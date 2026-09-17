@@ -28,6 +28,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lead to an indexed tree is still refused, and `RankOfKey` still fails over
   an absent path. `AxisKeys::empty_for_axis` is new. (#965)
 
+### Fixed
+- MMR proof verification (`MmrTreeProof::verify`, `verify_and_get_root`,
+  `MerkleProof::calculate_root`, `calculate_root_with_new_leaf` and
+  `verify_incremental`) now rejects an `mmr_size` no MMR can have. The peak
+  helpers round a non-canonical size (2, 5, 6, ...) down to the last valid MMR
+  below it, so an honest proof relabelled with such a size recomputed the same
+  root, and `u64::MAX` maps to `2^63` leaves, whose last leaf index overflowed
+  the position arithmetic (a panic under overflow checks) before the proof was
+  bound to a trusted root. `MmrTreeProof::generate` refuses the same sizes.
+  The new `checked_mmr_size_to_leaf_count` helper is the single definition of
+  a canonical size and also backs the state-sync check. Not version-gated:
+  every size a real MMR reaches is canonical, so no honest proof changes.
+  (closes #692)
+
 ## [6.0.1] - 2026-09-13
 
 GroveDB 6.0.1 is the 6.0 release to depend on. It supersedes 6.0.0, which is

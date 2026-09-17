@@ -373,3 +373,58 @@ fn interval_completeness_keeps_honest_and_unsound_behaviour() {
         other => panic!("expected soundness rejection, got {other:?}"),
     }
 }
+
+/// Issue #692: the forged parent element may also declare an `mmr_size`
+/// that no MMR can have. `u64::MAX` maps to `2^63` leaves, so leaf index
+/// `2^63 - 1` passed the range check and overflowed the position
+/// arithmetic — a panic under overflow checks — before the element was
+/// bound to the trusted root. Sizes 2, 5 and 6 round down to the peak set
+/// of a smaller MMR. All must be refused as an invalid proof.
+#[test]
+fn forged_non_canonical_mmr_size_rejected_before_position_arithmetic() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+    db.insert(
+        EMPTY_PATH,
+        b"mmr",
+        Element::empty_mmr_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert mmr tree");
+    db.mmr_tree_append(EMPTY_PATH, b"mmr", vec![7], None, grove_version)
+        .unwrap()
+        .expect("append one leaf");
+
+    let path_query = range_full_under(b"mmr", 2);
+    let honest = db
+        .prove_query(&path_query, None, grove_version)
+        .unwrap()
+        .expect("honest proof");
+
+    for (forged_mmr_size, leaf_index) in [
+        (u64::MAX, (1u64 << 63) - 1),
+        (u64::MAX - 1, 0),
+        (2, 0),
+        (5, 0),
+        (6, 0),
+    ] {
+        let forged_mmr = MmrTreeProof::new(forged_mmr_size, vec![(leaf_index, vec![7])], vec![]);
+        let forged = forge_root_layer_node(
+            &honest,
+            b"mmr",
+            &Element::new_mmr_tree(forged_mmr_size, None),
+            [0u8; 32],
+            ProofBytes::MMR(forged_mmr.encode_to_vec().expect("encode MMR proof")),
+            grove_version,
+        );
+
+        let result = GroveDb::verify_query(&forged, &path_query, grove_version);
+        expect_bounded_rejection(
+            result,
+            &format!("{forged_mmr_size} is not a valid MMR size"),
+        );
+    }
+}

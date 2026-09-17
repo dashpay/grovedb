@@ -3,7 +3,9 @@
 /// # Safety (arithmetic)
 ///
 /// Overflows when `index >= 2^63 - 1`. Callers must validate indices
-/// before calling (e.g. check `index < mmr_size_to_leaf_count(mmr_size)`).
+/// before calling: `index < checked_mmr_size_to_leaf_count(mmr_size)?`
+/// is always in range, whereas the unchecked [`mmr_size_to_leaf_count`]
+/// reports `2^63` leaves for `u64::MAX`.
 pub fn leaf_index_to_pos(index: u64) -> u64 {
     // mmr_size - H - 1, H is the height(intervals) of last peak
     leaf_index_to_mmr_size(index) - (index + 1).trailing_zeros() as u64 - 1
@@ -90,23 +92,6 @@ pub fn get_peak_map(mmr_size: u64) -> u64 {
     peak_map
 }
 
-/// Returns the pos of the peaks in the mmr.
-/// for example, for a mmr with 11 leaves, the mmr_size is 19, it will return
-/// [14, 17, 18].           14
-///        /       \
-///      6          13
-///    /   \       /   \
-///   2     5     9     12     17
-///  / \   /  \  / \   /  \   /  \
-/// 0   1 3   4 7   8 10  11 15  16 18
-///
-/// please note that when the mmr_size is invalid, it will return the peaks of
-/// the last valid mmr. in the below example, the mmr_size is 6, but it's not a
-/// valid mmr (size 4 is the last valid one with 3 leaves), so it will return
-/// [2, 3].
-///   2
-///  / \
-/// 0   1 3
 /// Blake3 merges [`MMR::get_root`](crate::MMR::get_root) performs for an MMR
 /// of this size.
 ///
@@ -125,6 +110,23 @@ pub fn hash_count_for_root_bagging(mmr_size: u64) -> u32 {
     get_peaks(mmr_size).len().saturating_sub(1) as u32
 }
 
+/// Returns the pos of the peaks in the mmr.
+/// for example, for a mmr with 11 leaves, the mmr_size is 19, it will return
+/// [14, 17, 18].           14
+///        /       \
+///      6          13
+///    /   \       /   \
+///   2     5     9     12     17
+///  / \   /  \  / \   /  \   /  \
+/// 0   1 3   4 7   8 10  11 15  16 18
+///
+/// please note that when the mmr_size is invalid, it will return the peaks of
+/// the last valid mmr. in the below example, the mmr_size is 6, but it's not a
+/// valid mmr (size 4 is the last valid one with 3 leaves), so it will return
+/// [2, 3].
+///   2
+///  / \
+/// 0   1 3
 pub fn get_peaks(mmr_size: u64) -> Vec<u64> {
     if mmr_size == 0 {
         return vec![];
@@ -246,8 +248,33 @@ pub fn hash_count_for_push(leaf_count: u64) -> u32 {
 /// The peak map bitmap encodes one bit per peak at height `h`, so its
 /// numeric value equals the total leaf count: `sum(2^h)` for each set
 /// bit `h`.
+///
+/// A non-canonical `mmr_size` silently yields the leaf count of the last
+/// valid MMR below it. Use [`checked_mmr_size_to_leaf_count`] for any size
+/// that has not already been validated.
 pub fn mmr_size_to_leaf_count(mmr_size: u64) -> u64 {
     get_peak_map(mmr_size)
+}
+
+/// Derive the number of leaves from `mmr_size`, or `None` if `mmr_size` is
+/// not a size an MMR can actually have.
+///
+/// [`get_peak_map`] and [`get_peaks`] round a non-canonical size (2, 5, 6,
+/// ...) down to the last valid MMR below it, so two different sizes would
+/// otherwise describe the same tree. A size is canonical exactly when it
+/// round-trips: `2 * leaf_count - popcount(leaf_count) == mmr_size`.
+///
+/// The round-trip is computed with checked arithmetic, which also rejects
+/// `u64::MAX`: it maps to `2^63` leaves, whose last index
+/// [`leaf_index_to_pos`] cannot convert without overflowing. Every leaf
+/// index below a returned count is therefore safe to pass to
+/// [`leaf_index_to_pos`] and [`leaf_index_to_mmr_size`].
+pub fn checked_mmr_size_to_leaf_count(mmr_size: u64) -> Option<u64> {
+    let leaf_count = mmr_size_to_leaf_count(mmr_size);
+    let canonical = leaf_count
+        .checked_mul(2)?
+        .checked_sub(u64::from(leaf_count.count_ones()))?;
+    (canonical == mmr_size).then_some(leaf_count)
 }
 
 #[cfg(test)]
@@ -271,6 +298,57 @@ mod grove_util_tests {
         assert_eq!(mmr_size_to_leaf_count(3), 2);
         assert_eq!(mmr_size_to_leaf_count(4), 3);
         assert_eq!(mmr_size_to_leaf_count(7), 4);
+    }
+
+    #[test]
+    fn test_checked_mmr_size_to_leaf_count_accepts_every_reachable_size() {
+        assert_eq!(checked_mmr_size_to_leaf_count(0), Some(0));
+        for leaf_count in 1..=1024u64 {
+            let mmr_size = leaf_index_to_mmr_size(leaf_count - 1);
+            assert_eq!(
+                checked_mmr_size_to_leaf_count(mmr_size),
+                Some(leaf_count),
+                "size {mmr_size}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_checked_mmr_size_to_leaf_count_rejects_sizes_between_valid_ones() {
+        // Sizes 0, 1, 3, 4, 7, 8, 10, 11, 15, 16 are the canonical ones up
+        // to 16; everything else in range must be refused rather than
+        // rounded down.
+        let canonical = [0u64, 1, 3, 4, 7, 8, 10, 11, 15, 16];
+        for mmr_size in 0..=16u64 {
+            assert_eq!(
+                checked_mmr_size_to_leaf_count(mmr_size).is_some(),
+                canonical.contains(&mmr_size),
+                "size {mmr_size}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_checked_mmr_size_to_leaf_count_bounds_position_arithmetic() {
+        // The largest accepted size holds 2^63 - 1 leaves, and its last leaf
+        // index converts without overflow.
+        let max_leaves = (1u64 << 63) - 1;
+        let max_size = leaf_index_to_mmr_size(max_leaves - 1);
+        assert_eq!(max_size, u64::MAX - 64);
+        assert_eq!(checked_mmr_size_to_leaf_count(max_size), Some(max_leaves));
+        assert_eq!(leaf_index_to_pos(max_leaves - 1), max_size - 1);
+
+        // u64::MAX is the size of a perfect tree with 2^63 leaves, but no
+        // index arithmetic can address its last leaf.
+        assert_eq!(mmr_size_to_leaf_count(u64::MAX), 1u64 << 63);
+        assert_eq!(checked_mmr_size_to_leaf_count(u64::MAX), None);
+        for mmr_size in (max_size + 1)..=u64::MAX {
+            assert_eq!(
+                checked_mmr_size_to_leaf_count(mmr_size),
+                None,
+                "size {mmr_size}"
+            );
+        }
     }
 
     #[test]

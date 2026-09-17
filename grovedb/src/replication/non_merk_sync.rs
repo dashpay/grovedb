@@ -62,7 +62,7 @@ use grovedb_merk::{
     tree_type::TreeType,
 };
 use grovedb_merkle_mountain_range::{
-    leaf_to_pos, mmr_size_to_leaf_count, MMRStoreReadOps, MmrNode, MmrStore, MMR,
+    checked_mmr_size_to_leaf_count, leaf_to_pos, MMRStoreReadOps, MmrNode, MmrStore, MMR,
 };
 use grovedb_path::SubtreePath;
 use grovedb_private_document_store::PrivateDocumentStore;
@@ -130,19 +130,8 @@ pub(crate) fn element_supports_entry_replay(element: &Element) -> bool {
 /// (element from the parent) go through this check so the arithmetic that
 /// follows is always in range.
 pub(crate) fn validate_mmr_size(mmr_size: u64) -> Result<u64, Error> {
-    let leaf_count = mmr_size_to_leaf_count(mmr_size);
-    // Canonical size for `leaf_count` leaves is `2 * leaf_count -
-    // popcount(leaf_count)`; compute it with checked arithmetic so a
-    // pathological size can never overflow here either.
-    let canonical = leaf_count
-        .checked_mul(2)
-        .and_then(|twice| twice.checked_sub(u64::from(leaf_count.count_ones())));
-    if canonical != Some(mmr_size) {
-        return Err(Error::CorruptedData(format!(
-            "{mmr_size} is not a valid MMR size"
-        )));
-    }
-    Ok(leaf_count)
+    checked_mmr_size_to_leaf_count(mmr_size)
+        .ok_or_else(|| Error::CorruptedData(format!("{mmr_size} is not a valid MMR size")))
 }
 
 /// Local chunk id for a non-Merk subtree page request. The target — which
