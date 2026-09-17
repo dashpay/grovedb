@@ -210,7 +210,7 @@ pub fn generate_traversal_instruction(
 /// bound: a chunk id longer than this is refused before any recovery work,
 /// which keeps the work a request can cause proportional to the local tree
 /// rather than to the request (issue #883).
-pub fn max_traversal_instruction_len(height: usize) -> usize {
+pub const fn max_traversal_instruction_len(height: usize) -> usize {
     height.saturating_sub(1)
 }
 
