@@ -16,9 +16,8 @@ use grovedb_version::version::GroveVersion;
 
 use crate::{
     helper::{
-        get_peak_map, get_peaks, leaf_index_to_mmr_size, leaf_index_to_pos,
-        leaf_index_to_pos as leaf_to_pos, mmr_size_to_leaf_count, parent_offset,
-        pos_height_in_tree, sibling_offset,
+        checked_mmr_size_to_leaf_count, get_peaks, leaf_index_to_mmr_size, leaf_index_to_pos,
+        leaf_index_to_pos as leaf_to_pos, parent_offset, pos_height_in_tree, sibling_offset,
     },
     leaf_hash,
     mmr::bag_peaks,
@@ -80,6 +79,12 @@ impl MerkleProof {
                 new_pos, new_mmr_size
             )));
         }
+        if checked_mmr_size_to_leaf_count(new_mmr_size).is_none() {
+            return Err(Error::InvalidInput(format!(
+                "new_mmr_size {} is not a valid MMR size",
+                new_mmr_size
+            )));
+        }
         let pos_height = pos_height_in_tree(new_pos);
         let next_height = pos_height_in_tree(new_pos + 1);
         if next_height > pos_height {
@@ -130,7 +135,7 @@ impl MerkleProof {
         prev_root: MmrNode,
         incremental: Vec<MmrNode>,
     ) -> Result<bool> {
-        let current_leaves_count = get_peak_map(self.mmr_size);
+        let current_leaves_count = proof_leaf_count(self.mmr_size)?;
         if current_leaves_count <= incremental.len() as u64 {
             return Err(Error::InvalidProof(
                 "incremental leaves exceed current leaf count".into(),
@@ -184,6 +189,18 @@ impl MerkleProof {
             .collect();
         self.verify(root, leaves)
     }
+}
+
+/// Leaf count for the `mmr_size` a proof carries.
+///
+/// The size is prover-chosen, and `get_peaks` rounds a non-canonical one
+/// down to the last valid MMR below it, so without this check the same
+/// leaves and proof items recompute the same root under several sizes. It
+/// also keeps every position conversion that follows inside `u64`: see
+/// [`checked_mmr_size_to_leaf_count`].
+fn proof_leaf_count(mmr_size: u64) -> Result<u64> {
+    checked_mmr_size_to_leaf_count(mmr_size)
+        .ok_or_else(|| Error::InvalidProof(format!("{} is not a valid MMR size", mmr_size)))
 }
 
 fn calculate_peak_root<'a, I: Iterator<Item = &'a MmrNode>>(
@@ -263,6 +280,8 @@ fn calculate_peaks_hashes<'a, I: Iterator<Item = &'a MmrNode>>(
     mmr_size: u64,
     mut proof_iter: I,
 ) -> Result<Vec<MmrNode>> {
+    proof_leaf_count(mmr_size)?;
+
     if leaves.iter().any(|(pos, _)| pos_height_in_tree(*pos) > 0) {
         return Err(Error::NodeProofsNotSupported);
     }
@@ -398,7 +417,8 @@ impl MmrTreeProof {
             return Err(Error::InvalidInput("leaf_indices must not be empty".into()));
         }
 
-        let leaf_count = mmr_size_to_leaf_count(mmr_size);
+        let leaf_count = checked_mmr_size_to_leaf_count(mmr_size)
+            .ok_or_else(|| Error::InvalidInput(format!("{} is not a valid MMR size", mmr_size)))?;
 
         // Validate indices and reject duplicates
         let mut seen_indices = BTreeSet::new();
@@ -483,9 +503,10 @@ impl MmrTreeProof {
             ));
         }
 
-        // Validate leaf indices to prevent arithmetic overflow in
-        // leaf_index_to_pos / leaf_index_to_mmr_size.
-        let leaf_count = mmr_size_to_leaf_count(self.mmr_size);
+        // Reject sizes no MMR can have, then validate leaf indices against
+        // the resulting count; together they keep leaf_index_to_pos /
+        // leaf_index_to_mmr_size from overflowing.
+        let leaf_count = proof_leaf_count(self.mmr_size)?;
         for (idx, _) in &self.leaves {
             if *idx >= leaf_count {
                 return Err(Error::InvalidProof(format!(
@@ -552,9 +573,10 @@ impl MmrTreeProof {
             ));
         }
 
-        // Validate leaf indices to prevent arithmetic overflow in
-        // leaf_index_to_pos / leaf_index_to_mmr_size.
-        let leaf_count = mmr_size_to_leaf_count(self.mmr_size);
+        // Reject sizes no MMR can have, then validate leaf indices against
+        // the resulting count; together they keep leaf_index_to_pos /
+        // leaf_index_to_mmr_size from overflowing.
+        let leaf_count = proof_leaf_count(self.mmr_size)?;
         for (idx, _) in &self.leaves {
             if *idx >= leaf_count {
                 return Err(Error::InvalidProof(format!(
@@ -1196,5 +1218,113 @@ mod tests {
         assert_eq!(verified_leaves.len(), 2);
         assert_eq!(verified_leaves[0], (1, b"item_1".to_vec()));
         assert_eq!(verified_leaves[1], (3, b"item_3".to_vec()));
+    }
+
+    /// Issue #692: sizes 5 and 6 share their peak set with size 4 (three
+    /// leaves), and size 2 shares its with size 1, so an honest proof
+    /// relabelled with one of them used to recompute the honest root.
+    #[test]
+    fn test_verify_rejects_non_canonical_mmr_size() {
+        let (store, mmr_size) = build_mmr(&[b"a", b"b", b"c"]);
+        assert_eq!(mmr_size, 4);
+        let root = root_hash(&store, mmr_size);
+        let honest = MmrTreeProof::generate(mmr_size, &[0], get_node_from_store(&store))
+            .expect("generate should succeed");
+        honest.verify(&root).expect("honest proof verifies");
+
+        for relabelled in [5u64, 6] {
+            let proof = MmrTreeProof::new(
+                relabelled,
+                honest.leaves().to_vec(),
+                honest.proof_items().to_vec(),
+            );
+            for err in [
+                proof.verify(&root).expect_err("verify must reject"),
+                proof
+                    .verify_and_get_root()
+                    .expect_err("verify_and_get_root must reject"),
+            ] {
+                assert!(
+                    matches!(&err, Error::InvalidProof(msg) if msg.contains("not a valid MMR size")),
+                    "size {relabelled}: unexpected error {err:?}"
+                );
+            }
+        }
+
+        let (single_store, single_size) = build_mmr(&[b"only"]);
+        assert_eq!(single_size, 1);
+        let single_root = root_hash(&single_store, single_size);
+        let proof = MmrTreeProof::new(2, vec![(0, b"only".to_vec())], vec![]);
+        let err = proof.verify(&single_root).expect_err("size 2 must reject");
+        assert!(
+            matches!(&err, Error::InvalidProof(msg) if msg.contains("not a valid MMR size")),
+            "size 2: unexpected error {err:?}"
+        );
+    }
+
+    /// Issue #692: `u64::MAX` maps to `2^63` leaves, so leaf index
+    /// `2^63 - 1` passed the range check and then overflowed
+    /// `leaf_index_to_mmr_size` (a panic under overflow checks, a wrapped
+    /// position without them).
+    #[test]
+    fn test_verify_rejects_mmr_size_beyond_position_arithmetic() {
+        let proof = MmrTreeProof::new(u64::MAX, vec![((1u64 << 63) - 1, b"x".to_vec())], vec![]);
+        for err in [
+            proof.verify(&[0u8; 32]).expect_err("verify must reject"),
+            proof
+                .verify_and_get_root()
+                .expect_err("verify_and_get_root must reject"),
+        ] {
+            assert!(
+                matches!(&err, Error::InvalidProof(msg) if msg.contains("not a valid MMR size")),
+                "unexpected error {err:?}"
+            );
+        }
+    }
+
+    /// The lower-level `MerkleProof` API takes positions directly and is
+    /// public, so it enforces the same rule on its own.
+    #[test]
+    fn test_merkle_proof_rejects_non_canonical_mmr_size() {
+        let leaf = MmrNode::leaf(b"only".to_vec());
+        for invalid in [2u64, 5, 6, 9, u64::MAX] {
+            let err = MerkleProof::new(invalid, vec![])
+                .calculate_root(vec![(0, leaf.clone())])
+                .expect_err("calculate_root must reject");
+            assert!(
+                matches!(&err, Error::InvalidProof(msg) if msg.contains("not a valid MMR size")),
+                "size {invalid}: unexpected error {err:?}"
+            );
+        }
+
+        // The extended size is a caller argument, not part of the proof.
+        let err = MerkleProof::new(1, vec![])
+            .calculate_root_with_new_leaf(vec![(0, leaf.clone())], 1, leaf.clone(), 2)
+            .expect_err("new_mmr_size must be canonical");
+        assert!(
+            matches!(&err, Error::InvalidInput(msg) if msg.contains("not a valid MMR size")),
+            "unexpected error {err:?}"
+        );
+
+        let err = MerkleProof::new(6, vec![leaf.clone()])
+            .verify_incremental(leaf.clone(), leaf.clone(), vec![leaf.clone()])
+            .expect_err("verify_incremental must reject");
+        assert!(
+            matches!(&err, Error::InvalidProof(msg) if msg.contains("not a valid MMR size")),
+            "unexpected error {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_generate_rejects_non_canonical_mmr_size() {
+        let (store, _) = build_mmr(&[b"a", b"b", b"c"]);
+        for invalid in [2u64, 5, 6, u64::MAX] {
+            let err = MmrTreeProof::generate(invalid, &[0], get_node_from_store(&store))
+                .expect_err("generate must reject");
+            assert!(
+                matches!(&err, Error::InvalidInput(msg) if msg.contains("not a valid MMR size")),
+                "size {invalid}: unexpected error {err:?}"
+            );
+        }
     }
 }
