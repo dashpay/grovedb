@@ -31,7 +31,36 @@ use std::io::{Read, Write};
 use ed::{Decode, Encode};
 use integer_encoding::{VarInt, VarIntReader};
 
-use crate::proofs::Op;
+use crate::proofs::{
+    chunk::{
+        chunk::{LEFT, RIGHT},
+        util::max_traversal_instruction_len,
+    },
+    Op,
+};
+
+/// Longest chunk id the decoder accepts.
+///
+/// Merk stores node heights as `u8`, so no tree is taller than `u8::MAX` and
+/// no traversal instruction longer than this can address a node. The declared
+/// length is checked against it before the instruction buffer is allocated
+/// (issue #904).
+const MAX_CHUNK_ID_LEN: usize = max_traversal_instruction_len(u8::MAX as usize);
+
+/// Most ops the decoder reserves room for up front.
+///
+/// The declared op count is attacker-controlled and the reader's remaining
+/// length is unknown, so the count only sizes the initial reservation up to
+/// this many ops. Past that the vec grows as ops are actually decoded, which
+/// keeps the allocation proportional to the input consumed (issue #904).
+const MAX_PREALLOCATED_OPS: usize = 1024;
+
+fn invalid_data_error(message: &'static str) -> ed::Error {
+    ed::Error::IOError(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        message,
+    ))
+}
 
 /// Represents the chunk generated from a given starting chunk id
 #[derive(PartialEq, Debug)]
@@ -94,20 +123,31 @@ impl Decode for ChunkOp {
 
         match marker[0] {
             0 => {
-                let length = input.read_varint()?;
+                let length: usize = input.read_varint()?;
+                if length > MAX_CHUNK_ID_LEN {
+                    return Err(invalid_data_error(
+                        "chunk id is longer than any tree is deep",
+                    ));
+                }
                 let mut instruction_as_binary = vec![0_u8; length];
                 input.read_exact(&mut instruction_as_binary)?;
 
-                let instruction: Vec<bool> = instruction_as_binary
+                // same mapping as `vec_bytes_as_traversal_instruction`: anything
+                // other than 0 or 1 is not a traversal step
+                let instruction = instruction_as_binary
                     .into_iter()
-                    .map(|v| v == 1_u8)
-                    .collect();
+                    .map(|v| match v {
+                        1_u8 => Ok(LEFT),
+                        0_u8 => Ok(RIGHT),
+                        _ => Err(ed::Error::UnexpectedByte(v)),
+                    })
+                    .collect::<ed::Result<Vec<bool>>>()?;
 
                 *self = ChunkOp::ChunkId(instruction);
             }
             1 => {
-                let ops_length = input.read_varint()?;
-                let mut chunk = Vec::with_capacity(ops_length);
+                let ops_length: usize = input.read_varint()?;
+                let mut chunk = Vec::with_capacity(ops_length.min(MAX_PREALLOCATED_OPS));
 
                 for _ in 0..ops_length {
                     let op = Decode::decode(&mut input)?;
@@ -126,11 +166,12 @@ impl Decode for ChunkOp {
 #[cfg(test)]
 mod test {
     use ed::{Decode, Encode};
+    use integer_encoding::VarInt;
 
     use crate::proofs::{
         chunk::{
             chunk::{LEFT, RIGHT},
-            chunk_op::ChunkOp,
+            chunk_op::{ChunkOp, MAX_CHUNK_ID_LEN, MAX_PREALLOCATED_OPS},
         },
         Node, Op,
     };
@@ -177,12 +218,72 @@ mod test {
     }
 
     #[test]
-    fn test_chunk_op_decoding_non_binary_chunk_id_values() {
-        let encoded_chunk_op = vec![0, 4, 1, 2, 0, 255];
-        let decoded_chunk_op = ChunkOp::decode(encoded_chunk_op.as_slice()).unwrap();
+    fn test_chunk_op_decoding_rejects_non_binary_chunk_id_values() {
+        // issue #704: only 0 and 1 are traversal steps; every other byte used
+        // to decode as `false`, giving one chunk id many encodings
+        for bad_byte in [2u8, 3, 128, 255] {
+            let encoded_chunk_op = vec![0, 4, 1, bad_byte, 0, 1];
+            let err = ChunkOp::decode(encoded_chunk_op.as_slice()).unwrap_err();
+            assert!(
+                matches!(err, ed::Error::UnexpectedByte(byte) if byte == bad_byte),
+                "byte {bad_byte} should be rejected, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_chunk_op_decoding_bounds_chunk_id_length_before_allocating() {
+        // issue #904: a declared length no tree can have is refused outright,
+        // without reserving a buffer for it
+        let mut encoded_chunk_op = vec![0];
+        encoded_chunk_op.extend(usize::MAX.encode_var_vec());
+        let err = ChunkOp::decode(encoded_chunk_op.as_slice()).unwrap_err();
+        assert!(
+            matches!(&err, ed::Error::IOError(e) if e.kind() == std::io::ErrorKind::InvalidData),
+            "got {err:?}"
+        );
+
+        let mut encoded_chunk_op = vec![0];
+        encoded_chunk_op.extend((MAX_CHUNK_ID_LEN + 1).encode_var_vec());
+        encoded_chunk_op.extend(vec![0u8; MAX_CHUNK_ID_LEN + 1]);
+        let err = ChunkOp::decode(encoded_chunk_op.as_slice()).unwrap_err();
+        assert!(
+            matches!(&err, ed::Error::IOError(e) if e.kind() == std::io::ErrorKind::InvalidData),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_chunk_op_longest_chunk_id_round_trips() {
+        let instruction: Vec<bool> = (0..MAX_CHUNK_ID_LEN).map(|i| i % 2 == 0).collect();
+        let chunk_op = ChunkOp::ChunkId(instruction);
+        let encoded_chunk_op = chunk_op.encode().unwrap();
+        assert_eq!(encoded_chunk_op.len(), chunk_op.encoding_length().unwrap());
         assert_eq!(
-            decoded_chunk_op,
-            ChunkOp::ChunkId(vec![true, false, false, false])
+            ChunkOp::decode(encoded_chunk_op.as_slice()).unwrap(),
+            chunk_op
+        );
+    }
+
+    #[test]
+    fn test_chunk_op_decoding_does_not_reserve_declared_op_count() {
+        // issue #904: the op count used to go straight into
+        // `Vec::with_capacity`, so this panicked on capacity overflow
+        // instead of returning an error
+        let mut encoded_chunk_op = vec![1];
+        encoded_chunk_op.extend(usize::MAX.encode_var_vec());
+        encoded_chunk_op.extend(Op::Child.encode().unwrap());
+        let err = ChunkOp::decode(encoded_chunk_op.as_slice()).unwrap_err();
+        assert!(matches!(err, ed::Error::IOError(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn test_chunk_op_more_ops_than_preallocated_round_trip() {
+        let chunk_op = ChunkOp::Chunk(vec![Op::Child; MAX_PREALLOCATED_OPS + 1]);
+        let encoded_chunk_op = chunk_op.encode().unwrap();
+        assert_eq!(
+            ChunkOp::decode(encoded_chunk_op.as_slice()).unwrap(),
+            chunk_op
         );
     }
 }
