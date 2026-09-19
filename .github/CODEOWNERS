@@ -1,3 +1,8 @@
 # Generated from dashpay/stale_prs_are_bad policies/grovedb.json; do not edit by hand.
-# Owners and reviewers are combined here for native review routing.
-* @QuantumExplorer
+#
+# Review routing for this repository is controlled by PR Hygiene:
+#   https://github.com/dashpay/stale_prs_are_bad/blob/master/policies/grovedb.json
+#
+# This file has no rules on purpose. Reviewers are requested by the policy
+# once the bots have reported and the author has self-reviewed, not by
+# GitHub the moment a pull request is opened.
