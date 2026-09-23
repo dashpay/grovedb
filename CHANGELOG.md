@@ -41,6 +41,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a canonical size and also backs the state-sync check. Not version-gated:
   every size a real MMR reaches is canonical, so no honest proof changes.
   (closes #692)
+- `GroveDb::fetch_chunk` no longer panics when a state-sync peer names a tree
+  type whose aggregate family differs from that of the subtree it addresses. The
+  source opened the subtree with the peer's type as-is, so naming a `Provable*`
+  type for a plain, sum or count subtree (plain chunk route), or an indexed
+  type with a header request (indexed header route), reached the fail-closed
+  `panic!` in `TreeNode::hash_for_link`: any peer could crash a serving node
+  at will. Such a request is now refused with `Error::CorruptedData` before
+  anything is hashed. Serving is not consensus, so this is not version-gated;
+  an honest target always names the type its restored element carries, which
+  is never refused. (#989)
 
 ## [6.0.1] - 2026-09-13
 

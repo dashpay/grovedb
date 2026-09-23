@@ -4520,10 +4520,11 @@ mod tests {
 
     /// Every peer-controlled field of an indexed header request is
     /// rejected descriptively on the source: a request that is not alone
-    /// in its global chunk, an unknown axis tag, and a primary root key
-    /// that opens nothing. (A secondary root key that names no node opens
-    /// as an empty Merk and is answered with the NULL hash, which the
-    /// target's joint verification then rejects.)
+    /// in its global chunk, an unknown axis tag, a primary root key that
+    /// opens nothing, and a dropped secondary root key for a populated
+    /// secondary. (A secondary root key that names no node opens as an
+    /// empty Merk and is answered with the NULL hash, which the target's
+    /// joint verification then rejects.)
     #[test]
     fn fetch_chunk_rejects_malformed_indexed_header_requests() {
         use grovedb_storage::rocksdb_storage::RocksDbStorage;
@@ -4536,11 +4537,16 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let source = tamper_test_psit_source(grove_version);
         let tx = source.start_transaction();
-        let (merk, root_key, tree_type, _element) = source
+        let (merk, root_key, tree_type, element) = source
             .open_merk_for_replication([TEST_LEAF, b"psit"].as_ref().into(), &tx, grove_version)
             .expect("open indexed primary for replication");
         drop(merk);
         assert!(tree_type.is_indexed_primary(), "sanity: {tree_type:?}");
+        let secondary_root_key = match element {
+            Some(Element::ProvableSumIndexedTree(_, secondary_root_key, ..)) => secondary_root_key,
+            other => panic!("sanity: expected a PSIT element, got {other:?}"),
+        };
+        assert!(secondary_root_key.is_some(), "sanity: populated secondary");
         let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
         let prefix = RocksDbStorage::build_prefix(path.into()).unwrap();
         let fetch = |global_id: Vec<u8>| {
@@ -4594,7 +4600,10 @@ mod tests {
                 prefix,
                 Some(b"no such node".to_vec()),
                 tree_type,
-                vec![valid_request],
+                vec![IndexedHeaderRequest {
+                    axes: vec![(1, secondary_root_key)],
+                }
+                .encode()],
             )
             .unwrap(),
         )
@@ -4603,6 +4612,18 @@ mod tests {
         // root node to chunk from, so the refusal comes from the producer.
         assert!(
             format!("{err}").contains("failed to create indexed primary chunk producer"),
+            "{err}"
+        );
+
+        // Without a root key the source opens the secondary through its
+        // persisted base root as a `NormalTree`, whose family is not the
+        // secondary's; it is refused rather than hashed under that type.
+        let err = fetch(
+            encode_global_chunk_id(prefix, root_key, tree_type, vec![valid_request]).unwrap(),
+        )
+        .expect_err("a dropped secondary root key for a populated secondary must be refused");
+        assert!(
+            format!("{err}").contains("does not belong to the subtree"),
             "{err}"
         );
     }
