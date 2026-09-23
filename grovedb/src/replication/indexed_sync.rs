@@ -61,7 +61,10 @@ use grovedb_storage::rocksdb_storage::RocksDbStorage;
 
 use crate::{
     operations::indexed_tree::axis_secondary_tree_type,
-    replication::utils::{encode_vec_ops, pack_nested_bytes},
+    replication::{
+        ensure_served_merk_family,
+        utils::{encode_vec_ops, pack_nested_bytes},
+    },
     Element, Error, GroveDb, SubtreePrefix, Transaction,
 };
 
@@ -257,7 +260,9 @@ impl GroveDb {
     /// Every field of `request` is peer-controlled: an invalid axis tag or
     /// a root key that does not open a Merk produces a bounded descriptive
     /// error, and a wrong-but-openable request only yields hashes the
-    /// target's joint verification will reject.
+    /// target's joint verification will reject. So is `tree_type`: naming
+    /// an indexed type for a subtree whose nodes belong to another family
+    /// is refused before the primary is hashed.
     pub(crate) fn serve_indexed_header_page(
         &self,
         chunk_prefix: SubtreePrefix,
@@ -285,6 +290,9 @@ impl GroveDb {
                     hex::encode(chunk_prefix)
                 ))
             })?;
+        // `root_hash` hashes under the peer-chosen `tree_type`; refuse a
+        // type of another family than the stored nodes before it panics.
+        ensure_served_merk_family(&merk, &chunk_prefix)?;
         let primary_root_hash = merk.root_hash().unwrap();
 
         let mut axes = Vec::with_capacity(request.axes.len());
@@ -309,6 +317,10 @@ impl GroveDb {
                         "failed to open indexed secondary (axis {axis:?}) by prefix: {e}"
                     ))
                 })?;
+            // The secondary's type and its prefix both follow from the
+            // tag, so a mismatch here needs corrupt storage; checked anyway
+            // so no Merk is hashed for a peer unchecked.
+            ensure_served_merk_family(&secondary_merk, &secondary_prefix)?;
             axes.push((*tag, secondary_merk.root_hash().unwrap()));
         }
 
