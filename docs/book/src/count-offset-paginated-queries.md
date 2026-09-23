@@ -243,9 +243,25 @@ A malicious prover could try several attacks:
 | Emit a `KVDigestCount` with a key outside its inherited bounds  | `key_strictly_inside` check rejects                                                                             |
 | Emit children whose aggregates exceed the parent's              | `own_count = aggregate − left − right` underflow rejects                                                        |
 | Inject a non-count node kind (e.g. `Hash`, `KVHash`)            | `execute_with_options` visit-node allowlist rejects                                                             |
+| Re-emit a returned `KVCount(k, v, c)` as `KVValueHashFeatureType(k, forged, H(v), c)` | The node hash is unchanged, because this node hashes the carried value hash and not the value bytes. `classify_self` admits only trees and references on this node, so any other element type is refused. The GroveDB layer also requires a row that did not come through a reference to be a simple item or an empty tree whose committed hash it recomputes |
 
 These rejection branches all have dedicated forging tests in
-`merk/src/proofs/query/count_offset/tests.rs`.
+`merk/src/proofs/query/count_offset/tests.rs`. The value-substitution
+row is also covered end to end, for every Provable* count host and every
+public verify entry point, in
+`grovedb/src/tests/count_offset_backward_ref_forgery_tests.rs`.
+
+The node-type allowlist in `execute_with_options` is not enough on its
+own for the value-substitution row. The count-offset verifier rebuilds
+the tree with `execute_with_options` rather than `execute_proof`, so the
+element-type refusals `execute_proof` applies to `KVValueHashFeatureType`
+never run on this path. `classify_self` carries its own, as an allowlist
+so that element types added later are refused by default. Before it was
+an allowlist, it refused only `Item` / `SumItem` / `ItemWithSumItem`,
+and a forged `ItemWithBackwardsReferences`, `SumItemWithBackwardsReferences`
+or `ItemWithSumItemWithBackwardsReferences` row verified under the
+genuine root. No honest proof carries these types on a directly read
+row, because Provable* count trees refuse them at insert.
 
 ## Unsupported in-range value shapes (P1 / P2)
 

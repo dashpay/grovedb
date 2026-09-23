@@ -599,16 +599,14 @@ impl GroveDb {
         Ok((root_hash, last_tree_feature_type, result))
     }
 
-    /// Shared count-offset leaf-dispatch helper used by both
-    /// `verify_layer_proof` (V0) and `verify_layer_proof_v1`. Their V0
-    /// and V1 envelopes wrap the merk proof bytes differently
-    /// (`MerkOnlyLayerProof.merk_proof: Vec<u8>` vs
-    /// `LayerProof.merk_proof: ProofBytes::Merk(Vec<u8>)`), so callers
-    /// pass the unwrapped `merk_proof_bytes` and the
-    /// `lower_layers_empty` flag explicitly. Everything else (
-    /// `validate_count_offset_paginated`, the `verify_count_offset_on_range_proof`
-    /// call, item translation, V1 strict-mode-style rejection of
-    /// non-empty tree returns) is identical.
+    /// Count-offset leaf dispatch for `verify_layer_proof_v1`, its only
+    /// caller. V0 envelopes never reach it: `apply_count_offset_envelope_gate`
+    /// rejects any non-zero offset on a V0 envelope. The caller passes the
+    /// unwrapped `merk_proof_bytes` and the `lower_layers_empty` flag; this
+    /// helper runs `validate_count_offset_paginated`, the
+    /// `verify_count_offset_on_range_proof` call, the item translation and
+    /// the V1 strict-mode rejections of shapes an honest proof never
+    /// surfaces.
     fn run_count_offset_layer_dispatch<T>(
         query: &PathQuery,
         merk_proof_bytes: &[u8],
@@ -675,12 +673,12 @@ impl GroveDb {
         // value-hash is `combine_hash(H(value), child_root)`).
         //
         // Defense-in-depth: reject any returned value whose deserialized
-        // element type is one of the three shapes the count-offset
-        // proof flow doesn't yet support. The prover-side checks in
+        // element type is one of the four shapes an honest count-offset
+        // proof never surfaces. The prover-side checks in
         // `emit_count_offset_proof` already block these, so an honest
         // proof will never reach this loop with them — but a forged
         // proof might, and we don't want to silently pass tampered
-        // values through. The three rejected shapes are:
+        // values through. The four rejected shapes are:
         //
         //   • **NonCounted-wrapped** entries — silently dropped in
         //     normal traversal (own_count = 0) and not surfaced via
@@ -694,6 +692,9 @@ impl GroveDb {
         //     `KVValueHashFeatureTypeWithChildHash` proof node here;
         //     accepting one without that would silently bypass the
         //     child-hash invariant the regular flow enforces.
+        //   • **Any other unresolved row that is not a simple item or
+        //     tree** — today the backward-references items. See the
+        //     allowlist in the loop below.
         for item in count_offset_result.returned_items.iter() {
             // Reject non-Element bytes — a forged proof might surface raw
             // bytes that don't deserialize as any known Element type. The
@@ -764,6 +765,37 @@ impl GroveDb {
                         hex::encode(&item.key)
                     ),
                 ));
+            }
+            // Allowlist the element types an unresolved row may hold
+            // (defense in depth behind the merk-level allowlist in
+            // `classify_self`). A row not resolved through a reference
+            // is one of the count tree's own entries. An honest proof
+            // surfaces only two kinds of entry here: simple items, on
+            // `KVCount` / `KVCountSum`, which recompute `H(value)`, and
+            // empty subtrees, checked against their committed hash
+            // below. Any other type is a forgery. On a
+            // `KVValueHashFeatureType` node the hash does not bind the
+            // value bytes; on a `KVCount` / `KVCountSum` node the bytes
+            // cannot match the committed root, because the tree never
+            // stores that type. Today that means the backward-references
+            // items, which Provable* count trees refuse at insert. Rows
+            // resolved through a reference are exempt: their value is
+            // the target, which the `KVRefValueHash*` combine binds.
+            if !item.resolved_from_reference {
+                let element_type = inner.element_type();
+                if !(element_type.has_simple_value_hash() || element_type.is_tree()) {
+                    return Err(Error::InvalidProof(
+                        query.clone(),
+                        format!(
+                            "count-offset paginated proof surfaced an element of type '{}' at key {}; \
+                             a count tree's own rows are simple items or empty trees, and \
+                             any other type rides on a node whose hash does not bind its \
+                             value bytes, so the row is forged",
+                            element_type.as_str(),
+                            hex::encode(&item.key)
+                        ),
+                    ));
+                }
             }
             // Empty-tree value-hash equality check (defense-in-depth on
             // top of the merk-level KV→KVValueHash forgery guard).

@@ -684,32 +684,39 @@ fn classify_self<'a>(
                     own_count
                 )));
             }
-            // V1 strict-mode KV→KVValueHash forgery guard (mirrors the
-            // regular `execute_proof` check at `verify.rs:427`).
+            // V1 strict-mode KV→KVValueHash forgery guard.
             //
-            // Without this, an attacker can replace an honest
-            // `KVCount(k, real_value, count)` (where `real_value` is an
-            // Item) with `KVValueHashFeatureType(k, serialized_forged_Item,
-            // H(real_value), ProvableCountedMerkNode(count))`: the merk
-            // tree-hash chain still reconstructs because the proof
-            // carries the committed `value_hash` directly rather than
-            // recomputing it from `value`, but the surfaced bytes are
-            // the attacker's forged Item. The downstream GroveDB
-            // filter at `grovedb/src/operations/proof/verify.rs:523`
-            // only blacklists NonCounted / Reference / non-empty Tree
-            // shapes — it cannot tell a forged Item-in-tree-shape from
-            // an honest tree return.
+            // This node's hash covers `(key, value_hash, count)` and
+            // takes `value_hash` from the proof, never from `value`, so
+            // nothing in the merk chain binds the value bytes. An
+            // attacker can re-emit an honest `KVCount(k, item, count)`
+            // as `KVValueHashFeatureType(k, forged, H(item),
+            // ProvableCountedMerkNode(count))`. The node hash does not
+            // change (`kv_hash(k, v) == kv_digest_to_kv_hash(k, H(v))`),
+            // so `forged` would surface as the row's value under the
+            // genuine root.
             //
-            // KVValueHashFeatureType is the right proof-node type ONLY
-            // for elements with `combine_hash`-composed value_hash
-            // (subtrees, references, indexed-tree elements). Element
-            // types with a simple `H(value)` value_hash (`Item`,
-            // `SumItem`, `ItemWithSumItem`) MUST use `KVCount` /
-            // `KVCountSum` (count tree) or the plain `KV` / `KVValueHash`
-            // family (other trees), where the verifier recomputes the
-            // value_hash from the value bytes via
-            // `kv_digest_to_kv_hash` and forgery is structurally
-            // blocked.
+            // The phase-1 replay uses `execute_with_options`, not
+            // `execute_proof`, so the element-type refusal that
+            // `execute_proof` applies to this node never runs here.
+            // This guard has to do it instead.
+            //
+            // It is an allowlist of what an honest prover puts on this
+            // node: the element types whose committed value hash is a
+            // `combine_hash` the verifier cannot recompute from `value`.
+            // Those are subtrees (every Merk, non-Merk and indexed
+            // tree) and references (rewritten by the GroveDB post-pass
+            // into the self-binding `KVRefValueHash*` family, or bound
+            // against the target chain for indexed-axis secondaries).
+            // Everything else fails closed, including element types
+            // added later. Today that refuses:
+            //   - `Item` / `SumItem` / `ItemWithSumItem`, which an
+            //     honest prover emits as `KVCount` / `KVCountSum`, where
+            //     the verifier recomputes `H(value)`;
+            //   - the three backward-references items. Provable* count
+            //     trees refuse them at insert, so no honest count-offset
+            //     proof carries one, and elsewhere they ride on
+            //     `KVBackwardsReferencesValueHash`.
             let element_type = grovedb_element::ElementType::from_serialized_value(
                 value.as_slice(),
             )
@@ -719,16 +726,16 @@ fn classify_self<'a>(
                              KVValueHashFeatureType node: {e}"
                 ))
             })?;
-            if element_type.has_simple_value_hash() {
-                return Err(Error::InvalidProofError(
-                    "count-offset proof: KVValueHashFeatureType node must not contain a \
-                     simple-value Element type (Item / SumItem / ItemWithSumItem) — these \
-                     use a simple H(value) value-hash and an honest prover would emit \
-                     KVCount or KVCountSum instead. Rejected to prevent KV→KVValueHash \
-                     forgery (the proof's tree-hash chain only verifies the proof-carried \
-                     value_hash, not that `value_hash == H(value)`)"
-                        .to_string(),
-                ));
+            if !(element_type.is_tree() || element_type.is_reference()) {
+                return Err(Error::InvalidProofError(format!(
+                    "count-offset proof: KVValueHashFeatureType node carries an element of type \
+                     '{}'; \
+                     only trees and references use this node, because only their value \
+                     hash is a combine_hash the verifier cannot recompute. The node hash \
+                     does not bind the value bytes, so any other element type here is a \
+                     forged row (an honest prover emits items as KVCount / KVCountSum)",
+                    element_type.as_str()
+                )));
             }
             Ok(BoundaryKind::ValueReturned {
                 resolved_from_reference: false,
