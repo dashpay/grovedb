@@ -50,7 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   at will. Such a request is now refused with `Error::CorruptedData` before
   anything is hashed. Serving is not consensus, so this is not version-gated;
   an honest target always names the type its restored element carries, which
-  is never refused.
+  is never refused. (#989)
 
 ## [6.0.1] - 2026-09-13
 
