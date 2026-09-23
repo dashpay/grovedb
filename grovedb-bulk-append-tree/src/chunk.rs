@@ -110,6 +110,112 @@ pub fn deserialize_chunk_blob(blob: &[u8]) -> Result<Vec<Vec<u8>>, BulkAppendErr
     }
 }
 
+/// Deserialize a completed chunk blob, which must hold exactly
+/// `expected_count` entries.
+///
+/// Equivalent to [`completed_chunk_entries`] asking for every entry.
+pub fn deserialize_completed_chunk_blob(
+    blob: &[u8],
+    expected_count: u64,
+) -> Result<Vec<Vec<u8>>, BulkAppendError> {
+    let all = usize::try_from(expected_count).map_err(|_| {
+        BulkAppendError::InvalidInput(format!(
+            "chunk entry count {} overflows usize",
+            expected_count
+        ))
+    })?;
+    completed_chunk_entries(blob, expected_count, &[(0, all)])
+}
+
+/// Validate a completed chunk blob, which must hold exactly
+/// `expected_count` entries, and copy out only the entries at the indices
+/// in `wanted`.
+///
+/// `wanted` holds sorted, disjoint, half-open index ranges below
+/// `expected_count`. The entries come back in ascending index order.
+///
+/// Compaction writes a chunk only when the buffer is full, so every
+/// completed chunk holds exactly `chunk_item_count = 2^height` entries. A
+/// proof verifier decodes chunk blobs taken from proof bytes that are not yet
+/// bound to a trusted root, and [`deserialize_chunk_blob`] lets a 9-byte
+/// fixed-format blob with `entry_size = 0` declare `MAX_CHUNK_ENTRIES`
+/// entries. This decoder checks the count without allocating anything per
+/// entry: the fixed format's header count must equal `expected_count`, and a
+/// variable-format blob is walked once and rejected at the first entry past
+/// `expected_count`. Only the `wanted` entries are copied, so a query that
+/// touches one position of a chunk costs one entry, not the whole chunk.
+///
+/// This is a resource bound, not a soundness check. A completed chunk's
+/// bytes are already bound by its MMR leaf hash; see the note in
+/// `BulkAppendTreeProof::verify_and_compute_root`.
+pub fn completed_chunk_entries(
+    blob: &[u8],
+    expected_count: u64,
+    wanted: &[(usize, usize)],
+) -> Result<Vec<Vec<u8>>, BulkAppendError> {
+    let wrong_count = |found: &dyn std::fmt::Display| {
+        BulkAppendError::CorruptedData(format!(
+            "completed chunk blob holds {} entries, expected exactly {}",
+            found, expected_count
+        ))
+    };
+    if wanted
+        .iter()
+        .any(|&(start, end)| start > end || end as u64 > expected_count)
+        || wanted.windows(2).any(|pair| pair[0].1 > pair[1].0)
+    {
+        return Err(BulkAppendError::InvalidInput(format!(
+            "wanted entry ranges must be sorted, disjoint and below {}",
+            expected_count
+        )));
+    }
+    let mut entries = Vec::with_capacity(wanted.iter().map(|(start, end)| end - start).sum());
+    match blob.split_first() {
+        None => {
+            if expected_count != 0 {
+                return Err(wrong_count(&0));
+            }
+        }
+        Some((&FORMAT_FIXED, data)) => {
+            let (count, entry_size, payload) = fixed_layout(data)?;
+            if count as u64 != expected_count {
+                return Err(wrong_count(&count));
+            }
+            // `fixed_layout` checked `payload.len() == count * entry_size`.
+            for &(start, end) in wanted {
+                entries.extend(
+                    (start..end).map(|i| payload[i * entry_size..(i + 1) * entry_size].to_vec()),
+                );
+            }
+        }
+        Some((&FORMAT_VARIABLE, data)) => {
+            let max = usize::try_from(expected_count).unwrap_or(usize::MAX);
+            let mut wanted = wanted.iter().peekable();
+            let count = walk_variable(
+                data,
+                max,
+                || wrong_count(&format_args!("more than {}", expected_count)),
+                |index, entry| {
+                    while wanted.next_if(|&&(_, end)| end <= index).is_some() {}
+                    if wanted.peek().is_some_and(|&&(start, _)| start <= index) {
+                        entries.push(entry.to_vec());
+                    }
+                },
+            )?;
+            if count as u64 != expected_count {
+                return Err(wrong_count(&count));
+            }
+        }
+        Some((&other, _)) => {
+            return Err(BulkAppendError::CorruptedData(format!(
+                "unknown chunk blob format flag: 0x{:02x}",
+                other
+            )));
+        }
+    }
+    Ok(entries)
+}
+
 // -- Fixed-size format -------------------------------------------------------
 // Layout: [0x01] [count: u32 BE] [entry_size: u32 BE] [entry_0] [entry_1] ...
 
@@ -132,7 +238,9 @@ fn serialize_fixed(entries: &[Vec<u8>]) -> Result<Vec<u8>, BulkAppendError> {
     Ok(blob)
 }
 
-fn deserialize_fixed(data: &[u8]) -> Result<Vec<Vec<u8>>, BulkAppendError> {
+/// Parse a fixed-format blob's header (after the format byte) and check the
+/// payload length, without allocating: `(count, entry_size, payload)`.
+fn fixed_layout(data: &[u8]) -> Result<(usize, usize, &[u8]), BulkAppendError> {
     if data.len() < 8 {
         return Err(BulkAppendError::CorruptedData(
             "fixed chunk blob truncated at header".to_string(),
@@ -175,7 +283,11 @@ fn deserialize_fixed(data: &[u8]) -> Result<Vec<Vec<u8>>, BulkAppendError> {
             entry_size
         )));
     }
+    Ok((count, entry_size, payload))
+}
 
+fn deserialize_fixed(data: &[u8]) -> Result<Vec<Vec<u8>>, BulkAppendError> {
+    let (count, entry_size, payload) = fixed_layout(data)?;
     let mut entries = Vec::with_capacity(count);
     for i in 0..count {
         let start = i * entry_size;
@@ -203,34 +315,54 @@ fn serialize_variable(entries: &[Vec<u8>]) -> Result<Vec<u8>, BulkAppendError> {
 
 fn deserialize_variable(data: &[u8]) -> Result<Vec<Vec<u8>>, BulkAppendError> {
     let mut entries = Vec::new();
-    let mut offset = 0;
-    while offset < data.len() {
-        if entries.len() >= MAX_CHUNK_ENTRIES {
-            return Err(BulkAppendError::CorruptedData(format!(
+    walk_variable(
+        data,
+        MAX_CHUNK_ENTRIES,
+        || {
+            BulkAppendError::CorruptedData(format!(
                 "variable chunk blob exceeds maximum {} entries",
                 MAX_CHUNK_ENTRIES
-            )));
-        }
-        if offset + 4 > data.len() {
-            return Err(BulkAppendError::CorruptedData(
-                "chunk blob truncated at length prefix".to_string(),
-            ));
-        }
-        let len = u32::from_be_bytes(
-            data[offset..offset + 4]
-                .try_into()
-                .map_err(|_| BulkAppendError::CorruptedData("bad length prefix bytes".into()))?,
-        ) as usize;
-        offset += 4;
-        if offset + len > data.len() {
-            return Err(BulkAppendError::CorruptedData(
-                "chunk blob truncated at entry data".to_string(),
-            ));
-        }
-        entries.push(data[offset..offset + len].to_vec());
-        offset += len;
-    }
+            ))
+        },
+        |_, entry| entries.push(entry.to_vec()),
+    )?;
     Ok(entries)
+}
+
+/// Walk a variable-format payload (after the format byte), calling
+/// `on_entry(index, bytes)` for each entry, and return the entry count.
+/// Fails with `too_many()` before visiting an entry past `max_entries`, and
+/// on a truncated length prefix or entry. Allocates nothing itself.
+fn walk_variable(
+    data: &[u8],
+    max_entries: usize,
+    too_many: impl FnOnce() -> BulkAppendError,
+    mut on_entry: impl FnMut(usize, &[u8]),
+) -> Result<usize, BulkAppendError> {
+    let mut count = 0usize;
+    let mut offset = 0usize;
+    while offset < data.len() {
+        if count == max_entries {
+            return Err(too_many());
+        }
+        let len_bytes: [u8; 4] = data
+            .get(offset..offset + 4)
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| {
+                BulkAppendError::CorruptedData("chunk blob truncated at length prefix".to_string())
+            })?;
+        let start = offset + 4;
+        let end = start
+            .checked_add(u32::from_be_bytes(len_bytes) as usize)
+            .filter(|end| *end <= data.len())
+            .ok_or_else(|| {
+                BulkAppendError::CorruptedData("chunk blob truncated at entry data".to_string())
+            })?;
+        on_entry(count, &data[start..end]);
+        offset = end;
+        count += 1;
+    }
+    Ok(count)
 }
 
 #[cfg(test)]
@@ -378,6 +510,103 @@ mod tests {
         blob.extend_from_slice(&u32::MAX.to_be_bytes());
         let err = deserialize_chunk_blob(&blob).expect_err("should reject huge count/entry_size");
         assert!(matches!(err, BulkAppendError::CorruptedData(_)));
+    }
+}
+
+#[cfg(test)]
+mod completed_chunk_tests {
+    use super::*;
+
+    fn zero_size_fixed_blob(count: usize) -> Vec<u8> {
+        serialize_chunk_blob(&vec![Vec::new(); count]).unwrap()
+    }
+
+    #[test]
+    fn honest_blobs_of_the_expected_count_decode() {
+        let fixed: Vec<Vec<u8>> = (0..4u8).map(|i| vec![i; 3]).collect();
+        let variable = vec![vec![], vec![1], vec![2, 2], vec![3, 3, 3]];
+        let empty_entries = vec![Vec::new(); 4];
+        for entries in [fixed, variable, empty_entries] {
+            let blob = serialize_chunk_blob(&entries).unwrap();
+            assert_eq!(
+                deserialize_completed_chunk_blob(&blob, 4).expect("honest chunk"),
+                entries
+            );
+        }
+    }
+
+    #[test]
+    fn a_nine_byte_blob_cannot_declare_more_than_its_chunk_holds() {
+        // Accepted by the general decoder: 2^20 empty entries from 9 bytes.
+        let blob = zero_size_fixed_blob(1 << 20);
+        assert_eq!(blob.len(), 9);
+        assert_eq!(deserialize_chunk_blob(&blob).unwrap().len(), 1 << 20);
+
+        let err = deserialize_completed_chunk_blob(&blob, 2).expect_err("count is not 2");
+        assert!(
+            matches!(&err, BulkAppendError::CorruptedData(m)
+                if m.contains("holds 1048576 entries, expected exactly 2")),
+            "{err:?}"
+        );
+        // Short as well as long.
+        assert!(deserialize_completed_chunk_blob(&zero_size_fixed_blob(1), 2).is_err());
+    }
+
+    #[test]
+    fn variable_blobs_are_counted_without_decoding() {
+        let three = serialize_chunk_blob(&[vec![], vec![1], vec![2, 2]]).unwrap();
+        assert_eq!(three[0], FORMAT_VARIABLE);
+        let err = deserialize_completed_chunk_blob(&three, 2).expect_err("one entry too many");
+        assert!(
+            matches!(&err, BulkAppendError::CorruptedData(m) if m.contains("more than 2")),
+            "{err:?}"
+        );
+        let err = deserialize_completed_chunk_blob(&three, 4).expect_err("one entry short");
+        assert!(
+            matches!(&err, BulkAppendError::CorruptedData(m) if m.contains("holds 3 entries")),
+            "{err:?}"
+        );
+
+        // A length prefix running past the blob is truncation, not overflow.
+        let mut blob = vec![FORMAT_VARIABLE];
+        blob.extend_from_slice(&u32::MAX.to_be_bytes());
+        assert!(deserialize_completed_chunk_blob(&blob, 1).is_err());
+        assert!(deserialize_completed_chunk_blob(&[FORMAT_VARIABLE, 0, 0], 1).is_err());
+    }
+
+    #[test]
+    fn malformed_and_empty_blobs() {
+        assert!(deserialize_completed_chunk_blob(&[], 2).is_err());
+        assert!(deserialize_completed_chunk_blob(&[], 0).unwrap().is_empty());
+        assert!(deserialize_completed_chunk_blob(&[FORMAT_FIXED, 0, 0], 2).is_err());
+        assert!(deserialize_completed_chunk_blob(&[0xFF, 1, 2, 3], 2).is_err());
+        // Right header count, wrong payload length.
+        let mut blob = zero_size_fixed_blob(2);
+        blob[8] = 1; // entry_size = 1, payload empty
+        assert!(deserialize_completed_chunk_blob(&blob, 2).is_err());
+    }
+
+    #[test]
+    fn only_wanted_entries_are_copied() {
+        let fixed: Vec<Vec<u8>> = (0..6u8).map(|i| vec![i; 2]).collect();
+        let variable: Vec<Vec<u8>> = (0..6u8).map(|i| vec![i; i as usize]).collect();
+        for entries in [fixed, variable, vec![Vec::new(); 6]] {
+            let blob = serialize_chunk_blob(&entries).unwrap();
+            let got = completed_chunk_entries(&blob, 6, &[(1, 2), (3, 5)]).expect("honest");
+            assert_eq!(got, [1, 3, 4].map(|i| entries[i].clone()));
+            assert!(completed_chunk_entries(&blob, 6, &[]).unwrap().is_empty());
+            // The count is still checked when nothing is wanted.
+            assert!(completed_chunk_entries(&blob, 5, &[]).is_err());
+        }
+    }
+
+    #[test]
+    fn wanted_ranges_must_be_sorted_disjoint_and_in_bounds() {
+        let blob = zero_size_fixed_blob(4);
+        for wanted in [&[(0, 5)][..], &[(2, 1)], &[(0, 2), (1, 3)]] {
+            let err = completed_chunk_entries(&blob, 4, wanted).expect_err("bad wanted ranges");
+            assert!(matches!(err, BulkAppendError::InvalidInput(_)), "{err:?}");
+        }
     }
 }
 

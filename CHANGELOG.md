@@ -51,6 +51,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   anything is hashed. Serving is not consensus, so this is not version-gated;
   an honest target always names the type its restored element carries, which
   is never refused. (#989)
+- `BulkAppendTree` / `CommitmentTree` proof verification no longer lets a
+  forged proof drive unbounded allocation before the proof is bound to a
+  trusted root. The V1 lower-layer verifier took `total_count` and `height`
+  from element bytes carried in the proof and extracted values before its
+  caller compared the root. A 9-byte fixed-format chunk blob can declare
+  2^20 zero-sized entries, and under a forged `height = 1` every blob's
+  positions overlapped the query window. So a proof of a few KB made the
+  verifier decode 2^20 entries per blob and return one row per blob per
+  queried position, hundreds of thousands of duplicate rows for 64 blobs.
+  Completeness is now checked first, from the proof's chunk indices and
+  buffer positions, without decoding anything. Extraction then walks the
+  query's position intervals in the query's direction, stops at the row
+  limit, copies only the entries it returns, and refuses a chunk blob that
+  does not hold exactly `2^height` entries without allocating per entry. It
+  also refuses chunk indices that repeat, descend or reach the buffer. The
+  new `BulkAppendTreeProofResult::values_in_ranges_directed`,
+  `proved_position_spans`, `values_in_ranges`, `completed_chunk_entries`
+  and `deserialize_completed_chunk_blob` carry these checks, and a bad
+  chunk blob in a proof result is now reported as `InvalidProof`. The MMR,
+  dense, bulk and commitment-tree lower layers now also bind their computed
+  root to the parent row's value hash before reporting any row. Not
+  version-gated: a client-side verifier change that honest proofs never
+  trigger. (incomplete fix of #856 / #872)
 
 ## [6.0.1] - 2026-09-13
 
