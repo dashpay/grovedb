@@ -205,9 +205,8 @@ where
 /// provided-value-hash put) over the stored `old_serialized` bytes at `key`
 /// in a subtree of `in_tree_type`, with the caller's callbacks.
 ///
-/// Only a write that carries flags can change: the just-in-time update
-/// leaves an unflagged element's bytes as supplied, so the element is
-/// returned without consulting any callback.
+/// The callbacks must answer the apply the same way they answer here: the
+/// batch checks after the apply that the stored bytes are the predicted ones.
 pub(crate) fn predict_provided_value_hash_put<G, SR>(
     key: &[u8],
     old_serialized: &[u8],
@@ -225,9 +224,6 @@ where
         u32,
     ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
 {
-    if new_element.get_flags().is_none() {
-        return Ok(new_element.clone());
-    }
     let new_serialized = new_element.serialize(grove_version)?;
     let feature_type = new_element.get_feature_type(in_tree_type)?;
     let final_bytes = TreeNode::provided_value_hash_put_final_value(
@@ -235,7 +231,6 @@ where
         old_serialized.to_vec(),
         new_serialized.clone(),
         feature_type,
-        Some(&Element::value_defined_cost_for_serialized_value),
         &|key, value| old_specialized_cost(key, value, in_tree_type, grove_version),
         &|old_value, new_value| new_value_with_old_flags(old_value, new_value, grove_version),
         &mut |storage_costs, old_value, new_value| {
@@ -256,10 +251,12 @@ where
                 grove_version,
             )
         },
-        grove_version,
     )
-    // The apply reports a failing just-in-time update the same way.
-    .map_err(|e| Error::CorruptedData(e.to_string()))?;
+    .map_err(|e| {
+        Error::CorruptedData(format!(
+            "predicting the just-in-time value update of a backward-references item: {e}"
+        ))
+    })?;
     if final_bytes == new_serialized {
         return Ok(new_element.clone());
     }

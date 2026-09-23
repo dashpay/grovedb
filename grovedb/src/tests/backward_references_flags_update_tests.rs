@@ -91,6 +91,26 @@ fn assert_referrers_bound(
     expected_value: &[u8],
     grove_version: &GroveVersion,
 ) {
+    for referrer in referrers {
+        let resolved = db
+            .get(path, referrer, None, grove_version)
+            .unwrap()
+            .expect("the referrer resolves");
+        assert_eq!(resolved.as_item_bytes().unwrap(), expected_value);
+    }
+    for element in assert_proofs_bind(db, path, referrers, grove_version) {
+        assert_eq!(element.as_item_bytes().unwrap(), expected_value);
+    }
+}
+
+/// Every node verifies, and an honest proof of each referrer verifies
+/// against the live root; returns the proved elements.
+fn assert_proofs_bind(
+    db: &TempGroveDb,
+    path: &[&[u8]],
+    referrers: &[&[u8]],
+    grove_version: &GroveVersion,
+) -> Vec<Element> {
     let issues = db.verify_grovedb(None, true, true, grove_version).unwrap();
     assert!(
         issues.is_empty(),
@@ -99,13 +119,8 @@ fn assert_referrers_bound(
         issues.keys().collect::<Vec<_>>()
     );
     let live_root = db.root_hash(None, grove_version).unwrap().unwrap();
+    let mut proved = Vec::new();
     for referrer in referrers {
-        let resolved = db
-            .get(path, referrer, None, grove_version)
-            .unwrap()
-            .expect("the referrer resolves");
-        assert_eq!(resolved.as_item_bytes().unwrap(), expected_value);
-
         let mut query = Query::new();
         query.insert_key(referrer.to_vec());
         let path_query =
@@ -123,12 +138,14 @@ fn assert_referrers_bound(
             });
         assert_eq!(root, live_root, "the proof must commit to the live root");
         assert_eq!(results.len(), 1);
-        let element = results[0]
-            .2
-            .as_ref()
-            .expect("the referrer is proved present");
-        assert_eq!(element.as_item_bytes().unwrap(), expected_value);
+        proved.push(
+            results[0]
+                .2
+                .clone()
+                .expect("the referrer is proved present"),
+        );
     }
+    proved
 }
 
 /// `TEST_LEAF` holding `value` (a flagged item written in epoch 1) and the
@@ -654,6 +671,307 @@ fn settling_resettles_after_dropping_a_dangling_referrer_entry() {
     );
 }
 
+/// A callback whose answer depends on its own state (here: how often it
+/// was called) answers the apply differently from the planning pass. The
+/// batch must refuse rather than store an item its referrers do not bind.
+#[test]
+fn callback_answering_the_apply_differently_is_refused() {
+    let grove_version = GroveVersion::latest();
+    let db = db_with_flagged_chain(grove_version);
+    let root_before = db.root_hash(None, grove_version).unwrap().unwrap();
+    let mut calls = 0u8;
+    let result = db
+        .apply_batch_with_element_flags_update(
+            vec![replace_value_op(b"updated", 3)],
+            None,
+            |_cost, _old_flags, new_flags| {
+                calls += 1;
+                new_flags.push(calls);
+                Ok(true)
+            },
+            |_flags, removed_key_bytes, removed_value_bytes| {
+                Ok((
+                    BasicStorageRemoval(removed_key_bytes),
+                    BasicStorageRemoval(removed_value_bytes),
+                ))
+            },
+            None,
+            grove_version,
+        )
+        .unwrap();
+    assert!(
+        matches!(&result, Err(Error::JustInTimeElementFlagsClientError(message))
+            if message.contains("deterministic")),
+        "{result:?}"
+    );
+    assert_eq!(
+        db.root_hash(None, grove_version).unwrap().unwrap(),
+        root_before
+    );
+    assert_referrers_bound(&db, &[TEST_LEAF], &[b"r1", b"r2"], b"hello", grove_version);
+}
+
+/// A family item written over a plain sum item is measured by its own size,
+/// not by the fixed cost of the sum item it replaces. With a callback that
+/// changes nothing, the first measurement is the one charged: a stale fixed
+/// cost would bill a 200-byte item as a same-size replacement.
+#[test]
+fn family_item_replacing_a_sum_item_is_charged_for_its_own_size() {
+    let grove_version = GroveVersion::latest();
+    let path: &[&[u8]] = &[TEST_LEAF, b"sums"];
+    let db = make_test_grovedb(grove_version);
+    db.insert(
+        &[TEST_LEAF],
+        b"sums",
+        Element::empty_sum_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        path,
+        b"value",
+        Element::new_sum_item(5),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    let cost = db
+        .apply_batch(
+            vec![QualifiedGroveDbOp::insert_or_replace_op(
+                path.iter().map(|segment| segment.to_vec()).collect(),
+                b"value".to_vec(),
+                Element::ItemWithSumItemWithBackwardsReferences(
+                    vec![7; 200],
+                    5,
+                    BackwardReferences::with_max_incoming(4),
+                    None,
+                ),
+            )],
+            None,
+            None,
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("apply");
+    assert!(
+        cost.storage_cost.added_bytes >= 150,
+        "the grown bytes must be charged: {cost:?}"
+    );
+    assert!(db
+        .verify_grovedb(None, true, true, grove_version)
+        .unwrap()
+        .is_empty());
+}
+
+/// A plain reference above its target: the target's deeper Merk is applied
+/// before the reference is hashed, and the reference must still commit to
+/// the bytes the target lands with.
+#[test]
+fn plain_reference_above_a_deeper_updated_item_is_bound() {
+    let grove_version = GroveVersion::latest();
+    let deep: &[&[u8]] = &[TEST_LEAF, b"deep"];
+    let db = make_test_grovedb(grove_version);
+    db.insert(
+        &[TEST_LEAF],
+        b"deep",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        deep,
+        b"value",
+        flagged_item(b"hello", 1),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        deep,
+        b"r1",
+        sibling_bidi(b"value"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    apply_with_epoch_flags(
+        &db,
+        vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                deep.iter().map(|segment| segment.to_vec()).collect(),
+                b"value".to_vec(),
+                flagged_item(b"hello world, larger", 3),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"plain".to_vec(),
+                Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec(),
+                    b"deep".to_vec(),
+                    b"value".to_vec(),
+                ])),
+            ),
+        ],
+        grove_version,
+    )
+    .unwrap();
+    assert_referrers_bound(&db, deep, &[b"r1"], b"hello world, larger", grove_version);
+    assert_referrers_bound(
+        &db,
+        &[TEST_LEAF],
+        &[b"plain"],
+        b"hello world, larger",
+        grove_version,
+    );
+}
+
+/// Other hosts and family variants: an item in a count tree, and an
+/// item-with-sum-item in a sum tree, each updated across epochs.
+#[test]
+fn count_tree_host_and_item_with_sum_item_keep_referrers_bound() {
+    let grove_version = GroveVersion::latest();
+    let cases: [(&[u8], Element, Element, Element); 2] = [
+        (
+            b"counts",
+            Element::empty_count_tree(),
+            flagged_item(b"hello", 1),
+            flagged_item(b"hello world, larger", 3),
+        ),
+        (
+            b"sums",
+            Element::empty_sum_tree(),
+            Element::ItemWithSumItemWithBackwardsReferences(
+                b"hello".to_vec(),
+                5,
+                BackwardReferences::with_max_incoming(4),
+                epoch_flags(1),
+            ),
+            Element::ItemWithSumItemWithBackwardsReferences(
+                b"hello world, larger".to_vec(),
+                5_000_000,
+                BackwardReferences::with_max_incoming(4),
+                epoch_flags(3),
+            ),
+        ),
+    ];
+    for (host_key, host, before, after) in cases {
+        let path: &[&[u8]] = &[TEST_LEAF, host_key];
+        let db = make_test_grovedb(grove_version);
+        db.insert(&[TEST_LEAF], host_key, host, None, None, grove_version)
+            .unwrap()
+            .unwrap();
+        db.insert(path, b"value", before, None, None, grove_version)
+            .unwrap()
+            .unwrap();
+        db.insert(
+            path,
+            b"r1",
+            sibling_bidi(b"value"),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        apply_with_epoch_flags(
+            &db,
+            vec![QualifiedGroveDbOp::insert_or_replace_op(
+                path.iter().map(|segment| segment.to_vec()).collect(),
+                b"value".to_vec(),
+                after,
+            )],
+            grove_version,
+        )
+        .unwrap();
+        assert!(matches!(
+            stored_storage_flags(&db, path, b"value", grove_version),
+            Some(StorageFlags::MultiEpoch(1, _))
+        ));
+        for element in assert_proofs_bind(&db, path, &[b"r1"], grove_version) {
+            assert_eq!(element.as_item_bytes().unwrap(), b"hello world, larger");
+        }
+    }
+}
+
+/// A family item may switch between its item and sum-item forms in a
+/// batch that also writes a plain reference to it. (The plain-item
+/// reference path refuses that switch; for family items the prediction
+/// follows Merk, which accepts it.)
+#[test]
+fn family_item_switching_to_a_sum_item_with_a_same_batch_plain_reference() {
+    let grove_version = GroveVersion::latest();
+    let path: &[&[u8]] = &[TEST_LEAF, b"sums"];
+    let db = make_test_grovedb(grove_version);
+    db.insert(
+        &[TEST_LEAF],
+        b"sums",
+        Element::empty_sum_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        path,
+        b"value",
+        flagged_item(b"hello", 1),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        path,
+        b"r1",
+        sibling_bidi(b"value"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    apply_with_epoch_flags(
+        &db,
+        vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                path.iter().map(|segment| segment.to_vec()).collect(),
+                b"value".to_vec(),
+                Element::SumItemWithBackwardsReferences(
+                    7,
+                    BackwardReferences::with_max_incoming(4),
+                    epoch_flags(3),
+                ),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                path.iter().map(|segment| segment.to_vec()).collect(),
+                b"plain".to_vec(),
+                Element::new_reference(ReferencePathType::SiblingReference(b"value".to_vec())),
+            ),
+        ],
+        grove_version,
+    )
+    .unwrap();
+    for element in assert_proofs_bind(&db, path, &[b"r1", b"plain"], grove_version) {
+        assert_eq!(element.sum_value_or_default(), 7);
+    }
+}
+
 /// A failing callback fails the batch cleanly, whether the planner or the
 /// apply consults it first, and leaves the grove untouched.
 #[test]
@@ -680,7 +998,10 @@ fn failing_callback_rejects_the_batch() {
             grove_version,
         )
         .unwrap();
-    assert!(result.is_err(), "{result:?}");
+    assert!(
+        matches!(&result, Err(e) if e.to_string().contains("refused")),
+        "the callback's own error must surface: {result:?}"
+    );
     assert_eq!(
         db.root_hash(None, grove_version).unwrap().unwrap(),
         root_before

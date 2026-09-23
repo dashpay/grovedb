@@ -1857,6 +1857,11 @@ impl GroveDbOpConsistencyResults {
 /// Cache for Merk trees by their paths.
 struct TreeCacheMerkByPath<S, F, F2> {
     backward_references_prepared: bool,
+    /// The bytes each backward-references item the batch writes over a
+    /// stored value finally stores, as the preprocessor predicted them
+    /// (keyed by qualified path). Same-batch plain references to those items
+    /// hash these; the apply checks the stored bytes against them.
+    landed_backward_references_items: backward_references::LandedItems,
     /// Populated Merk subtrees the observer saw removed or replaced, each
     /// with the declaration of the op that displaced it.
     unprepared_subtree_removals: Vec<(Vec<Vec<u8>>, BackwardsReferences)>,
@@ -2705,11 +2710,9 @@ where
                     Element::ItemWithBackwardsReferences(..)
                     | Element::SumItemWithBackwardsReferences(..)
                     | Element::ItemWithSumItemWithBackwardsReferences(..) => self
-                        .pending_backward_references_item_value_hash(
+                        .landed_backward_references_item_value_hash(
                             qualified_path,
                             element,
-                            flags_update,
-                            split_removal_bytes,
                             grove_version,
                         )
                         .add_cost(cost),
@@ -2819,11 +2822,9 @@ where
                         Element::ItemWithBackwardsReferences(..)
                         | Element::SumItemWithBackwardsReferences(..)
                         | Element::ItemWithSumItemWithBackwardsReferences(..) => self
-                            .pending_backward_references_item_value_hash(
+                            .landed_backward_references_item_value_hash(
                                 qualified_path,
                                 element,
-                                flags_update,
-                                split_removal_bytes,
                                 grove_version,
                             )
                             .add_cost(cost),
@@ -3247,6 +3248,24 @@ where
             .filter(|(_, op)| op.is_dont_check_for_backwards_references())
             .map(|(key, _)| key.get_key_clone())
             .collect();
+        // Backward-references items at this path whose final bytes the
+        // preprocessor predicted; the apply must store exactly those.
+        let predicted_landed_items: Vec<(Vec<u8>, Element)> =
+            if self.landed_backward_references_items.is_empty() {
+                Vec::new()
+            } else {
+                ops_at_path_by_key
+                    .keys()
+                    .filter_map(|key_info| {
+                        let key = key_info.get_key_clone();
+                        let mut qualified = path.to_vec();
+                        qualified.push(key.clone());
+                        self.landed_backward_references_items
+                            .get(&qualified)
+                            .map(|landed| (key, landed.clone()))
+                    })
+                    .collect()
+            };
         for (key_info, op) in ops_at_path_by_key.into_iter() {
             match op {
                 // Derived by the backward-references preprocessor: write the
@@ -4863,6 +4882,32 @@ where
         if let Some(gate_error) = old_value_gate_error {
             return Err(gate_error).wrap_with_cost(cost);
         }
+        // The referrers of each predicted item were committed to its
+        // predicted bytes. A flags callback that answers the apply otherwise
+        // (one that is not a pure function of its inputs) would leave them
+        // bound to bytes the item does not hold: refuse the batch instead.
+        for (key, landed) in predicted_landed_items {
+            let stored = cost_return_on_error!(
+                &mut cost,
+                merk.get(
+                    &key,
+                    true,
+                    Some(&Element::value_defined_cost_for_serialized_value),
+                    grove_version,
+                )
+                .map_err(|e| Error::CorruptedData(e.to_string()))
+            );
+            let expected = cost_return_on_error_into_no_add!(cost, landed.serialize(grove_version));
+            if stored.as_deref() != Some(expected.as_slice()) {
+                return Err(Error::JustInTimeElementFlagsClientError(
+                    "the flags update callback gave a backward-references item different \
+                     flags when the batch was applied than when it was planned; the \
+                     callbacks must be deterministic"
+                        .to_owned(),
+                ))
+                .wrap_with_cost(cost);
+            }
+        }
         self.cidx_overwrite_cleanup_paths
             .extend(cidx_overwrite_cleanups);
         for (key, actual_tree_type, deletion_behavior) in deleted_tree_captures {
@@ -5461,9 +5506,11 @@ impl GroveDb {
     /// If the pause height is set in the batch apply options
     /// Then return the list of leftover operations, together with the live
     /// Merk cache the body ran against so the apply can be continued on it.
+    #[allow(clippy::too_many_arguments)]
     fn apply_body<'db, S, F, F2>(
         &self,
         backward_references_prepared: bool,
+        landed_backward_references_items: backward_references::LandedItems,
         ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
         update_element_flags_function: impl FnMut(
@@ -5513,6 +5560,7 @@ impl GroveDb {
                 split_removed_bytes_function,
                 TreeCacheMerkByPath {
                     backward_references_prepared,
+                    landed_backward_references_items,
                     unprepared_subtree_removals: Vec::new(),
                     merks: Default::default(),
                     unused_new_merks: Default::default(),
@@ -6683,6 +6731,13 @@ impl GroveDb {
     }
 
     /// Applies batch of operations on GroveDB
+    ///
+    /// `update_element_flags_function` and `split_removal_bytes_function`
+    /// run whenever a write replaces a stored value. They must be
+    /// deterministic: under backward-references maintenance the batch
+    /// predicts the bytes a flagged item will store (its referrers commit to
+    /// them) by consulting the same callbacks before the apply, and refuses
+    /// the batch if the apply stores anything else.
     pub fn apply_batch_with_element_flags_update(
         &self,
         ops: Vec<QualifiedGroveDbOp>,
@@ -6774,8 +6829,8 @@ impl GroveDb {
             Self::reject_flat_drop_declaring_participants(&ops, grove_version)
         );
         let storage_batch = StorageBatch::new();
-        let (ops, prepared_merks) = if backward_references_enabled {
-            let (ops, prepared_merks) = cost_return_on_error!(
+        let (ops, prepared_merks, landed_items) = if backward_references_enabled {
+            let (ops, prepared_merks, landed_items) = cost_return_on_error!(
                 &mut cost,
                 backward_references::expand_backward_references_ops(
                     self,
@@ -6805,9 +6860,9 @@ impl GroveDb {
                     .wrap_with_cost(cost);
                 }
             }
-            (ops, prepared_merks)
+            (ops, prepared_merks, landed_items)
         } else {
-            (ops, HashMap::new())
+            (ops, HashMap::new(), backward_references::LandedItems::new())
         };
         let mut prepared_merks = prepared_merks;
 
@@ -6914,6 +6969,7 @@ impl GroveDb {
             &mut cost,
             self.apply_body(
                 true,
+                landed_items,
                 ops,
                 batch_apply_options,
                 update_element_flags_function,
@@ -7366,6 +7422,7 @@ impl GroveDb {
             &mut cost,
             self.apply_body(
                 false,
+                backward_references::LandedItems::new(),
                 ops,
                 Some(batch_apply_options.clone()),
                 &mut update_element_flags_function,

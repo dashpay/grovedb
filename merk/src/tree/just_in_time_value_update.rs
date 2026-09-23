@@ -2,7 +2,6 @@ use grovedb_costs::storage_cost::{
     removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     StorageCost,
 };
-use grovedb_version::version::GroveVersion;
 
 use crate::{
     merk::defaults::MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES,
@@ -20,11 +19,11 @@ impl TreeNode {
     /// just-in-time value update has run the client callbacks (storage-flags
     /// carry-over and rewrite).
     ///
-    /// Runs the apply's own steps on a detached node: the node decoded from
-    /// `old_value` keeps the value-defined cost `value_defined_cost_fn`
-    /// derives from it, takes the new value and feature type exactly as
-    /// `put_value_with_provided_value_hash` installs them, and then goes
-    /// through [`Self::just_in_time_tree_node_value_update`]. With the same
+    /// Runs the apply's own steps on a detached node: the node holding
+    /// `old_value` takes the new value and feature type exactly as
+    /// `put_value_with_provided_value_hash` installs them (which drops any
+    /// value-defined cost the predecessor carried), and then goes through
+    /// [`Self::just_in_time_tree_node_value_update`]. With the same
     /// (deterministic) callbacks the result is byte-for-byte what the apply
     /// writes, so a caller that must commit to the final bytes BEFORE the
     /// apply — a backward-references referrer holding its target's hash —
@@ -35,9 +34,6 @@ impl TreeNode {
         old_value: Vec<u8>,
         new_value: Vec<u8>,
         feature_type: TreeFeatureType,
-        value_defined_cost_fn: Option<
-            &impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
-        >,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         get_temp_new_value_with_old_flags: &impl Fn(
             &Vec<u8>,
@@ -59,21 +55,20 @@ impl TreeNode {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
-        grove_version: &GroveVersion,
     ) -> Result<Vec<u8>, Error> {
-        // The stored node, as a load decodes it (no hashes are needed: the
-        // update only measures sizes and consults the callbacks).
-        let mut kv = KV::from_fields(key, old_value, NULL_HASH, NULL_HASH, feature_type);
-        if let Some(value_defined_cost_fn) = value_defined_cost_fn {
-            kv.value_defined_cost = value_defined_cost_fn(kv.value.as_slice(), grove_version);
-        }
+        // The stored node (no hashes are needed: the update only measures
+        // sizes and consults the callbacks).
+        let kv = KV::from_fields(key, old_value, NULL_HASH, NULL_HASH, feature_type);
         let mut node = TreeNode::new_with_tree_inner(TreeNodeInner {
             left: None,
             right: None,
             kv,
         });
         // The put, as `put_value_with_provided_value_hash` performs it.
-        node.inner.kv = node.inner.kv.put_value_no_update_of_hashes(new_value);
+        node.inner.kv = node
+            .inner
+            .kv
+            .put_ordinary_value_no_update_of_hashes(new_value);
         node.inner.kv.feature_type = feature_type;
         node.just_in_time_tree_node_value_update(
             old_specialized_cost,
@@ -301,12 +296,10 @@ mod tests {
                 old.clone(),
                 new.clone(),
                 BasicMerkNode,
-                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                 &old_cost,
                 &no_temp_value,
                 &mut stamp_costs,
                 &mut basic_removal,
-                grove_version,
             )
             .expect("prediction");
             assert_ne!(predicted, new, "the callback rewrote the flags");
