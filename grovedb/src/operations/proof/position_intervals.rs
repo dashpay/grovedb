@@ -211,6 +211,41 @@ impl PositionIntervals {
         PositionMismatch { total, examples }
     }
 
+    /// Completeness against proved position *spans*: which covered
+    /// positions lie outside every span of `proved`?
+    ///
+    /// `proved` holds sorted, disjoint, half-open spans. Same result as
+    /// [`missing_from`](Self::missing_from) on the positions those spans
+    /// contain, at a cost of O(|intervals| log |proved| + |proved|): a
+    /// proof's coverage can be checked before anything is extracted from it.
+    pub(crate) fn missing_from_spans(&self, proved: &[(u64, u64)]) -> PositionMismatch {
+        let mut total = 0u64;
+        let mut examples = Vec::new();
+        let mut gap = |from: u64, to: u64, examples: &mut Vec<u64>| {
+            total = total.saturating_add(to - from);
+            push_gap(examples, from, to);
+        };
+
+        for &(start, end) in &self.ranges {
+            let first = proved.partition_point(|&(_, span_end)| span_end <= start);
+            let mut expected = start;
+            for &(span_start, span_end) in proved[first..]
+                .iter()
+                .take_while(|&&(span_start, _)| span_start < end)
+            {
+                if span_start > expected {
+                    gap(expected, span_start, &mut examples);
+                }
+                expected = expected.max(span_end.min(end));
+            }
+            if expected < end {
+                gap(expected, end, &mut examples);
+            }
+        }
+
+        PositionMismatch { total, examples }
+    }
+
     /// Soundness: which of `proved` lie outside every interval?
     ///
     /// Cost is O(|proved| log |intervals|).
@@ -366,6 +401,36 @@ mod tests {
 
         let full: BTreeSet<u64> = (0..4).chain(10..=12).collect();
         assert!(intervals.missing_from(&full).is_empty());
+    }
+
+    #[test]
+    fn missing_from_spans_matches_missing_from() {
+        let items = vec![
+            QueryItem::Range(be(0)..be(4)),
+            QueryItem::RangeInclusive(be(10)..=be(40)),
+            QueryItem::Key(be(60)),
+        ];
+        let intervals = PositionIntervals::from_query_items(&items, 100).unwrap();
+        for spans in [
+            vec![],
+            vec![(1, 2), (3, 11), (12, 14), (30, 61)],
+            vec![(0, 100)],
+            vec![(2, 3), (5, 9), (39, 45)],
+        ] {
+            let positions: BTreeSet<u64> = spans.iter().flat_map(|&(s, e)| s..e).collect();
+            assert_eq!(
+                intervals.missing_from_spans(&spans),
+                intervals.missing_from(&positions),
+                "spans {spans:?}"
+            );
+        }
+
+        // A huge interval against a tiny proof costs nothing extra.
+        let huge =
+            PositionIntervals::from_query_items(&[QueryItem::RangeFull(..)], u64::MAX).unwrap();
+        let missing = huge.missing_from_spans(&[(0, 2)]);
+        assert_eq!(missing.total, u64::MAX - 2);
+        assert_eq!(missing.examples, (2..18).collect::<Vec<_>>());
     }
 
     #[test]

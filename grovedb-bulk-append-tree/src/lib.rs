@@ -19,8 +19,8 @@ pub mod test_utils;
 
 // Re-export main types
 pub use chunk::{
-    chunk_blob_entry_bytes, deserialize_chunk_blob, deserialize_completed_chunk_blob,
-    serialize_chunk_blob,
+    chunk_blob_entry_bytes, completed_chunk_entries, deserialize_chunk_blob,
+    deserialize_completed_chunk_blob, serialize_chunk_blob,
 };
 pub use cost::{
     amortized_compaction_added_bytes, amortized_compaction_hashes, amortized_compaction_seeks,

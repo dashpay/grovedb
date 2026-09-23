@@ -463,13 +463,10 @@ fn unlimited_range_full_under(key: &[u8]) -> PathQuery {
     PathQuery::new_unsized(Vec::new(), query)
 }
 
-/// A fixed-format chunk blob declaring `count` zero-sized entries. It is 9
-/// bytes whatever the count.
-fn zero_size_chunk_blob(count: u32) -> Vec<u8> {
-    let mut blob = vec![0x01]; // fixed format
-    blob.extend_from_slice(&count.to_be_bytes());
-    blob.extend_from_slice(&0u32.to_be_bytes()); // entry_size
-    blob
+/// The fixed-format chunk blob of `count` zero-sized entries: 9 bytes
+/// whatever the count.
+fn zero_size_chunk_blob(count: usize) -> Vec<u8> {
+    serialize_chunk_blob(&vec![Vec::new(); count]).expect("chunk blob")
 }
 
 /// A synthetic MMR proof of `leaf_count` leaves carrying `blobs` as leaves
@@ -489,16 +486,6 @@ fn synthetic_mmr_proof_with_leaves(leaf_count: u64, blobs: &[Vec<u8>]) -> MmrTre
         }))
     })
     .expect("synthetic MMR proof")
-}
-
-/// The CommitmentTree child hash: `blake3("ct_state" || sinsemilla_root ||
-/// bulk_state_root)`.
-fn commitment_tree_child_hash(sinsemilla_root: &[u8; 32], bulk_state_root: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"ct_state");
-    hasher.update(sinsemilla_root);
-    hasher.update(bulk_state_root);
-    *hasher.finalize().as_bytes()
 }
 
 /// A root-level BulkAppendTree at `key` with the given chunk power and
@@ -536,13 +523,14 @@ fn honest_bulk_proof(
 /// Forged `height = 1` chunk blobs, each 9 bytes and declaring 2^20
 /// zero-sized entries, under a forged element whose value hash is
 /// consistent with the forged lower root, queried over an unlimited
-/// 8192-position window. Before the fix every blob's positions overlapped
-/// the window. Extraction decoded 64 × 2^20 entries, the overlapping blobs
-/// covered the window so completeness passed, and `verify_query` returned
-/// about 520k duplicate rows under a root nobody holds. Only the caller's
-/// later root comparison would have refused it. Scaling the leaf count
-/// scaled the damage to gigabytes. Now the first blob the window touches is
-/// refused. BulkAppendTree and CommitmentTree share this lower layer.
+/// 8192-position window. The proof carries every chunk the claimed
+/// `total_count` has, so completeness holds. Before the fix every blob's
+/// positions overlapped the window: extraction decoded 64 × 2^20 entries and
+/// `verify_query` returned thousands of duplicate rows under a root nobody
+/// holds (about 520k with `total_count = 8192`). Only the caller's later
+/// root comparison would have refused it. Now the first blob the window
+/// touches is refused. BulkAppendTree and CommitmentTree share this lower
+/// layer.
 #[test]
 fn forged_chunk_blob_counts_refused_before_expansion() {
     let grove_version = GroveVersion::latest();
@@ -551,9 +539,8 @@ fn forged_chunk_blob_counts_refused_before_expansion() {
     let path_query = window_under(b"bulk", window);
     let (_db, honest) = honest_bulk_proof(b"bulk", height, &[vec![9]], &path_query, grove_version);
 
-    // total_count = window: 4096 completed chunks of 2. The proof carries
-    // the first 64.
-    let forged_total_count = window;
+    // 64 completed chunks of 2, all carried by the proof.
+    let forged_total_count = 128;
     let forged_bulk = BulkAppendTreeProof {
         chunk_proof: synthetic_mmr_proof_with_leaves(
             forged_total_count / 2,
@@ -579,7 +566,10 @@ fn forged_chunk_blob_counts_refused_before_expansion() {
         ),
         (
             Element::new_commitment_tree(forged_total_count, height, None),
-            commitment_tree_child_hash(&sinsemilla_root, &forged_state_root),
+            grovedb_commitment_tree::compute_commitment_tree_state_root(
+                &sinsemilla_root,
+                &forged_state_root,
+            ),
             ProofBytes::CommitmentTree([sinsemilla_root.as_slice(), &bulk_bytes].concat()),
         ),
     ] {
@@ -691,6 +681,112 @@ fn lower_layer_root_bound_before_rows_are_extracted() {
             ),
             other => panic!("{element:?}: expected the binding refusal, got {other:?}"),
         }
+    }
+}
+
+/// Forge a root-level `BulkAppendTree` at `key` of `total_count` entries at
+/// `height`, whose chunk MMR carries `blobs` as its first leaves and whose
+/// buffer is empty, on top of an honest proof for `path_query`.
+fn forge_bulk_chunks(
+    path_query: &PathQuery,
+    height: u8,
+    total_count: u64,
+    blobs: &[Vec<u8>],
+    grove_version: &GroveVersion,
+) -> Vec<u8> {
+    let (_db, honest) = honest_bulk_proof(b"bulk", 1, &[vec![9]], path_query, grove_version);
+    let forged_bulk = BulkAppendTreeProof {
+        chunk_proof: synthetic_mmr_proof_with_leaves(total_count >> height, blobs),
+        buffer_proof: DenseTreeProof {
+            entries: Vec::new(),
+            node_value_hashes: Vec::new(),
+            node_hashes: Vec::new(),
+        },
+    };
+    let (forged_state_root, _) = forged_bulk
+        .verify_and_compute_root(height, total_count)
+        .expect("synthetic bulk proof is internally consistent");
+    forge_root_layer_node(
+        &honest,
+        b"bulk",
+        &Element::new_bulk_append_tree(total_count, height, None),
+        forged_state_root,
+        ProofBytes::BulkAppendTree(forged_bulk.encode_to_vec().expect("encode bulk proof")),
+        grove_version,
+    )
+}
+
+/// A forged proof that claims far more chunks than it carries is refused by
+/// completeness before any chunk is decoded. Every carried blob is garbage,
+/// so a verifier that decoded before checking completeness would fail on
+/// the blob instead. Before, the verifier extracted `2^height` values per
+/// carried chunk first: 64 honest-shaped zero-size chunks at `height = 16`
+/// gave about 4M values from a 1 KB proof.
+#[test]
+fn incomplete_forged_chunks_refused_before_decoding() {
+    let grove_version = GroveVersion::latest();
+    let path_query = unlimited_range_full_under(b"bulk");
+    let height: u8 = 16;
+    let forged = forge_bulk_chunks(
+        &path_query,
+        height,
+        (1u64 << 20) << height,
+        &vec![vec![0xFF]; 64],
+        grove_version,
+    );
+
+    let message = expect_bounded_rejection(
+        GroveDb::verify_query(&forged, &path_query, grove_version),
+        "BulkAppendTree proof missing requested positions",
+    );
+    assert!(
+        message.contains(&format!("{} positions", ((1u64 << 20) - 64) << height)),
+        "unexpected diagnostic: {message}"
+    );
+}
+
+/// A broad query with a small limit decodes only the entries it reports.
+/// The forged proof carries every chunk of the claimed count, so it is
+/// complete, but only the chunk the limit is met in holds real entries; the
+/// rest are garbage, and the query still verifies from either end. Before,
+/// every chunk was decoded before the limit applied: `2^height` values per
+/// carried chunk.
+#[test]
+fn limited_query_decodes_only_what_it_reports() {
+    let grove_version = GroveVersion::latest();
+    let height: u8 = 16;
+    let chunk_item_count = 1u64 << height;
+    let chunks = 64;
+    let total_count = chunks as u64 * chunk_item_count;
+    let honest_chunk = zero_size_chunk_blob(chunk_item_count as usize);
+
+    for left_to_right in [true, false] {
+        let mut blobs = vec![vec![0xFF]; chunks];
+        let (real_chunk, expected) = if left_to_right {
+            (0, vec![0, 1])
+        } else {
+            (chunks - 1, vec![total_count - 1, total_count - 2])
+        };
+        blobs[real_chunk] = honest_chunk.clone();
+        let mut query = Query::new();
+        query.insert_key(b"bulk".to_vec());
+        query.set_subquery(Query {
+            left_to_right,
+            ..Query::new_range_full()
+        });
+        let path_query = PathQuery::new(Vec::new(), SizedQuery::new(query, Some(2), None));
+        let forged = forge_bulk_chunks(&path_query, height, total_count, &blobs, grove_version);
+
+        let (_forged_root, rows) = GroveDb::verify_query(&forged, &path_query, grove_version)
+            .expect("complete forged proof; only the real chunk is decoded");
+        let positions: Vec<u64> = rows
+            .into_iter()
+            .map(|(_, key, element)| {
+                assert_eq!(element, Some(Element::new_item(Vec::new())));
+                u64::from_be_bytes(key.as_slice().try_into().unwrap())
+            })
+            .collect();
+        assert_eq!(positions, expected, "left_to_right = {left_to_right}");
     }
 }
 

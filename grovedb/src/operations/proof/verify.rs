@@ -89,12 +89,14 @@ pub enum SumBudgetStop {
 /// A lower layer is bound to its parent when
 /// `combine_hash(H(value_bytes), lower_root) == value_hash`. The append-only
 /// (non-Merk) lower layers check this as soon as they have computed their
-/// root, before they extract any rows, as the standalone
-/// `BulkAppendTreeProof::verify_against_query` does. This is defense in
-/// depth, not a resource bound. The parent row is itself unauthenticated
-/// until the caller compares the returned root with a trusted one, so a
-/// forger can make it consistent with any lower root. Each extraction must
-/// bound its own work.
+/// root, before they report any row, as the standalone
+/// `BulkAppendTreeProof::verify_against_query` does. The MMR and dense
+/// layers decode their leaves and entries while computing that root, which
+/// the proof bytes bound; the bulk and commitment-tree layers decode chunk
+/// blobs only after binding. This is defense in depth, not a resource
+/// bound. The parent row is itself unauthenticated until the caller compares
+/// the returned root with a trusted one, so a forger can make it consistent
+/// with any lower root. Each extraction must bound its own work.
 #[derive(Clone, Copy)]
 struct ParentCommitment<'a> {
     value_bytes: &'a [u8],
@@ -102,21 +104,29 @@ struct ParentCommitment<'a> {
 }
 
 impl ParentCommitment<'_> {
-    fn bind(&self, query: &PathQuery, lower_hash: &CryptoHash) -> Result<(), Error> {
+    /// `Ok` when the parent commits to `lower_hash`; otherwise the value hash
+    /// it would have to commit, `combine_hash(H(value_bytes), lower_hash)`.
+    fn check(&self, lower_hash: &CryptoHash) -> Result<(), CryptoHash> {
         let combined_root_hash = combine_hash(value_hash(self.value_bytes).value(), lower_hash)
             .value()
             .to_owned();
         if self.value_hash != &combined_root_hash {
-            return Err(Error::InvalidProof(
+            return Err(combined_root_hash);
+        }
+        Ok(())
+    }
+
+    fn bind(&self, query: &PathQuery, lower_hash: &CryptoHash) -> Result<(), Error> {
+        self.check(lower_hash).map_err(|combined_root_hash| {
+            Error::InvalidProof(
                 query.clone(),
                 format!(
                     "V1 mismatch in lower layer hash, expected {}, got {}",
                     hex::encode(self.value_hash),
                     hex::encode(combined_root_hash)
                 ),
-            ));
-        }
-        Ok(())
+            )
+        })
     }
 }
 
@@ -2150,7 +2160,10 @@ impl GroveDb {
                                         value_bytes,
                                         value_hash: hash,
                                     };
-                                    let lower_hash = match &lower_layer.merk_proof {
+                                    // Every arm binds the root it derives to
+                                    // `parent`; the append-only ones do it
+                                    // before reporting any row.
+                                    match &lower_layer.merk_proof {
                                         ProofBytes::Merk(_) => {
                                             // A sum-budget layer must carry
                                             // the window envelope; a plain
@@ -2169,7 +2182,7 @@ impl GroveDb {
                                             // Standard Merk subtree - recurse
                                             let merk_bytes =
                                                 Self::merk_bytes_of_layer(lower_layer, query)?;
-                                            if has_query_below {
+                                            let lower_hash = if has_query_below {
                                                 Self::verify_layer_proof_v1(
                                                     merk_bytes,
                                                     &lower_layer.lower_layers,
@@ -2187,7 +2200,8 @@ impl GroveDb {
                                                 )?
                                             } else {
                                                 Self::merk_layer_root_hash(merk_bytes, query)?
-                                            }
+                                            };
+                                            parent.bind(query, &lower_hash)?;
                                         }
                                         ProofBytes::SumBudgetWindow(payload_bytes) => {
                                             if !lower_layer.lower_layers.is_empty() {
@@ -2198,13 +2212,14 @@ impl GroveDb {
                                                         .to_string(),
                                                 ));
                                             }
-                                            Self::verify_sum_budget_window_layer(
+                                            let lower_hash = Self::verify_sum_budget_window_layer(
                                                 payload_bytes,
                                                 &path,
                                                 axis_outcomes,
                                                 query,
                                                 grove_version,
-                                            )?
+                                            )?;
+                                            parent.bind(query, &lower_hash)?;
                                         }
                                         ProofBytes::MMR(mmr_bytes) => {
                                             // Mirror of the prover: min-compose
@@ -2221,7 +2236,7 @@ impl GroveDb {
                                                         }),
                                                 );
                                             let non_merk_before = non_merk_effective;
-                                            let lower_hash = Self::verify_mmr_lower_layer(
+                                            Self::verify_mmr_lower_layer(
                                                 mmr_bytes,
                                                 &element,
                                                 parent,
@@ -2237,7 +2252,6 @@ impl GroveDb {
                                                     non_merk_effective.unwrap_or(0),
                                                 ),
                                             );
-                                            lower_hash
                                         }
                                         ProofBytes::BulkAppendTree(bulk_bytes) => {
                                             // Mirror of the prover: min-compose
@@ -2254,7 +2268,7 @@ impl GroveDb {
                                                         }),
                                                 );
                                             let non_merk_before = non_merk_effective;
-                                            let lower_hash = Self::verify_bulk_append_lower_layer(
+                                            Self::verify_bulk_append_lower_layer(
                                                 bulk_bytes,
                                                 &element,
                                                 parent,
@@ -2270,7 +2284,6 @@ impl GroveDb {
                                                     non_merk_effective.unwrap_or(0),
                                                 ),
                                             );
-                                            lower_hash
                                         }
                                         ProofBytes::DenseTree(dense_bytes) => {
                                             // Mirror of the prover: min-compose
@@ -2287,7 +2300,7 @@ impl GroveDb {
                                                         }),
                                                 );
                                             let non_merk_before = non_merk_effective;
-                                            let lower_hash = Self::verify_dense_tree_lower_layer(
+                                            Self::verify_dense_tree_lower_layer(
                                                 dense_bytes,
                                                 &element,
                                                 parent,
@@ -2303,7 +2316,6 @@ impl GroveDb {
                                                     non_merk_effective.unwrap_or(0),
                                                 ),
                                             );
-                                            lower_hash
                                         }
                                         ProofBytes::CommitmentTree(ct_bytes) => {
                                             // Mirror of the prover: min-compose
@@ -2320,24 +2332,22 @@ impl GroveDb {
                                                         }),
                                                 );
                                             let non_merk_before = non_merk_effective;
-                                            let lower_hash =
-                                                Self::verify_commitment_tree_lower_layer(
-                                                    ct_bytes,
-                                                    &element,
-                                                    parent,
-                                                    &path,
-                                                    &mut non_merk_effective,
-                                                    result,
-                                                    query,
-                                                    has_query_below,
-                                                    grove_version,
-                                                )?;
+                                            Self::verify_commitment_tree_lower_layer(
+                                                ct_bytes,
+                                                &element,
+                                                parent,
+                                                &path,
+                                                &mut non_merk_effective,
+                                                result,
+                                                query,
+                                                has_query_below,
+                                                grove_version,
+                                            )?;
                                             limit_state.charge_rows(
                                                 non_merk_before.unwrap_or(0).saturating_sub(
                                                     non_merk_effective.unwrap_or(0),
                                                 ),
                                             );
-                                            lower_hash
                                         }
                                         ProofBytes::CountIndexedTree(_)
                                         | ProofBytes::IndexedTreeTerminal(_)
@@ -2363,11 +2373,6 @@ impl GroveDb {
                                         rows_before_descent,
                                         limit_state.consumed_rows,
                                     );
-
-                                    // The append-only layers above already bound
-                                    // their root before extracting rows; this is
-                                    // the binding for every Merk-backed descent.
-                                    parent.bind(query, &lower_hash)?;
 
                                     if !has_query_below {
                                         // The tree element itself is the
@@ -2707,9 +2712,9 @@ impl GroveDb {
     }
 
     /// Verify an MMR lower layer proof and add results.
-    /// Returns the computed MMR root hash, the child hash of the parent Merk
-    /// row (`combine_hash(value_hash || mmr_root)`), which is checked
-    /// against `parent` before any leaf is reported.
+    /// The computed MMR root is the child hash of the parent Merk row
+    /// (`combine_hash(value_hash || mmr_root)`) and is bound to `parent`
+    /// before any leaf is reported.
     #[allow(clippy::too_many_arguments)]
     fn verify_mmr_lower_layer<T>(
         mmr_bytes: &[u8],
@@ -2721,7 +2726,7 @@ impl GroveDb {
         query: &PathQuery,
         report_contents: bool,
         grove_version: &GroveVersion,
-    ) -> Result<CryptoHash, Error>
+    ) -> Result<(), Error>
     where
         T: TryFromVersioned<ProvedPathKeyOptionalValue>,
         Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
@@ -2752,11 +2757,11 @@ impl GroveDb {
             ));
         }
 
-        // An empty MMR (mmr_size == 0) has no leaves to verify.
-        // Return the empty-MMR root hash ([0u8; 32]) directly.
+        // An empty MMR (mmr_size == 0) has no leaves to verify: its root is
+        // the empty-MMR root hash ([0u8; 32]).
         if mmr_proof.leaves().is_empty() {
             if element_mmr_size == 0 {
-                return Ok([0u8; 32]);
+                return parent.bind(query, &[0u8; 32]);
             }
             return Err(Error::InvalidProof(
                 query.clone(),
@@ -2768,7 +2773,7 @@ impl GroveDb {
         }
 
         // Compute root from the proof and bind it to the parent row
-        // (combine_hash(value_hash || mmr_root)) before reading any leaf.
+        // (combine_hash(value_hash || mmr_root)) before reporting any leaf.
         let (mmr_root, verified_leaves) = mmr_proof
             .verify_and_get_root()
             .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
@@ -2778,7 +2783,7 @@ impl GroveDb {
         // are not reported, so there is no query at this path to check
         // completeness/succinctness against.
         if !report_contents {
-            return Ok(mmr_root);
+            return Ok(());
         }
 
         // Get the sub-query items for this path to enforce succinctness.
@@ -2856,15 +2861,13 @@ impl GroveDb {
             }
         }
 
-        // Return the computed MMR root as the child hash
-        Ok(mmr_root)
+        Ok(())
     }
 
     /// Verify a BulkAppendTree lower layer proof and add results.
     ///
     /// Verifies the proof's internal consistency, binds the computed child
-    /// hash to `parent`, and only then reports the queried entries. Returns
-    /// the child hash.
+    /// hash to `parent`, and only then reports the queried entries.
     #[allow(clippy::too_many_arguments)]
     fn verify_bulk_append_lower_layer<T>(
         bulk_bytes: &[u8],
@@ -2876,7 +2879,7 @@ impl GroveDb {
         query: &PathQuery,
         report_contents: bool,
         grove_version: &GroveVersion,
-    ) -> Result<CryptoHash, Error>
+    ) -> Result<(), Error>
     where
         T: TryFromVersioned<ProvedPathKeyOptionalValue>,
         Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
@@ -2894,7 +2897,7 @@ impl GroveDb {
                 grove_version,
             )?;
         }
-        Ok(child_hash)
+        Ok(())
     }
 
     /// Decode a `BulkAppendTree` / `CommitmentTree` bulk proof and check its
@@ -2956,11 +2959,17 @@ impl GroveDb {
     /// bytes carried by the proof. They are bound to the trusted root only
     /// when the caller checks the returned root, so nothing here may cost
     /// work proportional to them, or to what a chunk blob declares about
-    /// itself. Extraction walks the query's position intervals and decodes
-    /// only the chunks that overlap them, each of which must hold exactly
-    /// `2^height` entries (`BulkAppendTreeProofResult::values_in_ranges`).
-    /// So every extracted value is a distinct queried position, and the
-    /// decode work is at most `2^height` entries per chunk that yields one.
+    /// itself:
+    ///
+    /// - completeness is checked first, against the positions the proof's
+    ///   chunk indices and buffer entries cover, without decoding anything;
+    /// - extraction then walks the query's intervals in its direction and
+    ///   stops at the row limit, decoding only the entries it returns, from
+    ///   chunks that must hold exactly `2^height` entries
+    ///   (`BulkAppendTreeProofResult::values_in_ranges_directed`).
+    ///
+    /// So every extracted value is a distinct queried position, and a
+    /// limited query decodes no more entries than it reports.
     fn report_bulk_append_entries<T>(
         proof_result: &grovedb_bulk_append_tree::BulkAppendTreeProofResult,
         path: &[&[u8]],
@@ -2986,18 +2995,13 @@ impl GroveDb {
         let expected_positions =
             PositionIntervals::from_query_items(&sub_query.items, proof_result.total_count)?;
 
-        // Only positions inside `expected_positions`, ascending. Chunk-aligned
-        // proofs legitimately carry a superset of the queried positions; the
-        // positions outside the query are never extracted.
-        let mut values = proof_result
-            .values_in_ranges(expected_positions.ranges())
+        // Completeness: every position the query expects must be covered by
+        // a proved chunk or buffer entry. Checked on spans, before anything
+        // is decoded: O(intervals + proved chunks + buffer entries).
+        let proved_spans = proof_result
+            .proved_position_spans()
             .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
-
-        // Completeness: every position the query expects must be present in
-        // the proof values. The coverage check is O(extracted values +
-        // intervals).
-        let proved_positions: BTreeSet<u64> = values.iter().map(|(pos, _)| *pos).collect();
-        let missing = expected_positions.missing_from(&proved_positions);
+        let missing = expected_positions.missing_from_spans(&proved_spans);
         if !missing.is_empty() {
             return Err(Error::InvalidProof(
                 query.clone(),
@@ -3008,12 +3012,20 @@ impl GroveDb {
             ));
         }
 
-        // Result rows follow the query direction; the cap below then
-        // keeps the LAST positions for a descending query instead of
-        // truncating to the first ascending ones.
-        if !sub_query.left_to_right {
-            values.reverse();
-        }
+        // Only positions inside `expected_positions`, in the query direction,
+        // so the cap keeps the LAST positions for a descending query.
+        // Chunk-aligned proofs legitimately carry a superset of the queried
+        // positions; the ones outside the query are never extracted. The row
+        // loop below emits a row before it checks the limit, so the cap is
+        // at least one.
+        let values = proof_result
+            .values_in_ranges_directed(
+                expected_positions.ranges(),
+                sub_query.left_to_right,
+                limit_left.map(|limit| usize::from(limit.max(1))),
+            )
+            .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
+
         for (position, value) in values {
             let key = position.to_be_bytes().to_vec();
             let element = Element::new_item(value);
@@ -3046,9 +3058,8 @@ impl GroveDb {
     ///
     /// The proof bytes are `sinsemilla_root (32 bytes) || bulk_append_proof`.
     /// Verifies the BulkAppendTree proof to get `bulk_state_root`, binds
-    /// `blake3("ct_state" || sinsemilla_root || bulk_state_root)` to
-    /// `parent`, and only then reports the queried entries. Returns that
-    /// hash as the child hash.
+    /// `blake3("ct_state" || sinsemilla_root || bulk_state_root)`, the child
+    /// hash, to `parent`, and only then reports the queried entries.
     #[allow(clippy::too_many_arguments)]
     fn verify_commitment_tree_lower_layer<T>(
         ct_bytes: &[u8],
@@ -3060,7 +3071,7 @@ impl GroveDb {
         query: &PathQuery,
         report_contents: bool,
         grove_version: &GroveVersion,
-    ) -> Result<CryptoHash, Error>
+    ) -> Result<(), Error>
     where
         T: TryFromVersioned<ProvedPathKeyOptionalValue>,
         Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
@@ -3102,12 +3113,12 @@ impl GroveDb {
                 grove_version,
             )?;
         }
-        Ok(child_hash)
+        Ok(())
     }
 
     /// Verify a DenseAppendOnlyFixedSizeTree lower layer proof and add results.
-    /// Returns the computed dense root, the child hash of the parent Merk
-    /// row, which is checked against `parent` before any entry is reported.
+    /// The computed dense root is the child hash of the parent Merk row and
+    /// is bound to `parent` before any entry is reported.
     #[allow(clippy::too_many_arguments)]
     fn verify_dense_tree_lower_layer<T>(
         dense_bytes: &[u8],
@@ -3119,7 +3130,7 @@ impl GroveDb {
         query: &PathQuery,
         report_contents: bool,
         grove_version: &GroveVersion,
-    ) -> Result<CryptoHash, Error>
+    ) -> Result<(), Error>
     where
         T: TryFromVersioned<ProvedPathKeyOptionalValue>,
         Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
@@ -3146,8 +3157,7 @@ impl GroveDb {
             let (computed_root, _entries): ([u8; 32], Vec<(u16, Vec<u8>)>) = dense_proof
                 .verify_and_get_root(element_height, element_count)
                 .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
-            parent.bind(query, &computed_root)?;
-            return Ok(computed_root);
+            return parent.bind(query, &computed_root);
         }
 
         // Get the sub-query items for this path to build a query for
@@ -3209,8 +3219,7 @@ impl GroveDb {
             }
         }
 
-        // Return computed dense root as the child hash for Merk verification
-        Ok(computed_root)
+        Ok(())
     }
 
     /// ╔══════════════════════════════════════════════════════════════════╗
@@ -4444,15 +4453,12 @@ impl GroveDb {
         // value_hash in a KVValueHash node.
         let mut current_lower_hash = lower_hash;
         for (i, layer_info) in layer_infos.iter().rev().enumerate() {
-            let combined_hash = combine_hash(
-                value_hash(&layer_info.value_bytes).value(),
-                &current_lower_hash,
-            )
-            .value()
-            .to_owned();
-
-            if combined_hash != layer_info.expected_hash {
-                return Err(Error::InvalidProof(
+            let parent = ParentCommitment {
+                value_bytes: &layer_info.value_bytes,
+                value_hash: &layer_info.expected_hash,
+            };
+            parent.check(&current_lower_hash).map_err(|combined_hash| {
+                Error::InvalidProof(
                     PathQuery::new_unsized(current_path.clone(), Query::default()),
                     format!(
                         "V1 trunk hash mismatch at layer {} from bottom: expected {}, got {}",
@@ -4460,8 +4466,8 @@ impl GroveDb {
                         hex::encode(layer_info.expected_hash),
                         hex::encode(combined_hash)
                     ),
-                ));
-            }
+                )
+            })?;
 
             current_lower_hash = layer_info.layer_root_hash;
         }

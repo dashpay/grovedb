@@ -50,14 +50,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   positions overlapped the query window. So a proof of a few KB made the
   verifier decode 2^20 entries per blob and return one row per blob per
   queried position, hundreds of thousands of duplicate rows for 64 blobs.
-  Extraction now walks the query's position intervals, skips chunks no
-  interval touches, and refuses a decoded chunk blob that does not hold
-  exactly `2^height` entries, before allocating. It also refuses chunk
-  indices that repeat, descend or reach the buffer. The new
-  `BulkAppendTreeProofResult::values_in_ranges` and
-  `deserialize_completed_chunk_blob` carry these checks. The MMR, dense,
-  bulk and commitment-tree lower layers now also bind their computed root
-  to the parent row's value hash before extracting any row. Not
+  Completeness is now checked first, from the proof's chunk indices and
+  buffer positions, without decoding anything. Extraction then walks the
+  query's position intervals in the query's direction, stops at the row
+  limit, copies only the entries it returns, and refuses a chunk blob that
+  does not hold exactly `2^height` entries without allocating per entry. It
+  also refuses chunk indices that repeat, descend or reach the buffer. The
+  new `BulkAppendTreeProofResult::values_in_ranges_directed`,
+  `proved_position_spans`, `values_in_ranges`, `completed_chunk_entries`
+  and `deserialize_completed_chunk_blob` carry these checks, and a bad
+  chunk blob in a proof result is now reported as `InvalidProof`. The MMR,
+  dense, bulk and commitment-tree lower layers now also bind their computed
+  root to the parent row's value hash before reporting any row. Not
   version-gated: a client-side verifier change that honest proofs never
   trigger. (incomplete fix of #856 / #872)
 

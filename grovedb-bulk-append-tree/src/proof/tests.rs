@@ -693,7 +693,8 @@ mod proof_tests {
         let err = result
             .values_in_range(0, 4)
             .expect_err("corrupted chunk blob must fail");
-        assert!(matches!(err, BulkAppendError::CorruptedData(_)));
+        // A bad blob in a proof result is a bad proof, not local corruption.
+        assert!(matches!(err, BulkAppendError::InvalidProof(_)), "{err:?}");
     }
 
     // ── New tests ─────────────────────────────────────────────────────
@@ -1303,7 +1304,7 @@ mod proof_tests {
         let err = result
             .values_in_ranges(&[(3, 5)])
             .expect_err("chunk 1 is touched and malformed");
-        assert!(matches!(err, BulkAppendError::CorruptedData(_)), "{err:?}");
+        assert!(matches!(err, BulkAppendError::InvalidProof(_)), "{err:?}");
     }
 
     #[test]
@@ -1319,7 +1320,7 @@ mod proof_tests {
             };
             let err = result.values_in_range(0, 4).expect_err("wrong count");
             assert!(
-                matches!(&err, BulkAppendError::CorruptedData(m)
+                matches!(&err, BulkAppendError::InvalidProof(m)
                     if m.contains(&format!("holds {entries} entries, expected exactly 4"))),
                 "{err:?}"
             );
@@ -1362,8 +1363,12 @@ mod proof_tests {
             shaped(vec![(u64::MAX, blob.clone())], Vec::new()),
             "at or beyond the buffer start",
         );
-        // A buffer entry past total_count.
+        // A buffer entry past total_count, or repeated.
         expect_invalid(shaped(Vec::new(), vec![(1, vec![9])]), "beyond total_count");
+        expect_invalid(
+            shaped(Vec::new(), vec![(0, vec![9]), (0, vec![8])]),
+            "appears twice",
+        );
         // The honest shape extracts.
         assert_eq!(
             shaped(vec![(0, blob.clone()), (1, blob)], vec![(0, vec![9])])
@@ -1377,5 +1382,96 @@ mod proof_tests {
                 (4, vec![9])
             ]
         );
+    }
+
+    #[test]
+    fn test_values_in_ranges_directed_limits_from_the_query_end() {
+        // height=2: chunks [0,4) [4,8) [8,12), buffer 12..15.
+        let values: Vec<Vec<u8>> = (0..15u32)
+            .map(|i| format!("v_{}", i).into_bytes())
+            .collect();
+        let result = verified_result(2, &values);
+        let positions = |left_to_right, limit| -> Vec<u64> {
+            result
+                .values_in_ranges_directed(&[(1, 3), (6, 14)], left_to_right, limit)
+                .expect("honest extraction")
+                .into_iter()
+                .map(|(pos, value)| {
+                    assert_eq!(value, values[pos as usize]);
+                    pos
+                })
+                .collect()
+        };
+        assert_eq!(
+            positions(true, None),
+            vec![1, 2, 6, 7, 8, 9, 10, 11, 12, 13]
+        );
+        assert_eq!(
+            positions(false, None),
+            vec![13, 12, 11, 10, 9, 8, 7, 6, 2, 1]
+        );
+        assert_eq!(positions(true, Some(3)), vec![1, 2, 6]);
+        assert_eq!(positions(false, Some(3)), vec![13, 12, 11]);
+        assert_eq!(
+            positions(false, Some(9)),
+            vec![13, 12, 11, 10, 9, 8, 7, 6, 2]
+        );
+        assert!(positions(true, Some(0)).is_empty());
+    }
+
+    #[test]
+    fn test_values_in_ranges_directed_stops_decoding_at_the_limit() {
+        // Chunks 1 and 2 are garbage: a limit met inside chunk 0 never
+        // decodes them, whichever end the query starts from.
+        let chunk = |base: u8| {
+            crate::serialize_chunk_blob(&(base..base + 4).map(|i| vec![i]).collect::<Vec<_>>())
+                .unwrap()
+        };
+        let result = BulkAppendTreeProofResult {
+            chunk_blobs: vec![(0, chunk(0)), (1, vec![0xFF]), (2, vec![0xFF])],
+            dense_entries: Vec::new(),
+            total_count: 12,
+            height: 2,
+        };
+        assert_eq!(
+            result
+                .values_in_ranges_directed(&[(0, 12)], true, Some(2))
+                .unwrap(),
+            vec![(0, vec![0]), (1, vec![1])]
+        );
+        let result = BulkAppendTreeProofResult {
+            chunk_blobs: vec![(0, vec![0xFF]), (1, vec![0xFF]), (2, chunk(8))],
+            ..result
+        };
+        assert_eq!(
+            result
+                .values_in_ranges_directed(&[(0, 12)], false, Some(2))
+                .unwrap(),
+            vec![(11, vec![11]), (10, vec![10])]
+        );
+        result
+            .values_in_ranges_directed(&[(0, 12)], false, Some(5))
+            .expect_err("the fifth value is in garbage chunk 1");
+    }
+
+    #[test]
+    fn test_proved_position_spans_needs_no_decoding() {
+        // Chunk blobs are never decoded; buffer entries are single positions.
+        let result = BulkAppendTreeProofResult {
+            chunk_blobs: vec![(0, vec![0xFF]), (1, vec![0xFF]), (3, vec![0xFF])],
+            dense_entries: vec![(2, vec![2]), (0, vec![0])],
+            total_count: 19, // height=2: 4 chunks, buffer 16..19
+            height: 2,
+        };
+        assert_eq!(
+            result.proved_position_spans().unwrap(),
+            vec![(0, 8), (12, 17), (18, 19)]
+        );
+        let bad = BulkAppendTreeProofResult {
+            chunk_blobs: vec![(4, vec![0xFF])],
+            ..result
+        };
+        bad.proved_position_spans()
+            .expect_err("chunk 4 reaches the buffer");
     }
 }
