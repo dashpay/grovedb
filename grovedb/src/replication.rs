@@ -15,7 +15,13 @@
 //!   through the packed transport get the same protection. An over-depth
 //!   id is refused before any recovery or tree work, which keeps the cost
 //!   of a request proportional to the local tree rather than to the
-//!   request (issue #883).
+//!   request (issue #883);
+//! - the tree type a global chunk id carries must be the one the addressed
+//!   Merk's stored nodes were written under. The source opens the subtree
+//!   with the peer's type as-is, and hashing nodes under a type of another
+//!   aggregate family trips the fail-closed `panic!` in
+//!   `TreeNode::hash_for_link`, so every Merk opened for a peer passes
+//!   [`ensure_served_merk_family`] before anything is hashed.
 //!
 //! Every limit is one an honest target never exceeds: the target only asks
 //! for ids the source itself handed it in earlier chunks.
@@ -27,15 +33,16 @@ mod verify;
 
 use std::pin::Pin;
 
-use grovedb_merk::{tree::hash::CryptoHash, tree_type::TreeType, ChunkProducer};
+use grovedb_merk::{tree::hash::CryptoHash, tree_type::TreeType, ChunkProducer, Merk};
 use grovedb_path::SubtreePath;
+use grovedb_storage::rocksdb_storage::PrefixedRocksDbTransactionContext;
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
 pub use self::state_sync_session::{MultiStateSyncSession, CONST_GROUP_PACKING_SIZE};
 use crate::{
     replication::utils::{pack_nested_bytes, unpack_nested_bytes},
     util::TxRef,
-    Error, GroveDb, TransactionArg,
+    Error, GroveDb, SubtreePrefix, TransactionArg,
 };
 
 /// Type alias representing a chunk identifier in the state synchronization
@@ -346,6 +353,10 @@ impl GroveDb {
     ///   depth (see the module docs); an id longer than the subtree is deep
     ///   is refused by the chunk producer with a `BadTraversalInstruction`
     ///   error, surfaced here as `Error::CorruptedData`.
+    /// - The tree type in each global chunk id is peer-chosen. A Merk
+    ///   subtree whose stored nodes belong to another aggregate family than
+    ///   that type is refused with `Error::CorruptedData` before any node is
+    ///   hashed (see [`ensure_served_merk_family`]).
     /// - Non-Merk append-only subtrees (`CommitmentTree`, `MmrTree`,
     ///   `BulkAppendTree`, `DenseAppendOnlyFixedSizeTree`,
     ///   `PrivateDocumentStore`) are served as cursor-based entry pages
@@ -494,6 +505,7 @@ impl GroveDb {
                         e
                     ))
                 })?;
+            ensure_served_merk_family(&merk, &chunk_prefix)?;
             if merk.is_empty_tree().unwrap() {
                 local_chunk_bytes.push(vec![]);
             } else {
@@ -612,6 +624,41 @@ impl GroveDb {
             commit_mode,
             grove_version,
         )
+    }
+}
+
+/// Refuses to serve a Merk whose stored nodes belong to another aggregate
+/// family than the tree type it was opened with.
+///
+/// The tree type in a global chunk id is chosen by the requesting peer and
+/// the source opens the addressed subtree with it as-is, while the nodes on
+/// disk carry the feature type of the subtree's real type. Hashing a node
+/// under a tree type of another family is the invariant break
+/// `TreeNode::hash_for_link` answers with a deliberate `panic!` (a
+/// `Provable*` type needs the matching `Provable*` aggregate), so a remote
+/// peer could crash the serving node with one byte. Comparing the families
+/// before anything is hashed turns that into a descriptive error.
+///
+/// Every node of a Merk shares its root's family (restore enforces the same
+/// rule node by node in `Restorer::write_chunk`), so the root decides for
+/// the whole subtree. An empty Merk has no node to hash and passes. An
+/// honest target always names the type the element it restored carries,
+/// which is the type the nodes were written under, so this never refuses a
+/// request an honest target sends.
+pub(crate) fn ensure_served_merk_family(
+    merk: &Merk<PrefixedRocksDbTransactionContext<'_>>,
+    chunk_prefix: &SubtreePrefix,
+) -> Result<(), Error> {
+    let expected = merk.tree_type.inner_node_type();
+    let stored = merk.walk(|root| root.map(|root| root.tree().node_type()));
+    match stored {
+        Some(stored) if stored != expected => Err(Error::CorruptedData(format!(
+            "state sync request names a {} for subtree {}, whose stored nodes are {stored:?}; the \
+             tree type does not belong to the subtree",
+            merk.tree_type,
+            hex::encode(chunk_prefix),
+        ))),
+        _ => Ok(()),
     }
 }
 

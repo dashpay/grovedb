@@ -416,6 +416,87 @@ mod tests {
         }
     }
 
+    // ── `fetch_chunk` against a real grove ──────────────────────────────
+
+    /// The surfaces above are pure decoders; `fetch_chunk` also opens the
+    /// subtree a request addresses and walks it under the tree type the
+    /// peer named, and a type of another aggregate family used to reach
+    /// the fail-closed `panic!` in `TreeNode::hash_for_link`. This replays
+    /// the global chunk ids of an honest sync over a grove holding every
+    /// subtree kind with a peer-chosen tree-type byte, the root key
+    /// sometimes dropped, and either the local ids or the whole request
+    /// mutated. The source must answer `Ok` or `Err`, never panic, and must
+    /// never serve a Merk subtree under a type of another family.
+    #[test]
+    fn fetch_chunk_survives_peer_chosen_tree_types_and_ids() {
+        use grovedb_version::version::GroveVersion;
+        use proptest::test_runner::{Config, TestRunner};
+
+        use crate::tests::replication_serving_tree_type_tests::{
+            every_subtree_kind_source, global_chunk_id_with_type_byte, honest_global_chunk_ids,
+            must_refuse_family, serve, served_targets, synthetic_locals, Served,
+        };
+
+        let grove_version = GroveVersion::latest();
+        let source = every_subtree_kind_source(grove_version);
+        let honest_ids = honest_global_chunk_ids(&source, grove_version);
+        let targets = served_targets(&source, &honest_ids, grove_version);
+        let synthetic = synthetic_locals();
+
+        let strategy = (
+            0..targets.len(),
+            prop_oneof![3 => 0u8..=16, 1 => any::<u8>()],
+            any::<bool>(),
+            any::<prop::sample::Index>(),
+            any::<bool>(),
+            mutations(),
+        );
+        let mut runner = TestRunner::new(Config {
+            failure_persistence: None,
+            ..Config::with_cases(256)
+        });
+        runner
+            .run(
+                &strategy,
+                |(target, type_byte, drop_root_key, shape, mutate_request, muts)| {
+                    let target = &targets[target];
+                    let root_key = (!drop_root_key).then(|| target.root_key.clone()).flatten();
+                    let shapes: Vec<&Vec<Vec<u8>>> =
+                        target.honest_locals.iter().chain(&synthetic).collect();
+                    let mut locals = shapes[shape.index(shapes.len())].clone();
+                    if !mutate_request {
+                        locals = locals
+                            .into_iter()
+                            .map(|id| mutate(id, muts.clone()))
+                            .collect();
+                    }
+                    let mut request = pack_nested_bytes(vec![global_chunk_id_with_type_byte(
+                        target.prefix,
+                        root_key.clone(),
+                        type_byte,
+                        locals,
+                    )])
+                    .unwrap();
+                    if mutate_request {
+                        request = mutate(request, muts);
+                    }
+                    match serve(&source, &request, grove_version) {
+                        Served::Panic(message) => {
+                            prop_assert!(false, "fetch_chunk panicked: {message}")
+                        }
+                        Served::Ok => prop_assert!(
+                            mutate_request || !must_refuse_family(target, &root_key, type_byte),
+                            "a {:?} subtree was served under type byte {type_byte}",
+                            target.honest_type
+                        ),
+                        Served::Err(_) => {}
+                    }
+                    Ok(())
+                },
+            )
+            .unwrap();
+    }
+
     // ── Non-vacuity guard ───────────────────────────────────────────────
 
     /// Every property above is written as `if let Ok(..) = decode(input)`,
