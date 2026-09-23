@@ -739,7 +739,9 @@ pub(crate) fn plan_element_update(
             // Update with another backward references-compatible element:
             // referrers commit to the INNER hash, so propagate the new one
             // along every chain. The carried-over referrers must fit the
-            // capacity the new element declares.
+            // capacity the new element declares. (This is the hash of the
+            // bytes as supplied; a batch driver whose apply rewrites them
+            // through a flags callback settles the referrers afterwards.)
             cost_return_on_error_no_add!(cost, check_carried_referrers_fit(&new));
             let new_logical_hash = cost_return_on_error!(
                 &mut cost,

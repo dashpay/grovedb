@@ -1700,11 +1700,10 @@ fn batch_registration_depth_is_bounded() {
 /// The mutation lands on the REFERRER (a bidirectional reference, whose
 /// recomputed hash must fold its end hash back in) and on an unreferenced
 /// item; the referenced target carries no flags, so the callback leaves it
-/// alone. A callback mutating a REFERENCED element would leave its
-/// referrers committed to the pre-mutation bytes — exactly as plain
-/// references behave under a mutating callback (the batch resolves pending
-/// targets from the op's bytes, before any just-in-time rewrite) — which
-/// `verify_grovedb` reports and the next flagged write of the target heals.
+/// alone. A callback mutating a REFERENCED item also changes the logical
+/// hash its referrers hold; the batch predicts the item's final bytes and
+/// commits the referrers to those (see
+/// `backward_references_flags_update_tests`).
 #[test]
 fn batch_flags_mutation_on_derived_rewrite_rehashes_final_bytes() {
     let grove_version = GroveVersion::latest();

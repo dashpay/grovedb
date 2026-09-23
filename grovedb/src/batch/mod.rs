@@ -28,6 +28,7 @@ mod multi_insert_cost_tests;
 mod just_in_time_cost_tests;
 /// Just-in-time reference update handling for batch operations.
 pub mod just_in_time_reference_update;
+mod just_in_time_value_update;
 mod options;
 mod refresh_reference_mode;
 #[cfg(test)]
@@ -71,11 +72,8 @@ use grovedb_merk::{
         exists::ElementExistsInStorageExtensions, get::ElementFetchFromStorageExtensions,
         insert::ElementInsertToStorageExtensions, tree_type::ElementTreeTypeExtensions,
     },
-    tree::{
-        kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
-        value_hash, AggregateData, NULL_HASH,
-    },
-    tree_type::{CostSize, TreeType, SUM_ITEM_COST_SIZE},
+    tree::{value_hash, AggregateData, NULL_HASH},
+    tree_type::TreeType,
     CryptoHash, Error as MerkError, Merk, MerkType, OldValueDisposition, Op,
     RootHashKeyAndAggregateData,
 };
@@ -89,7 +87,6 @@ use grovedb_storage::{
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 use grovedb_visualize::{Drawer, Visualize};
 use initial_segment_footprint::InitialSegmentFootprint;
-use integer_encoding::VarInt;
 use itertools::Itertools;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
 pub use options::BatchApplyOptions;
@@ -2707,16 +2704,15 @@ where
                 GroveOp::ReplaceBackwardReferenceFamilyMember { element, .. } => match element {
                     Element::ItemWithBackwardsReferences(..)
                     | Element::SumItemWithBackwardsReferences(..)
-                    | Element::ItemWithSumItemWithBackwardsReferences(..) => {
-                        let serialized = cost_return_on_error_into_no_add!(
-                            cost,
-                            element
-                                .stripped_of_backward_references()
-                                .serialize(grove_version)
-                        );
-                        let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
-                        Ok(val_hash).wrap_with_cost(cost)
-                    }
+                    | Element::ItemWithSumItemWithBackwardsReferences(..) => self
+                        .pending_backward_references_item_value_hash(
+                            qualified_path,
+                            element,
+                            flags_update,
+                            split_removal_bytes,
+                            grove_version,
+                        )
+                        .add_cost(cost),
                     Element::BidirectionalReference(reference, _) => {
                         let path = cost_return_on_error_into_no_add!(
                             cost,
@@ -2816,64 +2812,21 @@ where
                         // references: dependent references commit to the
                         // LOGICAL (stripped) hash — the referrer list is
                         // excluded so registrations never ripple through
-                        // chains. (These elements reject aggregation
+                        // chains — of the bytes the apply will actually
+                        // write. (These elements reject aggregation
                         // wrappers, so the outer element IS the underlying
                         // one.)
                         Element::ItemWithBackwardsReferences(..)
                         | Element::SumItemWithBackwardsReferences(..)
-                        | Element::ItemWithSumItemWithBackwardsReferences(..) => {
-                            // Referrers commit to the LOGICAL (stripped)
-                            // hash — and, exactly like the `Item` arm above,
-                            // the hash must reflect the flags the APPLY path
-                            // will actually write, so storage flags go
-                            // through the same old-flags merge over the
-                            // stripped shape.
-                            let stripped = element.stripped_of_backward_references();
-                            let serialized = cost_return_on_error_into_no_add!(
-                                cost,
-                                stripped.serialize(grove_version)
-                            );
-                            if element.get_flags().is_none() {
-                                let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
-                                Ok(val_hash).wrap_with_cost(cost)
-                            } else {
-                                let mut new_element = stripped.clone();
-                                let (key, reference_path) = qualified_path
-                                    .split_last()
-                                    .expect("path validated non-empty above");
-                                let serialized_element_result = cost_return_on_error!(
-                                    &mut cost,
-                                    self.get_and_deserialize_referenced_element(
-                                        key,
-                                        reference_path,
-                                        grove_version
-                                    )
-                                );
-                                if let Some((old_element, old_serialized_element, is_in_sum_tree)) =
-                                    serialized_element_result
-                                {
-                                    let value_hash = cost_return_on_error!(
-                                        &mut cost,
-                                        Self::process_old_element_flags(
-                                            key,
-                                            &serialized,
-                                            &mut new_element,
-                                            old_element,
-                                            &old_serialized_element,
-                                            is_in_sum_tree,
-                                            flags_update,
-                                            split_removal_bytes,
-                                            grove_version,
-                                        )
-                                    );
-                                    Ok(value_hash).wrap_with_cost(cost)
-                                } else {
-                                    let value_hash =
-                                        value_hash(&serialized).unwrap_add_cost(&mut cost);
-                                    Ok(value_hash).wrap_with_cost(cost)
-                                }
-                            }
-                        }
+                        | Element::ItemWithSumItemWithBackwardsReferences(..) => self
+                            .pending_backward_references_item_value_hash(
+                                qualified_path,
+                                element,
+                                flags_update,
+                                split_removal_bytes,
+                                grove_version,
+                            )
+                            .add_cost(cost),
                         // A pending bidirectional reference resolves through
                         // its forward path like any reference. (Under the
                         // backward-references flag the preprocessor converts
@@ -4864,142 +4817,38 @@ where
                 &[],
                 Some(batch_apply_options.as_merk_options()),
                 &|key, value| {
-                    Element::specialized_costs_for_key_value(
+                    just_in_time_value_update::old_specialized_cost(
                         key,
                         value,
-                        in_tree_type.inner_node_type(),
+                        in_tree_type,
                         grove_version,
                     )
-                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
                 },
                 Some(&Element::value_defined_cost_for_serialized_value),
                 &|old_value, new_value| {
-                    let old_element = Element::deserialize(old_value.as_slice(), grove_version)
-                        .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
-                    let maybe_old_flags = old_element.get_flags_owned();
-                    if maybe_old_flags.is_some() {
-                        let mut new_element =
-                            Element::deserialize(new_value.as_slice(), grove_version)
-                                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
-                        new_element.set_flags(maybe_old_flags);
-                        new_element
-                            .serialize(grove_version)
-                            .map(Some)
-                            .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
-                    } else {
-                        Ok(None)
-                    }
+                    just_in_time_value_update::new_value_with_old_flags(
+                        old_value,
+                        new_value,
+                        grove_version,
+                    )
                 },
                 &mut |storage_costs, old_value, new_value| {
-                    // todo: change the flags without full deserialization
-                    let old_element = Element::deserialize(old_value.as_slice(), grove_version)
-                        .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
-                    let maybe_old_flags = old_element.get_flags_owned();
-
-                    let mut new_element = Element::deserialize(new_value.as_slice(), grove_version)
-                        .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
-                    let maybe_new_flags = new_element.get_flags_mut();
-                    match maybe_new_flags {
-                        None => Ok((false, None)),
-                        Some(new_flags) => {
-                            let changed = (flags_update)(storage_costs, maybe_old_flags, new_flags)
-                                .map_err(|e| match e {
-                                    Error::JustInTimeElementFlagsClientError(_) => {
-                                        MerkError::ClientCorruptionError(e.to_string())
-                                    }
-                                    _ => MerkError::ClientCorruptionError(
-                                        "non client error".to_string(),
-                                    ),
-                                })?;
-                            if changed {
-                                let flags_len = new_flags.len() as u32;
-                                new_value.clone_from(
-                                    &new_element.serialize(grove_version).map_err(|e| {
-                                        MerkError::ClientCorruptionError(e.to_string())
-                                    })?,
-                                );
-                                // we need to give back the value defined cost in the case that the
-                                // new element is a tree.
-                                //
-                                // Look through wrapper variants for the cost
-                                // path (the wrapper byte costs +1 over the
-                                // bare type, mirroring `wrapper_overhead`
-                                // in `merk/src/element/costs.rs`).
-                                let wrapper_overhead =
-                                    if new_element.is_wrapped() { 1u32 } else { 0 };
-                                match new_element.underlying() {
-                                    Element::Tree(..)
-                                    | Element::SumTree(..)
-                                    | Element::BigSumTree(..)
-                                    | Element::CountTree(..)
-                                    | Element::CountSumTree(..)
-                                    | Element::ProvableCountTree(..)
-                                    | Element::ProvableCountSumTree(..)
-                                    | Element::ProvableSumTree(..)
-                                    | Element::ProvableCountProvableSumTree(..)
-                                    | Element::CommitmentTree(..)
-                                    | Element::MmrTree(..)
-                                    | Element::BulkAppendTree(..)
-                                    | Element::DenseAppendOnlyFixedSizeTree(..)
-                                    | Element::ProvableSumIndexedTree(..)
-                                    | Element::ProvableCountIndexedTree(..)
-                                    | Element::ProvableCountProvableSumIndexedTree(..)
-                                    | Element::PrivateDocumentStore(..) => {
-                                        let tree_type = new_element
-                                            .tree_type()
-                                            .expect("tree_type guaranteed by match arm");
-                                        let tree_cost_size = tree_type.cost_size();
-                                        let tree_value_cost = tree_cost_size
-                                            + flags_len
-                                            + flags_len.required_space() as u32
-                                            + wrapper_overhead;
-                                        Ok((true, Some(LayeredValueDefinedCost(tree_value_cost))))
-                                    }
-                                    Element::SumItem(..) => {
-                                        let sum_item_value_cost = SUM_ITEM_COST_SIZE
-                                            + flags_len
-                                            + flags_len.required_space() as u32
-                                            + wrapper_overhead;
-                                        Ok((
-                                            true,
-                                            Some(SpecializedValueDefinedCost(sum_item_value_cost)),
-                                        ))
-                                    }
-                                    Element::ItemWithSumItem(item_value, ..) => {
-                                        let item_len = item_value.len() as u32;
-                                        let sum_item_value_cost = SUM_ITEM_COST_SIZE
-                                            + flags_len
-                                            + flags_len.required_space() as u32
-                                            + item_len
-                                            + item_len.required_space() as u32
-                                            + wrapper_overhead;
-                                        Ok((
-                                            true,
-                                            Some(SpecializedValueDefinedCost(sum_item_value_cost)),
-                                        ))
-                                    }
-                                    _ => Ok((true, None)),
-                                }
-                            } else {
-                                Ok((false, None))
-                            }
-                        }
-                    }
+                    just_in_time_value_update::update_value_flags_based_on_costs(
+                        flags_update,
+                        storage_costs,
+                        old_value,
+                        new_value,
+                        grove_version,
+                    )
                 },
                 &mut |value, removed_key_bytes, removed_value_bytes| {
-                    let mut element = Element::deserialize(value.as_slice(), grove_version)
-                        .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
-                    let maybe_flags = element.get_flags_mut();
-                    match maybe_flags {
-                        None => Ok((
-                            BasicStorageRemoval(removed_key_bytes),
-                            BasicStorageRemoval(removed_value_bytes),
-                        )),
-                        Some(flags) => {
-                            (split_removal_bytes)(flags, removed_key_bytes, removed_value_bytes)
-                                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
-                        }
-                    }
+                    just_in_time_value_update::section_removal_bytes(
+                        split_removal_bytes,
+                        value,
+                        removed_key_bytes,
+                        removed_value_bytes,
+                        grove_version,
+                    )
                 },
                 &mut old_value_observer,
                 grove_version,
@@ -6838,12 +6687,12 @@ impl GroveDb {
         &self,
         ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
-        update_element_flags_function: impl FnMut(
+        mut update_element_flags_function: impl FnMut(
             &StorageCost,
             Option<ElementFlags>,
             &mut ElementFlags,
         ) -> Result<bool, Error>,
-        split_removal_bytes_function: impl FnMut(
+        mut split_removal_bytes_function: impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
             u32, // value removed bytes
@@ -6937,6 +6786,8 @@ impl GroveDb {
                         .as_ref()
                         .map(|options| options.validate_insertion_does_not_override)
                         .unwrap_or_default(),
+                    &mut update_element_flags_function,
+                    &mut split_removal_bytes_function,
                     grove_version
                 )
             );

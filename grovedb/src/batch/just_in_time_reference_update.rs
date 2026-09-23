@@ -1,7 +1,7 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::hash_map::Entry as HashMapEntry};
 
 use grovedb_costs::{
-    cost_return_on_error_into_no_add, cost_return_on_error_no_add,
+    cost_return_on_error, cost_return_on_error_into_no_add, cost_return_on_error_no_add,
     storage_cost::{
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
         StorageCost,
@@ -9,6 +9,7 @@ use grovedb_costs::{
     CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::{
+    element::costs::ElementCostExtensions,
     tree::{kv::KV, value_hash, TreeNode},
     tree_type::TreeType,
     CryptoHash, Merk,
@@ -17,7 +18,9 @@ use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
-    batch::{MerkError, TreeCacheMerkByPath},
+    batch::{
+        just_in_time_value_update::predict_provided_value_hash_put, MerkError, TreeCacheMerkByPath,
+    },
     Element, ElementFlags, Error,
 };
 
@@ -30,6 +33,87 @@ where
     ) -> CostResult<Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>, Error>,
     S: StorageContext<'db>,
 {
+    /// The hash a reference written in this batch commits to for a pending
+    /// write of a backward-references ITEM at `qualified_path`: the logical
+    /// (stripped) hash of the bytes the apply finally stores there.
+    ///
+    /// A write over a stored value runs the caller's flags update, which
+    /// measures the FULL element — its referrer list included — against the
+    /// stored predecessor. The prediction therefore runs on the element as
+    /// the op writes it, against the COMMITTED predecessor: read past the
+    /// in-memory tree, since the target's Merk may already have been applied
+    /// earlier in this batch (a deeper level goes first).
+    pub(crate) fn pending_backward_references_item_value_hash<G, SR>(
+        &mut self,
+        qualified_path: &[Vec<u8>],
+        element: &Element,
+        flags_update: &mut G,
+        split_removal_bytes: &mut SR,
+        grove_version: &GroveVersion,
+    ) -> CostResult<CryptoHash, Error>
+    where
+        G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+        SR: FnMut(
+            &mut ElementFlags,
+            u32,
+            u32,
+        ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
+    {
+        let mut cost = OperationCost::default();
+        // The update leaves an unflagged element's bytes as supplied.
+        let landed = if element.get_flags().is_some() {
+            let (key, path) = cost_return_on_error_no_add!(
+                cost,
+                qualified_path
+                    .split_last()
+                    .ok_or(Error::CorruptedPath("empty reference target".to_string()))
+            );
+            let merk = match self.merks.entry(path.to_vec()) {
+                HashMapEntry::Occupied(o) => o.into_mut(),
+                HashMapEntry::Vacant(v) => v.insert(cost_return_on_error!(
+                    &mut cost,
+                    (self.get_merk_fn)(path, false)
+                )),
+            };
+            let committed = cost_return_on_error!(
+                &mut cost,
+                merk.get(
+                    key,
+                    false,
+                    Some(&Element::value_defined_cost_for_serialized_value),
+                    grove_version
+                )
+                .map_err(|e| Error::CorruptedData(e.to_string()))
+            );
+            match committed {
+                Some(old_serialized) => cost_return_on_error_no_add!(
+                    cost,
+                    predict_provided_value_hash_put(
+                        key,
+                        &old_serialized,
+                        element,
+                        merk.tree_type,
+                        flags_update,
+                        split_removal_bytes,
+                        grove_version,
+                    )
+                ),
+                // A fresh insert runs no just-in-time update.
+                None => element.clone(),
+            }
+        } else {
+            element.clone()
+        };
+        let serialized = cost_return_on_error_into_no_add!(
+            cost,
+            landed
+                .stripped_of_backward_references()
+                .serialize(grove_version)
+        );
+        let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+        Ok(val_hash).wrap_with_cost(cost)
+    }
+
     pub(crate) fn process_old_element_flags<G, SR>(
         key: &[u8],
         serialized: &[u8],
