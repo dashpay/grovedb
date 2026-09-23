@@ -5344,8 +5344,7 @@ mod tests {
     // =========================================================================
     // BulkAppendTree query variant coverage
     //
-    // Exercises different QueryItem match arms in verify.rs:
-    //   extract_range_from_query_items
+    // Exercises different QueryItem match arms in:
     //   position_intervals::PositionIntervals::from_query_items
     //
     // Existing tests only use Key and RangeInclusive. These tests cover:
@@ -5566,8 +5565,7 @@ mod tests {
     // This covers the match arms in:
     //   generate.rs: query_items_to_positions, query_items_to_leaf_indices,
     //                query_items_to_range
-    //   verify.rs:   extract_range_from_query_items,
-    //                position_intervals::PositionIntervals::from_query_items
+    //   verify.rs:   position_intervals::PositionIntervals::from_query_items
     // =========================================================================
 
     /// Helper: build a PathQuery selecting `tree_key` inside `[b"root"]`,

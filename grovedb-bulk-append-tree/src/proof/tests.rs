@@ -1227,4 +1227,155 @@ mod proof_tests {
             other => panic!("expected Range item, got {:?}", other),
         }
     }
+
+    // ── values_in_ranges: extraction bounds (incomplete fix of #856) ─────
+
+    /// Verify an honest full-range proof and return its (unbound) result.
+    fn verified_result(height: u8, values: &[Vec<u8>]) -> BulkAppendTreeProofResult {
+        let (state_root, tree) = build_test_tree(height, values);
+        let proof =
+            BulkAppendTreeProof::generate(&full_range_query(), &tree).expect("generate proof");
+        let (root, result) = proof
+            .verify_and_compute_root(height, tree.total_count)
+            .expect("honest proof");
+        assert_eq!(root, state_root);
+        result
+    }
+
+    #[test]
+    fn test_values_in_ranges_honest_disjoint_ranges_over_chunks_and_buffer() {
+        // height=2: chunks [0,4) [4,8) [8,12), buffer 12..15.
+        let values: Vec<Vec<u8>> = (0..15u32)
+            .map(|i| format!("v_{}", i).into_bytes())
+            .collect();
+        let result = verified_result(2, &values);
+        let expect = |positions: &[u64]| -> Vec<(u64, Vec<u8>)> {
+            positions
+                .iter()
+                .map(|&p| (p, values[p as usize].clone()))
+                .collect()
+        };
+
+        // Unsorted, overlapping and empty input ranges are normalized.
+        let got = result
+            .values_in_ranges(&[(13, 14), (1, 2), (6, 9), (7, 8), (5, 5), (14, 99)])
+            .expect("honest extraction");
+        assert_eq!(got, expect(&[1, 6, 7, 8, 13, 14]));
+
+        // A range entirely past total_count and an empty set extract nothing.
+        assert!(result.values_in_ranges(&[(15, 40)]).unwrap().is_empty());
+        assert!(result.values_in_ranges(&[]).unwrap().is_empty());
+
+        // The single-range wrapper agrees.
+        assert_eq!(
+            result.values_in_range(3, 13).unwrap(),
+            expect(&(3..13).collect::<Vec<_>>())
+        );
+    }
+
+    #[test]
+    fn test_values_in_ranges_honest_empty_entries() {
+        // Empty values are appendable, so a zero-entry-size chunk blob is
+        // honest and must still extract.
+        let values = vec![Vec::new(); 9]; // height=2: two chunks + 1 buffered
+        let result = verified_result(2, &values);
+        let got = result.values_in_ranges(&[(0, 9)]).expect("honest");
+        assert_eq!(got, (0..9u64).map(|p| (p, Vec::new())).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_values_in_ranges_skips_chunks_outside_the_ranges() {
+        // Chunk 1 is garbage, but no range touches it, so it is never
+        // decoded. Chunk 0 is decoded because a range touches it.
+        let chunk0 = crate::serialize_chunk_blob(&[vec![0], vec![1], vec![2], vec![3]]).unwrap();
+        let result = BulkAppendTreeProofResult {
+            chunk_blobs: vec![(0, chunk0), (1, vec![0xFF, 0xFF])],
+            dense_entries: Vec::new(),
+            total_count: 8,
+            height: 2,
+        };
+        assert_eq!(
+            result
+                .values_in_ranges(&[(2, 4)])
+                .expect("chunk 1 is skipped"),
+            vec![(2, vec![2]), (3, vec![3])]
+        );
+        let err = result
+            .values_in_ranges(&[(3, 5)])
+            .expect_err("chunk 1 is touched and malformed");
+        assert!(matches!(err, BulkAppendError::CorruptedData(_)), "{err:?}");
+    }
+
+    #[test]
+    fn test_values_in_ranges_rejects_blob_count_other_than_chunk_size() {
+        // height=2 chunks hold exactly 4 entries: 3 or 5 is refused.
+        for entries in [3usize, 5] {
+            let blob = crate::serialize_chunk_blob(&vec![vec![7u8]; entries]).unwrap();
+            let result = BulkAppendTreeProofResult {
+                chunk_blobs: vec![(0, blob)],
+                dense_entries: Vec::new(),
+                total_count: 4,
+                height: 2,
+            };
+            let err = result.values_in_range(0, 4).expect_err("wrong count");
+            assert!(
+                matches!(&err, BulkAppendError::CorruptedData(m)
+                    if m.contains(&format!("holds {entries} entries, expected exactly 4"))),
+                "{err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_values_in_ranges_rejects_malformed_result_shape() {
+        let blob = crate::serialize_chunk_blob(&[vec![1], vec![2]]).unwrap();
+        let shaped = |chunk_blobs: Vec<(u64, Vec<u8>)>, dense_entries| BulkAppendTreeProofResult {
+            chunk_blobs,
+            dense_entries,
+            total_count: 5, // height=1: chunks 0 and 1, buffer position 4
+            height: 1,
+        };
+        let expect_invalid = |result: BulkAppendTreeProofResult, needle: &str| {
+            let err = result.values_in_range(0, 5).expect_err(needle);
+            assert!(
+                matches!(&err, BulkAppendError::InvalidProof(m) if m.contains(needle)),
+                "{err:?}"
+            );
+        };
+
+        // A repeated or descending chunk index would produce a position twice.
+        expect_invalid(
+            shaped(vec![(1, blob.clone()), (1, blob.clone())], Vec::new()),
+            "strictly ascending",
+        );
+        expect_invalid(
+            shaped(vec![(1, blob.clone()), (0, blob.clone())], Vec::new()),
+            "strictly ascending",
+        );
+        // A chunk at or past the buffer start, including one whose start
+        // would overflow u64.
+        expect_invalid(
+            shaped(vec![(2, blob.clone())], Vec::new()),
+            "at or beyond the buffer start",
+        );
+        expect_invalid(
+            shaped(vec![(u64::MAX, blob.clone())], Vec::new()),
+            "at or beyond the buffer start",
+        );
+        // A buffer entry past total_count.
+        expect_invalid(shaped(Vec::new(), vec![(1, vec![9])]), "beyond total_count");
+        // The honest shape extracts.
+        assert_eq!(
+            shaped(vec![(0, blob.clone()), (1, blob)], vec![(0, vec![9])])
+                .values_in_range(0, 5)
+                .unwrap(),
+            vec![
+                (0, vec![1]),
+                (1, vec![2]),
+                (2, vec![1]),
+                (3, vec![2]),
+                (4, vec![9])
+            ]
+        );
+    }
 }

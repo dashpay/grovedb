@@ -41,6 +41,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a canonical size and also backs the state-sync check. Not version-gated:
   every size a real MMR reaches is canonical, so no honest proof changes.
   (closes #692)
+- `BulkAppendTree` / `CommitmentTree` proof verification no longer lets a
+  forged proof drive unbounded allocation before the proof is bound to a
+  trusted root. The V1 lower-layer verifier took `total_count` and `height`
+  from element bytes carried in the proof and extracted values before its
+  caller compared the root. A 9-byte fixed-format chunk blob can declare
+  2^20 zero-sized entries, and under a forged `height = 1` every blob's
+  positions overlapped the query window. So a proof of a few KB made the
+  verifier decode 2^20 entries per blob and return one row per blob per
+  queried position, hundreds of thousands of duplicate rows for 64 blobs.
+  Extraction now walks the query's position intervals, skips chunks no
+  interval touches, and refuses a decoded chunk blob that does not hold
+  exactly `2^height` entries, before allocating. It also refuses chunk
+  indices that repeat, descend or reach the buffer. The new
+  `BulkAppendTreeProofResult::values_in_ranges` and
+  `deserialize_completed_chunk_blob` carry these checks. The MMR, dense,
+  bulk and commitment-tree lower layers now also bind their computed root
+  to the parent row's value hash before extracting any row. Not
+  version-gated: a client-side verifier change that honest proofs never
+  trigger. (incomplete fix of #856 / #872)
 
 ## [6.0.1] - 2026-09-13
 

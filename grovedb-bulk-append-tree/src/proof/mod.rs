@@ -22,7 +22,8 @@ use grovedb_storage::StorageContext;
 #[cfg(feature = "storage")]
 use crate::BulkAppendTree;
 use crate::{
-    compute_state_root, deserialize_chunk_blob, error::BulkAppendError, leaf_count_to_mmr_size,
+    compute_state_root, deserialize_completed_chunk_blob, error::BulkAppendError,
+    leaf_count_to_mmr_size,
 };
 
 #[cfg(all(test, feature = "storage"))]
@@ -161,19 +162,7 @@ fn query_to_ranges(query: &Query, total_count: u64) -> Result<Vec<(u64, u64)>, B
     }
 
     // Sort and merge overlapping / adjacent ranges
-    ranges.sort();
-    let mut merged: Vec<(u64, u64)> = Vec::new();
-    for (s, e) in ranges {
-        if let Some(last) = merged.last_mut()
-            && s <= last.1
-        {
-            last.1 = last.1.max(e);
-            continue;
-        }
-        merged.push((s, e));
-    }
-
-    Ok(merged)
+    Ok(normalize_ranges(&ranges))
 }
 
 /// Build the canonical [`Query`] selecting the position range
@@ -488,6 +477,15 @@ impl BulkAppendTreeProof {
         // trusts `total_count` yet verifies against an attacker-chosen root —
         // which is outside the trust model (such a caller can be handed an
         // entirely different, internally consistent tree). See PR #729 (closed).
+        //
+        // Value extraction (`BulkAppendTreeProofResult::values_in_ranges`) does
+        // require each chunk blob it decodes to hold exactly `chunk_item_count`
+        // entries. That check bounds resources; it is not the soundness check
+        // above. The root comparison bounds nothing that happens before it,
+        // and the GroveDB verifier extracts values before its caller compares
+        // the returned root with a trusted one. Until then `height`,
+        // `total_count` and every blob are attacker-chosen, and a 9-byte
+        // fixed-format blob could otherwise declare 2^20 zero-sized entries.
 
         // 2. Verify dense tree buffer sub-proof
         let (dense_root, dense_entries) = if dense_count > 0 {
@@ -619,35 +617,12 @@ impl BulkAppendTreeProof {
         }
 
         // ── Extract values matching the query ──────────────────────────
-        let mut values = Vec::new();
-
-        for (chunk_idx, blob) in &result.chunk_blobs {
-            let entries = deserialize_chunk_blob(blob).map_err(|e| {
-                BulkAppendError::CorruptedData(format!(
-                    "failed to deserialize chunk blob {}: {}",
-                    chunk_idx, e
-                ))
-            })?;
-            let chunk_start = chunk_idx * chunk_item_count;
-            for (i, value) in entries.into_iter().enumerate() {
-                let global_pos = chunk_start + i as u64;
-                if in_ranges(global_pos, &ranges) {
-                    values.push((global_pos, value));
-                }
-            }
-        }
-
-        for (pos, value) in &result.dense_entries {
-            let global_pos = buffer_start + *pos as u64;
-            if in_ranges(global_pos, &ranges) {
-                values.push((global_pos, value.clone()));
-            }
-        }
+        // Ascending by position.
+        let mut values = result.values_in_ranges(&ranges)?;
 
         // Order by the trusted query direction BEFORE applying the
         // cap, so a descending limit keeps the highest positions rather
         // than truncating the ascending order to its lowest ones.
-        values.sort_by_key(|(pos, _)| *pos);
         if !query.left_to_right {
             values.reverse();
         }
@@ -710,11 +685,41 @@ impl BulkAppendTreeProofResult {
     /// Extract values in the position range [start, end).
     ///
     /// Collects values from chunk blobs and dense tree entries that fall within
-    /// the specified range.
+    /// the specified range. See [`values_in_ranges`](Self::values_in_ranges).
     pub fn values_in_range(
         &self,
         start: u64,
         end: u64,
+    ) -> Result<Vec<(u64, Vec<u8>)>, BulkAppendError> {
+        self.values_in_ranges(&[(start, end)])
+    }
+
+    /// Extract the values at every position covered by `ranges`, ascending
+    /// by position.
+    ///
+    /// Each range is half-open `[start, end)`. They may come in any order and
+    /// may overlap or be empty.
+    ///
+    /// The work is bounded by the ranges and by the chunks that overlap them,
+    /// never by `total_count` and `height` alone. A caller may reach this
+    /// before the proof's root is bound to a trusted value: the GroveDB
+    /// verifier's root is authenticated only when its caller compares it
+    /// with a trusted root, after verification returns. So `total_count`,
+    /// `height` and every blob can still be attacker-chosen here, and:
+    ///
+    /// - chunk blobs must come in strictly ascending chunk-index order, each
+    ///   index below `total_count / 2^height`, so no position is produced
+    ///   twice and no chunk reaches into the buffer;
+    /// - a blob that no range touches is skipped without being decoded;
+    /// - a blob that is decoded must hold exactly `2^height` entries, checked
+    ///   before allocating (see [`deserialize_completed_chunk_blob`]).
+    ///
+    /// Together these keep every chunk's positions inside its own
+    /// `2^height` slot, so each value returned is a distinct position inside
+    /// `ranges`.
+    pub fn values_in_ranges(
+        &self,
+        ranges: &[(u64, u64)],
     ) -> Result<Vec<(u64, Vec<u8>)>, BulkAppendError> {
         if self.height == 0 || self.height > 16 {
             return Err(BulkAppendError::InvalidProof(format!(
@@ -722,24 +727,59 @@ impl BulkAppendTreeProofResult {
                 self.height
             )));
         }
-        let chunk_item_count = ((1u32 << self.height) - 1) as u64 + 1;
+        let ranges = normalize_ranges(ranges);
+        let chunk_item_count = 1u64 << self.height;
         let completed_chunks = self.total_count / chunk_item_count;
+        // At most `total_count`, so it cannot overflow.
         let buffer_start = completed_chunks * chunk_item_count;
         let mut result = Vec::new();
 
         // Extract from chunk blobs
+        let mut previous_chunk: Option<u64> = None;
         for (chunk_idx, blob) in &self.chunk_blobs {
-            let values = deserialize_chunk_blob(blob).map_err(|e| {
-                BulkAppendError::CorruptedData(format!(
-                    "failed to deserialize chunk blob {}: {}",
-                    chunk_idx, e
-                ))
-            })?;
+            let chunk_idx = *chunk_idx;
+            if let Some(previous) = previous_chunk
+                && chunk_idx <= previous
+            {
+                return Err(BulkAppendError::InvalidProof(format!(
+                    "chunk blobs must be in strictly ascending chunk-index order: chunk {} \
+                     follows chunk {}",
+                    chunk_idx, previous
+                )));
+            }
+            previous_chunk = Some(chunk_idx);
+            let chunk_start = chunk_idx
+                .checked_mul(chunk_item_count)
+                .filter(|_| chunk_idx < completed_chunks)
+                .ok_or_else(|| {
+                    BulkAppendError::InvalidProof(format!(
+                        "chunk blob {} is at or beyond the buffer start (completed chunks: {})",
+                        chunk_idx, completed_chunks
+                    ))
+                })?;
+            // `chunk_idx < completed_chunks`, so this is at most
+            // `buffer_start` and cannot overflow.
+            let chunk_end = chunk_start + chunk_item_count;
 
-            let chunk_start = chunk_idx * chunk_item_count;
-            for (i, value) in values.into_iter().enumerate() {
-                let global_pos = chunk_start + i as u64;
-                if global_pos >= start && global_pos < end {
+            // The ranges overlapping this chunk, if any, before decoding.
+            let first = ranges.partition_point(|&(_, end)| end <= chunk_start);
+            let overlapping = ranges[first..]
+                .iter()
+                .take_while(|&&(start, _)| start < chunk_end);
+            if overlapping.clone().next().is_none() {
+                continue;
+            }
+
+            let mut entries =
+                deserialize_completed_chunk_blob(blob, chunk_item_count).map_err(|e| {
+                    BulkAppendError::CorruptedData(format!(
+                        "failed to deserialize chunk blob {}: {}",
+                        chunk_idx, e
+                    ))
+                })?;
+            for &(start, end) in overlapping {
+                for global_pos in start.max(chunk_start)..end.min(chunk_end) {
+                    let value = std::mem::take(&mut entries[(global_pos - chunk_start) as usize]);
                     result.push((global_pos, value));
                 }
             }
@@ -747,8 +787,16 @@ impl BulkAppendTreeProofResult {
 
         // Extract from dense tree entries
         for (pos, value) in &self.dense_entries {
-            let global_pos = buffer_start + *pos as u64;
-            if global_pos >= start && global_pos < end {
+            let global_pos = buffer_start
+                .checked_add(*pos as u64)
+                .filter(|global_pos| *global_pos < self.total_count)
+                .ok_or_else(|| {
+                    BulkAppendError::InvalidProof(format!(
+                        "buffer entry {} is beyond total_count {}",
+                        pos, self.total_count
+                    ))
+                })?;
+            if in_ranges(global_pos, &ranges) {
                 result.push((global_pos, value.clone()));
             }
         }
@@ -756,4 +804,22 @@ impl BulkAppendTreeProofResult {
         result.sort_by_key(|(pos, _)| *pos);
         Ok(result)
     }
+}
+
+/// Sort `ranges`, drop the empty ones and merge the overlapping or adjacent
+/// ones, giving the sorted, disjoint form [`in_ranges`] expects.
+fn normalize_ranges(ranges: &[(u64, u64)]) -> Vec<(u64, u64)> {
+    let mut sorted: Vec<(u64, u64)> = ranges.iter().copied().filter(|(s, e)| s < e).collect();
+    sorted.sort_unstable();
+    let mut merged: Vec<(u64, u64)> = Vec::with_capacity(sorted.len());
+    for (start, end) in sorted {
+        if let Some(last) = merged.last_mut()
+            && start <= last.1
+        {
+            last.1 = last.1.max(end);
+            continue;
+        }
+        merged.push((start, end));
+    }
+    merged
 }

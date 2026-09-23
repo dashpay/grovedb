@@ -11,8 +11,17 @@
 //! position into the error string. Now the expected set is kept as
 //! intervals, so the rejection costs O(proof bytes + query items) and the
 //! diagnostic spells out at most a fixed number of positions.
+//!
+//! That fix left the BulkAppendTree / CommitmentTree extraction itself
+//! unbounded (audit 2026-09-23): each chunk blob was decoded to whatever
+//! entry count it declared, and a 9-byte blob can declare 2^20 entries. The
+//! tests after `forged_non_canonical_mmr_size_rejected_before_position_arithmetic`
+//! cover that follow-up.
 
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, HashMap},
+    time::{Duration, Instant},
+};
 
 use bincode::config;
 use grovedb_bulk_append_tree::{serialize_chunk_blob, BulkAppendTreeProof, DenseTreeProof};
@@ -21,7 +30,9 @@ use grovedb_merk::{
     tree::hash::{combine_hash, value_hash},
     CryptoHash,
 };
-use grovedb_merkle_mountain_range::{leaf_index_to_mmr_size, MmrNode, MmrTreeProof};
+use grovedb_merkle_mountain_range::{
+    leaf_index_to_mmr_size, leaf_index_to_pos, MmrNode, MmrTreeProof,
+};
 use grovedb_version::version::GroveVersion;
 
 use crate::{
@@ -426,5 +437,325 @@ fn forged_non_canonical_mmr_size_rejected_before_position_arithmetic() {
             result,
             &format!("{forged_mmr_size} is not a valid MMR size"),
         );
+    }
+}
+
+// ── Forged chunk blobs: extraction bounded before the root is bound ──────
+
+/// A path query at the root selecting `key`, with an unlimited
+/// `[0, window)` position range below it. Platform's shielded-note
+/// verification uses this shape.
+fn window_under(key: &[u8], window: u64) -> PathQuery {
+    let mut inner = Query::new();
+    inner.insert_range(0u64.to_be_bytes().to_vec()..window.to_be_bytes().to_vec());
+    let mut query = Query::new();
+    query.insert_key(key.to_vec());
+    query.set_subquery(inner);
+    PathQuery::new_unsized(Vec::new(), query)
+}
+
+/// A path query at the root selecting `key` with an unlimited `RangeFull`
+/// subquery.
+fn unlimited_range_full_under(key: &[u8]) -> PathQuery {
+    let mut query = Query::new();
+    query.insert_key(key.to_vec());
+    query.set_subquery(Query::new_range_full());
+    PathQuery::new_unsized(Vec::new(), query)
+}
+
+/// A fixed-format chunk blob declaring `count` zero-sized entries. It is 9
+/// bytes whatever the count.
+fn zero_size_chunk_blob(count: u32) -> Vec<u8> {
+    let mut blob = vec![0x01]; // fixed format
+    blob.extend_from_slice(&count.to_be_bytes());
+    blob.extend_from_slice(&0u32.to_be_bytes()); // entry_size
+    blob
+}
+
+/// A synthetic MMR proof of `leaf_count` leaves carrying `blobs` as leaves
+/// `0..blobs.len()`. Every other node is an arbitrary internal hash, so the
+/// proof is internally consistent but commits to a root nobody holds.
+fn synthetic_mmr_proof_with_leaves(leaf_count: u64, blobs: &[Vec<u8>]) -> MmrTreeProof {
+    let by_position: HashMap<u64, &Vec<u8>> = blobs
+        .iter()
+        .enumerate()
+        .map(|(index, blob)| (leaf_index_to_pos(index as u64), blob))
+        .collect();
+    let indices: Vec<u64> = (0..blobs.len() as u64).collect();
+    MmrTreeProof::generate(leaf_index_to_mmr_size(leaf_count - 1), &indices, |pos| {
+        Ok(Some(match by_position.get(&pos) {
+            Some(blob) => MmrNode::leaf((*blob).clone()),
+            None => MmrNode::internal(*blake3::hash(&pos.to_be_bytes()).as_bytes()),
+        }))
+    })
+    .expect("synthetic MMR proof")
+}
+
+/// The CommitmentTree child hash: `blake3("ct_state" || sinsemilla_root ||
+/// bulk_state_root)`.
+fn commitment_tree_child_hash(sinsemilla_root: &[u8; 32], bulk_state_root: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"ct_state");
+    hasher.update(sinsemilla_root);
+    hasher.update(bulk_state_root);
+    *hasher.finalize().as_bytes()
+}
+
+/// A root-level BulkAppendTree at `key` with the given chunk power and
+/// entries, and an honest proof for `path_query` over it.
+fn honest_bulk_proof(
+    key: &[u8],
+    height: u8,
+    entries: &[Vec<u8>],
+    path_query: &PathQuery,
+    grove_version: &GroveVersion,
+) -> (crate::tests::TempGroveDb, Vec<u8>) {
+    let db = make_empty_grovedb();
+    db.insert(
+        EMPTY_PATH,
+        key,
+        Element::empty_bulk_append_tree(height).expect("valid chunk power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert bulk append tree");
+    for entry in entries {
+        db.bulk_append(EMPTY_PATH, key, entry.clone(), None, grove_version)
+            .unwrap()
+            .expect("append");
+    }
+    let proof = db
+        .prove_query(path_query, None, grove_version)
+        .unwrap()
+        .expect("honest proof");
+    (db, proof)
+}
+
+/// Forged `height = 1` chunk blobs, each 9 bytes and declaring 2^20
+/// zero-sized entries, under a forged element whose value hash is
+/// consistent with the forged lower root, queried over an unlimited
+/// 8192-position window. Before the fix every blob's positions overlapped
+/// the window. Extraction decoded 64 × 2^20 entries, the overlapping blobs
+/// covered the window so completeness passed, and `verify_query` returned
+/// about 520k duplicate rows under a root nobody holds. Only the caller's
+/// later root comparison would have refused it. Scaling the leaf count
+/// scaled the damage to gigabytes. Now the first blob the window touches is
+/// refused. BulkAppendTree and CommitmentTree share this lower layer.
+#[test]
+fn forged_chunk_blob_counts_refused_before_expansion() {
+    let grove_version = GroveVersion::latest();
+    let height: u8 = 1;
+    let window: u64 = 8192;
+    let path_query = window_under(b"bulk", window);
+    let (_db, honest) = honest_bulk_proof(b"bulk", height, &[vec![9]], &path_query, grove_version);
+
+    // total_count = window: 4096 completed chunks of 2. The proof carries
+    // the first 64.
+    let forged_total_count = window;
+    let forged_bulk = BulkAppendTreeProof {
+        chunk_proof: synthetic_mmr_proof_with_leaves(
+            forged_total_count / 2,
+            &vec![zero_size_chunk_blob(1 << 20); 64],
+        ),
+        buffer_proof: DenseTreeProof {
+            entries: Vec::new(),
+            node_value_hashes: Vec::new(),
+            node_hashes: Vec::new(),
+        },
+    };
+    let (forged_state_root, _) = forged_bulk
+        .verify_and_compute_root(height, forged_total_count)
+        .expect("synthetic bulk proof is internally consistent");
+    let bulk_bytes = forged_bulk.encode_to_vec().expect("encode bulk proof");
+    let sinsemilla_root = [3u8; 32];
+
+    for (element, lower_hash, lower) in [
+        (
+            Element::new_bulk_append_tree(forged_total_count, height, None),
+            forged_state_root,
+            ProofBytes::BulkAppendTree(bulk_bytes.clone()),
+        ),
+        (
+            Element::new_commitment_tree(forged_total_count, height, None),
+            commitment_tree_child_hash(&sinsemilla_root, &forged_state_root),
+            ProofBytes::CommitmentTree([sinsemilla_root.as_slice(), &bulk_bytes].concat()),
+        ),
+    ] {
+        let forged =
+            forge_root_layer_node(&honest, b"bulk", &element, lower_hash, lower, grove_version);
+        assert!(
+            forged.len() < 4096,
+            "forged proof is {} bytes",
+            forged.len()
+        );
+
+        let started = Instant::now();
+        let result = GroveDb::verify_query(&forged, &path_query, grove_version);
+        let elapsed = started.elapsed();
+
+        expect_bounded_rejection(result, "holds 1048576 entries, expected exactly 2");
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "rejection took {elapsed:?}; work must not scale with declared blob counts"
+        );
+    }
+}
+
+/// The append-only lower layers bind their computed root to the parent
+/// row's committed value hash before they extract any row, as the
+/// standalone `BulkAppendTreeProof::verify_against_query` does. A lower
+/// layer whose root the parent row does not commit to is refused by that
+/// binding. Before, it was read for rows first and refused by the
+/// completeness check.
+#[test]
+fn lower_layer_root_bound_before_rows_are_extracted() {
+    let grove_version = GroveVersion::latest();
+
+    let bulk_query = unlimited_range_full_under(b"bulk");
+    let (_bulk_db, honest_bulk) =
+        honest_bulk_proof(b"bulk", 1, &[vec![9]], &bulk_query, grove_version);
+    // A buffer proof carrying only a node hash (the #691 shape) derives a
+    // root but proves no entry.
+    let unentried_bulk = BulkAppendTreeProof {
+        chunk_proof: MmrTreeProof::new(0, Vec::new(), Vec::new()),
+        buffer_proof: DenseTreeProof {
+            entries: Vec::new(),
+            node_value_hashes: Vec::new(),
+            node_hashes: vec![(0, [7u8; 32])],
+        },
+    }
+    .encode_to_vec()
+    .expect("encode bulk proof");
+
+    let mmr_query = unlimited_range_full_under(b"mmr");
+    let mmr_db = make_empty_grovedb();
+    mmr_db
+        .insert(
+            EMPTY_PATH,
+            b"mmr",
+            Element::empty_mmr_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert mmr tree");
+    for leaf in [vec![7], vec![8]] {
+        mmr_db
+            .mmr_tree_append(EMPTY_PATH, b"mmr", leaf, None, grove_version)
+            .unwrap()
+            .expect("append leaf");
+    }
+    let honest_mmr = mmr_db
+        .prove_query(&mmr_query, None, grove_version)
+        .unwrap()
+        .expect("honest proof");
+    // Leaf 0 of two, with an arbitrary sibling standing in for leaf 1.
+    let one_of_two_leaves = MmrTreeProof::new(3, vec![(0, vec![7])], vec![[9u8; 32]])
+        .encode_to_vec()
+        .expect("encode MMR proof");
+
+    let cases = [
+        (
+            &honest_bulk,
+            b"bulk".as_slice(),
+            &bulk_query,
+            Element::new_bulk_append_tree(1, 1, None),
+            ProofBytes::BulkAppendTree(unentried_bulk.clone()),
+        ),
+        (
+            &honest_bulk,
+            b"bulk".as_slice(),
+            &bulk_query,
+            Element::new_commitment_tree(1, 1, None),
+            ProofBytes::CommitmentTree([[0u8; 32].as_slice(), &unentried_bulk].concat()),
+        ),
+        (
+            &honest_mmr,
+            b"mmr".as_slice(),
+            &mmr_query,
+            Element::new_mmr_tree(3, None),
+            ProofBytes::MMR(one_of_two_leaves),
+        ),
+    ];
+    for (honest, key, path_query, element, lower) in cases {
+        // The parent row commits to a lower root of all zeros, which none
+        // of these layers derives.
+        let forged = forge_root_layer_node(honest, key, &element, [0u8; 32], lower, grove_version);
+        match GroveDb::verify_query(&forged, path_query, grove_version) {
+            Err(Error::InvalidProof(_, message)) => assert!(
+                message.contains("V1 mismatch in lower layer hash"),
+                "{element:?}: the binding must refuse before extraction; got: {message}"
+            ),
+            other => panic!("{element:?}: expected the binding refusal, got {other:?}"),
+        }
+    }
+}
+
+/// Honest proofs still verify through the interval-driven extraction:
+/// disjoint keys and ranges across completed chunks and the buffer, both
+/// directions, under a limit, over variable-format chunks with empty values
+/// and over zero-entry-size fixed-format chunks.
+#[test]
+fn honest_bulk_queries_across_chunks_and_buffer() {
+    let grove_version = GroveVersion::latest();
+    let be = |position: u64| position.to_be_bytes().to_vec();
+    // height = 2: chunks [0, 4) and [4, 8), buffer [8, 11). Every third
+    // value is empty, so the chunks use the variable format.
+    let mixed: Vec<Vec<u8>> = (0..11u8)
+        .map(|i| if i % 3 == 0 { Vec::new() } else { vec![i] })
+        .collect();
+    let all_empty = vec![Vec::new(); 11];
+
+    let disjoint = |left_to_right: bool| {
+        let mut inner = Query::new_with_direction(left_to_right);
+        inner.insert_key(be(1));
+        inner.insert_range(be(2)..be(4));
+        inner.insert_key(be(6));
+        inner.insert_key(be(9));
+        inner
+    };
+    let range_full_desc = Query {
+        left_to_right: false,
+        ..Query::new_range_full()
+    };
+    let under = |inner: Query, limit: Option<u16>| {
+        let mut query = Query::new();
+        query.insert_key(b"bulk".to_vec());
+        query.set_subquery(inner);
+        PathQuery::new(Vec::new(), SizedQuery::new(query, limit, None))
+    };
+
+    for entries in [&mixed, &all_empty] {
+        for (path_query, expected) in [
+            (under(disjoint(true), None), vec![1u64, 2, 3, 6, 9]),
+            (under(disjoint(false), Some(2)), vec![9, 6]),
+            (
+                under(range_full_desc.clone(), Some(5)),
+                vec![10, 9, 8, 7, 6],
+            ),
+        ] {
+            let (db, proof) = honest_bulk_proof(b"bulk", 2, entries, &path_query, grove_version);
+            let (root, rows) = GroveDb::verify_query(&proof, &path_query, grove_version)
+                .expect("honest proof verifies");
+            assert_eq!(root, db.root_hash(None, grove_version).unwrap().unwrap());
+            let got: Vec<(u64, Vec<u8>)> = rows
+                .into_iter()
+                .map(|(_, key, element)| {
+                    let position = u64::from_be_bytes(key.as_slice().try_into().unwrap());
+                    match element {
+                        Some(Element::Item(value, None)) => (position, value),
+                        other => panic!("position {position}: expected an item, got {other:?}"),
+                    }
+                })
+                .collect();
+            let want: Vec<(u64, Vec<u8>)> = expected
+                .iter()
+                .map(|&position| (position, entries[position as usize].clone()))
+                .collect();
+            assert_eq!(got, want);
+        }
     }
 }

@@ -110,6 +110,89 @@ pub fn deserialize_chunk_blob(blob: &[u8]) -> Result<Vec<Vec<u8>>, BulkAppendErr
     }
 }
 
+/// Deserialize a completed chunk blob, which must hold exactly
+/// `expected_count` entries.
+///
+/// Compaction writes a chunk only when the buffer is full, so every
+/// completed chunk holds exactly `chunk_item_count = 2^height` entries. A
+/// proof verifier decodes chunk blobs taken from proof bytes that are not yet
+/// bound to a trusted root, and [`deserialize_chunk_blob`] lets a 9-byte
+/// fixed-format blob with `entry_size = 0` declare `MAX_CHUNK_ENTRIES`
+/// entries. This decoder checks the entry count **before** allocating
+/// anything per entry: the fixed format's header count must equal
+/// `expected_count`, and a variable-format blob is walked without allocating
+/// and rejected at the first entry past `expected_count`.
+///
+/// This is a resource bound, not a soundness check. A completed chunk's
+/// bytes are already bound by its MMR leaf hash; see the note in
+/// `BulkAppendTreeProof::verify_and_compute_root`.
+pub fn deserialize_completed_chunk_blob(
+    blob: &[u8],
+    expected_count: u64,
+) -> Result<Vec<Vec<u8>>, BulkAppendError> {
+    let wrong_count = |found: &dyn std::fmt::Display| {
+        BulkAppendError::CorruptedData(format!(
+            "completed chunk blob holds {} entries, expected exactly {}",
+            found, expected_count
+        ))
+    };
+    match blob.split_first() {
+        None => {
+            if expected_count != 0 {
+                return Err(wrong_count(&0));
+            }
+        }
+        Some((&FORMAT_FIXED, data)) => {
+            let count_bytes: [u8; 4] = data
+                .get(0..4)
+                .and_then(|bytes| bytes.try_into().ok())
+                .ok_or_else(|| {
+                    BulkAppendError::CorruptedData(
+                        "fixed chunk blob truncated at header".to_string(),
+                    )
+                })?;
+            let count = u32::from_be_bytes(count_bytes) as u64;
+            if count != expected_count {
+                return Err(wrong_count(&count));
+            }
+        }
+        Some((&FORMAT_VARIABLE, data)) => {
+            let mut count: u64 = 0;
+            let mut offset = 0usize;
+            while offset < data.len() {
+                if count == expected_count {
+                    return Err(wrong_count(&format_args!("more than {}", expected_count)));
+                }
+                let len_bytes: [u8; 4] = data
+                    .get(offset..offset + 4)
+                    .and_then(|bytes| bytes.try_into().ok())
+                    .ok_or_else(|| {
+                        BulkAppendError::CorruptedData(
+                            "chunk blob truncated at length prefix".to_string(),
+                        )
+                    })?;
+                let len = u32::from_be_bytes(len_bytes) as usize;
+                offset = offset
+                    .checked_add(4)
+                    .and_then(|offset| offset.checked_add(len))
+                    .filter(|end| *end <= data.len())
+                    .ok_or_else(|| {
+                        BulkAppendError::CorruptedData(
+                            "chunk blob truncated at entry data".to_string(),
+                        )
+                    })?;
+                count += 1;
+            }
+            if count != expected_count {
+                return Err(wrong_count(&count));
+            }
+        }
+        // Unknown format flags are reported by the full decoder below.
+        Some(_) => {}
+    }
+    deserialize_chunk_blob(blob)
+}
+
 // -- Fixed-size format -------------------------------------------------------
 // Layout: [0x01] [count: u32 BE] [entry_size: u32 BE] [entry_0] [entry_1] ...
 
@@ -378,6 +461,83 @@ mod tests {
         blob.extend_from_slice(&u32::MAX.to_be_bytes());
         let err = deserialize_chunk_blob(&blob).expect_err("should reject huge count/entry_size");
         assert!(matches!(err, BulkAppendError::CorruptedData(_)));
+    }
+}
+
+#[cfg(test)]
+mod completed_chunk_tests {
+    use super::*;
+
+    fn zero_size_fixed_blob(count: u32) -> Vec<u8> {
+        let mut blob = vec![FORMAT_FIXED];
+        blob.extend_from_slice(&count.to_be_bytes());
+        blob.extend_from_slice(&0u32.to_be_bytes());
+        blob
+    }
+
+    #[test]
+    fn honest_blobs_of_the_expected_count_decode() {
+        let fixed: Vec<Vec<u8>> = (0..4u8).map(|i| vec![i; 3]).collect();
+        let variable = vec![vec![], vec![1], vec![2, 2], vec![3, 3, 3]];
+        let empty_entries = vec![Vec::new(); 4];
+        for entries in [fixed, variable, empty_entries] {
+            let blob = serialize_chunk_blob(&entries).unwrap();
+            assert_eq!(
+                deserialize_completed_chunk_blob(&blob, 4).expect("honest chunk"),
+                entries
+            );
+        }
+    }
+
+    #[test]
+    fn a_nine_byte_blob_cannot_declare_more_than_its_chunk_holds() {
+        // Accepted by the general decoder: 2^20 empty entries from 9 bytes.
+        let blob = zero_size_fixed_blob(1 << 20);
+        assert_eq!(blob.len(), 9);
+        assert_eq!(deserialize_chunk_blob(&blob).unwrap().len(), 1 << 20);
+
+        let err = deserialize_completed_chunk_blob(&blob, 2).expect_err("count is not 2");
+        assert!(
+            matches!(&err, BulkAppendError::CorruptedData(m)
+                if m.contains("holds 1048576 entries, expected exactly 2")),
+            "{err:?}"
+        );
+        // Short as well as long.
+        assert!(deserialize_completed_chunk_blob(&zero_size_fixed_blob(1), 2).is_err());
+    }
+
+    #[test]
+    fn variable_blobs_are_counted_without_decoding() {
+        let three = serialize_chunk_blob(&[vec![], vec![1], vec![2, 2]]).unwrap();
+        assert_eq!(three[0], FORMAT_VARIABLE);
+        let err = deserialize_completed_chunk_blob(&three, 2).expect_err("one entry too many");
+        assert!(
+            matches!(&err, BulkAppendError::CorruptedData(m) if m.contains("more than 2")),
+            "{err:?}"
+        );
+        let err = deserialize_completed_chunk_blob(&three, 4).expect_err("one entry short");
+        assert!(
+            matches!(&err, BulkAppendError::CorruptedData(m) if m.contains("holds 3 entries")),
+            "{err:?}"
+        );
+
+        // A length prefix running past the blob is truncation, not overflow.
+        let mut blob = vec![FORMAT_VARIABLE];
+        blob.extend_from_slice(&u32::MAX.to_be_bytes());
+        assert!(deserialize_completed_chunk_blob(&blob, 1).is_err());
+        assert!(deserialize_completed_chunk_blob(&[FORMAT_VARIABLE, 0, 0], 1).is_err());
+    }
+
+    #[test]
+    fn malformed_and_empty_blobs() {
+        assert!(deserialize_completed_chunk_blob(&[], 2).is_err());
+        assert!(deserialize_completed_chunk_blob(&[], 0).unwrap().is_empty());
+        assert!(deserialize_completed_chunk_blob(&[FORMAT_FIXED, 0, 0], 2).is_err());
+        assert!(deserialize_completed_chunk_blob(&[0xFF, 1, 2, 3], 2).is_err());
+        // Right header count, wrong payload length: the full decoder refuses.
+        let mut blob = zero_size_fixed_blob(2);
+        blob[8] = 1; // entry_size = 1, payload empty
+        assert!(deserialize_completed_chunk_blob(&blob, 2).is_err());
     }
 }
 

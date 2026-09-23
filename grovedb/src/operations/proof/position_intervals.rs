@@ -149,7 +149,6 @@ impl PositionIntervals {
     }
 
     /// The merged intervals, ascending.
-    #[cfg(test)]
     pub(crate) fn ranges(&self) -> &[(u64, u64)] {
         &self.ranges
     }
