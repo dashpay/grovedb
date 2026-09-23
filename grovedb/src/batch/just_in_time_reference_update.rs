@@ -30,6 +30,32 @@ where
     ) -> CostResult<Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>, Error>,
     S: StorageContext<'db>,
 {
+    /// The hash a reference written in this batch commits to for a pending
+    /// write of a backward-references ITEM at `qualified_path`: the logical
+    /// (stripped) hash of the bytes the apply finally stores there — the
+    /// preprocessor's prediction when the caller's flags update may rewrite
+    /// them, the op's own element otherwise.
+    pub(crate) fn landed_backward_references_item_value_hash(
+        &self,
+        qualified_path: &[Vec<u8>],
+        element: &Element,
+        grove_version: &GroveVersion,
+    ) -> CostResult<CryptoHash, Error> {
+        let mut cost = OperationCost::default();
+        let landed = self
+            .landed_backward_references_items
+            .get(qualified_path)
+            .unwrap_or(element);
+        let serialized = cost_return_on_error_into_no_add!(
+            cost,
+            landed
+                .stripped_of_backward_references()
+                .serialize(grove_version)
+        );
+        let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+        Ok(val_hash).wrap_with_cost(cost)
+    }
+
     pub(crate) fn process_old_element_flags<G, SR>(
         key: &[u8],
         serialized: &[u8],

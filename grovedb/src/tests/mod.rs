@@ -16,6 +16,7 @@ mod append_layer_direction_tests;
 mod append_layer_limit_accounting_tests;
 mod append_storage_accounting_tests;
 mod automatic_backward_references_tests;
+mod backward_references_flags_update_tests;
 mod batch_backward_references_cost_tests;
 mod batch_backward_references_tests;
 mod batch_coverage_tests;

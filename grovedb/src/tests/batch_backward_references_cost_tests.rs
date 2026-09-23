@@ -186,6 +186,74 @@ fn worst_case_estimate_covers_flagged_family_overwrite() {
     );
 }
 
+/// The same overwrite of a FLAGGED item under Drive's epoch-based flags
+/// callback, in a later epoch: the batch settles the referrers' end hashes
+/// against the bytes the callback makes the item store, re-propagating the
+/// chain. The worst-case estimate must still cover that.
+#[test]
+fn worst_case_estimate_covers_flagged_family_overwrite_under_epoch_flags() {
+    use grovedb_epoch_based_storage_flags::StorageFlags;
+
+    let grove_version = GroveVersion::latest();
+    let epoch_item = |value: &[u8], epoch: u16| {
+        Element::ItemWithBackwardsReferences(
+            value.to_vec(),
+            Default::default(),
+            Some(StorageFlags::SingleEpoch(epoch).to_element_flags()),
+        )
+    };
+    let db = make_test_grovedb(grove_version);
+    for (key, element) in [
+        (b"value".as_slice(), epoch_item(b"hello", 1)),
+        (b"r1", sibling_bidi(b"value")),
+        (b"r2", sibling_bidi(b"r1")),
+    ] {
+        db.insert(&[TEST_LEAF], key, element, None, None, grove_version)
+            .unwrap()
+            .unwrap();
+    }
+
+    let ops = vec![
+        QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"value".to_vec(),
+            epoch_item(b"updated, and larger", 3),
+        ),
+        QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"r3".to_vec(),
+            sibling_bidi(b"r2"),
+        ),
+    ];
+    let estimate = worst_case_estimate(ops.clone(), None, grove_version);
+    let actual = db
+        .apply_batch_with_element_flags_update(
+            ops,
+            None,
+            |cost, old_flags, new_flags| {
+                StorageFlags::update_element_flags(cost, old_flags, new_flags)
+                    .map_err(|e| Error::JustInTimeElementFlagsClientError(e.to_string()))
+            },
+            |flags, removed_key_bytes, removed_value_bytes| {
+                StorageFlags::split_removal_bytes(flags, removed_key_bytes, removed_value_bytes)
+                    .map_err(|e| Error::SplitRemovalBytesClientError(e.to_string()))
+            },
+            None,
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("apply succeeds");
+    assert!(db
+        .verify_grovedb(None, true, true, grove_version)
+        .unwrap()
+        .is_empty());
+
+    assert!(
+        estimate.worse_or_eq_than(&actual),
+        "worst-case estimate {estimate:?} must cover the actual {actual:?}"
+    );
+}
+
 #[test]
 fn worst_case_estimate_covers_flagged_delete_cascade() {
     let grove_version = GroveVersion::latest();

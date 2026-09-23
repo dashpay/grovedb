@@ -28,6 +28,12 @@
 //! Planners read through [`OverlayChainStore`]: staged pending state first,
 //! the transaction's pre-batch DB state otherwise.
 //!
+//! Planning commits referrers to the staged, caller-supplied bytes of their
+//! terminal item. A third pass then settles those end hashes against the
+//! bytes the apply will actually store, since the apply runs the caller's
+//! flags update on every write over a stored value (see
+//! [`Expansion::settle_end_hashes`]).
+//!
 //! Derived writes carry their final node value hash (the two-layer
 //! combine), computed here exactly as the live applier computes it, and
 //! execute through [`super::GroveOp::ReplaceBackwardReferenceFamilyMember`].
@@ -65,9 +71,14 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
 };
 
-use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{
+    cost_return_on_error, cost_return_on_error_no_add,
+    storage_cost::{removal::StorageRemovedBytes, StorageCost},
+    CostResult, CostsExt, OperationCost,
+};
 use grovedb_merk::{
     element::{costs::ElementCostExtensions, ElementExt},
+    tree_type::TreeType,
     CryptoHash, Merk,
 };
 use grovedb_path::SubtreePath;
@@ -77,16 +88,34 @@ use grovedb_version::version::GroveVersion;
 pub(super) type PreparedMerks<'db> =
     HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext<'db>>>;
 
-use super::{key_info::KeyInfo, GroveOp, KeyInfoPath, QualifiedGroveDbOp};
+use super::{
+    just_in_time_value_update::predict_provided_value_hash_put, key_info::KeyInfo, GroveOp,
+    KeyInfoPath, QualifiedGroveDbOp,
+};
 use crate::{
     bidirectional_references::semantics::{
-        plan_element_update, plan_reference_insertion, ChainStore, DerivedMutation, Position,
-        ResolvedPosition,
+        plan_element_update, plan_propagation, plan_reference_insertion, ChainStore,
+        DerivedMutation, Plan, Position, ResolvedPosition,
     },
     operations::get::MAX_REFERENCE_HOPS,
     reference_path::{path_from_reference_path_type, ReferencePathType},
-    Element, Error, GroveDb, Transaction,
+    Element, ElementFlags, Error, GroveDb, Transaction,
 };
+
+/// Rounds the end-hash settling pass may take. A round re-predicts only the
+/// items the previous round rewrote. Besides the referrer chain (which
+/// holds no items), a propagation rewrites only the item itself, and only
+/// to drop dangling referrer entries; after one such drop nothing is left
+/// to drop, so two rounds settle any batch with deterministic callbacks.
+/// The rest is margin before refusing a callback that never settles.
+const MAX_END_HASH_SETTLING_ROUNDS: usize = 8;
+
+/// The element each backward-references item this batch writes over a
+/// stored value will finally store, keyed by qualified path (path segments
+/// then key). Produced by the settling pass; the apply hashes same-batch
+/// plain references to these items from it, and checks each item's stored
+/// bytes against it.
+pub(super) type LandedItems = HashMap<Vec<Vec<u8>>, Element>;
 
 /// [`ChainStore`] over the batch's prospective state: an overlay of staged
 /// pending position states (what the batch has decided each position will
@@ -97,7 +126,10 @@ pub(super) struct OverlayChainStore<'db, 'g> {
     db: &'db GroveDb,
     batch: &'db StorageBatch,
     merks: RefCell<PreparedMerks<'db>>,
+    /// Committed (pre-batch) state read so far.
     observed: RefCell<HashMap<Position, Option<Element>>>,
+    /// The exact stored bytes of every committed element in `observed`.
+    observed_bytes: RefCell<HashMap<Position, Vec<u8>>>,
     tx: &'db Transaction<'db>,
     version: &'g GroveVersion,
     /// Staged pending state: `Some(element)` = the batch writes this,
@@ -130,6 +162,7 @@ impl<'db, 'g> OverlayChainStore<'db, 'g> {
             batch,
             merks: RefCell::new(HashMap::new()),
             observed: RefCell::new(HashMap::new()),
+            observed_bytes: RefCell::new(HashMap::new()),
             tx,
             version,
             overlay: RefCell::new(HashMap::new()),
@@ -173,6 +206,86 @@ impl<'db, 'g> OverlayChainStore<'db, 'g> {
         (1..=path.len()).any(|i| fresh.contains(&path[..i]))
     }
 
+    /// The committed (pre-batch) element at a position — what the apply
+    /// finds there, since a batch writes each position once. `None` for an
+    /// absent key, and beneath a subtree this batch creates (committed
+    /// storage holds nothing there). Its stored bytes are kept for
+    /// [`Self::committed_bytes`].
+    fn committed_at(&self, path: &[Vec<u8>], key: &[u8]) -> CostResult<Option<Element>, Error> {
+        if self.under_fresh_subtree(path) {
+            return Ok(None).wrap_with_cost(OperationCost::default());
+        }
+        let position = (path.to_vec(), key.to_vec());
+        if let Some(observed) = self.observed.borrow().get(&position) {
+            return Ok(observed.clone()).wrap_with_cost(OperationCost::default());
+        }
+        let mut cost = OperationCost::default();
+        let mut merks = self.merks.borrow_mut();
+        if !merks.contains_key(path) {
+            let merk = cost_return_on_error!(
+                &mut cost,
+                self.db.open_batch_transactional_merk_at_path(
+                    self.batch,
+                    SubtreePath::from(path),
+                    self.tx,
+                    false,
+                    self.version,
+                )
+            );
+            merks.insert(path.to_vec(), merk);
+        }
+        let merk = merks.get(path).expect("opened above");
+        let mut observed = None;
+        cost_return_on_error!(
+            &mut cost,
+            merk.observe_old_value(
+                key,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                &mut |_, bytes| {
+                    observed = Some(
+                        Element::deserialize(bytes, self.version)
+                            .map(|element| (element, bytes.to_vec())),
+                    );
+                },
+                self.version,
+            )
+            .map_err(Error::MerkError)
+        );
+        let observed = match observed.transpose() {
+            Ok(value) => value,
+            Err(error) => return Err(error.into()).wrap_with_cost(cost),
+        };
+        let element = observed.map(|(element, bytes)| {
+            self.observed_bytes
+                .borrow_mut()
+                .insert(position.clone(), bytes);
+            element
+        });
+        self.observed.borrow_mut().insert(position, element.clone());
+        Ok(element).wrap_with_cost(cost)
+    }
+
+    /// The exact stored bytes of the committed element at a position (see
+    /// [`Self::committed_at`]).
+    fn committed_bytes(&self, path: &[Vec<u8>], key: &[u8]) -> CostResult<Option<Vec<u8>>, Error> {
+        let mut cost = OperationCost::default();
+        if cost_return_on_error!(&mut cost, self.committed_at(path, key)).is_none() {
+            return Ok(None).wrap_with_cost(cost);
+        }
+        let bytes = self
+            .observed_bytes
+            .borrow()
+            .get(&(path.to_vec(), key.to_vec()))
+            .cloned();
+        Ok(bytes).wrap_with_cost(cost)
+    }
+
+    /// The tree type of the subtree at `path`, when planning opened its
+    /// Merk (the one the apply reuses).
+    fn opened_tree_type(&self, path: &[Vec<u8>]) -> Option<TreeType> {
+        self.merks.borrow().get(path).map(|merk| merk.tree_type)
+    }
+
     fn resolve_position(
         &self,
         path: &[Vec<u8>],
@@ -211,50 +324,7 @@ impl<'db, 'g> ChainStore for OverlayChainStore<'db, 'g> {
         // Below a subtree this batch creates, committed storage has nothing
         // — not even the parent tree. Everything that exists there is in
         // the overlay (checked above).
-        if self.under_fresh_subtree(path) {
-            return Ok(None).wrap_with_cost(OperationCost::default());
-        }
-        let position = (path.to_vec(), key.to_vec());
-        if let Some(observed) = self.observed.borrow().get(&position) {
-            return Ok(observed.clone()).wrap_with_cost(OperationCost::default());
-        }
-        let mut cost = OperationCost::default();
-        let mut merks = self.merks.borrow_mut();
-        if !merks.contains_key(path) {
-            let merk = cost_return_on_error!(
-                &mut cost,
-                self.db.open_batch_transactional_merk_at_path(
-                    self.batch,
-                    SubtreePath::from(path),
-                    self.tx,
-                    false,
-                    self.version,
-                )
-            );
-            merks.insert(path.to_vec(), merk);
-        }
-        let merk = merks.get(path).expect("opened above");
-        let mut observed = None;
-        cost_return_on_error!(
-            &mut cost,
-            merk.observe_old_value(
-                key,
-                Some(&Element::value_defined_cost_for_serialized_value),
-                &mut |_, bytes| {
-                    observed = Some(Element::deserialize(bytes, self.version));
-                },
-                self.version,
-            )
-            .map_err(Error::MerkError)
-        );
-        let observed = match observed.transpose() {
-            Ok(value) => value,
-            Err(error) => return Err(error.into()).wrap_with_cost(cost),
-        };
-        self.observed
-            .borrow_mut()
-            .insert(position, observed.clone());
-        Ok(observed).wrap_with_cost(cost)
+        self.committed_at(path, key)
     }
 
     fn resolve_once(
@@ -633,16 +703,187 @@ impl<'db, 'g> Expansion<'db, 'g> {
     }
 }
 
+impl<'db, 'g> Expansion<'db, 'g> {
+    /// Settle every referrer's end hash against the bytes its terminal item
+    /// will actually store, and return those bytes for every item that the
+    /// update may rewrite (see [`LandedItems`]).
+    ///
+    /// The planners commit referrers to the logical hash of the item AS
+    /// STAGED — the bytes the caller supplied. When the apply writes a
+    /// flagged item over a stored value, it first runs the caller's
+    /// just-in-time flags update, which may rewrite the flags and with
+    /// them the logical hash (Drive's epoch-based storage flags do on
+    /// every cross-epoch update: reset to the old flags on a same-size
+    /// write, merge into a multi-epoch map when it grows, combine removed
+    /// bytes when it shrinks). Merk rehashes the item's own node from its
+    /// final bytes, but its referrers would keep the supplied hash.
+    ///
+    /// So once planning is complete — every registration folded in, since
+    /// the flags a callback derives can depend on the item's full size —
+    /// this pass predicts each such item's final bytes through the same
+    /// update Merk runs, and re-propagates the landed logical hash along
+    /// its referrer chains wherever it differs from the one committed to.
+    fn settle_end_hashes<G, SR>(
+        &mut self,
+        flags_update: &mut G,
+        split_removal_bytes: &mut SR,
+    ) -> CostResult<LandedItems, Error>
+    where
+        G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+        SR: FnMut(
+            &mut ElementFlags,
+            u32,
+            u32,
+        ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
+    {
+        let mut cost = OperationCost::default();
+        let version = self.store.version;
+        let mut landed_items = LandedItems::new();
+        // Per re-propagated item: the hash its referrers now commit to.
+        let mut settled: HashMap<Position, CryptoHash> = HashMap::new();
+        // The items to (re-)predict: every candidate in the first round,
+        // then only those the previous round's propagations rewrote.
+        let mut only: Option<HashSet<Position>> = None;
+        for _ in 0..MAX_END_HASH_SETTLING_ROUNDS {
+            // Only a flagged item can change: the update leaves unflagged
+            // bytes as supplied.
+            let mut items: Vec<(Position, Element)> = self
+                .store
+                .overlay
+                .borrow()
+                .iter()
+                .filter_map(|(position, staged)| match staged {
+                    Some(element)
+                        if is_family_item(element)
+                            && element.get_flags().is_some()
+                            && only.as_ref().is_none_or(|only| only.contains(position)) =>
+                    {
+                        Some((position.clone(), element.clone()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            items.sort_by(|a, b| a.0.cmp(&b.0));
+
+            let mut rewritten: HashSet<Position> = HashSet::new();
+            for (position, element) in items {
+                let (path, key) = &position;
+                // No stored predecessor: the apply runs no just-in-time
+                // update and stores the bytes as supplied.
+                let Some(old_bytes) =
+                    cost_return_on_error!(&mut cost, self.store.committed_bytes(path, key))
+                else {
+                    continue;
+                };
+                let in_tree_type = cost_return_on_error_no_add!(
+                    cost,
+                    self.store
+                        .opened_tree_type(path)
+                        .ok_or(Error::CorruptedCodeExecution(
+                            "a committed backward-references item's subtree was not opened",
+                        ))
+                );
+                let landed = cost_return_on_error_no_add!(
+                    cost,
+                    predict_provided_value_hash_put(
+                        key,
+                        &old_bytes,
+                        &element,
+                        in_tree_type,
+                        flags_update,
+                        split_removal_bytes,
+                        version,
+                    )
+                );
+                let mut qualified = path.clone();
+                qualified.push(key.clone());
+                landed_items.insert(qualified, landed.clone());
+
+                // Only referrers commit to the item's hash.
+                if element
+                    .backward_references()
+                    .is_none_or(|refs| refs.is_empty())
+                {
+                    continue;
+                }
+                let already_settled = settled.get(&position).copied();
+                if already_settled.is_none() && landed == element {
+                    // Stored as staged: the planned hashes hold.
+                    continue;
+                }
+                let landed_hash = cost_return_on_error!(
+                    &mut cost,
+                    landed.logical_value_hash(version).map_err(Error::from)
+                );
+                let committed_hash = match already_settled {
+                    Some(hash) => hash,
+                    None => cost_return_on_error!(
+                        &mut cost,
+                        element.logical_value_hash(version).map_err(Error::from)
+                    ),
+                };
+                if landed_hash == committed_hash {
+                    continue;
+                }
+                // Re-propagate from the STAGED element: the referrer list
+                // is what the apply writes (the update only touches flags).
+                let mut plan = Plan::default();
+                cost_return_on_error!(
+                    &mut cost,
+                    plan_propagation(&self.store, &mut plan, path, key, element, landed_hash)
+                );
+                rewritten.extend(plan.mutations.iter().filter_map(|mutation| match mutation {
+                    DerivedMutation::Write {
+                        path, key, element, ..
+                    } if is_family_item(element) => Some((path.clone(), key.clone())),
+                    _ => None,
+                }));
+                cost_return_on_error!(&mut cost, self.apply_mutations(plan.mutations, usize::MAX));
+                settled.insert(position, landed_hash);
+            }
+            if rewritten.is_empty() {
+                return Ok(landed_items).wrap_with_cost(cost);
+            }
+            only = Some(rewritten);
+        }
+        // Deterministic callbacks settle within two rounds; one whose answer
+        // keeps moving the item's bytes is the caller's to fix.
+        Err(Error::JustInTimeElementFlagsClientError(
+            "the flags update callback kept changing a backward-references item's bytes; \
+             its referrers cannot be bound"
+                .to_owned(),
+        ))
+        .wrap_with_cost(cost)
+    }
+}
+
 /// Expand `ops` with the derived operations the backward-references rules
 /// require, per the module documentation.
-pub(super) fn expand_backward_references_ops<'db>(
+///
+/// `flags_update` and `split_removal_bytes` are the caller's just-in-time
+/// callbacks the apply will run; the expansion consults them to predict the
+/// bytes a flagged family item finally stores (see
+/// [`Expansion::settle_end_hashes`]) and returns those predictions for the
+/// apply.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn expand_backward_references_ops<'db, G, SR>(
     db: &'db GroveDb,
     tx: &'db Transaction<'db>,
     batch: &'db StorageBatch,
     ops: Vec<QualifiedGroveDbOp>,
     validate_insertion_does_not_override: bool,
+    flags_update: &mut G,
+    split_removal_bytes: &mut SR,
     grove_version: &GroveVersion,
-) -> CostResult<(Vec<QualifiedGroveDbOp>, PreparedMerks<'db>), Error> {
+) -> CostResult<(Vec<QualifiedGroveDbOp>, PreparedMerks<'db>, LandedItems), Error>
+where
+    G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+    SR: FnMut(
+        &mut ElementFlags,
+        u32,
+        u32,
+    ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
+{
     let mut cost = OperationCost::default();
 
     let mut expansion = Expansion {
@@ -811,6 +1052,7 @@ pub(super) fn expand_backward_references_ops<'db>(
         return Ok((
             expansion.ops.into_iter().flatten().collect(),
             expansion.store.merks.into_inner(),
+            LandedItems::new(),
         ))
         .wrap_with_cost(cost);
     }
@@ -1234,9 +1476,16 @@ pub(super) fn expand_backward_references_ops<'db>(
         }
     }
 
+    // Pass 3: every end hash above was planned against the STAGED bytes;
+    // settle them against what the apply's flags update will store.
+    let landed_items = cost_return_on_error!(
+        &mut cost,
+        expansion.settle_end_hashes(flags_update, split_removal_bytes)
+    );
+
     let mut expanded: Vec<QualifiedGroveDbOp> = expansion.ops.into_iter().flatten().collect();
     expanded.extend(expansion.derived.into_values());
-    Ok((expanded, expansion.store.merks.into_inner())).wrap_with_cost(cost)
+    Ok((expanded, expansion.store.merks.into_inner(), landed_items)).wrap_with_cost(cost)
 }
 
 /// The qualified position of a reference's first hop, when the path type is

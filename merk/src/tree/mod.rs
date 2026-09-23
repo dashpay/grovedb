@@ -1224,7 +1224,11 @@ impl TreeNode {
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
 
-        self.inner.kv = self.inner.kv.put_value_no_update_of_hashes(value);
+        // Only backward-references family elements are written this way, and
+        // they carry no value-defined cost: a cost inherited from a
+        // specialized predecessor (a sum item, a tree) would size the new
+        // element wrongly (issue #908's twin).
+        self.inner.kv = self.inner.kv.put_ordinary_value_no_update_of_hashes(value);
         self.inner.kv.feature_type = feature_type;
 
         let mut value_hash = value_hash;
