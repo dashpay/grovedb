@@ -790,6 +790,76 @@ fn limited_query_decodes_only_what_it_reports() {
     }
 }
 
+/// The lower layer `honest_proof` carries under the root-level `key`.
+fn honest_lower_layer(honest_proof: &[u8], key: &[u8]) -> ProofBytes {
+    let decoded: GroveDBProof = bincode::decode_from_slice(honest_proof, envelope_config())
+        .expect("decode honest envelope")
+        .0;
+    let GroveDBProof::V1(GroveDBProofV1 { root_layer }) = decoded else {
+        panic!("expected a V1 envelope under the latest grove version");
+    };
+    root_layer.lower_layers[key].merk_proof.clone()
+}
+
+/// A subset query that stops at an MMR or dense tree still consumes the
+/// lower layer the proof carries, for its root alone, and binds it to the
+/// parent row: the honest element verifies, and a lower layer whose root
+/// the parent row does not commit to is refused.
+#[test]
+fn element_only_subset_query_binds_mmr_and_dense_lower_layers() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+    for (key, element) in [
+        (b"mmr".as_slice(), Element::empty_mmr_tree()),
+        (b"dense".as_slice(), Element::empty_dense_tree(2)),
+    ] {
+        db.insert(EMPTY_PATH, key, element, None, None, grove_version)
+            .unwrap()
+            .expect("insert tree");
+    }
+    for value in [vec![7], vec![8], vec![9]] {
+        db.mmr_tree_append(EMPTY_PATH, b"mmr", value.clone(), None, grove_version)
+            .unwrap()
+            .expect("append leaf");
+        db.dense_tree_insert(EMPTY_PATH, b"dense", value, None, grove_version)
+            .unwrap()
+            .expect("insert entry");
+    }
+
+    for key in [b"mmr".as_slice(), b"dense".as_slice()] {
+        let proof = db
+            .prove_query(&unlimited_range_full_under(key), None, grove_version)
+            .unwrap()
+            .expect("honest proof");
+        let element_query = PathQuery::new_single_key(Vec::new(), key.to_vec());
+        let (root, rows) = GroveDb::verify_subset_query(&proof, &element_query, grove_version)
+            .expect("honest subset verifies");
+        assert_eq!(root, db.root_hash(None, grove_version).unwrap().unwrap());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].1, key);
+
+        let element = db
+            .get(EMPTY_PATH, key, None, grove_version)
+            .unwrap()
+            .expect("element");
+        let forged = forge_root_layer_node(
+            &proof,
+            key,
+            &element,
+            [0u8; 32],
+            honest_lower_layer(&proof, key),
+            grove_version,
+        );
+        match GroveDb::verify_subset_query(&forged, &element_query, grove_version) {
+            Err(Error::InvalidProof(_, message)) => assert!(
+                message.contains("V1 mismatch in lower layer hash"),
+                "{element:?}: {message}"
+            ),
+            other => panic!("{element:?}: expected the binding refusal, got {other:?}"),
+        }
+    }
+}
+
 /// Honest proofs still verify through the interval-driven extraction:
 /// disjoint keys and ranges across completed chunks and the buffer, both
 /// directions, under a limit, over variable-format chunks with empty values
