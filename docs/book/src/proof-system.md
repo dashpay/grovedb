@@ -395,7 +395,15 @@ somewhere else onto them:
 |---|---|---|
 | Tree (any Merk or non-Merk tree) | accepted | The GroveDB layer recomputes `combine_hash(H(value), child)` from the lower layer, from `NULL_HASH` for an empty tree, or from the `child_hash` carried by `KVValueHashFeatureTypeWithChildHash`. |
 | Item (`Item`, `SumItem`, `ItemWithSumItem`) | rejected by the Merk verifier at proof version 1 | Nothing — items commit the plain `H(value)` and must ride on `KV` / `KVCount` / `KVSum` / `KVCountSum`, where the verifier recomputes the hash from the bytes. |
+| Backward-references item (`ItemWithBackwardsReferences`, `SumItemWithBackwardsReferences`, `ItemWithSumItemWithBackwardsReferences`) | rejected on `KVValueHash` / `KVValueHashFeatureType` by the Merk verifier at proof version 1, and by the count-offset verifier's allowlist | Nothing on these nodes. These items commit `combine(H(stripped), backrefs_hash)` and ride on `KVBackwardsReferencesValueHash`, which recomputes that hash from the bytes. Provable* aggregate trees refuse them at insert, so no honest count or sum node carries one. |
 | Reference (`Reference`, `ReferenceWithSumItem`, wrapped or not) | passes the Merk verifier; **rejected by `verify_layer_proof_v1` the moment it is consumed as a row** | Nothing on the node — references commit `combine_hash(H(reference), H(target))` and every row the GroveDB verifier consumes is served as `KVRefValueHash{,Count,Sum,CountSum}`, which hashes the **target** bytes and carries only `H(reference)`. Inside a sum-budget window a reference row rides on `KVValueHashFeatureTypeWithChildHash`, whose own `combine_hash(H(value), child_hash)` check binds it. |
+
+The count-offset verifier (`verify_count_offset_on_range_proof`) rebuilds
+its tree with `execute_with_options`, not `execute_proof`, so none of the
+Merk-verifier refusals above run there. Its `classify_self` applies its
+own allowlist to `KVValueHashFeatureType`: only trees and references are
+accepted. The GroveDB count-offset dispatch then requires every row that
+did not come through a reference to be a simple item or an empty tree.
 
 The reference rule lives in the GroveDB layer rather than the Merk
 verifier on purpose. A reference row that lies *past* the query limit

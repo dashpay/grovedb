@@ -65,6 +65,7 @@ mod wrapped_terminal_reference_tests;
 // `generic_writes_against_pcit_primary_are_rejected`.
 mod axis_descent_proof_tests;
 mod axis_read_projection_tests;
+mod count_offset_backward_ref_forgery_tests;
 mod count_offset_paginated_tests;
 mod count_sum_tree_tests;
 mod count_tree_tests;

@@ -1774,3 +1774,138 @@ fn offset_collapse_walk_is_charged() {
     );
     assert_eq!(with_walk.storage_cost, without_walk.storage_cost);
 }
+
+// ─── Backward-references items on KVValueHashFeatureType (2026-09-23 audit) ───
+//
+// A `KVValueHashFeatureType` node hashes the proof-carried value hash,
+// never the value bytes, so re-emitting an honest `KVCount(k, v, c)` as
+// `KVValueHashFeatureType(k, forged, H(v), ProvableCountedMerkNode(c))`
+// keeps the root. `classify_self` used to refuse only Item / SumItem /
+// ItemWithSumItem there, so the three backward-references item types
+// surfaced as returned rows under the genuine root. It now allowlists the
+// element types an honest prover puts on that node (trees and
+// references). Indexed-axis callers of `verify_count_offset_on_range_proof`
+// have no GroveDB-level post-filter, so this guard is their only one.
+
+/// A `ProvableCountTree` holding serialized `Item`s under keys `a..=o`.
+/// (`make_15_key_provable_count_tree` stores raw one-byte values, several
+/// of which decode as tree discriminants and are proved on
+/// `KVValueHashFeatureType` already.)
+fn make_15_item_provable_count_tree(grove_version: &GroveVersion) -> (TempMerk, [u8; 32]) {
+    let mut merk = TempMerk::new_with_tree_type(grove_version, TreeType::ProvableCountTree);
+    let entries: Vec<(Vec<u8>, Op)> = (b'a'..=b'o')
+        .map(|key| {
+            let item = grovedb_element::Element::new_item(vec![key])
+                .serialize(grove_version)
+                .expect("serialize item");
+            (vec![key], Op::Put(item, ProvableCountedMerkNode(1)))
+        })
+        .collect();
+    merk.apply::<_, Vec<_>>(&entries, &[], None, grove_version)
+        .unwrap()
+        .expect("apply should succeed");
+    merk.commit(grove_version);
+    let root_hash = merk.root_hash().unwrap();
+    (merk, root_hash)
+}
+
+/// Re-emit the honest `KVCount` row at `target` as a
+/// `KVValueHashFeatureType` carrying `forged`, keeping its value hash and
+/// count.
+fn forge_row_as_feature_type_node(
+    ops: &LinkedList<ProofOp>,
+    target: &[u8],
+    forged: &[u8],
+) -> Vec<ProofOp> {
+    use crate::TreeFeatureType;
+    let rewrite = |node: Node| match node {
+        Node::KVCount(key, value, count) if key == target => Node::KVValueHashFeatureType(
+            key,
+            forged.to_vec(),
+            crate::tree::value_hash(&value).unwrap(),
+            TreeFeatureType::ProvableCountedMerkNode(count),
+        ),
+        other => other,
+    };
+    let forged_ops: Vec<ProofOp> = ops
+        .iter()
+        .cloned()
+        .map(|op| match op {
+            ProofOp::Push(node) => ProofOp::Push(rewrite(node)),
+            ProofOp::PushInverted(node) => ProofOp::PushInverted(rewrite(node)),
+            other => other,
+        })
+        .collect();
+    assert_ne!(
+        forged_ops,
+        ops.iter().cloned().collect::<Vec<_>>(),
+        "fixture: the honest proof must carry the target row as KVCount"
+    );
+    forged_ops
+}
+
+#[test]
+fn rejects_backward_reference_items_on_kv_value_hash_feature_type() {
+    use grovedb_element::{BackwardReferences, Element};
+
+    let v = GroveVersion::latest();
+    let (merk, root) = make_15_item_provable_count_tree(v);
+    let range = QueryItem::RangeFull(std::ops::RangeFull);
+    let forged_elements = [
+        Element::ItemWithBackwardsReferences(
+            b"forged".to_vec(),
+            BackwardReferences::default(),
+            None,
+        ),
+        Element::SumItemWithBackwardsReferences(1_000_000_000, BackwardReferences::default(), None),
+        Element::ItemWithSumItemWithBackwardsReferences(
+            b"forged".to_vec(),
+            1_000_000_000,
+            BackwardReferences::default(),
+            None,
+        ),
+    ];
+    // Offset 5, limit 3 returns f, g, h ascending and j, i, h descending.
+    for left_to_right in [true, false] {
+        let honest = merk
+            .prove_count_offset_on_range(&range, 5, Some(3), left_to_right, v)
+            .unwrap()
+            .expect("prove should succeed");
+        for element in &forged_elements {
+            let forged_bytes = element.serialize(v).expect("serialize forged element");
+            let forged_ops = forge_row_as_feature_type_node(&honest.ops, b"h", &forged_bytes);
+            let rebuilt_root = crate::proofs::tree::execute_with_options(
+                forged_ops.iter().map(|op| Ok(op.clone())),
+                false,
+                false,
+                |_| Ok(()),
+            )
+            .unwrap()
+            .expect("execute forged ops")
+            .hash()
+            .unwrap();
+            assert_eq!(
+                rebuilt_root, root,
+                "the rewrite must preserve the root, or this test does not exercise the \
+                 forgery ({element:?}, ltr={left_to_right})"
+            );
+            let res = verify_count_offset_on_range_proof(
+                &encode_ops(&forged_ops),
+                &range,
+                5,
+                Some(3),
+                left_to_right,
+            )
+            .unwrap();
+            assert!(
+                matches!(
+                    res,
+                    Err(crate::Error::InvalidProofError(ref msg))
+                        if msg.contains("KVValueHashFeatureType node carries an element of type")
+                ),
+                "a {element:?} row on KVValueHashFeatureType must be refused by the \
+                 allowlist (ltr={left_to_right}); got {res:?}"
+            );
+        }
+    }
+}
