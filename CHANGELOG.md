@@ -41,6 +41,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a canonical size and also backs the state-sync check. Not version-gated:
   every size a real MMR reaches is canonical, so no honest proof changes.
   (closes #692)
+- Multi-epoch storage flag decoding (`StorageFlags::deserialize_multi_epoch`,
+  `deserialize_multi_epoch_owned` and everything routed through
+  `deserialize`) now accepts only the bytes `serialize` emits. The record loop
+  stopped with one or two bytes unread, so junk after valid flags (including a
+  non-base epoch with no byte count) decoded successfully; a repeated epoch
+  silently replaced the earlier record; and a non-base record on the base
+  epoch was accepted, where removal splitting then overwrote that record's
+  share with the base epoch's residue and reported fewer removed bytes than it
+  was asked to split. Records must now be complete, minimally varint-encoded,
+  and strictly ascending above the base epoch;
+  `StorageFlagsError::NonCanonicalStorageFlags` is new. Not version-gated:
+  the combine functions only ever produce ascending records above the base
+  epoch, so no stored flags decode differently. (closes #701)
 
 ## [6.0.1] - 2026-09-13
 

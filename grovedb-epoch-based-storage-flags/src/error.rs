@@ -8,6 +8,9 @@ pub enum StorageFlagsError {
     #[error("storage flags wrong size error: {0}")]
     StorageFlagsWrongSize(String),
     /// Error
+    #[error("non canonical storage flags error: {0}")]
+    NonCanonicalStorageFlags(String),
+    /// Error
     #[error("removing at epoch with no associated storage error: {0}")]
     RemovingAtEpochWithNoAssociatedStorage(String),
     /// Error
@@ -30,6 +33,7 @@ impl StorageFlagsError {
         match self {
             StorageFlagsError::DeserializeUnknownStorageFlagsType(msg)
             | StorageFlagsError::StorageFlagsWrongSize(msg)
+            | StorageFlagsError::NonCanonicalStorageFlags(msg)
             | StorageFlagsError::RemovingAtEpochWithNoAssociatedStorage(msg)
             | StorageFlagsError::StorageFlagsOverflow(msg)
             | StorageFlagsError::RemovingFlagsError(msg)
@@ -53,6 +57,7 @@ mod tests {
         let errors = vec![
             StorageFlagsError::DeserializeUnknownStorageFlagsType("a".to_string()),
             StorageFlagsError::StorageFlagsWrongSize("b".to_string()),
+            StorageFlagsError::NonCanonicalStorageFlags("h".to_string()),
             StorageFlagsError::RemovingAtEpochWithNoAssociatedStorage("c".to_string()),
             StorageFlagsError::StorageFlagsOverflow("d".to_string()),
             StorageFlagsError::RemovingFlagsError("e".to_string()),
