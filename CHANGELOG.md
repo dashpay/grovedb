@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   slice or `&Vec` still works for `delete_operation_for_delete_internal`;
   callers of `delete_operations_for_delete_up_tree_while_empty` pass `&ops` or
   `ops.iter()` for an owned `Vec`. `add_delete_operations_for_delete_up_tree_while_empty`
-  keeps its signature. (PR_NUMBER)
+  keeps its signature. (#995)
 - Single-path axis reads (`PathQuery::new_axis*`) over a path that does not
   exist — a missing segment, or an empty tree above one — now answer with the
   traversal's empty result (no entries and `skipped: Some(0)` for a ranked
