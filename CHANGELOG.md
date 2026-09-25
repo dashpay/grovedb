@@ -16,6 +16,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   collection kept as one aux entry per member could not be read back. (#968)
 
 ### Changed
+- **BREAKING**: `delete_operation_for_delete_internal` and
+  `delete_operations_for_delete_up_tree_while_empty` borrow the operations
+  already pending in the batch: they take any
+  `IntoIterator<Item = &QualifiedGroveDbOp>` (also `Clone` for the up-tree
+  builder) in place of a slice and an owned `Vec`. A caller that keeps its
+  batch in its own operation type can pass an adapter over it, where it had to
+  copy the whole batch for every delete it built, so building k deletes into
+  one batch cost O(k^2) copies. The pending operations are read in one pass,
+  and only when the deleted element is a tree; which of them count and the
+  operations and costs built are unchanged, so this is not version-gated. A
+  slice or `&Vec` still works for `delete_operation_for_delete_internal`;
+  callers of `delete_operations_for_delete_up_tree_while_empty` pass `&ops` or
+  `ops.iter()` for an owned `Vec`. `add_delete_operations_for_delete_up_tree_while_empty`
+  keeps its signature. (PR_NUMBER)
 - Single-path axis reads (`PathQuery::new_axis*`) over a path that does not
   exist — a missing segment, or an empty tree above one — now answer with the
   traversal's empty result (no entries and `skipped: Some(0)` for a ranked

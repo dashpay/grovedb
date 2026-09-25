@@ -458,13 +458,24 @@ impl GroveDb {
     /// builds the `DontCheckForBackwardsReferences` twin, so whether the batch maintains or refuses
     /// a backward-reference participant is decided here. See the
     /// [module-level documentation](self) for details.
-    pub fn delete_operation_for_delete_internal<B: AsRef<[u8]>>(
+    ///
+    /// # Pending operations
+    ///
+    /// `current_batch_operations` are the operations already in the batch the
+    /// delete is built into. They matter only when the deleted element is a
+    /// tree, and only those at the tree's own path (`path` followed by `key`):
+    /// deletes there count as removing those children, and anything else
+    /// there makes the tree non-empty. They are borrowed and read once, and
+    /// not at all when the element is not a tree, so a caller building many
+    /// deletes into one batch can pass its pending operations as they are,
+    /// without copying them for each delete.
+    pub fn delete_operation_for_delete_internal<'a, B: AsRef<[u8]>>(
         &self,
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteOptions,
         is_known_to_be_subtree: Option<MaybeTree>,
-        current_batch_operations: &[QualifiedGroveDbOp],
+        current_batch_operations: impl IntoIterator<Item = &'a QualifiedGroveDbOp>,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<QualifiedGroveDbOp>, Error> {
@@ -517,6 +528,28 @@ impl GroveDb {
                 let subtree_merk_path = path.derive_owned_with_child(key);
                 let subtree_merk_path_vec = subtree_merk_path.to_vec();
 
+                // One pass over the pending operations at this tree's path:
+                // the keys the batch deletes there, and whether it writes
+                // anything else there. Reading them costs nothing.
+                let mut batch_deleted_keys = BTreeSet::<&[u8]>::new();
+                let mut batch_writes_into_tree = false;
+                for op in current_batch_operations {
+                    if !op.path.eq_path_vec(&subtree_merk_path_vec) {
+                        continue;
+                    }
+                    match op.op {
+                        GroveOp::Delete
+                        | GroveOp::DeleteDontCheckForBackwardsReferences
+                        | GroveOp::DeleteTree(..)
+                        | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..) => {
+                            if let Some(deleted_key) = op.key.as_ref() {
+                                batch_deleted_keys.insert(deleted_key.as_slice());
+                            }
+                        }
+                        _ => batch_writes_into_tree = true,
+                    }
+                }
+
                 // Non-Merk data trees (CommitmentTree, MmrTree,
                 // BulkAppendTree, DenseTree) never contain child subtrees
                 // in the Merk sense, so is_empty_tree_except would
@@ -541,22 +574,6 @@ impl GroveDb {
                     };
                     count == 0
                 } else {
-                    let batch_deleted_keys = current_batch_operations
-                        .iter()
-                        .filter_map(|op| match op.op {
-                            GroveOp::Delete
-                            | GroveOp::DeleteDontCheckForBackwardsReferences
-                            | GroveOp::DeleteTree(..)
-                            | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..) => {
-                                if op.path.eq_path_vec(&subtree_merk_path_vec) {
-                                    Some(op.key.as_ref()?.as_slice())
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => None,
-                        })
-                        .collect::<BTreeSet<&[u8]>>();
                     let subtree = cost_return_on_error!(
                         &mut cost,
                         compat::merk_optional_tx_path_not_empty(
@@ -575,13 +592,7 @@ impl GroveDb {
 
                 // If there is any current batch operation that is inserting something in this
                 // tree then it is not empty either
-                is_empty &= !current_batch_operations.iter().any(|op| match op.op {
-                    GroveOp::Delete
-                    | GroveOp::DeleteDontCheckForBackwardsReferences
-                    | GroveOp::DeleteTree(..)
-                    | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..) => false,
-                    _ => op.path.eq_path_vec(&subtree_merk_path_vec),
-                });
+                is_empty &= !batch_writes_into_tree;
 
                 let result = if !options.allow_deleting_non_empty_trees && !is_empty {
                     if options.deleting_non_empty_trees_returns_error {

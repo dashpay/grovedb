@@ -177,16 +177,29 @@ impl GroveDb {
     }
 
     /// Returns a vector of GroveDb ops
-    pub fn delete_operations_for_delete_up_tree_while_empty<B: AsRef<[u8]>>(
+    ///
+    /// `current_batch_operations` are the operations already in the batch the
+    /// deletes are built into. Every level reads them, with the deletes of the
+    /// levels below it, as
+    /// [`delete_operation_for_delete_internal`](Self::delete_operation_for_delete_internal)
+    /// does. They are borrowed, so a caller building many deletes into one
+    /// batch passes its pending operations as they are (`&ops`, `ops.iter()`
+    /// or an adapter over its own operation type) instead of copying them for
+    /// each call.
+    pub fn delete_operations_for_delete_up_tree_while_empty<'a, B, I>(
         &self,
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteUpTreeOptions,
         is_known_to_be_subtree: Option<MaybeTree>,
-        mut current_batch_operations: Vec<QualifiedGroveDbOp>,
+        current_batch_operations: I,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
-    ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
+    ) -> CostResult<Vec<QualifiedGroveDbOp>, Error>
+    where
+        B: AsRef<[u8]>,
+        I: IntoIterator<Item = &'a QualifiedGroveDbOp> + Clone,
+    {
         check_grovedb_v0_with_cost!(
             "delete",
             grove_version
@@ -195,12 +208,13 @@ impl GroveDb {
                 .delete_up_tree
                 .delete_operations_for_delete_up_tree_while_empty
         );
-        self.add_delete_operations_for_delete_up_tree_while_empty(
+        self.add_delete_operations_for_delete_up_tree_while_empty_after(
             path,
             key,
             options,
             is_known_to_be_subtree,
-            &mut current_batch_operations,
+            current_batch_operations,
+            &mut Vec::new(),
             transaction,
             grove_version,
         )
@@ -209,6 +223,9 @@ impl GroveDb {
 
     /// Adds operations to "delete operations" for delete up tree while empty
     /// for each level. Returns a vector of GroveDb ops.
+    ///
+    /// Each level's delete is appended to `current_batch_operations` before
+    /// the level above it is built.
     pub fn add_delete_operations_for_delete_up_tree_while_empty<B: AsRef<[u8]>>(
         &self,
         path: SubtreePath<B>,
@@ -219,6 +236,42 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Vec<QualifiedGroveDbOp>>, Error> {
+        let mut level_deletes = Vec::new();
+        let result = self.add_delete_operations_for_delete_up_tree_while_empty_after(
+            path,
+            key,
+            options,
+            is_known_to_be_subtree,
+            current_batch_operations.iter(),
+            &mut level_deletes,
+            transaction,
+            grove_version,
+        );
+        current_batch_operations.append(&mut level_deletes);
+        result
+    }
+
+    /// The levels of
+    /// [`add_delete_operations_for_delete_up_tree_while_empty`](Self::add_delete_operations_for_delete_up_tree_while_empty),
+    /// reading the pending operations as `current_batch_operations` followed by
+    /// `level_deletes`, where each level's delete is appended before the level
+    /// above it is built.
+    #[allow(clippy::too_many_arguments)]
+    fn add_delete_operations_for_delete_up_tree_while_empty_after<'a, B, I>(
+        &self,
+        path: SubtreePath<B>,
+        key: &[u8],
+        options: &DeleteUpTreeOptions,
+        is_known_to_be_subtree: Option<MaybeTree>,
+        current_batch_operations: I,
+        level_deletes: &mut Vec<QualifiedGroveDbOp>,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Option<Vec<QualifiedGroveDbOp>>, Error>
+    where
+        B: AsRef<[u8]>,
+        I: IntoIterator<Item = &'a QualifiedGroveDbOp> + Clone,
+    {
         check_grovedb_v0_with_cost!(
             "delete",
             grove_version
@@ -244,6 +297,14 @@ impl GroveDb {
                 self.check_subtree_exists_path_not_found(path.clone(), tx.as_ref(), grove_version)
             );
         }
+        // The `map` shortens the borrow of the caller's operations to this
+        // level's, so the deletes built for the levels below can follow them.
+        #[allow(clippy::map_identity)]
+        let pending_operations = current_batch_operations
+            .clone()
+            .into_iter()
+            .map(|op| op)
+            .chain(level_deletes.iter());
         if let Some(delete_operation_this_level) = cost_return_on_error!(
             &mut cost,
             self.delete_operation_for_delete_internal(
@@ -251,26 +312,27 @@ impl GroveDb {
                 key,
                 &options.to_delete_options(),
                 is_known_to_be_subtree,
-                current_batch_operations,
+                pending_operations,
                 Some(tx.as_ref()),
                 grove_version,
             )
         ) {
             let mut delete_operations = vec![delete_operation_this_level.clone()];
             if let Some((parent_path, parent_key)) = path.derive_parent() {
-                current_batch_operations.push(delete_operation_this_level);
+                level_deletes.push(delete_operation_this_level);
                 let mut new_options = options.clone();
                 // we should not give an error from now on
                 new_options.allow_deleting_non_empty_trees = false;
                 new_options.deleting_non_empty_trees_returns_error = false;
                 if let Some(mut delete_operations_upper_level) = cost_return_on_error!(
                     &mut cost,
-                    self.add_delete_operations_for_delete_up_tree_while_empty(
+                    self.add_delete_operations_for_delete_up_tree_while_empty_after(
                         parent_path,
                         parent_key,
                         &new_options,
                         None, // todo: maybe we can know this?
                         current_batch_operations,
+                        level_deletes,
                         transaction,
                         grove_version,
                     )
