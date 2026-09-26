@@ -77,6 +77,7 @@ mod coverage_proof_generate_tests;
 mod coverage_proof_verify_tests;
 mod delete_cost_estimation_tests;
 mod delete_indexed_tree_tests;
+mod delete_pending_operations_tests;
 mod delete_up_tree_tests;
 mod dense_tree_tests;
 mod direct_insert_indexed_tests;

@@ -16,6 +16,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   collection kept as one aux entry per member could not be read back. (#968)
 
 ### Changed
+- **BREAKING**: `delete_operation_for_delete_internal` and
+  `delete_operations_for_delete_up_tree_while_empty` take the operations
+  already pending in the batch as any `impl PendingOperations` in place of a
+  slice and an owned `Vec`. A caller that keeps its batch in its own operation
+  type had to copy the whole batch for every delete it built, so building k
+  deletes into one batch cost O(k^2) copies. The builders ask for the pending
+  operations at one path, the deleted tree's own, and only when the deleted
+  element is a tree: never for a non-tree delete, and once per tree an
+  up-tree chain climbs through. `PendingOperations` is implemented for every
+  `IntoIterator<Item = &QualifiedGroveDbOp> + Clone` (a slice, `&Vec`,
+  `ops.iter()` or an adapter over the caller's own operation type), which
+  scans all of its operations each time it is asked; a caller building many
+  deletes into one large batch can implement it over an index of its batch by
+  path, so that each question costs only the operations at that path. `&[]`,
+  `&ops` for a `Vec` or slice `ops`, and `vec![]` compile as before; the
+  argument no longer deref-coerces, so a `&mut Vec`, `&&Vec`, `&Box<[_]>` or
+  `&Arc<Vec<_>>` is passed as `ops.iter()`. The operations and costs built are
+  unchanged apart from the `GROVE_V4` fix under Fixed.
+  `add_delete_operations_for_delete_up_tree_while_empty` keeps its signature,
+  but appends the chain's deletes to the caller's `Vec` once every level is
+  built, and leaves the `Vec` as it was on an error, where it used to keep the
+  deletes built below the failing level. (#995)
 - Single-path axis reads (`PathQuery::new_axis*`) over a path that does not
   exist — a missing segment, or an empty tree above one — now answer with the
   traversal's empty result (no entries and `skipped: Some(0)` for a ranked
@@ -29,6 +51,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an absent path. `AxisKeys::empty_for_axis` is new. (#965)
 
 ### Fixed
+- From `GROVE_V4`, `delete_operation_for_delete_internal`, and the up-tree
+  builders through it, no longer count a pending `DeleteTree` with
+  `SubelementsDeletionBehavior::Skip` as removing its child when deciding
+  whether a tree they delete is empty. The batch drops such a delete when the
+  child is not empty, so a parent emptied only by it was deleted with
+  `DontCheckWithNoCleanup` while the child was still in it, leaving the child
+  and its contents orphaned in storage with `verify_grovedb` reporting
+  nothing. The check now counts only the deletes the apply path counts in its
+  own emptiness check. `GROVE_V1`..`GROVE_V3` keep the old rule. (#995)
 - MMR proof verification (`MmrTreeProof::verify`, `verify_and_get_root`,
   `MerkleProof::calculate_root`, `calculate_root_with_new_leaf` and
   `verify_incremental`) now rejects an `mmr_size` no MMR can have. The peak

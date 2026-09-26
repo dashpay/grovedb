@@ -11,8 +11,10 @@ use grovedb_path::SubtreePath;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
 use crate::{
-    batch::QualifiedGroveDbOp, operations::delete::DeleteOptions, util::TxRef, ElementFlags, Error,
-    GroveDb, TransactionArg,
+    batch::QualifiedGroveDbOp,
+    operations::delete::{DeleteOptions, PendingOperations},
+    util::TxRef,
+    ElementFlags, Error, GroveDb, TransactionArg,
 };
 
 #[cfg(feature = "minimal")]
@@ -177,13 +179,22 @@ impl GroveDb {
     }
 
     /// Returns a vector of GroveDb ops
-    pub fn delete_operations_for_delete_up_tree_while_empty<B: AsRef<[u8]>>(
+    ///
+    /// `current_batch_operations` are the operations already in the batch the
+    /// deletes are built into. Each tree the chain climbs through reads those
+    /// at its own path, as
+    /// [`delete_operation_for_delete_internal`](Self::delete_operation_for_delete_internal)
+    /// does, and counts the child the chain deleted at the level below as
+    /// removed. See [`PendingOperations`] for what can be passed: a slice,
+    /// `&Vec`, an iterator or adapter over the caller's own operations, or an
+    /// index by path.
+    pub fn delete_operations_for_delete_up_tree_while_empty<'a, B: AsRef<[u8]>>(
         &self,
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteUpTreeOptions,
         is_known_to_be_subtree: Option<MaybeTree>,
-        mut current_batch_operations: Vec<QualifiedGroveDbOp>,
+        current_batch_operations: impl PendingOperations<'a>,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
@@ -195,20 +206,29 @@ impl GroveDb {
                 .delete_up_tree
                 .delete_operations_for_delete_up_tree_while_empty
         );
-        self.add_delete_operations_for_delete_up_tree_while_empty(
+        let mut delete_operations = Vec::new();
+        self.push_delete_operations_for_delete_up_tree_while_empty(
             path,
             key,
             options,
             is_known_to_be_subtree,
-            &mut current_batch_operations,
+            &current_batch_operations,
+            None,
+            &mut delete_operations,
             transaction,
             grove_version,
         )
-        .map_ok(|ops| ops.unwrap_or_default())
+        .map_ok(|()| delete_operations)
     }
 
     /// Adds operations to "delete operations" for delete up tree while empty
     /// for each level. Returns a vector of GroveDb ops.
+    ///
+    /// The levels read `current_batch_operations` as
+    /// [`delete_operations_for_delete_up_tree_while_empty`](Self::delete_operations_for_delete_up_tree_while_empty)
+    /// does. Once every level is built, their deletes are appended to
+    /// `current_batch_operations` as well as returned; on an error it is left
+    /// as it was.
     pub fn add_delete_operations_for_delete_up_tree_while_empty<B: AsRef<[u8]>>(
         &self,
         path: SubtreePath<B>,
@@ -219,6 +239,51 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Vec<QualifiedGroveDbOp>>, Error> {
+        let mut delete_operations = Vec::new();
+        self.push_delete_operations_for_delete_up_tree_while_empty(
+            path,
+            key,
+            options,
+            is_known_to_be_subtree,
+            &current_batch_operations.as_slice(),
+            None,
+            &mut delete_operations,
+            transaction,
+            grove_version,
+        )
+        .map_ok(|()| {
+            if delete_operations.is_empty() {
+                None
+            } else {
+                current_batch_operations.extend(delete_operations.iter().cloned());
+                Some(delete_operations)
+            }
+        })
+    }
+
+    /// Pushes the delete of `key` under `path` onto `delete_operations`, then
+    /// those of the trees above it while they are left empty, reading the
+    /// operations pending at each tree's path from `current_batch_operations`.
+    /// `deleted_child_key` is the child of this level's tree that the level
+    /// below deleted; it is the only one of the chain's own deletes at this
+    /// tree's path.
+    #[allow(clippy::too_many_arguments)]
+    fn push_delete_operations_for_delete_up_tree_while_empty<
+        'a,
+        B: AsRef<[u8]>,
+        P: PendingOperations<'a>,
+    >(
+        &self,
+        path: SubtreePath<B>,
+        key: &[u8],
+        options: &DeleteUpTreeOptions,
+        is_known_to_be_subtree: Option<MaybeTree>,
+        current_batch_operations: &P,
+        deleted_child_key: Option<&[u8]>,
+        delete_operations: &mut Vec<QualifiedGroveDbOp>,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
         check_grovedb_v0_with_cost!(
             "delete",
             grove_version
@@ -233,7 +298,7 @@ impl GroveDb {
             && u16::try_from(path.to_vec().len()).unwrap_or(u16::MAX) == stop_path_height
         {
             // TODO investigate how necessary it is to have path length
-            return Ok(None).wrap_with_cost(cost);
+            return Ok(()).wrap_with_cost(cost);
         }
 
         let tx = TxRef::new(&self.db, transaction);
@@ -244,43 +309,42 @@ impl GroveDb {
                 self.check_subtree_exists_path_not_found(path.clone(), tx.as_ref(), grove_version)
             );
         }
-        if let Some(delete_operation_this_level) = cost_return_on_error!(
+        let Some(delete_operation_this_level) = cost_return_on_error!(
             &mut cost,
-            self.delete_operation_for_delete_internal(
+            self.delete_operation_for_delete_internal_with_deleted_child(
                 path.clone(),
                 key,
                 &options.to_delete_options(),
                 is_known_to_be_subtree,
                 current_batch_operations,
+                deleted_child_key,
                 Some(tx.as_ref()),
                 grove_version,
             )
-        ) {
-            let mut delete_operations = vec![delete_operation_this_level.clone()];
-            if let Some((parent_path, parent_key)) = path.derive_parent() {
-                current_batch_operations.push(delete_operation_this_level);
-                let mut new_options = options.clone();
-                // we should not give an error from now on
-                new_options.allow_deleting_non_empty_trees = false;
-                new_options.deleting_non_empty_trees_returns_error = false;
-                if let Some(mut delete_operations_upper_level) = cost_return_on_error!(
-                    &mut cost,
-                    self.add_delete_operations_for_delete_up_tree_while_empty(
-                        parent_path,
-                        parent_key,
-                        &new_options,
-                        None, // todo: maybe we can know this?
-                        current_batch_operations,
-                        transaction,
-                        grove_version,
-                    )
-                ) {
-                    delete_operations.append(&mut delete_operations_upper_level);
-                }
-            }
-            Ok(Some(delete_operations)).wrap_with_cost(cost)
-        } else {
-            Ok(None).wrap_with_cost(cost)
+        ) else {
+            return Ok(()).wrap_with_cost(cost);
+        };
+        delete_operations.push(delete_operation_this_level);
+        if let Some((parent_path, parent_key)) = path.derive_parent() {
+            let mut new_options = options.clone();
+            // we should not give an error from now on
+            new_options.allow_deleting_non_empty_trees = false;
+            new_options.deleting_non_empty_trees_returns_error = false;
+            cost_return_on_error!(
+                &mut cost,
+                self.push_delete_operations_for_delete_up_tree_while_empty(
+                    parent_path,
+                    parent_key,
+                    &new_options,
+                    None, // todo: maybe we can know this?
+                    current_batch_operations,
+                    Some(key),
+                    delete_operations,
+                    transaction,
+                    grove_version,
+                )
+            );
         }
+        Ok(()).wrap_with_cost(cost)
     }
 }

@@ -31,6 +31,10 @@ mod clear_subtree;
 /// delete path). Consensus-critical — see the module docs.
 #[cfg(feature = "minimal")]
 mod delete_internal_on_transaction;
+/// Versioned dispatch for `delete_operation_for_delete_internal` (building
+/// a delete into a batch). Consensus-critical — see the module docs.
+#[cfg(feature = "minimal")]
+mod delete_operation_for_delete_internal;
 #[cfg(feature = "minimal")]
 mod delete_up_tree;
 /// Flat-subtree drop (issue #848): O(1) removal of a populated subtree
@@ -38,12 +42,14 @@ mod delete_up_tree;
 /// consensus via range tombstones driven from durable redo records.
 #[cfg(feature = "minimal")]
 pub mod flat_drop;
+/// The operations pending in a batch that delete operations are built into.
+#[cfg(feature = "minimal")]
+mod pending_operations;
 #[cfg(feature = "estimated_costs")]
 mod worst_case;
 
 #[cfg(feature = "minimal")]
 use crate::BackwardsReferences;
-use std::collections::BTreeSet;
 
 #[cfg(feature = "minimal")]
 pub use delete_up_tree::DeleteUpTreeOptions;
@@ -53,24 +59,20 @@ pub use flat_drop::PendingPrefixDropsReport;
 use grovedb_costs::{
     cost_return_on_error,
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
-    CostResult, CostsExt, OperationCost,
+    CostResult, CostsExt,
 };
-use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
-#[cfg(feature = "minimal")]
-use grovedb_merk::MaybeTree;
 #[cfg(feature = "minimal")]
 use grovedb_merk::{Error as MerkError, MerkOptions};
 use grovedb_path::SubtreePath;
 #[cfg(feature = "minimal")]
 use grovedb_storage::{Storage, StorageBatch};
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
-
-use crate::util::{compat, TxRef};
 #[cfg(feature = "minimal")]
-use crate::{
-    batch::{GroveOp, QualifiedGroveDbOp, SubelementsDeletionBehavior},
-    Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
-};
+pub use pending_operations::PendingOperations;
+
+use crate::util::TxRef;
+#[cfg(feature = "minimal")]
+use crate::{Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg};
 
 #[cfg(feature = "minimal")]
 #[derive(Clone)]
@@ -445,180 +447,6 @@ impl GroveDb {
             batch,
             grove_version,
         )
-    }
-
-    /// Delete operation for delete internal.
-    ///
-    /// # Dangling references
-    ///
-    /// This builds a batch operation; it performs no reference check itself.
-    /// Ordinary [`Reference`](crate::Element::Reference) elements pointing at
-    /// the deleted element become dangling when the batch applies. The op
-    /// carries `options.backwards_references`: [`BackwardsReferences::DontCheck`]
-    /// builds the `DontCheckForBackwardsReferences` twin, so whether the batch maintains or refuses
-    /// a backward-reference participant is decided here. See the
-    /// [module-level documentation](self) for details.
-    pub fn delete_operation_for_delete_internal<B: AsRef<[u8]>>(
-        &self,
-        path: SubtreePath<B>,
-        key: &[u8],
-        options: &DeleteOptions,
-        is_known_to_be_subtree: Option<MaybeTree>,
-        current_batch_operations: &[QualifiedGroveDbOp],
-        transaction: TransactionArg,
-        grove_version: &GroveVersion,
-    ) -> CostResult<Option<QualifiedGroveDbOp>, Error> {
-        check_grovedb_v0_with_cost!(
-            "delete_operation_for_delete_internal",
-            grove_version
-                .grovedb_versions
-                .operations
-                .delete
-                .delete_operation_for_delete_internal
-        );
-
-        let tx = TxRef::new(&self.db, transaction);
-
-        let mut cost = OperationCost::default();
-
-        if path.is_root() {
-            // Attempt to delete a root tree leaf
-            Err(Error::InvalidPath(
-                "root tree leaves currently cannot be deleted".to_owned(),
-            ))
-            .wrap_with_cost(cost)
-        } else {
-            if options.validate_tree_at_path_exists {
-                cost_return_on_error!(
-                    &mut cost,
-                    self.check_subtree_exists_path_not_found(
-                        path.clone(),
-                        tx.as_ref(),
-                        grove_version
-                    )
-                );
-            }
-            // Fetch the element if not already known, so we can determine
-            // tree type and (for non-Merk trees) entry count.
-            let element = match is_known_to_be_subtree {
-                None => Some(cost_return_on_error!(
-                    &mut cost,
-                    self.get_raw(path.clone(), key.as_ref(), Some(tx.as_ref()), grove_version)
-                )),
-                Some(_) => None,
-            };
-            let tree_type = match (&element, is_known_to_be_subtree) {
-                (Some(el), _) => el.maybe_tree_type(),
-                (None, Some(x)) => x,
-                _ => unreachable!(),
-            };
-
-            if let MaybeTree::Tree(tree_type) = tree_type {
-                let subtree_merk_path = path.derive_owned_with_child(key);
-                let subtree_merk_path_vec = subtree_merk_path.to_vec();
-
-                // Non-Merk data trees (CommitmentTree, MmrTree,
-                // BulkAppendTree, DenseTree) never contain child subtrees
-                // in the Merk sense, so is_empty_tree_except would
-                // incorrectly see non-Merk keys.  We check their
-                // element-level entry count instead.
-                let mut is_empty = if tree_type.uses_non_merk_data_storage() {
-                    // If we already fetched the element, use it; otherwise
-                    // fetch it now to check the entry count.
-                    let count = if let Some(ref el) = element {
-                        el.non_merk_entry_count().unwrap_or(0)
-                    } else {
-                        let el = cost_return_on_error!(
-                            &mut cost,
-                            self.get_raw(
-                                path.clone(),
-                                key.as_ref(),
-                                Some(tx.as_ref()),
-                                grove_version,
-                            )
-                        );
-                        el.non_merk_entry_count().unwrap_or(0)
-                    };
-                    count == 0
-                } else {
-                    let batch_deleted_keys = current_batch_operations
-                        .iter()
-                        .filter_map(|op| match op.op {
-                            GroveOp::Delete
-                            | GroveOp::DeleteDontCheckForBackwardsReferences
-                            | GroveOp::DeleteTree(..)
-                            | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..) => {
-                                if op.path.eq_path_vec(&subtree_merk_path_vec) {
-                                    Some(op.key.as_ref()?.as_slice())
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => None,
-                        })
-                        .collect::<BTreeSet<&[u8]>>();
-                    let subtree = cost_return_on_error!(
-                        &mut cost,
-                        compat::merk_optional_tx_path_not_empty(
-                            &self.db,
-                            SubtreePath::from(&subtree_merk_path),
-                            tx.as_ref(),
-                            None,
-                            grove_version,
-                        )
-                    );
-
-                    subtree
-                        .is_empty_tree_except(batch_deleted_keys)
-                        .unwrap_add_cost(&mut cost)
-                };
-
-                // If there is any current batch operation that is inserting something in this
-                // tree then it is not empty either
-                is_empty &= !current_batch_operations.iter().any(|op| match op.op {
-                    GroveOp::Delete
-                    | GroveOp::DeleteDontCheckForBackwardsReferences
-                    | GroveOp::DeleteTree(..)
-                    | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..) => false,
-                    _ => op.path.eq_path_vec(&subtree_merk_path_vec),
-                });
-
-                let result = if !options.allow_deleting_non_empty_trees && !is_empty {
-                    if options.deleting_non_empty_trees_returns_error {
-                        Err(Error::DeletingNonEmptyTree(
-                            "trying to do a delete operation for a non empty tree, but options \
-                             not allowing this",
-                        ))
-                    } else {
-                        Ok(None)
-                    }
-                } else if is_empty {
-                    // Emptiness was already verified above — use
-                    // DontCheckWithNoCleanup to avoid a redundant re-check
-                    // and skip cleanup (the tree is empty, nothing to clean).
-                    Ok(Some(
-                        QualifiedGroveDbOp::delete_tree_op(
-                            path.to_vec(),
-                            key.to_vec(),
-                            tree_type,
-                            SubelementsDeletionBehavior::DontCheckWithNoCleanup,
-                        )
-                        .with_backwards_references(options.backwards_references),
-                    ))
-                } else {
-                    Err(Error::NotSupported(
-                        "deletion operation for non empty tree not currently supported".to_string(),
-                    ))
-                };
-                result.wrap_with_cost(cost)
-            } else {
-                Ok(Some(
-                    QualifiedGroveDbOp::delete_op(path.to_vec(), key.to_vec())
-                        .with_backwards_references(options.backwards_references),
-                ))
-                .wrap_with_cost(cost)
-            }
-        }
     }
 }
 
