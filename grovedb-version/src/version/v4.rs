@@ -483,7 +483,13 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 delete_with_sectional_storage_function: 0,
                 delete_if_empty_tree: 0,
                 delete_if_empty_tree_with_sectional_storage_function: 0,
-                delete_operation_for_delete_internal: 0,
+                // v1: a pending `DeleteTree` with `SubelementsDeletionBehavior::Skip`
+                // no longer counts as removing its child when deciding whether
+                // the tree being deleted is empty, as on the apply path, which
+                // drops such a delete when the child is not empty. v0
+                // (GROVE_V1..V3) counts it, and deletes the parent without
+                // cleanup over the child it leaves behind.
+                delete_operation_for_delete_internal: 1,
                 // v1: reuse the already-open parent Merk when deleting a
                 // non-empty child tree instead of reopening the parent layer
                 // with the child's tree type (issue #686). v0 (GROVE_V1..V3)

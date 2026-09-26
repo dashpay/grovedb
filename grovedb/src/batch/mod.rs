@@ -137,7 +137,10 @@ pub enum SubelementsDeletionBehavior {
     /// reached via `delete_operations_for_delete_up_tree_while_empty`),
     /// which emits this variant only inside its `is_empty` branch — a
     /// check that also counts same-batch deletes as removed and same-batch
-    /// inserts as making the tree non-empty. The window between that check
+    /// inserts as making the tree non-empty. From `GROVE_V4` it does not
+    /// count a same-batch `DeleteTree` with [`Self::Skip`], as the apply path
+    /// does not: the batch drops that delete when its child is not empty, so
+    /// counting it would abandon the child. The window between that check
     /// and apply is covered by `verify_consistency_of_operations` (on by
     /// default), which rejects batches inserting under a deleted path.
     ///
@@ -652,6 +655,24 @@ pub enum GroveOp {
 }
 
 impl GroveOp {
+    /// Whether the op removes the element at its key whenever the batch
+    /// holding it applies.
+    ///
+    /// True for every delete except a `DeleteTree` with
+    /// [`SubelementsDeletionBehavior::Skip`]: the batch drops that op when the
+    /// tree it names is not empty, and the element stays. Emptiness checks
+    /// that count a batch's deletes as removing their keys count only these.
+    pub(crate) fn always_removes_its_key(&self) -> bool {
+        match self {
+            GroveOp::Delete | GroveOp::DeleteDontCheckForBackwardsReferences => true,
+            GroveOp::DeleteTree(_, behavior)
+            | GroveOp::DeleteTreeDontCheckForBackwardsReferences(_, behavior) => {
+                !matches!(behavior, SubelementsDeletionBehavior::Skip)
+            }
+            _ => false,
+        }
+    }
+
     /// Whether this is a `DontCheckForBackwardsReferences` twin: the op declares that the value it
     /// displaces takes no part in backward references.
     pub fn is_dont_check_for_backwards_references(&self) -> bool {
@@ -1133,6 +1154,19 @@ pub struct QualifiedGroveDbOp {
     pub key: Option<KeyInfo>,
     /// Operation to perform on the key
     pub op: GroveOp,
+}
+
+impl QualifiedGroveDbOp {
+    /// The key this op removes from the tree at `tree_path` whenever the batch
+    /// holding it applies: its key if it is at that path and
+    /// [`GroveOp::always_removes_its_key`], `None` otherwise.
+    pub(crate) fn key_always_removed_at(&self, tree_path: &[Vec<u8>]) -> Option<&[u8]> {
+        if self.op.always_removes_its_key() && self.path.eq_path_vec(tree_path) {
+            self.key.as_ref().map(KeyInfo::as_slice)
+        } else {
+            None
+        }
+    }
 }
 
 impl fmt::Debug for QualifiedGroveDbOp {
@@ -6404,40 +6438,12 @@ impl GroveDb {
                                 // those might not execute if their target is
                                 // non-empty, so we cannot assume they will
                                 // delete their key.
-                                let batch_deleted_keys =
-                                    ops.iter()
-                                        .filter_map(|other_op| match &other_op.op {
-                                            GroveOp::Delete
-                                            | GroveOp::DeleteDontCheckForBackwardsReferences => {
-                                                if other_op.path.to_path() == child_path {
-                                                    Some(other_op.key.as_ref()?.as_slice().to_vec())
-                                                } else {
-                                                    None
-                                                }
-                                            }
-                                            GroveOp::DeleteTree(
-                                                _,
-                                                SubelementsDeletionBehavior::Skip,
-                                            )
-                                            | GroveOp::DeleteTreeDontCheckForBackwardsReferences(
-                                                _,
-                                                SubelementsDeletionBehavior::Skip,
-                                            ) => None,
-                                            GroveOp::DeleteTree(..)
-                                            | GroveOp::DeleteTreeDontCheckForBackwardsReferences(
-                                                ..,
-                                            ) => {
-                                                if other_op.path.to_path() == child_path {
-                                                    Some(other_op.key.as_ref()?.as_slice().to_vec())
-                                                } else {
-                                                    None
-                                                }
-                                            }
-                                            _ => None,
-                                        })
-                                        .collect::<Vec<Vec<u8>>>();
                                 let batch_deleted_keys_refs: std::collections::BTreeSet<&[u8]> =
-                                    batch_deleted_keys.iter().map(|k| k.as_slice()).collect();
+                                    ops.iter()
+                                        .filter_map(|other_op| {
+                                            other_op.key_always_removed_at(&child_path)
+                                        })
+                                        .collect();
 
                                 let child_merk = cost_return_on_error!(
                                     &mut cost,
@@ -6561,35 +6567,10 @@ impl GroveDb {
                             // Exclude DeleteTree ops with Skip policy — those
                             // might not execute if their target is non-empty,
                             // so we cannot assume they will delete their key.
-                            let batch_deleted_keys = ops
+                            let batch_deleted_keys_refs: std::collections::BTreeSet<&[u8]> = ops
                                 .iter()
-                                .filter_map(|other_op| match &other_op.op {
-                                    GroveOp::Delete
-                                    | GroveOp::DeleteDontCheckForBackwardsReferences => {
-                                        if other_op.path.to_path() == child_path {
-                                            Some(other_op.key.as_ref()?.as_slice().to_vec())
-                                        } else {
-                                            None
-                                        }
-                                    }
-                                    GroveOp::DeleteTree(_, SubelementsDeletionBehavior::Skip)
-                                    | GroveOp::DeleteTreeDontCheckForBackwardsReferences(
-                                        _,
-                                        SubelementsDeletionBehavior::Skip,
-                                    ) => None,
-                                    GroveOp::DeleteTree(..)
-                                    | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..) => {
-                                        if other_op.path.to_path() == child_path {
-                                            Some(other_op.key.as_ref()?.as_slice().to_vec())
-                                        } else {
-                                            None
-                                        }
-                                    }
-                                    _ => None,
-                                })
-                                .collect::<Vec<Vec<u8>>>();
-                            let batch_deleted_keys_refs: std::collections::BTreeSet<&[u8]> =
-                                batch_deleted_keys.iter().map(|k| k.as_slice()).collect();
+                                .filter_map(|other_op| other_op.key_always_removed_at(&child_path))
+                                .collect();
 
                             let child_merk = cost_return_on_error!(
                                 &mut cost,
