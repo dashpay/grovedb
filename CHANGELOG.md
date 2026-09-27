@@ -38,6 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   but appends the chain's deletes to the caller's `Vec` once every level is
   built, and leaves the `Vec` as it was on an error, where it used to keep the
   deletes built below the failing level. (#995)
+- **BREAKING**: `StorageFlagsError` has a new variant,
+  `NonCanonicalStorageFlags`, for multi-epoch storage flag bytes that are
+  complete but not the encoding `serialize` emits (see the storage flag entry
+  under Fixed). The enum is not `#[non_exhaustive]`, so an exhaustive `match`
+  over it must handle the new variant to compile. (#977)
 - Single-path axis reads (`PathQuery::new_axis*`) over a path that does not
   exist — a missing segment, or an empty tree above one — now answer with the
   traversal's empty result (no entries and `skipped: Some(0)` for a ranked
@@ -105,6 +110,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   root to the parent row's value hash before reporting any row. Not
   version-gated: a client-side verifier change that honest proofs never
   trigger. (incomplete fix of #856 / #872)
+- Multi-epoch storage flag decoding (`StorageFlags::deserialize_multi_epoch`,
+  `deserialize_multi_epoch_owned` and everything routed through
+  `deserialize`) now accepts only the bytes `serialize` emits. The record loop
+  stopped with one or two bytes unread, so junk after valid flags (including a
+  non-base epoch with no byte count) decoded successfully; a repeated epoch
+  silently replaced the earlier record; and a non-base record on the base
+  epoch was accepted, where removal splitting then overwrote that record's
+  share with the base epoch's residue and reported fewer removed bytes than it
+  was asked to split. Records must now be complete, minimally varint-encoded
+  with a byte count that fits in a `u32`, and strictly ascending above the
+  base epoch; missing or partial bytes are reported as
+  `StorageFlagsWrongSize` and complete but non-canonical records as the new
+  `StorageFlagsError::NonCanonicalStorageFlags` (see Changed).
+  `split_storage_removed_bytes` now also adds the base epoch's residue to a
+  share already taken at the base epoch instead of replacing it, for flags
+  built in memory that never pass through the decoder, and `serialize`
+  debug-asserts that non-base epochs are above the base epoch. Not
+  version-gated: the combine functions only ever produce ascending records
+  above the base epoch, so no stored flags decode or split differently.
+  (closes #701)
 
 ## [6.0.1] - 2026-09-13
 

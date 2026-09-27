@@ -142,7 +142,7 @@ type OwnerId = [u8; 32];
 ```
 
 - **Base epoch**: the epoch the element was first stored in. It never changes when the element is updated.
-- **Epoch map** (multi-epoch forms only): for each later epoch in which the element grew, how many bytes were added then. The map must not be empty (`serialize` debug-asserts this). Once no later epoch has bytes left, the combine functions switch the flags back to the single-epoch form.
+- **Epoch map** (multi-epoch forms only): for each later epoch in which the element grew, how many bytes were added then. The map must not be empty, and every epoch in it must be above the base epoch (`serialize` debug-asserts both). Once no later epoch has bytes left, the combine functions switch the flags back to the single-epoch form.
 - **Owner id** (owned forms only): the identity charged for, or refunded, the storage.
 
 ### Serialization
@@ -165,9 +165,10 @@ type OwnerId = [u8; 32];
 `deserialize(bytes)` (also `from_slice`, `from_element_flags_ref`) returns:
 - `Ok(None)` for empty bytes, which means the element has no storage flags.
 - `Err(DeserializeUnknownStorageFlagsType)` for a type byte above 3.
-- `Err(StorageFlagsWrongSize)` when a single-epoch form is not exactly 3 or 35 bytes, a multi-epoch form is shorter than 6 or 38 bytes, or a varint is truncated.
+- `Err(StorageFlagsWrongSize)` when a single-epoch form is not exactly 3 or 35 bytes, or a multi-epoch form is missing bytes: no owner id or base epoch, no records, or a record cut short (such as one or two stray bytes after the last record).
+- `Err(NonCanonicalStorageFlags)` for a multi-epoch form whose records are complete but not what `serialize()` writes: epochs that repeat, descend, or are not above the base epoch; a varint that is not minimally encoded; or a byte count that does not fit in a `u32`.
 
-The decoder does not yet reject every non-canonical multi-epoch encoding, so only store bytes that `serialize()` produced.
+So a multi-epoch form decodes only if it is exactly what `serialize()` writes for a valid epoch map, and decoding and re-serializing gives back the same bytes.
 
 ### Combining Flags on Update
 When an element is overwritten, the old flags (`self`) are combined with the flags the caller wrote for the new value (`rhs`):
@@ -202,7 +203,7 @@ pub fn split_storage_removed_bytes(&self, removed_key_bytes: u32, removed_value_
 ```
 This works out which epochs, and which owner, a removal is attributed to. Each non-zero part is returned as `SectionedStorageRemoval`, keyed by the owner id (or `[0; 32]` if unowned) and then by epoch. A zero part is `NoStorageRemoval`.
 - **Key bytes** are always taken from the base epoch. The key only goes away when the element is deleted.
-- **Value bytes** are taken LIFO. The newest non-base epoch goes first, and each non-base epoch gives up at most `bytes_added - MINIMUM_NON_BASE_FLAGS_SIZE`. Whatever is still owed after all of them comes from the base epoch. Single-epoch flags take everything from the base epoch.
+- **Value bytes** are taken LIFO. The newest non-base epoch goes first, and each non-base epoch gives up at most `bytes_added - MINIMUM_NON_BASE_FLAGS_SIZE`. Whatever is still owed after all of them comes from the base epoch, added to anything already attributed there. Single-epoch flags take everything from the base epoch.
 
 ### GroveDB Callback Helpers
 These work on raw `ElementFlags` and match the callback signatures GroveDB expects (after mapping the error type):

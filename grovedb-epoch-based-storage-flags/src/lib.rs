@@ -448,10 +448,19 @@ impl StorageFlags {
 
     fn maybe_append_to_vec_epoch_map(&self, buffer: &mut Vec<u8>) {
         match self {
-            MultiEpoch(_, epoch_map) | MultiEpochOwned(_, epoch_map, _) => {
+            MultiEpoch(base_epoch, epoch_map) | MultiEpochOwned(base_epoch, epoch_map, _) => {
                 debug_assert!(
                     !epoch_map.is_empty(),
                     "epoch map should not be empty for MultiEpoch/MultiEpochOwned"
+                );
+                // the map is ordered, so checking its first epoch covers all of them
+                debug_assert!(
+                    epoch_map
+                        .keys()
+                        .next()
+                        .is_none_or(|first_epoch| first_epoch > base_epoch),
+                    "epoch map epochs should be above the base epoch for \
+                     MultiEpoch/MultiEpochOwned"
                 );
                 epoch_map.iter().for_each(|(epoch_index, bytes_added)| {
                     buffer.extend(epoch_index.to_be_bytes());
@@ -543,40 +552,92 @@ impl StorageFlags {
     }
 
     /// Deserialize multi epoch storage flags from bytes
+    ///
+    /// Only canonical bytes are accepted: at least one non-base epoch record,
+    /// every record complete, each byte count a minimal varint that fits in a
+    /// `u32`, and the epoch indexes strictly ascending and above the base
+    /// epoch. Missing or incomplete bytes are a `StorageFlagsWrongSize` error;
+    /// complete but non-canonical records are a `NonCanonicalStorageFlags`
+    /// error.
     pub fn deserialize_multi_epoch(data: &[u8]) -> Result<Self, StorageFlagsError> {
-        let len = data.len();
-        if len < 6 {
-            Err(StorageFlagsError::StorageFlagsWrongSize(
-                "multi epoch must be at least 6 bytes total".to_string(),
-            ))
-        } else {
-            let base_epoch = u16::from_be_bytes(data[1..3].try_into().map_err(|_| {
-                StorageFlagsError::StorageFlagsWrongSize(
-                    "multi epoch must have enough bytes for the base epoch".to_string(),
-                )
-            })?);
-            let mut offset = 3;
-            let mut bytes_per_epoch: BTreeMap<u16, u32> = BTreeMap::default();
-            while offset + 2 < len {
-                // 2 for epoch size
-                let epoch_index =
-                    u16::from_be_bytes(data[offset..offset + 2].try_into().map_err(|_| {
-                        StorageFlagsError::StorageFlagsWrongSize(
-                            "multi epoch must have enough bytes epoch indexes".to_string(),
-                        )
-                    })?);
-                offset += 2;
-                let (bytes_at_epoch, bytes_used) = u32::decode_var(&data[offset..]).ok_or(
+        let (base_epoch, bytes_per_epoch) =
+            Self::deserialize_base_epoch_and_epoch_map(data.get(1..).unwrap_or_default())?;
+        Ok(MultiEpoch(base_epoch, bytes_per_epoch))
+    }
+
+    /// Deserialize the base epoch and the non-base epoch records of multi
+    /// epoch storage flags
+    ///
+    /// `data` starts at the base epoch. Only the encoding that `serialize`
+    /// emits for flags whose non-base epochs are above the base epoch is
+    /// accepted: at least one record, every record complete, each byte count a
+    /// minimal varint that fits in a `u32`, and the epoch indexes strictly
+    /// ascending and above the base epoch. Anything else would be read into a
+    /// map that silently drops or overwrites part of what the bytes said.
+    fn deserialize_base_epoch_and_epoch_map(
+        data: &[u8],
+    ) -> Result<(BaseEpoch, BTreeMap<EpochIndex, BytesAddedInEpoch>), StorageFlagsError> {
+        let (base_epoch, data) = data.split_first_chunk::<2>().ok_or_else(|| {
+            StorageFlagsError::StorageFlagsWrongSize(
+                "multi epoch must have enough bytes for the base epoch".to_string(),
+            )
+        })?;
+        let base_epoch = u16::from_be_bytes(*base_epoch);
+        let mut bytes_per_epoch = BTreeMap::new();
+        let mut previous_epoch = base_epoch;
+        let mut offset = 0;
+        while offset < data.len() {
+            // 2 for epoch size
+            let epoch_index = data
+                .get(offset..offset + 2)
+                .and_then(|bytes| bytes.try_into().ok())
+                .map(u16::from_be_bytes)
+                .ok_or_else(|| {
+                    StorageFlagsError::StorageFlagsWrongSize(
+                        "multi epoch must have enough bytes epoch indexes".to_string(),
+                    )
+                })?;
+            offset += 2;
+            // decoded as a u64 first so that a truncated varint and one that is
+            // complete but too large for a u32 are told apart
+            let (bytes_at_epoch, bytes_used) =
+                u64::decode_var(&data[offset..]).ok_or_else(|| {
                     StorageFlagsError::StorageFlagsWrongSize(
                         "multi epoch must have enough bytes for the amount of bytes used"
                             .to_string(),
-                    ),
-                )?;
-                offset += bytes_used;
-                bytes_per_epoch.insert(epoch_index, bytes_at_epoch);
+                    )
+                })?;
+            let bytes_at_epoch = BytesAddedInEpoch::try_from(bytes_at_epoch).map_err(|_| {
+                StorageFlagsError::NonCanonicalStorageFlags(format!(
+                    "multi epoch bytes used at epoch {} must fit in a u32",
+                    epoch_index
+                ))
+            })?;
+            if bytes_used != bytes_at_epoch.required_space() {
+                return Err(StorageFlagsError::NonCanonicalStorageFlags(format!(
+                    "multi epoch bytes used at epoch {} must be minimally encoded",
+                    epoch_index
+                )));
             }
-            Ok(MultiEpoch(base_epoch, bytes_per_epoch))
+            offset += bytes_used;
+            // the base epoch stands in for the previous one on the first record,
+            // so this also refuses a non-base record at or below the base epoch
+            if epoch_index <= previous_epoch {
+                return Err(StorageFlagsError::NonCanonicalStorageFlags(format!(
+                    "multi epoch non-base epoch {} must be above the base epoch and the non-base \
+                     epoch before it [{}]",
+                    epoch_index, previous_epoch
+                )));
+            }
+            previous_epoch = epoch_index;
+            bytes_per_epoch.insert(epoch_index, bytes_at_epoch);
         }
+        if bytes_per_epoch.is_empty() {
+            return Err(StorageFlagsError::StorageFlagsWrongSize(
+                "multi epoch must have at least one non-base epoch".to_string(),
+            ));
+        }
+        Ok((base_epoch, bytes_per_epoch))
     }
 
     /// Deserialize single epoch owned storage flags from bytes
@@ -601,48 +662,30 @@ impl StorageFlags {
     }
 
     /// Deserialize multi epoch owned storage flags from bytes
+    ///
+    /// The bytes after the owner id are held to the same canonical rules as
+    /// [`Self::deserialize_multi_epoch`], with the same errors.
     pub fn deserialize_multi_epoch_owned(data: &[u8]) -> Result<Self, StorageFlagsError> {
-        let len = data.len();
-        if len < 38 {
-            Err(StorageFlagsError::StorageFlagsWrongSize(
-                "multi epoch owned must be at least 38 bytes total".to_string(),
-            ))
-        } else {
-            let owner_id: OwnerId = data[1..33].try_into().map_err(|_| {
+        let (owner_id, data): (OwnerId, _) = data
+            .get(1..33)
+            .and_then(|owner_id| owner_id.try_into().ok())
+            .map(|owner_id| (owner_id, &data[33..]))
+            .ok_or_else(|| {
                 StorageFlagsError::StorageFlagsWrongSize(
-                    "multi epoch owned must be 38 bytes total for owner id".to_string(),
+                    "multi epoch owned must have enough bytes for the owner id".to_string(),
                 )
             })?;
-            let base_epoch = u16::from_be_bytes(data[33..35].try_into().map_err(|_| {
-                StorageFlagsError::StorageFlagsWrongSize(
-                    "multi epoch must have enough bytes for the base epoch".to_string(),
-                )
-            })?);
-            let mut offset = 35;
-            let mut bytes_per_epoch: BTreeMap<u16, u32> = BTreeMap::default();
-            while offset + 2 < len {
-                // 2 for epoch size
-                let epoch_index =
-                    u16::from_be_bytes(data[offset..offset + 2].try_into().map_err(|_| {
-                        StorageFlagsError::StorageFlagsWrongSize(
-                            "multi epoch must have enough bytes epoch indexes".to_string(),
-                        )
-                    })?);
-                offset += 2;
-                let (bytes_at_epoch, bytes_used) = u32::decode_var(&data[offset..]).ok_or(
-                    StorageFlagsError::StorageFlagsWrongSize(
-                        "multi epoch must have enough bytes for the amount of bytes used"
-                            .to_string(),
-                    ),
-                )?;
-                offset += bytes_used;
-                bytes_per_epoch.insert(epoch_index, bytes_at_epoch);
-            }
-            Ok(MultiEpochOwned(base_epoch, bytes_per_epoch, owner_id))
-        }
+        let (base_epoch, bytes_per_epoch) = Self::deserialize_base_epoch_and_epoch_map(data)?;
+        Ok(MultiEpochOwned(base_epoch, bytes_per_epoch, owner_id))
     }
 
     /// Deserialize storage flags from bytes
+    ///
+    /// Empty bytes are no flags. Multi epoch flags must be canonical, as
+    /// described on [`Self::deserialize_multi_epoch`]: bytes that decoded
+    /// before (trailing bytes, repeated or descending epochs, a non-base epoch
+    /// at or below the base epoch, overlong varints) are refused with
+    /// `StorageFlagsWrongSize` or `NonCanonicalStorageFlags`.
     pub fn deserialize(data: &[u8]) -> Result<Option<Self>, StorageFlagsError> {
         let first_byte = data.first();
         match first_byte {
@@ -792,8 +835,15 @@ impl StorageFlags {
             }
 
             if bytes_left > 0 {
-                // If there are still bytes left, take them from the base epoch
-                sectioned_storage_removal.insert(*base_epoch, bytes_left);
+                // If there are still bytes left, take them from the base epoch.
+                // Add to rather than replace any share already taken at the
+                // base epoch, so a non-base entry there is not lost; the total
+                // never exceeds `removed_bytes`, so this cannot overflow.
+                let base_epoch_bytes = sectioned_storage_removal
+                    .get(*base_epoch)
+                    .copied()
+                    .unwrap_or_default();
+                sectioned_storage_removal.insert(*base_epoch, base_epoch_bytes + bytes_left);
             }
 
             let mut sectioned_storage_removal_by_identifier: StorageRemovalPerEpochByIdentifier =
@@ -1836,6 +1886,253 @@ mod storage_flags_additional_tests {
         let err =
             StorageFlags::deserialize_multi_epoch_owned(&bytes).expect_err("expected varint error");
         assert!(matches!(err, StorageFlagsError::StorageFlagsWrongSize(_)));
+    }
+
+    /// Builds multi epoch flag bytes record by record, so a test can write
+    /// encodings `serialize` never emits. The owned form is used when an owner
+    /// id is given.
+    fn multi_epoch_bytes(
+        owner_id: Option<[u8; 32]>,
+        base_epoch: u16,
+        records: &[(u16, &[u8])],
+    ) -> Vec<u8> {
+        let mut bytes = match owner_id {
+            None => vec![1],
+            Some(owner_id) => {
+                let mut bytes = vec![3];
+                bytes.extend(owner_id);
+                bytes
+            }
+        };
+        bytes.extend(base_epoch.to_be_bytes());
+        for (epoch_index, encoded_bytes_added) in records {
+            bytes.extend(epoch_index.to_be_bytes());
+            bytes.extend(*encoded_bytes_added);
+        }
+        bytes
+    }
+
+    /// Both multi epoch forms, so each rejection is pinned on the borrowed and
+    /// the owned decoder.
+    fn both_multi_epoch_forms() -> [Option<[u8; 32]>; 2] {
+        [None, Some(owner(1))]
+    }
+
+    #[test]
+    fn deserialize_multi_epoch_rejects_trailing_bytes() {
+        for owner_id in both_multi_epoch_forms() {
+            let canonical = multi_epoch_bytes(owner_id, 1, &[(2, &[10])]);
+            StorageFlags::deserialize(&canonical).expect("canonical flags must decode");
+
+            // one junk byte: not even a whole epoch index
+            let mut one_trailing = canonical.clone();
+            one_trailing.push(0xff);
+            assert!(matches!(
+                StorageFlags::deserialize(&one_trailing).expect_err("expected trailing byte error"),
+                StorageFlagsError::StorageFlagsWrongSize(_)
+            ));
+
+            // two junk bytes: an epoch index with no byte count after it
+            let mut two_trailing = canonical.clone();
+            two_trailing.extend([0, 9]);
+            assert!(matches!(
+                StorageFlags::deserialize(&two_trailing)
+                    .expect_err("expected incomplete record error"),
+                StorageFlagsError::StorageFlagsWrongSize(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn deserialize_multi_epoch_rejects_duplicate_epochs() {
+        for owner_id in both_multi_epoch_forms() {
+            let bytes = multi_epoch_bytes(owner_id, 1, &[(2, &[10]), (2, &[20])]);
+            assert!(matches!(
+                StorageFlags::deserialize(&bytes).expect_err("expected duplicate epoch error"),
+                StorageFlagsError::NonCanonicalStorageFlags(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn deserialize_multi_epoch_rejects_descending_epochs() {
+        for owner_id in both_multi_epoch_forms() {
+            let bytes = multi_epoch_bytes(owner_id, 1, &[(5, &[10]), (3, &[20])]);
+            assert!(matches!(
+                StorageFlags::deserialize(&bytes).expect_err("expected epoch order error"),
+                StorageFlagsError::NonCanonicalStorageFlags(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn deserialize_multi_epoch_rejects_non_base_epoch_at_or_below_base() {
+        for owner_id in both_multi_epoch_forms() {
+            // a non-base record on the base epoch: removal splitting would
+            // overwrite its allocation with the base epoch's residue
+            let colliding = multi_epoch_bytes(owner_id, 4, &[(4, &[10])]);
+            assert!(matches!(
+                StorageFlags::deserialize(&colliding).expect_err("expected base collision error"),
+                StorageFlagsError::NonCanonicalStorageFlags(_)
+            ));
+
+            let below_base = multi_epoch_bytes(owner_id, 4, &[(3, &[10])]);
+            assert!(matches!(
+                StorageFlags::deserialize(&below_base).expect_err("expected below base error"),
+                StorageFlagsError::NonCanonicalStorageFlags(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn deserialize_multi_epoch_rejects_overlong_varint() {
+        for owner_id in both_multi_epoch_forms() {
+            // 10 written on two bytes; `serialize` writes it on one
+            let bytes = multi_epoch_bytes(owner_id, 1, &[(2, &[0x8a, 0x00])]);
+            assert!(matches!(
+                StorageFlags::deserialize(&bytes).expect_err("expected overlong varint error"),
+                StorageFlagsError::NonCanonicalStorageFlags(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn deserialize_multi_epoch_rejects_byte_count_beyond_u32() {
+        for owner_id in both_multi_epoch_forms() {
+            // a complete, minimal varint for 2^35 - 1
+            let bytes = multi_epoch_bytes(owner_id, 1, &[(2, &[0xff, 0xff, 0xff, 0xff, 0x7f])]);
+            assert!(matches!(
+                StorageFlags::deserialize(&bytes).expect_err("expected out of range error"),
+                StorageFlagsError::NonCanonicalStorageFlags(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn deserialize_multi_epoch_rejects_missing_non_base_epochs() {
+        for owner_id in both_multi_epoch_forms() {
+            let header_only = multi_epoch_bytes(owner_id, 1, &[]);
+            assert!(matches!(
+                StorageFlags::deserialize(&header_only).expect_err("expected empty map error"),
+                StorageFlagsError::StorageFlagsWrongSize(_)
+            ));
+            let truncated_header = &header_only[..header_only.len() - 1];
+            assert!(matches!(
+                StorageFlags::deserialize(truncated_header).expect_err("expected header error"),
+                StorageFlagsError::StorageFlagsWrongSize(_)
+            ));
+        }
+        for decode in [
+            StorageFlags::deserialize_multi_epoch,
+            StorageFlags::deserialize_multi_epoch_owned,
+        ] {
+            assert!(matches!(
+                decode(&[]).expect_err("expected empty input error"),
+                StorageFlagsError::StorageFlagsWrongSize(_)
+            ));
+        }
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "epoch map epochs should be above the base epoch")]
+    fn serialize_debug_asserts_for_epoch_at_or_below_base() {
+        let flags = StorageFlags::MultiEpochOwned(5, BTreeMap::from([(3, 10)]), owner(1));
+        let _ = flags.serialize();
+    }
+
+    #[test]
+    fn split_storage_removed_bytes_keeps_a_base_epoch_entry() {
+        // flags built in memory skip the decoder, so the split itself must not
+        // replace a non-base entry sitting on the base epoch
+        let flags = StorageFlags::MultiEpoch(4, BTreeMap::from([(4, 10)]));
+        let (_, value_removal) = flags.split_storage_removed_bytes(0, 20);
+        let StorageRemovedBytes::SectionedStorageRemoval(removal) = value_removal else {
+            panic!("expected sectioned removal");
+        };
+        assert_eq!(removal.get(&[0; 32]).and_then(|map| map.get(4)), Some(&20));
+    }
+
+    #[test]
+    fn split_removal_bytes_refuses_base_epoch_collision() {
+        let mut flags = multi_epoch_bytes(Some(owner(1)), 4, &[(4, &[10])]);
+        let error = StorageFlags::split_removal_bytes(&mut flags, 0, 20)
+            .expect_err("expected colliding flags to be refused before accounting");
+        assert!(matches!(
+            error,
+            StorageFlagsError::NonCanonicalStorageFlags(_)
+        ));
+        assert!(error
+            .to_string()
+            .contains("drive did not understand flags of item being updated"));
+    }
+
+    #[test]
+    fn deserialize_multi_epoch_accepts_boundary_values() {
+        let epochs = BTreeMap::from([
+            (1, 0),
+            (2, 127),
+            (3, 128),
+            (300, 16_384),
+            (u16::MAX, u32::MAX),
+        ]);
+        let flags = [
+            StorageFlags::MultiEpoch(0, epochs.clone()),
+            StorageFlags::MultiEpochOwned(0, epochs, owner(7)),
+        ];
+
+        for flag in flags {
+            let serialized = flag.serialize();
+            let deserialized = StorageFlags::deserialize(&serialized)
+                .expect("canonical flags must decode")
+                .expect("should contain flags");
+            assert_eq!(flag, deserialized);
+            assert_eq!(deserialized.serialize(), serialized);
+        }
+    }
+
+    #[test]
+    fn combined_flags_always_decode() {
+        // Stored flags only ever come out of the combine functions, so whatever
+        // they produce has to survive the canonical decoder.
+        let mut flags = StorageFlags::SingleEpochOwned(3, owner(2));
+        for (epoch, added_bytes) in [(3, 50), (4, 1), (4, 200), (9, 70_000), (u16::MAX, 5)] {
+            flags = flags
+                .combine_added_bytes(
+                    StorageFlags::SingleEpochOwned(epoch, owner(2)),
+                    added_bytes,
+                    MergingOwnersStrategy::RaiseIssue,
+                )
+                .expect("expected combine to succeed");
+            let deserialized = StorageFlags::deserialize(&flags.serialize())
+                .expect("combined flags must decode")
+                .expect("should contain flags");
+            assert_eq!(flags, deserialized);
+        }
+        assert_eq!(
+            flags.epoch_index_map(),
+            Some(&BTreeMap::from([(4, 201), (9, 70_000), (u16::MAX, 5)]))
+        );
+
+        let removal = StorageRemovedBytes::SectionedStorageRemoval(BTreeMap::from([(
+            owner(2),
+            IntMap::from_iter([(9u16, 69_998u32)]),
+        )]));
+        let flags = flags
+            .combine_removed_bytes(
+                StorageFlags::SingleEpochOwned(u16::MAX, owner(2)),
+                &removal,
+                MergingOwnersStrategy::RaiseIssue,
+            )
+            .expect("expected combine to succeed");
+        let deserialized = StorageFlags::deserialize(&flags.serialize())
+            .expect("combined flags must decode")
+            .expect("should contain flags");
+        assert_eq!(flags, deserialized);
+        assert_eq!(
+            flags.epoch_index_map(),
+            Some(&BTreeMap::from([(4, 201), (u16::MAX, 5)]))
+        );
     }
 
     #[test]
