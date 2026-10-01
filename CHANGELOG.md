@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- From `GROVE_V4` a `ProvableCountProvableSumIndexedTree` primary accepts a
+  bare `SumItem` child, on the direct and the batch path, as it accepts an
+  `ItemWithSumItem`: the tree aggregates it as a count of one and its sum,
+  which is every input its count, sum and average axes read. A tree of
+  per-group counters can then rank its groups by how many counters they
+  hold, their total and their average without wrapping each counter in an
+  empty item. V1..V3 keep refusing it, through the new
+  `insert.validate_indexed_child_for_variant` slot (**BREAKING** for code
+  building `GroveDBOperationsInsertVersions` by hand); a wrapped `SumItem`
+  stays refused at every version.
+
 ### Added
 - `StorageContext::raw_iter_aux`, a raw iterator over the aux column family
   scoped to the context's subtree prefix like `raw_iter`, and

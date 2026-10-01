@@ -64,7 +64,7 @@ use grovedb_storage::{
     rocksdb_storage::{PrefixedRocksDbTransactionContext, RocksDbStorage},
     RawIterator, Storage, StorageBatch, StorageContext,
 };
-use grovedb_version::version::GroveVersion;
+use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
 use crate::{
     query_result_type::IndexedAxisEntry, util::TxRef, Element, Error, GroveDb, Transaction,
@@ -183,7 +183,11 @@ pub(crate) struct IndexedEntryState {
 ///   `sum_value_or_default` has no narrowing conversion, so accepting one
 ///   would silently mirror zero into authenticated state.
 /// - **PCPSIT** can index count, sum and avg, and avg needs both, so children
-///   must contribute count AND sum.
+///   must contribute count AND sum. From `GROVE_V4`
+///   (`insert.validate_indexed_child_for_variant: 1`) a bare `SumItem`
+///   qualifies: it counts one and adds its sum, which is all the count, sum
+///   and average axes read (`count_sum_value_or_default`). Earlier versions
+///   refuse it as not carrying a count explicitly.
 /// - **PCIT** adds nothing beyond the generic rule — every element carries a
 ///   count contribution.
 ///
@@ -193,6 +197,7 @@ pub(crate) struct IndexedEntryState {
 pub(crate) fn validate_indexed_child_for_variant(
     item: &Element,
     primary_tree_type: TreeType,
+    grove_version: &GroveVersion,
 ) -> Result<(), Error> {
     match primary_tree_type {
         TreeType::ProvableSumIndexedTree => {
@@ -211,11 +216,32 @@ pub(crate) fn validate_indexed_child_for_variant(
             Ok(())
         }
         TreeType::ProvableCountProvableSumIndexedTree => {
-            if !item.is_count_and_sum_bearing_child() {
+            let sum_item_counts_once = match grove_version
+                .grovedb_versions
+                .operations
+                .insert
+                .validate_indexed_child_for_variant
+            {
+                0 => false,
+                1 => true,
+                received => {
+                    return Err(GroveVersionError::UnknownVersionMismatch {
+                        method: "validate_indexed_child_for_variant".to_string(),
+                        known_versions: vec![0, 1],
+                        received,
+                    }
+                    .into())
+                }
+            };
+            // Unwrapped only: a wrapper would suppress the count or the sum
+            // the item exists to give.
+            let bare_sum_item = sum_item_counts_once && matches!(item, Element::SumItem(..));
+            if !bare_sum_item && !item.is_count_and_sum_bearing_child() {
                 return Err(Error::InvalidInput(
                     "ProvableCountProvableSumIndexedTree only accepts children that contribute \
                      both count and sum (ItemWithSumItem, ReferenceWithSumItem, CountSumTree, \
-                     ProvableCountSumTree, ProvableCountProvableSumTree, or a nested PCPSIT)",
+                     ProvableCountSumTree, ProvableCountProvableSumTree, a nested PCPSIT, or \
+                     from GROVE_V4 a SumItem)",
                 ));
             }
             Ok(())
@@ -554,7 +580,10 @@ impl GroveDb {
         // Variant rule first: "this index does not accept BigSumTree children"
         // tells the caller more than "the child must be empty" when both
         // apply, and the batch path enforces the same rule.
-        cost_return_on_error_no_add!(cost, validate_indexed_child_for_variant(&item, expect));
+        cost_return_on_error_no_add!(
+            cost,
+            validate_indexed_child_for_variant(&item, expect, grove_version)
+        );
         // Contract of the dedicated APIs specifically, not of indexed trees:
         // these entry points create child subtrees empty, so a claimed child
         // root key or populated secondary would describe state they do not

@@ -607,6 +607,15 @@ pub struct GroveDBOperationsInsertVersions {
     pub insert_if_not_exists: FeatureVersion,
     pub insert_if_not_exists_return_existing_element: FeatureVersion,
     pub insert_if_changed_value: FeatureVersion,
+    /// The children an indexed-tree primary accepts beyond what its tree
+    /// type admits, on the direct and the batch path alike.
+    ///
+    /// - `0` (`GROVE_V1`..`GROVE_V3`): a `ProvableCountProvableSumIndexedTree`
+    ///   primary accepts only children that carry a count and a sum
+    ///   explicitly, and refuses a bare `SumItem`.
+    /// - `1` (`GROVE_V4`+): it also accepts a bare `SumItem`, which it
+    ///   aggregates as a count of one and its sum.
+    pub validate_indexed_child_for_variant: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
