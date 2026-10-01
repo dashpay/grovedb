@@ -247,6 +247,13 @@
 //!   the epoch the switch happened in). Gated because the work — and so the
 //!   fee — moves, and because V4 writes keys V1..V3 never read.
 //!
+//! - `insert.validate_indexed_child_for_variant: 1` — a
+//!   `ProvableCountProvableSumIndexedTree` primary also accepts a bare
+//!   `SumItem` child, on the direct and the batch path. The tree aggregates
+//!   it as a count of one and its sum, which is every input its count, sum
+//!   and average axes read. V1..V3 keep refusing it as not carrying a count
+//!   explicitly.
+//!
 //! - `insert.add_element_on_transaction: 2` — a directly inserted
 //!   `Reference` / `ReferenceWithSumItem` (i) binds the value hash of its
 //!   terminal's STORED bytes, wrapper included for a `NonCounted`-wrapped
@@ -470,6 +477,9 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 insert_if_not_exists: 0,
                 insert_if_not_exists_return_existing_element: 0,
                 insert_if_changed_value: 0,
+                // v1: a ProvableCountProvableSumIndexedTree primary also accepts a
+                // bare SumItem (see the module docs).
+                validate_indexed_child_for_variant: 1,
             },
             delete: GroveDBOperationsDeleteVersions {
                 delete: 0,
