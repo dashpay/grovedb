@@ -69,9 +69,37 @@ impl GroveOp {
         // it declares `Check`.
         backwards_references: BackwardsReferences,
         propagate: bool,
+        // The batch's `settle_owner_changes` option: a write that may settle
+        // an owner change is charged as the insertion it then records too.
+        settle_owner_changes: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let in_tree_type = layer_element_estimates.tree_type;
+        // A referrer entry of the typical shape: an inverted path built from
+        // a qualified origin like this op's own (its path segments plus its
+        // key; an absolute inversion serializes them all), the cascade flag,
+        // and framing.
+        let referrer_entry_bound = path
+            .0
+            .iter()
+            .map(|segment| 4 + segment.max_length() as u32)
+            .sum::<u32>()
+            .saturating_add(4 + key.max_length() as u32)
+            .saturating_add(16);
+        let settling = |base: CostResult<(), Error>, element: &Element| {
+            if settle_owner_changes {
+                super::with_settled_owner_change(
+                    base,
+                    key,
+                    element,
+                    in_tree_type.inner_node_type(),
+                    referrer_entry_bound,
+                    grove_version,
+                )
+            } else {
+                base
+            }
+        };
         let propagate_if_input = || {
             if propagate {
                 Some(layer_element_estimates)
@@ -93,20 +121,10 @@ impl GroveOp {
             }
             match element {
                 Some(Element::BidirectionalReference(..)) => {
-                    // The registration entry appended to the target: an
-                    // inverted path built from the referrer's qualified
-                    // origin (this op's path segments plus its key — an
-                    // absolute inversion serializes them all), the cascade
-                    // flag, and framing.
-                    let origin_bytes: u32 = path
-                        .0
-                        .iter()
-                        .map(|segment| 4 + segment.max_length() as u32)
-                        .sum::<u32>()
-                        .saturating_add(4 + key.max_length() as u32);
-                    let entry_bound = origin_bytes.saturating_add(16);
+                    // The registration entry appended to the target, whose
+                    // referrer is this op itself.
                     Some(super::BackwardReferencesFanOut::average_reference(
-                        entry_bound,
+                        referrer_entry_bound,
                     ))
                 }
                 // A backward-references ITEM write carries its own referrer
@@ -225,8 +243,20 @@ impl GroveOp {
                 grove_version,
             ),
             GroveOp::InsertOrReplace { element }
-            | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
-            | GroveOp::InsertWithKnownToNotAlreadyExist { element } => with_fan_out(
+            | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element } => with_fan_out(
+                settling(
+                    GroveDb::average_case_merk_insert_element(
+                        key,
+                        element,
+                        in_tree_type,
+                        propagate_if_input(),
+                        grove_version,
+                    ),
+                    element,
+                ),
+                backward_references_fan_out(Some(element)),
+            ),
+            GroveOp::InsertWithKnownToNotAlreadyExist { element } => with_fan_out(
                 GroveDb::average_case_merk_insert_element(
                     key,
                     element,
@@ -310,22 +340,32 @@ impl GroveOp {
                 } else {
                     inner
                 };
-                GroveDb::average_case_merk_replace_element(
+                let replace_cost = GroveDb::average_case_merk_replace_element(
                     key,
                     &element,
                     in_tree_type,
                     propagate_if_input(),
                     grove_version,
-                )
+                );
+                // An untrusted refresh writes the stored flags back, so only
+                // a trusted one can change the owner.
+                if mode.is_trusted() {
+                    settling(replace_cost, &element)
+                } else {
+                    replace_cost
+                }
             }
             GroveOp::Replace { element }
             | GroveOp::ReplaceDontCheckForBackwardsReferences { element } => with_fan_out(
-                GroveDb::average_case_merk_replace_element(
-                    key,
+                settling(
+                    GroveDb::average_case_merk_replace_element(
+                        key,
+                        element,
+                        in_tree_type,
+                        propagate_if_input(),
+                        grove_version,
+                    ),
                     element,
-                    in_tree_type,
-                    propagate_if_input(),
-                    grove_version,
                 ),
                 backward_references_fan_out(Some(element)),
             ),
@@ -337,13 +377,16 @@ impl GroveOp {
                 element,
                 change_in_bytes,
             } => with_fan_out(
-                GroveDb::average_case_merk_patch_element(
-                    key,
+                settling(
+                    GroveDb::average_case_merk_patch_element(
+                        key,
+                        element,
+                        *change_in_bytes,
+                        in_tree_type,
+                        propagate_if_input(),
+                        grove_version,
+                    ),
                     element,
-                    *change_in_bytes,
-                    in_tree_type,
-                    propagate_if_input(),
-                    grove_version,
                 ),
                 backward_references_fan_out(Some(element)),
             ),
@@ -979,7 +1022,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         path: &KeyInfoPath,
         ops_at_path_by_key: BTreeMap<KeyInfo, GroveOp>,
         _ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, GroveOp>,
-        _batch_apply_options: &BatchApplyOptions,
+        batch_apply_options: &BatchApplyOptions,
         _flags_update: &mut G,
         _split_removal_bytes: &mut SR,
         grove_version: &GroveVersion,
@@ -1151,6 +1194,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                     append_tree_chunk_power,
                     op.backwards_references(),
                     false,
+                    batch_apply_options.settle_owner_changes,
                     grove_version
                 )
             );
@@ -2265,6 +2309,7 @@ mod tests {
                 None,
                 BackwardsReferences::DontCheck,
                 false,
+                false,
                 grove_version
             )
             .cost_as_result()
@@ -2276,6 +2321,7 @@ mod tests {
                 &layer_info,
                 Some(10),
                 BackwardsReferences::DontCheck,
+                false,
                 false,
                 grove_version,
             )
@@ -2332,6 +2378,7 @@ mod tests {
                 None,
                 BackwardsReferences::DontCheck,
                 false,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -2381,6 +2428,7 @@ mod tests {
                 None,
                 BackwardsReferences::DontCheck,
                 false,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -2425,6 +2473,7 @@ mod tests {
                 Some(4),
                 BackwardsReferences::DontCheck,
                 false,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -2461,6 +2510,7 @@ mod tests {
                 Some(4),
                 BackwardsReferences::DontCheck,
                 false,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -2475,6 +2525,7 @@ mod tests {
                 &layer_info,
                 None,
                 BackwardsReferences::DontCheck,
+                false,
                 false,
                 grove_version
             )
@@ -2495,6 +2546,7 @@ mod tests {
                 Some(2),
                 BackwardsReferences::DontCheck,
                 false,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -2506,6 +2558,7 @@ mod tests {
                 &layer_info,
                 Some(10),
                 BackwardsReferences::DontCheck,
+                false,
                 false,
                 grove_version,
             )
@@ -2562,6 +2615,7 @@ mod tests {
                 None,
                 BackwardsReferences::DontCheck,
                 false,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -2614,6 +2668,7 @@ mod tests {
                 None,
                 BackwardsReferences::DontCheck,
                 false,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -2656,6 +2711,7 @@ mod tests {
                 &layer_info,
                 None,
                 BackwardsReferences::DontCheck,
+                false,
                 false,
                 grove_version,
             )
@@ -2713,6 +2769,7 @@ mod tests {
                 &layer_info,
                 None,
                 BackwardsReferences::DontCheck,
+                false,
                 false,
                 grove_version,
             )
@@ -2776,6 +2833,7 @@ mod tests {
                 None,
                 BackwardsReferences::DontCheck,
                 false,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -2823,6 +2881,7 @@ mod tests {
                 None,
                 BackwardsReferences::DontCheck,
                 false,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -2843,6 +2902,7 @@ mod tests {
                 None,
                 BackwardsReferences::DontCheck,
                 true,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -3506,6 +3566,7 @@ mod tests {
                 None,
                 BackwardsReferences::DontCheck,
                 false,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -3519,6 +3580,7 @@ mod tests {
                 &layer_info,
                 Some(4),
                 BackwardsReferences::DontCheck,
+                false,
                 false,
                 grove_version,
             )

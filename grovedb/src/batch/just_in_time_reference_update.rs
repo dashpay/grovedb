@@ -4,11 +4,13 @@ use grovedb_costs::{
     cost_return_on_error_into_no_add, cost_return_on_error_no_add,
     storage_cost::{
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
+        transition::ElementFlagsUpdate,
         StorageCost,
     },
     CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::{
+    element::costs::ElementCostExtensions,
     tree::{kv::KV, value_hash, TreeNode},
     tree_type::TreeType,
     CryptoHash, Merk,
@@ -56,6 +58,17 @@ where
         Ok(val_hash).wrap_with_cost(cost)
     }
 
+    /// The value hash of the bytes a pending write of `new_element` over the
+    /// stored `old_element` finally stores, after the apply has run the
+    /// caller's flags update on it, so that a reference written in the same
+    /// batch commits to them.
+    ///
+    /// With `settle_owner_changes` a flags update may settle an owner change,
+    /// and the apply then stores the new element with the flags the callback
+    /// leaves it, whatever its size. A sum item is otherwise taken to keep
+    /// its stored flags without asking the flags update, so in that mode it
+    /// is asked first.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn process_old_element_flags<G, SR>(
         key: &[u8],
         serialized: &[u8],
@@ -63,12 +76,17 @@ where
         old_element: Element,
         old_serialized_element: &[u8],
         in_tree_type: TreeType,
+        settle_owner_changes: bool,
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
         grove_version: &GroveVersion,
     ) -> CostResult<CryptoHash, Error>
     where
-        G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+        G: FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> Result<ElementFlagsUpdate, Error>,
         SR: FnMut(
             &mut ElementFlags,
             u32,
@@ -76,9 +94,71 @@ where
         ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     {
         let mut cost = OperationCost::default();
+        let client_error = |e: Error| -> Error {
+            match e {
+                Error::JustInTimeElementFlagsClientError(_) => {
+                    MerkError::ClientCorruptionError(e.to_string()).into()
+                }
+                _ => MerkError::ClientCorruptionError("non client error".to_string()).into(),
+            }
+        };
         if old_element.is_sum_item() {
             return if new_element.is_sum_item() {
                 let maybe_old_flags = old_element.get_flags_owned();
+                if settle_owner_changes
+                    && maybe_old_flags.is_some()
+                    && new_element.get_flags().is_some()
+                {
+                    // Merk measures a sum item by its own specialized cost,
+                    // new flags included, against the stored one's.
+                    let node_type = in_tree_type.inner_node_type();
+                    let old_storage_cost = cost_return_on_error_no_add!(
+                        cost,
+                        Element::specialized_costs_for_key_value(
+                            key,
+                            old_serialized_element,
+                            node_type,
+                            grove_version,
+                        )
+                        .map_err(Error::MerkError)
+                    );
+                    let new_storage_cost = cost_return_on_error_no_add!(
+                        cost,
+                        Element::specialized_costs_for_key_value(
+                            key,
+                            serialized,
+                            node_type,
+                            grove_version,
+                        )
+                        .map_err(Error::MerkError)
+                    );
+                    let mut storage_costs =
+                        TreeNode::storage_cost_for_update(new_storage_cost, old_storage_cost);
+                    if let BasicStorageRemoval(removed_bytes) = storage_costs.removed_bytes {
+                        let mut old_flags = maybe_old_flags.clone().unwrap_or_default();
+                        let (_, value_removed_bytes) = cost_return_on_error_no_add!(
+                            cost,
+                            split_removal_bytes(&mut old_flags, 0, removed_bytes)
+                        );
+                        storage_costs.removed_bytes = value_removed_bytes;
+                    }
+                    let mut settled_element = new_element.clone();
+                    if let Some(new_flags) = settled_element.get_flags_mut().as_mut() {
+                        let update = cost_return_on_error_no_add!(
+                            cost,
+                            (flags_update)(&storage_costs, maybe_old_flags.clone(), new_flags)
+                                .map_err(client_error)
+                        );
+                        if update == ElementFlagsUpdate::SettleOwnerChange {
+                            let settled_bytes = cost_return_on_error_into_no_add!(
+                                cost,
+                                settled_element.serialize(grove_version)
+                            );
+                            let val_hash = value_hash(&settled_bytes).unwrap_add_cost(&mut cost);
+                            return Ok(val_hash).wrap_with_cost(cost);
+                        }
+                    }
+                }
                 if maybe_old_flags.is_some() {
                     let mut updated_new_element_with_old_flags = new_element.clone();
                     updated_new_element_with_old_flags.set_flags(maybe_old_flags.clone());
@@ -168,20 +248,12 @@ where
                         "element has no flags for just-in-time update",
                     ))
             );
-            let changed = cost_return_on_error_no_add!(
+            let update = cost_return_on_error_no_add!(
                 cost,
-                (flags_update)(&storage_costs, maybe_old_flags.clone(), new_flags).map_err(|e| {
-                    match e {
-                        Error::JustInTimeElementFlagsClientError(_) => {
-                            MerkError::ClientCorruptionError(e.to_string()).into()
-                        }
-                        _ => {
-                            MerkError::ClientCorruptionError("non client error".to_string()).into()
-                        }
-                    }
-                })
+                (flags_update)(&storage_costs, maybe_old_flags.clone(), new_flags)
+                    .map_err(client_error)
             );
-            if !changed {
+            if update == ElementFlagsUpdate::Unchanged {
                 // There are no storage flags, we can just hash new element
 
                 let val_hash = value_hash(&serialization_to_use).unwrap_add_cost(&mut cost);
@@ -192,6 +264,13 @@ where
                     cost,
                     new_element_cloned.serialize(grove_version)
                 );
+
+                if update == ElementFlagsUpdate::SettleOwnerChange {
+                    // The apply stores the new element with the flags the
+                    // callback left it, whatever its size.
+                    let val_hash = value_hash(&new_serialized_bytes).unwrap_add_cost(&mut cost);
+                    return Ok(val_hash).wrap_with_cost(cost);
+                }
 
                 new_storage_cost = KV::node_value_byte_cost_size(
                     key.len() as u32,

@@ -12,6 +12,7 @@ use grovedb_costs::{
     storage_cost::{
         key_value_cost::KeyValueStorageCost,
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
+        transition::ElementFlagsUpdate,
         StorageCost,
     },
     CostContext, CostResult, CostsExt, OperationCost,
@@ -221,7 +222,7 @@ where
             &StorageCost,
             &Vec<u8>,
             &mut Vec<u8>,
-        ) -> Result<(bool, Option<ValueDefinedCostType>), Error>,
+        ) -> Result<(ElementFlagsUpdate, Option<ValueDefinedCostType>), Error>,
         R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
         O: FnMut(&[u8], &[u8], OldValueDisposition),
     {
@@ -311,7 +312,7 @@ where
             &StorageCost,
             &Vec<u8>,
             &mut Vec<u8>,
-        ) -> Result<(bool, Option<ValueDefinedCostType>), Error>,
+        ) -> Result<(ElementFlagsUpdate, Option<ValueDefinedCostType>), Error>,
         R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
         O: FnMut(&[u8], &[u8], OldValueDisposition),
     {
@@ -498,7 +499,7 @@ where
             &|_, _| Ok(0),
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             &|_, _| Ok(None),
-            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _, _| Ok((ElementFlagsUpdate::Unchanged, None)),
             &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
                     BasicStorageRemoval(key_bytes_to_remove),
@@ -533,7 +534,7 @@ where
             &StorageCost,
             &Vec<u8>,
             &mut Vec<u8>,
-        ) -> Result<(bool, Option<ValueDefinedCostType>), Error>,
+        ) -> Result<(ElementFlagsUpdate, Option<ValueDefinedCostType>), Error>,
         R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
         O: FnMut(&[u8], &[u8], OldValueDisposition),
     {
@@ -925,7 +926,7 @@ where
             &StorageCost,
             &Vec<u8>,
             &mut Vec<u8>,
-        ) -> Result<(bool, Option<ValueDefinedCostType>), Error>,
+        ) -> Result<(ElementFlagsUpdate, Option<ValueDefinedCostType>), Error>,
         V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
         R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
         O: FnMut(&[u8], &[u8], OldValueDisposition),
@@ -1252,7 +1253,7 @@ mod test {
             &|_, _| Ok(0),
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             &|_, _| Ok(None),
-            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _, _| Ok((ElementFlagsUpdate::Unchanged, None)),
             &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
                     BasicStorageRemoval(key_bytes_to_remove),

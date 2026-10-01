@@ -58,6 +58,9 @@ impl GroveOp {
         // it declares `Check`.
         backwards_references: BackwardsReferences,
         propagate: bool,
+        // The batch's `settle_owner_changes` option: a write that may settle
+        // an owner change is charged as the insertion it then records too.
+        settle_owner_changes: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let propagate_if_input = || {
@@ -65,6 +68,20 @@ impl GroveOp {
                 Some(worst_case_layer_element_estimates)
             } else {
                 None
+            }
+        };
+        let settling = |base: CostResult<(), Error>, element: &Element| {
+            if settle_owner_changes {
+                super::with_settled_owner_change(
+                    base,
+                    key,
+                    element,
+                    super::WORST_CASE_SETTLED_NODE_TYPE,
+                    super::WORST_CASE_BACKWARD_REFERENCE_ENTRY_BOUND,
+                    grove_version,
+                )
+            } else {
+                base
             }
         };
         let fan_out_version = grove_version
@@ -207,8 +224,20 @@ impl GroveOp {
                 grove_version,
             ),
             GroveOp::InsertOrReplace { element }
-            | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
-            | GroveOp::InsertWithKnownToNotAlreadyExist { element } => with_fan_out(
+            | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element } => with_fan_out(
+                settling(
+                    GroveDb::worst_case_merk_insert_element(
+                        key,
+                        element,
+                        in_parent_tree_type,
+                        propagate_if_input(),
+                        grove_version,
+                    ),
+                    element,
+                ),
+                backward_references_fan_out(Some(element)),
+            ),
+            GroveOp::InsertWithKnownToNotAlreadyExist { element } => with_fan_out(
                 GroveDb::worst_case_merk_insert_element(
                     key,
                     element,
@@ -283,22 +312,32 @@ impl GroveOp {
                 } else {
                     inner
                 };
-                GroveDb::worst_case_merk_replace_element(
+                let replace_cost = GroveDb::worst_case_merk_replace_element(
                     key,
                     &element,
                     in_parent_tree_type,
                     propagate_if_input(),
                     grove_version,
-                )
+                );
+                // An untrusted refresh writes the stored flags back, so only
+                // a trusted one can change the owner.
+                if mode.is_trusted() {
+                    settling(replace_cost, &element)
+                } else {
+                    replace_cost
+                }
             }
             GroveOp::Replace { element }
             | GroveOp::ReplaceDontCheckForBackwardsReferences { element } => with_fan_out(
-                GroveDb::worst_case_merk_replace_element(
-                    key,
+                settling(
+                    GroveDb::worst_case_merk_replace_element(
+                        key,
+                        element,
+                        in_parent_tree_type,
+                        propagate_if_input(),
+                        grove_version,
+                    ),
                     element,
-                    in_parent_tree_type,
-                    propagate_if_input(),
-                    grove_version,
                 ),
                 backward_references_fan_out(Some(element)),
             ),
@@ -310,12 +349,15 @@ impl GroveOp {
                 element,
                 change_in_bytes: _,
             } => with_fan_out(
-                GroveDb::worst_case_merk_replace_element(
-                    key,
+                settling(
+                    GroveDb::worst_case_merk_replace_element(
+                        key,
+                        element,
+                        in_parent_tree_type,
+                        propagate_if_input(),
+                        grove_version,
+                    ),
                     element,
-                    in_parent_tree_type,
-                    propagate_if_input(),
-                    grove_version,
                 ),
                 backward_references_fan_out(Some(element)),
             ),
@@ -852,7 +894,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         path: &KeyInfoPath,
         ops_at_path_by_key: BTreeMap<KeyInfo, GroveOp>,
         _ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, GroveOp>,
-        _batch_apply_options: &BatchApplyOptions,
+        batch_apply_options: &BatchApplyOptions,
         _flags_update: &mut G,
         _split_removal_bytes: &mut SR,
         grove_version: &GroveVersion,
@@ -909,6 +951,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
                     worst_case_layer_element_estimates,
                     op.backwards_references(),
                     false,
+                    batch_apply_options.settle_owner_changes,
                     grove_version
                 )
             );
@@ -1583,6 +1626,7 @@ mod tests {
                 &MaxElementsNumber(100),
                 BackwardsReferences::DontCheck,
                 false,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -1609,6 +1653,7 @@ mod tests {
                 &MaxElementsNumber(100),
                 BackwardsReferences::DontCheck,
                 true,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -1633,6 +1678,7 @@ mod tests {
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
                 BackwardsReferences::DontCheck,
+                false,
                 false,
                 grove_version,
             )
@@ -1659,6 +1705,7 @@ mod tests {
                 &MaxElementsNumber(100),
                 BackwardsReferences::DontCheck,
                 false,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -1682,6 +1729,7 @@ mod tests {
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
                 BackwardsReferences::DontCheck,
+                false,
                 false,
                 grove_version,
             )
@@ -1719,6 +1767,7 @@ mod tests {
                 &MaxElementsNumber(100),
                 BackwardsReferences::DontCheck,
                 false,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -1747,6 +1796,7 @@ mod tests {
                 &MaxElementsNumber(100),
                 BackwardsReferences::DontCheck,
                 true,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -1771,6 +1821,7 @@ mod tests {
                 &MaxElementsNumber(50),
                 BackwardsReferences::DontCheck,
                 true,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -1802,6 +1853,7 @@ mod tests {
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
                 BackwardsReferences::DontCheck,
+                false,
                 false,
                 grove_version,
             )
@@ -1835,6 +1887,7 @@ mod tests {
                 &MaxElementsNumber(100),
                 BackwardsReferences::DontCheck,
                 true,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -1870,6 +1923,7 @@ mod tests {
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
                 BackwardsReferences::DontCheck,
+                false,
                 false,
                 grove_version,
             )
@@ -1926,6 +1980,7 @@ mod tests {
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
                 BackwardsReferences::DontCheck,
+                false,
                 false,
                 grove_version,
             )
@@ -1998,6 +2053,7 @@ mod tests {
                 &MaxElementsNumber(100),
                 BackwardsReferences::DontCheck,
                 false,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -2025,6 +2081,7 @@ mod tests {
                 &MaxElementsNumber(100),
                 BackwardsReferences::DontCheck,
                 true,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -2074,6 +2131,7 @@ mod tests {
                 TreeType::NormalTree,
                 &layer_info,
                 BackwardsReferences::DontCheck,
+                false,
                 false,
                 grove_version,
             )
@@ -2134,6 +2192,7 @@ mod tests {
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
                 BackwardsReferences::DontCheck,
+                false,
                 false,
                 grove_version,
             )

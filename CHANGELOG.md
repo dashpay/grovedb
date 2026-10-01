@@ -14,8 +14,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prefix in key order, including a transaction's own uncommitted writes when
   read through it. Aux storage was reachable by exact key only, so a
   collection kept as one aux entry per member could not be read back. (#968)
+- An opt-in mode that settles storage owner changes:
+  `BatchApplyOptions::settle_owner_changes` together with
+  `StorageFlags::update_element_flags_settling_owner_changes` as the flags
+  callback. An update in place whose new storage flags name a different owner
+  than the stored flags is accounted as a deletion plus an insertion: every
+  byte of the old element, key included, counts as removed and is sectioned
+  to the old owner through its epoch map by `split_removal_bytes`, and every
+  byte of the new element, key included, counts as added and is charged to
+  the writer, who keeps the flags they wrote. Without the mode the new owner
+  took the whole element (and its refund) when the size changed, or paid for
+  an element that kept naming the old owner when it did not. Updates that
+  keep the owner, or that have no owner on either side, are unchanged. The
+  flags callback can now answer an `ElementFlagsUpdate` (`Unchanged`,
+  `Changed`, `SettleOwnerChange`, new in `grovedb_costs`) in place of a
+  `bool`; a batch refuses `SettleOwnerChange` unless the option is set. With
+  the option, the average-case and worst-case batch estimates charge every
+  `InsertOrReplace`, `Replace`, `Patch` and trusted `RefreshReference` of an
+  element with flags at least the bytes its node adds when inserted (for a
+  backward-references element, with the referrers it carries over counted at
+  its declared capacity), so an estimate is never below a settled apply. With the option off, every cost,
+  estimate, stored element and hash is what it was before.
 
 ### Changed
+- **BREAKING**: `BatchApplyOptions` has a new public field,
+  `settle_owner_changes` (`false` by default), so a struct literal that names
+  every field without `..Default::default()` must add it.
+- **BREAKING**: Merk's just-in-time value update callback (the
+  `update_tree_value_based_on_costs` argument of
+  `Merk::apply_with_costs_just_in_time_value_update`, `Merk::apply_unchecked`
+  and the `TreeNode` put functions) answers
+  `(ElementFlagsUpdate, Option<ValueDefinedCostType>)` in place of
+  `(bool, Option<ValueDefinedCostType>)`. GroveDB's own flags callback (in
+  `apply_batch_with_element_flags_update`,
+  `apply_partial_batch_with_element_flags_update` and
+  `estimated_case_operations_for_batch`) takes any answer that converts into
+  an `ElementFlagsUpdate`, so a callback answering a `bool` compiles as before,
+  except one that never returns `Ok`, which now has to name its result type
+  (for example `-> Result<bool, Error>`).
 - **BREAKING**: `delete_operation_for_delete_internal` and
   `delete_operations_for_delete_up_tree_while_empty` take the operations
   already pending in the batch as any `impl PendingOperations` in place of a

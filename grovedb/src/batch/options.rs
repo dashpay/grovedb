@@ -78,6 +78,28 @@ pub struct BatchApplyOptions {
     /// At what height do we want to pause applying batch operations
     /// Most of the time this should be not set
     pub batch_pause_height: Option<u8>,
+    /// Settle owner changes: account an update in place whose flags update
+    /// answers
+    /// [`ElementFlagsUpdate::SettleOwnerChange`](grovedb_costs::storage_cost::transition::ElementFlagsUpdate::SettleOwnerChange)
+    /// as the removal of the old element plus the insertion of the new one.
+    ///
+    /// The old element's bytes, key included, count as removed and are
+    /// sectioned by the removal-bytes callback as a deletion sections them;
+    /// the new element's bytes, key included, count as added, and it keeps
+    /// the flags the callback leaves it with. A batch that does not set this
+    /// refuses a flags update that answers `SettleOwnerChange`.
+    ///
+    /// The estimators read it too: an estimate with it set charges every
+    /// write that may settle an owner change (`InsertOrReplace`, `Replace`,
+    /// `Patch` and a trusted `RefreshReference` of an element with flags) at
+    /// least the bytes its element adds when inserted, with the referrer
+    /// entries a backward-references element carries over counted at its
+    /// declared capacity, so the estimate is never below what the apply
+    /// records.
+    ///
+    /// Off by default, and every cost is then what it was before the option
+    /// existed.
+    pub settle_owner_changes: bool,
 }
 
 #[cfg(feature = "minimal")]
@@ -89,6 +111,7 @@ impl Default for BatchApplyOptions {
             disable_operation_consistency_check: false,
             base_root_storage_is_free: true,
             batch_pause_height: None,
+            settle_owner_changes: false,
         }
     }
 }

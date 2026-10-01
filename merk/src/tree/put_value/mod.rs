@@ -22,7 +22,10 @@
 mod v0;
 mod v1;
 
-use grovedb_costs::{storage_cost::removal::StorageRemovedBytes, CostResult, CostsExt};
+use grovedb_costs::{
+    storage_cost::{removal::StorageRemovedBytes, transition::ElementFlagsUpdate},
+    CostResult, CostsExt,
+};
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
 use crate::{
@@ -49,7 +52,7 @@ impl TreeNode {
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<
-            (bool, Option<ValueDefinedCostType>),
+            (ElementFlagsUpdate, Option<ValueDefinedCostType>),
             Error,
         >,
         section_removal_bytes: &mut impl FnMut(
@@ -109,7 +112,7 @@ impl TreeNode {
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<
-            (bool, Option<ValueDefinedCostType>),
+            (ElementFlagsUpdate, Option<ValueDefinedCostType>),
             Error,
         >,
         section_removal_bytes: &mut impl FnMut(

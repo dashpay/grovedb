@@ -6,7 +6,7 @@
 
 use grovedb_costs::{
     cost_return_on_error_no_add,
-    storage_cost::{removal::StorageRemovedBytes, StorageCost},
+    storage_cost::{removal::StorageRemovedBytes, transition::ElementFlagsUpdate, StorageCost},
     CostResult, CostsExt, OperationCost,
 };
 
@@ -32,7 +32,7 @@ impl TreeNode {
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<
-            (bool, Option<ValueDefinedCostType>),
+            (ElementFlagsUpdate, Option<ValueDefinedCostType>),
             Error,
         >,
         section_removal_bytes: &mut impl FnMut(
@@ -85,7 +85,7 @@ impl TreeNode {
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<
-            (bool, Option<ValueDefinedCostType>),
+            (ElementFlagsUpdate, Option<ValueDefinedCostType>),
             Error,
         >,
         section_removal_bytes: &mut impl FnMut(

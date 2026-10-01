@@ -32,6 +32,8 @@ mod just_in_time_value_update;
 mod options;
 mod refresh_reference_mode;
 #[cfg(test)]
+mod settle_owner_change_cost_tests;
+#[cfg(test)]
 mod single_deletion_cost_tests;
 #[cfg(test)]
 mod single_insert_cost_tests;
@@ -61,6 +63,7 @@ use grovedb_costs::{
     cost_return_on_error_no_add,
     storage_cost::{
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
+        transition::ElementFlagsUpdate,
         StorageCost,
     },
     CostResult, CostsExt, OperationCost,
@@ -1962,6 +1965,10 @@ struct TreeCacheMerkByPath<S, F, F2> {
     /// added and unattributed-removal lanes into `replaced_bytes` — a row
     /// move is physically a delete plus an insert but logically an update.
     indexed_mirror_rekey_churn_bytes: u32,
+    /// The batch's `settle_owner_changes` option: a flags update may settle
+    /// an owner change, so the hash a same-batch reference commits to must
+    /// ask the flags update about a sum item too.
+    settle_owner_changes: bool,
 }
 
 impl<S, F, F2> fmt::Debug for TreeCacheMerkByPath<S, F, F2> {
@@ -2281,7 +2288,11 @@ where
         grove_version: &GroveVersion,
     ) -> CostResult<CryptoHash, Error>
     where
-        G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+        G: FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> Result<ElementFlagsUpdate, Error>,
         SR: FnMut(
             &mut ElementFlags,
             u32,
@@ -2580,7 +2591,11 @@ where
         grove_version: &GroveVersion,
     ) -> CostResult<CryptoHash, Error>
     where
-        G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+        G: FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> Result<ElementFlagsUpdate, Error>,
         SR: FnMut(
             &mut ElementFlags,
             u32,
@@ -2710,7 +2725,11 @@ where
         grove_version: &GroveVersion,
     ) -> CostResult<CryptoHash, Error>
     where
-        G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+        G: FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> Result<ElementFlagsUpdate, Error>,
         SR: FnMut(
             &mut ElementFlags,
             u32,
@@ -2832,6 +2851,7 @@ where
                                             old_element,
                                             &old_serialized_element,
                                             is_in_sum_tree,
+                                            self.settle_owner_changes,
                                             flags_update,
                                             split_removal_bytes,
                                             grove_version,
@@ -3082,7 +3102,11 @@ where
 
 impl<'db, S, F, F2, G, SR> TreeCache<G, SR> for TreeCacheMerkByPath<S, F, F2>
 where
-    G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+    G: FnMut(
+        &StorageCost,
+        Option<ElementFlags>,
+        &mut ElementFlags,
+    ) -> Result<ElementFlagsUpdate, Error>,
     SR: FnMut(
         &mut ElementFlags,
         u32,
@@ -5210,7 +5234,11 @@ impl GroveDb {
         Error,
     >
     where
-        F: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+        F: FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> Result<ElementFlagsUpdate, Error>,
         SR: FnMut(
             &mut ElementFlags,
             u32,
@@ -5551,7 +5579,7 @@ impl GroveDb {
             &StorageCost,
             Option<ElementFlags>,
             &mut ElementFlags,
-        ) -> Result<bool, Error>,
+        ) -> Result<ElementFlagsUpdate, Error>,
         split_removed_bytes_function: impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -5607,6 +5635,9 @@ impl GroveDb {
                     cidx_overwrite_cleanup_paths: Default::default(),
                     deleted_tree_actual_types: Default::default(),
                     indexed_mirror_rekey_churn_bytes: 0,
+                    settle_owner_changes: batch_apply_options
+                        .as_ref()
+                        .is_some_and(|options| options.settle_owner_changes),
                 },
                 grove_version
             )
@@ -5638,7 +5669,7 @@ impl GroveDb {
             &StorageCost,
             Option<ElementFlags>,
             &mut ElementFlags,
-        ) -> Result<bool, Error>,
+        ) -> Result<ElementFlagsUpdate, Error>,
         split_removed_bytes_function: impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -6719,15 +6750,20 @@ impl GroveDb {
     /// predicts the bytes a flagged item will store (its referrers commit to
     /// them) by consulting the same callbacks before the apply, and refuses
     /// the batch if the apply stores anything else.
-    pub fn apply_batch_with_element_flags_update(
+    ///
+    /// The flags callback answers a `bool` (whether it rewrote the flags) or
+    /// an [`ElementFlagsUpdate`]; `SettleOwnerChange` is accepted only when
+    /// the options set
+    /// [`settle_owner_changes`](BatchApplyOptions::settle_owner_changes).
+    pub fn apply_batch_with_element_flags_update<U: Into<ElementFlagsUpdate>>(
         &self,
         ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
-        mut update_element_flags_function: impl FnMut(
+        update_element_flags_function: impl FnMut(
             &StorageCost,
             Option<ElementFlags>,
             &mut ElementFlags,
-        ) -> Result<bool, Error>,
+        ) -> Result<U, Error>,
         mut split_removal_bytes_function: impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -6745,6 +6781,12 @@ impl GroveDb {
                 .grovedb_versions
                 .apply_batch
                 .apply_batch_with_element_flags_update
+        );
+        let mut update_element_flags_function = just_in_time_value_update::batch_flags_update(
+            update_element_flags_function,
+            batch_apply_options
+                .as_ref()
+                .is_some_and(|options| options.settle_owner_changes),
         );
         let _storage_removal_version_guard =
             grovedb_costs::storage_cost::removal::use_basic_sectioned_removal_addition_version(
@@ -7207,15 +7249,18 @@ impl GroveDb {
     /// The initial segment pauses at `batch_pause_height` (default: 1).
     /// Cross-segment safety checks are always enforced, even when
     /// `disable_operation_consistency_check` skips per-segment validation.
-    pub fn apply_partial_batch_with_element_flags_update(
+    ///
+    /// The flags callback is answered as in
+    /// [`Self::apply_batch_with_element_flags_update`].
+    pub fn apply_partial_batch_with_element_flags_update<U: Into<ElementFlagsUpdate>>(
         &self,
         ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
-        mut update_element_flags_function: impl FnMut(
+        update_element_flags_function: impl FnMut(
             &StorageCost,
             Option<ElementFlags>,
             &mut ElementFlags,
-        ) -> Result<bool, Error>,
+        ) -> Result<U, Error>,
         mut split_removal_bytes_function: impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -7237,6 +7282,12 @@ impl GroveDb {
                 .grovedb_versions
                 .apply_batch
                 .apply_partial_batch_with_element_flags_update
+        );
+        let mut update_element_flags_function = just_in_time_value_update::batch_flags_update(
+            update_element_flags_function,
+            batch_apply_options
+                .as_ref()
+                .is_some_and(|options| options.settle_owner_changes),
         );
         let _storage_removal_version_guard =
             grovedb_costs::storage_cost::removal::use_basic_sectioned_removal_addition_version(
@@ -7973,7 +8024,11 @@ impl GroveDb {
     #[cfg(feature = "estimated_costs")]
     /// Returns the estimated average or worst case cost for an entire batch of
     /// ops
-    pub fn estimated_case_operations_for_batch(
+    ///
+    /// With [`settle_owner_changes`](BatchApplyOptions::settle_owner_changes)
+    /// set, every write that may settle an owner change is charged at least
+    /// the bytes its element adds when inserted.
+    pub fn estimated_case_operations_for_batch<U: Into<ElementFlagsUpdate>>(
         estimated_costs_type: EstimatedCostsType,
         ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
@@ -7981,7 +8036,7 @@ impl GroveDb {
             &StorageCost,
             Option<ElementFlags>,
             &mut ElementFlags,
-        ) -> Result<bool, Error>,
+        ) -> Result<U, Error>,
         split_removal_bytes_function: impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -7998,6 +8053,12 @@ impl GroveDb {
                 .grovedb_versions
                 .apply_batch
                 .estimated_case_operations_for_batch
+        );
+        let update_element_flags_function = just_in_time_value_update::batch_flags_update(
+            update_element_flags_function,
+            batch_apply_options
+                .as_ref()
+                .is_some_and(|options| options.settle_owner_changes),
         );
         let mut cost = OperationCost::default();
 
@@ -8239,6 +8300,7 @@ mod tests {
                     disable_operation_consistency_check: true,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
+                    settle_owner_changes: false,
                 }),
                 None,
                 grove_version
@@ -8844,6 +8906,7 @@ mod tests {
                     disable_operation_consistency_check: false,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
+                    settle_owner_changes: false,
                 }),
                 None,
                 grove_version
@@ -8885,6 +8948,7 @@ mod tests {
                     validate_insertion_does_not_override: true,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
+                    settle_owner_changes: false,
                 }),
                 None,
                 grove_version
@@ -8918,6 +8982,7 @@ mod tests {
                     disable_operation_consistency_check: false,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
+                    settle_owner_changes: false,
                 }),
                 None,
                 grove_version
