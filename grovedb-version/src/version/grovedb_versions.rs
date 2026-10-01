@@ -249,6 +249,21 @@ pub struct GroveDBApplyBatchVersions {
     /// are versioned by their own `insert_on_transaction` and
     /// `delete_internal_on_transaction` slots.
     pub backward_references_maintenance: FeatureVersion,
+    /// How a reference written in a batch predicts the value hash of a
+    /// target item the same batch is still to update.
+    ///
+    /// - `0` (V1..V3): a hand-written copy of Merk's just-in-time value
+    ///   update. For a sum item it assumes the new element keeps the stored
+    ///   flags and does not consult the flags update, while the apply stores
+    ///   the flags the flags update leaves, so when those differ (an owned
+    ///   item updated in a later epoch, an unowned one gaining an owner) the
+    ///   reference commits to bytes that are never stored.
+    /// - `1` (V4+): the prediction runs Merk's own just-in-time value update
+    ///   on the stored and new bytes, with the value-defined cost the apply
+    ///   puts the element with, so the reference commits to exactly the
+    ///   bytes the apply stores, for every item kind and every answer of the
+    ///   flags update.
+    pub same_batch_reference_target_prediction: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

@@ -366,6 +366,10 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             // participant gate, per-op BackwardsReferences declarations, and
             // DontCheck required for DropFlat.
             backward_references_maintenance: 1,
+            // v1: a reference written in the same batch as its target's
+            // update predicts the target's stored bytes through Merk's own
+            // just-in-time value update.
+            same_batch_reference_target_prediction: 1,
         },
         element: GroveDBElementMethodVersions {
             delete: 0,
@@ -665,7 +669,10 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
         },
         // Bumped 0 -> 1: ordinary (Item / Reference) replacements of a
         // specialized value are charged from their own bytes (issue #908).
-        tree: MerkTreeVersions { put_value: 1 },
+        tree: MerkTreeVersions {
+            put_value: 1,
+            just_in_time_value_update: 1,
+        },
     },
     // MMR hash charges: one hash per blake3 merge actually computed —
     // `push` per collapsed peak, `get_root` and `gen_proof` per peak

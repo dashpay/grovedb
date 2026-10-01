@@ -32,6 +32,8 @@ mod just_in_time_value_update;
 mod options;
 mod refresh_reference_mode;
 #[cfg(test)]
+mod same_batch_reference_prediction_tests;
+#[cfg(test)]
 mod settle_owner_change_cost_tests;
 #[cfg(test)]
 mod single_deletion_cost_tests;
@@ -5635,9 +5637,9 @@ impl GroveDb {
                     cidx_overwrite_cleanup_paths: Default::default(),
                     deleted_tree_actual_types: Default::default(),
                     indexed_mirror_rekey_churn_bytes: 0,
-                    settle_owner_changes: batch_apply_options
-                        .as_ref()
-                        .is_some_and(|options| options.settle_owner_changes),
+                    settle_owner_changes: BatchApplyOptions::settle_owner_changes_in(
+                        &batch_apply_options,
+                    ),
                 },
                 grove_version
             )
@@ -6784,9 +6786,7 @@ impl GroveDb {
         );
         let mut update_element_flags_function = just_in_time_value_update::batch_flags_update(
             update_element_flags_function,
-            batch_apply_options
-                .as_ref()
-                .is_some_and(|options| options.settle_owner_changes),
+            BatchApplyOptions::settle_owner_changes_in(&batch_apply_options),
         );
         let _storage_removal_version_guard =
             grovedb_costs::storage_cost::removal::use_basic_sectioned_removal_addition_version(
@@ -7285,9 +7285,7 @@ impl GroveDb {
         );
         let mut update_element_flags_function = just_in_time_value_update::batch_flags_update(
             update_element_flags_function,
-            batch_apply_options
-                .as_ref()
-                .is_some_and(|options| options.settle_owner_changes),
+            BatchApplyOptions::settle_owner_changes_in(&batch_apply_options),
         );
         let _storage_removal_version_guard =
             grovedb_costs::storage_cost::removal::use_basic_sectioned_removal_addition_version(
@@ -8054,12 +8052,11 @@ impl GroveDb {
                 .apply_batch
                 .estimated_case_operations_for_batch
         );
-        let update_element_flags_function = just_in_time_value_update::batch_flags_update(
-            update_element_flags_function,
-            batch_apply_options
-                .as_ref()
-                .is_some_and(|options| options.settle_owner_changes),
-        );
+        // The estimators never call the flags update (an estimate follows
+        // the batch options, not the answers the flags update would give),
+        // so it only needs its answer type.
+        let update_element_flags_function =
+            just_in_time_value_update::flags_update_answers(update_element_flags_function);
         let mut cost = OperationCost::default();
 
         if ops.is_empty() {

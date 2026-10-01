@@ -1,12 +1,31 @@
+//! The just-in-time value update a replacement of a stored value runs: the
+//! client callbacks carry the old storage flags into the size measurement,
+//! rewrite the new value's flags, and section the bytes the replacement
+//! frees.
+//!
+//! Each `v*.rs` defines a `just_in_time_tree_node_value_update_v*`. The
+//! dispatcher below selects it by
+//! `GroveVersion::merk_versions.tree.just_in_time_value_update`:
+//!
+//! - version 0 keeps the first measurement, taken with the new value
+//!   carrying the OLD value's flags, when the flags-update callback answers
+//!   `Unchanged`. A new value stored with flags of a different length is
+//!   then charged for bytes it does not hold, and the commit fails with a
+//!   storage cost mismatch. Grove v1..v3 are consensus-locked to this.
+//! - version 1 measures the replacement again from the bytes it stores when
+//!   their size differs from that measurement, and charges every update that
+//!   version 0 accepts exactly as version 0 does.
+
+mod v0;
+mod v1;
+
 use grovedb_costs::storage_cost::{
-    key_value_cost::KeyValueStorageCost,
-    removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
-    transition::ElementFlagsUpdate,
-    StorageCost,
+    key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes,
+    transition::ElementFlagsUpdate, StorageCost,
 };
+use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
 use crate::{
-    merk::defaults::MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES,
     tree::{
         kv::{ValueDefinedCostType, KV},
         TreeFeatureType, TreeNode, TreeNodeInner, NULL_HASH,
@@ -15,27 +34,29 @@ use crate::{
 };
 
 impl TreeNode {
-    /// The value bytes an apply finally stores when an
-    /// [`Op::PutWithProvidedValueHash`](crate::tree::Op::PutWithProvidedValueHash)
-    /// of `new_value` replaces the stored `old_value` — after the
-    /// just-in-time value update has run the client callbacks (storage-flags
-    /// carry-over and rewrite).
+    /// The value bytes an apply finally stores when a put of `new_value`
+    /// replaces the stored `old_value` — after the just-in-time value update
+    /// has run the client callbacks (storage-flags carry-over and rewrite).
     ///
     /// Runs the apply's own steps on a detached node: the node holding
-    /// `old_value` takes the new value and feature type exactly as
-    /// `put_value_with_provided_value_hash` installs them (which drops any
-    /// value-defined cost the predecessor carried), and then goes through
-    /// [`Self::just_in_time_tree_node_value_update`]. With the same
-    /// (deterministic) callbacks the result is byte-for-byte what the apply
-    /// writes, so a caller that must commit to the final bytes BEFORE the
-    /// apply — a backward-references referrer holding its target's hash —
-    /// can compute them.
+    /// `old_value` takes the new value and feature type exactly as the put
+    /// installs them, and then goes through
+    /// [`Self::just_in_time_tree_node_value_update`]. `value_defined_cost` is
+    /// the cost the put stamps on the node: `None` for an ordinary put
+    /// (`Op::Put` from merk tree version 1 on, and
+    /// [`Op::PutWithProvidedValueHash`](crate::tree::Op::PutWithProvidedValueHash),
+    /// which drop any cost the predecessor carried), and the op's own cost
+    /// for `Op::PutWithSpecializedCost`. With the same (deterministic)
+    /// callbacks the result is byte-for-byte what the apply writes, so a
+    /// caller that must commit to the final bytes BEFORE the apply — a
+    /// reference holding its target's hash — can compute them.
     #[allow(clippy::too_many_arguments)]
     pub fn provided_value_hash_put_final_value(
         key: Vec<u8>,
         old_value: Vec<u8>,
         new_value: Vec<u8>,
         feature_type: TreeFeatureType,
+        value_defined_cost: Option<ValueDefinedCostType>,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         get_temp_new_value_with_old_flags: &impl Fn(
             &Vec<u8>,
@@ -57,6 +78,7 @@ impl TreeNode {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
+        grove_version: &GroveVersion,
     ) -> Result<Vec<u8>, Error> {
         // The stored node (no hashes are needed: the update only measures
         // sizes and consults the callbacks).
@@ -66,21 +88,31 @@ impl TreeNode {
             right: None,
             kv,
         });
-        // The put, as `put_value_with_provided_value_hash` performs it.
-        node.inner.kv = node
-            .inner
-            .kv
-            .put_ordinary_value_no_update_of_hashes(new_value);
+        // The put, as the apply performs it.
+        node.inner.kv = match value_defined_cost {
+            None => node
+                .inner
+                .kv
+                .put_ordinary_value_no_update_of_hashes(new_value),
+            Some(value_defined_cost) => node
+                .inner
+                .kv
+                .put_value_with_fixed_cost_no_update_of_hashes(new_value, value_defined_cost),
+        };
         node.inner.kv.feature_type = feature_type;
         node.just_in_time_tree_node_value_update(
             old_specialized_cost,
             get_temp_new_value_with_old_flags,
             update_tree_value_based_on_costs,
             section_removal_bytes,
+            grove_version,
         )?;
         Ok(node.inner.kv.value)
     }
 
+    /// Runs the just-in-time value update on a node that has taken a new
+    /// value over a stored one. See the module docs for the version
+    /// semantics.
     pub(in crate::tree) fn just_in_time_tree_node_value_update(
         &mut self,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
@@ -104,108 +136,40 @@ impl TreeNode {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
+        grove_version: &GroveVersion,
     ) -> Result<(), Error> {
-        let mut i = 0;
-
-        if let Some(old_value) = self.old_value.clone() {
-            // At this point the tree value can be updated based on client requirements
-            // For example to store the costs
-            // todo: clean up clones
-            let original_new_value = self.value_ref().clone();
-
-            let new_value_with_old_flags = if self.inner.kv.value_defined_cost.is_none() {
-                // for items
-                get_temp_new_value_with_old_flags(&old_value, &original_new_value)?
-            } else {
-                // don't do this for sum items or trees
-                None
-            };
-
-            let (mut current_tree_plus_hook_size, mut storage_costs) = self
-                .kv_with_parent_hook_size_and_storage_cost_change_for_value(
-                    old_specialized_cost,
-                    new_value_with_old_flags,
-                )?;
-
-            loop {
-                if let BasicStorageRemoval(removed_bytes) =
-                    storage_costs.value_storage_cost.removed_bytes
-                {
-                    let (_, value_removed_bytes) =
-                        section_removal_bytes(&old_value, 0, removed_bytes)?;
-                    storage_costs.value_storage_cost.removed_bytes = value_removed_bytes;
-                }
-
-                let (flags_update, value_defined_cost) = update_tree_value_based_on_costs(
-                    &storage_costs.value_storage_cost,
-                    &old_value,
-                    self.value_mut_ref(),
-                )?;
-                match flags_update {
-                    ElementFlagsUpdate::Unchanged => break,
-                    ElementFlagsUpdate::SettleOwnerChange => {
-                        // The value now holds the new element as the client
-                        // left it, and the update is accounted as the removal
-                        // of the old element plus the insertion of this one.
-                        self.inner.kv.value_defined_cost = value_defined_cost;
-                        self.known_storage_cost = Some(self.settled_owner_change_storage_cost(
-                            &old_value,
-                            old_specialized_cost,
-                            section_removal_bytes,
-                        )?);
-                        self.old_value = Some(self.value_ref().clone());
-                        return Ok(());
-                    }
-                    ElementFlagsUpdate::Changed => {
-                        self.inner.kv.value_defined_cost = value_defined_cost;
-                        let after_update_tree_plus_hook_size =
-                            self.value_encoding_length_with_parent_to_child_reference();
-                        if after_update_tree_plus_hook_size == current_tree_plus_hook_size {
-                            break;
-                        }
-                        // we are calling this with merged flags that are were put in through value
-                        // mut ref
-                        let new_size_and_storage_costs =
-                            self.kv_with_parent_hook_size_and_storage_cost(old_specialized_cost)?;
-                        current_tree_plus_hook_size = new_size_and_storage_costs.0;
-                        storage_costs = new_size_and_storage_costs.1;
-                        self.set_value(original_new_value.clone())
-                    }
-                }
-                if i > MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES {
-                    return Err(Error::CyclicError(
-                        "updated value based on costs too many times",
-                    ));
-                }
-                i += 1;
-            }
-
-            if let BasicStorageRemoval(removed_bytes) =
-                storage_costs.value_storage_cost.removed_bytes
-            {
-                let (_, value_removed_bytes) = section_removal_bytes(&old_value, 0, removed_bytes)?;
-                storage_costs.value_storage_cost.removed_bytes = value_removed_bytes;
-            }
-            self.known_storage_cost = Some(storage_costs);
-        } else {
-            let (_, storage_costs) =
-                self.kv_with_parent_hook_size_and_storage_cost(old_specialized_cost)?;
-            self.known_storage_cost = Some(storage_costs);
+        match grove_version.merk_versions.tree.just_in_time_value_update {
+            0 => self.just_in_time_tree_node_value_update_v0(
+                old_specialized_cost,
+                get_temp_new_value_with_old_flags,
+                update_tree_value_based_on_costs,
+                section_removal_bytes,
+            ),
+            1 => self.just_in_time_tree_node_value_update_v1(
+                old_specialized_cost,
+                get_temp_new_value_with_old_flags,
+                update_tree_value_based_on_costs,
+                section_removal_bytes,
+            ),
+            version => Err(Error::VersionError(
+                GroveVersionError::UnknownVersionMismatch {
+                    method: "just_in_time_tree_node_value_update".to_string(),
+                    known_versions: vec![0, 1],
+                    received: version,
+                },
+            )),
         }
-
-        self.old_value = Some(self.value_ref().clone());
-
-        Ok(())
     }
 
     /// The storage an update that settles an owner change records: the old
     /// element removed, key included, with the removal sectioned through its
     /// flags exactly as a deletion sections it, and the new element as this
-    /// node now holds it added, key included.
+    /// node now holds it added, key included. `old_value_bytes` is the
+    /// stored value's own cost.
     fn settled_owner_change_storage_cost(
         &self,
         old_value: &Vec<u8>,
-        old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        old_value_bytes: u32,
         section_removal_bytes: &mut impl FnMut(
             &Vec<u8>,
             u32,
@@ -216,7 +180,6 @@ impl TreeNode {
         >,
     ) -> Result<KeyValueStorageCost, Error> {
         let key_bytes = KV::node_key_byte_cost_size(self.key().len() as u32);
-        let old_value_bytes = old_specialized_cost(self.key_as_ref(), old_value)?;
         let (removed_key_bytes, removed_value_bytes) =
             section_removal_bytes(old_value, key_bytes, old_value_bytes)?;
         Ok(KeyValueStorageCost {
@@ -354,10 +317,12 @@ mod tests {
                 old.clone(),
                 new.clone(),
                 BasicMerkNode,
+                None,
                 &old_cost,
                 &no_temp_value,
                 &mut stamp_costs,
                 &mut basic_removal,
+                grove_version,
             )
             .expect("prediction");
             assert_ne!(predicted, new, "the callback rewrote the flags");
@@ -425,6 +390,7 @@ mod tests {
                     sectioned.push((value.clone(), key_bytes, value_bytes));
                     basic_removal(value, key_bytes, value_bytes)
                 },
+                grove_version,
             )
             .expect("expected the update to settle");
 

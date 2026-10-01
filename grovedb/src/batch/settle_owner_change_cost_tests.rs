@@ -496,7 +496,8 @@ mod tests {
 
     /// A backward-references item keeps the referrers registered on the item
     /// it replaces, and a settled write adds their entries too. Both
-    /// estimates cover them through the item's declared capacity.
+    /// estimates cover them through the item's declared capacity, wherever
+    /// the referrers sit.
     #[test]
     fn estimates_cover_the_referrers_a_settled_item_carries_over() {
         let grove_version = GroveVersion::latest();
@@ -509,53 +510,102 @@ mod tests {
         };
         let old = family_item(vec![7; 20], owned_flags(0, OLD_OWNER));
         let new = family_item(vec![8; 20], owned_flags(2, NEW_OWNER));
-        let db = grove_with(&old, TreeType::NormalTree, grove_version);
-        for referrer in [b"r1".as_slice(), b"r2", b"r3"] {
+        let siblings = |db: &TempGroveDb| {
+            for referrer in [b"r1".as_slice(), b"r2", b"r3"] {
+                db.insert(
+                    [b"tree".as_slice()].as_ref(),
+                    referrer,
+                    Element::new_bidirectional_reference(ReferencePathType::SiblingReference(
+                        KEY.to_vec(),
+                    )),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("expected to register a referrer");
+            }
+        };
+        // Referrers far from the item under long keys, whose entries hold
+        // absolute paths much longer than the item's own.
+        let distant = |db: &TempGroveDb| {
+            let (outer, inner) = (vec![b'x'; 200], vec![b'y'; 200]);
             db.insert(
-                [b"tree".as_slice()].as_ref(),
-                referrer,
-                Element::new_bidirectional_reference(ReferencePathType::SiblingReference(
-                    KEY.to_vec(),
-                )),
+                [b"targets".as_slice()].as_ref(),
+                &outer,
+                Element::empty_tree(),
                 None,
                 None,
                 grove_version,
             )
             .unwrap()
-            .expect("expected to register a referrer");
-        }
-        let applied = apply(&db, vec![write_op(&new)], Mode::Settling, grove_version)
-            .expect("expected the settling update to apply");
-        let landed = stored_in_merk(&db, grove_version);
-        assert_eq!(
-            landed.backward_references().map(|refs| refs.len()),
-            Some(3),
-            "the item keeps its referrers"
-        );
-        assert_eq!(
-            storage_flags_of(&landed),
-            StorageFlags::SingleEpochOwned(2, NEW_OWNER)
-        );
-        // the referrer entries are part of what the settled apply adds
-        assert_eq!(
-            applied.storage_cost.added_bytes,
-            key_bytes() + value_bytes(&landed, TreeType::NormalTree, grove_version)
-        );
-        assert!(
-            applied.storage_cost.added_bytes
-                > key_bytes() + value_bytes(&new, TreeType::NormalTree, grove_version)
-        );
-        for average_case_tree_type in [Some(TreeType::NormalTree), None] {
-            let estimate = estimate(
-                vec![write_op(&new)],
-                Some(options(Mode::Settling)),
-                average_case_tree_type,
+            .expect("expected to insert a tree");
+            db.insert(
+                [b"targets".as_slice(), outer.as_slice()].as_ref(),
+                &inner,
+                Element::empty_tree(),
+                None,
+                None,
                 grove_version,
+            )
+            .unwrap()
+            .expect("expected to insert a tree");
+            for i in 0..3u8 {
+                let mut referrer = vec![b'z'; 199];
+                referrer.push(i);
+                db.insert(
+                    [b"targets".as_slice(), outer.as_slice(), inner.as_slice()].as_ref(),
+                    &referrer,
+                    Element::new_bidirectional_reference(ReferencePathType::AbsolutePathReference(
+                        vec![b"tree".to_vec(), KEY.to_vec()],
+                    )),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("expected to register a referrer");
+            }
+        };
+        let placements: [(&str, &dyn Fn(&TempGroveDb)); 2] =
+            [("siblings", &siblings), ("distant", &distant)];
+        for (placement, register_referrers) in placements {
+            let db = grove_with(&old, TreeType::NormalTree, grove_version);
+            register_referrers(&db);
+            let applied = apply(&db, vec![write_op(&new)], Mode::Settling, grove_version)
+                .expect("expected the settling update to apply");
+            let landed = stored_in_merk(&db, grove_version);
+            assert_eq!(
+                landed.backward_references().map(|refs| refs.len()),
+                Some(3),
+                "{placement}: the item keeps its referrers"
+            );
+            assert_eq!(
+                storage_flags_of(&landed),
+                StorageFlags::SingleEpochOwned(2, NEW_OWNER)
+            );
+            // the referrer entries are part of what the settled apply adds
+            assert_eq!(
+                applied.storage_cost.added_bytes,
+                key_bytes() + value_bytes(&landed, TreeType::NormalTree, grove_version)
             );
             assert!(
-                estimate.storage_cost.added_bytes >= applied.storage_cost.added_bytes,
-                "estimate {estimate:?} adds less than the settled apply {applied:?}"
+                applied.storage_cost.added_bytes
+                    > key_bytes() + value_bytes(&new, TreeType::NormalTree, grove_version)
             );
+            for average_case_tree_type in [Some(TreeType::NormalTree), None] {
+                let estimate = estimate(
+                    vec![write_op(&new)],
+                    Some(options(Mode::Settling)),
+                    average_case_tree_type,
+                    grove_version,
+                );
+                assert!(
+                    estimate.storage_cost.added_bytes >= applied.storage_cost.added_bytes,
+                    "{placement}: estimate {estimate:?} adds less than the settled apply \
+                     {applied:?}"
+                );
+            }
         }
     }
 
@@ -899,13 +949,10 @@ mod tests {
         .expect("expected an estimate")
     }
 
-    /// With the option, the average-case and worst-case estimates of every
-    /// write that may settle an owner change are never below the settled
-    /// apply; without it they are what they always were.
-    #[test]
-    fn estimates_with_the_option_cover_a_settled_owner_change() {
-        let grove_version = GroveVersion::latest();
-        let cases = [
+    /// Updates of every element kind an estimate may see settle: the old
+    /// element, the new one, and the tree they are in.
+    fn estimate_cases() -> [(Element, Element, TreeType); 7] {
+        [
             (
                 Element::new_item_with_flags(vec![7; 20], owned_flags(0, OLD_OWNER)),
                 Element::new_item_with_flags(vec![8; 60], owned_flags(2, NEW_OWNER)),
@@ -957,35 +1004,67 @@ mod tests {
                 Element::empty_tree_with_flags(owned_flags(2, NEW_OWNER)),
                 TreeType::NormalTree,
             ),
-        ];
-        for (old, new, tree_type) in cases {
-            let db = grove_with(&old, tree_type, grove_version);
-            let applied = apply(&db, vec![write_op(&new)], Mode::Settling, grove_version)
-                .expect("expected the settling update to apply");
+        ]
+    }
 
-            let replace =
-                QualifiedGroveDbOp::replace_op(vec![b"tree".to_vec()], KEY.to_vec(), new.clone());
-            let mut ops = vec![write_op(&new), replace];
-            if let Element::Item(..) = new {
-                ops.push(QualifiedGroveDbOp::patch_op(
-                    vec![b"tree".to_vec()],
+    /// Every write of `new` at `key1` that may settle an owner change.
+    fn settling_writes(new: &Element) -> Vec<(&'static str, QualifiedGroveDbOp)> {
+        let path = vec![b"tree".to_vec()];
+        let mut ops = vec![
+            ("insert_or_replace", write_op(new)),
+            (
+                "insert_or_replace_dont_check",
+                write_op(new).dont_check_for_backwards_references(),
+            ),
+            (
+                "replace",
+                QualifiedGroveDbOp::replace_op(path.clone(), KEY.to_vec(), new.clone()),
+            ),
+            (
+                "replace_dont_check",
+                QualifiedGroveDbOp::replace_op(path.clone(), KEY.to_vec(), new.clone())
+                    .dont_check_for_backwards_references(),
+            ),
+        ];
+        if let Element::Item(..) = new {
+            ops.push((
+                "patch",
+                QualifiedGroveDbOp::patch_op(path.clone(), KEY.to_vec(), new.clone(), 0),
+            ));
+            ops.push((
+                "patch_dont_check",
+                QualifiedGroveDbOp::patch_op(path.clone(), KEY.to_vec(), new.clone(), 0)
+                    .dont_check_for_backwards_references(),
+            ));
+        }
+        if let Element::Reference(reference_path, max_hop, flags) = new {
+            ops.push((
+                "refresh_trusted",
+                QualifiedGroveDbOp::refresh_reference_op(
+                    path,
                     KEY.to_vec(),
-                    new.clone(),
-                    0,
-                ));
-            }
-            if let Element::Reference(path, max_hop, flags) = &new {
-                ops.push(QualifiedGroveDbOp::refresh_reference_op(
-                    vec![b"tree".to_vec()],
-                    KEY.to_vec(),
-                    path.clone(),
+                    reference_path.clone(),
                     *max_hop,
                     flags.clone(),
                     false,
                     true,
-                ));
-            }
-            for op in ops {
+                ),
+            ));
+        }
+        ops
+    }
+
+    /// With the option, the average-case and worst-case estimates of every
+    /// write that may settle an owner change are never below the settled
+    /// apply.
+    #[test]
+    fn estimates_with_the_option_cover_a_settled_owner_change() {
+        let grove_version = GroveVersion::latest();
+        for (old, new, tree_type) in estimate_cases() {
+            let db = grove_with(&old, tree_type, grove_version);
+            let applied = apply(&db, vec![write_op(&new)], Mode::Settling, grove_version)
+                .expect("expected the settling update to apply");
+            for (label, op) in settling_writes(&new) {
                 for average_case_tree_type in [Some(tree_type), None] {
                     let settling = estimate(
                         vec![op.clone()],
@@ -997,32 +1076,409 @@ mod tests {
                         settling
                             .storage_cost
                             .worse_or_eq_than(&applied.storage_cost),
-                        "estimate {settling:?} of {op:?} is below the settled apply {applied:?}"
-                    );
-                    assert!(
-                        settling.storage_cost.added_bytes >= applied.storage_cost.added_bytes,
-                        "estimate {settling:?} of {op:?} adds less than the settled apply \
+                        "estimate {settling:?} of {label} of {new:?} is below the settled apply \
                          {applied:?}"
-                    );
-                    // without the option the estimate is what it always was
-                    let merging = estimate(
-                        vec![op.clone()],
-                        Some(options(Mode::Merging)),
-                        average_case_tree_type,
-                        grove_version,
-                    );
-                    assert_eq!(
-                        merging,
-                        estimate(
-                            vec![op.clone()],
-                            None,
-                            average_case_tree_type,
-                            grove_version
-                        )
                     );
                 }
             }
         }
+    }
+
+    /// The estimates of those writes without the option, as they were
+    /// before it existed: (case, write, average case, seeks, added bytes,
+    /// replaced bytes, loaded bytes, hash calls), taken from develop at
+    /// a720f7c1.
+    const ESTIMATES_BEFORE_THE_OPTION: &[(usize, &str, bool, u32, u32, u32, u64, u32)] = &[
+        (0, "insert_or_replace", true, 34, 243, 4289, 6170, 79),
+        (
+            0,
+            "insert_or_replace",
+            false,
+            506892,
+            243,
+            4294967295,
+            27857252525,
+            87703315,
+        ),
+        (
+            0,
+            "insert_or_replace_dont_check",
+            true,
+            13,
+            243,
+            1047,
+            1379,
+            23,
+        ),
+        (
+            0,
+            "insert_or_replace_dont_check",
+            false,
+            12,
+            243,
+            409674,
+            394925,
+            275,
+        ),
+        (0, "replace", true, 34, 0, 4568, 6170, 80),
+        (
+            0,
+            "replace",
+            false,
+            506892,
+            206,
+            4294967295,
+            27857252525,
+            87703315,
+        ),
+        (0, "replace_dont_check", true, 13, 0, 1326, 1379, 24),
+        (0, "replace_dont_check", false, 12, 206, 409711, 394925, 275),
+        (0, "patch", true, 34, 0, 4568, 6170, 80),
+        (
+            0,
+            "patch",
+            false,
+            506892,
+            206,
+            4294967295,
+            27857252525,
+            87703315,
+        ),
+        (0, "patch_dont_check", true, 13, 0, 1326, 1379, 24),
+        (0, "patch_dont_check", false, 12, 206, 409711, 394925, 275),
+        (1, "insert_or_replace", true, 34, 187, 4289, 6170, 78),
+        (
+            1,
+            "insert_or_replace",
+            false,
+            506892,
+            187,
+            4294967295,
+            27857252525,
+            87703314,
+        ),
+        (
+            1,
+            "insert_or_replace_dont_check",
+            true,
+            13,
+            187,
+            1047,
+            1379,
+            22,
+        ),
+        (
+            1,
+            "insert_or_replace_dont_check",
+            false,
+            12,
+            187,
+            409674,
+            394925,
+            274,
+        ),
+        (1, "replace", true, 34, 0, 4513, 6170, 79),
+        (
+            1,
+            "replace",
+            false,
+            506892,
+            150,
+            4294967295,
+            27857252525,
+            87703314,
+        ),
+        (1, "replace_dont_check", true, 13, 0, 1271, 1379, 23),
+        (1, "replace_dont_check", false, 12, 150, 409711, 394925, 274),
+        (1, "patch", true, 34, 0, 4513, 6170, 79),
+        (
+            1,
+            "patch",
+            false,
+            506892,
+            150,
+            4294967295,
+            27857252525,
+            87703314,
+        ),
+        (1, "patch_dont_check", true, 13, 0, 1271, 1379, 23),
+        (1, "patch_dont_check", false, 12, 150, 409711, 394925, 274),
+        (2, "insert_or_replace", true, 34, 245, 4545, 6578, 79),
+        (
+            2,
+            "insert_or_replace",
+            false,
+            506892,
+            229,
+            4294967295,
+            27857252525,
+            87703315,
+        ),
+        (
+            2,
+            "insert_or_replace_dont_check",
+            true,
+            13,
+            245,
+            1095,
+            1451,
+            23,
+        ),
+        (
+            2,
+            "insert_or_replace_dont_check",
+            false,
+            12,
+            229,
+            409674,
+            394925,
+            275,
+        ),
+        (2, "replace", true, 34, 0, 4790, 6578, 79),
+        (
+            2,
+            "replace",
+            false,
+            506892,
+            192,
+            4294967295,
+            27857252525,
+            87703315,
+        ),
+        (2, "replace_dont_check", true, 13, 0, 1340, 1451, 23),
+        (2, "replace_dont_check", false, 12, 192, 409711, 394925, 275),
+        (3, "insert_or_replace", true, 34, 198, 4545, 6578, 78),
+        (
+            3,
+            "insert_or_replace",
+            false,
+            506892,
+            182,
+            4294967295,
+            27857252525,
+            87703314,
+        ),
+        (
+            3,
+            "insert_or_replace_dont_check",
+            true,
+            13,
+            198,
+            1095,
+            1451,
+            22,
+        ),
+        (
+            3,
+            "insert_or_replace_dont_check",
+            false,
+            12,
+            182,
+            409674,
+            394925,
+            274,
+        ),
+        (3, "replace", true, 34, 0, 4751, 6578, 78),
+        (
+            3,
+            "replace",
+            false,
+            506892,
+            0,
+            4294967295,
+            27857252525,
+            87703314,
+        ),
+        (3, "replace_dont_check", true, 13, 0, 1301, 1451, 22),
+        (3, "replace_dont_check", false, 12, 0, 409864, 394925, 274),
+        (4, "insert_or_replace", true, 34, 223, 4289, 6170, 79),
+        (
+            4,
+            "insert_or_replace",
+            false,
+            506892,
+            223,
+            4294967295,
+            27857252525,
+            87703315,
+        ),
+        (
+            4,
+            "insert_or_replace_dont_check",
+            true,
+            13,
+            223,
+            1047,
+            1379,
+            23,
+        ),
+        (
+            4,
+            "insert_or_replace_dont_check",
+            false,
+            12,
+            223,
+            409674,
+            394925,
+            275,
+        ),
+        (4, "replace", true, 34, 0, 4512, 6170, 79),
+        (
+            4,
+            "replace",
+            false,
+            506892,
+            186,
+            4294967295,
+            27857252525,
+            87703315,
+        ),
+        (4, "replace_dont_check", true, 13, 0, 1270, 1379, 23),
+        (4, "replace_dont_check", false, 12, 186, 409711, 394925, 275),
+        (4, "refresh_trusted", true, 13, 0, 1270, 1379, 23),
+        (4, "refresh_trusted", false, 12, 186, 409711, 394925, 275),
+        (5, "insert_or_replace", true, 34, 240, 4545, 6578, 79),
+        (
+            5,
+            "insert_or_replace",
+            false,
+            506892,
+            224,
+            4294967295,
+            27857252525,
+            87703315,
+        ),
+        (
+            5,
+            "insert_or_replace_dont_check",
+            true,
+            13,
+            240,
+            1095,
+            1451,
+            23,
+        ),
+        (
+            5,
+            "insert_or_replace_dont_check",
+            false,
+            12,
+            224,
+            409674,
+            394925,
+            275,
+        ),
+        (5, "replace", true, 34, 0, 4785, 6578, 79),
+        (
+            5,
+            "replace",
+            false,
+            506892,
+            187,
+            4294967295,
+            27857252525,
+            87703315,
+        ),
+        (5, "replace_dont_check", true, 13, 0, 1335, 1451, 23),
+        (5, "replace_dont_check", false, 12, 187, 409711, 394925, 275),
+        (6, "insert_or_replace", true, 34, 151, 4289, 6170, 80),
+        (
+            6,
+            "insert_or_replace",
+            false,
+            506892,
+            151,
+            4294967295,
+            27857252525,
+            87703316,
+        ),
+        (
+            6,
+            "insert_or_replace_dont_check",
+            true,
+            13,
+            151,
+            1047,
+            1379,
+            24,
+        ),
+        (
+            6,
+            "insert_or_replace_dont_check",
+            false,
+            12,
+            151,
+            409674,
+            394925,
+            276,
+        ),
+        (6, "replace", true, 34, 0, 4440, 6170, 80),
+        (
+            6,
+            "replace",
+            false,
+            506892,
+            0,
+            4294967295,
+            27857252525,
+            87703316,
+        ),
+        (6, "replace_dont_check", true, 13, 0, 1198, 1379, 24),
+        (6, "replace_dont_check", false, 12, 0, 409825, 394925, 276),
+    ];
+
+    /// Without the option, every estimate is what it was before the option
+    /// existed.
+    #[test]
+    fn estimates_without_the_option_are_unchanged() {
+        let grove_version = GroveVersion::latest();
+        let mut pinned = ESTIMATES_BEFORE_THE_OPTION.iter();
+        for (case, (_, new, tree_type)) in estimate_cases().into_iter().enumerate() {
+            for (label, op) in settling_writes(&new) {
+                for average_case in [true, false] {
+                    let average_case_tree_type = average_case.then_some(tree_type);
+                    for batch_apply_options in [None, Some(options(Mode::Merging))] {
+                        let estimate = estimate(
+                            vec![op.clone()],
+                            batch_apply_options,
+                            average_case_tree_type,
+                            grove_version,
+                        );
+                        let &(
+                            pinned_case,
+                            pinned_label,
+                            pinned_average_case,
+                            seek_count,
+                            added_bytes,
+                            replaced_bytes,
+                            storage_loaded_bytes,
+                            hash_node_calls,
+                        ) = pinned.clone().next().expect("expected a pinned estimate");
+                        assert_eq!(
+                            (pinned_case, pinned_label, pinned_average_case),
+                            (case, label, average_case)
+                        );
+                        assert_eq!(
+                            estimate,
+                            OperationCost {
+                                seek_count,
+                                storage_cost: grovedb_costs::storage_cost::StorageCost {
+                                    added_bytes,
+                                    replaced_bytes,
+                                    removed_bytes: NoStorageRemoval,
+                                },
+                                storage_loaded_bytes,
+                                hash_node_calls,
+                                sinsemilla_hash_calls: 0,
+                            },
+                            "case {case}, {label}, average case {average_case}"
+                        );
+                    }
+                    pinned.next();
+                }
+            }
+        }
+        assert!(pinned.next().is_none(), "expected every pinned estimate");
     }
 
     /// A replacement estimated without the option charges no added bytes,
@@ -1060,5 +1516,95 @@ mod tests {
             settling.storage_cost.replaced_bytes,
             merging.storage_cost.replaced_bytes
         );
+    }
+
+    /// A flagged tree written together with a write under it reaches the
+    /// estimators as the `InsertTreeWithRootHash` its propagation makes of
+    /// it; with the option that op too is charged the insertion a settled
+    /// owner change records, whatever tree it lands in.
+    #[test]
+    fn estimates_with_the_option_cover_a_settled_tree_written_with_its_children() {
+        let grove_version = GroveVersion::latest();
+        for parent_tree in [
+            Element::empty_tree(),
+            Element::empty_sum_tree(),
+            Element::empty_big_sum_tree(),
+            Element::empty_count_tree(),
+        ] {
+            let parent_tree_type = parent_tree.tree_type().expect("expected a tree");
+            let db = make_empty_grovedb();
+            db.insert(
+                EMPTY_PATH,
+                b"parent",
+                parent_tree,
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("expected to insert the parent tree");
+            db.insert(
+                [b"parent".as_slice()].as_ref(),
+                b"tree",
+                Element::empty_tree_with_flags(owned_flags(0, OLD_OWNER)),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("expected to insert the tree");
+            db.insert(
+                [b"parent".as_slice(), b"tree"].as_ref(),
+                b"child",
+                Element::new_item(b"child".to_vec()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("expected to insert the child");
+            let ops = vec![
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![b"parent".to_vec()],
+                    b"tree".to_vec(),
+                    Element::empty_tree_with_flags(owned_flags(2, NEW_OWNER)),
+                ),
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![b"parent".to_vec(), b"tree".to_vec()],
+                    b"another child".to_vec(),
+                    Element::new_item(b"another child".to_vec()),
+                ),
+            ];
+            let applied = apply(&db, ops.clone(), Mode::Settling, grove_version)
+                .expect("expected the settling update to apply");
+
+            let mut paths = HashMap::new();
+            paths.insert(KeyInfoPath(vec![]), MaxElementsNumber(2));
+            paths.insert(
+                KeyInfoPath::from_known_path([b"parent".as_slice()]),
+                MaxElementsNumber(2),
+            );
+            paths.insert(
+                KeyInfoPath::from_known_path([b"parent".as_slice(), b"tree"]),
+                MaxElementsNumber(2),
+            );
+            let worst = GroveDb::estimated_case_operations_for_batch(
+                WorstCaseCostsType(paths),
+                ops,
+                Some(options(Mode::Settling)),
+                |_cost, _old_flags, _new_flags| Ok(false),
+                |_flags, _removed_key_bytes, _removed_value_bytes| {
+                    Ok((NoStorageRemoval, NoStorageRemoval))
+                },
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected an estimate");
+            assert!(
+                worst.storage_cost.added_bytes >= applied.storage_cost.added_bytes,
+                "in a {parent_tree_type:?}: worst-case estimate {worst:?} is below the settled \
+                 apply {applied:?}"
+            );
+        }
     }
 }

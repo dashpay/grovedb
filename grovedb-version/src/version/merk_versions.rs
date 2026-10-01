@@ -29,6 +29,22 @@ pub struct MerkTreeVersions {
     /// accounting is unchanged: it is always computed from the stored
     /// predecessor bytes.
     pub put_value: FeatureVersion,
+    /// `TreeNode::just_in_time_tree_node_value_update` — the client-driven
+    /// update a replacement of a stored value runs (flags carry-over,
+    /// flags-update callback, removal sectioning).
+    ///
+    /// Version 0 measures the replacement with the new value carrying the
+    /// OLD value's flags, and keeps that measurement when the flags-update
+    /// callback answers `Unchanged`. The new value is then stored with its
+    /// own flags, so when those differ in length from the old ones the
+    /// recorded cost does not match the bytes written and the commit fails
+    /// with a storage cost mismatch. Consensus-locked for grove v1..v3.
+    ///
+    /// Version 1 re-measures the replacement from the bytes it stores when
+    /// the callback answers `Unchanged` and their size differs from the
+    /// first measurement. Every update that version 0 accepts is charged
+    /// the same.
+    pub just_in_time_value_update: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

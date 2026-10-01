@@ -25,36 +25,37 @@ impl StorageFlags {
         old_flags: Option<ElementFlags>,
         new_flags: &mut ElementFlags,
     ) -> Result<ElementFlagsUpdate, StorageFlagsError> {
-        if Self::update_changes_owner(cost, old_flags.as_ref(), new_flags) {
-            return Ok(ElementFlagsUpdate::SettleOwnerChange);
-        }
-        Self::update_element_flags(cost, old_flags, new_flags).map(ElementFlagsUpdate::from)
-    }
-
-    /// Whether `cost` updates an element in place and the old and new flags
-    /// both parse and name different owners. Flags that do not parse are left
-    /// to [`Self::update_element_flags`], which reports them.
-    fn update_changes_owner(
-        cost: &StorageCost,
-        old_flags: Option<&ElementFlags>,
-        new_flags: &ElementFlags,
-    ) -> bool {
+        // Without old flags there is no old owner, and
+        // `update_element_flags` leaves the new flags as written.
+        let Some(old_flags) = old_flags else {
+            return Ok(ElementFlagsUpdate::Unchanged);
+        };
+        let (maybe_old_storage_flags, new_storage_flags) =
+            Self::decode_update_flags(&old_flags, new_flags)?;
         let is_update_in_place = matches!(
             cost.transition_type(),
             OperationStorageTransitionType::OperationUpdateBiggerSize
                 | OperationStorageTransitionType::OperationUpdateSmallerSize
                 | OperationStorageTransitionType::OperationUpdateSameSize
         );
-        let owner_of = |flags: &ElementFlags| {
-            StorageFlags::from_element_flags_ref(flags)
-                .ok()
-                .flatten()
-                .and_then(|storage_flags| storage_flags.owner_id().copied())
-        };
-        match (old_flags.and_then(owner_of), owner_of(new_flags)) {
-            (Some(old_owner), Some(new_owner)) => is_update_in_place && old_owner != new_owner,
-            _ => false,
+        if is_update_in_place
+            && let (Some(old_owner), Some(new_owner)) = (
+                maybe_old_storage_flags
+                    .as_ref()
+                    .and_then(|flags| flags.owner_id()),
+                new_storage_flags.owner_id(),
+            )
+            && old_owner != new_owner
+        {
+            return Ok(ElementFlagsUpdate::SettleOwnerChange);
         }
+        Self::update_decoded_element_flags(
+            cost,
+            maybe_old_storage_flags,
+            new_storage_flags,
+            new_flags,
+        )
+        .map(ElementFlagsUpdate::from)
     }
 
     pub fn update_element_flags(
@@ -66,11 +67,26 @@ impl StorageFlags {
         let Some(old_flags) = old_flags else {
             return Ok(false);
         };
+        let (maybe_old_storage_flags, new_storage_flags) =
+            Self::decode_update_flags(&old_flags, new_flags)?;
+        Self::update_decoded_element_flags(
+            cost,
+            maybe_old_storage_flags,
+            new_storage_flags,
+            new_flags,
+        )
+    }
 
+    /// The old and new flags of an update, decoded as
+    /// [`Self::update_element_flags`] requires them.
+    fn decode_update_flags(
+        old_flags: &ElementFlags,
+        new_flags: &ElementFlags,
+    ) -> Result<(Option<StorageFlags>, StorageFlags), StorageFlagsError> {
         // This could be none only because the old element didn't exist
         // If they were empty we get an error
         let maybe_old_storage_flags =
-            StorageFlags::from_element_flags_ref(&old_flags).map_err(|mut e| {
+            StorageFlags::from_element_flags_ref(old_flags).map_err(|mut e| {
                 e.add_info("drive did not understand flags of old item being updated");
                 e
             })?;
@@ -82,6 +98,17 @@ impl StorageFlags {
             .ok_or(StorageFlagsError::RemovingFlagsError(
                 "removing flags from an item with flags is not allowed".to_string(),
             ))?;
+        Ok((maybe_old_storage_flags, new_storage_flags))
+    }
+
+    /// [`Self::update_element_flags`] on flags [`Self::decode_update_flags`]
+    /// decoded.
+    fn update_decoded_element_flags(
+        cost: &StorageCost,
+        maybe_old_storage_flags: Option<StorageFlags>,
+        new_storage_flags: StorageFlags,
+        new_flags: &mut ElementFlags,
+    ) -> Result<bool, StorageFlagsError> {
         let old_storage_flags =
             maybe_old_storage_flags
                 .clone()

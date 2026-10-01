@@ -9,6 +9,8 @@ use grovedb_costs::{
     CostResult, CostsExt, OperationCost,
 };
 
+use grovedb_version::version::GroveVersion;
+
 use crate::{
     tree::{kv::ValueDefinedCostType, CryptoHash, TreeFeatureType, TreeNode},
     Error,
@@ -42,6 +44,7 @@ impl TreeNode {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
+        grove_version: &GroveVersion,
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
 
@@ -58,7 +61,8 @@ impl TreeNode {
                     old_specialized_cost,
                     get_temp_new_value_with_old_flags,
                     update_tree_value_based_on_costs,
-                    section_removal_bytes
+                    section_removal_bytes,
+                    grove_version,
                 )
             );
         }
@@ -95,6 +99,7 @@ impl TreeNode {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
+        grove_version: &GroveVersion,
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
 
@@ -111,7 +116,8 @@ impl TreeNode {
                     old_specialized_cost,
                     get_temp_new_value_with_old_flags,
                     update_tree_value_based_on_costs,
-                    section_removal_bytes
+                    section_removal_bytes,
+                    grove_version,
                 )
             );
         }

@@ -73,6 +73,7 @@ impl TreeNode {
                 get_temp_new_value_with_old_flags,
                 update_tree_value_based_on_costs,
                 section_removal_bytes,
+                grove_version,
             ),
             1 => self.put_value_v1(
                 value,
@@ -81,6 +82,7 @@ impl TreeNode {
                 get_temp_new_value_with_old_flags,
                 update_tree_value_based_on_costs,
                 section_removal_bytes,
+                grove_version,
             ),
             version => Err(Error::VersionError(
                 GroveVersionError::UnknownVersionMismatch {
@@ -134,6 +136,7 @@ impl TreeNode {
                 get_temp_new_value_with_old_flags,
                 update_tree_value_based_on_costs,
                 section_removal_bytes,
+                grove_version,
             ),
             1 => self.put_value_and_reference_value_hash_v1(
                 value,
@@ -143,6 +146,7 @@ impl TreeNode {
                 get_temp_new_value_with_old_flags,
                 update_tree_value_based_on_costs,
                 section_removal_bytes,
+                grove_version,
             ),
             version => Err(Error::VersionError(
                 GroveVersionError::UnknownVersionMismatch {

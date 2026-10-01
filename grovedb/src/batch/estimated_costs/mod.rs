@@ -48,17 +48,46 @@ pub(in crate::batch) fn wrapper_overhead_for(
 pub(in crate::batch) const WORST_CASE_SETTLED_NODE_TYPE: grovedb_merk::merk::NodeType =
     grovedb_merk::merk::NodeType::BigSumNode;
 
+/// The allowance a registered referrer entry takes per segment of the
+/// referrer's inverted path (and for its key).
+#[cfg(feature = "minimal")]
+const REFERRER_ENTRY_SEGMENT_BYTES: u32 = 4;
+
+/// The allowance a registered referrer entry takes for its cascade flag and
+/// framing.
+#[cfg(feature = "minimal")]
+const REFERRER_ENTRY_FRAMING_BYTES: u32 = 16;
+
+/// An upper bound on the registered referrer entry of a referrer at `path`
+/// under `key`: an inverted path built from the referrer's qualified origin
+/// (its path segments plus its key; an absolute inversion serializes them
+/// all), the cascade flag, and framing.
+#[cfg(feature = "minimal")]
+pub(in crate::batch) fn backward_reference_entry_bound(
+    path: &crate::batch::KeyInfoPath,
+    key: &crate::batch::KeyInfo,
+) -> u32 {
+    use grovedb_storage::worst_case_costs::WorstKeyLength;
+
+    path.0
+        .iter()
+        .map(|segment| REFERRER_ENTRY_SEGMENT_BYTES + segment.max_length() as u32)
+        .sum::<u32>()
+        .saturating_add(REFERRER_ENTRY_SEGMENT_BYTES + key.max_length() as u32)
+        .saturating_add(REFERRER_ENTRY_FRAMING_BYTES)
+}
+
 /// An upper bound on one registered referrer entry of a backward-references
-/// element whose referrers may sit anywhere registration admits them: the
-/// inverted path of a referrer at the deepest such position
-/// (`MAX_BACKWARD_REFERENCES_GROVE_DEPTH` segments plus its key, each of the
-/// biggest key size), with the per-segment and framing allowance the
-/// registration bound uses.
+/// element whose referrers may sit anywhere registration admits them:
+/// [`backward_reference_entry_bound`] of a referrer at the deepest such
+/// position (`MAX_BACKWARD_REFERENCES_GROVE_DEPTH` segments plus its key,
+/// each of the biggest key size).
 #[cfg(feature = "minimal")]
 pub(in crate::batch) const WORST_CASE_BACKWARD_REFERENCE_ENTRY_BOUND: u32 =
     (crate::bidirectional_references::MAX_BACKWARD_REFERENCES_GROVE_DEPTH as u32 + 1)
-        * (4 + grovedb_merk::estimated_costs::worst_case_costs::MERK_BIGGEST_KEY_SIZE)
-        + 16;
+        * (REFERRER_ENTRY_SEGMENT_BYTES
+            + grovedb_merk::estimated_costs::worst_case_costs::MERK_BIGGEST_KEY_SIZE)
+        + REFERRER_ENTRY_FRAMING_BYTES;
 
 /// The bytes a write of `element` at a key of `key_len` bytes adds when it
 /// settles an owner change: the whole node, key and value, sized exactly as
@@ -66,14 +95,16 @@ pub(in crate::batch) const WORST_CASE_BACKWARD_REFERENCE_ENTRY_BOUND: u32 =
 ///
 /// A backward-references element lands with the referrers registered on the
 /// element it replaces in place of the ones it was written with, and the
-/// settled apply adds their entries too: they are charged at the element's
-/// declared capacity, each at `referrer_entry_bound` bytes.
+/// settled apply adds their entries too. Those referrers can sit anywhere
+/// registration admits them, so they are charged at the element's declared
+/// capacity, each at [`WORST_CASE_BACKWARD_REFERENCE_ENTRY_BOUND`]. (Only
+/// backward-references elements declare a capacity, and none of them has a
+/// value-defined cost.)
 #[cfg(feature = "minimal")]
 fn settled_owner_change_added_bytes(
     key_len: u32,
     element: &crate::Element,
     node_type: grovedb_merk::merk::NodeType,
-    referrer_entry_bound: u32,
     grove_version: &grovedb_version::version::GroveVersion,
 ) -> Result<u32, crate::Error> {
     use grovedb_merk::{
@@ -84,48 +115,42 @@ fn settled_owner_change_added_bytes(
         },
     };
 
-    let carried_referrer_bytes = element.max_incoming_references().map_or(0, |capacity| {
-        (capacity as u32).saturating_mul(referrer_entry_bound)
-    });
-    Ok(match element.value_defined_cost(grove_version) {
+    let raw_value_len = match element.value_defined_cost(grove_version) {
         Some(LayeredValueDefinedCost(value_cost)) => {
-            KV::layered_node_byte_cost_size_for_key_and_value_lengths(
-                key_len,
-                value_cost.saturating_add(carried_referrer_bytes),
-                node_type,
-            )
+            return Ok(KV::layered_node_byte_cost_size_for_key_and_value_lengths(
+                key_len, value_cost, node_type,
+            ))
         }
-        Some(SpecializedValueDefinedCost(value_cost)) => {
-            KV::node_byte_cost_size_for_key_and_raw_value_lengths(
-                key_len,
-                value_cost.saturating_add(carried_referrer_bytes),
-                node_type,
-            )
+        Some(SpecializedValueDefinedCost(value_cost)) => value_cost,
+        None => {
+            let carried_referrer_bytes = element.max_incoming_references().map_or(0, |capacity| {
+                (capacity as u32).saturating_mul(WORST_CASE_BACKWARD_REFERENCE_ENTRY_BOUND)
+            });
+            (element.serialized_size(grove_version)? as u32).saturating_add(carried_referrer_bytes)
         }
-        None => KV::node_byte_cost_size_for_key_and_raw_value_lengths(
-            key_len,
-            (element.serialized_size(grove_version)? as u32).saturating_add(carried_referrer_bytes),
-            node_type,
-        ),
-    })
+    };
+    Ok(KV::node_byte_cost_size_for_key_and_raw_value_lengths(
+        key_len,
+        raw_value_len,
+        node_type,
+    ))
 }
 
 /// `base`, the estimate of a write of `element` over a stored element,
 /// charged for the case that the write settles an owner change
 /// ([`BatchApplyOptions::settle_owner_changes`](crate::batch::BatchApplyOptions::settle_owner_changes)):
 /// its added bytes are raised to every byte of the element's node, key
-/// included, sized for a tree of `node_type` nodes with each referrer entry
-/// a backward-references element may carry over at `referrer_entry_bound`
-/// bytes, so the estimate covers both the replacement it models and the
-/// insertion a settled owner change records. An element without flags names
-/// no owner and never settles, so its estimate is left as it is.
+/// included, sized for a tree of `node_type` nodes with the referrer entries
+/// a backward-references element may carry over, so the estimate covers both
+/// the replacement it models and the insertion a settled owner change
+/// records. An element without flags names no owner and never settles, so
+/// its estimate is left as it is.
 #[cfg(feature = "minimal")]
 pub(in crate::batch) fn with_settled_owner_change(
     base: grovedb_costs::CostResult<(), crate::Error>,
     key: &crate::batch::KeyInfo,
     element: &crate::Element,
     node_type: grovedb_merk::merk::NodeType,
-    referrer_entry_bound: u32,
     grove_version: &grovedb_version::version::GroveVersion,
 ) -> grovedb_costs::CostResult<(), crate::Error> {
     use grovedb_costs::CostsExt;
@@ -137,7 +162,6 @@ pub(in crate::batch) fn with_settled_owner_change(
             key.max_length() as u32,
             element,
             node_type,
-            referrer_entry_bound,
             grove_version,
         ) {
             Ok(settled_bytes) => {
@@ -145,6 +169,44 @@ pub(in crate::batch) fn with_settled_owner_change(
             }
             Err(e) => return Err(e).wrap_with_cost(cost),
         }
+    }
+    value.wrap_with_cost(cost)
+}
+
+/// [`with_settled_owner_change`] for the `InsertTreeWithRootHash` that a
+/// write of a tree becomes when the batch also writes under it: `base` is
+/// raised by the tree element that op writes — a tree of `tree_type` with
+/// `flags`, and `wrapper_overhead` wrapper bytes — sized as the apply sizes
+/// it in a tree of `node_type` nodes.
+#[cfg(feature = "minimal")]
+pub(in crate::batch) fn with_settled_tree_owner_change(
+    base: grovedb_costs::CostResult<(), crate::Error>,
+    key: &crate::batch::KeyInfo,
+    flags: &Option<crate::ElementFlags>,
+    tree_type: grovedb_merk::tree_type::TreeType,
+    wrapper_overhead: u32,
+    node_type: grovedb_merk::merk::NodeType,
+) -> grovedb_costs::CostResult<(), crate::Error> {
+    use grovedb_costs::CostsExt;
+    use grovedb_merk::{tree::kv::KV, tree_type::CostSize};
+    use grovedb_storage::worst_case_costs::WorstKeyLength;
+    use integer_encoding::VarInt;
+
+    let grovedb_costs::CostContext { value, mut cost } = base;
+    if value.is_ok()
+        && let Some(flags) = flags
+    {
+        let flags_len = flags.len() as u32;
+        let value_cost = tree_type.cost_size()
+            + flags_len
+            + flags_len.required_space() as u32
+            + wrapper_overhead;
+        let settled_bytes = KV::layered_node_byte_cost_size_for_key_and_value_lengths(
+            key.max_length() as u32,
+            value_cost,
+            node_type,
+        );
+        cost.storage_cost.added_bytes = cost.storage_cost.added_bytes.max(settled_bytes);
     }
     value.wrap_with_cost(cost)
 }

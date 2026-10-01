@@ -31,10 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `bool`; a batch refuses `SettleOwnerChange` unless the option is set. With
   the option, the average-case and worst-case batch estimates charge every
   `InsertOrReplace`, `Replace`, `Patch` and trusted `RefreshReference` of an
-  element with flags at least the bytes its node adds when inserted (for a
+  element with flags, and the write of a flagged tree the batch also writes
+  under, at least the bytes its node adds when inserted (for a
   backward-references element, with the referrers it carries over counted at
-  its declared capacity), so an estimate is never below a settled apply. With the option off, every cost,
-  estimate, stored element and hash is what it was before.
+  its declared capacity, each at the largest entry registration admits), so
+  an estimate is never below a settled apply. With the option off, every
+  cost, estimate, stored element and hash is what it was before.
 
 ### Changed
 - **BREAKING**: `BatchApplyOptions` has a new public field,
@@ -52,6 +54,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an `ElementFlagsUpdate`, so a callback answering a `bool` compiles as before,
   except one that never returns `Ok`, which now has to name its result type
   (for example `-> Result<bool, Error>`).
+- **BREAKING**: `TreeNode::put_value_with_fixed_cost`,
+  `TreeNode::put_value_with_reference_value_hash_and_value_cost`,
+  `TreeNode::put_value_with_two_reference_value_hashes_and_value_cost` and
+  their `Walker` counterparts take a `&GroveVersion`, and
+  `TreeNode::provided_value_hash_put_final_value` takes the value-defined
+  cost the put stamps on the node and a `&GroveVersion`.
 - **BREAKING**: `delete_operation_for_delete_internal` and
   `delete_operations_for_delete_up_tree_while_empty` take the operations
   already pending in the batch as any `impl PendingOperations` in place of a
@@ -92,6 +100,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an absent path. `AxisKeys::empty_for_axis` is new. (#965)
 
 ### Fixed
+- A reference written in a batch that also updates its target item, such as
+  a Drive index reference refreshed alongside its document, committed to
+  bytes the update never stores when the target was a sum item (`SumItem`,
+  `ItemWithSumItem`) whose storage flags the flags update merges: an owned
+  item updated in a later epoch, or an unowned one gaining an owner. The
+  prediction assumed a sum item keeps its stored flags, while the apply
+  stores the merged ones, so the grove no longer verified. From GROVE_V4
+  (`apply_batch.same_batch_reference_target_prediction`) the prediction runs
+  Merk's own just-in-time value update, so the reference commits to exactly
+  the stored bytes; GROVE_V1..V3 keep the old prediction.
+- A replacement whose flags update answered `Unchanged` was charged as if the
+  new value carried the old value's flags. When its own flags had a different
+  length (a write with longer, shorter or no flags without a flags update,
+  or an unowned item gaining an owner as it grows) the commit failed with a
+  storage cost mismatch. From GROVE_V4
+  (`merk_versions.tree.just_in_time_value_update`) the replacement is
+  measured from the bytes it stores; GROVE_V1..V3 keep the old measurement.
 - From `GROVE_V4`, `delete_operation_for_delete_internal`, and the up-tree
   builders through it, no longer count a pending `DeleteTree` with
   `SubelementsDeletionBehavior::Skip` as removing its child when deciding

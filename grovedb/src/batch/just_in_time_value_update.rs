@@ -23,7 +23,7 @@ use grovedb_merk::{
             ValueDefinedCostType,
             ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
         },
-        TreeNode,
+        TreeFeatureType, TreeNode,
     },
     tree_type::{CostSize, TreeType, SUM_ITEM_COST_SIZE},
     Error as MerkError,
@@ -60,6 +60,25 @@ where
             ));
         }
         Ok(update)
+    }
+}
+
+/// The caller's flags-update callback with its answer as an
+/// [`ElementFlagsUpdate`] (a `bool` answer is `Changed` or `Unchanged`).
+pub(crate) fn flags_update_answers<U>(
+    mut flags_update: impl FnMut(
+        &StorageCost,
+        Option<ElementFlags>,
+        &mut ElementFlags,
+    ) -> Result<U, Error>,
+) -> impl FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<ElementFlagsUpdate, Error>
+where
+    U: Into<ElementFlagsUpdate>,
+{
+    move |storage_cost: &StorageCost,
+          old_flags: Option<ElementFlags>,
+          new_flags: &mut ElementFlags| {
+        flags_update(storage_cost, old_flags, new_flags).map(Into::into)
     }
 }
 
@@ -242,6 +261,67 @@ where
     }
 }
 
+/// The bytes a batch apply finally stores when it puts `new_serialized`
+/// (with `feature_type`, and the value-defined cost `value_defined_cost` the
+/// put stamps on the node) over the stored `old_serialized` bytes at `key` in
+/// a subtree of `in_tree_type`, with the caller's callbacks: Merk's own
+/// just-in-time value update, run on a detached node.
+///
+/// The callbacks must answer the apply the same way they answer here.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn predict_put_final_bytes<G, SR>(
+    key: &[u8],
+    old_serialized: &[u8],
+    new_serialized: Vec<u8>,
+    feature_type: TreeFeatureType,
+    value_defined_cost: Option<ValueDefinedCostType>,
+    in_tree_type: TreeType,
+    flags_update: &mut G,
+    split_removal_bytes: &mut SR,
+    grove_version: &GroveVersion,
+) -> Result<Vec<u8>, MerkError>
+where
+    G: FnMut(
+        &StorageCost,
+        Option<ElementFlags>,
+        &mut ElementFlags,
+    ) -> Result<ElementFlagsUpdate, Error>,
+    SR: FnMut(
+        &mut ElementFlags,
+        u32,
+        u32,
+    ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
+{
+    TreeNode::provided_value_hash_put_final_value(
+        key.to_vec(),
+        old_serialized.to_vec(),
+        new_serialized,
+        feature_type,
+        value_defined_cost,
+        &|key, value| old_specialized_cost(key, value, in_tree_type, grove_version),
+        &|old_value, new_value| new_value_with_old_flags(old_value, new_value, grove_version),
+        &mut |storage_costs, old_value, new_value| {
+            update_value_flags_based_on_costs(
+                flags_update,
+                storage_costs,
+                old_value,
+                new_value,
+                grove_version,
+            )
+        },
+        &mut |value, removed_key_bytes, removed_value_bytes| {
+            section_removal_bytes(
+                split_removal_bytes,
+                value,
+                removed_key_bytes,
+                removed_value_bytes,
+                grove_version,
+            )
+        },
+        grove_version,
+    )
+}
+
 /// The element a batch apply finally stores when it writes `new_element`
 /// (a backward-references family element, which the apply writes as a
 /// provided-value-hash put) over the stored `old_serialized` bytes at `key`
@@ -272,31 +352,17 @@ where
 {
     let new_serialized = new_element.serialize(grove_version)?;
     let feature_type = new_element.get_feature_type(in_tree_type)?;
-    let final_bytes = TreeNode::provided_value_hash_put_final_value(
-        key.to_vec(),
-        old_serialized.to_vec(),
+    // A provided-value-hash put drops any value-defined cost.
+    let final_bytes = predict_put_final_bytes(
+        key,
+        old_serialized,
         new_serialized.clone(),
         feature_type,
-        &|key, value| old_specialized_cost(key, value, in_tree_type, grove_version),
-        &|old_value, new_value| new_value_with_old_flags(old_value, new_value, grove_version),
-        &mut |storage_costs, old_value, new_value| {
-            update_value_flags_based_on_costs(
-                flags_update,
-                storage_costs,
-                old_value,
-                new_value,
-                grove_version,
-            )
-        },
-        &mut |value, removed_key_bytes, removed_value_bytes| {
-            section_removal_bytes(
-                split_removal_bytes,
-                value,
-                removed_key_bytes,
-                removed_value_bytes,
-                grove_version,
-            )
-        },
+        None,
+        in_tree_type,
+        flags_update,
+        split_removal_bytes,
+        grove_version,
     )
     .map_err(|e| {
         Error::CorruptedData(format!(

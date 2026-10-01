@@ -1157,6 +1157,7 @@ impl TreeNode {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
+        grove_version: &GroveVersion,
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
         self.inner.kv = self.inner.kv.put_value_with_fixed_cost_no_update_of_hashes(
@@ -1175,7 +1176,8 @@ impl TreeNode {
                     old_specialized_cost,
                     get_temp_new_value_with_old_flags,
                     update_tree_value_based_on_costs,
-                    section_removal_bytes
+                    section_removal_bytes,
+                    grove_version,
                 )
             );
         }
@@ -1244,7 +1246,8 @@ impl TreeNode {
                     old_specialized_cost,
                     get_temp_new_value_with_old_flags,
                     update_tree_value_based_on_costs,
-                    section_removal_bytes
+                    section_removal_bytes,
+                    grove_version,
                 )
             );
             // The provided hash was computed over the bytes supplied by the
@@ -1380,6 +1383,7 @@ impl TreeNode {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
+        grove_version: &GroveVersion,
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
 
@@ -1396,7 +1400,8 @@ impl TreeNode {
                     old_specialized_cost,
                     get_temp_new_value_with_old_flags,
                     update_tree_value_based_on_costs,
-                    section_removal_bytes
+                    section_removal_bytes,
+                    grove_version,
                 )
             );
         }
@@ -1439,6 +1444,7 @@ impl TreeNode {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
+        grove_version: &GroveVersion,
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
 
@@ -1458,7 +1464,8 @@ impl TreeNode {
                     old_specialized_cost,
                     get_temp_new_value_with_old_flags,
                     update_tree_value_based_on_costs,
-                    section_removal_bytes
+                    section_removal_bytes,
+                    grove_version,
                 )
             );
         }

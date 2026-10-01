@@ -91,11 +91,12 @@ pub struct BatchApplyOptions {
     ///
     /// The estimators read it too: an estimate with it set charges every
     /// write that may settle an owner change (`InsertOrReplace`, `Replace`,
-    /// `Patch` and a trusted `RefreshReference` of an element with flags) at
-    /// least the bytes its element adds when inserted, with the referrer
-    /// entries a backward-references element carries over counted at its
-    /// declared capacity, so the estimate is never below what the apply
-    /// records.
+    /// `Patch` and a trusted `RefreshReference` of an element with flags, and
+    /// the write of a flagged tree the batch also writes under) at least the
+    /// bytes its element adds when inserted, with the referrer entries a
+    /// backward-references element carries over counted at its declared
+    /// capacity, each at the largest entry registration admits, so the
+    /// estimate is never below what the apply records.
     ///
     /// Off by default, and every cost is then what it was before the option
     /// existed.
@@ -118,6 +119,14 @@ impl Default for BatchApplyOptions {
 
 #[cfg(feature = "minimal")]
 impl BatchApplyOptions {
+    /// Whether the batch options `options`, when given, set
+    /// [`Self::settle_owner_changes`].
+    pub(crate) fn settle_owner_changes_in(options: &Option<BatchApplyOptions>) -> bool {
+        options
+            .as_ref()
+            .is_some_and(|options| options.settle_owner_changes)
+    }
+
     /// As insert options
     pub(crate) fn as_insert_options(&self) -> InsertOptions {
         InsertOptions {
