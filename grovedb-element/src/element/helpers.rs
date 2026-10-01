@@ -119,11 +119,13 @@ impl Element {
     /// `NonCounted` and `NotCountedOrSummed` return 0 — both wrappers
     /// suppress the parent count contribution.
     /// `NotSummed` delegates to its inner — counts still propagate.
+    /// `CountItem` returns its explicit count, which may be 0.
     pub fn count_value_or_default(&self) -> u64 {
         match self {
             Element::NonCounted(_) | Element::NotCountedOrSummed(_) => 0,
             Element::NotSummed(inner) => inner.count_value_or_default(),
-            Element::CountTree(_, count_value, _)
+            Element::CountItem(count_value, _)
+            | Element::CountTree(_, count_value, _)
             | Element::CountSumTree(_, count_value, ..)
             | Element::ProvableCountTree(_, count_value, _)
             | Element::ProvableCountSumTree(_, count_value, ..)
@@ -146,6 +148,7 @@ impl Element {
     /// `NotCountedOrSummed` returns `(0, 0)` — both are suppressed.
     /// `ReferenceWithSumItem` returns `(1, sum_value)` — counts as one
     /// element like a plain reference, contributes its explicit sum.
+    /// `CountItem` returns `(count_value, 0)` — its explicit count and no sum.
     pub fn count_sum_value_or_default(&self) -> (u64, i64) {
         match self {
             Element::NonCounted(inner) => (0, inner.sum_value_or_default()),
@@ -160,7 +163,9 @@ impl Element {
             | Element::ItemWithSumItemWithBackwardsReferences(_, sum_value, _, _) => {
                 (1, *sum_value)
             }
-            Element::CountTree(_, count_value, _) => (*count_value, 0),
+            Element::CountItem(count_value, _) | Element::CountTree(_, count_value, _) => {
+                (*count_value, 0)
+            }
             Element::CountSumTree(_, count_value, sum_value, _)
             | Element::ProvableCountSumTree(_, count_value, sum_value, _)
             | Element::ProvableCountProvableSumTree(_, count_value, sum_value, _) => {
@@ -580,7 +585,13 @@ impl Element {
                 | Element::ItemWithBackwardsReferences(..)
                 | Element::SumItemWithBackwardsReferences(..)
                 | Element::ItemWithSumItemWithBackwardsReferences(..)
+                | Element::CountItem(..)
         )
+    }
+
+    /// Check if the element is a count item.
+    pub fn is_count_item(&self) -> bool {
+        matches!(self, Element::CountItem(..))
     }
 
     /// Check if the element is a basic item. Looks through `NonCounted`.
@@ -701,6 +712,7 @@ impl Element {
             | Element::BigSumTree(.., flags)
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
+            | Element::CountItem(_, flags)
             | Element::CountSumTree(.., flags)
             | Element::ProvableCountTree(.., flags)
             | Element::ProvableCountSumTree(.., flags)
@@ -738,6 +750,7 @@ impl Element {
             | Element::BigSumTree(.., flags)
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
+            | Element::CountItem(_, flags)
             | Element::CountSumTree(.., flags)
             | Element::ProvableCountTree(.., flags)
             | Element::ProvableCountSumTree(.., flags)
@@ -775,6 +788,7 @@ impl Element {
             | Element::BigSumTree(.., flags)
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
+            | Element::CountItem(_, flags)
             | Element::CountSumTree(.., flags)
             | Element::ProvableCountTree(.., flags)
             | Element::ProvableCountSumTree(.., flags)
@@ -811,6 +825,7 @@ impl Element {
             | Element::BigSumTree(.., flags)
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
+            | Element::CountItem(_, flags)
             | Element::CountSumTree(.., flags)
             | Element::ProvableCountTree(.., flags)
             | Element::ProvableCountSumTree(.., flags)

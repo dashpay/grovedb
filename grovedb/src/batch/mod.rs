@@ -2610,7 +2610,10 @@ where
         // from the OUTER element's serialized bytes. Storage keeps the
         // wrapper byte; the on-disk value hash must reflect that.
         match element.underlying() {
-            Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
+            Element::Item(..)
+            | Element::SumItem(..)
+            | Element::ItemWithSumItem(..)
+            | Element::CountItem(..) => {
                 let serialized =
                     cost_return_on_error_into_no_add!(cost, element.serialize(grove_version));
                 let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
@@ -2796,7 +2799,10 @@ where
                     // Look through NonCounted for dispatch; serialize the outer
                     // wrapper for hashing so the value hash matches storage.
                     match element.underlying() {
-                        Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
+                        Element::Item(..)
+                        | Element::SumItem(..)
+                        | Element::ItemWithSumItem(..)
+                        | Element::CountItem(..) => {
                             let serialized = cost_return_on_error_into_no_add!(
                                 cost,
                                 element.serialize(grove_version)
@@ -2934,7 +2940,10 @@ where
                 }
                 GroveOp::InsertWithKnownToNotAlreadyExist { element }
                 | GroveOp::InsertIfNotExists { element, .. } => match element.underlying() {
-                    Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
+                    Element::Item(..)
+                    | Element::SumItem(..)
+                    | Element::ItemWithSumItem(..)
+                    | Element::CountItem(..) => {
                         let serialized = cost_return_on_error_into_no_add!(
                             cost,
                             element.serialize(grove_version)
@@ -3491,6 +3500,13 @@ where
                             "not-counted-or-summed elements may only be inserted into \
                              CountSumTree; ProvableCountSumTree commits the count \
                              cryptographically and cannot host NotCountedOrSummed children",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                    if element.is_count_item() && !in_tree_type.is_count_bearing() {
+                        return Err(Error::InvalidBatchOperation(
+                            "count items may only be inserted into count-bearing trees; \
+                             anywhere else their count would contribute to nothing",
                         ))
                         .wrap_with_cost(cost);
                     }
@@ -4087,7 +4103,10 @@ where
                                 ),
                             ));
                         }
-                        Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
+                        Element::Item(..)
+                        | Element::SumItem(..)
+                        | Element::ItemWithSumItem(..)
+                        | Element::CountItem(..) => {
                             let merk_feature_type = cost_return_on_error_into!(
                                 &mut cost,
                                 element
@@ -6711,6 +6730,37 @@ impl GroveDb {
         Ok(())
     }
 
+    /// `Element::CountItem` activates with `GROVE_V4`
+    /// (`element.count_item`). Released grove versions refuse a batch that
+    /// would write one, so no released protocol version can store it.
+    fn reject_count_items_in_batch(
+        ops: &[QualifiedGroveDbOp],
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        if grove_version.grovedb_versions.element.count_item != 0 {
+            return Ok(());
+        }
+        for op in ops {
+            let element = match &op.op {
+                GroveOp::InsertWithKnownToNotAlreadyExist { element }
+                | GroveOp::InsertIfNotExists { element, .. }
+                | GroveOp::InsertOrReplace { element }
+                | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
+                | GroveOp::Replace { element }
+                | GroveOp::ReplaceDontCheckForBackwardsReferences { element }
+                | GroveOp::Patch { element, .. }
+                | GroveOp::PatchDontCheckForBackwardsReferences { element, .. } => element,
+                _ => continue,
+            };
+            if element.underlying().is_count_item() {
+                return Err(Error::NotSupported(
+                    "count items (CountItem) require GROVE_V4+".to_owned(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Applies batch of operations on GroveDB
     ///
     /// `update_element_flags_function` and `split_removal_bytes_function`
@@ -6805,6 +6855,7 @@ impl GroveDb {
             cost,
             Self::reject_backward_references_elements_in_batch(&ops, backward_references_enabled)
         );
+        cost_return_on_error_no_add!(cost, Self::reject_count_items_in_batch(&ops, grove_version));
         cost_return_on_error_no_add!(
             cost,
             Self::reject_flat_drop_declaring_participants(&ops, grove_version)
@@ -7274,6 +7325,7 @@ impl GroveDb {
             cost,
             Self::reject_backward_references_elements_in_batch(&ops, false)
         );
+        cost_return_on_error_no_add!(cost, Self::reject_count_items_in_batch(&ops, grove_version));
         cost_return_on_error_no_add!(
             cost,
             Self::reject_flat_drop_declaring_participants(&ops, grove_version)
@@ -7598,6 +7650,10 @@ impl GroveDb {
         cost_return_on_error_no_add!(
             cost,
             Self::reject_backward_references_elements_in_batch(&new_operations, false)
+        );
+        cost_return_on_error_no_add!(
+            cost,
+            Self::reject_count_items_in_batch(&new_operations, grove_version)
         );
         cost_return_on_error_no_add!(
             cost,

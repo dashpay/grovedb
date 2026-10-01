@@ -289,6 +289,12 @@ impl ElementInsertToStorageExtensions for Element {
                 "cannot add sum item to non sum tree",
             ));
         }
+        if self.is_count_item() && !tree_type.is_count_bearing() {
+            return Err(Error::InvalidInputError(
+                "count items may only be inserted into count-bearing trees; anywhere else \
+                 their count would contribute to nothing",
+            ));
+        }
         if self.supports_backward_references()
             && matches!(
                 tree_type,

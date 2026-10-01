@@ -183,6 +183,33 @@ running sum. The `NotSummed` ElementType twin lives at slot 177 in the
 ProvableSumTree's base discriminant `17` and `0xb0 | 17 = 0xB1` would mask
 back to `Reference` under the legacy `& 0x0F` inverse).
 
+## CountItem — A Counter Kept in Place
+
+Every item counts as one in a count-bearing parent. `CountItem` carries an
+explicit count instead, and contributes that count wherever a `CountTree`
+child would contribute its own:
+
+```rust
+Element::CountItem(count: CountValue, flags: Option<ElementFlags>) // discriminant [29]
+```
+
+It lets a parent count something without storing one node per counted
+thing. Replacing `CountItem(n)` with `CountItem(n + 1)` moves every
+aggregate above it, and re-keys an indexed parent's count secondary, the
+same way inserting a node would. The item is charged a fixed
+`COUNT_ITEM_COST_SIZE` (11 bytes, the `SumItem` layout) whatever its count,
+so a counter rewritten in place never adds storage. A count of zero is legal
+and still occupies its key.
+
+- It may only be inserted into a count-bearing tree (`CountTree`,
+  `CountSumTree`, the `ProvableCount*` trees, `ProvableCountIndexedTree`);
+  anywhere else its count would contribute to nothing.
+- It cannot be wrapped in `NonCounted`, `NotSummed` or `NotCountedOrSummed`.
+- It hashes and proves like `Item` (`KV` / `KVCount` / `KVCountSum` nodes);
+  the count reaches the node hash through the parent's per-node aggregate.
+- It activates with `GROVE_V4` (`element.count_item`); earlier versions
+  refuse it on every insert path and in batches.
+
 ## Element Serialization
 
 Elements are serialized using **bincode** with big-endian byte order:

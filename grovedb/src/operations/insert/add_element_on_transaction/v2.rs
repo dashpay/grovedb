@@ -353,6 +353,7 @@ impl GroveDb {
             Element::Item(..)
             | Element::SumItem(..)
             | Element::ItemWithSumItem(..)
+            | Element::CountItem(..)
             | Element::ItemWithBackwardsReferences(..)
             | Element::SumItemWithBackwardsReferences(..)
             | Element::ItemWithSumItemWithBackwardsReferences(..) => {

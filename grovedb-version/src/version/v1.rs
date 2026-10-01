@@ -92,6 +92,7 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
             get_with_value_hash: 0,
             insert_reference_if_changed_value: 0,
             aggregate_sum_query_item: 0,
+            count_item: 0,
         },
         operations: GroveDBOperationsVersions {
             get: GroveDBOperationsGetVersions {

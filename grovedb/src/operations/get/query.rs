@@ -306,6 +306,7 @@ where {
             | Element::ItemWithBackwardsReferences(..)
             | Element::SumItemWithBackwardsReferences(..)
             | Element::ItemWithSumItemWithBackwardsReferences(..)
+            | Element::CountItem(..)
             | Element::SumTree(..)
             | Element::BigSumTree(..)
             | Element::CountTree(..)
@@ -472,6 +473,7 @@ where {
                                         | Element::SumItemWithBackwardsReferences(item, _, _) => {
                                             Ok(item.encode_var_vec())
                                         }
+                                        Element::CountItem(count, _) => Ok(count.encode_var_vec()),
                                         _ => Err(Error::InvalidQuery(
                                             "the reference must result in an item",
                                         )),
@@ -490,6 +492,7 @@ where {
                         | Element::SumItemWithBackwardsReferences(item, _, _) => {
                             Ok(item.encode_var_vec())
                         }
+                        Element::CountItem(count, _) => Ok(count.encode_var_vec()),
                         Element::BidirectionalReference(..) => {
                             unreachable!("normalized to Element::Reference above")
                         }
@@ -633,7 +636,8 @@ where {
                                         Element::BigSumTree(_, big_sum_value, _) => {
                                             Ok(QueryItemOrSumReturnType::BigSumValue(big_sum_value))
                                         }
-                                        Element::CountTree(_, count_value, _) => {
+                                        Element::CountItem(count_value, _)
+                                        | Element::CountTree(_, count_value, _) => {
                                             Ok(QueryItemOrSumReturnType::CountValue(count_value))
                                         }
                                         Element::CountSumTree(_, count_value, sum_value, _) => {
@@ -715,7 +719,8 @@ where {
                         Element::BigSumTree(_, big_sum_value, _) => {
                             Ok(QueryItemOrSumReturnType::BigSumValue(big_sum_value))
                         }
-                        Element::CountTree(_, count_value, _) => {
+                        Element::CountItem(count_value, _)
+                        | Element::CountTree(_, count_value, _) => {
                             Ok(QueryItemOrSumReturnType::CountValue(count_value))
                         }
                         Element::CountSumTree(_, count_value, sum_value, _) => Ok(
@@ -1261,7 +1266,8 @@ where {
                         | Element::ProvableCountProvableSumIndexedTree(..)
                         | Element::ProvableCountIndexedTree(..)
                         | Element::Item(..)
-                        | Element::ItemWithBackwardsReferences(..) => Err(Error::InvalidQuery(
+                        | Element::ItemWithBackwardsReferences(..)
+                        | Element::CountItem(..) => Err(Error::InvalidQuery(
                             "path_queries over sum items can only refer to sum items and \
                              references",
                         )),

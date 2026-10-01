@@ -24,7 +24,7 @@ use grovedb_merk::{
         },
         TreeNode,
     },
-    tree_type::{CostSize, TreeType, SUM_ITEM_COST_SIZE},
+    tree_type::{CostSize, TreeType, COUNT_ITEM_COST_SIZE, SUM_ITEM_COST_SIZE},
     Error as MerkError,
 };
 use grovedb_version::version::GroveVersion;
@@ -144,6 +144,16 @@ where
                             + flags_len.required_space() as u32
                             + wrapper_overhead;
                         Ok((true, Some(LayeredValueDefinedCost(tree_value_cost))))
+                    }
+                    Element::CountItem(..) => {
+                        let count_item_value_cost = COUNT_ITEM_COST_SIZE
+                            + flags_len
+                            + flags_len.required_space() as u32
+                            + wrapper_overhead;
+                        Ok((
+                            true,
+                            Some(SpecializedValueDefinedCost(count_item_value_cost)),
+                        ))
                     }
                     Element::SumItem(..) => {
                         let sum_item_value_cost = SUM_ITEM_COST_SIZE

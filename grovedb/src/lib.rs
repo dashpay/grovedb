@@ -2752,7 +2752,10 @@ impl GroveDb {
                         )?);
                     }
                 }
-                Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
+                Element::Item(..)
+                | Element::SumItem(..)
+                | Element::ItemWithSumItem(..)
+                | Element::CountItem(..) => {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,

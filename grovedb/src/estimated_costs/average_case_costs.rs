@@ -17,7 +17,7 @@ use grovedb_merk::{
         },
     },
     tree::TreeNode,
-    tree_type::{CostSize, TreeType, SUM_ITEM_COST_SIZE},
+    tree_type::{CostSize, TreeType, COUNT_ITEM_COST_SIZE, SUM_ITEM_COST_SIZE},
     HASH_LENGTH,
 };
 use grovedb_storage::{rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage};
@@ -292,6 +292,18 @@ impl GroveDb {
             let tree_cost_size = tree_type.cost_size();
             let value_len = tree_cost_size + flags_len;
             add_cost_case_merk_insert_layered(&mut cost, key_len, value_len, in_tree_type)
+        } else if let Element::CountItem(_, flags) = value {
+            // A count item is charged its fixed size whatever its count.
+            let flags_len = flags.as_ref().map_or(0, |flags| {
+                let flags_len = flags.len() as u32;
+                flags_len + flags_len.required_space() as u32
+            });
+            add_cost_case_merk_insert(
+                &mut cost,
+                key_len,
+                COUNT_ITEM_COST_SIZE + flags_len,
+                in_tree_type,
+            )
         } else {
             add_cost_case_merk_insert(
                 &mut cost,
@@ -361,6 +373,15 @@ impl GroveDb {
                         as u32
                 };
                 let value_len = sum_item_cost_size + flags_len + wrapper_overhead;
+                add_cost_case_merk_replace_same_size(&mut cost, key_len, value_len, in_tree_type)
+            }
+            // A count rewritten in place keeps its fixed size.
+            Element::CountItem(_, flags) => {
+                let flags_len = flags.as_ref().map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = COUNT_ITEM_COST_SIZE + flags_len;
                 add_cost_case_merk_replace_same_size(&mut cost, key_len, value_len, in_tree_type)
             }
             _ => add_cost_case_merk_replace_same_size(

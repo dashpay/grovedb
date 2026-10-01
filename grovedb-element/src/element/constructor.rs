@@ -78,6 +78,17 @@ impl Element {
         Element::SumItem(value, flags)
     }
 
+    /// Set element to a count item without flags: an item that contributes
+    /// `count` (rather than one) to a count-bearing parent.
+    pub fn new_count_item(count: CountValue) -> Self {
+        Element::CountItem(count, None)
+    }
+
+    /// Set element to a count item with flags
+    pub fn new_count_item_with_flags(count: CountValue, flags: Option<ElementFlags>) -> Self {
+        Element::CountItem(count, flags)
+    }
+
     /// Set element to an item without flags that can be targeted by
     /// bidirectional references
     pub fn new_item_allowing_bidirectional_references(item_value: Vec<u8>) -> Self {
@@ -920,6 +931,11 @@ impl Element {
         ) {
             return Err(ElementError::InvalidInput(
                 "NonCounted cannot wrap backward-references elements",
+            ));
+        }
+        if matches!(inner, Element::CountItem(..)) {
+            return Err(ElementError::InvalidInput(
+                "NonCounted cannot wrap a CountItem: the item exists to contribute its count",
             ));
         }
         Ok(Element::NonCounted(Box::new(inner)))

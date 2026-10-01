@@ -298,6 +298,15 @@ impl GroveDb {
                     )
                 );
             }
+            Element::CountItem(..) => {
+                // `CountItem` activates with `GROVE_V4` (`element.count_item`);
+                // this generation is selected by `GROVE_V3` only, where it
+                // must not exist. Fail closed.
+                return Err(Error::NotSupported(
+                    "count items (CountItem) require GROVE_V4+".to_owned(),
+                ))
+                .wrap_with_cost(cost);
+            }
             Element::BidirectionalReference(..) => {
                 // Inserting a bidirectional reference must register its
                 // backward reference in the target's meta storage, which

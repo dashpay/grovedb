@@ -1240,6 +1240,17 @@ impl GroveDb {
                             // GROVE_V4, which proves through V1; the V0
                             // prover (locked wire format, grove v1/v2)
                             // can never legitimately encounter them.
+                            // `CountItem` activates with GROVE_V4 too
+                            // (`element.count_item`), so the V0 prover can
+                            // never legitimately encounter one either.
+                            Ok(Element::CountItem(..)) => {
+                                return Err(Error::NotSupported(
+                                    "count items are not supported in V0 proofs; they \
+                                     require GROVE_V4+, which proves through V1"
+                                        .to_owned(),
+                                ))
+                                .wrap_with_cost(cost);
+                            }
                             Ok(Element::BidirectionalReference(..))
                             | Ok(Element::ItemWithBackwardsReferences(..))
                             | Ok(Element::SumItemWithBackwardsReferences(..))
@@ -2360,6 +2371,7 @@ impl GroveDb {
                             Ok(Element::Item(..))
                             | Ok(Element::SumItem(..))
                             | Ok(Element::ItemWithSumItem(..))
+                            | Ok(Element::CountItem(..))
                                 if !done_with_results =>
                             {
                                 if !should_preserve_node_type {
@@ -3394,6 +3406,7 @@ impl GroveDb {
                             Ok(Element::Item(..))
                             | Ok(Element::SumItem(..))
                             | Ok(Element::ItemWithSumItem(..))
+                            | Ok(Element::CountItem(..))
                             | Ok(Element::ItemWithBackwardsReferences(..))
                             | Ok(Element::SumItemWithBackwardsReferences(..))
                             | Ok(Element::ItemWithSumItemWithBackwardsReferences(..))

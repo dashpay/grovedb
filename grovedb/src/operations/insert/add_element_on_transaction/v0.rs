@@ -273,6 +273,15 @@ impl GroveDb {
             // inserted via `Op::Put` here (NOT the layered-subtree arm above) to
             // preserve the grovedb v4.1.0 / protocol-v11 consensus root — see the
             // module docs.
+            Element::CountItem(..) => {
+                // `CountItem` activates with `GROVE_V4` (`element.count_item`);
+                // this generation is selected by `GROVE_V1` / `GROVE_V2` only, where it
+                // must not exist. Fail closed.
+                return Err(Error::NotSupported(
+                    "count items (CountItem) require GROVE_V4+".to_owned(),
+                ))
+                .wrap_with_cost(cost);
+            }
             Element::BidirectionalReference(..)
             | Element::ItemWithBackwardsReferences(..)
             | Element::SumItemWithBackwardsReferences(..)

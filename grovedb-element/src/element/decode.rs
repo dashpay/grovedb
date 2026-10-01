@@ -15,7 +15,7 @@ use crate::{
     reference_path::ReferencePathType,
 };
 
-const ELEMENT_VARIANTS: AllowedEnumVariants = AllowedEnumVariants::Range { min: 0, max: 28 };
+const ELEMENT_VARIANTS: AllowedEnumVariants = AllowedEnumVariants::Range { min: 0, max: 29 };
 
 // Keep discriminants and domain checks in one schema. Each expansion calls only
 // the selected trait for fields and its matching helper for wrapper recursion.
@@ -117,6 +117,9 @@ macro_rules! element_decoder {
                                 "NonCounted cannot wrap a backward-references element",
                             ));
                         }
+                        if matches!(inner, Self::CountItem(..)) {
+                            return Err(DecodeError::Other("NonCounted cannot wrap a CountItem"));
+                        }
                         Ok(Self::NonCounted(Box::new(inner)))
                     }
                     16 => {
@@ -213,6 +216,10 @@ macro_rules! element_decoder {
                         $decode_trait::$decode(decoder)?,
                         i64::$decode(decoder)?,
                         BackwardReferences::$decode(decoder)?,
+                        $decode_trait::$decode(decoder)?,
+                    )),
+                    29 => Ok(Self::CountItem(
+                        u64::$decode(decoder)?,
                         $decode_trait::$decode(decoder)?,
                     )),
                     found => Err(DecodeError::UnexpectedVariant {

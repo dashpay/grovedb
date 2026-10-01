@@ -34,6 +34,7 @@
 | 21 | `ProvableSumIndexedTree` | 13 (ProvableSumIndexedTree) | `(primary_root_key, secondary_root_key, sum: i64, flags)` | 13 | ProvableSumTree-shaped primary + sum-ordered secondary index — see chapter "Indexed Trees" |
 | 22 | `ProvableCountIndexedTree` | 14 (ProvableCountIndexedTree) | `(primary_root_key, secondary_root_key, count: u64, flags)` | 13 | ProvableCountTree-shaped primary + count-ordered secondary index |
 | 23 | `ProvableCountProvableSumIndexedTree` | 15 (ProvableCountProvableSumIndexedTree) | `(primary_root_key, count: u64, sum: i64, axes: TLV, flags)` | 13 | ProvableCountProvableSumTree-shaped primary + 1..=3 secondary indexes (count / sum / avg) |
+| 29 | `CountItem` | N/A | `(count: u64, flags)` | COUNT_ITEM_COST_SIZE (11) | Item contributing an explicit count to its count-bearing parent (`GROVE_V4`+) |
 
 **Notes:**
 - Discriminants 11–14 are **non-Merk trees**: data lives outside a child Merk subtree

@@ -31,6 +31,15 @@ impl Visualize for Element {
                     drawer = f.visualize(drawer)?;
                 }
             }
+            Element::CountItem(value, flags) => {
+                drawer.write(format!("count_item: {value}").as_bytes())?;
+
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
+                }
+            }
             Element::BidirectionalReference(reference, flags) => {
                 drawer.write(
                     format!(

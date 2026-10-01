@@ -11,10 +11,10 @@ use crate::{
     },
     tree_type::{
         BIG_SUM_TREE_COST_SIZE, BULK_APPEND_TREE_COST_SIZE, COMMITMENT_TREE_COST_SIZE,
-        COUNT_INDEXED_TREE_COST_SIZE, COUNT_SUM_TREE_COST_SIZE, COUNT_TREE_COST_SIZE,
-        DENSE_TREE_COST_SIZE, MMR_TREE_COST_SIZE, PRIVATE_DOCUMENT_STORE_COST_SIZE,
-        PROVABLE_COUNT_PROVABLE_SUM_INDEXED_TREE_COST_SIZE, SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE,
-        TREE_COST_SIZE,
+        COUNT_INDEXED_TREE_COST_SIZE, COUNT_ITEM_COST_SIZE, COUNT_SUM_TREE_COST_SIZE,
+        COUNT_TREE_COST_SIZE, DENSE_TREE_COST_SIZE, MMR_TREE_COST_SIZE,
+        PRIVATE_DOCUMENT_STORE_COST_SIZE, PROVABLE_COUNT_PROVABLE_SUM_INDEXED_TREE_COST_SIZE,
+        SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE,
     },
     Error,
 };
@@ -70,6 +70,7 @@ impl ElementCostPrivateExtensions for Element {
             Element::SumTree(..) => Ok(SUM_TREE_COST_SIZE),
             Element::BigSumTree(..) => Ok(BIG_SUM_TREE_COST_SIZE),
             Element::SumItem(..) | Element::ItemWithSumItem(..) => Ok(SUM_ITEM_COST_SIZE),
+            Element::CountItem(..) => Ok(COUNT_ITEM_COST_SIZE),
             Element::CountTree(..) => Ok(COUNT_TREE_COST_SIZE),
             Element::CountSumTree(..) => Ok(COUNT_SUM_TREE_COST_SIZE),
             Element::ProvableCountTree(..) => Ok(COUNT_TREE_COST_SIZE),
@@ -334,6 +335,15 @@ impl ElementCostExtensions for Element {
                 let key_len = key.len() as u32;
                 KV::node_value_byte_cost_size(key_len, value_len, node_type)
             }
+            Element::CountItem(_, flags) => {
+                let flags_len = flags.map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = COUNT_ITEM_COST_SIZE + flags_len + wrapper_overhead;
+                let key_len = key.len() as u32;
+                KV::node_value_byte_cost_size(key_len, value_len, node_type)
+            }
             Element::ItemWithSumItem(item_value, _, flags) => {
                 let item_value_len = item_value.len() as u32;
                 let flags_len = flags.map_or(0, |flags| {
@@ -368,7 +378,7 @@ impl ElementCostExtensions for Element {
                 flags_len + flags_len.required_space() as u32
             });
         match self.underlying() {
-            Element::SumItem(..) => Some(cost),
+            Element::SumItem(..) | Element::CountItem(..) => Some(cost),
             Element::ItemWithSumItem(item, ..) => {
                 let item_len = item.len() as u32;
                 Some(cost + item_len + item_len.required_space() as u32)
@@ -437,7 +447,9 @@ impl ElementCostExtensions for Element {
             Element::ProvableSumIndexedTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::ProvableCountIndexedTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::ProvableCountProvableSumIndexedTree(..) => Some(LayeredValueDefinedCost(cost)),
-            Element::SumItem(..) => Some(SpecializedValueDefinedCost(cost)),
+            Element::SumItem(..) | Element::CountItem(..) => {
+                Some(SpecializedValueDefinedCost(cost))
+            }
             Element::ItemWithSumItem(item, ..) => {
                 let item_len = item.len() as u32;
                 Some(SpecializedValueDefinedCost(

@@ -411,6 +411,24 @@ pub enum Element {
         crate::bidirectional_reference::BackwardReferences,
         Option<ElementFlags>,
     ),
+    /// An item that carries an explicit `CountValue` and nothing else. It
+    /// contributes its count to every count-bearing parent (`CountTree`,
+    /// `CountSumTree`, the `ProvableCount*` trees and their indexed
+    /// mirrors) the way a `CountTree` child does, where any other item
+    /// counts as one. It contributes nothing to a sum.
+    ///
+    /// A counter kept in place: replacing `CountItem(n)` with
+    /// `CountItem(n + 1)` moves the parent's aggregate (and re-keys an
+    /// indexed parent's count secondary) without storing a new node. A count
+    /// of zero is legal and still occupies its key.
+    ///
+    /// May not be wrapped in `NonCounted` / `NotSummed` /
+    /// `NotCountedOrSummed`: the item exists to contribute its count.
+    ///
+    /// Activates with `GROVE_V4`; earlier versions refuse to write it.
+    ///
+    /// Discriminant 29.
+    CountItem(CountValue, Option<ElementFlags>),
 }
 
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {
@@ -782,6 +800,16 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
+            Element::CountItem(count_value, flags) => {
+                write!(
+                    f,
+                    "CountItem({}{})",
+                    count_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
         }
     }
 }
@@ -827,6 +855,7 @@ impl Element {
             Element::ItemWithSumItemWithBackwardsReferences(..) => {
                 ElementType::ItemWithSumItemWithBackwardsReferences
             }
+            Element::CountItem(..) => ElementType::CountItem,
             Element::NonCounted(inner) => match inner.element_type() {
                 ElementType::Item => ElementType::NonCountedItem,
                 ElementType::Reference => ElementType::NonCountedReference,
@@ -969,6 +998,12 @@ impl Element {
                          (BidirectionalReference, ItemWithBackwardsReferences, \
                          SumItemWithBackwardsReferences, \
                          ItemWithSumItemWithBackwardsReferences)",
+                    ));
+                }
+                if matches!(**inner, Element::CountItem(..)) {
+                    return Err(crate::error::ElementError::InvalidInput(
+                        "NonCounted cannot wrap a CountItem: the item exists to contribute \
+                         its count",
                     ));
                 }
             }
@@ -1117,6 +1152,7 @@ mod serde_impl {
             crate::bidirectional_reference::BackwardReferences,
             Option<ElementFlags>,
         ),
+        CountItem(CountValue, Option<ElementFlags>),
     }
 
     // An uninhabited wrapper payload makes a second wrapper impossible to
@@ -1208,6 +1244,7 @@ mod serde_impl {
                 ElementShadow::ItemWithSumItemWithBackwardsReferences(v, sv, b, f) => {
                     Element::ItemWithSumItemWithBackwardsReferences(v, sv, b, f)
                 }
+                ElementShadow::CountItem(c, f) => Element::CountItem(c, f),
             }
         }
     }

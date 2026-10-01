@@ -261,6 +261,13 @@ pub enum Element {
         /// means the list was omitted from a proof.
         backward_references_count: Option<u16>,
     },
+    /// An item carrying an explicit count, which it contributes to its
+    /// count-bearing parent in place of the one any other item counts as.
+    CountItem {
+        value: u64,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
+    },
 }
 
 #[serde_as]

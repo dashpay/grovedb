@@ -325,6 +325,10 @@ pub enum ElementType {
     /// combined (stripped ‖ backrefs) scheme like the other two backward-
     /// references item variants. No wrapper twins.
     ItemWithSumItemWithBackwardsReferences = 28,
+    /// Item carrying an explicit count that it contributes to count-bearing
+    /// parents - discriminant 29. Hashes like `Item` (simple value hash). No
+    /// wrapper twins: the aggregation wrappers reject it.
+    CountItem = 29,
     /// Non-counted wrapper around `Item` - discriminant 128
     NonCountedItem = 128,
     /// Non-counted wrapper around `Reference` - discriminant 129
@@ -450,7 +454,9 @@ impl ElementType {
             // ItemWithBackwardsReferences / SumItemWithBackwardsReferences),
             // which the aggregation wrappers deliberately reject (fail
             // closed — their interaction with count/sum suppression is
-            // undefined); 29..=127 are unallocated; 128..=152 are the
+            // undefined); 29 is `CountItem`, which exists to contribute its
+            // count and is rejected the same way; 30..=127 are unallocated;
+            // 128..=152 are the
             // synthetic NonCountedXxx twins which never appear on disk.
             // Without this check, the bitwise OR below would collapse
             // `0x80 | inner_byte` into `inner_byte` and a payload like
@@ -763,7 +769,10 @@ impl ElementType {
     pub fn has_simple_value_hash(&self) -> bool {
         matches!(
             self.base(),
-            ElementType::Item | ElementType::SumItem | ElementType::ItemWithSumItem
+            ElementType::Item
+                | ElementType::SumItem
+                | ElementType::ItemWithSumItem
+                | ElementType::CountItem
         )
     }
 
@@ -859,6 +868,7 @@ impl ElementType {
                 | ElementType::ItemWithBackwardsReferences
                 | ElementType::SumItemWithBackwardsReferences
                 | ElementType::ItemWithSumItemWithBackwardsReferences
+                | ElementType::CountItem
         )
     }
 
@@ -895,6 +905,7 @@ impl ElementType {
             ElementType::ItemWithSumItemWithBackwardsReferences => {
                 "item with sum item with backwards references"
             }
+            ElementType::CountItem => "count item",
             ElementType::NonCountedItem => "non_counted item",
             ElementType::NonCountedReference => "non_counted reference",
             ElementType::NonCountedTree => "non_counted tree",
@@ -989,6 +1000,7 @@ impl TryFrom<u8> for ElementType {
             26 => Ok(ElementType::ItemWithBackwardsReferences),
             27 => Ok(ElementType::SumItemWithBackwardsReferences),
             28 => Ok(ElementType::ItemWithSumItemWithBackwardsReferences),
+            29 => Ok(ElementType::CountItem),
             128 => Ok(ElementType::NonCountedItem),
             129 => Ok(ElementType::NonCountedReference),
             130 => Ok(ElementType::NonCountedTree),
@@ -1141,8 +1153,9 @@ mod tests {
             ElementType::try_from(28).unwrap(),
             ElementType::ItemWithSumItemWithBackwardsReferences
         );
-        // 29..=127 are unallocated and invalid.
-        assert!(ElementType::try_from(29).is_err());
+        assert_eq!(ElementType::try_from(29).unwrap(), ElementType::CountItem);
+        // 30..=127 are unallocated and invalid.
+        assert!(ElementType::try_from(30).is_err());
         assert!(ElementType::try_from(100).is_err());
 
         // NonCounted twins (0x80 | base): 128..142, plus 146 (= 0x80|18 =
@@ -1846,14 +1859,15 @@ mod tests {
         // Wrapper with a non-wrappable mid-range inner byte is also
         // rejected, even though it has no high bit set: 16/17 are the other
         // wrapper bytes, 25..=28 are the backward-references family (which
-        // the aggregation wrappers refuse — fail closed), and 29..=127 are
-        // unallocated.
+        // the aggregation wrappers refuse — fail closed), 29 is `CountItem`
+        // (refused the same way), and 30..=127 are unallocated.
         assert!(ElementType::from_serialized_value(&[15, 16]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 17]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 25]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 26]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 27]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 28]).is_err());
+        assert!(ElementType::from_serialized_value(&[15, 29]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 100]).is_err());
 
         // Inner byte 18 (ReferenceWithSumItem) IS a legal base; resolves to
@@ -2114,16 +2128,22 @@ mod tests {
                 ElementType::PrivateDocumentStore,
                 "PrivateDocumentStore",
             ),
+            // discriminant 29
+            (
+                Element::CountItem(42, None),
+                ElementType::CountItem,
+                "CountItem",
+            ),
         ];
 
-        // Verify we're testing all 22 base discriminants: 0..=14, 18, 19,
-        // 20, 21, 22, 23, 24. (15 = NonCounted wrapper byte, 16 = NotSummed
-        // wrapper byte, 17 = NotCountedOrSummed wrapper byte — none has
-        // a base ElementType variant.)
+        // Verify we're testing these 23 base discriminants: 0..=14, 18, 19,
+        // 20, 21, 22, 23, 24, 29. (15 = NonCounted wrapper byte, 16 =
+        // NotSummed wrapper byte, 17 = NotCountedOrSummed wrapper byte — none
+        // has a base ElementType variant.)
         assert_eq!(
             test_cases.len(),
-            22,
-            "Expected 22 base Element variants in test, got {}",
+            23,
+            "Expected 23 base Element variants in test, got {}",
             test_cases.len()
         );
 

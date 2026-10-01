@@ -1107,6 +1107,10 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             value,
             element_flags,
         },
+        crate::Element::CountItem(value, element_flags) => grovedbg_types::Element::CountItem {
+            value,
+            element_flags,
+        },
         crate::Element::SumItemWithBackwardsReferences(
             value,
             backward_references,

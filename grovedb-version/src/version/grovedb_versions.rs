@@ -710,6 +710,13 @@ pub struct GroveDBElementMethodVersions {
     pub serialized_size: FeatureVersion,
     pub deserialize: FeatureVersion,
     pub aggregate_sum_query_item: FeatureVersion,
+    /// Whether `Element::CountItem` may be written.
+    ///
+    /// - `0` (`GROVE_V1`..`GROVE_V3`): every insert path and batch refuses
+    ///   it, so released protocol versions can never store one.
+    /// - `1` (`GROVE_V4`+): accepted wherever a count-bearing tree can hold
+    ///   it.
+    pub count_item: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

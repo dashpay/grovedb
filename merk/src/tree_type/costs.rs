@@ -16,6 +16,14 @@ pub const TREE_COST_SIZE: u32 = LAYER_COST_SIZE; // 3
 /// 1 byte for the flags option
 pub const SUM_ITEM_COST_SIZE: u32 = SUM_VALUE_EXTRA_COST + 2; // 11
 
+/// The cost of a count item
+///
+/// A count item has the sum item's layout (1 byte for the item type, a
+/// varint of at most 9 bytes for the count, 1 byte for the flags option) and
+/// is charged the same fixed size whatever its count, so a counter rewritten
+/// in place never changes its storage cost.
+pub const COUNT_ITEM_COST_SIZE: u32 = SUM_ITEM_COST_SIZE; // 11
+
 /// The cost of a sum tree
 pub const SUM_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 12
 

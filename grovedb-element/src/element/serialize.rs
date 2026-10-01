@@ -55,6 +55,13 @@ impl Element {
                 "NonCounted cannot wrap backward-references elements".to_string(),
             ));
         }
+        if let Element::NonCounted(inner) = self
+            && matches!(**inner, Element::CountItem(..))
+        {
+            return Err(ElementError::CorruptedData(
+                "NonCounted cannot wrap a CountItem".to_string(),
+            ));
+        }
         if let Element::NotSummed(inner) = self {
             match **inner {
                 Element::SumTree(..)
@@ -163,6 +170,13 @@ impl Element {
         {
             return Err(ElementError::CorruptedData(
                 "deserialized NonCounted wrapping a backward-references element".to_string(),
+            ));
+        }
+        if let Element::NonCounted(inner) = &elem
+            && matches!(**inner, Element::CountItem(..))
+        {
+            return Err(ElementError::CorruptedData(
+                "deserialized NonCounted wrapping a CountItem".to_string(),
             ));
         }
         if let Element::NotSummed(inner) = &elem {
@@ -294,6 +308,7 @@ mod tests {
                 crate::BackwardReferences::default(),
                 flags(),
             ),
+            Element::CountItem(32, flags()),
         ]
     }
 
@@ -599,7 +614,7 @@ mod tests {
             Element::SumItemWithBackwardsReferences(7, Default::default(), None),
         ];
 
-        for inner in inners {
+        for inner in inners.into_iter().chain([Element::new_count_item(7)]) {
             // Constructor refuses.
             assert!(Element::new_non_counted(inner.clone()).is_err());
 

@@ -16,7 +16,10 @@ use grovedb_merk::{
         },
     },
     tree::TreeNode,
-    tree_type::{CostSize, TreeType, SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE},
+    tree_type::{
+        CostSize, TreeType, COUNT_ITEM_COST_SIZE, SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE,
+        TREE_COST_SIZE,
+    },
     HASH_LENGTH,
 };
 use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
@@ -209,6 +212,19 @@ impl GroveDb {
                     in_parent_tree_type,
                 )
             }
+            // A count item is charged its fixed size whatever its count.
+            Element::CountItem(_, flags) => {
+                let flags_len = flags.as_ref().map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                add_cost_case_merk_insert(
+                    &mut cost,
+                    key_len,
+                    COUNT_ITEM_COST_SIZE + flags_len,
+                    in_parent_tree_type,
+                )
+            }
             _ => add_cost_case_merk_insert(
                 &mut cost,
                 key_len,
@@ -273,6 +289,20 @@ impl GroveDb {
                     flags_len + flags_len.required_space() as u32
                 });
                 let value_len = SUM_ITEM_COST_SIZE + flags_len;
+                add_cost_case_merk_replace_same_size(
+                    &mut cost,
+                    key_len,
+                    value_len,
+                    in_parent_tree_type,
+                )
+            }
+            // A count rewritten in place keeps its fixed size.
+            Element::CountItem(_, flags) => {
+                let flags_len = flags.as_ref().map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = COUNT_ITEM_COST_SIZE + flags_len;
                 add_cost_case_merk_replace_same_size(
                     &mut cost,
                     key_len,

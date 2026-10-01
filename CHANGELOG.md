@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **BREAKING**: `Element::CountItem(CountValue, Option<ElementFlags>)`
+  (discriminant 29), an item that contributes an explicit count to its
+  count-bearing parent where any other item counts as one. A counter is
+  rewritten in place: replacing `CountItem(n)` with `CountItem(n + 1)` moves
+  every aggregate above it, including an indexed parent's count ranking,
+  and is charged the fixed `COUNT_ITEM_COST_SIZE` (11 bytes) whatever its
+  count, so the rewrite adds no storage. It is refused outside count-bearing
+  trees and in the aggregation wrappers, and activates with `GROVE_V4`
+  through the new `element.count_item` slot: V1..V3 refuse it on every
+  insert path and in batches. Exhaustive matches on `Element` and
+  `grovedbg_types::Element` need the new arm.
 - `StorageContext::raw_iter_aux`, a raw iterator over the aux column family
   scoped to the context's subtree prefix like `raw_iter`, and
   `GroveDb::get_aux_by_key_prefix`, which lists every aux entry under a key

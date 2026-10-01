@@ -247,6 +247,11 @@
 //!   the epoch the switch happened in). Gated because the work — and so the
 //!   fee — moves, and because V4 writes keys V1..V3 never read.
 //!
+//! - `element.count_item: 1` — `Element::CountItem` (an item contributing an
+//!   explicit count to its count-bearing parent) may be written. V1..V3
+//!   refuse it on every insert path and in batches, so no released protocol
+//!   version can store one.
+//!
 //! - `insert.add_element_on_transaction: 2` — a directly inserted
 //!   `Reference` / `ReferenceWithSumItem` (i) binds the value hash of its
 //!   terminal's STORED bytes, wrapper included for a `NonCounted`-wrapped
@@ -423,6 +428,8 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             get_with_value_hash: 0,
             insert_reference_if_changed_value: 0,
             aggregate_sum_query_item: 0,
+            // `Element::CountItem` may be written (see the module docs).
+            count_item: 1,
         },
         operations: GroveDBOperationsVersions {
             get: GroveDBOperationsGetVersions {
