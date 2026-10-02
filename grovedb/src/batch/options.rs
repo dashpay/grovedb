@@ -98,8 +98,11 @@ pub struct BatchApplyOptions {
     /// capacity, each at the largest entry registration admits, so the
     /// estimate is never below what the apply records.
     ///
-    /// Off by default, and every cost is then what it was before the option
-    /// existed.
+    /// Off by default. On GROVE_V1..V3 every cost, estimate, stored element
+    /// and hash is then what it was before the option existed; GROVE_V4 also
+    /// carries the fixes of `apply_batch.same_batch_reference_target_prediction`
+    /// and `merk_versions.tree.just_in_time_value_update`, which change
+    /// some outcomes with the option off too.
     pub settle_owner_changes: bool,
 }
 

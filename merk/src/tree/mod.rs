@@ -15,6 +15,8 @@ mod iter;
 #[cfg(feature = "minimal")]
 mod just_in_time_value_update;
 #[cfg(feature = "minimal")]
+pub use just_in_time_value_update::PredictedPut;
+#[cfg(feature = "minimal")]
 pub mod kv;
 #[cfg(feature = "minimal")]
 mod link;

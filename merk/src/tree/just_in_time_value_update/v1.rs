@@ -18,9 +18,12 @@ impl TreeNode {
     /// when the value the update stores is not the size the last
     /// measurement took (the first one sizes the new value with the OLD
     /// value's flags), the replacement is measured again from the stored
-    /// bytes, so the recorded cost is the cost of what is written. The
-    /// stored value's own cost is also measured once rather than on every
-    /// measurement, which leaves every figure unchanged.
+    /// bytes, so the recorded cost is the cost of what is written. For that,
+    /// a `Changed` round that restores the put's value restores the put's
+    /// value-defined cost with it, so a sum item or tree is measured with
+    /// the cost of the bytes it holds. The stored value's own cost is also
+    /// measured once rather than on every measurement, which leaves every
+    /// figure unchanged.
     pub(super) fn just_in_time_tree_node_value_update_v1(
         &mut self,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
@@ -52,6 +55,7 @@ impl TreeNode {
             // For example to store the costs
             // todo: clean up clones
             let original_new_value = self.value_ref().clone();
+            let original_value_defined_cost = self.inner.kv.value_defined_cost.clone();
 
             // The stored value does not change while the update runs, so its
             // cost is measured once.
@@ -126,7 +130,8 @@ impl TreeNode {
                             self.kv_with_parent_hook_size_and_storage_cost(&old_cost)?;
                         current_tree_plus_hook_size = new_size_and_storage_costs.0;
                         storage_costs = new_size_and_storage_costs.1;
-                        self.set_value(original_new_value.clone())
+                        self.set_value(original_new_value.clone());
+                        self.inner.kv.value_defined_cost = original_value_defined_cost.clone();
                     }
                 }
                 if i > MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES {

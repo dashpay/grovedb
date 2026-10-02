@@ -254,7 +254,7 @@ impl GroveOp {
                         insert_cost,
                         key,
                         flags,
-                        aggregate_data.parent_tree_type(),
+                        super::WORST_CASE_SETTLED_TREE_COST_SIZE,
                         wrapper_overhead,
                         super::WORST_CASE_SETTLED_NODE_TYPE,
                     )

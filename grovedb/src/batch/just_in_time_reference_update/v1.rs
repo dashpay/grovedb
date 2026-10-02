@@ -1,11 +1,13 @@
+use std::collections::HashMap;
+
 use grovedb_costs::{
     cost_return_on_error_into_no_add, cost_return_on_error_no_add,
     storage_cost::{removal::StorageRemovedBytes, transition::ElementFlagsUpdate, StorageCost},
     CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::{
-    element::{costs::ElementCostExtensions, tree_type::ElementTreeTypeExtensions},
-    tree::{kv::ValueDefinedCostType::SpecializedValueDefinedCost, value_hash},
+    element::{insert::specialized_put_cost, tree_type::ElementTreeTypeExtensions},
+    tree::{value_hash, PredictedPut},
     tree_type::TreeType,
     CryptoHash,
 };
@@ -16,21 +18,27 @@ use crate::{
 };
 
 /// Version 1 of the same-batch reference target prediction, selected by
-/// `apply_batch.same_batch_reference_target_prediction == 1` (grove v4+).
+/// `apply_batch.same_batch_reference_target_prediction == 1` (grove v4+),
+/// and on every grove version for a batch with `settle_owner_changes`.
 ///
-/// It differs from version 0 in how it gets the stored bytes: it runs
-/// Merk's own just-in-time value update on the stored and new bytes, with
-/// the put the apply performs (a sum item at its specialized cost, any other
-/// item as an ordinary put), so the reference commits to exactly what the
-/// apply stores whatever the flags update answers.
+/// It differs from version 0 in how it gets the stored bytes. Once this pass
+/// has written the target, `old_serialized_element` (the target's bytes as
+/// the Merk cache holds them) are the bytes it stores. Before that, they are
+/// the bytes the apply will update, and the stored bytes are predicted by
+/// running Merk's own just-in-time value update on them and the new ones,
+/// with the put the apply performs (`specialized_put_cost`), once per target.
+/// The reference commits to exactly what the apply stores whatever the flags
+/// update answers, and whether the target is a sum item or not.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn process_old_element_flags_v1<G, SR>(
     key: &[u8],
-    serialized: &[u8],
+    qualified_path: &[Vec<u8>],
+    serialized: Vec<u8>,
     new_element: &Element,
-    old_element: &Element,
-    old_serialized_element: &[u8],
+    old_serialized_element: Vec<u8>,
     in_tree_type: TreeType,
+    target_written: bool,
+    predicted_targets: &mut HashMap<Vec<Vec<u8>>, Vec<u8>>,
     flags_update: &mut G,
     split_removal_bytes: &mut SR,
     grove_version: &GroveVersion,
@@ -48,33 +56,20 @@ where
     ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
 {
     let mut cost = OperationCost::default();
-    match (old_element.is_sum_item(), new_element.is_sum_item()) {
-        (true, false) => {
-            return Err(Error::NotSupported(
-                "going from a sum item to a not sum item is not supported".to_string(),
-            ))
-            .wrap_with_cost(cost)
-        }
-        (false, true) => {
-            return Err(Error::NotSupported(
-                "going from an item to a sum item is not supported".to_string(),
-            ))
-            .wrap_with_cost(cost)
-        }
-        _ => {}
+    if target_written {
+        let val_hash = value_hash(&old_serialized_element).unwrap_add_cost(&mut cost);
+        return Ok(val_hash).wrap_with_cost(cost);
     }
-    // The put the apply performs (`insert_into_batch_operations`).
-    let value_defined_cost = if new_element.is_sum_item() {
-        Some(SpecializedValueDefinedCost(cost_return_on_error_no_add!(
-            cost,
-            new_element
-                .specialized_value_defined_cost(grove_version)
-                .ok_or(Error::CorruptedCodeExecution(
-                    "sum items should always have a value defined cost"
-                ))
-        )))
-    } else {
-        None
+    if let Some(stored_bytes) = predicted_targets.get(qualified_path) {
+        let val_hash = value_hash(stored_bytes).unwrap_add_cost(&mut cost);
+        return Ok(val_hash).wrap_with_cost(cost);
+    }
+    let put = match cost_return_on_error_no_add!(
+        cost,
+        specialized_put_cost(new_element, grove_version).map_err(Error::MerkError)
+    ) {
+        Some(value_cost) => PredictedPut::SpecializedCost(value_cost),
+        None => PredictedPut::Ordinary,
     };
     let feature_type =
         cost_return_on_error_into_no_add!(cost, new_element.get_feature_type(in_tree_type));
@@ -83,9 +78,9 @@ where
         predict_put_final_bytes(
             key,
             old_serialized_element,
-            serialized.to_vec(),
+            serialized,
             feature_type,
-            value_defined_cost,
+            put,
             in_tree_type,
             flags_update,
             split_removal_bytes,
@@ -96,5 +91,6 @@ where
         )))
     );
     let val_hash = value_hash(&stored_bytes).unwrap_add_cost(&mut cost);
+    predicted_targets.insert(qualified_path.to_vec(), stored_bytes);
     Ok(val_hash).wrap_with_cost(cost)
 }

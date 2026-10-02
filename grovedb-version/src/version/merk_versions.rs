@@ -42,8 +42,9 @@ pub struct MerkTreeVersions {
     ///
     /// Version 1 re-measures the replacement from the bytes it stores when
     /// the callback answers `Unchanged` and their size differs from the
-    /// first measurement. Every update that version 0 accepts is charged
-    /// the same.
+    /// last measurement taken, and restores the put's value-defined cost
+    /// whenever it restores the put's value. Every update whose cost
+    /// version 0 records for the bytes it stores is charged the same.
     pub just_in_time_value_update: FeatureVersion,
 }
 

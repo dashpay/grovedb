@@ -173,22 +173,30 @@ pub(in crate::batch) fn with_settled_owner_change(
     value.wrap_with_cost(cost)
 }
 
+/// The largest cost size of a Merk tree an `InsertTreeWithRootHash` can
+/// write (a count-sum tree's), which a worst-case estimate sizes a settled
+/// tree with: the op carries no aggregate data from which the tree type
+/// could be read.
+#[cfg(feature = "minimal")]
+pub(in crate::batch) const WORST_CASE_SETTLED_TREE_COST_SIZE: u32 =
+    grovedb_merk::tree_type::COUNT_SUM_TREE_COST_SIZE;
+
 /// [`with_settled_owner_change`] for the `InsertTreeWithRootHash` that a
 /// write of a tree becomes when the batch also writes under it: `base` is
-/// raised by the tree element that op writes — a tree of `tree_type` with
-/// `flags`, and `wrapper_overhead` wrapper bytes — sized as the apply sizes
-/// it in a tree of `node_type` nodes.
+/// raised by the tree element that op writes — a tree of `tree_cost_size`
+/// with `flags`, and `wrapper_overhead` wrapper bytes — sized as the apply
+/// sizes it in a tree of `node_type` nodes.
 #[cfg(feature = "minimal")]
 pub(in crate::batch) fn with_settled_tree_owner_change(
     base: grovedb_costs::CostResult<(), crate::Error>,
     key: &crate::batch::KeyInfo,
     flags: &Option<crate::ElementFlags>,
-    tree_type: grovedb_merk::tree_type::TreeType,
+    tree_cost_size: u32,
     wrapper_overhead: u32,
     node_type: grovedb_merk::merk::NodeType,
 ) -> grovedb_costs::CostResult<(), crate::Error> {
     use grovedb_costs::CostsExt;
-    use grovedb_merk::{tree::kv::KV, tree_type::CostSize};
+    use grovedb_merk::tree::kv::KV;
     use grovedb_storage::worst_case_costs::WorstKeyLength;
     use integer_encoding::VarInt;
 
@@ -197,10 +205,8 @@ pub(in crate::batch) fn with_settled_tree_owner_change(
         && let Some(flags) = flags
     {
         let flags_len = flags.len() as u32;
-        let value_cost = tree_type.cost_size()
-            + flags_len
-            + flags_len.required_space() as u32
-            + wrapper_overhead;
+        let value_cost =
+            tree_cost_size + flags_len + flags_len.required_space() as u32 + wrapper_overhead;
         let settled_bytes = KV::layered_node_byte_cost_size_for_key_and_value_lengths(
             key.max_length() as u32,
             value_cost,
@@ -797,4 +803,70 @@ pub enum EstimatedCostsType {
     AverageCaseCostsType(HashMap<KeyInfoPath, EstimatedLayerInformation>),
     /// Worst case estimated costs type
     WorstCaseCostsType(HashMap<KeyInfoPath, WorstCaseLayerInformation>),
+}
+
+#[cfg(all(test, feature = "minimal"))]
+mod tests {
+    use grovedb_costs::{CostsExt, OperationCost};
+    use grovedb_merk::{
+        merk::NodeType,
+        tree::kv::KV,
+        tree_type::{CostSize, TreeType},
+    };
+
+    use crate::batch::KeyInfo;
+
+    /// The worst-case size of a settled tree bounds the node of every Merk
+    /// tree an `InsertTreeWithRootHash` can write, in a tree of any node
+    /// type.
+    #[test]
+    fn the_worst_case_settled_tree_bounds_every_merk_tree_in_every_node_type() {
+        let key = KeyInfo::KnownKey(b"tree".to_vec());
+        let flags = Some(vec![0; 35]);
+        let raised = super::with_settled_tree_owner_change(
+            Ok(()).wrap_with_cost(OperationCost::default()),
+            &key,
+            &flags,
+            super::WORST_CASE_SETTLED_TREE_COST_SIZE,
+            0,
+            super::WORST_CASE_SETTLED_NODE_TYPE,
+        )
+        .cost
+        .storage_cost
+        .added_bytes;
+        for tree_type in [
+            TreeType::NormalTree,
+            TreeType::SumTree,
+            TreeType::BigSumTree,
+            TreeType::CountTree,
+            TreeType::CountSumTree,
+            TreeType::ProvableCountTree,
+            TreeType::ProvableCountSumTree,
+            TreeType::ProvableSumTree,
+            TreeType::ProvableCountProvableSumTree,
+        ] {
+            for node_type in [
+                NodeType::NormalNode,
+                NodeType::SumNode,
+                NodeType::BigSumNode,
+                NodeType::CountNode,
+                NodeType::CountSumNode,
+                NodeType::ProvableCountNode,
+                NodeType::ProvableCountSumNode,
+                NodeType::ProvableSumNode,
+                NodeType::ProvableCountProvableSumNode,
+            ] {
+                let settled = KV::layered_node_byte_cost_size_for_key_and_value_lengths(
+                    4,
+                    tree_type.cost_size() + 36,
+                    node_type,
+                );
+                assert!(
+                    raised >= settled,
+                    "a {tree_type:?} in a tree of {node_type:?} nodes adds {settled}, above \
+                     the worst-case {raised}"
+                );
+            }
+        }
+    }
 }

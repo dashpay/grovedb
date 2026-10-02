@@ -23,7 +23,7 @@ use grovedb_merk::{
             ValueDefinedCostType,
             ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
         },
-        TreeFeatureType, TreeNode,
+        PredictedPut, TreeFeatureType, TreeNode,
     },
     tree_type::{CostSize, TreeType, SUM_ITEM_COST_SIZE},
     Error as MerkError,
@@ -65,6 +65,7 @@ where
 
 /// The caller's flags-update callback with its answer as an
 /// [`ElementFlagsUpdate`] (a `bool` answer is `Changed` or `Unchanged`).
+#[cfg(feature = "estimated_costs")]
 pub(crate) fn flags_update_answers<U>(
     mut flags_update: impl FnMut(
         &StorageCost,
@@ -261,20 +262,20 @@ where
     }
 }
 
-/// The bytes a batch apply finally stores when it puts `new_serialized`
-/// (with `feature_type`, and the value-defined cost `value_defined_cost` the
-/// put stamps on the node) over the stored `old_serialized` bytes at `key` in
-/// a subtree of `in_tree_type`, with the caller's callbacks: Merk's own
-/// just-in-time value update, run on a detached node.
+/// The bytes a batch apply finally stores when `put` of `new_serialized`
+/// (with `feature_type`) replaces the stored `old_serialized` bytes at `key`
+/// in a subtree of `in_tree_type`, with the caller's callbacks: Merk's own
+/// just-in-time value update, run on a detached node loaded as the apply
+/// loads the stored node.
 ///
 /// The callbacks must answer the apply the same way they answer here.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn predict_put_final_bytes<G, SR>(
     key: &[u8],
-    old_serialized: &[u8],
+    old_serialized: Vec<u8>,
     new_serialized: Vec<u8>,
     feature_type: TreeFeatureType,
-    value_defined_cost: Option<ValueDefinedCostType>,
+    put: PredictedPut,
     in_tree_type: TreeType,
     flags_update: &mut G,
     split_removal_bytes: &mut SR,
@@ -292,12 +293,15 @@ where
         u32,
     ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
 {
+    let old_value_defined_cost =
+        Element::value_defined_cost_for_serialized_value(&old_serialized, grove_version);
     TreeNode::provided_value_hash_put_final_value(
         key.to_vec(),
-        old_serialized.to_vec(),
+        old_serialized,
+        old_value_defined_cost,
         new_serialized,
         feature_type,
-        value_defined_cost,
+        put,
         &|key, value| old_specialized_cost(key, value, in_tree_type, grove_version),
         &|old_value, new_value| new_value_with_old_flags(old_value, new_value, grove_version),
         &mut |storage_costs, old_value, new_value| {
@@ -352,13 +356,12 @@ where
 {
     let new_serialized = new_element.serialize(grove_version)?;
     let feature_type = new_element.get_feature_type(in_tree_type)?;
-    // A provided-value-hash put drops any value-defined cost.
     let final_bytes = predict_put_final_bytes(
         key,
-        old_serialized,
+        old_serialized.to_vec(),
         new_serialized.clone(),
         feature_type,
-        None,
+        PredictedPut::ProvidedValueHash,
         in_tree_type,
         flags_update,
         split_removal_bytes,

@@ -20,7 +20,9 @@ use grovedb_merk::estimated_costs::{
     add_cost_case_merk_replace_layered, add_cost_case_merk_replace_same_size,
 };
 use grovedb_merk::{
-    element::tree_type::ElementTreeTypeExtensions, tree::AggregateData, tree_type::TreeType,
+    element::tree_type::ElementTreeTypeExtensions,
+    tree::AggregateData,
+    tree_type::{CostSize, TreeType},
     RootHashKeyAndAggregateData,
 };
 #[cfg(feature = "minimal")]
@@ -66,6 +68,7 @@ impl GroveOp {
             append_tree_chunk_power,
             backwards_references,
             propagate,
+            None,
             &BatchApplyOptions::default(),
             grove_version,
         )
@@ -96,6 +99,10 @@ impl GroveOp {
         // it declares `Check`.
         backwards_references: BackwardsReferences,
         propagate: bool,
+        // The declared tree type of the layer an `InsertTreeWithRootHash`
+        // writes, which sizes it when it settles an owner change (the op
+        // carries no aggregate data from which the type could be read).
+        written_tree_type: Option<TreeType>,
         // The batch's options: with `settle_owner_changes`, a write that may
         // settle an owner change is charged as the insertion it then records
         // too.
@@ -268,7 +275,10 @@ impl GroveOp {
                         insert_cost,
                         key,
                         flags,
-                        aggregate_data.parent_tree_type(),
+                        written_tree_type
+                            .map_or(super::WORST_CASE_SETTLED_TREE_COST_SIZE, |tree_type| {
+                                tree_type.cost_size()
+                            }),
                         wrapper_overhead,
                         in_tree_type.inner_node_type(),
                     )
@@ -1219,6 +1229,15 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                     &mut cost, path, &key, tree_type,
                 );
             }
+            // The layer an `InsertTreeWithRootHash` writes, whose declared
+            // tree type sizes the tree when it settles an owner change.
+            let written_tree_type = if let GroveOp::InsertTreeWithRootHash { .. } = &op {
+                let mut written_layer = path.clone();
+                written_layer.push(key.clone());
+                self.paths.get(&written_layer).map(|layer| layer.tree_type)
+            } else {
+                None
+            };
             cost_return_on_error!(
                 &mut cost,
                 op.average_case_cost_with_options(
@@ -1228,6 +1247,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                     append_tree_chunk_power,
                     op.backwards_references(),
                     false,
+                    written_tree_type,
                     batch_apply_options,
                     grove_version
                 )

@@ -36,6 +36,8 @@ mod same_batch_reference_prediction_tests;
 #[cfg(test)]
 mod settle_owner_change_cost_tests;
 #[cfg(test)]
+pub(crate) mod settle_test_support;
+#[cfg(test)]
 mod single_deletion_cost_tests;
 #[cfg(test)]
 mod single_insert_cost_tests;
@@ -1968,9 +1970,20 @@ struct TreeCacheMerkByPath<S, F, F2> {
     /// move is physically a delete plus an insert but logically an update.
     indexed_mirror_rekey_churn_bytes: u32,
     /// The batch's `settle_owner_changes` option: a flags update may settle
-    /// an owner change, so the hash a same-batch reference commits to must
-    /// ask the flags update about a sum item too.
+    /// an owner change, so a same-batch reference to a pending item write
+    /// predicts the bytes it stores through Merk's own just-in-time value
+    /// update on every grove version (see `just_in_time_reference_update`).
     settle_owner_changes: bool,
+    /// The qualified paths of the targets this pass has already written. A
+    /// same-batch reference to one of them commits to the bytes it now
+    /// stores instead of predicting them (from
+    /// `apply_batch.same_batch_reference_target_prediction` version 1).
+    written_qualified_paths: HashSet<Vec<Vec<u8>>>,
+    /// The bytes predicted for a pending item write that a same-batch
+    /// reference points at, by the target's qualified path, so references
+    /// sharing a target predict it once (from
+    /// `apply_batch.same_batch_reference_target_prediction` version 1).
+    predicted_reference_targets: HashMap<Vec<Vec<u8>>, Vec<u8>>,
 }
 
 impl<S, F, F2> fmt::Debug for TreeCacheMerkByPath<S, F, F2> {
@@ -2827,8 +2840,6 @@ where
                                 let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                                 Ok(val_hash).wrap_with_cost(cost)
                             } else {
-                                let mut new_element = element.clone();
-
                                 // it can be unmerged, let's get the value on disk
                                 let (key, reference_path) = qualified_path
                                     .split_last()
@@ -2844,16 +2855,21 @@ where
                                 if let Some((old_element, old_serialized_element, is_in_sum_tree)) =
                                     serialized_element_result
                                 {
+                                    let target_written =
+                                        self.written_qualified_paths.contains(qualified_path);
                                     let value_hash = cost_return_on_error!(
                                         &mut cost,
                                         Self::process_old_element_flags(
                                             key,
-                                            &serialized,
-                                            &mut new_element,
+                                            qualified_path,
+                                            serialized,
+                                            element,
                                             old_element,
-                                            &old_serialized_element,
+                                            old_serialized_element,
                                             is_in_sum_tree,
                                             self.settle_owner_changes,
+                                            target_written,
+                                            &mut self.predicted_reference_targets,
                                             flags_update,
                                             split_removal_bytes,
                                             grove_version,
@@ -3210,6 +3226,16 @@ where
         let p = path.to_path();
         let path = &p;
         self.unused_new_merks.remove(path);
+        // The targets this path writes, recorded as written once it has
+        // applied them.
+        let written_qualified_paths: Vec<Vec<Vec<u8>>> = ops_at_path_by_key
+            .keys()
+            .map(|key_info| {
+                let mut qualified_path = path.to_vec();
+                qualified_path.push(key_info.get_key_clone());
+                qualified_path
+            })
+            .collect();
 
         // This also populates Merk trees cache
         let in_tree_type = {
@@ -5047,6 +5073,7 @@ where
                 .insert(path.to_vec(), per_axis);
         }
 
+        self.written_qualified_paths.extend(written_qualified_paths);
         let merk = self.merks.get_mut(path).expect("the Merk is cached");
         merk.root_hash_key_and_aggregate_data()
             .add_cost(cost)
@@ -5640,6 +5667,8 @@ impl GroveDb {
                     settle_owner_changes: BatchApplyOptions::settle_owner_changes_in(
                         &batch_apply_options,
                     ),
+                    written_qualified_paths: Default::default(),
+                    predicted_reference_targets: Default::default(),
                 },
                 grove_version
             )
@@ -5710,6 +5739,19 @@ impl GroveDb {
                 merk_tree_cache.merks.remove(&path);
             }
         }
+        // The additional ops write their targets again, so a reference to one
+        // predicts the bytes it stores from what the first segment left, and
+        // no prediction made before the continuation still holds.
+        for op in &additional_ops {
+            if let Some(key) = &op.key {
+                let mut qualified_path = op.path.to_path();
+                qualified_path.push(key.get_key_clone());
+                merk_tree_cache
+                    .written_qualified_paths
+                    .remove(&qualified_path);
+            }
+        }
+        merk_tree_cache.predicted_reference_targets.clear();
         let mut cost = OperationCost::default();
         let batch_structure = cost_return_on_error!(
             &mut cost,
@@ -6747,11 +6789,19 @@ impl GroveDb {
     /// Applies batch of operations on GroveDB
     ///
     /// `update_element_flags_function` and `split_removal_bytes_function`
-    /// run whenever a write replaces a stored value. They must be
-    /// deterministic: under backward-references maintenance the batch
-    /// predicts the bytes a flagged item will store (its referrers commit to
-    /// them) by consulting the same callbacks before the apply, and refuses
-    /// the batch if the apply stores anything else.
+    /// run whenever a write replaces a stored value, and may run more than
+    /// once for one write. They must be deterministic, answering the same
+    /// inputs the same way every time: the batch predicts the bytes a
+    /// flagged item will store by consulting the same callbacks before the
+    /// apply, wherever something commits to those bytes first.
+    ///
+    /// - A reference the batch writes or refreshes to an item the batch
+    ///   also updates commits to the predicted bytes. Nothing checks them
+    ///   after the apply, so a callback that answers the apply differently
+    ///   leaves the reference committed to bytes that are never stored.
+    /// - Under backward-references maintenance the referrers of a flagged
+    ///   backward-references item commit to them, and the batch refuses the
+    ///   batch if the apply stores anything else.
     ///
     /// The flags callback answers a `bool` (whether it rewrote the flags) or
     /// an [`ElementFlagsUpdate`]; `SettleOwnerChange` is accepted only when

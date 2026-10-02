@@ -35,8 +35,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   under, at least the bytes its node adds when inserted (for a
   backward-references element, with the referrers it carries over counted at
   its declared capacity, each at the largest entry registration admits), so
-  an estimate is never below a settled apply. With the option off, every
-  cost, estimate, stored element and hash is what it was before.
+  an estimate is never below a settled apply. With the option off on
+  GROVE_V1..V3, every cost, estimate, stored element and hash is what it was
+  before; GROVE_V4 also carries the two fixes below (same-batch references to
+  updated items, and replacements keeping flags of another length), which
+  change some outcomes with the option off too. A batch with the option
+  predicts a same-batch reference's target as GROVE_V4 does on every grove
+  version. `grovedb_merk::element::insert::specialized_put_cost` is new: the
+  value-defined cost an ordinary write puts an element with.
 
 ### Changed
 - **BREAKING**: `BatchApplyOptions` has a new public field,
@@ -44,8 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every field without `..Default::default()` must add it.
 - **BREAKING**: Merk's just-in-time value update callback (the
   `update_tree_value_based_on_costs` argument of
-  `Merk::apply_with_costs_just_in_time_value_update`, `Merk::apply_unchecked`
-  and the `TreeNode` put functions) answers
+  `Merk::apply_with_costs_just_in_time_value_update`, `Merk::apply_unchecked`,
+  `Merk::apply_unchecked_with_old_value_observer`, `Walker::apply_to`, the
+  `TreeNode` put functions and the `Walker::put_value*` family) answers
   `(ElementFlagsUpdate, Option<ValueDefinedCostType>)` in place of
   `(bool, Option<ValueDefinedCostType>)`. GroveDB's own flags callback (in
   `apply_batch_with_element_flags_update`,
@@ -59,7 +66,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TreeNode::put_value_with_two_reference_value_hashes_and_value_cost` and
   their `Walker` counterparts take a `&GroveVersion`, and
   `TreeNode::provided_value_hash_put_final_value` takes the value-defined
-  cost the put stamps on the node and a `&GroveVersion`.
+  cost the stored node is loaded with, the put it predicts (the new
+  `grovedb_merk::tree::PredictedPut`: an ordinary put as `TreeNode::put_value`
+  installs it at the grove version, a provided-value-hash put, or a put at a
+  specialized cost) and a `&GroveVersion`.
 - **BREAKING**: `delete_operation_for_delete_internal` and
   `delete_operations_for_delete_up_tree_while_empty` take the operations
   already pending in the batch as any `impl PendingOperations` in place of a
@@ -106,17 +116,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ItemWithSumItem`) whose storage flags the flags update merges: an owned
   item updated in a later epoch, or an unowned one gaining an owner. The
   prediction assumed a sum item keeps its stored flags, while the apply
-  stores the merged ones, so the grove no longer verified. From GROVE_V4
-  (`apply_batch.same_batch_reference_target_prediction`) the prediction runs
-  Merk's own just-in-time value update, so the reference commits to exactly
-  the stored bytes; GROVE_V1..V3 keep the old prediction.
+  stores the merged ones, so the grove no longer verified; it also refused a
+  sum item replaced by an item, or the reverse, that applies on its own. From
+  GROVE_V4 (`apply_batch.same_batch_reference_target_prediction`) a reference
+  to a target the batch has already written commits to the bytes it stores,
+  and one to a target still to be written commits to the bytes Merk's own
+  just-in-time value update predicts for the put the apply performs, once
+  per target; the reference commits to exactly the stored bytes whatever the
+  order the batch writes the two in. GROVE_V1..V3 keep the old prediction.
 - A replacement whose flags update answered `Unchanged` was charged as if the
   new value carried the old value's flags. When its own flags had a different
   length (a write with longer, shorter or no flags without a flags update,
   or an unowned item gaining an owner as it grows) the commit failed with a
   storage cost mismatch. From GROVE_V4
   (`merk_versions.tree.just_in_time_value_update`) the replacement is
-  measured from the bytes it stores; GROVE_V1..V3 keep the old measurement.
+  measured from the bytes it stores, and a sum item or tree measured again
+  after its flags update rewrote and then restored its value is measured with
+  the value-defined cost of the bytes it holds; GROVE_V1..V3 keep the old
+  measurement.
 - From `GROVE_V4`, `delete_operation_for_delete_internal`, and the up-tree
   builders through it, no longer count a pending `DeleteTree` with
   `SubelementsDeletionBehavior::Skip` as removing its child when deciding

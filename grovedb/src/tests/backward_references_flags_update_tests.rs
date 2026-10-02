@@ -375,16 +375,8 @@ fn settled_owner_change_keeps_referrers_bound() {
                 settle_owner_changes: true,
                 ..Default::default()
             }),
-            |cost, old_flags, new_flags| {
-                StorageFlags::update_element_flags_settling_owner_changes(
-                    cost, old_flags, new_flags,
-                )
-                .map_err(|e| Error::JustInTimeElementFlagsClientError(e.to_string()))
-            },
-            |flags, removed_key_bytes, removed_value_bytes| {
-                StorageFlags::split_removal_bytes(flags, removed_key_bytes, removed_value_bytes)
-                    .map_err(|e| Error::SplitRemovalBytesClientError(e.to_string()))
-            },
+            crate::batch::settle_test_support::settling_flags_update,
+            crate::batch::settle_test_support::split_removal_bytes,
             None,
             grove_version,
         )

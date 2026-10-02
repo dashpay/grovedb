@@ -13,8 +13,10 @@
 //!   then charged for bytes it does not hold, and the commit fails with a
 //!   storage cost mismatch. Grove v1..v3 are consensus-locked to this.
 //! - version 1 measures the replacement again from the bytes it stores when
-//!   their size differs from that measurement, and charges every update that
-//!   version 0 accepts exactly as version 0 does.
+//!   their size differs from the last measurement taken, and restores the
+//!   put's value-defined cost each time it restores the put's value. Every
+//!   update whose cost version 0 records for the bytes it stores is charged
+//!   exactly as version 0 charges it.
 
 mod v0;
 mod v1;
@@ -33,30 +35,43 @@ use crate::{
     Error,
 };
 
+/// The put whose final bytes [`TreeNode::provided_value_hash_put_final_value`]
+/// predicts: how it installs the new value on the stored node, which decides
+/// the value-defined cost the just-in-time value update measures with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PredictedPut {
+    /// An `Op::Put`: installed as [`TreeNode::put_value`] installs an
+    /// ordinary value at the grove version (merk tree version 0 keeps the
+    /// value-defined cost the stored node was loaded with).
+    Ordinary,
+    /// An [`Op::PutWithProvidedValueHash`](crate::tree::Op::PutWithProvidedValueHash),
+    /// which drops any value-defined cost.
+    ProvidedValueHash,
+    /// An `Op::PutWithSpecializedCost`, at the op's own cost.
+    SpecializedCost(u32),
+}
+
 impl TreeNode {
-    /// The value bytes an apply finally stores when a put of `new_value`
+    /// The value bytes an apply finally stores when `put` of `new_value`
     /// replaces the stored `old_value` — after the just-in-time value update
     /// has run the client callbacks (storage-flags carry-over and rewrite).
     ///
     /// Runs the apply's own steps on a detached node: the node holding
-    /// `old_value` takes the new value and feature type exactly as the put
-    /// installs them, and then goes through
-    /// [`Self::just_in_time_tree_node_value_update`]. `value_defined_cost` is
-    /// the cost the put stamps on the node: `None` for an ordinary put
-    /// (`Op::Put` from merk tree version 1 on, and
-    /// [`Op::PutWithProvidedValueHash`](crate::tree::Op::PutWithProvidedValueHash),
-    /// which drop any cost the predecessor carried), and the op's own cost
-    /// for `Op::PutWithSpecializedCost`. With the same (deterministic)
-    /// callbacks the result is byte-for-byte what the apply writes, so a
-    /// caller that must commit to the final bytes BEFORE the apply — a
-    /// reference holding its target's hash — can compute them.
+    /// `old_value`, loaded with `old_value_defined_cost` as the apply loads
+    /// it, takes the new value and feature type exactly as `put` installs
+    /// them, and then goes through the just-in-time value update
+    /// (`just_in_time_tree_node_value_update`). With the same
+    /// (deterministic) callbacks the result is byte-for-byte what the apply
+    /// writes, so a caller that must commit to the final bytes BEFORE the
+    /// apply — a reference holding its target's hash — can compute them.
     #[allow(clippy::too_many_arguments)]
     pub fn provided_value_hash_put_final_value(
         key: Vec<u8>,
         old_value: Vec<u8>,
+        old_value_defined_cost: Option<ValueDefinedCostType>,
         new_value: Vec<u8>,
         feature_type: TreeFeatureType,
-        value_defined_cost: Option<ValueDefinedCostType>,
+        put: PredictedPut,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         get_temp_new_value_with_old_flags: &impl Fn(
             &Vec<u8>,
@@ -80,26 +95,31 @@ impl TreeNode {
         >,
         grove_version: &GroveVersion,
     ) -> Result<Vec<u8>, Error> {
-        // The stored node (no hashes are needed: the update only measures
-        // sizes and consults the callbacks).
-        let kv = KV::from_fields(key, old_value, NULL_HASH, NULL_HASH, feature_type);
-        let mut node = TreeNode::new_with_tree_inner(TreeNodeInner {
-            left: None,
-            right: None,
-            kv,
-        });
+        // The stored node as loaded (no hashes are needed: the update only
+        // measures sizes and consults the callbacks); its value is installed
+        // by the put below, and the stored bytes are its old value.
+        let mut kv = KV::from_fields(key, Vec::new(), NULL_HASH, NULL_HASH, feature_type);
+        kv.value_defined_cost = old_value_defined_cost;
         // The put, as the apply performs it.
-        node.inner.kv = match value_defined_cost {
-            None => node
-                .inner
-                .kv
-                .put_ordinary_value_no_update_of_hashes(new_value),
-            Some(value_defined_cost) => node
-                .inner
-                .kv
-                .put_value_with_fixed_cost_no_update_of_hashes(new_value, value_defined_cost),
+        let mut kv = match put {
+            PredictedPut::Ordinary => Self::install_ordinary_value(kv, new_value, grove_version)?,
+            PredictedPut::ProvidedValueHash => kv.put_ordinary_value_no_update_of_hashes(new_value),
+            PredictedPut::SpecializedCost(value_cost) => kv
+                .put_value_with_fixed_cost_no_update_of_hashes(
+                    new_value,
+                    ValueDefinedCostType::SpecializedValueDefinedCost(value_cost),
+                ),
         };
-        node.inner.kv.feature_type = feature_type;
+        kv.feature_type = feature_type;
+        let mut node = TreeNode {
+            inner: Box::new(TreeNodeInner {
+                left: None,
+                right: None,
+                kv,
+            }),
+            old_value: Some(old_value),
+            known_storage_cost: None,
+        };
         node.just_in_time_tree_node_value_update(
             old_specialized_cost,
             get_temp_new_value_with_old_flags,
@@ -214,8 +234,8 @@ mod tests {
         merk::NodeType,
         test_utils::TempMerk,
         tree::{
-            kv::ValueDefinedCostType, kv::KV, TreeFeatureType::BasicMerkNode, TreeNode,
-            TreeNodeInner, NULL_HASH,
+            just_in_time_value_update::PredictedPut, kv::ValueDefinedCostType, kv::KV,
+            TreeFeatureType::BasicMerkNode, TreeNode, TreeNodeInner, NULL_HASH,
         },
         Error, Op,
     };
@@ -315,9 +335,10 @@ mod tests {
             let predicted = TreeNode::provided_value_hash_put_final_value(
                 b"key".to_vec(),
                 old.clone(),
+                None,
                 new.clone(),
                 BasicMerkNode,
-                None,
+                PredictedPut::ProvidedValueHash,
                 &old_cost,
                 &no_temp_value,
                 &mut stamp_costs,

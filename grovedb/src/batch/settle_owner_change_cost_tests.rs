@@ -8,18 +8,12 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
 
     use grovedb_costs::{
-        storage_cost::{
-            removal::StorageRemovedBytes::{NoStorageRemoval, SectionedStorageRemoval},
-            transition::ElementFlagsUpdate,
-        },
+        storage_cost::removal::StorageRemovedBytes::{NoStorageRemoval, SectionedStorageRemoval},
         OperationCost,
     };
     use grovedb_epoch_based_storage_flags::StorageFlags;
     use grovedb_merk::{
-        element::{
-            costs::ElementCostExtensions, get::ElementFetchFromStorageExtensions,
-            tree_type::ElementTreeTypeExtensions,
-        },
+        element::{get::ElementFetchFromStorageExtensions, tree_type::ElementTreeTypeExtensions},
         estimated_costs::{
             average_case_costs::{
                 EstimatedLayerCount::ApproximateElements,
@@ -32,9 +26,13 @@ mod tests {
         tree::kv::KV,
         tree_type::TreeType,
     };
-    use grovedb_version::version::GroveVersion;
+    use grovedb_version::version::{v3::GROVE_V3, GroveVersion};
     use intmap::IntMap;
 
+    use crate::batch::settle_test_support::{
+        apply, merging_flags_update, options, owned_flags, settling_flags_update,
+        split_removal_bytes, unowned_flags, value_bytes, write_op, Mode, KEY, NEW_OWNER, OLD_OWNER,
+    };
     use crate::{
         batch::{
             estimated_costs::EstimatedCostsType::{AverageCaseCostsType, WorstCaseCostsType},
@@ -42,20 +40,8 @@ mod tests {
         },
         reference_path::ReferencePathType,
         tests::{common::EMPTY_PATH, make_empty_grovedb, TempGroveDb},
-        BackwardReferences, Element, Error, GroveDb,
+        BackwardReferences, Element, GroveDb,
     };
-
-    const OLD_OWNER: [u8; 32] = [1; 32];
-    const NEW_OWNER: [u8; 32] = [2; 32];
-    const KEY: &[u8] = b"key1";
-
-    fn owned_flags(epoch: u16, owner: [u8; 32]) -> Option<Vec<u8>> {
-        Some(StorageFlags::SingleEpochOwned(epoch, owner).to_element_flags())
-    }
-
-    fn unowned_flags(epoch: u16) -> Option<Vec<u8>> {
-        Some(StorageFlags::SingleEpoch(epoch).to_element_flags())
-    }
 
     fn target_path() -> ReferencePathType {
         ReferencePathType::AbsolutePathReference(vec![b"targets".to_vec(), b"target".to_vec()])
@@ -66,51 +52,6 @@ mod tests {
             b"targets".to_vec(),
             b"target with a much longer key".to_vec(),
         ])
-    }
-
-    /// How a batch is applied.
-    #[derive(Clone, Copy, PartialEq)]
-    enum Mode {
-        /// Today's flags update, without the option.
-        Merging,
-        /// The settling flags update, with the option.
-        Settling,
-    }
-
-    fn options(mode: Mode) -> BatchApplyOptions {
-        BatchApplyOptions {
-            settle_owner_changes: mode == Mode::Settling,
-            ..Default::default()
-        }
-    }
-
-    fn apply(
-        db: &TempGroveDb,
-        ops: Vec<QualifiedGroveDbOp>,
-        mode: Mode,
-        grove_version: &GroveVersion,
-    ) -> Result<OperationCost, Error> {
-        db.apply_batch_with_element_flags_update(
-            ops,
-            Some(options(mode)),
-            |cost, old_flags, new_flags| {
-                match mode {
-                    Mode::Merging => StorageFlags::update_element_flags(cost, old_flags, new_flags)
-                        .map(ElementFlagsUpdate::from),
-                    Mode::Settling => StorageFlags::update_element_flags_settling_owner_changes(
-                        cost, old_flags, new_flags,
-                    ),
-                }
-                .map_err(|e| Error::JustInTimeElementFlagsClientError(e.to_string()))
-            },
-            |flags, removed_key_bytes, removed_value_bytes| {
-                StorageFlags::split_removal_bytes(flags, removed_key_bytes, removed_value_bytes)
-                    .map_err(|e| Error::SplitRemovalBytesClientError(e.to_string()))
-            },
-            None,
-            grove_version,
-        )
-        .cost_as_result()
     }
 
     /// A grove holding `old` at `[tree]/key1` next to an unflagged sibling,
@@ -170,14 +111,6 @@ mod tests {
         db
     }
 
-    fn write_op(element: &Element) -> QualifiedGroveDbOp {
-        QualifiedGroveDbOp::insert_or_replace_op(
-            vec![b"tree".to_vec()],
-            KEY.to_vec(),
-            element.clone(),
-        )
-    }
-
     fn delete_op(element: &Element) -> QualifiedGroveDbOp {
         match element.tree_type() {
             Some(tree_type) => QualifiedGroveDbOp::delete_tree_op(
@@ -223,20 +156,6 @@ mod tests {
         StorageFlags::from_element_flags_ref(element.get_flags().as_ref().expect("expected flags"))
             .expect("expected valid flags")
             .expect("expected storage flags")
-    }
-
-    /// The bytes the node of `element` at `key1` holds besides its key, as
-    /// the apply sizes them.
-    fn value_bytes(element: &Element, tree_type: TreeType, grove_version: &GroveVersion) -> u32 {
-        Element::specialized_costs_for_key_value(
-            KEY,
-            &element
-                .serialize(grove_version)
-                .expect("expected to serialize"),
-            tree_type.inner_node_type(),
-            grove_version,
-        )
-        .expect("expected value bytes")
     }
 
     fn key_bytes() -> u32 {
@@ -379,6 +298,59 @@ mod tests {
         let old = Element::new_item_with_flags(vec![7; 20], owned_flags(0, OLD_OWNER));
         let new = Element::new_item_with_flags(vec![8; 30], owned_flags(0, NEW_OWNER));
         assert_settles(&old, &new, TreeType::NormalTree, grove_version);
+    }
+
+    /// Settling owner changes does not depend on the grove version: on grove
+    /// v1..v3, whose Merk runs version 0 of the just-in-time value update,
+    /// an owner change settles exactly as it does on the latest version.
+    #[test]
+    fn owner_changes_settle_on_grove_v3() {
+        let grove_version = &GROVE_V3;
+        let item = |len: usize, epoch, owner| {
+            Element::new_item_with_flags(vec![8; len], owned_flags(epoch, owner))
+        };
+        for (old, new, tree_type) in [
+            (
+                item(20, 0, OLD_OWNER),
+                item(60, 2, NEW_OWNER),
+                TreeType::NormalTree,
+            ),
+            (
+                item(60, 0, OLD_OWNER),
+                item(5, 2, NEW_OWNER),
+                TreeType::NormalTree,
+            ),
+            (
+                item(20, 0, OLD_OWNER),
+                item(20, 2, NEW_OWNER),
+                TreeType::NormalTree,
+            ),
+            (
+                item(20, 0, OLD_OWNER),
+                item(30, 0, NEW_OWNER),
+                TreeType::NormalTree,
+            ),
+            (
+                Element::new_sum_item_with_flags(5, owned_flags(0, OLD_OWNER)),
+                Element::new_sum_item_with_flags(900, owned_flags(2, NEW_OWNER)),
+                TreeType::SumTree,
+            ),
+            (
+                Element::new_item_with_sum_item_with_flags(
+                    vec![7; 20],
+                    5,
+                    owned_flags(0, OLD_OWNER),
+                ),
+                Element::new_item_with_sum_item_with_flags(
+                    vec![8; 45],
+                    9,
+                    owned_flags(2, NEW_OWNER),
+                ),
+                TreeType::SumTree,
+            ),
+        ] {
+            assert_settles(&old, &new, tree_type, grove_version);
+        }
     }
 
     #[test]
@@ -624,16 +596,8 @@ mod tests {
             .apply_partial_batch_with_element_flags_update(
                 vec![write_op(&new)],
                 Some(options(Mode::Settling)),
-                |cost, old_flags, new_flags| {
-                    StorageFlags::update_element_flags_settling_owner_changes(
-                        cost, old_flags, new_flags,
-                    )
-                    .map_err(|e| Error::JustInTimeElementFlagsClientError(e.to_string()))
-                },
-                |flags, removed_key_bytes, removed_value_bytes| {
-                    StorageFlags::split_removal_bytes(flags, removed_key_bytes, removed_value_bytes)
-                        .map_err(|e| Error::SplitRemovalBytesClientError(e.to_string()))
-                },
+                settling_flags_update,
+                split_removal_bytes,
                 |cost, _leftover_operations| {
                     initial_cost = Some(cost.clone());
                     Ok(vec![])
@@ -767,19 +731,8 @@ mod tests {
                             settle_owner_changes,
                             ..Default::default()
                         }),
-                        |cost, old_flags, new_flags| {
-                            StorageFlags::update_element_flags(cost, old_flags, new_flags).map_err(
-                                |e| Error::JustInTimeElementFlagsClientError(e.to_string()),
-                            )
-                        },
-                        |flags, removed_key_bytes, removed_value_bytes| {
-                            StorageFlags::split_removal_bytes(
-                                flags,
-                                removed_key_bytes,
-                                removed_value_bytes,
-                            )
-                            .map_err(|e| Error::SplitRemovalBytesClientError(e.to_string()))
-                        },
+                        merging_flags_update,
+                        split_removal_bytes,
                         None,
                         grove_version,
                     )
@@ -804,16 +757,8 @@ mod tests {
             .apply_batch_with_element_flags_update(
                 vec![write_op(&new)],
                 None,
-                |cost, old_flags, new_flags| {
-                    StorageFlags::update_element_flags_settling_owner_changes(
-                        cost, old_flags, new_flags,
-                    )
-                    .map_err(|e| Error::JustInTimeElementFlagsClientError(e.to_string()))
-                },
-                |flags, removed_key_bytes, removed_value_bytes| {
-                    StorageFlags::split_removal_bytes(flags, removed_key_bytes, removed_value_bytes)
-                        .map_err(|e| Error::SplitRemovalBytesClientError(e.to_string()))
-                },
+                settling_flags_update,
+                split_removal_bytes,
                 None,
                 grove_version,
             )
@@ -830,64 +775,66 @@ mod tests {
     }
 
     /// A reference written in the same batch commits to the bytes the
-    /// settled element stores: its new flags, not the old owner's.
+    /// settled element stores: its new flags, not the old owner's, on the
+    /// latest grove version and on grove v1..v3 alike.
     #[test]
     fn a_reference_in_the_same_batch_commits_to_the_settled_element() {
-        let grove_version = GroveVersion::latest();
-        let cases = [
-            (
-                Element::new_item_with_flags(vec![7; 20], owned_flags(0, OLD_OWNER)),
-                Element::new_item_with_flags(vec![8; 20], owned_flags(2, NEW_OWNER)),
-                TreeType::NormalTree,
-            ),
-            (
-                Element::new_item_with_flags(vec![7; 20], owned_flags(0, OLD_OWNER)),
-                Element::new_item_with_flags(vec![8; 70], owned_flags(2, NEW_OWNER)),
-                TreeType::NormalTree,
-            ),
-            (
-                Element::new_sum_item_with_flags(5, owned_flags(0, OLD_OWNER)),
-                Element::new_sum_item_with_flags(900, owned_flags(2, NEW_OWNER)),
-                TreeType::SumTree,
-            ),
-            (
-                Element::new_item_with_sum_item_with_flags(
-                    vec![7; 20],
-                    5,
-                    owned_flags(0, OLD_OWNER),
+        for grove_version in [GroveVersion::latest(), &GROVE_V3] {
+            let cases = [
+                (
+                    Element::new_item_with_flags(vec![7; 20], owned_flags(0, OLD_OWNER)),
+                    Element::new_item_with_flags(vec![8; 20], owned_flags(2, NEW_OWNER)),
+                    TreeType::NormalTree,
                 ),
-                Element::new_item_with_sum_item_with_flags(
-                    vec![8; 20],
-                    9,
-                    owned_flags(2, NEW_OWNER),
+                (
+                    Element::new_item_with_flags(vec![7; 20], owned_flags(0, OLD_OWNER)),
+                    Element::new_item_with_flags(vec![8; 70], owned_flags(2, NEW_OWNER)),
+                    TreeType::NormalTree,
                 ),
-                TreeType::SumTree,
-            ),
-        ];
-        for (old, new, tree_type) in cases {
-            let db = grove_with(&old, tree_type, grove_version);
-            apply(
-                &db,
-                vec![
-                    write_op(&new),
-                    QualifiedGroveDbOp::insert_or_replace_op(
-                        vec![b"targets".to_vec()],
-                        b"reference".to_vec(),
-                        Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
-                            b"tree".to_vec(),
-                            KEY.to_vec(),
-                        ])),
+                (
+                    Element::new_sum_item_with_flags(5, owned_flags(0, OLD_OWNER)),
+                    Element::new_sum_item_with_flags(900, owned_flags(2, NEW_OWNER)),
+                    TreeType::SumTree,
+                ),
+                (
+                    Element::new_item_with_sum_item_with_flags(
+                        vec![7; 20],
+                        5,
+                        owned_flags(0, OLD_OWNER),
                     ),
-                ],
-                Mode::Settling,
-                grove_version,
-            )
-            .expect("expected the batch to apply");
-            assert_eq!(stored(&db, grove_version), new);
-            let issues = db
-                .visualize_verify_grovedb(None, true, false, grove_version)
-                .expect("expected to verify the grove");
-            assert!(issues.is_empty(), "reference issues: {issues:?}");
+                    Element::new_item_with_sum_item_with_flags(
+                        vec![8; 20],
+                        9,
+                        owned_flags(2, NEW_OWNER),
+                    ),
+                    TreeType::SumTree,
+                ),
+            ];
+            for (old, new, tree_type) in cases {
+                let db = grove_with(&old, tree_type, grove_version);
+                apply(
+                    &db,
+                    vec![
+                        write_op(&new),
+                        QualifiedGroveDbOp::insert_or_replace_op(
+                            vec![b"targets".to_vec()],
+                            b"reference".to_vec(),
+                            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                                b"tree".to_vec(),
+                                KEY.to_vec(),
+                            ])),
+                        ),
+                    ],
+                    Mode::Settling,
+                    grove_version,
+                )
+                .expect("expected the batch to apply");
+                assert_eq!(stored(&db, grove_version), new);
+                let issues = db
+                    .visualize_verify_grovedb(None, true, false, grove_version)
+                    .expect("expected to verify the grove");
+                assert!(issues.is_empty(), "reference issues: {issues:?}");
+            }
         }
     }
 
@@ -1084,10 +1031,11 @@ mod tests {
         }
     }
 
-    /// The estimates of those writes without the option, as they were
-    /// before it existed: (case, write, average case, seeks, added bytes,
-    /// replaced bytes, loaded bytes, hash calls), taken from develop at
-    /// a720f7c1.
+    /// The estimates of those writes without the option on the latest grove
+    /// version, as they were before it existed: (case, write, average case,
+    /// seeks, added bytes, replaced bytes, loaded bytes, hash calls), taken
+    /// from develop at a720f7c1. The worst-case rows whose replaced bytes
+    /// saturate at `u32::MAX` still pin every other figure.
     const ESTIMATES_BEFORE_THE_OPTION: &[(usize, &str, bool, u32, u32, u32, u64, u32)] = &[
         (0, "insert_or_replace", true, 34, 243, 4289, 6170, 79),
         (
@@ -1427,23 +1375,215 @@ mod tests {
         (6, "replace_dont_check", false, 12, 0, 409825, 394925, 276),
     ];
 
+    /// The same estimates on grove v3 (no backward-references fan-out),
+    /// taken from develop at a720f7c1.
+    const GROVE_V3_ESTIMATES_BEFORE_THE_OPTION: &[(usize, &str, bool, u32, u32, u32, u64, u32)] = &[
+        (0, "insert_or_replace", true, 13, 243, 1047, 1379, 23),
+        (0, "insert_or_replace", false, 12, 243, 409674, 394925, 275),
+        (
+            0,
+            "insert_or_replace_dont_check",
+            true,
+            13,
+            243,
+            1047,
+            1379,
+            23,
+        ),
+        (
+            0,
+            "insert_or_replace_dont_check",
+            false,
+            12,
+            243,
+            409674,
+            394925,
+            275,
+        ),
+        (0, "replace", true, 13, 0, 1326, 1379, 24),
+        (0, "replace", false, 12, 206, 409711, 394925, 275),
+        (0, "replace_dont_check", true, 13, 0, 1326, 1379, 24),
+        (0, "replace_dont_check", false, 12, 206, 409711, 394925, 275),
+        (0, "patch", true, 13, 0, 1326, 1379, 24),
+        (0, "patch", false, 12, 206, 409711, 394925, 275),
+        (0, "patch_dont_check", true, 13, 0, 1326, 1379, 24),
+        (0, "patch_dont_check", false, 12, 206, 409711, 394925, 275),
+        (1, "insert_or_replace", true, 13, 187, 1047, 1379, 22),
+        (1, "insert_or_replace", false, 12, 187, 409674, 394925, 274),
+        (
+            1,
+            "insert_or_replace_dont_check",
+            true,
+            13,
+            187,
+            1047,
+            1379,
+            22,
+        ),
+        (
+            1,
+            "insert_or_replace_dont_check",
+            false,
+            12,
+            187,
+            409674,
+            394925,
+            274,
+        ),
+        (1, "replace", true, 13, 0, 1271, 1379, 23),
+        (1, "replace", false, 12, 150, 409711, 394925, 274),
+        (1, "replace_dont_check", true, 13, 0, 1271, 1379, 23),
+        (1, "replace_dont_check", false, 12, 150, 409711, 394925, 274),
+        (1, "patch", true, 13, 0, 1271, 1379, 23),
+        (1, "patch", false, 12, 150, 409711, 394925, 274),
+        (1, "patch_dont_check", true, 13, 0, 1271, 1379, 23),
+        (1, "patch_dont_check", false, 12, 150, 409711, 394925, 274),
+        (2, "insert_or_replace", true, 13, 245, 1095, 1451, 23),
+        (2, "insert_or_replace", false, 12, 229, 409674, 394925, 275),
+        (
+            2,
+            "insert_or_replace_dont_check",
+            true,
+            13,
+            245,
+            1095,
+            1451,
+            23,
+        ),
+        (
+            2,
+            "insert_or_replace_dont_check",
+            false,
+            12,
+            229,
+            409674,
+            394925,
+            275,
+        ),
+        (2, "replace", true, 13, 0, 1340, 1451, 23),
+        (2, "replace", false, 12, 192, 409711, 394925, 275),
+        (2, "replace_dont_check", true, 13, 0, 1340, 1451, 23),
+        (2, "replace_dont_check", false, 12, 192, 409711, 394925, 275),
+        (3, "insert_or_replace", true, 13, 198, 1095, 1451, 22),
+        (3, "insert_or_replace", false, 12, 182, 409674, 394925, 274),
+        (
+            3,
+            "insert_or_replace_dont_check",
+            true,
+            13,
+            198,
+            1095,
+            1451,
+            22,
+        ),
+        (
+            3,
+            "insert_or_replace_dont_check",
+            false,
+            12,
+            182,
+            409674,
+            394925,
+            274,
+        ),
+        (3, "replace", true, 13, 0, 1301, 1451, 22),
+        (3, "replace", false, 12, 0, 409864, 394925, 274),
+        (3, "replace_dont_check", true, 13, 0, 1301, 1451, 22),
+        (3, "replace_dont_check", false, 12, 0, 409864, 394925, 274),
+        (4, "insert_or_replace", true, 13, 223, 1047, 1379, 23),
+        (4, "insert_or_replace", false, 12, 223, 409674, 394925, 275),
+        (
+            4,
+            "insert_or_replace_dont_check",
+            true,
+            13,
+            223,
+            1047,
+            1379,
+            23,
+        ),
+        (
+            4,
+            "insert_or_replace_dont_check",
+            false,
+            12,
+            223,
+            409674,
+            394925,
+            275,
+        ),
+        (4, "replace", true, 13, 0, 1270, 1379, 23),
+        (4, "replace", false, 12, 186, 409711, 394925, 275),
+        (4, "replace_dont_check", true, 13, 0, 1270, 1379, 23),
+        (4, "replace_dont_check", false, 12, 186, 409711, 394925, 275),
+        (4, "refresh_trusted", true, 13, 0, 1270, 1379, 23),
+        (4, "refresh_trusted", false, 12, 186, 409711, 394925, 275),
+        (5, "insert_or_replace", true, 13, 240, 1095, 1451, 23),
+        (5, "insert_or_replace", false, 12, 224, 409674, 394925, 275),
+        (
+            5,
+            "insert_or_replace_dont_check",
+            true,
+            13,
+            240,
+            1095,
+            1451,
+            23,
+        ),
+        (
+            5,
+            "insert_or_replace_dont_check",
+            false,
+            12,
+            224,
+            409674,
+            394925,
+            275,
+        ),
+        (5, "replace", true, 13, 0, 1335, 1451, 23),
+        (5, "replace", false, 12, 187, 409711, 394925, 275),
+        (5, "replace_dont_check", true, 13, 0, 1335, 1451, 23),
+        (5, "replace_dont_check", false, 12, 187, 409711, 394925, 275),
+        (6, "insert_or_replace", true, 13, 151, 1047, 1379, 24),
+        (6, "insert_or_replace", false, 12, 151, 409674, 394925, 276),
+        (
+            6,
+            "insert_or_replace_dont_check",
+            true,
+            13,
+            151,
+            1047,
+            1379,
+            24,
+        ),
+        (
+            6,
+            "insert_or_replace_dont_check",
+            false,
+            12,
+            151,
+            409674,
+            394925,
+            276,
+        ),
+        (6, "replace", true, 13, 0, 1198, 1379, 24),
+        (6, "replace", false, 12, 0, 409825, 394925, 276),
+        (6, "replace_dont_check", true, 13, 0, 1198, 1379, 24),
+        (6, "replace_dont_check", false, 12, 0, 409825, 394925, 276),
+    ];
+
     /// Without the option, every estimate is what it was before the option
-    /// existed.
+    /// existed, on the latest grove version and on grove v3.
     #[test]
     fn estimates_without_the_option_are_unchanged() {
-        let grove_version = GroveVersion::latest();
-        let mut pinned = ESTIMATES_BEFORE_THE_OPTION.iter();
-        for (case, (_, new, tree_type)) in estimate_cases().into_iter().enumerate() {
-            for (label, op) in settling_writes(&new) {
-                for average_case in [true, false] {
-                    let average_case_tree_type = average_case.then_some(tree_type);
-                    for batch_apply_options in [None, Some(options(Mode::Merging))] {
-                        let estimate = estimate(
-                            vec![op.clone()],
-                            batch_apply_options,
-                            average_case_tree_type,
-                            grove_version,
-                        );
+        for (grove_version, pins) in [
+            (GroveVersion::latest(), ESTIMATES_BEFORE_THE_OPTION),
+            (&GROVE_V3, GROVE_V3_ESTIMATES_BEFORE_THE_OPTION),
+        ] {
+            let mut pinned = pins.iter();
+            for (case, (_, new, tree_type)) in estimate_cases().into_iter().enumerate() {
+                for (label, op) in settling_writes(&new) {
+                    for average_case in [true, false] {
                         let &(
                             pinned_case,
                             pinned_label,
@@ -1453,32 +1593,39 @@ mod tests {
                             replaced_bytes,
                             storage_loaded_bytes,
                             hash_node_calls,
-                        ) = pinned.clone().next().expect("expected a pinned estimate");
+                        ) = pinned.next().expect("expected a pinned estimate");
                         assert_eq!(
                             (pinned_case, pinned_label, pinned_average_case),
                             (case, label, average_case)
                         );
-                        assert_eq!(
-                            estimate,
-                            OperationCost {
-                                seek_count,
-                                storage_cost: grovedb_costs::storage_cost::StorageCost {
-                                    added_bytes,
-                                    replaced_bytes,
-                                    removed_bytes: NoStorageRemoval,
-                                },
-                                storage_loaded_bytes,
-                                hash_node_calls,
-                                sinsemilla_hash_calls: 0,
+                        let before = OperationCost {
+                            seek_count,
+                            storage_cost: grovedb_costs::storage_cost::StorageCost {
+                                added_bytes,
+                                replaced_bytes,
+                                removed_bytes: NoStorageRemoval,
                             },
-                            "case {case}, {label}, average case {average_case}"
-                        );
+                            storage_loaded_bytes,
+                            hash_node_calls,
+                            sinsemilla_hash_calls: 0,
+                        };
+                        for batch_apply_options in [None, Some(options(Mode::Merging))] {
+                            assert_eq!(
+                                estimate(
+                                    vec![op.clone()],
+                                    batch_apply_options,
+                                    average_case.then_some(tree_type),
+                                    grove_version,
+                                ),
+                                before,
+                                "case {case}, {label}, average case {average_case}"
+                            );
+                        }
                     }
-                    pinned.next();
                 }
             }
+            assert!(pinned.next().is_none(), "expected every pinned estimate");
         }
-        assert!(pinned.next().is_none(), "expected every pinned estimate");
     }
 
     /// A replacement estimated without the option charges no added bytes,
@@ -1521,10 +1668,20 @@ mod tests {
     /// A flagged tree written together with a write under it reaches the
     /// estimators as the `InsertTreeWithRootHash` its propagation makes of
     /// it; with the option that op too is charged the insertion a settled
-    /// owner change records, whatever tree it lands in.
+    /// owner change records, whatever tree it is and whatever tree it lands
+    /// in.
     #[test]
     fn estimates_with_the_option_cover_a_settled_tree_written_with_its_children() {
         let grove_version = GroveVersion::latest();
+        let trees: [fn(Option<Vec<u8>>) -> Element; 7] = [
+            Element::empty_tree_with_flags,
+            Element::empty_sum_tree_with_flags,
+            Element::empty_big_sum_tree_with_flags,
+            Element::empty_count_tree_with_flags,
+            Element::empty_count_sum_tree_with_flags,
+            Element::empty_provable_count_tree_with_flags,
+            Element::empty_provable_count_sum_tree_with_flags,
+        ];
         for parent_tree in [
             Element::empty_tree(),
             Element::empty_sum_tree(),
@@ -1532,79 +1689,118 @@ mod tests {
             Element::empty_count_tree(),
         ] {
             let parent_tree_type = parent_tree.tree_type().expect("expected a tree");
-            let db = make_empty_grovedb();
-            db.insert(
-                EMPTY_PATH,
-                b"parent",
-                parent_tree,
-                None,
-                None,
-                grove_version,
-            )
-            .unwrap()
-            .expect("expected to insert the parent tree");
-            db.insert(
-                [b"parent".as_slice()].as_ref(),
-                b"tree",
-                Element::empty_tree_with_flags(owned_flags(0, OLD_OWNER)),
-                None,
-                None,
-                grove_version,
-            )
-            .unwrap()
-            .expect("expected to insert the tree");
-            db.insert(
-                [b"parent".as_slice(), b"tree"].as_ref(),
-                b"child",
-                Element::new_item(b"child".to_vec()),
-                None,
-                None,
-                grove_version,
-            )
-            .unwrap()
-            .expect("expected to insert the child");
-            let ops = vec![
-                QualifiedGroveDbOp::insert_or_replace_op(
-                    vec![b"parent".to_vec()],
-                    b"tree".to_vec(),
-                    Element::empty_tree_with_flags(owned_flags(2, NEW_OWNER)),
-                ),
-                QualifiedGroveDbOp::insert_or_replace_op(
-                    vec![b"parent".to_vec(), b"tree".to_vec()],
-                    b"another child".to_vec(),
-                    Element::new_item(b"another child".to_vec()),
-                ),
-            ];
-            let applied = apply(&db, ops.clone(), Mode::Settling, grove_version)
-                .expect("expected the settling update to apply");
+            for tree in trees {
+                let tree_type = tree(None).tree_type().expect("expected a tree");
+                let db = make_empty_grovedb();
+                db.insert(
+                    EMPTY_PATH,
+                    b"parent",
+                    parent_tree.clone(),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("expected to insert the parent tree");
+                db.insert(
+                    [b"parent".as_slice()].as_ref(),
+                    b"tree",
+                    tree(owned_flags(0, OLD_OWNER)),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("expected to insert the tree");
+                db.insert(
+                    [b"parent".as_slice(), b"tree"].as_ref(),
+                    b"child",
+                    Element::new_item(b"child".to_vec()),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("expected to insert the child");
+                let ops = vec![
+                    QualifiedGroveDbOp::insert_or_replace_op(
+                        vec![b"parent".to_vec()],
+                        b"tree".to_vec(),
+                        tree(owned_flags(2, NEW_OWNER)),
+                    ),
+                    QualifiedGroveDbOp::insert_or_replace_op(
+                        vec![b"parent".to_vec(), b"tree".to_vec()],
+                        b"another child".to_vec(),
+                        Element::new_item(b"another child".to_vec()),
+                    ),
+                ];
+                let applied = apply(&db, ops.clone(), Mode::Settling, grove_version)
+                    .expect("expected the settling update to apply");
 
-            let mut paths = HashMap::new();
-            paths.insert(KeyInfoPath(vec![]), MaxElementsNumber(2));
-            paths.insert(
-                KeyInfoPath::from_known_path([b"parent".as_slice()]),
-                MaxElementsNumber(2),
-            );
-            paths.insert(
-                KeyInfoPath::from_known_path([b"parent".as_slice(), b"tree"]),
-                MaxElementsNumber(2),
-            );
-            let worst = GroveDb::estimated_case_operations_for_batch(
-                WorstCaseCostsType(paths),
-                ops,
-                Some(options(Mode::Settling)),
-                |_cost, _old_flags, _new_flags| Ok(false),
-                |_flags, _removed_key_bytes, _removed_value_bytes| {
-                    Ok((NoStorageRemoval, NoStorageRemoval))
-                },
-                grove_version,
-            )
-            .cost_as_result()
-            .expect("expected an estimate");
-            assert!(
-                worst.storage_cost.added_bytes >= applied.storage_cost.added_bytes,
-                "in a {parent_tree_type:?}: worst-case estimate {worst:?} is below the settled \
-                 apply {applied:?}"
-            );
+                let mut average_case_layers = HashMap::new();
+                average_case_layers.insert(
+                    KeyInfoPath(vec![]),
+                    EstimatedLayerInformation {
+                        tree_type: TreeType::NormalTree,
+                        estimated_layer_count: ApproximateElements(2),
+                        estimated_layer_sizes: AllSubtrees(7, NoSumTrees, None),
+                    },
+                );
+                average_case_layers.insert(
+                    KeyInfoPath::from_known_path([b"parent".as_slice()]),
+                    EstimatedLayerInformation {
+                        tree_type: parent_tree_type,
+                        estimated_layer_count: ApproximateElements(2),
+                        estimated_layer_sizes: AllSubtrees(4, NoSumTrees, Some(35)),
+                    },
+                );
+                average_case_layers.insert(
+                    KeyInfoPath::from_known_path([b"parent".as_slice(), b"tree"]),
+                    EstimatedLayerInformation {
+                        tree_type,
+                        estimated_layer_count: ApproximateElements(2),
+                        estimated_layer_sizes: AllItems(13, 13, None),
+                    },
+                );
+                let mut worst_case_layers = HashMap::new();
+                worst_case_layers.insert(KeyInfoPath(vec![]), MaxElementsNumber(2));
+                worst_case_layers.insert(
+                    KeyInfoPath::from_known_path([b"parent".as_slice()]),
+                    MaxElementsNumber(2),
+                );
+                worst_case_layers.insert(
+                    KeyInfoPath::from_known_path([b"parent".as_slice(), b"tree"]),
+                    MaxElementsNumber(2),
+                );
+                // The worst case sizes the item written under the tree as
+                // under a normal tree whatever the tree is, so only a normal
+                // tree's batch is bounded as a whole there; the worst-case
+                // settled tree itself is bounded for every tree in
+                // `estimated_costs`' tests.
+                let mut estimated_costs_types = vec![AverageCaseCostsType(average_case_layers)];
+                if tree_type == TreeType::NormalTree {
+                    estimated_costs_types.push(WorstCaseCostsType(worst_case_layers));
+                }
+                for estimated_costs_type in estimated_costs_types {
+                    let estimate = GroveDb::estimated_case_operations_for_batch(
+                        estimated_costs_type,
+                        ops.clone(),
+                        Some(options(Mode::Settling)),
+                        |_cost, _old_flags, _new_flags| Ok(false),
+                        |_flags, _removed_key_bytes, _removed_value_bytes| {
+                            Ok((NoStorageRemoval, NoStorageRemoval))
+                        },
+                        grove_version,
+                    )
+                    .cost_as_result()
+                    .expect("expected an estimate");
+                    assert!(
+                        estimate.storage_cost.added_bytes >= applied.storage_cost.added_bytes,
+                        "a {tree_type:?} in a {parent_tree_type:?}: estimate {estimate:?} is \
+                         below the settled apply {applied:?}"
+                    );
+                }
+            }
         }
     }
 }

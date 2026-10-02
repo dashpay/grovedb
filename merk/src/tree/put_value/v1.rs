@@ -13,11 +13,20 @@ use grovedb_costs::{
 use grovedb_version::version::GroveVersion;
 
 use crate::{
-    tree::{kv::ValueDefinedCostType, CryptoHash, TreeFeatureType, TreeNode},
+    tree::{
+        kv::{ValueDefinedCostType, KV},
+        CryptoHash, TreeFeatureType, TreeNode,
+    },
     Error,
 };
 
 impl TreeNode {
+    /// How version 1 installs an ordinary value on a node: it clears the `value_defined_cost` the
+    /// node was loaded with.
+    pub(super) fn install_ordinary_value_v1(kv: KV, value: Vec<u8>) -> KV {
+        kv.put_ordinary_value_no_update_of_hashes(value)
+    }
+
     /// Version 1 of [`TreeNode::put_value`].
     #[inline]
     pub(super) fn put_value_v1(
@@ -49,7 +58,7 @@ impl TreeNode {
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
 
-        self.inner.kv = self.inner.kv.put_ordinary_value_no_update_of_hashes(value);
+        self.inner.kv = Self::install_ordinary_value_v1(self.inner.kv, value);
         self.inner.kv.feature_type = feature_type;
 
         if self.old_value.is_some() {
@@ -104,7 +113,7 @@ impl TreeNode {
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
 
-        self.inner.kv = self.inner.kv.put_ordinary_value_no_update_of_hashes(value);
+        self.inner.kv = Self::install_ordinary_value_v1(self.inner.kv, value);
         self.inner.kv.feature_type = feature_type;
 
         if self.old_value.is_some() {

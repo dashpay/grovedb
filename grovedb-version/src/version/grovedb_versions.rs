@@ -249,20 +249,26 @@ pub struct GroveDBApplyBatchVersions {
     /// are versioned by their own `insert_on_transaction` and
     /// `delete_internal_on_transaction` slots.
     pub backward_references_maintenance: FeatureVersion,
-    /// How a reference written in a batch predicts the value hash of a
-    /// target item the same batch is still to update.
+    /// How a reference written in a batch gets the value hash of a target
+    /// item the same batch updates.
     ///
     /// - `0` (V1..V3): a hand-written copy of Merk's just-in-time value
-    ///   update. For a sum item it assumes the new element keeps the stored
-    ///   flags and does not consult the flags update, while the apply stores
-    ///   the flags the flags update leaves, so when those differ (an owned
-    ///   item updated in a later epoch, an unowned one gaining an owner) the
-    ///   reference commits to bytes that are never stored.
-    /// - `1` (V4+): the prediction runs Merk's own just-in-time value update
-    ///   on the stored and new bytes, with the value-defined cost the apply
-    ///   puts the element with, so the reference commits to exactly the
-    ///   bytes the apply stores, for every item kind and every answer of the
-    ///   flags update.
+    ///   update over the target's bytes as the Merk cache holds them. For a
+    ///   sum item it assumes the new element keeps the stored flags and does
+    ///   not consult the flags update, while the apply stores the flags the
+    ///   flags update leaves, so when those differ (an owned item updated in
+    ///   a later epoch, an unowned one gaining an owner) the reference
+    ///   commits to bytes that are never stored. A sum item replaced by an
+    ///   item, or the reverse, is refused.
+    /// - `1` (V4+): once the batch has written the target, the hash of the
+    ///   bytes it stores; before, Merk's own just-in-time value update run on
+    ///   the stored and new bytes with the put the apply performs, once per
+    ///   target. The reference commits to exactly the bytes the apply stores,
+    ///   for every item kind, every answer of the flags update and every
+    ///   order the batch writes the reference and its target in.
+    ///
+    /// A batch with `settle_owner_changes` uses version `1` on every grove
+    /// version: the option has no legacy behaviour to keep.
     pub same_batch_reference_target_prediction: FeatureVersion,
 }
 

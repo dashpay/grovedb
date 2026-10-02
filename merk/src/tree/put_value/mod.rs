@@ -29,7 +29,10 @@ use grovedb_costs::{
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
 use crate::{
-    tree::{kv::ValueDefinedCostType, CryptoHash, TreeFeatureType, TreeNode},
+    tree::{
+        kv::{ValueDefinedCostType, KV},
+        CryptoHash, TreeFeatureType, TreeNode,
+    },
     Error,
 };
 
@@ -156,6 +159,28 @@ impl TreeNode {
                 },
             ))
             .wrap_with_cost(Default::default()),
+        }
+    }
+
+    /// Installs an ordinary value on a node exactly as [`Self::put_value`]
+    /// does, without the just-in-time value update or hashing: what a
+    /// prediction of the bytes an `Op::Put` finally stores must start from.
+    /// See the module docs for the version semantics.
+    pub(in crate::tree) fn install_ordinary_value(
+        kv: KV,
+        value: Vec<u8>,
+        grove_version: &GroveVersion,
+    ) -> Result<KV, Error> {
+        match grove_version.merk_versions.tree.put_value {
+            0 => Ok(Self::install_ordinary_value_v0(kv, value)),
+            1 => Ok(Self::install_ordinary_value_v1(kv, value)),
+            version => Err(Error::VersionError(
+                GroveVersionError::UnknownVersionMismatch {
+                    method: "install_ordinary_value".to_string(),
+                    known_versions: vec![0, 1],
+                    received: version,
+                },
+            )),
         }
     }
 }

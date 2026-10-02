@@ -7,80 +7,40 @@
 #[cfg(feature = "minimal")]
 mod tests {
     use grovedb_costs::{
-        storage_cost::{
-            removal::StorageRemovedBytes::NoStorageRemoval, transition::ElementFlagsUpdate,
-        },
+        storage_cost::removal::StorageRemovedBytes::{BasicStorageRemoval, NoStorageRemoval},
         OperationCost,
     };
-    use grovedb_epoch_based_storage_flags::StorageFlags;
-    use grovedb_merk::{element::costs::ElementCostExtensions, tree_type::TreeType};
+    use grovedb_merk::tree_type::TreeType;
     use grovedb_version::version::{v3::GROVE_V3, GroveVersion};
 
     use crate::{
-        batch::{BatchApplyOptions, QualifiedGroveDbOp},
+        batch::{
+            settle_test_support::{
+                apply, flags_update, options, owned_flags, split_removal_bytes, unowned_flags,
+                value_bytes, write_op, Mode, KEY, NEW_OWNER, OLD_OWNER,
+            },
+            QualifiedGroveDbOp,
+        },
         reference_path::ReferencePathType,
-        tests::{common::EMPTY_PATH, make_empty_grovedb, TempGroveDb},
+        tests::{make_empty_grovedb, TempGroveDb},
         Element, Error,
     };
-
-    const OLD_OWNER: [u8; 32] = [1; 32];
-    const NEW_OWNER: [u8; 32] = [2; 32];
-    const KEY: &[u8] = b"key1";
-
-    fn owned_flags(epoch: u16, owner: [u8; 32]) -> Option<Vec<u8>> {
-        Some(StorageFlags::SingleEpochOwned(epoch, owner).to_element_flags())
-    }
-
-    fn unowned_flags(epoch: u16) -> Option<Vec<u8>> {
-        Some(StorageFlags::SingleEpoch(epoch).to_element_flags())
-    }
 
     fn target() -> ReferencePathType {
         ReferencePathType::AbsolutePathReference(vec![b"tree".to_vec(), KEY.to_vec()])
     }
 
-    /// Drive's flags update, merging or settling owner changes.
-    #[derive(Clone, Copy, Debug, PartialEq)]
-    enum Mode {
-        Merging,
-        Settling,
+    fn insert(db: &TempGroveDb, path: &[&[u8]], key: &[u8], element: Element, gv: &GroveVersion) {
+        db.insert(path, key, element, None, None, gv)
+            .unwrap()
+            .expect("expected to insert");
     }
 
-    fn apply(
-        db: &TempGroveDb,
-        ops: Vec<QualifiedGroveDbOp>,
-        mode: Mode,
-        grove_version: &GroveVersion,
-    ) -> Result<OperationCost, Error> {
-        db.apply_batch_with_element_flags_update(
-            ops,
-            Some(BatchApplyOptions {
-                settle_owner_changes: mode == Mode::Settling,
-                ..Default::default()
-            }),
-            |cost, old_flags, new_flags| {
-                match mode {
-                    Mode::Merging => StorageFlags::update_element_flags(cost, old_flags, new_flags)
-                        .map(ElementFlagsUpdate::from),
-                    Mode::Settling => StorageFlags::update_element_flags_settling_owner_changes(
-                        cost, old_flags, new_flags,
-                    ),
-                }
-                .map_err(|e| Error::JustInTimeElementFlagsClientError(e.to_string()))
-            },
-            |flags, removed_key_bytes, removed_value_bytes| {
-                StorageFlags::split_removal_bytes(flags, removed_key_bytes, removed_value_bytes)
-                    .map_err(|e| Error::SplitRemovalBytesClientError(e.to_string()))
-            },
-            None,
-            grove_version,
-        )
-        .cost_as_result()
-    }
-
-    /// A grove holding `old` at `[tree]/key1` (a tree of `tree_type`), and,
-    /// `with_reference`, a reference to it at `[index, value]/reference`,
-    /// deeper than its target as a Drive index reference is.
+    /// A grove holding `old` at `[tree]/key1` (a tree of `tree_type`), next
+    /// to an `index` tree with a `value` tree under it and a `zindex` tree
+    /// that sorts after `tree`, and, `with_reference`, a reference to it at
+    /// `[index, value]/reference`, deeper than its target as a Drive index
+    /// reference is.
     fn grove_with(
         old: &Element,
         tree_type: TreeType,
@@ -92,61 +52,27 @@ mod tests {
             TreeType::SumTree => Element::empty_sum_tree(),
             _ => Element::empty_tree(),
         };
-        db.insert(EMPTY_PATH, b"tree", tree, None, None, grove_version)
-            .unwrap()
-            .expect("expected to insert the tree");
-        db.insert(
-            [b"tree".as_slice()].as_ref(),
-            KEY,
-            old.clone(),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("expected to insert the old element");
-        db.insert(
-            EMPTY_PATH,
-            b"index",
-            Element::empty_tree(),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("expected to insert the index tree");
-        db.insert(
-            [b"index".as_slice()].as_ref(),
+        insert(&db, &[], b"tree", tree, grove_version);
+        insert(&db, &[b"tree"], KEY, old.clone(), grove_version);
+        insert(&db, &[], b"index", Element::empty_tree(), grove_version);
+        insert(
+            &db,
+            &[b"index"],
             b"value",
             Element::empty_tree(),
-            None,
-            None,
             grove_version,
-        )
-        .unwrap()
-        .expect("expected to insert the index value tree");
-        if !with_reference {
-            return db;
+        );
+        insert(&db, &[], b"zindex", Element::empty_tree(), grove_version);
+        if with_reference {
+            insert(
+                &db,
+                &[b"index", b"value"],
+                b"reference",
+                Element::new_reference(target()),
+                grove_version,
+            );
         }
-        db.insert(
-            [b"index".as_slice(), b"value"].as_ref(),
-            b"reference",
-            Element::new_reference(target()),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("expected to insert the reference");
         db
-    }
-
-    fn write_op(element: &Element) -> QualifiedGroveDbOp {
-        QualifiedGroveDbOp::insert_or_replace_op(
-            vec![b"tree".to_vec()],
-            KEY.to_vec(),
-            element.clone(),
-        )
     }
 
     fn refresh_op(trusted: bool) -> QualifiedGroveDbOp {
@@ -161,35 +87,67 @@ mod tests {
         )
     }
 
-    /// The ways a batch rewrites the references to the element it updates.
-    fn reference_ops() -> Vec<(&'static str, Vec<QualifiedGroveDbOp>)> {
+    fn reference_op(path: Vec<Vec<u8>>, key: &[u8]) -> QualifiedGroveDbOp {
+        QualifiedGroveDbOp::insert_or_replace_op(
+            path,
+            key.to_vec(),
+            Element::new_reference(target()),
+        )
+    }
+
+    /// The ways a batch rewrites the references to the element it updates:
+    /// whether the grove holds the deeper reference (which a way then
+    /// rewrites too), and how many of the references resolve before the
+    /// batch writes the element.
+    fn reference_ops() -> Vec<(&'static str, Vec<QualifiedGroveDbOp>, bool, usize)> {
         vec![
             (
                 "an untrusted refresh of a deeper reference",
                 vec![refresh_op(false)],
+                true,
+                1,
             ),
             (
                 "a trusted refresh of a deeper reference",
                 vec![refresh_op(true)],
+                true,
+                1,
             ),
             (
                 "a rewrite of a deeper reference",
-                vec![QualifiedGroveDbOp::insert_or_replace_op(
+                vec![reference_op(
                     vec![b"index".to_vec(), b"value".to_vec()],
-                    b"reference".to_vec(),
-                    Element::new_reference(target()),
+                    b"reference",
                 )],
+                true,
+                1,
             ),
             (
-                "a refresh and a new reference beside the tree",
+                "a refresh and a new reference in a tree before the target's",
                 vec![
                     refresh_op(true),
-                    QualifiedGroveDbOp::insert_or_replace_op(
-                        vec![b"index".to_vec()],
-                        b"another reference".to_vec(),
-                        Element::new_reference(target()),
-                    ),
+                    reference_op(vec![b"index".to_vec()], b"another"),
                 ],
+                true,
+                2,
+            ),
+            (
+                "a refresh and a new reference at the root",
+                vec![refresh_op(true), reference_op(vec![], b"root reference")],
+                true,
+                1,
+            ),
+            (
+                "a new reference at the root",
+                vec![reference_op(vec![], b"root reference")],
+                false,
+                0,
+            ),
+            (
+                "a new reference in a tree after the target's",
+                vec![reference_op(vec![b"zindex".to_vec()], b"another")],
+                false,
+                0,
             ),
         ]
     }
@@ -197,8 +155,9 @@ mod tests {
     /// Updates whose stored flags are not the new element's as written, nor
     /// the old element's: the flags update merges them.
     fn flag_changing_updates() -> Vec<(&'static str, Element, Element, TreeType)> {
-        vec![
-            (
+        let mut updates = vec![];
+        for growth in [1, 3, 25] {
+            updates.push((
                 "an item with a sum item, same owner, grown in a later epoch",
                 Element::new_item_with_sum_item_with_flags(
                     vec![7; 20],
@@ -206,12 +165,14 @@ mod tests {
                     owned_flags(0, OLD_OWNER),
                 ),
                 Element::new_item_with_sum_item_with_flags(
-                    vec![8; 45],
+                    vec![8; 20 + growth],
                     9,
                     owned_flags(2, OLD_OWNER),
                 ),
                 TreeType::SumTree,
-            ),
+            ));
+        }
+        updates.extend([
             (
                 "a sum item gaining an owner in the same epoch",
                 Element::new_sum_item_with_flags(5, unowned_flags(0)),
@@ -236,7 +197,8 @@ mod tests {
                 Element::new_item_with_flags(vec![8; 45], owned_flags(2, NEW_OWNER)),
                 TreeType::NormalTree,
             ),
-        ]
+        ]);
+        updates
     }
 
     fn issues(db: &TempGroveDb, grove_version: &GroveVersion) -> usize {
@@ -245,30 +207,56 @@ mod tests {
             .len()
     }
 
+    /// Applies `new` and `reference_ops` to a fresh grove holding `old` (and,
+    /// `with_reference`, the deeper reference), and counts the stale
+    /// references.
+    fn stale_references(
+        old: &Element,
+        new: &Element,
+        tree_type: TreeType,
+        reference_ops: Vec<QualifiedGroveDbOp>,
+        with_reference: bool,
+        mode: Mode,
+        grove_version: &GroveVersion,
+    ) -> Result<usize, Error> {
+        let db = grove_with(old, tree_type, with_reference, grove_version);
+        let mut ops = vec![write_op(new)];
+        ops.extend(reference_ops);
+        apply(&db, ops, mode, grove_version)?;
+        Ok(issues(&db, grove_version))
+    }
+
     #[test]
     fn a_reference_rewritten_in_the_same_batch_commits_to_the_stored_bytes() {
         let grove_version = GroveVersion::latest();
         for (label, old, new, tree_type) in flag_changing_updates() {
             for mode in [Mode::Merging, Mode::Settling] {
-                for (reference_label, reference_ops) in reference_ops() {
-                    let db = grove_with(&old, tree_type, true, grove_version);
-                    let mut ops = vec![write_op(&new)];
-                    ops.extend(reference_ops);
-                    apply(&db, ops, mode, grove_version).unwrap_or_else(|e| {
+                for (reference_label, reference_ops, with_reference, _) in reference_ops() {
+                    let stale = stale_references(
+                        &old,
+                        &new,
+                        tree_type,
+                        reference_ops,
+                        with_reference,
+                        mode,
+                        grove_version,
+                    )
+                    .unwrap_or_else(|e| {
                         panic!("{label}, {reference_label}, {mode:?}: expected to apply: {e}")
                     });
                     assert_eq!(
-                        issues(&db, grove_version),
-                        0,
-                        "{label}, {reference_label}, {mode:?}: the reference is stale"
+                        stale, 0,
+                        "{label} ({new:?}), {reference_label}, {mode:?}: a reference is stale"
                     );
                 }
             }
         }
     }
 
-    /// Grove v1..v3 keep the hand-written prediction, which takes a sum item
-    /// to keep its stored flags (consensus-locked).
+    /// Grove v1..v3 keep the hand-written prediction without the option,
+    /// which takes a sum item to keep its stored flags: a reference that
+    /// resolves before the batch writes the sum item commits to bytes that
+    /// are never stored (consensus-locked).
     #[test]
     fn grove_v3_keeps_the_legacy_sum_item_prediction() {
         let grove_version = &GROVE_V3;
@@ -276,34 +264,205 @@ mod tests {
             if !old.is_sum_item() {
                 continue;
             }
-            for (reference_label, reference_ops) in reference_ops() {
-                let db = grove_with(&old, tree_type, true, grove_version);
-                let references = reference_ops.len();
-                let mut ops = vec![write_op(&new)];
-                ops.extend(reference_ops);
-                apply(&db, ops, Mode::Merging, grove_version).unwrap_or_else(|e| {
-                    panic!("{label}, {reference_label}: expected to apply: {e}")
-                });
+            for (reference_label, reference_ops, with_reference, resolving_first) in reference_ops()
+            {
+                let stale = stale_references(
+                    &old,
+                    &new,
+                    tree_type,
+                    reference_ops,
+                    with_reference,
+                    Mode::Merging,
+                    grove_version,
+                )
+                .unwrap_or_else(|e| panic!("{label}, {reference_label}: expected to apply: {e}"));
                 assert_eq!(
-                    issues(&db, grove_version),
-                    references,
-                    "{label}, {reference_label}: expected every reference stale"
+                    stale, resolving_first,
+                    "{label} ({new:?}), {reference_label}: expected the legacy stale references"
                 );
             }
         }
     }
 
-    /// The bytes the node of `element` at `key1` holds besides its key.
-    fn value_bytes(element: &Element, tree_type: TreeType, grove_version: &GroveVersion) -> u32 {
-        Element::specialized_costs_for_key_value(
-            KEY,
-            &element
-                .serialize(grove_version)
-                .expect("expected to serialize"),
-            tree_type.inner_node_type(),
-            grove_version,
-        )
-        .expect("expected value bytes")
+    /// Settling owner changes is new on every grove version and has no
+    /// legacy prediction to keep: with the option, grove v1..v3 predict a
+    /// same-batch reference's target through Merk's own update too.
+    #[test]
+    fn grove_v3_predicts_the_stored_bytes_with_the_option() {
+        let grove_version = &GROVE_V3;
+        for (label, old, new, tree_type) in flag_changing_updates() {
+            for (reference_label, reference_ops, with_reference, _) in reference_ops() {
+                let stale = stale_references(
+                    &old,
+                    &new,
+                    tree_type,
+                    reference_ops,
+                    with_reference,
+                    Mode::Settling,
+                    grove_version,
+                )
+                .unwrap_or_else(|e| panic!("{label}, {reference_label}: expected to apply: {e}"));
+                assert_eq!(
+                    stale, 0,
+                    "{label} ({new:?}), {reference_label}: a reference is stale"
+                );
+            }
+        }
+    }
+
+    /// A sum item replaced by an item, or the reverse, applies with a
+    /// same-batch reference to it as it does alone.
+    #[test]
+    fn a_sum_item_and_an_item_replace_each_other_under_a_same_batch_reference() {
+        let swaps = [
+            (
+                Element::new_sum_item_with_flags(5, owned_flags(0, OLD_OWNER)),
+                Element::new_item_with_flags(b"x".to_vec(), owned_flags(1, OLD_OWNER)),
+            ),
+            (
+                Element::new_item_with_flags(b"x".to_vec(), owned_flags(0, OLD_OWNER)),
+                Element::new_sum_item_with_flags(5, owned_flags(1, OLD_OWNER)),
+            ),
+        ];
+        for (old, new) in swaps {
+            for (reference_label, reference_ops, with_reference, _) in reference_ops() {
+                let stale = stale_references(
+                    &old,
+                    &new,
+                    TreeType::SumTree,
+                    reference_ops,
+                    with_reference,
+                    Mode::Merging,
+                    GroveVersion::latest(),
+                )
+                .unwrap_or_else(|e| panic!("{old:?} -> {new:?}, {reference_label}: {e}"));
+                assert_eq!(stale, 0, "{old:?} -> {new:?}, {reference_label}");
+            }
+            // grove v1..v3 refuse it when the reference resolves first
+            // (consensus-locked)
+            let error = stale_references(
+                &old,
+                &new,
+                TreeType::SumTree,
+                vec![refresh_op(true)],
+                true,
+                Mode::Merging,
+                &GROVE_V3,
+            )
+            .expect_err("expected the legacy refusal");
+            assert!(
+                error.to_string().contains("is not supported"),
+                "unexpected error {error}"
+            );
+        }
+    }
+
+    /// A deterministic flags update that stamps the measured storage change
+    /// into the new flags, so the stored bytes depend on every measurement
+    /// the update takes.
+    fn stamp_costs(
+        cost: &grovedb_costs::storage_cost::StorageCost,
+        _old_flags: Option<Vec<u8>>,
+        new_flags: &mut Vec<u8>,
+    ) -> Result<bool, Error> {
+        let removed = match cost.removed_bytes {
+            BasicStorageRemoval(bytes) => bytes,
+            _ => 0,
+        };
+        let mut stamp = cost.added_bytes.to_be_bytes().to_vec();
+        stamp.extend(removed.to_be_bytes());
+        stamp.extend(cost.replaced_bytes.to_be_bytes());
+        if *new_flags == stamp {
+            return Ok(false);
+        }
+        *new_flags = stamp;
+        Ok(true)
+    }
+
+    /// A reference that resolves after the batch has written its target
+    /// commits to the bytes the target stores, whatever the flags update.
+    #[test]
+    fn a_reference_to_a_target_written_earlier_in_the_batch_commits_to_its_stored_bytes() {
+        let grove_version = GroveVersion::latest();
+        for (target_path, reference_path) in [
+            (vec![b"a".to_vec(), b"b".to_vec()], vec![b"c".to_vec()]),
+            (vec![b"a".to_vec()], vec![b"c".to_vec(), b"d".to_vec()]),
+        ] {
+            let db = make_empty_grovedb();
+            insert(&db, &[], b"a", Element::empty_tree(), grove_version);
+            insert(&db, &[b"a"], b"b", Element::empty_tree(), grove_version);
+            insert(&db, &[], b"c", Element::empty_tree(), grove_version);
+            insert(&db, &[b"c"], b"d", Element::empty_tree(), grove_version);
+            let path: Vec<&[u8]> = target_path.iter().map(Vec::as_slice).collect();
+            insert(
+                &db,
+                &path,
+                b"k",
+                Element::new_item_with_flags(b"v".to_vec(), Some(vec![0])),
+                grove_version,
+            );
+            let mut qualified_target = target_path.clone();
+            qualified_target.push(b"k".to_vec());
+            db.apply_batch_with_element_flags_update(
+                vec![
+                    QualifiedGroveDbOp::replace_op(
+                        target_path.clone(),
+                        b"k".to_vec(),
+                        Element::new_item_with_flags(b"vv".to_vec(), Some(vec![0])),
+                    ),
+                    QualifiedGroveDbOp::insert_or_replace_op(
+                        reference_path.clone(),
+                        b"r".to_vec(),
+                        Element::new_reference(ReferencePathType::AbsolutePathReference(
+                            qualified_target,
+                        )),
+                    ),
+                ],
+                None,
+                stamp_costs,
+                |_flags, removed_key_bytes, removed_value_bytes| {
+                    Ok((
+                        BasicStorageRemoval(removed_key_bytes),
+                        BasicStorageRemoval(removed_value_bytes),
+                    ))
+                },
+                None,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected the batch to apply");
+            assert_eq!(
+                issues(&db, grove_version),
+                0,
+                "target at {target_path:?}, reference at {reference_path:?}"
+            );
+        }
+    }
+
+    /// A reference a partial batch's add-on writes to an item its initial
+    /// segment updated commits to the bytes that item stores.
+    #[test]
+    fn an_add_on_reference_commits_to_the_bytes_the_initial_segment_stored() {
+        let grove_version = GroveVersion::latest();
+        let old =
+            Element::new_item_with_sum_item_with_flags(vec![7; 20], 5, owned_flags(0, OLD_OWNER));
+        let new =
+            Element::new_item_with_sum_item_with_flags(vec![8; 21], 9, owned_flags(2, OLD_OWNER));
+        for mode in [Mode::Merging, Mode::Settling] {
+            let db = grove_with(&old, TreeType::SumTree, false, grove_version);
+            db.apply_partial_batch_with_element_flags_update(
+                vec![write_op(&new)],
+                Some(options(mode)),
+                flags_update(mode),
+                split_removal_bytes,
+                |_cost, _leftover_operations| Ok(vec![reference_op(vec![], b"root reference")]),
+                None,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected the partial batch to apply");
+            assert_eq!(issues(&db, grove_version), 0, "{mode:?}");
+        }
     }
 
     /// Replacements whose new flags stand as written (the flags update
