@@ -596,10 +596,9 @@ impl GroveDb {
             grove_version.grovedb_versions.operations.get.has_raw
         );
 
+        let cost = OperationCost::default();
         let path: SubtreePath<B> = path.into();
-        if let Err(e) = validate_path_segment_lengths(&path) {
-            return Err(e).wrap_with_cost(OperationCost::default());
-        }
+        cost_return_on_error_no_add!(cost, validate_path_segment_lengths(&path));
         let tx = TxRef::new(&self.db, transaction);
 
         // Merk's items should be written into data storage and checked accordingly

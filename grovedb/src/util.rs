@@ -43,6 +43,11 @@ impl<'db> AsRef<Transaction<'db>> for TxRef<'_, 'db> {
     }
 }
 
+/// Maximum key length in bytes. Merk link encoding stores the key length as a
+/// single `u8`, so keys longer than 255 bytes would corrupt the encoding.
+/// Every path segment is a key, so it bounds path segments too.
+pub(crate) const MAX_KEY_LENGTH: usize = u8::MAX as usize;
+
 /// Refuse a path with a segment longer than 255 bytes.
 ///
 /// A subtree prefix records each segment length in one byte, so storage
@@ -58,7 +63,7 @@ pub(crate) fn validate_path_segment_lengths<B: AsRef<[u8]>>(
     if path
         .clone()
         .into_reverse_iter()
-        .any(|segment| segment.len() > u8::MAX as usize)
+        .any(|segment| segment.len() > MAX_KEY_LENGTH)
     {
         return Err(Error::InvalidInput(
             "path segment length must be at most 255 bytes",

@@ -7,7 +7,7 @@
 mod v0;
 mod v1;
 
-use grovedb_costs::{CostResult, CostsExt, OperationCost};
+use grovedb_costs::{cost_return_on_error_no_add, CostResult, CostsExt, OperationCost};
 use grovedb_path::SubtreePath;
 use grovedb_version::version::GroveVersion;
 
@@ -42,19 +42,23 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<Vec<Vec<u8>>>, Error> {
-        // Both versions open `path` before anything else, so this refuses
-        // exactly the paths they would panic on.
-        if let Err(e) = validate_path_segment_lengths(path) {
-            return Err(e).wrap_with_cost(OperationCost::default());
-        }
+        // Both versions open `path` before anything else, so the check in
+        // their arms refuses exactly the paths they would panic on.
+        let cost = OperationCost::default();
         match grove_version
             .grovedb_versions
             .operations
             .non_merk_tree
             .subtree_discovery
         {
-            0 => self.find_subtrees_v0(path, transaction, grove_version),
-            1 => self.find_subtrees_v1(path, transaction, grove_version),
+            0 => {
+                cost_return_on_error_no_add!(cost, validate_path_segment_lengths(path));
+                self.find_subtrees_v0(path, transaction, grove_version)
+            }
+            1 => {
+                cost_return_on_error_no_add!(cost, validate_path_segment_lengths(path));
+                self.find_subtrees_v1(path, transaction, grove_version)
+            }
             version => Err(
                 grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
                     method: "find_subtrees".to_string(),

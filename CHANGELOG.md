@@ -68,15 +68,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an absent path. `AxisKeys::empty_for_axis` is new. (#965)
 
 ### Fixed
-- A path with a segment longer than 255 bytes no longer panics. Reads, writes,
-  deletes, path queries, non-Merk tree operations and batches given one now
-  return `Error::InvalidInput("path segment length must be at most 255
-  bytes")`. Before, storage panicked while building the subtree prefix, since
-  a prefix records each segment length in one byte. Keys are capped at 255
-  bytes on insert, so no subtree has such a path. The check runs only where a
-  prefix would be built from the caller's path. Every call it refuses used to
-  panic, and every other call keeps its old result, including a proof that
-  such a path is absent. Not version-gated. (#680)
+- A path with a segment longer than 255 bytes no longer panics. Storage
+  panicked while building the subtree prefix for it, since a prefix records
+  each segment length in one byte. Where it did, the call now returns
+  `Error::InvalidInput("path segment length must be at most 255 bytes")`.
+  Keys are capped at 255 bytes on insert, so no subtree has such a path. The
+  check runs only where a prefix would be built from the caller's path, so
+  every call that never built one keeps its old result. Do not read
+  `InvalidInput` as the only answer to such a path:
+  - a lookup whose overlong segment is the last one still reports the key as
+    not found;
+  - proofs still prove the path absent;
+  - axis reads still return an empty result.
+
+  Not version-gated, since every call the check refuses used to panic. (#680)
 - From `GROVE_V4`, `delete_operation_for_delete_internal`, and the up-tree
   builders through it, no longer count a pending `DeleteTree` with
   `SubelementsDeletionBehavior::Skip` as removing its child when deciding
