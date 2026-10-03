@@ -87,16 +87,20 @@ pub struct BatchApplyOptions {
     /// sectioned by the removal-bytes callback as a deletion sections them;
     /// the new element's bytes, key included, count as added, and it keeps
     /// the flags the callback leaves it with. A batch that does not set this
-    /// refuses a flags update that answers `SettleOwnerChange`.
+    /// refuses a flags update that answers `SettleOwnerChange` with
+    /// [`Error::InvalidBatchOperation`](crate::Error::InvalidBatchOperation).
     ///
     /// The estimators read it too: an estimate with it set charges every
     /// write that may settle an owner change (`InsertOrReplace`, `Replace`,
     /// `Patch` and a trusted `RefreshReference` of an element with flags, and
     /// the write of a flagged tree the batch also writes under) at least the
-    /// bytes its element adds when inserted, with the referrer entries a
-    /// backward-references element carries over counted at its declared
-    /// capacity, each at the largest entry registration admits, so the
-    /// estimate is never below what the apply records.
+    /// bytes its element adds when inserted. The referrer entries a
+    /// backward-references element carries over are counted, in the worst
+    /// case, at its declared capacity, each at the largest entry
+    /// registration admits, so a worst-case estimate is never below what the
+    /// apply records; the average case counts the typical shape (the
+    /// average item fan-out, each entry the size of one from the write's own
+    /// position).
     ///
     /// Off by default. On GROVE_V1..V3 every cost, estimate, stored element
     /// and hash is then what it was before the option existed; GROVE_V4 also

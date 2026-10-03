@@ -40,7 +40,7 @@ mod tests {
         },
         reference_path::ReferencePathType,
         tests::{common::EMPTY_PATH, make_empty_grovedb, TempGroveDb},
-        BackwardReferences, Element, GroveDb,
+        BackwardReferences, Element, Error, GroveDb,
     };
 
     fn target_path() -> ReferencePathType {
@@ -467,9 +467,10 @@ mod tests {
     }
 
     /// A backward-references item keeps the referrers registered on the item
-    /// it replaces, and a settled write adds their entries too. Both
-    /// estimates cover them through the item's declared capacity, wherever
-    /// the referrers sit.
+    /// it replaces, and a settled write adds their entries too. The
+    /// worst-case estimate covers them through the item's declared capacity,
+    /// wherever the referrers sit; the average case charges the typical
+    /// shape, which covers referrers beside the item.
     #[test]
     fn estimates_cover_the_referrers_a_settled_item_carries_over() {
         let grove_version = GroveVersion::latest();
@@ -565,17 +566,35 @@ mod tests {
                 applied.storage_cost.added_bytes
                     > key_bytes() + value_bytes(&new, TreeType::NormalTree, grove_version)
             );
-            for average_case_tree_type in [Some(TreeType::NormalTree), None] {
-                let estimate = estimate(
-                    vec![write_op(&new)],
-                    Some(options(Mode::Settling)),
-                    average_case_tree_type,
-                    grove_version,
-                );
+            let worst_case = estimate(
+                vec![write_op(&new)],
+                Some(options(Mode::Settling)),
+                None,
+                grove_version,
+            );
+            assert!(
+                worst_case.storage_cost.added_bytes >= applied.storage_cost.added_bytes,
+                "{placement}: worst-case estimate {worst_case:?} adds less than the settled \
+                 apply {applied:?}"
+            );
+            // The average case charges the typical referrer shape: it covers
+            // referrers beside the item, and stays below the worst case.
+            let average_case = estimate(
+                vec![write_op(&new)],
+                Some(options(Mode::Settling)),
+                Some(TreeType::NormalTree),
+                grove_version,
+            );
+            assert!(
+                average_case.storage_cost.added_bytes < worst_case.storage_cost.added_bytes,
+                "{placement}: average-case estimate {average_case:?} is not below the worst \
+                 case {worst_case:?}"
+            );
+            if placement == "siblings" {
                 assert!(
-                    estimate.storage_cost.added_bytes >= applied.storage_cost.added_bytes,
-                    "{placement}: estimate {estimate:?} adds less than the settled apply \
-                     {applied:?}"
+                    average_case.storage_cost.added_bytes >= applied.storage_cost.added_bytes,
+                    "{placement}: average-case estimate {average_case:?} adds less than the \
+                     settled apply {applied:?}"
                 );
             }
         }
@@ -746,31 +765,61 @@ mod tests {
         }
     }
 
+    /// A settling answer without the option refuses the batch as an invalid
+    /// batch, whether the apply meets it first, a same-batch reference's
+    /// prediction does, or a partial batch's initial segment does.
     #[test]
     fn a_settling_flags_update_is_refused_without_the_option() {
         let grove_version = GroveVersion::latest();
         let old = Element::new_item_with_flags(vec![7; 20], owned_flags(0, OLD_OWNER));
         let new = Element::new_item_with_flags(vec![8; 60], owned_flags(2, NEW_OWNER));
+        let reference = QualifiedGroveDbOp::insert_or_replace_op(
+            vec![b"targets".to_vec()],
+            b"reference".to_vec(),
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                b"tree".to_vec(),
+                KEY.to_vec(),
+            ])),
+        );
+        let assert_refused = |error: Error| {
+            assert!(
+                matches!(error, Error::InvalidBatchOperation(reason) if reason.contains("settle_owner_changes")),
+                "unexpected error: {error}"
+            );
+        };
+        for ops in [vec![write_op(&new)], vec![write_op(&new), reference]] {
+            let db = grove_with(&old, TreeType::NormalTree, grove_version);
+            let root_hash = db.root_hash(None, grove_version).unwrap().unwrap();
+            assert_refused(
+                db.apply_batch_with_element_flags_update(
+                    ops,
+                    None,
+                    settling_flags_update,
+                    split_removal_bytes,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect_err("expected the settling answer to be refused"),
+            );
+            assert_eq!(
+                db.root_hash(None, grove_version).unwrap().unwrap(),
+                root_hash
+            );
+        }
         let db = grove_with(&old, TreeType::NormalTree, grove_version);
-        let root_hash = db.root_hash(None, grove_version).unwrap().unwrap();
-        let error = db
-            .apply_batch_with_element_flags_update(
+        assert_refused(
+            db.apply_partial_batch_with_element_flags_update(
                 vec![write_op(&new)],
                 None,
                 settling_flags_update,
                 split_removal_bytes,
+                |_cost, _leftover_operations| Ok(vec![]),
                 None,
                 grove_version,
             )
             .unwrap()
-            .expect_err("expected the settling answer to be refused");
-        assert!(
-            error.to_string().contains("settle_owner_changes"),
-            "unexpected error: {error}"
-        );
-        assert_eq!(
-            db.root_hash(None, grove_version).unwrap().unwrap(),
-            root_hash
+            .expect_err("expected the settling answer to be refused"),
         );
     }
 

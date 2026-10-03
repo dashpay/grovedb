@@ -11,6 +11,8 @@
 //! cross-epoch update. [`predict_provided_value_hash_put`] runs this update
 //! through Merk's own routine to get those bytes.
 
+use std::cell::Cell;
+
 use grovedb_costs::storage_cost::{
     removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     transition::ElementFlagsUpdate,
@@ -33,10 +35,17 @@ use integer_encoding::VarInt;
 
 use crate::{Element, ElementFlags, Error};
 
+/// Why a batch whose flags update settled an owner change was refused: its
+/// options do not set `settle_owner_changes`.
+pub(crate) const SETTLE_OWNER_CHANGES_NOT_SET: &str =
+    "the flags update settled an owner change, but the batch options do not set \
+     settle_owner_changes";
+
 /// The caller's flags-update callback as a batch runs it: its answer as an
 /// [`ElementFlagsUpdate`] (a `bool` answer is `Changed` or `Unchanged`), and
 /// `SettleOwnerChange` refused unless the batch's options set
-/// `settle_owner_changes`.
+/// `settle_owner_changes`. A refusal is recorded in `refused`, so the batch
+/// reports it with [`settle_refusal_error`] whatever error it surfaces as.
 pub(crate) fn batch_flags_update<U>(
     mut flags_update: impl FnMut(
         &StorageCost,
@@ -44,6 +53,7 @@ pub(crate) fn batch_flags_update<U>(
         &mut ElementFlags,
     ) -> Result<U, Error>,
     settle_owner_changes: bool,
+    refused: &Cell<bool>,
 ) -> impl FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<ElementFlagsUpdate, Error>
 where
     U: Into<ElementFlagsUpdate>,
@@ -53,13 +63,24 @@ where
           new_flags: &mut ElementFlags| {
         let update = flags_update(storage_cost, old_flags, new_flags)?.into();
         if update == ElementFlagsUpdate::SettleOwnerChange && !settle_owner_changes {
+            refused.set(true);
             return Err(Error::JustInTimeElementFlagsClientError(
-                "the flags update settled an owner change, but the batch options do not set \
-                 settle_owner_changes"
-                    .to_owned(),
+                SETTLE_OWNER_CHANGES_NOT_SET.to_owned(),
             ));
         }
         Ok(update)
+    }
+}
+
+/// The error a batch run with [`batch_flags_update`] reports: the refusal of
+/// a settled owner change, as the invalid batch it is, when `refused` says
+/// one happened (the Merk and prediction layers it surfaced through report
+/// it as client or data corruption), and `error` otherwise.
+pub(crate) fn settle_refusal_error(error: Error, refused: &Cell<bool>) -> Error {
+    if refused.get() {
+        Error::InvalidBatchOperation(SETTLE_OWNER_CHANGES_NOT_SET)
+    } else {
+        error
     }
 }
 
@@ -295,7 +316,7 @@ where
 {
     let old_value_defined_cost =
         Element::value_defined_cost_for_serialized_value(&old_serialized, grove_version);
-    TreeNode::provided_value_hash_put_final_value(
+    TreeNode::predict_put_final_value(
         key.to_vec(),
         old_serialized,
         old_value_defined_cost,

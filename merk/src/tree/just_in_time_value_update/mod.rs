@@ -35,7 +35,7 @@ use crate::{
     Error,
 };
 
-/// The put whose final bytes [`TreeNode::provided_value_hash_put_final_value`]
+/// The put whose final bytes [`TreeNode::predict_put_final_value`]
 /// predicts: how it installs the new value on the stored node, which decides
 /// the value-defined cost the just-in-time value update measures with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,7 +65,7 @@ impl TreeNode {
     /// writes, so a caller that must commit to the final bytes BEFORE the
     /// apply — a reference holding its target's hash — can compute them.
     #[allow(clippy::too_many_arguments)]
-    pub fn provided_value_hash_put_final_value(
+    pub fn predict_put_final_value(
         key: Vec<u8>,
         old_value: Vec<u8>,
         old_value_defined_cost: Option<ValueDefinedCostType>,
@@ -309,7 +309,7 @@ mod tests {
     /// The detached prediction stores exactly what a real provided-hash put
     /// over a stored value stores, for a growing and a shrinking write.
     #[test]
-    fn provided_value_hash_put_final_value_matches_the_apply() {
+    fn predicted_provided_value_hash_put_matches_the_apply() {
         let grove_version = GroveVersion::latest();
         let item = |value: &[u8], flags: u8| {
             Element::ItemWithBackwardsReferences(
@@ -332,7 +332,7 @@ mod tests {
             );
             merk.commit(grove_version);
 
-            let predicted = TreeNode::provided_value_hash_put_final_value(
+            let predicted = TreeNode::predict_put_final_value(
                 b"key".to_vec(),
                 old.clone(),
                 None,

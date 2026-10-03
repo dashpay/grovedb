@@ -28,14 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keep the owner, or that have no owner on either side, are unchanged. The
   flags callback can now answer an `ElementFlagsUpdate` (`Unchanged`,
   `Changed`, `SettleOwnerChange`, new in `grovedb_costs`) in place of a
-  `bool`; a batch refuses `SettleOwnerChange` unless the option is set. With
-  the option, the average-case and worst-case batch estimates charge every
-  `InsertOrReplace`, `Replace`, `Patch` and trusted `RefreshReference` of an
-  element with flags, and the write of a flagged tree the batch also writes
-  under, at least the bytes its node adds when inserted (for a
-  backward-references element, with the referrers it carries over counted at
-  its declared capacity, each at the largest entry registration admits), so
-  an estimate is never below a settled apply. With the option off on
+  `bool`; a batch refuses `SettleOwnerChange` unless the option is set, with
+  `Error::InvalidBatchOperation`. With the option, the average-case and
+  worst-case batch estimates charge every `InsertOrReplace`, `Replace`,
+  `Patch` and trusted `RefreshReference` of an element with flags, and the
+  write of a flagged tree the batch also writes under, at least the bytes its
+  node adds when inserted. For a backward-references element the worst case
+  counts the referrers it carries over at its declared capacity, each at the
+  largest entry registration admits, so a worst-case estimate is never below
+  a settled apply; the average case counts the typical referrer shape. With the option off on
   GROVE_V1..V3, every cost, estimate, stored element and hash is what it was
   before; GROVE_V4 also carries the two fixes below (same-batch references to
   updated items, and replacements keeping flags of another length), which
@@ -65,7 +66,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TreeNode::put_value_with_reference_value_hash_and_value_cost`,
   `TreeNode::put_value_with_two_reference_value_hashes_and_value_cost` and
   their `Walker` counterparts take a `&GroveVersion`, and
-  `TreeNode::provided_value_hash_put_final_value` takes the value-defined
+  `TreeNode::provided_value_hash_put_final_value` is renamed
+  `TreeNode::predict_put_final_value` and takes the value-defined
   cost the stored node is loaded with, the put it predicts (the new
   `grovedb_merk::tree::PredictedPut`: an ordinary put as `TreeNode::put_value`
   installs it at the grove version, a provided-value-hash put, or a put at a

@@ -98,19 +98,13 @@ impl GroveOp {
                 None
             }
         };
-        let settling = |base: CostResult<(), Error>, element: &Element| {
-            if batch_apply_options.settle_owner_changes {
-                super::with_settled_owner_change(
-                    base,
-                    key,
-                    element,
-                    super::WORST_CASE_SETTLED_NODE_TYPE,
-                    grove_version,
-                )
-            } else {
-                base
-            }
-        };
+        let settling = super::SettledOwnerChange::new(
+            batch_apply_options,
+            key,
+            super::WORST_CASE_SETTLED_NODE_TYPE,
+            super::CarriedReferrers::Worst,
+            grove_version,
+        );
         let fan_out_version = grove_version
             .grovedb_versions
             .operations
@@ -230,41 +224,28 @@ impl GroveOp {
                 not_summed,
                 not_counted_or_summed,
                 ..
-            } => {
-                // Account for the wrapper byte if the op rebuilds the
-                // tree as `NonCounted(...)`, `NotSummed(...)`, or
-                // `NotCountedOrSummed(...)`. They share the same +1
-                // discriminant overhead and are mutually exclusive on
-                // the rebuilt element.
-                let wrapper_overhead =
-                    super::wrapper_overhead_for(*non_counted, *not_summed, *not_counted_or_summed);
-                let insert_cost = GroveDb::worst_case_merk_insert_tree(
+            } => settling.raise_tree(
+                GroveDb::worst_case_merk_insert_tree(
                     key,
                     flags,
                     aggregate_data.parent_tree_type(),
                     in_parent_tree_type,
-                    wrapper_overhead,
+                    // See the comment in the corresponding average-case arm.
+                    super::wrapper_overhead_for(*non_counted, *not_summed, *not_counted_or_summed),
                     propagate_if_input(),
                     grove_version,
-                );
-                // The write of a tree the batch also writes under: it may
-                // settle an owner change as a write of its element does.
-                if batch_apply_options.settle_owner_changes {
-                    super::with_settled_tree_owner_change(
-                        insert_cost,
-                        key,
-                        flags,
-                        super::WORST_CASE_SETTLED_TREE_COST_SIZE,
-                        wrapper_overhead,
-                        super::WORST_CASE_SETTLED_NODE_TYPE,
-                    )
-                } else {
-                    insert_cost
-                }
-            }
+                ),
+                // The write of a tree the batch also writes under may settle
+                // an owner change as a write of its element does.
+                super::WORST_CASE_SETTLED_TREE_TYPE,
+                flags,
+                *non_counted,
+                *not_summed,
+                *not_counted_or_summed,
+            ),
             GroveOp::InsertOrReplace { element }
             | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element } => with_fan_out(
-                settling(
+                settling.raise(
                     GroveDb::worst_case_merk_insert_element(
                         key,
                         element,
@@ -361,14 +342,14 @@ impl GroveOp {
                 // An untrusted refresh writes the stored flags back, so only
                 // a trusted one can change the owner.
                 if mode.is_trusted() {
-                    settling(replace_cost, &element)
+                    settling.raise(replace_cost, &element)
                 } else {
                     replace_cost
                 }
             }
             GroveOp::Replace { element }
             | GroveOp::ReplaceDontCheckForBackwardsReferences { element } => with_fan_out(
-                settling(
+                settling.raise(
                     GroveDb::worst_case_merk_replace_element(
                         key,
                         element,
@@ -388,7 +369,7 @@ impl GroveOp {
                 element,
                 change_in_bytes: _,
             } => with_fan_out(
-                settling(
+                settling.raise(
                     GroveDb::worst_case_merk_replace_element(
                         key,
                         element,

@@ -30,7 +30,7 @@ mod v1;
 use std::collections::HashMap;
 
 use grovedb_costs::{
-    cost_return_on_error_into_no_add,
+    cost_return_on_error_into_no_add, cost_return_on_error_no_add,
     storage_cost::{removal::StorageRemovedBytes, transition::ElementFlagsUpdate, StorageCost},
     CostResult, CostsExt, OperationCost,
 };
@@ -75,20 +75,32 @@ where
         Ok(val_hash).wrap_with_cost(cost)
     }
 
+    /// Whether a same-batch reference predicts its target with version 1,
+    /// which reads whether this pass has already written the target, so
+    /// the pass must record the targets it writes
+    /// (`written_qualified_paths`).
+    pub(crate) fn tracks_written_targets(&self, grove_version: &GroveVersion) -> bool {
+        self.settle_owner_changes
+            || grove_version
+                .grovedb_versions
+                .apply_batch
+                .same_batch_reference_target_prediction
+                != 0
+    }
+
     /// The value hash of the bytes a pending write of `new_element` at
-    /// `qualified_path` over the stored `old_element` finally stores, after
-    /// the apply has run the caller's flags update on it, so that a
-    /// reference written in the same batch commits to them. `target_written`
-    /// says this pass has already written the target, so the stored bytes
-    /// are the ones it stores. See the module docs for the version
-    /// semantics.
+    /// `qualified_path` over the stored `old_serialized_element` finally
+    /// stores, after the apply has run the caller's flags update on it, so
+    /// that a reference written in the same batch commits to them.
+    /// `target_written` says this pass has already written the target, so
+    /// the stored bytes are the ones it stores. See the module docs for the
+    /// version semantics.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn process_old_element_flags<G, SR>(
         key: &[u8],
         qualified_path: &[Vec<u8>],
         serialized: Vec<u8>,
         new_element: &Element,
-        old_element: Element,
         old_serialized_element: Vec<u8>,
         in_tree_type: TreeType,
         settle_owner_changes: bool,
@@ -117,17 +129,26 @@ where
                 .same_batch_reference_target_prediction,
             settle_owner_changes,
         ) {
-            (0, false) => v0::process_old_element_flags_v0(
-                key,
-                &serialized,
-                new_element,
-                old_element,
-                &old_serialized_element,
-                in_tree_type,
-                flags_update,
-                split_removal_bytes,
-                grove_version,
-            ),
+            (0, false) => {
+                let cost = OperationCost::default();
+                let old_element = cost_return_on_error_no_add!(
+                    cost,
+                    Element::deserialize(&old_serialized_element, grove_version).map_err(|e| {
+                        Error::CorruptedData(format!("unable to deserialize element: {e}"))
+                    })
+                );
+                v0::process_old_element_flags_v0(
+                    key,
+                    &serialized,
+                    new_element,
+                    old_element,
+                    &old_serialized_element,
+                    in_tree_type,
+                    flags_update,
+                    split_removal_bytes,
+                    grove_version,
+                )
+            }
             (0, true) | (1, _) => v1::process_old_element_flags_v1(
                 key,
                 qualified_path,

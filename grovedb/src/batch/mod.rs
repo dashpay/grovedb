@@ -49,6 +49,7 @@ mod single_sum_item_insert_cost_tests;
 use crate::{bidirectional_references::batch_maintains_backward_references, BackwardsReferences};
 use core::fmt;
 use std::{
+    cell::Cell,
     cmp::Ordering,
     collections::{btree_map::Entry, hash_map::Entry as HashMapEntry, BTreeMap, HashMap, HashSet},
     hash::{Hash, Hasher},
@@ -2511,6 +2512,36 @@ where
     ) -> CostResult<Option<(Element, Vec<u8>, TreeType)>, Error> {
         let mut cost = OperationCost::default();
 
+        let referenced_element = cost_return_on_error!(
+            &mut cost,
+            self.get_referenced_element_bytes(key, reference_path, grove_version)
+        );
+
+        if let Some((referenced_element, tree_type)) = referenced_element {
+            let element = cost_return_on_error_no_add!(
+                cost,
+                Element::deserialize(referenced_element.as_slice(), grove_version).map_err(|e| {
+                    Error::CorruptedData(format!("unable to deserialize element: {e}"))
+                })
+            );
+
+            Ok(Some((element, referenced_element, tree_type))).wrap_with_cost(cost)
+        } else {
+            Ok(None).wrap_with_cost(cost)
+        }
+    }
+
+    /// The serialized bytes of the element at `key` under `reference_path`
+    /// as the Merk cache holds them, and the type of the tree holding it;
+    /// [`Self::get_and_deserialize_referenced_element`] without the decode.
+    fn get_referenced_element_bytes(
+        &mut self,
+        key: &[u8],
+        reference_path: &[Vec<u8>],
+        grove_version: &GroveVersion,
+    ) -> CostResult<Option<(Vec<u8>, TreeType)>, Error> {
+        let mut cost = OperationCost::default();
+
         let merk = match self.merks.entry(reference_path.to_vec()) {
             HashMapEntry::Occupied(o) => o.into_mut(),
             HashMapEntry::Vacant(v) => v.insert(cost_return_on_error!(
@@ -2532,18 +2563,8 @@ where
 
         let tree_type = merk.tree_type;
 
-        if let Some(referenced_element) = referenced_element {
-            let element = cost_return_on_error_no_add!(
-                cost,
-                Element::deserialize(referenced_element.as_slice(), grove_version).map_err(|e| {
-                    Error::CorruptedData(format!("unable to deserialize element: {e}"))
-                })
-            );
-
-            Ok(Some((element, referenced_element, tree_type))).wrap_with_cost(cost)
-        } else {
-            Ok(None).wrap_with_cost(cost)
-        }
+        Ok(referenced_element.map(|referenced_element| (referenced_element, tree_type)))
+            .wrap_with_cost(cost)
     }
 
     /// Processes a reference with a hop count greater than one, handling the
@@ -2846,13 +2867,13 @@ where
                                     .expect("path validated non-empty above");
                                 let serialized_element_result = cost_return_on_error!(
                                     &mut cost,
-                                    self.get_and_deserialize_referenced_element(
+                                    self.get_referenced_element_bytes(
                                         key,
                                         reference_path,
                                         grove_version
                                     )
                                 );
-                                if let Some((old_element, old_serialized_element, is_in_sum_tree)) =
+                                if let Some((old_serialized_element, is_in_sum_tree)) =
                                     serialized_element_result
                                 {
                                     let target_written =
@@ -2864,7 +2885,6 @@ where
                                             qualified_path,
                                             serialized,
                                             element,
-                                            old_element,
                                             old_serialized_element,
                                             is_in_sum_tree,
                                             self.settle_owner_changes,
@@ -3227,15 +3247,20 @@ where
         let path = &p;
         self.unused_new_merks.remove(path);
         // The targets this path writes, recorded as written once it has
-        // applied them.
-        let written_qualified_paths: Vec<Vec<Vec<u8>>> = ops_at_path_by_key
-            .keys()
-            .map(|key_info| {
-                let mut qualified_path = path.to_vec();
-                qualified_path.push(key_info.get_key_clone());
-                qualified_path
-            })
-            .collect();
+        // applied them (only read by the version 1 target prediction).
+        let written_qualified_paths: Vec<Vec<Vec<u8>>> =
+            if self.tracks_written_targets(grove_version) {
+                ops_at_path_by_key
+                    .keys()
+                    .map(|key_info| {
+                        let mut qualified_path = path.to_vec();
+                        qualified_path.push(key_info.get_key_clone());
+                        qualified_path
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
         // This also populates Merk trees cache
         let in_tree_type = {
@@ -5743,6 +5768,9 @@ impl GroveDb {
         // predicts the bytes it stores from what the first segment left, and
         // no prediction made before the continuation still holds.
         for op in &additional_ops {
+            if merk_tree_cache.written_qualified_paths.is_empty() {
+                break;
+            }
             if let Some(key) = &op.key {
                 let mut qualified_path = op.path.to_path();
                 qualified_path.push(key.get_key_clone());
@@ -6806,7 +6834,8 @@ impl GroveDb {
     /// The flags callback answers a `bool` (whether it rewrote the flags) or
     /// an [`ElementFlagsUpdate`]; `SettleOwnerChange` is accepted only when
     /// the options set
-    /// [`settle_owner_changes`](BatchApplyOptions::settle_owner_changes).
+    /// [`settle_owner_changes`](BatchApplyOptions::settle_owner_changes);
+    /// without it the batch fails with [`Error::InvalidBatchOperation`].
     pub fn apply_batch_with_element_flags_update<U: Into<ElementFlagsUpdate>>(
         &self,
         ops: Vec<QualifiedGroveDbOp>,
@@ -6816,6 +6845,45 @@ impl GroveDb {
             Option<ElementFlags>,
             &mut ElementFlags,
         ) -> Result<U, Error>,
+        split_removal_bytes_function: impl FnMut(
+            &mut ElementFlags,
+            u32, // key removed bytes
+            u32, // value removed bytes
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        let settle_refused = Cell::new(false);
+        let update_element_flags_function = just_in_time_value_update::batch_flags_update(
+            update_element_flags_function,
+            BatchApplyOptions::settle_owner_changes_in(&batch_apply_options),
+            &settle_refused,
+        );
+        self.apply_batch_with_batch_flags_update(
+            ops,
+            batch_apply_options,
+            update_element_flags_function,
+            split_removal_bytes_function,
+            transaction,
+            grove_version,
+        )
+        .map_err(|e| just_in_time_value_update::settle_refusal_error(e, &settle_refused))
+    }
+
+    /// [`Self::apply_batch_with_element_flags_update`] with the flags
+    /// callback as [`just_in_time_value_update::batch_flags_update`] runs it.
+    fn apply_batch_with_batch_flags_update(
+        &self,
+        ops: Vec<QualifiedGroveDbOp>,
+        batch_apply_options: Option<BatchApplyOptions>,
+        mut update_element_flags_function: impl FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> Result<ElementFlagsUpdate, Error>,
         mut split_removal_bytes_function: impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -6833,10 +6901,6 @@ impl GroveDb {
                 .grovedb_versions
                 .apply_batch
                 .apply_batch_with_element_flags_update
-        );
-        let mut update_element_flags_function = just_in_time_value_update::batch_flags_update(
-            update_element_flags_function,
-            BatchApplyOptions::settle_owner_changes_in(&batch_apply_options),
         );
         let _storage_removal_version_guard =
             grovedb_costs::storage_cost::removal::use_basic_sectioned_removal_addition_version(
@@ -7311,6 +7375,51 @@ impl GroveDb {
             Option<ElementFlags>,
             &mut ElementFlags,
         ) -> Result<U, Error>,
+        split_removal_bytes_function: impl FnMut(
+            &mut ElementFlags,
+            u32, // key removed bytes
+            u32, // value removed bytes
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+        add_on_operations: impl FnMut(
+            &OperationCost,
+            &Option<OpsByLevelPath>,
+        ) -> Result<Vec<QualifiedGroveDbOp>, Error>,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        let settle_refused = Cell::new(false);
+        let update_element_flags_function = just_in_time_value_update::batch_flags_update(
+            update_element_flags_function,
+            BatchApplyOptions::settle_owner_changes_in(&batch_apply_options),
+            &settle_refused,
+        );
+        self.apply_partial_batch_with_batch_flags_update(
+            ops,
+            batch_apply_options,
+            update_element_flags_function,
+            split_removal_bytes_function,
+            add_on_operations,
+            transaction,
+            grove_version,
+        )
+        .map_err(|e| just_in_time_value_update::settle_refusal_error(e, &settle_refused))
+    }
+
+    /// [`Self::apply_partial_batch_with_element_flags_update`] with the
+    /// flags callback as [`just_in_time_value_update::batch_flags_update`]
+    /// runs it.
+    fn apply_partial_batch_with_batch_flags_update(
+        &self,
+        ops: Vec<QualifiedGroveDbOp>,
+        batch_apply_options: Option<BatchApplyOptions>,
+        mut update_element_flags_function: impl FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> Result<ElementFlagsUpdate, Error>,
         mut split_removal_bytes_function: impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -7332,10 +7441,6 @@ impl GroveDb {
                 .grovedb_versions
                 .apply_batch
                 .apply_partial_batch_with_element_flags_update
-        );
-        let mut update_element_flags_function = just_in_time_value_update::batch_flags_update(
-            update_element_flags_function,
-            BatchApplyOptions::settle_owner_changes_in(&batch_apply_options),
         );
         let _storage_removal_version_guard =
             grovedb_costs::storage_cost::removal::use_basic_sectioned_removal_addition_version(

@@ -20,9 +20,7 @@ use grovedb_merk::estimated_costs::{
     add_cost_case_merk_replace_layered, add_cost_case_merk_replace_same_size,
 };
 use grovedb_merk::{
-    element::tree_type::ElementTreeTypeExtensions,
-    tree::AggregateData,
-    tree_type::{CostSize, TreeType},
+    element::tree_type::ElementTreeTypeExtensions, tree::AggregateData, tree_type::TreeType,
     RootHashKeyAndAggregateData,
 };
 #[cfg(feature = "minimal")]
@@ -110,19 +108,17 @@ impl GroveOp {
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let in_tree_type = layer_element_estimates.tree_type;
-        let settling = |base: CostResult<(), Error>, element: &Element| {
-            if batch_apply_options.settle_owner_changes {
-                super::with_settled_owner_change(
-                    base,
-                    key,
-                    element,
-                    in_tree_type.inner_node_type(),
-                    grove_version,
-                )
-            } else {
-                base
-            }
-        };
+        // A backward-references element is charged the typical referrer
+        // shape, each referrer at the entry of one at this op's own position.
+        let settling = super::SettledOwnerChange::new(
+            batch_apply_options,
+            key,
+            in_tree_type.inner_node_type(),
+            super::CarriedReferrers::Average {
+                entry_bytes: super::backward_reference_entry_bound(path, key),
+            },
+            grove_version,
+        );
         let propagate_if_input = || {
             if propagate {
                 Some(layer_element_estimates)
@@ -251,44 +247,32 @@ impl GroveOp {
                 not_summed,
                 not_counted_or_summed,
                 ..
-            } => {
-                // Account for the wrapper byte if the op rebuilds the
-                // tree as `NonCounted(...)`, `NotSummed(...)`, or
-                // `NotCountedOrSummed(...)`. They share the same +1
-                // discriminant overhead and are mutually exclusive on
-                // the rebuilt element.
-                let wrapper_overhead =
-                    super::wrapper_overhead_for(*non_counted, *not_summed, *not_counted_or_summed);
-                let insert_cost = GroveDb::average_case_merk_insert_tree(
+            } => settling.raise_tree(
+                GroveDb::average_case_merk_insert_tree(
                     key,
                     flags,
                     aggregate_data.parent_tree_type(),
                     in_tree_type,
-                    wrapper_overhead,
+                    // Account for the wrapper byte if the op rebuilds the
+                    // tree as `NonCounted(...)`, `NotSummed(...)`, or
+                    // `NotCountedOrSummed(...)`. They share the same +1
+                    // discriminant overhead and are mutually exclusive on
+                    // the rebuilt element.
+                    super::wrapper_overhead_for(*non_counted, *not_summed, *not_counted_or_summed),
                     propagate_if_input(),
                     grove_version,
-                );
-                // The write of a tree the batch also writes under: it may
-                // settle an owner change as a write of its element does.
-                if batch_apply_options.settle_owner_changes {
-                    super::with_settled_tree_owner_change(
-                        insert_cost,
-                        key,
-                        flags,
-                        written_tree_type
-                            .map_or(super::WORST_CASE_SETTLED_TREE_COST_SIZE, |tree_type| {
-                                tree_type.cost_size()
-                            }),
-                        wrapper_overhead,
-                        in_tree_type.inner_node_type(),
-                    )
-                } else {
-                    insert_cost
-                }
-            }
+                ),
+                // The write of a tree the batch also writes under may settle
+                // an owner change as a write of its element does.
+                written_tree_type.unwrap_or(super::WORST_CASE_SETTLED_TREE_TYPE),
+                flags,
+                *non_counted,
+                *not_summed,
+                *not_counted_or_summed,
+            ),
             GroveOp::InsertOrReplace { element }
             | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element } => with_fan_out(
-                settling(
+                settling.raise(
                     GroveDb::average_case_merk_insert_element(
                         key,
                         element,
@@ -394,14 +378,14 @@ impl GroveOp {
                 // An untrusted refresh writes the stored flags back, so only
                 // a trusted one can change the owner.
                 if mode.is_trusted() {
-                    settling(replace_cost, &element)
+                    settling.raise(replace_cost, &element)
                 } else {
                     replace_cost
                 }
             }
             GroveOp::Replace { element }
             | GroveOp::ReplaceDontCheckForBackwardsReferences { element } => with_fan_out(
-                settling(
+                settling.raise(
                     GroveDb::average_case_merk_replace_element(
                         key,
                         element,
@@ -421,7 +405,7 @@ impl GroveOp {
                 element,
                 change_in_bytes,
             } => with_fan_out(
-                settling(
+                settling.raise(
                     GroveDb::average_case_merk_patch_element(
                         key,
                         element,
