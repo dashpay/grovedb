@@ -214,6 +214,7 @@ These work on raw `ElementFlags` and match the callback signatures GroveDB expec
   - **Anything else, or no old flags**: leaves `new_flags` alone and returns `false`.
 
   It always merges with `MergingOwnersStrategy::UseTheirs`. When `old_flags` is `Some`, both the old and the new bytes must decode to flags, or it returns `RemovingFlagsError`.
+- `StorageFlags::update_element_flags_settling_owner_changes(cost, old_flags, new_flags) -> Result<ElementFlagsUpdate, StorageFlagsError>` answers `ElementFlagsUpdate::SettleOwnerChange` for an update in place (bigger, smaller or same size) whose old and new flags both name an owner and the owners differ, and leaves `new_flags` as written. Every other update gets what `update_element_flags` gives it, as `Changed` or `Unchanged`. A batch accepts the settling answer only with `BatchApplyOptions::settle_owner_changes` set, and then accounts the update as a deletion plus an insertion: the old element's key and value bytes are removed and sectioned to the old owner by `split_removal_bytes`, and the new element's key and value bytes are added.
 - `StorageFlags::split_removal_bytes(flags: &mut ElementFlags, removed_key_bytes, removed_value_bytes)` decodes the flags and calls `split_storage_removed_bytes`. It returns `BasicStorageRemoval` for both parts if the element has no flags.
 
 Other helpers include:

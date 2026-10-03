@@ -22,11 +22,17 @@
 mod v0;
 mod v1;
 
-use grovedb_costs::{storage_cost::removal::StorageRemovedBytes, CostResult, CostsExt};
+use grovedb_costs::{
+    storage_cost::{removal::StorageRemovedBytes, transition::ElementFlagsUpdate},
+    CostResult, CostsExt,
+};
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
 use crate::{
-    tree::{kv::ValueDefinedCostType, CryptoHash, TreeFeatureType, TreeNode},
+    tree::{
+        kv::{ValueDefinedCostType, KV},
+        CryptoHash, TreeFeatureType, TreeNode,
+    },
     Error,
 };
 
@@ -49,7 +55,7 @@ impl TreeNode {
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<
-            (bool, Option<ValueDefinedCostType>),
+            (ElementFlagsUpdate, Option<ValueDefinedCostType>),
             Error,
         >,
         section_removal_bytes: &mut impl FnMut(
@@ -70,6 +76,7 @@ impl TreeNode {
                 get_temp_new_value_with_old_flags,
                 update_tree_value_based_on_costs,
                 section_removal_bytes,
+                grove_version,
             ),
             1 => self.put_value_v1(
                 value,
@@ -78,6 +85,7 @@ impl TreeNode {
                 get_temp_new_value_with_old_flags,
                 update_tree_value_based_on_costs,
                 section_removal_bytes,
+                grove_version,
             ),
             version => Err(Error::VersionError(
                 GroveVersionError::UnknownVersionMismatch {
@@ -109,7 +117,7 @@ impl TreeNode {
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<
-            (bool, Option<ValueDefinedCostType>),
+            (ElementFlagsUpdate, Option<ValueDefinedCostType>),
             Error,
         >,
         section_removal_bytes: &mut impl FnMut(
@@ -131,6 +139,7 @@ impl TreeNode {
                 get_temp_new_value_with_old_flags,
                 update_tree_value_based_on_costs,
                 section_removal_bytes,
+                grove_version,
             ),
             1 => self.put_value_and_reference_value_hash_v1(
                 value,
@@ -140,6 +149,7 @@ impl TreeNode {
                 get_temp_new_value_with_old_flags,
                 update_tree_value_based_on_costs,
                 section_removal_bytes,
+                grove_version,
             ),
             version => Err(Error::VersionError(
                 GroveVersionError::UnknownVersionMismatch {
@@ -149,6 +159,28 @@ impl TreeNode {
                 },
             ))
             .wrap_with_cost(Default::default()),
+        }
+    }
+
+    /// Installs an ordinary value on a node exactly as [`Self::put_value`]
+    /// does, without the just-in-time value update or hashing: what a
+    /// prediction of the bytes an `Op::Put` finally stores must start from.
+    /// See the module docs for the version semantics.
+    pub(in crate::tree) fn install_ordinary_value(
+        kv: KV,
+        value: Vec<u8>,
+        grove_version: &GroveVersion,
+    ) -> Result<KV, Error> {
+        match grove_version.merk_versions.tree.put_value {
+            0 => Ok(Self::install_ordinary_value_v0(kv, value)),
+            1 => Ok(Self::install_ordinary_value_v1(kv, value)),
+            version => Err(Error::VersionError(
+                GroveVersionError::UnknownVersionMismatch {
+                    method: "install_ordinary_value".to_string(),
+                    known_versions: vec![0, 1],
+                    received: version,
+                },
+            )),
         }
     }
 }

@@ -11,7 +11,7 @@ pub use fetch::Fetch;
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use grovedb_costs::{
     cost_return_on_error_no_add,
-    storage_cost::{removal::StorageRemovedBytes, StorageCost},
+    storage_cost::{removal::StorageRemovedBytes, transition::ElementFlagsUpdate, StorageCost},
 };
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "minimal")]
@@ -234,7 +234,7 @@ where
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<
-            (bool, Option<ValueDefinedCostType>),
+            (ElementFlagsUpdate, Option<ValueDefinedCostType>),
             Error,
         >,
         section_removal_bytes: &mut impl FnMut(
@@ -281,7 +281,7 @@ where
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<
-            (bool, Option<ValueDefinedCostType>),
+            (ElementFlagsUpdate, Option<ValueDefinedCostType>),
             Error,
         >,
         section_removal_bytes: &mut impl FnMut(
@@ -292,6 +292,7 @@ where
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
+        grove_version: &GroveVersion,
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
         cost_return_on_error_no_add!(
@@ -304,7 +305,8 @@ where
                     old_specialized_cost,
                     get_temp_new_value_with_old_flags,
                     update_tree_value_based_on_costs,
-                    section_removal_bytes
+                    section_removal_bytes,
+                    grove_version
                 )
                 .unwrap_add_cost(&mut cost))
         );
@@ -327,7 +329,7 @@ where
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<
-            (bool, Option<ValueDefinedCostType>),
+            (ElementFlagsUpdate, Option<ValueDefinedCostType>),
             Error,
         >,
         section_removal_bytes: &mut impl FnMut(
@@ -377,7 +379,7 @@ where
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<
-            (bool, Option<ValueDefinedCostType>),
+            (ElementFlagsUpdate, Option<ValueDefinedCostType>),
             Error,
         >,
         section_removal_bytes: &mut impl FnMut(
@@ -427,7 +429,7 @@ where
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<
-            (bool, Option<ValueDefinedCostType>),
+            (ElementFlagsUpdate, Option<ValueDefinedCostType>),
             Error,
         >,
         section_removal_bytes: &mut impl FnMut(
@@ -438,6 +440,7 @@ where
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
+        grove_version: &GroveVersion,
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
         cost_return_on_error_no_add!(
@@ -451,7 +454,8 @@ where
                     old_specialized_cost,
                     get_temp_new_value_with_old_flags,
                     update_tree_value_based_on_costs,
-                    section_removal_bytes
+                    section_removal_bytes,
+                    grove_version
                 )
                 .unwrap_add_cost(&mut cost))
         );
@@ -478,7 +482,7 @@ where
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<
-            (bool, Option<ValueDefinedCostType>),
+            (ElementFlagsUpdate, Option<ValueDefinedCostType>),
             Error,
         >,
         section_removal_bytes: &mut impl FnMut(
@@ -489,6 +493,7 @@ where
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
+        grove_version: &GroveVersion,
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
         cost_return_on_error_no_add!(
@@ -503,7 +508,8 @@ where
                     old_specialized_cost,
                     get_temp_new_value_with_old_flags,
                     update_tree_value_based_on_costs,
-                    section_removal_bytes
+                    section_removal_bytes,
+                    grove_version
                 )
                 .unwrap_add_cost(&mut cost))
         );

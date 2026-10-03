@@ -45,10 +45,38 @@ use crate::{BackwardsReferences, Element};
 
 #[cfg(feature = "minimal")]
 impl GroveOp {
+    /// [`Self::average_case_cost_with_options`] with the default batch
+    /// options.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    fn average_case_cost(
+        &self,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        layer_element_estimates: &EstimatedLayerInformation,
+        append_tree_chunk_power: Option<u8>,
+        backwards_references: BackwardsReferences,
+        propagate: bool,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        self.average_case_cost_with_options(
+            path,
+            key,
+            layer_element_estimates,
+            append_tree_chunk_power,
+            backwards_references,
+            propagate,
+            None,
+            &BatchApplyOptions::default(),
+            grove_version,
+        )
+    }
+
     /// Get the estimated average case cost of the op. Calls a lower level
     /// function to calculate the estimate based on the type of op. Returns
     /// CostResult.
-    fn average_case_cost(
+    #[allow(clippy::too_many_arguments)]
+    fn average_case_cost_with_options(
         &self,
         // The op's own path: sizes the inverted-registration growth bound
         // (every `invert()` output is built from the origin's qualified
@@ -69,9 +97,28 @@ impl GroveOp {
         // it declares `Check`.
         backwards_references: BackwardsReferences,
         propagate: bool,
+        // The declared tree type of the layer an `InsertTreeWithRootHash`
+        // writes, which sizes it when it settles an owner change (the op
+        // carries no aggregate data from which the type could be read).
+        written_tree_type: Option<TreeType>,
+        // The batch's options: with `settle_owner_changes`, a write that may
+        // settle an owner change is charged as the insertion it then records
+        // too.
+        batch_apply_options: &BatchApplyOptions,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let in_tree_type = layer_element_estimates.tree_type;
+        // A backward-references element is charged the typical referrer
+        // shape, each referrer at the entry of one at this op's own position.
+        let settling = super::SettledOwnerChange::new(
+            batch_apply_options,
+            key,
+            in_tree_type.inner_node_type(),
+            super::CarriedReferrers::Average {
+                entry_bytes: super::backward_reference_entry_bound(path, key),
+            },
+            grove_version,
+        );
         let propagate_if_input = || {
             if propagate {
                 Some(layer_element_estimates)
@@ -93,20 +140,10 @@ impl GroveOp {
             }
             match element {
                 Some(Element::BidirectionalReference(..)) => {
-                    // The registration entry appended to the target: an
-                    // inverted path built from the referrer's qualified
-                    // origin (this op's path segments plus its key — an
-                    // absolute inversion serializes them all), the cascade
-                    // flag, and framing.
-                    let origin_bytes: u32 = path
-                        .0
-                        .iter()
-                        .map(|segment| 4 + segment.max_length() as u32)
-                        .sum::<u32>()
-                        .saturating_add(4 + key.max_length() as u32);
-                    let entry_bound = origin_bytes.saturating_add(16);
+                    // The registration entry appended to the target, whose
+                    // referrer is this op itself.
                     Some(super::BackwardReferencesFanOut::average_reference(
-                        entry_bound,
+                        super::backward_reference_entry_bound(path, key),
                     ))
                 }
                 // A backward-references ITEM write carries its own referrer
@@ -210,23 +247,44 @@ impl GroveOp {
                 not_summed,
                 not_counted_or_summed,
                 ..
-            } => GroveDb::average_case_merk_insert_tree(
-                key,
+            } => settling.raise_tree(
+                GroveDb::average_case_merk_insert_tree(
+                    key,
+                    flags,
+                    aggregate_data.parent_tree_type(),
+                    in_tree_type,
+                    // Account for the wrapper byte if the op rebuilds the
+                    // tree as `NonCounted(...)`, `NotSummed(...)`, or
+                    // `NotCountedOrSummed(...)`. They share the same +1
+                    // discriminant overhead and are mutually exclusive on
+                    // the rebuilt element.
+                    super::wrapper_overhead_for(*non_counted, *not_summed, *not_counted_or_summed),
+                    propagate_if_input(),
+                    grove_version,
+                ),
+                // The write of a tree the batch also writes under may settle
+                // an owner change as a write of its element does.
+                written_tree_type.unwrap_or(super::WORST_CASE_SETTLED_TREE_TYPE),
                 flags,
-                aggregate_data.parent_tree_type(),
-                in_tree_type,
-                // Account for the wrapper byte if the op rebuilds the
-                // tree as `NonCounted(...)`, `NotSummed(...)`, or
-                // `NotCountedOrSummed(...)`. They share the same +1
-                // discriminant overhead and are mutually exclusive on
-                // the rebuilt element.
-                super::wrapper_overhead_for(*non_counted, *not_summed, *not_counted_or_summed),
-                propagate_if_input(),
-                grove_version,
+                *non_counted,
+                *not_summed,
+                *not_counted_or_summed,
             ),
             GroveOp::InsertOrReplace { element }
-            | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
-            | GroveOp::InsertWithKnownToNotAlreadyExist { element } => with_fan_out(
+            | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element } => with_fan_out(
+                settling.raise(
+                    GroveDb::average_case_merk_insert_element(
+                        key,
+                        element,
+                        in_tree_type,
+                        propagate_if_input(),
+                        grove_version,
+                    ),
+                    element,
+                ),
+                backward_references_fan_out(Some(element)),
+            ),
+            GroveOp::InsertWithKnownToNotAlreadyExist { element } => with_fan_out(
                 GroveDb::average_case_merk_insert_element(
                     key,
                     element,
@@ -310,22 +368,32 @@ impl GroveOp {
                 } else {
                     inner
                 };
-                GroveDb::average_case_merk_replace_element(
+                let replace_cost = GroveDb::average_case_merk_replace_element(
                     key,
                     &element,
                     in_tree_type,
                     propagate_if_input(),
                     grove_version,
-                )
+                );
+                // An untrusted refresh writes the stored flags back, so only
+                // a trusted one can change the owner.
+                if mode.is_trusted() {
+                    settling.raise(replace_cost, &element)
+                } else {
+                    replace_cost
+                }
             }
             GroveOp::Replace { element }
             | GroveOp::ReplaceDontCheckForBackwardsReferences { element } => with_fan_out(
-                GroveDb::average_case_merk_replace_element(
-                    key,
+                settling.raise(
+                    GroveDb::average_case_merk_replace_element(
+                        key,
+                        element,
+                        in_tree_type,
+                        propagate_if_input(),
+                        grove_version,
+                    ),
                     element,
-                    in_tree_type,
-                    propagate_if_input(),
-                    grove_version,
                 ),
                 backward_references_fan_out(Some(element)),
             ),
@@ -337,13 +405,16 @@ impl GroveOp {
                 element,
                 change_in_bytes,
             } => with_fan_out(
-                GroveDb::average_case_merk_patch_element(
-                    key,
+                settling.raise(
+                    GroveDb::average_case_merk_patch_element(
+                        key,
+                        element,
+                        *change_in_bytes,
+                        in_tree_type,
+                        propagate_if_input(),
+                        grove_version,
+                    ),
                     element,
-                    *change_in_bytes,
-                    in_tree_type,
-                    propagate_if_input(),
-                    grove_version,
                 ),
                 backward_references_fan_out(Some(element)),
             ),
@@ -979,7 +1050,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         path: &KeyInfoPath,
         ops_at_path_by_key: BTreeMap<KeyInfo, GroveOp>,
         _ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, GroveOp>,
-        _batch_apply_options: &BatchApplyOptions,
+        batch_apply_options: &BatchApplyOptions,
         _flags_update: &mut G,
         _split_removal_bytes: &mut SR,
         grove_version: &GroveVersion,
@@ -1142,15 +1213,26 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                     &mut cost, path, &key, tree_type,
                 );
             }
+            // The layer an `InsertTreeWithRootHash` writes, whose declared
+            // tree type sizes the tree when it settles an owner change.
+            let written_tree_type = if let GroveOp::InsertTreeWithRootHash { .. } = &op {
+                let mut written_layer = path.clone();
+                written_layer.push(key.clone());
+                self.paths.get(&written_layer).map(|layer| layer.tree_type)
+            } else {
+                None
+            };
             cost_return_on_error!(
                 &mut cost,
-                op.average_case_cost(
+                op.average_case_cost_with_options(
                     path,
                     &key,
                     layer_element_estimates,
                     append_tree_chunk_power,
                     op.backwards_references(),
                     false,
+                    written_tree_type,
+                    batch_apply_options,
                     grove_version
                 )
             );

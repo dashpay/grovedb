@@ -78,6 +78,36 @@ pub struct BatchApplyOptions {
     /// At what height do we want to pause applying batch operations
     /// Most of the time this should be not set
     pub batch_pause_height: Option<u8>,
+    /// Settle owner changes: account an update in place whose flags update
+    /// answers
+    /// [`ElementFlagsUpdate::SettleOwnerChange`](grovedb_costs::storage_cost::transition::ElementFlagsUpdate::SettleOwnerChange)
+    /// as the removal of the old element plus the insertion of the new one.
+    ///
+    /// The old element's bytes, key included, count as removed and are
+    /// sectioned by the removal-bytes callback as a deletion sections them;
+    /// the new element's bytes, key included, count as added, and it keeps
+    /// the flags the callback leaves it with. A batch that does not set this
+    /// refuses a flags update that answers `SettleOwnerChange` with
+    /// [`Error::InvalidBatchOperation`](crate::Error::InvalidBatchOperation).
+    ///
+    /// The estimators read it too: an estimate with it set charges every
+    /// write that may settle an owner change (`InsertOrReplace`, `Replace`,
+    /// `Patch` and a trusted `RefreshReference` of an element with flags, and
+    /// the write of a flagged tree the batch also writes under) at least the
+    /// bytes its element adds when inserted. The referrer entries a
+    /// backward-references element carries over are counted, in the worst
+    /// case, at its declared capacity, each at the largest entry
+    /// registration admits, so a worst-case estimate is never below what the
+    /// apply records; the average case counts the typical shape (the
+    /// average item fan-out, each entry the size of one from the write's own
+    /// position).
+    ///
+    /// Off by default. On GROVE_V1..V3 every cost, estimate, stored element
+    /// and hash is then what it was before the option existed; GROVE_V4 also
+    /// carries the fixes of `apply_batch.same_batch_reference_target_prediction`
+    /// and `merk_versions.tree.just_in_time_value_update`, which change
+    /// some outcomes with the option off too.
+    pub settle_owner_changes: bool,
 }
 
 #[cfg(feature = "minimal")]
@@ -89,12 +119,21 @@ impl Default for BatchApplyOptions {
             disable_operation_consistency_check: false,
             base_root_storage_is_free: true,
             batch_pause_height: None,
+            settle_owner_changes: false,
         }
     }
 }
 
 #[cfg(feature = "minimal")]
 impl BatchApplyOptions {
+    /// Whether the batch options `options`, when given, set
+    /// [`Self::settle_owner_changes`].
+    pub(crate) fn settle_owner_changes_in(options: &Option<BatchApplyOptions>) -> bool {
+        options
+            .as_ref()
+            .is_some_and(|options| options.settle_owner_changes)
+    }
+
     /// As insert options
     pub(crate) fn as_insert_options(&self) -> InsertOptions {
         InsertOptions {

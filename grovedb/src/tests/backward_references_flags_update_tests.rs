@@ -317,6 +317,85 @@ fn same_batch_referrers_of_an_updated_item_commit_to_the_landed_bytes() {
     assert_referrers_bound(&db, &[TEST_LEAF], &[b"n1"], b"world", grove_version);
 }
 
+/// An update that hands a flagged item to a new owner settles under
+/// `settle_owner_changes`: the item lands with the new owner's flags as
+/// written, and its referrers, old and same-batch, commit to those bytes.
+#[test]
+fn settled_owner_change_keeps_referrers_bound() {
+    let grove_version = GroveVersion::latest();
+    let owned_item = |value: &[u8], epoch: u16, owner: [u8; 32]| {
+        Element::ItemWithBackwardsReferences(
+            value.to_vec(),
+            BackwardReferences::with_max_incoming(4),
+            Some(StorageFlags::SingleEpochOwned(epoch, owner).to_element_flags()),
+        )
+    };
+    for value in [
+        b"world".as_slice(),
+        b"hello world, larger".as_slice(),
+        b"hi".as_slice(),
+    ] {
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            &[TEST_LEAF],
+            b"value",
+            owned_item(b"hello", 1, [1; 32]),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        for (key, target) in [(b"r1", b"value".as_slice()), (b"r2", b"r1".as_slice())] {
+            db.insert(
+                &[TEST_LEAF],
+                key,
+                sibling_bidi(target),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+        }
+        db.apply_batch_with_element_flags_update(
+            vec![
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"value".to_vec(),
+                    owned_item(value, 3, [2; 32]),
+                ),
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"n1".to_vec(),
+                    sibling_bidi(b"value"),
+                ),
+            ],
+            Some(crate::batch::BatchApplyOptions {
+                settle_owner_changes: true,
+                ..Default::default()
+            }),
+            crate::batch::settle_test_support::settling_flags_update,
+            crate::batch::settle_test_support::split_removal_bytes,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected the settled owner change to apply");
+        assert_eq!(
+            stored_storage_flags(&db, &[TEST_LEAF], b"value", grove_version),
+            Some(StorageFlags::SingleEpochOwned(3, [2; 32]))
+        );
+        assert_referrers_bound(
+            &db,
+            &[TEST_LEAF],
+            &[b"r1", b"r2", b"n1"],
+            value,
+            grove_version,
+        );
+    }
+}
+
 /// Replacing a flagged bidirectional reference with a flagged item keeps
 /// the reference's referrer and moves it onto the item: the referrer must
 /// commit to the item as it lands.
@@ -983,7 +1062,7 @@ fn failing_callback_rejects_the_batch() {
         .apply_batch_with_element_flags_update(
             vec![replace_value_op(b"updated", 3)],
             None,
-            |_cost, _old_flags, _new_flags| {
+            |_cost, _old_flags, _new_flags| -> Result<bool, Error> {
                 Err(Error::JustInTimeElementFlagsClientError(
                     "refused".to_owned(),
                 ))

@@ -55,6 +55,39 @@ pub enum OperationStorageTransitionType {
     OperationNone,
 }
 
+/// What a just-in-time flags update decided for an element that an update
+/// rewrites in place
+///
+/// A flags-update callback that only rewrites flags answers `Changed` or
+/// `Unchanged`, and a `bool` converts to those. `SettleOwnerChange` also
+/// changes how the update is accounted, and a batch only accepts it when its
+/// options ask for that.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ElementFlagsUpdate {
+    /// The new element's flags were left as they were
+    Unchanged,
+    /// The new element's flags were rewritten
+    Changed,
+    /// The update hands the element to a different owner. It is accounted
+    /// as the removal of the old element plus the insertion of the new one
+    /// (an [`OperationStorageTransitionType::OperationReplace`]): every byte
+    /// of the old element, key included, counts as removed and is sectioned
+    /// through the old element's flags as a deletion sections it, and every
+    /// byte of the new element, key included, counts as added. The new
+    /// element keeps the flags the callback leaves it with.
+    SettleOwnerChange,
+}
+
+impl From<bool> for ElementFlagsUpdate {
+    fn from(flags_changed: bool) -> Self {
+        if flags_changed {
+            ElementFlagsUpdate::Changed
+        } else {
+            ElementFlagsUpdate::Unchanged
+        }
+    }
+}
+
 impl StorageCost {
     /// the type of transition that the costs represent
     pub fn transition_type(&self) -> OperationStorageTransitionType {
@@ -77,5 +110,19 @@ impl StorageCost {
         } else {
             OperationNone
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ElementFlagsUpdate;
+
+    #[test]
+    fn a_bool_flags_update_converts_to_changed_or_unchanged() {
+        assert_eq!(ElementFlagsUpdate::from(true), ElementFlagsUpdate::Changed);
+        assert_eq!(
+            ElementFlagsUpdate::from(false),
+            ElementFlagsUpdate::Unchanged
+        );
     }
 }

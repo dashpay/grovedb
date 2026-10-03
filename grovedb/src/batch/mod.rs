@@ -32,6 +32,12 @@ mod just_in_time_value_update;
 mod options;
 mod refresh_reference_mode;
 #[cfg(test)]
+mod same_batch_reference_prediction_tests;
+#[cfg(test)]
+mod settle_owner_change_cost_tests;
+#[cfg(test)]
+pub(crate) mod settle_test_support;
+#[cfg(test)]
 mod single_deletion_cost_tests;
 #[cfg(test)]
 mod single_insert_cost_tests;
@@ -43,6 +49,7 @@ mod single_sum_item_insert_cost_tests;
 use crate::{bidirectional_references::batch_maintains_backward_references, BackwardsReferences};
 use core::fmt;
 use std::{
+    cell::Cell,
     cmp::Ordering,
     collections::{btree_map::Entry, hash_map::Entry as HashMapEntry, BTreeMap, HashMap, HashSet},
     hash::{Hash, Hasher},
@@ -61,6 +68,7 @@ use grovedb_costs::{
     cost_return_on_error_no_add,
     storage_cost::{
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
+        transition::ElementFlagsUpdate,
         StorageCost,
     },
     CostResult, CostsExt, OperationCost,
@@ -1962,6 +1970,21 @@ struct TreeCacheMerkByPath<S, F, F2> {
     /// added and unattributed-removal lanes into `replaced_bytes` — a row
     /// move is physically a delete plus an insert but logically an update.
     indexed_mirror_rekey_churn_bytes: u32,
+    /// The batch's `settle_owner_changes` option: a flags update may settle
+    /// an owner change, so a same-batch reference to a pending item write
+    /// predicts the bytes it stores through Merk's own just-in-time value
+    /// update on every grove version (see `just_in_time_reference_update`).
+    settle_owner_changes: bool,
+    /// The qualified paths of the targets this pass has already written. A
+    /// same-batch reference to one of them commits to the bytes it now
+    /// stores instead of predicting them (from
+    /// `apply_batch.same_batch_reference_target_prediction` version 1).
+    written_qualified_paths: HashSet<Vec<Vec<u8>>>,
+    /// The bytes predicted for a pending item write that a same-batch
+    /// reference points at, by the target's qualified path, so references
+    /// sharing a target predict it once (from
+    /// `apply_batch.same_batch_reference_target_prediction` version 1).
+    predicted_reference_targets: HashMap<Vec<Vec<u8>>, Vec<u8>>,
 }
 
 impl<S, F, F2> fmt::Debug for TreeCacheMerkByPath<S, F, F2> {
@@ -2281,7 +2304,11 @@ where
         grove_version: &GroveVersion,
     ) -> CostResult<CryptoHash, Error>
     where
-        G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+        G: FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> Result<ElementFlagsUpdate, Error>,
         SR: FnMut(
             &mut ElementFlags,
             u32,
@@ -2485,6 +2512,36 @@ where
     ) -> CostResult<Option<(Element, Vec<u8>, TreeType)>, Error> {
         let mut cost = OperationCost::default();
 
+        let referenced_element = cost_return_on_error!(
+            &mut cost,
+            self.get_referenced_element_bytes(key, reference_path, grove_version)
+        );
+
+        if let Some((referenced_element, tree_type)) = referenced_element {
+            let element = cost_return_on_error_no_add!(
+                cost,
+                Element::deserialize(referenced_element.as_slice(), grove_version).map_err(|e| {
+                    Error::CorruptedData(format!("unable to deserialize element: {e}"))
+                })
+            );
+
+            Ok(Some((element, referenced_element, tree_type))).wrap_with_cost(cost)
+        } else {
+            Ok(None).wrap_with_cost(cost)
+        }
+    }
+
+    /// The serialized bytes of the element at `key` under `reference_path`
+    /// as the Merk cache holds them, and the type of the tree holding it;
+    /// [`Self::get_and_deserialize_referenced_element`] without the decode.
+    fn get_referenced_element_bytes(
+        &mut self,
+        key: &[u8],
+        reference_path: &[Vec<u8>],
+        grove_version: &GroveVersion,
+    ) -> CostResult<Option<(Vec<u8>, TreeType)>, Error> {
+        let mut cost = OperationCost::default();
+
         let merk = match self.merks.entry(reference_path.to_vec()) {
             HashMapEntry::Occupied(o) => o.into_mut(),
             HashMapEntry::Vacant(v) => v.insert(cost_return_on_error!(
@@ -2506,18 +2563,8 @@ where
 
         let tree_type = merk.tree_type;
 
-        if let Some(referenced_element) = referenced_element {
-            let element = cost_return_on_error_no_add!(
-                cost,
-                Element::deserialize(referenced_element.as_slice(), grove_version).map_err(|e| {
-                    Error::CorruptedData(format!("unable to deserialize element: {e}"))
-                })
-            );
-
-            Ok(Some((element, referenced_element, tree_type))).wrap_with_cost(cost)
-        } else {
-            Ok(None).wrap_with_cost(cost)
-        }
+        Ok(referenced_element.map(|referenced_element| (referenced_element, tree_type)))
+            .wrap_with_cost(cost)
     }
 
     /// Processes a reference with a hop count greater than one, handling the
@@ -2580,7 +2627,11 @@ where
         grove_version: &GroveVersion,
     ) -> CostResult<CryptoHash, Error>
     where
-        G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+        G: FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> Result<ElementFlagsUpdate, Error>,
         SR: FnMut(
             &mut ElementFlags,
             u32,
@@ -2710,7 +2761,11 @@ where
         grove_version: &GroveVersion,
     ) -> CostResult<CryptoHash, Error>
     where
-        G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+        G: FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> Result<ElementFlagsUpdate, Error>,
         SR: FnMut(
             &mut ElementFlags,
             u32,
@@ -2806,32 +2861,35 @@ where
                                 let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                                 Ok(val_hash).wrap_with_cost(cost)
                             } else {
-                                let mut new_element = element.clone();
-
                                 // it can be unmerged, let's get the value on disk
                                 let (key, reference_path) = qualified_path
                                     .split_last()
                                     .expect("path validated non-empty above");
                                 let serialized_element_result = cost_return_on_error!(
                                     &mut cost,
-                                    self.get_and_deserialize_referenced_element(
+                                    self.get_referenced_element_bytes(
                                         key,
                                         reference_path,
                                         grove_version
                                     )
                                 );
-                                if let Some((old_element, old_serialized_element, is_in_sum_tree)) =
+                                if let Some((old_serialized_element, is_in_sum_tree)) =
                                     serialized_element_result
                                 {
+                                    let target_written =
+                                        self.written_qualified_paths.contains(qualified_path);
                                     let value_hash = cost_return_on_error!(
                                         &mut cost,
                                         Self::process_old_element_flags(
                                             key,
-                                            &serialized,
-                                            &mut new_element,
-                                            old_element,
-                                            &old_serialized_element,
+                                            qualified_path,
+                                            serialized,
+                                            element,
+                                            old_serialized_element,
                                             is_in_sum_tree,
+                                            self.settle_owner_changes,
+                                            target_written,
+                                            &mut self.predicted_reference_targets,
                                             flags_update,
                                             split_removal_bytes,
                                             grove_version,
@@ -3082,7 +3140,11 @@ where
 
 impl<'db, S, F, F2, G, SR> TreeCache<G, SR> for TreeCacheMerkByPath<S, F, F2>
 where
-    G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+    G: FnMut(
+        &StorageCost,
+        Option<ElementFlags>,
+        &mut ElementFlags,
+    ) -> Result<ElementFlagsUpdate, Error>,
     SR: FnMut(
         &mut ElementFlags,
         u32,
@@ -3184,6 +3246,21 @@ where
         let p = path.to_path();
         let path = &p;
         self.unused_new_merks.remove(path);
+        // The targets this path writes, recorded as written once it has
+        // applied them (only read by the version 1 target prediction).
+        let written_qualified_paths: Vec<Vec<Vec<u8>>> =
+            if self.tracks_written_targets(grove_version) {
+                ops_at_path_by_key
+                    .keys()
+                    .map(|key_info| {
+                        let mut qualified_path = path.to_vec();
+                        qualified_path.push(key_info.get_key_clone());
+                        qualified_path
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
         // This also populates Merk trees cache
         let in_tree_type = {
@@ -5021,6 +5098,7 @@ where
                 .insert(path.to_vec(), per_axis);
         }
 
+        self.written_qualified_paths.extend(written_qualified_paths);
         let merk = self.merks.get_mut(path).expect("the Merk is cached");
         merk.root_hash_key_and_aggregate_data()
             .add_cost(cost)
@@ -5210,7 +5288,11 @@ impl GroveDb {
         Error,
     >
     where
-        F: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+        F: FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> Result<ElementFlagsUpdate, Error>,
         SR: FnMut(
             &mut ElementFlags,
             u32,
@@ -5551,7 +5633,7 @@ impl GroveDb {
             &StorageCost,
             Option<ElementFlags>,
             &mut ElementFlags,
-        ) -> Result<bool, Error>,
+        ) -> Result<ElementFlagsUpdate, Error>,
         split_removed_bytes_function: impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -5607,6 +5689,11 @@ impl GroveDb {
                     cidx_overwrite_cleanup_paths: Default::default(),
                     deleted_tree_actual_types: Default::default(),
                     indexed_mirror_rekey_churn_bytes: 0,
+                    settle_owner_changes: BatchApplyOptions::settle_owner_changes_in(
+                        &batch_apply_options,
+                    ),
+                    written_qualified_paths: Default::default(),
+                    predicted_reference_targets: Default::default(),
                 },
                 grove_version
             )
@@ -5638,7 +5725,7 @@ impl GroveDb {
             &StorageCost,
             Option<ElementFlags>,
             &mut ElementFlags,
-        ) -> Result<bool, Error>,
+        ) -> Result<ElementFlagsUpdate, Error>,
         split_removed_bytes_function: impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -5677,6 +5764,22 @@ impl GroveDb {
                 merk_tree_cache.merks.remove(&path);
             }
         }
+        // The additional ops write their targets again, so a reference to one
+        // predicts the bytes it stores from what the first segment left, and
+        // no prediction made before the continuation still holds.
+        for op in &additional_ops {
+            if merk_tree_cache.written_qualified_paths.is_empty() {
+                break;
+            }
+            if let Some(key) = &op.key {
+                let mut qualified_path = op.path.to_path();
+                qualified_path.push(key.get_key_clone());
+                merk_tree_cache
+                    .written_qualified_paths
+                    .remove(&qualified_path);
+            }
+        }
+        merk_tree_cache.predicted_reference_targets.clear();
         let mut cost = OperationCost::default();
         let batch_structure = cost_return_on_error!(
             &mut cost,
@@ -6715,12 +6818,65 @@ impl GroveDb {
     /// Applies batch of operations on GroveDB
     ///
     /// `update_element_flags_function` and `split_removal_bytes_function`
-    /// run whenever a write replaces a stored value. They must be
-    /// deterministic: under backward-references maintenance the batch
-    /// predicts the bytes a flagged item will store (its referrers commit to
-    /// them) by consulting the same callbacks before the apply, and refuses
-    /// the batch if the apply stores anything else.
-    pub fn apply_batch_with_element_flags_update(
+    /// run whenever a write replaces a stored value, and may run more than
+    /// once for one write. They must be deterministic, answering the same
+    /// inputs the same way every time: the batch predicts the bytes a
+    /// flagged item will store by consulting the same callbacks before the
+    /// apply, wherever something commits to those bytes first.
+    ///
+    /// - A reference the batch writes or refreshes to an item the batch
+    ///   also updates commits to the predicted bytes. Nothing checks them
+    ///   after the apply, so a callback that answers the apply differently
+    ///   leaves the reference committed to bytes that are never stored.
+    /// - Under backward-references maintenance the referrers of a flagged
+    ///   backward-references item commit to them, and the batch refuses the
+    ///   batch if the apply stores anything else.
+    ///
+    /// The flags callback answers a `bool` (whether it rewrote the flags) or
+    /// an [`ElementFlagsUpdate`]; `SettleOwnerChange` is accepted only when
+    /// the options set
+    /// [`settle_owner_changes`](BatchApplyOptions::settle_owner_changes);
+    /// without it the batch fails with [`Error::InvalidBatchOperation`].
+    pub fn apply_batch_with_element_flags_update<U: Into<ElementFlagsUpdate>>(
+        &self,
+        ops: Vec<QualifiedGroveDbOp>,
+        batch_apply_options: Option<BatchApplyOptions>,
+        update_element_flags_function: impl FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> Result<U, Error>,
+        split_removal_bytes_function: impl FnMut(
+            &mut ElementFlags,
+            u32, // key removed bytes
+            u32, // value removed bytes
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        let settle_refused = Cell::new(false);
+        let update_element_flags_function = just_in_time_value_update::batch_flags_update(
+            update_element_flags_function,
+            BatchApplyOptions::settle_owner_changes_in(&batch_apply_options),
+            &settle_refused,
+        );
+        self.apply_batch_with_batch_flags_update(
+            ops,
+            batch_apply_options,
+            update_element_flags_function,
+            split_removal_bytes_function,
+            transaction,
+            grove_version,
+        )
+        .map_err(|e| just_in_time_value_update::settle_refusal_error(e, &settle_refused))
+    }
+
+    /// [`Self::apply_batch_with_element_flags_update`] with the flags
+    /// callback as [`just_in_time_value_update::batch_flags_update`] runs it.
+    fn apply_batch_with_batch_flags_update(
         &self,
         ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
@@ -6728,7 +6884,7 @@ impl GroveDb {
             &StorageCost,
             Option<ElementFlags>,
             &mut ElementFlags,
-        ) -> Result<bool, Error>,
+        ) -> Result<ElementFlagsUpdate, Error>,
         mut split_removal_bytes_function: impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -7208,7 +7364,55 @@ impl GroveDb {
     /// The initial segment pauses at `batch_pause_height` (default: 1).
     /// Cross-segment safety checks are always enforced, even when
     /// `disable_operation_consistency_check` skips per-segment validation.
-    pub fn apply_partial_batch_with_element_flags_update(
+    ///
+    /// The flags callback is answered as in
+    /// [`Self::apply_batch_with_element_flags_update`].
+    pub fn apply_partial_batch_with_element_flags_update<U: Into<ElementFlagsUpdate>>(
+        &self,
+        ops: Vec<QualifiedGroveDbOp>,
+        batch_apply_options: Option<BatchApplyOptions>,
+        update_element_flags_function: impl FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> Result<U, Error>,
+        split_removal_bytes_function: impl FnMut(
+            &mut ElementFlags,
+            u32, // key removed bytes
+            u32, // value removed bytes
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+        add_on_operations: impl FnMut(
+            &OperationCost,
+            &Option<OpsByLevelPath>,
+        ) -> Result<Vec<QualifiedGroveDbOp>, Error>,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        let settle_refused = Cell::new(false);
+        let update_element_flags_function = just_in_time_value_update::batch_flags_update(
+            update_element_flags_function,
+            BatchApplyOptions::settle_owner_changes_in(&batch_apply_options),
+            &settle_refused,
+        );
+        self.apply_partial_batch_with_batch_flags_update(
+            ops,
+            batch_apply_options,
+            update_element_flags_function,
+            split_removal_bytes_function,
+            add_on_operations,
+            transaction,
+            grove_version,
+        )
+        .map_err(|e| just_in_time_value_update::settle_refusal_error(e, &settle_refused))
+    }
+
+    /// [`Self::apply_partial_batch_with_element_flags_update`] with the
+    /// flags callback as [`just_in_time_value_update::batch_flags_update`]
+    /// runs it.
+    fn apply_partial_batch_with_batch_flags_update(
         &self,
         ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
@@ -7216,7 +7420,7 @@ impl GroveDb {
             &StorageCost,
             Option<ElementFlags>,
             &mut ElementFlags,
-        ) -> Result<bool, Error>,
+        ) -> Result<ElementFlagsUpdate, Error>,
         mut split_removal_bytes_function: impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -7974,7 +8178,11 @@ impl GroveDb {
     #[cfg(feature = "estimated_costs")]
     /// Returns the estimated average or worst case cost for an entire batch of
     /// ops
-    pub fn estimated_case_operations_for_batch(
+    ///
+    /// With [`settle_owner_changes`](BatchApplyOptions::settle_owner_changes)
+    /// set, every write that may settle an owner change is charged at least
+    /// the bytes its element adds when inserted.
+    pub fn estimated_case_operations_for_batch<U: Into<ElementFlagsUpdate>>(
         estimated_costs_type: EstimatedCostsType,
         ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
@@ -7982,7 +8190,7 @@ impl GroveDb {
             &StorageCost,
             Option<ElementFlags>,
             &mut ElementFlags,
-        ) -> Result<bool, Error>,
+        ) -> Result<U, Error>,
         split_removal_bytes_function: impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -8000,6 +8208,11 @@ impl GroveDb {
                 .apply_batch
                 .estimated_case_operations_for_batch
         );
+        // The estimators never call the flags update (an estimate follows
+        // the batch options, not the answers the flags update would give),
+        // so it only needs its answer type.
+        let update_element_flags_function =
+            just_in_time_value_update::flags_update_answers(update_element_flags_function);
         let mut cost = OperationCost::default();
 
         if ops.is_empty() {
@@ -8240,6 +8453,7 @@ mod tests {
                     disable_operation_consistency_check: true,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
+                    settle_owner_changes: false,
                 }),
                 None,
                 grove_version
@@ -8845,6 +9059,7 @@ mod tests {
                     disable_operation_consistency_check: false,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
+                    settle_owner_changes: false,
                 }),
                 None,
                 grove_version
@@ -8886,6 +9101,7 @@ mod tests {
                     validate_insertion_does_not_override: true,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
+                    settle_owner_changes: false,
                 }),
                 None,
                 grove_version
@@ -8919,6 +9135,7 @@ mod tests {
                     disable_operation_consistency_check: false,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
+                    settle_owner_changes: false,
                 }),
                 None,
                 grove_version

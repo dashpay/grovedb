@@ -1,8 +1,63 @@
-use grovedb_costs::storage_cost::{transition::OperationStorageTransitionType, StorageCost};
+use grovedb_costs::storage_cost::{
+    transition::{ElementFlagsUpdate, OperationStorageTransitionType},
+    StorageCost,
+};
 
 use crate::{error::StorageFlagsError, ElementFlags, MergingOwnersStrategy, StorageFlags};
 
 impl StorageFlags {
+    /// [`Self::update_element_flags`], except that an update whose new flags
+    /// name a different owner than the old flags settles the owner change
+    ///
+    /// When both the old and the new flags name an owner and the owners
+    /// differ, the new flags are left as the writer wrote them and the update
+    /// answers [`ElementFlagsUpdate::SettleOwnerChange`]: the batch then
+    /// accounts it as the removal of the old element, sectioned to the old
+    /// owner through its epoch map by [`Self::split_removal_bytes`], plus the
+    /// insertion of the new element, charged to the writer. Every other update
+    /// (same owner, or no owner on either side) is answered by
+    /// [`Self::update_element_flags`], unchanged.
+    ///
+    /// The batch accepts the answer only when its options set
+    /// `settle_owner_changes`.
+    pub fn update_element_flags_settling_owner_changes(
+        cost: &StorageCost,
+        old_flags: Option<ElementFlags>,
+        new_flags: &mut ElementFlags,
+    ) -> Result<ElementFlagsUpdate, StorageFlagsError> {
+        // Without old flags there is no old owner, and
+        // `update_element_flags` leaves the new flags as written.
+        let Some(old_flags) = old_flags else {
+            return Ok(ElementFlagsUpdate::Unchanged);
+        };
+        let (maybe_old_storage_flags, new_storage_flags) =
+            Self::decode_update_flags(&old_flags, new_flags)?;
+        let is_update_in_place = matches!(
+            cost.transition_type(),
+            OperationStorageTransitionType::OperationUpdateBiggerSize
+                | OperationStorageTransitionType::OperationUpdateSmallerSize
+                | OperationStorageTransitionType::OperationUpdateSameSize
+        );
+        if is_update_in_place
+            && let (Some(old_owner), Some(new_owner)) = (
+                maybe_old_storage_flags
+                    .as_ref()
+                    .and_then(|flags| flags.owner_id()),
+                new_storage_flags.owner_id(),
+            )
+            && old_owner != new_owner
+        {
+            return Ok(ElementFlagsUpdate::SettleOwnerChange);
+        }
+        Self::update_decoded_element_flags(
+            cost,
+            maybe_old_storage_flags,
+            new_storage_flags,
+            new_flags,
+        )
+        .map(ElementFlagsUpdate::from)
+    }
+
     pub fn update_element_flags(
         cost: &StorageCost,
         old_flags: Option<ElementFlags>,
@@ -12,11 +67,26 @@ impl StorageFlags {
         let Some(old_flags) = old_flags else {
             return Ok(false);
         };
+        let (maybe_old_storage_flags, new_storage_flags) =
+            Self::decode_update_flags(&old_flags, new_flags)?;
+        Self::update_decoded_element_flags(
+            cost,
+            maybe_old_storage_flags,
+            new_storage_flags,
+            new_flags,
+        )
+    }
 
+    /// The old and new flags of an update, decoded as
+    /// [`Self::update_element_flags`] requires them.
+    fn decode_update_flags(
+        old_flags: &ElementFlags,
+        new_flags: &ElementFlags,
+    ) -> Result<(Option<StorageFlags>, StorageFlags), StorageFlagsError> {
         // This could be none only because the old element didn't exist
         // If they were empty we get an error
         let maybe_old_storage_flags =
-            StorageFlags::from_element_flags_ref(&old_flags).map_err(|mut e| {
+            StorageFlags::from_element_flags_ref(old_flags).map_err(|mut e| {
                 e.add_info("drive did not understand flags of old item being updated");
                 e
             })?;
@@ -28,6 +98,17 @@ impl StorageFlags {
             .ok_or(StorageFlagsError::RemovingFlagsError(
                 "removing flags from an item with flags is not allowed".to_string(),
             ))?;
+        Ok((maybe_old_storage_flags, new_storage_flags))
+    }
+
+    /// [`Self::update_element_flags`] on flags [`Self::decode_update_flags`]
+    /// decoded.
+    fn update_decoded_element_flags(
+        cost: &StorageCost,
+        maybe_old_storage_flags: Option<StorageFlags>,
+        new_storage_flags: StorageFlags,
+        new_flags: &mut ElementFlags,
+    ) -> Result<bool, StorageFlagsError> {
         let old_storage_flags =
             maybe_old_storage_flags
                 .clone()
@@ -146,7 +227,9 @@ impl StorageFlags {
 mod tests {
     use std::collections::BTreeMap;
 
-    use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+    use grovedb_costs::storage_cost::{
+        removal::StorageRemovedBytes, transition::ElementFlagsUpdate, StorageCost,
+    };
 
     use crate::StorageFlags;
 
@@ -309,5 +392,174 @@ mod tests {
         assert!(new_error
             .to_string()
             .contains("drive did not understand updated item flag information"));
+    }
+
+    fn update_cost(added_bytes: u32, replaced_bytes: u32, removed_bytes: u32) -> StorageCost {
+        StorageCost {
+            added_bytes,
+            replaced_bytes,
+            removed_bytes: if removed_bytes > 0 {
+                StorageRemovedBytes::BasicStorageRemoval(removed_bytes)
+            } else {
+                StorageRemovedBytes::NoStorageRemoval
+            },
+        }
+    }
+
+    #[test]
+    fn settling_update_settles_an_owner_change_of_any_size() {
+        let old_owner = [1u8; 32];
+        let new_owner = [2u8; 32];
+        let old = StorageFlags::SingleEpochOwned(1, old_owner).to_element_flags();
+        let written = StorageFlags::SingleEpochOwned(4, new_owner).to_element_flags();
+        for cost in [
+            update_cost(10, 50, 0),
+            update_cost(0, 50, 10),
+            update_cost(0, 50, 0),
+        ] {
+            let mut new_flags = written.clone();
+            let update = StorageFlags::update_element_flags_settling_owner_changes(
+                &cost,
+                Some(old.clone()),
+                &mut new_flags,
+            )
+            .expect("expected success");
+            assert_eq!(update, ElementFlagsUpdate::SettleOwnerChange);
+            // the writer's flags are kept as written, never merged with the
+            // old owner's epochs
+            assert_eq!(new_flags, written);
+        }
+    }
+
+    #[test]
+    fn settling_update_settles_an_owner_change_of_multi_epoch_flags() {
+        let old = StorageFlags::MultiEpochOwned(1, BTreeMap::from([(2, 20), (3, 7)]), [1u8; 32])
+            .to_element_flags();
+        let written = StorageFlags::SingleEpochOwned(5, [2u8; 32]).to_element_flags();
+        let mut new_flags = written.clone();
+        let update = StorageFlags::update_element_flags_settling_owner_changes(
+            &update_cost(4, 60, 0),
+            Some(old),
+            &mut new_flags,
+        )
+        .expect("expected success");
+        assert_eq!(update, ElementFlagsUpdate::SettleOwnerChange);
+        assert_eq!(new_flags, written);
+    }
+
+    /// Every update that does not change the owner gets exactly what
+    /// `update_element_flags` gives it.
+    #[test]
+    fn settling_update_matches_update_element_flags_without_an_owner_change() {
+        let owner = [1u8; 32];
+        let cases = [
+            // same owner, bigger, smaller and same size
+            (
+                Some(StorageFlags::SingleEpochOwned(1, owner)),
+                StorageFlags::SingleEpochOwned(2, owner),
+                update_cost(10, 50, 0),
+            ),
+            (
+                Some(StorageFlags::MultiEpochOwned(
+                    1,
+                    BTreeMap::from([(2, 20)]),
+                    owner,
+                )),
+                StorageFlags::SingleEpochOwned(2, owner),
+                StorageCost {
+                    added_bytes: 0,
+                    replaced_bytes: 50,
+                    removed_bytes: StorageRemovedBytes::SectionedStorageRemoval(BTreeMap::from([
+                        (owner, intmap::IntMap::from_iter([(2u16, 5u32)])),
+                    ])),
+                },
+            ),
+            (
+                Some(StorageFlags::SingleEpochOwned(1, owner)),
+                StorageFlags::SingleEpochOwned(2, owner),
+                update_cost(0, 50, 0),
+            ),
+            // no owner on the old side, on the new side, or on either
+            (
+                Some(StorageFlags::SingleEpoch(1)),
+                StorageFlags::SingleEpochOwned(2, owner),
+                update_cost(10, 50, 0),
+            ),
+            (
+                Some(StorageFlags::SingleEpochOwned(1, owner)),
+                StorageFlags::SingleEpoch(2),
+                update_cost(0, 50, 0),
+            ),
+            (
+                Some(StorageFlags::SingleEpoch(1)),
+                StorageFlags::SingleEpoch(2),
+                update_cost(10, 50, 0),
+            ),
+            // no old flags at all
+            (
+                None,
+                StorageFlags::SingleEpochOwned(2, owner),
+                update_cost(10, 50, 0),
+            ),
+        ];
+        for (old, new, cost) in cases {
+            let old = old.map(|old| old.to_element_flags());
+            let mut expected_flags = new.to_element_flags();
+            let expected =
+                StorageFlags::update_element_flags(&cost, old.clone(), &mut expected_flags)
+                    .expect("expected success");
+            let mut new_flags = new.to_element_flags();
+            let update = StorageFlags::update_element_flags_settling_owner_changes(
+                &cost,
+                old,
+                &mut new_flags,
+            )
+            .expect("expected success");
+            assert_eq!(update, ElementFlagsUpdate::from(expected));
+            assert_eq!(new_flags, expected_flags);
+        }
+    }
+
+    #[test]
+    fn settling_update_does_not_settle_outside_an_update_in_place() {
+        let old = StorageFlags::SingleEpochOwned(1, [1u8; 32]).to_element_flags();
+        let written = StorageFlags::SingleEpochOwned(2, [2u8; 32]).to_element_flags();
+        let mut new_flags = written.clone();
+        let update = StorageFlags::update_element_flags_settling_owner_changes(
+            &update_cost(10, 0, 0),
+            Some(old),
+            &mut new_flags,
+        )
+        .expect("expected success");
+        assert_eq!(update, ElementFlagsUpdate::Unchanged);
+        assert_eq!(new_flags, written);
+    }
+
+    #[test]
+    fn settling_update_reports_unreadable_flags_as_update_element_flags_does() {
+        let cost = update_cost(0, 50, 0);
+        let owned = StorageFlags::SingleEpochOwned(1, [1u8; 32]).to_element_flags();
+
+        let mut new_flags = owned.clone();
+        let old_error = StorageFlags::update_element_flags_settling_owner_changes(
+            &cost,
+            Some(vec![255]),
+            &mut new_flags,
+        )
+        .expect_err("expected old flag parse error");
+        assert!(old_error
+            .to_string()
+            .contains("drive did not understand flags of old item being updated"));
+
+        let mut removed_flags = vec![];
+        let removed_error = StorageFlags::update_element_flags_settling_owner_changes(
+            &cost,
+            Some(owned),
+            &mut removed_flags,
+        )
+        .expect_err("expected an error for removed flags");
+        assert!(removed_error
+            .to_string()
+            .contains("removing flags from an item with flags is not allowed"));
     }
 }
