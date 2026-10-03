@@ -9,7 +9,10 @@ use grovedb_path::SubtreePath;
 use grovedb_storage::{Storage, StorageBatch};
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
-use crate::{util::TxRef, Element, Error, GroveDb, TransactionArg};
+use crate::{
+    util::{TxRef, MAX_KEY_LENGTH},
+    Element, Error, GroveDb, TransactionArg,
+};
 
 /// Versioned dispatch for `add_element_on_transaction` (the non-batch insert
 /// path). Consensus-critical — see the module docs.
@@ -64,10 +67,6 @@ impl InsertOptions {
         }
     }
 }
-
-/// Maximum key length in bytes. Merk link encoding stores the key length as a
-/// single `u8`, so keys longer than 255 bytes would corrupt the encoding.
-const MAX_KEY_LENGTH: usize = u8::MAX as usize;
 
 fn validate_key_length(key: &[u8]) -> CostResult<(), Error> {
     if key.len() > MAX_KEY_LENGTH {
