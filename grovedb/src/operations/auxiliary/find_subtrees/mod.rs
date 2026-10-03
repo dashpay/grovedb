@@ -11,7 +11,7 @@ use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_path::SubtreePath;
 use grovedb_version::version::GroveVersion;
 
-use crate::{Error, GroveDb, TransactionArg};
+use crate::{util::validate_path_segment_lengths, Error, GroveDb, TransactionArg};
 
 impl GroveDb {
     /// Finds subtree namespaces recursively, including the starting Merk
@@ -42,6 +42,11 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<Vec<Vec<u8>>>, Error> {
+        // Both versions open `path` before anything else, so this refuses
+        // exactly the paths they would panic on.
+        if let Err(e) = validate_path_segment_lengths(path) {
+            return Err(e).wrap_with_cost(OperationCost::default());
+        }
         match grove_version
             .grovedb_versions
             .operations

@@ -43,6 +43,30 @@ impl<'db> AsRef<Transaction<'db>> for TxRef<'_, 'db> {
     }
 }
 
+/// Refuse a path with a segment longer than 255 bytes.
+///
+/// A subtree prefix records each segment length in one byte, so storage
+/// panics if asked to build a prefix for a longer segment. Keys are capped at
+/// 255 bytes on insert, so no subtree has such a path, but a caller can still
+/// pass one to a public entry point. Each place where a caller's path first
+/// reaches prefix construction calls this just before it, so that caller gets
+/// an input error instead of a panic, and a call that never builds the prefix
+/// keeps its old result (#680).
+pub(crate) fn validate_path_segment_lengths<B: AsRef<[u8]>>(
+    path: &grovedb_path::SubtreePath<B>,
+) -> Result<(), Error> {
+    if path
+        .clone()
+        .into_reverse_iter()
+        .any(|segment| segment.len() > u8::MAX as usize)
+    {
+        return Err(Error::InvalidInput(
+            "path segment length must be at most 255 bytes",
+        ));
+    }
+    Ok(())
+}
+
 /// Build the storage path of a subtree living at `path`/`key`.
 ///
 /// Every non-Merk tree type (commitment tree, bulk-append tree, private

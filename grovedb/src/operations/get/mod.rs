@@ -31,7 +31,7 @@ use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 use crate::bidirectional_references::BidirectionalReference;
 use crate::{
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
-    util::TxRef,
+    util::{validate_path_segment_lengths, TxRef},
     Element, Error, GroveDb, Transaction, TransactionArg,
 };
 
@@ -596,11 +596,15 @@ impl GroveDb {
             grove_version.grovedb_versions.operations.get.has_raw
         );
 
+        let path: SubtreePath<B> = path.into();
+        if let Err(e) = validate_path_segment_lengths(&path) {
+            return Err(e).wrap_with_cost(OperationCost::default());
+        }
         let tx = TxRef::new(&self.db, transaction);
 
         // Merk's items should be written into data storage and checked accordingly
         self.db
-            .get_transactional_storage_context(path.into(), None, tx.as_ref())
+            .get_transactional_storage_context(path, None, tx.as_ref())
             .flat_map(|s| s.get(key).map_err(|e| e.into()).map_ok(|x| x.is_some()))
     }
 
