@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- From `GROVE_V4` a `ProvableCountProvableSumIndexedTree` primary accepts a
+  bare `SumItem` child, on the direct and the batch path, as it accepts an
+  `ItemWithSumItem`: the tree aggregates it as a count of one and its sum,
+  which is every input its count, sum and average axes read. A tree of
+  per-group counters can then rank its groups by how many counters they
+  hold, their total and their average without wrapping each counter in an
+  empty item. V1..V3 keep refusing it, through the new
+  `insert.validate_indexed_child_for_variant` slot (**BREAKING** for code
+  building `GroveDBOperationsInsertVersions` by hand); a wrapped `SumItem`
+  stays refused at every version.
+
 ### Added
 - `StorageContext::raw_iter_aux`, a raw iterator over the aux column family
   scoped to the context's subtree prefix like `raw_iter`, and
@@ -136,6 +148,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after its flags update rewrote and then restored its value is measured with
   the value-defined cost of the bytes it holds; GROVE_V1..V3 keep the old
   measurement.
+- A path with a segment longer than 255 bytes no longer panics. Storage
+  panicked while building the subtree prefix for it, since a prefix records
+  each segment length in one byte. Where it did, the call now returns
+  `Error::InvalidInput("path segment length must be at most 255 bytes")`.
+  Keys are capped at 255 bytes on insert, so no subtree has such a path. The
+  check runs only where a prefix would be built from the caller's path, so
+  every call that never built one keeps its old result. Do not read
+  `InvalidInput` as the only answer to such a path:
+  - a lookup whose overlong segment is the last one still reports the key as
+    not found;
+  - proofs still prove the path absent;
+  - axis reads still return an empty result.
+
+  Not version-gated, since every call the check refuses used to panic. (#680)
 - From `GROVE_V4`, `delete_operation_for_delete_internal`, and the up-tree
   builders through it, no longer count a pending `DeleteTree` with
   `SubelementsDeletionBehavior::Skip` as removing its child when deciding

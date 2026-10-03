@@ -141,6 +141,22 @@ network input; assess those entry points and their validation separately.
 with a path derived from configuration or network input rather than from an
 immediate caller.
 
+## Batch-caller contract gaps that Platform never reaches
+
+The finding below is real in GroveDB's general batch API. It is left unfixed
+on purpose because no production caller builds the triggering batch, and a fix
+would change batch acceptance and the resulting root hash. That needs a
+version gate, and no production caller would gain anything from it.
+
+| Issue | Claim | Why not real |
+|---|---|---|
+| [#779](https://github.com/dashpay/grovedb/issues/779) (closed; audit group M009) | `apply_batch` replaces a populated tree with an empty tree and writes under it in the same batch. It returns `Ok(())` but orphans the old rows, and `verify_grovedb` then fails. Default `BatchApplyOptions` allow it. A related case: InsertOrReplace of a populated typed tree plus a delete under it in one batch stores a plain empty `Tree`. | Accurate as described, and generic: it is not specific to indexed trees. But Drive never sends an InsertOrReplace of a tree onto a path that already holds a populated tree. Drive creates trees through `batch_insert_empty_tree_if_not_exists`, which checks stored state (`grove_has_raw`) and the pending batch (`pending_tree_already_queued`) before it queues the InsertOrReplace (`packages/rs-drive/src/util/grove_operations/batch_insert_empty_tree_if_not_exists/v0/mod.rs` in dashpay/platform). Drive never builds GroveDB's own `InsertIfNotExists` op, which is the other creation route the audit names. |
+
+**Becomes real if:** Drive or another production caller sends a tree
+InsertOrReplace, or a GroveDB-level `InsertIfNotExists` of a tree, onto a path
+that already holds a populated tree; or `batch_insert_empty_tree_if_not_exists`
+stops checking stored and pending state before it queues the insert.
+
 ## Version-gating and build hygiene reported as vulnerabilities
 
 | Issue | Claim | Why not real |

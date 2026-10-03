@@ -67,6 +67,7 @@ fn enforce_indexed_item_key_ceiling(
 fn validate_indexed_child_ops(
     ops_at_path_by_key: &BTreeMap<KeyInfo, GroveOp>,
     primary_tree_type: grovedb_merk::TreeType,
+    grove_version: &GroveVersion,
 ) -> Result<(), Error> {
     for op in ops_at_path_by_key.values() {
         // EXHAUSTIVE on purpose — no `_` arm. An earlier revision used a
@@ -120,6 +121,7 @@ fn validate_indexed_child_ops(
         crate::operations::indexed_tree::validate_indexed_child_for_variant(
             element,
             primary_tree_type,
+            grove_version,
         )?;
         let rootless_with_aggregate = match element.underlying() {
             Element::SumTree(None, sum, _) | Element::ProvableSumTree(None, sum, _) => *sum != 0,
@@ -172,7 +174,7 @@ pub(crate) fn capture_indexed_pre_state<'db, S: StorageContext<'db>>(
     cost_return_on_error_no_add!(cost, enforce_indexed_item_key_ceiling(ops_at_path_by_key));
     cost_return_on_error_no_add!(
         cost,
-        validate_indexed_child_ops(ops_at_path_by_key, primary_merk.tree_type)
+        validate_indexed_child_ops(ops_at_path_by_key, primary_merk.tree_type, grove_version)
     );
 
     let mut pre: BTreeMap<Vec<u8>, MaybeEntryState> = BTreeMap::new();

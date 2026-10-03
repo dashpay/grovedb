@@ -111,7 +111,7 @@ use crate::{
     reference_path::{
         path_from_reference_path_type, path_from_reference_qualified_path_type, ReferencePathType,
     },
-    util::TxRef,
+    util::{validate_path_segment_lengths, TxRef},
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
 
@@ -6259,6 +6259,7 @@ impl GroveDb {
                 .open_batch_transactional_merk_at_path
         );
         let mut cost = OperationCost::default();
+        cost_return_on_error_no_add!(cost, validate_path_segment_lengths(&path));
         let storage = self
             .db
             .get_transactional_storage_context(path.clone(), Some(storage_batch), tx)

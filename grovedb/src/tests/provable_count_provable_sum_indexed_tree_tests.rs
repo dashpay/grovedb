@@ -415,10 +415,9 @@ mod tests {
     }
 
     #[test]
-    fn pcpsit_rejects_sum_only_item() {
-        // Plain SumItem contributes only sum (no count-bearing role
-        // beyond the implicit +1; the helper requires the "both axes"
-        // shape).
+    fn pcpsit_accepts_a_bare_sum_item_from_grove_v4() {
+        // A SumItem counts one and adds its sum, which is every input the
+        // count, sum and average axes read.
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
         insert_empty_pcpsit(
@@ -427,16 +426,71 @@ mod tests {
             &[IndexAxis::Count.tag(), IndexAxis::Sum.tag()],
             grove_version,
         );
+        db.insert_into_provable_count_provable_sum_indexed_tree(
+            [TEST_LEAF, b"pcpsit"].as_ref(),
+            b"row",
+            Element::new_sum_item(42),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("a bare SumItem is a count-and-sum-bearing child from GROVE_V4");
+        let parent = db
+            .get([TEST_LEAF].as_ref(), b"pcpsit", None, grove_version)
+            .unwrap()
+            .expect("the PCPSIT element");
+        assert_eq!(parent.count_sum_value_or_default(), (1, 42));
+        assert_verify_passes(&db, grove_version);
+    }
+
+    #[test]
+    fn pcpsit_refuses_a_wrapped_sum_item() {
+        // A wrapper would suppress the count or the sum the item gives
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcpsit(
+            &db,
+            b"pcpsit",
+            &[IndexAxis::Count.tag(), IndexAxis::Sum.tag()],
+            grove_version,
+        );
+        let wrapped = Element::new_non_counted(Element::new_sum_item(42)).expect("wrappable");
         let result = db
             .insert_into_provable_count_provable_sum_indexed_tree(
                 [TEST_LEAF, b"pcpsit"].as_ref(),
                 b"row",
-                Element::new_sum_item(42),
+                wrapped,
                 None,
                 grove_version,
             )
             .unwrap();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn pcpsit_child_rule_refuses_a_bare_sum_item_before_grove_v4() {
+        use grovedb_merk::tree_type::TreeType;
+        use grovedb_version::version::{v1::GROVE_V1, v2::GROVE_V2, v3::GROVE_V3};
+
+        use crate::operations::indexed_tree::validate_indexed_child_for_variant;
+
+        let sum_item = Element::new_sum_item(42);
+        for grove_version in [&GROVE_V1, &GROVE_V2, &GROVE_V3] {
+            match validate_indexed_child_for_variant(
+                &sum_item,
+                TreeType::ProvableCountProvableSumIndexedTree,
+                grove_version,
+            ) {
+                Err(Error::InvalidInput(msg)) => assert!(msg.contains("count and sum"), "{msg}"),
+                other => panic!("expected InvalidInput, got {other:?}"),
+            }
+        }
+        validate_indexed_child_for_variant(
+            &sum_item,
+            TreeType::ProvableCountProvableSumIndexedTree,
+            GroveVersion::latest(),
+        )
+        .expect("accepted at the latest grove version");
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use grovedb_costs::{cost_return_on_error, CostResult, CostsExt};
+use grovedb_costs::{cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt};
 use grovedb_merk::{
     element::{
         costs::ElementCostExtensions, get::ElementFetchFromStorageExtensions,
@@ -13,6 +13,7 @@ use grovedb_storage::{
 };
 use grovedb_version::version::GroveVersion;
 
+use super::validate_path_segment_lengths;
 use crate::{Element, Error, Transaction};
 
 pub(crate) trait OpenMerkErrorsCompat {
@@ -39,6 +40,7 @@ where
 {
     let mut cost = Default::default();
 
+    cost_return_on_error_no_add!(cost, validate_path_segment_lengths(&path));
     let storage = db
         .get_transactional_storage_context(path.clone(), batch, tx)
         .unwrap_add_cost(&mut cost);
