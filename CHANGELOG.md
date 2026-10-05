@@ -20,6 +20,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stays refused at every version.
 
 ### Added
+- `ProofLimitMode::UpperBound` and `QueryProofVerify::execute_proof_with_limit_mode`
+  verify a proof with `limit` as a ceiling instead of the exact limit the
+  prover used. Once the proof has returned a result, the walk stops where the
+  proof stops revealing the query, and nothing carrying a value may follow, so
+  the results stay a gap-free prefix. `ProofVerificationResult::exhausted`
+  reports whether the proof shows nothing further matches.
+  `GroveDb::verify_aggregate_{count,sum,count_and_sum}_query_per_key_up_to_limit`
+  verify carrier aggregates this way and return `(root_hash, entries,
+  exhausted)`. A client no longer has to know the server's limit to verify an
+  honest proof. Existing verification calls behave as before; code outside
+  the crate that builds a `ProofVerificationResult` or destructures it
+  exhaustively must account for the new `exhausted` field. (#1008)
 - `StorageContext::raw_iter_aux`, a raw iterator over the aux column family
   scoped to the context's subtree prefix like `raw_iter`, and
   `GroveDb::get_aux_by_key_prefix`, which lists every aux entry under a key

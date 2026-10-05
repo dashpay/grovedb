@@ -736,7 +736,12 @@ impl QueryProofVerify for Query {
                 | Node::KVHashSum(..)
                 | Node::KVHashCountSum(..) => {
                     if in_range {
-                        if limit_mode == ProofLimitMode::UpperBound {
+                        // `in_range` is only set by a node the current item
+                        // contains, which is a result, so `output` is never
+                        // empty here. The check keeps the "no stop before
+                        // the first result" rule explicit, as at the other
+                        // two stopping points.
+                        if limit_mode == ProofLimitMode::UpperBound && !output.is_empty() {
                             // The prover stopped here: it hides everything
                             // after its last result once its own limit runs
                             // out. Everything from this node on is
@@ -1941,6 +1946,48 @@ mod limit_mode_tests {
             ProofLimitMode::Exact,
         )
         .expect_err("exact mode must not accept a hidden node in range");
+    }
+
+    /// An empty result is exhausted when the proof shows nothing matches,
+    /// in both modes and directions.
+    #[test]
+    fn verified_empty_range_is_exhausted() {
+        let v = GroveVersion::latest();
+        let merk = make_20_key_merk(v);
+        let root = merk.root_hash().unwrap();
+        for left_to_right in [true, false] {
+            let query = query_of(vec![QueryItem::Range(vec![50]..vec![60])], left_to_right);
+            let proof = prove(&merk, &query, None, v);
+            for mode in [ProofLimitMode::Exact, ProofLimitMode::UpperBound] {
+                for limit in [None, Some(5)] {
+                    let (hash, result) = verify(&query, &proof, limit, mode)
+                        .unwrap_or_else(|e| panic!("{mode:?} {limit:?}: {e}"));
+                    assert_eq!(hash, root);
+                    assert!(result.result_set.is_empty());
+                    assert!(result.exhausted, "{left_to_right} {mode:?} {limit:?}");
+                }
+            }
+        }
+    }
+
+    /// With a limit of 0 nothing is walked, so the result is empty and not
+    /// exhausted even though keys match, in both modes and directions.
+    #[test]
+    fn zero_limit_empty_result_is_not_exhausted() {
+        let v = GroveVersion::latest();
+        let merk = make_20_key_merk(v);
+        let root = merk.root_hash().unwrap();
+        for left_to_right in [true, false] {
+            let query = query_of(vec![QueryItem::RangeFrom(vec![2]..)], left_to_right);
+            let proof = prove(&merk, &query, Some(0), v);
+            for mode in [ProofLimitMode::Exact, ProofLimitMode::UpperBound] {
+                let (hash, result) = verify(&query, &proof, Some(0), mode)
+                    .unwrap_or_else(|e| panic!("{mode:?}: {e}"));
+                assert_eq!(hash, root);
+                assert!(result.result_set.is_empty());
+                assert!(!result.exhausted, "{left_to_right} {mode:?}");
+            }
+        }
     }
 
     /// Upper-bound mode is V1-only; V0 verification is frozen.
