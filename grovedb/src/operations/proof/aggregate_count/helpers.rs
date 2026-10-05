@@ -12,7 +12,7 @@
 //!   axis-specific terminal-type set is why this helper stays per-axis.
 
 use grovedb_merk::{
-    proofs::query::aggregate_count::verify_aggregate_count_on_range_proof,
+    proofs::query::{aggregate_count::verify_aggregate_count_on_range_proof, ProofLimitMode},
     tree::{combine_hash, value_hash},
     CryptoHash,
 };
@@ -65,13 +65,15 @@ pub(super) fn execute_carrier_layer_proof(
     outer_items: &[QueryItem],
     left_to_right: bool,
     outer_limit: Option<u16>,
+    limit_mode: ProofLimitMode,
     path_query: &PathQuery,
-) -> Result<(CryptoHash, Vec<OuterMatch>), Error> {
+) -> Result<(CryptoHash, Vec<OuterMatch>, bool), Error> {
     super::super::aggregate_common::execute_carrier_layer_proof(
         merk_bytes,
         outer_items,
         left_to_right,
         outer_limit,
+        limit_mode,
         path_query,
         AXIS_LABEL,
     )
