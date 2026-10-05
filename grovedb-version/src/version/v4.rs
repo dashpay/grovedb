@@ -53,6 +53,17 @@
 //!   because deriving each child root costs the prover storage reads and hash
 //!   calls.
 //!
+//! - `merk_versions.proof.execute_proof_limit_reached_tail: 1` — once a V1
+//!   merk proof's limit is reached, the verifier treats the walk as complete
+//!   and no longer checks later nodes as range bounds; a node carrying a
+//!   value the query matches is still rejected as a result past the limit.
+//!   A prover that runs out of limit can still reveal a boundary key it passed
+//!   (an exclusive range end, or a later item's bound) behind the nodes it
+//!   hid, and V1..V3 reject that honest proof with "Cannot verify lower bound
+//!   of queried range" even at the prover's own limit. It is the norm on
+//!   subtrees written in one batch. Gated because it flips a
+//!   rejected/accepted outcome; it only accepts more, with the same results.
+//!
 //! - `proof.axis_descent_in_v1_envelope: 1` — the V1 proof envelope carries
 //!   axis-ordered descents into indexed trees
 //!   (`ProofBytes::IndexedTreeAxisDescent`): a proof over the queried
@@ -672,6 +683,11 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             // Initial implementation; introduced alongside the V1
             // proof envelope.
             prove_count_offset_on_range: 0,
+            // Bumped 0 -> 1: once the limit is reached the verifier no
+            // longer checks later nodes as range bounds, so a limit-cut
+            // proof that reveals a boundary key behind hidden nodes
+            // verifies. V1..V3 keep rejecting it.
+            execute_proof_limit_reached_tail: 1,
         },
         // Bumped 0 -> 1: ordinary (Item / Reference) replacements of a
         // specialized value are charged from their own bytes (issue #908).

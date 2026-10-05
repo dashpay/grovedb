@@ -153,6 +153,7 @@ fn verify_v1_carrier_layer(
         classification.carrier_left_to_right,
         outer_limit,
         path_query,
+        grove_version,
     )?;
 
     let subquery_path = classification

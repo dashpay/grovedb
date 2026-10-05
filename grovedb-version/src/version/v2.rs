@@ -285,6 +285,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
         // direct caller doesn't trip the version gate.
         proof: MerkProofVersions {
             prove_count_offset_on_range: 0,
+            execute_proof_limit_reached_tail: 0,
         },
         // Ordinary replacements keep the loaded `value_defined_cost`
         // metadata (issue #908); consensus-locked, bumped in v4.

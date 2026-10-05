@@ -86,22 +86,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   holds at every grove version that proves aggregate queries (`GROVE_V3` and
   later): the descent above the terminal always failed, so no proof that
   generated before changes, and the change needs no version slot. (#1010)
-- A V1 proof cut short by its limit now verifies at that same limit when the
-  prover revealed a boundary key after the cut. Once its limit runs out the
-  prover hides the rest of the walk, but it can still reveal a key it passed
-  (an exclusive range end, or a later query item's bound) behind the nodes it
-  hid. The verifier checked that key as a range bound and rejected the honest
-  proof with "Cannot verify lower bound of queried range". Whether it happens
-  depends on the tree's shape: it is the norm for subtrees written in one
-  batch and rare for subtrees built one insert at a time. It hit ascending
-  walks over an exclusive upper bound (`Range`, `RangeTo`, `RangeAfterTo`),
-  descending walks over an exclusive lower bound, and subqueries whose outer
-  layer the limit cuts. Once the limit is reached the verifier now accepts any
-  later node except one carrying a value that the query matches, which is
-  still rejected as a result past the limit. For queries built through
-  `insert_item`, every proof accepted before is still accepted with the same
-  result; the change only accepts more. Not gated on `GroveVersion`, since it
-  changes verification only; V0 proofs (`proof_version = 0`) are unchanged.
+- From `GROVE_V4`, a V1 proof cut short by its limit verifies at that same
+  limit when the prover revealed a boundary key after the cut. Once its limit
+  runs out the prover hides the rest of the walk, but it can still reveal a
+  key it passed (an exclusive range end, or a later query item's bound)
+  behind the nodes it hid. The verifier checked that key as a range bound and
+  rejected the honest proof with "Cannot verify lower bound of queried range".
+  It is the norm for subtrees written in one batch and rare for subtrees
+  built one insert at a time. It hit ascending walks over an exclusive upper
+  bound (`Range`, `RangeTo`, `RangeAfterTo`), descending walks over an
+  exclusive lower bound, and subqueries whose outer layer the limit cuts.
+  Once the limit is reached the verifier now treats the walk as complete: it
+  accepts any later node except one carrying a value the query matches,
+  which is still rejected as a result past the limit. For queries built
+  through `insert_item`, every proof accepted before is still accepted with
+  the same result. Gated through
+  `merk_versions.proof.execute_proof_limit_reached_tail` because it flips a
+  rejected/accepted outcome: V1..V3 keep rejecting these proofs. The new
+  `QueryProofVerify::execute_proof_for_grove_version` selects the behaviour
+  (with a default body, so existing implementations keep compiling);
+  `execute_proof` keeps the released behaviour. GroveDB's V1 path-query,
+  carrier, axis-descent, sum-budget and indexed-axis verifiers pass their
+  grove version. Proof generation and V0 proofs are unchanged.
 - A path with a segment longer than 255 bytes no longer panics. Storage
   panicked while building the subtree prefix for it, since a prefix records
   each segment length in one byte. Where it did, the call now returns

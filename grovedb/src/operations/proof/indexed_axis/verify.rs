@@ -655,11 +655,12 @@ fn verify_indexed_axis_range_inner(
     let limit_for_verify = envelope.requested_limit;
     let left_to_right = secondary_query.left_to_right;
     let (secondary_root_hash, sec_result) = secondary_query
-        .execute_proof(
+        .execute_proof_for_grove_version(
             &envelope.secondary_proof,
             limit_for_verify,
             left_to_right,
             PROOF_VERSION_LATEST,
+            grove_version,
         )
         .unwrap()
         .map_err(|e| {

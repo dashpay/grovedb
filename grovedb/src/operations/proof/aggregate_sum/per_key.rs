@@ -149,6 +149,7 @@ fn verify_v1_carrier_layer(
         classification.carrier_left_to_right,
         outer_limit,
         path_query,
+        grove_version,
     )?;
 
     // Invariant from `classify_aggregate_sum_path_query`: whenever

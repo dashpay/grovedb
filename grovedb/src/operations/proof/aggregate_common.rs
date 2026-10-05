@@ -42,6 +42,7 @@ use grovedb_merk::{
     CryptoHash,
 };
 use grovedb_query::{Query, QueryItem};
+use grovedb_version::version::GroveVersion;
 
 use crate::{
     operations::proof::{GroveDBProof, GroveDBProofV1, LayerProof, ProofBytes},
@@ -181,6 +182,7 @@ pub(in crate::operations::proof) fn execute_carrier_layer_proof(
     outer_limit: Option<u16>,
     path_query: &PathQuery,
     axis_label: &'static str,
+    grove_version: &GroveVersion,
 ) -> Result<(CryptoHash, Vec<OuterMatch>), Error> {
     // The grovedb_query::QueryItem and
     // grovedb_merk::proofs::query::QueryItem types are identical (the
@@ -198,7 +200,13 @@ pub(in crate::operations::proof) fn execute_carrier_layer_proof(
     // in the wrong family cannot fill a limited outer walk from the
     // wrong end of the range.
     let (root_hash, merk_result) = level_query
-        .execute_proof(merk_bytes, outer_limit, left_to_right, PROOF_VERSION_LATEST)
+        .execute_proof_for_grove_version(
+            merk_bytes,
+            outer_limit,
+            left_to_right,
+            PROOF_VERSION_LATEST,
+            grove_version,
+        )
         .unwrap()
         .map_err(|e| {
             Error::InvalidProof(

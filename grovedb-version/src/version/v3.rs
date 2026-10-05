@@ -303,6 +303,7 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
             // Initial implementation; introduced alongside the V1
             // proof envelope.
             prove_count_offset_on_range: 0,
+            execute_proof_limit_reached_tail: 0,
         },
         // Ordinary replacements keep the loaded `value_defined_cost`
         // metadata (issue #908); consensus-locked, bumped in v4.

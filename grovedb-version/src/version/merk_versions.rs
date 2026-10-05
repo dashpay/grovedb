@@ -64,4 +64,20 @@ pub struct MerkProofVersions {
     /// Bump this if the prover's emitted op stream changes shape in a
     /// way that requires a coordinated verifier update.
     pub prove_count_offset_on_range: FeatureVersion,
+    /// `QueryProofVerify::execute_proof_for_grove_version` — how a V1 merk
+    /// proof is checked after its limit is reached.
+    ///
+    /// Version 0 checks every later node as a range bound, as before. The
+    /// prover, once its limit runs out, hides the rest of the walk but can
+    /// still reveal a boundary key it passed (an exclusive range end, or a
+    /// later query item's bound) behind the nodes it hid; version 0 rejects
+    /// that honest proof with "Cannot verify lower bound of queried range".
+    /// It is the norm on subtrees written in one batch. Consensus-locked for
+    /// grove v1..v3.
+    ///
+    /// Version 1 treats the walk as complete once the limit is reached: later
+    /// nodes are not checked as range bounds, and a node carrying a value the
+    /// query matches is still rejected as a result past the limit. It only
+    /// accepts more, with the same results.
+    pub execute_proof_limit_reached_tail: FeatureVersion,
 }

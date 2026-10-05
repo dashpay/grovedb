@@ -5,12 +5,14 @@
 //! still reveal a boundary key it passed (an exclusive range end), behind
 //! the nodes it hid. Whether that happens depends on the tree's shape: it is
 //! the norm for subtrees written in one batch, the way Platform writes, and
-//! rare for subtrees built one insert at a time. The merk verifier used to
-//! check that key as a range bound and reject the proof with "Cannot verify
-//! lower bound of queried range".
+//! rare for subtrees built one insert at a time. The merk verifier checked
+//! that key as a range bound and rejected the proof with "Cannot verify lower
+//! bound of queried range". From GROVE_V4
+//! (`merk_versions.proof.execute_proof_limit_reached_tail: 1`) it accepts the
+//! proof; GROVE_V3 keeps rejecting it.
 
 use grovedb_merk::proofs::{query::QueryItem, Query};
-use grovedb_version::version::GroveVersion;
+use grovedb_version::version::{v3::GROVE_V3, GroveVersion};
 
 use crate::{
     batch::QualifiedGroveDbOp,
@@ -145,4 +147,47 @@ fn limit_cut_outer_layer_of_subquery_verifies() {
             assert_eq!(outer, matches[..limit as usize], "{name}, limit {limit}");
         }
     }
+}
+
+/// The fix is gated on the grove version: a limit-cut proof made under
+/// GROVE_V3 is still rejected when verified under GROVE_V3 and accepted under
+/// GROVE_V4.
+#[test]
+fn limit_cut_acceptance_is_gated_on_grove_version() {
+    let v = GroveVersion::latest();
+    let db = make_test_grovedb(v);
+    let ops = (0..20u8)
+        .map(|i| {
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                vec![i],
+                Element::new_item(vec![i]),
+            )
+        })
+        .collect();
+    db.apply_batch(ops, None, None, v)
+        .unwrap()
+        .expect("apply batch");
+
+    let mut query = Query::new();
+    query.insert_item(QueryItem::Range(vec![2]..vec![10]));
+    let path_query = PathQuery::new(
+        vec![TEST_LEAF.to_vec()],
+        SizedQuery::new(query, Some(3), None),
+    );
+    let proof = db
+        .grove_db
+        .prove_query(&path_query, None, &GROVE_V3)
+        .unwrap()
+        .expect("prove_query under GROVE_V3");
+
+    let err = GroveDb::verify_query(&proof, &path_query, &GROVE_V3)
+        .expect_err("GROVE_V3 keeps rejecting the limit-cut proof");
+    assert!(
+        err.to_string().contains("Cannot verify lower bound"),
+        "{err}"
+    );
+    let (_, results) = GroveDb::verify_query(&proof, &path_query, v).expect("GROVE_V4 accepts it");
+    let keys: Vec<u8> = results.iter().map(|(_, key, _)| key[0]).collect();
+    assert_eq!(keys, vec![2, 3, 4]);
 }

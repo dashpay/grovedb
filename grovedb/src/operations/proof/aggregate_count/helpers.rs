@@ -66,6 +66,7 @@ pub(super) fn execute_carrier_layer_proof(
     left_to_right: bool,
     outer_limit: Option<u16>,
     path_query: &PathQuery,
+    grove_version: &GroveVersion,
 ) -> Result<(CryptoHash, Vec<OuterMatch>), Error> {
     super::super::aggregate_common::execute_carrier_layer_proof(
         merk_bytes,
@@ -74,6 +75,7 @@ pub(super) fn execute_carrier_layer_proof(
         outer_limit,
         path_query,
         AXIS_LABEL,
+        grove_version,
     )
 }
 

@@ -1155,11 +1155,12 @@ impl GroveDb {
                     // decoders consume only `proved.key`, bound into the
                     // recomputed secondary root — but harmless.
                     let (root, res) = secondary_query
-                        .execute_proof(
+                        .execute_proof_for_grove_version(
                             &payload.secondary_proof,
                             Some(*limit),
                             left_to_right,
                             PROOF_VERSION_LATEST,
+                            grove_version,
                         )
                         .unwrap()
                         .map_err(|e| {
@@ -1339,11 +1340,12 @@ impl GroveDb {
             Some(payload.window_len)
         };
         let (window_root, window_result) = window_query
-            .execute_proof(
+            .execute_proof_for_grove_version(
                 &payload.merk_proof,
                 execute_limit,
                 node.left_to_right,
                 PROOF_VERSION_LATEST,
+                grove_version,
             )
             .unwrap()
             .map_err(|e| {
@@ -1729,11 +1731,12 @@ impl GroveDb {
         };
 
         let (root_hash, merk_result) = level_query
-            .execute_proof(
+            .execute_proof_for_grove_version(
                 merk_proof_bytes,
                 layer_limit,
                 left_to_right,
                 PROOF_VERSION_LATEST, // V1 proof: strict mode rejects items in value hash nodes
+                grove_version,
             )
             .unwrap()
             .map_err(|e| {
