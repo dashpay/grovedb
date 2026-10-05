@@ -29,9 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GroveDb::verify_aggregate_{count,sum,count_and_sum}_query_per_key_up_to_limit`
   verify carrier aggregates this way and return `(root_hash, entries,
   exhausted)`. A client no longer has to know the server's limit to verify an
-  honest proof. Existing verification calls behave as before; code outside
-  the crate that builds a `ProofVerificationResult` or destructures it
-  exhaustively must account for the new `exhausted` field. (#1008)
+  honest proof. Existing verification calls behave as before. The new trait
+  method has a default body (exact mode through `execute_proof`, upper-bound
+  mode refused), so existing `QueryProofVerify` implementations keep
+  compiling. Code outside the crate that builds a `ProofVerificationResult`
+  or destructures it exhaustively must account for the new `exhausted`
+  field. (#1008)
 - `StorageContext::raw_iter_aux`, a raw iterator over the aux column family
   scoped to the context's subtree prefix like `raw_iter`, and
   `GroveDb::get_aux_by_key_prefix`, which lists every aux entry under a key
