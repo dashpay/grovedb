@@ -191,3 +191,75 @@ fn limit_cut_acceptance_is_gated_on_grove_version() {
     let keys: Vec<u8> = results.iter().map(|(_, key, _)| key[0]).collect();
     assert_eq!(keys, vec![2, 3, 4]);
 }
+
+/// A bounded axis read over a provable-sum indexed tree, written in one
+/// batch. The ascending bound `[2, 9]` lowers to an exclusive upper bound on
+/// the secondary key of sum 10, which is held by the empty primary key and
+/// sits at the secondary tree's root, so the limit-cut secondary proof
+/// reveals it behind hidden nodes. The prover replays that proof to build
+/// its row chains; under GROVE_V4 the replay must accept it as the verifier
+/// does, or `prove_query` aborts.
+#[test]
+fn limit_cut_bounded_axis_read_proves_and_verifies() {
+    use grovedb_merk::proofs::query::IndexAxis;
+
+    use crate::operations::proof::{indexed_axis::AxisEntries, VerifiedPathQuery};
+
+    let v = GroveVersion::latest();
+    let db = make_test_grovedb(v);
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"psit",
+        Element::empty_provable_sum_indexed_tree(),
+        None,
+        None,
+        v,
+    )
+    .unwrap()
+    .expect("create PSIT");
+    let ops = (0..20i64)
+        .map(|sum| {
+            let key = if sum == 10 {
+                Vec::new()
+            } else {
+                format!("k{sum:02}").into_bytes()
+            };
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"psit".to_vec()],
+                key,
+                Element::new_sum_item(sum),
+            )
+        })
+        .collect();
+    db.apply_batch(ops, None, None, v)
+        .unwrap()
+        .expect("apply batch");
+    let root = db.grove_db.root_hash(None, v).unwrap().expect("root hash");
+
+    let path_query = PathQuery::new_axis_bounded(
+        vec![TEST_LEAF.to_vec(), b"psit".to_vec()],
+        IndexAxis::Sum,
+        2,
+        9,
+        3,
+        false,
+    );
+    let proof = db
+        .grove_db
+        .prove_query(&path_query, None, v)
+        .unwrap()
+        .expect("prove_query of the limit-cut bounded read");
+    match GroveDb::verify_path_query(&proof, &path_query, v).expect("bounded read verifies") {
+        VerifiedPathQuery::AxisEntries {
+            root_hash, entries, ..
+        } => {
+            assert_eq!(root_hash, root);
+            let AxisEntries::Sum(entries) = entries else {
+                panic!("expected sum entries, got {entries:?}");
+            };
+            let sums: Vec<i64> = entries.iter().map(|e| e.ordering_value).collect();
+            assert_eq!(sums, vec![2, 3, 4]);
+        }
+        other => panic!("expected AxisEntries, got {other:?}"),
+    }
+}

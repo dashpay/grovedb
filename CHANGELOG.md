@@ -103,11 +103,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same result. Gated through
   `merk_versions.proof.execute_proof_limit_reached_tail` because it flips a
   rejected/accepted outcome: V1..V3 keep rejecting these proofs. The new
-  `QueryProofVerify::execute_proof_for_grove_version` selects the behaviour
-  (with a default body, so existing implementations keep compiling);
-  `execute_proof` keeps the released behaviour. GroveDB's V1 path-query,
-  carrier, axis-descent, sum-budget and indexed-axis verifiers pass their
-  grove version. Proof generation and V0 proofs are unchanged.
+  `QueryProofVerify::execute_proof_for_grove_version` selects the behaviour.
+  Its default body serves version 0 through `execute_proof` and refuses
+  version 1, so existing implementations keep compiling but must override it
+  to verify under `GROVE_V4`. `execute_proof` keeps the released behaviour.
+  GroveDB's V1 path-query, carrier, axis-descent, sum-budget and
+  indexed-axis verifiers pass their grove version, and the indexed-axis
+  prover replays its secondary proof the same way, so it no longer aborts on
+  a limit-cut bounded read. Proof generation and V0 proofs are unchanged.
+  **BREAKING** for code building `MerkProofVersions` by hand: set
+  `execute_proof_limit_reached_tail` (0 keeps the v1..v3 behaviour) or use
+  struct-update syntax.
 - A path with a segment longer than 255 bytes no longer panics. Storage
   panicked while building the subtree prefix for it, since a prefix records
   each segment length in one byte. Where it did, the call now returns

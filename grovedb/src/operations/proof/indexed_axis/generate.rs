@@ -11,7 +11,7 @@ use grovedb_costs::{
 use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::{
     element::get::ElementFetchFromStorageExtensions,
-    proofs::query::{verify_count_offset_on_range_proof, QueryProofVerify},
+    proofs::query::{verify_count_offset_on_range_proof, QueryProofVerify, PROOF_VERSION_LATEST},
     proofs::{encode_into, query::QueryItem as MerkQueryItemForRange, Query as MerkQuery},
 };
 use grovedb_path::{SubtreePath, SubtreePathBuilder};
@@ -58,13 +58,39 @@ fn build_row_target_chains<'db>(
         return Ok(Vec::new()).wrap_with_cost(cost);
     }
     let left_to_right = secondary_query.left_to_right;
+    // The replay must accept what the verifier accepts. From
+    // `merk_versions.proof.execute_proof_limit_reached_tail: 1` the verifier
+    // reads this V1 payload with the limit-reached tail rule, so the replay
+    // does too; grove v1..v3 keep the replay they shipped with.
+    let replay = match grove_version
+        .merk_versions
+        .proof
+        .execute_proof_limit_reached_tail
+    {
+        0 => secondary_query.execute_proof(secondary_proof, limit, left_to_right, 0),
+        1 => secondary_query.execute_proof_for_grove_version(
+            secondary_proof,
+            limit,
+            left_to_right,
+            PROOF_VERSION_LATEST,
+            grove_version,
+        ),
+        version => {
+            return Err(Error::VersionError(
+                grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                    method: "build_row_target_chains".to_string(),
+                    known_versions: vec![0, 1],
+                    received: version,
+                },
+            ))
+            .wrap_with_cost(cost);
+        }
+    };
     let (_, sec_result) = cost_return_on_error!(
         &mut cost,
-        secondary_query
-            .execute_proof(secondary_proof, limit, left_to_right, 0)
-            .map_err(|e| Error::CorruptedData(format!(
-                "indexed-axis proof: replaying the secondary proof for row order: {e}"
-            )))
+        replay.map_err(|e| Error::CorruptedData(format!(
+            "indexed-axis proof: replaying the secondary proof for row order: {e}"
+        )))
     );
     let keys: Vec<Vec<u8>> = sec_result
         .result_set
