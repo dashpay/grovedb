@@ -192,20 +192,15 @@ fn limit_cut_acceptance_is_gated_on_grove_version() {
     assert_eq!(keys, vec![2, 3, 4]);
 }
 
-/// A bounded axis read over a provable-sum indexed tree, written in one
-/// batch. The ascending bound `[2, 9]` lowers to an exclusive upper bound on
-/// the secondary key of sum 10, which is held by the empty primary key and
-/// sits at the secondary tree's root, so the limit-cut secondary proof
-/// reveals it behind hidden nodes. The prover replays that proof to build
-/// its row chains; under GROVE_V4 the replay must accept it as the verifier
-/// does, or `prove_query` aborts.
-#[test]
-fn limit_cut_bounded_axis_read_proves_and_verifies() {
+/// A provable-sum indexed tree holding sums 0..19, written in one batch, with
+/// the empty primary key at sum 10 and distinct keys elsewhere, and the
+/// ascending bounded read over `[2, 9]` at limit 3. The bound lowers to an
+/// exclusive upper bound on the secondary key of sum 10, which sits at the
+/// secondary tree's root, so the limit-cut secondary proof reveals it behind
+/// hidden nodes.
+fn limit_cut_bounded_axis_fixture(v: &GroveVersion) -> (crate::tests::TempGroveDb, PathQuery) {
     use grovedb_merk::proofs::query::IndexAxis;
 
-    use crate::operations::proof::{indexed_axis::AxisEntries, VerifiedPathQuery};
-
-    let v = GroveVersion::latest();
     let db = make_test_grovedb(v);
     db.insert(
         [TEST_LEAF].as_ref(),
@@ -234,8 +229,6 @@ fn limit_cut_bounded_axis_read_proves_and_verifies() {
     db.apply_batch(ops, None, None, v)
         .unwrap()
         .expect("apply batch");
-    let root = db.grove_db.root_hash(None, v).unwrap().expect("root hash");
-
     let path_query = PathQuery::new_axis_bounded(
         vec![TEST_LEAF.to_vec(), b"psit".to_vec()],
         IndexAxis::Sum,
@@ -244,6 +237,19 @@ fn limit_cut_bounded_axis_read_proves_and_verifies() {
         3,
         false,
     );
+    (db, path_query)
+}
+
+/// The prover replays the limit-cut secondary proof to build its row
+/// chains. Under GROVE_V4 the replay accepts it, as the verifier does, and
+/// the bounded read proves and verifies.
+#[test]
+fn limit_cut_bounded_axis_read_proves_and_verifies() {
+    use crate::operations::proof::{indexed_axis::AxisEntries, VerifiedPathQuery};
+
+    let v = GroveVersion::latest();
+    let (db, path_query) = limit_cut_bounded_axis_fixture(v);
+    let root = db.grove_db.root_hash(None, v).unwrap().expect("root hash");
     let proof = db
         .grove_db
         .prove_query(&path_query, None, v)
@@ -262,4 +268,35 @@ fn limit_cut_bounded_axis_read_proves_and_verifies() {
         }
         other => panic!("expected AxisEntries, got {other:?}"),
     }
+}
+
+/// The prover's replay follows the same version slot as the verifier: with
+/// the slot at 0 it keeps the released replay, which rejects this proof and
+/// aborts `prove_query`, and an unknown slot version is refused.
+#[test]
+fn limit_cut_axis_replay_follows_the_version_slot() {
+    let mut released = GroveVersion::latest().clone();
+    released
+        .merk_versions
+        .proof
+        .execute_proof_limit_reached_tail = 0;
+    let (db, path_query) = limit_cut_bounded_axis_fixture(&released);
+    let err = db
+        .grove_db
+        .prove_query(&path_query, None, &released)
+        .unwrap()
+        .expect_err("the released replay rejects the limit-cut proof");
+    assert!(
+        err.to_string().contains("replaying the secondary proof"),
+        "{err}"
+    );
+
+    let mut unknown = GroveVersion::latest().clone();
+    unknown.merk_versions.proof.execute_proof_limit_reached_tail = 2;
+    let err = db
+        .grove_db
+        .prove_query(&path_query, None, &unknown)
+        .unwrap()
+        .expect_err("an unknown slot version is refused");
+    assert!(err.to_string().contains("build_row_target_chains"), "{err}");
 }
