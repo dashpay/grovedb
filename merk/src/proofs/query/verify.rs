@@ -149,6 +149,11 @@ impl QueryProofVerify for Query {
         let mut output = Vec::with_capacity(self.len());
         let mut last_push = None;
         let mut query = self.directional_iter(left_to_right).peekable();
+        // Cursor over the query items for nodes after a reached limit. Their
+        // keys come in strict walk order, so it only moves forward and the
+        // whole tail costs one pass over the items. Kept apart from `query`,
+        // whose position records how far the walk proved the query.
+        let mut tail_items = self.directional_iter(left_to_right).peekable();
         let mut in_range = false;
         let original_limit = limit;
         let mut current_limit = limit;
@@ -215,11 +220,33 @@ impl QueryProofVerify for Query {
                 // proves nothing the result depends on. V0 proofs keep their
                 // frozen behaviour.
                 if proof_version >= 1 && current_limit == Some(0) {
-                    if value.is_some() && self.items.iter().any(|item| item.contains(key)) {
-                        return Err(Error::InvalidProofError(format!(
-                            "Proof returns more data than limit {:?}",
-                            original_limit
-                        )));
+                    if value.is_some() {
+                        // Skip the items wholly before this key in walk order.
+                        while let Some(item) = tail_items.peek() {
+                            let passed = if left_to_right {
+                                let (upper, inclusive) = item.upper_bound();
+                                upper.is_some_and(|upper| {
+                                    upper < key.as_slice()
+                                        || (!inclusive && upper == key.as_slice())
+                                })
+                            } else {
+                                let (lower, non_inclusive) = item.lower_bound();
+                                lower.is_some_and(|lower| {
+                                    lower > key.as_slice()
+                                        || (non_inclusive && lower == key.as_slice())
+                                })
+                            };
+                            if !passed {
+                                break;
+                            }
+                            tail_items.next();
+                        }
+                        if tail_items.peek().is_some_and(|item| item.contains(key)) {
+                            return Err(Error::InvalidProofError(format!(
+                                "Proof returns more data than limit {:?}",
+                                original_limit
+                            )));
+                        }
                     }
                     return Ok(());
                 }
@@ -1696,6 +1723,77 @@ mod limit_reached_tail_tests {
             .expect("accepted before the fix, accepted after");
         let keys: Vec<u8> = result.result_set.iter().map(|r| r.key[0]).collect();
         assert_eq!(keys, vec![1]);
+    }
+
+    /// After the limit, a value node is checked against the query item its
+    /// key falls in, found by walking the items in walk order: a key between
+    /// items is accepted, a key inside a later item is rejected. Query
+    /// `[0..2, 5, 10..20]` at limit 1, in both directions.
+    #[test]
+    fn tail_values_are_matched_against_items_in_walk_order() {
+        use grovedb_query::proofs::encode_into;
+
+        use crate::proofs::{Node, Op as ProofOp};
+
+        let encode = |ops: Vec<ProofOp>| {
+            let mut bytes = vec![];
+            encode_into(ops.iter(), &mut bytes);
+            bytes
+        };
+        // In walk order: `first`, `second`, `third`.
+        let ascending = |first: u8, second: u8, third: u8| {
+            encode(vec![
+                ProofOp::Push(Node::KV(vec![first], vec![first])),
+                ProofOp::Push(Node::KV(vec![second], vec![second])),
+                ProofOp::Parent,
+                ProofOp::Push(Node::KV(vec![third], vec![third])),
+                ProofOp::Child,
+            ])
+        };
+        let descending = |first: u8, second: u8, third: u8| {
+            encode(vec![
+                ProofOp::PushInverted(Node::KV(vec![first], vec![first])),
+                ProofOp::PushInverted(Node::KV(vec![second], vec![second])),
+                ProofOp::ParentInverted,
+                ProofOp::PushInverted(Node::KV(vec![third], vec![third])),
+                ProofOp::ChildInverted,
+            ])
+        };
+        let items = vec![
+            QueryItem::Range(vec![0]..vec![2]),
+            QueryItem::Key(vec![5]),
+            QueryItem::Range(vec![10]..vec![20]),
+        ];
+        let run = |left_to_right: bool, bytes: Vec<u8>| {
+            query_of(items.clone(), left_to_right)
+                .execute_proof(&bytes, Some(1), left_to_right, PROOF_VERSION_LATEST)
+                .unwrap()
+                .map(|(_, result)| {
+                    result
+                        .result_set
+                        .iter()
+                        .map(|r| r.key[0])
+                        .collect::<Vec<_>>()
+                })
+        };
+
+        // Ascending: result 1, then 3 (between items) and 25 (past all).
+        assert_eq!(
+            run(true, ascending(1, 3, 25)).expect("unmatched tail"),
+            vec![1]
+        );
+        // Ascending: 12 falls in `10..20`.
+        let err = run(true, ascending(1, 3, 12)).expect_err("matched tail value");
+        assert!(err.to_string().contains("more data than limit"), "{err}");
+
+        // Descending: result 15, then 7 (between items) and 3 (between).
+        assert_eq!(
+            run(false, descending(15, 7, 3)).expect("unmatched tail"),
+            vec![15]
+        );
+        // Descending: 1 falls in `0..2`.
+        let err = run(false, descending(15, 7, 1)).expect_err("matched tail value");
+        assert!(err.to_string().contains("more data than limit"), "{err}");
     }
 
     /// A caller limit of 0 walks nothing: an honest proof made at limit 0
