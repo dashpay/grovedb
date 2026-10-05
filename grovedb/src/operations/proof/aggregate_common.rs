@@ -36,7 +36,7 @@
 
 use grovedb_merk::{
     proofs::{
-        query::{QueryProofVerify, PROOF_VERSION_LATEST},
+        query::{ProofLimitMode, QueryProofVerify, PROOF_VERSION_LATEST},
         Query as MerkQuery,
     },
     CryptoHash,
@@ -160,7 +160,8 @@ pub(in crate::operations::proof) struct OuterMatch {
 }
 
 /// Execute the carrier-layer multi-key merk proof for `outer_items`,
-/// returning `(carrier_merk_root_hash, matched_outer_keys)`.
+/// returning `(carrier_merk_root_hash, matched_outer_keys,
+/// outer_walk_exhausted)`.
 ///
 /// `outer_limit` is the `SizedQuery::limit` that bounds the outer walk
 /// (matching what the prover passed to
@@ -172,6 +173,11 @@ pub(in crate::operations::proof) struct OuterMatch {
 /// limit so that its merk walker stops at the same boundary instead of
 /// demanding KV data for the un-walked tail.
 ///
+/// With [`ProofLimitMode::UpperBound`], `outer_limit` is only a ceiling:
+/// the prover may have walked fewer outer keys, and the walk ends at the
+/// first hidden node inside the outer range. `outer_walk_exhausted`
+/// reports whether the proof shows there are no further outer matches.
+///
 /// `axis_label` is interpolated into the rejection messages so each
 /// axis's wrapper can supply its own diagnostic prefix.
 pub(in crate::operations::proof) fn execute_carrier_layer_proof(
@@ -179,9 +185,10 @@ pub(in crate::operations::proof) fn execute_carrier_layer_proof(
     outer_items: &[QueryItem],
     left_to_right: bool,
     outer_limit: Option<u16>,
+    limit_mode: ProofLimitMode,
     path_query: &PathQuery,
     axis_label: &'static str,
-) -> Result<(CryptoHash, Vec<OuterMatch>), Error> {
+) -> Result<(CryptoHash, Vec<OuterMatch>, bool), Error> {
     // The grovedb_query::QueryItem and
     // grovedb_merk::proofs::query::QueryItem types are identical (the
     // merk crate re-exports the grovedb-query one).
@@ -198,7 +205,13 @@ pub(in crate::operations::proof) fn execute_carrier_layer_proof(
     // in the wrong family cannot fill a limited outer walk from the
     // wrong end of the range.
     let (root_hash, merk_result) = level_query
-        .execute_proof(merk_bytes, outer_limit, left_to_right, PROOF_VERSION_LATEST)
+        .execute_proof_with_limit_mode(
+            merk_bytes,
+            outer_limit,
+            limit_mode,
+            left_to_right,
+            PROOF_VERSION_LATEST,
+        )
         .unwrap()
         .map_err(|e| {
             Error::InvalidProof(
@@ -229,7 +242,7 @@ pub(in crate::operations::proof) fn execute_carrier_layer_proof(
         });
     }
 
-    Ok((root_hash, matched))
+    Ok((root_hash, matched, merk_result.exhausted))
 }
 
 /// Classification of any aggregate-on-range `PathQuery`. Encodes

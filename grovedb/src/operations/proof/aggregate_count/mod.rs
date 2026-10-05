@@ -54,7 +54,7 @@ mod helpers;
 mod leaf_chain;
 mod per_key;
 
-use grovedb_merk::CryptoHash;
+use grovedb_merk::{proofs::query::ProofLimitMode, CryptoHash};
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
 use crate::{
@@ -186,24 +186,75 @@ impl GroveDb {
                 .proof
                 .verify_query_with_options
         );
-
-        // Classify the query and extract the leaf inner range plus the
-        // optional carrier subquery_path. For leaf queries the carrier
-        // descent below is skipped (carrier_outer_items is None).
-        let classification = classification::classify_aggregate_count_path_query(path_query)?;
-
-        let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
-        let path_keys: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
-
-        let root_layer = require_v1_envelope(&grovedb_proof, path_query)?;
-        per_key::verify_v1_with_classification(
-            root_layer,
-            path_query,
-            &path_keys,
-            &classification,
-            grove_version,
-        )
+        let (root_hash, entries, _exhausted) =
+            verify_per_key(proof, path_query, ProofLimitMode::Exact, grove_version)?;
+        Ok((root_hash, entries))
     }
+
+    /// Like [`GroveDb::verify_aggregate_count_query_per_key`], but the carrier's
+    /// `SizedQuery::limit` is only a ceiling on the outer walk, not the
+    /// exact limit the prover used.
+    ///
+    /// The prover may have walked fewer outer keys than `limit` (for
+    /// example because it caps the walk lower than the caller asked), or
+    /// the caller may leave `limit` unset. The proof may then end the
+    /// outer walk wherever it stops revealing the outer query (see
+    /// [`ProofLimitMode::UpperBound`]). The returned entries are still the
+    /// first outer matches in query direction with none skipped: a result
+    /// after that point is rejected.
+    ///
+    /// Returns `(root_hash, entries, exhausted)`. `exhausted` is true
+    /// when the proof shows there are no further outer matches. When it
+    /// is false, the walk stopped early or at `limit` and later outer
+    /// keys may exist; a caller wanting the rest continues after the last
+    /// returned key. Do not treat a short result as complete unless
+    /// `exhausted` is true.
+    ///
+    /// For a leaf query (no outer walk) this returns the same single
+    /// entry as [`GroveDb::verify_aggregate_count_query_per_key`] with
+    /// `exhausted = true`.
+    pub fn verify_aggregate_count_query_per_key_up_to_limit(
+        proof: &[u8],
+        path_query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<(CryptoHash, Vec<(Vec<u8>, u64)>, bool), Error> {
+        check_grovedb_v0!(
+            "verify_aggregate_count_query_per_key_up_to_limit",
+            grove_version
+                .grovedb_versions
+                .operations
+                .proof
+                .verify_query_with_options
+        );
+        verify_per_key(proof, path_query, ProofLimitMode::UpperBound, grove_version)
+    }
+}
+
+/// Shared body of the per-key entry points; `limit_mode` says how the
+/// carrier's `SizedQuery::limit` is read (see [`ProofLimitMode`]).
+fn verify_per_key(
+    proof: &[u8],
+    path_query: &PathQuery,
+    limit_mode: ProofLimitMode,
+    grove_version: &GroveVersion,
+) -> Result<(CryptoHash, Vec<(Vec<u8>, u64)>, bool), Error> {
+    // Classify the query and extract the leaf inner range plus the
+    // optional carrier subquery_path. For leaf queries the carrier
+    // descent below is skipped (carrier_outer_items is None).
+    let classification = classification::classify_aggregate_count_path_query(path_query)?;
+
+    let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
+    let path_keys: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
+
+    let root_layer = require_v1_envelope(&grovedb_proof, path_query)?;
+    per_key::verify_v1_with_classification(
+        root_layer,
+        path_query,
+        &path_keys,
+        &classification,
+        limit_mode,
+        grove_version,
+    )
 }
 
 /// Thin wrapper around

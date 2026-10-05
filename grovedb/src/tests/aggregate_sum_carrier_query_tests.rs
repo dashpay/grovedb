@@ -176,6 +176,66 @@ mod tests {
         assert_eq!(results[0].1, 40);
     }
 
+    /// A range-outer carrier walk the prover capped at 2 verifies through
+    /// the upper-bound entry point without the verifier knowing the cap,
+    /// and is not exhausted. The exact entry point rejects it.
+    #[test]
+    fn carrier_sum_range_outer_capped_proof_verifies_up_to_limit() {
+        let v = GroveVersion::latest();
+        let (db, expected_root) = setup_brand_value_carrier_tree(
+            v,
+            &[
+                b"brand_000",
+                b"brand_001",
+                b"brand_002",
+                b"brand_003",
+                b"brand_004",
+            ],
+            10,
+        );
+        let path_query = |limit| {
+            let mut carrier = Query::new();
+            carrier
+                .items
+                .push(QueryItem::RangeAfter(b"brand_000".to_vec()..));
+            carrier.set_subquery_path(vec![b"value".to_vec()]);
+            carrier.set_subquery(Query::new_aggregate_sum_on_range(QueryItem::RangeFrom(
+                b"value_00000".to_vec()..,
+            )));
+            PathQuery::new(
+                vec![TEST_LEAF.to_vec(), b"byBrand".to_vec()],
+                SizedQuery::new(carrier, limit, None),
+            )
+        };
+        let proof = db
+            .grove_db
+            .prove_query(&path_query(Some(2)), None, v)
+            .unwrap()
+            .expect("prove_query (carrier with Range outer + limit) should succeed");
+
+        GroveDb::verify_aggregate_sum_query_per_key(&proof, &path_query(None), v)
+            .expect_err("exact verification without the prover's limit must fail");
+
+        for ceiling in [None, Some(10)] {
+            let (root, results, exhausted) =
+                GroveDb::verify_aggregate_sum_query_per_key_up_to_limit(
+                    &proof,
+                    &path_query(ceiling),
+                    v,
+                )
+                .unwrap_or_else(|e| panic!("upper bound {ceiling:?} must accept: {e}"));
+            assert_eq!(root, expected_root);
+            assert_eq!(
+                results,
+                vec![
+                    (b"brand_001".to_vec(), triangular(10)),
+                    (b"brand_002".to_vec(), triangular(10)),
+                ]
+            );
+            assert!(!exhausted);
+        }
+    }
+
     #[test]
     fn carrier_sum_keys_outer_with_limit_caps_results() {
         // Carrier ASOR with `Keys` outer items and `SizedQuery::limit`

@@ -9,7 +9,7 @@
 //! gate in [`super::mod`] before they reach this walker — V0 predates
 //! the aggregate-count feature and cannot legitimately carry one.
 
-use grovedb_merk::CryptoHash;
+use grovedb_merk::{proofs::query::ProofLimitMode, CryptoHash};
 use grovedb_query::QueryItem;
 use grovedb_version::version::GroveVersion;
 
@@ -34,14 +34,16 @@ pub(super) fn verify_v1_with_classification(
     path_query: &PathQuery,
     path_keys: &[&[u8]],
     classification: &AggregateCountClassification,
+    limit_mode: ProofLimitMode,
     grove_version: &GroveVersion,
-) -> Result<(CryptoHash, Vec<(Vec<u8>, u64)>), Error> {
+) -> Result<(CryptoHash, Vec<(Vec<u8>, u64)>, bool), Error> {
     verify_v1_per_key(
         layer,
         path_query,
         path_keys,
         0,
         classification,
+        limit_mode,
         grove_version,
     )
 }
@@ -57,8 +59,9 @@ fn verify_v1_per_key(
     path_keys: &[&[u8]],
     depth: usize,
     classification: &AggregateCountClassification,
+    limit_mode: ProofLimitMode,
     grove_version: &GroveVersion,
-) -> Result<(CryptoHash, Vec<(Vec<u8>, u64)>), Error> {
+) -> Result<(CryptoHash, Vec<(Vec<u8>, u64)>, bool), Error> {
     let merk_bytes = expect_merk_bytes(&layer.merk_proof, path_query)?;
 
     if depth < path_keys.len() {
@@ -74,12 +77,13 @@ fn verify_v1_per_key(
                 ),
             )
         })?;
-        let (lower_hash, results) = verify_v1_per_key(
+        let (lower_hash, results, exhausted) = verify_v1_per_key(
             lower_layer,
             path_query,
             path_keys,
             depth + 1,
             classification,
+            limit_mode,
             grove_version,
         )?;
         // Terminal here only in the LEAF shape — where the path's final
@@ -99,14 +103,14 @@ fn verify_v1_per_key(
             is_terminal,
             grove_version,
         )?;
-        return Ok((parent_root_hash, results));
+        return Ok((parent_root_hash, results, exhausted));
     }
 
     match &classification.carrier_outer_items {
         None => {
             let (root, count) =
                 verify_count_leaf(merk_bytes, &classification.leaf_inner_range, path_query)?;
-            Ok((root, vec![(Vec::new(), count)]))
+            Ok((root, vec![(Vec::new(), count)], true))
         }
         Some(outer_items) => verify_v1_carrier_layer(
             layer,
@@ -116,9 +120,11 @@ fn verify_v1_per_key(
             // `SizedQuery::limit` (validated as carrier-only at entry) caps
             // the outer walk. The prover truncates after this many outer
             // matches; the verifier must apply the same cap so its merk
-            // walker stops at the same boundary.
+            // walker stops at the same boundary, or, in upper-bound mode,
+            // treat it as a ceiling and accept an earlier stop.
             path_query.query.limit,
             classification,
+            limit_mode,
             grove_version,
         ),
     }
@@ -130,7 +136,10 @@ fn verify_v1_per_key(
 /// `(outer_key, count)` entry per match in query-direction order.
 ///
 /// `outer_limit` is the carrier's `SizedQuery::limit` (when set, the
-/// outer walk stops after that many matched outer keys).
+/// outer walk stops after that many matched outer keys). With
+/// [`ProofLimitMode::UpperBound`] it is only a ceiling and the proof may
+/// end the walk earlier; the returned flag says whether the walk was
+/// proven exhausted.
 fn verify_v1_carrier_layer(
     layer: &LayerProof,
     merk_bytes: &[u8],
@@ -138,13 +147,15 @@ fn verify_v1_carrier_layer(
     outer_items: &[QueryItem],
     outer_limit: Option<u16>,
     classification: &AggregateCountClassification,
+    limit_mode: ProofLimitMode,
     grove_version: &GroveVersion,
-) -> Result<(CryptoHash, Vec<(Vec<u8>, u64)>), Error> {
-    let (carrier_root, matched) = execute_carrier_layer_proof(
+) -> Result<(CryptoHash, Vec<(Vec<u8>, u64)>, bool), Error> {
+    let (carrier_root, matched, exhausted) = execute_carrier_layer_proof(
         merk_bytes,
         outer_items,
         classification.carrier_left_to_right,
         outer_limit,
+        limit_mode,
         path_query,
     )?;
 
@@ -205,7 +216,7 @@ fn verify_v1_carrier_layer(
         results.push((outer_key, count));
     }
 
-    Ok((carrier_root, results))
+    Ok((carrier_root, results, exhausted))
 }
 
 /// Walk the carrier's `subquery_path` (zero or more intermediate
