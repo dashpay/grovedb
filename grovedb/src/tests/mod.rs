@@ -37,6 +37,7 @@ mod clear_append_tree_tests;
 mod commitment_tree_cost_bound_tests;
 mod commitment_tree_tests;
 mod coverage_round7_tests;
+mod limit_cut_exclusive_bound_proof_tests;
 mod non_merk_completeness_budget_tests;
 mod non_merk_subtree_discovery_tests;
 // Tampers with raw storage via `GroveDb::raw_storage`, which is only

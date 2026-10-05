@@ -205,6 +205,24 @@ impl QueryProofVerify for Query {
                                     child_hash_verified: bool,
                                     plain_trusted_value: bool|
              -> Result<_, Error> {
+                // Once the limit is reached the walk is complete: no later node
+                // can be a result. The prover still includes the nodes it
+                // needs to rebuild the tree, and can reveal a boundary key it
+                // passed (an exclusive range end, or a later item's bound)
+                // behind nodes it hid, so later nodes are not checked as range
+                // bounds. A node carrying a value that the query matches would
+                // be a result past the limit and is rejected; anything else
+                // proves nothing the result depends on. V0 proofs keep their
+                // frozen behaviour.
+                if proof_version >= 1 && current_limit == Some(0) {
+                    if value.is_some() && self.items.iter().any(|item| item.contains(key)) {
+                        return Err(Error::InvalidProofError(format!(
+                            "Proof returns more data than limit {:?}",
+                            original_limit
+                        )));
+                    }
+                    return Ok(());
+                }
                 while let Some(item) = query.peek() {
                     // get next item in query
                     let query_item = *item;
@@ -1467,5 +1485,238 @@ mod proof_stream_direction_tests {
             err.to_string().contains("maximum operation count"),
             "unexpected error: {err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod limit_reached_tail_tests {
+    //! Once a limit is reached the prover hides the rest of the walk, but it
+    //! can still reveal a boundary key it passed on the way (an exclusive
+    //! range end, or a later item's bound), behind the nodes it hid. Exact
+    //! verification at the prover's own limit must accept that honest
+    //! proof.
+
+    use grovedb_version::version::GroveVersion;
+
+    use super::{QueryProofVerify, PROOF_VERSION_LATEST};
+    use crate::{
+        proofs::{query::QueryItem, Query},
+        test_utils::TempMerk,
+        tree::Op,
+        TreeFeatureType::BasicMerkNode,
+    };
+
+    /// A plain merk holding the single-byte keys `0..n`. Values start with
+    /// `v` so none of them parses as a serialized GroveDB element, which the
+    /// prover would otherwise treat specially.
+    fn make_merk(n: u8, grove_version: &GroveVersion) -> TempMerk {
+        let mut merk = TempMerk::new(grove_version);
+        let entries: Vec<(Vec<u8>, Op)> = (0..n)
+            .map(|i| (vec![i], Op::Put(vec![b'v', i], BasicMerkNode)))
+            .collect();
+        merk.apply::<_, Vec<_>>(&entries, &[], None, grove_version)
+            .unwrap()
+            .expect("apply should succeed");
+        merk.commit(grove_version);
+        merk
+    }
+
+    fn query_of(items: Vec<QueryItem>, left_to_right: bool) -> Query {
+        let mut query = Query::new();
+        for item in items {
+            query.insert_item(item);
+        }
+        query.left_to_right = left_to_right;
+        query
+    }
+
+    /// Every limit that cuts the walk short verifies at the prover's own
+    /// limit and returns the first `limit` matches in walk order, for the
+    /// shapes whose proofs reveal a bound key after the cut.
+    #[test]
+    fn proof_cut_by_its_limit_verifies_at_that_limit() {
+        let v = GroveVersion::latest();
+        let cases: Vec<(&str, Vec<QueryItem>, bool)> = vec![
+            ("Range asc", vec![QueryItem::Range(vec![2]..vec![10])], true),
+            ("RangeTo asc", vec![QueryItem::RangeTo(..vec![10])], true),
+            (
+                "RangeAfterTo asc",
+                vec![QueryItem::RangeAfterTo(vec![1]..vec![10])],
+                true,
+            ),
+            (
+                "RangeAfter desc",
+                vec![QueryItem::RangeAfter(vec![10]..)],
+                false,
+            ),
+            (
+                "RangeAfterTo desc",
+                vec![QueryItem::RangeAfterTo(vec![10]..vec![36])],
+                false,
+            ),
+            (
+                "Key + Range + Key + RangeFrom asc",
+                vec![
+                    QueryItem::Key(vec![3]),
+                    QueryItem::Range(vec![12]..vec![20]),
+                    QueryItem::Key(vec![26]),
+                    QueryItem::RangeFrom(vec![32]..),
+                ],
+                true,
+            ),
+        ];
+        for n in [20u8, 40] {
+            let merk = make_merk(n, v);
+            let root = merk.root_hash().unwrap();
+            for (name, items, left_to_right) in &cases {
+                let query = query_of(items.clone(), *left_to_right);
+                let mut matches: Vec<u8> = (0..n)
+                    .filter(|k| items.iter().any(|item| item.contains(&[*k])))
+                    .collect();
+                if !left_to_right {
+                    matches.reverse();
+                }
+                for limit in 1..matches.len() as u16 {
+                    let proof = merk
+                        .prove(query.clone(), Some(limit), v)
+                        .unwrap()
+                        .expect("prove should succeed")
+                        .proof;
+                    let (hash, result) = query
+                        .execute_proof(&proof, Some(limit), *left_to_right, PROOF_VERSION_LATEST)
+                        .unwrap()
+                        .unwrap_or_else(|e| panic!("{name}, {n} keys, limit {limit}: {e}"));
+                    assert_eq!(hash, root);
+                    let keys: Vec<u8> = result.result_set.iter().map(|r| r.key[0]).collect();
+                    assert_eq!(
+                        keys,
+                        matches[..limit as usize],
+                        "{name}, {n} keys, limit {limit}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Hand-built streams for what may follow a reached limit, for
+    /// `2..=5` at limit 2. In key order: results 2 and 3, then the nodes
+    /// given. A boundary key behind a hidden node is accepted; a matched
+    /// key with a value is a result past the limit and rejected, whether or
+    /// not a hidden node precedes it. V0 verification is frozen and keeps
+    /// rejecting the boundary key.
+    #[test]
+    fn after_the_limit_only_unmatched_or_value_free_nodes_are_accepted() {
+        use grovedb_query::proofs::encode_into;
+
+        use crate::proofs::{Node, Op as ProofOp};
+
+        // 3 is the parent of 2; `tail` hangs as 3's right subtree.
+        let stream = |tail: Vec<ProofOp>| {
+            let mut ops = vec![
+                ProofOp::Push(Node::KV(vec![2], vec![2])),
+                ProofOp::Push(Node::KV(vec![3], vec![3])),
+                ProofOp::Parent,
+            ];
+            ops.extend(tail);
+            ops.push(ProofOp::Child);
+            let mut bytes = vec![];
+            encode_into(ops.iter(), &mut bytes);
+            bytes
+        };
+        // `node` as the parent of a hidden left child: in key order the
+        // hidden node comes first.
+        let behind_hidden = |node: Node| {
+            vec![
+                ProofOp::Push(Node::Hash([7u8; 32])),
+                ProofOp::Push(node),
+                ProofOp::Parent,
+            ]
+        };
+        let query = query_of(vec![QueryItem::RangeInclusive(vec![2]..=vec![5])], true);
+        let execute = |bytes: &[u8], version| {
+            query
+                .execute_proof(bytes, Some(2), true, version)
+                .unwrap()
+                .map(|(_, result)| {
+                    result
+                        .result_set
+                        .iter()
+                        .map(|r| r.key[0])
+                        .collect::<Vec<_>>()
+                })
+        };
+
+        let boundary = stream(behind_hidden(Node::KVDigest(vec![9], [9u8; 32])));
+        assert_eq!(
+            execute(&boundary, PROOF_VERSION_LATEST).expect("boundary key after the limit"),
+            vec![2, 3]
+        );
+        execute(&boundary, 0).expect_err("V0 verification is unchanged");
+
+        for tail in [
+            vec![ProofOp::Push(Node::KV(vec![4], vec![4]))],
+            behind_hidden(Node::KV(vec![4], vec![4])),
+        ] {
+            let err = execute(&stream(tail), PROOF_VERSION_LATEST)
+                .expect_err("a result past the limit must be rejected");
+            assert!(err.to_string().contains("more data than limit"), "{err}");
+        }
+    }
+
+    /// The fix only turns rejections into acceptances. A proof the verifier
+    /// accepted before (a node with a value that no query item matches,
+    /// after the limit) is still accepted with the same result.
+    #[test]
+    fn unmatched_value_after_the_limit_is_still_accepted() {
+        use grovedb_query::proofs::encode_into;
+
+        use crate::proofs::{Node, Op as ProofOp};
+
+        let ops = [
+            ProofOp::Push(Node::KV(vec![1], vec![1])),
+            ProofOp::Push(Node::KVDigest(vec![5], [5u8; 32])),
+            ProofOp::Parent,
+            ProofOp::Push(Node::Hash([7u8; 32])),
+            ProofOp::Push(Node::KV(vec![7], vec![7])),
+            ProofOp::Parent,
+            ProofOp::Child,
+        ];
+        let mut bytes = vec![];
+        encode_into(ops.iter(), &mut bytes);
+        let query = query_of(
+            vec![
+                QueryItem::Range(vec![0]..vec![5]),
+                QueryItem::Range(vec![10]..vec![20]),
+            ],
+            true,
+        );
+        let (_, result) = query
+            .execute_proof(&bytes, Some(1), true, PROOF_VERSION_LATEST)
+            .unwrap()
+            .expect("accepted before the fix, accepted after");
+        let keys: Vec<u8> = result.result_set.iter().map(|r| r.key[0]).collect();
+        assert_eq!(keys, vec![1]);
+    }
+
+    /// A caller limit of 0 walks nothing: an honest proof made at limit 0
+    /// verifies with an empty result.
+    #[test]
+    fn zero_limit_verifies_empty() {
+        let v = GroveVersion::latest();
+        let merk = make_merk(20, v);
+        for left_to_right in [true, false] {
+            let query = query_of(vec![QueryItem::Range(vec![2]..vec![10])], left_to_right);
+            let proof = merk
+                .prove(query.clone(), Some(0), v)
+                .unwrap()
+                .expect("prove should succeed")
+                .proof;
+            let (hash, result) = query
+                .execute_proof(&proof, Some(0), left_to_right, PROOF_VERSION_LATEST)
+                .unwrap()
+                .expect("limit 0 verifies");
+            assert_eq!(hash, merk.root_hash().unwrap());
+            assert!(result.result_set.is_empty());
+        }
     }
 }
