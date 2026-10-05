@@ -126,6 +126,11 @@ pub trait QueryProofVerify {
     /// [`QueryProofVerify::execute_proof`] with an explicit
     /// [`ProofLimitMode`]. `execute_proof` is this with
     /// [`ProofLimitMode::Exact`].
+    ///
+    /// The default body keeps existing implementations compiling: it serves
+    /// [`ProofLimitMode::Exact`] through [`QueryProofVerify::execute_proof`]
+    /// and refuses [`ProofLimitMode::UpperBound`]. The implementation for
+    /// [`Query`] supports both.
     fn execute_proof_with_limit_mode(
         &self,
         bytes: &[u8],
@@ -133,7 +138,16 @@ pub trait QueryProofVerify {
         limit_mode: ProofLimitMode,
         left_to_right: bool,
         proof_version: u16,
-    ) -> CostResult<(MerkHash, ProofVerificationResult), Error>;
+    ) -> CostResult<(MerkHash, ProofVerificationResult), Error> {
+        match limit_mode {
+            ProofLimitMode::Exact => self.execute_proof(bytes, limit, left_to_right, proof_version),
+            ProofLimitMode::UpperBound => Err(Error::InvalidProofError(
+                "upper-bound limit verification is not supported by this implementation"
+                    .to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default()),
+        }
+    }
 
     /// Verifies the encoded proof with the given query and expected hash.
     fn verify_proof(
@@ -1988,6 +2002,58 @@ mod limit_mode_tests {
                 assert!(!result.exhausted, "{left_to_right} {mode:?}");
             }
         }
+    }
+
+    /// An implementation that only provides `execute_proof` gets exact
+    /// mode through the default `execute_proof_with_limit_mode`, and a clear
+    /// refusal for upper-bound mode.
+    #[test]
+    fn default_limit_mode_body_serves_exact_and_refuses_upper_bound() {
+        use grovedb_costs::{CostResult, CostsExt, OperationCost};
+
+        struct ExactOnly;
+        impl QueryProofVerify for ExactOnly {
+            fn execute_proof(
+                &self,
+                _bytes: &[u8],
+                limit: Option<u16>,
+                _left_to_right: bool,
+                _proof_version: u16,
+            ) -> CostResult<(CryptoHash, ProofVerificationResult), crate::Error> {
+                Ok((
+                    [1u8; 32],
+                    ProofVerificationResult {
+                        result_set: vec![],
+                        limit,
+                        exhausted: true,
+                    },
+                ))
+                .wrap_with_cost(OperationCost::default())
+            }
+
+            fn verify_proof(
+                &self,
+                _bytes: &[u8],
+                _limit: Option<u16>,
+                _left_to_right: bool,
+                _expected_hash: CryptoHash,
+            ) -> CostResult<ProofVerificationResult, crate::Error> {
+                unreachable!("not used by this test")
+            }
+        }
+
+        let (hash, result) = ExactOnly
+            .execute_proof_with_limit_mode(&[], Some(3), ProofLimitMode::Exact, true, 1)
+            .unwrap()
+            .expect("exact mode delegates to execute_proof");
+        assert_eq!(hash, [1u8; 32]);
+        assert_eq!(result.limit, Some(3));
+
+        let err = ExactOnly
+            .execute_proof_with_limit_mode(&[], Some(3), ProofLimitMode::UpperBound, true, 1)
+            .unwrap()
+            .expect_err("upper-bound mode is refused by default");
+        assert!(err.to_string().contains("not supported"), "{err}");
     }
 
     /// Upper-bound mode is V1-only; V0 verification is frozen.
