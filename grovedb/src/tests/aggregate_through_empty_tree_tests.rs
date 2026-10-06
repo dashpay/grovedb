@@ -1,15 +1,16 @@
 //! Aggregate-on-range proofs whose path runs through an EMPTY aggregate tree
-//! above the aggregate terminal (`proof.empty_tree_above_aggregate_terminal`).
+//! above the aggregate terminal.
 //!
 //! An aggregate-on-range query descends into an empty `ProvableCountTree`,
 //! `ProvableCountSumTree`, `ProvableSumTree` or `ProvableCountProvableSumTree`
 //! it routes through, so that an empty terminal answers with the
 //! authenticated zero of its aggregate short-circuit. Above the terminal that
 //! descent reaches an ordinary layer over an empty Merk, which no Merk proof
-//! can be generated for: `GROVE_V1`..`GROVE_V3` fail generation with "Cannot
-//! create proof for empty tree". From `GROVE_V4` such a tree is proved in its
-//! parent layer with no lower layer, exactly like an empty tree of any other
-//! type there, and the single-key query over the same path verifies the proof.
+//! can be generated for, and generation failed with "Cannot create proof for
+//! empty tree". Such a tree is proved in its parent layer with no lower layer
+//! instead, exactly like an empty tree of any other type there, and the
+//! single-key query over the same path verifies the proof, at every grove
+//! version that proves aggregate queries (`GROVE_V3` and later).
 //!
 //! The shape is a document index nobody has written to yet:
 //! `widget / brand / <value> / color / <value>`, with `brand` an empty
@@ -33,7 +34,6 @@ mod tests {
     const ACME: &[u8] = b"acme";
     const ZETA: &[u8] = b"zeta";
     const COLOR: &[u8] = b"color";
-    const EMPTY_TREE_PROOF_ERROR: &str = "Cannot create proof for empty tree";
 
     type CryptoHash = [u8; 32];
 
@@ -233,17 +233,6 @@ mod tests {
         )
     }
 
-    fn assert_empty_tree_proof_error(result: Result<Vec<u8>, Error>, context: &str) {
-        let error = result.expect_err(context);
-        let message = error.to_string();
-        assert!(
-            message.contains(EMPTY_TREE_PROOF_ERROR),
-            "{context}: expected \"{EMPTY_TREE_PROOF_ERROR}\", got: {message}"
-        );
-    }
-
-    /// The aggregate verifiers require a descent at every key down to the
-    /// terminal, so they refuse the proof at the empty tree's key.
     fn assert_refused_for_a_missing_lower_layer(error: &Error, key: &[u8], context: &str) {
         assert!(
             matches!(error, Error::InvalidProof(..)),
@@ -295,40 +284,13 @@ mod tests {
     }
 
     #[test]
-    fn grove_v3_still_refuses_to_prove_through_an_empty_aggregate_tree() {
-        // The released behaviour, pinned: the descent into the empty
-        // `brand` reaches the `acme` layer of an empty Merk.
-        let v = &GROVE_V3;
-        for (aggregate, empty_tree) in EMPTY_AGGREGATE_TREES {
-            let brand = empty_tree();
-            let context = format!("{aggregate:?} through an empty {}", brand.type_str());
-            let db = with_empty_brand(brand, v);
-            assert_empty_tree_proof_error(
-                db.prove_query(&leaf_path_query(aggregate), None, v)
-                    .unwrap(),
-                &format!("{context} (leaf)"),
-            );
-            assert_empty_tree_proof_error(
-                db.prove_query(&carrier_path_query(aggregate), None, v)
-                    .unwrap(),
-                &format!("{context} (carrier)"),
-            );
-            // The plain query over the same path proves at every version:
-            // no aggregate, no descent.
-            let proof = db
-                .prove_query(&single_key_path_query(), None, v)
-                .unwrap()
-                .expect("the plain single-key query proves");
-            let (root, rows) = GroveDb::verify_query(&proof, &single_key_path_query(), v)
-                .expect("the plain single-key query verifies");
-            assert_eq!(root, root_hash(&db, v), "{context}");
-            assert!(rows.is_empty(), "{context}");
+    fn proves_a_leaf_aggregate_through_an_empty_aggregate_tree() {
+        for v in [&GROVE_V3, &GROVE_V4] {
+            proves_a_leaf_aggregate_through_an_empty_aggregate_tree_at(v);
         }
     }
 
-    #[test]
-    fn grove_v4_proves_a_leaf_aggregate_through_an_empty_aggregate_tree() {
-        let v = &GROVE_V4;
+    fn proves_a_leaf_aggregate_through_an_empty_aggregate_tree_at(v: &GroveVersion) {
         for (aggregate, empty_tree) in EMPTY_AGGREGATE_TREES {
             let brand = empty_tree();
             let context = format!("{aggregate:?} through an empty {}", brand.type_str());
@@ -339,7 +301,12 @@ mod tests {
             let proof = db
                 .prove_query(&path_query, None, v)
                 .unwrap()
-                .unwrap_or_else(|e| panic!("{context}: proves from GROVE_V4: {e}"));
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "{context}: proves at grove version {}: {e}",
+                        v.protocol_version
+                    )
+                });
 
             // `brand` is proved in the widget layer with nothing below it:
             // the very proof of the plain single-key query over the path.
@@ -381,8 +348,13 @@ mod tests {
     }
 
     #[test]
-    fn grove_v4_proves_a_carrier_aggregate_whose_path_ends_in_an_empty_aggregate_tree() {
-        let v = &GROVE_V4;
+    fn proves_a_carrier_aggregate_whose_path_ends_in_an_empty_aggregate_tree() {
+        for v in [&GROVE_V3, &GROVE_V4] {
+            proves_a_carrier_aggregate_whose_path_ends_in_an_empty_aggregate_tree_at(v);
+        }
+    }
+
+    fn proves_a_carrier_aggregate_whose_path_ends_in_an_empty_aggregate_tree_at(v: &GroveVersion) {
         for (aggregate, empty_tree) in EMPTY_AGGREGATE_TREES {
             let brand = empty_tree();
             let context = format!("{aggregate:?} carrier under an empty {}", brand.type_str());
@@ -393,7 +365,12 @@ mod tests {
             let proof = db
                 .prove_query(&path_query, None, v)
                 .unwrap()
-                .unwrap_or_else(|e| panic!("{context}: proves from GROVE_V4: {e}"));
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "{context}: proves at grove version {}: {e}",
+                        v.protocol_version
+                    )
+                });
             let mut decoded = decode_envelope(&proof);
             assert!(
                 widget_layer(&mut decoded).lower_layers.is_empty(),
@@ -413,7 +390,7 @@ mod tests {
     }
 
     #[test]
-    fn grove_v4_proves_a_carrier_key_that_is_an_empty_aggregate_tree_above_the_terminal() {
+    fn proves_a_carrier_key_that_is_an_empty_aggregate_tree_above_the_terminal() {
         // `brand` is populated: "acme" leads to a populated `color`
         // terminal, "zeta" is an empty aggregate tree with the `color`
         // subquery path still below it.
@@ -440,44 +417,44 @@ mod tests {
             };
             let path_query = carrier_path_query(aggregate);
 
-            let db = build(&GROVE_V3);
-            assert_empty_tree_proof_error(
-                db.prove_query(&path_query, None, &GROVE_V3).unwrap(),
-                &format!("{context} (GROVE_V3)"),
-            );
+            for v in [&GROVE_V3, &GROVE_V4] {
+                let db = build(v);
+                let proof = db
+                    .prove_query(&path_query, None, v)
+                    .unwrap()
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "{context}: proves at grove version {}: {e}",
+                            v.protocol_version
+                        )
+                    });
+                let mut decoded = decode_envelope(&proof);
+                let brand_layer = widget_layer(&mut decoded)
+                    .lower_layers
+                    .get(BRAND)
+                    .expect("brand layer");
+                assert!(
+                    brand_layer.lower_layers.contains_key(ACME),
+                    "{context}: acme is descended into"
+                );
+                assert!(
+                    !brand_layer.lower_layers.contains_key(ZETA),
+                    "{context}: no lower layer under the empty zeta"
+                );
 
-            let v = &GROVE_V4;
-            let db = build(v);
-            let proof = db
-                .prove_query(&path_query, None, v)
-                .unwrap()
-                .unwrap_or_else(|e| panic!("{context}: proves from GROVE_V4: {e}"));
-            let mut decoded = decode_envelope(&proof);
-            let brand_layer = widget_layer(&mut decoded)
-                .lower_layers
-                .get(BRAND)
-                .expect("brand layer");
-            assert!(
-                brand_layer.lower_layers.contains_key(ACME),
-                "{context}: acme is descended into"
-            );
-            assert!(
-                !brand_layer.lower_layers.contains_key(ZETA),
-                "{context}: no lower layer under the empty zeta"
-            );
-
-            // The per-key verifier expects a descent for every matched key.
-            let error = aggregate
-                .verify_per_key(&proof, &path_query, v)
-                .expect_err("the per-key aggregate verifier refuses the missing descent");
-            assert_refused_for_a_missing_lower_layer(&error, ZETA, &context);
+                // The per-key verifier expects a descent for every matched key.
+                let error = aggregate
+                    .verify_per_key(&proof, &path_query, v)
+                    .expect_err("the per-key aggregate verifier refuses the missing descent");
+                assert_refused_for_a_missing_lower_layer(&error, ZETA, &context);
+            }
         }
     }
 
     #[test]
     fn an_empty_aggregate_terminal_is_proved_identically_under_grove_v3_and_v4() {
-        // Unchanged by the gate: an empty tree that IS the terminal is
-        // descended into at every version and answers zero.
+        // Unchanged: an empty tree that IS the terminal is descended into at
+        // every version and answers zero.
         for (aggregate, empty_tree) in EMPTY_AGGREGATE_TREES {
             let color = empty_tree();
             let context = format!("{aggregate:?} over an empty {} terminal", color.type_str());
@@ -520,7 +497,7 @@ mod tests {
 
     #[test]
     fn a_populated_tree_cannot_be_passed_off_as_the_empty_tree_on_the_path() {
-        // The V4 proof shape for an empty tree on the path is a bare node
+        // The proof shape for an empty tree on the path is a bare node
         // with no lower layer. Forge it from an honest proof over a POPULATED
         // `brand`: give its node the empty tree's element bytes (keeping the
         // committed value hash, so the Merk root is unchanged) and drop its
@@ -609,23 +586,5 @@ mod tests {
                 "{context}: the aggregate verifier refuses the forgery"
             );
         }
-    }
-
-    #[test]
-    fn an_unknown_empty_tree_above_aggregate_terminal_version_is_refused() {
-        let mut v = GROVE_V4.clone();
-        v.grovedb_versions
-            .operations
-            .proof
-            .empty_tree_above_aggregate_terminal = 2;
-        let db = with_empty_brand(Element::empty_provable_count_tree(), &v);
-        let error = db
-            .prove_query(&leaf_path_query(Aggregate::Count), None, &v)
-            .unwrap()
-            .expect_err("an unknown slot value fails closed");
-        assert!(
-            matches!(error, Error::VersionError(..)),
-            "expected a version error, got: {error:?}"
-        );
     }
 }
