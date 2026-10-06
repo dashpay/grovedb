@@ -339,8 +339,9 @@ impl GroveOp {
                     propagate_if_input(),
                     grove_version,
                 );
-                // An untrusted refresh writes the stored flags back, so only
-                // a trusted one can change the owner.
+                // An untrusted refresh writes the stored flags back, and the
+                // batch refuses to settle a write that keeps the stored
+                // flags, so only a trusted one can change the owner.
                 if mode.is_trusted() {
                     settling.raise(replace_cost, &element)
                 } else {

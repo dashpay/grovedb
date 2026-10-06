@@ -1987,6 +1987,28 @@ struct TreeCacheMerkByPath<S, F, F2> {
     predicted_reference_targets: HashMap<Vec<Vec<u8>>, Vec<u8>>,
 }
 
+/// Whether a same-batch reference to the target `op` writes predicts that
+/// target: a flagged `Item`, `SumItem` or `ItemWithSumItem` (through any
+/// wrapper) written by an insert-or-replace, a replace or a patch. Such a
+/// reference reads whether the pass has already written the target, so only
+/// these targets are recorded in `written_qualified_paths`.
+fn writes_a_predicted_reference_target(op: &GroveOp) -> bool {
+    match op {
+        GroveOp::InsertOrReplace { element }
+        | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
+        | GroveOp::Replace { element }
+        | GroveOp::ReplaceDontCheckForBackwardsReferences { element }
+        | GroveOp::Patch { element, .. }
+        | GroveOp::PatchDontCheckForBackwardsReferences { element, .. } => {
+            matches!(
+                element.underlying(),
+                Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..)
+            ) && element.get_flags().is_some()
+        }
+        _ => false,
+    }
+}
+
 impl<S, F, F2> fmt::Debug for TreeCacheMerkByPath<S, F, F2> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TreeCacheMerkByPath").finish()
@@ -2876,6 +2898,9 @@ where
                                 if let Some((old_serialized_element, is_in_sum_tree)) =
                                     serialized_element_result
                                 {
+                                    // Recorded for exactly the ops this arm
+                                    // handles (`writes_a_predicted_reference_target`).
+                                    debug_assert!(writes_a_predicted_reference_target(op));
                                     let target_written =
                                         self.written_qualified_paths.contains(qualified_path);
                                     let value_hash = cost_return_on_error!(
@@ -3246,13 +3271,15 @@ where
         let p = path.to_path();
         let path = &p;
         self.unused_new_merks.remove(path);
-        // The targets this path writes, recorded as written once it has
-        // applied them (only read by the version 1 target prediction).
+        // The targets this path writes that a same-batch reference may
+        // predict, recorded as written once it has applied them (only read by
+        // the version 1 target prediction).
         let written_qualified_paths: Vec<Vec<Vec<u8>>> =
             if self.tracks_written_targets(grove_version) {
                 ops_at_path_by_key
-                    .keys()
-                    .map(|key_info| {
+                    .iter()
+                    .filter(|(_, op)| writes_a_predicted_reference_target(op))
+                    .map(|(key_info, _)| {
                         let mut qualified_path = path.to_vec();
                         qualified_path.push(key_info.get_key_clone());
                         qualified_path
@@ -6863,7 +6890,7 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        let settle_refused = Cell::new(false);
+        let settle_refused = Cell::new(None);
         let update_element_flags_function = just_in_time_value_update::batch_flags_update(
             update_element_flags_function,
             BatchApplyOptions::settle_owner_changes_in(&batch_apply_options),
@@ -7397,7 +7424,7 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        let settle_refused = Cell::new(false);
+        let settle_refused = Cell::new(None);
         let update_element_flags_function = just_in_time_value_update::batch_flags_update(
             update_element_flags_function,
             BatchApplyOptions::settle_owner_changes_in(&batch_apply_options),

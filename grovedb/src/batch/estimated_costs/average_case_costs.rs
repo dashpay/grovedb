@@ -110,12 +110,18 @@ impl GroveOp {
         let in_tree_type = layer_element_estimates.tree_type;
         // A backward-references element is charged the typical referrer
         // shape, each referrer at the entry of one at this op's own position.
+        // Only a settling estimate reads that entry size, so it is measured
+        // only then.
         let settling = super::SettledOwnerChange::new(
             batch_apply_options,
             key,
             in_tree_type.inner_node_type(),
             super::CarriedReferrers::Average {
-                entry_bytes: super::backward_reference_entry_bound(path, key),
+                entry_bytes: if batch_apply_options.settle_owner_changes {
+                    super::backward_reference_entry_bound(path, key)
+                } else {
+                    0
+                },
             },
             grove_version,
         );
@@ -375,8 +381,9 @@ impl GroveOp {
                     propagate_if_input(),
                     grove_version,
                 );
-                // An untrusted refresh writes the stored flags back, so only
-                // a trusted one can change the owner.
+                // An untrusted refresh writes the stored flags back, and the
+                // batch refuses to settle a write that keeps the stored
+                // flags, so only a trusted one can change the owner.
                 if mode.is_trusted() {
                     settling.raise(replace_cost, &element)
                 } else {

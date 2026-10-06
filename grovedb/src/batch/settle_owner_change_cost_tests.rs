@@ -823,6 +823,118 @@ mod tests {
         );
     }
 
+    /// A write that keeps the stored flags brings no owner of its own, so a
+    /// settling answer for it is refused, whatever the callback does with the
+    /// flags: an untrusted refresh, which writes the stored reference's flags
+    /// back, even when the callback rewrites them to another owner of the
+    /// same length, and a flagged tree's root update when a write under it
+    /// propagates. The estimators charge neither a settlement, so neither may
+    /// settle. A write that brings flags of its own still settles.
+    #[test]
+    fn a_write_that_keeps_the_stored_flags_cannot_settle() {
+        use grovedb_costs::storage_cost::transition::ElementFlagsUpdate;
+
+        let grove_version = GroveVersion::latest();
+        let assert_refused = |error: Error| {
+            assert!(
+                matches!(error, Error::InvalidBatchOperation(reason) if reason.contains("keeps the stored flags")),
+                "unexpected error: {error}"
+            );
+        };
+        let rewriting_to_a_new_owner = |_cost: &grovedb_costs::storage_cost::StorageCost,
+                                        _old: Option<Vec<u8>>,
+                                        new: &mut Vec<u8>| {
+            *new = owned_flags(0, NEW_OWNER).expect("owned flags");
+            Ok(ElementFlagsUpdate::SettleOwnerChange)
+        };
+        let always_settling =
+            |_cost: &grovedb_costs::storage_cost::StorageCost,
+             _old: Option<Vec<u8>>,
+             _new: &mut Vec<u8>| { Ok(ElementFlagsUpdate::SettleOwnerChange) };
+        assert_eq!(
+            owned_flags(0, OLD_OWNER).map(|flags| flags.len()),
+            owned_flags(0, NEW_OWNER).map(|flags| flags.len())
+        );
+
+        // An untrusted refresh of a reference owned by the old owner.
+        let old = Element::new_reference_with_flags(target_path(), owned_flags(0, OLD_OWNER));
+        let db = grove_with(&old, TreeType::NormalTree, grove_version);
+        let root_hash = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_refused(
+            db.apply_batch_with_element_flags_update(
+                vec![QualifiedGroveDbOp::refresh_reference_op(
+                    vec![b"tree".to_vec()],
+                    KEY.to_vec(),
+                    target_path(),
+                    None,
+                    owned_flags(0, NEW_OWNER),
+                    false,
+                    false,
+                )],
+                Some(options(Mode::Settling)),
+                rewriting_to_a_new_owner,
+                split_removal_bytes,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect_err("an untrusted refresh must not settle"),
+        );
+        assert_eq!(
+            db.root_hash(None, grove_version).unwrap().unwrap(),
+            root_hash
+        );
+
+        // A flagged tree whose root a write under it updates.
+        let db = make_empty_grovedb();
+        db.insert(
+            EMPTY_PATH,
+            b"flagged",
+            Element::empty_tree_with_flags(owned_flags(0, OLD_OWNER)),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert the flagged tree");
+        let root_hash = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_refused(
+            db.apply_batch_with_element_flags_update(
+                vec![QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![b"flagged".to_vec()],
+                    b"child".to_vec(),
+                    Element::new_item(vec![1]),
+                )],
+                Some(options(Mode::Settling)),
+                always_settling,
+                split_removal_bytes,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect_err("a tree's root update must not settle"),
+        );
+        assert_eq!(
+            db.root_hash(None, grove_version).unwrap().unwrap(),
+            root_hash
+        );
+
+        // A write bringing flags of its own settles.
+        let old = Element::new_item_with_flags(vec![7; 20], owned_flags(0, OLD_OWNER));
+        let new = Element::new_item_with_flags(vec![8; 20], owned_flags(0, NEW_OWNER));
+        let db = grove_with(&old, TreeType::NormalTree, grove_version);
+        db.apply_batch_with_element_flags_update(
+            vec![write_op(&new)],
+            Some(options(Mode::Settling)),
+            always_settling,
+            split_removal_bytes,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("a write bringing its own flags settles");
+    }
+
     /// A reference written in the same batch commits to the bytes the
     /// settled element stores: its new flags, not the old owner's, on the
     /// latest grove version and on grove v1..v3 alike.

@@ -41,11 +41,21 @@ pub(crate) const SETTLE_OWNER_CHANGES_NOT_SET: &str =
     "the flags update settled an owner change, but the batch options do not set \
      settle_owner_changes";
 
+/// Why a batch whose flags update settled an owner change was refused: the
+/// write keeps the stored flags (an untrusted reference refresh, or a tree's
+/// root update), so it brings no owner of its own to change to, and the
+/// estimators do not charge it for a settlement.
+pub(crate) const SETTLED_A_WRITE_KEEPING_ITS_FLAGS: &str =
+    "the flags update settled an owner change on a write that keeps the stored flags";
+
 /// The caller's flags-update callback as a batch runs it: its answer as an
-/// [`ElementFlagsUpdate`] (a `bool` answer is `Changed` or `Unchanged`), and
-/// `SettleOwnerChange` refused unless the batch's options set
-/// `settle_owner_changes`. A refusal is recorded in `refused`, so the batch
-/// reports it with [`settle_refusal_error`] whatever error it surfaces as.
+/// [`ElementFlagsUpdate`] (a `bool` answer is `Changed` or `Unchanged`).
+/// `SettleOwnerChange` is refused unless the batch's options set
+/// `settle_owner_changes`, and refused on a write that keeps the stored
+/// flags, whatever the callback does with them: only a write that brings
+/// flags of its own can change the owner. A refusal records its reason in
+/// `refused`, so the batch reports it with [`settle_refusal_error`] whatever
+/// error it surfaces as.
 pub(crate) fn batch_flags_update<U>(
     mut flags_update: impl FnMut(
         &StorageCost,
@@ -53,7 +63,7 @@ pub(crate) fn batch_flags_update<U>(
         &mut ElementFlags,
     ) -> Result<U, Error>,
     settle_owner_changes: bool,
-    refused: &Cell<bool>,
+    refused: &Cell<Option<&'static str>>,
 ) -> impl FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<ElementFlagsUpdate, Error>
 where
     U: Into<ElementFlagsUpdate>,
@@ -61,12 +71,20 @@ where
     move |storage_cost: &StorageCost,
           old_flags: Option<ElementFlags>,
           new_flags: &mut ElementFlags| {
+        let keeps_stored_flags = old_flags.as_deref() == Some(new_flags.as_slice());
         let update = flags_update(storage_cost, old_flags, new_flags)?.into();
-        if update == ElementFlagsUpdate::SettleOwnerChange && !settle_owner_changes {
-            refused.set(true);
-            return Err(Error::JustInTimeElementFlagsClientError(
-                SETTLE_OWNER_CHANGES_NOT_SET.to_owned(),
-            ));
+        if update == ElementFlagsUpdate::SettleOwnerChange {
+            let refusal = if !settle_owner_changes {
+                Some(SETTLE_OWNER_CHANGES_NOT_SET)
+            } else if keeps_stored_flags {
+                Some(SETTLED_A_WRITE_KEEPING_ITS_FLAGS)
+            } else {
+                None
+            };
+            if let Some(reason) = refusal {
+                refused.set(Some(reason));
+                return Err(Error::JustInTimeElementFlagsClientError(reason.to_owned()));
+            }
         }
         Ok(update)
     }
@@ -76,11 +94,10 @@ where
 /// a settled owner change, as the invalid batch it is, when `refused` says
 /// one happened (the Merk and prediction layers it surfaced through report
 /// it as client or data corruption), and `error` otherwise.
-pub(crate) fn settle_refusal_error(error: Error, refused: &Cell<bool>) -> Error {
-    if refused.get() {
-        Error::InvalidBatchOperation(SETTLE_OWNER_CHANGES_NOT_SET)
-    } else {
-        error
+pub(crate) fn settle_refusal_error(error: Error, refused: &Cell<Option<&'static str>>) -> Error {
+    match refused.get() {
+        Some(reason) => Error::InvalidBatchOperation(reason),
+        None => error,
     }
 }
 

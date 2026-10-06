@@ -62,7 +62,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keep the owner, or that have no owner on either side, are unchanged. The
   flags callback can now answer an `ElementFlagsUpdate` (`Unchanged`,
   `Changed`, `SettleOwnerChange`, new in `grovedb_costs`) in place of a
-  `bool`; a batch refuses `SettleOwnerChange` unless the option is set, with
+  `bool`; a batch refuses `SettleOwnerChange` unless the option is set, and
+  on a write that keeps the stored flags (an untrusted `RefreshReference`, or
+  a tree's root update), which brings no owner of its own, with
   `Error::InvalidBatchOperation`. With the option, the average-case and
   worst-case batch estimates charge every `InsertOrReplace`, `Replace`,
   `Patch` and trusted `RefreshReference` of an element with flags, and the
