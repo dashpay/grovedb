@@ -2874,12 +2874,12 @@ where
                     // wrapper for hashing so the value hash matches storage.
                     match element.underlying() {
                         Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
-                            let serialized = cost_return_on_error_into_no_add!(
-                                cost,
-                                element.serialize(grove_version)
-                            );
                             if element.get_flags().is_none() {
                                 // There are no storage flags, we can just hash new element
+                                let serialized = cost_return_on_error_into_no_add!(
+                                    cost,
+                                    element.serialize(grove_version)
+                                );
                                 let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                                 Ok(val_hash).wrap_with_cost(cost)
                             } else {
@@ -2908,7 +2908,6 @@ where
                                         Self::process_old_element_flags(
                                             key,
                                             qualified_path,
-                                            serialized,
                                             element,
                                             old_serialized_element,
                                             is_in_sum_tree,
@@ -2922,6 +2921,10 @@ where
                                     );
                                     Ok(value_hash).wrap_with_cost(cost)
                                 } else {
+                                    let serialized = cost_return_on_error_into_no_add!(
+                                        cost,
+                                        element.serialize(grove_version)
+                                    );
                                     let value_hash =
                                         value_hash(&serialized).unwrap_add_cost(&mut cost);
                                     Ok(value_hash).wrap_with_cost(cost)

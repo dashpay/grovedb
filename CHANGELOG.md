@@ -85,6 +85,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING**: `BatchApplyOptions` has a new public field,
   `settle_owner_changes` (`false` by default), so a struct literal that names
   every field without `..Default::default()` must add it.
+- **BREAKING**: the version tables gain two required fields,
+  `GroveDBApplyBatchVersions::same_batch_reference_target_prediction` and
+  `MerkTreeVersions::just_in_time_value_update`, so code building those
+  structs by hand must add them: `0` for a table matching GROVE_V1..V3, which
+  keeps the released behaviour, and `1` for one matching GROVE_V4.
 - **BREAKING**: Merk's just-in-time value update callback (the
   `update_tree_value_based_on_costs` argument of
   `Merk::apply_with_costs_just_in_time_value_update`, `Merk::apply_unchecked`,

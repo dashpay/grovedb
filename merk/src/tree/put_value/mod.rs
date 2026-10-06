@@ -183,6 +183,25 @@ impl TreeNode {
             )),
         }
     }
+
+    /// Whether [`Self::install_ordinary_value`] keeps the value-defined cost
+    /// the node was loaded with (version 0) rather than clearing it (version
+    /// 1), so a prediction knows whether it needs the stored node's cost.
+    pub fn ordinary_put_keeps_value_defined_cost(
+        grove_version: &GroveVersion,
+    ) -> Result<bool, Error> {
+        match grove_version.merk_versions.tree.put_value {
+            0 => Ok(true),
+            1 => Ok(false),
+            version => Err(Error::VersionError(
+                GroveVersionError::UnknownVersionMismatch {
+                    method: "ordinary_put_keeps_value_defined_cost".to_string(),
+                    known_versions: vec![0, 1],
+                    received: version,
+                },
+            )),
+        }
+    }
 }
 
 #[cfg(test)]

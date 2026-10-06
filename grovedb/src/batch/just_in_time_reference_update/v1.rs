@@ -33,7 +33,6 @@ use crate::{
 pub(super) fn process_old_element_flags_v1<G, SR>(
     key: &[u8],
     qualified_path: &[Vec<u8>],
-    serialized: Vec<u8>,
     new_element: &Element,
     old_serialized_element: Vec<u8>,
     in_tree_type: TreeType,
@@ -64,6 +63,9 @@ where
         let val_hash = value_hash(stored_bytes).unwrap_add_cost(&mut cost);
         return Ok(val_hash).wrap_with_cost(cost);
     }
+    // Serialized only now: a written target or a cached prediction does not
+    // need the incoming bytes.
+    let serialized = cost_return_on_error_into_no_add!(cost, new_element.serialize(grove_version));
     let put = match cost_return_on_error_no_add!(
         cost,
         specialized_put_cost(new_element, grove_version).map_err(Error::MerkError)

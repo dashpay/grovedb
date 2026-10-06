@@ -99,7 +99,6 @@ where
     pub(crate) fn process_old_element_flags<G, SR>(
         key: &[u8],
         qualified_path: &[Vec<u8>],
-        serialized: Vec<u8>,
         new_element: &Element,
         old_serialized_element: Vec<u8>,
         in_tree_type: TreeType,
@@ -131,6 +130,8 @@ where
         ) {
             (0, false) => {
                 let cost = OperationCost::default();
+                let serialized =
+                    cost_return_on_error_into_no_add!(cost, new_element.serialize(grove_version));
                 let old_element = cost_return_on_error_no_add!(
                     cost,
                     Element::deserialize(&old_serialized_element, grove_version).map_err(|e| {
@@ -152,7 +153,6 @@ where
             (0, true) | (1, _) => v1::process_old_element_flags_v1(
                 key,
                 qualified_path,
-                serialized,
                 new_element,
                 old_serialized_element,
                 in_tree_type,
