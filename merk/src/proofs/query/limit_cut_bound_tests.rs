@@ -5,11 +5,12 @@
 //! the verifier cannot check it as a bound, so the proof fails to verify even
 //! at the prover's own limit. The V1 shape, from grove v3, hides it, and the
 //! released verifier accepts the proof. These pin both shapes, that the grove
-//! version picks between them, and that they differ only there.
+//! version picks between them, that they differ only there, and that
+//! upper-bound verification accepts every V1 cut.
 
 use grovedb_version::version::{v2::GROVE_V2, v3::GROVE_V3, GroveVersion};
 
-use super::{verify::PROOF_VERSION_LATEST, Query, QueryItem, QueryProofVerify};
+use super::{verify::PROOF_VERSION_LATEST, ProofLimitMode, Query, QueryItem, QueryProofVerify};
 use crate::{
     proofs::{encode_into, tree::execute, Decoder, Node, Op as ProofOp},
     test_utils::TempMerk,
@@ -257,6 +258,59 @@ fn proof_shapes_agree_when_the_limit_does_not_cut() {
                             prove(&merk, &query, limit, v),
                             "{name} {a}..{b} {left_to_right} {limit:?}"
                         );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The same sweep under upper-bound verification, where the verifier does not
+/// know the prover's limit: every V1 cut verifies with no ceiling, the
+/// prover's limit and a larger one, returns the first `limit` matches and is
+/// not exhausted, and is refused below the prover's limit. Upper-bound mode
+/// rejects any key revealed after the walk stops, so this also pins that a
+/// V1 proof reveals nothing after its last result.
+#[test]
+fn upper_bound_verifies_every_v1_cut() {
+    let v = &GROVE_V3;
+    for (n, step) in [(20u8, 3usize), (40, 9)] {
+        let merk = batch_merk(n, v);
+        let root = merk.root_hash().unwrap();
+        for a in (0..n - 2).step_by(step) {
+            for b in (a + 2..n).step_by(step) {
+                for (name, items) in cut_shapes(a, b, n) {
+                    for left_to_right in [true, false] {
+                        let query = query_of(items.clone(), left_to_right);
+                        let full = prove(&merk, &query, None, v);
+                        let (_, all) = verify(&query, &full, None).expect("full proof verifies");
+                        for limit in 1..all.len() as u16 {
+                            let proof = prove(&merk, &query, Some(limit), v);
+                            let at = |ceiling| {
+                                query
+                                    .execute_proof_with_limit_mode(
+                                        &proof,
+                                        ceiling,
+                                        ProofLimitMode::UpperBound,
+                                        left_to_right,
+                                        PROOF_VERSION_LATEST,
+                                    )
+                                    .unwrap()
+                            };
+                            for ceiling in [None, Some(limit), Some(limit + 3)] {
+                                let (hash, result) = at(ceiling).unwrap_or_else(|e| {
+                                    panic!(
+                                        "{name} {a}..{b} {left_to_right} {limit} {ceiling:?}: {e}"
+                                    )
+                                });
+                                assert_eq!(hash, root);
+                                let keys: Vec<Vec<u8>> =
+                                    result.result_set.into_iter().map(|row| row.key).collect();
+                                assert_eq!(keys, all[..limit as usize], "{name} {a}..{b} {limit}");
+                                assert!(!result.exhausted, "{name} {a}..{b} {limit} {ceiling:?}");
+                            }
+                            at(Some(limit - 1)).expect_err("more results than the ceiling");
+                        }
                     }
                 }
             }

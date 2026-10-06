@@ -90,12 +90,16 @@ pub enum ProofLimitMode {
     /// The prover used this limit or a smaller one, so the verifier does
     /// not need to know it. Once the proof has returned at least one result,
     /// the walk stops at the first point the proof leaves unrevealed: a
-    /// hidden node inside a queried range, a boundary key reached across
-    /// hidden nodes, or the end of the proof with query items unproven. No
-    /// result may follow, so the results are a gap-free prefix of the query,
-    /// and [`ProofVerificationResult::exhausted`] is false. A proof that
-    /// hides the start of the query is still rejected, so a page is never
-    /// empty unless nothing matches or `limit` is `Some(0)`.
+    /// hidden node inside a queried range, or the end of the proof with
+    /// query items unproven. The results are then a gap-free prefix of the
+    /// query, and [`ProofVerificationResult::exhausted`] is false.
+    ///
+    /// After the stop the proof may hold only hidden nodes: once a V1
+    /// prover's limit runs out it reveals no further key, not even a range
+    /// bound it passes. A node revealing a key there is rejected, whether or
+    /// not it carries a value. A proof that hides the start of the query is
+    /// rejected too, so a page is never empty unless nothing matches or
+    /// `limit` is `Some(0)`.
     ///
     /// Requires proof version 1 or later.
     UpperBound,
@@ -279,17 +283,14 @@ impl QueryProofVerify for Query {
                                     child_hash_verified: bool,
                                     plain_trusted_value: bool|
              -> Result<_, Error> {
-                // Upper-bound mode: once the walk has stopped, the rest of the
-                // proof is structure the prover still had to include (ancestors
-                // and boundary keys). A node carrying a value there would be a
-                // result after a gap the verifier cannot see.
+                // Upper-bound mode: once the walk has stopped, a V1 prover
+                // reveals no further key (see `ProofLimitMode::UpperBound`).
+                // A key here would be a result, or a bound for one, after a
+                // gap the verifier cannot see.
                 if stopped_early {
-                    if value.is_some() {
-                        return Err(Error::InvalidProofError(
-                            "Proof returns data after the walk stopped".to_string(),
-                        ));
-                    }
-                    return Ok(());
+                    return Err(Error::InvalidProofError(
+                        "Proof reveals a key after the walk stopped".to_string(),
+                    ));
                 }
                 while let Some(item) = query.peek() {
                     // get next item in query
@@ -360,16 +361,6 @@ impl QueryProofVerify for Query {
                                 // cannot verify lower bound - we have an abridged
                                 // tree, so we cannot tell what the preceding key was
                                 Some(_) => {
-                                    // Upper-bound mode: a boundary key after hidden
-                                    // nodes, once the walk has results, is where the
-                                    // prover stopped; end the walk there.
-                                    if limit_mode == ProofLimitMode::UpperBound
-                                        && value.is_none()
-                                        && !output.is_empty()
-                                    {
-                                        stopped_early = true;
-                                        return Ok(());
-                                    }
                                     return Err(Error::InvalidProofError(
                                         "Cannot verify lower bound of queried range".to_string(),
                                     ));
@@ -413,14 +404,6 @@ impl QueryProofVerify for Query {
                                 // cannot verify upper bound - we have an abridged
                                 // tree so we cannot tell what the previous key was
                                 Some(_) => {
-                                    // Upper-bound mode: as for the lower bound.
-                                    if limit_mode == ProofLimitMode::UpperBound
-                                        && value.is_none()
-                                        && !output.is_empty()
-                                    {
-                                        stopped_early = true;
-                                        return Ok(());
-                                    }
                                     return Err(Error::InvalidProofError(
                                         "Cannot verify upper bound of queried range".to_string(),
                                     ));
@@ -754,7 +737,7 @@ impl QueryProofVerify for Query {
                         // contains, which is a result, so `output` is never
                         // empty here. The check keeps the "no stop before
                         // the first result" rule explicit, as at the other
-                        // two stopping points.
+                        // stopping point.
                         if limit_mode == ProofLimitMode::UpperBound && !output.is_empty() {
                             // The prover stopped here: it hides everything
                             // after its last result once its own limit runs
@@ -1831,9 +1814,8 @@ mod limit_mode_tests {
     /// Every shape a prover can cut short verifies at any ceiling at least
     /// the prover's limit: exclusive bounds in either direction, a cut
     /// landing on a query-item boundary, and `Key` items. Results are the
-    /// honest prefix and never exhausted. The exclusive-bound cases reveal
-    /// the bound key after the cut, which exact verification rejects even at
-    /// the prover's own limit.
+    /// honest prefix and never exhausted, and exact verification at the
+    /// prover's own limit gives the same prefix.
     #[test]
     fn honest_cut_of_every_shape_verifies_as_upper_bound() {
         let v = GroveVersion::latest();
@@ -1892,6 +1874,9 @@ mod limit_mode_tests {
                 assert_eq!(keys(&result), expected, "{query} {ceiling:?}");
                 assert!(!result.exhausted, "{query} {ceiling:?}");
             }
+            let (_, result) = verify(&query, &proof, Some(prover_limit), ProofLimitMode::Exact)
+                .unwrap_or_else(|e| panic!("{query} exact at {prover_limit}: {e}"));
+            assert_eq!(keys(&result), expected, "{query} exact");
         }
     }
 
@@ -1908,11 +1893,12 @@ mod limit_mode_tests {
     }
 
     /// Hand-built streams for what may follow a stop. In key order: results
-    /// 2 and 3, a hidden node, then a node for key 9 (outside `2..=5`). A
-    /// boundary key there ends the walk; a key with a value is data after the
-    /// stop and is rejected, even though 9 does not match the query.
+    /// 2 and 3, a hidden node inside `2..=5`, then a node for key 9. Hidden,
+    /// it ends the walk with 2 and 3. Revealed, it is a key after the stop
+    /// and is rejected, as a boundary node or with a value, even though 9
+    /// does not match the query.
     #[test]
-    fn after_a_stop_only_value_free_nodes_are_accepted() {
+    fn after_a_stop_no_key_may_be_revealed() {
         use grovedb_query::proofs::encode_into;
 
         use crate::proofs::{Node, Op as ProofOp};
@@ -1935,31 +1921,58 @@ mod limit_mode_tests {
 
         let (_, result) = verify(
             &query,
-            &stream(Node::KVDigest(vec![9], [9u8; 32])),
+            &stream(Node::KVHash([9u8; 32])),
             None,
             ProofLimitMode::UpperBound,
         )
-        .expect("a boundary key after the stop is accepted");
+        .expect("a hidden node after the stop is accepted");
         assert_eq!(keys(&result), vec![2, 3]);
         assert!(!result.exhausted);
 
-        let err = verify(
-            &query,
-            &stream(Node::KV(vec![9], vec![9])),
-            None,
-            ProofLimitMode::UpperBound,
-        )
-        .expect_err("a value after the stop must be rejected");
-        assert!(err.to_string().contains("after the walk stopped"), "{err}");
+        for revealed in [
+            Node::KVDigest(vec![9], [9u8; 32]),
+            Node::KV(vec![9], vec![9]),
+        ] {
+            let err = verify(&query, &stream(revealed), None, ProofLimitMode::UpperBound)
+                .expect_err("a key after the stop must be rejected");
+            assert!(
+                err.to_string()
+                    .contains("reveals a key after the walk stopped"),
+                "{err}"
+            );
+        }
 
         // Exact mode still refuses the hidden node inside the range.
         verify(
             &query,
-            &stream(Node::KVDigest(vec![9], [9u8; 32])),
+            &stream(Node::KVHash([9u8; 32])),
             None,
             ProofLimitMode::Exact,
         )
         .expect_err("exact mode must not accept a hidden node in range");
+    }
+
+    /// A prover from before V1 proofs hid their passed bounds reveals the
+    /// exclusive end `10` of `[2, 10)` after cutting at 3; grove v2 still
+    /// proves that shape. Upper-bound mode refuses it at any ceiling, while
+    /// the V1 proof of the same cut verifies.
+    #[test]
+    fn a_bound_revealed_after_the_cut_is_rejected() {
+        use grovedb_version::version::v2::GROVE_V2;
+
+        let v = GroveVersion::latest();
+        let merk = make_20_key_merk(v);
+        let query = query_of(vec![QueryItem::Range(vec![2]..vec![10])], true);
+        let revealing = prove(&merk, &query, Some(3), &GROVE_V2);
+        let hiding = prove(&merk, &query, Some(3), v);
+        assert_ne!(revealing, hiding);
+        for ceiling in [None, Some(3), Some(10)] {
+            verify(&query, &revealing, ceiling, ProofLimitMode::UpperBound)
+                .expect_err("a bound revealed after the cut must be rejected");
+            let (_, result) = verify(&query, &hiding, ceiling, ProofLimitMode::UpperBound)
+                .expect("the V1 shape verifies");
+            assert_eq!(keys(&result), vec![2, 3, 4]);
+        }
     }
 
     /// An empty result is exhausted when the proof shows nothing matches,
