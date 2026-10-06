@@ -32,7 +32,9 @@ mod temp_merk;
 
 use std::{convert::TryInto, ops::Range};
 
-use grovedb_costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
+use grovedb_costs::storage_cost::{
+    removal::StorageRemovedBytes::BasicStorageRemoval, transition::ElementFlagsUpdate,
+};
 use grovedb_path::SubtreePath;
 use grovedb_storage::{Storage, StorageBatch};
 use grovedb_version::version::GroveVersion;
@@ -96,7 +98,7 @@ pub fn apply_memonly_unchecked(
         },
         None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
         &|_, _| Ok(None),
-        &mut |_, _, _| Ok((false, None)),
+        &mut |_, _, _| Ok((ElementFlagsUpdate::Unchanged, None)),
         &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
             Ok((
                 BasicStorageRemoval(key_bytes_to_remove),
@@ -157,7 +159,7 @@ pub fn apply_to_memonly(
         },
         None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
         &|_, _| Ok(None),
-        &mut |_, _, _| Ok((false, None)),
+        &mut |_, _, _| Ok((ElementFlagsUpdate::Unchanged, None)),
         &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
             Ok((
                 BasicStorageRemoval(key_bytes_to_remove),

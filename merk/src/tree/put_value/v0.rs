@@ -5,16 +5,27 @@
 
 use grovedb_costs::{
     cost_return_on_error_no_add,
-    storage_cost::{removal::StorageRemovedBytes, StorageCost},
+    storage_cost::{removal::StorageRemovedBytes, transition::ElementFlagsUpdate, StorageCost},
     CostResult, CostsExt, OperationCost,
 };
 
+use grovedb_version::version::GroveVersion;
+
 use crate::{
-    tree::{kv::ValueDefinedCostType, CryptoHash, TreeFeatureType, TreeNode},
+    tree::{
+        kv::{ValueDefinedCostType, KV},
+        CryptoHash, TreeFeatureType, TreeNode,
+    },
     Error,
 };
 
 impl TreeNode {
+    /// How version 0 installs an ordinary value on a node: it keeps the `value_defined_cost` the
+    /// node was loaded with.
+    pub(super) fn install_ordinary_value_v0(kv: KV, value: Vec<u8>) -> KV {
+        kv.put_value_no_update_of_hashes(value)
+    }
+
     /// Version 0 of [`TreeNode::put_value`].
     #[inline]
     pub(super) fn put_value_v0(
@@ -31,7 +42,7 @@ impl TreeNode {
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<
-            (bool, Option<ValueDefinedCostType>),
+            (ElementFlagsUpdate, Option<ValueDefinedCostType>),
             Error,
         >,
         section_removal_bytes: &mut impl FnMut(
@@ -42,10 +53,11 @@ impl TreeNode {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
+        grove_version: &GroveVersion,
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
 
-        self.inner.kv = self.inner.kv.put_value_no_update_of_hashes(value);
+        self.inner.kv = Self::install_ordinary_value_v0(self.inner.kv, value);
         self.inner.kv.feature_type = feature_type;
 
         if self.old_value.is_some() {
@@ -58,7 +70,8 @@ impl TreeNode {
                     old_specialized_cost,
                     get_temp_new_value_with_old_flags,
                     update_tree_value_based_on_costs,
-                    section_removal_bytes
+                    section_removal_bytes,
+                    grove_version,
                 )
             );
         }
@@ -84,7 +97,7 @@ impl TreeNode {
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<
-            (bool, Option<ValueDefinedCostType>),
+            (ElementFlagsUpdate, Option<ValueDefinedCostType>),
             Error,
         >,
         section_removal_bytes: &mut impl FnMut(
@@ -95,10 +108,11 @@ impl TreeNode {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
+        grove_version: &GroveVersion,
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
 
-        self.inner.kv = self.inner.kv.put_value_no_update_of_hashes(value);
+        self.inner.kv = Self::install_ordinary_value_v0(self.inner.kv, value);
         self.inner.kv.feature_type = feature_type;
 
         if self.old_value.is_some() {
@@ -111,7 +125,8 @@ impl TreeNode {
                     old_specialized_cost,
                     get_temp_new_value_with_old_flags,
                     update_tree_value_based_on_costs,
-                    section_removal_bytes
+                    section_removal_bytes,
+                    grove_version,
                 )
             );
         }

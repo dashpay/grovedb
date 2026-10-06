@@ -48,8 +48,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prefix in key order, including a transaction's own uncommitted writes when
   read through it. Aux storage was reachable by exact key only, so a
   collection kept as one aux entry per member could not be read back. (#968)
+- An opt-in mode that settles storage owner changes:
+  `BatchApplyOptions::settle_owner_changes` together with
+  `StorageFlags::update_element_flags_settling_owner_changes` as the flags
+  callback. An update in place whose new storage flags name a different owner
+  than the stored flags is accounted as a deletion plus an insertion: every
+  byte of the old element, key included, counts as removed and is sectioned
+  to the old owner through its epoch map by `split_removal_bytes`, and every
+  byte of the new element, key included, counts as added and is charged to
+  the writer, who keeps the flags they wrote. Without the mode the new owner
+  took the whole element (and its refund) when the size changed, or paid for
+  an element that kept naming the old owner when it did not. Updates that
+  keep the owner, or that have no owner on either side, are unchanged. The
+  flags callback can now answer an `ElementFlagsUpdate` (`Unchanged`,
+  `Changed`, `SettleOwnerChange`, new in `grovedb_costs`) in place of a
+  `bool`; a batch refuses `SettleOwnerChange` unless the option is set, and
+  on a write that keeps the stored flags (an untrusted `RefreshReference`, or
+  a tree's root update), which brings no owner of its own, with
+  `Error::InvalidBatchOperation`. With the option, the average-case and
+  worst-case batch estimates charge every `InsertOrReplace`, `Replace`,
+  `Patch` and trusted `RefreshReference` of an element with flags, and the
+  write of a flagged tree the batch also writes under, at least the bytes its
+  node adds when inserted. For a backward-references element the worst case
+  counts the referrers it carries over at its declared capacity, each at the
+  largest entry registration admits, so a worst-case estimate is never below
+  a settled apply; the average case counts the typical referrer shape. With the option off on
+  GROVE_V1..V3, every cost, estimate, stored element and hash is what it was
+  before; GROVE_V4 also carries the two fixes below (same-batch references to
+  updated items, and replacements keeping flags of another length), which
+  change some outcomes with the option off too. A batch with the option
+  predicts a same-batch reference's target as GROVE_V4 does on every grove
+  version. `grovedb_merk::element::insert::specialized_put_cost` is new: the
+  value-defined cost an ordinary write puts an element with.
 
 ### Changed
+- **BREAKING**: `BatchApplyOptions` has a new public field,
+  `settle_owner_changes` (`false` by default), so a struct literal that names
+  every field without `..Default::default()` must add it.
+- **BREAKING**: the version tables gain two required fields,
+  `GroveDBApplyBatchVersions::same_batch_reference_target_prediction` and
+  `MerkTreeVersions::just_in_time_value_update`, so code building those
+  structs by hand must add them: `0` for a table matching GROVE_V1..V3, which
+  keeps the released behaviour, and `1` for one matching GROVE_V4.
+- **BREAKING**: Merk's just-in-time value update callback (the
+  `update_tree_value_based_on_costs` argument of
+  `Merk::apply_with_costs_just_in_time_value_update`, `Merk::apply_unchecked`,
+  `Merk::apply_unchecked_with_old_value_observer`, `Walker::apply_to`, the
+  `TreeNode` put functions and the `Walker::put_value*` family) answers
+  `(ElementFlagsUpdate, Option<ValueDefinedCostType>)` in place of
+  `(bool, Option<ValueDefinedCostType>)`. GroveDB's own flags callback (in
+  `apply_batch_with_element_flags_update`,
+  `apply_partial_batch_with_element_flags_update` and
+  `estimated_case_operations_for_batch`) takes any answer that converts into
+  an `ElementFlagsUpdate`, so a callback answering a `bool` compiles as before,
+  except one that never returns `Ok`, which now has to name its result type
+  (for example `-> Result<bool, Error>`).
+- **BREAKING**: `TreeNode::put_value_with_fixed_cost`,
+  `TreeNode::put_value_with_reference_value_hash_and_value_cost`,
+  `TreeNode::put_value_with_two_reference_value_hashes_and_value_cost` and
+  their `Walker` counterparts take a `&GroveVersion`, and
+  `TreeNode::provided_value_hash_put_final_value` is renamed
+  `TreeNode::predict_put_final_value` and takes the value-defined
+  cost the stored node is loaded with, the put it predicts (the new
+  `grovedb_merk::tree::PredictedPut`: an ordinary put as `TreeNode::put_value`
+  installs it at the grove version, a provided-value-hash put, or a put at a
+  specialized cost) and a `&GroveVersion`.
 - **BREAKING**: `delete_operation_for_delete_internal` and
   `delete_operations_for_delete_up_tree_while_empty` take the operations
   already pending in the batch as any `impl PendingOperations` in place of a
@@ -90,6 +153,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an absent path. `AxisKeys::empty_for_axis` is new. (#965)
 
 ### Fixed
+- A reference written in a batch that also updates its target item, such as
+  a Drive index reference refreshed alongside its document, committed to
+  bytes the update never stores when the target was a sum item (`SumItem`,
+  `ItemWithSumItem`) whose storage flags the flags update merges: an owned
+  item updated in a later epoch, or an unowned one gaining an owner. The
+  prediction assumed a sum item keeps its stored flags, while the apply
+  stores the merged ones, so the grove no longer verified; it also refused a
+  sum item replaced by an item, or the reverse, that applies on its own. From
+  GROVE_V4 (`apply_batch.same_batch_reference_target_prediction`) a reference
+  to a target the batch has already written commits to the bytes it stores,
+  and one to a target still to be written commits to the bytes Merk's own
+  just-in-time value update predicts for the put the apply performs, once
+  per target; the reference commits to exactly the stored bytes whatever the
+  order the batch writes the two in. GROVE_V1..V3 keep the old prediction.
+- A replacement whose flags update answered `Unchanged` was charged as if the
+  new value carried the old value's flags. When its own flags had a different
+  length (a write with longer, shorter or no flags without a flags update,
+  or an unowned item gaining an owner as it grows) the commit failed with a
+  storage cost mismatch. From GROVE_V4
+  (`merk_versions.tree.just_in_time_value_update`) the replacement is
+  measured from the bytes it stores, and a sum item or tree measured again
+  after its flags update rewrote and then restored its value is measured with
+  the value-defined cost of the bytes it holds; GROVE_V1..V3 keep the old
+  measurement.
 - A V1 proof whose limit runs out before its query does verifies at its own
   limit. The walk hides what it has not reached, but still passes back up
   through the ancestors of its last result, and one of them can be a range
