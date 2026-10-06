@@ -2142,6 +2142,19 @@ impl GroveDb {
         let is_aggregate_count_query = aggregate_kind == Some(AggregateKind::Count);
         let is_aggregate_sum_query = aggregate_kind == Some(AggregateKind::Sum);
         let is_aggregate_count_and_sum_query = aggregate_kind == Some(AggregateKind::CountAndSum);
+        // Whether the empty aggregate trees this layer routes through are
+        // descended into: only when they are the aggregate terminal itself
+        // (the children of this layer sit one level down), where the
+        // aggregate short-circuit answers an empty Merk with an
+        // authenticated zero. Above the terminal there is nothing below to
+        // prove, and a descent would reach an ordinary layer over an empty
+        // Merk, which has no Merk proof ("Cannot create proof for empty
+        // tree"); such a tree is proved in its parent layer with no lower
+        // layer instead, as an empty tree of any other type is, its value
+        // hash binding it to the empty child root (`NULL_HASH`). Only the
+        // three empty-host arms below read it.
+        let descends_into_empty_aggregate_tree =
+            aggregate_kind.is_some() && validated.aggregate_at_depth(path.len() + 1).is_some();
 
         // `query.left_to_right` is used verbatim, synthesized levels
         // included: this is the definition of the layer's op family, and
@@ -3222,11 +3235,19 @@ impl GroveDb {
                             // the recursion hits the ACOR short-circuit on
                             // the empty merk and emits an empty count proof
                             // (verifier reads it as count = 0).
+                            //
+                            // This and the two arms below descend only
+                            // while `descends_into_empty_aggregate_tree`
+                            // says so: an empty tree ABOVE the terminal
+                            // falls through to the generic empty-tree arm
+                            // instead, since a descent there reaches no
+                            // short-circuit and cannot prove an empty Merk.
                             Ok(Element::ProvableCountTree(None, ..))
                             | Ok(Element::ProvableCountSumTree(None, ..))
                             | Ok(Element::ProvableCountProvableSumTree(None, ..))
                                 if !done_with_results
                                     && is_aggregate_count_query
+                                    && descends_into_empty_aggregate_tree
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
                                 let mut lower_path = path.clone();
@@ -3271,6 +3292,7 @@ impl GroveDb {
                             | Ok(Element::ProvableCountProvableSumTree(None, ..))
                                 if !done_with_results
                                     && is_aggregate_sum_query
+                                    && descends_into_empty_aggregate_tree
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
                                 let mut lower_path = path.clone();
@@ -3310,6 +3332,7 @@ impl GroveDb {
                             Ok(Element::ProvableCountProvableSumTree(None, ..))
                                 if !done_with_results
                                     && is_aggregate_count_and_sum_query
+                                    && descends_into_empty_aggregate_tree
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
                                 let mut lower_path = path.clone();
@@ -3373,9 +3396,12 @@ impl GroveDb {
                                     // twin) and so hits the global budget
                                     // only — per-instance budgets count
                                     // result rows. The verifier mirrors
-                                    // this exactly; the aggregate-carrier
-                                    // empty hosts never reach this arm
-                                    // (their descent arms match first).
+                                    // this exactly. An empty aggregate
+                                    // terminal never reaches this arm (its
+                                    // descent arm matches first); an empty
+                                    // aggregate tree above the terminal
+                                    // does, and is proved here with no
+                                    // lower layer.
                                     limit_state.charge_empty_layer();
                                 } else {
                                     // The empty tree itself is the queried

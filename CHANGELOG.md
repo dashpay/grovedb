@@ -20,6 +20,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stays refused at every version.
 
 ### Added
+- `ProofLimitMode::UpperBound` and `QueryProofVerify::execute_proof_with_limit_mode`
+  verify a proof with `limit` as a ceiling instead of the exact limit the
+  prover used. Once the proof has returned a result, the walk stops at the
+  first hidden node inside a queried range, or at the end of the proof with
+  query items unproven. After that only hidden nodes may follow: a V1 prover
+  reveals no key once its limit runs out, so a node revealing one is
+  rejected, and the results stay a gap-free prefix. A proof from a prover
+  that still reveals a range bound after its cut (before the V1 shape hid
+  it) is therefore rejected. `ProofVerificationResult::exhausted` reports
+  whether the proof shows nothing further matches.
+  `GroveDb::verify_aggregate_{count,sum,count_and_sum}_query_per_key_up_to_limit`
+  verify carrier aggregates this way and return the root hash with a
+  `CarrierAggregatePage`: `Complete` when no further outer key matches,
+  otherwise `MoreAfter`, which carries the last outer key to continue after.
+  A ceiling of `Some(0)` is refused. A client no longer has to know the
+  server's limit to verify an honest proof. Existing verification calls
+  behave as before. The new trait
+  method has a default body (exact mode through `execute_proof`, upper-bound
+  mode refused), so existing `QueryProofVerify` implementations keep
+  compiling. Code outside the crate that builds a `ProofVerificationResult`
+  or destructures it exhaustively must account for the new `exhausted`
+  field. (#1008)
 - `StorageContext::raw_iter_aux`, a raw iterator over the aux column family
   scoped to the context's subtree prefix like `raw_iter`, and
   `GroveDb::get_aux_by_key_prefix`, which lists every aux entry under a key
@@ -148,6 +170,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after its flags update rewrote and then restored its value is measured with
   the value-defined cost of the bytes it holds; GROVE_V1..V3 keep the old
   measurement.
+- A V1 proof whose limit runs out before its query does verifies at its own
+  limit. The walk hides what it has not reached, but still passes back up
+  through the ancestors of its last result, and one of them can be a range
+  bound: an exclusive range end, or a later query item's bound. The prover
+  revealed that key as a boundary node behind the nodes it hid, where the
+  verifier cannot check it as a bound, so `verify_query` rejected the honest
+  proof with "Cannot verify lower bound of queried range". Whether that
+  happens depends on the tree's shape; it is common for subtrees written in
+  one batch. V1 proofs now hide the key like the rest of the unwalked tree.
+  The proof hashes to the same root, the verifier is unchanged, and every
+  released verifier accepts the new shape. So the fix needs no new version
+  slot, and clients verify these proofs as soon as the node serving them is
+  upgraded. Proofs the limit does not cut are byte-identical. Merk's prover
+  takes the shape from the grove version's proof envelope version
+  (`prove_query_non_serialized`), so V0 proofs (grove v1 and v2) keep their
+  shape and every prover under grove v3 and later, including the
+  indexed-axis secondary proofs, uses the new one. An unknown envelope
+  version is refused.
+- An aggregate-on-range proof (`AggregateCountOnRange`,
+  `AggregateSumOnRange`, `AggregateCountAndSumOnRange`, leaf or carrier
+  shape) whose path, or whose carrier key followed by a `subquery_path`, runs
+  through an EMPTY `ProvableCountTree`, `ProvableCountSumTree`,
+  `ProvableSumTree` or `ProvableCountProvableSumTree` above the aggregate
+  terminal is generated instead of failing with "Cannot create proof for
+  empty tree". The prover descended into such a tree so that an empty
+  terminal answers zero, but above the terminal the descent reached an
+  ordinary layer over an empty Merk, which has no Merk proof. That tree is
+  now proved in its parent layer with no lower layer, as an empty tree of
+  any other type there already was: its value hash binds it to the empty
+  child root, and `verify_query` with the single-key query over the same
+  path verifies the proof. The aggregate verifiers are unchanged and still
+  refuse a path that ends before the terminal. An empty tree that is the
+  terminal itself is still descended into, to its authenticated zero. This
+  holds at every grove version that proves aggregate queries (`GROVE_V3` and
+  later): the descent above the terminal always failed, so no proof that
+  generated before changes, and the change needs no version slot. (#1010)
 - A path with a segment longer than 255 bytes no longer panics. Storage
   panicked while building the subtree prefix for it, since a prefix records
   each segment length in one byte. Where it did, the call now returns

@@ -80,6 +80,31 @@ impl Default for VerifyOptions {
     }
 }
 
+/// How a verifier interprets the `limit` it is given.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ProofLimitMode {
+    /// The prover used exactly this limit. The proof may hide the rest of
+    /// the queried range only once `limit` results have been returned; a
+    /// hidden node inside the range before that is an error.
+    Exact,
+    /// The prover used this limit or a smaller one, so the verifier does
+    /// not need to know it. Once the proof has returned at least one result,
+    /// the walk stops at the first point the proof leaves unrevealed: a
+    /// hidden node inside a queried range, or the end of the proof with
+    /// query items unproven. The results are then a gap-free prefix of the
+    /// query, and [`ProofVerificationResult::exhausted`] is false.
+    ///
+    /// After the stop the proof may hold only hidden nodes: once a V1
+    /// prover's limit runs out it reveals no further key, not even a range
+    /// bound it passes. A node revealing a key there is rejected, whether or
+    /// not it carries a value. A proof that hides the start of the query is
+    /// rejected too, so a page is never empty unless nothing matches or
+    /// `limit` is `Some(0)`.
+    ///
+    /// Requires proof version 1 or later.
+    UpperBound,
+}
+
 /// Extension trait adding proof verification methods to `Query`.
 ///
 /// These methods depend on merk-internal types (Node, Op, Decoder, etc.)
@@ -101,6 +126,32 @@ pub trait QueryProofVerify {
         left_to_right: bool,
         proof_version: u16,
     ) -> CostResult<(MerkHash, ProofVerificationResult), Error>;
+
+    /// [`QueryProofVerify::execute_proof`] with an explicit
+    /// [`ProofLimitMode`]. `execute_proof` is this with
+    /// [`ProofLimitMode::Exact`].
+    ///
+    /// The default body keeps existing implementations compiling: it serves
+    /// [`ProofLimitMode::Exact`] through [`QueryProofVerify::execute_proof`]
+    /// and refuses [`ProofLimitMode::UpperBound`]. The implementation for
+    /// [`Query`] supports both.
+    fn execute_proof_with_limit_mode(
+        &self,
+        bytes: &[u8],
+        limit: Option<u16>,
+        limit_mode: ProofLimitMode,
+        left_to_right: bool,
+        proof_version: u16,
+    ) -> CostResult<(MerkHash, ProofVerificationResult), Error> {
+        match limit_mode {
+            ProofLimitMode::Exact => self.execute_proof(bytes, limit, left_to_right, proof_version),
+            ProofLimitMode::UpperBound => Err(Error::InvalidProofError(
+                "upper-bound limit verification is not supported by this implementation"
+                    .to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default()),
+        }
+    }
 
     /// Verifies the encoded proof with the given query and expected hash.
     fn verify_proof(
@@ -131,10 +182,34 @@ impl QueryProofVerify for Query {
         left_to_right: bool,
         proof_version: u16,
     ) -> CostResult<(MerkHash, ProofVerificationResult), Error> {
+        self.execute_proof_with_limit_mode(
+            bytes,
+            limit,
+            ProofLimitMode::Exact,
+            left_to_right,
+            proof_version,
+        )
+    }
+
+    fn execute_proof_with_limit_mode(
+        &self,
+        bytes: &[u8],
+        limit: Option<u16>,
+        limit_mode: ProofLimitMode,
+        left_to_right: bool,
+        proof_version: u16,
+    ) -> CostResult<(MerkHash, ProofVerificationResult), Error> {
+        if limit_mode == ProofLimitMode::UpperBound && proof_version < 1 {
+            return Err(Error::InvalidProofError(
+                "upper-bound limit verification requires proof version 1 or later".to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
+        }
         #[cfg(feature = "proof_debug")]
         {
             println!(
-                "executing proof with limit {:?} going {} using query {}",
+                "executing proof with {:?} limit {:?} going {} using query {}",
+                limit_mode,
                 limit,
                 if left_to_right {
                     "left to right"
@@ -152,6 +227,9 @@ impl QueryProofVerify for Query {
         let mut in_range = false;
         let original_limit = limit;
         let mut current_limit = limit;
+        // Upper-bound mode only: set where the proof stops revealing the
+        // query, which is where the prover stopped walking.
+        let mut stopped_early = false;
 
         let mut decoder = Decoder::new(bytes);
 
@@ -205,6 +283,15 @@ impl QueryProofVerify for Query {
                                     child_hash_verified: bool,
                                     plain_trusted_value: bool|
              -> Result<_, Error> {
+                // Upper-bound mode: once the walk has stopped, a V1 prover
+                // reveals no further key (see `ProofLimitMode::UpperBound`).
+                // A key here would be a result, or a bound for one, after a
+                // gap the verifier cannot see.
+                if stopped_early {
+                    return Err(Error::InvalidProofError(
+                        "Proof reveals a key after the walk stopped".to_string(),
+                    ));
+                }
                 while let Some(item) = query.peek() {
                     // get next item in query
                     let query_item = *item;
@@ -646,11 +733,26 @@ impl QueryProofVerify for Query {
                 | Node::KVHashSum(..)
                 | Node::KVHashCountSum(..) => {
                     if in_range {
-                        return Err(Error::InvalidProofError(format!(
-                            "Proof is missing data for query range. Encountered unexpected node \
-                             type: {}",
-                            node
-                        )));
+                        // `in_range` is only set by a node the current item
+                        // contains, which is a result, so `output` is never
+                        // empty here. The check keeps the "no stop before
+                        // the first result" rule explicit, as at the other
+                        // stopping point.
+                        if limit_mode == ProofLimitMode::UpperBound && !output.is_empty() {
+                            // The prover stopped here: it hides everything
+                            // after its last result once its own limit runs
+                            // out. Everything from this node on is
+                            // unrevealed, so the walk ends with the results
+                            // so far.
+                            in_range = false;
+                            stopped_early = true;
+                        } else {
+                            return Err(Error::InvalidProofError(format!(
+                                "Proof is missing data for query range. Encountered unexpected \
+                                 node type: {}",
+                                node
+                            )));
+                        }
                     }
                 }
                 Node::HashWithCount(..) => {
@@ -757,7 +859,7 @@ impl QueryProofVerify for Query {
         // we have remaining query items, check absence proof against right edge of
         // tree
         if query.peek().is_some() {
-            if current_limit == Some(0) {
+            if current_limit == Some(0) || stopped_early {
             } else {
                 match last_push {
                     // last node in tree was less than queried item
@@ -782,6 +884,12 @@ impl QueryProofVerify for Query {
                     Some(Node::KVDigestCountSum(..)) => {}
                     Some(Node::KVRefValueHashCountSum(..)) => {}
 
+                    // Upper-bound mode: the prover stopped after the results so
+                    // far and hid the rest; the remaining items are unproven.
+                    _ if limit_mode == ProofLimitMode::UpperBound && !output.is_empty() => {
+                        stopped_early = true;
+                    }
+
                     // proof contains abridged data so we cannot verify absence of
                     // remaining query items
                     _ => {
@@ -794,11 +902,18 @@ impl QueryProofVerify for Query {
             }
         }
 
+        // Whether the proof shows nothing further matches: true unless the walk
+        // stopped (at the limit, or early in upper-bound mode) with query items
+        // left. When items were left and it is true, the absence check above
+        // proved them.
+        let exhausted = !stopped_early && (query.peek().is_none() || current_limit != Some(0));
+
         Ok((
             root.hash().unwrap_add_cost(&mut cost),
             ProofVerificationResult {
                 result_set: output,
                 limit: current_limit,
+                exhausted,
             },
         ))
         .wrap_with_cost(cost)
@@ -925,6 +1040,14 @@ pub struct ProofVerificationResult {
     pub result_set: Vec<ProvedKeyOptionalValue>,
     /// Limit
     pub limit: Option<u16>,
+    /// Whether the proof shows there is nothing more to return: every
+    /// query item was walked to its end. False when the walk stopped with
+    /// query items left, because the limit ran out or, in
+    /// [`ProofLimitMode::UpperBound`] mode, because the proof stopped
+    /// revealing the query; later results may then exist. This covers this
+    /// merk layer's query only, not a whole GroveDB path query with
+    /// subqueries.
+    pub exhausted: bool,
 }
 
 impl fmt::Display for ProofVerificationResult {
@@ -936,6 +1059,7 @@ impl fmt::Display for ProofVerificationResult {
         }
         writeln!(f, "  ],")?;
         writeln!(f, "  limit: {:?}", self.limit)?;
+        writeln!(f, "  exhausted: {}", self.exhausted)?;
         write!(f, "}}")
     }
 }
@@ -1467,5 +1591,495 @@ mod proof_stream_direction_tests {
             err.to_string().contains("maximum operation count"),
             "unexpected error: {err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod limit_mode_tests {
+    //! `ProofLimitMode::UpperBound` lets a verifier accept a proof the
+    //! prover cut short at a limit no greater than the verifier's, without
+    //! knowing the prover's limit. These pin that honest early stops
+    //! verify, that the results stay a gap-free prefix, and that
+    //! `exhausted` only claims completeness the proof shows.
+
+    use grovedb_version::version::GroveVersion;
+
+    use super::{ProofLimitMode, ProofVerificationResult, QueryProofVerify, PROOF_VERSION_LATEST};
+    use crate::{
+        proofs::{query::QueryItem, Query},
+        test_utils::TempMerk,
+        tree::Op,
+        CryptoHash,
+        TreeFeatureType::BasicMerkNode,
+    };
+
+    /// A plain merk holding the single-byte keys `0..20`.
+    fn make_20_key_merk(grove_version: &GroveVersion) -> TempMerk {
+        let mut merk = TempMerk::new(grove_version);
+        let entries: Vec<(Vec<u8>, Op)> = (0u8..20)
+            .map(|i| (vec![i], Op::Put(vec![i], BasicMerkNode)))
+            .collect();
+        merk.apply::<_, Vec<_>>(&entries, &[], None, grove_version)
+            .unwrap()
+            .expect("apply should succeed");
+        merk.commit(grove_version);
+        merk
+    }
+
+    fn query_of(items: Vec<QueryItem>, left_to_right: bool) -> Query {
+        let mut query = Query::new();
+        for item in items {
+            query.insert_item(item);
+        }
+        query.left_to_right = left_to_right;
+        query
+    }
+
+    fn prove(merk: &TempMerk, query: &Query, limit: Option<u16>, v: &GroveVersion) -> Vec<u8> {
+        merk.prove(query.clone(), limit, v)
+            .unwrap()
+            .expect("prove should succeed")
+            .proof
+    }
+
+    fn verify(
+        query: &Query,
+        proof: &[u8],
+        limit: Option<u16>,
+        limit_mode: ProofLimitMode,
+    ) -> Result<(CryptoHash, ProofVerificationResult), crate::Error> {
+        query
+            .execute_proof_with_limit_mode(
+                proof,
+                limit,
+                limit_mode,
+                query.left_to_right,
+                PROOF_VERSION_LATEST,
+            )
+            .unwrap()
+    }
+
+    fn keys(result: &ProofVerificationResult) -> Vec<u8> {
+        result.result_set.iter().map(|r| r.key[0]).collect()
+    }
+
+    /// A proof the prover cut at 5 results verifies under any upper bound
+    /// of at least 5, including none, and is reported as not exhausted.
+    /// Exact mode still needs the prover's limit exactly.
+    fn check_honest_early_stop(left_to_right: bool, expected: Vec<u8>) {
+        let v = GroveVersion::latest();
+        let merk = make_20_key_merk(v);
+        let root = merk.root_hash().unwrap();
+        let query = query_of(vec![QueryItem::RangeFrom(vec![2]..)], left_to_right);
+        let proof = prove(&merk, &query, Some(5), v);
+
+        for ceiling in [None, Some(5), Some(10), Some(u16::MAX)] {
+            let (hash, result) = verify(&query, &proof, ceiling, ProofLimitMode::UpperBound)
+                .unwrap_or_else(|e| panic!("upper bound {ceiling:?} must accept: {e}"));
+            assert_eq!(hash, root);
+            assert_eq!(keys(&result), expected, "upper bound {ceiling:?}");
+            assert!(
+                !result.exhausted,
+                "upper bound {ceiling:?}: more keys exist"
+            );
+        }
+
+        // More results than the ceiling is still refused.
+        let err = verify(&query, &proof, Some(4), ProofLimitMode::UpperBound)
+            .expect_err("5 results must not verify under an upper bound of 4");
+        assert!(err.to_string().contains("more data than limit"), "{err}");
+
+        // Exact mode is unchanged: the prover's limit verifies, no limit
+        // fails at the hidden tail.
+        let (_, result) =
+            verify(&query, &proof, Some(5), ProofLimitMode::Exact).expect("exact limit verifies");
+        assert_eq!(keys(&result), expected);
+        let err = verify(&query, &proof, None, ProofLimitMode::Exact)
+            .expect_err("exact mode without the prover's limit must fail");
+        assert!(
+            err.to_string().contains("missing data for query range"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn honest_early_stop_verifies_as_upper_bound_ascending() {
+        check_honest_early_stop(true, vec![2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn honest_early_stop_verifies_as_upper_bound_descending() {
+        check_honest_early_stop(false, vec![19, 18, 17, 16, 15]);
+    }
+
+    /// A proof that walks the whole range is reported exhausted, in
+    /// either mode.
+    #[test]
+    fn complete_proof_is_exhausted() {
+        let v = GroveVersion::latest();
+        let merk = make_20_key_merk(v);
+        for left_to_right in [true, false] {
+            let query = query_of(vec![QueryItem::Range(vec![2]..vec![8])], left_to_right);
+            let proof = prove(&merk, &query, None, v);
+            for (limit, mode) in [
+                (None, ProofLimitMode::UpperBound),
+                (Some(100), ProofLimitMode::UpperBound),
+                (None, ProofLimitMode::Exact),
+            ] {
+                let (_, result) = verify(&query, &proof, limit, mode).expect("full proof verifies");
+                assert_eq!(result.result_set.len(), 6);
+                assert!(result.exhausted, "{limit:?} {mode:?}");
+            }
+        }
+    }
+
+    /// `exhausted` is conservative: when the walk ends exactly at the limit
+    /// with the range still open, the proof does not show what follows, so
+    /// it is not claimed even though nothing does. `2..` holds exactly 18
+    /// keys here.
+    #[test]
+    fn walk_ending_at_the_limit_is_not_claimed_exhausted() {
+        let v = GroveVersion::latest();
+        let merk = make_20_key_merk(v);
+        let query = query_of(vec![QueryItem::RangeFrom(vec![2]..)], true);
+        let proof = prove(&merk, &query, Some(18), v);
+        let (_, result) = verify(&query, &proof, Some(18), ProofLimitMode::UpperBound)
+            .expect("proof at its own limit verifies");
+        assert_eq!(keys(&result), (2u8..20).collect::<Vec<_>>());
+        assert!(!result.exhausted);
+    }
+
+    /// An early stop inside one query item leaves the later items
+    /// unproven: they are not returned and the result is not exhausted.
+    #[test]
+    fn early_stop_leaves_later_query_items_unproven() {
+        let v = GroveVersion::latest();
+        let merk = make_20_key_merk(v);
+        let query = query_of(
+            vec![
+                QueryItem::RangeInclusive(vec![2]..=vec![9]),
+                QueryItem::Key(vec![15]),
+            ],
+            true,
+        );
+        let proof = prove(&merk, &query, Some(3), v);
+        let (_, result) = verify(&query, &proof, None, ProofLimitMode::UpperBound)
+            .expect("early stop in the first item verifies");
+        assert_eq!(keys(&result), vec![2, 3, 4]);
+        assert!(!result.exhausted);
+    }
+
+    /// A proof that hides keys inside the range and then reveals a later
+    /// result is not a prefix. Here the proof was made for the keys
+    /// `{1, 2, 7, 8}`, so `3..=6` are hidden; read as `1..5` plus `8` it
+    /// would skip 3 and 4, and must be rejected.
+    #[test]
+    fn result_after_a_hidden_node_in_range_is_rejected() {
+        let v = GroveVersion::latest();
+        let merk = make_20_key_merk(v);
+        for left_to_right in [true, false] {
+            let proved = query_of(
+                [1u8, 2, 7, 8]
+                    .into_iter()
+                    .map(|k| QueryItem::Key(vec![k]))
+                    .collect(),
+                left_to_right,
+            );
+            let proof = prove(&merk, &proved, None, v);
+            let read_as = query_of(
+                vec![QueryItem::Range(vec![1]..vec![5]), QueryItem::Key(vec![8])],
+                left_to_right,
+            );
+            verify(&read_as, &proof, None, ProofLimitMode::UpperBound)
+                .expect_err("a gap inside the range must not verify as a prefix");
+        }
+    }
+
+    /// A proof that hides the start of the range returns nothing, which
+    /// would be an empty page that is not exhausted. Upper-bound mode still
+    /// refuses it, as exact mode does.
+    #[test]
+    fn hidden_start_of_range_is_rejected() {
+        let v = GroveVersion::latest();
+        let merk = make_20_key_merk(v);
+        let proved = query_of(vec![QueryItem::Key(vec![0]), QueryItem::Key(vec![9])], true);
+        let proof = prove(&merk, &proved, None, v);
+        let read_as = query_of(vec![QueryItem::Range(vec![2]..vec![6])], true);
+        for limit in [None, Some(10)] {
+            verify(&read_as, &proof, limit, ProofLimitMode::UpperBound)
+                .expect_err("a proof hiding the whole range must not verify");
+        }
+    }
+
+    /// Every shape a prover can cut short verifies at any ceiling at least
+    /// the prover's limit: exclusive bounds in either direction, a cut
+    /// landing on a query-item boundary, and `Key` items. Results are the
+    /// honest prefix and never exhausted, and exact verification at the
+    /// prover's own limit gives the same prefix.
+    #[test]
+    fn honest_cut_of_every_shape_verifies_as_upper_bound() {
+        let v = GroveVersion::latest();
+        let merk = make_20_key_merk(v);
+        let cases: Vec<(Vec<QueryItem>, bool, u16, Vec<u8>)> = vec![
+            (
+                vec![QueryItem::Range(vec![2]..vec![10])],
+                true,
+                3,
+                vec![2, 3, 4],
+            ),
+            (vec![QueryItem::RangeTo(..vec![10])], true, 3, vec![0, 1, 2]),
+            (
+                vec![QueryItem::RangeAfterTo(vec![1]..vec![10])],
+                true,
+                3,
+                vec![2, 3, 4],
+            ),
+            (
+                vec![QueryItem::RangeAfter(vec![10]..)],
+                false,
+                3,
+                vec![19, 18, 17],
+            ),
+            (
+                vec![QueryItem::RangeAfterTo(vec![10]..vec![18])],
+                false,
+                3,
+                vec![17, 16, 15],
+            ),
+            (
+                vec![
+                    QueryItem::RangeInclusive(vec![2]..=vec![4]),
+                    QueryItem::RangeFrom(vec![10]..),
+                ],
+                true,
+                3,
+                vec![2, 3, 4],
+            ),
+            (
+                [1u8, 3, 5, 7]
+                    .into_iter()
+                    .map(|k| QueryItem::Key(vec![k]))
+                    .collect(),
+                true,
+                2,
+                vec![1, 3],
+            ),
+        ];
+        for (items, left_to_right, prover_limit, expected) in cases {
+            let query = query_of(items, left_to_right);
+            let proof = prove(&merk, &query, Some(prover_limit), v);
+            for ceiling in [None, Some(prover_limit), Some(prover_limit + 3)] {
+                let (_, result) = verify(&query, &proof, ceiling, ProofLimitMode::UpperBound)
+                    .unwrap_or_else(|e| panic!("{query} cut at {prover_limit}, {ceiling:?}: {e}"));
+                assert_eq!(keys(&result), expected, "{query} {ceiling:?}");
+                assert!(!result.exhausted, "{query} {ceiling:?}");
+            }
+            let (_, result) = verify(&query, &proof, Some(prover_limit), ProofLimitMode::Exact)
+                .unwrap_or_else(|e| panic!("{query} exact at {prover_limit}: {e}"));
+            assert_eq!(keys(&result), expected, "{query} exact");
+        }
+    }
+
+    /// A ceiling of 0 admits no results.
+    #[test]
+    fn upper_bound_of_zero_refuses_any_result() {
+        let v = GroveVersion::latest();
+        let merk = make_20_key_merk(v);
+        let query = query_of(vec![QueryItem::RangeFrom(vec![2]..)], true);
+        let proof = prove(&merk, &query, Some(5), v);
+        let err = verify(&query, &proof, Some(0), ProofLimitMode::UpperBound)
+            .expect_err("a ceiling of 0 must refuse results");
+        assert!(err.to_string().contains("more data than limit"), "{err}");
+    }
+
+    /// Hand-built streams for what may follow a stop. In key order: results
+    /// 2 and 3, a hidden node inside `2..=5`, then a node for key 9. Hidden,
+    /// it ends the walk with 2 and 3. Revealed, it is a key after the stop
+    /// and is rejected, as a boundary node or with a value, even though 9
+    /// does not match the query.
+    #[test]
+    fn after_a_stop_no_key_may_be_revealed() {
+        use grovedb_query::proofs::encode_into;
+
+        use crate::proofs::{Node, Op as ProofOp};
+
+        let stream = |after: Node| {
+            let ops = [
+                ProofOp::Push(Node::KV(vec![2], vec![2])),
+                ProofOp::Push(Node::KV(vec![3], vec![3])),
+                ProofOp::Parent,
+                ProofOp::Push(Node::Hash([7u8; 32])),
+                ProofOp::Child,
+                ProofOp::Push(after),
+                ProofOp::Parent,
+            ];
+            let mut bytes = vec![];
+            encode_into(ops.iter(), &mut bytes);
+            bytes
+        };
+        let query = query_of(vec![QueryItem::RangeInclusive(vec![2]..=vec![5])], true);
+
+        let (_, result) = verify(
+            &query,
+            &stream(Node::KVHash([9u8; 32])),
+            None,
+            ProofLimitMode::UpperBound,
+        )
+        .expect("a hidden node after the stop is accepted");
+        assert_eq!(keys(&result), vec![2, 3]);
+        assert!(!result.exhausted);
+
+        for revealed in [
+            Node::KVDigest(vec![9], [9u8; 32]),
+            Node::KV(vec![9], vec![9]),
+        ] {
+            let err = verify(&query, &stream(revealed), None, ProofLimitMode::UpperBound)
+                .expect_err("a key after the stop must be rejected");
+            assert!(
+                err.to_string()
+                    .contains("reveals a key after the walk stopped"),
+                "{err}"
+            );
+        }
+
+        // Exact mode still refuses the hidden node inside the range.
+        verify(
+            &query,
+            &stream(Node::KVHash([9u8; 32])),
+            None,
+            ProofLimitMode::Exact,
+        )
+        .expect_err("exact mode must not accept a hidden node in range");
+    }
+
+    /// A prover from before V1 proofs hid their passed bounds reveals the
+    /// exclusive end `10` of `[2, 10)` after cutting at 3; grove v2 still
+    /// proves that shape. Upper-bound mode refuses it at any ceiling, while
+    /// the V1 proof of the same cut verifies.
+    #[test]
+    fn a_bound_revealed_after_the_cut_is_rejected() {
+        use grovedb_version::version::v2::GROVE_V2;
+
+        let v = GroveVersion::latest();
+        let merk = make_20_key_merk(v);
+        let query = query_of(vec![QueryItem::Range(vec![2]..vec![10])], true);
+        let revealing = prove(&merk, &query, Some(3), &GROVE_V2);
+        let hiding = prove(&merk, &query, Some(3), v);
+        assert_ne!(revealing, hiding);
+        for ceiling in [None, Some(3), Some(10)] {
+            verify(&query, &revealing, ceiling, ProofLimitMode::UpperBound)
+                .expect_err("a bound revealed after the cut must be rejected");
+            let (_, result) = verify(&query, &hiding, ceiling, ProofLimitMode::UpperBound)
+                .expect("the V1 shape verifies");
+            assert_eq!(keys(&result), vec![2, 3, 4]);
+        }
+    }
+
+    /// An empty result is exhausted when the proof shows nothing matches,
+    /// in both modes and directions.
+    #[test]
+    fn verified_empty_range_is_exhausted() {
+        let v = GroveVersion::latest();
+        let merk = make_20_key_merk(v);
+        let root = merk.root_hash().unwrap();
+        for left_to_right in [true, false] {
+            let query = query_of(vec![QueryItem::Range(vec![50]..vec![60])], left_to_right);
+            let proof = prove(&merk, &query, None, v);
+            for mode in [ProofLimitMode::Exact, ProofLimitMode::UpperBound] {
+                for limit in [None, Some(5)] {
+                    let (hash, result) = verify(&query, &proof, limit, mode)
+                        .unwrap_or_else(|e| panic!("{mode:?} {limit:?}: {e}"));
+                    assert_eq!(hash, root);
+                    assert!(result.result_set.is_empty());
+                    assert!(result.exhausted, "{left_to_right} {mode:?} {limit:?}");
+                }
+            }
+        }
+    }
+
+    /// With a limit of 0 nothing is walked, so the result is empty and not
+    /// exhausted even though keys match, in both modes and directions.
+    #[test]
+    fn zero_limit_empty_result_is_not_exhausted() {
+        let v = GroveVersion::latest();
+        let merk = make_20_key_merk(v);
+        let root = merk.root_hash().unwrap();
+        for left_to_right in [true, false] {
+            let query = query_of(vec![QueryItem::RangeFrom(vec![2]..)], left_to_right);
+            let proof = prove(&merk, &query, Some(0), v);
+            for mode in [ProofLimitMode::Exact, ProofLimitMode::UpperBound] {
+                let (hash, result) = verify(&query, &proof, Some(0), mode)
+                    .unwrap_or_else(|e| panic!("{mode:?}: {e}"));
+                assert_eq!(hash, root);
+                assert!(result.result_set.is_empty());
+                assert!(!result.exhausted, "{left_to_right} {mode:?}");
+            }
+        }
+    }
+
+    /// An implementation that only provides `execute_proof` gets exact
+    /// mode through the default `execute_proof_with_limit_mode`, and a clear
+    /// refusal for upper-bound mode.
+    #[test]
+    fn default_limit_mode_body_serves_exact_and_refuses_upper_bound() {
+        use grovedb_costs::{CostResult, CostsExt, OperationCost};
+
+        struct ExactOnly;
+        impl QueryProofVerify for ExactOnly {
+            fn execute_proof(
+                &self,
+                _bytes: &[u8],
+                limit: Option<u16>,
+                _left_to_right: bool,
+                _proof_version: u16,
+            ) -> CostResult<(CryptoHash, ProofVerificationResult), crate::Error> {
+                Ok((
+                    [1u8; 32],
+                    ProofVerificationResult {
+                        result_set: vec![],
+                        limit,
+                        exhausted: true,
+                    },
+                ))
+                .wrap_with_cost(OperationCost::default())
+            }
+
+            fn verify_proof(
+                &self,
+                _bytes: &[u8],
+                _limit: Option<u16>,
+                _left_to_right: bool,
+                _expected_hash: CryptoHash,
+            ) -> CostResult<ProofVerificationResult, crate::Error> {
+                unreachable!("not used by this test")
+            }
+        }
+
+        let (hash, result) = ExactOnly
+            .execute_proof_with_limit_mode(&[], Some(3), ProofLimitMode::Exact, true, 1)
+            .unwrap()
+            .expect("exact mode delegates to execute_proof");
+        assert_eq!(hash, [1u8; 32]);
+        assert_eq!(result.limit, Some(3));
+
+        let err = ExactOnly
+            .execute_proof_with_limit_mode(&[], Some(3), ProofLimitMode::UpperBound, true, 1)
+            .unwrap()
+            .expect_err("upper-bound mode is refused by default");
+        assert!(err.to_string().contains("not supported"), "{err}");
+    }
+
+    /// Upper-bound mode is V1-only; V0 verification is frozen.
+    #[test]
+    fn upper_bound_mode_refuses_proof_version_0() {
+        let v = GroveVersion::latest();
+        let merk = make_20_key_merk(v);
+        let query = query_of(vec![QueryItem::RangeFrom(vec![2]..)], true);
+        let proof = prove(&merk, &query, Some(5), v);
+        let err = query
+            .execute_proof_with_limit_mode(&proof, None, ProofLimitMode::UpperBound, true, 0)
+            .unwrap()
+            .expect_err("proof version 0 must be refused");
+        assert!(err.to_string().contains("proof version 1"), "{err}");
     }
 }
