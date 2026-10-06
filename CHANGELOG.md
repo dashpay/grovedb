@@ -68,7 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an absent path. `AxisKeys::empty_for_axis` is new. (#965)
 
 ### Fixed
-- From `GROVE_V4`, an aggregate-on-range proof (`AggregateCountOnRange`,
+- An aggregate-on-range proof (`AggregateCountOnRange`,
   `AggregateSumOnRange`, `AggregateCountAndSumOnRange`, leaf or carrier
   shape) whose path, or whose carrier key followed by a `subquery_path`, runs
   through an EMPTY `ProvableCountTree`, `ProvableCountSumTree`,
@@ -82,10 +82,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   child root, and `verify_query` with the single-key query over the same
   path verifies the proof. The aggregate verifiers are unchanged and still
   refuse a path that ends before the terminal. An empty tree that is the
-  terminal itself is still descended into, to its authenticated zero, at
-  every version. `GROVE_V1`..`GROVE_V3` keep failing, through the new
-  `proof.empty_tree_above_aggregate_terminal` slot (**BREAKING** for code
-  building `GroveDBOperationsProofVersions` by hand).
+  terminal itself is still descended into, to its authenticated zero. This
+  holds at every grove version that proves aggregate queries (`GROVE_V3` and
+  later): the descent above the terminal always failed, so no proof that
+  generated before changes, and the change needs no version slot. (#1010)
 - A path with a segment longer than 255 bytes no longer panics. Storage
   panicked while building the subtree prefix for it, since a prefix records
   each segment length in one byte. Where it did, the call now returns

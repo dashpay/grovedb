@@ -500,31 +500,6 @@ pub struct GroveDBOperationsProofVersions {
     /// Gated because it adds an acceptance rule to the live V1
     /// envelope, same as `axis_descent_in_v1_envelope`.
     pub sum_budget_in_v1_envelope: FeatureVersion,
-    /// Whether the V1 prover proves an **empty aggregate tree above an
-    /// aggregate-on-range terminal** in its parent layer, as it proves every
-    /// other empty tree, instead of descending into it.
-    ///
-    /// An aggregate-on-range query (`AggregateCountOnRange`,
-    /// `AggregateSumOnRange`, `AggregateCountAndSumOnRange`, leaf or carrier
-    /// shape) descends into an empty `ProvableCountTree`,
-    /// `ProvableCountSumTree`, `ProvableSumTree` or
-    /// `ProvableCountProvableSumTree` that the query routes through, so that
-    /// an empty terminal answers with the authenticated zero its aggregate
-    /// short-circuit emits.
-    ///
-    /// - `0` (V1..V3): the prover descends into every such empty tree. Where
-    ///   the tree sits above the terminal (a segment of the path, or a
-    ///   carrier key followed by a `subquery_path`), the descent reaches an
-    ///   ordinary layer over an empty Merk and generation fails with
-    ///   "Cannot create proof for empty tree".
-    /// - `1` (V4+): it descends only into an empty tree that is the terminal
-    ///   itself. An empty tree above the terminal is proved in its parent
-    ///   layer with no lower layer, its value hash binding it to the empty
-    ///   child root, exactly like an empty tree of any other type there.
-    ///
-    /// Prover only: every verifier is unchanged. Gated so that the proofs,
-    /// and the refusals, of released versions stay as they were.
-    pub empty_tree_above_aggregate_terminal: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
