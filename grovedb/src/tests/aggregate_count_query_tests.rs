@@ -16,6 +16,7 @@ mod tests {
     use grovedb_version::version::{v2::GROVE_V2, GroveVersion};
 
     use crate::{
+        operations::proof::CarrierAggregatePage,
         tests::{make_test_grovedb, TEST_LEAF},
         Element, GroveDb, PathQuery, SizedQuery,
     };
@@ -114,6 +115,22 @@ mod tests {
                 .expect("verify should succeed");
         assert_eq!(root, expected_root, "verifier reconstructed wrong root");
         assert_eq!(count, expected_count, "verifier returned wrong count");
+
+        // A leaf query has no outer walk, so the upper-bound entry point
+        // returns the same single entry as a complete page.
+        let per_key = GroveDb::verify_aggregate_count_query_per_key_up_to_limit(
+            &proof,
+            &path_query,
+            grove_version,
+        )
+        .expect("upper-bound verify of a leaf query should succeed");
+        assert_eq!(
+            per_key,
+            (
+                expected_root,
+                CarrierAggregatePage::Complete(vec![(Vec::new(), expected_count)])
+            )
+        );
     }
 
     #[test]
@@ -3241,6 +3258,291 @@ mod tests {
         for (_, count) in &results {
             assert_eq!(*count, 50);
         }
+    }
+
+    /// The `RangeAfter("brand_000")` carrier over brands `000..=005`,
+    /// counting colors after `color_00049` (50 per brand).
+    fn range_outer_carrier_path_query(limit: Option<u16>) -> PathQuery {
+        use grovedb_query::Query;
+        let mut carrier = Query::new();
+        carrier
+            .items
+            .push(QueryItem::RangeAfter(b"brand_000".to_vec()..));
+        carrier.set_subquery_path(vec![b"color".to_vec()]);
+        carrier.set_subquery(Query::new_aggregate_count_on_range(QueryItem::RangeAfter(
+            b"color_00049".to_vec()..,
+        )));
+        PathQuery::new(
+            vec![TEST_LEAF.to_vec(), b"byBrand".to_vec()],
+            SizedQuery::new(carrier, limit, None),
+        )
+    }
+
+    const SIX_BRANDS: [&[u8]; 6] = [
+        b"brand_000",
+        b"brand_001",
+        b"brand_002",
+        b"brand_003",
+        b"brand_004",
+        b"brand_005",
+    ];
+
+    /// A range-outer carrier walk the prover capped at 2, verified by a
+    /// caller that doesn't know that cap. The exact entry point needs the
+    /// prover's limit and rejects the proof; the upper-bound entry point
+    /// reads `limit` as a ceiling and returns the first two matches as a
+    /// page that continues after the second.
+    #[test]
+    fn carrier_range_outer_capped_proof_verifies_up_to_limit() {
+        let v = GroveVersion::latest();
+        let (db, expected_root) = setup_brand_color_carrier_tree(v, &SIX_BRANDS, 100);
+        let proof = db
+            .grove_db
+            .prove_query(&range_outer_carrier_path_query(Some(2)), None, v)
+            .unwrap()
+            .expect("prove_query (carrier with Range outer + limit) should succeed");
+
+        GroveDb::verify_aggregate_count_query_per_key(
+            &proof,
+            &range_outer_carrier_path_query(None),
+            v,
+        )
+        .expect_err("exact verification without the prover's limit must fail");
+
+        for ceiling in [None, Some(2), Some(10)] {
+            let (root, page) = GroveDb::verify_aggregate_count_query_per_key_up_to_limit(
+                &proof,
+                &range_outer_carrier_path_query(ceiling),
+                v,
+            )
+            .unwrap_or_else(|e| panic!("upper bound {ceiling:?} must accept: {e}"));
+            assert_eq!(root, expected_root);
+            assert_eq!(
+                page,
+                CarrierAggregatePage::MoreAfter {
+                    entries: vec![(b"brand_001".to_vec(), 50), (b"brand_002".to_vec(), 50)],
+                    last_key: b"brand_002".to_vec(),
+                },
+                "upper bound {ceiling:?}: more brands exist"
+            );
+        }
+
+        GroveDb::verify_aggregate_count_query_per_key_up_to_limit(
+            &proof,
+            &range_outer_carrier_path_query(Some(1)),
+            v,
+        )
+        .expect_err("two outer matches must not verify under an upper bound of 1");
+    }
+
+    /// An uncapped range-outer walk returns every match as a complete page.
+    #[test]
+    fn carrier_range_outer_full_walk_is_complete_up_to_limit() {
+        let v = GroveVersion::latest();
+        let (db, expected_root) = setup_brand_color_carrier_tree(v, &SIX_BRANDS, 100);
+        let proof = db
+            .grove_db
+            .prove_query(&range_outer_carrier_path_query(None), None, v)
+            .unwrap()
+            .expect("prove_query (carrier with Range outer) should succeed");
+
+        for ceiling in [None, Some(10)] {
+            let (root, page) = GroveDb::verify_aggregate_count_query_per_key_up_to_limit(
+                &proof,
+                &range_outer_carrier_path_query(ceiling),
+                v,
+            )
+            .expect("full walk verifies");
+            assert_eq!(root, expected_root);
+            let CarrierAggregatePage::Complete(results) = page else {
+                panic!("upper bound {ceiling:?}: the full walk must be complete, got {page:?}");
+            };
+            let keys: Vec<&[u8]> = results.iter().map(|(k, _)| k.as_slice()).collect();
+            assert_eq!(keys, SIX_BRANDS[1..].to_vec());
+        }
+    }
+
+    /// A `Keys` outer walk the prover capped at 2 of 4 keys verifies under
+    /// any ceiling of at least 2, as a page that continues after the second.
+    #[test]
+    fn carrier_keys_outer_capped_proof_verifies_up_to_limit() {
+        use grovedb_query::Query;
+        let v = GroveVersion::latest();
+        let brands = [b"brand_000", b"brand_001", b"brand_002", b"brand_003"];
+        let (db, expected_root) = setup_brand_color_carrier_tree(
+            v,
+            &brands.iter().map(|b| b.as_slice()).collect::<Vec<_>>(),
+            100,
+        );
+        let path_query = |limit| {
+            let mut carrier = Query::new();
+            for k in brands {
+                carrier.insert_key(k.to_vec());
+            }
+            carrier.set_subquery_path(vec![b"color".to_vec()]);
+            carrier.set_subquery(Query::new_aggregate_count_on_range(QueryItem::RangeAfter(
+                b"color_00049".to_vec()..,
+            )));
+            PathQuery::new(
+                vec![TEST_LEAF.to_vec(), b"byBrand".to_vec()],
+                SizedQuery::new(carrier, limit, None),
+            )
+        };
+        let proof = db
+            .grove_db
+            .prove_query(&path_query(Some(2)), None, v)
+            .unwrap()
+            .expect("prove_query (carrier with Keys outer + limit) should succeed");
+
+        for ceiling in [None, Some(2), Some(10)] {
+            let (root, page) = GroveDb::verify_aggregate_count_query_per_key_up_to_limit(
+                &proof,
+                &path_query(ceiling),
+                v,
+            )
+            .unwrap_or_else(|e| panic!("upper bound {ceiling:?} must accept: {e}"));
+            assert_eq!(root, expected_root);
+            assert_eq!(
+                page,
+                CarrierAggregatePage::MoreAfter {
+                    entries: vec![(b"brand_000".to_vec(), 50), (b"brand_001".to_vec(), 50)],
+                    last_key: b"brand_001".to_vec(),
+                },
+                "upper bound {ceiling:?}"
+            );
+        }
+    }
+
+    /// Range outer shapes Dash Platform builds besides `>`: an exclusive
+    /// upper bound walked ascending (`<`), and an exclusive lower bound
+    /// walked descending. A V1 prover hides a bound it passes after the
+    /// cut, so the capped walk verifies whatever the tree's shape.
+    #[test]
+    fn carrier_exclusive_bound_outer_capped_proof_verifies_up_to_limit() {
+        use grovedb_query::Query;
+        let v = GroveVersion::latest();
+        let (db, expected_root) = setup_brand_color_carrier_tree(v, &SIX_BRANDS, 100);
+        let cases: [(QueryItem, bool, [&[u8]; 2]); 2] = [
+            (
+                QueryItem::RangeTo(..b"brand_005".to_vec()),
+                true,
+                [b"brand_000", b"brand_001"],
+            ),
+            (
+                QueryItem::RangeAfter(b"brand_000".to_vec()..),
+                false,
+                [b"brand_005", b"brand_004"],
+            ),
+        ];
+        for (outer, left_to_right, expected) in cases {
+            let path_query = |limit| {
+                let mut carrier = Query::new_with_direction(left_to_right);
+                carrier.items.push(outer.clone());
+                carrier.set_subquery_path(vec![b"color".to_vec()]);
+                carrier.set_subquery(Query::new_aggregate_count_on_range(QueryItem::RangeAfter(
+                    b"color_00049".to_vec()..,
+                )));
+                PathQuery::new(
+                    vec![TEST_LEAF.to_vec(), b"byBrand".to_vec()],
+                    SizedQuery::new(carrier, limit, None),
+                )
+            };
+            let proof = db
+                .grove_db
+                .prove_query(&path_query(Some(2)), None, v)
+                .unwrap()
+                .expect("prove_query should succeed");
+            for ceiling in [None, Some(2), Some(10)] {
+                let (root, page) = GroveDb::verify_aggregate_count_query_per_key_up_to_limit(
+                    &proof,
+                    &path_query(ceiling),
+                    v,
+                )
+                .unwrap_or_else(|e| panic!("{outer} {ceiling:?} must accept: {e}"));
+                assert_eq!(root, expected_root);
+                let keys: Vec<&[u8]> = page.entries().iter().map(|(k, _)| k.as_slice()).collect();
+                assert_eq!(keys, expected.to_vec(), "{outer} {ceiling:?}");
+                assert_eq!(
+                    page.resume_after(),
+                    Some(expected[1]),
+                    "{outer} {ceiling:?}"
+                );
+            }
+        }
+    }
+
+    /// A client that leaves the limit unset pages through a walk the prover
+    /// caps at 2 outer keys per proof: each page continues after its last
+    /// key until one comes back complete, and the pages together hold every
+    /// match exactly once.
+    #[test]
+    fn carrier_range_outer_pages_to_the_end_up_to_limit() {
+        use grovedb_query::Query;
+        let v = GroveVersion::latest();
+        let (db, expected_root) = setup_brand_color_carrier_tree(v, &SIX_BRANDS, 100);
+        let path_query = |after: &[u8], limit| {
+            let mut carrier = Query::new();
+            carrier.items.push(QueryItem::RangeAfter(after.to_vec()..));
+            carrier.set_subquery_path(vec![b"color".to_vec()]);
+            carrier.set_subquery(Query::new_aggregate_count_on_range(QueryItem::RangeAfter(
+                b"color_00049".to_vec()..,
+            )));
+            PathQuery::new(
+                vec![TEST_LEAF.to_vec(), b"byBrand".to_vec()],
+                SizedQuery::new(carrier, limit, None),
+            )
+        };
+
+        let mut collected = Vec::new();
+        let mut after = b"brand_000".to_vec();
+        for _ in 0..SIX_BRANDS.len() {
+            let proof = db
+                .grove_db
+                .prove_query(&path_query(&after, Some(2)), None, v)
+                .unwrap()
+                .expect("prove_query of a page should succeed");
+            let (root, page) = GroveDb::verify_aggregate_count_query_per_key_up_to_limit(
+                &proof,
+                &path_query(&after, None),
+                v,
+            )
+            .expect("a page verifies without knowing the cap");
+            assert_eq!(root, expected_root);
+            match page {
+                CarrierAggregatePage::Complete(entries) => {
+                    collected.extend(entries);
+                    let keys: Vec<&[u8]> = collected.iter().map(|(k, _)| k.as_slice()).collect();
+                    assert_eq!(keys, SIX_BRANDS[1..].to_vec());
+                    assert!(collected.iter().all(|(_, count)| *count == 50));
+                    return;
+                }
+                CarrierAggregatePage::MoreAfter { entries, last_key } => {
+                    collected.extend(entries);
+                    after = last_key;
+                }
+            }
+        }
+        panic!("paging never reached a complete page: {collected:?}");
+    }
+
+    /// A ceiling of 0 admits no outer key, so the page could never move:
+    /// the upper-bound entry point refuses it.
+    #[test]
+    fn carrier_zero_ceiling_is_refused_up_to_limit() {
+        let v = GroveVersion::latest();
+        let (db, _) = setup_brand_color_carrier_tree(v, &SIX_BRANDS, 100);
+        let proof = db
+            .grove_db
+            .prove_query(&range_outer_carrier_path_query(Some(2)), None, v)
+            .unwrap()
+            .expect("prove_query should succeed");
+        let err = GroveDb::verify_aggregate_count_query_per_key_up_to_limit(
+            &proof,
+            &range_outer_carrier_path_query(Some(0)),
+            v,
+        )
+        .expect_err("a ceiling of 0 must be refused");
+        assert!(err.to_string().contains("ceiling of at least 1"), "{err}");
     }
 
     #[test]
