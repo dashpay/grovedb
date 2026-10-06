@@ -517,6 +517,15 @@ trivial proof (the empty-tree marker). Asking for `AggregateCountOnRange` on a
 path that does not resolve to a tree at all is an error
 (`Error::PathNotFound(...)`), the same as any other query.
 
+When the empty tree sits *above* the terminal (a segment of the path, or a
+carrier key with a `subquery_path` still below it) there is no terminal to
+count. From `GROVE_V4` (`proof.empty_tree_above_aggregate_terminal: 1`) the
+prover proves that tree in its parent layer with no lower layer, its value
+hash binding it to the empty child root, and the single-key query over the
+same path verifies the proof. The aggregate verifiers refuse it, since they
+require a descent all the way to the terminal. `GROVE_V3` fails to generate
+such a proof ("Cannot create proof for empty tree").
+
 ### Why this is `O(log n)` regardless of count
 
 Every diagram above has at most:

@@ -11,6 +11,7 @@ mod aggregate_count_and_sum_query_tests;
 mod aggregate_count_query_tests;
 mod aggregate_sum_carrier_query_tests;
 mod aggregate_sum_query_tests;
+mod aggregate_through_empty_tree_tests;
 mod append_family_cost_bound_tests;
 mod append_layer_direction_tests;
 mod append_layer_limit_accounting_tests;
