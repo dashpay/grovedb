@@ -827,9 +827,10 @@ mod tests {
     /// settling answer for it is refused, whatever the callback does with the
     /// flags: an untrusted refresh, which writes the stored reference's flags
     /// back, even when the callback rewrites them to another owner of the
-    /// same length, and a flagged tree's root update when a write under it
-    /// propagates. The estimators charge neither a settlement, so neither may
-    /// settle. A write that brings flags of its own still settles.
+    /// same length (in a subtree and at the grove's root), and a flagged
+    /// tree's root update when a write under it propagates. The estimators
+    /// charge neither a settlement, so neither may settle. A write that
+    /// brings flags of its own still settles.
     #[test]
     fn a_write_that_keeps_the_stored_flags_cannot_settle() {
         use grovedb_costs::storage_cost::transition::ElementFlagsUpdate;
@@ -879,6 +880,44 @@ mod tests {
             )
             .unwrap()
             .expect_err("an untrusted refresh must not settle"),
+        );
+        assert_eq!(
+            db.root_hash(None, grove_version).unwrap().unwrap(),
+            root_hash
+        );
+
+        // The same refresh of a reference at the grove's root.
+        let db = grove_with(&old, TreeType::NormalTree, grove_version);
+        db.insert(
+            EMPTY_PATH,
+            b"root reference",
+            Element::new_reference_with_flags(target_path(), owned_flags(0, OLD_OWNER)),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert the root reference");
+        let root_hash = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_refused(
+            db.apply_batch_with_element_flags_update(
+                vec![QualifiedGroveDbOp::refresh_reference_op(
+                    vec![],
+                    b"root reference".to_vec(),
+                    target_path(),
+                    None,
+                    owned_flags(0, NEW_OWNER),
+                    false,
+                    false,
+                )],
+                Some(options(Mode::Settling)),
+                rewriting_to_a_new_owner,
+                split_removal_bytes,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect_err("an untrusted refresh at the root must not settle"),
         );
         assert_eq!(
             db.root_hash(None, grove_version).unwrap().unwrap(),
