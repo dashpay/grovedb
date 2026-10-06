@@ -22,14 +22,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `ProofLimitMode::UpperBound` and `QueryProofVerify::execute_proof_with_limit_mode`
   verify a proof with `limit` as a ceiling instead of the exact limit the
-  prover used. Once the proof has returned a result, the walk stops where the
-  proof stops revealing the query, and nothing carrying a value may follow, so
-  the results stay a gap-free prefix. `ProofVerificationResult::exhausted`
-  reports whether the proof shows nothing further matches.
+  prover used. Once the proof has returned a result, the walk stops at the
+  first hidden node inside a queried range, or at the end of the proof with
+  query items unproven. After that only hidden nodes may follow: a V1 prover
+  reveals no key once its limit runs out, so a node revealing one is
+  rejected, and the results stay a gap-free prefix. A proof from a prover
+  that still reveals a range bound after its cut (before the V1 shape hid
+  it) is therefore rejected. `ProofVerificationResult::exhausted` reports
+  whether the proof shows nothing further matches.
   `GroveDb::verify_aggregate_{count,sum,count_and_sum}_query_per_key_up_to_limit`
-  verify carrier aggregates this way and return `(root_hash, entries,
-  exhausted)`. A client no longer has to know the server's limit to verify an
-  honest proof. Existing verification calls behave as before. The new trait
+  verify carrier aggregates this way and return the root hash with a
+  `CarrierAggregatePage`: `Complete` when no further outer key matches,
+  otherwise `MoreAfter`, which carries the last outer key to continue after.
+  A ceiling of `Some(0)` is refused. A client no longer has to know the
+  server's limit to verify an honest proof. Existing verification calls
+  behave as before. The new trait
   method has a default body (exact mode through `execute_proof`, upper-bound
   mode refused), so existing `QueryProofVerify` implementations keep
   compiling. Code outside the crate that builds a `ProofVerificationResult`

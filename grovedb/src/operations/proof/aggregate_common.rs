@@ -26,6 +26,10 @@
 //! - [`require_v1_envelope`] — extract the V1 root layer from a
 //!   `GroveDBProof` or reject the proof. All aggregate axes require
 //!   V1 envelopes; V0 predates the feature.
+//! - [`CarrierAggregatePage`] — what the `*_per_key_up_to_limit`
+//!   verifiers return: the entries, and whether more outer keys may
+//!   match. [`up_to_limit_page`] builds it, and
+//!   [`refuse_zero_ceiling`] guards the entry points.
 //!
 //! The functions that produce diagnostic strings take an
 //! `axis_label: &'static str` (and `query_type_name: &'static str` for
@@ -47,6 +51,85 @@ use crate::{
     operations::proof::{GroveDBProof, GroveDBProofV1, LayerProof, ProofBytes},
     Error, PathQuery,
 };
+
+/// One page of a carrier aggregate verified with the outer walk's
+/// `SizedQuery::limit` as a ceiling, as the `*_per_key_up_to_limit`
+/// verifiers return it. Either way the entries are the first outer matches
+/// in walk order, with none skipped; the variant says whether the proof
+/// shows they are all of them.
+#[must_use = "a page can be partial: `MoreAfter` means later outer keys may match"]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CarrierAggregatePage<E> {
+    /// The proof shows no further outer key matches: these are all of them.
+    Complete(Vec<E>),
+    /// The proof stopped before the outer query did, so later outer keys
+    /// may match. Query again from after `last_key`, the outer key of the
+    /// last entry. Never empty.
+    MoreAfter {
+        /// The first outer matches in walk order.
+        entries: Vec<E>,
+        /// The outer key of the last entry, where the next page starts.
+        last_key: Vec<u8>,
+    },
+}
+
+impl<E> CarrierAggregatePage<E> {
+    /// The verified entries, whether or not more outer keys may match.
+    pub fn entries(&self) -> &[E] {
+        match self {
+            Self::Complete(entries) | Self::MoreAfter { entries, .. } => entries,
+        }
+    }
+
+    /// The outer key the next page starts after, or `None` when the page
+    /// holds every match.
+    pub fn resume_after(&self) -> Option<&[u8]> {
+        match self {
+            Self::Complete(_) => None,
+            Self::MoreAfter { last_key, .. } => Some(last_key),
+        }
+    }
+}
+
+/// Refuse an `*_up_to_limit` verification whose ceiling is `Some(0)`: it
+/// admits no outer key, so the page could never move past its start.
+pub(in crate::operations::proof) fn refuse_zero_ceiling(
+    path_query: &PathQuery,
+) -> Result<(), Error> {
+    if path_query.query.limit == Some(0) {
+        return Err(Error::InvalidQuery(
+            "an upper-bound aggregate page needs a ceiling of at least 1",
+        ));
+    }
+    Ok(())
+}
+
+/// Build the page an `*_up_to_limit` verifier returns from its walk's
+/// entries and whether the proof showed the outer query exhausted.
+/// `outer_key` reads an entry's outer key.
+pub(in crate::operations::proof) fn up_to_limit_page<E>(
+    root_hash: CryptoHash,
+    entries: Vec<E>,
+    exhausted: bool,
+    outer_key: fn(&E) -> &[u8],
+    path_query: &PathQuery,
+) -> Result<(CryptoHash, CarrierAggregatePage<E>), Error> {
+    if exhausted {
+        return Ok((root_hash, CarrierAggregatePage::Complete(entries)));
+    }
+    // Upper-bound verification never stops before the first result, and
+    // a ceiling of 0 was refused up front.
+    let Some(last_key) = entries.last().map(|entry| outer_key(entry).to_vec()) else {
+        return Err(Error::InvalidProof(
+            path_query.clone(),
+            "upper-bound aggregate proof stopped before its first outer key".to_string(),
+        ));
+    };
+    Ok((
+        root_hash,
+        CarrierAggregatePage::MoreAfter { entries, last_key },
+    ))
+}
 
 /// Unwrap a `ProofBytes::Merk(_)` or reject the proof. All three
 /// aggregate-axis envelopes are merk-flavored at every layer; a

@@ -21,6 +21,7 @@ mod tests {
     use grovedb_version::version::GroveVersion;
 
     use crate::{
+        operations::proof::CarrierAggregatePage,
         tests::{make_test_grovedb, TEST_LEAF},
         Element, GroveDb, PathQuery, SizedQuery,
     };
@@ -179,8 +180,9 @@ mod tests {
     }
 
     /// A range-outer carrier walk the prover capped at 2 verifies through
-    /// the upper-bound entry point without the verifier knowing the cap,
-    /// and is not exhausted. The exact entry point rejects it.
+    /// the upper-bound entry point without the verifier knowing the cap, as
+    /// a page that continues after the second key. The exact entry point
+    /// rejects it.
     #[test]
     fn carrier_count_and_sum_range_outer_capped_proof_verifies_up_to_limit() {
         let v = GroveVersion::latest();
@@ -219,22 +221,23 @@ mod tests {
             .expect_err("exact verification without the prover's limit must fail");
 
         for ceiling in [None, Some(10)] {
-            let (root, results, exhausted) =
-                GroveDb::verify_aggregate_count_and_sum_query_per_key_up_to_limit(
-                    &proof,
-                    &path_query(ceiling),
-                    v,
-                )
-                .unwrap_or_else(|e| panic!("upper bound {ceiling:?} must accept: {e}"));
+            let (root, page) = GroveDb::verify_aggregate_count_and_sum_query_per_key_up_to_limit(
+                &proof,
+                &path_query(ceiling),
+                v,
+            )
+            .unwrap_or_else(|e| panic!("upper bound {ceiling:?} must accept: {e}"));
             assert_eq!(root, expected_root);
             assert_eq!(
-                results,
-                vec![
-                    (b"brand_001".to_vec(), 10, triangular(10)),
-                    (b"brand_002".to_vec(), 10, triangular(10)),
-                ]
+                page,
+                CarrierAggregatePage::MoreAfter {
+                    entries: vec![
+                        (b"brand_001".to_vec(), 10, triangular(10)),
+                        (b"brand_002".to_vec(), 10, triangular(10)),
+                    ],
+                    last_key: b"brand_002".to_vec(),
+                }
             );
-            assert!(!exhausted);
         }
     }
 

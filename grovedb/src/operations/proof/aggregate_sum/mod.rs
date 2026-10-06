@@ -53,7 +53,10 @@ use grovedb_merk::{proofs::query::ProofLimitMode, CryptoHash};
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
 use crate::{
-    operations::proof::{GroveDBProof, LayerProof},
+    operations::proof::{
+        aggregate_common::{refuse_zero_ceiling, up_to_limit_page},
+        CarrierAggregatePage, GroveDBProof, LayerProof,
+    },
     query::AggregateKind,
     Error, GroveDb, PathQuery,
 };
@@ -199,21 +202,20 @@ impl GroveDb {
     /// first outer matches in query direction with none skipped: a result
     /// after that point is rejected.
     ///
-    /// Returns `(root_hash, entries, exhausted)`. `exhausted` is true
-    /// when the proof shows there are no further outer matches. When it
-    /// is false, the walk stopped early or at `limit` and later outer
-    /// keys may exist; a caller wanting the rest continues after the last
-    /// returned key. Do not treat a short result as complete unless
-    /// `exhausted` is true.
+    /// Returns the root hash and a [`CarrierAggregatePage`]:
+    /// [`CarrierAggregatePage::Complete`] when the proof shows no further
+    /// outer key matches, otherwise [`CarrierAggregatePage::MoreAfter`],
+    /// whose later outer keys may match; the next page starts after its
+    /// `last_key`. A ceiling of `Some(0)` is refused, since such a page
+    /// could never move.
     ///
-    /// For a leaf query (no outer walk) this returns the same single
-    /// entry as [`GroveDb::verify_aggregate_sum_query_per_key`] with
-    /// `exhausted = true`.
+    /// For a leaf query (no outer walk) the page is complete and holds the
+    /// same single entry as [`GroveDb::verify_aggregate_sum_query_per_key`].
     pub fn verify_aggregate_sum_query_per_key_up_to_limit(
         proof: &[u8],
         path_query: &PathQuery,
         grove_version: &GroveVersion,
-    ) -> Result<(CryptoHash, Vec<(Vec<u8>, i64)>, bool), Error> {
+    ) -> Result<(CryptoHash, CarrierAggregatePage<(Vec<u8>, i64)>), Error> {
         check_grovedb_v0!(
             "verify_aggregate_sum_query_per_key_up_to_limit",
             grove_version
@@ -222,7 +224,10 @@ impl GroveDb {
                 .proof
                 .verify_query_with_options
         );
-        verify_per_key(proof, path_query, ProofLimitMode::UpperBound, grove_version)
+        refuse_zero_ceiling(path_query)?;
+        let (root_hash, entries, exhausted) =
+            verify_per_key(proof, path_query, ProofLimitMode::UpperBound, grove_version)?;
+        up_to_limit_page(root_hash, entries, exhausted, |entry| &entry.0, path_query)
     }
 }
 
