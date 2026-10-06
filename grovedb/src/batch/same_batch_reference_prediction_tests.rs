@@ -465,6 +465,74 @@ mod tests {
         }
     }
 
+    /// A partial batch whose initial segment updates a flagged item and
+    /// whose add-on rewrites that item together with the deeper reference to
+    /// it. The reference sits deeper, so the add-on resolves it before it
+    /// writes the item again: it has to predict that second write rather
+    /// than read the bytes the initial segment stored. The item ends exactly
+    /// as the two updates applied as separate batches leave it, and every
+    /// reference verifies, with the merging update and with the settling one,
+    /// including a second update that changes the owner.
+    #[test]
+    fn an_add_on_rewriting_an_initial_segment_target_predicts_its_new_bytes() {
+        let grove_version = GroveVersion::latest();
+        let item = |value: u8, len: usize, sum: i64, flags| {
+            Element::new_item_with_sum_item_with_flags(vec![value; len], sum, flags)
+        };
+        let old = item(7, 20, 5, owned_flags(0, OLD_OWNER));
+        let first = item(8, 21, 9, owned_flags(1, OLD_OWNER));
+        let cases = [
+            (Mode::Merging, item(9, 23, 11, owned_flags(2, OLD_OWNER))),
+            (Mode::Settling, item(9, 23, 11, owned_flags(2, OLD_OWNER))),
+            (Mode::Settling, item(9, 23, 11, owned_flags(2, NEW_OWNER))),
+        ];
+        for (mode, second) in cases {
+            for reference in [refresh_op(true), refresh_op(false)] {
+                let label = format!("{mode:?}, second {second:?}, {reference:?}");
+
+                let sequential = grove_with(&old, TreeType::SumTree, true, grove_version);
+                apply(&sequential, vec![write_op(&first)], mode, grove_version)
+                    .unwrap_or_else(|e| panic!("{label}: first batch: {e}"));
+                apply(
+                    &sequential,
+                    vec![write_op(&second), reference.clone()],
+                    mode,
+                    grove_version,
+                )
+                .unwrap_or_else(|e| panic!("{label}: second batch: {e}"));
+
+                let partial = grove_with(&old, TreeType::SumTree, true, grove_version);
+                partial
+                    .apply_partial_batch_with_element_flags_update(
+                        vec![write_op(&first)],
+                        Some(options(mode)),
+                        flags_update(mode),
+                        split_removal_bytes,
+                        |_cost, _leftover_operations| {
+                            Ok(vec![write_op(&second), reference.clone()])
+                        },
+                        None,
+                        grove_version,
+                    )
+                    .cost_as_result()
+                    .unwrap_or_else(|e| panic!("{label}: partial batch: {e}"));
+
+                assert_eq!(issues(&partial, grove_version), 0, "{label}");
+                let stored = |db: &TempGroveDb| {
+                    db.get([b"tree".as_slice()].as_ref(), KEY, None, grove_version)
+                        .unwrap()
+                        .expect("expected the item")
+                };
+                assert_eq!(stored(&partial), stored(&sequential), "{label}");
+                assert_eq!(
+                    stored(&partial).get_flags(),
+                    stored(&sequential).get_flags(),
+                    "{label}"
+                );
+            }
+        }
+    }
+
     /// Replacements whose new flags stand as written (the flags update
     /// answers `Unchanged`) but are not the length of the old ones.
     fn unchanged_flags_of_another_length() -> Vec<(&'static str, Element, Element, Option<Mode>)> {

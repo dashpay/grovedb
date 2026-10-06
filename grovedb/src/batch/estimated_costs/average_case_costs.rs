@@ -1213,9 +1213,13 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                     &mut cost, path, &key, tree_type,
                 );
             }
-            // The layer an `InsertTreeWithRootHash` writes, whose declared
-            // tree type sizes the tree when it settles an owner change.
-            let written_tree_type = if let GroveOp::InsertTreeWithRootHash { .. } = &op {
+            // The layer a flagged `InsertTreeWithRootHash` writes, whose
+            // declared tree type sizes the tree when it settles an owner
+            // change. Only a settling estimate reads it, so the lookup is
+            // skipped otherwise.
+            let written_tree_type = if batch_apply_options.settle_owner_changes
+                && let GroveOp::InsertTreeWithRootHash { flags: Some(_), .. } = &op
+            {
                 let mut written_layer = path.clone();
                 written_layer.push(key.clone());
                 self.paths.get(&written_layer).map(|layer| layer.tree_type)
