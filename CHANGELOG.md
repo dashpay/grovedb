@@ -68,6 +68,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an absent path. `AxisKeys::empty_for_axis` is new. (#965)
 
 ### Fixed
+- A V1 proof whose limit runs out before its query does verifies at its own
+  limit. The walk hides what it has not reached, but still passes back up
+  through the ancestors of its last result, and one of them can be a range
+  bound: an exclusive range end, or a later query item's bound. The prover
+  revealed that key as a boundary node behind the nodes it hid, where the
+  verifier cannot check it as a bound, so `verify_query` rejected the honest
+  proof with "Cannot verify lower bound of queried range". Whether that
+  happens depends on the tree's shape; it is common for subtrees written in
+  one batch. V1 proofs now hide the key like the rest of the unwalked tree.
+  The proof hashes to the same root, the verifier is unchanged, and every
+  released verifier accepts the new shape. So the fix needs no version slot,
+  and clients verify these proofs as soon as the node serving them is
+  upgraded. Proofs the limit does not cut are byte-identical. V0 proofs
+  (grove v1 and v2) keep their shape. The path-query, sum-budget window and
+  indexed-axis provers use it. New in merk:
+  `Merk::prove_unchecked_query_items_for_proof_version`; the existing prove
+  methods keep the V0 shape.
 - An aggregate-on-range proof (`AggregateCountOnRange`,
   `AggregateSumOnRange`, `AggregateCountAndSumOnRange`, leaf or carrier
   shape) whose path, or whose carrier key followed by a `subquery_path`, runs

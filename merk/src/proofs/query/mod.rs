@@ -3,6 +3,8 @@
 pub use grovedb_query::*;
 
 #[cfg(test)]
+mod limit_cut_bound_tests;
+#[cfg(test)]
 mod merk_integration_tests;
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
@@ -287,6 +289,21 @@ where
         left_to_right: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<ProofAbsenceLimit, Error> {
+        self.create_proof_for_proof_version(query, limit, left_to_right, 0, grove_version)
+    }
+
+    /// [`Self::create_proof`] in the shape of `proof_version`. From proof
+    /// version 1 a limited proof no longer reveals a range bound once its
+    /// limit is used up; see [`Self::create_proof_internal`].
+    #[cfg(feature = "minimal")]
+    pub(crate) fn create_proof_for_proof_version(
+        &mut self,
+        query: &[QueryItem],
+        limit: Option<u16>,
+        left_to_right: bool,
+        proof_version: u16,
+        grove_version: &GroveVersion,
+    ) -> CostResult<ProofAbsenceLimit, Error> {
         let (proof_query_items, proof_params) =
             ProofItems::new_with_query_items(query, left_to_right);
         let proof_status = ProofStatus::new_with_limit(limit);
@@ -294,6 +311,7 @@ where
             &proof_query_items,
             &proof_params,
             proof_status,
+            proof_version,
             grove_version,
         )
     }
@@ -302,12 +320,24 @@ where
     /// containing the generated proof operators, and a tuple representing if
     /// any keys were queried were less than the left edge or greater than the
     /// right edge, respectively.
+    ///
+    /// `proof_version` selects the proof's shape once a limit is used up.
+    /// The walk then hides everything it has not reached, but it still
+    /// passes back up through the ancestors of its last result. One of them
+    /// can be a range bound: an exclusive range end, or a later query item's
+    /// bound. Version 0 reveals such a key as a boundary node behind the
+    /// nodes it hid. No verifier can check it as a bound there, since the
+    /// node before it is hidden, so the proof was rejected ("Cannot verify
+    /// lower bound of queried range") even at the prover's own limit. From
+    /// version 1 that key is hidden like the rest of the unwalked tree. Both
+    /// shapes hash to the same root.
     #[cfg(feature = "minimal")]
     pub(crate) fn create_proof_internal(
         &mut self,
         proof_query_items: &ProofItems,
         proof_params: &ProofParams,
         proof_status: ProofStatus,
+        proof_version: u16,
         grove_version: &GroveVersion,
     ) -> CostResult<ProofAbsenceLimit, Error> {
         let mut cost = OperationCost::default();
@@ -324,8 +354,12 @@ where
         // 6. The same logic applies to range queries. If we are searching for
         // items 1 to 4 it would not make sense to push this to the right of 6.
 
-        let (mut found_item, on_boundary_not_found, mut left_proof_items, mut right_proof_items) =
-            proof_query_items.process_key(&key);
+        let (
+            mut found_item,
+            mut on_boundary_not_found,
+            mut left_proof_items,
+            mut right_proof_items,
+        ) = proof_query_items.process_key(&key);
 
         if let Some(current_limit) = proof_status.limit
             && current_limit == 0
@@ -333,6 +367,11 @@ where
             left_proof_items = ProofItems::default();
             found_item = false;
             right_proof_items = ProofItems::default();
+            // From V1 a node past the limit is not revealed as a range bound
+            // either; see `proof_version` above.
+            if proof_version >= 1 {
+                on_boundary_not_found = false;
+            }
         }
 
         let proof_direction = proof_params.left_to_right; // search the opposite path on second pass
@@ -344,6 +383,7 @@ where
                     &left_proof_items,
                     proof_params,
                     proof_status,
+                    proof_version,
                     grove_version
                 )
             )
@@ -355,6 +395,7 @@ where
                     &right_proof_items,
                     proof_params,
                     proof_status,
+                    proof_version,
                     grove_version
                 )
             )
@@ -372,6 +413,12 @@ where
                     left_proof_items = ProofItems::default();
                 }
                 found_item = false;
+                // The limit ran out in the first child, so this node is past
+                // it: from V1 not revealed as a range bound either; see
+                // `proof_version` above.
+                if proof_version >= 1 {
+                    on_boundary_not_found = false;
+                }
             } else if found_item && !on_boundary_not_found {
                 // if limit is not zero, reserve a limit slot for the current node
                 // before generating proof for the right subtree
@@ -398,6 +445,7 @@ where
                     &right_proof_items,
                     proof_params,
                     new_proof_status,
+                    proof_version,
                     grove_version
                 )
             )
@@ -410,6 +458,7 @@ where
                     &left_proof_items,
                     proof_params,
                     new_proof_status,
+                    proof_version,
                     grove_version
                 )
             )
@@ -627,6 +676,7 @@ where
         query_items: &ProofItems,
         params: &ProofParams,
         proof_status: ProofStatus,
+        proof_version: u16,
         grove_version: &GroveVersion,
     ) -> CostResult<ProofAbsenceLimit, Error> {
         if !query_items.has_no_query_items() {
@@ -637,7 +687,13 @@ where
             )
             .flat_map_ok(|child_opt| {
                 if let Some(mut child) = child_opt {
-                    child.create_proof_internal(query_items, params, proof_status, grove_version)
+                    child.create_proof_internal(
+                        query_items,
+                        params,
+                        proof_status,
+                        proof_version,
+                        grove_version,
+                    )
                 } else {
                     Ok((LinkedList::new(), (true, true), proof_status))
                         .wrap_with_cost(Default::default())

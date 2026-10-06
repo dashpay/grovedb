@@ -13,7 +13,7 @@ use grovedb_merk::{
     element::ElementExt,
     proofs::{
         encode_into,
-        query::{AxisTraversal, QueryItem},
+        query::{AxisTraversal, QueryItem, PROOF_VERSION_LATEST},
         Node, Op,
     },
     tree::{combine_hash, value_hash, NULL_HASH},
@@ -323,7 +323,7 @@ impl GroveDb {
         };
         let mut window_proof = cost_return_on_error!(
             &mut cost,
-            self.generate_merk_proof(
+            self.generate_merk_proof_v1(
                 &target_merk,
                 &node.items,
                 node.left_to_right,
@@ -1322,6 +1322,47 @@ impl GroveDb {
         .wrap_with_cost(cost)
     }
 
+    /// [`Self::generate_merk_proof`] for V1 proofs: the Merk proof takes the
+    /// shape of [`PROOF_VERSION_LATEST`], the proof version V1 verifiers pass
+    /// to `execute_proof`. It differs from the V0 shape only once a limit is
+    /// used up: a range bound the walk passes after that is hidden instead of
+    /// revealed behind hidden nodes, where no verifier could check it, so a
+    /// limit-cut proof verifies at its own limit (see
+    /// `Merk::prove_unchecked_query_items_for_proof_version`). V0 proofs keep
+    /// [`Self::generate_merk_proof`].
+    fn generate_merk_proof_v1<'a, S>(
+        &self,
+        subtree: &'a Merk<S>,
+        query_items: &[QueryItem],
+        left_to_right: bool,
+        limit: Option<u16>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<ProofWithoutEncodingResult, Error>
+    where
+        S: StorageContext<'a> + 'a,
+    {
+        subtree
+            .prove_unchecked_query_items_for_proof_version(
+                query_items,
+                limit,
+                left_to_right,
+                PROOF_VERSION_LATEST,
+                grove_version,
+            )
+            .map_ok(|(proof, limit)| ProofWithoutEncodingResult::new(proof, limit))
+            .map_err(|e| {
+                Error::InternalError(format!(
+                    "failed to generate proof for query_items [{}] error is : {}",
+                    query_items
+                        .iter()
+                        .map(|e| e.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    e
+                ))
+            })
+    }
+
     /// Generates query proof given a subtree and appends the result to a proof
     /// list
     fn generate_merk_proof<'a, S>(
@@ -2165,7 +2206,7 @@ impl GroveDb {
         // See `SinglePathSubquery::synthesized_path_component`.
         let mut merk_proof = cost_return_on_error!(
             &mut cost,
-            self.generate_merk_proof(
+            self.generate_merk_proof_v1(
                 &subtree,
                 &query.items,
                 query.left_to_right,
