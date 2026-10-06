@@ -78,13 +78,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   happens depends on the tree's shape; it is common for subtrees written in
   one batch. V1 proofs now hide the key like the rest of the unwalked tree.
   The proof hashes to the same root, the verifier is unchanged, and every
-  released verifier accepts the new shape. So the fix needs no version slot,
-  and clients verify these proofs as soon as the node serving them is
-  upgraded. Proofs the limit does not cut are byte-identical. V0 proofs
-  (grove v1 and v2) keep their shape. The path-query, sum-budget window and
-  indexed-axis provers use it. New in merk:
-  `Merk::prove_unchecked_query_items_for_proof_version`; the existing prove
-  methods keep the V0 shape.
+  released verifier accepts the new shape. So the fix needs no new version
+  slot, and clients verify these proofs as soon as the node serving them is
+  upgraded. Proofs the limit does not cut are byte-identical. Merk's prover
+  takes the shape from the grove version's proof envelope version
+  (`prove_query_non_serialized`), so V0 proofs (grove v1 and v2) keep their
+  shape and every prover under grove v3 and later, including the
+  indexed-axis secondary proofs, uses the new one. An unknown envelope
+  version is refused.
 - An aggregate-on-range proof (`AggregateCountOnRange`,
   `AggregateSumOnRange`, `AggregateCountAndSumOnRange`, leaf or carrier
   shape) whose path, or whose carrier key followed by a `subquery_path`, runs

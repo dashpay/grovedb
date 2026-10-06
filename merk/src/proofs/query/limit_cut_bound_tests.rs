@@ -1,12 +1,13 @@
 //! A proof whose limit runs out before its query does. The walk hides what it
 //! has not reached, but still passes back up through the ancestors of its
-//! last result, and one of them can be a range bound. The version 0 shape
-//! reveals that key behind the nodes it hid, where the verifier cannot check
-//! it as a bound, so the proof fails to verify even at the prover's own
-//! limit. The version 1 shape hides it, and the released verifier accepts
-//! the proof. These pin both shapes and that they differ only there.
+//! last result, and one of them can be a range bound. The V0 shape, which
+//! grove v1 and v2 produce, reveals that key behind the nodes it hid, where
+//! the verifier cannot check it as a bound, so the proof fails to verify even
+//! at the prover's own limit. The V1 shape, from grove v3, hides it, and the
+//! released verifier accepts the proof. These pin both shapes, that the grove
+//! version picks between them, and that they differ only there.
 
-use grovedb_version::version::GroveVersion;
+use grovedb_version::version::{v2::GROVE_V2, v3::GROVE_V3, GroveVersion};
 
 use super::{verify::PROOF_VERSION_LATEST, Query, QueryItem, QueryProofVerify};
 use crate::{
@@ -39,22 +40,15 @@ fn query_of(items: Vec<QueryItem>, left_to_right: bool) -> Query {
     query
 }
 
-/// The encoded proof of `query` at `limit` in the shape of `proof_version`.
+/// The encoded proof of `query` at `limit` under `grove_version`.
 fn prove(
     merk: &TempMerk,
     query: &Query,
     limit: Option<u16>,
-    proof_version: u16,
     grove_version: &GroveVersion,
 ) -> Vec<u8> {
     let (ops, _) = merk
-        .prove_unchecked_query_items_for_proof_version(
-            &query.items,
-            limit,
-            query.left_to_right,
-            proof_version,
-            grove_version,
-        )
+        .prove_unchecked_query_items(&query.items, limit, query.left_to_right, grove_version)
         .unwrap()
         .expect("prove should succeed");
     let mut bytes = vec![];
@@ -103,57 +97,74 @@ fn pushed_keys(proof: &[u8]) -> Vec<(Vec<u8>, bool)> {
 }
 
 /// `[2, 10)` ascending at limit 3 on 20 batch-written keys: key 10 is an
-/// ancestor of the last result, 4. Version 0 reveals it after the hidden
-/// keys 5..=9 and fails to verify at its own limit; version 1 hides it and
-/// verifies to the first three keys. Both rebuild the merk's root.
+/// ancestor of the last result, 4. Under grove v2 the proof reveals it after
+/// the hidden keys 5..=9 and fails to verify at its own limit; from grove v3
+/// it is hidden and the proof verifies to the first three keys. Both rebuild
+/// the merk's root.
 #[test]
 fn v1_hides_a_range_bound_passed_after_the_limit() {
-    let v = GroveVersion::latest();
-    let merk = batch_merk(20, v);
+    let latest = GroveVersion::latest();
+    let merk = batch_merk(20, latest);
     let root = merk.root_hash().unwrap();
     let query = query_of(vec![QueryItem::Range(vec![2]..vec![10])], true);
 
-    let v0 = prove(&merk, &query, Some(3), 0, v);
+    let v0 = prove(&merk, &query, Some(3), &GROVE_V2);
     assert_eq!(
         pushed_keys(&v0).last(),
         Some(&(vec![10], false)),
-        "version 0 reveals the exclusive end as a boundary node"
+        "the V0 shape reveals the exclusive end as a boundary node"
     );
-    let err = verify(&query, &v0, Some(3)).expect_err("version 0 shape must fail at its limit");
+    let err = verify(&query, &v0, Some(3)).expect_err("the V0 shape must fail at its limit");
     assert!(
         err.to_string()
             .contains("Cannot verify lower bound of queried range"),
         "{err}"
     );
 
-    let v1 = prove(&merk, &query, Some(3), 1, v);
+    let v1 = prove(&merk, &query, Some(3), &GROVE_V3);
     assert_eq!(
         pushed_keys(&v1),
         vec![(vec![2], true), (vec![3], true), (vec![4], true)],
-        "version 1 reveals nothing after the last result"
+        "the V1 shape reveals nothing after the last result"
     );
-    let (hash, keys) = verify(&query, &v1, Some(3)).expect("version 1 shape verifies");
+    let (hash, keys) = verify(&query, &v1, Some(3)).expect("the V1 shape verifies");
     assert_eq!(hash, root);
     assert_eq!(keys, vec![vec![2], vec![3], vec![4]]);
+    assert_eq!(prove(&merk, &query, Some(3), latest), v1);
 
     assert_eq!(rebuilt_root(&v0), root);
     assert_eq!(rebuilt_root(&v1), root);
 
-    // The existing entry points keep the version 0 shape.
-    let (ops, _) = merk
-        .prove_unchecked_query_items(&query.items, Some(3), true, v)
+    // `Merk::prove` takes its shape from the grove version too.
+    for (grove_version, expected) in [(&GROVE_V2, &v0), (&GROVE_V3, &v1)] {
+        assert_eq!(
+            &merk
+                .prove(query.clone(), Some(3), grove_version)
+                .unwrap()
+                .expect("prove should succeed")
+                .proof,
+            expected
+        );
+    }
+}
+
+/// A grove version whose proof envelope version merk does not know gets no
+/// shape by default: proving is refused.
+#[test]
+fn unknown_proof_envelope_version_is_refused() {
+    let mut unknown = GroveVersion::latest().clone();
+    unknown
+        .grovedb_versions
+        .operations
+        .proof
+        .prove_query_non_serialized = 2;
+    let merk = batch_merk(20, GroveVersion::latest());
+    let query = query_of(vec![QueryItem::Range(vec![2]..vec![10])], true);
+    let err = merk
+        .prove_unchecked_query_items(&query.items, Some(3), true, &unknown)
         .unwrap()
-        .expect("prove should succeed");
-    let mut released = vec![];
-    encode_into(ops.iter(), &mut released);
-    assert_eq!(released, v0);
-    assert_eq!(
-        merk.prove(query.clone(), Some(3), v)
-            .unwrap()
-            .expect("prove should succeed")
-            .proof,
-        v0
-    );
+        .expect_err("an unknown envelope version must be refused");
+    assert!(err.to_string().contains("create_proof"), "{err}");
 }
 
 /// The query shapes a limit can cut over a bound: exclusive ends in both
@@ -187,13 +198,13 @@ fn cut_shapes(a: u8, b: u8, n: u8) -> Vec<(&'static str, Vec<QueryItem>)> {
 }
 
 /// Every limit that cuts a walk short, over a spread of bound pairs on 20
-/// and 40 keys, in both directions: the version 1 proof verifies
-/// at its own limit with the released verifier and returns the first
-/// `limit` matches. Some version 0 proofs of the same cuts fail, so the
-/// sweep reaches the shape the fix is for.
+/// and 40 keys, in both directions: the V1 proof verifies at its own limit
+/// with the released verifier and returns the first `limit` matches. Some V0
+/// proofs of the same cuts fail, so the sweep reaches the shape the fix is
+/// for.
 #[test]
 fn v1_limit_cut_proofs_verify_at_their_own_limit() {
-    let v = GroveVersion::latest();
+    let v = &GROVE_V3;
     let mut v0_failures = 0;
     for (n, step) in [(20u8, 2usize), (40, 7)] {
         let merk = batch_merk(n, v);
@@ -203,17 +214,17 @@ fn v1_limit_cut_proofs_verify_at_their_own_limit() {
                 for (name, items) in cut_shapes(a, b, n) {
                     for left_to_right in [true, false] {
                         let query = query_of(items.clone(), left_to_right);
-                        let full = prove(&merk, &query, None, 1, v);
+                        let full = prove(&merk, &query, None, v);
                         let (_, all) = verify(&query, &full, None).expect("full proof verifies");
                         for limit in 1..all.len() as u16 {
-                            let proof = prove(&merk, &query, Some(limit), 1, v);
+                            let proof = prove(&merk, &query, Some(limit), v);
                             let (hash, keys) =
                                 verify(&query, &proof, Some(limit)).unwrap_or_else(|e| {
                                     panic!("{name} {a}..{b} {left_to_right} limit {limit}: {e}")
                                 });
                             assert_eq!(hash, root);
                             assert_eq!(keys, all[..limit as usize], "{name} {a}..{b} {limit}");
-                            let released = prove(&merk, &query, Some(limit), 0, v);
+                            let released = prove(&merk, &query, Some(limit), &GROVE_V2);
                             if verify(&query, &released, Some(limit)).is_err() {
                                 v0_failures += 1;
                             }
@@ -226,11 +237,11 @@ fn v1_limit_cut_proofs_verify_at_their_own_limit() {
     assert!(v0_failures > 0, "the sweep never reached a failing cut");
 }
 
-/// A proof its limit does not cut has the same bytes in both shapes: the
-/// versions differ only past a used-up limit.
+/// A proof its limit does not cut has the same bytes in both shapes: grove
+/// v2 and v3 differ only past a used-up limit.
 #[test]
-fn proof_versions_agree_when_the_limit_does_not_cut() {
-    let v = GroveVersion::latest();
+fn proof_shapes_agree_when_the_limit_does_not_cut() {
+    let v = &GROVE_V3;
     let n = 20u8;
     let merk = batch_merk(n, v);
     for a in (0..n - 2).step_by(2) {
@@ -238,12 +249,12 @@ fn proof_versions_agree_when_the_limit_does_not_cut() {
             for (name, items) in cut_shapes(a, b, n) {
                 for left_to_right in [true, false] {
                     let query = query_of(items.clone(), left_to_right);
-                    let full = prove(&merk, &query, None, 1, v);
+                    let full = prove(&merk, &query, None, v);
                     let (_, all) = verify(&query, &full, None).expect("full proof verifies");
                     for limit in [None, Some(all.len() as u16 + 1)] {
                         assert_eq!(
-                            prove(&merk, &query, limit, 0, v),
-                            prove(&merk, &query, limit, 1, v),
+                            prove(&merk, &query, limit, &GROVE_V2),
+                            prove(&merk, &query, limit, v),
                             "{name} {a}..{b} {left_to_right} {limit:?}"
                         );
                     }

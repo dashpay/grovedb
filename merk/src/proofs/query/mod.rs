@@ -38,7 +38,7 @@ use grovedb_costs::{cost_return_on_error, CostContext, CostResult, CostsExt, Ope
 #[cfg(feature = "minimal")]
 use grovedb_element::{ElementType, ProofNodeType};
 #[cfg(feature = "minimal")]
-use grovedb_version::version::GroveVersion;
+use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use map::{Map, MapBuilder};
 #[cfg(any(feature = "minimal", feature = "verify"))]
@@ -69,6 +69,33 @@ use crate::TreeType;
 /// left/right absence, and the current proof status (remaining limit).
 #[cfg(feature = "minimal")]
 pub type ProofAbsenceLimit = (LinkedList<Op>, (bool, bool), ProofStatus);
+
+/// The shape of the Merk proofs `create_proof` emits under `grove_version`:
+/// the version of the GroveDB proof envelope that grove version produces
+/// (`prove_query_non_serialized`), which is the proof version its verifier
+/// passes to `execute_proof`. The shapes differ only in a proof whose limit
+/// runs out before its query does; see `RefWalker::create_proof_internal`.
+/// Grove v1 and v2 produce V0 envelopes, whose shape is locked; grove v3 and
+/// later produce V1. An unknown envelope version is refused rather than
+/// given a shape by default.
+#[cfg(feature = "minimal")]
+fn merk_proof_version(grove_version: &GroveVersion) -> Result<u16, Error> {
+    match grove_version
+        .grovedb_versions
+        .operations
+        .proof
+        .prove_query_non_serialized
+    {
+        version @ (0 | 1) => Ok(version),
+        version => Err(Error::VersionError(
+            GroveVersionError::UnknownVersionMismatch {
+                method: "create_proof".to_string(),
+                known_versions: vec![0, 1],
+                received: version,
+            },
+        )),
+    }
+}
 
 #[cfg(feature = "minimal")]
 impl<S> RefWalker<'_, S>
@@ -289,21 +316,10 @@ where
         left_to_right: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<ProofAbsenceLimit, Error> {
-        self.create_proof_for_proof_version(query, limit, left_to_right, 0, grove_version)
-    }
-
-    /// [`Self::create_proof`] in the shape of `proof_version`. From proof
-    /// version 1 a limited proof no longer reveals a range bound once its
-    /// limit is used up; see [`Self::create_proof_internal`].
-    #[cfg(feature = "minimal")]
-    pub(crate) fn create_proof_for_proof_version(
-        &mut self,
-        query: &[QueryItem],
-        limit: Option<u16>,
-        left_to_right: bool,
-        proof_version: u16,
-        grove_version: &GroveVersion,
-    ) -> CostResult<ProofAbsenceLimit, Error> {
+        let proof_version = match merk_proof_version(grove_version) {
+            Ok(proof_version) => proof_version,
+            Err(e) => return Err(e).wrap_with_cost(OperationCost::default()),
+        };
         let (proof_query_items, proof_params) =
             ProofItems::new_with_query_items(query, left_to_right);
         let proof_status = ProofStatus::new_with_limit(limit);
@@ -321,16 +337,16 @@ where
     /// any keys were queried were less than the left edge or greater than the
     /// right edge, respectively.
     ///
-    /// `proof_version` selects the proof's shape once a limit is used up.
-    /// The walk then hides everything it has not reached, but it still
-    /// passes back up through the ancestors of its last result. One of them
-    /// can be a range bound: an exclusive range end, or a later query item's
-    /// bound. Version 0 reveals such a key as a boundary node behind the
-    /// nodes it hid. No verifier can check it as a bound there, since the
-    /// node before it is hidden, so the proof was rejected ("Cannot verify
-    /// lower bound of queried range") even at the prover's own limit. From
-    /// version 1 that key is hidden like the rest of the unwalked tree. Both
-    /// shapes hash to the same root.
+    /// `proof_version` (see [`merk_proof_version`]) selects the proof's
+    /// shape once a limit is used up. The walk then hides everything it has
+    /// not reached, but it still passes back up through the ancestors of its
+    /// last result. One of them can be a range bound: an exclusive range end,
+    /// or a later query item's bound. Version 0 reveals such a key as a
+    /// boundary node behind the nodes it hid. No verifier can check it as a
+    /// bound there, since the node before it is hidden, so the proof was
+    /// rejected ("Cannot verify lower bound of queried range") even at the
+    /// prover's own limit. From version 1 that key is hidden like the rest of
+    /// the unwalked tree. Both shapes hash to the same root.
     #[cfg(feature = "minimal")]
     pub(crate) fn create_proof_internal(
         &mut self,

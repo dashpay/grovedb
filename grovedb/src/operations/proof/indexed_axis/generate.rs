@@ -11,9 +11,8 @@ use grovedb_costs::{
 use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::{
     element::get::ElementFetchFromStorageExtensions,
-    proofs::query::{verify_count_offset_on_range_proof, QueryProofVerify, PROOF_VERSION_LATEST},
+    proofs::query::{verify_count_offset_on_range_proof, QueryProofVerify},
     proofs::{encode_into, query::QueryItem as MerkQueryItemForRange, Query as MerkQuery},
-    ProofWithoutEncodingResult,
 };
 use grovedb_path::{SubtreePath, SubtreePathBuilder};
 use grovedb_query::AggregateFold;
@@ -1015,14 +1014,7 @@ impl GroveDb {
         let sec_result = cost_return_on_error!(
             &mut cost,
             secondary_merk
-                .prove_unchecked_query_items_for_proof_version(
-                    &secondary_query.items,
-                    limit,
-                    secondary_query.left_to_right,
-                    PROOF_VERSION_LATEST,
-                    grove_version,
-                )
-                .map_ok(|(proof, limit)| ProofWithoutEncodingResult::new(proof, limit))
+                .prove_without_encoding(secondary_query, limit, grove_version)
                 .map_err(|e| Error::CorruptedData(format!(
                     "indexed-axis range proof: secondary range proof: {e}"
                 )))
@@ -1522,14 +1514,7 @@ impl GroveDb {
                     let sec_result = cost_return_on_error!(
                         &mut cost,
                         secondary_merk
-                            .prove_unchecked_query_items_for_proof_version(
-                                &secondary_query.items,
-                                Some(*limit),
-                                secondary_query.left_to_right,
-                                PROOF_VERSION_LATEST,
-                                grove_version,
-                            )
-                            .map_ok(|(proof, limit)| ProofWithoutEncodingResult::new(proof, limit))
+                            .prove_without_encoding(secondary_query, Some(*limit), grove_version)
                             .map_err(|e| Error::CorruptedData(format!(
                                 "axis descent: secondary range proof: {e}"
                             )))

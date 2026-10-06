@@ -126,36 +126,6 @@ where
         left_to_right: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<Proof, Error> {
-        self.prove_unchecked_query_items_for_proof_version(
-            query_items,
-            limit,
-            left_to_right,
-            0,
-            grove_version,
-        )
-    }
-
-    /// [`Self::prove_unchecked_query_items`] in the shape of `proof_version`,
-    /// the proof version its verifier passes to `execute_proof`.
-    ///
-    /// The shapes differ only in a proof whose limit runs out before the
-    /// query does. The walk then hides everything it has not reached, but
-    /// it still passes back up through the ancestors of its last result,
-    /// and one of them can be a range bound (an exclusive range end, or a
-    /// later query item's bound). Version 0 reveals that key behind the
-    /// nodes it hid, where no verifier can check it as a bound, so the proof
-    /// fails to verify even at the prover's own limit ("Cannot verify lower
-    /// bound of queried range"). From version 1 the key is hidden like the
-    /// rest of the unwalked tree, and the proof verifies. Both shapes hash to
-    /// the same root, and `prove_unchecked_query_items` keeps version 0.
-    pub fn prove_unchecked_query_items_for_proof_version(
-        &self,
-        query_items: &[QueryItem],
-        limit: Option<u16>,
-        left_to_right: bool,
-        proof_version: u16,
-        grove_version: &GroveVersion,
-    ) -> CostResult<Proof, Error> {
         self.use_tree_mut(|maybe_tree| {
             maybe_tree
                 .ok_or(Error::CorruptedCodeExecution(
@@ -164,13 +134,7 @@ where
                 .wrap_with_cost(Default::default())
                 .flat_map_ok(|tree| {
                     let mut ref_walker = RefWalker::new(tree, self.source());
-                    ref_walker.create_proof_for_proof_version(
-                        query_items,
-                        limit,
-                        left_to_right,
-                        proof_version,
-                        grove_version,
-                    )
+                    ref_walker.create_proof(query_items, limit, left_to_right, grove_version)
                 })
                 .map_ok(|(proof, _, status, ..)| (proof, status.limit))
         })
