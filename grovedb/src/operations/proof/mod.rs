@@ -37,6 +37,8 @@ mod verify;
 mod verify_path_query;
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
+pub use aggregate_common::CarrierAggregatePage;
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use verify::SumBudgetStop;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use verify_path_query::VerifiedPathQuery;

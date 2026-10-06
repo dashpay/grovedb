@@ -26,6 +26,10 @@
 //! - [`require_v1_envelope`] — extract the V1 root layer from a
 //!   `GroveDBProof` or reject the proof. All aggregate axes require
 //!   V1 envelopes; V0 predates the feature.
+//! - [`CarrierAggregatePage`] — what the `*_per_key_up_to_limit`
+//!   verifiers return: the entries, and whether more outer keys may
+//!   match. [`up_to_limit_page`] builds it, and
+//!   [`refuse_zero_ceiling`] guards the entry points.
 //!
 //! The functions that produce diagnostic strings take an
 //! `axis_label: &'static str` (and `query_type_name: &'static str` for
@@ -36,7 +40,7 @@
 
 use grovedb_merk::{
     proofs::{
-        query::{QueryProofVerify, PROOF_VERSION_LATEST},
+        query::{ProofLimitMode, QueryProofVerify, PROOF_VERSION_LATEST},
         Query as MerkQuery,
     },
     CryptoHash,
@@ -47,6 +51,85 @@ use crate::{
     operations::proof::{GroveDBProof, GroveDBProofV1, LayerProof, ProofBytes},
     Error, PathQuery,
 };
+
+/// One page of a carrier aggregate verified with the outer walk's
+/// `SizedQuery::limit` as a ceiling, as the `*_per_key_up_to_limit`
+/// verifiers return it. Either way the entries are the first outer matches
+/// in walk order, with none skipped; the variant says whether the proof
+/// shows they are all of them.
+#[must_use = "a page can be partial: `MoreAfter` means later outer keys may match"]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CarrierAggregatePage<E> {
+    /// The proof shows no further outer key matches: these are all of them.
+    Complete(Vec<E>),
+    /// The proof stopped before the outer query did, so later outer keys
+    /// may match. Query again from after `last_key`, the outer key of the
+    /// last entry. Never empty.
+    MoreAfter {
+        /// The first outer matches in walk order.
+        entries: Vec<E>,
+        /// The outer key of the last entry, where the next page starts.
+        last_key: Vec<u8>,
+    },
+}
+
+impl<E> CarrierAggregatePage<E> {
+    /// The verified entries, whether or not more outer keys may match.
+    pub fn entries(&self) -> &[E] {
+        match self {
+            Self::Complete(entries) | Self::MoreAfter { entries, .. } => entries,
+        }
+    }
+
+    /// The outer key the next page starts after, or `None` when the page
+    /// holds every match.
+    pub fn resume_after(&self) -> Option<&[u8]> {
+        match self {
+            Self::Complete(_) => None,
+            Self::MoreAfter { last_key, .. } => Some(last_key),
+        }
+    }
+}
+
+/// Refuse an `*_up_to_limit` verification whose ceiling is `Some(0)`: it
+/// admits no outer key, so the page could never move past its start.
+pub(in crate::operations::proof) fn refuse_zero_ceiling(
+    path_query: &PathQuery,
+) -> Result<(), Error> {
+    if path_query.query.limit == Some(0) {
+        return Err(Error::InvalidQuery(
+            "an upper-bound aggregate page needs a ceiling of at least 1",
+        ));
+    }
+    Ok(())
+}
+
+/// Build the page an `*_up_to_limit` verifier returns from its walk's
+/// entries and whether the proof showed the outer query exhausted.
+/// `outer_key` reads an entry's outer key.
+pub(in crate::operations::proof) fn up_to_limit_page<E>(
+    root_hash: CryptoHash,
+    entries: Vec<E>,
+    exhausted: bool,
+    outer_key: fn(&E) -> &[u8],
+    path_query: &PathQuery,
+) -> Result<(CryptoHash, CarrierAggregatePage<E>), Error> {
+    if exhausted {
+        return Ok((root_hash, CarrierAggregatePage::Complete(entries)));
+    }
+    // Upper-bound verification never stops before the first result, and
+    // a ceiling of 0 was refused up front.
+    let Some(last_key) = entries.last().map(|entry| outer_key(entry).to_vec()) else {
+        return Err(Error::InvalidProof(
+            path_query.clone(),
+            "upper-bound aggregate proof stopped before its first outer key".to_string(),
+        ));
+    };
+    Ok((
+        root_hash,
+        CarrierAggregatePage::MoreAfter { entries, last_key },
+    ))
+}
 
 /// Unwrap a `ProofBytes::Merk(_)` or reject the proof. All three
 /// aggregate-axis envelopes are merk-flavored at every layer; a
@@ -160,7 +243,8 @@ pub(in crate::operations::proof) struct OuterMatch {
 }
 
 /// Execute the carrier-layer multi-key merk proof for `outer_items`,
-/// returning `(carrier_merk_root_hash, matched_outer_keys)`.
+/// returning `(carrier_merk_root_hash, matched_outer_keys,
+/// outer_walk_exhausted)`.
 ///
 /// `outer_limit` is the `SizedQuery::limit` that bounds the outer walk
 /// (matching what the prover passed to
@@ -172,6 +256,11 @@ pub(in crate::operations::proof) struct OuterMatch {
 /// limit so that its merk walker stops at the same boundary instead of
 /// demanding KV data for the un-walked tail.
 ///
+/// With [`ProofLimitMode::UpperBound`], `outer_limit` is only a ceiling:
+/// the prover may have walked fewer outer keys, and the walk ends at the
+/// first hidden node inside the outer range. `outer_walk_exhausted`
+/// reports whether the proof shows there are no further outer matches.
+///
 /// `axis_label` is interpolated into the rejection messages so each
 /// axis's wrapper can supply its own diagnostic prefix.
 pub(in crate::operations::proof) fn execute_carrier_layer_proof(
@@ -179,9 +268,10 @@ pub(in crate::operations::proof) fn execute_carrier_layer_proof(
     outer_items: &[QueryItem],
     left_to_right: bool,
     outer_limit: Option<u16>,
+    limit_mode: ProofLimitMode,
     path_query: &PathQuery,
     axis_label: &'static str,
-) -> Result<(CryptoHash, Vec<OuterMatch>), Error> {
+) -> Result<(CryptoHash, Vec<OuterMatch>, bool), Error> {
     // The grovedb_query::QueryItem and
     // grovedb_merk::proofs::query::QueryItem types are identical (the
     // merk crate re-exports the grovedb-query one).
@@ -198,7 +288,13 @@ pub(in crate::operations::proof) fn execute_carrier_layer_proof(
     // in the wrong family cannot fill a limited outer walk from the
     // wrong end of the range.
     let (root_hash, merk_result) = level_query
-        .execute_proof(merk_bytes, outer_limit, left_to_right, PROOF_VERSION_LATEST)
+        .execute_proof_with_limit_mode(
+            merk_bytes,
+            outer_limit,
+            limit_mode,
+            left_to_right,
+            PROOF_VERSION_LATEST,
+        )
         .unwrap()
         .map_err(|e| {
             Error::InvalidProof(
@@ -229,7 +325,7 @@ pub(in crate::operations::proof) fn execute_carrier_layer_proof(
         });
     }
 
-    Ok((root_hash, matched))
+    Ok((root_hash, matched, merk_result.exhausted))
 }
 
 /// Classification of any aggregate-on-range `PathQuery`. Encodes
