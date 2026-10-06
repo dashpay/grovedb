@@ -307,6 +307,29 @@
 //!   Identity-owned sections are unaffected; Drive accounts for the default
 //!   section as system removals, separately from identity fee refunds.
 //!
+//! - `apply_batch.same_batch_reference_target_prediction: 1` — a reference
+//!   written in the same batch as an update of its target commits to the
+//!   bytes the target stores. A target the batch has already written is
+//!   hashed from those bytes; one still to be written is predicted once,
+//!   through Merk's own just-in-time value update for the put the apply
+//!   performs. V1..V3 assume a sum item keeps its stored flags, so when the
+//!   flags update merges them (an owned item updated in a later epoch, an
+//!   unowned one gaining an owner) the reference commits to bytes never
+//!   stored and the grove stops verifying; they also refuse a sum item
+//!   replaced by an item, or the reverse, that applies on its own. Gated
+//!   because it moves a committed root and flips a rejected/accepted
+//!   outcome.
+//!
+//! - `merk_versions.tree.just_in_time_value_update: 1` — a replacement
+//!   whose flags update answers `Unchanged` is charged for the bytes it
+//!   stores. V1..V3 keep the measurement taken with the old value's flags,
+//!   so a replacement whose own flags differ in length fails its commit
+//!   with a storage cost mismatch. A `Changed` round that restores the
+//!   put's value also restores its value-defined cost, so a sum item or tree
+//!   measured again is measured with the cost of the bytes it holds. Gated
+//!   because it changes tracked costs and flips a failed commit into a
+//!   successful one.
+//!
 //! Note that `GroveVersion::latest()` resolves to this version, so anything
 //! defaulting to "latest" — tests, benchmarks, tools — exercises every gate
 //! listed above rather than V3 behaviour.
@@ -677,10 +700,14 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             // proof envelope.
             prove_count_offset_on_range: 0,
         },
-        // Bumped 0 -> 1: ordinary (Item / Reference) replacements of a
-        // specialized value are charged from their own bytes (issue #908).
         tree: MerkTreeVersions {
+            // Bumped 0 -> 1: ordinary (Item / Reference) replacements of a
+            // specialized value are charged from their own bytes (issue #908).
             put_value: 1,
+            // Bumped 0 -> 1: a replacement whose flags update answers
+            // `Unchanged` is measured from the bytes it stores, and a sum
+            // item or tree measured again after its value was restored is
+            // measured with that value's own value-defined cost.
             just_in_time_value_update: 1,
         },
     },

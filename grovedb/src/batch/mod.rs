@@ -5098,7 +5098,13 @@ where
                 .insert(path.to_vec(), per_axis);
         }
 
-        self.written_qualified_paths.extend(written_qualified_paths);
+        for qualified_path in written_qualified_paths {
+            // A reference to a written target hashes the bytes it stores
+            // and never reads its prediction again, so the prediction can
+            // go.
+            self.predicted_reference_targets.remove(&qualified_path);
+            self.written_qualified_paths.insert(qualified_path);
+        }
         let merk = self.merks.get_mut(path).expect("the Merk is cached");
         merk.root_hash_key_and_aggregate_data()
             .add_cost(cost)

@@ -446,4 +446,96 @@ mod tests {
             assert_eq!(node.old_value, Some(new));
         }
     }
+
+    /// A `Changed` round whose rewrite changes the value-defined cost, which
+    /// the update then restores with the value, followed by `Unchanged`, is
+    /// measured exactly as an immediate `Unchanged`: the sum item it stores
+    /// is measured with its own value-defined cost, not the rewrite's.
+    #[test]
+    fn a_changed_round_then_unchanged_measures_the_value_it_stores() {
+        use crate::element::insert::specialized_put_cost;
+
+        let grove_version = GroveVersion::latest();
+        let key = b"key".to_vec();
+        let sum_item =
+            |sum: i64, flags: Vec<u8>| Element::new_sum_item_with_flags(sum, Some(flags));
+        let old = sum_item(5, vec![1]).serialize(grove_version).unwrap();
+        let new_element = sum_item(7, vec![2]);
+        let new = new_element.serialize(grove_version).unwrap();
+        let new_cost = specialized_put_cost(&new_element, grove_version)
+            .unwrap()
+            .expect("a sum item has a specialized cost");
+        let rewritten_element = sum_item(7, vec![2; 9]);
+        let rewritten = rewritten_element.serialize(grove_version).unwrap();
+        let rewritten_cost = specialized_put_cost(&rewritten_element, grove_version)
+            .unwrap()
+            .expect("a sum item has a specialized cost");
+        assert_ne!(new_cost, rewritten_cost);
+
+        let putting_new = || {
+            let kv = KV::from_fields(
+                key.clone(),
+                old.clone(),
+                NULL_HASH,
+                NULL_HASH,
+                BasicMerkNode,
+            );
+            let mut node = TreeNode::new_with_tree_inner(TreeNodeInner {
+                left: None,
+                right: None,
+                kv,
+            });
+            node.inner.kv = node.inner.kv.put_value_with_fixed_cost_no_update_of_hashes(
+                new.clone(),
+                ValueDefinedCostType::SpecializedValueDefinedCost(new_cost),
+            );
+            node
+        };
+
+        let mut at_once = putting_new();
+        at_once
+            .just_in_time_tree_node_value_update(
+                &old_cost,
+                &no_temp_value,
+                &mut |_cost: &StorageCost, _old: &Vec<u8>, _new: &mut Vec<u8>| {
+                    Ok((ElementFlagsUpdate::Unchanged, None))
+                },
+                &mut basic_removal,
+                grove_version,
+            )
+            .expect("expected the update to apply");
+
+        let mut rounds = 0;
+        let mut retried = putting_new();
+        retried
+            .just_in_time_tree_node_value_update(
+                &old_cost,
+                &no_temp_value,
+                &mut |_cost: &StorageCost, _old: &Vec<u8>, value: &mut Vec<u8>| {
+                    rounds += 1;
+                    if rounds == 1 {
+                        *value = rewritten.clone();
+                        Ok((
+                            ElementFlagsUpdate::Changed,
+                            Some(ValueDefinedCostType::SpecializedValueDefinedCost(
+                                rewritten_cost,
+                            )),
+                        ))
+                    } else {
+                        Ok((ElementFlagsUpdate::Unchanged, None))
+                    }
+                },
+                &mut basic_removal,
+                grove_version,
+            )
+            .expect("expected the update to apply");
+
+        assert_eq!(rounds, 2, "the resized rewrite must force a second round");
+        assert_eq!(retried.inner.kv.value, new);
+        assert_eq!(
+            retried.inner.kv.value_defined_cost,
+            Some(ValueDefinedCostType::SpecializedValueDefinedCost(new_cost))
+        );
+        assert_eq!(retried.known_storage_cost, at_once.known_storage_cost);
+    }
 }

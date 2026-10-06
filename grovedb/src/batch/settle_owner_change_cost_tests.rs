@@ -1052,15 +1052,15 @@ mod tests {
 
     /// With the option, the average-case and worst-case estimates of every
     /// write that may settle an owner change are never below the settled
-    /// apply.
+    /// apply of that same write.
     #[test]
     fn estimates_with_the_option_cover_a_settled_owner_change() {
         let grove_version = GroveVersion::latest();
         for (old, new, tree_type) in estimate_cases() {
-            let db = grove_with(&old, tree_type, grove_version);
-            let applied = apply(&db, vec![write_op(&new)], Mode::Settling, grove_version)
-                .expect("expected the settling update to apply");
             for (label, op) in settling_writes(&new) {
+                let db = grove_with(&old, tree_type, grove_version);
+                let applied = apply(&db, vec![op.clone()], Mode::Settling, grove_version)
+                    .unwrap_or_else(|e| panic!("expected {label} of {new:?} to apply: {e}"));
                 for average_case_tree_type in [Some(tree_type), None] {
                     let settling = estimate(
                         vec![op.clone()],
