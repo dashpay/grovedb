@@ -68,6 +68,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an absent path. `AxisKeys::empty_for_axis` is new. (#965)
 
 ### Fixed
+- From `GROVE_V4`, an aggregate-on-range proof (`AggregateCountOnRange`,
+  `AggregateSumOnRange`, `AggregateCountAndSumOnRange`, leaf or carrier
+  shape) whose path, or whose carrier key followed by a `subquery_path`, runs
+  through an EMPTY `ProvableCountTree`, `ProvableCountSumTree`,
+  `ProvableSumTree` or `ProvableCountProvableSumTree` above the aggregate
+  terminal is generated instead of failing with "Cannot create proof for
+  empty tree". The prover descended into such a tree so that an empty
+  terminal answers zero, but above the terminal the descent reached an
+  ordinary layer over an empty Merk, which has no Merk proof. That tree is
+  now proved in its parent layer with no lower layer, as an empty tree of
+  any other type there already was: its value hash binds it to the empty
+  child root, and `verify_query` with the single-key query over the same
+  path verifies the proof. The aggregate verifiers are unchanged and still
+  refuse a path that ends before the terminal. An empty tree that is the
+  terminal itself is still descended into, to its authenticated zero, at
+  every version. `GROVE_V1`..`GROVE_V3` keep failing, through the new
+  `proof.empty_tree_above_aggregate_terminal` slot (**BREAKING** for code
+  building `GroveDBOperationsProofVersions` by hand).
 - A path with a segment longer than 255 bytes no longer panics. Storage
   panicked while building the subtree prefix for it, since a prefix records
   each segment length in one byte. Where it did, the call now returns

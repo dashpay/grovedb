@@ -23,7 +23,8 @@ use grovedb_merkle_mountain_range::MmrTreeProof;
 use grovedb_path::SubtreePath;
 use grovedb_storage::{Storage, StorageContext};
 use grovedb_version::{
-    check_grovedb_v0_or_v1_with_cost, check_grovedb_v0_with_cost, version::GroveVersion,
+    check_grovedb_v0_or_v1_with_cost, check_grovedb_v0_with_cost, error::GroveVersionError,
+    version::GroveVersion,
 };
 
 #[cfg(feature = "proof_debug")]
@@ -2142,6 +2143,17 @@ impl GroveDb {
         let is_aggregate_count_query = aggregate_kind == Some(AggregateKind::Count);
         let is_aggregate_sum_query = aggregate_kind == Some(AggregateKind::Sum);
         let is_aggregate_count_and_sum_query = aggregate_kind == Some(AggregateKind::CountAndSum);
+        // Whether the empty aggregate trees this layer routes through are
+        // descended into: the children of this layer sit one level down.
+        // Only the three empty-host arms below read it, and only on an
+        // aggregate query.
+        let descends_into_empty_aggregate_tree = match aggregate_kind {
+            Some(_) => cost_return_on_error_no_add!(
+                cost,
+                Self::descends_into_empty_aggregate_tree(validated, path.len() + 1, grove_version)
+            ),
+            None => false,
+        };
 
         // `query.left_to_right` is used verbatim, synthesized levels
         // included: this is the definition of the layer's op family, and
@@ -3222,11 +3234,20 @@ impl GroveDb {
                             // the recursion hits the ACOR short-circuit on
                             // the empty merk and emits an empty count proof
                             // (verifier reads it as count = 0).
+                            //
+                            // This and the two arms below descend only
+                            // while `descends_into_empty_aggregate_tree`
+                            // says so: from GROVE_V4 an empty tree ABOVE
+                            // the terminal falls through to the generic
+                            // empty-tree arm instead, since a descent there
+                            // reaches no short-circuit and cannot prove an
+                            // empty Merk.
                             Ok(Element::ProvableCountTree(None, ..))
                             | Ok(Element::ProvableCountSumTree(None, ..))
                             | Ok(Element::ProvableCountProvableSumTree(None, ..))
                                 if !done_with_results
                                     && is_aggregate_count_query
+                                    && descends_into_empty_aggregate_tree
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
                                 let mut lower_path = path.clone();
@@ -3271,6 +3292,7 @@ impl GroveDb {
                             | Ok(Element::ProvableCountProvableSumTree(None, ..))
                                 if !done_with_results
                                     && is_aggregate_sum_query
+                                    && descends_into_empty_aggregate_tree
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
                                 let mut lower_path = path.clone();
@@ -3310,6 +3332,7 @@ impl GroveDb {
                             Ok(Element::ProvableCountProvableSumTree(None, ..))
                                 if !done_with_results
                                     && is_aggregate_count_and_sum_query
+                                    && descends_into_empty_aggregate_tree
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
                                 let mut lower_path = path.clone();
@@ -3373,9 +3396,12 @@ impl GroveDb {
                                     // twin) and so hits the global budget
                                     // only — per-instance budgets count
                                     // result rows. The verifier mirrors
-                                    // this exactly; the aggregate-carrier
-                                    // empty hosts never reach this arm
-                                    // (their descent arms match first).
+                                    // this exactly. An empty aggregate
+                                    // terminal never reaches this arm (its
+                                    // descent arm matches first); from
+                                    // GROVE_V4 an empty aggregate tree
+                                    // above the terminal does, and is
+                                    // proved here with no lower layer.
                                     limit_state.charge_empty_layer();
                                 } else {
                                     // The empty tree itself is the queried
@@ -3459,6 +3485,58 @@ impl GroveDb {
             lower_layers,
         })
         .wrap_with_cost(cost)
+    }
+
+    /// Whether [`Self::prove_subqueries_v1`] descends into an empty
+    /// `ProvableCountTree` / `ProvableCountSumTree` / `ProvableSumTree` /
+    /// `ProvableCountProvableSumTree` that an aggregate-on-range query routes
+    /// through, the tree sitting at `child_depth` (the length of its own
+    /// path). Selected by `proof.empty_tree_above_aggregate_terminal`.
+    fn descends_into_empty_aggregate_tree(
+        validated: &ValidatedPathQuery<'_>,
+        child_depth: usize,
+        grove_version: &GroveVersion,
+    ) -> Result<bool, Error> {
+        match grove_version
+            .grovedb_versions
+            .operations
+            .proof
+            .empty_tree_above_aggregate_terminal
+        {
+            0 => Ok(Self::descends_into_empty_aggregate_tree_v0()),
+            1 => Ok(Self::descends_into_empty_aggregate_tree_v1(
+                validated,
+                child_depth,
+            )),
+            received => Err(Error::VersionError(
+                GroveVersionError::UnknownVersionMismatch {
+                    method: "descends_into_empty_aggregate_tree".to_string(),
+                    known_versions: vec![0, 1],
+                    received,
+                },
+            )),
+        }
+    }
+
+    /// GROVE_V1..V3: always descends. Above the aggregate terminal the
+    /// descent reaches an ordinary layer over an empty Merk, which fails
+    /// generation with "Cannot create proof for empty tree". Kept so the
+    /// released versions' proofs and refusals do not change.
+    fn descends_into_empty_aggregate_tree_v0() -> bool {
+        true
+    }
+
+    /// GROVE_V4+: descends only into the aggregate terminal itself, where the
+    /// aggregate short-circuit answers an empty Merk with an authenticated
+    /// zero. Above the terminal there is nothing below to prove, so the
+    /// tree is proved in its parent layer with no lower layer, as an empty
+    /// tree of any other type is: its value hash binds it to the empty
+    /// child root (`NULL_HASH`).
+    fn descends_into_empty_aggregate_tree_v1(
+        validated: &ValidatedPathQuery<'_>,
+        child_depth: usize,
+    ) -> bool {
+        validated.aggregate_at_depth(child_depth).is_some()
     }
 
     /// Count-offset paginated short-circuit of [`Self::prove_subqueries_v1`].

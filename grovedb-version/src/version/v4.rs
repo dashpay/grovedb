@@ -68,6 +68,17 @@
 //!   proved elements. V1..V3 refuse the shape on both sides. Gated because
 //!   it adds an acceptance rule to the live V1 envelope.
 //!
+//! - `proof.empty_tree_above_aggregate_terminal: 1` — an aggregate-on-range
+//!   proof whose path, or whose carrier key followed by a `subquery_path`,
+//!   runs through an EMPTY `ProvableCountTree` / `ProvableCountSumTree` /
+//!   `ProvableSumTree` / `ProvableCountProvableSumTree` above the aggregate
+//!   terminal proves that tree in its parent layer with no lower layer, as
+//!   it proves an empty tree of any other type there. V1..V3 descend into it
+//!   and fail generation with "Cannot create proof for empty tree". An empty
+//!   tree that is the terminal itself still descends, to its authenticated
+//!   zero, at every version. Prover only; gated so released versions' proofs
+//!   and refusals are unchanged.
+//!
 //! - `path_query_methods.terminal_keys: 1` — `PathQuery::terminal_keys`
 //!   resolves conditional subquery branches per queried item (first matching
 //!   conditional wins, default branch as fallback), so keys never selected by
@@ -566,6 +577,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 chunk_proof_row_binding: 1, // bind every tree / reference row of a trunk or branch chunk proof
                 axis_descent_in_v1_envelope: 1, // axis-ordered descents in the V1 envelope (ReadMode::Axis)
                 sum_budget_in_v1_envelope: 1, // sum-budget windows in the V1 envelope (ReadMode::SumBudget)
+                empty_tree_above_aggregate_terminal: 1, // prove an empty tree above an aggregate terminal in its parent layer
             },
             average_case: GroveDBOperationsAverageCaseVersions {
                 add_average_case_get_merk_at_path: 0,
