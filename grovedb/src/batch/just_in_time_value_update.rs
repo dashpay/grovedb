@@ -71,7 +71,10 @@ where
     move |storage_cost: &StorageCost,
           old_flags: Option<ElementFlags>,
           new_flags: &mut ElementFlags| {
-        let keeps_stored_flags = old_flags.as_deref() == Some(new_flags.as_slice());
+        // Compared before the callback, which may rewrite the flags. Without
+        // the option any settling answer is refused anyway.
+        let keeps_stored_flags =
+            settle_owner_changes && old_flags.as_deref() == Some(new_flags.as_slice());
         let update = flags_update(storage_cost, old_flags, new_flags)?.into();
         if update == ElementFlagsUpdate::SettleOwnerChange {
             let refusal = if !settle_owner_changes {
@@ -331,8 +334,15 @@ where
         u32,
     ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
 {
-    let old_value_defined_cost =
-        Element::value_defined_cost_for_serialized_value(&old_serialized, grove_version);
+    // Only an ordinary put can keep the stored node's value-defined cost: a
+    // provided-value-hash put clears it and a specialized-cost put replaces
+    // it, so the stored element is decoded for it only then.
+    let old_value_defined_cost = match put {
+        PredictedPut::Ordinary => {
+            Element::value_defined_cost_for_serialized_value(&old_serialized, grove_version)
+        }
+        PredictedPut::ProvidedValueHash | PredictedPut::SpecializedCost(_) => None,
+    };
     TreeNode::predict_put_final_value(
         key.to_vec(),
         old_serialized,
