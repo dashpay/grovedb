@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- `grovedb-commitment-tree` pins `orchard` to the `dashpay/orchard`
+  `integration/prover-perf` commit, which builds on `dashpay/halo2` and
+  embeds the k=11 params and fixed-base Lagrange tables: Orchard proving
+  is 50-61% faster, verification 27-51% faster, and a cold proving-key build
+  5-7x faster, with byte-identical proofs. **BREAKING**: the
+  `ProofSizeEnforcement` re-export is gone, because that orchard revision
+  includes dashpay/orchard#11, which removed the enum and made
+  `Bundle::try_from_parts` always enforce the canonical proof size (the old
+  `Strict` behaviour). Callers drop the last argument.
+
+### Changed
 - From `GROVE_V4` a `ProvableCountProvableSumIndexedTree` primary accepts a
   bare `SumItem` child, on the direct and the batch path, as it accepts an
   `ItemWithSumItem`: the tree aggregates it as a count of one and its sum,
