@@ -155,6 +155,10 @@
 //!   tree or a tree replacement declared `Check` is scanned; a
 //!   `DeleteTree` never is, `DeleteChildren` checking the declaration on
 //!   its cleanup walk instead.
+//! - `apply_batch.move_element: 1` — batches accept `GroveOp::Move`, which
+//!   renames a key within its parent and copies the stored nodes of
+//!   everything under it to the new key's storage prefixes. A new
+//!   operation: nothing that applies on V1..V3 changes.
 //! - `apply_batch.non_merk_parent_keyed_ops_rejection: 1` — batch execution
 //!   refuses ordinary keyed ops at a level whose parent is a non-Merk data
 //!   tree (`CommitmentTree`, `MmrTree`, `BulkAppendTree`, `DenseTree`,
@@ -373,6 +377,8 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             // participant gate, per-op BackwardsReferences declarations, and
             // DontCheck required for DropFlat.
             backward_references_maintenance: 1,
+            // v1: batches accept `GroveOp::Move` (issue #1014).
+            move_element: 1,
         },
         element: GroveDBElementMethodVersions {
             delete: 0,

@@ -249,6 +249,13 @@ pub struct GroveDBApplyBatchVersions {
     /// are versioned by their own `insert_on_transaction` and
     /// `delete_internal_on_transaction` slots.
     pub backward_references_maintenance: FeatureVersion,
+    /// Whether a batch accepts `GroveOp::Move`, which renames a key and
+    /// keeps the stored nodes of everything under it (issue #1014).
+    ///
+    /// - `0` (V1..V3): a batch holding a move is refused before anything is
+    ///   read.
+    /// - `1` (V4+): moves are applied. No other operation changes.
+    pub move_element: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

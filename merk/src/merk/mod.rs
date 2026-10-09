@@ -1126,6 +1126,178 @@ mod test {
         );
     }
 
+    /// A Merk holding `aaa`, `mmm` and `zzz`, each with a distinct value.
+    fn three_key_merk(grove_version: &GroveVersion) -> TempMerk {
+        let mut merk = TempMerk::new(grove_version);
+        let batch: Vec<(Vec<u8>, Op)> = [b"aaa", b"mmm", b"zzz"]
+            .into_iter()
+            .map(|key| (key.to_vec(), Op::Put(vec![key[0]; 40], BasicMerkNode)))
+            .collect();
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+            .unwrap()
+            .expect("seed");
+        merk
+    }
+
+    fn stored_value_hash(merk: &TempMerk, key: &[u8], grove_version: &GroveVersion) -> [u8; 32] {
+        merk.get_value_hash(
+            key,
+            true,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
+        .unwrap()
+        .expect("read")
+        .expect("present")
+    }
+
+    #[test]
+    fn moved_node_hashes_like_a_put_at_its_new_key() {
+        let grove_version = GroveVersion::latest();
+
+        let mut plain = three_key_merk(grove_version);
+        plain
+            .apply::<_, Vec<_>>(
+                &[
+                    (b"bbb".to_vec(), Op::Put(vec![b'z'; 40], BasicMerkNode)),
+                    (b"zzz".to_vec(), Op::Delete),
+                ],
+                &[],
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("delete and put");
+
+        let mut moved = three_key_merk(grove_version);
+        let value_hash = stored_value_hash(&moved, b"zzz", grove_version);
+        moved
+            .apply::<_, Vec<_>>(
+                &[
+                    (
+                        b"bbb".to_vec(),
+                        Op::PutMoved(vec![b'z'; 40], value_hash, 3, BasicMerkNode),
+                    ),
+                    (b"zzz".to_vec(), Op::DeleteMoved),
+                ],
+                &[],
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("move");
+
+        assert_eq!(moved.root_hash().unwrap(), plain.root_hash().unwrap());
+        assert_eq!(stored_value_hash(&moved, b"bbb", grove_version), value_hash);
+        assert_invariants(&moved);
+    }
+
+    #[test]
+    fn a_moved_node_updates_alike_whether_or_not_the_merk_is_reopened() {
+        let grove_version = GroveVersion::latest();
+        // How many times the flags callback sees a replaced value when `bbb`,
+        // just moved there from `aaa`, is overwritten.
+        let replacements_after_move = |reopen: bool| {
+            let mut merk = TempMerk::new(grove_version);
+            merk.apply::<_, Vec<_>>(
+                &[(b"aaa".to_vec(), Op::Put(vec![1; 40], BasicMerkNode))],
+                &[],
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("seed");
+            merk.commit(grove_version);
+            let value_hash = stored_value_hash(&merk, b"aaa", grove_version);
+            merk.apply::<_, Vec<_>>(
+                &[
+                    (b"aaa".to_vec(), Op::DeleteMoved),
+                    (
+                        b"bbb".to_vec(),
+                        Op::PutMoved(vec![1; 40], value_hash, 3, BasicMerkNode),
+                    ),
+                ],
+                &[],
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("move");
+            if reopen {
+                merk.commit(grove_version);
+            }
+            let mut replacements = 0;
+            merk.apply_with_costs_just_in_time_value_update::<_, Vec<u8>>(
+                &[(b"bbb".to_vec(), Op::Put(vec![2; 40], BasicMerkNode))],
+                &[],
+                None,
+                &|_, _| Ok(0),
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                &|_, _| Ok(None),
+                &mut |_, _, _| {
+                    replacements += 1;
+                    Ok((false, None))
+                },
+                &mut |_, key_bytes, value_bytes| {
+                    Ok((
+                        grovedb_costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval(key_bytes),
+                        grovedb_costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval(value_bytes),
+                    ))
+                },
+                grove_version,
+            )
+            .unwrap()
+            .expect("overwrite");
+            replacements
+        };
+
+        assert_eq!(replacements_after_move(false), 1);
+        assert_eq!(replacements_after_move(true), 1);
+    }
+
+    #[test]
+    fn moved_nodes_can_trade_places() {
+        let grove_version = GroveVersion::latest();
+        let mut merk = three_key_merk(grove_version);
+        let aaa = stored_value_hash(&merk, b"aaa", grove_version);
+        let zzz = stored_value_hash(&merk, b"zzz", grove_version);
+        let root_before = merk.root_hash().unwrap();
+
+        merk.apply::<_, Vec<_>>(
+            &[
+                (
+                    b"aaa".to_vec(),
+                    Op::PutMoved(vec![b'z'; 40], zzz, 3, BasicMerkNode),
+                ),
+                (
+                    b"zzz".to_vec(),
+                    Op::PutMoved(vec![b'a'; 40], aaa, 3, BasicMerkNode),
+                ),
+            ],
+            &[],
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("swap");
+
+        assert_eq!(stored_value_hash(&merk, b"aaa", grove_version), zzz);
+        assert_eq!(stored_value_hash(&merk, b"zzz", grove_version), aaa);
+        assert_ne!(merk.root_hash().unwrap(), root_before);
+        assert_eq!(
+            merk.get(
+                b"aaa",
+                true,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version
+            )
+            .unwrap()
+            .expect("read"),
+            Some(vec![b'z'; 40])
+        );
+        assert_invariants(&merk);
+    }
+
     #[test]
     fn apply_rejects_overlong_keys() {
         let grove_version = GroveVersion::latest();

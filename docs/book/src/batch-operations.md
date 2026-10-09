@@ -14,6 +14,7 @@ pub enum GroveOp {
     RefreshReference { reference_path_type, max_reference_hop, flags, trust_refresh_reference },
     Delete,
     DeleteTree(TreeType, SubelementsDeletionBehavior),  // Per-op deletion policy
+    Move { new_key: Vec<u8> },  // Rename a key, keeping everything under it (V4)
 
     // Non-Merk tree append operations (user-facing):
     CommitmentTreeInsert { cmx: [u8; 32], rho: [u8; 32], cv_net: [u8; 32], payload: Vec<u8> },
@@ -291,3 +292,65 @@ twin; the checked `DeleteTree` is refused before reading anything,
 preserving the O(1) contract. Partial batches refuse
 participant mutations in either segment; their inspection of tree
 replacements occurs before commit and can also incur recursive read costs.
+
+
+## Moving an element to a new key (V4)
+
+`QualifiedGroveDbOp::move_op(path, key, new_key)` renames a key within its
+parent: the element at `path`/`key` ends up at `path`/`new_key` with the same
+bytes, and for a tree everything under it stays exactly as stored. Batches
+accept it from `GROVE_V4` (`apply_batch.move_element`).
+
+A move is applied in two steps:
+
+1. At the parent's level it becomes two Merk ops. `Op::DeleteMoved` removes
+   the node at the old key, and `Op::PutMoved` writes the same value with the
+   same value hash at the new key. A tree element's value hash already commits
+   to its subtree's root, and nothing it commits to depends on the key, so the
+   parent's new root hash comes out right without opening the subtree.
+   Aggregates are unchanged and propagate up as usual.
+2. After the apply, every record of a moved tree is copied from the storage
+   prefixes under the old path to the ones under the new path (a prefix is the
+   blake3 hash of a path, so every nested subtree gets a new one), and the old
+   prefixes are cleared. This covers nested Merk trees, non-Merk trees' data
+   and indexed trees' secondary Merks; namespaces the element shows empty
+   are skipped. Records stream into the storage batch, and a Merk record is
+   classified by its element's type byte, decoded only where its contents
+   matter. A read error stops the batch rather than commit a partial copy.
+   Root hashes, aggregates and Merk shapes below the moved key do not
+   change.
+
+The copy reads the state from before the batch, and within the storage batch
+a put wins over a delete of the same key, so moves can trade places:
+
+| In the same batch | Outcome |
+|---|---|
+| The target exists | Refused, unless the batch moves its element away (a swap or a chain) |
+| Another op at the target or the moved key, or anything under either | Refused |
+| A delete of the tree holding the move, or of an ancestor | Refused |
+| A reference the batch resolves to or under a moved key or a target | Refused |
+| A backward-reference participant as the element or under it | Refused |
+| The moved element is a cousin or removed-cousin reference | Refused: it resolves through its own key |
+| The moved element is a reference that no longer resolves from the new key (it would reach a moved key, or close a cycle) | Refused |
+| A reference directly under the moved element whose path ends with its parent's key (`UpstreamRootHeightWithParentPathAdditionReference`) | Refused: it resolves through the moved key |
+| A move inside an indexed tree | Refused: secondary rows are keyed by the primary key |
+| A partial batch, or a cost estimate | Refused |
+
+References are copied as stored and resolve from where they now are. One
+inside the moved subtree whose path stays inside it (any relative reference
+that does not climb above the moved element) still reaches the element it
+did. One whose path names the old key, such as an absolute path into the
+subtree or a reference from outside, keeps its stored value hash but reaches
+whatever is at the old key after the batch: nothing after a plain move, as
+after a delete, or the element another move brings there in a swap or a
+chain. GroveDB does not follow those; keeping them valid is the caller's
+job.
+
+A move is billed as storage that stays where it is. The moved element's node
+counts as replaced at the size it had under the old key, plus added bytes if
+the new key is longer, or removed bytes (sectioned through the removal
+callback) if it is shorter. Every record copied below it counts as replaced
+at its stored size, and clearing the old prefixes bills nothing. The
+flags-update callback is not called for anything the move carries, so no
+storage is charged or refunded beyond the change in key length; ancestors
+updated by propagation go through it as in any batch.

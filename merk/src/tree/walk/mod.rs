@@ -410,6 +410,40 @@ where
         Ok(self).wrap_with_cost(cost)
     }
 
+    /// Similar to `Tree#put_moved_value`.
+    pub(crate) fn put_moved_value(
+        mut self,
+        value: Vec<u8>,
+        value_hash: CryptoHash,
+        moved_from_key_len: u32,
+        feature_type: TreeFeatureType,
+        value_defined_cost: Option<ValueDefinedCostType>,
+        section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+    ) -> CostResult<Self, Error> {
+        let mut cost = OperationCost::default();
+        cost_return_on_error_no_add!(
+            cost,
+            self.tree.own_result(|t| t
+                .put_moved_value(
+                    value,
+                    value_hash,
+                    moved_from_key_len,
+                    feature_type,
+                    value_defined_cost,
+                    section_removal_bytes,
+                )
+                .unwrap_add_cost(&mut cost))
+        );
+        Ok(self).wrap_with_cost(cost)
+    }
+
     /// Similar to `Tree#put_value_with_reference_value_hash_and_value_cost`.
     pub fn put_value_with_reference_value_hash_and_value_cost(
         mut self,

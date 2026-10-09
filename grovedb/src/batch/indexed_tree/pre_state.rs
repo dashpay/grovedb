@@ -106,6 +106,15 @@ fn validate_indexed_child_ops(
             | GroveOp::BulkAppend { .. }
             | GroveOp::DenseTreeInsert { .. }
             | GroveOp::PrivateDocumentStoreInsert { .. } => continue,
+            // A secondary row is keyed by the primary key and binds the
+            // primary node, so renaming a key would need the row moved too.
+            GroveOp::Move { .. } => {
+                return Err(Error::NotSupported(
+                    "a move inside an indexed tree is not supported: its secondary rows are \
+                     keyed by the primary key; delete and insert the element instead"
+                        .to_owned(),
+                ));
+            }
         };
         // Child-type acceptance, delegated to merk's own rule rather than a
         // second copy of it: `get_feature_type` is what decides whether an
