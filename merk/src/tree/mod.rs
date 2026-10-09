@@ -347,6 +347,146 @@ impl TreeNode {
         )
     }
 
+    /// Creates the node of an element moved to `key` from another key of the
+    /// same Merk (see [`Op::PutMoved`](crate::tree::Op::PutMoved)). The node
+    /// keeps the value hash it had at its old key and is billed by
+    /// [`Self::moved_storage_cost`].
+    pub(crate) fn new_moved(
+        key: Vec<u8>,
+        value: Vec<u8>,
+        value_hash: CryptoHash,
+        moved_from_key_len: u32,
+        feature_type: TreeFeatureType,
+        value_defined_cost: Option<ValueDefinedCostType>,
+        section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+    ) -> CostResult<Self, Error> {
+        let mut cost = OperationCost::default();
+        let mut kv = KV::new_with_value_hash(key, value, value_hash, feature_type)
+            .unwrap_add_cost(&mut cost);
+        kv.value_defined_cost = value_defined_cost;
+        let mut node = Self {
+            inner: Box::new(TreeNodeInner {
+                kv,
+                left: None,
+                right: None,
+            }),
+            old_value: None,
+            known_storage_cost: None,
+        };
+        let storage_cost = cost_return_on_error_no_add!(
+            cost,
+            node.moved_storage_cost(moved_from_key_len, section_removal_bytes)
+        );
+        node.known_storage_cost = Some(storage_cost);
+        Ok(node).wrap_with_cost(cost)
+    }
+
+    /// Replaces this node's element with one moved here from another key of
+    /// the same Merk, as [`Self::new_moved`] creates one: the value hash is
+    /// kept as given and no flags callback runs, since the bytes stay the
+    /// bytes they were.
+    pub(crate) fn put_moved_value(
+        mut self,
+        value: Vec<u8>,
+        value_hash: CryptoHash,
+        moved_from_key_len: u32,
+        feature_type: TreeFeatureType,
+        value_defined_cost: Option<ValueDefinedCostType>,
+        section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+    ) -> CostResult<Self, Error> {
+        let mut cost = OperationCost::default();
+        self.inner.kv = self.inner.kv.put_ordinary_value_no_update_of_hashes(value);
+        self.inner.kv.value_defined_cost = value_defined_cost;
+        self.inner.kv.feature_type = feature_type;
+        self.inner.kv = self
+            .inner
+            .kv
+            .update_hashes_with_provided_value_hash(value_hash)
+            .unwrap_add_cost(&mut cost);
+        let storage_cost = cost_return_on_error_no_add!(
+            cost,
+            self.moved_storage_cost(moved_from_key_len, section_removal_bytes)
+        );
+        self.known_storage_cost = Some(storage_cost);
+        self.old_value = Some(self.value_ref().clone());
+        Ok(self).wrap_with_cost(cost)
+    }
+
+    /// The storage cost of a node moved here from a key `moved_from_key_len`
+    /// bytes long: the bytes did not come into being, they changed key. The
+    /// key and the value (parent hook included) count as replaced at the
+    /// size they had at the old key; what they gain under this key counts as
+    /// added, and what they lose as removed, sectioned through
+    /// `section_removal_bytes` like any removal of the value's bytes.
+    fn moved_storage_cost(
+        &self,
+        moved_from_key_len: u32,
+        section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+    ) -> Result<KeyValueStorageCost, Error> {
+        fn paid_key_len(not_prefixed_key_len: u32) -> u32 {
+            let prefixed_key_len = HASH_LENGTH_U32 + not_prefixed_key_len;
+            prefixed_key_len + prefixed_key_len.required_space() as u32
+        }
+        fn kept_and_added(old: u32, new: u32) -> StorageCost {
+            StorageCost {
+                added_bytes: new.saturating_sub(old),
+                replaced_bytes: old.min(new),
+                removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+            }
+        }
+
+        let key_len = self.inner.kv.key.len() as u32;
+        let (old_key_bytes, new_key_bytes) =
+            (paid_key_len(moved_from_key_len), paid_key_len(key_len));
+        let old_value_bytes = self
+            .inner
+            .kv
+            .value_byte_cost_size_for_key_len(moved_from_key_len);
+        let new_value_bytes = self.inner.kv.value_byte_cost_size_for_key_len(key_len);
+
+        let mut key_storage_cost = kept_and_added(old_key_bytes, new_key_bytes);
+        let mut value_storage_cost = kept_and_added(old_value_bytes, new_value_bytes);
+        let removed_key_bytes = old_key_bytes.saturating_sub(new_key_bytes);
+        let removed_value_bytes = old_value_bytes.saturating_sub(new_value_bytes);
+        if removed_key_bytes > 0 || removed_value_bytes > 0 {
+            let (key_removal, value_removal) =
+                section_removal_bytes(self.value_ref(), removed_key_bytes, removed_value_bytes)?;
+            key_storage_cost.removed_bytes = key_removal;
+            value_storage_cost.removed_bytes = value_removal;
+        }
+
+        Ok(KeyValueStorageCost {
+            key_storage_cost,
+            value_storage_cost,
+            // The key bytes are billed here, so the storage layer must not
+            // add them again as a new node's.
+            new_node: false,
+            needs_value_verification: false,
+            prepaid: false,
+        })
+    }
+
     /// Creates a new `Tree` for a `CountIndexedTree` /
     /// `ProvableCountIndexedTree` element. The value hash is
     /// `Blake3(actual_value_hash ‖ primary_root_hash ‖ secondary_root_hash)`

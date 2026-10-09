@@ -20,6 +20,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stays refused at every version.
 
 ### Added
+- `GroveOp::Move` and `QualifiedGroveDbOp::move_op(path, key, new_key)`
+  rename a key within its parent in a batch (issue #1014). The element keeps
+  its bytes and node value hash, and for a tree every record under it — nested
+  Merk trees, non-Merk trees' data, indexed trees' secondary Merks — is
+  copied byte for byte to the storage prefixes of the new path, so nothing
+  below the moved key is re-hashed, rebalanced or re-resolved. Moves can
+  swap or chain keys in one batch; a target occupied before the batch must be
+  moved away by the same batch. The move is billed as storage that stays
+  where it is: replaced bytes, plus the change in key length. Refused for
+  backward-reference participants, cousin references, moves inside an
+  indexed tree, partial batches and cost estimates. Batches accept it from
+  `GROVE_V4`, through the new `apply_batch.move_element` slot
+  (**BREAKING** for code building `GroveDBApplyBatchVersions` by hand, or
+  matching `GroveOp` or merk's `Op` exhaustively: merk gains
+  `Op::PutMoved` and `Op::DeleteMoved`).
 - `ProofLimitMode::UpperBound` and `QueryProofVerify::execute_proof_with_limit_mode`
   verify a proof with `limit` as a ceiling instead of the exact limit the
   prover used. Once the proof has returned a result, the walk stops at the

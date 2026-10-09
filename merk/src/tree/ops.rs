@@ -89,6 +89,21 @@ pub enum Op {
     /// Very close to DeleteLayered. A sum layered
     /// element uses a different calculation for its costs.
     DeleteLayeredMaybeSpecialized,
+    /// Insert an element moved here from another key of the same Merk, whose
+    /// node the same batch removes with [`Op::DeleteMoved`] (or replaces with
+    /// another moved element). In GroveDB this renames a key.
+    ///
+    /// Fields: `(value, value_hash, moved_from_key_len, feature_type)`. The
+    /// node keeps the value hash it had at its old key — nothing it commits
+    /// to depends on its key — and no flags callback runs, since the bytes
+    /// are the bytes they were. Its key and value are billed as replaced at
+    /// the size they had under the old key (`moved_from_key_len` bytes
+    /// long); a longer key adds bytes, a shorter one removes them.
+    PutMoved(Vec<u8>, CryptoHash, u32, TreeFeatureType),
+    /// Delete a node whose element a [`Op::PutMoved`] writes at another key
+    /// of the same batch. The bytes are billed where they land, so the
+    /// removal bills nothing.
+    DeleteMoved,
 }
 
 #[cfg(feature = "minimal")]
@@ -134,10 +149,15 @@ impl fmt::Debug for Op {
                     "Replace Layered Count-Indexed Reference({value:?}) with cost ({cost:?}) for \
                      primary=({primary:?}), secondary=({secondary:?}). ({feature_type:?})"
                 ),
+                PutMoved(value, value_hash, moved_from_key_len, feature_type) => format!(
+                    "Put Moved({value:?}) with hash ({value_hash:?}) from a key of \
+                     {moved_from_key_len} bytes ({feature_type:?})"
+                ),
                 Delete => "Delete".to_string(),
                 DeleteLayered => "Delete Layered".to_string(),
                 DeleteMaybeSpecialized => "Delete Maybe Specialized".to_string(),
                 DeleteLayeredMaybeSpecialized => "Delete Layered Maybe Specialized".to_string(),
+                DeleteMoved => "Delete Moved".to_string(),
             }
         )
     }
@@ -324,7 +344,11 @@ where
         let mid_index = batch.len() / 2;
         let (mid_key, mid_op) = &batch[mid_index];
         let (mid_value, mid_feature_type) = match mid_op {
-            Delete | DeleteLayered | DeleteLayeredMaybeSpecialized | DeleteMaybeSpecialized => {
+            Delete
+            | DeleteLayered
+            | DeleteLayeredMaybeSpecialized
+            | DeleteMaybeSpecialized
+            | DeleteMoved => {
                 let left_batch = &batch[..mid_index];
                 let right_batch = &batch[mid_index + 1..];
 
@@ -385,9 +409,8 @@ where
             | PutLayeredReference(value, .., feature_type)
             | ReplaceLayeredReference(value, .., feature_type)
             | PutLayeredCountIndexedReference(value, .., feature_type)
-            | ReplaceLayeredCountIndexedReference(value, .., feature_type) => {
-                (value.to_vec(), feature_type)
-            }
+            | ReplaceLayeredCountIndexedReference(value, .., feature_type)
+            | PutMoved(value, .., feature_type) => (value.to_vec(), feature_type),
         };
 
         // TODO: take from batch so we don't have to clone
@@ -454,7 +477,27 @@ where
                 mid_feature_type.to_owned(),
             )
             .unwrap_add_cost(&mut cost),
-            Delete | DeleteLayered | DeleteLayeredMaybeSpecialized | DeleteMaybeSpecialized => {
+            PutMoved(_, value_hash, moved_from_key_len, _) => {
+                let value_defined_cost =
+                    value_defined_cost_fn.and_then(|f| f(mid_value.as_slice(), grove_version));
+                cost_return_on_error!(
+                    &mut cost,
+                    TreeNode::new_moved(
+                        mid_key.as_ref().to_vec(),
+                        mid_value,
+                        value_hash.to_owned(),
+                        *moved_from_key_len,
+                        mid_feature_type.to_owned(),
+                        value_defined_cost,
+                        section_removal_bytes,
+                    )
+                )
+            }
+            Delete
+            | DeleteLayered
+            | DeleteLayeredMaybeSpecialized
+            | DeleteMaybeSpecialized
+            | DeleteMoved => {
                 unreachable!("cannot get here, should return at the top")
             }
         };
@@ -553,9 +596,11 @@ where
             // callers would otherwise have to re-read (and re-pay) from
             // storage.
             let disposition = match op {
-                Delete | DeleteLayered | DeleteLayeredMaybeSpecialized | DeleteMaybeSpecialized => {
-                    OldValueDisposition::Deleted
-                }
+                Delete
+                | DeleteLayered
+                | DeleteLayeredMaybeSpecialized
+                | DeleteMaybeSpecialized
+                | DeleteMoved => OldValueDisposition::Deleted,
                 _ => OldValueDisposition::Replaced,
             };
             old_value_observer(
@@ -672,10 +717,36 @@ where
                         )
                     )
                 }
-                Delete | DeleteLayered | DeleteLayeredMaybeSpecialized | DeleteMaybeSpecialized => {
+                PutMoved(value, value_hash, moved_from_key_len, feature_type) => {
+                    let value_defined_cost =
+                        value_defined_cost_fn.and_then(|f| f(value.as_slice(), grove_version));
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.put_moved_value(
+                            value.to_vec(),
+                            value_hash.to_owned(),
+                            *moved_from_key_len,
+                            feature_type.to_owned(),
+                            value_defined_cost,
+                            section_removal_bytes,
+                        )
+                    )
+                }
+                Delete
+                | DeleteLayered
+                | DeleteLayeredMaybeSpecialized
+                | DeleteMaybeSpecialized
+                | DeleteMoved => {
                     let source = self.clone_source();
 
-                    let (r_key_cost, r_value_cost) = {
+                    let (r_key_cost, r_value_cost) = if matches!(&batch[index].1, DeleteMoved) {
+                        // The element's bytes are billed at the key a
+                        // `PutMoved` writes them to.
+                        (
+                            StorageRemovedBytes::NoStorageRemoval,
+                            StorageRemovedBytes::NoStorageRemoval,
+                        )
+                    } else {
                         let value = self.tree().value_ref();
 
                         let old_cost = match &batch[index].1 {
@@ -1262,6 +1333,80 @@ mod test {
             &mut |_, _, _| {},
             grove_version,
         )
+    }
+
+    /// The cost a node moved to `key` from a key `from_len` bytes long is
+    /// billed, with removals sectioned as basic ones.
+    fn moved_cost(
+        key: &[u8],
+        from_len: u32,
+    ) -> (
+        grovedb_costs::storage_cost::key_value_cost::KeyValueStorageCost,
+        u32,
+    ) {
+        let mut sectioned = 0;
+        let mut node = TreeNode::new_moved(
+            key.to_vec(),
+            vec![7; 30],
+            [1; 32],
+            from_len,
+            BasicMerkNode,
+            None,
+            &mut |_, key_bytes, value_bytes| {
+                sectioned += key_bytes + value_bytes;
+                Ok((
+                    BasicStorageRemoval(key_bytes),
+                    BasicStorageRemoval(value_bytes),
+                ))
+            },
+        )
+        .unwrap()
+        .expect("moved node");
+        (node.known_storage_cost.take().expect("billed"), sectioned)
+    }
+
+    #[test]
+    fn moved_node_bills_what_it_keeps_as_replaced() {
+        let (same, sectioned) = moved_cost(b"bbb", 3);
+        assert_eq!(same.key_storage_cost.added_bytes, 0);
+        assert_eq!(same.value_storage_cost.added_bytes, 0);
+        assert_eq!(
+            same.clone().combined_removed_bytes().total_removed_bytes(),
+            0
+        );
+        assert_eq!(sectioned, 0);
+        // The key with its prefix and length, as a new node's would be.
+        assert_eq!(same.key_storage_cost.replaced_bytes, 32 + 3 + 1);
+        assert!(same.value_storage_cost.replaced_bytes > 30);
+        assert!(!same.new_node && !same.needs_value_verification && !same.prepaid);
+
+        // Two key bytes more: two in the key, two in the parent's hook.
+        let (longer, sectioned) = moved_cost(b"bbbbb", 3);
+        assert_eq!(longer.key_storage_cost.added_bytes, 2);
+        assert_eq!(longer.value_storage_cost.added_bytes, 2);
+        assert_eq!(
+            longer.key_storage_cost.replaced_bytes,
+            same.key_storage_cost.replaced_bytes
+        );
+        assert_eq!(sectioned, 0);
+
+        let (shorter, sectioned) = moved_cost(b"bbb", 5);
+        assert_eq!(shorter.key_storage_cost.added_bytes, 0);
+        assert_eq!(
+            shorter
+                .clone()
+                .combined_removed_bytes()
+                .total_removed_bytes(),
+            4
+        );
+        assert_eq!(
+            sectioned, 4,
+            "the freed bytes go through the removal callback"
+        );
+        assert_eq!(
+            shorter.value_storage_cost.replaced_bytes,
+            same.value_storage_cost.replaced_bytes
+        );
     }
 
     #[test]

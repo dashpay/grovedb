@@ -169,6 +169,12 @@ impl GroveOp {
             probe
         };
         match self {
+            // A move's cost grows with the subtree it carries, which a layer
+            // estimate does not describe.
+            GroveOp::Move { .. } => Err(Error::NotSupported(
+                "average-case costs are not estimated for a batch that moves an element".to_owned(),
+            ))
+            .wrap_with_cost(OperationCost::default()),
             // The internal derived rewrite: a same-size element replace
             // whose node hash is provided precombined — the standard
             // replace model plus the two combine calls.
