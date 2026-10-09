@@ -565,22 +565,22 @@ impl GroveDb {
         iter.seek_to_first().unwrap_add_cost(&mut cost);
         while iter.valid().unwrap_add_cost(&mut cost) {
             let (Some(key), Some(value)) = (
-                iter.key().unwrap_add_cost(&mut cost).map(<[u8]>::to_vec),
-                iter.value().unwrap_add_cost(&mut cost).map(<[u8]>::to_vec),
+                iter.key().unwrap_add_cost(&mut cost),
+                iter.value().unwrap_add_cost(&mut cost),
             ) else {
                 return Err(Error::CorruptedData(
                     "a raw iterator at a record returned no key or value".to_owned(),
                 ))
                 .wrap_with_cost(cost);
             };
-            cost_return_on_error_no_add!(cost, inspect(&key, &value));
+            cost_return_on_error_no_add!(cost, inspect(key, value));
             let prefixed_key_len = (to.len() + key.len()) as u32;
             cost_return_on_error!(
                 &mut cost,
                 destination
                     .put(
-                        &key,
-                        &value,
+                        key,
+                        value,
                         None,
                         Some(moved_record_cost(prefixed_key_len, value.len() as u32)),
                     )
@@ -591,7 +591,7 @@ impl GroveDb {
             cost_return_on_error!(
                 &mut cost,
                 source
-                    .delete(&key, Some(KeyValueStorageCost::default()))
+                    .delete(key, Some(KeyValueStorageCost::default()))
                     .map_err(Into::into)
             );
             iter.next().unwrap_add_cost(&mut cost);

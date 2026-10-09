@@ -1193,6 +1193,69 @@ mod test {
     }
 
     #[test]
+    fn a_moved_node_updates_alike_whether_or_not_the_merk_is_reopened() {
+        let grove_version = GroveVersion::latest();
+        // How many times the flags callback sees a replaced value when `bbb`,
+        // just moved there from `aaa`, is overwritten.
+        let replacements_after_move = |reopen: bool| {
+            let mut merk = TempMerk::new(grove_version);
+            merk.apply::<_, Vec<_>>(
+                &[(b"aaa".to_vec(), Op::Put(vec![1; 40], BasicMerkNode))],
+                &[],
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("seed");
+            merk.commit(grove_version);
+            let value_hash = stored_value_hash(&merk, b"aaa", grove_version);
+            merk.apply::<_, Vec<_>>(
+                &[
+                    (b"aaa".to_vec(), Op::DeleteMoved),
+                    (
+                        b"bbb".to_vec(),
+                        Op::PutMoved(vec![1; 40], value_hash, 3, BasicMerkNode),
+                    ),
+                ],
+                &[],
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("move");
+            if reopen {
+                merk.commit(grove_version);
+            }
+            let mut replacements = 0;
+            merk.apply_with_costs_just_in_time_value_update::<_, Vec<u8>>(
+                &[(b"bbb".to_vec(), Op::Put(vec![2; 40], BasicMerkNode))],
+                &[],
+                None,
+                &|_, _| Ok(0),
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                &|_, _| Ok(None),
+                &mut |_, _, _| {
+                    replacements += 1;
+                    Ok((false, None))
+                },
+                &mut |_, key_bytes, value_bytes| {
+                    Ok((
+                        grovedb_costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval(key_bytes),
+                        grovedb_costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval(value_bytes),
+                    ))
+                },
+                grove_version,
+            )
+            .unwrap()
+            .expect("overwrite");
+            replacements
+        };
+
+        assert_eq!(replacements_after_move(false), 1);
+        assert_eq!(replacements_after_move(true), 1);
+    }
+
+    #[test]
     fn moved_nodes_can_trade_places() {
         let grove_version = GroveVersion::latest();
         let mut merk = three_key_merk(grove_version);

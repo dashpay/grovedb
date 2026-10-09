@@ -18,10 +18,13 @@ mod tests {
     use grovedb_costs::storage_cost::removal::StorageRemovedBytes::{
         BasicStorageRemoval, NoStorageRemoval,
     };
+    use grovedb_costs::OperationCost;
     use grovedb_merk::{element::costs::ElementCostExtensions, proofs::Query};
     use grovedb_path::SubtreePath;
     use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageContext};
-    use grovedb_version::version::{v3::GROVE_V3, GroveVersion};
+    use grovedb_version::version::{
+        v1::GROVE_V1, v2::GROVE_V2, v3::GROVE_V3, v4::GROVE_V4, GroveVersion,
+    };
 
     use crate::{
         batch::{QualifiedGroveDbOp, SubelementsDeletionBehavior},
@@ -1340,14 +1343,55 @@ mod tests {
     }
 
     #[test]
-    fn released_versions_refuse_moves() {
-        let db = make_test_grovedb(&GROVE_V3);
-        insert(&db, &[TEST_LEAF], b"a", Element::empty_tree(), &GROVE_V3);
-        let result = apply(&db, vec![move_op(&[TEST_LEAF], b"a", b"z")], &GROVE_V3);
-        assert!(
-            matches!(result, Err(Error::VersionError(_))),
-            "got {result:?}"
-        );
+    fn moves_run_only_where_the_version_slot_is_1() {
+        let mut unknown_slot = GROVE_V4.clone();
+        unknown_slot.grovedb_versions.apply_batch.move_element = 2;
+        for (grove_version, accepts) in [
+            (&GROVE_V1, false),
+            (&GROVE_V2, false),
+            (&GROVE_V3, false),
+            (&GROVE_V4, true),
+            (&unknown_slot, false),
+        ] {
+            let db = make_test_grovedb(grove_version);
+            insert(
+                &db,
+                &[TEST_LEAF],
+                b"a",
+                Element::empty_tree(),
+                grove_version,
+            );
+            insert(
+                &db,
+                &[TEST_LEAF, b"a"],
+                b"k",
+                Element::new_item(v(b"v")),
+                grove_version,
+            );
+            let before = root_hash(&db, grove_version);
+
+            let result = db.apply_batch(
+                vec![move_op(&[TEST_LEAF], b"a", b"z")],
+                None,
+                None,
+                grove_version,
+            );
+
+            if accepts {
+                result.unwrap().expect("V4 moves");
+                assert_eq!(records_in(&db, prefix_of(&[TEST_LEAF, b"a"])), 0);
+            } else {
+                // Refused before anything is read: no cost, no change.
+                assert_eq!(result.cost, OperationCost::default());
+                assert!(
+                    matches!(result.value, Err(Error::VersionError(_))),
+                    "got {:?}",
+                    result.value
+                );
+                assert_eq!(root_hash(&db, grove_version), before);
+                assert_eq!(records_in(&db, prefix_of(&[TEST_LEAF, b"a"])), 1);
+            }
+        }
     }
 
     #[test]
@@ -1533,6 +1577,9 @@ mod tests {
             grove_version,
             "takes part in backward references",
         );
+        // That refusal comes while the copy is under way: none of it lands.
+        assert_eq!(records_in(&db, prefix_of(&[TEST_LEAF, b"z"])), 0);
+        assert!(records_in(&db, prefix_of(&[TEST_LEAF, b"b"])) > 0);
     }
 
     #[test]

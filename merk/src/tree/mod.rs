@@ -385,6 +385,9 @@ impl TreeNode {
             node.moved_storage_cost(moved_from_key_len, section_removal_bytes)
         );
         node.known_storage_cost = Some(storage_cost);
+        // The bytes were stored before the move: a later write to this node
+        // through the same Merk replaces them, as it would after a reopen.
+        node.old_value = Some(node.value_ref().clone());
         Ok(node).wrap_with_cost(cost)
     }
 
