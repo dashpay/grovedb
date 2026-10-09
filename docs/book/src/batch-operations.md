@@ -313,9 +313,12 @@ A move is applied in two steps:
    prefixes under the old path to the ones under the new path (a prefix is the
    blake3 hash of a path, so every nested subtree gets a new one), and the old
    prefixes are cleared. This covers nested Merk trees, non-Merk trees' data
-   and indexed trees' secondary Merks. Records stream into the storage batch,
-   and Merk records are decoded only to find nested trees. Root hashes,
-   aggregates and Merk shapes below the moved key do not change.
+   and indexed trees' secondary Merks; namespaces the element shows empty
+   are skipped. Records stream into the storage batch, and a Merk record is
+   classified by its element's type byte, decoded only where its contents
+   matter. A read error stops the batch rather than commit a partial copy.
+   Root hashes, aggregates and Merk shapes below the moved key do not
+   change.
 
 The copy reads the state from before the batch, and within the storage batch
 a put wins over a delete of the same key, so moves can trade places:
@@ -325,9 +328,11 @@ a put wins over a delete of the same key, so moves can trade places:
 | The target exists | Refused, unless the batch moves its element away (a swap or a chain) |
 | Another op at the target or the moved key, or anything under either | Refused |
 | A delete of the tree holding the move, or of an ancestor | Refused |
-| A reference the batch resolves into a moved subtree | Refused |
+| A reference the batch resolves to or under a moved key or a target | Refused |
 | A backward-reference participant as the element or under it | Refused |
 | The moved element is a cousin or removed-cousin reference | Refused: it resolves through its own key |
+| The moved element is a reference that no longer resolves from the new key (it would reach a moved key, or close a cycle) | Refused |
+| A reference directly under the moved element whose path ends with its parent's key (`UpstreamRootHeightWithParentPathAdditionReference`) | Refused: it resolves through the moved key |
 | A move inside an indexed tree | Refused: secondary rows are keyed by the primary key |
 | A partial batch, or a cost estimate | Refused |
 
@@ -335,8 +340,11 @@ References are copied as stored and resolve from where they now are. One
 inside the moved subtree whose path stays inside it (any relative reference
 that does not climb above the moved element) still reaches the element it
 did. One whose path names the old key, such as an absolute path into the
-subtree or a reference from outside, keeps its stored value hash but points
-at a key that no longer exists, as after a delete.
+subtree or a reference from outside, keeps its stored value hash but reaches
+whatever is at the old key after the batch: nothing after a plain move, as
+after a delete, or the element another move brings there in a swap or a
+chain. GroveDB does not follow those; keeping them valid is the caller's
+job.
 
 A move is billed as storage that stays where it is. The moved element's node
 counts as replaced at the size it had under the old key, plus added bytes if

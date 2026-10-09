@@ -524,32 +524,6 @@ impl KV {
         Self::node_value_byte_cost_size(key_len, value_cost, node_type)
     }
 
-    /// The value byte cost (parent hook included) this node's value would
-    /// have under a key `not_prefixed_key_len` bytes long. A node's value
-    /// cost depends on its key only through the parent-to-child hook, so a
-    /// move prices the same value at the key it left and at the key it lands
-    /// on with this.
-    pub(crate) fn value_byte_cost_size_for_key_len(&self, not_prefixed_key_len: u32) -> u32 {
-        let node_type = self.feature_type.node_type();
-        match &self.value_defined_cost {
-            Some(SpecializedValueDefinedCost(cost)) => {
-                Self::node_value_byte_cost_size(not_prefixed_key_len, *cost, node_type)
-            }
-            Some(LayeredValueDefinedCost(cost)) => {
-                Self::layered_value_byte_cost_size_for_key_and_value_lengths(
-                    not_prefixed_key_len,
-                    *cost,
-                    node_type,
-                )
-            }
-            None => Self::value_byte_cost_size_for_key_and_value_lengths(
-                not_prefixed_key_len,
-                self.encoding_cost() as u32,
-                node_type,
-            ),
-        }
-    }
-
     /// Costs based on predefined types (Trees, SumTrees, SumItems) that behave
     /// differently than items or references
     #[inline]

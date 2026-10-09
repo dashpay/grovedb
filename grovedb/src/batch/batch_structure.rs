@@ -286,12 +286,15 @@ where
                 // A move opens no Merk under either key: the subtree's
                 // storage is copied after the apply, and its root hash
                 // travels with the element's node value hash.
+                GroveOp::Move { new_key } => {
+                    merk_tree_cache.remember_move(&op_path, &key, new_key);
+                    Ok(())
+                }
                 GroveOp::RefreshReference { .. }
                 | GroveOp::Delete
                 | GroveOp::DeleteDontCheckForBackwardsReferences
                 | GroveOp::DeleteTree(..)
-                | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..)
-                | GroveOp::Move { .. } => Ok(()),
+                | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..) => Ok(()),
                 GroveOp::CommitmentTreeInsert { .. }
                 | GroveOp::MmrTreeAppend { .. }
                 | GroveOp::BulkAppend { .. }

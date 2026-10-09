@@ -1378,7 +1378,9 @@ mod test {
         // The key with its prefix and length, as a new node's would be.
         assert_eq!(same.key_storage_cost.replaced_bytes, 32 + 3 + 1);
         assert!(same.value_storage_cost.replaced_bytes > 30);
-        assert!(!same.new_node && !same.needs_value_verification && !same.prepaid);
+        // The key is billed here, not again by the storage layer, which
+        // still checks a plain value's size as for any put.
+        assert!(!same.new_node && same.needs_value_verification && !same.prepaid);
 
         // Two key bytes more: two in the key, two in the parent's hook.
         let (longer, sectioned) = moved_cost(b"bbbbb", 3);

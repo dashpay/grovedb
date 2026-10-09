@@ -1536,6 +1536,182 @@ mod tests {
     }
 
     #[test]
+    fn a_reference_ending_with_the_moved_key_is_refused() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert(
+            &db,
+            &[TEST_LEAF],
+            b"idx",
+            Element::empty_tree(),
+            grove_version,
+        );
+        insert(
+            &db,
+            &[TEST_LEAF, b"idx"],
+            b"a",
+            Element::new_item(v(b"A")),
+            grove_version,
+        );
+        insert(
+            &db,
+            &[TEST_LEAF, b"idx"],
+            b"b",
+            Element::new_item(v(b"B")),
+            grove_version,
+        );
+        insert(
+            &db,
+            &[TEST_LEAF],
+            b"a",
+            Element::empty_tree(),
+            grove_version,
+        );
+        // Resolves to [TEST_LEAF, idx, <its parent's key>]: [TEST_LEAF, idx, a].
+        insert(
+            &db,
+            &[TEST_LEAF, b"a"],
+            b"r",
+            Element::new_reference(
+                ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(
+                    1,
+                    vec![v(b"idx")],
+                ),
+            ),
+            grove_version,
+        );
+
+        assert_refused(
+            &db,
+            vec![move_op(&[TEST_LEAF], b"a", b"b")],
+            grove_version,
+            "appends its parent's key",
+        );
+    }
+
+    #[test]
+    fn moved_references_must_still_resolve() {
+        let grove_version = GroveVersion::latest();
+        let sibling =
+            |key: &[u8]| Element::new_reference(ReferencePathType::SiblingReference(v(key)));
+        let db = make_test_grovedb(grove_version);
+        insert(
+            &db,
+            &[TEST_LEAF],
+            b"b",
+            Element::new_item(v(b"x")),
+            grove_version,
+        );
+        insert(&db, &[TEST_LEAF], b"a", sibling(b"b"), grove_version);
+        insert(
+            &db,
+            &[TEST_LEAF],
+            b"d",
+            Element::new_item(v(b"y")),
+            grove_version,
+        );
+        insert(
+            &db,
+            &[TEST_LEAF],
+            b"x",
+            Element::new_item(v(b"z")),
+            grove_version,
+        );
+        insert(&db, &[TEST_LEAF], b"y", sibling(b"x"), grove_version);
+        insert(&db, &[TEST_LEAF], b"w", sibling(b"y"), grove_version);
+
+        // Swapping a reference with its target would leave it pointing at
+        // itself.
+        assert_refused(
+            &db,
+            vec![
+                move_op(&[TEST_LEAF], b"a", b"b"),
+                move_op(&[TEST_LEAF], b"b", b"a"),
+            ],
+            grove_version,
+            "CyclicReference",
+        );
+        // A chain closing a cycle through a reference that does not move:
+        // w (a reference to y) lands on x, which y references.
+        assert_refused(
+            &db,
+            vec![
+                move_op(&[TEST_LEAF], b"x", b"x2"),
+                move_op(&[TEST_LEAF], b"w", b"x"),
+            ],
+            grove_version,
+            "CyclicReference",
+        );
+        // A moved reference whose target moves too would be left stale.
+        assert_refused(
+            &db,
+            vec![
+                move_op(&[TEST_LEAF], b"a", b"a2"),
+                move_op(&[TEST_LEAF], b"b", b"b2"),
+            ],
+            grove_version,
+            "references can not point to an element this batch moves",
+        );
+
+        // A reference trading places with an unrelated element still
+        // resolves.
+        apply(
+            &db,
+            vec![
+                move_op(&[TEST_LEAF], b"a", b"d"),
+                move_op(&[TEST_LEAF], b"d", b"a"),
+            ],
+            grove_version,
+        )
+        .expect("swap a reference with an element it does not reach");
+        assert_eq!(
+            db.get([TEST_LEAF].as_ref(), b"d", None, grove_version)
+                .unwrap()
+                .expect("moved reference resolves"),
+            Element::new_item(v(b"x"))
+        );
+        assert_grove_verifies(&db, grove_version);
+    }
+
+    #[test]
+    fn references_into_a_move_target_are_refused() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert(
+            &db,
+            &[TEST_LEAF],
+            b"sub",
+            Element::empty_tree(),
+            grove_version,
+        );
+        insert(
+            &db,
+            &[TEST_LEAF, b"sub"],
+            b"A",
+            Element::new_item(v(b"a")),
+            grove_version,
+        );
+
+        // The reference is filed above the move, so it resolves after the
+        // move's level has applied.
+        assert_refused(
+            &db,
+            vec![
+                move_op(&[TEST_LEAF, b"sub"], b"A", b"B"),
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    path(&[TEST_LEAF]),
+                    v(b"r"),
+                    Element::new_reference(ReferencePathType::AbsolutePathReference(path(&[
+                        TEST_LEAF, b"sub", b"B",
+                    ]))),
+                ),
+            ],
+            grove_version,
+            "references can not point to an element this batch moves",
+        );
+    }
+
+    #[test]
     fn partial_batches_refuse_moves() {
         let grove_version = GroveVersion::latest();
         let db = seeded(grove_version);

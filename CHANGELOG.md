@@ -29,8 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   swap or chain keys in one batch; a target occupied before the batch must be
   moved away by the same batch. The move is billed as storage that stays
   where it is: replaced bytes, plus the change in key length. Refused for
-  backward-reference participants, cousin references, moves inside an
-  indexed tree, partial batches and cost estimates. Batches accept it from
+  backward-reference participants, references a rename would retarget or
+  that no longer resolve from the new key, moves inside an indexed tree,
+  partial batches and cost estimates. `RawIterator` gains `status()`, so a
+  read error no longer looks like the end of the records. Batches accept it from
   `GROVE_V4`, through the new `apply_batch.move_element` slot
   (**BREAKING** for code building `GroveDBApplyBatchVersions` by hand, or
   matching `GroveOp` or merk's `Op` exhaustively: merk gains

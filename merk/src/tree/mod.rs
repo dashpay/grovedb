@@ -444,29 +444,18 @@ impl TreeNode {
             Error,
         >,
     ) -> Result<KeyValueStorageCost, Error> {
-        fn paid_key_len(not_prefixed_key_len: u32) -> u32 {
-            let prefixed_key_len = HASH_LENGTH_U32 + not_prefixed_key_len;
-            prefixed_key_len + prefixed_key_len.required_space() as u32
-        }
-        fn kept_and_added(old: u32, new: u32) -> StorageCost {
-            StorageCost {
-                added_bytes: new.saturating_sub(old),
-                replaced_bytes: old.min(new),
-                removed_bytes: StorageRemovedBytes::NoStorageRemoval,
-            }
-        }
-
         let key_len = self.inner.kv.key.len() as u32;
-        let (old_key_bytes, new_key_bytes) =
-            (paid_key_len(moved_from_key_len), paid_key_len(key_len));
-        let old_value_bytes = self
-            .inner
-            .kv
-            .value_byte_cost_size_for_key_len(moved_from_key_len);
-        let new_value_bytes = self.inner.kv.value_byte_cost_size_for_key_len(key_len);
+        let old_key_bytes = KV::node_key_byte_cost_size(moved_from_key_len);
+        let new_key_bytes = KV::node_key_byte_cost_size(key_len);
+        // A node's value cost depends on its key only through its parent's
+        // hook to it.
+        let new_value_bytes = self.value_encoding_length_with_parent_to_child_reference();
+        let old_value_bytes = new_value_bytes - Link::encoded_link_size(key_len, self.node_type())
+            + Link::encoded_link_size(moved_from_key_len, self.node_type());
 
-        let mut key_storage_cost = kept_and_added(old_key_bytes, new_key_bytes);
-        let mut value_storage_cost = kept_and_added(old_value_bytes, new_value_bytes);
+        let mut key_storage_cost = Self::storage_cost_for_update(new_key_bytes, old_key_bytes);
+        let mut value_storage_cost =
+            Self::storage_cost_for_update(new_value_bytes, old_value_bytes);
         let removed_key_bytes = old_key_bytes.saturating_sub(new_key_bytes);
         let removed_value_bytes = old_value_bytes.saturating_sub(new_value_bytes);
         if removed_key_bytes > 0 || removed_value_bytes > 0 {
@@ -482,7 +471,8 @@ impl TreeNode {
             // The key bytes are billed here, so the storage layer must not
             // add them again as a new node's.
             new_node: false,
-            needs_value_verification: false,
+            // As for any put: the storage layer checks a plain value's size.
+            needs_value_verification: self.inner.kv.value_defined_cost.is_none(),
             prepaid: false,
         })
     }
