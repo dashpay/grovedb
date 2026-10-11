@@ -21,6 +21,7 @@ mod tests {
         BasicStorageRemoval, NoStorageRemoval,
     };
     use grovedb_costs::OperationCost;
+    use grovedb_element::indexed::IndexAxis;
     use grovedb_epoch_based_storage_flags::StorageFlags;
     use grovedb_merk::{
         element::costs::ElementCostExtensions,
@@ -35,6 +36,7 @@ mod tests {
 
     use crate::{
         batch::{QualifiedGroveDbOp, SubelementsDeletionBehavior},
+        operations::proof::VerifiedPathQuery,
         reference_path::ReferencePathType,
         tests::{make_test_grovedb, TempGroveDb, ANOTHER_TEST_LEAF, TEST_LEAF},
         Element, Error, GroveDb, PathQuery,
@@ -119,11 +121,12 @@ mod tests {
     }
 
     fn secondary_prefix_of(subtree: &[&[u8]]) -> [u8; 32] {
-        RocksDbStorage::secondary_prefix_for(
-            &prefix_of(subtree),
-            grovedb_element::indexed::IndexAxis::Count.tag(),
-        )
-        .unwrap()
+        axis_prefix_of(subtree, IndexAxis::Count)
+    }
+
+    /// The secondary namespace of an indexed tree at `subtree` for `axis`.
+    fn axis_prefix_of(subtree: &[&[u8]], axis: IndexAxis) -> [u8; 32] {
+        RocksDbStorage::secondary_prefix_for(&prefix_of(subtree), axis.tag()).unwrap()
     }
 
     fn insert(
@@ -1123,6 +1126,121 @@ mod tests {
                 .expect("bulk value"),
             Some(vec![7; 6])
         );
+    }
+
+    #[test]
+    fn a_multi_axis_indexed_tree_moves_with_every_axis() {
+        let grove_version = GroveVersion::latest();
+        let axes = [IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg];
+        let populate_pcpsit = |db: &TempGroveDb, at: &[&[u8]], key: &[u8]| {
+            let element = Element::empty_provable_count_provable_sum_indexed_tree(
+                axes.iter().map(|axis| (axis.tag(), None)).collect(),
+            )
+            .expect("canonical axes");
+            insert(db, at, key, element, grove_version);
+            let mut tree: Vec<&[u8]> = at.to_vec();
+            tree.push(key);
+            for (row, sum) in [(b"a", 40), (b"b", -10), (b"c", 25), (b"d", 40), (b"e", 5)] {
+                db.insert_into_provable_count_provable_sum_indexed_tree(
+                    tree.as_slice(),
+                    row,
+                    Element::new_item_with_sum_item(v(b"v"), sum),
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("indexed row");
+            }
+        };
+        // The tree moved on its own, and nested in a tree that moves.
+        let build = |suffix: &[u8]| {
+            let db = make_test_grovedb(grove_version);
+            populate_pcpsit(&db, &[TEST_LEAF], &[b"pcpsit", suffix].concat());
+            let holder = [b"holder", suffix].concat();
+            insert(
+                &db,
+                &[TEST_LEAF],
+                &holder,
+                Element::empty_tree(),
+                grove_version,
+            );
+            populate_pcpsit(&db, &[TEST_LEAF, &holder], b"idx");
+            db
+        };
+        let db = build(b"_old");
+        let expected = build(b"_new");
+
+        apply(
+            &db,
+            vec![
+                move_op(&[TEST_LEAF], b"pcpsit_old", b"pcpsit_new"),
+                move_op(&[TEST_LEAF], b"holder_old", b"holder_new"),
+            ],
+            grove_version,
+        )
+        .expect("moves");
+        assert_grove_verifies(&db, grove_version);
+
+        let moved: [(Vec<&[u8]>, Vec<&[u8]>); 2] = [
+            (
+                vec![TEST_LEAF, b"pcpsit_old"],
+                vec![TEST_LEAF, b"pcpsit_new"],
+            ),
+            (
+                vec![TEST_LEAF, b"holder_old", b"idx"],
+                vec![TEST_LEAF, b"holder_new", b"idx"],
+            ),
+        ];
+        for (old, new) in &moved {
+            let (parent, key) = new.split_at(new.len() - 1);
+            assert_eq!(
+                value_hash_at(&db, parent, key[0], grove_version),
+                value_hash_at(&expected, parent, key[0], grove_version),
+                "{new:?}"
+            );
+            assert_eq!(records_in(&db, prefix_of(old)), 0);
+            assert_eq!(
+                records_in(&db, prefix_of(new)),
+                records_in(&expected, prefix_of(new))
+            );
+            // Each axis's rows land under the new path with that axis's own
+            // tag, and none stay behind.
+            for axis in axes {
+                assert_eq!(records_in(&db, axis_prefix_of(old, axis)), 0, "{axis:?}");
+                let landed = records_in(&db, axis_prefix_of(new, axis));
+                assert!(landed > 0, "{axis:?}");
+                assert_eq!(
+                    landed,
+                    records_in(&expected, axis_prefix_of(new, axis)),
+                    "{axis:?}"
+                );
+            }
+
+            // Axis reads prove and verify at the new path, with the entries
+            // of a tree built there.
+            for axis in [IndexAxis::Sum, IndexAxis::Avg] {
+                let query = PathQuery::new_axis_top_k(path(new), axis, 3, 0, true);
+                let verified = |db: &TempGroveDb| {
+                    let proof = db
+                        .prove_query(&query, None, grove_version)
+                        .unwrap()
+                        .expect("prove");
+                    let verified =
+                        GroveDb::verify_path_query(&proof, &query, grove_version).expect("verify");
+                    let VerifiedPathQuery::AxisEntries {
+                        root_hash: proved_root,
+                        entries,
+                        ..
+                    } = verified
+                    else {
+                        panic!("expected axis entries");
+                    };
+                    assert_eq!(proved_root, root_hash(db, grove_version));
+                    format!("{entries:?}")
+                };
+                assert_eq!(verified(&db), verified(&expected), "{new:?} {axis:?}");
+            }
+        }
     }
 
     #[test]
