@@ -90,6 +90,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an absent path. `AxisKeys::empty_for_axis` is new. (#965)
 
 ### Fixed
+- A batch carrying a nested element wrapper, such as a hand-built
+  `Element::NonCounted(Box::new(Element::NonCounted(..)))`, no longer panics.
+  The checked constructors and both decoders refuse nesting, and the direct
+  insert path has refused it with an error since `NotSummed` landed. But
+  batch execution and batch reference following dispatch on `underlying()`,
+  which unwraps one level, and their wrapper arms were `unreachable!`. Any
+  element-carrying op whose parent accepted the outer wrapper panicked there,
+  and so did a reference in the same batch following into such an op. Full
+  batches, partial batches and partial-batch add-ons now refuse a nested
+  wrapper up front with `InvalidBatchOperation`, so the batch writes nothing.
+  The fix is not version-gated. A batch carrying a nested wrapper either
+  panicked or failed at every grove version, and no production caller can
+  build one, so no stored state or replayed block can change.
 - A batch whose reference chain reaches another pending reference that
   resolves to an empty path no longer panics. `apply_batch` refused an empty
   path only for the reference op it was processing. Keys in a path run in
