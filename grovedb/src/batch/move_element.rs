@@ -726,11 +726,10 @@ fn classify_moved_record(
     }
 }
 
-/// The open scan of a tree the copy moves: its paths before and after the
-/// move, whether its records are Merk nodes, and the scan of its namespace.
+/// The open scan of a tree the copy moves: whether its records are Merk
+/// nodes, and the scan of its namespace. Its paths are the walk's current
+/// ones (see [`GroveDb::move_subtree_storage`]).
 struct TreeScan<'db> {
-    from: Vec<Vec<u8>>,
-    to: Vec<Vec<u8>>,
     is_merk: bool,
     prefix_len: usize,
     source: PrefixedRocksDbTransactionContext<'db>,
@@ -765,16 +764,15 @@ impl GroveDb {
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
+        // The paths of the deepest open scan, before and after the move:
+        // descending pushes a segment, finishing a nested scan pops it, so
+        // the walk holds one pair of paths whatever its depth.
+        let mut from = moved.from.clone();
+        let mut to = moved.to.clone();
         let mut scans = Vec::new();
         if let Some(scan) = cost_return_on_error!(
             &mut cost,
-            self.start_tree_copy(
-                moved.from.clone(),
-                moved.to.clone(),
-                &moved.element,
-                transaction,
-                batch,
-            )
+            self.start_tree_copy(&from, &to, &moved.element, transaction, batch)
         ) {
             scans.push(scan);
         }
@@ -782,8 +780,6 @@ impl GroveDb {
             // The first scan is the moved element's own namespace.
             let directly_under = scans.len() == 1;
             let Some(TreeScan {
-                from,
-                to,
                 is_merk,
                 prefix_len,
                 source,
@@ -801,7 +797,7 @@ impl GroveDb {
                     *prefix_len,
                     |key, value| {
                         if is_merk {
-                            classify_moved_record(from, directly_under, key, value, grove_version)
+                            classify_moved_record(&from, directly_under, key, value, grove_version)
                         } else {
                             Ok(None)
                         }
@@ -824,18 +820,24 @@ impl GroveDb {
                 // This namespace is done; the scan of its parent goes on.
                 None => {
                     scans.pop();
+                    if !scans.is_empty() {
+                        from.pop();
+                        to.pop();
+                    }
                 }
                 Some(None) => {}
                 Some(Some((key, child))) => {
-                    let mut child_from = from.clone();
-                    child_from.push(key.clone());
-                    let mut child_to = to.clone();
-                    child_to.push(key);
-                    if let Some(scan) = cost_return_on_error!(
+                    from.push(key.clone());
+                    to.push(key);
+                    match cost_return_on_error!(
                         &mut cost,
-                        self.start_tree_copy(child_from, child_to, &child, transaction, batch)
+                        self.start_tree_copy(&from, &to, &child, transaction, batch)
                     ) {
-                        scans.push(scan);
+                        Some(scan) => scans.push(scan),
+                        None => {
+                            from.pop();
+                            to.pop();
+                        }
                     }
                 }
             }
@@ -847,8 +849,8 @@ impl GroveDb {
     /// of its own namespace unless its element shows it empty.
     fn start_tree_copy<'db>(
         &'db self,
-        from: Vec<Vec<u8>>,
-        to: Vec<Vec<u8>>,
+        from: &[Vec<u8>],
+        to: &[Vec<u8>],
         element: &Element,
         transaction: &'db Transaction<'db>,
         batch: &'db StorageBatch,
@@ -874,10 +876,10 @@ impl GroveDb {
             return Ok(None).wrap_with_cost(cost);
         }
 
-        let from_prefix = RocksDbStorage::build_prefix(SubtreePath::from(from.as_slice()))
-            .unwrap_add_cost(&mut cost);
-        let to_prefix = RocksDbStorage::build_prefix(SubtreePath::from(to.as_slice()))
-            .unwrap_add_cost(&mut cost);
+        let from_prefix =
+            RocksDbStorage::build_prefix(SubtreePath::from(from)).unwrap_add_cost(&mut cost);
+        let to_prefix =
+            RocksDbStorage::build_prefix(SubtreePath::from(to)).unwrap_add_cost(&mut cost);
         for axis in secondary_axes {
             let from_secondary = RocksDbStorage::secondary_prefix_for(&from_prefix, axis.tag())
                 .unwrap_add_cost(&mut cost);
@@ -911,8 +913,6 @@ impl GroveDb {
         let mut iter = source.raw_iter();
         iter.seek_to_first().unwrap_add_cost(&mut cost);
         Ok(Some(TreeScan {
-            from,
-            to,
             is_merk,
             prefix_len: to_prefix.len(),
             source,

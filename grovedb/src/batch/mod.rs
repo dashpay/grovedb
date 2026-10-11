@@ -2069,6 +2069,10 @@ struct TreeCacheMerkByPath<S, F, F2> {
     /// The qualified path of every moved key and every move target in the
     /// batch; references the batch resolves may not lead to or under them.
     moved_positions: move_element::MovedPositions,
+    /// Pending `InsertIfNotExists` positions reference resolution found
+    /// already holding an element: the insert writes nothing there, so a
+    /// moved reference through one does not reach a write.
+    kept_by_conditional_insert: HashSet<Vec<Vec<u8>>>,
 }
 
 impl<S, F, F2> fmt::Debug for TreeCacheMerkByPath<S, F, F2> {
@@ -3093,6 +3097,8 @@ where
                             )
                         ) =>
                     {
+                        self.kept_by_conditional_insert
+                            .insert(qualified_path.to_vec());
                         self.process_reference(
                             qualified_path,
                             ops_by_qualified_paths,
@@ -4972,10 +4978,14 @@ where
                             grove_version,
                         )
                     );
-                    // Every hop the follow took is in `visited`; the
-                    // reference's own position may hold another move's op.
+                    // Every hop the follow took is in `visited`. The
+                    // reference's own position may hold another move's op,
+                    // and a conditional insert that keeps the stored element
+                    // writes nothing.
                     let reaches_a_write = visited.iter().any(|hop| {
-                        *hop != own_position && ops_by_qualified_paths.contains_key(hop)
+                        *hop != own_position
+                            && ops_by_qualified_paths.contains_key(hop)
+                            && !self.kept_by_conditional_insert.contains(hop)
                     });
                     Ok(reaches_a_write.then_some(referenced_value_hash)).wrap_with_cost(cost)
                 })
@@ -5879,6 +5889,7 @@ impl GroveDb {
                     indexed_mirror_rekey_churn_bytes: 0,
                     moved_subtrees: Vec::new(),
                     moved_positions: Default::default(),
+                    kept_by_conditional_insert: HashSet::new(),
                 },
                 grove_version
             )

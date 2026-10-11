@@ -2073,22 +2073,137 @@ mod tests {
             reference_hash(&to_sub_x, &kept, grove_version)
         );
         assert_grove_verifies(&db, grove_version);
+        // `the_conditional_insert_reference_slot_switches_at_v4` pins the
+        // versions before V4.
+    }
 
-        // GROVE_V3 keeps resolving through the op's element, for replay.
-        let db = seeded(&GROVE_V3);
+    #[test]
+    fn the_conditional_insert_reference_slot_switches_at_v4() {
+        let kept = Element::new_item(v(b"1"));
+        let skipped = Element::new_item(v(b"2"));
+        let to_x = Element::new_reference(ReferencePathType::SiblingReference(v(b"x")));
+        let seeded = |grove_version: &GroveVersion| {
+            let db = make_test_grovedb(grove_version);
+            insert(&db, &[TEST_LEAF], b"x", kept.clone(), grove_version);
+            db
+        };
+        // A reference the batch inserts through a skip-mode insert over `x`.
+        let batch = || {
+            vec![
+                QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+                    path(&[TEST_LEAF]),
+                    v(b"x"),
+                    skipped.clone(),
+                ),
+                QualifiedGroveDbOp::insert_or_replace_op(path(&[TEST_LEAF]), v(b"y"), to_x.clone()),
+            ]
+        };
+
+        for grove_version in [&GROVE_V1, &GROVE_V2, &GROVE_V3, &GROVE_V4] {
+            let db = seeded(grove_version);
+            let result = db.apply_batch(batch(), None, None, grove_version);
+            result.value.expect("batch");
+            let corrected = grove_version
+                .grovedb_versions
+                .apply_batch
+                .reference_through_conditional_insert
+                == 1;
+            // V1..V3 keep committing to the op's element, which never lands,
+            // at the cost they always had; V4 commits to the element that
+            // stays.
+            let reached = if corrected { &kept } else { &skipped };
+            assert_eq!(
+                value_hash_at(&db, &[TEST_LEAF], b"y", grove_version),
+                reference_hash(&to_x, reached, grove_version)
+            );
+            // The corrected resolution adds one read: whether `x` already
+            // holds an element.
+            let legacy_cost = OperationCost {
+                seek_count: 9,
+                storage_cost: grovedb_costs::storage_cost::StorageCost {
+                    added_bytes: 143,
+                    replaced_bytes: 190,
+                    removed_bytes: NoStorageRemoval,
+                },
+                storage_loaded_bytes: 352,
+                hash_node_calls: 14,
+                sinsemilla_hash_calls: 0,
+            };
+            let expected_cost = if corrected {
+                OperationCost {
+                    seek_count: 10,
+                    storage_loaded_bytes: 423,
+                    ..legacy_cost.clone()
+                }
+            } else {
+                legacy_cost
+            };
+            assert_eq!(result.cost, expected_cost, "{grove_version:?}");
+        }
+
+        // An unknown selector refuses the batch before anything commits.
+        let mut unknown = GROVE_V4.clone();
+        unknown
+            .grovedb_versions
+            .apply_batch
+            .reference_through_conditional_insert = 2;
+        let db = seeded(&unknown);
+        let before = root_hash(&db, &unknown);
+        assert!(matches!(
+            db.apply_batch(batch(), None, None, &unknown).unwrap(),
+            Err(Error::VersionError(_))
+        ));
+        assert_eq!(root_hash(&db, &unknown), before);
+    }
+
+    #[test]
+    fn a_skipped_conditional_insert_is_no_write_for_a_moved_reference() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert(
+            &db,
+            &[TEST_LEAF],
+            b"x",
+            Element::new_item(v(b"1")),
+            grove_version,
+        );
+        insert(
+            &db,
+            &[TEST_LEAF],
+            b"q",
+            Element::new_reference(ReferencePathType::SiblingReference(v(b"x"))),
+            grove_version,
+        );
+        insert(
+            &db,
+            &[TEST_LEAF],
+            b"r",
+            Element::new_reference_with_hops(ReferencePathType::SiblingReference(v(b"q")), Some(1)),
+            grove_version,
+        );
+        let stored = value_hash_at(&db, &[TEST_LEAF], b"r", grove_version);
+
+        // The conditional insert over `q` is skipped, so nothing on the
+        // moved reference's chain changes and it keeps the hash its own
+        // write committed.
         apply(
             &db,
             vec![
-                skip_insert(),
-                QualifiedGroveDbOp::insert_or_replace_op(path(&[TEST_LEAF]), v(b"y"), to_x.clone()),
+                QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+                    path(&[TEST_LEAF]),
+                    v(b"q"),
+                    Element::new_item(v(b"2")),
+                ),
+                move_op(&[TEST_LEAF], b"r", b"s"),
             ],
-            &GROVE_V3,
+            grove_version,
         )
-        .expect("V3 batch");
+        .expect("skip the insert and move the reference");
         assert_eq!(
-            value_hash_at(&db, &[TEST_LEAF], b"y", &GROVE_V3),
-            reference_hash(&to_x, &skipped, &GROVE_V3)
+            value_hash_at(&db, &[TEST_LEAF], b"s", grove_version),
+            stored
         );
+        assert_grove_verifies(&db, grove_version);
     }
 
     #[test]
