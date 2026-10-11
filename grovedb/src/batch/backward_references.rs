@@ -864,7 +864,8 @@ impl<'db, 'g> Expansion<'db, 'g> {
 /// callbacks the apply will run; the expansion consults them to predict the
 /// bytes a flagged family item finally stores (see
 /// [`Expansion::settle_end_hashes`]) and returns those predictions for the
-/// apply.
+/// apply. The last value says whether the expansion derived any op: without
+/// one, the ops come back at the positions and with the kinds they had.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn expand_backward_references_ops<'db, G, SR>(
     db: &'db GroveDb,
@@ -875,7 +876,15 @@ pub(super) fn expand_backward_references_ops<'db, G, SR>(
     flags_update: &mut G,
     split_removal_bytes: &mut SR,
     grove_version: &GroveVersion,
-) -> CostResult<(Vec<QualifiedGroveDbOp>, PreparedMerks<'db>, LandedItems), Error>
+) -> CostResult<
+    (
+        Vec<QualifiedGroveDbOp>,
+        PreparedMerks<'db>,
+        LandedItems,
+        bool,
+    ),
+    Error,
+>
 where
     G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
     SR: FnMut(
@@ -1053,6 +1062,7 @@ where
             expansion.ops.into_iter().flatten().collect(),
             expansion.store.merks.into_inner(),
             LandedItems::new(),
+            false,
         ))
         .wrap_with_cost(cost);
     }
@@ -1483,9 +1493,16 @@ where
         expansion.settle_end_hashes(flags_update, split_removal_bytes)
     );
 
+    let derived_any = !expansion.derived.is_empty();
     let mut expanded: Vec<QualifiedGroveDbOp> = expansion.ops.into_iter().flatten().collect();
     expanded.extend(expansion.derived.into_values());
-    Ok((expanded, expansion.store.merks.into_inner(), landed_items)).wrap_with_cost(cost)
+    Ok((
+        expanded,
+        expansion.store.merks.into_inner(),
+        landed_items,
+        derived_any,
+    ))
+    .wrap_with_cost(cost)
 }
 
 /// The qualified position of a reference's first hop, when the path type is

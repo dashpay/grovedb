@@ -621,6 +621,15 @@ impl ElementType {
         )
     }
 
+    /// True for every backward-references participant: the item variants
+    /// and `BidirectionalReference`. This is the one definition of the
+    /// family; `Element::supports_backward_references` reads it, so a site
+    /// that sees only a serialized type byte classifies alike.
+    #[inline]
+    pub fn supports_backward_references(self) -> bool {
+        self.is_backward_references_item() || self.base() == ElementType::BidirectionalReference
+    }
+
     /// Returns the type of proof node that should be used for this element
     /// type, given the parent tree type.
     ///

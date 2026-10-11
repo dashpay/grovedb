@@ -25,19 +25,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its bytes and node value hash, and for a tree every record under it — nested
   Merk trees, non-Merk trees' data, indexed trees' secondary Merks — is
   copied byte for byte to the storage prefixes of the new path, so nothing
-  below the moved key is re-hashed, rebalanced or re-resolved. Moves can
-  swap or chain keys in one batch; a target occupied before the batch must be
-  moved away by the same batch. The move is billed as storage that stays
-  where it is: replaced bytes, plus the change in key length. Refused for
-  backward-reference participants, references a rename would retarget or
-  that no longer resolve from the new key, moves inside an indexed tree,
-  elements with flags moving to a key of another length, partial batches
-  and cost estimates. `RawIterator` gains `status()`, so a
-  read error no longer looks like the end of the records. Batches accept it from
-  `GROVE_V4`, through the new `apply_batch.move_element` slot
-  (**BREAKING** for code building `GroveDBApplyBatchVersions` by hand, or
-  matching `GroveOp` or merk's `Op` exhaustively: merk gains
-  `Op::PutMoved` and `Op::DeleteMoved`).
+  below the moved key is re-hashed, rebalanced or re-resolved. A moved
+  reference is the exception: it is followed from its new key and commits to
+  what it reaches there after the batch, like a reference the batch writes.
+  Moves can swap or chain keys in one batch; a target occupied before the
+  batch must be moved away by the same batch. The move is billed as storage
+  that stays where it is: replaced bytes, plus the change in key length.
+  Refused for backward-reference participants, references a rename would
+  retarget or that no longer resolve from the new key, moves inside an
+  indexed tree, elements with flags moving to a key of another length,
+  partial batches and cost estimates. Batches accept it from `GROVE_V4`,
+  through the new `apply_batch.move_element` slot (**BREAKING** for code
+  building `GroveDBApplyBatchVersions` by hand, or matching `GroveOp` or
+  merk's `Op` exhaustively: merk gains `Op::PutMoved` and `Op::DeleteMoved`).
+  `RawIterator` gains `status()` (default `Ok(())`, overridden by the RocksDB
+  iterators), which the move's copy checks so that a read error fails the
+  batch instead of committing a partial copy; other scans still stop at a
+  read error as at the end of their records.
+  `ElementType::supports_backward_references` classifies a serialized
+  element as a backward-reference participant; `Element`'s method of the
+  same name now reads it.
 - `ProofLimitMode::UpperBound` and `QueryProofVerify::execute_proof_with_limit_mode`
   verify a proof with `limit` as a ceiling instead of the exact limit the
   prover used. Once the proof has returned a result, the walk stops at the

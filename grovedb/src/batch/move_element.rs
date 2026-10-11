@@ -10,9 +10,9 @@
 //!   `PutMoved` replaces the node another move leaves). The node keeps its
 //!   value hash, which commits to everything below it, so the parent's new
 //!   root hash comes out right without opening the subtree, and propagation
-//!   carries it up like any other change. A moved reference keeps its value
-//!   hash too, so the level follows it from its new key first, as it would a
-//!   reference the batch writes.
+//!   carries it up like any other change. A moved reference is followed from
+//!   its new key, as a reference the batch writes is, and commits to what it
+//!   reaches there after the batch ([`PlannedMoves::commit_reference`]).
 //! - After the apply, [`GroveDb::move_subtree_storage`] copies every record
 //!   of a moved tree from the storage prefixes under its old path to the ones
 //!   under its new path and clears the old ones. It reads through the
@@ -29,7 +29,7 @@
 //! deletion's cleanup walks the state from before the batch and would never
 //! find the copy).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_into_no_add, cost_return_on_error_no_add,
@@ -39,8 +39,8 @@ use grovedb_costs::{
 use grovedb_element::{reference_path::ReferencePathType, ElementType};
 use grovedb_merk::{
     element::{costs::ElementCostExtensions, tree_type::ElementTreeTypeExtensions},
-    tree::TreeNode,
-    Merk, Op,
+    tree::{combine_hash, value_hash, TreeNode},
+    CryptoHash, Merk, Op,
 };
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
@@ -85,6 +85,31 @@ fn known_path(path: &KeyInfoPath) -> Option<Vec<Vec<u8>>> {
         .collect()
 }
 
+/// Qualified positions a batch moves elements from or to, with the path
+/// lengths they sit at: a path is at or under one of them only if its prefix
+/// of one of those lengths is, so a check hashes one prefix per length
+/// (usually one) rather than every prefix.
+#[derive(Debug, Default)]
+pub(crate) struct MovedPositions {
+    positions: HashSet<Vec<Vec<u8>>>,
+    lengths: BTreeSet<usize>,
+}
+
+impl MovedPositions {
+    pub(crate) fn insert(&mut self, position: Vec<Vec<u8>>) {
+        self.lengths.insert(position.len());
+        self.positions.insert(position);
+    }
+
+    /// Whether `path` is one of the positions or lies under one.
+    pub(crate) fn covers(&self, path: &[Vec<u8>]) -> bool {
+        self.lengths
+            .iter()
+            .take_while(|&&len| len <= path.len())
+            .any(|&len| self.positions.contains(&path[..len]))
+    }
+}
+
 /// Check the moves in `ops` before anything is read: the grove version
 /// accepts them, each names a new key, no two land on one key, a target is
 /// left alone except by a move that frees it, nothing else in the batch
@@ -127,6 +152,7 @@ pub(super) fn validate_move_ops(
     // every target: nothing else in the batch may work at or under them.
     let mut sources: HashMap<Vec<Vec<u8>>, usize> = HashMap::new();
     let mut targets: HashSet<Vec<Vec<u8>>> = HashSet::new();
+    let mut moved_positions = MovedPositions::default();
     for spec in &moves {
         if spec.new_key == spec.key {
             return Err(Error::InvalidBatchOperation(
@@ -137,22 +163,24 @@ pub(super) fn validate_move_ops(
             return Err(Error::InvalidInput("key length must be at most 255 bytes"));
         }
         let path = SubtreePath::from(spec.path.as_slice());
-        sources.insert(subtree_path_with_key(&path, &spec.key), 0);
-        if !targets.insert(subtree_path_with_key(&path, &spec.new_key)) {
+        let source = subtree_path_with_key(&path, &spec.key);
+        let target = subtree_path_with_key(&path, &spec.new_key);
+        if !targets.insert(target.clone()) {
             return Err(Error::InvalidBatchOperation(
                 "two moves in one batch have the same target",
             ));
         }
+        moved_positions.insert(source.clone());
+        moved_positions.insert(target);
+        sources.insert(source, 0);
     }
 
     for op in ops {
         // The path an op works in (for a keyless append, the tree it appends
         // to): a moved position at or above it means it works under a moved
         // key or a target.
-        let op_path = op.path.to_path();
-        if (1..=op_path.len())
-            .any(|len| sources.contains_key(&op_path[..len]) || targets.contains(&op_path[..len]))
-        {
+        let mut position = op.path.to_path();
+        if moved_positions.covers(&position) {
             return Err(Error::InvalidBatchOperation(
                 "a batch that moves an element cannot also change anything under its key or its \
                  target",
@@ -161,8 +189,7 @@ pub(super) fn validate_move_ops(
         let Some(key) = &op.key else {
             continue;
         };
-        let position =
-            subtree_path_with_key(&SubtreePath::from(op_path.as_slice()), key.as_slice());
+        position.push(key.get_key_clone());
         // Without the consistency check a second op at a moved key would
         // silently replace the move, or be replaced by it.
         if let Some(ops_at_source) = sources.get_mut(&position) {
@@ -193,39 +220,40 @@ pub(super) fn validate_move_ops(
 
 /// Partial batches do not carry moves: a move's storage copy runs after the
 /// whole apply, which a paused batch does not reach in one piece.
-pub(super) fn refuse_moves_in_partial_batch(ops: &[QualifiedGroveDbOp]) -> Result<(), Error> {
-    if ops.iter().any(|op| matches!(op.op, GroveOp::Move { .. })) {
-        return Err(Error::NotSupported(
-            "partial batches cannot move elements; use a full batch".to_owned(),
-        ));
-    }
-    Ok(())
-}
+pub(super) const PARTIAL_BATCH_MOVE_REFUSAL: &str =
+    "partial batches cannot move elements; use a full batch";
 
 /// Cost estimation does not carry moves: a move's cost grows with the
 /// subtree it carries, which a layer estimate does not describe.
 #[cfg(feature = "estimated_costs")]
-pub(super) fn refuse_moves_in_estimated_costs(ops: &[QualifiedGroveDbOp]) -> Result<(), Error> {
+pub(super) const ESTIMATED_COSTS_MOVE_REFUSAL: &str =
+    "costs are not estimated for a batch that moves an element: the cost grows with the moved \
+     subtree";
+
+/// Refuse `ops` if they carry a move, for a batch path that cannot (see
+/// [`PARTIAL_BATCH_MOVE_REFUSAL`] and `ESTIMATED_COSTS_MOVE_REFUSAL`).
+pub(super) fn refuse_moves(ops: &[QualifiedGroveDbOp], reason: &str) -> Result<(), Error> {
     if ops.iter().any(|op| matches!(op.op, GroveOp::Move { .. })) {
-        return Err(Error::NotSupported(
-            "costs are not estimated for a batch that moves an element: the cost grows with the \
-             moved subtree"
-                .to_owned(),
-        ));
+        return Err(Error::NotSupported(reason.to_owned()));
     }
     Ok(())
 }
 
+/// The error of a match arm for `GroveOp::Move` that the move's own checks
+/// keep unreachable (the arm exists because the match is exhaustive):
+/// reaching it means one of those checks is missing.
+pub(super) fn unrefused_move_error() -> Error {
+    Error::CorruptedCodeExecution("a move reached a step its validation should have refused")
+}
+
 /// Refuse to resolve a reference at or under a moved key or a move's target
-/// (`moved_positions`, both as qualified paths): the stored state the
-/// resolution would read is leaving, or not there yet.
+/// (`moved_positions`): the stored state the resolution would read is
+/// leaving, or not there yet.
 pub(super) fn refuse_reference_into_moved_element(
     qualified_path: &[Vec<u8>],
-    moved_positions: &HashSet<Vec<Vec<u8>>>,
+    moved_positions: &MovedPositions,
 ) -> Result<(), Error> {
-    if !moved_positions.is_empty()
-        && (1..=qualified_path.len()).any(|len| moved_positions.contains(&qualified_path[..len]))
-    {
+    if moved_positions.covers(qualified_path) {
         return Err(Error::InvalidBatchOperation(
             "references can not point to an element this batch moves, or into its subtree",
         ));
@@ -241,27 +269,52 @@ fn participant_refusal() -> Error {
     )
 }
 
-/// Refuse a moved element the move cannot carry: a backward-reference
-/// participant, or a reference whose path is built from its own key (a
-/// cousin or removed-cousin reference), which a rename would point at
-/// another element. Below the moved element no key changes, only a segment
-/// of every path, so references there resolve as before, except one stored
-/// directly under it that appends its parent's key (see
-/// [`refuse_parent_key_reference`]).
-fn refuse_unmovable(element: &Element) -> Result<(), Error> {
+/// Refuse a moved element the move cannot carry, given whether its key
+/// changes length:
+///
+/// - a backward-reference participant;
+/// - a reference whose path is built from its own key (a cousin or
+///   removed-cousin reference), which a rename would point at another
+///   element;
+/// - an element with flags moving to a key of another length: flags may
+///   count an element's stored bytes per epoch, and a move keeps the
+///   element's bytes, its flags with them, as they are, so the bytes it is
+///   billed for would no longer match what its flags count.
+///
+/// What the move does to references stored below the element, or naming
+/// its key from elsewhere, is described on
+/// [`QualifiedGroveDbOp::move_op`]; the one the move itself would retarget
+/// is refused during the copy ([`refuse_parent_key_reference`]).
+fn refuse_unmovable(element: &Element, changes_key_length: bool) -> Result<(), Error> {
     if element.supports_backward_references() {
         return Err(participant_refusal());
     }
     if let Element::Reference(reference_path, ..)
     | Element::ReferenceWithSumItem(reference_path, ..) = element.underlying()
-        && matches!(
-            reference_path,
-            ReferencePathType::CousinReference(_) | ReferencePathType::RemovedCousinReference(_)
-        )
     {
+        // Exhaustive so that a new path type has to say whether it reads
+        // the reference's own key.
+        let reads_own_key = match reference_path {
+            ReferencePathType::CousinReference(_)
+            | ReferencePathType::RemovedCousinReference(_) => true,
+            ReferencePathType::AbsolutePathReference(_)
+            | ReferencePathType::UpstreamRootHeightReference(..)
+            | ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(..)
+            | ReferencePathType::UpstreamFromElementHeightReference(..)
+            | ReferencePathType::SiblingReference(_) => false,
+        };
+        if reads_own_key {
+            return Err(Error::NotSupported(
+                "a cousin or removed-cousin reference resolves through its own key, so moving it \
+                 would point it at another element; delete and insert it instead"
+                    .to_owned(),
+            ));
+        }
+    }
+    if changes_key_length && element.get_flags().is_some() {
         return Err(Error::NotSupported(
-            "a cousin or removed-cousin reference resolves through its own key, so moving it \
-             would point it at another element; delete and insert it instead"
+            "an element with flags can only move to a key of the same length: its flags may \
+             count its stored bytes, which a move does not rewrite"
                 .to_owned(),
         ));
     }
@@ -272,13 +325,23 @@ fn refuse_unmovable(element: &Element) -> Result<(), Error> {
 /// with its parent's key (`UpstreamRootHeightWithParentPathAdditionReference`):
 /// that key is the moved one, so the move would point it at another element.
 fn refuse_parent_key_reference(element: &Element) -> Result<(), Error> {
-    if let Element::Reference(reference_path, ..)
-    | Element::ReferenceWithSumItem(reference_path, ..) = element.underlying()
-        && matches!(
-            reference_path,
-            ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(..)
-        )
-    {
+    let (Element::Reference(reference_path, ..)
+    | Element::ReferenceWithSumItem(reference_path, ..)) = element.underlying()
+    else {
+        return Ok(());
+    };
+    // Exhaustive so that a new path type has to say whether, stored directly
+    // under the moved element, it reads that element's key.
+    let reads_parent_key = match reference_path {
+        ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(..) => true,
+        ReferencePathType::AbsolutePathReference(_)
+        | ReferencePathType::UpstreamRootHeightReference(..)
+        | ReferencePathType::UpstreamFromElementHeightReference(..)
+        | ReferencePathType::CousinReference(_)
+        | ReferencePathType::RemovedCousinReference(_)
+        | ReferencePathType::SiblingReference(_) => false,
+    };
+    if reads_parent_key {
         return Err(Error::NotSupported(
             "a reference directly under a moved element that appends its parent's key resolves \
              through the moved key, so the move would point it at another element"
@@ -297,15 +360,46 @@ fn merk_read_error(error: grovedb_merk::Error, context: String) -> Error {
     }
 }
 
+/// A reference a level moves, which must still resolve from its new key.
+pub(super) struct MovedReference {
+    pub(super) new_key: Vec<u8>,
+    pub(super) path: ReferencePathType,
+    pub(super) max_hop: MaxReferenceHop,
+}
+
 /// What [`plan_level_moves`] derives from one level's moves.
 pub(super) struct PlannedMoves {
-    /// The Merk ops on the parent Merk, sorted with one per key.
-    pub(super) merk_ops: Vec<(Vec<u8>, Op)>,
+    /// The Merk ops on the parent Merk, one per key.
+    pub(super) merk_ops: BTreeMap<Vec<u8>, Op>,
     /// The moved trees whose storage must follow.
     pub(super) moved_subtrees: Vec<MovedSubtree>,
-    /// Every moved reference, as its new key, path and hop limit. It keeps
-    /// its stored value hash, so it must still resolve from its new key.
-    pub(super) moved_references: Vec<(Vec<u8>, ReferencePathType, MaxReferenceHop)>,
+    /// Every moved reference; see [`Self::commit_reference`].
+    pub(super) moved_references: Vec<MovedReference>,
+}
+
+impl PlannedMoves {
+    /// Commit the reference moved to `new_key` to `referenced_value_hash`,
+    /// the value hash its path reaches from there after the batch, as a
+    /// reference the batch writes is: its node value hash becomes
+    /// `combine_hash(value_hash(value), referenced_value_hash)`. Its bytes
+    /// do not change, so neither does what the move bills for them.
+    pub(super) fn commit_reference(
+        &mut self,
+        new_key: &[u8],
+        referenced_value_hash: &CryptoHash,
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+        let Some(Op::PutMoved(value, node_value_hash, ..)) = self.merk_ops.get_mut(new_key) else {
+            return Err(Error::CorruptedCodeExecution(
+                "a moved reference has no moved put at its new key",
+            ))
+            .wrap_with_cost(cost);
+        };
+        let own_value_hash = value_hash(value).unwrap_add_cost(&mut cost);
+        *node_value_hash =
+            combine_hash(&own_value_hash, referenced_value_hash).unwrap_add_cost(&mut cost);
+        Ok(()).wrap_with_cost(cost)
+    }
 }
 
 /// Turn the moves filed at one level into Merk ops on the parent Merk at
@@ -313,7 +407,8 @@ pub(super) struct PlannedMoves {
 ///
 /// Each element and its node value hash are read at the old key from the
 /// Merk's state before this level applies. A target must be absent unless
-/// another move at this level frees it.
+/// another move at this level frees it. Both reads retain the nodes they
+/// fetch, which applying the moves walks again.
 pub(super) fn plan_level_moves<'db, S: StorageContext<'db>>(
     merk: &Merk<S>,
     path: &[Vec<u8>],
@@ -355,26 +450,15 @@ pub(super) fn plan_level_moves<'db, S: StorageContext<'db>>(
         };
         let element =
             cost_return_on_error_into_no_add!(cost, Element::deserialize(&value, grove_version));
-        cost_return_on_error_no_add!(cost, refuse_unmovable(&element));
-        // Flags may count an element's stored bytes per epoch, and a move
-        // keeps the element's bytes, its flags with them, as they are; under a
-        // key of another length the bytes it is billed for would no longer
-        // match what its flags count.
-        if new_key.len() != key.len() && element.get_flags().is_some() {
-            return Err(Error::NotSupported(
-                "an element with flags can only move to a key of the same length: its flags \
-                 may count its stored bytes, which a move does not rewrite"
-                    .to_owned(),
-            ))
-            .wrap_with_cost(cost);
-        }
+        cost_return_on_error_no_add!(cost, refuse_unmovable(&element, new_key.len() != key.len()));
 
         if !freed.contains(&new_key) {
             let occupied = cost_return_on_error!(
                 &mut cost,
-                merk.exists(
+                merk.observe_old_value(
                     &new_key,
                     Some(&Element::value_defined_cost_for_serialized_value),
+                    &mut |_, _| {},
                     grove_version,
                 )
                 .map_err(|e| merk_read_error(
@@ -406,7 +490,11 @@ pub(super) fn plan_level_moves<'db, S: StorageContext<'db>>(
         if let Element::Reference(reference_path, max_hop, _)
         | Element::ReferenceWithSumItem(reference_path, max_hop, ..) = element.underlying()
         {
-            moved_references.push((new_key.clone(), reference_path.clone(), *max_hop));
+            moved_references.push(MovedReference {
+                new_key: new_key.clone(),
+                path: reference_path.clone(),
+                max_hop: *max_hop,
+            });
         } else if element.is_any_tree() {
             moved_subtrees.push(MovedSubtree {
                 from: subtree_path_with_key(&subtree_path, &key),
@@ -417,7 +505,7 @@ pub(super) fn plan_level_moves<'db, S: StorageContext<'db>>(
     }
 
     Ok(PlannedMoves {
-        merk_ops: merk_ops.into_iter().collect(),
+        merk_ops,
         moved_subtrees,
         moved_references,
     })
@@ -426,7 +514,8 @@ pub(super) fn plan_level_moves<'db, S: StorageContext<'db>>(
 
 /// What a record copied to a moved tree's new prefix is billed: replaced
 /// bytes at its stored size, key and value with their length prefixes, as a
-/// write of it would otherwise add.
+/// write of it would otherwise add. The storage layer checks the value half
+/// against the bytes it writes, as for any put.
 fn moved_record_cost(prefixed_key_len: u32, value_len: u32) -> KeyValueStorageCost {
     KeyValueStorageCost {
         key_storage_cost: StorageCost {
@@ -438,7 +527,7 @@ fn moved_record_cost(prefixed_key_len: u32, value_len: u32) -> KeyValueStorageCo
             ..Default::default()
         },
         new_node: false,
-        needs_value_verification: false,
+        needs_value_verification: true,
         prepaid: false,
     }
 }
@@ -484,6 +573,16 @@ fn copy_records<I: RawIterator>(
     Ok(()).wrap_with_cost(cost)
 }
 
+/// A record under a moved tree that cannot be decoded, at `key` in the
+/// namespace of `path`.
+fn moved_record_error(path: &[Vec<u8>], key: &[u8], error: impl std::fmt::Display) -> Error {
+    Error::CorruptedData(format!(
+        "unable to decode the record at key {} under {} while moving it: {error}",
+        hex::encode(key),
+        path.iter().map(hex::encode).collect::<Vec<_>>().join("/"),
+    ))
+}
+
 impl GroveDb {
     /// Copy every record of a tree a batch moved from the storage prefixes
     /// under its old path to the ones under its new path, and clear the old
@@ -504,101 +603,119 @@ impl GroveDb {
         batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        self.move_tree_storage(
+            moved,
+            &mut Vec::new(),
+            &moved.element,
+            transaction,
+            batch,
+            grove_version,
+        )
+    }
+
+    /// [`Self::move_subtree_storage`] for the tree `element` at
+    /// `relative_path` below the moved one. A nested tree is copied when its
+    /// record is met, before the scan of its parent goes on, so what the
+    /// walk holds besides the storage batch grows with the depth of the
+    /// moved subtree, not its width.
+    fn move_tree_storage(
+        &self,
+        moved: &MovedSubtree,
+        relative_path: &mut Vec<Vec<u8>>,
+        element: &Element,
+        transaction: &Transaction,
+        batch: &StorageBatch,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
+        let is_merk = !element.uses_non_merk_data_storage();
+        // A Merk without a root key holds no records; a non-Merk tree's data
+        // is there whatever its element says.
+        let copies_primary = !is_merk
+            || element
+                .root_key_and_tree_type()
+                .is_some_and(|(root_key, _)| root_key.is_some());
+        let secondary_axes: Vec<_> = if element.is_indexed_tree() {
+            let axes = cost_return_on_error_no_add!(cost, indexed_element_axes(element));
+            axes.into_iter()
+                .filter(|(_, root_key)| root_key.is_some())
+                .map(|(axis, _)| axis)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if !copies_primary && secondary_axes.is_empty() {
+            return Ok(()).wrap_with_cost(cost);
+        }
 
-        // Depth first: each entry is a tree still to copy, as its path below
-        // the moved element and its element.
-        let mut pending: Vec<(Vec<Vec<u8>>, Element)> = vec![(Vec::new(), moved.element.clone())];
-        while let Some((relative_path, element)) = pending.pop() {
-            let is_merk = !element.uses_non_merk_data_storage();
-            // A Merk without a root key holds no records; a non-Merk tree's
-            // data is there whatever its element says.
-            let copies_primary = !is_merk
-                || element
-                    .root_key_and_tree_type()
-                    .is_some_and(|(root_key, _)| root_key.is_some());
-            let secondary_axes = if element.is_indexed_tree() {
-                let axes = cost_return_on_error_no_add!(cost, indexed_element_axes(&element));
-                axes.into_iter()
-                    .filter(|(_, root_key)| root_key.is_some())
-                    .map(|(axis, _)| axis)
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            if !copies_primary && secondary_axes.is_empty() {
-                continue;
-            }
+        let mut from = moved.from.clone();
+        from.extend(relative_path.iter().cloned());
+        let mut to = moved.to.clone();
+        to.extend(relative_path.iter().cloned());
+        let from_prefix = RocksDbStorage::build_prefix(SubtreePath::from(from.as_slice()))
+            .unwrap_add_cost(&mut cost);
+        let to_prefix = RocksDbStorage::build_prefix(SubtreePath::from(to.as_slice()))
+            .unwrap_add_cost(&mut cost);
 
-            let mut from = moved.from.clone();
-            from.extend(relative_path.iter().cloned());
-            let mut to = moved.to.clone();
-            to.extend(relative_path.iter().cloned());
-            let from_prefix = RocksDbStorage::build_prefix(SubtreePath::from(from.as_slice()))
+        if copies_primary {
+            // What the nested copies cost; the scan's closure can only
+            // report a plain result.
+            let mut nested_cost = OperationCost::default();
+            let copied = self
+                .move_namespace(from_prefix, to_prefix, transaction, batch, |key, value| {
+                    if !is_merk {
+                        return Ok(());
+                    }
+                    // The element's type byte classifies the record; the
+                    // element itself is decoded only where its contents
+                    // matter.
+                    let node = TreeNode::decode_raw_for_read(value)
+                        .map_err(|e| moved_record_error(&from, key, e))?;
+                    let element_type = ElementType::from_serialized_value(node.value_as_slice())
+                        .map_err(|e| moved_record_error(&from, key, e))?;
+                    if element_type.supports_backward_references() {
+                        return Err(participant_refusal());
+                    }
+                    if element_type.is_tree() {
+                        let child = Element::deserialize(node.value_as_slice(), grove_version)
+                            .map_err(|e| moved_record_error(&from, key, e))?;
+                        relative_path.push(key.to_vec());
+                        let nested = self
+                            .move_tree_storage(
+                                moved,
+                                relative_path,
+                                &child,
+                                transaction,
+                                batch,
+                                grove_version,
+                            )
+                            .unwrap_add_cost(&mut nested_cost);
+                        relative_path.pop();
+                        nested
+                    } else if relative_path.is_empty() && element_type.is_reference() {
+                        let reference = Element::deserialize(node.value_as_slice(), grove_version)
+                            .map_err(|e| moved_record_error(&from, key, e))?;
+                        refuse_parent_key_reference(&reference)
+                    } else {
+                        Ok(())
+                    }
+                })
                 .unwrap_add_cost(&mut cost);
-            let to_prefix = RocksDbStorage::build_prefix(SubtreePath::from(to.as_slice()))
+            cost += nested_cost;
+            cost_return_on_error_no_add!(cost, copied);
+        }
+
+        for axis in secondary_axes {
+            let from_secondary = RocksDbStorage::secondary_prefix_for(&from_prefix, axis.tag())
                 .unwrap_add_cost(&mut cost);
-
-            if copies_primary {
-                cost_return_on_error!(
-                    &mut cost,
-                    self.move_namespace(
-                        from_prefix,
-                        to_prefix,
-                        transaction,
-                        batch,
-                        |key, value| {
-                            if !is_merk {
-                                return Ok(());
-                            }
-                            // The element's type byte classifies the record; the
-                            // element itself is decoded only where its contents
-                            // matter.
-                            let node = TreeNode::decode_raw_for_read(value)?;
-                            let element_type =
-                                ElementType::from_serialized_value(node.value_as_slice())?;
-                            if element_type.base() == ElementType::BidirectionalReference
-                                || element_type.is_backward_references_item()
-                            {
-                                return Err(participant_refusal());
-                            }
-                            let directly_under = relative_path.is_empty();
-                            if element_type.is_tree()
-                                || (directly_under && element_type.is_reference())
-                            {
-                                let child =
-                                    Element::deserialize(node.value_as_slice(), grove_version)?;
-                                if directly_under {
-                                    refuse_parent_key_reference(&child)?;
-                                }
-                                if element_type.is_tree() {
-                                    let mut child_path = relative_path.clone();
-                                    child_path.push(key.to_vec());
-                                    pending.push((child_path, child));
-                                }
-                            }
-                            Ok(())
-                        },
-                    )
-                );
-            }
-
-            for axis in secondary_axes {
-                let from_secondary = RocksDbStorage::secondary_prefix_for(&from_prefix, axis.tag())
-                    .unwrap_add_cost(&mut cost);
-                let to_secondary = RocksDbStorage::secondary_prefix_for(&to_prefix, axis.tag())
-                    .unwrap_add_cost(&mut cost);
-                cost_return_on_error!(
-                    &mut cost,
-                    self.move_namespace(
-                        from_secondary,
-                        to_secondary,
-                        transaction,
-                        batch,
-                        |_, _| { Ok(()) },
-                    )
-                );
-            }
+            let to_secondary = RocksDbStorage::secondary_prefix_for(&to_prefix, axis.tag())
+                .unwrap_add_cost(&mut cost);
+            cost_return_on_error!(
+                &mut cost,
+                self.move_namespace(from_secondary, to_secondary, transaction, batch, |_, _| {
+                    Ok(())
+                },)
+            );
         }
         Ok(()).wrap_with_cost(cost)
     }
@@ -799,6 +916,44 @@ mod tests {
             "got {:?}",
             result.value
         );
+    }
+
+    #[test]
+    fn a_fresh_target_is_checked_on_the_path_the_move_walks() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"a",
+            Element::new_item(vec![1]),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("item");
+        let tx = db.start_transaction();
+        let merk = db
+            .open_transactional_merk_at_path(
+                SubtreePath::from([TEST_LEAF].as_ref()),
+                &tx,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("merk");
+
+        // The root, "a", is loaded when the Merk opens, and "b" would hang
+        // off its empty right link: neither the source nor the target needs
+        // a storage read.
+        let planned = super::plan_level_moves(
+            &merk,
+            &[TEST_LEAF.to_vec()],
+            vec![(b"a".to_vec(), b"b".to_vec())],
+            grove_version,
+        );
+        assert_eq!(planned.cost.seek_count, 0);
+        planned.value.expect("plan");
     }
 
     #[test]

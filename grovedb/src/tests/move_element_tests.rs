@@ -22,7 +22,11 @@ mod tests {
     };
     use grovedb_costs::OperationCost;
     use grovedb_epoch_based_storage_flags::StorageFlags;
-    use grovedb_merk::{element::costs::ElementCostExtensions, proofs::Query};
+    use grovedb_merk::{
+        element::costs::ElementCostExtensions,
+        proofs::Query,
+        tree::{combine_hash, value_hash},
+    };
     use grovedb_path::SubtreePath;
     use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageContext};
     use grovedb_version::version::{
@@ -1356,21 +1360,7 @@ mod tests {
             (&GROVE_V4, true),
             (&unknown_slot, false),
         ] {
-            let db = make_test_grovedb(grove_version);
-            insert(
-                &db,
-                &[TEST_LEAF],
-                b"a",
-                Element::empty_tree(),
-                grove_version,
-            );
-            insert(
-                &db,
-                &[TEST_LEAF, b"a"],
-                b"k",
-                Element::new_item(v(b"v")),
-                grove_version,
-            );
+            let db = seeded(grove_version);
             let before = root_hash(&db, grove_version);
 
             let result = db.apply_batch(
@@ -1580,9 +1570,10 @@ mod tests {
             grove_version,
             "takes part in backward references",
         );
-        // That refusal comes while the copy is under way: none of it lands.
-        assert_eq!(records_in(&db, prefix_of(&[TEST_LEAF, b"z"])), 0);
-        assert!(records_in(&db, prefix_of(&[TEST_LEAF, b"b"])) > 0);
+        // That refusal comes from the copy, on its first record ("bidi"
+        // sorts first), so nothing is staged yet;
+        // `a_refusal_after_records_were_staged_commits_nothing` covers a
+        // refusal once records are.
     }
 
     #[test]
@@ -1721,6 +1712,115 @@ mod tests {
             Element::new_item(v(b"x"))
         );
         assert_grove_verifies(&db, grove_version);
+    }
+
+    #[test]
+    fn a_moved_reference_commits_to_a_target_the_batch_replaces() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert(
+            &db,
+            &[TEST_LEAF],
+            b"x",
+            Element::new_item(v(b"1")),
+            grove_version,
+        );
+        let reference = Element::new_reference(ReferencePathType::SiblingReference(v(b"x")));
+        insert(&db, &[TEST_LEAF], b"r", reference.clone(), grove_version);
+
+        // Neither the old key nor the new one could carry a refresh of the
+        // reference in this batch, so the move itself commits it to the
+        // replaced target, as a reference the batch writes is.
+        let replaced = Element::new_item(v(b"2"));
+        apply(
+            &db,
+            vec![
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    path(&[TEST_LEAF]),
+                    v(b"x"),
+                    replaced.clone(),
+                ),
+                move_op(&[TEST_LEAF], b"r", b"s"),
+            ],
+            grove_version,
+        )
+        .expect("replace the target and move its reference");
+        assert_eq!(
+            db.get([TEST_LEAF].as_ref(), b"s", None, grove_version)
+                .unwrap()
+                .expect("the moved reference resolves"),
+            replaced
+        );
+        let committed = combine_hash(
+            &value_hash(&reference.serialize(grove_version).unwrap()).unwrap(),
+            &value_hash(&replaced.serialize(grove_version).unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            value_hash_at(&db, &[TEST_LEAF], b"s", grove_version),
+            committed
+        );
+        assert_grove_verifies(&db, grove_version);
+
+        // With its target left alone, a moved reference keeps the hash it
+        // was stored with.
+        apply(&db, vec![move_op(&[TEST_LEAF], b"s", b"t")], grove_version)
+            .expect("move the reference again");
+        assert_eq!(
+            value_hash_at(&db, &[TEST_LEAF], b"t", grove_version),
+            committed
+        );
+        assert_grove_verifies(&db, grove_version);
+    }
+
+    #[test]
+    fn a_swap_can_leave_a_carried_reference_reaching_itself() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        for key in [b"a".as_slice(), b"b"] {
+            insert(&db, &[TEST_LEAF], key, Element::empty_tree(), grove_version);
+        }
+        insert(
+            &db,
+            &[TEST_LEAF, b"a"],
+            b"k",
+            Element::new_item(v(b"v")),
+            grove_version,
+        );
+        insert(
+            &db,
+            &[TEST_LEAF, b"b"],
+            b"k",
+            Element::new_reference(ReferencePathType::AbsolutePathReference(path(&[
+                TEST_LEAF, b"a", b"k",
+            ]))),
+            grove_version,
+        );
+
+        // References inside a moved tree are copied as stored (see
+        // `QualifiedGroveDbOp::move_op`). This one names `a`, which the swap
+        // hands to `b`'s tree, so it now reaches itself; reads of it fail
+        // as they would for a dangling reference.
+        apply(
+            &db,
+            vec![
+                move_op(&[TEST_LEAF], b"a", b"b"),
+                move_op(&[TEST_LEAF], b"b", b"a"),
+            ],
+            grove_version,
+        )
+        .expect("swap");
+        assert!(matches!(
+            db.get([TEST_LEAF, b"a"].as_ref(), b"k", None, grove_version)
+                .unwrap(),
+            Err(Error::CyclicReference)
+        ));
+        assert_eq!(
+            db.get([TEST_LEAF, b"b"].as_ref(), b"k", None, grove_version)
+                .unwrap()
+                .expect("the item moved intact"),
+            Element::new_item(v(b"v"))
+        );
     }
 
     #[test]

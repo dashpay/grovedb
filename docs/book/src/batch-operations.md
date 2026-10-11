@@ -308,7 +308,10 @@ A move is applied in two steps:
    same value hash at the new key. A tree element's value hash already commits
    to its subtree's root, and nothing it commits to depends on the key, so the
    parent's new root hash comes out right without opening the subtree.
-   Aggregates are unchanged and propagate up as usual.
+   Aggregates are unchanged and propagate up as usual. A moved reference is
+   the one element whose value hash is recomputed: the level follows it from
+   the new key, as it follows a reference the batch writes, and commits it to
+   the value it reaches there after the batch.
 2. After the apply, every record of a moved tree is copied from the storage
    prefixes under the old path to the ones under the new path (a prefix is the
    blake3 hash of a path, so every nested subtree gets a new one), and the old
@@ -316,7 +319,9 @@ A move is applied in two steps:
    and indexed trees' secondary Merks; namespaces the element shows empty
    are skipped. Records stream into the storage batch, and a Merk record is
    classified by its element's type byte, decoded only where its contents
-   matter. A read error stops the batch rather than commit a partial copy.
+   matter. A nested tree is copied when its record is met, so besides the
+   storage batch the copy holds one scan per level of depth. A read error
+   stops the batch rather than commit a partial copy.
    Root hashes, aggregates and Merk shapes below the moved key do not
    change.
 
@@ -331,7 +336,7 @@ a put wins over a delete of the same key, so moves can trade places:
 | A reference the batch resolves to or under a moved key or a target | Refused |
 | A backward-reference participant as the element or under it | Refused |
 | The moved element is a cousin or removed-cousin reference | Refused: it resolves through its own key |
-| The moved element is a reference that no longer resolves from the new key (it would reach a moved key, or close a cycle) | Refused |
+| The moved element is a reference that no longer resolves from the new key (it would reach a moved key, close a cycle, find no target, or exceed its hop limit) | Refused |
 | A reference directly under the moved element whose path ends with its parent's key (`UpstreamRootHeightWithParentPathAdditionReference`) | Refused: it resolves through the moved key |
 | A move inside an indexed tree | Refused: secondary rows are keyed by the primary key |
 | An element with flags moving to a key of another length | Refused: its flags may count its stored bytes, which the move does not rewrite |
@@ -344,14 +349,19 @@ did. One whose path names the old key, such as an absolute path into the
 subtree or a reference from outside, keeps its stored value hash but reaches
 whatever is at the old key after the batch: nothing after a plain move, as
 after a delete, or the element another move brings there in a swap or a
-chain. GroveDB does not follow those; keeping them valid is the caller's
-job.
+chain. That element can be the reference itself, or one leading back to it;
+reads of the reference then fail with `CyclicReference`, as they fail for a
+dangling one. GroveDB does not follow those; keeping them valid is the
+caller's job. A moved reference itself is followed: it commits to the value
+it reaches from its new key after the batch, so a batch that replaces its
+target and moves it leaves it valid.
 
 A move is billed as storage that stays where it is. The moved element's node
 counts as replaced at the size it had under the old key, plus added bytes if
 the new key is longer, or removed bytes if it is shorter; only an element
-without flags may change key length. Every record copied below it counts as replaced
-at its stored size, and clearing the old prefixes bills nothing. The
+without flags may change key length. Every record copied below it counts as
+replaced at its stored size, and clearing the old prefixes bills nothing. A
+moved reference also pays for resolving its path and re-hashing its value. The
 flags-update callback is not called for anything the move carries, so no
 storage is charged or refunded beyond the change in key length; ancestors
 updated by propagation go through it as in any batch.
