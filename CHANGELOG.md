@@ -90,6 +90,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an absent path. `AxisKeys::empty_for_axis` is new. (#965)
 
 ### Fixed
+- A batch whose reference chain reaches another pending reference that
+  resolves to an empty path no longer panics. `apply_batch` refused an empty
+  path only for the reference op it was processing. Keys in a path run in
+  byte order, so an earlier op could follow into a later pending reference
+  (an `AbsolutePathReference(vec![])`, say, or a trusted `RefreshReference`
+  carrying one) before that op's own check ran. The next hop then reached
+  `process_reference(&[])`, where `split_last().expect(..)` panicked. Every
+  hop now refuses an empty path with `InvalidBatchOperation`, so the batch
+  fails and writes nothing. The fix is not version-gated. A batch that took
+  this path never committed at any grove version, so no stored state or
+  replayed block can change, and a batch that succeeded before resolves the
+  same way now.
 - A V1 proof whose limit runs out before its query does verifies at its own
   limit. The walk hides what it has not reached, but still passes back up
   through the ancestors of its last result, and one of them can be a range
