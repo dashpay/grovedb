@@ -35,6 +35,13 @@ impl TreeNode {
         TreeNode::decode(key, bytes, value_defined_cost_fn, grove_version).map_err(EdError)
     }
 
+    /// Decode a stored node only to read it: the fields come back without a
+    /// key, a value-defined cost, or the copy of the value a node keeps as
+    /// its mutation baseline.
+    pub fn decode_raw_for_read(bytes: &[u8]) -> Result<TreeNodeInner, Error> {
+        TreeNodeInner::decode(bytes).map_err(EdError)
+    }
+
     /// Get value from storage given key.
     pub(crate) fn get<'db, S, K>(
         storage: &S,
