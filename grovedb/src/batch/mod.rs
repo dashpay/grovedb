@@ -2391,7 +2391,7 @@ where
         let mut cost = OperationCost::default();
         let (key, reference_path) = qualified_path
             .split_last()
-            .expect("path validated non-empty above");
+            .expect("follow_reference_get_value_hash refuses an empty path");
 
         // Fast path: `recursions_allowed == 1` means the user-declared
         // `max_reference_hop` budget allows exactly one more hop. Under
@@ -2824,6 +2824,18 @@ where
         if recursions_allowed == 0 {
             return Err(Error::ReferenceLimit).wrap_with_cost(cost);
         }
+        // Every hop enters here, so this is the one place an empty path is
+        // refused. The apply arms check only the reference they are
+        // processing; a hop can still land on another pending reference
+        // whose path resolves to `[]` before that op's own check runs.
+        // Everything below (`process_reference` and the flagged-item arm)
+        // splits the path and relies on this check.
+        if qualified_path.is_empty() {
+            return Err(Error::InvalidBatchOperation(
+                "reference chain resolves to an empty path",
+            ))
+            .wrap_with_cost(cost);
+        }
         let path_vec = qualified_path.to_vec();
         if !visited.insert(path_vec) {
             return Err(Error::CyclicReference).wrap_with_cost(cost);
@@ -2920,7 +2932,7 @@ where
                                 // it can be unmerged, let's get the value on disk
                                 let (key, reference_path) = qualified_path
                                     .split_last()
-                                    .expect("path validated non-empty above");
+                                    .expect("empty path refused at the top of this function");
                                 let serialized_element_result = cost_return_on_error!(
                                     &mut cost,
                                     self.get_and_deserialize_referenced_element(
