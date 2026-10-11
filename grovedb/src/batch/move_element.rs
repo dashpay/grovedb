@@ -11,8 +11,9 @@
 //!   value hash, which commits to everything below it, so the parent's new
 //!   root hash comes out right without opening the subtree, and propagation
 //!   carries it up like any other change. A moved reference is followed from
-//!   its new key, as a reference the batch writes is, and commits to what it
-//!   reaches there after the batch ([`PlannedMoves::commit_reference`]).
+//!   its new key, as a reference the batch writes is, and when the batch
+//!   writes something its path reaches, commits to what it reaches there
+//!   after the batch ([`PlannedMoves::into_ops`]).
 //! - After the apply, [`GroveDb::move_subtree_storage`] copies every record
 //!   of a moved tree from the storage prefixes under its old path to the ones
 //!   under its new path and clears the old ones. It reads through the
@@ -97,9 +98,29 @@ pub(crate) struct MovedPositions {
 }
 
 impl MovedPositions {
-    pub(crate) fn insert(&mut self, position: Vec<Vec<u8>>) {
+    fn insert(&mut self, position: Vec<Vec<u8>>) {
         self.lengths.insert(position.len());
         self.positions.insert(position);
+    }
+
+    /// Reserve the positions a move from `path`/`key` to `path`/`new_key`
+    /// holds: its source and its target, which it returns. The one place
+    /// that spells them, for validation and reference resolution alike.
+    pub(crate) fn insert_move(
+        &mut self,
+        path: &[Vec<u8>],
+        key: &[u8],
+        new_key: &[u8],
+    ) -> [Vec<Vec<u8>>; 2] {
+        let path = SubtreePath::from(path);
+        let positions = [
+            subtree_path_with_key(&path, key),
+            subtree_path_with_key(&path, new_key),
+        ];
+        for position in &positions {
+            self.insert(position.clone());
+        }
+        positions
     }
 
     /// Whether `path` is one of the positions or lies under one.
@@ -163,16 +184,12 @@ pub(super) fn validate_move_ops(
         if spec.new_key.len() > MAX_KEY_LENGTH {
             return Err(Error::InvalidInput("key length must be at most 255 bytes"));
         }
-        let path = SubtreePath::from(spec.path.as_slice());
-        let source = subtree_path_with_key(&path, &spec.key);
-        let target = subtree_path_with_key(&path, &spec.new_key);
-        if !targets.insert(target.clone()) {
+        let [source, target] = moved_positions.insert_move(&spec.path, &spec.key, &spec.new_key);
+        if !targets.insert(target) {
             return Err(Error::InvalidBatchOperation(
                 "two moves in one batch have the same target",
             ));
         }
-        moved_positions.insert(source.clone());
-        moved_positions.insert(target);
         sources.insert(source, 0);
     }
 
@@ -270,6 +287,54 @@ fn participant_refusal() -> Error {
     )
 }
 
+/// What a move does with an element it carries, decided by [`carried`]'s
+/// exhaustive match, so that a new element variant has to say.
+enum Carried<'a> {
+    /// A backward-reference participant: refused.
+    Participant,
+    /// A reference: carried if its path allows, then followed from where it
+    /// lands.
+    Reference(&'a ReferencePathType, MaxReferenceHop),
+    /// A tree: its storage follows the move.
+    Tree,
+    /// Anything else: carried as stored.
+    Value,
+}
+
+fn carried(element: &Element) -> Carried<'_> {
+    match element {
+        Element::NonCounted(inner)
+        | Element::NotSummed(inner)
+        | Element::NotCountedOrSummed(inner) => carried(inner),
+        Element::ItemWithBackwardsReferences(..)
+        | Element::SumItemWithBackwardsReferences(..)
+        | Element::ItemWithSumItemWithBackwardsReferences(..)
+        | Element::BidirectionalReference(..) => Carried::Participant,
+        Element::Reference(reference_path, max_hop, _)
+        | Element::ReferenceWithSumItem(reference_path, max_hop, ..) => {
+            Carried::Reference(reference_path, *max_hop)
+        }
+        Element::Tree(..)
+        | Element::SumTree(..)
+        | Element::BigSumTree(..)
+        | Element::CountTree(..)
+        | Element::CountSumTree(..)
+        | Element::ProvableCountTree(..)
+        | Element::ProvableCountSumTree(..)
+        | Element::ProvableSumTree(..)
+        | Element::ProvableCountProvableSumTree(..)
+        | Element::CommitmentTree(..)
+        | Element::MmrTree(..)
+        | Element::BulkAppendTree(..)
+        | Element::DenseAppendOnlyFixedSizeTree(..)
+        | Element::ProvableSumIndexedTree(..)
+        | Element::ProvableCountIndexedTree(..)
+        | Element::ProvableCountProvableSumIndexedTree(..)
+        | Element::PrivateDocumentStore(..) => Carried::Tree,
+        Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => Carried::Value,
+    }
+}
+
 /// Refuse a moved element the move cannot carry, given whether its key
 /// changes length:
 ///
@@ -287,29 +352,28 @@ fn participant_refusal() -> Error {
 /// [`QualifiedGroveDbOp::move_op`]; the one the move itself would retarget
 /// is refused during the copy ([`refuse_parent_key_reference`]).
 fn refuse_unmovable(element: &Element, changes_key_length: bool) -> Result<(), Error> {
-    if element.supports_backward_references() {
-        return Err(participant_refusal());
-    }
-    if let Element::Reference(reference_path, ..)
-    | Element::ReferenceWithSumItem(reference_path, ..) = element.underlying()
-    {
-        // Exhaustive so that a new path type has to say whether it reads
-        // the reference's own key.
-        let reads_own_key = match reference_path {
-            ReferencePathType::CousinReference(_)
-            | ReferencePathType::RemovedCousinReference(_) => true,
-            ReferencePathType::AbsolutePathReference(_)
-            | ReferencePathType::UpstreamRootHeightReference(..)
-            | ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(..)
-            | ReferencePathType::UpstreamFromElementHeightReference(..)
-            | ReferencePathType::SiblingReference(_) => false,
-        };
-        if reads_own_key {
-            return Err(Error::NotSupported(
-                "a cousin or removed-cousin reference resolves through its own key, so moving it \
-                 would point it at another element; delete and insert it instead"
-                    .to_owned(),
-            ));
+    match carried(element) {
+        Carried::Participant => return Err(participant_refusal()),
+        Carried::Tree | Carried::Value => {}
+        Carried::Reference(reference_path, _) => {
+            // Exhaustive so that a new path type has to say whether it reads
+            // the reference's own key.
+            let reads_own_key = match reference_path {
+                ReferencePathType::CousinReference(_)
+                | ReferencePathType::RemovedCousinReference(_) => true,
+                ReferencePathType::AbsolutePathReference(_)
+                | ReferencePathType::UpstreamRootHeightReference(..)
+                | ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(..)
+                | ReferencePathType::UpstreamFromElementHeightReference(..)
+                | ReferencePathType::SiblingReference(_) => false,
+            };
+            if reads_own_key {
+                return Err(Error::NotSupported(
+                    "a cousin or removed-cousin reference resolves through its own key, so \
+                     moving it would point it at another element; delete and insert it instead"
+                        .to_owned(),
+                ));
+            }
         }
     }
     if changes_key_length && element.get_flags().is_some() {
@@ -326,10 +390,9 @@ fn refuse_unmovable(element: &Element, changes_key_length: bool) -> Result<(), E
 /// with its parent's key (`UpstreamRootHeightWithParentPathAdditionReference`):
 /// that key is the moved one, so the move would point it at another element.
 fn refuse_parent_key_reference(element: &Element) -> Result<(), Error> {
-    let (Element::Reference(reference_path, ..)
-    | Element::ReferenceWithSumItem(reference_path, ..)) = element.underlying()
-    else {
-        return Ok(());
+    let reference_path = match carried(element) {
+        Carried::Reference(reference_path, _) => reference_path,
+        Carried::Participant | Carried::Tree | Carried::Value => return Ok(()),
     };
     // Exhaustive so that a new path type has to say whether, stored directly
     // under the moved element, it reads that element's key.
@@ -368,38 +431,55 @@ pub(super) struct MovedReference {
     pub(super) max_hop: MaxReferenceHop,
 }
 
-/// What [`plan_level_moves`] derives from one level's moves.
+/// What [`plan_level_moves`] derives from one level's moves. Its ops come
+/// out only through [`Self::into_ops`], once every moved reference is
+/// resolved.
 pub(super) struct PlannedMoves {
     /// The Merk ops on the parent Merk, one per key.
-    pub(super) merk_ops: BTreeMap<Vec<u8>, Op>,
+    merk_ops: BTreeMap<Vec<u8>, Op>,
     /// The moved trees whose storage must follow.
-    pub(super) moved_subtrees: Vec<MovedSubtree>,
-    /// Every moved reference; see [`Self::commit_reference`].
-    pub(super) moved_references: Vec<MovedReference>,
+    moved_subtrees: Vec<MovedSubtree>,
+    /// Every moved reference, whose `PutMoved` carries its stored hash
+    /// until [`Self::into_ops`] resolves it.
+    moved_references: Vec<MovedReference>,
 }
 
 impl PlannedMoves {
-    /// Commit the reference moved to `new_key` to `referenced_value_hash`,
-    /// the value hash its path reaches from there after the batch, as a
-    /// reference the batch writes is: its node value hash becomes
-    /// `combine_hash(value_hash(value), referenced_value_hash)`. Its bytes
-    /// do not change, so neither does what the move bills for them.
-    pub(super) fn commit_reference(
-        &mut self,
-        new_key: &[u8],
-        referenced_value_hash: &CryptoHash,
-    ) -> CostResult<(), Error> {
+    /// The level's Merk ops and the moved trees whose storage must follow,
+    /// once `follow` has resolved every moved reference from its new key:
+    /// `Some(hash)` commits the reference to `hash`, the value hash its path
+    /// reaches there after the batch, as a reference the batch writes is
+    /// (its node value hash becomes `combine_hash(value_hash(value), hash)`;
+    /// its bytes, and what the move bills for them, do not change); `None`
+    /// keeps the hash it was stored with.
+    pub(super) fn into_ops(
+        self,
+        mut follow: impl FnMut(&MovedReference) -> CostResult<Option<CryptoHash>, Error>,
+    ) -> CostResult<(BTreeMap<Vec<u8>, Op>, Vec<MovedSubtree>), Error> {
         let mut cost = OperationCost::default();
-        let Some(Op::PutMoved(value, node_value_hash, ..)) = self.merk_ops.get_mut(new_key) else {
-            return Err(Error::CorruptedCodeExecution(
-                "a moved reference has no moved put at its new key",
-            ))
-            .wrap_with_cost(cost);
-        };
-        let own_value_hash = value_hash(value).unwrap_add_cost(&mut cost);
-        *node_value_hash =
-            combine_hash(&own_value_hash, referenced_value_hash).unwrap_add_cost(&mut cost);
-        Ok(()).wrap_with_cost(cost)
+        let PlannedMoves {
+            mut merk_ops,
+            moved_subtrees,
+            moved_references,
+        } = self;
+        for reference in &moved_references {
+            let Some(referenced_value_hash) = cost_return_on_error!(&mut cost, follow(reference))
+            else {
+                continue;
+            };
+            let Some(Op::PutMoved(value, node_value_hash, ..)) =
+                merk_ops.get_mut(&reference.new_key)
+            else {
+                return Err(Error::CorruptedCodeExecution(
+                    "a moved reference has no moved put at its new key",
+                ))
+                .wrap_with_cost(cost);
+            };
+            let own_value_hash = value_hash(value).unwrap_add_cost(&mut cost);
+            *node_value_hash =
+                combine_hash(&own_value_hash, &referenced_value_hash).unwrap_add_cost(&mut cost);
+        }
+        Ok((merk_ops, moved_subtrees)).wrap_with_cost(cost)
     }
 }
 
@@ -488,15 +568,21 @@ pub(super) fn plan_level_moves<'db, S: StorageContext<'db>>(
             new_key.clone(),
             Op::PutMoved(value, value_hash, key.len() as u32, feature_type),
         );
-        if let Element::Reference(reference_path, max_hop, _)
-        | Element::ReferenceWithSumItem(reference_path, max_hop, ..) = element.underlying()
-        {
-            moved_references.push(MovedReference {
-                new_key: new_key.clone(),
-                path: reference_path.clone(),
-                max_hop: *max_hop,
-            });
-        } else if element.is_any_tree() {
+        let moves_storage = match carried(&element) {
+            Carried::Reference(reference_path, max_hop) => {
+                moved_references.push(MovedReference {
+                    new_key: new_key.clone(),
+                    path: reference_path.clone(),
+                    max_hop,
+                });
+                false
+            }
+            Carried::Tree => true,
+            Carried::Value => false,
+            // `refuse_unmovable` refused it above.
+            Carried::Participant => return Err(participant_refusal()).wrap_with_cost(cost),
+        };
+        if moves_storage {
             moved_subtrees.push(MovedSubtree {
                 from: subtree_path_with_key(&subtree_path, &key),
                 to: subtree_path_with_key(&subtree_path, &new_key),

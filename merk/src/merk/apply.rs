@@ -16,7 +16,7 @@ use crate::{
         kv::{ValueDefinedCostType, KV},
         AuxMerkBatch, OldValueDisposition, Walker,
     },
-    Error, Merk, MerkBatch, MerkOptions, TreeType,
+    Error, Merk, MerkBatch, MerkOptions, Op, TreeType,
 };
 
 const MAX_KEY_LENGTH: usize = u8::MAX as usize;
@@ -419,10 +419,20 @@ where
             ))
             .wrap_with_cost(Default::default());
         }
-        for (key, ..) in batch.iter() {
+        for (key, op) in batch.iter() {
             if key.as_ref().len() > MAX_KEY_LENGTH {
                 return Err(Error::InvalidInputError(
                     "key length must be at most 255 bytes",
+                ))
+                .wrap_with_cost(Default::default());
+            }
+            // A moved node is billed by the length of the key it leaves,
+            // which no stored key exceeds.
+            if let Op::PutMoved(_, _, moved_from_key_len, _) = op
+                && *moved_from_key_len as usize > MAX_KEY_LENGTH
+            {
+                return Err(Error::InvalidInputError(
+                    "a moved node's former key length must be at most 255 bytes",
                 ))
                 .wrap_with_cost(Default::default());
             }

@@ -45,6 +45,7 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
             non_merk_parent_keyed_ops_rejection: 0,
             backward_references_maintenance: 0,
             move_element: 0,
+            reference_through_conditional_insert: 0,
         },
         element: GroveDBElementMethodVersions {
             delete: 0,

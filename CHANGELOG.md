@@ -26,25 +26,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Merk trees, non-Merk trees' data, indexed trees' secondary Merks — is
   copied byte for byte to the storage prefixes of the new path, so nothing
   below the moved key is re-hashed, rebalanced or re-resolved. A moved
-  reference is the exception: it is followed from its new key and commits to
-  what it reaches there after the batch, like a reference the batch writes.
-  Moves can swap or chain keys in one batch; a target occupied before the
-  batch must be moved away by the same batch. The move is billed as storage
-  that stays where it is: replaced bytes, plus the change in key length.
-  Refused for backward-reference participants, references a rename would
-  retarget or that no longer resolve from the new key, moves inside an
-  indexed tree, elements with flags moving to a key of another length,
-  partial batches and cost estimates. Batches accept it from `GROVE_V4`,
+  reference is followed from its new key; when its path reaches something
+  the same batch writes, it commits to what it reaches there after the
+  batch, like a reference the batch writes, and otherwise keeps the hash it
+  was stored with. Moves can swap or chain keys in one batch; a target
+  occupied before the batch must be moved away by the same batch. The move
+  is billed as storage that stays where it is: replaced bytes, plus the
+  change in key length. Refused for backward-reference participants, a
+  moved reference that resolves through its own key (cousin and
+  removed-cousin) or that no longer resolves from the new key (it would
+  reach a key the batch moves, close a cycle, or find no target), a
+  reference directly under a moved element that appends its parent's key,
+  moves inside an indexed tree, elements with flags moving to a key of
+  another length, partial batches and cost estimates. Other references are
+  carried as stored and not followed, so keeping them valid is the
+  caller's job, as for a delete: one that names the old key reaches
+  whatever is there after the batch, which in a swap or chain can be the
+  reference itself or one leading back to it. Reads of such a reference,
+  proofs through it, `verify_grovedb` with `verify_references` and state-sync
+  finalization then fail with `CyclicReference`, as they fail for a
+  dangling reference. Likewise a moved reference whose target lies under a
+  tree the same batch deletes or replaces is not refused: it keeps its
+  stored hash and dangles afterwards. Batches accept moves from `GROVE_V4`,
   through the new `apply_batch.move_element` slot (**BREAKING** for code
   building `GroveDBApplyBatchVersions` by hand, or matching `GroveOp` or
-  merk's `Op` exhaustively: merk gains `Op::PutMoved` and `Op::DeleteMoved`).
+  merk's `Op` exhaustively: merk gains `Op::PutMoved` and `Op::DeleteMoved`;
+  merk's apply refuses a `PutMoved` whose former key length exceeds 255).
   `RawIterator` gains `status()` (default `Ok(())`, overridden by the RocksDB
   iterators), which the move's copy checks so that a read error fails the
   batch instead of committing a partial copy; other scans still stop at a
   read error as at the end of their records.
   `ElementType::supports_backward_references` classifies a serialized
   element as a backward-reference participant; `Element`'s method of the
-  same name now reads it.
+  same name now reads it, so it also looks through wrappers. Decoders and
+  constructors never produce a wrapped participant, but a hand-built
+  wrapper chain around one (`NonCounted(NonCounted(ItemWithBackwardsReferences(..)))`,
+  say) is now refused up front by the insert and batch gates at every
+  version: `NotSupported` / `InvalidBatchOperation` at no cost, where V1..V3
+  returned `InvalidInput` after opening the Merk, or panicked in a batch
+  under a count tree.
 - `ProofLimitMode::UpperBound` and `QueryProofVerify::execute_proof_with_limit_mode`
   verify a proof with `limit` as a ceiling instead of the exact limit the
   prover used. Once the proof has returned a result, the walk stops at the
@@ -115,6 +135,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an absent path. `AxisKeys::empty_for_axis` is new. (#965)
 
 ### Fixed
+- From `GROVE_V4`, a reference a batch resolves through a pending
+  `InsertIfNotExists` reaches the element already stored at that key when
+  there is one. Before, it always reached the op's element, so a reference
+  inserted (or moved) in the same batch as a skip-mode
+  `insert_if_not_exists_or_skip_op` over an existing key committed to an
+  element that is never written, which `verify_grovedb` reports and proofs
+  reject. The existence check is the one the insert's own level makes.
+  V1..V3 keep the old resolution for replay, through the new
+  `apply_batch.reference_through_conditional_insert` slot (**BREAKING** for
+  code building `GroveDBApplyBatchVersions` by hand).
 - A batch whose reference chain reaches another pending reference that
   resolves to an empty path no longer panics. `apply_batch` refused an empty
   path only for the reference op it was processing. Keys in a path run in

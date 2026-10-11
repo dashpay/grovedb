@@ -94,11 +94,14 @@ pub enum Op {
     /// another moved element). In GroveDB this renames a key.
     ///
     /// Fields: `(value, value_hash, moved_from_key_len, feature_type)`. The
-    /// node keeps the value hash it had at its old key — nothing it commits
-    /// to depends on its key — and no flags callback runs, since the bytes
-    /// are the bytes they were. Its key and value are billed as replaced at
-    /// the size they had under the old key (`moved_from_key_len` bytes
-    /// long); a longer key adds bytes, a shorter one removes them.
+    /// node commits to `value_hash` as given; `value` is not re-hashed.
+    /// GroveDB passes the value hash the node had at its old key (nothing an
+    /// item or a tree commits to depends on its key), recommitted for a
+    /// moved reference whose path reaches something the batch writes. No
+    /// flags callback runs, since the bytes are the bytes they were. Its key
+    /// and value are billed as replaced at the size they had under the old
+    /// key (`moved_from_key_len` bytes long, at most 255); a longer key adds
+    /// bytes, a shorter one removes them.
     PutMoved(Vec<u8>, CryptoHash, u32, TreeFeatureType),
     /// Delete a node whose element a [`Op::PutMoved`] writes at another key
     /// of the same batch. The bytes are billed where they land, so the

@@ -349,7 +349,7 @@ impl TreeNode {
 
     /// Creates the node of an element moved to `key` from another key of the
     /// same Merk (see [`Op::PutMoved`](crate::tree::Op::PutMoved)). The node
-    /// keeps the value hash it had at its old key and is billed by
+    /// commits to the value hash it is given and is billed by
     /// [`Self::moved_storage_cost`].
     pub(crate) fn new_moved(
         key: Vec<u8>,

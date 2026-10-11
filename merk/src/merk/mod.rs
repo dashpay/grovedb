@@ -1193,6 +1193,33 @@ mod test {
     }
 
     #[test]
+    fn a_moved_node_cannot_claim_a_former_key_longer_than_any_key() {
+        let grove_version = GroveVersion::latest();
+        let mut merk = three_key_merk(grove_version);
+        let value_hash = stored_value_hash(&merk, b"zzz", grove_version);
+        let root_hash = merk.root_hash().unwrap();
+        let result = merk
+            .apply::<_, Vec<_>>(
+                &[
+                    (
+                        b"bbb".to_vec(),
+                        Op::PutMoved(vec![b'z'; 40], value_hash, 256, BasicMerkNode),
+                    ),
+                    (b"zzz".to_vec(), Op::DeleteMoved),
+                ],
+                &[],
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            matches!(result, Err(Error::InvalidInputError(_))),
+            "{result:?}"
+        );
+        assert_eq!(merk.root_hash().unwrap(), root_hash);
+    }
+
+    #[test]
     fn a_moved_node_updates_alike_whether_or_not_the_merk_is_reopened() {
         let grove_version = GroveVersion::latest();
         // How many times the flags callback sees a replaced value when `bbb`,

@@ -256,6 +256,18 @@ pub struct GroveDBApplyBatchVersions {
     ///   read.
     /// - `1` (V4+): moves are applied. No other operation changes.
     pub move_element: FeatureVersion,
+    /// What a reference the batch resolves through a pending
+    /// `InsertIfNotExists` reaches.
+    ///
+    /// - `0` (V1..V3): the op's element, whether or not the insert lands. A
+    ///   skip-mode insert over a key that already holds an element writes
+    ///   nothing, so the reference commits to an element that is never
+    ///   stored and `verify_grovedb` reports it. Preserved for replay.
+    /// - `1` (V4+): the element already stored at the key when there is
+    ///   one (the insert is skipped, or the batch fails on it), found by
+    ///   the same existence read the insert's own level makes; the op's
+    ///   element otherwise.
+    pub reference_through_conditional_insert: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

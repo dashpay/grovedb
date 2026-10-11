@@ -2232,9 +2232,11 @@ impl Element {
     /// (i.e. carries a backward-references list).
     ///
     /// Defined by its type
-    /// ([`crate::ElementType::supports_backward_references`]).
-    /// Participants are never wrapped (construction, serialization and
-    /// decoding refuse it), so a wrapper's type answers as its own.
+    /// ([`crate::ElementType::supports_backward_references`]), which looks
+    /// through wrappers: constructors, serialization and decoding never
+    /// produce a wrapped participant, but a hand-built wrapper chain around
+    /// one answers `true`, so the insert and batch gates that check
+    /// `.underlying()` refuse it up front on every version.
     pub fn supports_backward_references(&self) -> bool {
         self.element_type().supports_backward_references()
     }

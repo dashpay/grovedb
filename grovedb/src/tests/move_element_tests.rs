@@ -120,10 +120,6 @@ mod tests {
         RocksDbStorage::build_prefix(subtree.into()).unwrap()
     }
 
-    fn secondary_prefix_of(subtree: &[&[u8]]) -> [u8; 32] {
-        axis_prefix_of(subtree, IndexAxis::Count)
-    }
-
     /// The secondary namespace of an indexed tree at `subtree` for `axis`.
     fn axis_prefix_of(subtree: &[&[u8]], axis: IndexAxis) -> [u8; 32] {
         RocksDbStorage::secondary_prefix_for(&prefix_of(subtree), axis.tag()).unwrap()
@@ -333,7 +329,10 @@ mod tests {
             assert_eq!(records_in(&db, prefix_of(&subtree)), 0, "{subtree:?}");
         }
         assert_eq!(
-            records_in(&db, secondary_prefix_of(&[TEST_LEAF, b"old_key", b"cidx"])),
+            records_in(
+                &db,
+                axis_prefix_of(&[TEST_LEAF, b"old_key", b"cidx"], IndexAxis::Count)
+            ),
             0
         );
         // And under the new key every namespace holds what a grove built
@@ -345,7 +344,7 @@ mod tests {
                 "{subtree:?}"
             );
         }
-        let new_secondary = secondary_prefix_of(&[TEST_LEAF, b"new_key", b"cidx"]);
+        let new_secondary = axis_prefix_of(&[TEST_LEAF, b"new_key", b"cidx"], IndexAxis::Count);
         assert!(records_in(&db, new_secondary) > 0);
         assert_eq!(
             records_in(&db, new_secondary),
@@ -937,9 +936,14 @@ mod tests {
         let db = make_test_grovedb(grove_version);
         populate(&db, &[TEST_LEAF], b"old_key", grove_version);
 
+        // A pause height means nothing to a batch of one; the other ops'
+        // converted options drop it too.
         db.apply_operations_without_batching(
             vec![move_op(&[TEST_LEAF], b"old_key", b"new_key")],
-            None,
+            Some(crate::batch::BatchApplyOptions {
+                batch_pause_height: Some(1),
+                ..Default::default()
+            }),
             None,
             grove_version,
         )
@@ -1183,7 +1187,10 @@ mod tests {
             );
         }
         assert_eq!(
-            records_in(&db, secondary_prefix_of(&[TEST_LEAF, b"cidx_old"])),
+            records_in(
+                &db,
+                axis_prefix_of(&[TEST_LEAF, b"cidx_old"], IndexAxis::Count)
+            ),
             0
         );
         assert_eq!(
@@ -1257,11 +1264,29 @@ mod tests {
                 vec![TEST_LEAF, b"holder_new", b"idx"],
             ),
         ];
+        // An axis read's entries, proved and verified against the grove's
+        // root hash.
+        let proved_entries = |db: &TempGroveDb, query: &PathQuery| {
+            let proof = db
+                .prove_query(query, None, grove_version)
+                .unwrap()
+                .expect("prove");
+            let VerifiedPathQuery::AxisEntries {
+                root_hash: proved_root,
+                entries,
+                ..
+            } = GroveDb::verify_path_query(&proof, query, grove_version).expect("verify")
+            else {
+                panic!("expected axis entries");
+            };
+            assert_eq!(proved_root, root_hash(db, grove_version));
+            entries
+        };
         for (old, new) in &moved {
-            let (parent, key) = new.split_at(new.len() - 1);
+            let (key, parent) = new.split_last().expect("a path");
             assert_eq!(
-                value_hash_at(&db, parent, key[0], grove_version),
-                value_hash_at(&expected, parent, key[0], grove_version),
+                value_hash_at(&db, parent, key, grove_version),
+                value_hash_at(&expected, parent, key, grove_version),
                 "{new:?}"
             );
             assert_eq!(records_in(&db, prefix_of(old)), 0);
@@ -1286,25 +1311,11 @@ mod tests {
             // of a tree built there.
             for axis in [IndexAxis::Sum, IndexAxis::Avg] {
                 let query = PathQuery::new_axis_top_k(path(new), axis, 3, 0, true);
-                let verified = |db: &TempGroveDb| {
-                    let proof = db
-                        .prove_query(&query, None, grove_version)
-                        .unwrap()
-                        .expect("prove");
-                    let verified =
-                        GroveDb::verify_path_query(&proof, &query, grove_version).expect("verify");
-                    let VerifiedPathQuery::AxisEntries {
-                        root_hash: proved_root,
-                        entries,
-                        ..
-                    } = verified
-                    else {
-                        panic!("expected axis entries");
-                    };
-                    assert_eq!(proved_root, root_hash(db, grove_version));
-                    format!("{entries:?}")
-                };
-                assert_eq!(verified(&db), verified(&expected), "{new:?} {axis:?}");
+                assert_eq!(
+                    proved_entries(&db, &query),
+                    proved_entries(&expected, &query),
+                    "{new:?} {axis:?}"
+                );
             }
         }
     }
@@ -1867,7 +1878,8 @@ mod tests {
             grove_version,
             "CyclicReference",
         );
-        // A moved reference whose target moves too would be left stale.
+        // A moved reference whose target moves too no longer resolves from
+        // its new key: its path reaches a key the batch moves.
         assert_refused(
             &db,
             vec![
@@ -1953,6 +1965,168 @@ mod tests {
         assert_eq!(
             value_hash_at(&db, &[TEST_LEAF], b"t", grove_version),
             committed
+        );
+        assert_grove_verifies(&db, grove_version);
+    }
+
+    /// The node value hash a reference to an element with `target` bytes
+    /// commits to.
+    fn reference_hash(
+        reference: &Element,
+        target: &Element,
+        grove_version: &GroveVersion,
+    ) -> [u8; 32] {
+        combine_hash(
+            &value_hash(&reference.serialize(grove_version).unwrap()).unwrap(),
+            &value_hash(&target.serialize(grove_version).unwrap()).unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_reference_through_a_skipped_conditional_insert_reaches_what_stays() {
+        let kept = Element::new_item(v(b"1"));
+        let skipped = Element::new_item(v(b"2"));
+        let to_x = Element::new_reference(ReferencePathType::SiblingReference(v(b"x")));
+        let seeded = |grove_version: &GroveVersion| {
+            let db = make_test_grovedb(grove_version);
+            insert(&db, &[TEST_LEAF], b"x", kept.clone(), grove_version);
+            insert(&db, &[TEST_LEAF], b"r", to_x.clone(), grove_version);
+            db
+        };
+        let skip_insert = || {
+            QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+                path(&[TEST_LEAF]),
+                v(b"x"),
+                skipped.clone(),
+            )
+        };
+        let grove_version = GroveVersion::latest();
+
+        // A moved reference whose target the batch skip-inserts over.
+        let db = seeded(grove_version);
+        apply(
+            &db,
+            vec![skip_insert(), move_op(&[TEST_LEAF], b"r", b"s")],
+            grove_version,
+        )
+        .expect("skip the insert and move the reference");
+        assert_eq!(
+            db.get([TEST_LEAF].as_ref(), b"s", None, grove_version)
+                .unwrap()
+                .expect("resolves"),
+            kept
+        );
+        assert_eq!(
+            value_hash_at(&db, &[TEST_LEAF], b"s", grove_version),
+            reference_hash(&to_x, &kept, grove_version)
+        );
+        assert_grove_verifies(&db, grove_version);
+
+        // A reference the batch inserts through the same skipped insert.
+        let db = seeded(grove_version);
+        apply(
+            &db,
+            vec![
+                skip_insert(),
+                QualifiedGroveDbOp::insert_or_replace_op(path(&[TEST_LEAF]), v(b"y"), to_x.clone()),
+            ],
+            grove_version,
+        )
+        .expect("skip the insert and insert a reference through it");
+        assert_eq!(
+            value_hash_at(&db, &[TEST_LEAF], b"y", grove_version),
+            reference_hash(&to_x, &kept, grove_version)
+        );
+        assert_grove_verifies(&db, grove_version);
+
+        // A target one level down, which applies before the reference's
+        // level, reached by a moved reference.
+        let db = make_test_grovedb(grove_version);
+        insert(
+            &db,
+            &[TEST_LEAF],
+            b"sub",
+            Element::empty_tree(),
+            grove_version,
+        );
+        insert(&db, &[TEST_LEAF, b"sub"], b"x", kept.clone(), grove_version);
+        let to_sub_x = Element::new_reference(ReferencePathType::AbsolutePathReference(path(&[
+            TEST_LEAF, b"sub", b"x",
+        ])));
+        insert(&db, &[TEST_LEAF], b"r", to_sub_x.clone(), grove_version);
+        apply(
+            &db,
+            vec![
+                QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+                    path(&[TEST_LEAF, b"sub"]),
+                    v(b"x"),
+                    skipped.clone(),
+                ),
+                move_op(&[TEST_LEAF], b"r", b"s"),
+            ],
+            grove_version,
+        )
+        .expect("skip the deeper insert and move the reference");
+        assert_eq!(
+            value_hash_at(&db, &[TEST_LEAF], b"s", grove_version),
+            reference_hash(&to_sub_x, &kept, grove_version)
+        );
+        assert_grove_verifies(&db, grove_version);
+
+        // GROVE_V3 keeps resolving through the op's element, for replay.
+        let db = seeded(&GROVE_V3);
+        apply(
+            &db,
+            vec![
+                skip_insert(),
+                QualifiedGroveDbOp::insert_or_replace_op(path(&[TEST_LEAF]), v(b"y"), to_x.clone()),
+            ],
+            &GROVE_V3,
+        )
+        .expect("V3 batch");
+        assert_eq!(
+            value_hash_at(&db, &[TEST_LEAF], b"y", &GROVE_V3),
+            reference_hash(&to_x, &skipped, &GROVE_V3)
+        );
+    }
+
+    #[test]
+    fn a_hop_limited_moved_reference_keeps_the_hash_its_write_committed() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert(
+            &db,
+            &[TEST_LEAF],
+            b"x",
+            Element::new_item(v(b"1")),
+            grove_version,
+        );
+        insert(
+            &db,
+            &[TEST_LEAF],
+            b"q",
+            Element::new_reference(ReferencePathType::SiblingReference(v(b"x"))),
+            grove_version,
+        );
+        // A direct insert resolves a plain reference to its terminal
+        // whatever hop limit it declares; a batch would stop at `q`.
+        insert(
+            &db,
+            &[TEST_LEAF],
+            b"r",
+            Element::new_reference_with_hops(ReferencePathType::SiblingReference(v(b"q")), Some(1)),
+            grove_version,
+        );
+        let stored = value_hash_at(&db, &[TEST_LEAF], b"r", grove_version);
+        assert_grove_verifies(&db, grove_version);
+
+        // Nothing on its chain changes, so the move keeps that hash.
+        apply(&db, vec![move_op(&[TEST_LEAF], b"r", b"s")], grove_version)
+            .expect("move the reference");
+        assert_eq!(
+            value_hash_at(&db, &[TEST_LEAF], b"s", grove_version),
+            stored
         );
         assert_grove_verifies(&db, grove_version);
     }
