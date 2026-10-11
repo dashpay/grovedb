@@ -15,10 +15,13 @@
 mod tests {
     use std::cell::Cell;
 
+    use std::collections::BTreeMap;
+
     use grovedb_costs::storage_cost::removal::StorageRemovedBytes::{
         BasicStorageRemoval, NoStorageRemoval,
     };
     use grovedb_costs::OperationCost;
+    use grovedb_epoch_based_storage_flags::StorageFlags;
     use grovedb_merk::{element::costs::ElementCostExtensions, proofs::Query};
     use grovedb_path::SubtreePath;
     use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageContext};
@@ -769,7 +772,7 @@ mod tests {
         apply(
             &db,
             vec![
-                move_op(&[TEST_LEAF], b"item", b"item2"),
+                move_op(&[TEST_LEAF], b"item", b"itex"),
                 move_op(&[TEST_LEAF], b"ref", b"ref2"),
             ],
             grove_version,
@@ -777,7 +780,7 @@ mod tests {
         .expect("move non-tree elements");
 
         assert_eq!(
-            db.get_raw([TEST_LEAF].as_ref().into(), b"item2", None, grove_version)
+            db.get_raw([TEST_LEAF].as_ref().into(), b"itex", None, grove_version)
                 .unwrap()
                 .unwrap(),
             Element::new_item_with_flags(v(b"v"), Some(vec![1, 2]))
@@ -1816,12 +1819,18 @@ mod tests {
         (cost, removals.into_inner())
     }
 
-    fn flagged_tree_with_contents(db: &TempGroveDb, key: &[u8], grove_version: &GroveVersion) {
+    /// A tree of flagged items at `[TEST_LEAF]/key`, itself flagged or not.
+    fn tree_with_contents(
+        db: &TempGroveDb,
+        key: &[u8],
+        tree_flags: Option<Vec<u8>>,
+        grove_version: &GroveVersion,
+    ) {
         insert(
             db,
             &[TEST_LEAF],
             key,
-            Element::empty_tree_with_flags(Some(vec![9, 9, 9])),
+            Element::empty_tree_with_flags(tree_flags),
             grove_version,
         );
         for i in 0..8u8 {
@@ -1839,7 +1848,7 @@ mod tests {
     fn a_same_length_move_adds_and_removes_nothing() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
-        flagged_tree_with_contents(&db, b"aaa", grove_version);
+        tree_with_contents(&db, b"aaa", Some(vec![9, 9, 9]), grove_version);
 
         let (cost, removals) = apply_counting_callbacks(
             &db,
@@ -1862,7 +1871,8 @@ mod tests {
     fn a_longer_key_adds_and_a_shorter_one_removes_its_difference() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
-        flagged_tree_with_contents(&db, b"aaa", grove_version);
+        // Only an element without flags may change key length.
+        tree_with_contents(&db, b"aaa", None, grove_version);
 
         let (same, _) = apply_counting_callbacks(
             &db,
@@ -1886,17 +1896,131 @@ mod tests {
             grove_version,
         );
         assert_eq!(shorter.storage_cost.added_bytes, 0, "{shorter:?}");
-        assert_eq!(shorter.storage_cost.removed_bytes.total_removed_bytes(), 4);
-        assert_eq!(
-            removals,
-            vec![(2, 2)],
-            "the freed bytes are sectioned through the callback"
-        );
+        assert_eq!(shorter.storage_cost.removed_bytes, BasicStorageRemoval(4));
+        assert!(removals.is_empty(), "no flags to section by: {removals:?}");
         // What is kept is billed the same whichever way the key changes.
         assert_eq!(
             same.storage_cost.replaced_bytes,
             shorter.storage_cost.replaced_bytes
         );
         assert_grove_verifies(&db, grove_version);
+    }
+
+    /// Apply `ops` with Drive's epoch-based storage flag callbacks.
+    fn apply_with_epoch_flags(
+        db: &TempGroveDb,
+        ops: Vec<QualifiedGroveDbOp>,
+        grove_version: &GroveVersion,
+    ) -> grovedb_costs::CostResult<(), Error> {
+        db.apply_batch_with_element_flags_update(
+            ops,
+            None,
+            |cost, old_flags, new_flags| {
+                StorageFlags::update_element_flags(cost, old_flags, new_flags)
+                    .map_err(|e| Error::JustInTimeElementFlagsClientError(e.to_string()))
+            },
+            |flags, removed_key_bytes, removed_value_bytes| {
+                StorageFlags::split_removal_bytes(flags, removed_key_bytes, removed_value_bytes)
+                    .map_err(|e| Error::SplitRemovalBytesClientError(e.to_string()))
+            },
+            None,
+            grove_version,
+        )
+    }
+
+    #[test]
+    fn a_flagged_element_moves_only_between_keys_of_one_length() {
+        let grove_version = GroveVersion::latest();
+        let flags = StorageFlags::MultiEpoch(1, BTreeMap::from([(2, 100)]));
+        let db = make_test_grovedb(grove_version);
+        for key in [b"aaaaa".as_slice(), b"bbbbb"] {
+            insert(
+                &db,
+                &[TEST_LEAF],
+                key,
+                Element::new_item_with_flags(vec![7; 300], Some(flags.to_element_flags())),
+                grove_version,
+            );
+        }
+
+        // Its flags count its bytes per epoch, which a move does not rewrite.
+        for new_key in [b"aaa".as_slice(), b"aaaaaaa"] {
+            assert_refused(
+                &db,
+                vec![move_op(&[TEST_LEAF], b"aaaaa", new_key)],
+                grove_version,
+                "can only move to a key of the same length",
+            );
+        }
+
+        // A same-width rename keeps the flags as stored, and removing the
+        // moved element refunds exactly what removing its unmoved twin does.
+        apply_with_epoch_flags(
+            &db,
+            vec![move_op(&[TEST_LEAF], b"aaaaa", b"ccccc")],
+            grove_version,
+        )
+        .unwrap()
+        .expect("same-width move");
+        let stored = db
+            .get_raw([TEST_LEAF].as_ref().into(), b"ccccc", None, grove_version)
+            .unwrap()
+            .expect("moved element");
+        assert_eq!(stored.get_flags(), &Some(flags.to_element_flags()));
+        let delete = |key: &[u8]| {
+            let cost = apply_with_epoch_flags(
+                &db,
+                vec![QualifiedGroveDbOp::delete_op(path(&[TEST_LEAF]), v(key))],
+                grove_version,
+            );
+            cost.value.expect("delete");
+            cost.cost.storage_cost.removed_bytes
+        };
+        assert_eq!(delete(b"ccccc"), delete(b"bbbbb"));
+        assert_grove_verifies(&db, grove_version);
+    }
+
+    #[test]
+    fn a_refusal_after_records_were_staged_commits_nothing() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert(
+            &db,
+            &[TEST_LEAF],
+            b"src",
+            Element::empty_tree(),
+            grove_version,
+        );
+        for key in [b"a".as_slice(), b"b"] {
+            insert(
+                &db,
+                &[TEST_LEAF, b"src"],
+                key,
+                Element::new_item(v(b"v")),
+                grove_version,
+            );
+        }
+        // Sorted after the two items, so the copy stages both of them before
+        // it reaches this participant and refuses the move.
+        insert(
+            &db,
+            &[TEST_LEAF, b"src"],
+            b"z",
+            Element::new_item_allowing_bidirectional_references(v(b"x")),
+            grove_version,
+        );
+        let source_records = records_in(&db, prefix_of(&[TEST_LEAF, b"src"]));
+
+        assert_refused(
+            &db,
+            vec![move_op(&[TEST_LEAF], b"src", b"dst")],
+            grove_version,
+            "takes part in backward references",
+        );
+        assert_eq!(records_in(&db, prefix_of(&[TEST_LEAF, b"dst"])), 0);
+        assert_eq!(
+            records_in(&db, prefix_of(&[TEST_LEAF, b"src"])),
+            source_records
+        );
     }
 }

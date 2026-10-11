@@ -69,6 +69,50 @@ where
         })
     }
 
+    /// The value at `key` and its node value hash, read like
+    /// [`Self::observe_old_value`]: the traversal retains every node it
+    /// fetches, so a mutation applied on the same instance reuses those
+    /// reads. `None` for an absent key.
+    pub fn observe_value_and_value_hash<V>(
+        &self,
+        key: &[u8],
+        value_defined_cost_fn: Option<&V>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Option<(Vec<u8>, CryptoHash)>, Error>
+    where
+        V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+    {
+        self.walk(|walker| {
+            fn find<F, V>(
+                mut walker: crate::tree::RefWalker<'_, F>,
+                key: &[u8],
+                value_defined_cost_fn: Option<&V>,
+                grove_version: &GroveVersion,
+            ) -> CostResult<Option<(Vec<u8>, CryptoHash)>, Error>
+            where
+                F: crate::tree::Fetch + Clone,
+                V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+            {
+                if walker.tree().key() == key {
+                    let tree = walker.tree();
+                    return Ok(Some((tree.value_as_slice().to_vec(), *tree.value_hash())))
+                        .wrap_with_cost(OperationCost::default());
+                }
+                let left = key < walker.tree().key();
+                walker
+                    .walk(left, value_defined_cost_fn, grove_version)
+                    .flat_map_ok(|child| match child {
+                        Some(child) => find(child, key, value_defined_cost_fn, grove_version),
+                        None => Ok(None).wrap_with_cost(OperationCost::default()),
+                    })
+            }
+            match walker {
+                Some(walker) => find(walker, key, value_defined_cost_fn, grove_version),
+                None => Ok(None).wrap_with_cost(OperationCost::default()),
+            }
+        })
+    }
+
     /// Gets an auxiliary value.
     pub fn get_aux(&self, key: &[u8]) -> CostResult<Option<Vec<u8>>, Error> {
         self.storage.get_aux(key).map_err(StorageError)

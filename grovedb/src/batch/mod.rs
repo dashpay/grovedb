@@ -1633,7 +1633,9 @@ impl QualifiedGroveDbOp {
     ///   directly under the moved element whose path ends with its parent's
     ///   key (`UpstreamRootHeightWithParentPathAdditionReference`), which the
     ///   move would retarget; a move inside an indexed tree, whose secondary
-    ///   rows are keyed by the primary key.
+    ///   rows are keyed by the primary key; a move of an element with flags
+    ///   to a key of another length, since its flags may count its stored
+    ///   bytes and a move does not rewrite them.
     /// - **In a batch**: a target occupied before the batch is accepted only
     ///   when the same batch moves its element away, so a swap (A to B and B
     ///   to A) or a chain works in one batch. No other op may touch the
@@ -1643,8 +1645,8 @@ impl QualifiedGroveDbOp {
     ///   batches and estimated costs refuse moves.
     /// - **Costs**: a move is billed as storage that stays where it is. The
     ///   element's node counts as replaced at the size it had under `key`,
-    ///   plus added bytes when `new_key` is longer, or removed bytes
-    ///   (sectioned through the removal callback) when it is shorter. Each
+    ///   plus added bytes when `new_key` is longer, or removed bytes when it
+    ///   is shorter (only an element without flags changes key length). Each
     ///   record copied below it counts as replaced at its stored size, and
     ///   clearing the old prefixes bills nothing. The flags-update callback
     ///   is not called for anything the move carries (ancestors updated by

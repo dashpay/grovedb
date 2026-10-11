@@ -288,6 +288,15 @@ fn refuse_parent_key_reference(element: &Element) -> Result<(), Error> {
     Ok(())
 }
 
+/// A Merk read failure while planning a move: a failed storage read keeps
+/// its type, anything else is reported as corrupted data with `context`.
+fn merk_read_error(error: grovedb_merk::Error, context: String) -> Error {
+    match error {
+        grovedb_merk::Error::StorageError(_) => Error::from(error),
+        error => Error::CorruptedData(format!("{context}: {error}")),
+    }
+}
+
 /// What [`plan_level_moves`] derives from one level's moves.
 pub(super) struct PlannedMoves {
     /// The Merk ops on the parent Merk, sorted with one per key.
@@ -320,18 +329,21 @@ pub(super) fn plan_level_moves<'db, S: StorageContext<'db>>(
     let mut moved_references = Vec::new();
 
     for (key, new_key) in moves {
+        // Retains the nodes it reads: applying the move walks the same path.
         let stored = cost_return_on_error!(
             &mut cost,
-            merk.get_value_and_value_hash(
+            merk.observe_value_and_value_hash(
                 &key,
-                true,
                 Some(&Element::value_defined_cost_for_serialized_value),
                 grove_version,
             )
-            .map_err(|e| Error::CorruptedData(format!(
-                "unable to read the element to move at key {}: {e}",
-                hex::encode(&key)
-            )))
+            .map_err(|e| merk_read_error(
+                e,
+                format!(
+                    "unable to read the element to move at key {}",
+                    hex::encode(&key)
+                )
+            ))
         );
         let Some((value, value_hash)) = stored else {
             return Err(Error::PathKeyNotFound(format!(
@@ -344,6 +356,18 @@ pub(super) fn plan_level_moves<'db, S: StorageContext<'db>>(
         let element =
             cost_return_on_error_into_no_add!(cost, Element::deserialize(&value, grove_version));
         cost_return_on_error_no_add!(cost, refuse_unmovable(&element));
+        // Flags may count an element's stored bytes per epoch, and a move
+        // keeps the element's bytes, its flags with them, as they are; under a
+        // key of another length the bytes it is billed for would no longer
+        // match what its flags count.
+        if new_key.len() != key.len() && element.get_flags().is_some() {
+            return Err(Error::NotSupported(
+                "an element with flags can only move to a key of the same length: its flags \
+                 may count its stored bytes, which a move does not rewrite"
+                    .to_owned(),
+            ))
+            .wrap_with_cost(cost);
+        }
 
         if !freed.contains(&new_key) {
             let occupied = cost_return_on_error!(
@@ -353,10 +377,13 @@ pub(super) fn plan_level_moves<'db, S: StorageContext<'db>>(
                     Some(&Element::value_defined_cost_for_serialized_value),
                     grove_version,
                 )
-                .map_err(|e| Error::CorruptedData(format!(
-                    "unable to check whether the move target {} exists: {e}",
-                    hex::encode(&new_key)
-                )))
+                .map_err(|e| merk_read_error(
+                    e,
+                    format!(
+                        "unable to check whether the move target {} exists",
+                        hex::encode(&new_key)
+                    )
+                ))
             );
             if occupied {
                 return Err(Error::InvalidBatchOperation(

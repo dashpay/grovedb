@@ -334,6 +334,7 @@ a put wins over a delete of the same key, so moves can trade places:
 | The moved element is a reference that no longer resolves from the new key (it would reach a moved key, or close a cycle) | Refused |
 | A reference directly under the moved element whose path ends with its parent's key (`UpstreamRootHeightWithParentPathAdditionReference`) | Refused: it resolves through the moved key |
 | A move inside an indexed tree | Refused: secondary rows are keyed by the primary key |
+| An element with flags moving to a key of another length | Refused: its flags may count its stored bytes, which the move does not rewrite |
 | A partial batch, or a cost estimate | Refused |
 
 References are copied as stored and resolve from where they now are. One
@@ -348,8 +349,8 @@ job.
 
 A move is billed as storage that stays where it is. The moved element's node
 counts as replaced at the size it had under the old key, plus added bytes if
-the new key is longer, or removed bytes (sectioned through the removal
-callback) if it is shorter. Every record copied below it counts as replaced
+the new key is longer, or removed bytes if it is shorter; only an element
+without flags may change key length. Every record copied below it counts as replaced
 at its stored size, and clearing the old prefixes bills nothing. The
 flags-update callback is not called for anything the move carries, so no
 storage is charged or refunded beyond the change in key length; ancestors
