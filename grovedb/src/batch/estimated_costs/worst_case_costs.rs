@@ -154,6 +154,9 @@ impl GroveOp {
             probe
         };
         match self {
+            // `estimated_case_operations_for_batch` refuses moves first.
+            GroveOp::Move { .. } => Err(crate::batch::move_element::unrefused_move_error())
+                .wrap_with_cost(OperationCost::default()),
             // The internal derived rewrite: a same-size element replace
             // whose node hash is provided precombined — the standard
             // replace model plus the two combine calls.

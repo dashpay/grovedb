@@ -92,10 +92,7 @@ use grovedb_storage::{
     },
     Storage, StorageBatch, StorageContext,
 };
-use grovedb_version::{
-    error::GroveVersionError,
-    version::{FeatureVersion, GroveVersion},
-};
+use grovedb_version::version::{FeatureVersion, GroveVersion};
 
 use crate::{util::TxRef, Element, Error, GroveDb, TransactionArg};
 
@@ -106,15 +103,7 @@ use crate::{util::TxRef, Element, Error, GroveDb, TransactionArg};
 /// an EXACT match — accepting `slot > 1` would silently run v1 code under a
 /// future protocol version that assigned the slot new semantics.
 pub(crate) fn check_flat_drop_enabled(method: &str, slot: FeatureVersion) -> Result<(), Error> {
-    if slot != 1 {
-        return Err(GroveVersionError::UnknownVersionMismatch {
-            method: method.to_string(),
-            known_versions: vec![1],
-            received: slot,
-        }
-        .into());
-    }
-    Ok(())
+    crate::util::check_v1_slot_enabled(method, slot)
 }
 
 /// Compute every storage prefix a dropped subtree owns: its path-derived

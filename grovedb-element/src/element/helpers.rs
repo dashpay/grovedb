@@ -2230,14 +2230,15 @@ impl Element {
 
     /// Whether this element can be targeted by bidirectional references
     /// (i.e. carries a backward-references list).
+    ///
+    /// Defined by its type
+    /// ([`crate::ElementType::supports_backward_references`]), which looks
+    /// through wrappers: constructors, serialization and decoding never
+    /// produce a wrapped participant, but a hand-built wrapper chain around
+    /// one answers `true`, so the insert and batch gates that check
+    /// `.underlying()` refuse it up front on every version.
     pub fn supports_backward_references(&self) -> bool {
-        matches!(
-            self,
-            Element::ItemWithBackwardsReferences(..)
-                | Element::SumItemWithBackwardsReferences(..)
-                | Element::ItemWithSumItemWithBackwardsReferences(..)
-                | Element::BidirectionalReference(..)
-        )
+        self.element_type().supports_backward_references()
     }
 
     /// This element with its backward-references list emptied — the

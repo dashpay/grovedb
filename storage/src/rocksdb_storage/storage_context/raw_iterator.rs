@@ -34,7 +34,7 @@ use rocksdb::DBRawIteratorWithThreadMode;
 use super::make_prefixed_key;
 use crate::{
     rocksdb_storage::storage::{Db, RawTx, SubtreePrefix},
-    RawIterator,
+    Error, RawIterator,
 };
 
 /// 256 bytes for the key and 32 bytes for the prefix
@@ -185,6 +185,10 @@ impl RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'_, 
             })
             .wrap_with_cost(cost)
     }
+
+    fn status(&self) -> Result<(), Error> {
+        self.raw_iterator.status().map_err(Error::RocksDBError)
+    }
 }
 
 impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'a, RawTx<'a>>> {
@@ -306,5 +310,9 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
                 false
             })
             .wrap_with_cost(cost)
+    }
+
+    fn status(&self) -> Result<(), Error> {
+        self.raw_iterator.status().map_err(Error::RocksDBError)
     }
 }

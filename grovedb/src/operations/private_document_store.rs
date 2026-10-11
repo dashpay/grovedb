@@ -21,7 +21,7 @@ use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
 use grovedb_path::SubtreePath;
 use grovedb_private_document_store::PrivateDocumentStore;
 use grovedb_storage::{Storage, StorageBatch};
-use grovedb_version::{error::GroveVersionError, version::GroveVersion};
+use grovedb_version::version::GroveVersion;
 
 use crate::{
     batch::{GroveOp, QualifiedGroveDbOp},
@@ -51,15 +51,7 @@ pub(crate) fn check_pds_enabled(
     method: &str,
     slot: grovedb_version::version::FeatureVersion,
 ) -> Result<(), Error> {
-    if slot != 1 {
-        return Err(GroveVersionError::UnknownVersionMismatch {
-            method: method.to_string(),
-            known_versions: vec![1],
-            received: slot,
-        }
-        .into());
-    }
-    Ok(())
+    crate::util::check_v1_slot_enabled(method, slot)
 }
 
 /// The rules a `PrivateDocumentStore` element must satisfy to be created,

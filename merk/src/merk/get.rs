@@ -33,38 +33,75 @@ where
         V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
         O: FnMut(&[u8], &[u8]),
     {
+        self.observe_node(
+            key,
+            value_defined_cost_fn,
+            |tree| observer(key, tree.value_as_slice()),
+            grove_version,
+        )
+        .map_ok(|observed| observed.is_some())
+    }
+
+    /// The value at `key` and its node value hash, read like
+    /// [`Self::observe_old_value`]: the traversal retains every node it
+    /// fetches, so a mutation applied on the same instance reuses those
+    /// reads. `None` for an absent key.
+    pub fn observe_value_and_value_hash<V>(
+        &self,
+        key: &[u8],
+        value_defined_cost_fn: Option<&V>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Option<(Vec<u8>, CryptoHash)>, Error>
+    where
+        V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+    {
+        self.observe_node(
+            key,
+            value_defined_cost_fn,
+            |tree| (tree.value_as_slice().to_vec(), *tree.value_hash()),
+            grove_version,
+        )
+    }
+
+    /// The walk behind the observing reads: find the node at `key`, keeping
+    /// every node fetched on the way in this Merk, and `read` it. `None` for
+    /// an absent key, without calling `read`.
+    fn observe_node<V, T>(
+        &self,
+        key: &[u8],
+        value_defined_cost_fn: Option<&V>,
+        read: impl FnOnce(&TreeNode) -> T,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Option<T>, Error>
+    where
+        V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+    {
         self.walk(|walker| {
-            fn observe<F, V, O>(
-                mut walker: crate::tree::RefWalker<'_, F>,
+            fn find<F, V, T>(
+                mut walker: RefWalker<'_, F>,
                 key: &[u8],
                 value_defined_cost_fn: Option<&V>,
-                observer: &mut O,
+                read: impl FnOnce(&TreeNode) -> T,
                 grove_version: &GroveVersion,
-            ) -> CostResult<bool, Error>
+            ) -> CostResult<Option<T>, Error>
             where
                 F: crate::tree::Fetch + Clone,
                 V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
-                O: FnMut(&[u8], &[u8]),
             {
                 if walker.tree().key() == key {
-                    observer(key, walker.tree().value_as_slice());
-                    return Ok(true).wrap_with_cost(OperationCost::default());
+                    return Ok(Some(read(walker.tree()))).wrap_with_cost(OperationCost::default());
                 }
                 let left = key < walker.tree().key();
                 walker
                     .walk(left, value_defined_cost_fn, grove_version)
                     .flat_map_ok(|child| match child {
-                        Some(child) => {
-                            observe(child, key, value_defined_cost_fn, observer, grove_version)
-                        }
-                        None => Ok(false).wrap_with_cost(OperationCost::default()),
+                        Some(child) => find(child, key, value_defined_cost_fn, read, grove_version),
+                        None => Ok(None).wrap_with_cost(OperationCost::default()),
                     })
             }
             match walker {
-                Some(walker) => {
-                    observe(walker, key, value_defined_cost_fn, observer, grove_version)
-                }
-                None => Ok(false).wrap_with_cost(OperationCost::default()),
+                Some(walker) => find(walker, key, value_defined_cost_fn, read, grove_version),
+                None => Ok(None).wrap_with_cost(OperationCost::default()),
             }
         })
     }
