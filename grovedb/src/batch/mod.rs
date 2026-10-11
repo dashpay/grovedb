@@ -3068,7 +3068,9 @@ where
                             "references can not point to trees being updated",
                         ))
                         .wrap_with_cost(cost),
-                        // Wrappers are unwrapped via underlying() above.
+                        // Only a nested wrapper reaches here, and
+                        // `reject_backward_references_elements_in_batch`
+                        // refuses one before execution.
                         Element::NonCounted(_)
                         | Element::NotSummed(_)
                         | Element::NotCountedOrSummed(_) => {
@@ -3180,7 +3182,9 @@ where
                         "references can not point to trees being updated",
                     ))
                     .wrap_with_cost(cost),
-                    // Wrappers are unwrapped via underlying() above.
+                    // Only a nested wrapper reaches here, and
+                    // `reject_backward_references_elements_in_batch`
+                    // refuses one before execution.
                     Element::NonCounted(_)
                     | Element::NotSummed(_)
                     | Element::NotCountedOrSummed(_) => {
@@ -4319,7 +4323,9 @@ where
                                 );
                             }
                         }
-                        // Wrappers are unwrapped via underlying() above.
+                        // Only a nested wrapper reaches here, and
+                        // `reject_backward_references_elements_in_batch`
+                        // refuses one before execution.
                         Element::NonCounted(_)
                         | Element::NotSummed(_)
                         | Element::NotCountedOrSummed(_) => {
@@ -6953,6 +6959,10 @@ impl GroveDb {
     /// Family payloads require full-batch planning on V4. Earlier versions
     /// and partial batches reject them because those paths cannot register
     /// their edges or plan cross-subtree reference mutations.
+    ///
+    /// Also refuses a nested element wrapper at every version, since every
+    /// batch entry point (full, partial, partial add-ons) runs this pass
+    /// before execution.
     fn reject_backward_references_elements_in_batch(
         ops: &[QualifiedGroveDbOp],
         allow_family: bool,
@@ -6978,6 +6988,17 @@ impl GroveDb {
                 | GroveOp::PatchDontCheckForBackwardsReferences { element, .. } => element,
                 _ => continue,
             };
+            // The checked constructors and both decoders refuse a wrapper
+            // inside a wrapper, but `Element` is a public enum, so a caller
+            // can build one by hand. Execution and reference following
+            // dispatch on `underlying()`, which unwraps one level, and treat
+            // a wrapper there as unreachable: a nested one panicked.
+            if element.is_wrapped() && element.underlying().is_wrapped() {
+                return Err(Error::InvalidBatchOperation(
+                    "nested element wrappers (NonCounted / NotSummed / NotCountedOrSummed) are \
+                     not allowed",
+                ));
+            }
             if element.underlying().supports_backward_references() {
                 // Never wrapped: the wrappers' constructors refuse the family
                 // and deserialization rejects the shape, so a hand-built

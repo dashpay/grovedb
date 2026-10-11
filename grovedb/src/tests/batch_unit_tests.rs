@@ -1789,4 +1789,329 @@ mod tests {
             }
         }
     }
+
+    // ===================================================================
+    // Group 17: a hand-built nested element wrapper
+    // ===================================================================
+    //
+    // `Element` is a public enum, so a caller can build
+    // `NonCounted(NonCounted(item))` without the checked constructors, which
+    // refuse nesting. Execution and reference following dispatch on
+    // `underlying()`, which unwraps one level, and their wrapper arms were
+    // `unreachable!`, so a nested wrapper panicked at every grove version.
+
+    fn non_counted(inner: Element) -> Element {
+        Element::NonCounted(Box::new(inner))
+    }
+
+    fn not_summed(inner: Element) -> Element {
+        Element::NotSummed(Box::new(inner))
+    }
+
+    fn not_counted_or_summed(inner: Element) -> Element {
+        Element::NotCountedOrSummed(Box::new(inner))
+    }
+
+    /// `(case, parent tree, nested element)`. Each parent accepts the
+    /// outer wrapper, so the element passed the per-parent wrapper guard
+    /// and reached the panicking dispatch.
+    fn nested_wrapper_cases() -> Vec<(&'static str, Element, Element)> {
+        vec![
+            (
+                "NonCounted(NonCounted(Item)) under CountTree",
+                Element::empty_count_tree(),
+                non_counted(non_counted(Element::new_item(b"v".to_vec()))),
+            ),
+            (
+                "NonCounted(NotSummed(SumTree)) under CountTree",
+                Element::empty_count_tree(),
+                non_counted(not_summed(Element::empty_sum_tree())),
+            ),
+            (
+                "NotSummed(NotSummed(SumTree)) under SumTree",
+                Element::empty_sum_tree(),
+                not_summed(not_summed(Element::empty_sum_tree())),
+            ),
+            (
+                "NotSummed(NonCounted(SumTree)) under SumTree",
+                Element::empty_sum_tree(),
+                not_summed(non_counted(Element::empty_sum_tree())),
+            ),
+            (
+                "NotCountedOrSummed(NonCounted(SumTree)) under CountSumTree",
+                Element::empty_count_sum_tree(),
+                not_counted_or_summed(non_counted(Element::empty_sum_tree())),
+            ),
+        ]
+    }
+
+    /// A db with `parent` at `[TEST_LEAF, p]` and, if `existing`, an item at
+    /// `[TEST_LEAF, p, k]`.
+    fn db_with_wrapper_parent(
+        parent: &Element,
+        existing: bool,
+        grove_version: &GroveVersion,
+    ) -> crate::tests::TempGroveDb {
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"p",
+            parent.clone(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert parent tree");
+        if existing {
+            db.insert(
+                [TEST_LEAF, b"p"].as_ref(),
+                b"k",
+                Element::new_item(b"old".to_vec()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert existing item");
+        }
+        db
+    }
+
+    fn wrapper_parent_path() -> Vec<Vec<u8>> {
+        vec![TEST_LEAF.to_vec(), b"p".to_vec()]
+    }
+
+    /// Caller-facing ops that carry an element, each writing `element` at
+    /// `[TEST_LEAF, p, k]`.
+    fn element_carrying_ops(element: &Element) -> Vec<(&'static str, QualifiedGroveDbOp)> {
+        let path = wrapper_parent_path();
+        let key = b"k".to_vec();
+        vec![
+            (
+                "InsertOrReplace",
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    path.clone(),
+                    key.clone(),
+                    element.clone(),
+                ),
+            ),
+            (
+                "InsertWithKnownToNotAlreadyExist",
+                QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
+                    path.clone(),
+                    key.clone(),
+                    element.clone(),
+                ),
+            ),
+            (
+                "InsertIfNotExists",
+                QualifiedGroveDbOp::insert_if_not_exists_op(
+                    path.clone(),
+                    key.clone(),
+                    element.clone(),
+                ),
+            ),
+            (
+                "InsertIfNotExists (skip)",
+                QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+                    path.clone(),
+                    key.clone(),
+                    element.clone(),
+                ),
+            ),
+            (
+                "Replace",
+                QualifiedGroveDbOp::replace_op(path.clone(), key.clone(), element.clone()),
+            ),
+            (
+                "Patch",
+                QualifiedGroveDbOp::patch_op(path.clone(), key.clone(), element.clone(), 0),
+            ),
+            (
+                "InsertOrReplace (dont check)",
+                QualifiedGroveDbOp::insert_or_replace_op(path, key, element.clone())
+                    .dont_check_for_backwards_references(),
+            ),
+        ]
+    }
+
+    /// Asserts `result` is the nesting refusal and `db` still has
+    /// `root_before`.
+    fn assert_nested_wrapper_refused(
+        db: &crate::tests::TempGroveDb,
+        result: Result<(), Error>,
+        root_before: [u8; 32],
+        grove_version: &GroveVersion,
+        case: &str,
+    ) {
+        assert!(
+            matches!(
+                &result,
+                Err(Error::InvalidBatchOperation(msg)) if msg.contains("nested element wrappers")
+            ),
+            "{case}: expected the nested-wrapper refusal, got {result:?}"
+        );
+        let root_after = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("root hash after");
+        assert_eq!(root_before, root_after, "{case}: refused batch wrote");
+    }
+
+    #[test]
+    fn test_batch_nested_wrapper_element_is_refused() {
+        for grove_version in grovedb_version::version::GROVE_VERSIONS {
+            for (name, parent, nested) in nested_wrapper_cases() {
+                // `existing` covers Replace / Patch over a stored element and
+                // an InsertIfNotExists that would skip the write.
+                for existing in [false, true] {
+                    for (op_name, op) in element_carrying_ops(&nested) {
+                        let case = format!(
+                            "v{} {name} {op_name} existing={existing}",
+                            grove_version.protocol_version
+                        );
+                        let db = db_with_wrapper_parent(&parent, existing, grove_version);
+                        let root_before = db
+                            .root_hash(None, grove_version)
+                            .unwrap()
+                            .expect("root hash before");
+                        let result = db.apply_batch(vec![op], None, None, grove_version).unwrap();
+                        assert_nested_wrapper_refused(
+                            &db,
+                            result,
+                            root_before,
+                            grove_version,
+                            &case,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_batch_reference_to_pending_nested_wrapper_is_refused() {
+        // `a` sorts before `k`, so the reference follows into the pending
+        // nested element before `k`'s own op runs. That is why the case the
+        // parent's guard would refuse (`NonCounted` under a SumTree) also
+        // panicked here.
+        let mut cases = nested_wrapper_cases();
+        cases.push((
+            "NonCounted(NonCounted(Item)) under SumTree",
+            Element::empty_sum_tree(),
+            non_counted(non_counted(Element::new_item(b"v".to_vec()))),
+        ));
+        for grove_version in grovedb_version::version::GROVE_VERSIONS {
+            for (name, parent, nested) in &cases {
+                // InsertOrReplace and InsertWithKnownToNotAlreadyExist /
+                // InsertIfNotExists reach different arms of
+                // `follow_reference_get_value_hash`.
+                let targets = [
+                    (
+                        "InsertOrReplace",
+                        QualifiedGroveDbOp::insert_or_replace_op(
+                            wrapper_parent_path(),
+                            b"k".to_vec(),
+                            nested.clone(),
+                        ),
+                    ),
+                    (
+                        "InsertWithKnownToNotAlreadyExist",
+                        QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
+                            wrapper_parent_path(),
+                            b"k".to_vec(),
+                            nested.clone(),
+                        ),
+                    ),
+                    (
+                        "InsertIfNotExists",
+                        QualifiedGroveDbOp::insert_if_not_exists_op(
+                            wrapper_parent_path(),
+                            b"k".to_vec(),
+                            nested.clone(),
+                        ),
+                    ),
+                ];
+                for (target_name, target_op) in targets {
+                    let case = format!(
+                        "v{} {name} target={target_name}",
+                        grove_version.protocol_version
+                    );
+                    let db = db_with_wrapper_parent(parent, false, grove_version);
+                    let root_before = db
+                        .root_hash(None, grove_version)
+                        .unwrap()
+                        .expect("root hash before");
+                    let ops = vec![
+                        QualifiedGroveDbOp::insert_or_replace_op(
+                            wrapper_parent_path(),
+                            b"a".to_vec(),
+                            Element::new_reference(ReferencePathType::SiblingReference(
+                                b"k".to_vec(),
+                            )),
+                        ),
+                        target_op,
+                    ];
+                    let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+                    assert_nested_wrapper_refused(&db, result, root_before, grove_version, &case);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_partial_batch_nested_wrapper_is_refused() {
+        for grove_version in grovedb_version::version::GROVE_VERSIONS {
+            for (name, parent, nested) in nested_wrapper_cases() {
+                let nested_op = || {
+                    QualifiedGroveDbOp::insert_or_replace_op(
+                        wrapper_parent_path(),
+                        b"k".to_vec(),
+                        nested.clone(),
+                    )
+                };
+
+                // In the initial ops.
+                let case = format!("v{} {name} initial op", grove_version.protocol_version);
+                let db = db_with_wrapper_parent(&parent, false, grove_version);
+                let root_before = db
+                    .root_hash(None, grove_version)
+                    .unwrap()
+                    .expect("root hash before");
+                let result = db
+                    .apply_partial_batch(
+                        vec![nested_op()],
+                        None,
+                        |_, _| Ok(vec![]),
+                        None,
+                        grove_version,
+                    )
+                    .unwrap();
+                assert_nested_wrapper_refused(&db, result, root_before, grove_version, &case);
+
+                // Returned by the add-on callback after a valid initial op.
+                let case = format!("v{} {name} add-on op", grove_version.protocol_version);
+                let db = db_with_wrapper_parent(&parent, false, grove_version);
+                let root_before = db
+                    .root_hash(None, grove_version)
+                    .unwrap()
+                    .expect("root hash before");
+                let result = db
+                    .apply_partial_batch(
+                        vec![QualifiedGroveDbOp::insert_or_replace_op(
+                            vec![TEST_LEAF.to_vec()],
+                            b"other".to_vec(),
+                            Element::new_item(b"v".to_vec()),
+                        )],
+                        None,
+                        |_, _| Ok(vec![nested_op()]),
+                        None,
+                        grove_version,
+                    )
+                    .unwrap();
+                assert_nested_wrapper_refused(&db, result, root_before, grove_version, &case);
+            }
+        }
+    }
 }
