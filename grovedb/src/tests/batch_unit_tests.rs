@@ -1668,4 +1668,125 @@ mod tests {
             "ref chain through refresh to tree should fail"
         );
     }
+
+    // ===================================================================
+    // Group 16: follow_reference_get_value_hash — a later hop resolves to
+    //           an empty path
+    // ===================================================================
+    //
+    // The apply arms refuse an empty path only for the reference they are
+    // processing. Keys in a path run in byte order, so `a` follows its
+    // sibling `b` before `b`'s own check runs. `b`'s pending element
+    // resolves to `[]`, and the next hop used to reach
+    // `process_reference(&[])`, whose `split_last().expect(..)` panicked.
+
+    /// Every reference path type that resolves to `[]` from a reference
+    /// stored directly under `[TEST_LEAF]`.
+    fn empty_resolving_reference_paths() -> Vec<ReferencePathType> {
+        vec![
+            ReferencePathType::AbsolutePathReference(vec![]),
+            ReferencePathType::UpstreamRootHeightReference(0, vec![]),
+            ReferencePathType::UpstreamFromElementHeightReference(1, vec![]),
+        ]
+    }
+
+    /// Applies `ops` and asserts the batch is refused with the empty-hop
+    /// error and leaves the root hash untouched.
+    fn assert_empty_hop_refused(
+        db: &crate::tests::TempGroveDb,
+        ops: Vec<QualifiedGroveDbOp>,
+        grove_version: &GroveVersion,
+        case: &str,
+    ) {
+        let root_before = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("root hash before");
+        let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+        assert!(
+            matches!(
+                result,
+                Err(Error::InvalidBatchOperation(msg)) if msg.contains("empty path")
+            ),
+            "{case}: expected the empty-hop refusal, got {result:?}"
+        );
+        let root_after = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("root hash after");
+        assert_eq!(root_before, root_after, "{case}: refused batch wrote");
+    }
+
+    #[test]
+    fn test_batch_ref_hop_to_pending_empty_reference_errors() {
+        for grove_version in grovedb_version::version::GROVE_VERSIONS {
+            for empty_path in empty_resolving_reference_paths() {
+                // InsertOrReplace and InsertWithKnownToNotAlreadyExist reach
+                // the empty hop through different match arms.
+                for insert_only in [false, true] {
+                    let case = format!(
+                        "v{} {empty_path:?} insert_only={insert_only}",
+                        grove_version.protocol_version
+                    );
+                    let db = make_test_grovedb(grove_version);
+                    let target = Element::new_reference(empty_path.clone());
+                    let target_op = if insert_only {
+                        QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
+                            vec![TEST_LEAF.to_vec()],
+                            b"b".to_vec(),
+                            target,
+                        )
+                    } else {
+                        QualifiedGroveDbOp::insert_or_replace_op(
+                            vec![TEST_LEAF.to_vec()],
+                            b"b".to_vec(),
+                            target,
+                        )
+                    };
+                    let ops = vec![
+                        QualifiedGroveDbOp::insert_or_replace_op(
+                            vec![TEST_LEAF.to_vec()],
+                            b"a".to_vec(),
+                            Element::new_reference(ReferencePathType::SiblingReference(
+                                b"b".to_vec(),
+                            )),
+                        ),
+                        target_op,
+                    ];
+                    assert_empty_hop_refused(&db, ops, grove_version, &case);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_batch_ref_hop_to_trusted_refresh_with_empty_path_errors() {
+        for grove_version in grovedb_version::version::GROVE_VERSIONS {
+            for empty_path in empty_resolving_reference_paths() {
+                let case = format!("v{} {empty_path:?}", grove_version.protocol_version);
+                let db = make_test_grovedb(grove_version);
+                // A trusted refresh carries its new path without a disk
+                // read, so `b` need not exist. `a` follows into the refresh
+                // and resolves the next hop through `process_reference`'s
+                // in-batch branch.
+                let ops = vec![
+                    QualifiedGroveDbOp::insert_or_replace_op(
+                        vec![TEST_LEAF.to_vec()],
+                        b"a".to_vec(),
+                        Element::new_reference(ReferencePathType::SiblingReference(b"b".to_vec())),
+                    ),
+                    QualifiedGroveDbOp::refresh_reference_op(
+                        vec![TEST_LEAF.to_vec()],
+                        b"b".to_vec(),
+                        empty_path,
+                        None,
+                        None,
+                        /* non_counted = */ false,
+                        true, // trust_refresh_reference
+                    ),
+                ];
+                assert_empty_hop_refused(&db, ops, grove_version, &case);
+            }
+        }
+    }
 }
