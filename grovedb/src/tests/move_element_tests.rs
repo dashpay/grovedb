@@ -1005,6 +1005,72 @@ mod tests {
     }
 
     #[test]
+    fn a_deep_chain_moves_on_a_bounded_stack() {
+        // The copy keeps one open scan per level of depth on the heap, not
+        // one call frame per level: run on a fixed 2 MiB stack, a chain this
+        // deep would overflow it if each level took a frame of its own.
+        const DEPTH: usize = 256;
+        let run = || {
+            let grove_version = GroveVersion::latest();
+            let build = |key: &[u8]| {
+                let db = make_test_grovedb(grove_version);
+                let mut ops = Vec::new();
+                let mut at = path(&[TEST_LEAF]);
+                let mut segment = v(key);
+                for _ in 0..DEPTH {
+                    ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+                        at.clone(),
+                        segment.clone(),
+                        Element::empty_tree(),
+                    ));
+                    at.push(segment);
+                    segment = v(b"c");
+                }
+                ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+                    at.clone(),
+                    v(b"leaf"),
+                    Element::new_item(v(b"deep")),
+                ));
+                apply(&db, ops, grove_version).expect("deep chain");
+                (db, at)
+            };
+            let (db, old_deepest) = build(b"src");
+            let (expected, new_deepest) = build(b"dst");
+
+            apply(
+                &db,
+                vec![move_op(&[TEST_LEAF], b"src", b"dst")],
+                grove_version,
+            )
+            .expect("move the chain");
+
+            assert_eq!(
+                root_hash(&db, grove_version),
+                root_hash(&expected, grove_version)
+            );
+            let new_deepest: Vec<&[u8]> = new_deepest.iter().map(Vec::as_slice).collect();
+            assert_eq!(
+                db.get(new_deepest.as_slice(), b"leaf", None, grove_version)
+                    .unwrap()
+                    .expect("the deepest item moved"),
+                Element::new_item(v(b"deep"))
+            );
+            let old_deepest: Vec<&[u8]> = old_deepest.iter().map(Vec::as_slice).collect();
+            assert_eq!(records_in(&db, prefix_of(&old_deepest)), 0);
+            assert_eq!(
+                records_in(&db, prefix_of(&new_deepest)),
+                records_in(&expected, prefix_of(&new_deepest))
+            );
+        };
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(run)
+            .expect("spawn")
+            .join()
+            .expect("the deep move must not overflow its stack");
+    }
+
+    #[test]
     fn non_merk_and_indexed_trees_move_with_their_data() {
         let grove_version = GroveVersion::latest();
         let build = |suffix: &[u8]| {
