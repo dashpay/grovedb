@@ -210,6 +210,15 @@
 //!   added bytes, below what the apply adds; preserved for replay. Gated
 //!   because the estimate is the admission bound.
 //!
+//! - `operations.average_case.average_case_sum_item_cost_size: 1` — an
+//!   average-case insert or replace sizes a `SumItem` or `ItemWithSumItem`
+//!   (wrapped or not) by the specialized cost the apply writes it with,
+//!   which charges the sum value at its fixed 9-byte width. V1..V3 size it
+//!   by its serialized size on insert, and an `ItemWithSumItem` that way on
+//!   replace, up to 8 bytes per item below what the apply charges;
+//!   preserved for replay. Gated because the estimate is the admission
+//!   bound.
+//!
 //! - `bulk_append_tree_versions.cost.append_storage_accounting: 1` and
 //!   `commitment_tree_versions.cost.frontier_save_storage_accounting: 1` —
 //!   the append-only family (`BulkAppendTree`, `CommitmentTree`,
@@ -609,6 +618,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 average_case_commitment_tree_insert: 1,
                 average_case_backward_references_fan_out: 1,
                 average_case_propagated_aggregate_kind: 1,
+                average_case_sum_item_cost_size: 1,
             },
             worst_case: GroveDBOperationsWorstCaseVersions {
                 add_worst_case_get_merk_at_path: 0,

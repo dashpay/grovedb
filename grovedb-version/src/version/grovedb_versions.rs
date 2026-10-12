@@ -599,6 +599,17 @@ pub struct GroveDBOperationsAverageCaseVersions {
     /// - `1` (V4+): every tree reports the aggregate of its own type, so its
     ///   element is sized as the apply writes it.
     pub average_case_propagated_aggregate_kind: FeatureVersion,
+    /// How an average-case insert or replace sizes a sum-bearing item
+    /// (`SumItem` or `ItemWithSumItem`, wrapped or not).
+    ///
+    /// - `0` (V1..V3): an insert sizes it by its serialized size, and a
+    ///   replace sizes an `ItemWithSumItem` that way. The apply sizes it by
+    ///   its specialized cost, which charges the sum value at its fixed
+    ///   9-byte width (`SUM_ITEM_COST_SIZE`), so the estimate comes in below
+    ///   the applied bytes by up to 8 per item. Preserved for replay of
+    ///   historical admission decisions.
+    /// - `1` (V4+): both size it by the specialized cost the apply uses.
+    pub average_case_sum_item_cost_size: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

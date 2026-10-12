@@ -146,6 +146,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `operations.average_case.average_case_propagated_aggregate_kind` slot
   (**BREAKING** for code building `GroveDBOperationsAverageCaseVersions` by
   hand).
+- From `GROVE_V4`, an average-case estimate sizes a `SumItem` or
+  `ItemWithSumItem` (wrapped or not) by the specialized cost the apply
+  writes it with, which charges the sum value at its fixed 9-byte width
+  (`SUM_ITEM_COST_SIZE`). Before, `average_case_merk_insert_element` sized
+  it by its serialized size, which encodes the sum as a varint, and
+  `average_case_merk_replace_element` did the same for an
+  `ItemWithSumItem`, so the estimate came in below the applied bytes by up
+  to 8 per item: a `SumItem(-3)` was estimated at 3 value bytes and applied
+  at 11. V1..V3 keep the old sizing for replay, through the new
+  `operations.average_case.average_case_sum_item_cost_size` slot
+  (**BREAKING** for code building `GroveDBOperationsAverageCaseVersions` by
+  hand).
 - From `GROVE_V4`, a reference a batch resolves through a pending
   `InsertIfNotExists` reaches the element already stored at that key when
   there is one. Before, it always reached the op's element, so a reference
