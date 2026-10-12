@@ -584,6 +584,21 @@ pub struct GroveDBOperationsAverageCaseVersions {
     ///   chains, 1 referrer per reference), and the derived op itself gets
     ///   a real model.
     pub average_case_backward_references_fan_out: FeatureVersion,
+    /// The aggregate a level's average-case estimate hands up to the op that
+    /// writes its tree element in the parent, which sizes that element by
+    /// the aggregate's tree type.
+    ///
+    /// - `0` (V1..V3): only an indexed tree reports its aggregate; every
+    ///   other tree reports none and is sized as a plain tree. A sum, count
+    ///   or count-sum tree inserted in the same batch as its contents is
+    ///   then estimated without its aggregate bytes (9 per axis, 16 for a
+    ///   big sum), below the bytes the apply adds, and a replaced root key
+    ///   of one (under `average_case_merk_replace_tree: 1`) below the bytes
+    ///   it replaces. Preserved for replay of historical admission
+    ///   decisions.
+    /// - `1` (V4+): every tree reports the aggregate of its own type, so its
+    ///   element is sized as the apply writes it.
+    pub average_case_propagated_aggregate_kind: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

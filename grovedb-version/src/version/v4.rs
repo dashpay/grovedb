@@ -200,6 +200,16 @@
 //!   the legacy figures were never admission-relevant) — preserved for
 //!   replay.
 //!
+//! - `operations.average_case.average_case_propagated_aggregate_kind: 1` —
+//!   each level of an average-case batch estimate reports the aggregate of
+//!   its own tree type to the op writing its tree element in the parent,
+//!   so a sum, count or count-sum tree inserted in the same batch as its
+//!   contents is sized as that tree. V1..V3 report an aggregate only for
+//!   indexed trees and size every other one as a plain tree, leaving its
+//!   aggregate bytes (9 per axis, 16 for a big sum) out of the estimate's
+//!   added bytes, below what the apply adds; preserved for replay. Gated
+//!   because the estimate is the admission bound.
+//!
 //! - `bulk_append_tree_versions.cost.append_storage_accounting: 1` and
 //!   `commitment_tree_versions.cost.frontier_save_storage_accounting: 1` —
 //!   the append-only family (`BulkAppendTree`, `CommitmentTree`,
@@ -598,6 +608,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 add_average_case_get_cost: 0,
                 average_case_commitment_tree_insert: 1,
                 average_case_backward_references_fan_out: 1,
+                average_case_propagated_aggregate_kind: 1,
             },
             worst_case: GroveDBOperationsWorstCaseVersions {
                 add_worst_case_get_merk_at_path: 0,
