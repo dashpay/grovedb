@@ -6,10 +6,8 @@ use grovedb_costs::{
     CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::{
-    element::tree_type::ElementTreeTypeExtensions,
     estimated_costs::{
-        add_cost_case_merk_insert, add_cost_case_merk_insert_layered, add_cost_case_merk_patch,
-        add_cost_case_merk_replace_layered, add_cost_case_merk_replace_same_size,
+        add_cost_case_merk_insert_layered, add_cost_case_merk_patch,
         average_case_costs::{
             add_average_case_get_merk_node, add_average_case_merk_delete,
             add_average_case_merk_delete_layered, add_average_case_merk_propagate,
@@ -17,7 +15,7 @@ use grovedb_merk::{
         },
     },
     tree::TreeNode,
-    tree_type::{CostSize, TreeType, SUM_ITEM_COST_SIZE},
+    tree_type::{CostSize, TreeType},
     HASH_LENGTH,
 };
 use grovedb_storage::{rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage};
@@ -30,6 +28,9 @@ use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
     Element, ElementFlags, Error, GroveDb,
 };
+
+mod merk_insert_element;
+mod merk_replace_element;
 
 impl GroveDb {
     /// Add average case for getting a merk tree
@@ -256,123 +257,6 @@ impl GroveDb {
         add_average_case_merk_delete_layered(&mut cost, key_len, layer_extra_size);
         if propagate {
             add_average_case_merk_propagate(&mut cost, estimated_layer_information, grove_version)
-                .map_err(Error::MerkError)
-        } else {
-            Ok(())
-        }
-        .wrap_with_cost(cost)
-    }
-
-    /// Add average case for insertion into merk
-    /// This only propagates on 1 level
-    /// As higher level propagation is done in batching
-    pub fn average_case_merk_insert_element(
-        key: &KeyInfo,
-        value: &Element,
-        in_tree_type: TreeType,
-        propagate_for_level: Option<&EstimatedLayerInformation>,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(), Error> {
-        check_grovedb_v0_with_cost!(
-            "average_case_merk_insert_element",
-            grove_version
-                .grovedb_versions
-                .operations
-                .average_case
-                .average_case_merk_insert_element
-        );
-
-        let mut cost = OperationCost::default();
-        let key_len = key.max_length() as u32;
-        if let Some((flags, tree_type)) = value.tree_flags_and_type() {
-            let flags_len = flags.as_ref().map_or(0, |flags| {
-                let flags_len = flags.len() as u32;
-                flags_len + flags_len.required_space() as u32
-            });
-            let tree_cost_size = tree_type.cost_size();
-            let value_len = tree_cost_size + flags_len;
-            add_cost_case_merk_insert_layered(&mut cost, key_len, value_len, in_tree_type)
-        } else {
-            add_cost_case_merk_insert(
-                &mut cost,
-                key_len,
-                cost_return_on_error_into_no_add!(cost, value.serialized_size(grove_version))
-                    as u32,
-                in_tree_type,
-            )
-        }
-        if let Some(level) = propagate_for_level {
-            add_average_case_merk_propagate(&mut cost, level, grove_version)
-                .map_err(Error::MerkError)
-        } else {
-            Ok(())
-        }
-        .wrap_with_cost(cost)
-    }
-
-    /// Add average case for replacement into merk
-    /// This only propagates on 1 level
-    /// As higher level propagation is done in batching
-    pub fn average_case_merk_replace_element(
-        key: &KeyInfo,
-        value: &Element,
-        in_tree_type: TreeType,
-        propagate_for_level: Option<&EstimatedLayerInformation>,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(), Error> {
-        check_grovedb_v0_with_cost!(
-            "average_case_merk_replace_element",
-            grove_version
-                .grovedb_versions
-                .operations
-                .average_case
-                .average_case_merk_replace_element
-        );
-
-        let mut cost = OperationCost::default();
-        let key_len = key.max_length() as u32;
-        // Look through wrapper variants for cost dispatch (the wrapper byte
-        // is accounted for via `wrapper_overhead` parallel to
-        // `merk/src/element/costs.rs`).
-        let wrapper_overhead = if value.is_wrapped() { 1u32 } else { 0 };
-        match value.underlying() {
-            Element::Tree(_, flags)
-            | Element::SumTree(_, _, flags)
-            | Element::BigSumTree(_, _, flags)
-            | Element::CountTree(_, _, flags) => {
-                let flags_len = flags.as_ref().map_or(0, |flags| {
-                    let flags_len = flags.len() as u32;
-                    flags_len + flags_len.required_space() as u32
-                });
-                let tree_cost_size = value.tree_type().unwrap().cost_size();
-                let value_len = tree_cost_size + flags_len + wrapper_overhead;
-                add_cost_case_merk_replace_layered(&mut cost, key_len, value_len, in_tree_type)
-            }
-            Element::Item(_, flags) | Element::SumItem(_, flags) => {
-                let flags_len = flags.as_ref().map_or(0, |flags| {
-                    let flags_len = flags.len() as u32;
-                    flags_len + flags_len.required_space() as u32
-                });
-                // Items need to be always the same serialized size for this to work
-                let sum_item_cost_size = if value.is_sum_item() {
-                    SUM_ITEM_COST_SIZE
-                } else {
-                    cost_return_on_error_into_no_add!(cost, value.serialized_size(grove_version))
-                        as u32
-                };
-                let value_len = sum_item_cost_size + flags_len + wrapper_overhead;
-                add_cost_case_merk_replace_same_size(&mut cost, key_len, value_len, in_tree_type)
-            }
-            _ => add_cost_case_merk_replace_same_size(
-                &mut cost,
-                key_len,
-                cost_return_on_error_into_no_add!(cost, value.serialized_size(grove_version))
-                    as u32,
-                in_tree_type,
-            ),
-        };
-        if let Some(level) = propagate_for_level {
-            add_average_case_merk_propagate(&mut cost, level, grove_version)
                 .map_err(Error::MerkError)
         } else {
             Ok(())
