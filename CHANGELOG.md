@@ -135,6 +135,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an absent path. `AxisKeys::empty_for_axis` is new. (#965)
 
 ### Fixed
+- From `GROVE_V4`, an average-case batch estimate sizes a sum, big sum,
+  count or count-sum tree inserted in the same batch as its contents as the
+  tree it is. Before, every level except an indexed tree reported no
+  aggregate to the op writing its tree element in the parent, so the
+  element was sized as a plain tree and the estimate's added bytes came in
+  below the applied ones by the aggregate's bytes (9 per axis, 16 for a big
+  sum); a replaced root key of such a tree was under-sized the same way in
+  replaced bytes. V1..V3 keep the old sizing for replay, through the new
+  `operations.average_case.average_case_propagated_aggregate_kind` slot
+  (**BREAKING** for code building `GroveDBOperationsAverageCaseVersions` by
+  hand).
 - From `GROVE_V4`, a reference a batch resolves through a pending
   `InsertIfNotExists` reaches the element already stored at that key when
   there is one. Before, it always reached the op's element, so a reference

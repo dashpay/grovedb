@@ -209,6 +209,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
                 add_average_case_get_cost: 0,
                 average_case_commitment_tree_insert: 0,
                 average_case_backward_references_fan_out: 0,
+                average_case_propagated_aggregate_kind: 0,
             },
             worst_case: GroveDBOperationsWorstCaseVersions {
                 add_worst_case_get_merk_at_path: 0,
