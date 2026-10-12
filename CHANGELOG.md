@@ -158,6 +158,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `operations.average_case.average_case_sum_item_cost_size` slot
   (**BREAKING** for code building `GroveDBOperationsAverageCaseVersions` by
   hand).
+- From `GROVE_V4`, a worst-case estimate sizes a `SumItem` or
+  `ItemWithSumItem` (wrapped or not) by the specialized cost the apply
+  writes it with, as the average-case estimate does since the entry above.
+  Before, `worst_case_merk_insert_element` sized it by its serialized size,
+  which encodes the sum as a varint, and `worst_case_merk_replace_element`
+  did the same for an `ItemWithSumItem` and left out a wrapped `SumItem`'s
+  wrapper byte, so the worst case came in below the applied bytes by up to
+  8 per item: a `SumItem(-3)` inserted into a normal tree was estimated at
+  142 added bytes and applied at 150. V1..V3 keep the old sizing for
+  replay, through the new
+  `operations.worst_case.worst_case_sum_item_cost_size` slot (**BREAKING**
+  for code building `GroveDBOperationsWorstCaseVersions` by hand).
 - From `GROVE_V4`, a reference a batch resolves through a pending
   `InsertIfNotExists` reaches the element already stored at that key when
   there is one. Before, it always reached the op's element, so a reference

@@ -219,6 +219,16 @@
 //!   preserved for replay. Gated because the estimate is the admission
 //!   bound.
 //!
+//! - `operations.worst_case.worst_case_sum_item_cost_size: 1` — a
+//!   worst-case insert or replace sizes a `SumItem` or `ItemWithSumItem`
+//!   (wrapped or not) by the specialized cost the apply writes it with,
+//!   which charges the sum value at its fixed 9-byte width and counts a
+//!   wrapper's byte. V1..V3 size it by its serialized size on insert, an
+//!   `ItemWithSumItem` that way on replace and a wrapped `SumItem` without
+//!   its wrapper byte, up to 8 bytes per item below what the apply charges,
+//!   so the "worst case" was not an upper bound; preserved for replay.
+//!   Gated because the estimate is the admission bound.
+//!
 //! - `bulk_append_tree_versions.cost.append_storage_accounting: 1` and
 //!   `commitment_tree_versions.cost.frontier_save_storage_accounting: 1` —
 //!   the append-only family (`BulkAppendTree`, `CommitmentTree`,
@@ -635,6 +645,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 add_worst_case_get_cost: 0,
                 worst_case_commitment_tree_insert: 1,
                 worst_case_backward_references_fan_out: 1,
+                worst_case_sum_item_cost_size: 1,
             },
             // PrivateDocumentStore activates in GROVE_V4.
             private_document_store: GroveDBOperationsPrivateDocumentStoreVersions {
