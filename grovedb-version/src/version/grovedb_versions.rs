@@ -642,6 +642,18 @@ pub struct GroveDBOperationsWorstCaseVersions {
     /// `GroveDBOperationsAverageCaseVersions::average_case_backward_references_fan_out`,
     /// with the worst-case bounds charged in full.
     pub worst_case_backward_references_fan_out: FeatureVersion,
+    /// How a worst-case insert or replace sizes a sum-bearing item
+    /// (`SumItem` or `ItemWithSumItem`, wrapped or not).
+    ///
+    /// - `0` (V1..V3): an insert sizes it by its serialized size, a replace
+    ///   sizes an `ItemWithSumItem` that way and a wrapped `SumItem` without
+    ///   its wrapper byte. The apply sizes it by its specialized cost, which
+    ///   charges the sum value at its fixed 9-byte width
+    ///   (`SUM_ITEM_COST_SIZE`) and counts the wrapper byte, so the estimate
+    ///   comes in below the applied bytes by up to 8 per item and is not an
+    ///   upper bound. Preserved for replay of historical admission decisions.
+    /// - `1` (V4+): both size it by the specialized cost the apply uses.
+    pub worst_case_sum_item_cost_size: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

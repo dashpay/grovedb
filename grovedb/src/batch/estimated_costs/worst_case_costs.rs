@@ -971,6 +971,7 @@ mod tests {
     };
     #[rustfmt::skip]
     use grovedb_merk::estimated_costs::worst_case_costs::WorstCaseLayerInformation::MaxElementsNumber;
+    use grovedb_merk::estimated_costs::worst_case_costs::WorstCaseLayerInformation;
     use grovedb_merk::tree_type::TreeType;
     use grovedb_version::version::GroveVersion;
 
@@ -2157,5 +2158,275 @@ mod tests {
             "added_bytes is per-note, not epoch-scaled: {}",
             cost.storage_cost.added_bytes
         );
+    }
+
+    /// Sum-bearing items, each with the plain item its sizing is measured
+    /// against: a wrapped item against a plain item in the same wrapper.
+    fn sum_bearing_items_with_baselines() -> Vec<(Element, Element)> {
+        let flags = Some(vec![1, 2, 3]);
+        let non_counted = |element| {
+            Element::new_non_counted(element).expect("expected an item to wrap as non-counted")
+        };
+        let item = || Element::new_item(b"v1".to_vec());
+        vec![
+            (Element::new_sum_item(-3), item()),
+            (Element::new_sum_item_with_flags(-3, flags.clone()), item()),
+            (Element::new_item_with_sum_item(b"v1".to_vec(), -3), item()),
+            (
+                Element::new_item_with_sum_item_with_flags(b"v1".to_vec(), -3, flags),
+                item(),
+            ),
+            (non_counted(Element::new_sum_item(-3)), non_counted(item())),
+            (
+                non_counted(Element::new_item_with_sum_item(b"v1".to_vec(), -3)),
+                non_counted(item()),
+            ),
+        ]
+    }
+
+    /// The worst-case cost of `ops`, described by `paths`.
+    fn batch_worst_case_cost(
+        paths: HashMap<KeyInfoPath, WorstCaseLayerInformation>,
+        ops: Vec<QualifiedGroveDbOp>,
+        grove_version: &GroveVersion,
+    ) -> OperationCost {
+        GroveDb::estimated_case_operations_for_batch(
+            WorstCaseCostsType(paths),
+            ops,
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected to get worst case costs")
+    }
+
+    /// The worst-case and applied costs of inserting `element` at the root of
+    /// an empty db, a normal tree.
+    fn root_insert_costs(
+        element: Element,
+        grove_version: &GroveVersion,
+    ) -> (OperationCost, OperationCost) {
+        let ops = dont_check(vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![],
+            b"k1".to_vec(),
+            element,
+        )]);
+        let mut paths = HashMap::new();
+        paths.insert(KeyInfoPath(vec![]), MaxElementsNumber(0));
+        let worst_case = batch_worst_case_cost(paths, ops.clone(), grove_version);
+        let applied = make_empty_grovedb()
+            .apply_batch(ops, None, None, grove_version)
+            .cost_as_result()
+            .expect("expected to apply batch");
+        (worst_case, applied)
+    }
+
+    /// The worst-case and applied costs of a batch writing `element` as the
+    /// only child `k1` of a count-sum tree `agg`: inserting it into the empty
+    /// tree, or, with `replace`, replacing it with itself.
+    fn count_sum_tree_child_costs(
+        element: Element,
+        replace: bool,
+        grove_version: &GroveVersion,
+    ) -> (OperationCost, OperationCost) {
+        let db = make_empty_grovedb();
+        let mut setup = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![],
+            b"agg".to_vec(),
+            Element::empty_count_sum_tree(),
+        )];
+        if replace {
+            setup.push(QualifiedGroveDbOp::insert_or_replace_op(
+                vec![b"agg".to_vec()],
+                b"k1".to_vec(),
+                element.clone(),
+            ));
+        }
+        db.apply_batch(setup, None, None, grove_version)
+            .cost_as_result()
+            .expect("expected to set up the tree");
+        let op = if replace {
+            QualifiedGroveDbOp::replace_op(vec![b"agg".to_vec()], b"k1".to_vec(), element)
+        } else {
+            QualifiedGroveDbOp::insert_or_replace_op(vec![b"agg".to_vec()], b"k1".to_vec(), element)
+        };
+        let ops = dont_check(vec![op]);
+        let mut paths = HashMap::new();
+        paths.insert(KeyInfoPath(vec![]), MaxElementsNumber(1));
+        paths.insert(
+            KeyInfoPath::from_known_owned_path(vec![b"agg".to_vec()]),
+            MaxElementsNumber(1),
+        );
+        let worst_case = batch_worst_case_cost(paths, ops.clone(), grove_version);
+        let applied = db
+            .apply_batch(ops, None, None, grove_version)
+            .cost_as_result()
+            .expect("expected to apply batch");
+        (worst_case, applied)
+    }
+
+    /// Bytes a cost writes, added or replaced: the worst-case replace arms
+    /// split them differently (a fixed-size `SumItem` all replaced, any other
+    /// element its value added), the total is comparable.
+    fn written_bytes(cost: &OperationCost) -> i64 {
+        cost.storage_cost.added_bytes as i64 + cost.storage_cost.replaced_bytes as i64
+    }
+
+    /// The apply writes a sum-bearing item with its specialized cost, which
+    /// charges the sum value at its fixed 9-byte width. From V4 the worst
+    /// case sizes it the same way, so inserting one into a normal tree is
+    /// estimated at exactly its applied added bytes, and the estimate covers
+    /// the applied cost (`worst_case_sum_item_cost_size`). The wrapped items
+    /// only go under a count tree, which `sizing_tracks_actual` covers.
+    #[test]
+    fn test_batch_sum_bearing_item_insert_worst_case_covers_actual() {
+        let grove_version = GroveVersion::latest();
+        for (element, _) in sum_bearing_items_with_baselines()
+            .into_iter()
+            .filter(|(element, _)| !element.is_wrapped())
+        {
+            let (worst_case, applied) = root_insert_costs(element.clone(), grove_version);
+            assert_eq!(
+                worst_case.storage_cost.added_bytes, applied.storage_cost.added_bytes,
+                "{element}: worst-case added_bytes must be the applied ones",
+            );
+            assert!(
+                worst_case.worse_or_eq_than(&applied),
+                "{element}: worst case {worst_case:?} must cover applied {applied:?}",
+            );
+        }
+    }
+
+    /// The worst-case batch charges every op as if its parent were a normal
+    /// tree, so under a count-sum tree its totals are short of the applied
+    /// ones whatever the element; the element's own sizing is what can be
+    /// compared there. Writing a sum-bearing item rather than a plain one
+    /// must raise the worst case by what it raises the apply, wrapped items
+    /// included, for an insert (added bytes) and a replace (bytes written).
+    /// From V4 both arms size the item by its specialized cost
+    /// (`worst_case_sum_item_cost_size`).
+    #[test]
+    fn test_batch_sum_bearing_item_worst_case_sizing_tracks_actual() {
+        let grove_version = GroveVersion::latest();
+        for (element, baseline) in sum_bearing_items_with_baselines() {
+            let (worst_case, applied) =
+                count_sum_tree_child_costs(element.clone(), false, grove_version);
+            let (baseline_worst_case, baseline_applied) =
+                count_sum_tree_child_costs(baseline.clone(), false, grove_version);
+            assert_eq!(
+                worst_case.storage_cost.added_bytes as i64
+                    - baseline_worst_case.storage_cost.added_bytes as i64,
+                applied.storage_cost.added_bytes as i64
+                    - baseline_applied.storage_cost.added_bytes as i64,
+                "{element}: inserting it rather than {baseline} must raise the worst-case \
+                 added_bytes as it raises the applied ones",
+            );
+
+            let (worst_case, applied) =
+                count_sum_tree_child_costs(element.clone(), true, grove_version);
+            let (baseline_worst_case, baseline_applied) =
+                count_sum_tree_child_costs(baseline.clone(), true, grove_version);
+            assert_eq!(
+                written_bytes(&worst_case) - written_bytes(&baseline_worst_case),
+                written_bytes(&applied) - written_bytes(&baseline_applied),
+                "{element}: replacing with it rather than {baseline} must raise the worst-case \
+                 bytes written as it raises the applied ones",
+            );
+        }
+    }
+
+    /// Replay guarantee: before V4 a sum-bearing item is sized by its
+    /// serialized size on insert, an `ItemWithSumItem` that way on replace and
+    /// a wrapped `SumItem` without its wrapper byte, as historical admission
+    /// bounds were computed. Pinned to the figures from before
+    /// `worst_case_sum_item_cost_size` existed.
+    #[test]
+    fn test_batch_sum_bearing_item_worst_case_pinned_before_v4() {
+        use grovedb_version::version::v3::GROVE_V3;
+        // Per item: (root insert added_bytes, count-sum tree insert
+        // added_bytes, count-sum tree replace bytes written); the wrapped
+        // items have no root insert.
+        let pinned = [
+            (Some(142), 142, 147_683),
+            (Some(146), 146, 147_687),
+            (Some(145), 145, 147_678),
+            (Some(149), 149, 147_682),
+            (None, 143, 147_683),
+            (None, 146, 147_679),
+        ];
+        for ((element, _), (root_added, added, written)) in
+            sum_bearing_items_with_baselines().into_iter().zip(pinned)
+        {
+            if let Some(root_added) = root_added {
+                let (worst_case, _) = root_insert_costs(element.clone(), &GROVE_V3);
+                assert_eq!(
+                    worst_case.storage_cost.added_bytes, root_added,
+                    "{element}: V3 root insert worst case must not move",
+                );
+            }
+            let (worst_case, _) = count_sum_tree_child_costs(element.clone(), false, &GROVE_V3);
+            assert_eq!(
+                worst_case.storage_cost.added_bytes, added,
+                "{element}: V3 insert worst case must not move",
+            );
+            let (worst_case, _) = count_sum_tree_child_costs(element.clone(), true, &GROVE_V3);
+            assert_eq!(
+                written_bytes(&worst_case),
+                written,
+                "{element}: V3 replace worst case must not move",
+            );
+        }
+    }
+
+    #[test]
+    fn test_worst_case_sum_item_cost_size_unknown_version_is_refused() {
+        use grovedb_version::version::v4::GROVE_V4;
+
+        let mut unknown = GROVE_V4.clone();
+        unknown
+            .grovedb_versions
+            .operations
+            .worst_case
+            .worst_case_sum_item_cost_size = 9;
+        let insert = QualifiedGroveDbOp::insert_or_replace_op(
+            vec![],
+            b"k1".to_vec(),
+            Element::new_sum_item(-3),
+        );
+        let replace =
+            QualifiedGroveDbOp::replace_op(vec![], b"k1".to_vec(), Element::new_sum_item(-3));
+        for op in [insert, replace] {
+            let mut paths = HashMap::new();
+            paths.insert(KeyInfoPath(vec![]), MaxElementsNumber(1));
+            let result = GroveDb::estimated_case_operations_for_batch(
+                WorstCaseCostsType(paths),
+                dont_check(vec![op]),
+                None,
+                |_cost, _old_flags, _new_flags| Ok(false),
+                |_flags, _removed_key_bytes, _removed_value_bytes| {
+                    Ok((NoStorageRemoval, NoStorageRemoval))
+                },
+                &unknown,
+            )
+            .cost_as_result();
+            match result {
+                Err(crate::Error::VersionError(
+                    grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                        method,
+                        known_versions,
+                        received,
+                    },
+                )) => {
+                    assert_eq!(method, "worst_case_sum_item_cost_size");
+                    assert_eq!(known_versions, vec![0, 1]);
+                    assert_eq!(received, 9);
+                }
+                other => panic!("expected an unknown version error, got {other:?}"),
+            }
+        }
     }
 }

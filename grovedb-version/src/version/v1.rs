@@ -227,6 +227,7 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
                 add_worst_case_get_cost: 0,
                 worst_case_commitment_tree_insert: 0,
                 worst_case_backward_references_fan_out: 0,
+                worst_case_sum_item_cost_size: 0,
             },
             // PrivateDocumentStore is unavailable before GROVE_V4: every
             // slot is 0 and the operations fail closed.
