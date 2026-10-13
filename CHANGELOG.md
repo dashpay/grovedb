@@ -107,7 +107,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TreeNode::put_value` installs it at the grove version, a
   provided-value-hash put, or a put at a specialized cost) and a
   `&GroveVersion`. `grovedb_merk::element::insert::specialized_put_cost`,
-  the value-defined cost an ordinary write puts an element with, is new.
+  the value-defined cost an ordinary write puts an element with, and
+  `Merk::replacement_runs_value_update`, whether a write over a key runs
+  the just-in-time value update, are new.
 - **BREAKING**: `delete_operation_for_delete_internal` and
   `delete_operations_for_delete_up_tree_while_empty` take the operations
   already pending in the batch as any `impl PendingOperations` in place of a
