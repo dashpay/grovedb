@@ -16,6 +16,8 @@ mod tests {
         },
         OperationCost,
     };
+    use std::collections::BTreeMap;
+
     use grovedb_epoch_based_storage_flags::StorageFlags;
     use grovedb_merk::{element::costs::ElementCostExtensions, tree_type::TreeType};
     use grovedb_version::version::{v3::GROVE_V3, GroveVersion};
@@ -24,7 +26,7 @@ mod tests {
         batch::{BatchApplyOptions, QualifiedGroveDbOp},
         reference_path::ReferencePathType,
         tests::{make_empty_grovedb, TempGroveDb},
-        Element, ElementFlags, Error,
+        Element, ElementFlags, Error, GroveDb, PathQuery,
     };
 
     const OLD_OWNER: [u8; 32] = [1; 32];
@@ -120,28 +122,45 @@ mod tests {
         with_reference: bool,
         grove_version: &GroveVersion,
     ) -> TempGroveDb {
+        grove_with_reference(
+            old,
+            tree_type,
+            with_reference.then(|| Element::new_reference(target())),
+            Element::empty_tree(),
+            grove_version,
+        )
+    }
+
+    /// [`grove_with`], with `value_tree` as the `[index]/value` tree and
+    /// `reference`, if any, as the deeper reference.
+    fn grove_with_reference(
+        old: &Element,
+        tree_type: TreeType,
+        reference: Option<Element>,
+        value_tree: Element,
+        grove_version: &GroveVersion,
+    ) -> TempGroveDb {
         let db = make_empty_grovedb();
         let tree = match tree_type {
             TreeType::SumTree => Element::empty_sum_tree(),
+            TreeType::CountSumTree => Element::empty_count_sum_tree(),
+            TreeType::ProvableSumTree => Element::empty_provable_sum_tree(),
+            TreeType::ProvableCountProvableSumTree => {
+                Element::empty_provable_count_provable_sum_tree()
+            }
             _ => Element::empty_tree(),
         };
         insert(&db, &[], b"tree", tree, grove_version);
         insert(&db, &[b"tree"], KEY, old.clone(), grove_version);
         insert(&db, &[], b"index", Element::empty_tree(), grove_version);
-        insert(
-            &db,
-            &[b"index"],
-            b"value",
-            Element::empty_tree(),
-            grove_version,
-        );
+        insert(&db, &[b"index"], b"value", value_tree, grove_version);
         insert(&db, &[], b"zindex", Element::empty_tree(), grove_version);
-        if with_reference {
+        if let Some(reference) = reference {
             insert(
                 &db,
                 &[b"index", b"value"],
                 b"reference",
-                Element::new_reference(target()),
+                reference,
                 grove_version,
             );
         }
@@ -312,6 +331,217 @@ mod tests {
                     reference_ops,
                     with_reference,
                     grove_version,
+                )
+                .unwrap_or_else(|e| panic!("{label}, {reference_label}: expected to apply: {e}"));
+                assert_eq!(
+                    stale, 0,
+                    "{label} ({new:?}), {reference_label}: a reference is stale"
+                );
+            }
+        }
+    }
+
+    /// The trees and writes Drive uses for a document of a summable type
+    /// that [`flag_changing_updates`] does not: a provable sum or count-sum
+    /// primary tree, a `NonCounted` target in a count-sum tree, and a
+    /// target holding bytes of two epochs shrunk in a later one (which
+    /// sections the freed bytes during the prediction).
+    fn drive_shaped_updates() -> Vec<(&'static str, Element, Element, TreeType)> {
+        let item = |value: u8, len: usize, sum: i64, flags| {
+            Element::new_item_with_sum_item_with_flags(vec![value; len], sum, flags)
+        };
+        let two_epochs = Some(
+            StorageFlags::MultiEpochOwned(0, BTreeMap::from([(1, 10)]), OLD_OWNER)
+                .to_element_flags(),
+        );
+        let mut updates = vec![];
+        for tree_type in [
+            TreeType::SumTree,
+            TreeType::CountSumTree,
+            TreeType::ProvableSumTree,
+            TreeType::ProvableCountProvableSumTree,
+        ] {
+            updates.push((
+                "grown in a later epoch",
+                item(7, 20, 5, owned_flags(0, OLD_OWNER)),
+                item(8, 23, 9, owned_flags(2, OLD_OWNER)),
+                tree_type,
+            ));
+            updates.push((
+                "holding two epochs, shrunk in a later epoch",
+                item(7, 30, 5, two_epochs.clone()),
+                item(8, 22, 9, owned_flags(3, OLD_OWNER)),
+                tree_type,
+            ));
+        }
+        let non_counted = |element| Element::new_non_counted(element).expect("a NonCounted item");
+        updates.push((
+            "NonCounted, grown in a later epoch",
+            non_counted(item(7, 20, 5, owned_flags(0, OLD_OWNER))),
+            non_counted(item(8, 23, 9, owned_flags(2, OLD_OWNER))),
+            TreeType::CountSumTree,
+        ));
+        updates
+    }
+
+    /// The deeper index reference as Drive writes it for a summable index:
+    /// a flagged `ReferenceWithSumItem` in a sum tree, refreshed (trusted or
+    /// not) or rewritten in the same batch as its target.
+    fn drive_shaped_reference_ops() -> Vec<(&'static str, QualifiedGroveDbOp)> {
+        let path = vec![b"index".to_vec(), b"value".to_vec()];
+        let refresh = |trusted| {
+            QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+                path.clone(),
+                b"reference".to_vec(),
+                target(),
+                None,
+                9,
+                owned_flags(2, OLD_OWNER),
+                false,
+                trusted,
+            )
+        };
+        vec![
+            ("an untrusted refresh", refresh(false)),
+            ("a trusted refresh", refresh(true)),
+            (
+                "a rewrite",
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    path.clone(),
+                    b"reference".to_vec(),
+                    Element::new_reference_with_sum_item_with_flags(
+                        target(),
+                        9,
+                        owned_flags(2, OLD_OWNER),
+                    ),
+                ),
+            ),
+        ]
+    }
+
+    #[test]
+    fn a_drive_shaped_reference_commits_to_the_stored_bytes() {
+        let grove_version = GroveVersion::latest();
+        for (label, old, new, tree_type) in drive_shaped_updates() {
+            for (reference_label, reference_op) in drive_shaped_reference_ops() {
+                let db = grove_with_reference(
+                    &old,
+                    tree_type,
+                    Some(Element::new_reference_with_sum_item_with_flags(
+                        target(),
+                        5,
+                        owned_flags(0, OLD_OWNER),
+                    )),
+                    Element::empty_sum_tree(),
+                    grove_version,
+                );
+                apply(&db, vec![write_op(&new), reference_op], grove_version).unwrap_or_else(|e| {
+                    panic!("{label} in {tree_type:?}, {reference_label}: expected to apply: {e}")
+                });
+                assert_eq!(
+                    issues(&db, grove_version),
+                    0,
+                    "{label} in {tree_type:?}, {reference_label}: a reference is stale"
+                );
+            }
+        }
+    }
+
+    /// A flags update that answers the apply otherwise than the prediction
+    /// would leave the reference committed to bytes the target does not
+    /// hold, so the batch is refused once the target is written.
+    #[test]
+    fn a_target_storing_other_bytes_than_its_prediction_refuses_the_batch() {
+        let grove_version = GroveVersion::latest();
+        let old = Element::new_item_with_flags(b"v".to_vec(), Some(vec![0]));
+        let new = Element::new_item_with_flags(b"w".to_vec(), Some(vec![0]));
+        let db = grove_with(&old, TreeType::NormalTree, true, grove_version);
+        let mut calls = 0u8;
+        let error = db
+            .apply_batch_with_element_flags_update(
+                vec![write_op(&new), refresh_op(false)],
+                Some(BatchApplyOptions::default()),
+                |_cost: &StorageCost, _old_flags: Option<Vec<u8>>, new_flags: &mut Vec<u8>| {
+                    calls += 1;
+                    *new_flags = vec![calls];
+                    Ok(true)
+                },
+                |_flags: &mut Vec<u8>, removed_key_bytes, removed_value_bytes| {
+                    Ok((
+                        BasicStorageRemoval(removed_key_bytes),
+                        BasicStorageRemoval(removed_value_bytes),
+                    ))
+                },
+                None,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect_err("expected the batch to be refused");
+        assert!(
+            error.to_string().contains("predicted for a reference"),
+            "unexpected error {error}"
+        );
+    }
+
+    /// Whether a proof of the deeper reference verifies against the grove's
+    /// root hash.
+    fn reference_proof_verifies(db: &TempGroveDb, grove_version: &GroveVersion) -> bool {
+        let query = PathQuery::new_single_key(
+            vec![b"index".to_vec(), b"value".to_vec()],
+            b"reference".to_vec(),
+        );
+        let Ok(proof) = db.prove_query(&query, None, grove_version).unwrap() else {
+            return false;
+        };
+        let Ok((root_hash, results)) = GroveDb::verify_query(&proof, &query, grove_version) else {
+            return false;
+        };
+        results.len() == 1
+            && root_hash
+                == db
+                    .root_hash(None, grove_version)
+                    .unwrap()
+                    .expect("expected the root hash")
+    }
+
+    /// A proof read through the reference, which a stale reference fails,
+    /// verifies once the batch has updated its target in a later epoch; on
+    /// grove v1..v3 (consensus-locked) it does not.
+    #[test]
+    fn a_proof_through_a_same_batch_reference_verifies() {
+        let old =
+            Element::new_item_with_sum_item_with_flags(vec![7; 20], 5, owned_flags(0, OLD_OWNER));
+        let new =
+            Element::new_item_with_sum_item_with_flags(vec![8; 23], 9, owned_flags(2, OLD_OWNER));
+        for (grove_version, verifies) in [(GroveVersion::latest(), true), (&GROVE_V3, false)] {
+            let db = grove_with(&old, TreeType::SumTree, true, grove_version);
+            apply(&db, vec![write_op(&new), refresh_op(false)], grove_version)
+                .expect("expected to apply");
+            assert_eq!(
+                reference_proof_verifies(&db, grove_version),
+                verifies,
+                "grove protocol version {}",
+                grove_version.protocol_version
+            );
+        }
+    }
+
+    /// The prediction also holds for a hand-built version pairing it with
+    /// Merk's `put_value` version 0, under which an ordinary put keeps the
+    /// value-defined cost the stored node was loaded with.
+    #[test]
+    fn a_reference_predicted_under_merk_put_value_0_commits_to_the_stored_bytes() {
+        let mut grove_version = GroveVersion::latest().clone();
+        grove_version.merk_versions.tree.put_value = 0;
+        for (label, old, new, tree_type) in flag_changing_updates() {
+            for (reference_label, reference_ops, with_reference, _) in reference_ops() {
+                let stale = stale_references(
+                    &old,
+                    &new,
+                    tree_type,
+                    reference_ops,
+                    with_reference,
+                    &grove_version,
                 )
                 .unwrap_or_else(|e| panic!("{label}, {reference_label}: expected to apply: {e}"));
                 assert_eq!(

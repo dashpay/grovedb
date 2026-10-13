@@ -229,19 +229,15 @@ where
         u32,
     ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
 {
-    // Only an ordinary put whose install keeps the stored node's
-    // value-defined cost (`merk_versions.tree.put_value` 0) reads it: version 1
-    // clears it, a provided-value-hash put clears it and a specialized-cost
-    // put replaces it, so the stored element is decoded for it only then.
+    // The stored node as the apply loads it (its value-defined cost through
+    // the same function the apply passes Merk). Only an ordinary put can keep
+    // that cost, as `TreeNode::put_value` installs it at the grove version; a
+    // provided-value-hash put clears it and a specialized-cost put replaces it.
     let old_value_defined_cost = match put {
-        PredictedPut::Ordinary
-            if TreeNode::ordinary_put_keeps_value_defined_cost(grove_version)? =>
-        {
+        PredictedPut::Ordinary => {
             Element::value_defined_cost_for_serialized_value(&old_serialized, grove_version)
         }
-        PredictedPut::Ordinary
-        | PredictedPut::ProvidedValueHash
-        | PredictedPut::SpecializedCost(_) => None,
+        PredictedPut::ProvidedValueHash | PredictedPut::SpecializedCost(_) => None,
     };
     TreeNode::predict_put_final_value(
         key.to_vec(),

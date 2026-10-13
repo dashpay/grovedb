@@ -2091,7 +2091,9 @@ struct TreeCacheMerkByPath<S, F, F2> {
 /// target: a flagged `Item`, `SumItem` or `ItemWithSumItem` (through any
 /// wrapper) written by an insert-or-replace, a replace or a patch. Such a
 /// reference reads whether the pass has already written the target, so only
-/// these targets are recorded in `written_qualified_paths`.
+/// these targets are recorded in `written_qualified_paths`; the reference arm
+/// of `follow_reference_get_value_hash` predicts exactly the targets this
+/// accepts.
 fn writes_a_predicted_reference_target(op: &GroveOp) -> bool {
     match op {
         GroveOp::InsertOrReplace { element }
@@ -2999,7 +3001,10 @@ where
                     // wrapper for hashing so the value hash matches storage.
                     match element.underlying() {
                         Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
-                            if element.get_flags().is_none() {
+                            // The same predicate decides which targets the pass
+                            // records as written, so every target predicted here
+                            // is recorded.
+                            if !writes_a_predicted_reference_target(op) {
                                 // There are no storage flags, we can just hash new element
                                 let serialized = cost_return_on_error_into_no_add!(
                                     cost,
@@ -3023,9 +3028,6 @@ where
                                 if let Some((old_serialized_element, is_in_sum_tree)) =
                                     serialized_element_result
                                 {
-                                    // Recorded for exactly the ops this arm
-                                    // handles (`writes_a_predicted_reference_target`).
-                                    debug_assert!(writes_a_predicted_reference_target(op));
                                     let target_written =
                                         self.written_qualified_paths.contains(qualified_path);
                                     let value_hash = cost_return_on_error!(
@@ -5373,8 +5375,37 @@ where
         for qualified_path in written_qualified_paths {
             // A reference to a written target hashes the bytes it stores
             // and never reads its prediction again, so the prediction can
-            // go.
-            self.predicted_reference_targets.remove(&qualified_path);
+            // go. A reference resolved before the write committed to the
+            // prediction, so the write must have stored exactly those bytes:
+            // refuse the batch otherwise, as for a backward-references item.
+            // The read is of the node this pass just wrote and is not
+            // charged, so the check changes no cost.
+            if let (Some(predicted), Some(key)) = (
+                self.predicted_reference_targets.remove(&qualified_path),
+                qualified_path.last(),
+            ) {
+                let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                let stored = cost_return_on_error_no_add!(
+                    cost,
+                    merk.get(
+                        key,
+                        true,
+                        Some(&Element::value_defined_cost_for_serialized_value),
+                        grove_version,
+                    )
+                    .unwrap()
+                    .map_err(|e| Error::CorruptedData(e.to_string()))
+                );
+                if stored.as_deref() != Some(predicted.as_slice()) {
+                    return Err(Error::JustInTimeElementFlagsClientError(
+                        "a pending item write stored other bytes than the ones predicted \
+                         for a reference to it in the same batch; the flags callbacks must \
+                         be deterministic"
+                            .to_owned(),
+                    ))
+                    .wrap_with_cost(cost);
+                }
+            }
             self.written_qualified_paths.insert(qualified_path);
         }
         let merk = self.merks.get_mut(path).expect("the Merk is cached");
