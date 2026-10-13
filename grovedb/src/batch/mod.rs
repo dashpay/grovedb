@@ -34,6 +34,8 @@ mod just_in_time_value_update;
 mod options;
 mod refresh_reference_mode;
 #[cfg(test)]
+mod same_batch_reference_prediction_tests;
+#[cfg(test)]
 mod single_deletion_cost_tests;
 #[cfg(test)]
 mod single_insert_cost_tests;
@@ -2073,6 +2075,40 @@ struct TreeCacheMerkByPath<S, F, F2> {
     /// already holding an element: the insert writes nothing there, so a
     /// moved reference through one does not reach a write.
     kept_by_conditional_insert: HashSet<Vec<Vec<u8>>>,
+    /// The qualified paths of the targets this pass has already written. A
+    /// same-batch reference to one of them commits to the bytes it now
+    /// stores instead of predicting them (from
+    /// `apply_batch.same_batch_reference_target_prediction` version 1).
+    written_qualified_paths: HashSet<Vec<Vec<u8>>>,
+    /// The bytes predicted for a pending item write that a same-batch
+    /// reference points at, by the target's qualified path, so references
+    /// sharing a target predict it once (from
+    /// `apply_batch.same_batch_reference_target_prediction` version 1).
+    predicted_reference_targets: HashMap<Vec<Vec<u8>>, Vec<u8>>,
+}
+
+/// Whether a same-batch reference to the target `op` writes predicts that
+/// target: a flagged `Item`, `SumItem` or `ItemWithSumItem` (through any
+/// wrapper) written by an insert-or-replace, a replace or a patch. Such a
+/// reference reads whether the pass has already written the target, so only
+/// these targets are recorded in `written_qualified_paths`; the reference arm
+/// of `follow_reference_get_value_hash` predicts exactly the targets this
+/// accepts.
+fn writes_a_predicted_reference_target(op: &GroveOp) -> bool {
+    match op {
+        GroveOp::InsertOrReplace { element }
+        | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
+        | GroveOp::Replace { element }
+        | GroveOp::ReplaceDontCheckForBackwardsReferences { element }
+        | GroveOp::Patch { element, .. }
+        | GroveOp::PatchDontCheckForBackwardsReferences { element, .. } => {
+            matches!(
+                element.underlying(),
+                Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..)
+            ) && element.get_flags().is_some()
+        }
+        _ => false,
+    }
 }
 
 impl<S, F, F2> fmt::Debug for TreeCacheMerkByPath<S, F, F2> {
@@ -2611,6 +2647,36 @@ where
     ) -> CostResult<Option<(Element, Vec<u8>, TreeType)>, Error> {
         let mut cost = OperationCost::default();
 
+        let referenced_element = cost_return_on_error!(
+            &mut cost,
+            self.get_referenced_element_bytes(key, reference_path, grove_version)
+        );
+
+        if let Some((referenced_element, tree_type)) = referenced_element {
+            let element = cost_return_on_error_no_add!(
+                cost,
+                Element::deserialize(referenced_element.as_slice(), grove_version).map_err(|e| {
+                    Error::CorruptedData(format!("unable to deserialize element: {e}"))
+                })
+            );
+
+            Ok(Some((element, referenced_element, tree_type))).wrap_with_cost(cost)
+        } else {
+            Ok(None).wrap_with_cost(cost)
+        }
+    }
+
+    /// The serialized bytes of the element at `key` under `reference_path`
+    /// as the Merk cache holds them, and the type of the tree holding it;
+    /// [`Self::get_and_deserialize_referenced_element`] without the decode.
+    fn get_referenced_element_bytes(
+        &mut self,
+        key: &[u8],
+        reference_path: &[Vec<u8>],
+        grove_version: &GroveVersion,
+    ) -> CostResult<Option<(Vec<u8>, TreeType)>, Error> {
+        let mut cost = OperationCost::default();
+
         let merk = match self.merks.entry(reference_path.to_vec()) {
             HashMapEntry::Occupied(o) => o.into_mut(),
             HashMapEntry::Vacant(v) => v.insert(cost_return_on_error!(
@@ -2632,18 +2698,8 @@ where
 
         let tree_type = merk.tree_type;
 
-        if let Some(referenced_element) = referenced_element {
-            let element = cost_return_on_error_no_add!(
-                cost,
-                Element::deserialize(referenced_element.as_slice(), grove_version).map_err(|e| {
-                    Error::CorruptedData(format!("unable to deserialize element: {e}"))
-                })
-            );
-
-            Ok(Some((element, referenced_element, tree_type))).wrap_with_cost(cost)
-        } else {
-            Ok(None).wrap_with_cost(cost)
-        }
+        Ok(referenced_element.map(|referenced_element| (referenced_element, tree_type)))
+            .wrap_with_cost(cost)
     }
 
     /// Processes a reference with a hop count greater than one, handling the
@@ -2945,41 +3001,52 @@ where
                     // wrapper for hashing so the value hash matches storage.
                     match element.underlying() {
                         Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
-                            let serialized = cost_return_on_error_into_no_add!(
-                                cost,
-                                element.serialize(grove_version)
-                            );
-                            if element.get_flags().is_none() {
+                            // The same predicate decides which targets the pass
+                            // records as written, so every target predicted here
+                            // is recorded.
+                            if !writes_a_predicted_reference_target(op) {
                                 // There are no storage flags, we can just hash new element
+                                let serialized = cost_return_on_error_into_no_add!(
+                                    cost,
+                                    element.serialize(grove_version)
+                                );
                                 let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                                 Ok(val_hash).wrap_with_cost(cost)
                             } else {
-                                let mut new_element = element.clone();
-
                                 // it can be unmerged, let's get the value on disk
                                 let (key, reference_path) = qualified_path
                                     .split_last()
                                     .expect("empty path refused at the top of this function");
                                 let serialized_element_result = cost_return_on_error!(
                                     &mut cost,
-                                    self.get_and_deserialize_referenced_element(
+                                    self.get_referenced_element_bytes(
                                         key,
                                         reference_path,
                                         grove_version
                                     )
                                 );
-                                if let Some((old_element, old_serialized_element, is_in_sum_tree)) =
+                                if let Some((old_serialized_element, is_in_sum_tree)) =
                                     serialized_element_result
                                 {
+                                    let target_written =
+                                        self.written_qualified_paths.contains(qualified_path);
+                                    // Only the version 1 prediction reads it.
+                                    let runs_value_update =
+                                        !Self::tracks_written_targets(grove_version)
+                                            || self.merks.get(reference_path).is_none_or(|merk| {
+                                                merk.replacement_runs_value_update(key)
+                                            });
                                     let value_hash = cost_return_on_error!(
                                         &mut cost,
                                         Self::process_old_element_flags(
                                             key,
-                                            &serialized,
-                                            &mut new_element,
-                                            old_element,
-                                            &old_serialized_element,
+                                            qualified_path,
+                                            element,
+                                            old_serialized_element,
                                             is_in_sum_tree,
+                                            target_written,
+                                            runs_value_update,
+                                            &mut self.predicted_reference_targets,
                                             flags_update,
                                             split_removal_bytes,
                                             grove_version,
@@ -2987,6 +3054,10 @@ where
                                     );
                                     Ok(value_hash).wrap_with_cost(cost)
                                 } else {
+                                    let serialized = cost_return_on_error_into_no_add!(
+                                        cost,
+                                        element.serialize(grove_version)
+                                    );
                                     let value_hash =
                                         value_hash(&serialized).unwrap_add_cost(&mut cost);
                                     Ok(value_hash).wrap_with_cost(cost)
@@ -3376,6 +3447,23 @@ where
         let p = path.to_path();
         let path = &p;
         self.unused_new_merks.remove(path);
+        // The targets this path writes that a same-batch reference may
+        // predict, recorded as written once it has applied them (only read by
+        // the version 1 target prediction).
+        let written_qualified_paths: Vec<Vec<Vec<u8>>> =
+            if Self::tracks_written_targets(grove_version) {
+                ops_at_path_by_key
+                    .iter()
+                    .filter(|(_, op)| writes_a_predicted_reference_target(op))
+                    .map(|(key_info, _)| {
+                        let mut qualified_path = path.to_vec();
+                        qualified_path.push(key_info.get_key_clone());
+                        qualified_path
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
         // This also populates Merk trees cache
         let in_tree_type = {
@@ -5291,6 +5379,42 @@ where
                 .insert(path.to_vec(), per_axis);
         }
 
+        for qualified_path in written_qualified_paths {
+            // A reference to a written target hashes the bytes it stores
+            // and never reads its prediction again, so the prediction can
+            // go. A reference resolved before the write committed to the
+            // prediction, so the write must have stored exactly those bytes:
+            // refuse the batch otherwise, as for a backward-references item.
+            // The read is of the node this pass just wrote and is not
+            // charged, so the check changes no cost.
+            if let (Some(predicted), Some(key)) = (
+                self.predicted_reference_targets.remove(&qualified_path),
+                qualified_path.last(),
+            ) {
+                let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                let stored = cost_return_on_error_no_add!(
+                    cost,
+                    merk.get(
+                        key,
+                        true,
+                        Some(&Element::value_defined_cost_for_serialized_value),
+                        grove_version,
+                    )
+                    .unwrap()
+                    .map_err(|e| Error::CorruptedData(e.to_string()))
+                );
+                if stored.as_deref() != Some(predicted.as_slice()) {
+                    return Err(Error::JustInTimeElementFlagsClientError(
+                        "a pending item write stored other bytes than the ones predicted \
+                         for a reference to it in the same batch; the flags callbacks must \
+                         be deterministic"
+                            .to_owned(),
+                    ))
+                    .wrap_with_cost(cost);
+                }
+            }
+            self.written_qualified_paths.insert(qualified_path);
+        }
         let merk = self.merks.get_mut(path).expect("the Merk is cached");
         merk.root_hash_key_and_aggregate_data()
             .add_cost(cost)
@@ -5890,6 +6014,8 @@ impl GroveDb {
                     moved_subtrees: Vec::new(),
                     moved_positions: Default::default(),
                     kept_by_conditional_insert: HashSet::new(),
+                    written_qualified_paths: Default::default(),
+                    predicted_reference_targets: Default::default(),
                 },
                 grove_version
             )
@@ -5960,6 +6086,22 @@ impl GroveDb {
                 merk_tree_cache.merks.remove(&path);
             }
         }
+        // The additional ops write their targets again, so a reference to one
+        // predicts the bytes it stores from what the first segment left, and
+        // no prediction made before the continuation still holds.
+        for op in &additional_ops {
+            if merk_tree_cache.written_qualified_paths.is_empty() {
+                break;
+            }
+            if let Some(key) = &op.key {
+                let mut qualified_path = op.path.to_path();
+                qualified_path.push(key.get_key_clone());
+                merk_tree_cache
+                    .written_qualified_paths
+                    .remove(&qualified_path);
+            }
+        }
+        merk_tree_cache.predicted_reference_targets.clear();
         let mut cost = OperationCost::default();
         let batch_structure = cost_return_on_error!(
             &mut cost,
@@ -7035,11 +7177,19 @@ impl GroveDb {
     /// Applies batch of operations on GroveDB
     ///
     /// `update_element_flags_function` and `split_removal_bytes_function`
-    /// run whenever a write replaces a stored value. They must be
-    /// deterministic: under backward-references maintenance the batch
-    /// predicts the bytes a flagged item will store (its referrers commit to
-    /// them) by consulting the same callbacks before the apply, and refuses
-    /// the batch if the apply stores anything else.
+    /// run whenever a write replaces a stored value, and may run more than
+    /// once for one write. They must be deterministic, answering the same
+    /// inputs the same way every time: the batch predicts the bytes a
+    /// flagged item will store by consulting the same callbacks before the
+    /// apply, wherever something commits to those bytes first.
+    ///
+    /// - A reference the batch writes or refreshes to an item the batch
+    ///   also updates commits to the predicted bytes. Nothing checks them
+    ///   after the apply, so a callback that answers the apply differently
+    ///   leaves the reference committed to bytes that are never stored.
+    /// - Under backward-references maintenance the referrers of a flagged
+    ///   backward-references item commit to them, and the batch refuses the
+    ///   batch if the apply stores anything else.
     pub fn apply_batch_with_element_flags_update(
         &self,
         ops: Vec<QualifiedGroveDbOp>,

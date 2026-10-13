@@ -9,7 +9,9 @@
 //! commits to the item's logical hash — flags included — and a flags
 //! callback (Drive's epoch-based storage flags) rewrites flags on every
 //! cross-epoch update. [`predict_provided_value_hash_put`] runs this update
-//! through Merk's own routine to get those bytes.
+//! through Merk's own routine to get those bytes, and
+//! [`predict_put_final_bytes`] does the same for any put, which a
+//! same-batch reference to a pending item write commits to.
 
 use grovedb_costs::storage_cost::{
     removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
@@ -22,7 +24,7 @@ use grovedb_merk::{
             ValueDefinedCostType,
             ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
         },
-        TreeNode,
+        PredictedPut, TreeFeatureType, TreeNode,
     },
     tree_type::{CostSize, TreeType, SUM_ITEM_COST_SIZE},
     Error as MerkError,
@@ -200,6 +202,74 @@ where
     }
 }
 
+/// The bytes a batch apply finally stores when `put` of `new_serialized`
+/// (with `feature_type`) replaces the stored `old_serialized` bytes at `key`
+/// in a subtree of `in_tree_type`, with the caller's callbacks: Merk's own
+/// just-in-time value update, run on a detached node loaded as the apply
+/// loads the stored node.
+///
+/// The callbacks must answer the apply the same way they answer here.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn predict_put_final_bytes<G, SR>(
+    key: &[u8],
+    old_serialized: Vec<u8>,
+    new_serialized: Vec<u8>,
+    feature_type: TreeFeatureType,
+    put: PredictedPut,
+    in_tree_type: TreeType,
+    flags_update: &mut G,
+    split_removal_bytes: &mut SR,
+    grove_version: &GroveVersion,
+) -> Result<Vec<u8>, MerkError>
+where
+    G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+    SR: FnMut(
+        &mut ElementFlags,
+        u32,
+        u32,
+    ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
+{
+    // The stored node as the apply loads it (its value-defined cost through
+    // the same function the apply passes Merk). Only an ordinary put can keep
+    // that cost, as `TreeNode::put_value` installs it at the grove version; a
+    // provided-value-hash put clears it and a specialized-cost put replaces it.
+    let old_value_defined_cost = match put {
+        PredictedPut::Ordinary => {
+            Element::value_defined_cost_for_serialized_value(&old_serialized, grove_version)
+        }
+        PredictedPut::ProvidedValueHash | PredictedPut::SpecializedCost(_) => None,
+    };
+    TreeNode::predict_put_final_value(
+        key.to_vec(),
+        old_serialized,
+        old_value_defined_cost,
+        new_serialized,
+        feature_type,
+        put,
+        &|key, value| old_specialized_cost(key, value, in_tree_type, grove_version),
+        &|old_value, new_value| new_value_with_old_flags(old_value, new_value, grove_version),
+        &mut |storage_costs, old_value, new_value| {
+            update_value_flags_based_on_costs(
+                flags_update,
+                storage_costs,
+                old_value,
+                new_value,
+                grove_version,
+            )
+        },
+        &mut |value, removed_key_bytes, removed_value_bytes| {
+            section_removal_bytes(
+                split_removal_bytes,
+                value,
+                removed_key_bytes,
+                removed_value_bytes,
+                grove_version,
+            )
+        },
+        grove_version,
+    )
+}
+
 /// The element a batch apply finally stores when it writes `new_element`
 /// (a backward-references family element, which the apply writes as a
 /// provided-value-hash put) over the stored `old_serialized` bytes at `key`
@@ -226,31 +296,16 @@ where
 {
     let new_serialized = new_element.serialize(grove_version)?;
     let feature_type = new_element.get_feature_type(in_tree_type)?;
-    let final_bytes = TreeNode::provided_value_hash_put_final_value(
-        key.to_vec(),
+    let final_bytes = predict_put_final_bytes(
+        key,
         old_serialized.to_vec(),
         new_serialized.clone(),
         feature_type,
-        &|key, value| old_specialized_cost(key, value, in_tree_type, grove_version),
-        &|old_value, new_value| new_value_with_old_flags(old_value, new_value, grove_version),
-        &mut |storage_costs, old_value, new_value| {
-            update_value_flags_based_on_costs(
-                flags_update,
-                storage_costs,
-                old_value,
-                new_value,
-                grove_version,
-            )
-        },
-        &mut |value, removed_key_bytes, removed_value_bytes| {
-            section_removal_bytes(
-                split_removal_bytes,
-                value,
-                removed_key_bytes,
-                removed_value_bytes,
-                grove_version,
-            )
-        },
+        PredictedPut::ProvidedValueHash,
+        in_tree_type,
+        flags_update,
+        split_removal_bytes,
+        grove_version,
     )
     .map_err(|e| {
         Error::CorruptedData(format!(
