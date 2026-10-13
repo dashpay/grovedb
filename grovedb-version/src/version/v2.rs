@@ -46,6 +46,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
             backward_references_maintenance: 0,
             move_element: 0,
             reference_through_conditional_insert: 0,
+            same_batch_reference_target_prediction: 0,
         },
         element: GroveDBElementMethodVersions {
             delete: 0,
@@ -293,7 +294,10 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
         },
         // Ordinary replacements keep the loaded `value_defined_cost`
         // metadata (issue #908); consensus-locked, bumped in v4.
-        tree: MerkTreeVersions { put_value: 0 },
+        tree: MerkTreeVersions {
+            put_value: 0,
+            just_in_time_value_update: 0,
+        },
     },
     // MMR hash charges: the shipped accounting, which billed the
     // storage reads each operation performed but not the blake3 merges

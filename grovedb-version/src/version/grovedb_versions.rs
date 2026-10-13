@@ -268,6 +268,24 @@ pub struct GroveDBApplyBatchVersions {
     ///   the same existence read the insert's own level makes; the op's
     ///   element otherwise.
     pub reference_through_conditional_insert: FeatureVersion,
+    /// How a reference written in a batch gets the value hash of a target
+    /// item the same batch updates.
+    ///
+    /// - `0` (V1..V3): a hand-written copy of Merk's just-in-time value
+    ///   update over the target's bytes as the Merk cache holds them. For a
+    ///   sum item it assumes the new element keeps the stored flags and does
+    ///   not consult the flags update, while the apply stores the flags the
+    ///   flags update leaves, so when those differ (an owned item updated in
+    ///   a later epoch, an unowned one gaining an owner) the reference
+    ///   commits to bytes that are never stored. A sum item replaced by an
+    ///   item, or the reverse, is refused.
+    /// - `1` (V4+): once the batch has written the target, the hash of the
+    ///   bytes it stores; before, Merk's own just-in-time value update run on
+    ///   the stored and new bytes with the put the apply performs, once per
+    ///   target. The reference commits to exactly the bytes the apply stores,
+    ///   for every item kind, every answer of the flags update and every
+    ///   order the batch writes the reference and its target in.
+    pub same_batch_reference_target_prediction: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

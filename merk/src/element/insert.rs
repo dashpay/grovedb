@@ -46,6 +46,28 @@ impl Delta<'_> {
     }
 }
 
+/// The specialized value-defined cost an ordinary write puts `element` with
+/// (`Op::PutWithSpecializedCost`), or `None` when it is put as an `Op::Put`.
+///
+/// A sum item takes its specialized cost; `is_sum_item` looks through the
+/// `NonCounted` / `NotSummed` / `NotCountedOrSummed` wrappers, so a wrapped
+/// sum item takes the same path as a bare one.
+pub fn specialized_put_cost(
+    element: &Element,
+    grove_version: &GroveVersion,
+) -> Result<Option<u32>, Error> {
+    if element.is_sum_item() {
+        element
+            .specialized_value_defined_cost(grove_version)
+            .map(Some)
+            .ok_or(Error::CorruptedCodeExecution(
+                "sum items should always have a value defined cost",
+            ))
+    } else {
+        Ok(None)
+    }
+}
+
 /// Extension trait for inserting elements into Merk storage.
 pub trait ElementInsertToStorageExtensions {
     /// Whether this element may legally live in a tree of `tree_type`.
@@ -365,22 +387,14 @@ impl ElementInsertToStorageExtensions for Element {
                 .map_err(|e| Error::CorruptedData(e.to_string()))
                 .add_cost(cost);
         }
-        // Use is_sum_item() (which looks through NonCounted) so that a
-        // NonCounted(SumItem(..)) takes the same specialized cost path as a
-        // bare SumItem(..).
-        let batch_operations = if self.is_sum_item() {
-            let cost = cost_return_on_error_default!(self
-                .specialized_value_defined_cost(grove_version)
-                .ok_or(Error::CorruptedCodeExecution(
-                    "sum items should always have a value defined cost"
-                )));
-            [(
-                key,
-                Op::PutWithSpecializedCost(serialized, cost, merk_feature_type),
-            )]
-        } else {
-            [(key, Op::Put(serialized, merk_feature_type))]
-        };
+        let batch_operations =
+            match cost_return_on_error_default!(specialized_put_cost(self, grove_version)) {
+                Some(cost) => [(
+                    key,
+                    Op::PutWithSpecializedCost(serialized, cost, merk_feature_type),
+                )],
+                None => [(key, Op::Put(serialized, merk_feature_type))],
+            };
         let tree_type = merk.tree_type;
         merk.apply_with_specialized_costs::<_, Vec<u8>>(
             &batch_operations,
@@ -424,22 +438,12 @@ impl ElementInsertToStorageExtensions for Element {
             Err(e) => return Err(e.into()).wrap_with_cost(Default::default()),
         };
 
-        // Use is_sum_item() (which looks through NonCounted) so that a
-        // NonCounted(SumItem(..)) takes the same specialized cost path as a
-        // bare SumItem(..).
-        let entry = if self.is_sum_item() {
-            let cost = cost_return_on_error_default!(self
-                .specialized_value_defined_cost(grove_version)
-                .ok_or(Error::CorruptedCodeExecution(
-                    "sum items should always have a value defined cost"
-                )));
-
-            (
+        let entry = match cost_return_on_error_default!(specialized_put_cost(self, grove_version)) {
+            Some(cost) => (
                 key,
                 Op::PutWithSpecializedCost(serialized, cost, feature_type),
-            )
-        } else {
-            (key, Op::Put(serialized, feature_type))
+            ),
+            None => (key, Op::Put(serialized, feature_type)),
         };
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())

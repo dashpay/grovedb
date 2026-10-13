@@ -95,6 +95,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   collection kept as one aux entry per member could not be read back. (#968)
 
 ### Changed
+- **BREAKING**: `TreeNode::put_value_with_fixed_cost`,
+  `TreeNode::put_value_with_reference_value_hash_and_value_cost`,
+  `TreeNode::put_value_with_two_reference_value_hashes_and_value_cost` and
+  their `Walker` counterparts take a `&GroveVersion`, which selects the
+  just-in-time value update (see the `merk_versions.tree.just_in_time_value_update`
+  entry under Fixed). `TreeNode::provided_value_hash_put_final_value` is
+  renamed `TreeNode::predict_put_final_value` and takes the value-defined
+  cost the stored node is loaded with, the put it predicts (the new
+  `grovedb_merk::tree::PredictedPut`: an ordinary put as
+  `TreeNode::put_value` installs it at the grove version, a
+  provided-value-hash put, or a put at a specialized cost) and a
+  `&GroveVersion`. `grovedb_merk::element::insert::specialized_put_cost`,
+  the value-defined cost an ordinary write puts an element with, and
+  `TreeNode::ordinary_put_keeps_value_defined_cost` are new.
 - **BREAKING**: `delete_operation_for_delete_internal` and
   `delete_operations_for_delete_up_tree_while_empty` take the operations
   already pending in the batch as any `impl PendingOperations` in place of a
@@ -170,6 +184,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replay, through the new
   `operations.worst_case.worst_case_sum_item_cost_size` slot (**BREAKING**
   for code building `GroveDBOperationsWorstCaseVersions` by hand).
+- From `GROVE_V4`, a reference a batch writes or refreshes alongside an
+  update of its target item commits to the bytes the update stores. Before,
+  the batch predicted those bytes with a hand-written copy of Merk's
+  just-in-time value update that took a sum item (`SumItem`,
+  `ItemWithSumItem`) to keep its stored flags, while the apply stores the
+  flags the flags update leaves it. When the flags update merges them (an
+  owned item updated in a later epoch, an unowned one gaining an owner) the
+  reference committed to bytes that are never stored, which
+  `verify_grovedb` reports. Drive writes this batch for a document of a
+  summable type: a refresh of a deeper index reference next to the
+  primary-storage update. The prediction also refused a sum item replaced
+  by an item, or the reverse, that applies on its own. Now a reference to
+  a target the batch has already written hashes the bytes stored there, and
+  one to a target still to be written commits to the bytes Merk's own
+  just-in-time value update gives for the put the apply performs, once per
+  target. V1..V3 keep the old prediction for replay, through the new
+  `apply_batch.same_batch_reference_target_prediction` slot (**BREAKING**
+  for code building `GroveDBApplyBatchVersions` by hand).
+- From `GROVE_V4`, a replacement whose flags update leaves the flags
+  unchanged is charged for the bytes it stores. Before, Merk measured the
+  replacement with the new value carrying the old value's flags and kept
+  that measurement, so when the new value's own flags had another length
+  (a plain `apply_batch` replacing a flagged item with longer, shorter or
+  no flags, or Drive's merging callback on an unowned item gaining an owner
+  as it grows) the commit failed with `storage_cost cost mismatch`. A round
+  that rewrites the flags and then restores the put's value now also
+  restores its value-defined cost, so a sum item or tree measured again is
+  measured with the cost of the bytes it holds. Every replacement V1..V3
+  accept is charged the same. V1..V3 keep the old measurement for replay,
+  through the new `merk_versions.tree.just_in_time_value_update` slot
+  (**BREAKING** for code building `MerkTreeVersions` by hand).
 - From `GROVE_V4`, a reference a batch resolves through a pending
   `InsertIfNotExists` reaches the element already stored at that key when
   there is one. Before, it always reached the op's element, so a reference
