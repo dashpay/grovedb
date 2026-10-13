@@ -4,7 +4,7 @@ use grovedb_version::version::GroveVersion;
 
 use crate::{
     proofs::query::QueryItem,
-    tree::{kv::ValueDefinedCostType, RefWalker, TreeNode},
+    tree::{kv::ValueDefinedCostType, Link, RefWalker, TreeNode},
     CryptoHash, Error,
     Error::StorageError,
     Merk, TreeFeatureType,
@@ -102,6 +102,29 @@ where
             match walker {
                 Some(walker) => find(walker, key, value_defined_cost_fn, read, grove_version),
                 None => Ok(None).wrap_with_cost(OperationCost::default()),
+            }
+        })
+    }
+
+    /// Whether a write replacing the value at `key` in this Merk runs the
+    /// just-in-time value update, as the put functions do on a node holding
+    /// the value it was loaded or last updated with. A node this Merk
+    /// inserted and still holds in memory has none, so a write over it
+    /// stores its bytes as given; a node held only in storage is loaded with
+    /// one. Reads no storage: only the nodes already in memory are walked.
+    pub fn replacement_runs_value_update(&self, key: &[u8]) -> bool {
+        self.use_tree(|maybe_tree| {
+            let Some(mut node) = maybe_tree else {
+                return true;
+            };
+            loop {
+                if node.key() == key {
+                    return node.old_value.is_some();
+                }
+                match node.link(key < node.key()).and_then(Link::tree) {
+                    Some(child) => node = child,
+                    None => return true,
+                }
             }
         })
     }

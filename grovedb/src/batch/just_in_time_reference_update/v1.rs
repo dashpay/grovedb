@@ -27,7 +27,10 @@ use crate::{
 /// running Merk's own just-in-time value update on them and the new ones,
 /// with the put the apply performs (`specialized_put_cost`), once per target.
 /// The reference commits to exactly what the apply stores whatever the flags
-/// update answers, and whether the target is a sum item or not.
+/// update answers, and whether the target is a sum item or not. A target the
+/// apply rewrites without the update (`runs_value_update` false: a node a
+/// partial batch's initial segment inserted, still held in the Merk) stores
+/// its bytes as given.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn process_old_element_flags_v1<G, SR>(
     key: &[u8],
@@ -36,6 +39,7 @@ pub(super) fn process_old_element_flags_v1<G, SR>(
     old_serialized_element: Vec<u8>,
     in_tree_type: TreeType,
     target_written: bool,
+    runs_value_update: bool,
     predicted_targets: &mut HashMap<Vec<Vec<u8>>, Vec<u8>>,
     flags_update: &mut G,
     split_removal_bytes: &mut SR,
@@ -61,6 +65,11 @@ where
     // Serialized only now: a written target or a cached prediction does not
     // need the incoming bytes.
     let serialized = cost_return_on_error_into_no_add!(cost, new_element.serialize(grove_version));
+    if !runs_value_update {
+        let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+        predicted_targets.insert(qualified_path.to_vec(), serialized);
+        return Ok(val_hash).wrap_with_cost(cost);
+    }
     let put = match cost_return_on_error_no_add!(
         cost,
         specialized_put_cost(new_element, grove_version).map_err(Error::MerkError)

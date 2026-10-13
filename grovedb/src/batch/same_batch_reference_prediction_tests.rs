@@ -791,6 +791,57 @@ mod tests {
         }
     }
 
+    /// A partial batch whose initial segment inserts a flagged item at a new
+    /// key and whose add-on rewrites it together with a deeper reference to
+    /// it. The Merk still holds the inserted node with no stored value to
+    /// replace, so the rewrite stores its bytes as given, without the flags
+    /// update; the reference commits to those bytes.
+    #[test]
+    fn an_add_on_rewriting_an_item_the_initial_segment_inserted_commits_to_its_bytes() {
+        let grove_version = GroveVersion::latest();
+        let item = |flags| Element::new_item_with_sum_item_with_flags(vec![7; 20], 5, flags);
+        // The merging update would keep the epoch-0 flags over these
+        // same-size epoch-2 ones, had the rewrite replaced a stored value.
+        let inserted = item(owned_flags(0, OLD_OWNER));
+        let rewritten = item(owned_flags(2, OLD_OWNER));
+        let fresh_path = vec![b"tree".to_vec(), b"fresh".to_vec()];
+        let write = |element: &Element| {
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![b"tree".to_vec()],
+                b"fresh".to_vec(),
+                element.clone(),
+            )
+        };
+        let reference = QualifiedGroveDbOp::insert_or_replace_op(
+            vec![b"index".to_vec(), b"value".to_vec()],
+            b"fresh reference".to_vec(),
+            Element::new_reference(ReferencePathType::AbsolutePathReference(fresh_path)),
+        );
+        let db = grove_with(
+            &item(owned_flags(0, OLD_OWNER)),
+            TreeType::SumTree,
+            false,
+            grove_version,
+        );
+        db.apply_partial_batch_with_element_flags_update(
+            vec![write(&inserted)],
+            Some(BatchApplyOptions::default()),
+            merging_flags_update,
+            split_removal_bytes,
+            |_cost, _leftover_operations| Ok(vec![write(&rewritten), reference.clone()]),
+            None,
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected the partial batch to apply");
+        assert_eq!(issues(&db, grove_version), 0);
+        let stored = db
+            .get([b"tree".as_slice()].as_ref(), b"fresh", None, grove_version)
+            .unwrap()
+            .expect("expected the item");
+        assert_eq!(stored, rewritten);
+    }
+
     /// Replacements whose new flags stand as written (the flags update
     /// leaves them unchanged) but are not the length of the old ones, and
     /// whether they run Drive's merging flags update.

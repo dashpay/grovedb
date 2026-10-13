@@ -3030,6 +3030,12 @@ where
                                 {
                                     let target_written =
                                         self.written_qualified_paths.contains(qualified_path);
+                                    // Only the version 1 prediction reads it.
+                                    let runs_value_update =
+                                        !Self::tracks_written_targets(grove_version)
+                                            || self.merks.get(reference_path).is_none_or(|merk| {
+                                                merk.replacement_runs_value_update(key)
+                                            });
                                     let value_hash = cost_return_on_error!(
                                         &mut cost,
                                         Self::process_old_element_flags(
@@ -3039,6 +3045,7 @@ where
                                             old_serialized_element,
                                             is_in_sum_tree,
                                             target_written,
+                                            runs_value_update,
                                             &mut self.predicted_reference_targets,
                                             flags_update,
                                             split_removal_bytes,
