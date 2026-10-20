@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.1.1] - 2026-10-20
+
+### Fixed
+- The `grovedbg` feature unpacks the bundled GroveDBG web UI with `zip` 9
+  instead of `zip-extensions` 0.13, which pulled `zip` 6 (#1023). `zip` 6
+  and 8 are covered by RUSTSEC-2026-0367, RUSTSEC-2026-0368 and
+  RUSTSEC-2026-0369. The archive is now read from memory, so no temporary
+  `grovedbg.zip` file is written. Nothing changes outside `grovedbg`, and
+  every `GroveVersion` behaves as in 6.1.0.
+
 ## [6.1.0] - 2026-10-13
 
 ### Changed
