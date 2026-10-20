@@ -10,7 +10,7 @@
 
 use std::{
     collections::{BTreeMap, HashMap},
-    fs,
+    io::Cursor,
     sync::{Arc, Weak},
     time::{Duration, Instant, SystemTime},
 };
@@ -164,6 +164,11 @@ impl BackwardReferencesFormat {
     }
 }
 
+/// Unpacks the bundled GroveDBG web UI into `destination`.
+fn extract_grovedbg(destination: &std::path::Path) -> zip::result::ZipResult<()> {
+    zip::ZipArchive::new(Cursor::new(GROVEDBG_ZIP))?.extract(destination)
+}
+
 pub(super) fn start_visualizer<A>(grovedb: Weak<GroveDb>, addr: A)
 where
     A: ToSocketAddrs + Send + 'static,
@@ -171,12 +176,9 @@ where
     std::thread::spawn(move || {
         let grovedbg_tmp =
             tempfile::tempdir().expect("cannot create tempdir for grovedbg contents");
-        let grovedbg_zip = grovedbg_tmp.path().join("grovedbg.zip");
         let grovedbg_www = grovedbg_tmp.path().join("grovedbg_www");
 
-        fs::write(&grovedbg_zip, GROVEDBG_ZIP).expect("cannot crate grovedbg.zip");
-        zip_extensions::inflate::zip_extract::zip_extract(&grovedbg_zip, &grovedbg_www)
-            .expect("cannot extract grovedbg contents");
+        extract_grovedbg(&grovedbg_www).expect("cannot extract grovedbg contents");
 
         let cancellation_token = CancellationToken::new();
 
@@ -1310,6 +1312,14 @@ fn node_to_update(
 mod tests {
     use super::*;
     use crate::BackwardsReferences;
+
+    /// The bundled UI unpacks with the `zip` features this crate enables.
+    #[test]
+    fn extract_grovedbg_unpacks_the_bundled_ui() {
+        let destination = tempfile::tempdir().expect("cannot create tempdir");
+        extract_grovedbg(destination.path()).expect("cannot extract grovedbg contents");
+        assert!(destination.path().join("index.html").is_file());
+    }
 
     #[test]
     fn element_to_grovedbg_converts_item_with_sum_item() {
