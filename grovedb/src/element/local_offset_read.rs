@@ -2,8 +2,11 @@
 //! paths and returned rows are visited; skipped subtrees stay collapsed.
 
 use grovedb_costs::{cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt};
-use grovedb_merk::proofs::{Node, Op};
-use grovedb_storage::rocksdb_storage::RocksDbStorage;
+use grovedb_merk::{
+    element::get::ElementFetchFromStorageExtensions,
+    proofs::{Node, Op},
+};
+use grovedb_storage::{rocksdb_storage::RocksDbStorage, Storage};
 use grovedb_version::version::GroveVersion;
 
 use super::{
@@ -36,7 +39,38 @@ pub(super) fn read_local_count_page(
         Ok(merk) => merk,
         // Direct range reads treat a missing storage layer as empty under
         // either strict-path option. Intermediate descents enforce that option.
-        Err(Error::PathParentLayerNotFound(_)) => {
+        Err(error @ Error::PathParentLayerNotFound(_)) => {
+            // The compatible opener also reports absence below a non-tree
+            // ancestor. Confirm a genuinely missing component before returning
+            // an empty page, and retain decoding and storage errors.
+            let mut missing = false;
+            for (depth, key) in path.iter().enumerate() {
+                let context = storage
+                    .get_transactional_storage_context(path[..depth].into(), None, tx.as_ref())
+                    .unwrap_add_cost(&mut cost);
+                let element = cost_return_on_error!(
+                    &mut cost,
+                    Element::get_optional_from_storage(&context, key, v).map_err(Error::from)
+                );
+                match element {
+                    None => {
+                        missing = true;
+                        break;
+                    }
+                    Some(element)
+                        if !element.is_any_tree() || element.uses_non_merk_data_storage() =>
+                    {
+                        return Err(Error::InvalidQuery(
+                            "local offsets require Merk tree intermediates along their selected path",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                    Some(_) => {}
+                }
+            }
+            if !missing {
+                return Err(error).wrap_with_cost(cost);
+            }
             if options.decrease_limit_on_range_with_no_sub_elements {
                 budget.charge_empty_subtree(
                     options.decrease_instance_limits_on_range_with_no_sub_elements,
@@ -169,6 +203,43 @@ mod tests {
                         Some(1 - u16::from(charge_empty && charge_instance))
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn present_non_merk_ancestors_are_not_empty_local_pages() {
+        let v = GroveVersion::latest();
+        for element in [Element::new_item(vec![1]), Element::empty_mmr_tree()] {
+            let db = crate::tests::make_empty_grovedb();
+            db.insert(&[] as &[&[u8]], b"blocker", element, None, None, v)
+                .unwrap()
+                .unwrap();
+            let mut query = Query::new_range_full();
+            query.offset = Some(1);
+            let sized = SizedQuery::new(query, None, None);
+            for strict in [false, true] {
+                let mut budget = QueryBudget::new(None, None, None);
+                let error = read_local_count_page(
+                    &db.db,
+                    &[b"blocker".as_slice(), b"doc"],
+                    &sized,
+                    1,
+                    &mut budget,
+                    QueryOptions {
+                        allow_get_raw: true,
+                        error_if_intermediate_path_tree_not_present: strict,
+                        ..QueryOptions::default()
+                    },
+                    QueryResultType::QueryElementResultType,
+                    None,
+                    Element::path_query_push,
+                    v,
+                )
+                .unwrap()
+                .unwrap_err();
+                assert!(matches!(error, Error::InvalidQuery(_)));
+                assert_eq!(budget.consumed, 0);
             }
         }
     }
