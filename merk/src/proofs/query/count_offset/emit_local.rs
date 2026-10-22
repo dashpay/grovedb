@@ -306,7 +306,5 @@ where
         });
     }
 
-    let _ = (left_link_count, right_link_count);
-
     Ok(node_count).wrap_with_cost(cost)
 }
