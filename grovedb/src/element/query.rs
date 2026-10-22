@@ -165,7 +165,10 @@ impl ElementQueryExtensions for Element {
             storage,
             merk_path,
             query,
-            query_options,
+            QueryOptions {
+                include_parent_tree_on_subquery: false,
+                ..query_options
+            },
             QueryElementResultType,
             transaction,
             grove_version,
@@ -930,6 +933,53 @@ mod tests {
         tests::{make_test_grovedb, TEST_LEAF},
         SizedQuery,
     };
+
+    #[test]
+    fn get_query_values_ignores_parent_echoes_under_v4_and_v5() {
+        let v5 = GroveVersion::latest();
+        for host in [Element::empty_tree(), Element::empty_provable_count_tree()] {
+            let db = crate::tests::make_empty_grovedb();
+            db.insert(
+                &[] as &[&[u8]],
+                b"docs",
+                Element::empty_tree(),
+                None,
+                None,
+                v5,
+            )
+            .unwrap()
+            .unwrap();
+            db.insert(&[b"docs".as_slice()], b"full", host, None, None, v5)
+                .unwrap()
+                .unwrap();
+            db.insert(
+                &[b"docs".as_slice(), b"full"],
+                b"k0",
+                Element::new_item(vec![0]),
+                None,
+                None,
+                v5,
+            )
+            .unwrap()
+            .unwrap();
+            let mut query = Query::new_range_full();
+            query.add_parent_tree_on_subquery = true;
+            query.set_subquery(Query::new_range_full());
+            for v in [&grovedb_version::version::v4::GROVE_V4, v5] {
+                let values = Element::get_query_values(
+                    &db.db,
+                    &[b"docs".as_slice()],
+                    &query,
+                    QueryOptions::default(),
+                    None,
+                    v,
+                )
+                .unwrap()
+                .unwrap();
+                assert_eq!(values, vec![Element::new_item(vec![0])]);
+            }
+        }
+    }
 
     #[test]
     fn test_get_query() {
