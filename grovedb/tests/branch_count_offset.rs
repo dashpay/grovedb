@@ -1124,3 +1124,59 @@ fn merged_global_zero_offsets_do_not_require_count_tree_hosts() {
     assert!(!merged.query.query.has_instance_offset_anywhere());
     assert_eq!(round_trip(&db, &merged).len(), 3);
 }
+
+#[test]
+fn missing_subquery_path_page_charges_one_shared_slot_before_its_sibling() {
+    let v = GroveVersion::latest();
+    let (_dir, db) = fixture(0, None, [true, true]);
+    for cap in [1, 2] {
+        let mut page = Query::new_range_full();
+        page.offset = Some(1);
+        page.limit = Some(1);
+        let mut root = Query::new_with_direction(false);
+        root.insert_key(vec![2]);
+        root.add_conditional_subquery(
+            grovedb::QueryItem::Key(vec![2]),
+            Some(vec![b"doc".to_vec()]),
+            Some(page),
+        );
+        root.insert_key(vec![1]);
+        root.add_conditional_subquery(
+            grovedb::QueryItem::Key(vec![1]),
+            None,
+            Some(Query::new_single_key(b"doc".to_vec())),
+        );
+        let query = PathQuery::new(
+            vec![b"type".to_vec()],
+            SizedQuery::new(root, Some(cap), None),
+        );
+        let verified = round_trip(&db, &query);
+        assert_eq!(
+            verified.len(),
+            usize::from(cap == 2),
+            "the missing page consumes one global slot before the sibling"
+        );
+        if cap == 2 {
+            assert_eq!(verified[0].0, vec![b"type".to_vec(), vec![1]]);
+            assert_eq!(verified[0].1, b"doc");
+        }
+        let (relaxed, _) = db
+            .query_raw(
+                &query,
+                true,
+                true,
+                false,
+                QueryResultType::QueryPathKeyElementTrioResultType,
+                None,
+                v,
+            )
+            .unwrap()
+            .unwrap();
+        let relaxed: Vec<_> = relaxed
+            .to_path_key_elements()
+            .into_iter()
+            .map(|(p, k, e)| (p, k, e.serialize(v).unwrap()))
+            .collect();
+        assert_eq!(relaxed, verified);
+    }
+}
