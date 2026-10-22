@@ -110,8 +110,8 @@ pub struct Query {
     /// shape, so this is not a general physical-row offset reader.
     ///
     /// Verified result rows do not signal truncation. An omitted exact key
-    /// establishes absence only when no global or ancestor query limit can
-    /// truncate its branch.
+    /// establishes absence only when there is no global limit and no
+    /// `Query::limit` on the selecting node or any enclosing node.
     pub offset: Option<u16>,
 }
 

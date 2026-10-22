@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING**: `QueryOptions` adds `include_parent_tree_on_subquery`.
+  Exhaustive struct literals must supply the field or use a default update.
+  It defaults to `true` for V5 raw parent carriers; value projections disable
+  those metadata rows. Earlier query engines ignore the field.
+
 ## [6.1.1] - 2026-10-20
 
 ### Fixed

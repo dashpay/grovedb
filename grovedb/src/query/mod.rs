@@ -1116,8 +1116,8 @@ impl PathQuery {
     /// authored local `Query::offset = Some(0)` still requires a count host.
     ///
     /// Verified results do not signal truncation. An omitted exact key
-    /// establishes absence only when no global or ancestor `Query::limit`
-    /// can truncate the branch containing that key.
+    /// establishes absence only when there is no global limit and no
+    /// `Query::limit` on the selecting node or any enclosing node.
     pub fn merge(
         mut path_queries: Vec<&PathQuery>,
         grove_version: &GroveVersion,
