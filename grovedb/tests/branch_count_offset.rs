@@ -1092,3 +1092,35 @@ fn missing_direct_local_page_matches_ordinary_ranges_and_authenticated_absence()
         }
     }
 }
+
+#[test]
+fn merged_global_zero_offsets_do_not_require_count_tree_hosts() {
+    let v = GroveVersion::latest();
+    let (_dir, db) = fixture(2, Some(Element::empty_tree()), [true, true]);
+    let page = PathQuery::new(
+        vec![b"type".to_vec(), vec![2], b"doc".to_vec()],
+        SizedQuery::new(Query::new_range_full(), None, Some(0)),
+    );
+    let sibling = PathQuery::new_unsized(
+        vec![b"type".to_vec(), vec![0]],
+        Query::new_single_key(b"doc".to_vec()),
+    );
+    let single = PathQuery::merge(vec![&page], v).unwrap();
+    assert_eq!(single.query.offset, Some(0));
+    assert!(!single.query.query.has_instance_offset_anywhere());
+    for inputs in [vec![&page, &sibling], vec![&sibling, &page]] {
+        let merged = PathQuery::merge(inputs, v).unwrap();
+        assert!(
+            !merged.query.query.has_instance_offset_anywhere(),
+            "a global zero skip must not become a local count operation"
+        );
+        assert_eq!(round_trip(&db, &merged).len(), 3);
+    }
+    let root = PathQuery::new(
+        vec![b"type".to_vec()],
+        SizedQuery::new(Query::new_single_key(vec![0]), None, Some(0)),
+    );
+    let merged = PathQuery::merge(vec![&root, &page], v).unwrap();
+    assert!(!merged.query.query.has_instance_offset_anywhere());
+    assert_eq!(round_trip(&db, &merged).len(), 3);
+}

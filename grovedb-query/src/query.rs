@@ -108,6 +108,10 @@ pub struct Query {
     /// equal physical rows when every row is an Item. Exposed non-unit rows
     /// are refused; mixed-tree acceptance can depend on the committed AVL
     /// shape, so this is not a general physical-row offset reader.
+    ///
+    /// Verified result rows do not signal truncation. An omitted exact key
+    /// establishes absence only when no global or ancestor query limit can
+    /// truncate its branch.
     pub offset: Option<u16>,
 }
 

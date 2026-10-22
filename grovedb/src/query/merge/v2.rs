@@ -1,4 +1,9 @@
 //! Exclusive branch grafts with per-instance count-unit offsets.
+//!
+//! Direction agreement, global limit lifting, canonical branch ordering, and
+//! exclusive grafts follow v1. See [`super::v1`] for the rationale for those
+//! unchanged steps. This version additionally lifts nonzero global offsets into
+//! branch-local count units; a global zero skip remains a no-op.
 
 use grovedb_merk::proofs::query::{Query, QueryItem, SubqueryBranch};
 
@@ -35,7 +40,7 @@ pub(super) fn merge_v2(path_queries: Vec<&PathQuery>) -> Result<PathQuery, Error
                             ))?;
                     if path_query.query.limit.is_some()
                         || root_body.limit.is_some()
-                        || path_query.query.offset.is_some()
+                        || path_query.query.offset.is_some_and(|offset| offset != 0)
                         || root_body.offset.is_some()
                     {
                         return Err(Error::NotSupported(
@@ -59,7 +64,7 @@ pub(super) fn merge_v2(path_queries: Vec<&PathQuery>) -> Result<PathQuery, Error
                             None => global,
                         });
                     }
-                    if let Some(offset) = path_query.query.offset {
+                    if let Some(offset) = path_query.query.offset.filter(|offset| *offset != 0) {
                         let body = unsized_path_query.subquery.as_deref_mut().ok_or(
                             Error::CorruptedCodeExecution("a merged branch must have a query"),
                         )?;

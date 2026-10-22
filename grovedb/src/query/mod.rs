@@ -1102,11 +1102,22 @@ impl PathQuery {
     /// rooted at their common path prefix.
     ///
     /// Behavior is version-gated on `path_query_methods.merge` — see
-    /// the [`merge`](crate::query::merge) module for the v0/v1
+    /// the [`merge`](crate::query::merge) module for the versioned
     /// semantics (direction handling and, from `GROVE_V4`'s v1, limit
     /// lifting). The checks below are version-independent: an empty
     /// input is malformed, read-mode queries have no merge semantics at
     /// any version, and a single input merges to itself.
+    ///
+    /// From `GROVE_V5`, merging two or more inputs lifts nonzero global
+    /// `SizedQuery::offset` values into branch-local `Query::offset` values.
+    /// These skip committed count units and require a plain range terminal
+    /// on a provable count-bearing tree. A single input retains its global
+    /// row pagination unchanged. Global `Some(0)` offsets are not lifted;
+    /// authored local `Query::offset = Some(0)` still requires a count host.
+    ///
+    /// Verified results do not signal truncation. An omitted exact key
+    /// establishes absence only when no global or ancestor `Query::limit`
+    /// can truncate the branch containing that key.
     pub fn merge(
         mut path_queries: Vec<&PathQuery>,
         grove_version: &GroveVersion,
