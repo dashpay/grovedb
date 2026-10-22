@@ -16,6 +16,231 @@ use crate::{
     Merk, TreeType,
 };
 
+fn assert_local_count_page(
+    merk: &Merk<impl grovedb_storage::StorageContext<'static>>,
+    root: [u8; 32],
+    offset: u64,
+    left_to_right: bool,
+    expected_skipped: u64,
+    expected_keys: &[&[u8]],
+) {
+    let range = QueryItem::RangeFull(..);
+    let page = merk
+        .prove_local_count_offset_on_range(
+            &range,
+            offset,
+            Some(2),
+            left_to_right,
+            GroveVersion::latest(),
+        )
+        .unwrap()
+        .expect("local count page should prove");
+    let verified = verify_count_offset_on_range_proof(
+        &encode_proof(&page.ops),
+        &range,
+        offset,
+        Some(2),
+        left_to_right,
+    )
+    .unwrap()
+    .expect("local count page should verify");
+    assert_eq!(verified.root_hash, root);
+    assert_eq!(verified.skipped, expected_skipped);
+    assert_eq!(page.offset_remaining, offset - expected_skipped);
+    assert_eq!(
+        verified
+            .returned_items
+            .iter()
+            .map(|row| row.key.as_slice())
+            .collect::<Vec<_>>(),
+        expected_keys,
+    );
+}
+
+#[test]
+fn local_count_unit_pages_cover_zero_maximum_and_past_end_offsets() {
+    let v = GroveVersion::latest();
+    let (merk, root) = make_15_key_provable_count_tree(v);
+    for (left_to_right, first_page) in [
+        (true, [b"a".as_slice(), b"b".as_slice()]),
+        (false, [b"o".as_slice(), b"n".as_slice()]),
+    ] {
+        assert_local_count_page(&merk, root, 0, left_to_right, 0, &first_page);
+        for offset in [15, 16, u64::from(u16::MAX)] {
+            assert_local_count_page(&merk, root, offset, left_to_right, 15, &[]);
+        }
+    }
+}
+
+#[test]
+fn local_count_unit_pages_refuse_exposed_zero_and_weighted_rows() {
+    let v = GroveVersion::latest();
+    for tree_type in [
+        TreeType::ProvableCountTree,
+        TreeType::ProvableCountSumTree,
+        TreeType::ProvableCountProvableSumTree,
+    ] {
+        for own in [0, 3] {
+            let (merk, _) = make_15_key_tree_with_non_unit_row_and_type(b'h', own, tree_type, v);
+            assert_eq!(merk.root_key(), Some(b"h".to_vec()));
+            for left_to_right in [true, false] {
+                for offset in [0, 2] {
+                    let error = merk
+                        .prove_local_count_offset_on_range(
+                            &QueryItem::RangeFull(..),
+                            offset,
+                            Some(1),
+                            left_to_right,
+                            v,
+                        )
+                        .unwrap()
+                        .err()
+                        .expect("an exposed non-unit row cannot represent a returned page row");
+                    assert!(
+                        error.to_string().contains("exactly one count unit"),
+                        "{error}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn local_count_unit_pages_skip_hidden_nested_counts_in_committed_units() {
+    let v = GroveVersion::latest();
+    for tree_type in [
+        TreeType::ProvableCountTree,
+        TreeType::ProvableCountSumTree,
+        TreeType::ProvableCountProvableSumTree,
+    ] {
+        for (left_to_right, weighted_key) in [(true, b'c'), (false, b'm')] {
+            for own in [0, 3] {
+                let (merk, root) =
+                    make_15_key_tree_with_non_unit_row_and_type(weighted_key, own, tree_type, v);
+                let offset = 6 + own;
+                assert_refuses_non_unit_row(
+                    &merk,
+                    QueryItem::RangeFull(..),
+                    offset,
+                    Some(1),
+                    left_to_right,
+                    v,
+                );
+                let page = merk
+                    .prove_local_count_offset_on_range(
+                        &QueryItem::RangeFull(..),
+                        offset,
+                        Some(1),
+                        left_to_right,
+                        v,
+                    )
+                    .unwrap()
+                    .expect("a hidden nested count consumes committed units, not physical rows");
+                let verified = verify_count_offset_on_range_proof(
+                    &encode_proof(&page.ops),
+                    &QueryItem::RangeFull(..),
+                    offset,
+                    Some(1),
+                    left_to_right,
+                )
+                .unwrap()
+                .expect("hidden nested counts stay bound to the authoritative root");
+                assert_eq!(verified.root_hash, root);
+                assert_eq!(verified.skipped, offset);
+                assert_eq!(verified.returned_items.len(), 1);
+                assert_eq!(verified.returned_items[0].key, b"h");
+                assert_local_count_page(
+                    &merk,
+                    root,
+                    u64::from(u16::MAX),
+                    left_to_right,
+                    14 + own,
+                    &[],
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn local_count_unit_pages_bound_cold_seeks_at_maximum_offset() {
+    let v = GroveVersion::latest();
+    let mut merk = TempMerk::new_with_tree_type(v, TreeType::ProvableCountTree);
+    let entries: Vec<_> = (0..=u16::MAX)
+        .map(|key| {
+            (
+                key.to_be_bytes().to_vec(),
+                Op::Put(vec![1], ProvableCountedMerkNode(1)),
+            )
+        })
+        .collect();
+    merk.apply::<_, Vec<_>>(&entries, &[], None, v)
+        .unwrap()
+        .expect("apply flat history");
+    merk.commit(v);
+    let root = merk.root_hash().unwrap();
+    for left_to_right in [true, false] {
+        // Commit reopens the Merk so a previous traversal cannot hide node
+        // fetches behind loaded links in either pagination mode.
+        merk.commit(v);
+        let legacy = merk.prove_count_offset_on_range(
+            &QueryItem::RangeFull(..),
+            u64::from(u16::MAX),
+            Some(1),
+            left_to_right,
+            v,
+        );
+        let legacy_cost = legacy.cost.clone();
+        legacy
+            .unwrap()
+            .expect("legacy row page should prove on a flat history");
+        assert!(
+            legacy_cost.seek_count > 65_000,
+            "the cold fixture must expose the legacy skipped-row walk: {legacy_cost:?}"
+        );
+        merk.commit(v);
+        let local = merk.prove_local_count_offset_on_range(
+            &QueryItem::RangeFull(..),
+            u64::from(u16::MAX),
+            Some(1),
+            left_to_right,
+            v,
+        );
+        assert!(
+            local.cost.seek_count < 256,
+            "a maximum-offset page must load boundary paths, not skipped rows: {:?}",
+            local.cost
+        );
+        assert!(
+            local.cost.storage_loaded_bytes < legacy_cost.storage_loaded_bytes / 100,
+            "local pagination must not fetch the skipped rows: {:?}",
+            local.cost
+        );
+        eprintln!(
+            "left_to_right={left_to_right}: local={:?}, legacy={legacy_cost:?}",
+            local.cost
+        );
+        let local = local.unwrap().expect("local maximum-offset page");
+        let verified = verify_count_offset_on_range_proof(
+            &encode_proof(&local.ops),
+            &QueryItem::RangeFull(..),
+            u64::from(u16::MAX),
+            Some(1),
+            left_to_right,
+        )
+        .unwrap()
+        .expect("verify maximum-offset page");
+        assert_eq!(verified.root_hash, root);
+        assert_eq!(verified.skipped, u64::from(u16::MAX));
+        assert_eq!(verified.returned_items.len(), 1);
+        assert_eq!(
+            verified.returned_items[0].key,
+            if left_to_right { u16::MAX } else { 0 }.to_be_bytes()
+        );
+    }
+}
+
 /// Build the same 15-key fixture the aggregate-count tests use: keys
 /// 'a'..='o' each paired with a single-byte value carrying the key's
 /// alphabetical index, all stored as `ProvableCountedMerkNode(1)`

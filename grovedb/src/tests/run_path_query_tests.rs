@@ -856,8 +856,8 @@ mod tests {
     fn read_mode_shapes_are_gated_to_grove_v4() {
         let v3 = &GROVE_VERSIONS[2];
         assert_eq!(v3.protocol_version, 3, "GROVE_VERSIONS[2] must be V3");
-        let v4 = GroveVersion::latest();
-        assert_eq!(v4.protocol_version, 4, "latest must be V4");
+        let v4 = &GROVE_VERSIONS[3];
+        assert_eq!(v4.protocol_version, 4, "GROVE_VERSIONS[3] must be V4");
 
         let db = make_test_grovedb(v4);
         build_psit(&db, v4, PSIT_ENTRIES);

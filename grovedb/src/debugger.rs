@@ -925,6 +925,7 @@ fn query_to_grovedb(query: Query) -> crate::Query {
         // queries are always plain key selection.
         read_mode: None,
         limit: None,
+        offset: None,
     }
 }
 

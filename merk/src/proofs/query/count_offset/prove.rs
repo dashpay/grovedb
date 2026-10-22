@@ -105,4 +105,53 @@ where
         })
         .wrap_with_cost(cost)
     }
+    /// Emit a terminal page after a committed-count-unit skip. Unlike row
+    /// pagination, collapsed subtrees need not be inspected for unit rows.
+    /// Exposed non-unit rows are refused, so mixed-tree support is partial.
+    pub(crate) fn create_local_count_offset_on_range_proof(
+        &mut self,
+        inner_range: &QueryItem,
+        offset: u64,
+        limit: Option<u64>,
+        left_to_right: bool,
+        tree_type: TreeType,
+        grove_version: &GroveVersion,
+    ) -> CostResult<ProverCountOffsetResult, Error> {
+        if !is_provable_count_bearing(tree_type) {
+            return Err(Error::InvalidProofError(format!(
+                "count-offset paginated proof is only valid against ProvableCountTree, \
+                 ProvableCountSumTree, or ProvableCountProvableSumTree, got {:?}",
+                tree_type
+            )))
+            .wrap_with_cost(OperationCost::default());
+        }
+
+        let mut cost = OperationCost::default();
+        let mut ops = LinkedList::new();
+        let mut state = EmitState {
+            offset_remaining: offset,
+            limit_remaining: limit,
+            returned: 0,
+            left_to_right,
+        };
+        cost_return_on_error!(
+            &mut cost,
+            super::emit_local::emit_local_count_offset_proof(
+                self,
+                inner_range,
+                None,
+                None,
+                &mut state,
+                &mut ops,
+                tree_type,
+                grove_version
+            )
+        );
+        Ok(ProverCountOffsetResult {
+            ops,
+            returned: state.returned,
+            offset_remaining: state.offset_remaining,
+        })
+        .wrap_with_cost(cost)
+    }
 }

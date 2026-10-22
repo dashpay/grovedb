@@ -101,15 +101,25 @@ pub struct Query {
     ///
     /// Serde: see the `query_serde` module.
     pub limit: Option<u16>,
+    /// Per-instance skip in committed count units, served from GROVE_V5.
+    ///
+    /// Only a plain single-range terminal on a provable count-bearing tree
+    /// can carry this field. Each parent starts a fresh skip. Count units
+    /// equal physical rows when every row is an Item. Exposed non-unit rows
+    /// are refused; mixed-tree acceptance can depend on the committed AVL
+    /// shape, so this is not a general physical-row offset reader.
+    pub offset: Option<u16>,
 }
 
 /// Version-3 `Query` encoding flags byte: the node carries a read mode.
 const QUERY_V3_FLAG_READ_MODE: u8 = 0b0000_0001;
 /// Version-3 `Query` encoding flags byte: the node carries a
-/// per-instance limit. A version-3 node always has this flag set —
-/// a node without a per-instance limit encodes as version 1 or 2.
+/// per-instance limit. Version-3 nodes carry at least a limit or an offset.
 const QUERY_V3_FLAG_INSTANCE_LIMIT: u8 = 0b0000_0010;
-const QUERY_V3_KNOWN_FLAGS: u8 = QUERY_V3_FLAG_READ_MODE | QUERY_V3_FLAG_INSTANCE_LIMIT;
+/// Version-3 `Query` encoding flags byte: committed-count-unit offset.
+const QUERY_V3_FLAG_INSTANCE_OFFSET: u8 = 0b0000_0100;
+const QUERY_V3_KNOWN_FLAGS: u8 =
+    QUERY_V3_FLAG_READ_MODE | QUERY_V3_FLAG_INSTANCE_LIMIT | QUERY_V3_FLAG_INSTANCE_OFFSET;
 
 impl Encode for Query {
     fn encode<E: bincode::enc::Encoder>(&self, encoder: &mut E) -> Result<(), EncodeError> {
@@ -120,9 +130,15 @@ impl Encode for Query {
         // 1 = plain (pre-read-mode layout, byte-for-byte), 2 = carries
         // a read mode, 3 = carries a per-instance limit (flags byte
         // says whether a read mode rides along).
-        if self.limit.is_some() {
+        if self.limit.is_some() || self.offset.is_some() {
             3u8.encode(encoder)?;
-            let mut flags = QUERY_V3_FLAG_INSTANCE_LIMIT;
+            let mut flags = 0;
+            if self.limit.is_some() {
+                flags |= QUERY_V3_FLAG_INSTANCE_LIMIT;
+            }
+            if self.offset.is_some() {
+                flags |= QUERY_V3_FLAG_INSTANCE_OFFSET;
+            }
             if self.read_mode.is_some() {
                 flags |= QUERY_V3_FLAG_READ_MODE;
             }
@@ -175,6 +191,9 @@ impl Encode for Query {
             limit.encode(encoder)?;
         }
 
+        if let Some(offset) = self.offset {
+            offset.encode(encoder)?;
+        }
         Ok(())
     }
 }
@@ -220,7 +239,7 @@ macro_rules! query_decoder {
                     if flags & !QUERY_V3_KNOWN_FLAGS != 0 {
                         return Err(DecodeError::Other("unknown Query version 3 flags"));
                     }
-                    if flags & QUERY_V3_FLAG_INSTANCE_LIMIT == 0 {
+                    if flags & (QUERY_V3_FLAG_INSTANCE_LIMIT | QUERY_V3_FLAG_INSTANCE_OFFSET) == 0 {
                         return Err(DecodeError::Other(
                             "non-canonical Query version 3 encoding: no per-instance limit",
                         ));
@@ -266,12 +285,17 @@ macro_rules! query_decoder {
                 };
 
                 // Version 3 always carries the per-instance limit last.
-                let limit = if version == 3 {
+                let limit = if flags & QUERY_V3_FLAG_INSTANCE_LIMIT != 0 {
                     Some(u16::$decode(decoder)?)
                 } else {
                     None
                 };
 
+                let offset = if flags & QUERY_V3_FLAG_INSTANCE_OFFSET != 0 {
+                    Some(u16::$decode(decoder)?)
+                } else {
+                    None
+                };
                 Ok(Query {
                     items,
                     default_subquery_branch,
@@ -280,6 +304,7 @@ macro_rules! query_decoder {
                     add_parent_tree_on_subquery,
                     read_mode,
                     limit,
+                    offset,
                 })
             }
         }
@@ -370,11 +395,45 @@ impl fmt::Display for Query {
         if let Some(limit) = self.limit {
             writeln!(f, "  limit: {limit},")?;
         }
+        if let Some(offset) = self.offset {
+            writeln!(f, "  offset: {offset},")?;
+        }
         write!(f, "}}")
     }
 }
 
 impl Query {
+    /// Whether any node, including dormant conditional branches, has a local
+    /// count-unit offset. Unsupported consumers must reject the whole query.
+    pub fn has_instance_offset_anywhere(&self) -> bool {
+        self.offset.is_some()
+            || self
+                .default_subquery_branch
+                .subquery
+                .as_deref()
+                .is_some_and(Query::has_instance_offset_anywhere)
+            || self
+                .conditional_subquery_branches
+                .as_ref()
+                .is_some_and(|branches| {
+                    branches.values().any(|branch| {
+                        branch
+                            .subquery
+                            .as_deref()
+                            .is_some_and(Query::has_instance_offset_anywhere)
+                    })
+                })
+    }
+
+    pub(crate) fn reject_instance_offsets_for_aggregates(&self) -> Result<(), crate::error::Error> {
+        if self.has_instance_offset_anywhere() {
+            return Err(crate::error::Error::InvalidOperation(
+                "aggregate queries may not carry per-instance offsets (Query::offset)",
+            ));
+        }
+        Ok(())
+    }
+
     /// Whether this query — or any subquery below it, default or
     /// conditional — carries a per-instance [`limit`](Self::limit).
     /// Entry points that don't serve per-instance limits use this to
@@ -640,6 +699,7 @@ impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
             add_parent_tree_on_subquery: false,
             read_mode: None,
             limit: None,
+            offset: None,
         }
     }
 }
@@ -925,7 +985,10 @@ mod query_serde {
 
     use super::*;
 
-    fn wire_version(read_mode: bool, limit: bool) -> u8 {
+    fn wire_version(read_mode: bool, limit: bool, offset: bool) -> u8 {
+        if offset {
+            return 4;
+        }
         match (read_mode, limit) {
             (_, true) => 3,
             (true, false) => 2,
@@ -937,8 +1000,9 @@ mod query_serde {
         version: u8,
         read_mode: bool,
         limit: bool,
+        offset: bool,
     ) -> Result<(), E> {
-        let expected = wire_version(read_mode, limit);
+        let expected = wire_version(read_mode, limit, offset);
         if version != expected {
             return Err(E::custom(format!(
                 "non-canonical Query serde version {version} for its contents (expected \
@@ -969,8 +1033,6 @@ mod query_serde {
         limit: &'a Option<u16>,
     }
 
-    #[derive(Deserialize)]
-    #[serde(rename = "Query")]
     struct PositionalOwned {
         magic: u64,
         version: u8,
@@ -981,6 +1043,111 @@ mod query_serde {
         add_parent_tree_on_subquery: bool,
         read_mode: Option<Box<ReadMode>>,
         limit: Option<u16>,
+        offset: Option<u16>,
+    }
+
+    #[derive(Serialize)]
+    struct PositionalOffsetRef<'a> {
+        magic: u64,
+        version: u8,
+        items: &'a Vec<QueryItem>,
+        default_subquery_branch: &'a SubqueryBranch,
+        conditional_subquery_branches: &'a Option<IndexMap<QueryItem, SubqueryBranch>>,
+        left_to_right: bool,
+        add_parent_tree_on_subquery: bool,
+        read_mode: &'a Option<Box<ReadMode>>,
+        limit: &'a Option<u16>,
+        offset: &'a Option<u16>,
+    }
+
+    impl<'de> Deserialize<'de> for PositionalOwned {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            struct FrameVisitor;
+            impl<'de> Visitor<'de> for FrameVisitor {
+                type Value = PositionalOwned;
+                fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                    f.write_str("a framed Query struct")
+                }
+                fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+                    #[derive(Deserialize)]
+                    struct MapFrame {
+                        magic: u64,
+                        version: u8,
+                        items: Vec<QueryItem>,
+                        default_subquery_branch: SubqueryBranch,
+                        conditional_subquery_branches: Option<IndexMap<QueryItem, SubqueryBranch>>,
+                        left_to_right: bool,
+                        add_parent_tree_on_subquery: bool,
+                        read_mode: Option<Box<ReadMode>>,
+                        limit: Option<u16>,
+                        #[serde(default)]
+                        offset: Option<u16>,
+                    }
+                    let wire = MapFrame::deserialize(de::value::MapAccessDeserializer::new(map))?;
+                    Ok(PositionalOwned {
+                        magic: wire.magic,
+                        version: wire.version,
+                        items: wire.items,
+                        default_subquery_branch: wire.default_subquery_branch,
+                        conditional_subquery_branches: wire.conditional_subquery_branches,
+                        left_to_right: wire.left_to_right,
+                        add_parent_tree_on_subquery: wire.add_parent_tree_on_subquery,
+                        read_mode: wire.read_mode,
+                        limit: wire.limit,
+                        offset: wire.offset,
+                    })
+                }
+                fn visit_seq<A: de::SeqAccess<'de>>(
+                    self,
+                    mut seq: A,
+                ) -> Result<Self::Value, A::Error> {
+                    macro_rules! field {
+                        ($name:literal) => {
+                            seq.next_element()?
+                                .ok_or_else(|| de::Error::missing_field($name))?
+                        };
+                    }
+                    let magic = field!("magic");
+                    let version: u8 = field!("version");
+                    let items = field!("items");
+                    let default_subquery_branch = field!("default_subquery_branch");
+                    let conditional_subquery_branches = field!("conditional_subquery_branches");
+                    let left_to_right = field!("left_to_right");
+                    let add_parent_tree_on_subquery = field!("add_parent_tree_on_subquery");
+                    let read_mode = field!("read_mode");
+                    let limit = field!("limit");
+                    let offset = if version == 4 { field!("offset") } else { None };
+                    Ok(PositionalOwned {
+                        magic,
+                        version,
+                        items,
+                        default_subquery_branch,
+                        conditional_subquery_branches,
+                        left_to_right,
+                        add_parent_tree_on_subquery,
+                        read_mode,
+                        limit,
+                        offset,
+                    })
+                }
+            }
+            deserializer.deserialize_struct(
+                "Query",
+                &[
+                    "magic",
+                    "version",
+                    "items",
+                    "default_subquery_branch",
+                    "conditional_subquery_branches",
+                    "left_to_right",
+                    "add_parent_tree_on_subquery",
+                    "read_mode",
+                    "limit",
+                    "offset",
+                ],
+                FrameVisitor,
+            )
+        }
     }
 
     /// The nested body of the human-readable version-2 and version-3
@@ -994,6 +1161,8 @@ mod query_serde {
         add_parent_tree_on_subquery: bool,
         read_mode: Option<Box<ReadMode>>,
         limit: Option<u16>,
+        #[serde(default)]
+        offset: Option<u16>,
     }
 
     #[derive(Serialize)]
@@ -1005,12 +1174,33 @@ mod query_serde {
         add_parent_tree_on_subquery: bool,
         read_mode: &'a Option<Box<ReadMode>>,
         limit: &'a Option<u16>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        offset: &'a Option<u16>,
     }
 
     impl Serialize for Query {
         fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-            let version = wire_version(self.read_mode.is_some(), self.limit.is_some());
+            let version = wire_version(
+                self.read_mode.is_some(),
+                self.limit.is_some(),
+                self.offset.is_some(),
+            );
             if !serializer.is_human_readable() {
+                if self.offset.is_some() {
+                    return PositionalOffsetRef {
+                        magic: POSITIONAL_MAGIC,
+                        version,
+                        items: &self.items,
+                        default_subquery_branch: &self.default_subquery_branch,
+                        conditional_subquery_branches: &self.conditional_subquery_branches,
+                        left_to_right: self.left_to_right,
+                        add_parent_tree_on_subquery: self.add_parent_tree_on_subquery,
+                        read_mode: &self.read_mode,
+                        limit: &self.limit,
+                        offset: &self.offset,
+                    }
+                    .serialize(serializer);
+                }
                 return PositionalRef {
                     magic: POSITIONAL_MAGIC,
                     version,
@@ -1026,7 +1216,7 @@ mod query_serde {
             }
             use serde::ser::SerializeStruct;
             match version {
-                2 | 3 => {
+                2..=4 => {
                     // Both non-released forms nest: the released
                     // derived reader ignores unknown flat keys, so
                     // either feature would silently vanish in a flat
@@ -1043,6 +1233,7 @@ mod query_serde {
                             add_parent_tree_on_subquery: self.add_parent_tree_on_subquery,
                             read_mode: &self.read_mode,
                             limit: &self.limit,
+                            offset: &self.offset,
                         },
                     )?;
                     state.end()
@@ -1144,6 +1335,7 @@ mod query_serde {
                     version,
                     body.read_mode.is_some(),
                     body.limit.is_some(),
+                    body.offset.is_some(),
                 )?;
                 if version < 2 {
                     return Err(de::Error::custom(
@@ -1158,6 +1350,7 @@ mod query_serde {
                     add_parent_tree_on_subquery: body.add_parent_tree_on_subquery,
                     read_mode: body.read_mode,
                     limit: body.limit,
+                    offset: body.offset,
                 });
             }
 
@@ -1179,7 +1372,7 @@ mod query_serde {
             }
             let read_mode = read_mode.unwrap_or(None);
             if let Some(version) = version {
-                validate_canonical::<A::Error>(version, false, false)?;
+                validate_canonical::<A::Error>(version, false, false, false)?;
             }
             Ok(Query {
                 items: items.ok_or_else(|| de::Error::missing_field("items"))?,
@@ -1192,6 +1385,7 @@ mod query_serde {
                     .ok_or_else(|| de::Error::missing_field("add_parent_tree_on_subquery"))?,
                 read_mode,
                 limit: None,
+                offset: None,
             })
         }
     }
@@ -1210,6 +1404,7 @@ mod query_serde {
                     wire.version,
                     wire.read_mode.is_some(),
                     wire.limit.is_some(),
+                    wire.offset.is_some(),
                 )?;
                 return Ok(Query {
                     items: wire.items,
@@ -1219,6 +1414,7 @@ mod query_serde {
                     add_parent_tree_on_subquery: wire.add_parent_tree_on_subquery,
                     read_mode: wire.read_mode,
                     limit: wire.limit,
+                    offset: wire.offset,
                 });
             }
             deserializer.deserialize_map(QueryVisitor)

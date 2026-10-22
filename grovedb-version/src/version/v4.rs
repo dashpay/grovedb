@@ -702,6 +702,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             query_items_at_path: 0,
             should_add_parent_tree_at_path: 0,
             unified_read_mode: 1,
+            per_instance_query_offsets: 0,
             per_instance_query_limits: 1, // Query::limit served on trusted reads (V4+)
         },
         storage_costs: GroveDBStorageCostVersions {

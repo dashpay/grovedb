@@ -84,6 +84,9 @@ pub struct GroveDBPathQueryMethodVersions {
     ///   expected-key projections would report keys beyond a cap as
     ///   falsely absent.
     pub per_instance_query_limits: FeatureVersion,
+    /// Local committed-count-unit pagination and matching V1 proof/read support.
+    /// Zero refuses the field; one serves it on provable count-bearing terminals.
+    pub per_instance_query_offsets: FeatureVersion,
 }
 
 /// Method versions for the standalone indexed-axis query family — the

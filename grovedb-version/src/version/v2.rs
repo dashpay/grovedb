@@ -261,6 +261,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
             query_items_at_path: 0,
             should_add_parent_tree_at_path: 0,
             unified_read_mode: 0,
+            per_instance_query_offsets: 0,
             per_instance_query_limits: 0,
         },
         storage_costs: GroveDBStorageCostVersions {

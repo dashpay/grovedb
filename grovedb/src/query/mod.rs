@@ -4,6 +4,7 @@ pub mod aggregate_sum_path_query;
 pub(crate) mod axis_lowering;
 mod grove_branch_query_result;
 mod grove_trunk_query_result;
+mod local_offset;
 pub(crate) mod merge;
 mod path_branch_chunk_query;
 mod path_trunk_chunk_query;
@@ -219,6 +220,11 @@ impl SizedQuery {
     /// or one value per outer key); per-instance limits (`Query::limit`)
     /// have no defined meaning there and are rejected.
     fn reject_instance_limits_for_aggregates(&self) -> Result<(), Error> {
+        if self.query.has_instance_offset_anywhere() {
+            return Err(Error::InvalidQuery(
+                "aggregate queries may not carry per-instance offsets",
+            ));
+        }
         if self.query.has_instance_limit_anywhere() {
             return Err(Error::InvalidQuery(
                 "aggregate queries may not carry per-instance limits (Query::limit)",
@@ -594,6 +600,7 @@ impl PathQuery {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: None,
                 offset: None,
@@ -799,6 +806,7 @@ impl PathQuery {
         &self,
         grove_version: &GroveVersion,
     ) -> Result<(), Error> {
+        self.reject_unserved_local_offsets(grove_version)?;
         reject_unserved_instance_limits_in_query(&self.query.query, grove_version)
     }
 
@@ -808,6 +816,7 @@ impl PathQuery {
     /// (whose expected-key projection would report keys beyond an
     /// instance cap as absent).
     pub(crate) fn reject_per_instance_limits(&self, context: &str) -> Result<(), Error> {
+        self.reject_local_offsets(context)?;
         if self.has_instance_limits() {
             Err(Error::NotSupported(format!(
                 "{context} does not serve per-instance query limits (Query::limit)"
@@ -829,6 +838,7 @@ impl PathQuery {
     /// report the skipped prefix (rows that exist) as proven absent.
     /// `Some(0)` is not pagination and passes.
     pub(crate) fn reject_absence_proofs_with_offset(&self) -> Result<(), Error> {
+        self.reject_local_offsets("absence-proof verification")?;
         if self.has_non_zero_offset() {
             Err(Error::NotSupported(
                 "absence-proof verification does not serve offset-paginated path queries \
@@ -1105,6 +1115,9 @@ impl PathQuery {
         // even for inputs the version-independent checks below would
         // short-circuit.
         merge::validate_version(grove_version)?;
+        for query in &path_queries {
+            query.reject_unserved_local_offsets(grove_version)?;
+        }
         if path_queries.is_empty() {
             return Err(Error::InvalidInput(
                 "merge function requires at least 1 path query",
@@ -1128,7 +1141,9 @@ impl PathQuery {
             return Ok(path_queries.remove(0).clone());
         }
 
-        merge::merge(path_queries, grove_version)
+        let merged = merge::merge(path_queries, grove_version)?;
+        merged.reject_unserved_local_offsets(grove_version)?;
+        Ok(merged)
     }
 
     /// Given a set of path queries, this returns an array of path keys that are
@@ -1634,6 +1649,7 @@ pub(crate) fn reject_unserved_instance_limits_in_query(
     query: &Query,
     grove_version: &GroveVersion,
 ) -> Result<(), Error> {
+    local_offset::gate(query, grove_version)?;
     if !query.has_instance_limit_anywhere() {
         return Ok(());
     }
@@ -1660,12 +1676,12 @@ pub(crate) fn reject_unserved_instance_limits_in_query(
                          path_query_push engine, which cannot account for them",
                     ));
                 }
-                1 => {}
+                1 | 2 => {}
                 version => {
                     return Err(Error::VersionError(
                         grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
                             method: "path_query_push".to_string(),
-                            known_versions: vec![0, 1],
+                            known_versions: vec![0, 1, 2],
                             received: version,
                         },
                     ));
@@ -1729,6 +1745,8 @@ pub struct SinglePathSubquery<'a> {
     /// that key or nothing, and the enclosing instance chain passes
     /// through it unchanged.
     pub instance_limit: Option<u16>,
+    /// Local skip on a resolved terminal; absent on synthesized path components.
+    pub instance_offset: Option<u16>,
 }
 
 impl fmt::Display for SinglePathSubquery<'_> {
@@ -1790,6 +1808,7 @@ impl<'a> SinglePathSubquery<'a> {
             in_path,
             synthesized_path_component: true,
             instance_limit: None,
+            instance_offset: None,
         }
     }
 
@@ -1814,6 +1833,7 @@ impl<'a> SinglePathSubquery<'a> {
             in_path: None,
             synthesized_path_component: false,
             instance_limit: query.limit,
+            instance_offset: query.offset,
         }
     }
 }
@@ -2528,6 +2548,7 @@ mod tests {
             add_parent_tree_on_subquery: false,
             read_mode: None,
             limit: None,
+            offset: None,
         };
 
         // Constructing the PathQuery
@@ -2548,6 +2569,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -2570,6 +2592,7 @@ mod tests {
                     in_path: Some(Cow::Borrowed(&root_path_key_2)),
                     synthesized_path_component: true,
                     instance_limit: None,
+                    instance_offset: None,
                 }
             );
         }
@@ -2592,6 +2615,7 @@ mod tests {
                     in_path: None,
                     synthesized_path_component: false,
                     instance_limit: None,
+                    instance_offset: None,
                 }
             );
         }
@@ -2617,6 +2641,7 @@ mod tests {
                     in_path: Some(Cow::Borrowed(&subquery_path_key_1)),
                     synthesized_path_component: true,
                     instance_limit: None,
+                    instance_offset: None,
                 }
             );
         }
@@ -2643,6 +2668,7 @@ mod tests {
                     in_path: Some(Cow::Borrowed(&subquery_path_key_2)),
                     synthesized_path_component: true,
                     instance_limit: None,
+                    instance_offset: None,
                 }
             );
         }
@@ -2671,6 +2697,7 @@ mod tests {
                     in_path: None,
                     synthesized_path_component: false,
                     instance_limit: None,
+                    instance_offset: None,
                 }
             );
         }
@@ -2699,6 +2726,7 @@ mod tests {
                     in_path: None,
                     synthesized_path_component: true,
                     instance_limit: None,
+                    instance_offset: None,
                 }
             );
         }
@@ -2727,6 +2755,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(100),
                 offset: None,
@@ -2750,6 +2779,7 @@ mod tests {
                     in_path: None,
                     synthesized_path_component: false,
                     instance_limit: None,
+                    instance_offset: None,
                 }
             );
         }
@@ -2772,6 +2802,7 @@ mod tests {
                     in_path: None,
                     synthesized_path_component: true,
                     instance_limit: None,
+                    instance_offset: None,
                 }
             );
         }
@@ -2806,6 +2837,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(100),
                 offset: None,
@@ -2829,6 +2861,7 @@ mod tests {
                     in_path: Some(Cow::Borrowed(&zero_vec)),
                     synthesized_path_component: true,
                     instance_limit: None,
+                    instance_offset: None,
                 }
             );
         }
@@ -2860,6 +2893,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 })),
             },
         )]);
@@ -2880,6 +2914,7 @@ mod tests {
                         add_parent_tree_on_subquery: false,
                         read_mode: None,
                         limit: None,
+                        offset: None,
                     })),
                 },
             ),
@@ -2900,6 +2935,7 @@ mod tests {
                         add_parent_tree_on_subquery: false,
                         read_mode: None,
                         limit: None,
+                        offset: None,
                     })),
                 },
             ),
@@ -2919,6 +2955,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(100),
                 offset: None,
@@ -2945,6 +2982,7 @@ mod tests {
                     in_path: None,
                     synthesized_path_component: false,
                     instance_limit: None,
+                    instance_offset: None,
                 }
             );
         }
@@ -2965,6 +3003,7 @@ mod tests {
                     in_path: Some(Cow::Borrowed(&identity_id)),
                     synthesized_path_component: true,
                     instance_limit: None,
+                    instance_offset: None,
                 }
             );
         }
@@ -2987,6 +3026,7 @@ mod tests {
                     in_path: None,
                     synthesized_path_component: false,
                     instance_limit: None,
+                    instance_offset: None,
                 }
             );
         }
@@ -3007,6 +3047,7 @@ mod tests {
                     in_path: None,
                     synthesized_path_component: false,
                     instance_limit: None,
+                    instance_offset: None,
                 }
             );
         }
@@ -3058,6 +3099,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: None,
                 offset: None,
@@ -3083,6 +3125,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(10),
                 offset: Some(2),
@@ -3108,6 +3151,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(5),
                 offset: None,
@@ -3142,6 +3186,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: None,
                 offset: None,
@@ -3188,6 +3233,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: None,
                 offset: None,
@@ -3213,6 +3259,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(100),
                 offset: Some(10),
@@ -3240,6 +3287,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 })),
             },
         );
@@ -3255,6 +3303,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 })),
             },
         );
@@ -3270,6 +3319,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(50),
                 offset: Some(5),
@@ -3299,6 +3349,7 @@ mod tests {
                             add_parent_tree_on_subquery: false,
                             read_mode: None,
                             limit: None,
+                            offset: None,
                         })),
                     },
                     conditional_subquery_branches: None,
@@ -3306,6 +3357,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: None,
                 offset: None,
@@ -3331,6 +3383,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(20),
                 offset: None,

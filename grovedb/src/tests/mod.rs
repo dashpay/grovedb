@@ -4767,6 +4767,7 @@ mod general_tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: None,
                 offset: None,

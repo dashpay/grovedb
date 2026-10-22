@@ -226,7 +226,7 @@ impl ElementQueryExtensions for Element {
             add_element_function,
             grove_version,
         )
-        .map_ok(|(elements, skipped, _consumed)| (elements, skipped))
+        .map_ok(|(elements, skipped, _consumed, _rows)| (elements, skipped))
     }
 
     /// Returns a vector of elements excluding trees, and the number of skipped
@@ -261,7 +261,7 @@ impl ElementQueryExtensions for Element {
             transaction,
             grove_version,
         )
-        .map_ok(|(elements, skipped, _consumed)| (elements, skipped))
+        .map_ok(|(elements, skipped, _consumed, _rows)| (elements, skipped))
     }
 
     /// Returns a vector of elements, and the number of skipped elements
@@ -306,10 +306,11 @@ impl ElementQueryExtensions for Element {
         match grove_version.grovedb_versions.element.path_query_push {
             0 => crate::element::path_query_push::path_query_push_v0(args, grove_version),
             1 => crate::element::path_query_push::path_query_push_v1(args, grove_version),
+            2 => crate::element::path_query_push::path_query_push_v2(args, grove_version),
             version => Err(Error::VersionError(
                 grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
                     method: "path_query_push".to_string(),
-                    known_versions: vec![0, 1],
+                    known_versions: vec![0, 1, 2],
                     received: version,
                 },
             ))
@@ -397,6 +398,12 @@ impl ElementQueryExtensions for Element {
         // queried node carries its own cap fails closed here instead of
         // having the cap ignored. (Caps on subqueries BELOW this node
         // are served through the descent.)
+        if sized_query.query.offset.is_some() {
+            return Err(Error::NotSupported(
+                "query_item cannot serve a node-local offset".to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
+        }
         if sized_query.query.limit.is_some() {
             return Err(Error::NotSupported(
                 "ElementQueryExtensions::query_item does not serve a per-instance limit \
@@ -549,6 +556,9 @@ pub(crate) fn query_item_internal(
                             subquery_path,
                             subquery,
                             left_to_right: sized_query.query.left_to_right,
+                            add_parent_tree_on_subquery: sized_query
+                                .query
+                                .add_parent_tree_on_subquery,
                             query_options,
                             result_type,
                             results,
@@ -641,6 +651,7 @@ pub(crate) fn query_item_internal(
                     subquery_path,
                     subquery,
                     left_to_right: sized_query.query.left_to_right,
+                    add_parent_tree_on_subquery: sized_query.query.add_parent_tree_on_subquery,
                     query_options,
                     result_type,
                     results,
@@ -696,7 +707,7 @@ pub(crate) fn get_query_apply_function_internal(
     transaction: TransactionArg,
     add_element_function: fn(PathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
     grove_version: &GroveVersion,
-) -> CostResult<(QueryResultElements, u16, u16), Error> {
+) -> CostResult<(QueryResultElements, u16, u16, u16), Error> {
     // The subordinate method-version slot holds for the internal body
     // exactly as it did when the public wrapper was the only entry —
     // the engines recurse through here directly, and a future/replay
@@ -744,12 +755,12 @@ pub(crate) fn get_query_apply_function_internal(
                         ))
                         .wrap_with_cost(cost);
                     }
-                    1 => {}
+                    1 | 2 => {}
                     version => {
                         return Err(Error::VersionError(
                             grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
                                 method: "path_query_push".to_string(),
-                                known_versions: vec![0, 1],
+                                known_versions: vec![0, 1, 2],
                                 received: version,
                             },
                         ))
@@ -778,12 +789,34 @@ pub(crate) fn get_query_apply_function_internal(
 
     let mut results = Vec::new();
 
+    if sized_query.offset.is_some() && sized_query.query.has_instance_offset_anywhere() {
+        return Err(Error::InvalidQuery(
+            "global and local offsets cannot be combined",
+        ))
+        .wrap_with_cost(cost);
+    }
     let original_offset = sized_query.offset;
     let mut budget = QueryBudget::new(
         sized_query.limit,
         QueryBudget::min_caps(inherited_instance_limit, sized_query.query.limit),
         original_offset,
     );
+
+    if let Some(offset) = sized_query.query.offset {
+        return super::local_offset_read::read_local_count_page(
+            storage,
+            path,
+            sized_query,
+            offset,
+            &mut budget,
+            query_options,
+            result_type,
+            transaction,
+            add_element_function,
+            grove_version,
+        )
+        .add_cost(cost);
+    }
 
     if sized_query.query.left_to_right {
         for item in sized_query.query.iter() {
@@ -840,6 +873,7 @@ pub(crate) fn get_query_apply_function_internal(
         QueryResultElements::from_elements(results),
         skipped,
         budget.consumed,
+        budget.rows,
     ))
     .wrap_with_cost(cost)
 }
@@ -855,7 +889,7 @@ pub(crate) fn get_path_query_internal(
     result_type: QueryResultType,
     transaction: TransactionArg,
     grove_version: &GroveVersion,
-) -> CostResult<(QueryResultElements, u16, u16), Error> {
+) -> CostResult<(QueryResultElements, u16, u16, u16), Error> {
     // Subordinate slot check — see `get_query_apply_function_internal`.
     check_grovedb_v0_with_cost!(
         "get_path_query",

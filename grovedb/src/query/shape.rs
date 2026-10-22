@@ -178,6 +178,23 @@ impl PathQuery {
         offset_gate: impl FnOnce() -> Result<(), Error>,
     ) -> Result<PathQueryShape<'_>, Error> {
         let query = &self.query.query;
+        if query.has_instance_offset_anywhere() {
+            if self.query.offset.is_some() {
+                return Err(Error::InvalidQuery(
+                    "global and local offsets cannot be combined",
+                ));
+            }
+            super::local_offset::validate_nodes(query)?;
+            if query.has_read_mode_anywhere()
+                || query.has_aggregate_count_on_range_anywhere()
+                || query.has_aggregate_sum_on_range_anywhere()
+                || query.has_aggregate_count_and_sum_on_range_anywhere()
+            {
+                return Err(Error::InvalidQuery(
+                    "local offsets cannot accompany aggregates or read modes",
+                ));
+            }
+        }
 
         // Read modes are checked first: a query carrying one anywhere is
         // one of the three read-mode shapes or malformed — it must never

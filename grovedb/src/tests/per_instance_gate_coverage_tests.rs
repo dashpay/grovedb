@@ -518,7 +518,7 @@ fn unknown_push_engine_is_rejected_independently_of_data() {
     let path_query = PathQuery::new(vec![DOCS.to_vec()], SizedQuery::new(missing, None, None));
 
     let mut unknown_engine = real.clone();
-    unknown_engine.grovedb_versions.element.path_query_push = 2;
+    unknown_engine.grovedb_versions.element.path_query_push = 3;
     let result = db.query_raw(
         &path_query,
         true,

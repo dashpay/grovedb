@@ -37,6 +37,7 @@ impl<'q> ValidatedPathQuery<'q> {
         query: &'q PathQuery,
         grove_version: &'q GroveVersion,
     ) -> Result<Self, Error> {
+        query.reject_unserved_local_offsets(grove_version)?;
         Ok(Self {
             query,
             shape: query.classify()?,
