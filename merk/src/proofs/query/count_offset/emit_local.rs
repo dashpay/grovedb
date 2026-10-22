@@ -194,8 +194,15 @@ where
                 grove_version,
             )
         );
-        let mut child_walker =
-            walked.unwrap_or_else(|| unreachable!("walk(first_dir) None despite link.is_some()"));
+        let mut child_walker = match walked {
+            Some(w) => w,
+            None => {
+                return Err(Error::CorruptedState(
+                    "tree.link(first_dir) was Some but walk returned None",
+                ))
+                .wrap_with_cost(cost)
+            }
+        };
         cost_return_on_error!(
             &mut cost,
             emit_local_count_offset_proof(
