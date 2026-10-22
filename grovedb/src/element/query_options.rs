@@ -5,6 +5,10 @@ use std::fmt;
 pub struct QueryOptions {
     /// If true, allows fetching raw (unprocessed) elements.
     pub allow_get_raw: bool,
+    /// Include parent trees requested by `Query::add_parent_tree_on_subquery`
+    /// in V5 raw results. Typed item projections disable these metadata rows.
+    /// Earlier query engines ignore this option.
+    pub include_parent_tree_on_subquery: bool,
     /// If true, allows reading from cache instead of forcing fresh disk reads.
     pub allow_cache: bool,
     /// Should we decrease the limit of elements found when we have no
@@ -33,6 +37,11 @@ impl fmt::Display for QueryOptions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "QueryOptions {{")?;
         writeln!(f, "  allow_get_raw: {}", self.allow_get_raw)?;
+        writeln!(
+            f,
+            "  include_parent_tree_on_subquery: {}",
+            self.include_parent_tree_on_subquery
+        )?;
         writeln!(f, "  allow_cache: {}", self.allow_cache)?;
         writeln!(
             f,
@@ -57,6 +66,7 @@ impl Default for QueryOptions {
     fn default() -> Self {
         QueryOptions {
             allow_get_raw: false,
+            include_parent_tree_on_subquery: true,
             allow_cache: true,
             decrease_limit_on_range_with_no_sub_elements: true,
             error_if_intermediate_path_tree_not_present: true,

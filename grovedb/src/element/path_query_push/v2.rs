@@ -94,7 +94,10 @@ pub(crate) fn path_query_push_v2(
         );
         path_vec.push(key);
 
-        if add_parent_tree_on_subquery && (subquery.is_some() || subquery_path.is_some()) {
+        if query_options.include_parent_tree_on_subquery
+            && add_parent_tree_on_subquery
+            && (subquery.is_some() || subquery_path.is_some())
+        {
             let echoed = element.clone();
             match result_type {
                 QueryElementResultType => {

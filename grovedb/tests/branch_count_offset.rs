@@ -759,6 +759,13 @@ fn platform_consumer_merges_history_carrier_with_unbudgeted_exact_reads() {
     let rows = round_trip(&db, &merged);
     assert_eq!(rows.len(), 4);
     assert_eq!(
+        db.query_item_value(&merged, true, true, true, None, v)
+            .unwrap()
+            .unwrap(),
+        (vec![vec![0], vec![7], vec![8]], 0),
+        "typed Platform reads return the exact sibling and page values",
+    );
+    assert_eq!(
         rows.iter()
             .filter(|(_, key, _)| key.len() == 16)
             .map(|(_, key, _)| key.clone())
@@ -884,4 +891,169 @@ fn non_merk_position_rows_cannot_replace_a_requested_descendant_page() {
         )
         .unwrap()
         .is_err());
+}
+
+fn parent_echo_query(shape: u8) -> PathQuery {
+    let mut query = Query::new_range_full();
+    query.add_parent_tree_on_subquery = true;
+    match shape {
+        0 => query.set_subquery(Query::new_range_full()),
+        1 => query.add_conditional_subquery(
+            grovedb::QueryItem::Key(b"doc".to_vec()),
+            None,
+            Some(Query::new_range_full()),
+        ),
+        _ => query.set_subquery_path(vec![history_key(1)]),
+    }
+    PathQuery::new(
+        vec![b"type".to_vec(), vec![2]],
+        SizedQuery::new(query, Some(1), None),
+    )
+}
+
+#[test]
+fn typed_query_ignores_parent_echoes_under_v4_and_v5() {
+    for host in [Element::empty_tree(), Element::empty_provable_count_tree()] {
+        let (_dir, db) = fixture(1, Some(host), [true, true]);
+        for v in [
+            &grovedb_version::version::v4::GROVE_V4,
+            GroveVersion::latest(),
+        ] {
+            for shape in 0..3 {
+                for result_type in [
+                    QueryResultType::QueryElementResultType,
+                    QueryResultType::QueryKeyElementPairResultType,
+                    QueryResultType::QueryPathKeyElementTrioResultType,
+                ] {
+                    let (rows, skipped) = db
+                        .query(
+                            &parent_echo_query(shape),
+                            true,
+                            true,
+                            true,
+                            result_type,
+                            None,
+                            v,
+                        )
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(rows.to_elements(), vec![Element::new_item(vec![1])]);
+                    assert_eq!(skipped, 0);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn typed_item_values_ignore_parent_echoes_under_v4_and_v5() {
+    use grovedb::operations::QueryItemOrSumReturnType;
+    for host in [Element::empty_tree(), Element::empty_provable_count_tree()] {
+        for n in [0, 1] {
+            let (_dir, db) = fixture(n, Some(host.clone()), [true, true]);
+            for v in [
+                &grovedb_version::version::v4::GROVE_V4,
+                GroveVersion::latest(),
+            ] {
+                for shape in 0..3 {
+                    let query = parent_echo_query(shape);
+                    let expected = if n == 0 { vec![] } else { vec![vec![1]] };
+                    let (values, skipped) = db
+                        .query_item_value(&query, true, true, true, None, v)
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(values, expected);
+                    assert_eq!(skipped, 0);
+                    let (values, _) = db
+                        .query_item_value_or_sum(&query, true, true, true, None, v)
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(
+                        values,
+                        expected
+                            .into_iter()
+                            .map(QueryItemOrSumReturnType::ItemData)
+                            .collect::<Vec<_>>()
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn typed_sums_ignore_parent_echoes_under_v4_and_v5() {
+    let (_dir, db) = fixture(0, Some(Element::empty_sum_tree()), [true, true]);
+    db.insert(
+        &[b"type".as_slice(), &[2], b"doc"],
+        &history_key(1),
+        Element::new_sum_item(42),
+        None,
+        None,
+        GroveVersion::latest(),
+    )
+    .unwrap()
+    .unwrap();
+    for v in [
+        &grovedb_version::version::v4::GROVE_V4,
+        GroveVersion::latest(),
+    ] {
+        for shape in 0..3 {
+            assert_eq!(
+                db.query_sums(&parent_echo_query(shape), true, true, true, None, v)
+                    .unwrap()
+                    .unwrap(),
+                (vec![42], 0)
+            );
+        }
+    }
+}
+
+#[test]
+#[allow(deprecated)]
+fn typed_encoded_many_ignores_parent_echoes_under_v4_and_v5() {
+    let (_dir, db) = fixture(0, Some(Element::empty_tree()), [true, true]);
+    db.insert(
+        &[b"type".as_slice(), &[2], b"doc"],
+        &history_key(1),
+        Element::new_reference(
+            grovedb::reference_path::ReferencePathType::AbsolutePathReference(vec![
+                b"type".to_vec(),
+                vec![0],
+                b"doc".to_vec(),
+            ]),
+        ),
+        None,
+        None,
+        GroveVersion::latest(),
+    )
+    .unwrap()
+    .unwrap();
+    for v in [
+        &grovedb_version::version::v4::GROVE_V4,
+        GroveVersion::latest(),
+    ] {
+        for shape in 0..3 {
+            let query = parent_echo_query(shape);
+            assert_eq!(
+                db.query_encoded_many(&[&query], true, true, true, None, v)
+                    .unwrap()
+                    .unwrap(),
+                vec![vec![0]]
+            );
+            let raw = db
+                .query_many_raw(
+                    &[&query],
+                    true,
+                    true,
+                    true,
+                    QueryResultType::QueryElementResultType,
+                    None,
+                    v,
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(raw.len(), if v.protocol_version == 5 { 2 } else { 1 });
+        }
+    }
 }

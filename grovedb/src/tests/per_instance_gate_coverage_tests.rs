@@ -225,6 +225,7 @@ fn absent_terminal_instance_charge_honors_the_governing_flag() {
         &path_query,
         QueryOptions {
             allow_get_raw: true,
+            include_parent_tree_on_subquery: true,
             allow_cache: true,
             decrease_limit_on_range_with_no_sub_elements: false,
             error_if_intermediate_path_tree_not_present: true,
