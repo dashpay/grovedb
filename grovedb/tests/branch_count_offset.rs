@@ -1057,3 +1057,38 @@ fn typed_encoded_many_ignores_parent_echoes_under_v4_and_v5() {
         }
     }
 }
+
+#[test]
+fn missing_direct_local_page_matches_ordinary_ranges_and_authenticated_absence() {
+    let v = GroveVersion::latest();
+    let (_dir, db) = fixture(0, None, [true, true]);
+    for offset in [None, Some(1)] {
+        let mut page = Query::new_range_full();
+        page.offset = offset;
+        page.limit = Some(1);
+        let query = PathQuery::new_unsized(vec![b"type".to_vec(), vec![2], b"doc".to_vec()], page);
+        let proof = db.prove_query(&query, None, v).unwrap().unwrap();
+        let (root, verified) = GroveDb::verify_query_raw(&proof, &query, v).unwrap();
+        assert_eq!(root, db.root_hash(None, v).unwrap().unwrap());
+        assert!(verified.is_empty());
+        for strict in [false, true] {
+            let (rows, skipped) = db
+                .query_raw(
+                    &query,
+                    true,
+                    true,
+                    strict,
+                    QueryResultType::QueryPathKeyElementTrioResultType,
+                    None,
+                    v,
+                )
+                .unwrap()
+                .unwrap();
+            assert!(
+                rows.is_empty(),
+                "direct missing ranges have no rows with strict={strict}"
+            );
+            assert_eq!(skipped, 0);
+        }
+    }
+}
