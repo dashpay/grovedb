@@ -78,6 +78,61 @@ fn local_offset_merges_and_terminal_projections_fail_closed() {
 }
 
 #[test]
+fn offset_only_merge_refusals_name_both_per_instance_fields() {
+    use grovedb_query::{error::Error, QueryItem, SubqueryBranch};
+
+    let branch = |query| SubqueryBranch {
+        subquery_path: None,
+        subquery: Some(Box::new(query)),
+    };
+    for offset in [0, 7] {
+        let mut carrying = Query::new_range_full();
+        carrying.offset = Some(offset);
+        let plain = Query::new_range_full();
+        for (ours, theirs) in [
+            (carrying.clone(), plain.clone()),
+            (plain.clone(), carrying.clone()),
+        ] {
+            let mut default = Query::new_range_full();
+            default.set_subquery(ours.clone());
+            let mut conditional = ours.clone();
+            let mut existing = indexmap::IndexMap::new();
+            existing.insert(QueryItem::Key(b"a".to_vec()), branch(ours.clone()));
+            let errors = [
+                branch(ours.clone())
+                    .merge(&branch(theirs.clone()))
+                    .unwrap_err(),
+                Query::merge_multiple(vec![ours.clone(), theirs.clone()]).unwrap_err(),
+                Query::merge_multiple_directional(vec![ours.clone(), theirs.clone()]).unwrap_err(),
+                ours.clone().merge_with(theirs.clone()).unwrap_err(),
+                default
+                    .merge_default_subquery_branch(branch(theirs.clone()))
+                    .unwrap_err(),
+                conditional
+                    .merge_conditional_boxed_subquery(
+                        QueryItem::Key(b"b".to_vec()),
+                        branch(theirs.clone()),
+                    )
+                    .unwrap_err(),
+                Query::merge_conditional_subquery_branches_with_new_at_query_item(
+                    Some(existing),
+                    QueryItem::Key(b"b".to_vec()),
+                    branch(theirs),
+                )
+                .unwrap_err(),
+            ];
+            for error in errors {
+                let Error::NotSupported(message) = error else {
+                    panic!("expected a merge refusal, got {error:?}");
+                };
+                assert!(message.contains("Query::limit"), "{message}");
+                assert!(message.contains("Query::offset"), "{message}");
+            }
+        }
+    }
+}
+
+#[test]
 fn aggregate_validators_reject_own_and_nested_count_unit_offsets() {
     use grovedb_query::{error::Error, QueryItem};
     type Validator = for<'a> fn(&'a Query) -> Result<&'a QueryItem, Error>;
