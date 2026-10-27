@@ -117,6 +117,9 @@ where
     /// Prove a local page by skipping committed count units without scanning
     /// collapsed subtrees. Count units equal rows for Item-only trees; exposed
     /// non-unit rows are refused and mixed-tree acceptance can depend on shape.
+    /// Uses the same Merk proof-version capability as
+    /// [`Self::prove_count_offset_on_range`]; GroveDB gates local query syntax
+    /// separately.
     pub fn prove_local_count_offset_on_range(
         &self,
         inner_range: &QueryItem,
@@ -125,17 +128,13 @@ where
         left_to_right: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<ProverCountOffsetResult, Error> {
-        if grove_version
-            .grovedb_versions
-            .path_query_methods
-            .per_instance_query_offsets
-            != 1
-        {
-            return Err(Error::InvalidProofError(
-                "local count-unit offsets require GROVE_V5".to_string(),
-            ))
-            .wrap_with_cost(Default::default());
-        }
+        check_merk_v0_with_cost!(
+            "prove_local_count_offset_on_range",
+            grove_version
+                .merk_versions
+                .proof
+                .prove_count_offset_on_range
+        );
         let tree_type = self.tree_type;
         if !matches!(
             tree_type,

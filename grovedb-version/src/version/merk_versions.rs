@@ -81,5 +81,7 @@ pub struct MerkProofVersions {
     ///
     /// Bump this if the prover's emitted op stream changes shape in a
     /// way that requires a coordinated verifier update.
+    /// Also gates `Merk::prove_local_count_offset_on_range`, which skips
+    /// committed count units using the same proof format and verifier.
     pub prove_count_offset_on_range: FeatureVersion,
 }

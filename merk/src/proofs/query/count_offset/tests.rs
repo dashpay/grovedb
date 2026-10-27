@@ -73,6 +73,45 @@ fn local_count_unit_pages_cover_zero_maximum_and_past_end_offsets() {
 }
 
 #[test]
+fn local_count_pages_use_the_merk_proof_version_instead_of_the_grove_query_gate() {
+    let mut v = GroveVersion::latest().clone();
+    let (merk, _) = make_15_key_provable_count_tree(&v);
+    v.grovedb_versions
+        .path_query_methods
+        .per_instance_query_offsets = 0;
+    let page = merk
+        .prove_local_count_offset_on_range(&QueryItem::RangeFull(..), 1, Some(2), true, &v)
+        .unwrap()
+        .expect("the GroveDB query gate must not control the low-level Merk API");
+    assert_eq!(page.returned, 2);
+    assert_eq!(page.offset_remaining, 0);
+}
+
+#[test]
+fn local_count_pages_refuse_unknown_merk_proof_versions_without_traversal() {
+    let mut v = GroveVersion::latest().clone();
+    let (merk, _) = make_15_key_provable_count_tree(&v);
+    v.merk_versions.proof.prove_count_offset_on_range = 1;
+    let result =
+        merk.prove_local_count_offset_on_range(&QueryItem::RangeFull(..), 1, Some(2), true, &v);
+    assert!(
+        result.cost.is_nothing(),
+        "version refusal must precede tree access"
+    );
+    let error = result
+        .unwrap()
+        .err()
+        .expect("unknown Merk versions must fail closed");
+    assert!(matches!(error, crate::Error::VersionError(_)), "{error}");
+    assert!(
+        error
+            .to_string()
+            .contains("prove_local_count_offset_on_range"),
+        "{error}"
+    );
+}
+
+#[test]
 fn local_count_unit_pages_refuse_exposed_zero_and_weighted_rows() {
     let v = GroveVersion::latest();
     for tree_type in [
