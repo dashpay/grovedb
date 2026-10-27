@@ -141,6 +141,159 @@ fn round_trip(db: &GroveDb, query: &PathQuery) -> Vec<RawRow> {
 }
 
 #[test]
+fn local_reference_pages_match_ordinary_raw_typed_and_verified_reads() {
+    assert_reference_page_parity(false);
+}
+
+#[test]
+fn local_summed_reference_pages_match_ordinary_raw_typed_and_verified_reads() {
+    assert_reference_page_parity(true);
+}
+
+fn assert_reference_page_parity(with_sum: bool) {
+    use grovedb::reference_path::ReferencePathType::{AbsolutePathReference, SiblingReference};
+
+    let v = GroveVersion::latest();
+    let path = vec![b"type".to_vec(), vec![2], b"doc".to_vec()];
+    let storage_path: Vec<_> = path.iter().map(Vec::as_slice).collect();
+    for host in [
+        Element::empty_provable_count_tree(),
+        Element::empty_provable_count_sum_tree(),
+        Element::empty_provable_count_provable_sum_tree(),
+    ] {
+        let (_dir, db) = fixture(0, Some(host), [false, false]);
+        for index in 0..6u8 {
+            let target_key = vec![b'z', index];
+            db.insert(
+                storage_path.as_slice(),
+                &target_key,
+                Element::new_item(vec![index, 42]),
+                None,
+                None,
+                v,
+            )
+            .unwrap()
+            .unwrap();
+            let reference = SiblingReference(target_key);
+            let element = if with_sum {
+                Element::new_reference_with_sum_item(reference, i64::from(index) + 7)
+            } else {
+                Element::new_reference(reference)
+            };
+            db.insert(
+                storage_path.as_slice(),
+                &[b'r', index],
+                element,
+                None,
+                None,
+                v,
+            )
+            .unwrap()
+            .unwrap();
+        }
+        let root = db.root_hash(None, v).unwrap().unwrap();
+        for left_to_right in [true, false] {
+            for offset in [0, 2u16] {
+                let mut indices: Vec<_> = (0..6u8).collect();
+                if !left_to_right {
+                    indices.reverse();
+                }
+                let selected: Vec<_> = indices
+                    .into_iter()
+                    .skip(usize::from(offset))
+                    .take(2)
+                    .collect();
+                let expected_raw: Vec<_> = selected
+                    .iter()
+                    .map(|&index| {
+                        let mut target = path.clone();
+                        target.push(vec![b'z', index]);
+                        let reference = AbsolutePathReference(target);
+                        let element = if with_sum {
+                            Element::new_reference_with_sum_item(reference, i64::from(index) + 7)
+                        } else {
+                            Element::new_reference(reference)
+                        };
+                        (path.clone(), vec![b'r', index], element)
+                    })
+                    .collect();
+                let expected_typed: Vec<_> = selected
+                    .iter()
+                    .map(|&index| {
+                        (
+                            path.clone(),
+                            vec![b'r', index],
+                            Element::new_item(vec![index, 42]),
+                        )
+                    })
+                    .collect();
+                let mut local = Query::new_with_direction(left_to_right);
+                local.insert_range(b"r".to_vec()..b"s".to_vec());
+                local.offset = Some(offset);
+                local.limit = Some(2);
+                let mut ordinary = Query::new_with_direction(left_to_right);
+                ordinary.insert_range_inclusive(
+                    vec![b'r', *selected.iter().min().unwrap()]
+                        ..=vec![b'r', *selected.iter().max().unwrap()],
+                );
+                for query in [local, ordinary] {
+                    let query = PathQuery::new_unsized(path.clone(), query);
+                    let (raw, skipped) = db
+                        .query_raw(
+                            &query,
+                            true,
+                            true,
+                            true,
+                            QueryResultType::QueryPathKeyElementTrioResultType,
+                            None,
+                            v,
+                        )
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(skipped, 0, "local skips do not become global skips");
+                    assert_eq!(raw.to_path_key_elements(), expected_raw);
+                    let (typed, _) = db
+                        .query(
+                            &query,
+                            true,
+                            true,
+                            true,
+                            QueryResultType::QueryPathKeyElementTrioResultType,
+                            None,
+                            v,
+                        )
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(typed.to_path_key_elements(), expected_typed);
+                    let proof = db.prove_query(&query, None, v).unwrap().unwrap();
+                    let (verified_root, raw) =
+                        GroveDb::verify_query_raw(&proof, &query, v).unwrap();
+                    assert_eq!(verified_root, root);
+                    assert_eq!(
+                        raw.into_iter()
+                            .map(|row| (row.path, row.key, row.value))
+                            .collect::<Vec<_>>(),
+                        expected_typed
+                            .iter()
+                            .map(|(p, k, e)| (p.clone(), k.clone(), e.serialize(v).unwrap()))
+                            .collect::<Vec<_>>()
+                    );
+                    let (verified_root, typed) = GroveDb::verify_query(&proof, &query, v).unwrap();
+                    assert_eq!(verified_root, root);
+                    assert_eq!(
+                        typed,
+                        expected_typed
+                            .iter()
+                            .map(|(p, k, e)| (p.clone(), k.clone(), Some(e.clone())))
+                            .collect::<Vec<_>>()
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn history_time_cursor_revision_and_start_pages_authenticate_sibling_absence() {
     for target in [
         Element::empty_provable_count_tree(),
