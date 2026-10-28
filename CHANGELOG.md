@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   branch-local pagination, and the v2 trusted query engine with parent-tree
   echoes. Earlier Grove versions continue to reject local offsets.
 
+### Fixed
+- Count-offset proof verification accepts pages whose rows resolve through a
+  reference to an empty tree, which earlier versions could persist. The
+  empty-tree hash check now applies only to direct tree rows, on both the
+  global offset path (from `GROVE_V4`) and V5 local pages; resolved
+  references keep the target binding Merk already verifies.
+
 ## [6.1.1] - 2026-10-20
 
 ### Fixed

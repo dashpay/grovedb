@@ -151,9 +151,59 @@ fn local_summed_reference_pages_match_ordinary_raw_typed_and_verified_reads() {
 }
 
 fn assert_reference_page_parity(with_sum: bool) {
+    assert_reference_target_page_parity(with_sum, None, true, GroveVersion::latest());
+}
+
+fn empty_reference_targets() -> [Element; 4] {
+    [
+        Element::empty_tree(),
+        Element::empty_provable_count_indexed_tree(),
+        Element::empty_provable_sum_indexed_tree(),
+        Element::empty_provable_count_provable_sum_indexed_tree(vec![
+            (0, None),
+            (1, None),
+            (2, None),
+        ])
+        .unwrap(),
+    ]
+}
+
+#[test]
+fn local_empty_tree_reference_pages_preserve_raw_and_verified_projections() {
+    for target in empty_reference_targets() {
+        for with_sum in [false, true] {
+            assert_reference_target_page_parity(
+                with_sum,
+                Some(target.clone()),
+                true,
+                GroveVersion::latest(),
+            );
+        }
+    }
+}
+
+#[test]
+fn global_empty_tree_reference_pages_preserve_raw_and_verified_projections() {
+    for v in [
+        &grovedb_version::version::v4::GROVE_V4,
+        GroveVersion::latest(),
+    ] {
+        for target in empty_reference_targets() {
+            for with_sum in [false, true] {
+                assert_reference_target_page_parity(with_sum, Some(target.clone()), false, v);
+            }
+        }
+    }
+}
+
+fn assert_reference_target_page_parity(
+    with_sum: bool,
+    tree_target: Option<Element>,
+    local_page: bool,
+    v: &GroveVersion,
+) {
     use grovedb::reference_path::ReferencePathType::{AbsolutePathReference, SiblingReference};
 
-    let v = GroveVersion::latest();
     let path = vec![b"type".to_vec(), vec![2], b"doc".to_vec()];
     let storage_path: Vec<_> = path.iter().map(Vec::as_slice).collect();
     for host in [
@@ -167,7 +217,9 @@ fn assert_reference_page_parity(with_sum: bool) {
             db.insert(
                 storage_path.as_slice(),
                 &target_key,
-                Element::new_item(vec![index, 42]),
+                tree_target
+                    .clone()
+                    .unwrap_or_else(|| Element::new_item(vec![index, 42])),
                 None,
                 None,
                 v,
@@ -180,13 +232,44 @@ fn assert_reference_page_parity(with_sum: bool) {
             } else {
                 Element::new_reference(reference)
             };
+            // Current writes refuse tree terminals. Legacy direct writes can
+            // persist them, and later readers must retain their commitments.
+            let insert_version = if tree_target.is_some() {
+                let root = db.root_hash(None, v).unwrap().unwrap();
+                let refused = db
+                    .insert(
+                        storage_path.as_slice(),
+                        &[b'r', index],
+                        element.clone(),
+                        None,
+                        None,
+                        v,
+                    )
+                    .unwrap();
+                assert!(matches!(
+                    refused,
+                    Err(grovedb::Error::InvalidInput(
+                        "references can not point to trees"
+                    ))
+                ));
+                assert_eq!(
+                    db.get_raw_optional(storage_path.as_slice().into(), &[b'r', index], None, v)
+                        .unwrap()
+                        .unwrap(),
+                    None
+                );
+                assert_eq!(db.root_hash(None, v).unwrap().unwrap(), root);
+                &grovedb_version::version::v3::GROVE_V3
+            } else {
+                v
+            };
             db.insert(
                 storage_path.as_slice(),
                 &[b'r', index],
                 element,
                 None,
                 None,
-                v,
+                insert_version,
             )
             .unwrap()
             .unwrap();
@@ -194,6 +277,9 @@ fn assert_reference_page_parity(with_sum: bool) {
         let root = db.root_hash(None, v).unwrap().unwrap();
         for left_to_right in [true, false] {
             for offset in [0, 2u16] {
+                if !local_page && offset == 0 {
+                    continue;
+                }
                 let mut indices: Vec<_> = (0..6u8).collect();
                 if !left_to_right {
                     indices.reverse();
@@ -223,21 +309,30 @@ fn assert_reference_page_parity(with_sum: bool) {
                         (
                             path.clone(),
                             vec![b'r', index],
-                            Element::new_item(vec![index, 42]),
+                            tree_target
+                                .clone()
+                                .unwrap_or_else(|| Element::new_item(vec![index, 42])),
                         )
                     })
                     .collect();
                 let mut local = Query::new_with_direction(left_to_right);
                 local.insert_range(b"r".to_vec()..b"s".to_vec());
-                local.offset = Some(offset);
-                local.limit = Some(2);
+                let page = if local_page {
+                    local.offset = Some(offset);
+                    local.limit = Some(2);
+                    PathQuery::new_unsized(path.clone(), local)
+                } else {
+                    PathQuery::new(path.clone(), SizedQuery::new(local, Some(2), Some(offset)))
+                };
                 let mut ordinary = Query::new_with_direction(left_to_right);
                 ordinary.insert_range_inclusive(
                     vec![b'r', *selected.iter().min().unwrap()]
                         ..=vec![b'r', *selected.iter().max().unwrap()],
                 );
-                for query in [local, ordinary] {
-                    let query = PathQuery::new_unsized(path.clone(), query);
+                for (query, is_page) in [
+                    (page, true),
+                    (PathQuery::new_unsized(path.clone(), ordinary), false),
+                ] {
                     let (raw, skipped) = db
                         .query_raw(
                             &query,
@@ -250,9 +345,9 @@ fn assert_reference_page_parity(with_sum: bool) {
                         )
                         .unwrap()
                         .unwrap();
-                    assert_eq!(skipped, 0, "local skips do not become global skips");
+                    assert_eq!(skipped, if !local_page && is_page { offset } else { 0 });
                     assert_eq!(raw.to_path_key_elements(), expected_raw);
-                    let (typed, _) = db
+                    let typed = db
                         .query(
                             &query,
                             true,
@@ -262,9 +357,20 @@ fn assert_reference_page_parity(with_sum: bool) {
                             None,
                             v,
                         )
-                        .unwrap()
                         .unwrap();
-                    assert_eq!(typed.to_path_key_elements(), expected_typed);
+                    if tree_target.is_some() {
+                        assert!(matches!(
+                            typed,
+                            Err(grovedb::Error::InvalidQuery(
+                                "the reference must result in an item"
+                            ))
+                        ));
+                        if !is_page {
+                            continue;
+                        }
+                    } else {
+                        assert_eq!(typed.unwrap().0.to_path_key_elements(), expected_typed);
+                    }
                     let proof = db.prove_query(&query, None, v).unwrap().unwrap();
                     let (verified_root, raw) =
                         GroveDb::verify_query_raw(&proof, &query, v).unwrap();
@@ -287,6 +393,45 @@ fn assert_reference_page_parity(with_sum: bool) {
                             .map(|(p, k, e)| (p.clone(), k.clone(), Some(e.clone())))
                             .collect::<Vec<_>>()
                     );
+                    if tree_target.is_some() {
+                        let altered = mutate_layer(&proof, &storage_path, |layer| {
+                            use grovedb::operations::proof::ProofBytes;
+                            use grovedb_merk::proofs::{encode_into, Decoder, Node, Op};
+
+                            let ProofBytes::Merk(bytes) = &mut layer.merk_proof else {
+                                panic!("Merk proof required")
+                            };
+                            let mut ops: Vec<_> = Decoder::new(bytes).map(Result::unwrap).collect();
+                            let value = ops
+                                .iter_mut()
+                                .find_map(|op| match op {
+                                    Op::Push(
+                                        Node::KVRefValueHashCount(_, value, ..)
+                                        | Node::KVRefValueHashCountSum(_, value, ..),
+                                    )
+                                    | Op::PushInverted(
+                                        Node::KVRefValueHashCount(_, value, ..)
+                                        | Node::KVRefValueHashCountSum(_, value, ..),
+                                    ) => Some(value),
+                                    _ => None,
+                                })
+                                .expect("page must contain a resolved reference");
+                            let replacement = Element::empty_tree_with_flags(Some(vec![99]))
+                                .serialize(v)
+                                .unwrap();
+                            assert_ne!(*value, replacement);
+                            *value = replacement;
+                            bytes.clear();
+                            encode_into(ops.iter(), bytes);
+                        });
+                        reject_authenticated(&db, &altered, &query);
+                        if let Ok((hash, _)) = GroveDb::verify_query(&altered, &query, v) {
+                            assert_ne!(
+                                hash, root,
+                                "changed reference target must not authenticate"
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -545,6 +690,94 @@ fn reject_authenticated(db: &GroveDb, proof: &[u8], query: &PathQuery) {
             db.root_hash(None, GroveVersion::latest()).unwrap().unwrap(),
             "altered answer must not authenticate against the trusted root"
         );
+    }
+}
+
+#[test]
+fn count_pages_reject_direct_empty_tree_substitutions() {
+    use grovedb::operations::proof::ProofBytes;
+    use grovedb_merk::{
+        proofs::{encode_into, Decoder, Node, Op},
+        tree::{value_hash, TreeFeatureType},
+    };
+
+    let v = GroveVersion::latest();
+    for host in [
+        Element::empty_provable_count_tree(),
+        Element::empty_provable_count_sum_tree(),
+        Element::empty_provable_count_provable_sum_tree(),
+    ] {
+        let (_dir, db) = fixture(4, Some(host), [false, false]);
+        for local in [true, false] {
+            for direction in [true, false] {
+                let mut range = Query::new_with_direction(direction);
+                range.insert_all();
+                let page = if local {
+                    range.offset = Some(1);
+                    range.limit = Some(1);
+                    SizedQuery::new(range, None, None)
+                } else {
+                    SizedQuery::new(range, Some(1), Some(1))
+                };
+                let path = vec![b"type".to_vec(), vec![2], b"doc".to_vec()];
+                let query = PathQuery::new(path, page);
+                let proof = db.prove_query(&query, None, v).unwrap().unwrap();
+                let (hash, rows) = GroveDb::verify_query_raw(&proof, &query, v).unwrap();
+                assert_eq!(hash, db.root_hash(None, v).unwrap().unwrap());
+                assert_eq!(rows.len(), 1);
+                for target in empty_reference_targets() {
+                    let altered = mutate_layer(&proof, &[b"type", &[2], b"doc"], |layer| {
+                        let ProofBytes::Merk(bytes) = &mut layer.merk_proof else {
+                            panic!("Merk proof required")
+                        };
+                        let mut ops: Vec<_> = Decoder::new(bytes).map(Result::unwrap).collect();
+                        let node = ops
+                            .iter_mut()
+                            .find_map(|op| match op {
+                                Op::Push(node @ (Node::KVCount(..) | Node::KVCountSum(..)))
+                                | Op::PushInverted(
+                                    node @ (Node::KVCount(..) | Node::KVCountSum(..)),
+                                ) => Some(node),
+                                _ => None,
+                            })
+                            .expect("page must contain a direct item");
+                        let (key, value, feature) = match node {
+                            Node::KVCount(key, value, count) => (
+                                key.clone(),
+                                value.clone(),
+                                TreeFeatureType::ProvableCountedMerkNode(*count),
+                            ),
+                            Node::KVCountSum(key, value, count, sum) => (
+                                key.clone(),
+                                value.clone(),
+                                TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(
+                                    *count, *sum,
+                                ),
+                            ),
+                            _ => unreachable!(),
+                        };
+                        *node = Node::KVValueHashFeatureType(
+                            key,
+                            target.serialize(v).unwrap(),
+                            value_hash(&value).unwrap(),
+                            feature,
+                        );
+                        bytes.clear();
+                        encode_into(ops.iter(), bytes);
+                    });
+                    for error in [
+                        GroveDb::verify_query_raw(&altered, &query, v).unwrap_err(),
+                        GroveDb::verify_query(&altered, &query, v).unwrap_err(),
+                    ] {
+                        assert!(
+                            matches!(error, grovedb::Error::InvalidProof(_, ref message)
+                            if message.contains("empty-tree return")),
+                            "unexpected refusal: {error:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 

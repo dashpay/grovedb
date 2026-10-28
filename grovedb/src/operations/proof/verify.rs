@@ -861,9 +861,10 @@ impl GroveDb {
             // by the merk-level KVCount path, which recomputes it via
             // `compute_value_hash` rather than trusting the proof.
             //
-            // Skipped for non-empty trees and references — those are
-            // already rejected above as NotSupported.
-            if inner.is_any_tree() && !inner.is_non_empty_tree() {
+            // Resolved references already bind the target bytes through
+            // combine_hash(reference_element_hash, H(target)), rather than
+            // the direct tree's child-root commitment.
+            if !item.resolved_from_reference && inner.is_any_tree() && !inner.is_non_empty_tree() {
                 use grovedb_merk::tree::{
                     axes_digest, combine_hash, combine_hash_three, value_hash, NULL_HASH,
                 };
@@ -1025,7 +1026,9 @@ impl GroveDb {
                     ));
                 }
             }
-            if inner.is_any_tree() && !inner.is_non_empty_tree() {
+            // Resolved references retain the target-byte binding verified
+            // by Merk; only direct tree rows use the empty child-root hash.
+            if !item.resolved_from_reference && inner.is_any_tree() && !inner.is_non_empty_tree() {
                 use grovedb_merk::tree::{
                     axes_digest, combine_hash, combine_hash_three, value_hash, NULL_HASH,
                 };
