@@ -417,6 +417,13 @@ impl ElementQueryExtensions for Element {
             .wrap_with_cost(OperationCost::default());
         }
 
+        if offset.is_some() && sized_query.query.has_instance_offset_anywhere() {
+            return Err(Error::InvalidQuery(
+                "global and local offsets cannot be combined",
+            ))
+            .wrap_with_cost(OperationCost::default());
+        }
+
         let mut budget = QueryBudget::new(*limit, None, *offset);
         let result = query_item_internal(
             storage,
