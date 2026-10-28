@@ -225,6 +225,7 @@ fn absent_terminal_instance_charge_honors_the_governing_flag() {
         &path_query,
         QueryOptions {
             allow_get_raw: true,
+            include_parent_tree_on_subquery: true,
             allow_cache: true,
             decrease_limit_on_range_with_no_sub_elements: false,
             error_if_intermediate_path_tree_not_present: true,
@@ -518,7 +519,7 @@ fn unknown_push_engine_is_rejected_independently_of_data() {
     let path_query = PathQuery::new(vec![DOCS.to_vec()], SizedQuery::new(missing, None, None));
 
     let mut unknown_engine = real.clone();
-    unknown_engine.grovedb_versions.element.path_query_push = 2;
+    unknown_engine.grovedb_versions.element.path_query_push = 3;
     let result = db.query_raw(
         &path_query,
         true,
@@ -568,5 +569,375 @@ fn subordinate_method_version_slots_still_gate_the_internal_walk() {
             matches!(result.unwrap(), Err(Error::VersionError(_))),
             "a bumped subordinate slot must reject, not run today's semantics"
         );
+    }
+}
+
+#[test]
+fn query_item_rejects_global_offset_with_local_descendants_before_reading() {
+    use crate::{
+        element::query::ElementQueryExtensions, query_result_type::QueryResultElement, QueryItem,
+    };
+
+    let v = GroveVersion::latest();
+    let db = make_test_grovedb(v);
+    populate(&db, v);
+    db.insert(
+        [DOCS].as_ref(),
+        b"counts",
+        Element::empty_provable_count_tree(),
+        None,
+        None,
+        v,
+    )
+    .unwrap()
+    .unwrap();
+    for selected_key in [b"missing".as_slice(), b"counts", b"p1"] {
+        for global_offset in [0, 1] {
+            let mut child = Query::new_range_full();
+            child.offset = Some(0);
+            let mut query = Query::new_single_key(selected_key.to_vec());
+            if selected_key == b"p1" {
+                // The offset-bearing branch does not match the selected key.
+                query.add_conditional_subquery(
+                    QueryItem::Key(b"unmatched".to_vec()),
+                    None,
+                    Some(child),
+                );
+            } else {
+                query.set_subquery(child);
+            }
+            let sized = SizedQuery::new(query, None, None);
+            let sentinel = QueryResultElement::ElementResultItem(Element::new_item(vec![42]));
+            let mut rows = vec![sentinel.clone()];
+            let mut limit = Some(3);
+            let mut offset = Some(global_offset);
+            let result = Element::query_item(
+                &db.db,
+                &QueryItem::Key(selected_key.to_vec()),
+                &mut rows,
+                &[DOCS],
+                &sized,
+                None,
+                &mut limit,
+                &mut offset,
+                Default::default(),
+                QueryResultType::QueryElementResultType,
+                Element::path_query_push,
+                v,
+            );
+            assert!(
+                matches!(
+                    result.value(),
+                    Err(Error::InvalidQuery(
+                        "global and local offsets cannot be combined"
+                    ))
+                ),
+                "selected key {selected_key:?}, global offset {global_offset}: {result:?}"
+            );
+            assert!(
+                result.cost.is_nothing(),
+                "refusal must precede storage access"
+            );
+            assert_eq!(rows, vec![sentinel], "refusal must not append partial rows");
+            assert_eq!(limit, Some(3));
+            assert_eq!(offset, Some(global_offset));
+        }
+    }
+}
+
+mod local_offset_public_reads {
+    use grovedb_costs::CostResult;
+    use grovedb_query::{AxisQuery, IndexAxis, ReadMode, SumBudgetRead};
+
+    use super::*;
+    use crate::{element::query::ElementQueryExtensions, QueryItem};
+
+    fn count_db() -> TempGroveDb {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            &[] as &[&[u8]],
+            DOCS,
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .unwrap();
+        for i in 0..3 {
+            db.insert(&[DOCS], &[i], Element::new_item(vec![i]), None, None, v)
+                .unwrap()
+                .unwrap();
+        }
+        db
+    }
+
+    fn read_each(
+        db: &TempGroveDb,
+        query: &Query,
+        v: &GroveVersion,
+    ) -> [(&'static str, CostResult<Vec<Element>, Error>); 6] {
+        let sized = SizedQuery::new(query.clone(), None, None);
+        let path_query = PathQuery::new(vec![DOCS.to_vec()], sized.clone());
+        let result_type = QueryResultType::QueryElementResultType;
+        let mut rows = Vec::new();
+        let query_item = Element::query_item(
+            &db.db,
+            query.items.first().unwrap_or(&QueryItem::RangeFull(..)),
+            &mut rows,
+            &[DOCS],
+            &sized,
+            None,
+            &mut None,
+            &mut None,
+            Default::default(),
+            result_type,
+            Element::path_query_push,
+            v,
+        )
+        .map_ok(|()| {
+            crate::query_result_type::QueryResultElements::from_elements(rows).to_elements()
+        });
+        [
+            (
+                "get_query",
+                Element::get_query(
+                    &db.db,
+                    &[DOCS],
+                    query,
+                    Default::default(),
+                    result_type,
+                    None,
+                    v,
+                )
+                .map_ok(|rows| rows.to_elements()),
+            ),
+            (
+                "get_query_values",
+                Element::get_query_values(&db.db, &[DOCS], query, Default::default(), None, v),
+            ),
+            (
+                "get_sized_query",
+                Element::get_sized_query(
+                    &db.db,
+                    &[DOCS],
+                    &sized,
+                    Default::default(),
+                    result_type,
+                    None,
+                    v,
+                )
+                .map_ok(|(rows, _)| rows.to_elements()),
+            ),
+            (
+                "get_query_apply_function",
+                Element::get_query_apply_function(
+                    &db.db,
+                    &[DOCS],
+                    &sized,
+                    Default::default(),
+                    result_type,
+                    None,
+                    Element::path_query_push,
+                    v,
+                )
+                .map_ok(|(rows, _)| rows.to_elements()),
+            ),
+            (
+                "get_path_query",
+                Element::get_path_query(
+                    &db.db,
+                    &path_query,
+                    Default::default(),
+                    result_type,
+                    None,
+                    v,
+                )
+                .map_ok(|(rows, _)| rows.to_elements()),
+            ),
+            ("query_item", query_item),
+        ]
+    }
+
+    fn assert_invalid_before_storage(db: &TempGroveDb, query: &Query, label: &str) {
+        for (api, result) in read_each(db, query, GroveVersion::latest()) {
+            assert!(
+                matches!(result.value(), Err(Error::InvalidQuery(_))),
+                "{api} must reject {label}: {result:?}"
+            );
+            assert!(
+                result.cost.is_nothing(),
+                "{api}: {label} must fail before storage access"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_local_offset_queries_return_errors_through_every_element_read() {
+        let db = count_db();
+        let mut query = Query::new();
+        query.offset = Some(0);
+        assert_invalid_before_storage(&db, &query, "an empty local-offset query");
+    }
+
+    #[test]
+    fn unsupported_local_offset_shapes_are_rejected_through_every_element_read() {
+        let db = count_db();
+        let mut multiple = Query::new();
+        multiple.insert_range(vec![0]..vec![1]);
+        multiple.insert_range(vec![2]..vec![3]);
+        let mut subquery = Query::new_range_full();
+        subquery.set_subquery(Query::new_range_full());
+        let mut conditional = Query::new_range_full();
+        conditional.add_conditional_subquery(
+            QueryItem::Key(vec![99]),
+            None,
+            Some(Query::new_range_full()),
+        );
+        let mut path = Query::new_range_full();
+        path.set_subquery_path(vec![b"child".to_vec()]);
+        let mut echo = Query::new_range_full();
+        echo.add_parent_tree_on_subquery = true;
+        let mut sum_budget = Query::new_range_full();
+        sum_budget.read_mode = Some(Box::new(ReadMode::SumBudget(SumBudgetRead {
+            sum_limit: 1,
+            match_limit: None,
+        })));
+        let mut axis = Query::new_range_full();
+        axis.read_mode = Some(Box::new(ReadMode::Axis(AxisQuery::top_k(
+            IndexAxis::Count,
+            1,
+            0,
+            true,
+        ))));
+        for (label, mut query) in [
+            ("multiple ranges", multiple),
+            ("an exact key", Query::new_single_key(vec![0])),
+            ("a default subquery", subquery),
+            ("a conditional subquery", conditional),
+            ("a subquery path", path),
+            ("parent echo", echo),
+            (
+                "a count aggregate",
+                Query::new_aggregate_count_on_range(QueryItem::RangeFull(..)),
+            ),
+            (
+                "a sum aggregate",
+                Query::new_aggregate_sum_on_range(QueryItem::RangeFull(..)),
+            ),
+            (
+                "a count-and-sum aggregate",
+                Query::new_aggregate_count_and_sum_on_range(QueryItem::RangeFull(..)),
+            ),
+            ("a sum-budget read", sum_budget),
+            ("an axis read", axis),
+        ] {
+            query.offset = Some(1);
+            assert_invalid_before_storage(&db, &query, label);
+        }
+    }
+
+    #[test]
+    fn unmatched_malformed_local_offsets_are_preflighted_by_every_element_read() {
+        let db = count_db();
+        let mut invalid = Query::new();
+        invalid.offset = Some(0);
+        let mut query = Query::new_single_key(vec![0]);
+        query.add_conditional_subquery(QueryItem::Key(vec![99]), None, Some(invalid));
+        assert_invalid_before_storage(&db, &query, "a malformed unmatched local-offset descendant");
+    }
+
+    #[test]
+    fn older_versions_refuse_local_offsets_through_every_element_read() {
+        let db = count_db();
+        let mut local = Query::new_range_full();
+        local.offset = Some(0);
+        let mut nested = Query::new_single_key(vec![0]);
+        nested.add_conditional_subquery(QueryItem::Key(vec![99]), None, Some(local.clone()));
+        for v in grovedb_version::version::GROVE_VERSIONS
+            .iter()
+            .filter(|v| v.protocol_version < 5)
+        {
+            for query in [&local, &nested] {
+                for (api, result) in read_each(&db, query, v) {
+                    assert!(
+                        matches!(result.value(), Err(Error::NotSupported(_))),
+                        "{api}, V{}: {result:?}",
+                        v.protocol_version
+                    );
+                    assert!(
+                        result.cost.is_nothing(),
+                        "{api} must validate the version before storage access"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn query_item_serves_local_descendants_without_a_global_offset() {
+        let db = count_db();
+        let v = GroveVersion::latest();
+        let mut local = Query::new_range_full();
+        local.offset = Some(1);
+        local.limit = Some(1);
+        let mut query = Query::new_single_key(DOCS.to_vec());
+        query.set_subquery(local);
+        let sized = SizedQuery::new(query, None, None);
+        let mut rows = Vec::new();
+        let mut limit = Some(3);
+        let mut offset = None;
+        Element::query_item(
+            &db.db,
+            &QueryItem::Key(DOCS.to_vec()),
+            &mut rows,
+            &[],
+            &sized,
+            None,
+            &mut limit,
+            &mut offset,
+            Default::default(),
+            QueryResultType::QueryElementResultType,
+            Element::path_query_push,
+            v,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            crate::query_result_type::QueryResultElements::from_elements(rows).to_elements(),
+            vec![Element::new_item(vec![1])],
+            "the local skip must apply within the selected count-bearing descendant"
+        );
+        assert_eq!(
+            limit,
+            Some(2),
+            "only the returned row consumes the global limit"
+        );
+        assert_eq!(offset, None, "local skips must not become a global offset");
+    }
+
+    #[test]
+    fn valid_local_pages_reach_every_serving_element_read() {
+        let db = count_db();
+        let mut query = Query::new_range_full();
+        query.offset = Some(1);
+        query.limit = Some(1);
+        for (api, result) in read_each(&db, &query, GroveVersion::latest()) {
+            if api == "query_item" {
+                assert!(matches!(result.value(), Err(Error::NotSupported(_))));
+                assert!(result.cost.is_nothing());
+            } else {
+                assert!(
+                    result.cost.seek_count > 0,
+                    "{api} must read the populated host"
+                );
+                assert_eq!(
+                    result.unwrap().unwrap(),
+                    vec![Element::new_item(vec![1])],
+                    "{api} must return the selected local page"
+                );
+            }
+        }
     }
 }

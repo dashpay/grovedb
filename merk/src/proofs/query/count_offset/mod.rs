@@ -103,6 +103,8 @@
 #[cfg(feature = "minimal")]
 mod emit;
 #[cfg(feature = "minimal")]
+mod emit_local;
+#[cfg(feature = "minimal")]
 mod prove;
 #[cfg(test)]
 mod tests;

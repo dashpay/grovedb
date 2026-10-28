@@ -2047,6 +2047,23 @@ impl GroveDb {
             limit_state.global
         };
 
+        if let Some(offset) = query.instance_offset {
+            return self
+                .prove_local_count_offset_layer_v1(
+                    &subtree,
+                    &path,
+                    offset,
+                    &query.items[0],
+                    query.left_to_right,
+                    limit_state,
+                    &mut frame_instance,
+                    transaction,
+                    prove_options,
+                    grove_version,
+                )
+                .add_cost(cost);
+        }
+
         // Shape validation fixed the aggregate family and terminal depth.
         // The merk primitives still enforce the actual tree's eligibility.
         if let Some((kind, inner_range)) = validated.aggregate_at_depth(path.len()) {
@@ -2293,6 +2310,17 @@ impl GroveDb {
                         // the proof) keeps its wrapper byte either way.
                         let elem =
                             Element::deserialize(value, grove_version).map(|e| e.into_underlying());
+                        if let Ok(element) = &elem {
+                            cost_return_on_error_no_add!(
+                                cost,
+                                path_query.validate_local_offset_host(
+                                    &path,
+                                    key,
+                                    element,
+                                    grove_version
+                                )
+                            );
+                        }
                         // Normalize a bidirectional reference to its plain
                         // reference shape: proof-wise both resolve the same
                         // way. A bidirectional reference's self-hash slot in
@@ -3701,6 +3729,186 @@ impl GroveDb {
         // for uniformity.)
         let returned_u16: u16 = prove_result.returned.min(u16::MAX as u64) as u16;
         limit_state.charge_rows(returned_u16);
+        if let Some(instance) = frame_instance.as_mut() {
+            *instance = instance.saturating_sub(returned_u16);
+        }
+        Ok(LayerProof {
+            merk_proof: ProofBytes::Merk(serialized),
+            lower_layers: BTreeMap::new(),
+        })
+        .wrap_with_cost(cost)
+    }
+
+    /// Emit a branch-local count-unit page with this instance's effective budget.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
+    fn prove_local_count_offset_layer_v1<'a, S>(
+        &self,
+        subtree: &'a Merk<S>,
+        path: &[&[u8]],
+        offset: u16,
+        inner_range: &QueryItem,
+        left_to_right: bool,
+        limit_state: &mut super::V1LimitState,
+        frame_instance: &mut Option<u16>,
+        transaction: &Transaction,
+        prove_options: &ProveOptions,
+        grove_version: &GroveVersion,
+    ) -> CostResult<LayerProof, Error>
+    where
+        S: StorageContext<'a> + 'a,
+    {
+        let mut cost = OperationCost::default();
+        use grovedb_merk::TreeType as MerkTreeType;
+        if !matches!(
+            subtree.tree_type,
+            MerkTreeType::ProvableCountTree
+                | MerkTreeType::ProvableCountSumTree
+                | MerkTreeType::ProvableCountProvableSumTree
+        ) {
+            return Err(Error::InvalidQuery(
+                "count-offset paginated queries are only valid against \
+                 ProvableCountTree / ProvableCountSumTree / ProvableCountProvableSumTree \
+                 merks",
+            ))
+            .wrap_with_cost(cost);
+        }
+        let offset = u64::from(offset);
+        let limit_u64 = limit_state
+            .effective_layer_limit(*frame_instance)
+            .map(u64::from);
+        let mut prove_result = cost_return_on_error!(
+            &mut cost,
+            subtree
+                .prove_local_count_offset_on_range(
+                    inner_range,
+                    offset,
+                    limit_u64,
+                    left_to_right,
+                    grove_version,
+                )
+                .map_err(|e| Error::CorruptedData(format!(
+                    "prove_count_offset_on_range failed: {}",
+                    e
+                )))
+        );
+        for op in prove_result.ops.iter_mut() {
+            let node = match op {
+                Op::Push(node) | Op::PushInverted(node) => node,
+                _ => continue,
+            };
+            let Node::KVValueHashFeatureType(key, value, committed_value_hash, feature_type) = node
+            else {
+                continue;
+            };
+            let elem = match Element::deserialize(value, grove_version) {
+                Ok(e) => e.into_underlying(),
+                Err(_) => continue,
+            };
+            let mut reference_self_hash_override = None;
+            let mut bidi_max_hop = None;
+            let elem = match elem {
+                ref e @ Element::BidirectionalReference(..) => {
+                    let hashes = cost_return_on_error!(
+                        &mut cost,
+                        e.backward_references_hashes(grove_version)
+                            .map_err(Error::from)
+                    )
+                    .expect("bidirectional references carry hashes");
+                    reference_self_hash_override = Some(hashes.combined);
+                    let Element::BidirectionalReference(reference, reference_flags) = elem else {
+                        unreachable!("checked above");
+                    };
+                    bidi_max_hop = reference.max_hop;
+                    Element::Reference(
+                        reference.forward_reference_path,
+                        reference.max_hop,
+                        reference_flags,
+                    )
+                }
+                other => other,
+            };
+            let (Element::Reference(reference_path, ..)
+            | Element::ReferenceWithSumItem(reference_path, ..)) = elem
+            else {
+                continue;
+            };
+            let absolute_path =
+                match path_from_reference_path_type(reference_path, path, Some(key.as_slice())) {
+                    Ok(p) => p,
+                    Err(e) => return Err(Error::from(e)).wrap_with_cost(cost),
+                };
+            let referenced_elem = cost_return_on_error!(
+                &mut cost,
+                self.follow_reference_with_max_hop(
+                    absolute_path.as_slice().into(),
+                    bidi_max_hop,
+                    true,
+                    Some(transaction),
+                    grove_version
+                )
+            );
+            let reference_element_hash = match reference_self_hash_override {
+                Some(hash) => hash,
+                None => value_hash(value).unwrap_add_cost(&mut cost),
+            };
+            let referenced_elem = cost_return_on_error!(
+                &mut cost,
+                Self::reference_terminal_as_committed(
+                    referenced_elem,
+                    &reference_element_hash,
+                    committed_value_hash,
+                    grove_version,
+                )
+            );
+            let serialized_referenced_elem = match referenced_elem
+                .stripped_of_backward_references()
+                .serialize(grove_version)
+            {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    return Err(Error::CorruptedData(String::from(
+                        "unable to serialize element",
+                    )))
+                    .wrap_with_cost(cost);
+                }
+            };
+            *node = match feature_type {
+                TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, sum) => {
+                    Node::KVRefValueHashCountSum(
+                        key.to_owned(),
+                        serialized_referenced_elem,
+                        reference_element_hash,
+                        *count,
+                        *sum,
+                    )
+                }
+                TreeFeatureType::ProvableCountedMerkNode(count)
+                | TreeFeatureType::ProvableCountedSummedMerkNode(count, _) => {
+                    Node::KVRefValueHashCount(
+                        key.to_owned(),
+                        serialized_referenced_elem,
+                        reference_element_hash,
+                        *count,
+                    )
+                }
+                other => {
+                    return Err(Error::CorruptedData(format!(
+                        "count-offset proof: reference row {} carries non-count feature type \
+                         {other:?}",
+                        hex::encode(key)
+                    )))
+                    .wrap_with_cost(cost);
+                }
+            };
+        }
+        let mut serialized = Vec::with_capacity(128);
+        encode_into(prove_result.ops.iter(), &mut serialized);
+        let returned_u16: u16 = prove_result.returned.min(u16::MAX as u64) as u16;
+        limit_state.charge_rows(returned_u16);
+        if returned_u16 == 0 && prove_options.decrease_limit_on_empty_sub_query_result {
+            limit_state.charge_empty_layer();
+        }
         if let Some(instance) = frame_instance.as_mut() {
             *instance = instance.saturating_sub(returned_u16);
         }

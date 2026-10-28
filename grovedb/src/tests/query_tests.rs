@@ -876,7 +876,6 @@ mod tests {
     #[test]
     fn test_subquery_offset_consumed_empty_does_not_decrease_limit_forward() {
         let grove_version = GroveVersion::latest();
-        assert_eq!(grove_version.protocol_version, 4);
         let db = make_test_grovedb(grove_version);
         populate_tree_for_unique_range_subquery(&db, grove_version);
 
@@ -958,7 +957,7 @@ mod tests {
     }
 
     /// The two grove versions on either side of the `element.path_query_push`
-    /// gate: GROVE_V3 selects the frozen v0 implementation, GROVE_V4 (latest)
+    /// gate: GROVE_V3 selects the frozen v0 implementation, GROVE_V4
     /// selects v1. The implementations differ in the offset-consumed
     /// empty-subquery limit accounting (issue #690), in serving per-instance
     /// limits, and in reconciling descents by consumed budget — none of which
@@ -967,7 +966,7 @@ mod tests {
     /// equivalence branch by branch.
     fn path_query_push_gate_versions() -> [&'static GroveVersion; 2] {
         let v3 = &grovedb_version::version::GROVE_VERSIONS[2];
-        let v4 = GroveVersion::latest();
+        let v4 = &grovedb_version::version::GROVE_VERSIONS[3];
         assert_eq!(v3.protocol_version, 3);
         assert_eq!(v4.protocol_version, 4);
         [v3, v4]
@@ -1160,7 +1159,7 @@ mod tests {
                 },
             )) => {
                 assert_eq!(method, "path_query_push");
-                assert_eq!(known_versions, vec![0, 1]);
+                assert_eq!(known_versions, vec![0, 1, 2]);
                 assert_eq!(received, 99);
             }
             other => panic!("expected UnknownVersionMismatch, got {other:?}"),
@@ -3788,6 +3787,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3837,6 +3837,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3886,6 +3887,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3935,6 +3937,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3984,6 +3987,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4033,6 +4037,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4084,6 +4089,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4135,6 +4141,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4186,6 +4193,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4237,6 +4245,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4288,6 +4297,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4339,6 +4349,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4390,6 +4401,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4441,6 +4453,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4495,6 +4508,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4549,6 +4563,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4603,6 +4618,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4657,6 +4673,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4711,6 +4728,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4765,6 +4783,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4819,6 +4838,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4873,6 +4893,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4927,6 +4948,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4981,6 +5003,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -5035,6 +5058,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -5089,6 +5113,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -5143,6 +5168,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -5203,6 +5229,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -5267,6 +5294,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -5321,6 +5349,7 @@ mod tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: Some(2),
                 offset: None,

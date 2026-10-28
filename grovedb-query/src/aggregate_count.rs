@@ -146,6 +146,7 @@ impl Query {
     ///    `default_subquery_branch.subquery_path` must both be `None`.
     /// 7. `conditional_subquery_branches` must be `None` or empty.
     pub fn validate_leaf_aggregate_count_on_range(&self) -> Result<&QueryItem, Error> {
+        self.reject_instance_offsets_for_aggregates()?;
         if self.items.len() != 1 {
             return Err(Error::InvalidOperation(
                 "AggregateCountOnRange must be the only item in the query",
@@ -232,6 +233,7 @@ impl Query {
     /// 5. `conditional_subquery_branches` must be `None` or empty
     ///    (out of scope for the initial implementation).
     pub fn validate_carrier_aggregate_count_on_range(&self) -> Result<&QueryItem, Error> {
+        self.reject_instance_offsets_for_aggregates()?;
         if self.items.is_empty() {
             return Err(Error::InvalidOperation(
                 "carrier AggregateCountOnRange query must have at least one outer item",

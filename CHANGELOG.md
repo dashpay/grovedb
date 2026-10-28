@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING**: `Query` adds the public `offset: Option<u16>` field for
+  branch-local committed-count-unit pagination. Exhaustive struct literals
+  must supply the field or use a default update. Offset-bearing queries use
+  a new native version-3 flag and a new serde version-4 frame, which older
+  decoders reject; offset-free encodings remain unchanged.
+- **BREAKING**: `QueryOptions` adds `include_parent_tree_on_subquery`.
+  Exhaustive struct literals must supply the field or use a default update.
+  It defaults to `true` for V5 raw parent carriers; value projections disable
+  those metadata rows. Earlier query engines ignore the field.
+- `GroveVersion::latest()` now selects `GROVE_V5`. V5 enables per-instance
+  query offsets on supported provable count trees, merge v2 for exclusive
+  branch-local pagination, and the v2 trusted query engine with parent-tree
+  echoes. Earlier Grove versions continue to reject local offsets.
+
+### Fixed
+- Count-offset proof verification accepts pages whose rows resolve through a
+  reference to an empty tree, which earlier versions could persist. The
+  empty-tree hash check now applies only to direct tree rows, on both the
+  global offset path (from `GROVE_V4`) and V5 local pages; resolved
+  references keep the target binding Merk already verifies.
+
 ## [6.1.1] - 2026-10-20
 
 ### Fixed

@@ -77,12 +77,13 @@ impl GroveDb {
 
         let elements = cost_return_on_error!(
             &mut cost,
-            self.query_many_raw(
+            self.query_many_raw_with_parent_tree(
                 path_queries,
                 allow_cache,
                 decrease_limit_on_range_with_no_sub_elements,
                 error_if_intermediate_path_tree_not_present,
                 QueryResultType::QueryElementResultType,
+                false,
                 transaction,
                 grove_version
             )
@@ -175,6 +176,30 @@ impl GroveDb {
         grove_version: &GroveVersion,
     ) -> CostResult<QueryResultElements, Error>
 where {
+        self.query_many_raw_with_parent_tree(
+            path_queries,
+            allow_cache,
+            decrease_limit_on_range_with_no_sub_elements,
+            error_if_intermediate_path_tree_not_present,
+            result_type,
+            true,
+            transaction,
+            grove_version,
+        )
+    }
+
+    fn query_many_raw_with_parent_tree(
+        &self,
+        path_queries: &[&PathQuery],
+        allow_cache: bool,
+        decrease_limit_on_range_with_no_sub_elements: bool,
+        error_if_intermediate_path_tree_not_present: bool,
+        result_type: QueryResultType,
+        include_parent_tree_on_subquery: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<QueryResultElements, Error>
+where {
         check_grovedb_v0_with_cost!(
             "query_many_raw",
             grove_version
@@ -191,12 +216,13 @@ where {
         );
         let (result, _) = cost_return_on_error!(
             &mut cost,
-            self.query_raw(
+            self.query_raw_with_parent_tree(
                 &query,
                 allow_cache,
                 decrease_limit_on_range_with_no_sub_elements,
                 error_if_intermediate_path_tree_not_present,
                 result_type,
+                include_parent_tree_on_subquery,
                 transaction,
                 grove_version
             )
@@ -357,12 +383,13 @@ where {
 
         let (elements, skipped) = cost_return_on_error!(
             &mut cost,
-            self.query_raw(
+            self.query_raw_with_parent_tree(
                 path_query,
                 allow_cache,
                 decrease_limit_on_range_with_no_sub_elements,
                 error_if_intermediate_path_tree_not_present,
                 result_type,
+                false,
                 transaction,
                 grove_version
             )
@@ -404,12 +431,13 @@ where {
 
         let (elements, skipped) = cost_return_on_error!(
             &mut cost,
-            self.query_raw(
+            self.query_raw_with_parent_tree(
                 path_query,
                 allow_cache,
                 decrease_limit_on_range_with_no_sub_elements,
                 error_if_intermediate_path_tree_not_present,
                 QueryResultType::QueryElementResultType,
+                false,
                 transaction,
                 grove_version
             )
@@ -552,12 +580,13 @@ where {
 
         let (elements, skipped) = cost_return_on_error!(
             &mut cost,
-            self.query_raw(
+            self.query_raw_with_parent_tree(
                 path_query,
                 allow_cache,
                 decrease_limit_on_range_with_no_sub_elements,
                 error_if_intermediate_path_tree_not_present,
                 QueryResultType::QueryElementResultType,
+                false,
                 transaction,
                 grove_version
             )
@@ -1160,12 +1189,13 @@ where {
 
         let (elements, skipped) = cost_return_on_error!(
             &mut cost,
-            self.query_raw(
+            self.query_raw_with_parent_tree(
                 path_query,
                 allow_cache,
                 decrease_limit_on_range_with_no_sub_elements,
                 error_if_intermediate_path_tree_not_present,
                 QueryResultType::QueryElementResultType,
+                false,
                 transaction,
                 grove_version
             )
@@ -1294,6 +1324,29 @@ where {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(QueryResultElements, u16), Error> {
+        self.query_raw_with_parent_tree(
+            path_query,
+            allow_cache,
+            decrease_limit_on_range_with_no_sub_elements,
+            error_if_intermediate_path_tree_not_present,
+            result_type,
+            true,
+            transaction,
+            grove_version,
+        )
+    }
+
+    fn query_raw_with_parent_tree(
+        &self,
+        path_query: &PathQuery,
+        allow_cache: bool,
+        decrease_limit_on_range_with_no_sub_elements: bool,
+        error_if_intermediate_path_tree_not_present: bool,
+        result_type: QueryResultType,
+        include_parent_tree_on_subquery: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(QueryResultElements, u16), Error> {
         check_grovedb_v0_with_cost!(
             "query_raw",
             grove_version.grovedb_versions.operations.query.query_raw
@@ -1317,6 +1370,7 @@ where {
             path_query,
             QueryOptions {
                 allow_get_raw: true,
+                include_parent_tree_on_subquery,
                 allow_cache,
                 decrease_limit_on_range_with_no_sub_elements,
                 error_if_intermediate_path_tree_not_present,

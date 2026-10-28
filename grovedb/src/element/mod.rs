@@ -21,3 +21,6 @@ pub mod query_budget;
 pub mod query_options;
 
 pub use grovedb_element::*;
+
+#[cfg(feature = "minimal")]
+mod local_offset_read;

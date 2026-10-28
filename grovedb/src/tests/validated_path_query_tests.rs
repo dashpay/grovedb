@@ -550,7 +550,7 @@ fn query_proof_bytes_and_costs_match_compatibility_fixtures() {
         )
     }
     let mut fixtures = Vec::new();
-    for version in GROVE_VERSIONS {
+    for version in &GROVE_VERSIONS[..4] {
         let db = make_test_grovedb(version);
         for (key, value) in [(b"a", 7), (b"b", 2), (b"c", 5)] {
             insert(

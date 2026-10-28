@@ -24,7 +24,7 @@ mod tests {
 
     #[test]
     fn v4_merge_requires_direction_agreement_and_propagates_it() {
-        let v4 = GroveVersion::latest();
+        let v4 = &GROVE_VERSIONS[3];
         assert_eq!(v4.protocol_version, 4);
 
         // Agreement: the shared direction survives the merge.
@@ -383,12 +383,11 @@ mod tests {
     }
 
     #[test]
-    fn merge_refuses_offsets_at_every_version_and_lifts_limits_from_v4() {
+    fn historical_merges_refuse_offsets_and_v4_lifts_limits() {
         use crate::SizedQuery;
 
-        // Offsets never merge — a merged offset would silently mean
-        // something different than either input asked for.
-        for version in [&GROVE_VERSIONS[2], GroveVersion::latest()] {
+        // Historical merge implementations cannot preserve branch-local skips.
+        for version in &GROVE_VERSIONS[..4] {
             let plain = directional_query(b"a", true);
 
             let mut query = Query::new();
@@ -421,7 +420,7 @@ mod tests {
         // …and lifted from GROVE_V4 (merge v1): the input's global budget
         // becomes its exclusive branch's per-instance cap, and the
         // merged query itself is unsized.
-        let merged = PathQuery::merge(vec![&plain, &with_limit], GroveVersion::latest())
+        let merged = PathQuery::merge(vec![&plain, &with_limit], &GROVE_VERSIONS[3])
             .expect("merge v1 (GROVE_V4) lifts an exclusive-branch limit");
         assert_eq!(merged.query.limit, None);
         let branches = merged

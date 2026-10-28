@@ -26,6 +26,11 @@ impl Query {
         max_results: usize,
         result: &mut Vec<(Vec<Vec<u8>>, Vec<u8>)>,
     ) -> Result<usize, Error> {
+        if self.has_instance_offset_anywhere() {
+            return Err(Error::NotSupported(
+                "terminal keys cannot project count-unit offsets".to_string(),
+            ));
+        }
         self.terminal_keys_inner_v1(current_path, max_results, result, 0)
     }
 
