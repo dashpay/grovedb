@@ -229,6 +229,13 @@
 //!   so the "worst case" was not an upper bound; preserved for replay.
 //!   Gated because the estimate is the admission bound.
 //!
+//! - The v1 insert estimators those two slots select also price creating a
+//!   `PrivateDocumentStore` as the apply does: the existence check a
+//!   write-once store makes, the two hashes deriving its empty root, and in
+//!   the worst case the store as the layered tree the apply writes, not an
+//!   item. Stores exist from `GROVE_V4` only, so no earlier version estimates
+//!   one; changed in place after 6.1.1, an estimate going up, for stores only.
+//!
 //! - `bulk_append_tree_versions.cost.append_storage_accounting: 1` and
 //!   `commitment_tree_versions.cost.frontier_save_storage_accounting: 1` —
 //!   the append-only family (`BulkAppendTree`, `CommitmentTree`,

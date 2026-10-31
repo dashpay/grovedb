@@ -104,6 +104,11 @@ pub fn empty_private_document_store_state_root(entry_size: u32, chunk_power: u8)
     )
 }
 
+/// The blake3 calls [`empty_private_document_store_state_root`] makes: the
+/// committed-config hash and the composite `pds_state` hash. Creating a store
+/// pays them, and the insert estimators charge them for a store element.
+pub const EMPTY_PRIVATE_DOCUMENT_STORE_STATE_ROOT_HASH_CALLS: u32 = 2;
+
 #[cfg(test)]
 mod tests {
     use super::*;
