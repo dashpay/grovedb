@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- A `PrivateDocumentStore`'s entries can be read and proved by position
+  range from `GROVE_V4`. `GroveDb::private_document_store_get_range` reads
+  `[start, start + limit)` in append order, clamped to the store's count
+  (`PrivateDocumentStore::get_range` in the store crate).
+  `prove_bulk_position_range` / `verify_bulk_position_range_proof` accept a
+  store, and a V1 proof's subquery into a store carries its bulk append
+  tree's proof, which the verifier binds through the store's committed
+  config (`blake3("pds_state" || config_hash || bulk_state_root)`, from the
+  authenticated element). Before, V1 proofs refused subqueries into a store.
+  Gated by the new `private_document_store.get_range` and
+  `private_document_store.range_proof` slots (0 in V1..V3, 1 in V4;
+  **BREAKING** for code building `GroveDBOperationsPrivateDocumentStoreVersions`
+  by hand). The proof envelope gains no variant; the `verify` feature now
+  builds `grovedb-private-document-store` (without storage) for the store's
+  root.
+
 ### Fixed
 - `GROVE_V4` insert estimates price creating a `PrivateDocumentStore` as the
   apply does. The average- and worst-case `merk_insert_element` estimators

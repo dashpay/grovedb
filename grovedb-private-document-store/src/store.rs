@@ -8,7 +8,7 @@
 //! tree; the wrapper adds entry-size validation and the config-binding
 //! state root.
 
-use grovedb_bulk_append_tree::BulkAppendTree;
+use grovedb_bulk_append_tree::{BulkAppendTree, RangePage};
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
@@ -285,6 +285,50 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
         }
 
         Ok(value).wrap_with_cost(cost)
+    }
+
+    /// The entries of the position range `[start, start + limit)`, in append
+    /// order with their positions, clamped to the store's count.
+    ///
+    /// Reads each completed chunk the range overlaps once and each buffered
+    /// entry in it once, as the bulk tree's range read does; the returned
+    /// [`RangePage`] carries the store's `total_count`, so a page shorter
+    /// than `limit` means the range reached the end of the store.
+    pub fn get_range(
+        &self,
+        start: u64,
+        limit: u16,
+    ) -> CostResult<RangePage, PrivateDocumentStoreError> {
+        let mut cost = OperationCost::default();
+        let page = match self
+            .bulk_tree
+            .get_range(start, limit)
+            .unwrap_add_cost(&mut cost)
+        {
+            Ok(page) => page,
+            Err(e) => {
+                return Err(PrivateDocumentStoreError::InvalidData(format!("{}", e)))
+                    .wrap_with_cost(cost);
+            }
+        };
+
+        // Defensive, as `get_value`: a stored entry that breaks the committed
+        // entry size is corruption (the append path rejects such entries).
+        if let Some((position, entry)) = page
+            .entries
+            .iter()
+            .find(|(_, entry)| entry.len() != self.entry_size as usize)
+        {
+            return Err(PrivateDocumentStoreError::CorruptedData(format!(
+                "entry at position {} has size {}, committed entry size is {}",
+                position,
+                entry.len(),
+                self.entry_size
+            )))
+            .wrap_with_cost(cost);
+        }
+
+        Ok(page).wrap_with_cost(cost)
     }
 
     /// Append many entries in one pass, computing roots once at the end.

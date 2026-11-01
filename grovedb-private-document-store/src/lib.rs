@@ -33,7 +33,7 @@ mod store;
 
 pub use error::PrivateDocumentStoreError;
 pub use grovedb_bulk_append_tree::{
-    deserialize_chunk_blob, serialize_chunk_blob, BulkAppendError, BulkAppendTree,
+    deserialize_chunk_blob, serialize_chunk_blob, BulkAppendError, BulkAppendTree, RangePage,
 };
 #[cfg(feature = "storage")]
 pub use store::{

@@ -139,7 +139,8 @@ impl GroveDb {
 
     /// Prove the paginated position range `[start, start + limit)` of the
     /// append-only, BulkAppendTree-backed element at `path`/`key`
-    /// (`Element::BulkAppendTree` or `Element::CommitmentTree`).
+    /// (`Element::BulkAppendTree`, `Element::CommitmentTree`, or, where
+    /// `private_document_store.range_proof` is set, `Element::PrivateDocumentStore`).
     ///
     /// This is the scanning hot path: clients walking "all entries since my
     /// cursor" prove one page per call, passing their cursor as `start`. The
@@ -184,10 +185,17 @@ impl GroveDb {
         );
         match element.underlying() {
             Element::BulkAppendTree(..) | Element::CommitmentTree(..) => {}
+            Element::PrivateDocumentStore(..)
+                if grove_version
+                    .grovedb_versions
+                    .operations
+                    .private_document_store
+                    .range_proof
+                    == 1 => {}
             _ => {
                 return Err(Error::InvalidInput(
-                    "prove_bulk_position_range requires a BulkAppendTree or CommitmentTree \
-                     element",
+                    "prove_bulk_position_range requires a BulkAppendTree, CommitmentTree or \
+                     PrivateDocumentStore element",
                 ))
                 .wrap_with_cost(cost);
             }
@@ -2555,23 +2563,47 @@ impl GroveDb {
                                 lower_layers.insert(key.clone(), layer_proof);
                             }
 
-                            // PrivateDocumentStore range-read proofs are not
-                            // implemented yet (planned at the BulkAppendTree
-                            // layer so the anchored DataCommitmentTree can
-                            // inherit them); reject subqueries instead of
-                            // shipping an unverifiable proof. Terminal
-                            // (no-subquery) queries still bind the store's
-                            // state root via the child-hash arm below.
-                            Ok(Element::PrivateDocumentStore(..))
+                            // PrivateDocumentStore with subquery: a store's
+                            // data is its bulk append tree, stored exactly as a
+                            // BulkAppendTree's, so the layer is the bulk proof;
+                            // the verifier binds its root through the store's
+                            // committed config, which the element carries.
+                            // Gated (`private_document_store.range_proof`), so
+                            // a version without it still refuses.
+                            Ok(Element::PrivateDocumentStore(total_count, _, chunk_power, _))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
-                                return Err(Error::NotSupported(
-                                    "V1 proofs do not yet support subqueries into \
-                                     PrivateDocumentStore elements"
-                                        .to_string(),
-                                ))
-                                .wrap_with_cost(cost);
+                                if grove_version
+                                    .grovedb_versions
+                                    .operations
+                                    .private_document_store
+                                    .range_proof
+                                    != 1
+                                {
+                                    return Err(Error::NotSupported(
+                                        "V1 proofs do not support subqueries into \
+                                         PrivateDocumentStore elements at this grove version"
+                                            .to_string(),
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+                                let mut lower_path = path.clone();
+                                lower_path.push(key.as_slice());
+                                let layer_proof = cost_return_on_error!(
+                                    &mut cost,
+                                    self.prove_non_merk_lower_layer_v1(
+                                        NonMerkLowerLayer::BulkAppend { total_count, chunk_power },
+                                        &lower_path,
+                                        path_query,
+                                        limit_state,
+                                        &mut frame_instance,
+                                        transaction,
+                                        grove_version,
+                                    )
+                                );
+                                has_a_result_at_level |= true;
+                                lower_layers.insert(key.clone(), layer_proof);
                             }
 
                             // Axis-ordered read of an indexed tree: the

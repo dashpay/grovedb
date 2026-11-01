@@ -684,17 +684,12 @@ fn test_private_document_store_prove_element_empty_and_populated() {
     prove_and_verify_store_element(&db, 5);
 }
 
-#[test]
-fn test_private_document_store_subquery_proofs_not_supported() {
-    let grove_version = GroveVersion::latest();
-    let db = make_db_with_store();
-    db.private_document_store_insert(&[b"root"], b"docs", entry(1), None, grove_version)
-        .unwrap()
-        .expect("append");
-
+/// The path query a reader proves a store's entries with: the store at
+/// `[root]/docs`, and every position below it.
+fn store_subquery_path_query() -> PathQuery {
     let mut inner_query = Query::new();
     inner_query.insert_all();
-    let path_query = PathQuery {
+    PathQuery {
         path: vec![b"root".to_vec()],
         query: SizedQuery {
             query: Query {
@@ -714,14 +709,259 @@ fn test_private_document_store_subquery_proofs_not_supported() {
             limit: None,
             offset: None,
         },
-    };
+    }
+}
 
-    let result = db.prove_query(&path_query, None, grove_version).unwrap();
+/// A store at `[root]/docs` holding `count` entries, entry `i` filled with
+/// byte `i + 1`: two completed chunks and two buffered entries for 10.
+fn make_db_with_entries(count: u8) -> crate::tests::TempGroveDb {
+    let db = make_db_with_store();
+    for i in 0..count {
+        db.private_document_store_insert(
+            &[b"root"],
+            b"docs",
+            entry(i + 1),
+            None,
+            GroveVersion::latest(),
+        )
+        .unwrap()
+        .expect("append");
+    }
+    db
+}
+
+/// `GROVE_V4` without the store's range proofs.
+fn grove_v4_without_range_proofs() -> GroveVersion {
+    let mut version = GROVE_V4.clone();
+    version
+        .grovedb_versions
+        .operations
+        .private_document_store
+        .range_proof = 0;
+    version
+}
+
+#[test]
+fn test_private_document_store_subquery_proofs_verify() {
+    let grove_version = GroveVersion::latest();
+    let db = make_db_with_entries(10);
+    let path_query = store_subquery_path_query();
+
+    let proof = db
+        .prove_query(&path_query, None, grove_version)
+        .unwrap()
+        .expect("prove every entry of the store");
+    let (root_hash, results) = GroveDb::verify_query_with_options(
+        &proof,
+        &path_query,
+        grovedb_merk::proofs::query::VerifyOptions {
+            absence_proofs_for_non_existing_searched_keys: false,
+            verify_proof_succinctness: false,
+            include_empty_trees_in_result: false,
+        },
+        grove_version,
+    )
+    .expect("verify the store's entries");
+
+    assert_eq!(
+        root_hash,
+        db.root_hash(None, grove_version).unwrap().unwrap()
+    );
+    let entries: Vec<(u64, Vec<u8>)> = results
+        .into_iter()
+        .map(|(path, key, element)| {
+            assert_eq!(path, vec![b"root".to_vec(), b"docs".to_vec()]);
+            let position = u64::from_be_bytes(key.try_into().expect("8-byte position key"));
+            match element.expect("a proved entry") {
+                Element::Item(value, _) => (position, value),
+                other => panic!("expected an item, got {:?}", other.type_str()),
+            }
+        })
+        .collect();
+    let expected: Vec<(u64, Vec<u8>)> = (0..10u8).map(|i| (i as u64, entry(i + 1))).collect();
+    assert_eq!(entries, expected);
+}
+
+#[test]
+fn test_private_document_store_subquery_proofs_refused_without_the_slot() {
+    let db = make_db_with_entries(5);
+    let path_query = store_subquery_path_query();
+    let without = grove_v4_without_range_proofs();
+
+    let result = db.prove_query(&path_query, None, &without).unwrap();
     assert!(
         matches!(result, Err(Error::NotSupported(_))),
-        "subquery proofs into a PrivateDocumentStore are not implemented yet, got {:?}",
+        "proving into a store must fail without the slot, got {:?}",
         result
     );
+
+    // A proof made where the slot is set does not verify where it is not.
+    let proof = db
+        .prove_query(&path_query, None, GroveVersion::latest())
+        .unwrap()
+        .expect("prove under latest");
+    let result = GroveDb::verify_query_with_options(
+        &proof,
+        &path_query,
+        grovedb_merk::proofs::query::VerifyOptions {
+            absence_proofs_for_non_existing_searched_keys: false,
+            verify_proof_succinctness: false,
+            include_empty_trees_in_result: false,
+        },
+        &without,
+    );
+    assert!(
+        matches!(result, Err(Error::NotSupported(_))),
+        "verifying a store's lower layer must fail without the slot, got {:?}",
+        result
+    );
+
+    let result = db
+        .prove_bulk_position_range(vec![b"root".to_vec()], b"docs", 0, 5, None, &without)
+        .unwrap();
+    assert!(
+        matches!(result, Err(Error::InvalidInput(_))),
+        "prove_bulk_position_range on a store must fail without the slot, got {:?}",
+        result
+    );
+}
+
+/// Ranges inside a chunk, across chunks, across the last chunk and the
+/// buffer, inside the buffer, past the end and empty: the unproved read and
+/// the proved page agree, the proof binds the database root, and a page
+/// stops at the store's count.
+#[test]
+fn test_private_document_store_range_reads_and_proofs() {
+    let grove_version = GroveVersion::latest();
+    let db = make_db_with_entries(10);
+    let root = db.root_hash(None, grove_version).unwrap().unwrap();
+
+    for (start, limit) in [
+        (0u64, 3u16),
+        (2, 5),
+        (6, 4),
+        (8, 2),
+        (8, 20),
+        (0, 10),
+        (0, u16::MAX),
+        (9, 1),
+        (10, 5),
+        (100, 5),
+        (3, 0),
+    ] {
+        let expected_end = start.saturating_add(limit as u64).min(10).max(start);
+        let expected: Vec<(u64, Vec<u8>)> = (start..expected_end)
+            .map(|position| (position, entry(position as u8 + 1)))
+            .collect();
+
+        let page = db
+            .private_document_store_get_range(
+                &[b"root"],
+                b"docs",
+                start,
+                limit,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("read the range");
+        assert_eq!(page.entries, expected, "unproved [{start}, +{limit})");
+        assert_eq!(page.total_count, 10);
+
+        let proof = db
+            .prove_bulk_position_range(
+                vec![b"root".to_vec()],
+                b"docs",
+                start,
+                limit,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove the range");
+        let (proved_root, proved_page) = GroveDb::verify_bulk_position_range_proof(
+            &proof,
+            vec![b"root".to_vec()],
+            b"docs",
+            start,
+            limit,
+            grove_version,
+        )
+        .expect("verify the range");
+        assert_eq!(proved_root, root, "proved [{start}, +{limit})");
+        assert_eq!(proved_page.entries, expected, "proved [{start}, +{limit})");
+        assert_eq!(proved_page.total_count, 10);
+    }
+}
+
+#[test]
+fn test_private_document_store_range_of_an_empty_store() {
+    let grove_version = GroveVersion::latest();
+    let db = make_db_with_store();
+    let root = db.root_hash(None, grove_version).unwrap().unwrap();
+
+    let page = db
+        .private_document_store_get_range(&[b"root"], b"docs", 0, 10, None, grove_version)
+        .unwrap()
+        .expect("read an empty store");
+    assert!(page.entries.is_empty());
+    assert_eq!(page.total_count, 0);
+
+    let proof = db
+        .prove_bulk_position_range(vec![b"root".to_vec()], b"docs", 0, 10, None, grove_version)
+        .unwrap()
+        .expect("prove an empty store's page");
+    let (proved_root, proved_page) = GroveDb::verify_bulk_position_range_proof(
+        &proof,
+        vec![b"root".to_vec()],
+        b"docs",
+        0,
+        10,
+        grove_version,
+    )
+    .expect("verify an empty store's page");
+    assert_eq!(proved_root, root);
+    assert!(proved_page.entries.is_empty());
+    assert_eq!(proved_page.total_count, 0);
+}
+
+/// Changing a proved entry's bytes either breaks the proof or moves the root
+/// it derives off the database's.
+#[test]
+fn test_private_document_store_range_proof_refuses_a_changed_entry() {
+    let grove_version = GroveVersion::latest();
+    let db = make_db_with_entries(10);
+    let root = db.root_hash(None, grove_version).unwrap().unwrap();
+
+    // Entry 2 sits in the first completed chunk, entry 9 in the buffer.
+    for position in [2u8, 9] {
+        let proof = db
+            .prove_bulk_position_range(vec![b"root".to_vec()], b"docs", 0, 10, None, grove_version)
+            .unwrap()
+            .expect("prove the range");
+        let needle = entry(position + 1);
+        let at = proof
+            .windows(needle.len())
+            .position(|window| window == needle.as_slice())
+            .expect("the entry's bytes are in the proof");
+        let mut tampered = proof.clone();
+        tampered[at] ^= 0xFF;
+
+        match GroveDb::verify_bulk_position_range_proof(
+            &tampered,
+            vec![b"root".to_vec()],
+            b"docs",
+            0,
+            10,
+            grove_version,
+        ) {
+            Err(_) => {}
+            Ok((proved_root, _)) => assert_ne!(
+                proved_root, root,
+                "a changed entry {position} must not derive the database root"
+            ),
+        }
+    }
 }
 
 // ===========================================================================
@@ -777,11 +1017,15 @@ fn test_private_document_store_version_slots_pinned() {
     assert_eq!(v3.insert, 0);
     assert_eq!(v3.get_value, 0);
     assert_eq!(v3.count, 0);
+    assert_eq!(v3.get_range, 0);
+    assert_eq!(v3.range_proof, 0);
     let v4 = &GROVE_V4.grovedb_versions.operations.private_document_store;
     assert_eq!(v4.element_creation, 1);
     assert_eq!(v4.insert, 1);
     assert_eq!(v4.get_value, 1);
     assert_eq!(v4.count, 1);
+    assert_eq!(v4.get_range, 1);
+    assert_eq!(v4.range_proof, 1);
 }
 
 #[test]
@@ -863,6 +1107,15 @@ fn test_private_document_store_operations_rejected_under_v3() {
     assert!(
         matches!(result, Err(Error::VersionError(_))),
         "V3 count op must fail closed, got {:?}",
+        result
+    );
+
+    let result = db
+        .private_document_store_get_range(&[b"root"], b"docs", 0, 10, None, &GROVE_V3)
+        .unwrap();
+    assert!(
+        matches!(result, Err(Error::VersionError(_))),
+        "V3 get_range op must fail closed, got {:?}",
         result
     );
 
