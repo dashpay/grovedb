@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `GROVE_V4` insert estimates price creating a `PrivateDocumentStore` as the
+  apply does. The average- and worst-case `merk_insert_element` estimators
+  (v1) now charge the existence check a write-once store makes before it is
+  created (priced as `InsertIfNotExists` prices its check) and the two blake3
+  calls deriving its empty root (the new
+  `EMPTY_PRIVATE_DOCUMENT_STORE_STATE_ROOT_HASH_CALLS`), and the worst case
+  prices the store as the layered tree the apply writes instead of an item at
+  its serialized size. Before, a store's creation was estimated one seek and
+  two hashes (three in the worst case) below its apply, which the batch
+  estimate's propagation headroom happened to cover. Estimates of every other
+  element, applied costs, stored data and proofs do not change.
+
 ## [6.1.1] - 2026-10-20
 
 ### Fixed
