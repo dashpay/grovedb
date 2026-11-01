@@ -41,10 +41,27 @@ use crate::{
 /// A non-Merk subtree kind a V1 proof descends into, carrying the element
 /// fields its layer prover needs.
 enum NonMerkLowerLayer {
-    Mmr { mmr_size: u64 },
-    BulkAppend { total_count: u64, chunk_power: u8 },
-    Dense { dense_count: u16, dense_height: u8 },
-    Commitment { total_count: u64, chunk_power: u8 },
+    Mmr {
+        mmr_size: u64,
+    },
+    BulkAppend {
+        total_count: u64,
+        chunk_power: u8,
+    },
+    /// A `PrivateDocumentStore`'s bulk append tree, proved as a `BulkAppendTree`'s, with the
+    /// proof generation's reads and hashes charged.
+    PrivateDocumentStore {
+        total_count: u64,
+        chunk_power: u8,
+    },
+    Dense {
+        dense_count: u16,
+        dense_height: u8,
+    },
+    Commitment {
+        total_count: u64,
+        chunk_power: u8,
+    },
 }
 
 impl GroveDb {
@@ -139,7 +156,8 @@ impl GroveDb {
 
     /// Prove the paginated position range `[start, start + limit)` of the
     /// append-only, BulkAppendTree-backed element at `path`/`key`
-    /// (`Element::BulkAppendTree` or `Element::CommitmentTree`).
+    /// (`Element::BulkAppendTree`, `Element::CommitmentTree`, or, where
+    /// `private_document_store.range_proof` is set, `Element::PrivateDocumentStore`).
     ///
     /// This is the scanning hot path: clients walking "all entries since my
     /// cursor" prove one page per call, passing their cursor as `start`. The
@@ -184,10 +202,17 @@ impl GroveDb {
         );
         match element.underlying() {
             Element::BulkAppendTree(..) | Element::CommitmentTree(..) => {}
+            Element::PrivateDocumentStore(..)
+                if grove_version
+                    .grovedb_versions
+                    .operations
+                    .private_document_store
+                    .range_proof
+                    == 1 => {}
             _ => {
                 return Err(Error::InvalidInput(
-                    "prove_bulk_position_range requires a BulkAppendTree or CommitmentTree \
-                     element",
+                    "prove_bulk_position_range requires a BulkAppendTree, CommitmentTree or \
+                     PrivateDocumentStore element",
                 ))
                 .wrap_with_cost(cost);
             }
@@ -2555,23 +2580,50 @@ impl GroveDb {
                                 lower_layers.insert(key.clone(), layer_proof);
                             }
 
-                            // PrivateDocumentStore range-read proofs are not
-                            // implemented yet (planned at the BulkAppendTree
-                            // layer so the anchored DataCommitmentTree can
-                            // inherit them); reject subqueries instead of
-                            // shipping an unverifiable proof. Terminal
-                            // (no-subquery) queries still bind the store's
-                            // state root via the child-hash arm below.
-                            Ok(Element::PrivateDocumentStore(..))
+                            // PrivateDocumentStore with subquery: a store's
+                            // data is its bulk append tree, stored exactly as a
+                            // BulkAppendTree's, so the layer is the bulk proof;
+                            // the verifier binds its root through the store's
+                            // committed config, which the element carries.
+                            // Gated (`private_document_store.range_proof`), so
+                            // a version without it still refuses.
+                            Ok(Element::PrivateDocumentStore(total_count, _, chunk_power, _))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
-                                return Err(Error::NotSupported(
-                                    "V1 proofs do not yet support subqueries into \
-                                     PrivateDocumentStore elements"
-                                        .to_string(),
-                                ))
-                                .wrap_with_cost(cost);
+                                if grove_version
+                                    .grovedb_versions
+                                    .operations
+                                    .private_document_store
+                                    .range_proof
+                                    != 1
+                                {
+                                    return Err(Error::NotSupported(
+                                        "V1 proofs do not support subqueries into \
+                                         PrivateDocumentStore elements at this grove version"
+                                            .to_string(),
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+                                let mut lower_path = path.clone();
+                                lower_path.push(key.as_slice());
+                                let layer_proof = cost_return_on_error!(
+                                    &mut cost,
+                                    self.prove_non_merk_lower_layer_v1(
+                                        NonMerkLowerLayer::PrivateDocumentStore {
+                                            total_count,
+                                            chunk_power,
+                                        },
+                                        &lower_path,
+                                        path_query,
+                                        limit_state,
+                                        &mut frame_instance,
+                                        transaction,
+                                        grove_version,
+                                    )
+                                );
+                                has_a_result_at_level |= true;
+                                lower_layers.insert(key.clone(), layer_proof);
                             }
 
                             // Axis-ordered read of an indexed tree: the
@@ -3954,6 +4006,21 @@ impl GroveDb {
                     [0u8; 32], // unused parameter
                     total_count,
                     chunk_power,
+                    false,
+                    &mut non_merk_effective,
+                    transaction,
+                    grove_version,
+                ),
+                NonMerkLowerLayer::PrivateDocumentStore {
+                    total_count,
+                    chunk_power,
+                } => self.generate_bulk_append_layer_proof(
+                    lower_path,
+                    path_query,
+                    [0u8; 32], // unused parameter
+                    total_count,
+                    chunk_power,
+                    true,
                     &mut non_merk_effective,
                     transaction,
                     grove_version,
@@ -4095,6 +4162,11 @@ impl GroveDb {
     }
 
     /// Generate a BulkAppendTree layer proof for a subquery.
+    ///
+    /// `charge_proof_generation` charges the bulk proof generator's own reads and hashes
+    /// (the proved chunk blobs, the buffer's dense proof), as a `PrivateDocumentStore`'s layer
+    /// does; the `BulkAppendTree` and `CommitmentTree` layers keep the charges they always had.
+    #[allow(clippy::too_many_arguments)]
     fn generate_bulk_append_layer_proof(
         &self,
         subtree_path: &[&[u8]],
@@ -4102,6 +4174,7 @@ impl GroveDb {
         _state_root: [u8; 32],
         total_count: u64,
         chunk_power: u8,
+        charge_proof_generation: bool,
         overall_limit: &mut Option<u16>,
         tx: &crate::Transaction,
         grove_version: &GroveVersion,
@@ -4158,11 +4231,19 @@ impl GroveDb {
         };
 
         // Generate the BulkAppendTree proof
-        let bulk_proof = cost_return_on_error_no_add!(
-            cost,
-            BulkAppendTreeProof::generate(&bulk_query, &tree)
-                .map_err(|e| Error::CorruptedData(format!("{}", e)))
-        );
+        let bulk_proof = if charge_proof_generation {
+            cost_return_on_error!(
+                &mut cost,
+                BulkAppendTreeProof::generate_with_cost(&bulk_query, &tree, grove_version)
+                    .map_err(|e| Error::CorruptedData(format!("{}", e)))
+            )
+        } else {
+            cost_return_on_error_no_add!(
+                cost,
+                BulkAppendTreeProof::generate(&bulk_query, &tree)
+                    .map_err(|e| Error::CorruptedData(format!("{}", e)))
+            )
+        };
 
         // Update limit: charge the rows the query semantically matches,
         // exactly as the verifier does — NOT the width of the bounding
@@ -4247,6 +4328,7 @@ impl GroveDb {
                 [0u8; 32],
                 total_count,
                 chunk_power,
+                false,
                 overall_limit,
                 tx,
                 grove_version,

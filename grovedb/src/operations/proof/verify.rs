@@ -2083,18 +2083,6 @@ impl GroveDb {
                                     }
                                 }
                             }
-                            // The V1 prover rejects subqueries into a
-                            // PrivateDocumentStore (range-read proofs are not
-                            // implemented yet), so an honest proof never
-                            // carries a lower layer for one — refuse to
-                            // fabricate a chain for it.
-                            Element::PrivateDocumentStore(..) => {
-                                return Err(Error::NotSupported(
-                                    "V1 proofs do not yet support lower layers for \
-                                     PrivateDocumentStore elements"
-                                        .to_string(),
-                                ));
-                            }
                             Element::Tree(Some(_), _)
                             | Element::SumTree(Some(_), ..)
                             | Element::BigSumTree(Some(_), ..)
@@ -2107,7 +2095,18 @@ impl GroveDb {
                             | Element::CommitmentTree(..)
                             | Element::MmrTree(..)
                             | Element::BulkAppendTree(..)
-                            | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                            | Element::DenseAppendOnlyFixedSizeTree(..)
+                            | Element::PrivateDocumentStore(..) => {
+                                // A store's layer is its bulk append tree's proof, which the
+                                // store's range proofs must be active to carry: checked before
+                                // the layer is dispatched, so no envelope can step past it.
+                                if matches!(element, Element::PrivateDocumentStore(..)) {
+                                    Self::check_private_document_store_lower_layer(
+                                        &lower_layer.merk_proof,
+                                        query,
+                                        grove_version,
+                                    )?;
+                                }
                                 path.push(key);
                                 *last_parent_tree_type = element.tree_feature_type();
                                 // Does the current query ask for anything BELOW
@@ -2932,10 +2931,42 @@ impl GroveDb {
         Ok(())
     }
 
-    /// Decode a `BulkAppendTree` / `CommitmentTree` bulk proof and check its
-    /// internal consistency against the element's `total_count` and
-    /// `height`. Returns the bulk child hash and the verified proof result,
-    /// from which nothing has been extracted yet.
+    /// Refuses the lower layer of a `PrivateDocumentStore` element unless the store's range
+    /// proofs are active (`private_document_store.range_proof` is exactly 1) and the layer is
+    /// the store's bulk append tree proof: a store has no Merk or other layer to descend.
+    fn check_private_document_store_lower_layer(
+        lower_layer: &ProofBytes,
+        query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        if grove_version
+            .grovedb_versions
+            .operations
+            .private_document_store
+            .range_proof
+            != 1
+        {
+            return Err(Error::NotSupported(
+                "V1 proofs do not support lower layers for PrivateDocumentStore elements at \
+                 this grove version"
+                    .to_string(),
+            ));
+        }
+        if !matches!(lower_layer, ProofBytes::BulkAppendTree(_)) {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                "a PrivateDocumentStore's lower layer must carry ProofBytes::BulkAppendTree"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Decode a `BulkAppendTree` / `CommitmentTree` / `PrivateDocumentStore`
+    /// bulk proof and check its internal consistency against the element's
+    /// `total_count` and `height`. Returns the child hash (the bulk root, or
+    /// for a store the root binding it to the store's committed config) and
+    /// the verified proof result, from which nothing has been extracted yet.
     fn decode_bulk_append_lower_layer(
         bulk_bytes: &[u8],
         element: &Element,
@@ -2950,6 +2981,11 @@ impl GroveDb {
         let (element_total_count, element_height) = match element {
             Element::BulkAppendTree(total_count, height, _) => (*total_count, *height),
             Element::CommitmentTree(total_count, height, _) => (*total_count, *height),
+            // The store's capability and layer type were checked before this layer was
+            // dispatched (`check_private_document_store_lower_layer`).
+            Element::PrivateDocumentStore(total_count, _, chunk_power, _) => {
+                (*total_count, *chunk_power)
+            }
             _ => {
                 return Err(Error::InvalidProof(
                     query.clone(),
@@ -2975,12 +3011,25 @@ impl GroveDb {
         // different — its insert commits `EMPTY_COMMITMENT_TREE_STATE_ROOT`,
         // which folds in the *computed* empty bulk root, so the CT wrapper
         // keeps the computed value.
-        let child_hash =
-            if element_total_count == 0 && matches!(element, Element::BulkAppendTree(..)) {
-                NULL_HASH
-            } else {
-                bulk_state_root
-            };
+        //
+        // A `PrivateDocumentStore` commits `blake3("pds_state" || config_hash
+        // || bulk_state_root)`, binding its `{entry_size, chunk_power}`, which
+        // the authenticated element carries; empty, that is
+        // `empty_private_document_store_state_root`, built on the computed
+        // empty bulk root as well.
+        let child_hash = match element {
+            Element::BulkAppendTree(..) if element_total_count == 0 => NULL_HASH,
+            Element::PrivateDocumentStore(_, entry_size, chunk_power, _) => {
+                grovedb_private_document_store::compute_private_document_store_state_root(
+                    &grovedb_private_document_store::private_document_store_config_hash(
+                        *entry_size,
+                        *chunk_power,
+                    ),
+                    &bulk_state_root,
+                )
+            }
+            _ => bulk_state_root,
+        };
         Ok((child_hash, proof_result))
     }
 
@@ -3112,6 +3161,13 @@ impl GroveDb {
             return Err(Error::InvalidProof(
                 query.clone(),
                 "CommitmentTree proof too short (missing sinsemilla_root)".to_string(),
+            ));
+        }
+
+        if !matches!(element, Element::CommitmentTree(..)) {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                "CommitmentTree proof attached to non-CommitmentTree element".to_string(),
             ));
         }
 
@@ -3695,8 +3751,10 @@ impl GroveDb {
     /// Verify a proof produced by [`GroveDb::prove_bulk_position_range`],
     /// returning `(root_hash, page)` for the position range
     /// `[start, start + limit)` of the append-only, BulkAppendTree-backed
-    /// element at `path`/`key` (`Element::BulkAppendTree` or
-    /// `Element::CommitmentTree`).
+    /// element at `path`/`key` (`Element::BulkAppendTree`,
+    /// `Element::CommitmentTree`, or, where `private_document_store.range_proof`
+    /// is set, `Element::PrivateDocumentStore`, whose lower layer is refused
+    /// otherwise).
     ///
     /// The page's entries are the `(position, value)` pairs, ascending and
     /// contiguous from `start`, clamped to the element's authenticated
@@ -3761,11 +3819,13 @@ impl GroveDb {
             [(_, element_key, Some(element))] if element_key.as_slice() == key => {
                 match element.underlying() {
                     Element::BulkAppendTree(total_count, _, _)
-                    | Element::CommitmentTree(total_count, _, _) => *total_count,
+                    | Element::CommitmentTree(total_count, _, _)
+                    | Element::PrivateDocumentStore(total_count, ..) => *total_count,
                     _ => {
                         return Err(Error::InvalidProof(
                             range_query,
-                            "element at path/key is not a BulkAppendTree or CommitmentTree"
+                            "element at path/key is not a BulkAppendTree, CommitmentTree or \
+                             PrivateDocumentStore"
                                 .to_string(),
                         ));
                     }

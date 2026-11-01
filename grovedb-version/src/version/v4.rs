@@ -229,6 +229,14 @@
 //!   so the "worst case" was not an upper bound; preserved for replay.
 //!   Gated because the estimate is the admission bound.
 //!
+//! - `operations.private_document_store.get_range: 1` and
+//!   `operations.private_document_store.range_proof: 1` — a store's
+//!   entries can be read by position range, and proved: a V1 proof descends
+//!   into a store as into its bulk append tree, and the verifier binds the
+//!   bulk root through the store's committed config. 0 in V1..V3, which
+//!   have no store; added in place after 6.1.1, when no store could be read
+//!   by range or proved below its element.
+//!
 //! - The v1 insert estimators those two slots select also price creating a
 //!   `PrivateDocumentStore` as the apply does: the existence check a
 //!   write-once store makes, the two hashes deriving its empty root, and in
@@ -687,6 +695,8 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 insert: 1,
                 get_value: 1,
                 count: 1,
+                get_range: 1,
+                range_proof: 1,
             },
             // Flat-subtree drop (issue #848) activates in GROVE_V4.
             flat_drop: GroveDBOperationsFlatDropVersions {

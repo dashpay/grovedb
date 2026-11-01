@@ -237,6 +237,8 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
                 insert: 0,
                 get_value: 0,
                 count: 0,
+                get_range: 0,
+                range_proof: 0,
             },
             // Flat-subtree drop (issue #848) is unavailable before
             // GROVE_V4: every slot is 0 and the operations fail closed.
