@@ -1157,6 +1157,68 @@ mod error_path_tests {
         ));
     }
 
+    /// The range read refuses what `get_value` refuses: a completed chunk it
+    /// can no longer read, and entries whose width is not the committed
+    /// entry size, in a chunk or in the buffer.
+    #[test]
+    fn test_range_reads_refuse_missing_chunks_and_wrong_widths() {
+        let mut store = PrivateDocumentStore::new(8, 2, MemStorageContext::new())
+            .unwrap()
+            .expect("new");
+        for i in 0..6u8 {
+            store
+                .append(&[i; 8], GroveVersion::latest())
+                .unwrap()
+                .expect("append");
+        }
+        store
+            .commit_mmr(GroveVersion::latest())
+            .expect("commit mmr");
+        let storage = PrivateDocumentStore::into_storage_for_test(store);
+        storage.data.borrow_mut().clear();
+        let wiped = PrivateDocumentStore::from_state(6, 8, 2, storage)
+            .unwrap()
+            .expect("reopen");
+        assert!(
+            matches!(
+                wiped.get_range(0, 6).unwrap(),
+                Err(PrivateDocumentStoreError::InvalidData(_))
+            ),
+            "got {:?}",
+            wiped.get_range(0, 6).unwrap()
+        );
+
+        // 10 entries of 8 bytes at chunk_power 3: one completed chunk, two
+        // buffered entries; reopened as 16-byte entries.
+        let mut store = PrivateDocumentStore::new(8, 3, MemStorageContext::new())
+            .unwrap()
+            .expect("new");
+        for i in 0..10u8 {
+            store
+                .append(&[i; 8], GroveVersion::latest())
+                .unwrap()
+                .expect("append");
+        }
+        store
+            .commit_mmr(GroveVersion::latest())
+            .expect("commit mmr");
+        let storage = PrivateDocumentStore::into_storage_for_test(store);
+        let wrong_size = PrivateDocumentStore::from_state(10, 16, 3, storage)
+            .unwrap()
+            .expect("reopen");
+        for (start, limit) in [(0, 10), (8, 2)] {
+            assert!(
+                matches!(
+                    wrong_size.get_range(start, limit).unwrap(),
+                    Err(PrivateDocumentStoreError::CorruptedData(ref m))
+                        if m.contains("committed entry size is 16")
+                ),
+                "[{start}, +{limit}): got {:?}",
+                wrong_size.get_range(start, limit).unwrap()
+            );
+        }
+    }
+
     /// A store that claims more entries than its storage holds must report
     /// the absence as corruption on every path — a claimed-but-absent chunk
     /// and a claimed-but-absent buffer slot are different branches.

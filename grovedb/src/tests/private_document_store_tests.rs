@@ -11,7 +11,10 @@ use grovedb_version::version::{v3::GROVE_V3, v4::GROVE_V4, GroveVersion};
 
 use crate::{
     batch::QualifiedGroveDbOp,
-    operations::delete::DeleteOptions,
+    operations::{
+        delete::DeleteOptions,
+        proof::{GroveDBProof, GroveDBProofV1, ProofBytes},
+    },
     query_result_type::QueryResultType,
     tests::{common::EMPTY_PATH, make_empty_grovedb},
     Element, Error, GroveDb, PathQuery, SizedQuery,
@@ -250,6 +253,11 @@ fn test_private_document_store_ops_reject_wrong_element_type() {
     ));
     assert!(matches!(
         db.private_document_store_count(EMPTY_PATH, b"plain", None, grove_version)
+            .unwrap(),
+        Err(Error::InvalidInput(_))
+    ));
+    assert!(matches!(
+        db.private_document_store_get_range(EMPTY_PATH, b"plain", 0, 10, None, grove_version)
             .unwrap(),
         Err(Error::InvalidInput(_))
     ));
@@ -923,6 +931,64 @@ fn test_private_document_store_range_of_an_empty_store() {
     assert_eq!(proved_root, root);
     assert!(proved_page.entries.is_empty());
     assert_eq!(proved_page.total_count, 0);
+}
+
+/// A store's lower layer dressed as a commitment tree's (a made-up Sinsemilla
+/// root before the same bulk proof) is refused for the element it sits under,
+/// not merely for the root it derives.
+#[test]
+fn test_private_document_store_layer_as_a_commitment_tree_layer_is_refused() {
+    let grove_version = GroveVersion::latest();
+    let db = make_db_with_entries(10);
+    let proof = db
+        .prove_bulk_position_range(vec![b"root".to_vec()], b"docs", 0, 10, None, grove_version)
+        .unwrap()
+        .expect("prove the range");
+
+    let config = bincode::config::standard()
+        .with_big_endian()
+        .with_limit::<{ 256 * 1024 * 1024 }>();
+    let (mut envelope, _): (GroveDBProof, usize) =
+        bincode::decode_from_slice(&proof, config).expect("decode the envelope");
+    let GroveDBProof::V1(GroveDBProofV1 { root_layer }) = &mut envelope else {
+        panic!("a range proof uses the V1 envelope");
+    };
+    let store_layer = root_layer
+        .lower_layers
+        .get_mut(b"root".as_slice())
+        .and_then(|root| root.lower_layers.get_mut(b"docs".as_slice()))
+        .expect("the store's layer");
+    let ProofBytes::BulkAppendTree(bulk_bytes) = &store_layer.merk_proof else {
+        panic!("a store's layer is its bulk append tree's proof");
+    };
+    let mut disguised = vec![0u8; 32];
+    disguised.extend_from_slice(bulk_bytes);
+    store_layer.merk_proof = ProofBytes::CommitmentTree(disguised);
+    let disguised_proof = bincode::encode_to_vec(
+        envelope,
+        bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit(),
+    )
+    .expect("re-encode the envelope");
+
+    let result = GroveDb::verify_bulk_position_range_proof(
+        &disguised_proof,
+        vec![b"root".to_vec()],
+        b"docs",
+        0,
+        10,
+        grove_version,
+    );
+    assert!(
+        matches!(
+            result,
+            Err(Error::InvalidProof(_, ref message))
+                if message.contains("non-CommitmentTree element")
+        ),
+        "got {:?}",
+        result
+    );
 }
 
 /// Changing a proved entry's bytes either breaks the proof or moves the root
