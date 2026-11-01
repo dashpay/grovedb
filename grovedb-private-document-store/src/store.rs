@@ -290,8 +290,8 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
     /// The entries of the position range `[start, start + limit)`, in append
     /// order with their positions, clamped to the store's count.
     ///
-    /// Reads each completed chunk the range overlaps once and each buffered
-    /// entry in it once, as the bulk tree's range read does; the returned
+    /// Reads each completed chunk the range overlaps once (charging the hash
+    /// validating it) and each buffered entry in it once; the returned
     /// [`RangePage`] carries the store's `total_count`, so a page shorter
     /// than `limit` means the range reached the end of the store.
     pub fn get_range(
@@ -302,7 +302,7 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
         let mut cost = OperationCost::default();
         let page = match self
             .bulk_tree
-            .get_range(start, limit)
+            .get_range_charging_chunk_validation(start, limit)
             .unwrap_add_cost(&mut cost)
         {
             Ok(page) => page,
@@ -1211,6 +1211,31 @@ mod error_path_tests {
             );
             assert!(refused, "[{start}, +{limit}): {page:?}");
         }
+    }
+
+    /// The range read charges the hash validating each completed chunk it
+    /// reads from storage: one chunk, committed and reopened, is one hash.
+    #[test]
+    fn test_range_reads_charge_validating_a_stored_chunk() {
+        let mut store = PrivateDocumentStore::new(8, 2, MemStorageContext::new())
+            .unwrap()
+            .expect("new");
+        for i in 0..4u8 {
+            store
+                .append(&[i; 8], GroveVersion::latest())
+                .unwrap()
+                .expect("append");
+        }
+        store
+            .commit_mmr(GroveVersion::latest())
+            .expect("commit mmr");
+        let storage = PrivateDocumentStore::into_storage_for_test(store);
+        let reopened = PrivateDocumentStore::from_state(4, 8, 2, storage)
+            .unwrap()
+            .expect("reopen");
+        let page = reopened.get_range(0, 4);
+        assert_eq!(page.value.expect("read the chunk").entries.len(), 4);
+        assert_eq!(page.cost.hash_node_calls, 1, "{:?}", page.cost);
     }
 
     /// A store that claims more entries than its storage holds must report

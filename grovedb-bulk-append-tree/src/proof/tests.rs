@@ -76,6 +76,58 @@ mod proof_tests {
         }
     }
 
+    /// A chunk read from storage (not from the MMR overlay) is validated by
+    /// recomputing its leaf hash: proving it charges that one hash, as does the
+    /// charging range read, while the plain range read charges none, as before.
+    #[test]
+    fn test_bulk_proof_generate_with_cost_charges_validating_a_stored_chunk() {
+        // Height 2, epoch 4: four values are one chunk, committed and reopened
+        let values: Vec<Vec<u8>> = (0..4u32)
+            .map(|i| format!("val_{}", i).into_bytes())
+            .collect();
+        let (_, mut tree) = build_test_tree(2, &values);
+        tree.commit_mmr(GroveVersion::latest())
+            .expect("commit the MMR");
+        let reopened =
+            BulkAppendTree::from_state(4, 2, tree.dense_tree.storage).expect("reopen the tree");
+
+        let proved = BulkAppendTreeProof::generate_with_cost(
+            &range_query(0, 4),
+            &reopened,
+            GroveVersion::latest(),
+        );
+        assert!(proved.value.is_ok());
+        assert_eq!(proved.cost.hash_node_calls, 1, "{:?}", proved.cost);
+
+        let charged = reopened.get_range_charging_chunk_validation(0, 4);
+        assert_eq!(charged.value.expect("read the chunk").entries.len(), 4);
+        assert_eq!(charged.cost.hash_node_calls, 1, "{:?}", charged.cost);
+        let plain = reopened.get_range(0, 4);
+        assert_eq!(plain.cost.hash_node_calls, 0, "{:?}", plain.cost);
+        assert_eq!(plain.cost.seek_count, charged.cost.seek_count);
+    }
+
+    /// With no completed chunk there is no MMR work, so the costed generator's
+    /// cost is exactly the buffer's dense proof's.
+    #[test]
+    fn test_bulk_proof_generate_with_cost_is_the_buffer_proof_cost_without_chunks() {
+        // Height 2: three values stay in the buffer
+        let values: Vec<Vec<u8>> = (0..3u32)
+            .map(|i| format!("val_{}", i).into_bytes())
+            .collect();
+        let (_, tree) = build_test_tree(2, &values);
+        let mut sparse = Query::new();
+        sparse.insert_key(pos_bytes(1));
+
+        let costed =
+            BulkAppendTreeProof::generate_with_cost(&sparse, &tree, GroveVersion::latest());
+        assert!(costed.value.is_ok());
+        let buffer_proof = DenseTreeProof::generate(&tree.dense_tree, &[1]);
+        assert!(buffer_proof.value.is_ok());
+        assert_eq!(costed.cost, buffer_proof.cost);
+        assert!(costed.cost.seek_count > 0, "{:?}", costed.cost);
+    }
+
     /// 28 values at height 2 are seven chunks, whose MMR peaks hold 4 + 2 + 1 chunks; proving
     /// the first chunk bags the two right-hand peaks, one merge, which the costed generator
     /// charges and nothing else in this proof hashes (there is no buffer).

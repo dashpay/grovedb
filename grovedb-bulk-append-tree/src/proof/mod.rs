@@ -242,8 +242,9 @@ impl BulkAppendTreeProof {
     }
 
     /// [`generate`](Self::generate), with the cost of the work it does at `grove_version`:
-    /// reading the MMR nodes of the chunk proof (the proved chunk blobs among them), bagging
-    /// the MMR peaks right of the proved chunks, and generating the buffer's dense tree proof.
+    /// reading the MMR nodes of the chunk proof (the proved chunk blobs among them, with the
+    /// hash validating each chunk leaf read from storage), bagging the MMR peaks right of the
+    /// proved chunks, and generating the buffer's dense tree proof.
     #[cfg(feature = "storage")]
     pub fn generate_with_cost<'db, S: StorageContext<'db>>(
         query: &Query,
@@ -291,9 +292,11 @@ impl BulkAppendTreeProof {
 
             let chunk_indices: Vec<u64> = chunk_indices_set.into_iter().collect();
 
-            let mmr_store = MmrStore::with_key_size(&tree.dense_tree.storage, MmrKeySize::U32);
+            // Each node read is charged, the proved chunk blobs among them, with the hash
+            // validating each chunk leaf read from storage
+            let mmr_store = MmrStore::with_key_size(&tree.dense_tree.storage, MmrKeySize::U32)
+                .charging_leaf_validation();
             let mmr = MMR::new_with_overlay(mmr_size, &mmr_store, tree.mmr_overlay.clone());
-            // Each node read is charged, the proved chunk blobs among them
             let read_cost = RefCell::new(OperationCost::default());
             let get_node = |pos: u64| -> grovedb_merkle_mountain_range::Result<Option<MmrNode>> {
                 let CostContext {

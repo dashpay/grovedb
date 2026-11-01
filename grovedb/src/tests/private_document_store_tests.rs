@@ -1019,8 +1019,8 @@ fn test_private_document_store_layer_as_a_commitment_tree_layer_is_refused() {
 }
 
 /// A store's range proof charges the work of its bulk proof: the completed
-/// chunk blobs it reads and the buffer's dense proof, which reads the buffer's
-/// stored node hashes (it computes none). A `BulkAppendTree` holding the same
+/// chunk blobs it reads, the hash validating each one read from storage, and
+/// the buffer's dense proof, which reads the buffer's stored node hashes. A `BulkAppendTree` holding the same
 /// entries, proved the way it always was, charges none of it, so the store's
 /// proof costs at least that much more.
 #[test]
@@ -1087,9 +1087,22 @@ fn test_private_document_store_range_proof_charges_its_reads_and_hashes() {
         store.seek_count > bulk.seek_count,
         "the reads are charged: store {store:?}, bulk {bulk:?}"
     );
+    // Each of the two chunks read from storage is validated by its leaf hash
     assert!(
-        store.hash_node_calls >= bulk.hash_node_calls,
-        "no hash work is lost: store {store:?}, bulk {bulk:?}"
+        store.hash_node_calls >= bulk.hash_node_calls + 2,
+        "the chunks' validation is charged: store {store:?}, bulk {bulk:?}"
+    );
+
+    // The unproved range reads differ the same way
+    let store_read = db
+        .private_document_store_get_range(&[b"root"], b"docs", 0, 10, None, grove_version)
+        .cost;
+    let bulk_read = db
+        .bulk_get_range(&[b"root"], b"bulk", 0, 10, None, grove_version)
+        .cost;
+    assert!(
+        store_read.hash_node_calls >= bulk_read.hash_node_calls + 2,
+        "the chunks' validation is charged on read: store {store_read:?}, bulk {bulk_read:?}"
     );
 }
 
