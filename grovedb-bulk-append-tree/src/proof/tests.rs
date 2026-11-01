@@ -47,6 +47,34 @@ mod proof_tests {
         q
     }
 
+    /// The costed generator makes the very proof `generate` does, and charges the reads it
+    /// makes: the MMR nodes of the chunk proof and the buffer's dense proof (which reads the
+    /// buffer's stored node hashes rather than computing any).
+    #[test]
+    fn test_bulk_proof_generate_with_cost_matches_generate_and_charges_the_buffer_proof() {
+        // Height 2, epoch 4: 10 values are two chunks and two buffered entries.
+        let values: Vec<Vec<u8>> = (0..10u32)
+            .map(|i| format!("val_{}", i).into_bytes())
+            .collect();
+        let (_, tree) = build_test_tree(2, &values);
+
+        for query in [range_query(0, 10), range_query(8, 10), range_query(0, 4)] {
+            let plain = BulkAppendTreeProof::generate(&query, &tree).expect("generate proof");
+            let costed = BulkAppendTreeProof::generate_with_cost(&query, &tree);
+            let costed_proof = costed.value.expect("generate proof with its cost");
+            assert_eq!(
+                costed_proof.encode_to_vec().expect("encode"),
+                plain.encode_to_vec().expect("encode"),
+                "the costed generator makes the same proof"
+            );
+            assert!(
+                costed.cost.seek_count > 0 && costed.cost.storage_loaded_bytes > 0,
+                "the proof's reads are charged: {:?}",
+                costed.cost
+            );
+        }
+    }
+
     #[test]
     fn test_bulk_proof_buffer_only() {
         // height=3, capacity=7. 3 values stay in buffer.

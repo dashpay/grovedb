@@ -6,6 +6,7 @@
 //! root. Includes the fail-closed version-gating tests: every operation and
 //! element creation must be rejected under GROVE_V3 and earlier.
 
+use grovedb_costs::CostContext;
 use grovedb_merk::proofs::{query::SubqueryBranch, Query};
 use grovedb_version::version::{v3::GROVE_V3, v4::GROVE_V4, GroveVersion};
 
@@ -933,11 +934,173 @@ fn test_private_document_store_range_of_an_empty_store() {
     assert_eq!(proved_page.total_count, 0);
 }
 
-/// A store's lower layer dressed as a commitment tree's (a made-up Sinsemilla
-/// root before the same bulk proof) is refused for the element it sits under,
-/// not merely for the root it derives.
+/// Re-encodes a range proof of `[root]/key` with its `BulkAppendTree` layer
+/// dressed as a `CommitmentTree` layer: a made-up Sinsemilla root before the
+/// same bulk proof.
+fn disguised_as_a_commitment_tree_layer(proof: &[u8], key: &[u8]) -> Vec<u8> {
+    let config = bincode::config::standard()
+        .with_big_endian()
+        .with_limit::<{ 256 * 1024 * 1024 }>();
+    let (mut envelope, _): (GroveDBProof, usize) =
+        bincode::decode_from_slice(proof, config).expect("decode the envelope");
+    let GroveDBProof::V1(GroveDBProofV1 { root_layer }) = &mut envelope else {
+        panic!("a range proof uses the V1 envelope");
+    };
+    let layer = root_layer
+        .lower_layers
+        .get_mut(b"root".as_slice())
+        .and_then(|root| root.lower_layers.get_mut(key))
+        .expect("the tree's layer");
+    let ProofBytes::BulkAppendTree(bulk_bytes) = &layer.merk_proof else {
+        panic!("the layer is a bulk append tree's proof");
+    };
+    let mut disguised = vec![0u8; 32];
+    disguised.extend_from_slice(bulk_bytes);
+    layer.merk_proof = ProofBytes::CommitmentTree(disguised);
+    bincode::encode_to_vec(
+        envelope,
+        bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit(),
+    )
+    .expect("re-encode the envelope")
+}
+
+/// A bulk proof dressed as a commitment tree's layer is refused for the
+/// element it sits under, not merely for the root it derives: under a store,
+/// which takes only its bulk proof, and under a `BulkAppendTree`, which is not
+/// a commitment tree.
 #[test]
 fn test_private_document_store_layer_as_a_commitment_tree_layer_is_refused() {
+    let grove_version = GroveVersion::latest();
+    let db = make_db_with_entries(10);
+    db.insert(
+        &[b"root"],
+        b"bulk",
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid config"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert the bulk append tree");
+    for i in 0..6u8 {
+        db.bulk_append(&[b"root"], b"bulk", entry(i + 1), None, grove_version)
+            .unwrap()
+            .expect("append to the bulk append tree");
+    }
+
+    for (key, refusal) in [
+        (b"docs".as_slice(), "ProofBytes::BulkAppendTree"),
+        (b"bulk".as_slice(), "non-CommitmentTree element"),
+    ] {
+        let proof = db
+            .prove_bulk_position_range(vec![b"root".to_vec()], key, 0, 6, None, grove_version)
+            .unwrap()
+            .expect("prove the range");
+        let result = GroveDb::verify_bulk_position_range_proof(
+            &disguised_as_a_commitment_tree_layer(&proof, key),
+            vec![b"root".to_vec()],
+            key,
+            0,
+            6,
+            grove_version,
+        );
+        assert!(
+            matches!(
+                result,
+                Err(Error::InvalidProof(_, ref message)) if message.contains(refusal)
+            ),
+            "{}: got {:?}",
+            String::from_utf8_lossy(key),
+            result
+        );
+    }
+}
+
+/// A store's range proof charges the work of its bulk proof: the completed
+/// chunk blobs it reads and the buffer's dense proof, which reads the buffer's
+/// stored node hashes (it computes none). A `BulkAppendTree` holding the same
+/// entries, proved the way it always was, charges none of it, so the store's
+/// proof costs at least that much more.
+#[test]
+fn test_private_document_store_range_proof_charges_its_reads_and_hashes() {
+    const ENTRY_SIZE: u32 = 1024;
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+    db.insert(
+        EMPTY_PATH,
+        b"root",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert root tree");
+    db.insert(
+        &[b"root"],
+        b"docs",
+        Element::empty_private_document_store(ENTRY_SIZE, TEST_CHUNK_POWER).expect("valid config"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert the store");
+    db.insert(
+        &[b"root"],
+        b"bulk",
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid config"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert the bulk append tree");
+    // 10 entries, 4 to a chunk: two compacted chunks and two buffered entries
+    for i in 0..10u8 {
+        let value = vec![i; ENTRY_SIZE as usize];
+        db.private_document_store_insert(&[b"root"], b"docs", value.clone(), None, grove_version)
+            .unwrap()
+            .expect("append to the store");
+        db.bulk_append(&[b"root"], b"bulk", value, None, grove_version)
+            .unwrap()
+            .expect("append to the bulk append tree");
+    }
+
+    let prove = |key: &[u8]| {
+        let CostContext { value, cost } =
+            db.prove_bulk_position_range(vec![b"root".to_vec()], key, 0, 10, None, grove_version);
+        value.expect("prove the range");
+        cost
+    };
+    let store = prove(b"docs");
+    let bulk = prove(b"bulk");
+
+    // The two chunk blobs alone hold 8 entries
+    assert!(
+        store.storage_loaded_bytes >= bulk.storage_loaded_bytes + 8 * u64::from(ENTRY_SIZE),
+        "the chunk blobs read are charged: store {store:?}, bulk {bulk:?}"
+    );
+    assert!(
+        store.seek_count > bulk.seek_count,
+        "the reads are charged: store {store:?}, bulk {bulk:?}"
+    );
+    assert!(
+        store.hash_node_calls >= bulk.hash_node_calls,
+        "no hash work is lost: store {store:?}, bulk {bulk:?}"
+    );
+}
+
+/// A store's lower layer must be its bulk append tree's proof, and the store's
+/// range proofs must be active, whatever envelope the layer arrives in: a
+/// Merk-tagged layer committing the store's true root, verified for a subset
+/// query stopping at the store, is refused where the slot is 0, 2 or 1.
+#[test]
+fn test_private_document_store_lower_layer_is_gated_before_dispatch() {
+    use grovedb_merk::proofs::{encoding::encode_into, Node, Op};
+
     let grove_version = GroveVersion::latest();
     let db = make_db_with_entries(10);
     let proof = db
@@ -961,10 +1124,24 @@ fn test_private_document_store_layer_as_a_commitment_tree_layer_is_refused() {
     let ProofBytes::BulkAppendTree(bulk_bytes) = &store_layer.merk_proof else {
         panic!("a store's layer is its bulk append tree's proof");
     };
-    let mut disguised = vec![0u8; 32];
-    disguised.extend_from_slice(bulk_bytes);
-    store_layer.merk_proof = ProofBytes::CommitmentTree(disguised);
-    let disguised_proof = bincode::encode_to_vec(
+    // The store's true root, from the honest bulk proof
+    let (bulk_root, _) =
+        grovedb_bulk_append_tree::BulkAppendTreeProof::decode_from_slice(bulk_bytes)
+            .expect("decode the bulk proof")
+            .verify_and_compute_root(TEST_CHUNK_POWER, 10)
+            .expect("verify the bulk proof");
+    let store_root = grovedb_private_document_store::compute_private_document_store_state_root(
+        &grovedb_private_document_store::private_document_store_config_hash(
+            TEST_ENTRY_SIZE,
+            TEST_CHUNK_POWER,
+        ),
+        &bulk_root,
+    );
+    let mut merk_bytes = Vec::new();
+    encode_into([Op::Push(Node::Hash(store_root))].iter(), &mut merk_bytes);
+    store_layer.merk_proof = ProofBytes::Merk(merk_bytes);
+    store_layer.lower_layers.clear();
+    let merk_tagged = bincode::encode_to_vec(
         envelope,
         bincode::config::standard()
             .with_big_endian()
@@ -972,19 +1149,26 @@ fn test_private_document_store_layer_as_a_commitment_tree_layer_is_refused() {
     )
     .expect("re-encode the envelope");
 
-    let result = GroveDb::verify_bulk_position_range_proof(
-        &disguised_proof,
-        vec![b"root".to_vec()],
-        b"docs",
-        0,
-        10,
-        grove_version,
-    );
+    let element_query = PathQuery::new_single_key(vec![b"root".to_vec()], b"docs".to_vec());
+    for slot in [0, 2] {
+        let mut version = GROVE_V4.clone();
+        version
+            .grovedb_versions
+            .operations
+            .private_document_store
+            .range_proof = slot;
+        let result = GroveDb::verify_subset_query(&merk_tagged, &element_query, &version);
+        assert!(
+            matches!(result, Err(Error::NotSupported(_))),
+            "slot {slot}: got {:?}",
+            result
+        );
+    }
+    let result = GroveDb::verify_subset_query(&merk_tagged, &element_query, grove_version);
     assert!(
         matches!(
             result,
-            Err(Error::InvalidProof(_, ref message))
-                if message.contains("non-CommitmentTree element")
+            Err(Error::InvalidProof(_, ref message)) if message.contains("ProofBytes::BulkAppendTree")
         ),
         "got {:?}",
         result

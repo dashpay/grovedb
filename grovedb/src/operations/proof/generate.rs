@@ -41,10 +41,27 @@ use crate::{
 /// A non-Merk subtree kind a V1 proof descends into, carrying the element
 /// fields its layer prover needs.
 enum NonMerkLowerLayer {
-    Mmr { mmr_size: u64 },
-    BulkAppend { total_count: u64, chunk_power: u8 },
-    Dense { dense_count: u16, dense_height: u8 },
-    Commitment { total_count: u64, chunk_power: u8 },
+    Mmr {
+        mmr_size: u64,
+    },
+    BulkAppend {
+        total_count: u64,
+        chunk_power: u8,
+    },
+    /// A `PrivateDocumentStore`'s bulk append tree, proved as a `BulkAppendTree`'s, with the
+    /// proof generation's reads and hashes charged.
+    PrivateDocumentStore {
+        total_count: u64,
+        chunk_power: u8,
+    },
+    Dense {
+        dense_count: u16,
+        dense_height: u8,
+    },
+    Commitment {
+        total_count: u64,
+        chunk_power: u8,
+    },
 }
 
 impl GroveDb {
@@ -2593,7 +2610,10 @@ impl GroveDb {
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
                                     self.prove_non_merk_lower_layer_v1(
-                                        NonMerkLowerLayer::BulkAppend { total_count, chunk_power },
+                                        NonMerkLowerLayer::PrivateDocumentStore {
+                                            total_count,
+                                            chunk_power,
+                                        },
                                         &lower_path,
                                         path_query,
                                         limit_state,
@@ -3986,6 +4006,21 @@ impl GroveDb {
                     [0u8; 32], // unused parameter
                     total_count,
                     chunk_power,
+                    false,
+                    &mut non_merk_effective,
+                    transaction,
+                    grove_version,
+                ),
+                NonMerkLowerLayer::PrivateDocumentStore {
+                    total_count,
+                    chunk_power,
+                } => self.generate_bulk_append_layer_proof(
+                    lower_path,
+                    path_query,
+                    [0u8; 32], // unused parameter
+                    total_count,
+                    chunk_power,
+                    true,
                     &mut non_merk_effective,
                     transaction,
                     grove_version,
@@ -4127,6 +4162,11 @@ impl GroveDb {
     }
 
     /// Generate a BulkAppendTree layer proof for a subquery.
+    ///
+    /// `charge_proof_generation` charges the bulk proof generator's own reads and hashes
+    /// (the proved chunk blobs, the buffer's dense proof), as a `PrivateDocumentStore`'s layer
+    /// does; the `BulkAppendTree` and `CommitmentTree` layers keep the charges they always had.
+    #[allow(clippy::too_many_arguments)]
     fn generate_bulk_append_layer_proof(
         &self,
         subtree_path: &[&[u8]],
@@ -4134,6 +4174,7 @@ impl GroveDb {
         _state_root: [u8; 32],
         total_count: u64,
         chunk_power: u8,
+        charge_proof_generation: bool,
         overall_limit: &mut Option<u16>,
         tx: &crate::Transaction,
         grove_version: &GroveVersion,
@@ -4190,11 +4231,19 @@ impl GroveDb {
         };
 
         // Generate the BulkAppendTree proof
-        let bulk_proof = cost_return_on_error_no_add!(
-            cost,
-            BulkAppendTreeProof::generate(&bulk_query, &tree)
-                .map_err(|e| Error::CorruptedData(format!("{}", e)))
-        );
+        let bulk_proof = if charge_proof_generation {
+            cost_return_on_error!(
+                &mut cost,
+                BulkAppendTreeProof::generate_with_cost(&bulk_query, &tree)
+                    .map_err(|e| Error::CorruptedData(format!("{}", e)))
+            )
+        } else {
+            cost_return_on_error_no_add!(
+                cost,
+                BulkAppendTreeProof::generate(&bulk_query, &tree)
+                    .map_err(|e| Error::CorruptedData(format!("{}", e)))
+            )
+        };
 
         // Update limit: charge the rows the query semantically matches,
         // exactly as the verifier does — NOT the width of the bounding
@@ -4279,6 +4328,7 @@ impl GroveDb {
                 [0u8; 32],
                 total_count,
                 chunk_power,
+                false,
                 overall_limit,
                 tx,
                 grove_version,

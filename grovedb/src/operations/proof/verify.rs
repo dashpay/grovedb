@@ -2097,6 +2097,16 @@ impl GroveDb {
                             | Element::BulkAppendTree(..)
                             | Element::DenseAppendOnlyFixedSizeTree(..)
                             | Element::PrivateDocumentStore(..) => {
+                                // A store's layer is its bulk append tree's proof, which the
+                                // store's range proofs must be active to carry: checked before
+                                // the layer is dispatched, so no envelope can step past it.
+                                if matches!(element, Element::PrivateDocumentStore(..)) {
+                                    Self::check_private_document_store_lower_layer(
+                                        &lower_layer.merk_proof,
+                                        query,
+                                        grove_version,
+                                    )?;
+                                }
                                 path.push(key);
                                 *last_parent_tree_type = element.tree_feature_type();
                                 // Does the current query ask for anything BELOW
@@ -2906,7 +2916,7 @@ impl GroveDb {
         Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
     {
         let (child_hash, proof_result) =
-            Self::decode_bulk_append_lower_layer(bulk_bytes, element, query, grove_version)?;
+            Self::decode_bulk_append_lower_layer(bulk_bytes, element, query)?;
         parent.bind(query, &child_hash)?;
         if report_contents {
             Self::report_bulk_append_entries(
@@ -2921,6 +2931,37 @@ impl GroveDb {
         Ok(())
     }
 
+    /// Refuses the lower layer of a `PrivateDocumentStore` element unless the store's range
+    /// proofs are active (`private_document_store.range_proof` is exactly 1) and the layer is
+    /// the store's bulk append tree proof: a store has no Merk or other layer to descend.
+    fn check_private_document_store_lower_layer(
+        lower_layer: &ProofBytes,
+        query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        if grove_version
+            .grovedb_versions
+            .operations
+            .private_document_store
+            .range_proof
+            != 1
+        {
+            return Err(Error::NotSupported(
+                "V1 proofs do not support lower layers for PrivateDocumentStore elements at \
+                 this grove version"
+                    .to_string(),
+            ));
+        }
+        if !matches!(lower_layer, ProofBytes::BulkAppendTree(_)) {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                "a PrivateDocumentStore's lower layer must carry ProofBytes::BulkAppendTree"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Decode a `BulkAppendTree` / `CommitmentTree` / `PrivateDocumentStore`
     /// bulk proof and check its internal consistency against the element's
     /// `total_count` and `height`. Returns the child hash (the bulk root, or
@@ -2930,7 +2971,6 @@ impl GroveDb {
         bulk_bytes: &[u8],
         element: &Element,
         query: &PathQuery,
-        grove_version: &GroveVersion,
     ) -> Result<
         (
             CryptoHash,
@@ -2941,20 +2981,9 @@ impl GroveDb {
         let (element_total_count, element_height) = match element {
             Element::BulkAppendTree(total_count, height, _) => (*total_count, *height),
             Element::CommitmentTree(total_count, height, _) => (*total_count, *height),
+            // The store's capability and layer type were checked before this layer was
+            // dispatched (`check_private_document_store_lower_layer`).
             Element::PrivateDocumentStore(total_count, _, chunk_power, _) => {
-                if grove_version
-                    .grovedb_versions
-                    .operations
-                    .private_document_store
-                    .range_proof
-                    != 1
-                {
-                    return Err(Error::NotSupported(
-                        "V1 proofs do not support lower layers for PrivateDocumentStore \
-                         elements at this grove version"
-                            .to_string(),
-                    ));
-                }
                 (*total_count, *chunk_power)
             }
             _ => {
@@ -3149,7 +3178,7 @@ impl GroveDb {
 
         // Verify the bulk append proof to get bulk_state_root
         let (bulk_state_root, proof_result) =
-            Self::decode_bulk_append_lower_layer(bulk_proof_bytes, element, query, grove_version)?;
+            Self::decode_bulk_append_lower_layer(bulk_proof_bytes, element, query)?;
 
         // Combine sinsemilla_root with bulk_state_root to produce the
         // child hash the parent row commits to.
