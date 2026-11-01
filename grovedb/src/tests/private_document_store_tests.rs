@@ -1093,6 +1093,44 @@ fn test_private_document_store_range_proof_charges_its_reads_and_hashes() {
     );
 }
 
+/// A store's range proof also charges bagging the MMR peaks right of the
+/// proved chunks: 28 entries, 4 to a chunk, are seven chunks under peaks of
+/// 4 + 2 + 1 chunks, and proving the first chunk bags the two right-hand
+/// peaks, one merge the `BulkAppendTree` route does not charge.
+#[test]
+fn test_private_document_store_range_proof_charges_the_mmr_peak_bagging() {
+    let grove_version = GroveVersion::latest();
+    let db = make_db_with_entries(28);
+    db.insert(
+        &[b"root"],
+        b"bulk",
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid config"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert the bulk append tree");
+    for i in 0..28u8 {
+        db.bulk_append(&[b"root"], b"bulk", entry(i + 1), None, grove_version)
+            .unwrap()
+            .expect("append to the bulk append tree");
+    }
+
+    let prove = |key: &[u8]| {
+        let CostContext { value, cost } =
+            db.prove_bulk_position_range(vec![b"root".to_vec()], key, 0, 4, None, grove_version);
+        value.expect("prove the first chunk");
+        cost
+    };
+    let store = prove(b"docs");
+    let bulk = prove(b"bulk");
+    assert!(
+        store.hash_node_calls > bulk.hash_node_calls,
+        "the peak bagging is charged: store {store:?}, bulk {bulk:?}"
+    );
+}
+
 /// A store's lower layer must be its bulk append tree's proof, and the store's
 /// range proofs must be active, whatever envelope the layer arrives in: a
 /// Merk-tagged layer committing the store's true root, verified for a subset

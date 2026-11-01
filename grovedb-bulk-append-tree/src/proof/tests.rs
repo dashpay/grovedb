@@ -60,7 +60,8 @@ mod proof_tests {
 
         for query in [range_query(0, 10), range_query(8, 10), range_query(0, 4)] {
             let plain = BulkAppendTreeProof::generate(&query, &tree).expect("generate proof");
-            let costed = BulkAppendTreeProof::generate_with_cost(&query, &tree);
+            let costed =
+                BulkAppendTreeProof::generate_with_cost(&query, &tree, GroveVersion::latest());
             let costed_proof = costed.value.expect("generate proof with its cost");
             assert_eq!(
                 costed_proof.encode_to_vec().expect("encode"),
@@ -73,6 +74,64 @@ mod proof_tests {
                 costed.cost
             );
         }
+    }
+
+    /// 28 values at height 2 are seven chunks, whose MMR peaks hold 4 + 2 + 1 chunks; proving
+    /// the first chunk bags the two right-hand peaks, one merge, which the costed generator
+    /// charges and nothing else in this proof hashes (there is no buffer).
+    #[test]
+    fn test_bulk_proof_generate_with_cost_charges_the_mmr_peak_bagging() {
+        let values: Vec<Vec<u8>> = (0..28u32)
+            .map(|i| format!("val_{}", i).into_bytes())
+            .collect();
+        let (_, tree) = build_test_tree(2, &values);
+        let costed = BulkAppendTreeProof::generate_with_cost(
+            &range_query(0, 4),
+            &tree,
+            GroveVersion::latest(),
+        );
+        assert!(costed.value.is_ok());
+        assert_eq!(costed.cost.hash_node_calls, 1, "{:?}", costed.cost);
+    }
+
+    /// The costed generator refuses what `generate` refuses, with what it spent: a query it
+    /// cannot read as positions, a chunk proof over chunks the storage does not hold, and a
+    /// buffer proof over a buffer it does not hold.
+    #[test]
+    fn test_bulk_proof_generate_with_cost_refusals() {
+        let (_, tree) = build_test_tree(2, &[b"val".to_vec()]);
+        let mut subquery = range_query(0, 1);
+        subquery.set_subquery(Query::new());
+        assert!(matches!(
+            BulkAppendTreeProof::generate_with_cost(&subquery, &tree, GroveVersion::latest()).value,
+            Err(BulkAppendError::InvalidInput(_))
+        ));
+
+        // Two chunks claimed, none stored
+        let missing_chunks =
+            BulkAppendTree::from_state(8, 2, MemStorageContext::new()).expect("restore the tree");
+        assert!(matches!(
+            BulkAppendTreeProof::generate_with_cost(
+                &range_query(0, 4),
+                &missing_chunks,
+                GroveVersion::latest()
+            )
+            .value,
+            Err(BulkAppendError::MmrError(_))
+        ));
+
+        // A buffer of three claimed, none stored
+        let missing_buffer =
+            BulkAppendTree::from_state(3, 2, MemStorageContext::new()).expect("restore the tree");
+        assert!(matches!(
+            BulkAppendTreeProof::generate_with_cost(
+                &range_query(0, 3),
+                &missing_buffer,
+                GroveVersion::latest()
+            )
+            .value,
+            Err(BulkAppendError::StorageError(_))
+        ));
     }
 
     #[test]

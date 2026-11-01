@@ -23,6 +23,8 @@ use grovedb_merkle_mountain_range::{MmrKeySize, MmrNode, MmrStore, MMR};
 use grovedb_query::{Query, QueryItem};
 #[cfg(feature = "storage")]
 use grovedb_storage::StorageContext;
+#[cfg(feature = "storage")]
+use grovedb_version::version::GroveVersion;
 
 #[cfg(feature = "storage")]
 use crate::BulkAppendTree;
@@ -236,16 +238,17 @@ impl BulkAppendTreeProof {
         query: &Query,
         tree: &BulkAppendTree<S>,
     ) -> Result<Self, BulkAppendError> {
-        Self::generate_with_cost(query, tree).value
+        Self::generate_with_cost(query, tree, GroveVersion::latest()).value
     }
 
-    /// [`generate`](Self::generate), with the cost of the work it does: reading the MMR
-    /// nodes of the chunk proof (the proved chunk blobs among them) and generating the
-    /// buffer's dense tree proof (its reads and hashes).
+    /// [`generate`](Self::generate), with the cost of the work it does at `grove_version`:
+    /// reading the MMR nodes of the chunk proof (the proved chunk blobs among them), bagging
+    /// the MMR peaks right of the proved chunks, and generating the buffer's dense tree proof.
     #[cfg(feature = "storage")]
     pub fn generate_with_cost<'db, S: StorageContext<'db>>(
         query: &Query,
         tree: &BulkAppendTree<S>,
+        grove_version: &GroveVersion,
     ) -> CostResult<Self, BulkAppendError> {
         let mut cost = OperationCost::default();
         let total_count = tree.total_count;
@@ -301,7 +304,9 @@ impl BulkAppendTreeProof {
                 value
             };
 
-            let chunk_proof = MmrTreeProof::generate(mmr_size, &chunk_indices, get_node);
+            let chunk_proof =
+                MmrTreeProof::generate_with_cost(mmr_size, &chunk_indices, get_node, grove_version)
+                    .unwrap_add_cost(&mut cost);
             cost += read_cost.into_inner();
             match chunk_proof {
                 Ok(chunk_proof) => chunk_proof,

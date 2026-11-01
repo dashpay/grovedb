@@ -4234,7 +4234,7 @@ impl GroveDb {
         let bulk_proof = if charge_proof_generation {
             cost_return_on_error!(
                 &mut cost,
-                BulkAppendTreeProof::generate_with_cost(&bulk_query, &tree)
+                BulkAppendTreeProof::generate_with_cost(&bulk_query, &tree, grove_version)
                     .map_err(|e| Error::CorruptedData(format!("{}", e)))
             )
         } else {

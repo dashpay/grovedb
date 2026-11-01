@@ -1179,13 +1179,10 @@ mod error_path_tests {
         let wiped = PrivateDocumentStore::from_state(6, 8, 2, storage)
             .unwrap()
             .expect("reopen");
+        let page = wiped.get_range(0, 6).unwrap();
         assert!(
-            matches!(
-                wiped.get_range(0, 6).unwrap(),
-                Err(PrivateDocumentStoreError::InvalidData(_))
-            ),
-            "got {:?}",
-            wiped.get_range(0, 6).unwrap()
+            matches!(page, Err(PrivateDocumentStoreError::InvalidData(_))),
+            "{page:?}"
         );
 
         // 10 entries of 8 bytes at chunk_power 3: one completed chunk, two
@@ -1207,15 +1204,12 @@ mod error_path_tests {
             .unwrap()
             .expect("reopen");
         for (start, limit) in [(0, 10), (8, 2)] {
-            assert!(
-                matches!(
-                    wrong_size.get_range(start, limit).unwrap(),
-                    Err(PrivateDocumentStoreError::CorruptedData(ref m))
-                        if m.contains("committed entry size is 16")
-                ),
-                "[{start}, +{limit}): got {:?}",
-                wrong_size.get_range(start, limit).unwrap()
+            let page = wrong_size.get_range(start, limit).unwrap();
+            let refused = matches!(
+                &page,
+                Err(PrivateDocumentStoreError::CorruptedData(m)) if m.contains("committed entry size is 16")
             );
+            assert!(refused, "[{start}, +{limit}): {page:?}");
         }
     }
 
