@@ -6,21 +6,13 @@
 //! a wrapper. Differs from [`super::v0`] only there: v0 sizes it by its
 //! serialized size, which encodes the sum value as a varint and so comes in
 //! up to 8 bytes below the applied `added_bytes`.
-//!
-//! It also prices creating a `PrivateDocumentStore` as the apply does: on
-//! top of the layered insert, the existence check every store creation makes
-//! (a store is write-once) and the two hashes deriving its empty root. Stores
-//! exist from `GROVE_V4` only, so no earlier version estimates one.
 
 use grovedb_costs::{cost_return_on_error_into_no_add, CostResult, CostsExt, OperationCost};
 use grovedb_merk::{
     element::{costs::ElementCostExtensions, tree_type::ElementTreeTypeExtensions},
     estimated_costs::{
         add_cost_case_merk_insert, add_cost_case_merk_insert_layered,
-        average_case_costs::{
-            add_average_case_merk_has_value, add_average_case_merk_propagate,
-            EstimatedLayerInformation,
-        },
+        average_case_costs::{add_average_case_merk_propagate, EstimatedLayerInformation},
     },
     tree_type::{CostSize, TreeType},
 };
@@ -61,17 +53,6 @@ impl GroveDb {
                 }
             };
             add_cost_case_merk_insert(&mut cost, key_len, value_len, in_tree_type)
-        }
-        if matches!(value.underlying(), Element::PrivateDocumentStore(..)) {
-            // The existence check, priced as `InsertIfNotExists` prices one,
-            // and the empty root's derivation.
-            let estimated_element_size =
-                cost_return_on_error_into_no_add!(cost, value.serialized_size(grove_version))
-                    as u32;
-            add_average_case_merk_has_value(&mut cost, key_len, estimated_element_size);
-            cost.hash_node_calls = cost.hash_node_calls.saturating_add(
-                grovedb_private_document_store::EMPTY_PRIVATE_DOCUMENT_STORE_STATE_ROOT_HASH_CALLS,
-            );
         }
         if let Some(level) = propagate_for_level {
             add_average_case_merk_propagate(&mut cost, level, grove_version)

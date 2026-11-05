@@ -8,7 +8,7 @@
 
 use grovedb_costs::CostContext;
 use grovedb_merk::proofs::{query::SubqueryBranch, Query};
-use grovedb_version::version::{v3::GROVE_V3, v4::GROVE_V4, GroveVersion};
+use grovedb_version::version::{v3::GROVE_V3, v4::GROVE_V4, v5::GROVE_V5, GroveVersion};
 
 use crate::{
     batch::QualifiedGroveDbOp,
@@ -741,17 +741,6 @@ fn make_db_with_entries(count: u8) -> crate::tests::TempGroveDb {
     db
 }
 
-/// `GROVE_V4` without the store's range proofs.
-fn grove_v4_without_range_proofs() -> GroveVersion {
-    let mut version = GROVE_V4.clone();
-    version
-        .grovedb_versions
-        .operations
-        .private_document_store
-        .range_proof = 0;
-    version
-}
-
 #[test]
 fn test_private_document_store_subquery_proofs_verify() {
     let grove_version = GroveVersion::latest();
@@ -794,12 +783,13 @@ fn test_private_document_store_subquery_proofs_verify() {
 }
 
 #[test]
-fn test_private_document_store_subquery_proofs_refused_without_the_slot() {
+fn test_private_document_store_subquery_proofs_refused_at_grove_v4() {
+    // GroveDB 6.1.1 shipped GROVE_V4 without a store's range proofs.
     let db = make_db_with_entries(5);
     let path_query = store_subquery_path_query();
-    let without = grove_v4_without_range_proofs();
+    let without = &GROVE_V4;
 
-    let result = db.prove_query(&path_query, None, &without).unwrap();
+    let result = db.prove_query(&path_query, None, without).unwrap();
     assert!(
         matches!(result, Err(Error::NotSupported(_))),
         "proving into a store must fail without the slot, got {:?}",
@@ -819,7 +809,7 @@ fn test_private_document_store_subquery_proofs_refused_without_the_slot() {
             verify_proof_succinctness: false,
             include_empty_trees_in_result: false,
         },
-        &without,
+        without,
     );
     assert!(
         matches!(result, Err(Error::NotSupported(_))),
@@ -828,11 +818,20 @@ fn test_private_document_store_subquery_proofs_refused_without_the_slot() {
     );
 
     let result = db
-        .prove_bulk_position_range(vec![b"root".to_vec()], b"docs", 0, 5, None, &without)
+        .prove_bulk_position_range(vec![b"root".to_vec()], b"docs", 0, 5, None, without)
         .unwrap();
     assert!(
         matches!(result, Err(Error::InvalidInput(_))),
         "prove_bulk_position_range on a store must fail without the slot, got {:?}",
+        result
+    );
+
+    let result = db
+        .private_document_store_get_range(&[b"root"], b"docs", 0, 5, None, without)
+        .unwrap();
+    assert!(
+        matches!(result, Err(Error::VersionError(_))),
+        "a store's range read must fail closed without the slot, got {:?}",
         result
     );
 }
@@ -1204,7 +1203,7 @@ fn test_private_document_store_lower_layer_is_gated_before_dispatch() {
 
     let element_query = PathQuery::new_single_key(vec![b"root".to_vec()], b"docs".to_vec());
     for slot in [0, 2] {
-        let mut version = GROVE_V4.clone();
+        let mut version = GROVE_V5.clone();
         version
             .grovedb_versions
             .operations
@@ -1314,7 +1313,9 @@ fn test_private_document_store_path_query_rejects_tree_result() {
 
 #[test]
 fn test_private_document_store_version_slots_pinned() {
-    // The gate itself: all slots 0 on V3 (fail closed), 1 on V4.
+    // The gate itself: all slots 0 on V3 (fail closed), 1 on V4 apart from
+    // the range read and range proofs, which 6.1.1 shipped V4 without and
+    // which arrive in V5.
     let v3 = &GROVE_V3.grovedb_versions.operations.private_document_store;
     assert_eq!(v3.element_creation, 0);
     assert_eq!(v3.insert, 0);
@@ -1327,8 +1328,11 @@ fn test_private_document_store_version_slots_pinned() {
     assert_eq!(v4.insert, 1);
     assert_eq!(v4.get_value, 1);
     assert_eq!(v4.count, 1);
-    assert_eq!(v4.get_range, 1);
-    assert_eq!(v4.range_proof, 1);
+    assert_eq!(v4.get_range, 0);
+    assert_eq!(v4.range_proof, 0);
+    let v5 = &GROVE_V5.grovedb_versions.operations.private_document_store;
+    assert_eq!(v5.get_range, 1);
+    assert_eq!(v5.range_proof, 1);
 }
 
 #[test]
@@ -1383,7 +1387,7 @@ fn test_private_document_store_element_creation_rejected_under_v3() {
 
 #[test]
 fn test_private_document_store_operations_rejected_under_v3() {
-    // Build the store under V4 (latest), then attempt V3 operations on it.
+    // Build the store under the latest version, then attempt V3 operations on it.
     let db = make_db_with_store();
 
     let result = db

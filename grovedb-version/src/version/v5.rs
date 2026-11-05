@@ -7,7 +7,25 @@
 //! - `path_query_methods.merge = 2` enables exclusive branch-local pagination merge rules.
 //! - `path_query_methods.per_instance_query_offsets = 1` enables local offsets on supported provable count trees.
 //!
-//! Offset-bearing queries remain rejected by earlier Grove versions.
+//!   Offset-bearing queries remain rejected by earlier Grove versions.
+//!
+//! - `operations.private_document_store.get_range: 1` and
+//!   `operations.private_document_store.range_proof: 1`: a store's entries
+//!   can be read by position range, and proved. A V1 proof descends into a
+//!   store as into its bulk append tree, and the verifier binds the bulk root
+//!   through the store's committed config. V4 refuses both, as 6.1.1 did:
+//!   the range read fails closed, and a V1 proof neither carries nor accepts
+//!   a lower layer under a store. Gated because it adds an acceptance rule
+//!   to the live V1 envelope.
+//!
+//! - `operations.average_case.average_case_merk_insert_element: 1` and
+//!   `operations.worst_case.worst_case_merk_insert_element: 1`: the insert
+//!   estimators price creating a `PrivateDocumentStore` as the apply does,
+//!   adding the existence check a write-once store makes and the two hashes
+//!   deriving its empty root, and in the worst case pricing the store as the
+//!   layered tree the apply writes rather than as an item. V4 keeps the
+//!   6.1.1 estimates, which price a store's creation below its apply. Gated
+//!   because the estimate is the admission bound.
 //!
 //! It exists so that changes made after GroveDB 6.1.1 have somewhere to
 //! land. GROVE_V4 as 6.1.1 shipped it is what Dash Platform 5.0 (protocol
@@ -25,7 +43,9 @@
 
 use super::{
     grovedb_versions::{
-        GroveDBElementMethodVersions, GroveDBPathQueryMethodVersions, GroveDBVersions,
+        GroveDBElementMethodVersions, GroveDBOperationsAverageCaseVersions,
+        GroveDBOperationsPrivateDocumentStoreVersions, GroveDBOperationsVersions,
+        GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBVersions,
     },
     v4::GROVE_V4,
     GroveVersion,
@@ -39,6 +59,22 @@ pub const GROVE_V5: GroveVersion = GroveVersion {
         element: GroveDBElementMethodVersions {
             path_query_push: 2, // changed: local count pages and trusted parent echo
             ..GROVE_V4.grovedb_versions.element
+        },
+        operations: GroveDBOperationsVersions {
+            average_case: GroveDBOperationsAverageCaseVersions {
+                average_case_merk_insert_element: 1, // changed: prices a store's creation
+                ..GROVE_V4.grovedb_versions.operations.average_case
+            },
+            worst_case: GroveDBOperationsWorstCaseVersions {
+                worst_case_merk_insert_element: 1, // changed: prices a store's creation
+                ..GROVE_V4.grovedb_versions.operations.worst_case
+            },
+            private_document_store: GroveDBOperationsPrivateDocumentStoreVersions {
+                get_range: 1,   // changed: a store's position-range read
+                range_proof: 1, // changed: proving a store's entries
+                ..GROVE_V4.grovedb_versions.operations.private_document_store
+            },
+            ..GROVE_V4.grovedb_versions.operations
         },
         path_query_methods: GroveDBPathQueryMethodVersions {
             merge: 2, // changed: preserve branch-local pagination during composition
