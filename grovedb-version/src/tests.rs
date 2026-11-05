@@ -77,12 +77,55 @@ fn grove_versions_count() {
 }
 
 #[test]
-fn v5_matches_v4_apart_from_protocol_version() {
+fn v5_matches_v4_apart_from_its_gates() {
     // GROVE_V5 starts as GROVE_V4. A gate added to V5 flips its slot back
     // here, so this test lists every slot V5 changes.
     let mut v5_as_v4 = GROVE_V5.clone();
     v5_as_v4.protocol_version = GROVE_V4.protocol_version;
+    let operations = &mut v5_as_v4.grovedb_versions.operations;
+    operations.private_document_store.get_range = 0;
+    operations.private_document_store.range_proof = 0;
+    operations.average_case.average_case_merk_insert_element = 0;
+    operations.worst_case.worst_case_merk_insert_element = 0;
     assert_eq!(format!("{v5_as_v4:?}"), format!("{GROVE_V4:?}"));
+}
+
+#[test]
+fn private_document_store_range_slots_are_gated_to_v5() {
+    // GroveDB 6.1.1 shipped GROVE_V4 without a store's range read or range
+    // proofs, and Dash Platform 5.0 runs it: turning either on in V4 would
+    // change what a live protocol version accepts.
+    for v in [&GROVE_V1, &GROVE_V2, &GROVE_V3, &GROVE_V4] {
+        let pds = &v.grovedb_versions.operations.private_document_store;
+        assert_eq!(pds.get_range, 0, "v{}", v.protocol_version);
+        assert_eq!(pds.range_proof, 0, "v{}", v.protocol_version);
+    }
+    let pds = &GROVE_V5.grovedb_versions.operations.private_document_store;
+    assert_eq!(pds.get_range, 1);
+    assert_eq!(pds.range_proof, 1);
+}
+
+#[test]
+fn store_creation_estimates_are_gated_to_v5() {
+    // The insert estimators price a store's creation as its apply does from
+    // GROVE_V5; V1..V4 keep the estimates they shipped with, which are the
+    // admission bound historical blocks replay against.
+    for v in [&GROVE_V1, &GROVE_V2, &GROVE_V3, &GROVE_V4] {
+        let operations = &v.grovedb_versions.operations;
+        assert_eq!(
+            operations.average_case.average_case_merk_insert_element, 0,
+            "v{}",
+            v.protocol_version
+        );
+        assert_eq!(
+            operations.worst_case.worst_case_merk_insert_element, 0,
+            "v{}",
+            v.protocol_version
+        );
+    }
+    let operations = &GROVE_V5.grovedb_versions.operations;
+    assert_eq!(operations.average_case.average_case_merk_insert_element, 1);
+    assert_eq!(operations.worst_case.worst_case_merk_insert_element, 1);
 }
 
 #[test]
