@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `GROVE_V5`, identical to `GROVE_V4` apart from its `protocol_version` (5).
+  `GROVE_V4` as 6.1.1 shipped it is what Dash Platform 5.0 (protocol version
+  14) runs, so behaviour changes from here on are gated in `GROVE_V5` and
+  leave V1..V4 as they are.
 - A `PrivateDocumentStore`'s entries can be read and proved by position
   range from `GROVE_V4`. `GroveDb::private_document_store_get_range` reads
   `[start, start + limit)` in append order, clamped to the store's count
@@ -23,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by hand). The proof envelope gains no variant; the `verify` feature now
   builds `grovedb-private-document-store` (without storage) for the store's
   root.
+
+### Changed
+- `GroveVersion::latest()` returns `GROVE_V5`. V5 behaves as V4 until a gate
+  lands in it; code that means `GROVE_V4` should name it rather than take
+  "latest".
 
 ### Fixed
 - `GROVE_V4` insert estimates price creating a `PrivateDocumentStore` as the
