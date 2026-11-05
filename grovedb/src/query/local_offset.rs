@@ -41,7 +41,7 @@ pub(crate) fn validate_nodes(query: &Query) -> Result<(), Error> {
     Ok(())
 }
 
-fn has_parent_echo(query: &Query) -> bool {
+pub(crate) fn has_parent_echo(query: &Query) -> bool {
     query.add_parent_tree_on_subquery
         || query
             .default_subquery_branch

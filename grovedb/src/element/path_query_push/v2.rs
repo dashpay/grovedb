@@ -11,6 +11,7 @@ use grovedb_version::version::GroveVersion;
 
 use crate::{
     element::{
+        local_offset_read::refuse_non_merk_on_offset_path,
         path_query_push_args::PathQueryPushArgs,
         query::{get_path_query_internal, ElementQueryExtensions},
         query_options::QueryOptions,
@@ -94,7 +95,29 @@ pub(crate) fn path_query_push_v2(
         );
         path_vec.push(key);
 
-        if query_options.include_parent_tree_on_subquery
+        // The prover refuses a non-Merk element anywhere on a local offset's
+        // path, including a subquery_path's components above a range node.
+        if let (Some(subquery), Some(subquery_path)) = (&subquery, &subquery_path)
+            && subquery.has_instance_offset_anywhere()
+            && !subquery_path.is_empty()
+        {
+            let mut offset_path = path_vec.clone();
+            offset_path.extend(subquery_path.iter().map(|k| k.as_slice()));
+            cost_return_on_error!(
+                &mut cost,
+                refuse_non_merk_on_offset_path(
+                    storage,
+                    &offset_path,
+                    path_vec.len(),
+                    tx.as_ref(),
+                    grove_version
+                )
+            );
+        }
+
+        // Echoes are raw rows: non-raw reads keep their V4 results.
+        if allow_get_raw
+            && query_options.include_parent_tree_on_subquery
             && add_parent_tree_on_subquery
             && (subquery.is_some() || subquery_path.is_some())
         {

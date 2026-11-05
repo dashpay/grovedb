@@ -5,6 +5,7 @@ use grovedb_costs::{cost_return_on_error, cost_return_on_error_no_add, CostResul
 use grovedb_merk::{
     element::get::ElementFetchFromStorageExtensions,
     proofs::{Node, Op},
+    tree_type::TreeType,
 };
 use grovedb_storage::{rocksdb_storage::RocksDbStorage, Storage};
 use grovedb_version::version::GroveVersion;
@@ -15,8 +16,42 @@ use super::{
 use crate::{
     query_result_type::{QueryResultElements, QueryResultType},
     util::{compat, TxRef},
-    Element, Error, SizedQuery, TransactionArg,
+    Element, Error, SizedQuery, Transaction, TransactionArg,
 };
+
+/// Walks `path` from component `from` and refuses a present element that is
+/// not a Merk tree, as the prover's `validate_local_offset_host` refuses one
+/// on a local offset's path. Returns whether a component is missing; the walk
+/// stops there, since a missing page reads as empty.
+pub(super) fn refuse_non_merk_on_offset_path(
+    storage: &RocksDbStorage,
+    path: &[&[u8]],
+    from: usize,
+    tx: &Transaction,
+    v: &GroveVersion,
+) -> CostResult<bool, Error> {
+    let mut cost = Default::default();
+    for depth in from..path.len() {
+        let context = storage
+            .get_transactional_storage_context(path[..depth].into(), None, tx)
+            .unwrap_add_cost(&mut cost);
+        let element = cost_return_on_error!(
+            &mut cost,
+            Element::get_optional_from_storage(&context, path[depth], v).map_err(Error::from)
+        );
+        match element {
+            None => return Ok(true).wrap_with_cost(cost),
+            Some(element) if !element.is_any_tree() || element.uses_non_merk_data_storage() => {
+                return Err(Error::InvalidQuery(
+                    "local offsets require Merk tree intermediates along their selected path",
+                ))
+                .wrap_with_cost(cost);
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(false).wrap_with_cost(cost)
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn read_local_count_page(
@@ -32,6 +67,13 @@ pub(super) fn read_local_count_page(
     v: &GroveVersion,
 ) -> CostResult<(QueryResultElements, u16, u16, u16), Error> {
     let mut cost = Default::default();
+    // The same refusal the prover makes (`reject_unserved_local_offsets`).
+    if path.is_empty() {
+        return Err(Error::InvalidQuery(
+            "the GroveDB root cannot host a local count-unit offset",
+        ))
+        .wrap_with_cost(cost);
+    }
     let tx = TxRef::new(storage, transaction);
     let merk = match compat::merk_optional_tx(storage, path.into(), tx.as_ref(), None, v)
         .unwrap_add_cost(&mut cost)
@@ -39,36 +81,17 @@ pub(super) fn read_local_count_page(
         Ok(merk) => merk,
         // Direct range reads treat a missing storage layer as empty under
         // either strict-path option. Intermediate descents enforce that option.
-        Err(error @ Error::PathParentLayerNotFound(_)) => {
-            // The compatible opener also reports absence below a non-tree
-            // ancestor. Confirm a genuinely missing component before returning
-            // an empty page, and retain decoding and storage errors.
-            let mut missing = false;
-            for (depth, key) in path.iter().enumerate() {
-                let context = storage
-                    .get_transactional_storage_context(path[..depth].into(), None, tx.as_ref())
-                    .unwrap_add_cost(&mut cost);
-                let element = cost_return_on_error!(
-                    &mut cost,
-                    Element::get_optional_from_storage(&context, key, v).map_err(Error::from)
-                );
-                match element {
-                    None => {
-                        missing = true;
-                        break;
-                    }
-                    Some(element)
-                        if !element.is_any_tree() || element.uses_non_merk_data_storage() =>
-                    {
-                        return Err(Error::InvalidQuery(
-                            "local offsets require Merk tree intermediates along their selected path",
-                        ))
-                        .wrap_with_cost(cost);
-                    }
-                    Some(_) => {}
-                }
-            }
-            if !missing {
+        // The opener reports a present non-tree host as CorruptedPath, and
+        // absence below a non-tree ancestor as PathParentLayerNotFound: both
+        // are refused as the query shape the prover refuses.
+        Err(error @ (Error::PathParentLayerNotFound(_) | Error::CorruptedPath(_))) => {
+            // Confirm a genuinely missing component before returning an empty
+            // page, and retain decoding and storage errors.
+            let missing = cost_return_on_error!(
+                &mut cost,
+                refuse_non_merk_on_offset_path(storage, path, 0, tx.as_ref(), v)
+            );
+            if !missing || !matches!(error, Error::PathParentLayerNotFound(_)) {
                 return Err(error).wrap_with_cost(cost);
             }
             if options.decrease_limit_on_range_with_no_sub_elements {
@@ -86,6 +109,17 @@ pub(super) fn read_local_count_page(
         }
         Err(error) => return Err(error).wrap_with_cost(cost),
     };
+    if !matches!(
+        merk.tree_type,
+        TreeType::ProvableCountTree
+            | TreeType::ProvableCountSumTree
+            | TreeType::ProvableCountProvableSumTree
+    ) {
+        return Err(Error::InvalidQuery(
+            "local count-unit offsets require a provable count-bearing host",
+        ))
+        .wrap_with_cost(cost);
+    }
     let page = cost_return_on_error!(
         &mut cost,
         merk.prove_local_count_offset_on_range(
@@ -204,6 +238,60 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn root_ordinary_and_item_hosts_are_invalid_queries() {
+        let v = GroveVersion::latest();
+        let db = crate::tests::make_empty_grovedb();
+        db.insert(
+            &[] as &[&[u8]],
+            b"tree",
+            Element::empty_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .unwrap();
+        db.insert(
+            &[] as &[&[u8]],
+            b"item",
+            Element::new_item(vec![1]),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .unwrap();
+        let mut query = Query::new_range_full();
+        query.offset = Some(1);
+        let sized = SizedQuery::new(query, None, None);
+        let hosts: [&[&[u8]]; 3] = [&[], &[b"tree".as_slice()], &[b"item".as_slice()]];
+        for path in hosts {
+            let mut budget = QueryBudget::new(None, None, None);
+            let error = read_local_count_page(
+                &db.db,
+                path,
+                &sized,
+                1,
+                &mut budget,
+                QueryOptions {
+                    allow_get_raw: true,
+                    ..QueryOptions::default()
+                },
+                QueryResultType::QueryElementResultType,
+                None,
+                Element::path_query_push,
+                v,
+            )
+            .unwrap()
+            .unwrap_err();
+            assert!(
+                matches!(error, Error::InvalidQuery(_)),
+                "{path:?}: {error:?}"
+            );
         }
     }
 

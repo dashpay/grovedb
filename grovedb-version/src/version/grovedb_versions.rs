@@ -549,6 +549,17 @@ pub struct GroveDBOperationsProofVersions {
     /// Gated because it adds an acceptance rule to the live V1
     /// envelope, same as `axis_descent_in_v1_envelope`.
     pub sum_budget_in_v1_envelope: FeatureVersion,
+    /// Whether the global count-offset verifier (a `SizedQuery::offset`
+    /// page on a provable count tree) exempts rows resolved through a
+    /// reference from its empty-tree value-hash check. A legacy reference to
+    /// an empty tree (current writes refuse references to trees) binds its
+    /// target through `combine_hash(reference_element_hash, H(target))`,
+    /// which the direct-tree check can never match.
+    ///
+    /// 0 (V1..V4, as 6.1.1 shipped): the check applies to every tree row,
+    /// so such a page is refused. 1: resolved references are exempt. Gated
+    /// because it turns a rejected proof into an accepted one.
+    pub count_offset_reference_empty_tree_rows: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

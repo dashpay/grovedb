@@ -863,8 +863,17 @@ impl GroveDb {
             //
             // Resolved references already bind the target bytes through
             // combine_hash(reference_element_hash, H(target)), rather than
-            // the direct tree's child-root commitment.
-            if !item.resolved_from_reference && inner.is_any_tree() && !inner.is_non_empty_tree() {
+            // the direct tree's child-root commitment. V1..V4 still apply the
+            // check to them, refusing the page as 6.1.1 did
+            // (`proof.count_offset_reference_empty_tree_rows`).
+            let reference_exempt = item.resolved_from_reference
+                && grove_version
+                    .grovedb_versions
+                    .operations
+                    .proof
+                    .count_offset_reference_empty_tree_rows
+                    >= 1;
+            if !reference_exempt && inner.is_any_tree() && !inner.is_non_empty_tree() {
                 use grovedb_merk::tree::{
                     axes_digest, combine_hash, combine_hash_three, value_hash, NULL_HASH,
                 };
@@ -923,6 +932,11 @@ impl GroveDb {
     }
 
     /// Verify one local count-unit page using the query node's own skip.
+    ///
+    /// Returns the root hash and the number of rows the page returned. Every
+    /// returned row counts against the budgets, as the prover counts it, but
+    /// a direct empty plain `Tree` row is reported only with
+    /// `include_empty_trees_in_result`, as on the ordinary V1 terminal path.
     #[allow(clippy::too_many_arguments)]
     fn run_local_count_offset_layer_dispatch<T>(
         query: &PathQuery,
@@ -933,9 +947,10 @@ impl GroveDb {
         lower_layers_empty: bool,
         current_path: &[&[u8]],
         limit_left: &mut Option<u16>,
+        include_empty_trees_in_result: bool,
         result: &mut Vec<T>,
         grove_version: &GroveVersion,
-    ) -> Result<CryptoHash, Error>
+    ) -> Result<(CryptoHash, u16), Error>
     where
         T: TryFromVersioned<ProvedPathKeyOptionalValue>,
         Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
@@ -968,6 +983,7 @@ impl GroveDb {
             )
         })?;
 
+        let mut returned: u16 = 0;
         for item in count_offset_result.returned_items.iter() {
             let elem = Element::deserialize(item.value.as_slice(), grove_version).map_err(|e| {
                 Error::InvalidProof(
@@ -991,6 +1007,9 @@ impl GroveDb {
                 ));
             }
             let inner = elem.into_underlying();
+            let reported = include_empty_trees_in_result
+                || item.resolved_from_reference
+                || !matches!(inner, Element::Tree(None, _));
             if inner.is_non_empty_tree() {
                 return Err(Error::NotSupported(format!(
                     "count-offset paginated proofs do not yet support \
@@ -1072,12 +1091,32 @@ impl GroveDb {
                 current_path.iter().map(|p| p.to_vec()).collect(),
                 proved_key_optional_value,
             );
-            result.push(path_key_optional_value.try_into_versioned(grove_version)?);
+            returned = returned.saturating_add(1);
+            if reported {
+                result.push(path_key_optional_value.try_into_versioned(grove_version)?);
+            }
             limit_left
                 .iter_mut()
                 .for_each(|limit| *limit = limit.saturating_sub(1));
         }
-        Ok(count_offset_result.root_hash)
+        Ok((count_offset_result.root_hash, returned))
+    }
+
+    /// The path a verified parent-tree echo is reported under. From
+    /// `GROVE_V5` (`element.path_query_push` 2, the engine whose trusted
+    /// reads echo parents) it is the parent's own path, as those reads report
+    /// it; GROVE_V1..V4 verifiers keep reporting the descended path.
+    fn parent_echo_path(
+        current_path: &[&[u8]],
+        descended_path: &[&[u8]],
+        grove_version: &GroveVersion,
+    ) -> Vec<Vec<u8>> {
+        let reported = if grove_version.grovedb_versions.element.path_query_push >= 2 {
+            current_path
+        } else {
+            descended_path
+        };
+        reported.iter().map(|p| p.to_vec()).collect()
     }
 
     /// Destructure a layer's proof body, rejecting non-Merk shapes. Callers
@@ -1804,9 +1843,8 @@ impl GroveDb {
             super::V1LimitState::min_caps(inherited_instance, internal_query.instance_limit);
 
         if let Some(offset) = internal_query.instance_offset {
-            let before = result.len();
             let mut effective = limit_state.effective_layer_limit(frame_instance);
-            let hash = Self::run_local_count_offset_layer_dispatch(
+            let (hash, returned) = Self::run_local_count_offset_layer_dispatch(
                 query,
                 &internal_query.items[0],
                 offset,
@@ -1815,10 +1853,10 @@ impl GroveDb {
                 lower_layers.is_empty(),
                 current_path,
                 &mut effective,
+                options.include_empty_trees_in_result,
                 result,
                 grove_version,
             )?;
-            let returned = (result.len() - before).min(u16::MAX as usize) as u16;
             limit_state.charge_rows(returned);
             if returned == 0 && prove_options.decrease_limit_on_empty_sub_query_result {
                 limit_state.charge_empty_layer();
@@ -2179,19 +2217,11 @@ impl GroveDb {
                                     )? {
                                         let path_key_optional_value =
                                             ProvedPathKeyOptionalValue::from_proved_key_value(
-                                                if grove_version
-                                                    .grovedb_versions
-                                                    .path_query_methods
-                                                    .per_instance_query_offsets
-                                                    == 1
-                                                {
-                                                    current_path
-                                                        .iter()
-                                                        .map(|p| p.to_vec())
-                                                        .collect()
-                                                } else {
-                                                    path.iter().map(|p| p.to_vec()).collect()
-                                                },
+                                                Self::parent_echo_path(
+                                                    current_path,
+                                                    &path,
+                                                    grove_version,
+                                                ),
                                                 proved_key_value.clone(),
                                             );
                                         result.push(
@@ -2366,19 +2396,11 @@ impl GroveDb {
                                     {
                                         let path_key_optional_value =
                                             ProvedPathKeyOptionalValue::from_proved_key_value(
-                                                if grove_version
-                                                    .grovedb_versions
-                                                    .path_query_methods
-                                                    .per_instance_query_offsets
-                                                    == 1
-                                                {
-                                                    current_path
-                                                        .iter()
-                                                        .map(|p| p.to_vec())
-                                                        .collect()
-                                                } else {
-                                                    path.iter().map(|p| p.to_vec()).collect()
-                                                },
+                                                Self::parent_echo_path(
+                                                    current_path,
+                                                    &path,
+                                                    grove_version,
+                                                ),
                                                 proved_key_value.clone(),
                                             );
                                         result.push(

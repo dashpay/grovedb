@@ -32,11 +32,13 @@
 //!   was folded into v1 rather than kept as a dead dispatch arm.)
 //!
 //! * **[v2]** — `GROVE_V5` onward. Keeps exclusive budget scopes and
-//!   lifts nonzero global offsets onto branch-local count-unit terminals.
-//!   Global zero offsets are no-ops and are not lifted. A single input keeps
-//!   its global row offset unchanged. Nonzero offsets at the merged root or
-//!   overlapping budget scopes are refused. See [`PathQuery::merge`] for
-//!   count-host requirements and the completeness caveat for exact keys.
+//!   carries authored branch-local `Query::offset`s. Nonzero global offsets
+//!   are still refused: they skip rows, while a branch offset skips count
+//!   units. Global zero offsets are no-ops. A single input keeps its global
+//!   row offset unchanged. Branch offsets at the merged root, overlapping
+//!   budget scopes, and an echoing root body sharing its node with other
+//!   inputs are refused. See [`PathQuery::merge`] for count-host
+//!   requirements and the completeness caveat for exact keys.
 //!
 //! The version-independent prelude (empty-input rejection, the
 //! read-mode refusal, and the single-input shortcut) lives in

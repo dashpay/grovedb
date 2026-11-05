@@ -4,7 +4,7 @@ pub mod aggregate_sum_path_query;
 pub(crate) mod axis_lowering;
 mod grove_branch_query_result;
 mod grove_trunk_query_result;
-mod local_offset;
+pub(crate) mod local_offset;
 pub(crate) mod merge;
 mod path_branch_chunk_query;
 mod path_trunk_chunk_query;
@@ -1108,11 +1108,12 @@ impl PathQuery {
     /// input is malformed, read-mode queries have no merge semantics at
     /// any version, and a single input merges to itself.
     ///
-    /// From `GROVE_V5`, merging two or more inputs lifts nonzero global
-    /// `SizedQuery::offset` values into branch-local `Query::offset` values.
-    /// These skip committed count units and require a plain range terminal
-    /// on a provable count-bearing tree. A single input retains its global
-    /// row pagination unchanged. Global `Some(0)` offsets are not lifted;
+    /// From `GROVE_V5`, merging two or more inputs carries their
+    /// branch-local `Query::offset` values. These skip committed count units
+    /// and require a plain range terminal on a provable count-bearing tree.
+    /// A nonzero global `SizedQuery::offset` is refused when merging, since it
+    /// skips rows rather than count units; a single input retains its global
+    /// row pagination unchanged. Global `Some(0)` offsets are no-ops;
     /// authored local `Query::offset = Some(0)` still requires a count host.
     ///
     /// Verified results do not signal truncation. An omitted exact key

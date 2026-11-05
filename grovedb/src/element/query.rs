@@ -217,6 +217,18 @@ impl ElementQueryExtensions for Element {
         ) {
             return Err(e).wrap_with_cost(OperationCost::default());
         }
+        let mut cost = OperationCost::default();
+        cost_return_on_error!(
+            &mut cost,
+            preflight_v5_trusted_read(
+                storage,
+                path,
+                sized_query,
+                query_options,
+                transaction,
+                grove_version
+            )
+        );
 
         get_query_apply_function_internal(
             storage,
@@ -229,6 +241,7 @@ impl ElementQueryExtensions for Element {
             add_element_function,
             grove_version,
         )
+        .add_cost(cost)
         .map_ok(|(elements, skipped, _consumed, _rows)| (elements, skipped))
     }
 
@@ -254,6 +267,19 @@ impl ElementQueryExtensions for Element {
         ) {
             return Err(e).wrap_with_cost(OperationCost::default());
         }
+        let mut cost = OperationCost::default();
+        let path: Vec<&[u8]> = path_query.path.iter().map(Vec::as_slice).collect();
+        cost_return_on_error!(
+            &mut cost,
+            preflight_v5_trusted_read(
+                storage,
+                &path,
+                &path_query.query,
+                query_options,
+                transaction,
+                grove_version
+            )
+        );
 
         get_path_query_internal(
             storage,
@@ -264,6 +290,7 @@ impl ElementQueryExtensions for Element {
             transaction,
             grove_version,
         )
+        .add_cost(cost)
         .map_ok(|(elements, skipped, _consumed, _rows)| (elements, skipped))
     }
 
@@ -891,6 +918,51 @@ pub(crate) fn get_query_apply_function_internal(
 /// The body of [`ElementQueryExtensions::get_path_query`], carrying the
 /// per-instance budget chain — see
 /// [`get_query_apply_function_internal`].
+/// Checks a trusted read's whole query once, at a public entry:
+/// - a V5 raw read echoes parent trees without charging rows, so a global
+///   offset, which skips rows, would repeat or orphan the echoes it passes
+///   over: the two are refused together (proofs refuse a global offset with
+///   any subquery);
+/// - a local offset anywhere requires Merk trees along the query's own path,
+///   as the prover requires (a missing component reads as empty).
+fn preflight_v5_trusted_read(
+    storage: &RocksDbStorage,
+    path: &[&[u8]],
+    sized_query: &SizedQuery,
+    query_options: QueryOptions,
+    transaction: TransactionArg,
+    grove_version: &GroveVersion,
+) -> CostResult<(), Error> {
+    use crate::util::TxRef;
+
+    let mut cost = OperationCost::default();
+    if sized_query.offset.is_some_and(|offset| offset > 0)
+        && query_options.allow_get_raw
+        && query_options.include_parent_tree_on_subquery
+        && grove_version.grovedb_versions.element.path_query_push >= 2
+        && crate::query::local_offset::has_parent_echo(&sized_query.query)
+    {
+        return Err(Error::InvalidQuery(
+            "parent tree echoes cannot be combined with a global offset",
+        ))
+        .wrap_with_cost(cost);
+    }
+    if sized_query.query.has_instance_offset_anywhere() && !path.is_empty() {
+        let tx = TxRef::new(storage, transaction);
+        cost_return_on_error!(
+            &mut cost,
+            super::local_offset_read::refuse_non_merk_on_offset_path(
+                storage,
+                path,
+                0,
+                tx.as_ref(),
+                grove_version
+            )
+        );
+    }
+    Ok(()).wrap_with_cost(cost)
+}
+
 pub(crate) fn get_path_query_internal(
     storage: &RocksDbStorage,
     path_query: &PathQuery,
@@ -935,10 +1007,13 @@ mod tests {
         element::query::{ElementQueryExtensions, QueryOptions},
         query_result_type::{
             KeyElementPair, QueryResultElement, QueryResultElements,
-            QueryResultType::{QueryKeyElementPairResultType, QueryPathKeyElementTrioResultType},
+            QueryResultType::{
+                QueryElementResultType, QueryKeyElementPairResultType,
+                QueryPathKeyElementTrioResultType,
+            },
         },
         tests::{make_test_grovedb, TEST_LEAF},
-        SizedQuery,
+        PathQuery, SizedQuery,
     };
 
     #[test]
@@ -984,6 +1059,18 @@ mod tests {
                 .unwrap()
                 .unwrap();
                 assert_eq!(values, vec![Element::new_item(vec![0])]);
+                // Non-raw reads never echo parents, whatever the options say.
+                let (rows, _) = Element::get_path_query(
+                    &db.db,
+                    &PathQuery::new_unsized(vec![b"docs".to_vec()], query.clone()),
+                    QueryOptions::default(),
+                    QueryElementResultType,
+                    None,
+                    v,
+                )
+                .unwrap()
+                .unwrap();
+                assert_eq!(rows.to_elements(), vec![Element::new_item(vec![0])]);
             }
         }
     }

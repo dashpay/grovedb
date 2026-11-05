@@ -112,44 +112,52 @@ fn path_key(parent: &[u8], key: &[u8]) -> (Vec<Vec<u8>>, Vec<u8>) {
 
 #[test]
 fn top_k_per_parent_returns_k_rows_under_each_parent() {
-    let grove_version = GroveVersion::latest();
-    let db = make_test_grovedb(grove_version);
-    populate_parents(&db, &[b"p1", b"p2", b"p3"], 5, grove_version);
+    for grove_version in [
+        &grovedb_version::version::GROVE_VERSIONS[3],
+        GroveVersion::latest(),
+    ] {
+        let db = make_test_grovedb(grove_version);
+        populate_parents(&db, &[b"p1", b"p2", b"p3"], 5, grove_version);
 
-    let (rows, skipped) = run(&db, &top_k_query(2, None, None), grove_version);
-    assert_eq!(skipped, 0);
-    assert_eq!(
-        rows,
-        vec![
-            path_key(b"p1", b"k0"),
-            path_key(b"p1", b"k1"),
-            path_key(b"p2", b"k0"),
-            path_key(b"p2", b"k1"),
-            path_key(b"p3", b"k0"),
-            path_key(b"p3", b"k1"),
-        ],
-        "each parent instance gets a fresh budget of 2"
-    );
+        let (rows, skipped) = run(&db, &top_k_query(2, None, None), grove_version);
+        assert_eq!(skipped, 0);
+        assert_eq!(
+            rows,
+            vec![
+                path_key(b"p1", b"k0"),
+                path_key(b"p1", b"k1"),
+                path_key(b"p2", b"k0"),
+                path_key(b"p2", b"k1"),
+                path_key(b"p3", b"k0"),
+                path_key(b"p3", b"k1"),
+            ],
+            "each parent instance gets a fresh budget of 2"
+        );
+    }
 }
 
 #[test]
 fn global_limit_still_caps_the_total() {
-    let grove_version = GroveVersion::latest();
-    let db = make_test_grovedb(grove_version);
-    populate_parents(&db, &[b"p1", b"p2", b"p3"], 5, grove_version);
+    for grove_version in [
+        &grovedb_version::version::GROVE_VERSIONS[3],
+        GroveVersion::latest(),
+    ] {
+        let db = make_test_grovedb(grove_version);
+        populate_parents(&db, &[b"p1", b"p2", b"p3"], 5, grove_version);
 
-    let (rows, _) = run(&db, &top_k_query(2, Some(5), None), grove_version);
-    assert_eq!(
-        rows,
-        vec![
-            path_key(b"p1", b"k0"),
-            path_key(b"p1", b"k1"),
-            path_key(b"p2", b"k0"),
-            path_key(b"p2", b"k1"),
-            path_key(b"p3", b"k0"),
-        ],
-        "the global budget runs out mid-way through the last parent"
-    );
+        let (rows, _) = run(&db, &top_k_query(2, Some(5), None), grove_version);
+        assert_eq!(
+            rows,
+            vec![
+                path_key(b"p1", b"k0"),
+                path_key(b"p1", b"k1"),
+                path_key(b"p2", b"k0"),
+                path_key(b"p2", b"k1"),
+                path_key(b"p3", b"k0"),
+            ],
+            "the global budget runs out mid-way through the last parent"
+        );
+    }
 }
 
 #[test]
@@ -744,54 +752,58 @@ fn pre_v4_grove_versions_reject_instance_limit_proofs() {
 
 #[test]
 fn merge_lifts_limits_onto_exclusive_branches_and_round_trips() {
-    let grove_version = GroveVersion::latest();
-    let db = make_test_grovedb(grove_version);
-    populate_parents(&db, &[b"p1", b"p2"], 4, grove_version);
-    use crate::tests::common::EMPTY_PATH;
-    db.insert(
-        EMPTY_PATH,
-        b"other",
-        Element::empty_tree(),
-        None,
-        None,
-        grove_version,
-    )
-    .unwrap()
-    .expect("insert other tree");
-    db.insert(
-        [b"other".as_slice()].as_ref(),
-        b"x",
-        Element::new_item(vec![9]),
-        None,
-        None,
-        grove_version,
-    )
-    .unwrap()
-    .expect("insert other item");
+    for grove_version in [
+        &grovedb_version::version::GROVE_VERSIONS[3],
+        GroveVersion::latest(),
+    ] {
+        let db = make_test_grovedb(grove_version);
+        populate_parents(&db, &[b"p1", b"p2"], 4, grove_version);
+        use crate::tests::common::EMPTY_PATH;
+        db.insert(
+            EMPTY_PATH,
+            b"other",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert other tree");
+        db.insert(
+            [b"other".as_slice()].as_ref(),
+            b"x",
+            Element::new_item(vec![9]),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert other item");
 
-    // An instance-capped input and an unrelated plain input merge onto
-    // exclusive branches; the merged query proves, verifies, and
-    // matches the trusted read.
-    let limited = top_k_query(2, None, None);
-    let other = PathQuery::new_unsized(
-        vec![b"other".to_vec()],
-        Query::new_single_key(b"x".to_vec()),
-    );
-    let merged = PathQuery::merge(vec![&limited, &other], grove_version)
-        .expect("exclusive-branch limits merge under GROVE_V4");
-    let rows = assert_proved_matches_trusted_read(&db, &merged, grove_version);
-    assert_eq!(rows, 5, "2 per docs parent plus the one other row");
+        // An instance-capped input and an unrelated plain input merge onto
+        // exclusive branches; the merged query proves, verifies, and
+        // matches the trusted read.
+        let limited = top_k_query(2, None, None);
+        let other = PathQuery::new_unsized(
+            vec![b"other".to_vec()],
+            Query::new_single_key(b"x".to_vec()),
+        );
+        let merged = PathQuery::merge(vec![&limited, &other], grove_version)
+            .expect("exclusive-branch limits merge from GROVE_V4");
+        let rows = assert_proved_matches_trusted_read(&db, &merged, grove_version);
+        assert_eq!(rows, 5, "2 per docs parent plus the one other row");
 
-    // A GLOBAL limit on an input is lifted to its branch's instance cap
-    // — the merged read returns that input's first 3 rows plus the
-    // other input's row.
-    let mut globally_limited = top_k_query(50, None, None);
-    globally_limited.query.limit = Some(3);
-    let merged = PathQuery::merge(vec![&globally_limited, &other], grove_version)
-        .expect("global limits lift under GROVE_V4");
-    assert_eq!(merged.query.limit, None, "the merged query stays unsized");
-    let rows = assert_proved_matches_trusted_read(&db, &merged, grove_version);
-    assert_eq!(rows, 4, "3 lifted rows from docs plus the other row");
+        // A GLOBAL limit on an input is lifted to its branch's instance cap
+        // — the merged read returns that input's first 3 rows plus the
+        // other input's row.
+        let mut globally_limited = top_k_query(50, None, None);
+        globally_limited.query.limit = Some(3);
+        let merged = PathQuery::merge(vec![&globally_limited, &other], grove_version)
+            .expect("global limits lift from GROVE_V4");
+        assert_eq!(merged.query.limit, None, "the merged query stays unsized");
+        let rows = assert_proved_matches_trusted_read(&db, &merged, grove_version);
+        assert_eq!(rows, 4, "3 lifted rows from docs plus the other row");
+    }
 }
 
 #[test]

@@ -37,12 +37,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decoders reject; offset-free encodings remain unchanged.
 - **BREAKING**: `QueryOptions` adds `include_parent_tree_on_subquery`.
   Exhaustive struct literals must supply the field or use a default update.
-  It defaults to `true` for V5 raw parent carriers; value projections disable
-  those metadata rows. Earlier query engines ignore the field.
+  It defaults to `true`, and applies to V5 raw reads (`allow_get_raw`) only:
+  non-raw reads and value projections never return parent echoes. A V5 raw
+  read refuses a nonzero global offset together with a parent echo, since
+  echoes are not rows the offset can skip. Earlier query engines ignore the
+  field.
 - `GroveVersion::latest()` now selects `GROVE_V5`. V5 enables per-instance
   query offsets on supported provable count trees, merge v2 for exclusive
   branch-local pagination, and the v2 trusted query engine with parent-tree
-  echoes. Earlier Grove versions continue to reject local offsets.
+  echoes. Earlier Grove versions continue to reject local offsets. Merge v2
+  carries a branch's own `Query::offset` but, like v1, refuses a nonzero
+  global `SizedQuery::offset`, which skips rows rather than count units, and
+  refuses a root body that echoes parents while sharing its node with other
+  inputs.
 
 ### Fixed
 - From `GROVE_V5`, insert estimates price creating a `PrivateDocumentStore`
@@ -58,11 +65,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in the worst case) below its apply, which the batch estimate's
   propagation headroom happens to cover. Estimates of every other element,
   applied costs, stored data and proofs do not change.
-- Count-offset proof verification accepts pages whose rows resolve through a
-  reference to an empty tree, which earlier versions could persist. The
-  empty-tree hash check now applies only to direct tree rows, on both the
-  global offset path (from `GROVE_V4`) and V5 local pages; resolved
-  references keep the target binding Merk already verifies.
+- From `GROVE_V5`, count-offset proof verification accepts pages whose rows
+  resolve through a reference to an empty tree, which earlier versions could
+  persist. The empty-tree hash check applies only to direct tree rows on the
+  global offset path (the new `proof.count_offset_reference_empty_tree_rows`
+  slot, 0 in V1..V4 and 1 in V5; **BREAKING** for code building
+  `GroveDBOperationsProofVersions` by hand) and on V5 local pages; resolved
+  references keep the target binding Merk already verifies. V1..V4 refuse
+  such a global page, as 6.1.1 did.
 
 ## [6.1.1] - 2026-10-20
 

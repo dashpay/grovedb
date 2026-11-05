@@ -27,26 +27,33 @@ mod tests {
         let v4 = &GROVE_VERSIONS[3];
         assert_eq!(v4.protocol_version, 4);
 
-        // Agreement: the shared direction survives the merge.
-        for direction in [true, false] {
-            let a = directional_query(b"a", direction);
-            let b = directional_query(b"b", direction);
-            let merged = PathQuery::merge(vec![&a, &b], v4).expect("agreeing merge succeeds");
-            assert_eq!(
-                merged.query.query.left_to_right, direction,
-                "merged direction must be the shared one"
-            );
-        }
-
-        // Conflict: typed rejection instead of silently keeping the
-        // first query's direction.
-        let ascending = directional_query(b"a", true);
-        let descending = directional_query(b"b", false);
-        match PathQuery::merge(vec![&ascending, &descending], v4) {
-            Err(Error::NotSupported(message)) => {
-                assert!(message.contains("direction"), "got: {message}")
+        // V4 (merge v1) and V5 (merge v2) each carry the direction rules.
+        for version in [v4, GroveVersion::latest()] {
+            // Agreement: the shared direction survives the merge.
+            for direction in [true, false] {
+                let a = directional_query(b"a", direction);
+                let b = directional_query(b"b", direction);
+                let merged =
+                    PathQuery::merge(vec![&a, &b], version).expect("agreeing merge succeeds");
+                assert_eq!(
+                    merged.query.query.left_to_right, direction,
+                    "merged direction must be the shared one"
+                );
             }
-            other => panic!("conflicting directions must be rejected at V4, got {other:?}"),
+
+            // Conflict: typed rejection instead of silently keeping the
+            // first query's direction.
+            let ascending = directional_query(b"a", true);
+            let descending = directional_query(b"b", false);
+            match PathQuery::merge(vec![&ascending, &descending], version) {
+                Err(Error::NotSupported(message)) => {
+                    assert!(message.contains("direction"), "got: {message}")
+                }
+                other => panic!(
+                    "conflicting directions must be rejected at v{}, got {other:?}",
+                    version.protocol_version
+                ),
+            }
         }
     }
 
@@ -383,11 +390,46 @@ mod tests {
     }
 
     #[test]
+    fn v5_merge_refuses_an_echoing_root_body_shared_with_other_inputs() {
+        let v5 = GroveVersion::latest();
+        let echoing = |key: &[u8]| {
+            let mut query = Query::new_single_key(key.to_vec());
+            query.set_subquery(Query::new_range_full());
+            query.add_parent_tree_on_subquery = true;
+            PathQuery::new_unsized(vec![b"docs".to_vec()], query)
+        };
+        let a = echoing(b"a");
+        let grafted = PathQuery::new_unsized(
+            vec![b"docs".to_vec(), b"b".to_vec(), b"x".to_vec()],
+            Query::new_range_full(),
+        );
+        let mut plain = Query::new_single_key(b"c".to_vec());
+        plain.set_subquery(Query::new_range_full());
+        let plain = PathQuery::new_unsized(vec![b"docs".to_vec()], plain);
+
+        // The echo would cover key b, which only `grafted` selects, and key
+        // c, which `plain` selects without asking for an echo.
+        for other in [&grafted, &plain] {
+            match PathQuery::merge(vec![&a, other], v5) {
+                Err(Error::NotSupported(message)) => {
+                    assert!(message.contains("echoes"), "got: {message}")
+                }
+                other => panic!("an echoing root body must not be shared, got {other:?}"),
+            }
+        }
+        // Bodies that all ask for the echo still merge.
+        PathQuery::merge(vec![&a, &echoing(b"c")], v5).expect("echoing bodies merge");
+        // GROVE_V4 (merge v1) keeps its behaviour.
+        PathQuery::merge(vec![&a, &grafted], &GROVE_VERSIONS[3]).expect("merge v1 is unchanged");
+    }
+
+    #[test]
     fn historical_merges_refuse_offsets_and_v4_lifts_limits() {
         use crate::SizedQuery;
 
-        // Historical merge implementations cannot preserve branch-local skips.
-        for version in &GROVE_VERSIONS[..4] {
+        // A global offset skips rows, which no merged branch can preserve,
+        // so it never merges (a branch's own Query::offset carries from V5).
+        for version in GROVE_VERSIONS {
             let plain = directional_query(b"a", true);
 
             let mut query = Query::new();

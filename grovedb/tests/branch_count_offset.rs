@@ -372,6 +372,22 @@ fn assert_reference_target_page_parity(
                         assert_eq!(typed.unwrap().0.to_path_key_elements(), expected_typed);
                     }
                     let proof = db.prove_query(&query, None, v).unwrap().unwrap();
+                    if tree_target.is_some()
+                        && !local_page
+                        && v.grovedb_versions
+                            .operations
+                            .proof
+                            .count_offset_reference_empty_tree_rows
+                            == 0
+                    {
+                        // GROVE_V4 verifies a global page as 6.1.1 did: the
+                        // empty-tree check refuses a resolved reference.
+                        assert!(matches!(
+                            GroveDb::verify_query_raw(&proof, &query, v),
+                            Err(grovedb::Error::InvalidProof(..))
+                        ));
+                        continue;
+                    }
                     let (verified_root, raw) =
                         GroveDb::verify_query_raw(&proof, &query, v).unwrap();
                     assert_eq!(verified_root, root);
@@ -603,16 +619,26 @@ fn exhausted_local_page_charges_global_traversal_budget_but_not_instance_rows() 
 }
 
 #[test]
-fn merge_lifts_only_exclusive_count_offsets_and_old_versions_refuse_them() {
+fn merge_carries_only_exclusive_branch_offsets_and_refuses_global_offsets() {
     let v = GroveVersion::latest();
     let (_dir, db) = fixture(12, Some(Element::empty_provable_count_tree()), [true, true]);
-    let page = PathQuery::new(
-        vec![b"type".to_vec(), vec![2], b"doc".to_vec()],
-        SizedQuery::new(Query::new_range_full(), Some(2), Some(6)),
-    );
     let pointer = PathQuery::new(
         vec![b"type".to_vec(), vec![0]],
         SizedQuery::new(Query::new_single_key(b"doc".to_vec()), None, None),
+    );
+    // A global offset skips rows, while a merged branch can only skip count
+    // units, so merging one is refused; the page names its branch offset.
+    let global = PathQuery::new(
+        vec![b"type".to_vec(), vec![2], b"doc".to_vec()],
+        SizedQuery::new(Query::new_range_full(), Some(2), Some(6)),
+    );
+    assert!(PathQuery::merge(vec![&global, &pointer], v).is_err());
+    let mut local = Query::new_range_full();
+    local.limit = Some(2);
+    local.offset = Some(6);
+    let page = PathQuery::new(
+        vec![b"type".to_vec(), vec![2], b"doc".to_vec()],
+        SizedQuery::new(local, None, None),
     );
     let merged = PathQuery::merge(vec![&page, &pointer], v).unwrap();
     let rows = round_trip(&db, &merged);
@@ -1564,5 +1590,182 @@ fn missing_subquery_path_page_charges_one_shared_slot_before_its_sibling() {
             .map(|(p, k, e)| (p, k, e.serialize(v).unwrap()))
             .collect();
         assert_eq!(relaxed, verified);
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn raw_read(
+    db: &GroveDb,
+    query: &PathQuery,
+    v: &GroveVersion,
+) -> Result<Vec<RawRow>, grovedb::Error> {
+    db.query_raw(
+        query,
+        true,
+        true,
+        true,
+        QueryResultType::QueryPathKeyElementTrioResultType,
+        None,
+        v,
+    )
+    .unwrap()
+    .map(|(rows, _)| {
+        rows.to_path_key_elements()
+            .into_iter()
+            .map(|(p, k, e)| (p, k, e.serialize(v).unwrap()))
+            .collect()
+    })
+}
+
+#[test]
+fn trusted_reads_refuse_non_merk_offset_paths_as_proofs_do() {
+    let v = GroveVersion::latest();
+    // type/[2]/doc is an Item.
+    let (_dir, db) = fixture(0, Some(Element::new_item(vec![9])), [true, true]);
+    let mut page = Query::new_range_full();
+    page.offset = Some(1);
+    let doc_path = vec![b"type".to_vec(), vec![2], b"doc".to_vec()];
+    // The Item is the query's own path, with the page one level below it.
+    let mut above = Query::new_range_full();
+    above.set_subquery(page.clone());
+    let below_item = PathQuery::new_unsized(doc_path.clone(), above);
+    // The Item hosts the page itself.
+    let item_host = PathQuery::new_unsized(doc_path, page.clone());
+    // A subquery_path through the Item leads to a range node above the page.
+    let mut range = Query::new_range_full();
+    range.set_subquery(page);
+    let mut through = Query::new_single_key(vec![2]);
+    through.set_subquery_path(vec![b"doc".to_vec()]);
+    through.set_subquery(range);
+    let through_item = PathQuery::new_unsized(vec![b"type".to_vec()], through);
+    for (name, query) in [
+        ("below an Item path", below_item),
+        ("Item host", item_host),
+        ("through an Item subquery_path", through_item),
+    ] {
+        assert!(
+            matches!(
+                db.prove_query(&query, None, v).unwrap(),
+                Err(grovedb::Error::InvalidQuery(_))
+            ),
+            "{name}: proving"
+        );
+        assert!(
+            matches!(
+                raw_read(&db, &query, v),
+                Err(grovedb::Error::InvalidQuery(_))
+            ),
+            "{name}: trusted read {:?}",
+            raw_read(&db, &query, v)
+        );
+    }
+}
+
+#[test]
+fn local_page_verification_reports_empty_trees_only_when_asked() {
+    let v = GroveVersion::latest();
+    let (_dir, db) = fixture(0, Some(Element::empty_provable_count_tree()), [true, true]);
+    let host: [&[u8]; 3] = [b"type", &[2], b"doc"];
+    for (key, element) in [
+        (b"a", Element::new_item(vec![1])),
+        (b"b", Element::empty_tree()),
+        (b"c", Element::new_item(vec![3])),
+    ] {
+        db.insert(host.as_slice(), key, element, None, None, v)
+            .unwrap()
+            .unwrap();
+    }
+    let mut page = Query::new_range_full();
+    page.offset = Some(0);
+    let query = PathQuery::new_unsized(host.iter().map(|k| k.to_vec()).collect(), page);
+    let proof = db.prove_query(&query, None, v).unwrap().unwrap();
+    let (_, raw) = GroveDb::verify_query_raw(&proof, &query, v).unwrap();
+    assert_eq!(
+        raw.iter().map(|row| row.key.clone()).collect::<Vec<_>>(),
+        vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]
+    );
+    // verify_query leaves out empty trees, as it does on ordinary layers.
+    let (_, typed) = GroveDb::verify_query(&proof, &query, v).unwrap();
+    assert_eq!(
+        typed
+            .iter()
+            .map(|(_, key, _)| key.clone())
+            .collect::<Vec<_>>(),
+        vec![b"a".to_vec(), b"c".to_vec()]
+    );
+}
+
+#[test]
+fn v5_raw_parent_echoes_refuse_a_global_offset() {
+    let (_dir, db) = fixture(2, Some(Element::empty_tree()), [true, true]);
+    let mut query = parent_echo_query(0);
+    query.query.offset = Some(1);
+    assert!(matches!(
+        raw_read(&db, &query, GroveVersion::latest()),
+        Err(grovedb::Error::InvalidQuery(_))
+    ));
+    // GROVE_V4 never echoes, and typed reads drop echoes, so both still page.
+    raw_read(&db, &query, &grovedb_version::version::v4::GROVE_V4).unwrap();
+    db.query(
+        &query,
+        true,
+        true,
+        true,
+        QueryResultType::QueryPathKeyElementTrioResultType,
+        None,
+        GroveVersion::latest(),
+    )
+    .unwrap()
+    .unwrap();
+}
+
+#[test]
+fn refused_local_pages_report_the_same_error_from_prover_and_reader() {
+    let v = GroveVersion::latest();
+    let (_dir, db) = fixture(0, Some(Element::empty_provable_count_tree()), [true, true]);
+    let host: [&[u8]; 3] = [b"type", &[2], b"doc"];
+    for key in [b"a", b"b", b"c", b"d", b"e"] {
+        let element = if key == b"c" {
+            Element::empty_count_tree()
+        } else {
+            Element::new_item(key.to_vec())
+        };
+        db.insert(host.as_slice(), key, element, None, None, v)
+            .unwrap()
+            .unwrap();
+    }
+    // The page [b, c] returns an empty count tree, which is no count unit.
+    let mut page = Query::new_range_full();
+    page.offset = Some(1);
+    page.limit = Some(2);
+    let query = PathQuery::new_unsized(host.iter().map(|k| k.to_vec()).collect(), page);
+    assert!(matches!(
+        db.prove_query(&query, None, v).unwrap(),
+        Err(grovedb::Error::MerkError(_))
+    ));
+    assert!(matches!(
+        raw_read(&db, &query, v),
+        Err(grovedb::Error::MerkError(_))
+    ));
+}
+
+#[test]
+fn verified_parent_echoes_keep_their_v4_path() {
+    let (_dir, db) = fixture(2, Some(Element::empty_tree()), [true, true]);
+    let query = parent_echo_query(0);
+    for (v, expected) in [
+        (
+            &grovedb_version::version::v4::GROVE_V4,
+            vec![b"type".to_vec(), vec![2], b"doc".to_vec()],
+        ),
+        (GroveVersion::latest(), vec![b"type".to_vec(), vec![2]]),
+    ] {
+        let proof = db.prove_query(&query, None, v).unwrap().unwrap();
+        let (_, rows) = GroveDb::verify_query_raw(&proof, &query, v).unwrap();
+        let echo = rows
+            .iter()
+            .find(|row| row.key == b"doc")
+            .expect("the parent echo is verified");
+        assert_eq!(echo.path, expected, "v{}", v.protocol_version);
     }
 }

@@ -3839,10 +3839,9 @@ impl GroveDb {
                     left_to_right,
                     grove_version,
                 )
-                .map_err(|e| Error::CorruptedData(format!(
-                    "prove_count_offset_on_range failed: {}",
-                    e
-                )))
+                // A page the emitter refuses is a query the data cannot
+                // serve, reported as the trusted read reports it.
+                .map_err(Error::MerkError)
         );
         for op in prove_result.ops.iter_mut() {
             let node = match op {

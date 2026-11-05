@@ -197,6 +197,7 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
                 chunk_proof_row_binding: 0,
                 axis_descent_in_v1_envelope: 0,
                 sum_budget_in_v1_envelope: 0,
+                count_offset_reference_empty_tree_rows: 0,
             },
             average_case: GroveDBOperationsAverageCaseVersions {
                 add_average_case_get_merk_at_path: 0,

@@ -2,8 +2,13 @@
 //!
 //! Direction agreement, global limit lifting, canonical branch ordering, and
 //! exclusive grafts follow v1. See [`super::v1`] for the rationale for those
-//! unchanged steps. This version additionally lifts nonzero global offsets into
-//! branch-local count units; a global zero skip remains a no-op.
+//! unchanged steps. This version additionally carries authored branch-local
+//! `Query::offset`s. A nonzero global offset is still refused, as in v1: it
+//! skips rows, while a branch offset skips committed count units, so lifting
+//! one into the other could return a different page than the input alone. A
+//! global zero skip remains a no-op. A root-landing body that echoes its
+//! parent trees cannot share its node with other inputs, whose keys its echo
+//! would cover.
 
 use grovedb_merk::proofs::query::{Query, QueryItem, SubqueryBranch};
 
@@ -31,6 +36,14 @@ pub(super) fn merge_v2(path_queries: Vec<&PathQuery>) -> Result<PathQuery, Error
         path_query
             .to_subquery_branch_with_offset_start_index(next_index)
             .and_then(|mut unsized_path_query| {
+                if path_query.query.offset.is_some_and(|offset| offset != 0) {
+                    return Err(Error::NotSupported(
+                        "can not merge a path query with a global offset: it skips rows, while \
+                         a merged branch can only skip count units; set Query::offset on the \
+                         query instead"
+                            .to_string(),
+                    ));
+                }
                 if unsized_path_query.subquery_path.is_none() {
                     let root_body =
                         *unsized_path_query
@@ -40,7 +53,6 @@ pub(super) fn merge_v2(path_queries: Vec<&PathQuery>) -> Result<PathQuery, Error
                             ))?;
                     if path_query.query.limit.is_some()
                         || root_body.limit.is_some()
-                        || path_query.query.offset.is_some_and(|offset| offset != 0)
                         || root_body.offset.is_some()
                     {
                         return Err(Error::NotSupported(
@@ -64,23 +76,29 @@ pub(super) fn merge_v2(path_queries: Vec<&PathQuery>) -> Result<PathQuery, Error
                             None => global,
                         });
                     }
-                    if let Some(offset) = path_query.query.offset.filter(|offset| *offset != 0) {
-                        let body = unsized_path_query.subquery.as_deref_mut().ok_or(
-                            Error::CorruptedCodeExecution("a merged branch must have a query"),
-                        )?;
-                        if body.offset.is_some() {
-                            return Err(Error::InvalidQuery(
-                                "cannot combine a global and local offset",
-                            ));
-                        }
-                        body.offset = Some(offset);
-                        super::super::local_offset::validate_nodes(body)?;
-                    }
                     queries_for_common_path_sub_level.push(unsized_path_query);
                 }
                 Ok(())
             })
     })?;
+
+    // A node's parent echo covers every key it selects with a subquery, so an
+    // echoing root body would echo the keys other inputs graft into its node.
+    if queries_for_common_path_this_level
+        .iter()
+        .any(|query| query.add_parent_tree_on_subquery)
+        && (!queries_for_common_path_sub_level.is_empty()
+            || queries_for_common_path_this_level
+                .iter()
+                .any(|query| !query.add_parent_tree_on_subquery))
+    {
+        return Err(Error::NotSupported(
+            "can not merge a path query that echoes its parent trees with other queries \
+             meeting at the same node: the echo would cover their keys too; merge it \
+             separately"
+                .to_string(),
+        ));
+    }
 
     if queries_for_common_path_this_level.len() > 1
         && queries_for_common_path_this_level.iter().any(|query| {

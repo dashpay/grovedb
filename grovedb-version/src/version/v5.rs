@@ -27,6 +27,13 @@
 //!   6.1.1 estimates, which price a store's creation below its apply. Gated
 //!   because the estimate is the admission bound.
 //!
+//! - `operations.proof.count_offset_reference_empty_tree_rows: 1`: the
+//!   global count-offset verifier exempts rows resolved through a reference
+//!   from its empty-tree value-hash check, which a legacy reference to an
+//!   empty tree can never pass; Merk already binds the target bytes. V1..V4
+//!   refuse such a page, as 6.1.1 did. Gated because it turns a rejected
+//!   proof into an accepted one.
+//!
 //! It exists so that changes made after GroveDB 6.1.1 have somewhere to
 //! land. GROVE_V4 as 6.1.1 shipped it is what Dash Platform 5.0 (protocol
 //! version 14) runs, so a change that alters an accepted/rejected outcome, a
@@ -44,8 +51,9 @@
 use super::{
     grovedb_versions::{
         GroveDBElementMethodVersions, GroveDBOperationsAverageCaseVersions,
-        GroveDBOperationsPrivateDocumentStoreVersions, GroveDBOperationsVersions,
-        GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBVersions,
+        GroveDBOperationsPrivateDocumentStoreVersions, GroveDBOperationsProofVersions,
+        GroveDBOperationsVersions, GroveDBOperationsWorstCaseVersions,
+        GroveDBPathQueryMethodVersions, GroveDBVersions,
     },
     v4::GROVE_V4,
     GroveVersion,
@@ -73,6 +81,10 @@ pub const GROVE_V5: GroveVersion = GroveVersion {
                 get_range: 1,   // changed: a store's position-range read
                 range_proof: 1, // changed: proving a store's entries
                 ..GROVE_V4.grovedb_versions.operations.private_document_store
+            },
+            proof: GroveDBOperationsProofVersions {
+                count_offset_reference_empty_tree_rows: 1, // changed: exempt resolved references
+                ..GROVE_V4.grovedb_versions.operations.proof
             },
             ..GROVE_V4.grovedb_versions.operations
         },

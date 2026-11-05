@@ -6,8 +6,9 @@ pub struct QueryOptions {
     /// If true, allows fetching raw (unprocessed) elements.
     pub allow_get_raw: bool,
     /// Include parent trees requested by `Query::add_parent_tree_on_subquery`
-    /// in V5 raw results. Typed item projections disable these metadata rows.
-    /// Earlier query engines ignore this option.
+    /// in V5 raw results (`allow_get_raw`); non-raw reads never echo them.
+    /// Typed item projections disable these metadata rows. Earlier query
+    /// engines ignore this option.
     pub include_parent_tree_on_subquery: bool,
     /// If true, allows reading from cache instead of forcing fresh disk reads.
     pub allow_cache: bool,
