@@ -231,21 +231,6 @@
 //!   so the "worst case" was not an upper bound; preserved for replay.
 //!   Gated because the estimate is the admission bound.
 //!
-//! - `operations.private_document_store.get_range: 1` and
-//!   `operations.private_document_store.range_proof: 1` — a store's
-//!   entries can be read by position range, and proved: a V1 proof descends
-//!   into a store as into its bulk append tree, and the verifier binds the
-//!   bulk root through the store's committed config. 0 in V1..V3, which
-//!   have no store; added in place after 6.1.1, when no store could be read
-//!   by range or proved below its element.
-//!
-//! - The v1 insert estimators those two slots select also price creating a
-//!   `PrivateDocumentStore` as the apply does: the existence check a
-//!   write-once store makes, the two hashes deriving its empty root, and in
-//!   the worst case the store as the layered tree the apply writes, not an
-//!   item. Stores exist from `GROVE_V4` only, so no earlier version estimates
-//!   one; changed in place after 6.1.1, an estimate going up, for stores only.
-//!
 //! - `bulk_append_tree_versions.cost.append_storage_accounting: 1` and
 //!   `commitment_tree_versions.cost.frontier_save_storage_accounting: 1` —
 //!   the append-only family (`BulkAppendTree`, `CommitmentTree`,
@@ -691,8 +676,10 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 insert: 1,
                 get_value: 1,
                 count: 1,
-                get_range: 1,
-                range_proof: 1,
+                // A store's range read and range proofs arrive in GROVE_V5:
+                // 6.1.1 shipped V4 without them.
+                get_range: 0,
+                range_proof: 0,
             },
             // Flat-subtree drop (issue #848) activates in GROVE_V4.
             flat_drop: GroveDBOperationsFlatDropVersions {

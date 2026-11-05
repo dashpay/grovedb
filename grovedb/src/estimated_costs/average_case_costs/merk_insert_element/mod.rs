@@ -4,7 +4,9 @@
 //! level only: the batch estimator propagates the levels above.
 //!
 //! How a sum-bearing item (`SumItem` or `ItemWithSumItem`, wrapped or not) is
-//! sized is gated on `average_case.average_case_sum_item_cost_size`:
+//! sized is gated on `average_case.average_case_sum_item_cost_size`, and how
+//! creating a `PrivateDocumentStore` is priced on
+//! `average_case.average_case_merk_insert_element`:
 //!
 //! * **[v0]** — released behaviour, `GROVE_V1`..`GROVE_V3`. Every element that
 //!   is not a tree is sized by its serialized size. The apply writes a
@@ -12,28 +14,28 @@
 //!   sum value at its fixed 9-byte width (`SUM_ITEM_COST_SIZE`), so the
 //!   estimate's `added_bytes` come in below the applied ones by up to 8 per
 //!   item (8 for any sum value that encodes in one byte).
-//! * **[v1]** — `GROVE_V4`+. A sum-bearing item is sized by the specialized
-//!   cost the apply writes it with, and creating a
-//!   `PrivateDocumentStore` (an element only `GROVE_V4` has) is priced as the
-//!   apply prices it: its existence check and the two hashes of its empty
-//!   root.
+//! * **[v1]** — `GROVE_V4`. A sum-bearing item is sized by the specialized
+//!   cost the apply writes it with.
+//! * **[v2]** — `GROVE_V5`+ (`average_case_merk_insert_element: 1`). v1, and
+//!   creating a `PrivateDocumentStore` is priced as the apply prices it: its
+//!   existence check and the two hashes of its empty root.
 //!
 //! The estimate is the admission bound historical blocks are replayed
-//! against, so the released versions keep the v0 sizing.
+//! against, so the released versions keep their sizing.
 //!
 //! [v0]: self::v0
 //! [v1]: self::v1
+//! [v2]: self::v2
 
 mod v0;
 mod v1;
+mod v2;
 
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_merk::{
     estimated_costs::average_case_costs::EstimatedLayerInformation, tree_type::TreeType,
 };
-use grovedb_version::{
-    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
-};
+use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
 use crate::{batch::key_info::KeyInfo, Element, Error, GroveDb};
 
@@ -48,14 +50,33 @@ impl GroveDb {
         propagate_for_level: Option<&EstimatedLayerInformation>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_grovedb_v0_with_cost!(
-            "average_case_merk_insert_element",
-            grove_version
-                .grovedb_versions
-                .operations
-                .average_case
-                .average_case_merk_insert_element
-        );
+        match grove_version
+            .grovedb_versions
+            .operations
+            .average_case
+            .average_case_merk_insert_element
+        {
+            0 => {}
+            1 => {
+                return Self::average_case_merk_insert_element_v2(
+                    key,
+                    value,
+                    in_tree_type,
+                    propagate_for_level,
+                    grove_version,
+                )
+            }
+            version => {
+                return Err(Error::VersionError(
+                    GroveVersionError::UnknownVersionMismatch {
+                        method: "average_case_merk_insert_element".to_string(),
+                        known_versions: vec![0, 1],
+                        received: version,
+                    },
+                ))
+                .wrap_with_cost(OperationCost::default())
+            }
+        }
 
         match grove_version
             .grovedb_versions
