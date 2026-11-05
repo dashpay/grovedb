@@ -1769,3 +1769,25 @@ fn verified_parent_echoes_keep_their_v4_path() {
         assert_eq!(echo.path, expected, "v{}", v.protocol_version);
     }
 }
+
+#[test]
+fn global_page_verification_refuses_an_unknown_reference_slot_version() {
+    let v = GroveVersion::latest();
+    let (_dir, db) = fixture(4, Some(Element::empty_provable_count_tree()), [true, true]);
+    let query = PathQuery::new(
+        vec![b"type".to_vec(), vec![2], b"doc".to_vec()],
+        SizedQuery::new(Query::new_range_full(), Some(2), Some(1)),
+    );
+    let proof = db.prove_query(&query, None, v).unwrap().unwrap();
+    GroveDb::verify_query_raw(&proof, &query, v).unwrap();
+    let mut future = v.clone();
+    future
+        .grovedb_versions
+        .operations
+        .proof
+        .count_offset_reference_empty_tree_rows = 2;
+    assert!(matches!(
+        GroveDb::verify_query_raw(&proof, &query, &future),
+        Err(grovedb::Error::VersionError(_))
+    ));
+}

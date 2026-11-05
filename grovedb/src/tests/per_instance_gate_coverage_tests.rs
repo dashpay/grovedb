@@ -573,6 +573,63 @@ fn subordinate_method_version_slots_still_gate_the_internal_walk() {
 }
 
 #[test]
+fn query_item_refuses_raw_parent_echoes_with_its_global_offset() {
+    use crate::{
+        element::{query::ElementQueryExtensions, query_options::QueryOptions},
+        query_result_type::QueryResultElement,
+        QueryItem,
+    };
+
+    let v = GroveVersion::latest();
+    let db = make_test_grovedb(v);
+    populate(&db, v);
+    let mut query = Query::new_range_full();
+    query.add_parent_tree_on_subquery = true;
+    query.set_subquery(Query::new_range_full());
+    let sized = SizedQuery::new(query, None, None);
+    let raw = QueryOptions {
+        allow_get_raw: true,
+        ..QueryOptions::default()
+    };
+    for (options, refused) in [(raw, true), (QueryOptions::default(), false)] {
+        let mut rows: Vec<QueryResultElement> = Vec::new();
+        let mut limit = Some(1);
+        let mut offset = Some(1);
+        let result = Element::query_item(
+            &db.db,
+            &QueryItem::RangeFull(..),
+            &mut rows,
+            &[DOCS],
+            &sized,
+            None,
+            &mut limit,
+            &mut offset,
+            options,
+            QueryResultType::QueryElementResultType,
+            Element::path_query_push,
+            v,
+        );
+        if refused {
+            // An echo is no row the offset can skip, so p1's echo would be
+            // returned although its rows were skipped.
+            assert!(
+                matches!(
+                    result.value(),
+                    Err(Error::InvalidQuery(
+                        "parent tree echoes cannot be combined with a global offset"
+                    ))
+                ),
+                "{result:?}"
+            );
+            assert!(rows.is_empty(), "nothing is read before the refusal");
+        } else {
+            // Non-raw reads never echo, so they page as before.
+            result.unwrap().unwrap();
+        }
+    }
+}
+
+#[test]
 fn query_item_rejects_global_offset_with_local_descendants_before_reading() {
     use crate::{
         element::query::ElementQueryExtensions, query_result_type::QueryResultElement, QueryItem,

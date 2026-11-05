@@ -224,6 +224,7 @@ impl ElementQueryExtensions for Element {
                 storage,
                 path,
                 sized_query,
+                sized_query.offset,
                 query_options,
                 transaction,
                 grove_version
@@ -275,6 +276,7 @@ impl ElementQueryExtensions for Element {
                 storage,
                 &path,
                 &path_query.query,
+                path_query.query.offset,
                 query_options,
                 transaction,
                 grove_version
@@ -450,6 +452,20 @@ impl ElementQueryExtensions for Element {
             ))
             .wrap_with_cost(OperationCost::default());
         }
+        // The other public entries' preflight, with this entry's own offset.
+        let mut cost = OperationCost::default();
+        cost_return_on_error!(
+            &mut cost,
+            preflight_v5_trusted_read(
+                storage,
+                path,
+                sized_query,
+                *offset,
+                query_options,
+                transaction,
+                grove_version
+            )
+        );
 
         let mut budget = QueryBudget::new(*limit, None, *offset);
         let result = query_item_internal(
@@ -464,7 +480,8 @@ impl ElementQueryExtensions for Element {
             result_type,
             add_element_function,
             grove_version,
-        );
+        )
+        .add_cost(cost);
         *limit = budget.global;
         *offset = budget.offset;
         result
@@ -929,6 +946,7 @@ fn preflight_v5_trusted_read(
     storage: &RocksDbStorage,
     path: &[&[u8]],
     sized_query: &SizedQuery,
+    global_offset: Option<u16>,
     query_options: QueryOptions,
     transaction: TransactionArg,
     grove_version: &GroveVersion,
@@ -936,7 +954,7 @@ fn preflight_v5_trusted_read(
     use crate::util::TxRef;
 
     let mut cost = OperationCost::default();
-    if sized_query.offset.is_some_and(|offset| offset > 0)
+    if global_offset.is_some_and(|offset| offset > 0)
         && query_options.allow_get_raw
         && query_options.include_parent_tree_on_subquery
         && grove_version.grovedb_versions.element.path_query_push >= 2

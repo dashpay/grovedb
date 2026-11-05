@@ -12,7 +12,8 @@ use grovedb_merk::{
     CryptoHash, TreeFeatureType,
 };
 use grovedb_version::{
-    check_grovedb_v0, version::GroveVersion, TryFromVersioned, TryIntoVersioned,
+    check_grovedb_v0, error::GroveVersionError, version::GroveVersion, TryFromVersioned,
+    TryIntoVersioned,
 };
 
 use super::position_intervals::PositionIntervals;
@@ -670,6 +671,26 @@ impl GroveDb {
         let inner_range = query.validate_count_offset_paginated()?.clone();
         let offset = query.query.offset.map(|o| o as u64).unwrap_or(0);
         let limit_u64 = query.query.limit.map(|l| l as u64);
+        // Whether rows resolved through a reference skip the empty-tree check
+        // below: not in V1..V4, as 6.1.1 shipped; from V5 they do.
+        let exempt_resolved_references = match grove_version
+            .grovedb_versions
+            .operations
+            .proof
+            .count_offset_reference_empty_tree_rows
+        {
+            0 => false,
+            1 => true,
+            received => {
+                return Err(Error::VersionError(
+                    GroveVersionError::UnknownVersionMismatch {
+                        method: "count_offset_reference_empty_tree_rows".to_string(),
+                        known_versions: vec![0, 1],
+                        received,
+                    },
+                ))
+            }
+        };
         let internal_query_for_dir = query
             .query_items_at_path(current_path, grove_version)?
             .ok_or(Error::CorruptedPath(format!(
@@ -866,13 +887,7 @@ impl GroveDb {
             // the direct tree's child-root commitment. V1..V4 still apply the
             // check to them, refusing the page as 6.1.1 did
             // (`proof.count_offset_reference_empty_tree_rows`).
-            let reference_exempt = item.resolved_from_reference
-                && grove_version
-                    .grovedb_versions
-                    .operations
-                    .proof
-                    .count_offset_reference_empty_tree_rows
-                    >= 1;
+            let reference_exempt = exempt_resolved_references && item.resolved_from_reference;
             if !reference_exempt && inner.is_any_tree() && !inner.is_non_empty_tree() {
                 use grovedb_merk::tree::{
                     axes_digest, combine_hash, combine_hash_three, value_hash, NULL_HASH,
