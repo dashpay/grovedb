@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `GROVE_V5` (`protocol_version` 5). `GROVE_V4` as 6.1.1 shipped it is what
+  Dash Platform 5.0 (protocol version 14) runs, so behaviour changes from
+  here on are gated in `GROVE_V5` and leave V1..V4 as they are.
+- A `PrivateDocumentStore`'s entries can be read and proved by position
+  range from `GROVE_V4`. `GroveDb::private_document_store_get_range` reads
+  `[start, start + limit)` in append order, clamped to the store's count
+  (`PrivateDocumentStore::get_range` in the store crate).
+  `prove_bulk_position_range` / `verify_bulk_position_range_proof` accept a
+  store, and a V1 proof's subquery into a store carries its bulk append
+  tree's proof, which the verifier binds through the store's committed
+  config (`blake3("pds_state" || config_hash || bulk_state_root)`, from the
+  authenticated element). Before, V1 proofs refused subqueries into a store.
+  Gated by the new `private_document_store.get_range` and
+  `private_document_store.range_proof` slots (0 in V1..V3, 1 in V4;
+  **BREAKING** for code building `GroveDBOperationsPrivateDocumentStoreVersions`
+  by hand). The proof envelope gains no variant; the `verify` feature now
+  builds `grovedb-private-document-store` (without storage) for the store's
+  root.
+
 ### Changed
 - **BREAKING**: `Query` adds the public `offset: Option<u16>` field for
   branch-local committed-count-unit pagination. Exhaustive struct literals
@@ -23,6 +43,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   echoes. Earlier Grove versions continue to reject local offsets.
 
 ### Fixed
+- `GROVE_V4` insert estimates price creating a `PrivateDocumentStore` as the
+  apply does. The average- and worst-case `merk_insert_element` estimators
+  (v1) now charge the existence check a write-once store makes before it is
+  created (priced as `InsertIfNotExists` prices its check) and the two blake3
+  calls deriving its empty root (the new
+  `EMPTY_PRIVATE_DOCUMENT_STORE_STATE_ROOT_HASH_CALLS`), and the worst case
+  prices the store as the layered tree the apply writes instead of an item at
+  its serialized size. Before, a store's creation was estimated one seek and
+  two hashes (three in the worst case) below its apply, which the batch
+  estimate's propagation headroom happened to cover. Estimates of every other
+  element, applied costs, stored data and proofs do not change.
 - Count-offset proof verification accepts pages whose rows resolve through a
   reference to an empty tree, which earlier versions could persist. The
   empty-tree hash check now applies only to direct tree rows, on both the

@@ -14,7 +14,10 @@
 //!   the applied ones by up to 8 per item (8 for any sum value that encodes
 //!   in one byte), and the worst case is not an upper bound.
 //! * **[v1]** — `GROVE_V4`+. A sum-bearing item is sized by the specialized
-//!   cost the apply writes it with.
+//!   cost the apply writes it with, and creating a
+//!   `PrivateDocumentStore` (an element only `GROVE_V4` has) is priced as the
+//!   apply prices it: its existence check and the two hashes of its empty
+//!   root.
 //!
 //! The estimate is the admission bound historical blocks are replayed
 //! against, so the released versions keep the v0 sizing.

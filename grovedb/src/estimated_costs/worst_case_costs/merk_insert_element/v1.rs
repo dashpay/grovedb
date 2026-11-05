@@ -6,13 +6,22 @@
 //! a wrapper. Differs from [`super::v0`] only there: v0 sizes it by its
 //! serialized size, which encodes the sum value as a varint and so comes in
 //! up to 8 bytes below the applied `added_bytes`.
+//!
+//! It also prices creating a `PrivateDocumentStore` as the apply does: as the
+//! layered tree the apply writes (not an item at its serialized size), plus
+//! the existence check every store creation makes (a store is write-once) and
+//! the two hashes deriving its empty root. Stores exist from `GROVE_V4` only,
+//! so no earlier version estimates one.
 
 use grovedb_costs::{cost_return_on_error_into_no_add, CostResult, CostsExt, OperationCost};
 use grovedb_merk::{
     element::{costs::ElementCostExtensions, tree_type::ElementTreeTypeExtensions},
     estimated_costs::{
         add_cost_case_merk_insert, add_cost_case_merk_insert_layered,
-        worst_case_costs::{add_worst_case_merk_propagate, WorstCaseLayerInformation},
+        worst_case_costs::{
+            add_worst_case_merk_has_value, add_worst_case_merk_propagate,
+            WorstCaseLayerInformation, MERK_BIGGEST_VALUE_SIZE,
+        },
     },
     tree_type::{CostSize, TreeType},
 };
@@ -39,7 +48,8 @@ impl GroveDb {
             Element::Tree(_, flags)
             | Element::SumTree(_, _, flags)
             | Element::BigSumTree(_, _, flags)
-            | Element::CountTree(_, _, flags) => {
+            | Element::CountTree(_, _, flags)
+            | Element::PrivateDocumentStore(_, _, _, flags) => {
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
@@ -67,6 +77,14 @@ impl GroveDb {
                 add_cost_case_merk_insert(&mut cost, key_len, value_len, in_parent_tree_type)
             }
         };
+        if matches!(value.underlying(), Element::PrivateDocumentStore(..)) {
+            // The existence check, priced as `InsertIfNotExists` prices one,
+            // and the empty root's derivation.
+            add_worst_case_merk_has_value(&mut cost, key_len, MERK_BIGGEST_VALUE_SIZE);
+            cost.hash_node_calls = cost.hash_node_calls.saturating_add(
+                grovedb_private_document_store::EMPTY_PRIVATE_DOCUMENT_STORE_STATE_ROOT_HASH_CALLS,
+            );
+        }
         if let Some(level) = propagate_for_level {
             add_worst_case_merk_propagate(&mut cost, level).map_err(Error::MerkError)
         } else {

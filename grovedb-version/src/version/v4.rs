@@ -1,7 +1,9 @@
 //! Grove protocol version 4.
 //!
 //! Introduced behaviourally identical to [`GROVE_V3`](super::v3::GROVE_V3),
-//! and no longer is — gates land here as they are written. Currently flipped:
+//! and no longer is. GroveDB 6.1.1 shipped it and Dash Platform 5.0
+//! (protocol version 14) runs it, so new gates land in
+//! [`GROVE_V5`](super::v5::GROVE_V5). Flipped from V3:
 //!
 //! - `apply_batch.delete_tree_cleanup_type_source: 1` — a batch `DeleteTree`
 //!   uses the stored element's ACTUAL type to select cleanup namespaces,
@@ -229,6 +231,21 @@
 //!   so the "worst case" was not an upper bound; preserved for replay.
 //!   Gated because the estimate is the admission bound.
 //!
+//! - `operations.private_document_store.get_range: 1` and
+//!   `operations.private_document_store.range_proof: 1` — a store's
+//!   entries can be read by position range, and proved: a V1 proof descends
+//!   into a store as into its bulk append tree, and the verifier binds the
+//!   bulk root through the store's committed config. 0 in V1..V3, which
+//!   have no store; added in place after 6.1.1, when no store could be read
+//!   by range or proved below its element.
+//!
+//! - The v1 insert estimators those two slots select also price creating a
+//!   `PrivateDocumentStore` as the apply does: the existence check a
+//!   write-once store makes, the two hashes deriving its empty root, and in
+//!   the worst case the store as the layered tree the apply writes, not an
+//!   item. Stores exist from `GROVE_V4` only, so no earlier version estimates
+//!   one; changed in place after 6.1.1, an estimate going up, for stores only.
+//!
 //! - `bulk_append_tree_versions.cost.append_storage_accounting: 1` and
 //!   `commitment_tree_versions.cost.frontier_save_storage_accounting: 1` —
 //!   the append-only family (`BulkAppendTree`, `CommitmentTree`,
@@ -369,21 +386,15 @@
 //!   of the bytes it holds. Gated because it changes tracked costs and
 //!   flips a failed commit into a successful one.
 //!
-//! Note that `GroveVersion::latest()` resolves to this version, so anything
-//! defaulting to "latest" — tests, benchmarks, tools — exercises every gate
-//! listed above rather than V3 behaviour.
-//!
 //! It exists so that fixes which change released behaviour have somewhere to
 //! land. GROVE_V3 is live, so a fix that alters an accepted/rejected outcome,
 //! a committed root hash, or a tracked cost cannot be applied unconditionally
 //! — nodes carrying it would diverge from nodes that do not. Such a fix bumps
 //! the relevant slot here and branches on it, leaving V1..V3 untouched.
 //!
-//! When adding a gate, say what changes in the slot comment, the way
-//! `add_element_on_transaction: 1` documents the layered-subtree switch in
-//! v3.rs. `GroveVersion::latest()` returns the last entry of
-//! `GROVE_VERSIONS`, so anything defaulting to "latest" starts exercising this
-//! version as soon as it is registered.
+//! This version is now live too: a fix of that kind bumps a slot in
+//! [`GROVE_V5`](super::v5::GROVE_V5), which `GroveVersion::latest()`
+//! resolves to, and leaves V1..V4 untouched.
 
 use crate::version::grovedb_versions::GroveDBAggregateSumPathQueryMethodVersions;
 use crate::version::{
@@ -680,6 +691,8 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 insert: 1,
                 get_value: 1,
                 count: 1,
+                get_range: 1,
+                range_proof: 1,
             },
             // Flat-subtree drop (issue #848) activates in GROVE_V4.
             flat_drop: GroveDBOperationsFlatDropVersions {

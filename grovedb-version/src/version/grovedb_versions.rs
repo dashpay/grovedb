@@ -392,6 +392,15 @@ pub struct GroveDBOperationsPrivateDocumentStoreVersions {
     pub get_value: FeatureVersion,
     /// Reading the entry count (`private_document_store_count`).
     pub count: FeatureVersion,
+    /// Reading the entries of a position range
+    /// (`private_document_store_get_range`).
+    pub get_range: FeatureVersion,
+    /// Proving and verifying the entries of a store: a V1 proof's lower
+    /// layer for a subquery into a store (the store's bulk append tree,
+    /// bound through its committed config), and
+    /// `prove_bulk_position_range` / `verify_bulk_position_range_proof` on
+    /// a store.
+    pub range_proof: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

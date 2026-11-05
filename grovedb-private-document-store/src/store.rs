@@ -8,7 +8,7 @@
 //! tree; the wrapper adds entry-size validation and the config-binding
 //! state root.
 
-use grovedb_bulk_append_tree::BulkAppendTree;
+use grovedb_bulk_append_tree::{BulkAppendTree, RangePage};
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
@@ -285,6 +285,50 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
         }
 
         Ok(value).wrap_with_cost(cost)
+    }
+
+    /// The entries of the position range `[start, start + limit)`, in append
+    /// order with their positions, clamped to the store's count.
+    ///
+    /// Reads each completed chunk the range overlaps once (charging the hash
+    /// validating it) and each buffered entry in it once; the returned
+    /// [`RangePage`] carries the store's `total_count`, so a page shorter
+    /// than `limit` means the range reached the end of the store.
+    pub fn get_range(
+        &self,
+        start: u64,
+        limit: u16,
+    ) -> CostResult<RangePage, PrivateDocumentStoreError> {
+        let mut cost = OperationCost::default();
+        let page = match self
+            .bulk_tree
+            .get_range_charging_chunk_validation(start, limit)
+            .unwrap_add_cost(&mut cost)
+        {
+            Ok(page) => page,
+            Err(e) => {
+                return Err(PrivateDocumentStoreError::InvalidData(format!("{}", e)))
+                    .wrap_with_cost(cost);
+            }
+        };
+
+        // Defensive, as `get_value`: a stored entry that breaks the committed
+        // entry size is corruption (the append path rejects such entries).
+        if let Some((position, entry)) = page
+            .entries
+            .iter()
+            .find(|(_, entry)| entry.len() != self.entry_size as usize)
+        {
+            return Err(PrivateDocumentStoreError::CorruptedData(format!(
+                "entry at position {} has size {}, committed entry size is {}",
+                position,
+                entry.len(),
+                self.entry_size
+            )))
+            .wrap_with_cost(cost);
+        }
+
+        Ok(page).wrap_with_cost(cost)
     }
 
     /// Append many entries in one pass, computing roots once at the end.
@@ -1111,6 +1155,87 @@ mod error_path_tests {
             wrong_size.get_value(0).unwrap(),
             Err(PrivateDocumentStoreError::CorruptedData(_))
         ));
+    }
+
+    /// The range read refuses what `get_value` refuses: a completed chunk it
+    /// can no longer read, and entries whose width is not the committed
+    /// entry size, in a chunk or in the buffer.
+    #[test]
+    fn test_range_reads_refuse_missing_chunks_and_wrong_widths() {
+        let mut store = PrivateDocumentStore::new(8, 2, MemStorageContext::new())
+            .unwrap()
+            .expect("new");
+        for i in 0..6u8 {
+            store
+                .append(&[i; 8], GroveVersion::latest())
+                .unwrap()
+                .expect("append");
+        }
+        store
+            .commit_mmr(GroveVersion::latest())
+            .expect("commit mmr");
+        let storage = PrivateDocumentStore::into_storage_for_test(store);
+        storage.data.borrow_mut().clear();
+        let wiped = PrivateDocumentStore::from_state(6, 8, 2, storage)
+            .unwrap()
+            .expect("reopen");
+        let page = wiped.get_range(0, 6).unwrap();
+        assert!(
+            matches!(page, Err(PrivateDocumentStoreError::InvalidData(_))),
+            "{page:?}"
+        );
+
+        // 10 entries of 8 bytes at chunk_power 3: one completed chunk, two
+        // buffered entries; reopened as 16-byte entries.
+        let mut store = PrivateDocumentStore::new(8, 3, MemStorageContext::new())
+            .unwrap()
+            .expect("new");
+        for i in 0..10u8 {
+            store
+                .append(&[i; 8], GroveVersion::latest())
+                .unwrap()
+                .expect("append");
+        }
+        store
+            .commit_mmr(GroveVersion::latest())
+            .expect("commit mmr");
+        let storage = PrivateDocumentStore::into_storage_for_test(store);
+        let wrong_size = PrivateDocumentStore::from_state(10, 16, 3, storage)
+            .unwrap()
+            .expect("reopen");
+        for (start, limit) in [(0, 10), (8, 2)] {
+            let page = wrong_size.get_range(start, limit).unwrap();
+            let refused = matches!(
+                &page,
+                Err(PrivateDocumentStoreError::CorruptedData(m)) if m.contains("committed entry size is 16")
+            );
+            assert!(refused, "[{start}, +{limit}): {page:?}");
+        }
+    }
+
+    /// The range read charges the hash validating each completed chunk it
+    /// reads from storage: one chunk, committed and reopened, is one hash.
+    #[test]
+    fn test_range_reads_charge_validating_a_stored_chunk() {
+        let mut store = PrivateDocumentStore::new(8, 2, MemStorageContext::new())
+            .unwrap()
+            .expect("new");
+        for i in 0..4u8 {
+            store
+                .append(&[i; 8], GroveVersion::latest())
+                .unwrap()
+                .expect("append");
+        }
+        store
+            .commit_mmr(GroveVersion::latest())
+            .expect("commit mmr");
+        let storage = PrivateDocumentStore::into_storage_for_test(store);
+        let reopened = PrivateDocumentStore::from_state(4, 8, 2, storage)
+            .unwrap()
+            .expect("reopen");
+        let page = reopened.get_range(0, 4);
+        assert_eq!(page.value.expect("read the chunk").entries.len(), 4);
+        assert_eq!(page.cost.hash_node_calls, 1, "{:?}", page.cost);
     }
 
     /// A store that claims more entries than its storage holds must report

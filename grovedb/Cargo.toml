@@ -128,6 +128,7 @@ verify = [
     "grovedb-merkle-mountain-range",
     "grovedb-bulk-append-tree",
     "grovedb-dense-fixed-sized-merkle-tree",
+    "grovedb-private-document-store",
 ]
 estimated_costs = ["full"]
 zk_client = ["grovedb-commitment-tree", "grovedb-commitment-tree/client"]

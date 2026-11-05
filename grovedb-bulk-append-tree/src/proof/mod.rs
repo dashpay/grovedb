@@ -14,10 +14,17 @@ use bincode::{Decode, DecodeUntrusted, Encode};
 use grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof;
 use grovedb_merkle_mountain_range::MmrTreeProof;
 #[cfg(feature = "storage")]
+use std::cell::RefCell;
+
+#[cfg(feature = "storage")]
+use grovedb_costs::{CostContext, CostResult, CostsExt, OperationCost};
+#[cfg(feature = "storage")]
 use grovedb_merkle_mountain_range::{MmrKeySize, MmrNode, MmrStore, MMR};
 use grovedb_query::{Query, QueryItem};
 #[cfg(feature = "storage")]
 use grovedb_storage::StorageContext;
+#[cfg(feature = "storage")]
+use grovedb_version::version::GroveVersion;
 
 #[cfg(feature = "storage")]
 use crate::BulkAppendTree;
@@ -220,6 +227,8 @@ impl BulkAppendTreeProof {
     /// Generate a BulkAppendTree proof for a [`Query`].
     ///
     /// Query items encode global u64 positions as big-endian bytes (1–8 bytes).
+    /// The cost of the reads and hashing it does is dropped; use
+    /// [`generate_with_cost`](Self::generate_with_cost) to have it.
     ///
     /// # Arguments
     /// * `query` - Query describing the positions to prove
@@ -229,6 +238,20 @@ impl BulkAppendTreeProof {
         query: &Query,
         tree: &BulkAppendTree<S>,
     ) -> Result<Self, BulkAppendError> {
+        Self::generate_with_cost(query, tree, GroveVersion::latest()).value
+    }
+
+    /// [`generate`](Self::generate), with the cost of the work it does at `grove_version`:
+    /// reading the MMR nodes of the chunk proof (the proved chunk blobs among them, with the
+    /// hash validating each chunk leaf read from storage), bagging the MMR peaks right of the
+    /// proved chunks, and generating the buffer's dense tree proof.
+    #[cfg(feature = "storage")]
+    pub fn generate_with_cost<'db, S: StorageContext<'db>>(
+        query: &Query,
+        tree: &BulkAppendTree<S>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Self, BulkAppendError> {
+        let mut cost = OperationCost::default();
         let total_count = tree.total_count;
         let height = tree.height();
         let chunk_item_count = ((1u32 << height) - 1) as u64 + 1; // capacity + 1 = 2^height
@@ -236,7 +259,10 @@ impl BulkAppendTreeProof {
         let dense_count = (total_count % chunk_item_count) as u16;
         let mmr_size = leaf_count_to_mmr_size(completed_chunks);
 
-        let ranges = query_to_ranges(query, total_count)?;
+        let ranges = match query_to_ranges(query, total_count) {
+            Ok(ranges) => ranges,
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        };
 
         // ── Chunk sub-proof (MMR) ────────────────────────────────────
 
@@ -266,15 +292,35 @@ impl BulkAppendTreeProof {
 
             let chunk_indices: Vec<u64> = chunk_indices_set.into_iter().collect();
 
-            let mmr_store = MmrStore::with_key_size(&tree.dense_tree.storage, MmrKeySize::U32);
+            // Each node read is charged, the proved chunk blobs among them, with the hash
+            // validating each chunk leaf read from storage
+            let mmr_store = MmrStore::with_key_size(&tree.dense_tree.storage, MmrKeySize::U32)
+                .charging_leaf_validation();
             let mmr = MMR::new_with_overlay(mmr_size, &mmr_store, tree.mmr_overlay.clone());
+            let read_cost = RefCell::new(OperationCost::default());
             let get_node = |pos: u64| -> grovedb_merkle_mountain_range::Result<Option<MmrNode>> {
-                mmr.batch.element_at_position(pos).unwrap() // unwrap CostResult
+                let CostContext {
+                    value,
+                    cost: node_cost,
+                } = mmr.batch.element_at_position(pos);
+                *read_cost.borrow_mut() += node_cost;
+                value
             };
 
-            MmrTreeProof::generate(mmr_size, &chunk_indices, get_node).map_err(|e| {
-                BulkAppendError::MmrError(format!("MmrTreeProof::generate failed: {}", e))
-            })?
+            let chunk_proof =
+                MmrTreeProof::generate_with_cost(mmr_size, &chunk_indices, get_node, grove_version)
+                    .unwrap_add_cost(&mut cost);
+            cost += read_cost.into_inner();
+            match chunk_proof {
+                Ok(chunk_proof) => chunk_proof,
+                Err(e) => {
+                    return Err(BulkAppendError::MmrError(format!(
+                        "MmrTreeProof::generate failed: {}",
+                        e
+                    )))
+                    .wrap_with_cost(cost)
+                }
+            }
         };
 
         // ── Buffer sub-proof (dense tree) ────────────────────────────
@@ -295,27 +341,27 @@ impl BulkAppendTreeProof {
                 }
             }
 
-            if buffer_positions.is_empty() {
-                // No buffer positions in query — generate a proof for position
-                // 0 anyway so we can verify the root hash.
-                DenseTreeProof::generate(&tree.dense_tree, &[0])
-                    .unwrap()
-                    .map_err(|e| {
-                        BulkAppendError::StorageError(format!(
-                            "dense tree proof generation failed: {}",
-                            e
-                        ))
-                    })?
+            // No buffer positions in the query: a proof for position 0 anyway, so the root
+            // hash can be verified.
+            let positions: Vec<u16> = if buffer_positions.is_empty() {
+                vec![0]
             } else {
-                let positions: Vec<u16> = buffer_positions.into_iter().collect();
-                DenseTreeProof::generate(&tree.dense_tree, &positions)
-                    .unwrap()
-                    .map_err(|e| {
-                        BulkAppendError::StorageError(format!(
-                            "dense tree proof generation failed: {}",
-                            e
-                        ))
-                    })?
+                buffer_positions.into_iter().collect()
+            };
+            let CostContext {
+                value,
+                cost: dense_cost,
+            } = DenseTreeProof::generate(&tree.dense_tree, &positions);
+            cost += dense_cost;
+            match value {
+                Ok(buffer_proof) => buffer_proof,
+                Err(e) => {
+                    return Err(BulkAppendError::StorageError(format!(
+                        "dense tree proof generation failed: {}",
+                        e
+                    )))
+                    .wrap_with_cost(cost)
+                }
             }
         } else {
             // Empty dense tree — empty proof
@@ -330,6 +376,7 @@ impl BulkAppendTreeProof {
             chunk_proof,
             buffer_proof,
         })
+        .wrap_with_cost(cost)
     }
 
     /// Generate a proof for the paginated position range

@@ -34,6 +34,10 @@ pub struct MmrStore<'a, C> {
     ctx: &'a C,
     key_size: MmrKeySize,
     leaf_value_storage_cost: LeafValueStorageCost,
+    /// Whether a read charges the hash validating a stored standard leaf
+    /// (`MmrNode::deserialize` recomputes `blake3(0x00 || value)`); see
+    /// [`charging_leaf_validation`](Self::charging_leaf_validation).
+    charge_leaf_validation: bool,
 }
 
 /// How the value carried by a leaf node is reported to the storage cost
@@ -78,6 +82,7 @@ impl<'a, C> MmrStore<'a, C> {
             ctx,
             key_size: MmrKeySize::U64,
             leaf_value_storage_cost: LeafValueStorageCost::New,
+            charge_leaf_validation: false,
         }
     }
 
@@ -90,7 +95,18 @@ impl<'a, C> MmrStore<'a, C> {
             ctx,
             key_size,
             leaf_value_storage_cost: LeafValueStorageCost::New,
+            charge_leaf_validation: false,
         }
+    }
+
+    /// Charge one hash call for each stored standard leaf a read validates:
+    /// deserializing it recomputes `blake3(0x00 || value)` to check the stored
+    /// hash, the same one call an append charges for hashing the leaf. Off by
+    /// default, which is what every shipped read path reports; a read path
+    /// that opts in reports the work it does.
+    pub fn charging_leaf_validation(mut self) -> Self {
+        self.charge_leaf_validation = true;
+        self
     }
 
     /// Select how leaf values are reported to the storage cost layer on
@@ -141,14 +157,20 @@ impl<'db, C: StorageContext<'db>> MMRStoreReadOps for &MmrStore<'_, C> {
             Err(e) => return Err(e).wrap_with_cost(OperationCost::default()),
         };
         let result = self.ctx.get(key);
-        let cost = result.cost;
+        let mut cost = result.cost;
         match result.value {
             Ok(Some(bytes)) => {
                 let node = MmrNode::deserialize(&bytes).map_err(|e| {
                     crate::Error::StoreError(format!("deserialize node at pos {}: {}", pos, e))
                 });
                 match node {
-                    Ok(n) => Ok(Some(n)).wrap_with_cost(cost),
+                    Ok(n) => {
+                        // A standard leaf (flag 0x01) had its hash recomputed to validate it
+                        if self.charge_leaf_validation && bytes.first() == Some(&0x01) {
+                            cost.hash_node_calls = cost.hash_node_calls.saturating_add(1);
+                        }
+                        Ok(Some(n)).wrap_with_cost(cost)
+                    }
                     Err(e) => Err(e).wrap_with_cost(cost),
                 }
             }

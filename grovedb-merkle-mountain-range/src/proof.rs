@@ -375,6 +375,9 @@ pub struct MmrTreeProof {
     proof_items: Vec<[u8; 32]>,
 }
 
+/// The MMR positions of the leaves a proof proves, and their `(leaf index, value)` pairs.
+type PositionsAndLeaves = (Vec<u64>, Vec<(u64, Vec<u8>)>);
+
 impl MmrTreeProof {
     /// Create a proof from its constituent parts.
     pub fn new(mmr_size: u64, leaves: Vec<(u64, Vec<u8>)>, proof_items: Vec<[u8; 32]>) -> Self {
@@ -413,63 +416,99 @@ impl MmrTreeProof {
     where
         F: Fn(u64) -> Result<Option<MmrNode>>,
     {
+        Self::generate_with_cost(mmr_size, leaf_indices, get_node, GroveVersion::latest()).value
+    }
+
+    /// [`generate`](Self::generate), with the cost `MMR::gen_proof` charges at
+    /// `grove_version` (bagging the peaks right of the proved leaves). The node
+    /// reads go through `get_node`, which charges them itself.
+    pub fn generate_with_cost<F>(
+        mmr_size: u64,
+        leaf_indices: &[u64],
+        get_node: F,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Self, Error>
+    where
+        F: Fn(u64) -> Result<Option<MmrNode>>,
+    {
+        let cost = OperationCost::default();
         if leaf_indices.is_empty() {
-            return Err(Error::InvalidInput("leaf_indices must not be empty".into()));
+            return Err(Error::InvalidInput("leaf_indices must not be empty".into()))
+                .wrap_with_cost(cost);
         }
 
-        let leaf_count = checked_mmr_size_to_leaf_count(mmr_size)
-            .ok_or_else(|| Error::InvalidInput(format!("{} is not a valid MMR size", mmr_size)))?;
-
-        // Validate indices and reject duplicates
-        let mut seen_indices = BTreeSet::new();
-        for &idx in leaf_indices {
-            if idx >= leaf_count {
-                return Err(Error::InvalidInput(format!(
-                    "MMR leaf index {} out of range (leaf_count={})",
-                    idx, leaf_count
-                )));
-            }
-            if !seen_indices.insert(idx) {
-                return Err(Error::InvalidInput(format!("duplicate leaf index {}", idx)));
-            }
-        }
-
-        // Convert leaf indices to MMR positions
-        let positions: Vec<u64> = leaf_indices.iter().map(|&idx| leaf_to_pos(idx)).collect();
-
-        // Collect leaf values
-        let mut leaves = Vec::with_capacity(leaf_indices.len());
-        for &idx in leaf_indices {
-            let pos = leaf_to_pos(idx);
-            let node = get_node(pos)?.ok_or_else(|| {
-                Error::InvalidData(format!(
-                    "MMR leaf node missing at position {} (leaf index {})",
-                    pos, idx
-                ))
+        let mut cost = cost;
+        let result = (|| -> Result<PositionsAndLeaves> {
+            let leaf_count = checked_mmr_size_to_leaf_count(mmr_size).ok_or_else(|| {
+                Error::InvalidInput(format!("{} is not a valid MMR size", mmr_size))
             })?;
-            let value = node.into_value().ok_or_else(|| {
-                Error::InvalidData(format!(
-                    "MMR node at position {} is internal, expected leaf",
-                    pos
-                ))
-            })?;
-            leaves.push((idx, value));
-        }
+
+            // Validate indices and reject duplicates
+            let mut seen_indices = BTreeSet::new();
+            for &idx in leaf_indices {
+                if idx >= leaf_count {
+                    return Err(Error::InvalidInput(format!(
+                        "MMR leaf index {} out of range (leaf_count={})",
+                        idx, leaf_count
+                    )));
+                }
+                if !seen_indices.insert(idx) {
+                    return Err(Error::InvalidInput(format!("duplicate leaf index {}", idx)));
+                }
+            }
+
+            // Convert leaf indices to MMR positions
+            let positions: Vec<u64> = leaf_indices.iter().map(|&idx| leaf_to_pos(idx)).collect();
+
+            // Collect leaf values
+            let mut leaves = Vec::with_capacity(leaf_indices.len());
+            for &idx in leaf_indices {
+                let pos = leaf_to_pos(idx);
+                let node = get_node(pos)?.ok_or_else(|| {
+                    Error::InvalidData(format!(
+                        "MMR leaf node missing at position {} (leaf index {})",
+                        pos, idx
+                    ))
+                })?;
+                let value = node.into_value().ok_or_else(|| {
+                    Error::InvalidData(format!(
+                        "MMR node at position {} is internal, expected leaf",
+                        pos
+                    ))
+                })?;
+                leaves.push((idx, value));
+            }
+            Ok((positions, leaves))
+        })();
+        let (positions, leaves) = match result {
+            Ok(collected) => collected,
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        };
 
         // Lazy-loading store: only fetches nodes needed by proof generation
         let store = LazyNodeStore::new(&get_node);
 
-        // Generate the MerkleProof (drops zero costs from lazy store)
+        // Generate the MerkleProof, keeping the peak bagging it charges
         let mmr = crate::MMR::new(mmr_size, &store);
-        let proof_result = mmr.gen_proof(positions, GroveVersion::latest()).unwrap();
+        let proof_result = mmr
+            .gen_proof(positions, grove_version)
+            .unwrap_add_cost(&mut cost);
 
         // Check deferred storage errors first — if the store failed, the
         // error (e.g. InconsistentStore) is a symptom, not the root cause.
         if let Some(err) = store.take_error() {
-            return Err(err);
+            return Err(err).wrap_with_cost(cost);
         }
-        let proof = proof_result
-            .map_err(|e| Error::OperationFailed(format!("MMR gen_proof failed: {}", e)))?;
+        let proof = match proof_result {
+            Ok(proof) => proof,
+            Err(e) => {
+                return Err(Error::OperationFailed(format!(
+                    "MMR gen_proof failed: {}",
+                    e
+                )))
+                .wrap_with_cost(cost)
+            }
+        };
 
         // Extract proof item hashes
         let proof_items: Vec<[u8; 32]> =
@@ -480,6 +519,7 @@ impl MmrTreeProof {
             leaves,
             proof_items,
         })
+        .wrap_with_cost(cost)
     }
 
     /// Verify this proof against an expected MMR root hash.
@@ -778,6 +818,35 @@ mod tests {
                 .unwrap()
                 .map_err(|e| Error::OperationFailed(format!("element_at_position: {}", e)))
         }
+    }
+
+    /// The costed generator makes the proof `generate` does and keeps what `gen_proof`
+    /// charges: 7 leaves are three peaks (4 + 2 + 1), and proving the first leaf bags the two
+    /// right-hand ones, one merge from GROVE_V4.
+    #[test]
+    fn test_mmr_proof_generate_with_cost_keeps_the_peak_bagging_charge() {
+        use grovedb_version::version::v4::GROVE_V4;
+
+        let values: Vec<Vec<u8>> = (0..7u8).map(|i| vec![i; 8]).collect();
+        let value_refs: Vec<&[u8]> = values.iter().map(|v| v.as_slice()).collect();
+        let (store, mmr_size) = build_mmr(&value_refs);
+
+        let costed = MmrTreeProof::generate_with_cost(
+            mmr_size,
+            &[0],
+            get_node_from_store(&store),
+            &GROVE_V4,
+        );
+        assert_eq!(costed.cost.hash_node_calls, 1, "{:?}", costed.cost);
+        let costed = costed.value.expect("generate the proof with its cost");
+        let plain = MmrTreeProof::generate(mmr_size, &[0], get_node_from_store(&store))
+            .expect("generate the proof");
+        assert_eq!(costed.proof_items(), plain.proof_items());
+        assert_eq!(costed.leaves(), plain.leaves());
+
+        let refused =
+            MmrTreeProof::generate_with_cost(mmr_size, &[], get_node_from_store(&store), &GROVE_V4);
+        assert!(refused.value.is_err());
     }
 
     #[test]
