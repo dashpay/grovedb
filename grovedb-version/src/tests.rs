@@ -5,6 +5,7 @@ use crate::version::v1::GROVE_V1;
 use crate::version::v2::GROVE_V2;
 use crate::version::v3::GROVE_V3;
 use crate::version::v4::GROVE_V4;
+use crate::version::v5::GROVE_V5;
 use crate::version::{GroveVersion, GROVE_VERSIONS};
 use crate::{TryFromVersioned, TryIntoVersioned};
 
@@ -65,14 +66,23 @@ fn grove_version_first_returns_v1() {
 }
 
 #[test]
-fn grove_version_latest_returns_v4() {
+fn grove_version_latest_returns_v5() {
     let latest = GroveVersion::latest();
-    assert_eq!(latest.protocol_version, GROVE_V4.protocol_version);
+    assert_eq!(latest.protocol_version, GROVE_V5.protocol_version);
 }
 
 #[test]
 fn grove_versions_count() {
-    assert_eq!(GROVE_VERSIONS.len(), 4);
+    assert_eq!(GROVE_VERSIONS.len(), 5);
+}
+
+#[test]
+fn v5_matches_v4_apart_from_protocol_version() {
+    // GROVE_V5 starts as GROVE_V4. A gate added to V5 flips its slot back
+    // here, so this test lists every slot V5 changes.
+    let mut v5_as_v4 = GROVE_V5.clone();
+    v5_as_v4.protocol_version = GROVE_V4.protocol_version;
+    assert_eq!(format!("{v5_as_v4:?}"), format!("{GROVE_V4:?}"));
 }
 
 #[test]

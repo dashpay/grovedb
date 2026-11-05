@@ -1,7 +1,9 @@
 //! Grove protocol version 4.
 //!
 //! Introduced behaviourally identical to [`GROVE_V3`](super::v3::GROVE_V3),
-//! and no longer is — gates land here as they are written. Currently flipped:
+//! and no longer is. GroveDB 6.1.1 shipped it and Dash Platform 5.0
+//! (protocol version 14) runs it, so new gates land in
+//! [`GROVE_V5`](super::v5::GROVE_V5). Flipped from V3:
 //!
 //! - `apply_batch.delete_tree_cleanup_type_source: 1` — a batch `DeleteTree`
 //!   uses the stored element's ACTUAL type to select cleanup namespaces,
@@ -384,21 +386,15 @@
 //!   of the bytes it holds. Gated because it changes tracked costs and
 //!   flips a failed commit into a successful one.
 //!
-//! Note that `GroveVersion::latest()` resolves to this version, so anything
-//! defaulting to "latest" — tests, benchmarks, tools — exercises every gate
-//! listed above rather than V3 behaviour.
-//!
 //! It exists so that fixes which change released behaviour have somewhere to
 //! land. GROVE_V3 is live, so a fix that alters an accepted/rejected outcome,
 //! a committed root hash, or a tracked cost cannot be applied unconditionally
 //! — nodes carrying it would diverge from nodes that do not. Such a fix bumps
 //! the relevant slot here and branches on it, leaving V1..V3 untouched.
 //!
-//! When adding a gate, say what changes in the slot comment, the way
-//! `add_element_on_transaction: 1` documents the layered-subtree switch in
-//! v3.rs. `GroveVersion::latest()` returns the last entry of
-//! `GROVE_VERSIONS`, so anything defaulting to "latest" starts exercising this
-//! version as soon as it is registered.
+//! This version is now live too: a fix of that kind bumps a slot in
+//! [`GROVE_V5`](super::v5::GROVE_V5), which `GroveVersion::latest()`
+//! resolves to, and leaves V1..V4 untouched.
 
 use crate::version::grovedb_versions::GroveDBAggregateSumPathQueryMethodVersions;
 use crate::version::{

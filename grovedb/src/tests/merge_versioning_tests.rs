@@ -24,7 +24,7 @@ mod tests {
 
     #[test]
     fn v4_merge_requires_direction_agreement_and_propagates_it() {
-        let v4 = GroveVersion::latest();
+        let v4 = &GROVE_VERSIONS[3];
         assert_eq!(v4.protocol_version, 4);
 
         // Agreement: the shared direction survives the merge.
