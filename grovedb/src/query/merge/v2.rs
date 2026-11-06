@@ -8,12 +8,16 @@
 //! one into the other could return a different page than the input alone. A
 //! global zero skip remains a no-op. A global limit lifts only onto a body
 //! without subqueries: it is also charged for an empty subtree, which a branch
-//! cap is not. A root-landing body that echoes its parent trees cannot share
-//! its node with other inputs, whose keys its echo would cover.
+//! cap is not. A node that echoes its parent trees cannot be shared with other
+//! inputs at any depth, since its echo would cover their keys too, so an input
+//! with an echo merges like one with a budget: only as an exclusive graft, which
+//! applies these rules again at every node where the inputs meet.
 
 use grovedb_merk::proofs::query::{Query, QueryItem, SubqueryBranch};
 
-use crate::{operations::proof::util::hex_to_ascii, Error, PathQuery};
+use crate::{
+    operations::proof::util::hex_to_ascii, query::local_offset::has_parent_echo, Error, PathQuery,
+};
 
 pub(super) fn merge_v2(path_queries: Vec<&PathQuery>) -> Result<PathQuery, Error> {
     let shared_direction = path_queries[0].query.query.left_to_right;
@@ -96,13 +100,19 @@ pub(super) fn merge_v2(path_queries: Vec<&PathQuery>) -> Result<PathQuery, Error
 
     // A node's parent echo covers every key it selects with a subquery, so an
     // echoing root body would echo the keys other inputs graft into its node.
-    if queries_for_common_path_this_level
+    // Bodies meeting here also merge whatever they select below, so an echo
+    // further down would cover the other bodies' keys in the same way.
+    if (queries_for_common_path_this_level
         .iter()
         .any(|query| query.add_parent_tree_on_subquery)
         && (!queries_for_common_path_sub_level.is_empty()
             || queries_for_common_path_this_level
                 .iter()
-                .any(|query| !query.add_parent_tree_on_subquery))
+                .any(|query| !query.add_parent_tree_on_subquery)))
+        || (queries_for_common_path_this_level.len() > 1
+            && queries_for_common_path_this_level
+                .iter()
+                .any(echoes_below_its_own_node))
     {
         return Err(Error::NotSupported(
             "can not merge a path query that echoes its parent trees with other queries \
@@ -132,20 +142,23 @@ pub(super) fn merge_v2(path_queries: Vec<&PathQuery>) -> Result<PathQuery, Error
             .map_err(|e| Error::NotSupported(e.to_string()))?,
     };
 
-    let carries_limits = |branch: &SubqueryBranch| {
-        branch.subquery.as_deref().is_some_and(|subquery| {
-            subquery.has_instance_limit_anywhere() || subquery.has_instance_offset_anywhere()
-        })
+    // A budget belongs to one input's rows and an echo to one input's keys, and
+    // a free merge below the merged root would blend either with another input's.
+    let stays_exclusive = |query: &Query| {
+        query.has_instance_limit_anywhere()
+            || query.has_instance_offset_anywhere()
+            || has_parent_echo(query)
     };
-    let (limited_branches, unlimited_branches): (Vec<SubqueryBranch>, Vec<SubqueryBranch>) =
+    let branch_stays_exclusive =
+        |branch: &SubqueryBranch| branch.subquery.as_deref().is_some_and(stays_exclusive);
+    let (exclusive_branches, free_branches): (Vec<SubqueryBranch>, Vec<SubqueryBranch>) =
         queries_for_common_path_sub_level
             .into_iter()
-            .partition(&carries_limits);
+            .partition(&branch_stays_exclusive);
 
-    for sub_path_query in unlimited_branches.into_iter().chain(limited_branches) {
-        let use_limit_free_merge = !(carries_limits(&sub_path_query)
-            || merged_query.has_instance_limit_anywhere()
-            || merged_query.has_instance_offset_anywhere());
+    for sub_path_query in free_branches.into_iter().chain(exclusive_branches) {
+        let use_free_merge =
+            !(branch_stays_exclusive(&sub_path_query) || stays_exclusive(&merged_query));
         let SubqueryBranch {
             subquery_path,
             subquery,
@@ -158,7 +171,7 @@ pub(super) fn merge_v2(path_queries: Vec<&PathQuery>) -> Result<PathQuery, Error
         } else {
             Some(subquery_path)
         };
-        if use_limit_free_merge {
+        if use_free_merge {
             merged_query.insert_item(QueryItem::Key(key.clone()));
             merged_query
                 .merge_conditional_boxed_subquery(
@@ -215,8 +228,9 @@ pub(super) fn merge_v2(path_queries: Vec<&PathQuery>) -> Result<PathQuery, Error
                 .is_some_and(|branches| branches.keys().any(|item| item.contains(key.as_slice())));
         if collides {
             return Err(Error::NotSupported(format!(
-                "can not merge limited path queries whose branches collide at key {}; \
-                 remove the limits or merge the colliding queries separately",
+                "can not merge path queries with limits, offsets or parent echoes whose \
+                 branches collide at key {}; remove them or merge the colliding queries \
+                 separately",
                 hex_to_ascii(&key),
             )));
         }
@@ -231,6 +245,16 @@ pub(super) fn merge_v2(path_queries: Vec<&PathQuery>) -> Result<PathQuery, Error
     merged_query.left_to_right = shared_direction;
 
     Ok(PathQuery::new_unsized(common_path, merged_query))
+}
+
+/// Whether a node below `query`'s own echoes its parent trees.
+fn echoes_below_its_own_node(query: &Query) -> bool {
+    let echoes = |branch: &SubqueryBranch| branch.subquery.as_deref().is_some_and(has_parent_echo);
+    echoes(&query.default_subquery_branch)
+        || query
+            .conditional_subquery_branches
+            .as_ref()
+            .is_some_and(|branches| branches.values().any(echoes))
 }
 
 fn graft_below(
@@ -263,8 +287,8 @@ fn graft_below(
     let incoming = as_path_query(incoming)?;
     let merged = merge_v2(vec![&existing, &incoming]).map_err(|error| match error {
         Error::NotSupported(message) => Error::NotSupported(format!(
-            "can not merge limited path queries whose branches collide at key {} and do \
-             not diverge below it: {}",
+            "can not merge path queries with limits, offsets or parent echoes whose \
+             branches collide at key {} and do not diverge below it: {}",
             hex_to_ascii(key),
             message
         )),

@@ -1896,3 +1896,61 @@ fn local_pages_refuse_a_legacy_reference_to_a_populated_tree_before_proving() {
         Err(grovedb::Error::NotSupported(_))
     ));
 }
+
+/// An unrelated input moves the merged root, not the node two inputs meet at, so
+/// it neither lets an echo cover another input's key nor stops inputs that keep
+/// to their own nodes from merging.
+#[test]
+fn should_keep_a_parent_echo_to_its_own_keys_whatever_else_joins_the_merge() {
+    let v = GroveVersion::latest();
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = GroveDb::open(dir.path()).unwrap();
+    let insert = |path: &[&[u8]], key: &[u8], element: Element| {
+        db.insert(path, key, element, None, None, v)
+            .unwrap()
+            .unwrap();
+    };
+    insert(&[], b"a", Element::empty_tree());
+    insert(&[], b"z", Element::empty_provable_count_tree());
+    insert(&[b"a"], b"b", Element::empty_tree());
+    insert(&[b"a"], b"e", Element::empty_tree());
+    insert(&[b"a", b"b"], b"c", Element::empty_tree());
+    insert(&[b"a", b"b"], b"d", Element::empty_tree());
+    insert(&[b"a", b"b", b"c"], b"x", Element::new_item(vec![1]));
+    insert(&[b"a", b"b", b"d"], b"y", Element::new_item(vec![2]));
+    insert(&[b"a", b"e"], b"w", Element::new_item(vec![3]));
+    for key in [b"p", b"q", b"r"] {
+        insert(&[b"z"], key, Element::new_item(vec![4]));
+    }
+
+    let mut echoing = Query::new_single_key(b"c".to_vec());
+    echoing.set_subquery(Query::new_single_key(b"x".to_vec()));
+    echoing.add_parent_tree_on_subquery = true;
+    let echoing = PathQuery::new_unsized(vec![b"a".to_vec(), b"b".to_vec()], echoing);
+    let same_node = PathQuery::new_unsized(
+        vec![b"a".to_vec(), b"b".to_vec(), b"d".to_vec()],
+        Query::new_single_key(b"y".to_vec()),
+    );
+    let elsewhere = PathQuery::new_unsized(
+        vec![b"a".to_vec(), b"e".to_vec()],
+        Query::new_single_key(b"w".to_vec()),
+    );
+    let mut page = Query::new_range_full();
+    page.offset = Some(1);
+    page.limit = Some(1);
+    let page = PathQuery::new_unsized(vec![b"z".to_vec()], page);
+
+    assert!(PathQuery::merge(vec![&echoing, &same_node], v).is_err());
+    assert!(PathQuery::merge(vec![&echoing, &same_node, &page], v).is_err());
+
+    let inputs = vec![&echoing, &elsewhere, &page];
+    let mut expected: Vec<RawRow> = inputs
+        .iter()
+        .flat_map(|input| round_trip(&db, input))
+        .collect();
+    expected.sort();
+    let merged = PathQuery::merge(inputs, v).unwrap();
+    let mut rows = round_trip(&db, &merged);
+    rows.sort();
+    assert_eq!(rows, expected);
+}

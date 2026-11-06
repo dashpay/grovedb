@@ -423,6 +423,60 @@ mod tests {
         PathQuery::merge(vec![&a, &grafted], &GROVE_VERSIONS[3]).expect("merge v1 is unchanged");
     }
 
+    /// The rule above holds at every node where inputs meet, wherever the merged
+    /// root ends up.
+    #[test]
+    fn v5_merge_refuses_an_echoing_node_shared_below_the_merged_root() {
+        let v5 = GroveVersion::latest();
+        let path = |keys: &[&[u8]]| keys.iter().map(|key| key.to_vec()).collect::<Vec<_>>();
+        let echoing_node = || {
+            let mut query = Query::new_single_key(b"c".to_vec());
+            query.set_subquery(Query::new_range_full());
+            query.add_parent_tree_on_subquery = true;
+            query
+        };
+        let echoing = PathQuery::new_unsized(path(&[b"a", b"b"]), echoing_node());
+        let grafted = PathQuery::new_unsized(path(&[b"a", b"b", b"d"]), Query::new_range_full());
+        let unrelated = PathQuery::new_unsized(path(&[b"z"]), Query::new_range_full());
+
+        // The echoing node, reached through a body at the merged root.
+        let mut conditional = Query::new_single_key(b"b".to_vec());
+        conditional.add_conditional_subquery(
+            QueryItem::Key(b"b".to_vec()),
+            None,
+            Some(echoing_node()),
+        );
+        let through_conditional = PathQuery::new_unsized(path(&[b"a"]), conditional);
+        let mut default = Query::new_single_key(b"b".to_vec());
+        default.set_subquery(echoing_node());
+        let through_default = PathQuery::new_unsized(path(&[b"a"]), default);
+
+        // A second body at the merged root, selecting another key in that node.
+        let mut plain = Query::new_single_key(b"b".to_vec());
+        plain.set_subquery(Query::new_single_key(b"d".to_vec()));
+        let plain = PathQuery::new_unsized(path(&[b"a"]), plain);
+
+        for inputs in [
+            vec![&echoing, &grafted, &unrelated],
+            vec![&grafted, &echoing, &unrelated],
+            vec![&unrelated, &grafted, &echoing],
+            vec![&through_conditional, &grafted],
+            vec![&through_default, &grafted],
+            vec![&through_conditional, &plain],
+            vec![&through_default, &plain],
+        ] {
+            match PathQuery::merge(inputs, v5) {
+                Err(Error::NotSupported(message)) => {
+                    assert!(message.contains("echo"), "got: {message}")
+                }
+                other => panic!("an echoing node must not be shared, got {other:?}"),
+            }
+        }
+        // GROVE_V4 (merge v1) keeps its behaviour.
+        PathQuery::merge(vec![&echoing, &grafted, &unrelated], &GROVE_VERSIONS[3])
+            .expect("merge v1 is unchanged");
+    }
+
     #[test]
     fn historical_merges_refuse_offsets_and_v4_lifts_limits() {
         use crate::SizedQuery;

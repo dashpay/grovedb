@@ -53,8 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   carries a branch's own `Query::offset` but, like v1, refuses a nonzero
   global `SizedQuery::offset`, which skips rows rather than count units. It
   also refuses a global limit on a body with subqueries, which a branch cap
-  could not represent because it is not charged for empty subtrees, and a root
-  body that echoes parents while sharing its node with other inputs.
+  could not represent because it is not charged for empty subtrees, and a node
+  that echoes parents while shared with other inputs at any depth.
 
 ### Fixed
 - Reads through a pinned iterator view, indexed-tree pages and V5 local count
