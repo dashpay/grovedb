@@ -9,11 +9,14 @@ use std::collections::LinkedList;
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
-use super::{local_count_offset_page_from_view, verify_count_offset_on_range_proof};
+use super::{
+    local_count_offset_page_from_view, pinned_view::PinnedViewSource,
+    verify_count_offset_on_range_proof,
+};
 use crate::{
     proofs::{encode_into, query::QueryItem, Op as ProofOp},
     test_utils::TempMerk,
-    tree::{Op, TreeFeatureType::ProvableCountedMerkNode},
+    tree::{kv::ValueDefinedCostType, Op, TreeFeatureType::ProvableCountedMerkNode, TreeNode},
     Merk, TreeType,
 };
 
@@ -118,6 +121,38 @@ fn trusted_rows_are_the_rows_a_proof_returns_at_every_offset_and_limit() {
             }
         }
     }
+}
+
+/// A page walk never commits, so the node it fetches holds no second copy of its
+/// value and loses nothing the walk reads, while a decode that can mutate still
+/// keeps its baseline.
+#[test]
+fn should_fetch_pinned_view_nodes_without_a_mutation_baseline() {
+    let v = GroveVersion::latest();
+    let (merk, _) = make_15_key_provable_count_tree(v);
+    let key = merk.root_key().expect("the fixture has a root");
+    let stored = merk
+        .storage
+        .get(&key)
+        .unwrap()
+        .unwrap()
+        .expect("the root is stored");
+    let mutable = TreeNode::decode_raw(
+        &stored,
+        key.clone(),
+        None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        v,
+    )
+    .unwrap();
+
+    let fetched = PinnedViewSource::new(merk.storage.raw_iter())
+        .fetch_key(&key)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(fetched.old_value, None);
+    assert_eq!(fetched.inner, mutable.inner);
+    assert_eq!(mutable.old_value.as_ref(), Some(mutable.value_ref()));
 }
 
 #[test]

@@ -26,7 +26,9 @@ use crate::{
 /// Serves Merk node fetches from one pinned raw iterator. The iterator needs
 /// `&mut` to seek while `Fetch` takes `&self`, and walkers clone their source,
 /// so the clones share it through a `RefCell`; the walk is single threaded.
-struct PinnedViewSource<I> {
+/// Only read-only page walks fetch through it, so its nodes skip the copy of the
+/// value a node keeps as its mutation baseline.
+pub(super) struct PinnedViewSource<I> {
     view: Rc<RefCell<I>>,
 }
 
@@ -39,14 +41,13 @@ impl<I> Clone for PinnedViewSource<I> {
 }
 
 impl<I: RawIterator> PinnedViewSource<I> {
-    fn fetch_key(
-        &self,
-        key: &[u8],
-        value_defined_cost_fn: Option<
-            &impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
-        >,
-        grove_version: &GroveVersion,
-    ) -> CostResult<TreeNode, Error> {
+    pub(super) fn new(view: I) -> Self {
+        PinnedViewSource {
+            view: Rc::new(RefCell::new(view)),
+        }
+    }
+
+    pub(super) fn fetch_key(&self, key: &[u8]) -> CostResult<TreeNode, Error> {
         let mut cost = OperationCost::default();
         let mut view = self.view.borrow_mut();
         view.seek(key).unwrap_add_cost(&mut cost);
@@ -64,8 +65,7 @@ impl<I: RawIterator> PinnedViewSource<I> {
         let Some(bytes) = view.value().unwrap_add_cost(&mut cost) else {
             return Err(Error::KeyNotFoundError("Key not found for fetch")).wrap_with_cost(cost);
         };
-        TreeNode::decode_raw(bytes, key.to_vec(), value_defined_cost_fn, grove_version)
-            .wrap_with_cost(cost)
+        TreeNode::decode_raw_for_read_only_walk(key.to_vec(), bytes).wrap_with_cost(cost)
     }
 }
 
@@ -73,12 +73,12 @@ impl<I: RawIterator> Fetch for PinnedViewSource<I> {
     fn fetch(
         &self,
         link: &Link,
-        value_defined_cost_fn: Option<
+        _value_defined_cost_fn: Option<
             &impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
         >,
-        grove_version: &GroveVersion,
+        _grove_version: &GroveVersion,
     ) -> CostResult<TreeNode, Error> {
-        self.fetch_key(link.key(), value_defined_cost_fn, grove_version)
+        self.fetch_key(link.key())
     }
 }
 
@@ -117,17 +117,8 @@ pub fn local_count_offset_page_from_view<I: RawIterator>(
     let Some(root_key) = root_key else {
         return Ok(Vec::new()).wrap_with_cost(cost);
     };
-    let source = PinnedViewSource {
-        view: Rc::new(RefCell::new(view)),
-    };
-    let mut root = cost_return_on_error!(
-        &mut cost,
-        source.fetch_key(
-            &root_key,
-            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-            grove_version,
-        )
-    );
+    let source = PinnedViewSource::new(view);
+    let mut root = cost_return_on_error!(&mut cost, source.fetch_key(&root_key));
     RefWalker::new(&mut root, source)
         .read_local_count_offset_rows(
             inner_range,
