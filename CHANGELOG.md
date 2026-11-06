@@ -58,6 +58,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   body that echoes parents while sharing its node with other inputs.
 
 ### Fixed
+- Reads through a pinned iterator view, indexed-tree pages and V5 local count
+  pages alike, report a failed seek as the storage error. A failed seek reads
+  as no record, so an indexed-tree page called it corruption and a local page
+  could have come back empty.
 - From `GROVE_V5`, insert estimates price creating a `PrivateDocumentStore`
   as the apply does. The average- and worst-case `merk_insert_element`
   estimators v2 (selected by `average_case_merk_insert_element: 1` and

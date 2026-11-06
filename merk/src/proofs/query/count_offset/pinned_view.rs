@@ -10,7 +10,9 @@
 
 use std::{cell::RefCell, rc::Rc};
 
-use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+};
 use grovedb_storage::RawIterator;
 use grovedb_version::{check_merk_v0_with_cost, version::GroveVersion};
 
@@ -48,6 +50,8 @@ impl<I: RawIterator> PinnedViewSource<I> {
         let mut cost = OperationCost::default();
         let mut view = self.view.borrow_mut();
         view.seek(key).unwrap_add_cost(&mut cost);
+        // A failed seek reports no record, as a missing key does.
+        cost_return_on_error_no_add!(cost, view.status().map_err(Error::StorageError));
         let found = view
             .key()
             .unwrap_add_cost(&mut cost)
@@ -139,4 +143,95 @@ pub fn local_count_offset_page_from_view<I: RawIterator>(
             grove_version,
         )
         .add_cost(cost)
+}
+
+#[cfg(test)]
+mod tests {
+    use grovedb_costs::CostContext;
+
+    use super::*;
+
+    /// Holds no record at any position, as an iterator past its records and one
+    /// stopped on an error both report. Only `status` tells them apart.
+    struct NoRecordIterator {
+        failure: Option<&'static str>,
+    }
+
+    impl RawIterator for NoRecordIterator {
+        fn seek_to_first(&mut self) -> CostContext<()> {
+            ().wrap_with_cost(OperationCost::with_seek_count(1))
+        }
+
+        fn seek_to_last(&mut self) -> CostContext<()> {
+            ().wrap_with_cost(OperationCost::with_seek_count(1))
+        }
+
+        fn seek<K: AsRef<[u8]>>(&mut self, _key: K) -> CostContext<()> {
+            ().wrap_with_cost(OperationCost::with_seek_count(1))
+        }
+
+        fn seek_for_prev<K: AsRef<[u8]>>(&mut self, _key: K) -> CostContext<()> {
+            ().wrap_with_cost(OperationCost::with_seek_count(1))
+        }
+
+        fn next(&mut self) -> CostContext<()> {
+            ().wrap_with_cost(OperationCost::with_seek_count(1))
+        }
+
+        fn prev(&mut self) -> CostContext<()> {
+            ().wrap_with_cost(OperationCost::with_seek_count(1))
+        }
+
+        fn value(&self) -> CostContext<Option<&[u8]>> {
+            None.wrap_with_cost(OperationCost::default())
+        }
+
+        fn key(&self) -> CostContext<Option<&[u8]>> {
+            None.wrap_with_cost(OperationCost::default())
+        }
+
+        fn valid(&self) -> CostContext<bool> {
+            false.wrap_with_cost(OperationCost::default())
+        }
+
+        fn status(&self) -> Result<(), grovedb_storage::Error> {
+            match self.failure {
+                Some(failure) => Err(grovedb_storage::Error::StorageError(failure.to_owned())),
+                None => Ok(()),
+            }
+        }
+    }
+
+    fn page_from(view: NoRecordIterator) -> CostContext<Result<ProverCountOffsetResult, Error>> {
+        local_count_offset_page_from_view(
+            view,
+            Some(b"root".to_vec()),
+            TreeType::ProvableCountTree,
+            &QueryItem::RangeFull(..),
+            1,
+            Some(1),
+            true,
+            GroveVersion::latest(),
+        )
+    }
+
+    #[test]
+    fn should_report_a_failed_seek_rather_than_a_missing_key() {
+        let page = page_from(NoRecordIterator {
+            failure: Some("injected read failure"),
+        });
+        assert_eq!(page.cost.seek_count, 1, "the seek's cost must be retained");
+        assert!(matches!(
+            page.value,
+            Err(Error::StorageError(grovedb_storage::Error::StorageError(message)))
+                if message == "injected read failure"
+        ));
+    }
+
+    #[test]
+    fn should_report_a_clean_miss_as_a_missing_key() {
+        let page = page_from(NoRecordIterator { failure: None });
+        assert_eq!(page.cost.seek_count, 1);
+        assert!(matches!(page.value, Err(Error::KeyNotFoundError(_))));
+    }
 }

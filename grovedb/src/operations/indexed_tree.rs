@@ -3509,7 +3509,8 @@ fn counted_skip_page<I: RawIterator>(
 }
 
 /// Fetch and decode one merk node from the pinned iterator view. Returns
-/// `Ok(None)` when the key is absent from that view.
+/// `Ok(None)` when the key is absent from that view, and the storage error when
+/// the seek failed, which an iterator otherwise reports as no record.
 pub(crate) fn snapshot_fetch_node<I: RawIterator>(
     iter: &mut I,
     key: &[u8],
@@ -3517,6 +3518,7 @@ pub(crate) fn snapshot_fetch_node<I: RawIterator>(
 ) -> CostResult<Option<TreeNode>, Error> {
     let mut cost = OperationCost::default();
     iter.seek(key).unwrap_add_cost(&mut cost);
+    cost_return_on_error_no_add!(cost, iter.status().map_err(Error::StorageError));
     match iter.key().unwrap_add_cost(&mut cost) {
         Some(found) if found == key => {}
         _ => return Ok(None).wrap_with_cost(cost),
@@ -4628,5 +4630,91 @@ mod indexed_element_axes_tests {
             matches!(&err, Error::CorruptedData(m) if m.contains("invalid axis tag")),
             "{err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod snapshot_fetch_node_tests {
+    use grovedb_costs::CostContext;
+
+    use super::*;
+
+    /// Holds no record at any position, as an iterator past its records and one
+    /// stopped on an error both report. Only `status` tells them apart.
+    struct NoRecordIterator {
+        failure: Option<&'static str>,
+    }
+
+    impl RawIterator for NoRecordIterator {
+        fn seek_to_first(&mut self) -> CostContext<()> {
+            ().wrap_with_cost(OperationCost::with_seek_count(1))
+        }
+
+        fn seek_to_last(&mut self) -> CostContext<()> {
+            ().wrap_with_cost(OperationCost::with_seek_count(1))
+        }
+
+        fn seek<K: AsRef<[u8]>>(&mut self, _key: K) -> CostContext<()> {
+            ().wrap_with_cost(OperationCost::with_seek_count(1))
+        }
+
+        fn seek_for_prev<K: AsRef<[u8]>>(&mut self, _key: K) -> CostContext<()> {
+            ().wrap_with_cost(OperationCost::with_seek_count(1))
+        }
+
+        fn next(&mut self) -> CostContext<()> {
+            ().wrap_with_cost(OperationCost::with_seek_count(1))
+        }
+
+        fn prev(&mut self) -> CostContext<()> {
+            ().wrap_with_cost(OperationCost::with_seek_count(1))
+        }
+
+        fn value(&self) -> CostContext<Option<&[u8]>> {
+            None.wrap_with_cost(OperationCost::default())
+        }
+
+        fn key(&self) -> CostContext<Option<&[u8]>> {
+            None.wrap_with_cost(OperationCost::default())
+        }
+
+        fn valid(&self) -> CostContext<bool> {
+            false.wrap_with_cost(OperationCost::default())
+        }
+
+        fn status(&self) -> Result<(), grovedb_storage::error::Error> {
+            match self.failure {
+                Some(failure) => Err(grovedb_storage::error::Error::StorageError(
+                    failure.to_owned(),
+                )),
+                None => Ok(()),
+            }
+        }
+    }
+
+    #[test]
+    fn should_report_a_failed_seek_rather_than_an_absent_node() {
+        let mut failed = NoRecordIterator {
+            failure: Some("injected read failure"),
+        };
+        let fetched = snapshot_fetch_node(&mut failed, b"host", GroveVersion::latest());
+        assert_eq!(
+            fetched.cost.seek_count, 1,
+            "the seek's cost must be retained"
+        );
+        assert!(matches!(
+            fetched.value,
+            Err(Error::StorageError(
+                grovedb_storage::error::Error::StorageError(message)
+            )) if message == "injected read failure"
+        ));
+    }
+
+    #[test]
+    fn should_report_a_clean_miss_as_an_absent_node() {
+        let mut empty = NoRecordIterator { failure: None };
+        let fetched = snapshot_fetch_node(&mut empty, b"host", GroveVersion::latest());
+        assert_eq!(fetched.cost.seek_count, 1);
+        assert!(matches!(fetched.value, Ok(None)));
     }
 }
