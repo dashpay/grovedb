@@ -48,6 +48,14 @@ fn assert_local_count_page(
     assert_eq!(verified.skipped, expected_skipped);
     assert_eq!(page.offset_remaining, offset - expected_skipped);
     assert_eq!(
+        page.returned_rows
+            .iter()
+            .map(|(key, _)| key.as_slice())
+            .collect::<Vec<_>>(),
+        expected_keys,
+        "the typed rows are the rows the proof returns"
+    );
+    assert_eq!(
         verified
             .returned_items
             .iter()

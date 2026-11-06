@@ -1791,3 +1791,108 @@ fn global_page_verification_refuses_an_unknown_reference_slot_version() {
         Err(grovedb::Error::VersionError(_))
     ));
 }
+
+#[test]
+fn merge_keeps_a_global_limit_only_where_a_branch_cap_means_the_same() {
+    let v = GroveVersion::latest();
+    let (_dir, db) = fixture(0, None, [true, true]);
+    let host: [&[u8]; 2] = [b"type", &[2]];
+    for (tree, rows) in [(b"a", 1u8), (b"b", 2)] {
+        db.insert(
+            host.as_slice(),
+            tree,
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .unwrap();
+        let path: [&[u8]; 3] = [b"type", &[2], tree];
+        for row in 0..rows {
+            db.insert(
+                path.as_slice(),
+                &[row],
+                Element::new_item(vec![row]),
+                None,
+                None,
+                v,
+            )
+            .unwrap()
+            .unwrap();
+        }
+    }
+    let pointer = PathQuery::new_unsized(
+        vec![b"type".to_vec(), vec![0]],
+        Query::new_single_key(b"doc".to_vec()),
+    );
+    let mut page = Query::new_range_full();
+    page.offset = Some(1);
+    page.limit = Some(1);
+    let mut body = Query::new_range_full();
+    body.set_subquery(page);
+
+    // a's exhausted page charges the global limit, so the input alone returns
+    // nothing. A branch cap charges rows only and would go on to b, so merging
+    // this input is refused rather than changing its answer.
+    let global = PathQuery::new(
+        vec![b"type".to_vec(), vec![2]],
+        SizedQuery::new(body.clone(), Some(1), None),
+    );
+    assert!(round_trip(&db, &global).is_empty());
+    assert!(matches!(
+        PathQuery::merge(vec![&global, &pointer], v),
+        Err(grovedb::Error::NotSupported(_))
+    ));
+
+    // An authored cap merges, and means what it says: one row, from b.
+    body.limit = Some(1);
+    let capped = PathQuery::new_unsized(vec![b"type".to_vec(), vec![2]], body);
+    let merged = PathQuery::merge(vec![&capped, &pointer], v).unwrap();
+    let rows = round_trip(&db, &merged);
+    assert_eq!(rows.len(), 2, "b's row and the pointer");
+    assert_eq!(rows[1].0, vec![b"type".to_vec(), vec![2], b"b".to_vec()]);
+
+    // A body without subqueries has no empty subtree to charge, so its global
+    // limit lifts and the input's rows are the same before and after merging.
+    let terminal = PathQuery::new(
+        vec![b"type".to_vec(), vec![2], b"b".to_vec()],
+        SizedQuery::new(Query::new_range_full(), Some(1), None),
+    );
+    let alone = round_trip(&db, &terminal);
+    assert_eq!(alone.len(), 1);
+    let merged = round_trip(
+        &db,
+        &PathQuery::merge(vec![&terminal, &pointer], v).unwrap(),
+    );
+    assert!(merged.contains(&alone[0]), "{merged:?} lacks {alone:?}");
+}
+
+#[test]
+fn local_pages_refuse_a_legacy_reference_to_a_populated_tree_before_proving() {
+    use grovedb::reference_path::ReferencePathType::AbsolutePathReference;
+
+    let v = GroveVersion::latest();
+    let (_dir, db) = fixture(0, Some(Element::empty_provable_count_tree()), [true, true]);
+    let host: [&[u8]; 3] = [b"type", &[2], b"doc"];
+    // [type, 0] holds doc. GROVE_V3 could persist a reference to it.
+    db.insert(
+        host.as_slice(),
+        b"r",
+        Element::new_reference(AbsolutePathReference(vec![b"type".to_vec(), vec![0]])),
+        None,
+        None,
+        &grovedb_version::version::v3::GROVE_V3,
+    )
+    .unwrap()
+    .unwrap();
+    let mut page = Query::new_range_full();
+    page.offset = Some(0);
+    page.limit = Some(1);
+    let query = PathQuery::new_unsized(host.iter().map(|k| k.to_vec()).collect(), page);
+    // The verifier refuses a non-empty tree in a page, so no proof is emitted.
+    assert!(matches!(
+        db.prove_query(&query, None, v).unwrap(),
+        Err(grovedb::Error::NotSupported(_))
+    ));
+}

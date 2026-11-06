@@ -33,6 +33,10 @@ pub struct ProverCountOffsetResult {
     /// items the prover skipped. Useful for callers that want to detect
     /// "offset past the end" without re-walking.
     pub offset_remaining: u64,
+    /// The `(key, value)` rows a branch-local page returned, in walk order, so
+    /// a trusted read need not decode them back out of `ops`. The global
+    /// row-offset prover leaves this empty.
+    pub returned_rows: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
 impl<S> RefWalker<'_, S>
@@ -83,6 +87,7 @@ where
             offset_remaining: offset,
             limit_remaining: limit,
             returned: 0,
+            returned_rows: Vec::new(),
             left_to_right,
         };
         cost_return_on_error!(
@@ -102,6 +107,7 @@ where
             ops,
             returned: state.returned,
             offset_remaining: state.offset_remaining,
+            returned_rows: state.returned_rows,
         })
         .wrap_with_cost(cost)
     }
@@ -132,6 +138,7 @@ where
             offset_remaining: offset,
             limit_remaining: limit,
             returned: 0,
+            returned_rows: Vec::new(),
             left_to_right,
         };
         cost_return_on_error!(
@@ -151,6 +158,7 @@ where
             ops,
             returned: state.returned,
             offset_remaining: state.offset_remaining,
+            returned_rows: state.returned_rows,
         })
         .wrap_with_cost(cost)
     }

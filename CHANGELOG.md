@@ -42,14 +42,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read refuses a nonzero global offset together with a parent echo, since
   echoes are not rows the offset can skip. Earlier query engines ignore the
   field.
+- **BREAKING**: `QueryBudget` adds the public `rows` field; build one with
+  `QueryBudget::new(..)`. `GroveDBPathQueryMethodVersions` adds
+  `per_instance_query_offsets`; hand-built version tables set it to 0 for
+  historical snapshots. Merk's `ProverCountOffsetResult` adds `returned_rows`,
+  the rows of a branch-local page.
 - `GroveVersion::latest()` now selects `GROVE_V5`. V5 enables per-instance
   query offsets on supported provable count trees, merge v2 for exclusive
   branch-local pagination, and the v2 trusted query engine with parent-tree
   echoes. Earlier Grove versions continue to reject local offsets. Merge v2
   carries a branch's own `Query::offset` but, like v1, refuses a nonzero
-  global `SizedQuery::offset`, which skips rows rather than count units, and
-  refuses a root body that echoes parents while sharing its node with other
-  inputs.
+  global `SizedQuery::offset`, which skips rows rather than count units. It
+  also refuses a global limit on a body with subqueries, which a branch cap
+  could not represent because it is not charged for empty subtrees, and a root
+  body that echoes parents while sharing its node with other inputs.
 
 ### Fixed
 - From `GROVE_V5`, insert estimates price creating a `PrivateDocumentStore`

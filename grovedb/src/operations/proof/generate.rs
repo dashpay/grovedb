@@ -2088,6 +2088,8 @@ impl GroveDb {
                 )
                 .add_cost(cost);
         }
+        // Once per layer: the query does not change between its rows.
+        let local_offsets_present = path_query.query.query.has_instance_offset_anywhere();
 
         // Shape validation fixed the aggregate family and terminal depth.
         // The merk primitives still enforce the actual tree's eligibility.
@@ -2335,7 +2337,7 @@ impl GroveDb {
                         // the proof) keeps its wrapper byte either way.
                         let elem =
                             Element::deserialize(value, grove_version).map(|e| e.into_underlying());
-                        if let Ok(element) = &elem {
+                        if let (true, Ok(element)) = (local_offsets_present, &elem) {
                             cost_return_on_error_no_add!(
                                 cost,
                                 path_query.validate_local_offset_host(
@@ -3912,6 +3914,16 @@ impl GroveDb {
                     grove_version,
                 )
             );
+            // Legacy writes could reference a populated tree. The verifier
+            // refuses one in a page, so don't emit a proof it would reject.
+            if referenced_elem.underlying().is_non_empty_tree() {
+                return Err(Error::NotSupported(format!(
+                    "count-offset paginated proofs do not yet support non-empty tree \
+                     return values (key {})",
+                    hex::encode(key)
+                )))
+                .wrap_with_cost(cost);
+            }
             let serialized_referenced_elem = match referenced_elem
                 .stripped_of_backward_references()
                 .serialize(grove_version)

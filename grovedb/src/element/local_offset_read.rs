@@ -1,12 +1,9 @@
-//! Trusted local pages reuse the unencoded count-skip traversal. Only boundary
-//! paths and returned rows are visited; skipped subtrees stay collapsed.
+//! Trusted local pages reuse the count-skip traversal and read the rows it
+//! selects. Boundary paths, returned rows and the root of each collapsed
+//! subtree are loaded; a collapsed subtree's contents are not.
 
 use grovedb_costs::{cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt};
-use grovedb_merk::{
-    element::get::ElementFetchFromStorageExtensions,
-    proofs::{Node, Op},
-    tree_type::TreeType,
-};
+use grovedb_merk::{element::get::ElementFetchFromStorageExtensions, tree_type::TreeType};
 use grovedb_storage::{rocksdb_storage::RocksDbStorage, Storage};
 use grovedb_version::version::GroveVersion;
 
@@ -132,20 +129,7 @@ pub(super) fn read_local_count_page(
         .map_err(Error::MerkError)
     );
     let mut results = Vec::new();
-    for op in page.ops {
-        let node = match op {
-            Op::Push(node) | Op::PushInverted(node) => node,
-            _ => continue,
-        };
-        let (key, value) = match node {
-            Node::KV(key, value)
-            | Node::KVCount(key, value, _)
-            | Node::KVSum(key, value, _)
-            | Node::KVCountSum(key, value, ..)
-            | Node::KVValueHash(key, value, ..)
-            | Node::KVValueHashFeatureType(key, value, ..) => (key, value),
-            _ => continue,
-        };
+    for (key, value) in page.returned_rows {
         let element = cost_return_on_error_no_add!(
             cost,
             Element::deserialize(&value, v).map_err(Error::from)

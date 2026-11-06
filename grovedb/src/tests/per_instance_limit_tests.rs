@@ -798,8 +798,14 @@ fn merge_lifts_limits_onto_exclusive_branches_and_round_trips() {
         // other input's row.
         let mut globally_limited = top_k_query(50, None, None);
         globally_limited.query.limit = Some(3);
-        let merged = PathQuery::merge(vec![&globally_limited, &other], grove_version)
-            .expect("global limits lift from GROVE_V4");
+        let merged = PathQuery::merge(vec![&globally_limited, &other], grove_version);
+        if grove_version.grovedb_versions.path_query_methods.merge >= 2 {
+            // From GROVE_V5 a body with subqueries keeps its global limit to
+            // itself: a branch cap would not charge its empty subtrees.
+            assert!(matches!(merged, Err(Error::NotSupported(_))));
+            continue;
+        }
+        let merged = merged.expect("global limits lift under GROVE_V4");
         assert_eq!(merged.query.limit, None, "the merged query stays unsized");
         let rows = assert_proved_matches_trusted_read(&db, &merged, grove_version);
         assert_eq!(rows, 4, "3 lifted rows from docs plus the other row");

@@ -241,6 +241,9 @@ where
             *l -= 1;
         }
         state.returned = state.returned.saturating_add(1);
+        state
+            .returned_rows
+            .push((node_key.clone(), walker.tree().value_as_slice().to_vec()));
         emit_returned_node(walker, node_count, tree_type)
     };
 

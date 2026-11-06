@@ -163,6 +163,8 @@ fn leads_to_local_offset(query: &Query, path: &[&[u8]]) -> bool {
 }
 
 impl PathQuery {
+    /// Checks one proved row of a query with a local offset. Callers test
+    /// `has_instance_offset_anywhere` once per layer rather than per row.
     pub(crate) fn validate_local_offset_host(
         &self,
         parent: &[&[u8]],
@@ -170,9 +172,6 @@ impl PathQuery {
         element: &crate::Element,
         v: &GroveVersion,
     ) -> Result<(), Error> {
-        if !self.query.query.has_instance_offset_anywhere() {
-            return Ok(());
-        }
         let mut child = parent.to_vec();
         child.push(key);
         let on_offset_path = if child.len() <= self.path.len() {

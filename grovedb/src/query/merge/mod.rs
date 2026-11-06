@@ -36,8 +36,8 @@
 //!   are still refused: they skip rows, while a branch offset skips count
 //!   units. Global zero offsets are no-ops. A single input keeps its global
 //!   row offset unchanged. Branch offsets at the merged root, overlapping
-//!   budget scopes, and an echoing root body sharing its node with other
-//!   inputs are refused. See [`PathQuery::merge`] for count-host
+//!   budget scopes, a global limit on a body with subqueries, and an echoing
+//!   root body sharing its node with other inputs are refused. See [`PathQuery::merge`] for count-host
 //!   requirements and the completeness caveat for exact keys.
 //!
 //! The version-independent prelude (empty-input rejection, the

@@ -99,6 +99,7 @@ where
                 ops: LinkedList::new(),
                 returned: 0,
                 offset_remaining: offset,
+                returned_rows: Vec::new(),
             })
             .wrap_with_cost(Default::default()),
             Some(tree) => {
@@ -154,6 +155,7 @@ where
                 ops: LinkedList::new(),
                 returned: 0,
                 offset_remaining: offset,
+                returned_rows: Vec::new(),
             })
             .wrap_with_cost(Default::default()),
             Some(tree) => {

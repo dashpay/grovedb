@@ -6,9 +6,10 @@
 //! `Query::offset`s. A nonzero global offset is still refused, as in v1: it
 //! skips rows, while a branch offset skips committed count units, so lifting
 //! one into the other could return a different page than the input alone. A
-//! global zero skip remains a no-op. A root-landing body that echoes its
-//! parent trees cannot share its node with other inputs, whose keys its echo
-//! would cover.
+//! global zero skip remains a no-op. A global limit lifts only onto a body
+//! without subqueries: it is also charged for an empty subtree, which a branch
+//! cap is not. A root-landing body that echoes its parent trees cannot share
+//! its node with other inputs, whose keys its echo would cover.
 
 use grovedb_merk::proofs::query::{Query, QueryItem, SubqueryBranch};
 
@@ -71,6 +72,17 @@ pub(super) fn merge_v2(path_queries: Vec<&PathQuery>) -> Result<PathQuery, Error
                                 "subquery must exist on a sub-level merge branch",
                             ),
                         )?;
+                        // A global limit is also charged for an empty subtree,
+                        // a branch cap for rows only, so a cap would serve a
+                        // descending body more rows than the input alone.
+                        if subquery.has_subquery() {
+                            return Err(Error::NotSupported(
+                                "can not merge a path query with a global limit whose body has \
+                                 subqueries: a branch cap would not charge its empty subtrees; \
+                                 set Query::limit on the query instead"
+                                    .to_string(),
+                            ));
+                        }
                         subquery.limit = Some(match subquery.limit {
                             Some(own) => own.min(global),
                             None => global,

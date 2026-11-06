@@ -80,6 +80,9 @@ pub(super) struct EmitState {
     /// caller as a convenience (the verifier independently computes it
     /// from the reconstructed proof, so this is not a trust input).
     pub(super) returned: u64,
+    /// The `(key, value)` rows a branch-local page returned, in walk order.
+    /// The global row-offset emitter leaves this empty.
+    pub(super) returned_rows: Vec<(Vec<u8>, Vec<u8>)>,
     /// Walk direction. `true` = ascending (left-to-right), `false` =
     /// descending (right-to-left).
     pub(super) left_to_right: bool,
