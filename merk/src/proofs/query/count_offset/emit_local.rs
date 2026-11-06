@@ -25,13 +25,23 @@ use crate::{
     CryptoHash, Error, TreeType,
 };
 
+/// What a local page's traversal builds. Selection is the same either way, so a
+/// trusted read returns the rows a proof of the same state proves, and each
+/// consumer pays only for its own copy of them.
+pub(super) enum LocalPageOutput<'a> {
+    /// The proof ops a prover serves.
+    Proof(&'a mut LinkedList<Op>),
+    /// The `(key, value)` rows a trusted read returns, in walk order.
+    Rows(&'a mut Vec<(Vec<u8>, Vec<u8>)>),
+}
+
 pub(super) fn emit_local_count_offset_proof<S>(
     walker: &mut RefWalker<'_, S>,
     range: &QueryItem,
     subtree_lo_excl: Option<&[u8]>,
     subtree_hi_excl: Option<&[u8]>,
     state: &mut EmitState,
-    ops: &mut LinkedList<Op>,
+    output: &mut LocalPageOutput<'_>,
     tree_type: TreeType,
     grove_version: &GroveVersion,
 ) -> CostResult<u64, Error>
@@ -95,11 +105,13 @@ where
         } else {
             Node::HashWithCount(kv_hash, left_child_hash, right_child_hash, subtree_count)
         };
-        ops.push_back(if state.left_to_right {
-            Op::Push(node)
-        } else {
-            Op::PushInverted(node)
-        });
+        if let LocalPageOutput::Proof(ops) = output {
+            ops.push_back(if state.left_to_right {
+                Op::Push(node)
+            } else {
+                Op::PushInverted(node)
+            });
+        }
         if matches!(action, CollapseAction::SkippedByOffset) {
             state.offset_remaining = state.offset_remaining.saturating_sub(subtree_count);
         }
@@ -211,7 +223,7 @@ where
                 child_lo,
                 child_hi,
                 state,
-                ops,
+                output,
                 tree_type,
                 grove_version,
             )
@@ -221,43 +233,48 @@ where
         false
     };
 
-    let make_boundary_node = || {
-        if binds_sum_into_hash(tree_type) {
-            Node::KVDigestCountSum(node_key.clone(), node_value_hash, node_count, node_sum)
-        } else {
-            Node::KVDigestCount(node_key.clone(), node_value_hash, node_count)
-        }
-    };
-
-    let self_node = if !is_in_range || own_struct == 0 {
-        make_boundary_node()
+    let selected = if !is_in_range || own_struct == 0 {
+        false
     } else if state.offset_remaining > 0 {
         state.offset_remaining -= 1;
-        make_boundary_node()
-    } else if state.limit_remaining == Some(0) {
-        make_boundary_node()
+        false
     } else {
+        state.limit_remaining != Some(0)
+    };
+    if selected {
         if let Some(ref mut l) = state.limit_remaining {
             *l -= 1;
         }
         state.returned = state.returned.saturating_add(1);
-        state
-            .returned_rows
-            .push((node_key.clone(), walker.tree().value_as_slice().to_vec()));
-        emit_returned_node(walker, node_count, tree_type)
-    };
+    }
 
-    ops.push_back(if state.left_to_right {
-        Op::Push(self_node)
-    } else {
-        Op::PushInverted(self_node)
-    });
-    if first_emitted {
-        ops.push_back(if state.left_to_right {
-            Op::Parent
-        } else {
-            Op::ParentInverted
-        });
+    match output {
+        LocalPageOutput::Proof(ops) => {
+            let self_node = if selected {
+                emit_returned_node(walker, node_count, tree_type)
+            } else if binds_sum_into_hash(tree_type) {
+                Node::KVDigestCountSum(node_key.clone(), node_value_hash, node_count, node_sum)
+            } else {
+                Node::KVDigestCount(node_key.clone(), node_value_hash, node_count)
+            };
+            ops.push_back(if state.left_to_right {
+                Op::Push(self_node)
+            } else {
+                Op::PushInverted(self_node)
+            });
+            if first_emitted {
+                ops.push_back(if state.left_to_right {
+                    Op::Parent
+                } else {
+                    Op::ParentInverted
+                });
+            }
+        }
+        LocalPageOutput::Rows(rows) => {
+            if selected {
+                rows.push((node_key.clone(), walker.tree().value_as_slice().to_vec()));
+            }
+        }
     }
 
     let second_emitted = if walker.tree().link(second_dir).is_some() {
@@ -291,7 +308,7 @@ where
                 child_lo,
                 child_hi,
                 state,
-                ops,
+                output,
                 tree_type,
                 grove_version,
             )
@@ -301,7 +318,7 @@ where
         false
     };
 
-    if second_emitted {
+    if second_emitted && let LocalPageOutput::Proof(ops) = output {
         ops.push_back(if state.left_to_right {
             Op::Child
         } else {

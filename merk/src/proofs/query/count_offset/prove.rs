@@ -9,6 +9,7 @@ use grovedb_version::version::GroveVersion;
 
 use super::{
     emit::{emit_count_offset_proof, EmitState},
+    emit_local::{emit_local_count_offset_proof, LocalPageOutput},
     is_provable_count_bearing,
 };
 use crate::{
@@ -33,10 +34,6 @@ pub struct ProverCountOffsetResult {
     /// items the prover skipped. Useful for callers that want to detect
     /// "offset past the end" without re-walking.
     pub offset_remaining: u64,
-    /// The `(key, value)` rows a branch-local page returned, in walk order, so
-    /// a trusted read need not decode them back out of `ops`. The global
-    /// row-offset prover leaves this empty.
-    pub returned_rows: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
 impl<S> RefWalker<'_, S>
@@ -87,7 +84,6 @@ where
             offset_remaining: offset,
             limit_remaining: limit,
             returned: 0,
-            returned_rows: Vec::new(),
             left_to_right,
         };
         cost_return_on_error!(
@@ -107,10 +103,10 @@ where
             ops,
             returned: state.returned,
             offset_remaining: state.offset_remaining,
-            returned_rows: state.returned_rows,
         })
         .wrap_with_cost(cost)
     }
+
     /// Emit a terminal page after a committed-count-unit skip. Unlike row
     /// pagination, collapsed subtrees need not be inspected for unit rows.
     /// Exposed non-unit rows are refused, so mixed-tree support is partial.
@@ -123,6 +119,68 @@ where
         tree_type: TreeType,
         grove_version: &GroveVersion,
     ) -> CostResult<ProverCountOffsetResult, Error> {
+        let mut cost = OperationCost::default();
+        let mut ops = LinkedList::new();
+        let state = cost_return_on_error!(
+            &mut cost,
+            self.walk_local_count_offset_page(
+                inner_range,
+                offset,
+                limit,
+                left_to_right,
+                tree_type,
+                &mut LocalPageOutput::Proof(&mut ops),
+                grove_version
+            )
+        );
+        Ok(ProverCountOffsetResult {
+            ops,
+            returned: state.returned,
+            offset_remaining: state.offset_remaining,
+        })
+        .wrap_with_cost(cost)
+    }
+
+    /// The `(key, value)` rows of the page
+    /// [`create_local_count_offset_on_range_proof`](Self::create_local_count_offset_on_range_proof)
+    /// proves, in walk order, for a trusted read that has no use for a proof.
+    pub(super) fn read_local_count_offset_rows(
+        &mut self,
+        inner_range: &QueryItem,
+        offset: u64,
+        limit: Option<u64>,
+        left_to_right: bool,
+        tree_type: TreeType,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<(Vec<u8>, Vec<u8>)>, Error> {
+        let mut cost = OperationCost::default();
+        let mut rows = Vec::new();
+        cost_return_on_error!(
+            &mut cost,
+            self.walk_local_count_offset_page(
+                inner_range,
+                offset,
+                limit,
+                left_to_right,
+                tree_type,
+                &mut LocalPageOutput::Rows(&mut rows),
+                grove_version
+            )
+        );
+        Ok(rows).wrap_with_cost(cost)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn walk_local_count_offset_page(
+        &mut self,
+        inner_range: &QueryItem,
+        offset: u64,
+        limit: Option<u64>,
+        left_to_right: bool,
+        tree_type: TreeType,
+        output: &mut LocalPageOutput<'_>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<EmitState, Error> {
         if !is_provable_count_bearing(tree_type) {
             return Err(Error::InvalidProofError(format!(
                 "count-offset paginated proof is only valid against ProvableCountTree, \
@@ -133,33 +191,25 @@ where
         }
 
         let mut cost = OperationCost::default();
-        let mut ops = LinkedList::new();
         let mut state = EmitState {
             offset_remaining: offset,
             limit_remaining: limit,
             returned: 0,
-            returned_rows: Vec::new(),
             left_to_right,
         };
         cost_return_on_error!(
             &mut cost,
-            super::emit_local::emit_local_count_offset_proof(
+            emit_local_count_offset_proof(
                 self,
                 inner_range,
                 None,
                 None,
                 &mut state,
-                &mut ops,
+                output,
                 tree_type,
                 grove_version
             )
         );
-        Ok(ProverCountOffsetResult {
-            ops,
-            returned: state.returned,
-            offset_remaining: state.offset_remaining,
-            returned_rows: state.returned_rows,
-        })
-        .wrap_with_cost(cost)
+        Ok(state).wrap_with_cost(cost)
     }
 }

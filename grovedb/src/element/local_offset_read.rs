@@ -178,7 +178,7 @@ pub(super) fn read_local_count_page(
         hook();
     }
     let host_prefix = RocksDbStorage::build_prefix(subtree_path).unwrap_add_cost(&mut cost);
-    let page = cost_return_on_error!(
+    let rows = cost_return_on_error!(
         &mut cost,
         local_count_offset_page_from_view(
             view.retarget(host_prefix),
@@ -193,7 +193,7 @@ pub(super) fn read_local_count_page(
         .map_err(Error::MerkError)
     );
     let mut results = Vec::new();
-    for (key, value) in page.returned_rows {
+    for (key, value) in rows {
         let element = cost_return_on_error_no_add!(
             cost,
             Element::deserialize(&value, v).map_err(Error::from)

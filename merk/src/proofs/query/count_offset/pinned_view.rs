@@ -16,7 +16,7 @@ use grovedb_costs::{
 use grovedb_storage::RawIterator;
 use grovedb_version::{check_merk_v0_with_cost, version::GroveVersion};
 
-use super::{is_provable_count_bearing, ProverCountOffsetResult};
+use super::is_provable_count_bearing;
 use crate::{
     proofs::query::QueryItem,
     tree::{kv::ValueDefinedCostType, Fetch, Link, RefWalker, TreeNode},
@@ -85,7 +85,8 @@ impl<I: RawIterator> Fetch for PinnedViewSource<I> {
 /// Runs the local count-unit traversal of
 /// [`Merk::prove_local_count_offset_on_range`](crate::Merk::prove_local_count_offset_on_range)
 /// against `view`, a raw iterator scoped to the tree's prefix, so the page comes
-/// from one stable state. `root_key` must have been read through the same view.
+/// from one stable state, and returns its `(key, value)` rows in walk order.
+/// `root_key` must have been read through the same view.
 #[allow(clippy::too_many_arguments)]
 pub fn local_count_offset_page_from_view<I: RawIterator>(
     view: I,
@@ -96,7 +97,7 @@ pub fn local_count_offset_page_from_view<I: RawIterator>(
     limit: Option<u64>,
     left_to_right: bool,
     grove_version: &GroveVersion,
-) -> CostResult<ProverCountOffsetResult, Error> {
+) -> CostResult<Vec<(Vec<u8>, Vec<u8>)>, Error> {
     check_merk_v0_with_cost!(
         "local_count_offset_page_from_view",
         grove_version
@@ -114,13 +115,7 @@ pub fn local_count_offset_page_from_view<I: RawIterator>(
         .wrap_with_cost(cost);
     }
     let Some(root_key) = root_key else {
-        return Ok(ProverCountOffsetResult {
-            ops: Default::default(),
-            returned: 0,
-            offset_remaining: offset,
-            returned_rows: Vec::new(),
-        })
-        .wrap_with_cost(cost);
+        return Ok(Vec::new()).wrap_with_cost(cost);
     };
     let source = PinnedViewSource {
         view: Rc::new(RefCell::new(view)),
@@ -134,7 +129,7 @@ pub fn local_count_offset_page_from_view<I: RawIterator>(
         )
     );
     RefWalker::new(&mut root, source)
-        .create_local_count_offset_on_range_proof(
+        .read_local_count_offset_rows(
             inner_range,
             offset,
             limit,

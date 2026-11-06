@@ -6,9 +6,10 @@
 
 use std::collections::LinkedList;
 
+use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
-use super::verify_count_offset_on_range_proof;
+use super::{local_count_offset_page_from_view, verify_count_offset_on_range_proof};
 use crate::{
     proofs::{encode_into, query::QueryItem, Op as ProofOp},
     test_utils::TempMerk,
@@ -48,14 +49,6 @@ fn assert_local_count_page(
     assert_eq!(verified.skipped, expected_skipped);
     assert_eq!(page.offset_remaining, offset - expected_skipped);
     assert_eq!(
-        page.returned_rows
-            .iter()
-            .map(|(key, _)| key.as_slice())
-            .collect::<Vec<_>>(),
-        expected_keys,
-        "the typed rows are the rows the proof returns"
-    );
-    assert_eq!(
         verified
             .returned_items
             .iter()
@@ -76,6 +69,53 @@ fn local_count_unit_pages_cover_zero_maximum_and_past_end_offsets() {
         assert_local_count_page(&merk, root, 0, left_to_right, 0, &first_page);
         for offset in [15, 16, u64::from(u16::MAX)] {
             assert_local_count_page(&merk, root, offset, left_to_right, 15, &[]);
+        }
+    }
+}
+
+/// One traversal serves both, so a trusted read cannot drift from the proof.
+#[test]
+fn trusted_rows_are_the_rows_a_proof_returns_at_every_offset_and_limit() {
+    let v = GroveVersion::latest();
+    let (merk, _) = make_15_key_provable_count_tree(v);
+    let range = QueryItem::RangeFull(..);
+    for left_to_right in [true, false] {
+        for offset in [0, 1, 7, 14, 15, 16] {
+            for limit in [None, Some(0), Some(1), Some(2), Some(15)] {
+                let page = merk
+                    .prove_local_count_offset_on_range(&range, offset, limit, left_to_right, v)
+                    .unwrap()
+                    .expect("local count page should prove");
+                let proved: Vec<(Vec<u8>, Vec<u8>)> = verify_count_offset_on_range_proof(
+                    &encode_proof(&page.ops),
+                    &range,
+                    offset,
+                    limit,
+                    left_to_right,
+                )
+                .unwrap()
+                .expect("local count page should verify")
+                .returned_items
+                .into_iter()
+                .map(|row| (row.key, row.value))
+                .collect();
+                let rows = local_count_offset_page_from_view(
+                    merk.storage.raw_iter(),
+                    merk.root_key(),
+                    TreeType::ProvableCountTree,
+                    &range,
+                    offset,
+                    limit,
+                    left_to_right,
+                    v,
+                )
+                .unwrap()
+                .expect("local count page should read");
+                assert_eq!(
+                    rows, proved,
+                    "ltr={left_to_right} offset={offset} limit={limit:?}"
+                );
+            }
         }
     }
 }
@@ -2187,7 +2227,7 @@ mod pinned_view_seek_failures {
     use grovedb_storage::RawIterator;
     use grovedb_version::version::GroveVersion;
 
-    use super::super::{local_count_offset_page_from_view, ProverCountOffsetResult};
+    use super::super::local_count_offset_page_from_view;
     use crate::{proofs::query::QueryItem, Error, TreeType};
 
     /// Holds no record at any position, as an iterator past its records and one
@@ -2241,7 +2281,7 @@ mod pinned_view_seek_failures {
         }
     }
 
-    fn page_from(view: NoRecordIterator) -> CostContext<Result<ProverCountOffsetResult, Error>> {
+    fn page_from(view: NoRecordIterator) -> CostContext<Result<Vec<(Vec<u8>, Vec<u8>)>, Error>> {
         local_count_offset_page_from_view(
             view,
             Some(b"root".to_vec()),

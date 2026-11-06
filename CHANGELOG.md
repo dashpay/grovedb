@@ -45,8 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING**: `QueryBudget` adds the public `rows` field; build one with
   `QueryBudget::new(..)`. `GroveDBPathQueryMethodVersions` adds
   `per_instance_query_offsets`; hand-built version tables set it to 0 for
-  historical snapshots. Merk's `ProverCountOffsetResult` adds `returned_rows`,
-  the rows of a branch-local page.
+  historical snapshots.
 - `GroveVersion::latest()` now selects `GROVE_V5`. V5 enables per-instance
   query offsets on supported provable count trees, merge v2 for exclusive
   branch-local pagination, and the v2 trusted query engine with parent-tree
