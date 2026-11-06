@@ -3510,7 +3510,7 @@ fn counted_skip_page<I: RawIterator>(
 
 /// Fetch and decode one merk node from the pinned iterator view. Returns
 /// `Ok(None)` when the key is absent from that view.
-fn snapshot_fetch_node<I: RawIterator>(
+pub(crate) fn snapshot_fetch_node<I: RawIterator>(
     iter: &mut I,
     key: &[u8],
     grove_version: &GroveVersion,
