@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `GROVE_V5` (`protocol_version` 5). `GROVE_V4` as 6.1.1 shipped it is what
   Dash Platform 5.0 (protocol version 14) runs, so behaviour changes from
   here on are gated in `GROVE_V5` and leave V1..V4 as they are. V5 is V4
-  plus the store range reads and proofs and the store creation estimates
-  below.
+  plus the store range reads and proofs, the store creation estimates and
+  repeated keyless appends below.
 - A `PrivateDocumentStore`'s entries can be read and proved by position
   range from `GROVE_V5`. `GroveDb::private_document_store_get_range` reads
   `[start, start + limit)` in append order, clamped to the store's count
@@ -32,6 +32,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - `GroveVersion::latest()` returns `GROVE_V5`. Code that means `GROVE_V4`
   should name it rather than take "latest".
+- From `GROVE_V5` a batch may carry the same keyless append
+  (`CommitmentTreeInsert`, `MmrTreeAppend`, `BulkAppend`, `DenseTreeInsert`,
+  `PrivateDocumentStoreInsert`) more than once (issue #1031). Each lands at
+  its tree's next position, so the batch stores what the same appends applied
+  one by one store. The batch consistency check counts keyed operations only
+  for repeats there; `GROVE_V1`..`V4` still count every operation and refuse
+  such a batch, as 6.1.1 does. Every other consistency check, stored data,
+  proofs and costs are unchanged. Gated by the new
+  `apply_batch.keyless_append_repeats` slot (0 in V1..V4, 1 in V5).
+  **BREAKING** for API users:
+  - `QualifiedGroveDbOp::verify_consistency_of_operations(ops, grove_version)`
+    takes the caller's `&GroveVersion` and returns
+    `Result<GroveDbOpConsistencyResults, Error>`, an error for a slot value it
+    does not know. A caller passes the version it applies the batch at and
+    handles the `Result` (for example with `?`) before reading
+    `is_empty()`.
+  - `GroveDBApplyBatchVersions` gains `keyless_append_repeats`; code building
+    it by hand sets it (0 for the V4 rule, 1 for the V5 rule).
 
 ### Fixed
 - From `GROVE_V5`, insert estimates price creating a `PrivateDocumentStore`

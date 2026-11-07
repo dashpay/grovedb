@@ -21,6 +21,14 @@
 //!   6.1.1 estimates, which price a store's creation below its apply. Gated
 //!   because the estimate is the admission bound.
 //!
+//! - `apply_batch.keyless_append_repeats: 1`: the batch consistency check
+//!   counts keyed operations only for repeats, so a batch may carry the same
+//!   keyless append (`CommitmentTreeInsert`, `MmrTreeAppend`, `BulkAppend`,
+//!   `DenseTreeInsert`, `PrivateDocumentStoreInsert`) more than once and
+//!   stores what the same appends applied one by one store. V4 refuses such a
+//!   batch, as 6.1.1 did. Gated because it flips an accepted/rejected outcome
+//!   (issue #1031).
+//!
 //! It exists so that changes made after GroveDB 6.1.1 have somewhere to
 //! land. GROVE_V4 as 6.1.1 shipped it is what Dash Platform 5.0 (protocol
 //! version 14) runs, so a change that alters an accepted/rejected outcome, a
@@ -37,8 +45,9 @@
 
 use super::{
     grovedb_versions::{
-        GroveDBOperationsAverageCaseVersions, GroveDBOperationsPrivateDocumentStoreVersions,
-        GroveDBOperationsVersions, GroveDBOperationsWorstCaseVersions, GroveDBVersions,
+        GroveDBApplyBatchVersions, GroveDBOperationsAverageCaseVersions,
+        GroveDBOperationsPrivateDocumentStoreVersions, GroveDBOperationsVersions,
+        GroveDBOperationsWorstCaseVersions, GroveDBVersions,
     },
     v4::GROVE_V4,
     GroveVersion,
@@ -47,6 +56,10 @@ use super::{
 pub const GROVE_V5: GroveVersion = GroveVersion {
     protocol_version: 5,
     grovedb_versions: GroveDBVersions {
+        apply_batch: GroveDBApplyBatchVersions {
+            keyless_append_repeats: 1, // changed: a batch may repeat a keyless append
+            ..GROVE_V4.grovedb_versions.apply_batch
+        },
         operations: GroveDBOperationsVersions {
             average_case: GroveDBOperationsAverageCaseVersions {
                 average_case_merk_insert_element: 1, // changed: prices a store's creation

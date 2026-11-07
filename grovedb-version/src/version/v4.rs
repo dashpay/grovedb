@@ -440,6 +440,8 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             // update predicts the target's stored bytes through Merk's own
             // just-in-time value update.
             same_batch_reference_target_prediction: 1,
+            // v0: every operation is counted for repeats, keyless appends included.
+            keyless_append_repeats: 0,
         },
         element: GroveDBElementMethodVersions {
             delete: 0,

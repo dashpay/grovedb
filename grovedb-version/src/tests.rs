@@ -87,6 +87,7 @@ fn v5_matches_v4_apart_from_its_gates() {
     operations.private_document_store.range_proof = 0;
     operations.average_case.average_case_merk_insert_element = 0;
     operations.worst_case.worst_case_merk_insert_element = 0;
+    v5_as_v4.grovedb_versions.apply_batch.keyless_append_repeats = 0;
     assert_eq!(format!("{v5_as_v4:?}"), format!("{GROVE_V4:?}"));
 }
 
