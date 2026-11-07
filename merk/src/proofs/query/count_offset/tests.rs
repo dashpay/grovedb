@@ -6,6 +6,7 @@
 
 use std::collections::LinkedList;
 
+use grovedb_costs::OperationCost;
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
@@ -283,6 +284,85 @@ fn local_count_unit_pages_skip_hidden_nested_counts_in_committed_units() {
             }
         }
     }
+}
+
+/// The work bound below would still pass if a fetch stopped being charged, so
+/// this states what a small page costs from the nodes it must load. The fixture
+/// balances to `h` over `d` and `l`, with `b`, `f`, `j` and `n` below them. A
+/// walk loads a collapsed child to read its count, and nothing below it.
+#[test]
+fn should_charge_exactly_the_nodes_a_local_page_loads() {
+    // The prefixed key a pinned view charges for its own read and again for the
+    // validity check inside its value read. A storage `get` charges neither.
+    const VIEW_KEY_CHARGES: u64 = 2 * (32 + 1);
+
+    let v = GroveVersion::latest();
+    let range = QueryItem::RangeFull(..);
+    let (mut merk, _) = make_15_key_provable_count_tree(v);
+    let cases: [(u64, bool, &[u8], &[u8]); 4] = [
+        (5, true, b"hdbfegl", b"fgh"),
+        (5, false, b"hlnjkid", b"jih"),
+        (15, true, b"h", b""),
+        (15, false, b"h", b""),
+    ];
+    for (offset, left_to_right, loaded, rows) in cases {
+        let stored_bytes = |nodes: &[u8]| -> u64 {
+            nodes
+                .iter()
+                .map(|node| {
+                    let bytes = merk.storage.get([*node]).unwrap().unwrap();
+                    bytes.expect("the node is stored").len() as u64
+                })
+                .sum()
+        };
+        let read_cost = OperationCost {
+            seek_count: loaded.len() as u32,
+            storage_loaded_bytes: stored_bytes(loaded) + loaded.len() as u64 * VIEW_KEY_CHARGES,
+            ..Default::default()
+        };
+        // A proof walks from the root the open Merk already holds.
+        let proof_cost = OperationCost {
+            seek_count: loaded.len() as u32 - 1,
+            storage_loaded_bytes: stored_bytes(&loaded[1..]),
+            ..Default::default()
+        };
+
+        let read = local_count_offset_page_from_view(
+            merk.storage.raw_iter(),
+            merk.root_key(),
+            TreeType::ProvableCountTree,
+            &range,
+            offset,
+            Some(3),
+            left_to_right,
+            v,
+        );
+        assert_eq!(read.cost, read_cost, "read at {offset}, {left_to_right}");
+        let keys: Vec<u8> = read.unwrap().unwrap().iter().map(|row| row.0[0]).collect();
+        assert_eq!(keys, rows);
+
+        // Commit reopens the Merk, so the proof cannot reuse loaded links.
+        merk.commit(v);
+        let proof =
+            merk.prove_local_count_offset_on_range(&range, offset, Some(3), left_to_right, v);
+        assert_eq!(proof.cost, proof_cost, "proof at {offset}, {left_to_right}");
+        assert_eq!(proof.unwrap().unwrap().returned, rows.len() as u64);
+    }
+
+    let empty = TempMerk::new_with_tree_type(v, TreeType::ProvableCountTree);
+    let read = local_count_offset_page_from_view(
+        empty.storage.raw_iter(),
+        empty.root_key(),
+        TreeType::ProvableCountTree,
+        &range,
+        1,
+        Some(1),
+        true,
+        v,
+    );
+    assert_eq!(read.cost, OperationCost::default());
+    let proof = empty.prove_local_count_offset_on_range(&range, 1, Some(1), true, v);
+    assert_eq!(proof.cost, OperationCost::default());
 }
 
 #[test]

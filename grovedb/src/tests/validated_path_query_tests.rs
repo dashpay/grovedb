@@ -536,10 +536,9 @@ fn legacy_pagination_contracts_remain_distinct() {
     }
 }
 
-/// The fixtures pin serialized queries, proof bytes, and both operations'
-/// costs against the implementation before validation was unified.
-#[test]
-fn query_proof_bytes_and_costs_match_compatibility_fixtures() {
+/// One fixture row: the serialized query, the proof bytes and the complete cost
+/// of both operations, once the read and the proof are shown to agree.
+fn fixture_row(db: &GroveDb, name: &str, query: &PathQuery, version: &GroveVersion) -> String {
     fn cost(cost: &OperationCost) -> (u32, u64, u32) {
         assert_eq!(cost.storage_cost, Default::default());
         assert_eq!(cost.sinsemilla_hash_calls, 0);
@@ -549,6 +548,35 @@ fn query_proof_bytes_and_costs_match_compatibility_fixtures() {
             cost.hash_node_calls,
         )
     }
+    let read = run(db, query, version);
+    let proof = db.prove_query(query, None, version);
+    let read_cost = cost(&read.cost);
+    let proof_cost = cost(&proof.cost);
+    let read = read.unwrap().unwrap();
+    let proof = proof.unwrap().unwrap();
+    assert_agree(
+        read,
+        GroveDb::verify_path_query(&proof, query, version).unwrap(),
+    );
+    let encoded = bincode::encode_to_vec(
+        query,
+        bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit(),
+    )
+    .unwrap();
+    format!(
+        "v{} {name} {} {} {read_cost:?} {proof_cost:?}",
+        version.protocol_version,
+        blake3::hash(&encoded).to_hex(),
+        blake3::hash(&proof).to_hex()
+    )
+}
+
+/// The fixtures pin serialized queries, proof bytes, and both operations'
+/// costs against the implementation before validation was unified.
+#[test]
+fn query_proof_bytes_and_costs_match_compatibility_fixtures() {
     let mut fixtures = Vec::new();
     for version in GROVE_VERSIONS {
         let db = make_test_grovedb(version);
@@ -636,34 +664,68 @@ fn query_proof_bytes_and_costs_match_compatibility_fixtures() {
             ));
         }
         for (name, query) in cases {
-            let read = run(&db, &query, version);
-            let proof = db.prove_query(&query, None, version);
-            let read_cost = cost(&read.cost);
-            let proof_cost = cost(&proof.cost);
-            let read = read.unwrap().unwrap();
-            let proof = proof.unwrap().unwrap();
-            assert_agree(
-                read,
-                GroveDb::verify_path_query(&proof, &query, version).unwrap(),
-            );
-            let encoded = bincode::encode_to_vec(
-                &query,
-                bincode::config::standard()
-                    .with_big_endian()
-                    .with_no_limit(),
-            )
-            .unwrap();
-            fixtures.push(format!(
-                "v{} {name} {} {} {read_cost:?} {proof_cost:?}",
-                version.protocol_version,
-                blake3::hash(&encoded).to_hex(),
-                blake3::hash(&proof).to_hex()
-            ));
+            fixtures.push(fixture_row(&db, &name, &query, version));
         }
     }
     assert_eq!(
         fixtures.join("\n") + "\n",
         include_str!("fixtures/validated_path_query.txt"),
         "query bytes, proof bytes, or operation costs changed from the pre-refactor baseline"
+    );
+}
+
+/// The `count-offset` row above is a global offset, which walks rows. A local
+/// page reaches its own reader and skip traversal, and a work bound on those
+/// would still pass if a fetch stopped being charged.
+#[test]
+fn should_pin_local_page_proof_bytes_and_costs() {
+    fn page(offset: u16, left_to_right: bool) -> Query {
+        let mut page = Query::new_with_direction(left_to_right);
+        page.insert_all();
+        page.offset = Some(offset);
+        page.limit = Some(2);
+        page
+    }
+    let leaf = |host: &[u8], page: Query| {
+        PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), host.to_vec()], page)
+    };
+    let carrier = |host: &[u8], page: Query| {
+        let mut outer = Query::new_single_key(host.to_vec());
+        outer.set_subquery(page);
+        PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], outer)
+    };
+    let mut fixtures = Vec::new();
+    for version in GROVE_VERSIONS.iter().filter(|version| {
+        version
+            .grovedb_versions
+            .path_query_methods
+            .per_instance_query_offsets
+            == 1
+    }) {
+        let db = make_test_grovedb(version);
+        for host in [b"count", b"empty"] {
+            let tree = Element::empty_provable_count_tree();
+            insert(&db, &[TEST_LEAF], host, tree, version);
+        }
+        for key in *b"abcdefg" {
+            let item = Element::new_item(vec![key]);
+            insert(&db, &[TEST_LEAF, b"count"], &[key], item, version);
+        }
+        for (name, query) in [
+            ("leaf-page-ascending", leaf(b"count", page(2, true))),
+            ("leaf-page-descending", leaf(b"count", page(2, false))),
+            ("leaf-exhausted", leaf(b"count", page(7, true))),
+            ("leaf-empty-host", leaf(b"empty", page(1, true))),
+            ("leaf-missing-host", leaf(b"missing", page(1, true))),
+            ("carrier-page", carrier(b"count", page(2, true))),
+            ("carrier-exhausted", carrier(b"count", page(7, true))),
+        ] {
+            fixtures.push(fixture_row(&db, name, &query, version));
+        }
+    }
+    assert_eq!(
+        fixtures.join("\n") + "\n",
+        include_str!("fixtures/local_count_page.txt"),
+        "local page query bytes, proof bytes, or operation costs changed"
     );
 }

@@ -1,3 +1,5 @@
+#![cfg(feature = "minimal")]
+
 use grovedb_version::version::GroveVersion;
 
 use grovedb::{query_result_type::QueryResultType, Element, GroveDb, PathQuery, Query, SizedQuery};
