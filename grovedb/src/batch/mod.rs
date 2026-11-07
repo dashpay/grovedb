@@ -1834,11 +1834,16 @@ impl QualifiedGroveDbOp {
             .map(|op| (op.clone(), 1))
             .collect();
 
-        // operations should not have any duplicates — O(n) via HashMap
+        // Keyed operations should not have any duplicates — O(n) via HashMap.
+        // Keyless operations (the append family: CommitmentTreeInsert,
+        // MmrTreeAppend, BulkAppend, DenseTreeInsert, PrivateDocumentStoreInsert)
+        // are left out: each appends at its tree's next position, so two
+        // identical ones are two appends, as the same appends applied one by
+        // one are, and the batch preprocessing keeps every one of them in order.
         let mut repeated_ops = internal_only_ops;
         {
             let mut op_counts: HashMap<&QualifiedGroveDbOp, u16> = HashMap::new();
-            for op in ops.iter() {
+            for op in ops.iter().filter(|op| op.key.is_some()) {
                 *op_counts.entry(op).or_insert(0) += 1;
             }
             for (op, count) in op_counts {

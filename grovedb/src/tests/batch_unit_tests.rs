@@ -541,6 +541,34 @@ mod tests {
     }
 
     #[test]
+    fn test_consistency_allows_identical_keyless_appends() {
+        let path = vec![b"root".to_vec(), b"tree_key".to_vec()];
+        for append_op in [
+            QualifiedGroveDbOp::commitment_tree_insert_op(
+                path.clone(),
+                [1; 32],
+                [2; 32],
+                [3; 32],
+                vec![],
+            ),
+            QualifiedGroveDbOp::mmr_tree_append_op(path.clone(), b"data".to_vec()),
+            QualifiedGroveDbOp::bulk_append_op(path.clone(), b"data".to_vec()),
+            QualifiedGroveDbOp::dense_tree_insert_op(path.clone(), b"data".to_vec()),
+            QualifiedGroveDbOp::private_document_store_insert_op(path.clone(), b"data".to_vec()),
+        ] {
+            // An append lands at its tree's next position: two identical ones
+            // are two appends, not a repeated operation.
+            let ops = vec![append_op.clone(), append_op.clone(), append_op];
+            let results = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
+            assert!(
+                results.is_empty(),
+                "identical keyless appends must not be flagged: {:?}",
+                ops
+            );
+        }
+    }
+
+    #[test]
     fn test_consistency_append_delete_conflict() {
         let ops = vec![
             QualifiedGroveDbOp::mmr_tree_append_op(
