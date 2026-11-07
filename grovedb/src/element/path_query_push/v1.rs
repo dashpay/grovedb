@@ -71,6 +71,7 @@ pub(crate) fn path_query_push_v1(
         subquery_path,
         subquery,
         left_to_right,
+        add_parent_tree_on_subquery,
         query_options,
         result_type,
         results,
@@ -105,7 +106,7 @@ pub(crate) fn path_query_push_v1(
             let path_vec_owned = path_vec.iter().map(|x| x.to_vec()).collect();
             let inner_path_query = PathQuery::new(path_vec_owned, inner_query);
 
-            let (mut sub_elements, skipped, child_consumed) = cost_return_on_error!(
+            let (mut sub_elements, skipped, child_consumed, _child_rows) = cost_return_on_error!(
                 &mut cost,
                 get_path_query_internal(
                     storage,
@@ -240,6 +241,7 @@ pub(crate) fn path_query_push_v1(
                         subquery_path,
                         subquery,
                         left_to_right,
+                        add_parent_tree_on_subquery,
                         query_options,
                         result_type,
                         results,
@@ -269,6 +271,7 @@ pub(crate) fn path_query_push_v1(
                     subquery_path,
                     subquery,
                     left_to_right,
+                    add_parent_tree_on_subquery,
                     query_options,
                     result_type,
                     results,

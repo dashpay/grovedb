@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `GROVE_V5` (`protocol_version` 5). `GROVE_V4` as 6.1.1 shipped it is what
   Dash Platform 5.0 (protocol version 14) runs, so behaviour changes from
   here on are gated in `GROVE_V5` and leave V1..V4 as they are. V5 is V4
-  plus the store range reads and proofs, the store creation estimates and
-  repeated keyless appends below.
+  plus the store range reads and proofs, the store creation estimates, the
+  query changes and repeated keyless appends below.
 - A `PrivateDocumentStore`'s entries can be read and proved by position
   range from `GROVE_V5`. `GroveDb::private_document_store_get_range` reads
   `[start, start + limit)` in append order, clamped to the store's count
@@ -30,8 +30,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   root.
 
 ### Changed
-- `GroveVersion::latest()` returns `GROVE_V5`. Code that means `GROVE_V4`
-  should name it rather than take "latest".
+- **BREAKING**: `Query` adds the public `offset: Option<u16>` field for
+  branch-local committed-count-unit pagination. Exhaustive struct literals
+  must supply the field or use a default update. Offset-bearing queries use
+  a new native version-3 flag and a new serde version-4 frame, which older
+  decoders reject; offset-free encodings remain unchanged.
+- **BREAKING**: `QueryOptions` adds `include_parent_tree_on_subquery`.
+  Exhaustive struct literals must supply the field or use a default update.
+  It defaults to `true`, and applies to V5 raw reads (`allow_get_raw`) only:
+  non-raw reads and value projections never return parent echoes. A V5 raw
+  read refuses a nonzero global offset together with a parent echo, since
+  echoes are not rows the offset can skip. Earlier query engines ignore the
+  field.
+- **BREAKING**: `QueryBudget` adds the public `rows` field; build one with
+  `QueryBudget::new(..)`. `GroveDBPathQueryMethodVersions` adds
+  `per_instance_query_offsets`; hand-built version tables set it to 0 for
+  historical snapshots.
+- `GroveVersion::latest()` now selects `GROVE_V5`. V5 enables per-instance
+  query offsets on supported provable count trees, merge v2 for exclusive
+  branch-local pagination, and the v2 trusted query engine with parent-tree
+  echoes. Earlier Grove versions continue to reject local offsets. Merge v2
+  carries a branch's own `Query::offset` but, like v1, refuses a nonzero
+  global `SizedQuery::offset`, which skips rows rather than count units. It
+  also refuses a global limit on a body with subqueries, which a branch cap
+  could not represent because it is not charged for empty subtrees, and a node
+  that echoes parents while shared with other inputs at any depth.
 - From `GROVE_V5` a batch may carry the same keyless append
   (`CommitmentTreeInsert`, `MmrTreeAppend`, `BulkAppend`, `DenseTreeInsert`,
   `PrivateDocumentStoreInsert`) more than once (issue #1031). Each lands at
@@ -52,6 +75,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     it by hand sets it (0 for the V4 rule, 1 for the V5 rule).
 
 ### Fixed
+- Reads through a pinned iterator view, indexed-tree pages and V5 local count
+  pages alike, report a failed seek as the storage error. A failed seek reads
+  as no record, so an indexed-tree page called it corruption and a local page
+  could have come back empty.
 - From `GROVE_V5`, insert estimates price creating a `PrivateDocumentStore`
   as the apply does. The average- and worst-case `merk_insert_element`
   estimators v2 (selected by `average_case_merk_insert_element: 1` and
@@ -65,6 +92,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in the worst case) below its apply, which the batch estimate's
   propagation headroom happens to cover. Estimates of every other element,
   applied costs, stored data and proofs do not change.
+- From `GROVE_V5`, count-offset proof verification accepts pages whose rows
+  resolve through a reference to an empty tree, which earlier versions could
+  persist. The empty-tree hash check applies only to direct tree rows on the
+  global offset path (the new `proof.count_offset_reference_empty_tree_rows`
+  slot, 0 in V1..V4 and 1 in V5; **BREAKING** for code building
+  `GroveDBOperationsProofVersions` by hand) and on V5 local pages; resolved
+  references keep the target binding Merk already verifies. V1..V4 refuse
+  such a global page, as 6.1.1 did.
 
 ## [6.1.1] - 2026-10-20
 

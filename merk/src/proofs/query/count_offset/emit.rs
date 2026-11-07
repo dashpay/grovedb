@@ -625,7 +625,7 @@ where
 /// contributes `own` count units instead of one. Shared by the
 /// pre-collapse walk and the descended-row check so callers see one
 /// message.
-fn non_unit_row_error(key: &[u8], own: u64) -> Error {
+pub(super) fn non_unit_row_error(key: &[u8], own: u64) -> Error {
     Error::InvalidProofError(format!(
         "count-offset paginated proofs require every row they skip or descend through to \
          contribute exactly one count unit, but the row at key {} contributes {} — a \
@@ -643,7 +643,7 @@ fn non_unit_row_error(key: &[u8], own: u64) -> Error {
 /// two emit the op for the parent's hash-binding but otherwise leave
 /// state alone.
 #[derive(Clone, Copy)]
-enum CollapseAction {
+pub(super) enum CollapseAction {
     /// Subtree's keys are entirely outside the inner range — no
     /// in-range items, but the structural count still has to be
     /// committed for the parent's `own_count` derivation.
@@ -675,7 +675,11 @@ enum CollapseAction {
 /// AggregateData at verify time — the verifier's `own_count = aggregate
 /// − left_struct − right_struct` derivation would underflow at every
 /// internal node and the proof would reject.
-fn emit_returned_node<S>(walker: &RefWalker<'_, S>, count: u64, tree_type: TreeType) -> Node
+pub(super) fn emit_returned_node<S>(
+    walker: &RefWalker<'_, S>,
+    count: u64,
+    tree_type: TreeType,
+) -> Node
 where
     S: Fetch + Sized + Clone,
 {

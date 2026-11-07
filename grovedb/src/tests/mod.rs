@@ -144,6 +144,7 @@ mod replication_session_tests;
 mod replication_utils_tests;
 mod replication_version_tests;
 mod run_path_query_tests;
+mod snapshot_fetch_node_tests;
 mod snapshot_read_transaction_tests;
 mod succinctness_gap_test;
 mod sum_budget_proof_tests;
@@ -4768,6 +4769,7 @@ mod general_tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: None,
                 offset: None,

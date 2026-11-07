@@ -635,6 +635,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 chunk_proof_row_binding: 1, // bind every tree / reference row of a trunk or branch chunk proof
                 axis_descent_in_v1_envelope: 1, // axis-ordered descents in the V1 envelope (ReadMode::Axis)
                 sum_budget_in_v1_envelope: 1, // sum-budget windows in the V1 envelope (ReadMode::SumBudget)
+                count_offset_reference_empty_tree_rows: 0,
             },
             average_case: GroveDBOperationsAverageCaseVersions {
                 add_average_case_get_merk_at_path: 0,
@@ -704,6 +705,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             query_items_at_path: 0,
             should_add_parent_tree_at_path: 0,
             unified_read_mode: 1,
+            per_instance_query_offsets: 0,
             per_instance_query_limits: 1, // Query::limit served on trusted reads (V4+)
         },
         storage_costs: GroveDBStorageCostVersions {

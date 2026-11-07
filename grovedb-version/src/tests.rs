@@ -87,6 +87,12 @@ fn v5_matches_v4_apart_from_its_gates() {
     operations.private_document_store.range_proof = 0;
     operations.average_case.average_case_merk_insert_element = 0;
     operations.worst_case.worst_case_merk_insert_element = 0;
+    operations.proof.count_offset_reference_empty_tree_rows = 0;
+    v5_as_v4.grovedb_versions.element.path_query_push =
+        GROVE_V4.grovedb_versions.element.path_query_push;
+    let path_query_methods = &mut v5_as_v4.grovedb_versions.path_query_methods;
+    path_query_methods.merge = GROVE_V4.grovedb_versions.path_query_methods.merge;
+    path_query_methods.per_instance_query_offsets = 0;
     v5_as_v4.grovedb_versions.apply_batch.keyless_append_repeats = 0;
     assert_eq!(format!("{v5_as_v4:?}"), format!("{GROVE_V4:?}"));
 }
@@ -810,4 +816,25 @@ fn bulk_append_cost_versions_are_pinned_per_protocol_version() {
         "the unversioned entry points delegate here and must stay on the \
          shipped figure"
     );
+}
+
+#[test]
+fn local_offsets_only_change_the_v5_query_slots() {
+    for old in &GROVE_VERSIONS[..4] {
+        assert_eq!(
+            old.grovedb_versions
+                .path_query_methods
+                .per_instance_query_offsets,
+            0
+        );
+    }
+    assert_eq!(
+        GROVE_V5
+            .grovedb_versions
+            .path_query_methods
+            .per_instance_query_offsets,
+        1
+    );
+    assert_eq!(GROVE_V5.grovedb_versions.path_query_methods.merge, 2);
+    assert_eq!(GROVE_V5.grovedb_versions.element.path_query_push, 2);
 }

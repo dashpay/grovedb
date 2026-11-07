@@ -58,10 +58,9 @@ impl SubqueryBranch {
     /// refuse rather than conflate them.
     fn branch_merge_carries_instance_limit(&self, other: &Self) -> bool {
         let carries = |branch: &Self| {
-            branch
-                .subquery
-                .as_deref()
-                .is_some_and(|subquery| subquery.has_instance_limit_anywhere())
+            branch.subquery.as_deref().is_some_and(|subquery| {
+                subquery.has_instance_limit_anywhere() || subquery.has_instance_offset_anywhere()
+            })
         };
         carries(self) || carries(other)
     }
@@ -84,7 +83,8 @@ impl SubqueryBranch {
         }
         if self.branch_merge_carries_instance_limit(other) {
             return Err(crate::error::Error::NotSupported(
-                "can not merge subquery branches carrying per-instance limits (Query::limit)"
+                "can not merge subquery branches carrying per-instance limits or offsets \
+                 (Query::limit / Query::offset)"
                     .to_string(),
             ));
         }
@@ -372,15 +372,18 @@ impl Query {
         // the receiver default's path is `[k]`) would be conflated with
         // the incoming default's result set if only the defaults were
         // scanned.
-        if self.has_instance_limit_anywhere()
+        if (self.has_instance_limit_anywhere() || self.has_instance_offset_anywhere())
             || other_default_subquery_branch
                 .subquery
                 .as_deref()
-                .is_some_and(|subquery| subquery.has_instance_limit_anywhere())
+                .is_some_and(|subquery| {
+                    subquery.has_instance_limit_anywhere()
+                        || subquery.has_instance_offset_anywhere()
+                })
         {
             return Err(crate::error::Error::NotSupported(
-                "can not merge a default subquery branch carrying a per-instance limit \
-                 (Query::limit)"
+                "can not merge a default subquery branch carrying a per-instance limit or offset \
+                 (Query::limit / Query::offset)"
                     .to_string(),
             ));
         }
@@ -666,9 +669,11 @@ impl Query {
                         .to_string(),
                 ));
             }
-            if query.has_instance_limit_anywhere() {
+            if query.has_instance_limit_anywhere() || query.has_instance_offset_anywhere() {
                 return Err(crate::error::Error::NotSupported(
-                    "cannot merge queries carrying per-instance limits (Query::limit)".to_string(),
+                    "cannot merge queries carrying per-instance limits or offsets \
+                     (Query::limit / Query::offset)"
+                        .to_string(),
                 ));
             }
         }
@@ -723,6 +728,7 @@ impl Query {
                 // instance-limit-free here.
                 read_mode: _,
                 limit: _,
+                offset: _,
             } = query;
             // Preserve add_parent_tree_on_subquery if any query requests it
             if add_parent_tree_on_subquery {
@@ -775,9 +781,13 @@ impl Query {
                 "cannot merge queries carrying read modes (axis / sum-budget reads)".to_string(),
             ));
         }
-        if self.has_instance_limit_anywhere() || other.has_instance_limit_anywhere() {
+        if (self.has_instance_limit_anywhere() || self.has_instance_offset_anywhere())
+            || (other.has_instance_limit_anywhere() || other.has_instance_offset_anywhere())
+        {
             return Err(crate::error::Error::NotSupported(
-                "cannot merge queries carrying per-instance limits (Query::limit)".to_string(),
+                "cannot merge queries carrying per-instance limits or offsets \
+                 (Query::limit / Query::offset)"
+                    .to_string(),
             ));
         }
         self.merge_with_unchecked(other);
@@ -796,6 +806,7 @@ impl Query {
             // instance-limit-free here.
             read_mode: _,
             limit: _,
+            offset: _,
         } = other;
         // Preserve add_parent_tree_on_subquery if either query requests it
         if add_parent_tree_on_subquery {
@@ -860,15 +871,18 @@ impl Query {
                     .to_string(),
             ));
         }
-        if self.has_instance_limit_anywhere()
+        if (self.has_instance_limit_anywhere() || self.has_instance_offset_anywhere())
             || subquery_branch_merging_in
                 .subquery
                 .as_deref()
-                .is_some_and(|subquery| subquery.has_instance_limit_anywhere())
+                .is_some_and(|subquery| {
+                    subquery.has_instance_limit_anywhere()
+                        || subquery.has_instance_offset_anywhere()
+                })
         {
             return Err(crate::error::Error::NotSupported(
-                "can not merge a conditional subquery branch carrying a per-instance limit \
-                 (Query::limit)"
+                "can not merge a conditional subquery branch carrying a per-instance limit or offset \
+                 (Query::limit / Query::offset)"
                     .to_string(),
             ));
         }
@@ -939,21 +953,24 @@ impl Query {
                 .as_ref()
                 .is_some_and(|branches| {
                     branches.values().any(|branch| {
-                        branch
-                            .subquery
-                            .as_deref()
-                            .is_some_and(|subquery| subquery.has_instance_limit_anywhere())
+                        branch.subquery.as_deref().is_some_and(|subquery| {
+                            subquery.has_instance_limit_anywhere()
+                                || subquery.has_instance_offset_anywhere()
+                        })
                     })
                 });
         if existing_carries_limit
             || subquery_branch_merging_in
                 .subquery
                 .as_deref()
-                .is_some_and(|subquery| subquery.has_instance_limit_anywhere())
+                .is_some_and(|subquery| {
+                    subquery.has_instance_limit_anywhere()
+                        || subquery.has_instance_offset_anywhere()
+                })
         {
             return Err(crate::error::Error::NotSupported(
-                "can not merge a conditional subquery branch carrying a per-instance limit \
-                 (Query::limit)"
+                "can not merge a conditional subquery branch carrying a per-instance limit or offset \
+                 (Query::limit / Query::offset)"
                     .to_string(),
             ));
         }
