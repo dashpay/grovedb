@@ -286,6 +286,24 @@ pub struct GroveDBApplyBatchVersions {
     ///   for every item kind, every answer of the flags update and every
     ///   order the batch writes the reference and its target in.
     pub same_batch_reference_target_prediction: FeatureVersion,
+    /// Whether a batch may carry the same keyless append more than once
+    /// (issue #1031). `QualifiedGroveDbOp::verify_consistency_of_operations`
+    /// reads it.
+    ///
+    /// - `0` (V1..V4): every operation is counted for repeats, so a batch
+    ///   carrying the same `CommitmentTreeInsert`, `MmrTreeAppend`,
+    ///   `BulkAppend`, `DenseTreeInsert` or `PrivateDocumentStoreInsert` twice
+    ///   fails the consistency check, though the same appends applied one by
+    ///   one are accepted.
+    /// - `1` (V5+): only keyed operations are counted. Each keyless append
+    ///   lands at its tree's next position and the batch preprocessing keeps
+    ///   every one in order, so the batch stores what the same appends applied
+    ///   one by one store.
+    ///
+    /// Every other consistency check, and every cost, is the same on both. The
+    /// slot gates an accepted/rejected outcome: a batch V1..V4 refuse is
+    /// accepted on V5+.
+    pub keyless_append_repeats: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

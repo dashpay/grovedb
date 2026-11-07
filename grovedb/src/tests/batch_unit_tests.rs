@@ -9,7 +9,9 @@
 mod tests {
     use grovedb_merk::tree::AggregateData;
     use grovedb_merk::tree_type::TreeType;
-    use grovedb_version::version::{v3::GROVE_V3, GroveVersion};
+    use grovedb_version::version::{
+        v1::GROVE_V1, v3::GROVE_V3, v4::GROVE_V4, v5::GROVE_V5, GroveVersion,
+    };
 
     use crate::batch::key_info::KeyInfo::KnownKey;
 
@@ -533,17 +535,18 @@ mod tests {
         );
         // Three copies of the same op
         let ops = vec![op.clone(), op.clone(), op];
-        let results = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
+        let results =
+            QualifiedGroveDbOp::verify_consistency_of_operations(&ops, GroveVersion::latest())
+                .expect("a known consistency check version");
         assert!(
             !results.is_empty(),
             "duplicate ops should be flagged as inconsistent"
         );
     }
 
-    #[test]
-    fn test_consistency_allows_identical_keyless_appends() {
+    fn identical_keyless_appends() -> Vec<Vec<QualifiedGroveDbOp>> {
         let path = vec![b"root".to_vec(), b"tree_key".to_vec()];
-        for append_op in [
+        [
             QualifiedGroveDbOp::commitment_tree_insert_op(
                 path.clone(),
                 [1; 32],
@@ -554,18 +557,65 @@ mod tests {
             QualifiedGroveDbOp::mmr_tree_append_op(path.clone(), b"data".to_vec()),
             QualifiedGroveDbOp::bulk_append_op(path.clone(), b"data".to_vec()),
             QualifiedGroveDbOp::dense_tree_insert_op(path.clone(), b"data".to_vec()),
-            QualifiedGroveDbOp::private_document_store_insert_op(path.clone(), b"data".to_vec()),
-        ] {
+            QualifiedGroveDbOp::private_document_store_insert_op(path, b"data".to_vec()),
+        ]
+        .into_iter()
+        .map(|append_op| vec![append_op.clone(), append_op.clone(), append_op])
+        .collect()
+    }
+
+    /// V1..V4 count every operation for repeats, keyless appends included
+    /// (`keyless_append_repeats` 0); V5 counts keyed operations only (1).
+    #[test]
+    fn test_consistency_flags_identical_keyless_appends_before_v5_only() {
+        for ops in identical_keyless_appends() {
+            for version in [&GROVE_V1, &GROVE_V3, &GROVE_V4] {
+                let results = QualifiedGroveDbOp::verify_consistency_of_operations(&ops, version)
+                    .expect("a known consistency check version");
+                assert!(
+                    !results.is_empty(),
+                    "protocol version {} must flag identical keyless appends: {:?}",
+                    version.protocol_version,
+                    ops
+                );
+            }
             // An append lands at its tree's next position: two identical ones
             // are two appends, not a repeated operation.
-            let ops = vec![append_op.clone(), append_op.clone(), append_op];
-            let results = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
+            let results = QualifiedGroveDbOp::verify_consistency_of_operations(&ops, &GROVE_V5)
+                .expect("a known consistency check version");
             assert!(
                 results.is_empty(),
-                "identical keyless appends must not be flagged: {:?}",
+                "GROVE_V5 must not flag identical keyless appends: {:?}",
                 ops
             );
         }
+    }
+
+    #[test]
+    fn test_consistency_still_flags_identical_keyed_ops_on_v5() {
+        let op = QualifiedGroveDbOp::insert_or_replace_op(
+            vec![b"root".to_vec()],
+            b"key1".to_vec(),
+            Element::new_item(b"a".to_vec()),
+        );
+        let results =
+            QualifiedGroveDbOp::verify_consistency_of_operations(&[op.clone(), op], &GROVE_V5)
+                .expect("a known consistency check version");
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn test_consistency_refuses_an_unknown_keyless_append_repeats_version() {
+        let mut version = GROVE_V5.clone();
+        version.grovedb_versions.apply_batch.keyless_append_repeats = 2;
+        let result = QualifiedGroveDbOp::verify_consistency_of_operations(
+            &identical_keyless_appends()[0],
+            &version,
+        );
+        assert!(
+            matches!(result, Err(Error::VersionError(_))),
+            "an unknown slot value must be refused, got {result:?}"
+        );
     }
 
     #[test]
@@ -577,7 +627,9 @@ mod tests {
             ),
             QualifiedGroveDbOp::delete_op(vec![b"root".to_vec()], b"tree_key".to_vec()),
         ];
-        let results = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
+        let results =
+            QualifiedGroveDbOp::verify_consistency_of_operations(&ops, GroveVersion::latest())
+                .expect("a known consistency check version");
         assert!(
             !results.is_empty(),
             "append + delete targeting same tree should be flagged"
@@ -592,7 +644,9 @@ mod tests {
             vec![append_op.clone(), keyed_op.clone()],
             vec![keyed_op.clone(), append_op.clone()],
         ] {
-            let results = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
+            let results =
+                QualifiedGroveDbOp::verify_consistency_of_operations(&ops, GroveVersion::latest())
+                    .expect("a known consistency check version");
             assert!(
                 !results.is_empty(),
                 "append + keyed op targeting same tree should be flagged for {:?}",
@@ -698,7 +752,9 @@ mod tests {
                 Element::new_item(b"val".to_vec()),
             ),
         ];
-        let results = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
+        let results =
+            QualifiedGroveDbOp::verify_consistency_of_operations(&ops, GroveVersion::latest())
+                .expect("a known consistency check version");
         assert!(
             !results.is_empty(),
             "InsertWithKnownToNotAlreadyExist under a deleted path should be flagged"
@@ -720,7 +776,9 @@ mod tests {
                 Element::new_item(b"val".to_vec()),
             ),
         ];
-        let results = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
+        let results =
+            QualifiedGroveDbOp::verify_consistency_of_operations(&ops, GroveVersion::latest())
+                .expect("a known consistency check version");
         assert!(
             !results.is_empty(),
             "insert under a DeleteTree path should be flagged"

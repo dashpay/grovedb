@@ -88,7 +88,9 @@ use grovedb_storage::{
     },
     Storage, StorageBatch, StorageContext,
 };
-use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
+use grovedb_version::{
+    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
+};
 use grovedb_visualize::{Drawer, Visualize};
 use initial_segment_footprint::InitialSegmentFootprint;
 use itertools::Itertools;
@@ -1814,9 +1816,74 @@ impl QualifiedGroveDbOp {
         }
     }
 
-    /// Verify consistency of operations
+    /// Verify consistency of operations, by the rules `grove_version` selects
+    /// through `grovedb_versions.apply_batch.keyless_append_repeats`: `0`
+    /// (V1..V4) counts every operation for repeats, `1` (V5) counts keyed
+    /// operations only (see [`Self::repeated_keyed_ops_v1`]). Every other check
+    /// is the same on every version. A slot value it does not know is an
+    /// error.
     pub fn verify_consistency_of_operations(
         ops: &[QualifiedGroveDbOp],
+        grove_version: &GroveVersion,
+    ) -> Result<GroveDbOpConsistencyResults, Error> {
+        let repeated_ops = match grove_version
+            .grovedb_versions
+            .apply_batch
+            .keyless_append_repeats
+        {
+            0 => Self::repeated_ops_v0(ops),
+            1 => Self::repeated_keyed_ops_v1(ops),
+            version => {
+                return Err(GroveVersionError::UnknownVersionMismatch {
+                    method: "verify_consistency_of_operations".to_string(),
+                    known_versions: vec![0, 1],
+                    received: version,
+                }
+                .into())
+            }
+        };
+        Ok(Self::consistency_results_with_repeats(ops, repeated_ops))
+    }
+
+    /// The operations a batch carries more than once, with their counts,
+    /// counting every operation (V1..V4): a keyless append repeated is
+    /// refused like any other repeated operation. Frozen.
+    fn repeated_ops_v0(ops: &[QualifiedGroveDbOp]) -> Vec<(QualifiedGroveDbOp, u16)> {
+        let mut op_counts: HashMap<&QualifiedGroveDbOp, u16> = HashMap::new();
+        for op in ops.iter() {
+            *op_counts.entry(op).or_insert(0) += 1;
+        }
+        op_counts
+            .into_iter()
+            .filter(|(_, count)| *count > 1)
+            .map(|(op, count)| (op.clone(), count))
+            .collect()
+    }
+
+    /// The keyed operations a batch carries more than once, with their counts
+    /// (V5). Keyless operations (the append family: `CommitmentTreeInsert`,
+    /// `MmrTreeAppend`, `BulkAppend`, `DenseTreeInsert`,
+    /// `PrivateDocumentStoreInsert`) are left out: each appends at its tree's
+    /// next position, so two identical ones are two appends, as the same
+    /// appends applied one by one are, and the batch preprocessing keeps every
+    /// one of them in order (issue #1031).
+    fn repeated_keyed_ops_v1(ops: &[QualifiedGroveDbOp]) -> Vec<(QualifiedGroveDbOp, u16)> {
+        let mut op_counts: HashMap<&QualifiedGroveDbOp, u16> = HashMap::new();
+        for op in ops.iter().filter(|op| op.key.is_some()) {
+            *op_counts.entry(op).or_insert(0) += 1;
+        }
+        op_counts
+            .into_iter()
+            .filter(|(_, count)| *count > 1)
+            .map(|(op, count)| (op.clone(), count))
+            .collect()
+    }
+
+    /// The consistency checks every version makes, with `repeated_ops`, the
+    /// repeats the caller's version counted.
+    fn consistency_results_with_repeats(
+        ops: &[QualifiedGroveDbOp],
+        repeated_ops: Vec<(QualifiedGroveDbOp, u16)>,
     ) -> GroveDbOpConsistencyResults {
         // Reject internal-only ops that should never appear in user-submitted
         // batches. These are produced by preprocessing or propagation only.
@@ -1834,24 +1901,11 @@ impl QualifiedGroveDbOp {
             .map(|op| (op.clone(), 1))
             .collect();
 
-        // Keyed operations should not have any duplicates — O(n) via HashMap.
-        // Keyless operations (the append family: CommitmentTreeInsert,
-        // MmrTreeAppend, BulkAppend, DenseTreeInsert, PrivateDocumentStoreInsert)
-        // are left out: each appends at its tree's next position, so two
-        // identical ones are two appends, as the same appends applied one by
-        // one are, and the batch preprocessing keeps every one of them in order.
-        let mut repeated_ops = internal_only_ops;
-        {
-            let mut op_counts: HashMap<&QualifiedGroveDbOp, u16> = HashMap::new();
-            for op in ops.iter().filter(|op| op.key.is_some()) {
-                *op_counts.entry(op).or_insert(0) += 1;
-            }
-            for (op, count) in op_counts {
-                if count > 1 {
-                    repeated_ops.push((op.clone(), count));
-                }
-            }
-        }
+        // Operations should not have any duplicates; the caller's version
+        // counted them.
+        let mut internal_and_repeated_ops = internal_only_ops;
+        internal_and_repeated_ops.extend(repeated_ops);
+        let repeated_ops = internal_and_repeated_ops;
 
         // No double insert or delete of same key in same path — O(n) via HashMap.
         // Keyless ops (append-only tree ops) can't conflict — skip them.
@@ -7269,7 +7323,10 @@ impl GroveDb {
             .unwrap_or(true);
 
         if check_batch_operation_consistency {
-            let consistency_result = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
+            let consistency_result = cost_return_on_error_no_add!(
+                cost,
+                QualifiedGroveDbOp::verify_consistency_of_operations(&ops, grove_version)
+            );
             if !consistency_result.is_empty() {
                 return Err(Error::InvalidBatchOperation(
                     "batch operations fail consistency checks",
@@ -7312,7 +7369,10 @@ impl GroveDb {
             // the expanded set should always be consistent; this re-check
             // is a backstop against expansion bugs.
             if check_batch_operation_consistency {
-                let consistency_result = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
+                let consistency_result = cost_return_on_error_no_add!(
+                    cost,
+                    QualifiedGroveDbOp::verify_consistency_of_operations(&ops, grove_version)
+                );
                 if !consistency_result.is_empty() {
                     return Err(Error::InvalidBatchOperation(
                         "derived backward-references operations conflict with the batch's own \
@@ -7758,7 +7818,10 @@ impl GroveDb {
             .unwrap_or(true);
 
         if check_batch_operation_consistency {
-            let consistency_result = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
+            let consistency_result = cost_return_on_error_no_add!(
+                cost,
+                QualifiedGroveDbOp::verify_consistency_of_operations(&ops, grove_version)
+            );
             if !consistency_result.is_empty() {
                 return Err(Error::InvalidBatchOperation(
                     "batch operations fail consistency checks",
@@ -7967,8 +8030,13 @@ impl GroveDb {
         // internal-only ops, or inserts under paths being deleted. Apply the
         // same consistency gate used for the initial batch.
         if check_batch_operation_consistency && !new_operations.is_empty() {
-            let consistency_result =
-                QualifiedGroveDbOp::verify_consistency_of_operations(&new_operations);
+            let consistency_result = cost_return_on_error_no_add!(
+                cost,
+                QualifiedGroveDbOp::verify_consistency_of_operations(
+                    &new_operations,
+                    grove_version
+                )
+            );
             if !consistency_result.is_empty() {
                 return Err(Error::InvalidBatchOperation(
                     "add-on operations from callback fail consistency checks",
