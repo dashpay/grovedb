@@ -409,24 +409,26 @@ impl fmt::Display for Query {
 impl Query {
     /// Whether any node, including dormant conditional branches, has a local
     /// count-unit offset. Unsupported consumers must reject the whole query.
+    ///
+    /// The scan keeps its pending nodes on the heap rather than recursing, so
+    /// a deeply nested query cannot exhaust the stack here before a walk that
+    /// calls this reaches its own depth guard.
     pub fn has_instance_offset_anywhere(&self) -> bool {
-        self.offset.is_some()
-            || self
-                .default_subquery_branch
-                .subquery
-                .as_deref()
-                .is_some_and(Query::has_instance_offset_anywhere)
-            || self
-                .conditional_subquery_branches
-                .as_ref()
-                .is_some_and(|branches| {
-                    branches.values().any(|branch| {
-                        branch
-                            .subquery
-                            .as_deref()
-                            .is_some_and(Query::has_instance_offset_anywhere)
-                    })
-                })
+        let mut pending = vec![self];
+        while let Some(query) = pending.pop() {
+            if query.offset.is_some() {
+                return true;
+            }
+            pending.extend(query.default_subquery_branch.subquery.as_deref());
+            if let Some(branches) = &query.conditional_subquery_branches {
+                pending.extend(
+                    branches
+                        .values()
+                        .filter_map(|branch| branch.subquery.as_deref()),
+                );
+            }
+        }
+        false
     }
 
     pub(crate) fn reject_instance_offsets_for_aggregates(&self) -> Result<(), crate::error::Error> {

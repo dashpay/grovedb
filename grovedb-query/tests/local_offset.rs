@@ -77,6 +77,55 @@ fn local_offset_merges_and_terminal_projections_fail_closed() {
     assert!(root.terminal_keys_v0(vec![], 10, &mut vec![]).is_err());
 }
 
+/// The offset scan runs before the terminal-key walk's depth guard, so it must
+/// not recurse: a chain far deeper than a small stack allows still reaches the
+/// guard, and an offset at its very bottom is still found.
+#[test]
+fn should_reach_the_terminal_key_depth_guard_on_a_chain_deeper_than_the_stack() {
+    const DEPTH: usize = 50_000;
+
+    /// Takes a chain apart one level at a time, so dropping it, even while
+    /// unwinding from a failed assertion, does not recurse once per level.
+    struct Chain(Query);
+    impl Drop for Chain {
+        fn drop(&mut self) {
+            let mut next = self.0.default_subquery_branch.subquery.take();
+            while let Some(mut inner) = next {
+                next = inner.default_subquery_branch.subquery.take();
+            }
+        }
+    }
+    let chain = |bottom_offset: Option<u16>| {
+        let mut query = Query::new_single_key(vec![0]);
+        query.offset = bottom_offset;
+        for _ in 0..DEPTH {
+            let mut parent = Query::new_single_key(vec![0]);
+            parent.set_subquery(query);
+            query = parent;
+        }
+        Chain(query)
+    };
+
+    std::thread::Builder::new()
+        .stack_size(512 * 1024)
+        .spawn(move || {
+            let plain = chain(None);
+            assert!(!plain.0.has_instance_offset_anywhere());
+            for terminal_keys in [Query::terminal_keys_v0, Query::terminal_keys_v1] {
+                let error = terminal_keys(&plain.0, vec![], 10, &mut vec![])
+                    .expect_err("the chain is deeper than the depth guard");
+                assert!(
+                    error.to_string().contains("nesting depth exceeded"),
+                    "{error}"
+                );
+            }
+            assert!(chain(Some(0)).0.has_instance_offset_anywhere());
+        })
+        .expect("the test thread starts")
+        .join()
+        .expect("the offset scan must not exhaust the stack");
+}
+
 #[test]
 fn offset_only_merge_refusals_name_both_per_instance_fields() {
     use grovedb_query::{error::Error, QueryItem, SubqueryBranch};
