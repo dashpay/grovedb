@@ -533,6 +533,7 @@ impl GroveDb {
             &proof.root_layer.lower_layers,
             &prove_options,
             query,
+            query.query.query.has_instance_offset_anywhere(),
             &mut limit_state,
             None,
             &[],
@@ -603,6 +604,7 @@ impl GroveDb {
             &proof.root_layer.lower_layers,
             &prove_options,
             query,
+            query.query.query.has_instance_offset_anywhere(),
             &mut limit_state,
             None,
             &[],
@@ -634,6 +636,7 @@ impl GroveDb {
             &proof.root_layer.lower_layers,
             &prove_options,
             query,
+            query.query.query.has_instance_offset_anywhere(),
             &mut limit_state,
             None,
             &[],
@@ -1708,12 +1711,16 @@ impl GroveDb {
     /// level — O(depth x payload) memory on a proof whose depth and payload an
     /// untrusted peer chooses. Splitting the parameters lets that descent pass
     /// a borrowed slice and a borrowed map, so nothing is copied.
+    ///
+    /// `local_offsets_present` is `has_instance_offset_anywhere` of `query`.
+    /// Every layer shares the query, so the entry point scans it once.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn verify_layer_proof_v1<T>(
         merk_proof_bytes: &[u8],
         lower_layers: &BTreeMap<Vec<u8>, LayerProof>,
         prove_options: &ProveOptions,
         query: &PathQuery,
+        local_offsets_present: bool,
         limit_state: &mut super::V1LimitState,
         inherited_instance: Option<u16>,
         current_path: &[&[u8]],
@@ -1911,8 +1918,6 @@ impl GroveDb {
             })?;
 
         let mut verified_keys = BTreeSet::new();
-        // Once per layer: the query does not change between its rows.
-        let local_offsets_present = query.query.query.has_instance_offset_anywhere();
 
         if merk_result.result_set.is_empty() {
             if prove_options.decrease_limit_on_empty_sub_query_result {
@@ -2224,6 +2229,7 @@ impl GroveDb {
                                         &lower_layer.lower_layers,
                                         prove_options,
                                         query,
+                                        local_offsets_present,
                                         limit_state,
                                         frame_instance,
                                         &path,
@@ -2404,6 +2410,7 @@ impl GroveDb {
                                                     &lower_layer.lower_layers,
                                                     prove_options,
                                                     query,
+                                                    local_offsets_present,
                                                     limit_state,
                                                     frame_instance,
                                                     &path,

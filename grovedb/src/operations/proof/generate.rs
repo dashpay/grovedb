@@ -2088,8 +2088,7 @@ impl GroveDb {
                 )
                 .add_cost(cost);
         }
-        // Once per layer: the query does not change between its rows.
-        let local_offsets_present = path_query.query.query.has_instance_offset_anywhere();
+        let local_offsets_present = validated.has_local_offsets();
 
         // Shape validation fixed the aggregate family and terminal depth.
         // The merk primitives still enforce the actual tree's eligibility.

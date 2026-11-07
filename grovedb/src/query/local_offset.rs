@@ -164,7 +164,7 @@ fn leads_to_local_offset(query: &Query, path: &[&[u8]]) -> bool {
 
 impl PathQuery {
     /// Checks one proved row of a query with a local offset. Callers test
-    /// `has_instance_offset_anywhere` once per layer rather than per row.
+    /// `has_instance_offset_anywhere` once per proof walk rather than per row.
     pub(crate) fn validate_local_offset_host(
         &self,
         parent: &[&[u8]],
