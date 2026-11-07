@@ -27,7 +27,7 @@ use crate::{
 /// `&mut` to seek while `Fetch` takes `&self`, and walkers clone their source,
 /// so the clones share it through a `RefCell`; the walk is single threaded.
 /// Only read-only page walks fetch through it, so its nodes skip the copy of the
-/// value a node keeps as its mutation baseline.
+/// value a node keeps as its mutation baseline, and none leaves this module.
 pub(super) struct PinnedViewSource<I> {
     view: Rc<RefCell<I>>,
 }
@@ -47,26 +47,48 @@ impl<I: RawIterator> PinnedViewSource<I> {
         }
     }
 
+    /// The node is decoded without the copy of its value a commit needs, so it
+    /// must never reach one. It stays inside this read-only walk.
     pub(super) fn fetch_key(&self, key: &[u8]) -> CostResult<TreeNode, Error> {
+        let mut cost = OperationCost::default();
         let mut view = self.view.borrow_mut();
+        let stored = cost_return_on_error!(&mut cost, stored_node_bytes(&mut *view, key));
         // A key this view's own parent or element names must be in this view,
         // so a miss is corruption rather than a race.
-        read_only_node_from_view(&mut *view, key)
-            .map_ok(|node| node.ok_or(Error::KeyNotFoundError("Key not found for fetch")))
-            .flatten()
+        let Some(bytes) = stored else {
+            return Err(Error::KeyNotFoundError("Key not found for fetch")).wrap_with_cost(cost);
+        };
+        TreeNode::decode_raw_for_read_only_walk(key.to_vec(), bytes).wrap_with_cost(cost)
     }
 }
 
-/// Fetches the node stored at `key` through `view`, or `None` when the view
-/// holds no such key. It is charged as an ordinary node fetch through a storage
-/// `get` is, with one seek and the stored bytes, so the same nodes cost the
-/// same however they are read. The iterator's own charges for reading the key,
-/// once to compare it and again inside its value read, are not billed. The node
-/// skips the copy of its value a commit needs, so it must never reach one.
-pub fn read_only_node_from_view<I: RawIterator>(
+/// Reads the value of the element stored at `key` through `view`, or `None`
+/// when the view holds no such key. It is charged as an ordinary node fetch
+/// through a storage `get` is, with one seek and the stored bytes, so the same
+/// nodes cost the same however they are read. Only the value leaves: the node
+/// holding it is decoded without a mutation baseline.
+pub fn read_value_from_view<I: RawIterator>(
     view: &mut I,
     key: &[u8],
-) -> CostResult<Option<TreeNode>, Error> {
+) -> CostResult<Option<Vec<u8>>, Error> {
+    let mut cost = OperationCost::default();
+    let stored = cost_return_on_error!(&mut cost, stored_node_bytes(view, key));
+    let Some(bytes) = stored else {
+        return Ok(None).wrap_with_cost(cost);
+    };
+    TreeNode::decode_raw_for_read(bytes)
+        .map(|node| Some(node.value_as_owned()))
+        .wrap_with_cost(cost)
+}
+
+/// Seeks `key` in `view` and returns the node bytes stored there, or `None`
+/// when the view holds no such key, charging one seek and the bytes loaded. The
+/// iterator's own charges for reading the key, once to compare it and again
+/// inside its value read, are not billed.
+fn stored_node_bytes<'v, I: RawIterator>(
+    view: &'v mut I,
+    key: &[u8],
+) -> CostResult<Option<&'v [u8]>, Error> {
     let mut cost = OperationCost::default();
     view.seek(key).unwrap_add_cost(&mut cost);
     // A failed seek reports no record, as a missing key does.
@@ -74,13 +96,11 @@ pub fn read_only_node_from_view<I: RawIterator>(
     if view.key().unwrap() != Some(key) {
         return Ok(None).wrap_with_cost(cost);
     }
-    let Some(bytes) = view.value().unwrap() else {
-        return Ok(None).wrap_with_cost(cost);
-    };
-    cost.storage_loaded_bytes += bytes.len() as u64;
-    TreeNode::decode_raw_for_read_only_walk(key.to_vec(), bytes)
-        .map(Some)
-        .wrap_with_cost(cost)
+    let bytes = view.value().unwrap();
+    if let Some(bytes) = bytes {
+        cost.storage_loaded_bytes += bytes.len() as u64;
+    }
+    Ok(bytes).wrap_with_cost(cost)
 }
 
 impl<I: RawIterator> Fetch for PinnedViewSource<I> {

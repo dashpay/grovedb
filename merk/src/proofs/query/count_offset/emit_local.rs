@@ -7,7 +7,7 @@ use std::collections::LinkedList;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use grovedb_element::Element;
+use grovedb_element::{Element, ElementType};
 use grovedb_version::version::GroveVersion;
 
 use super::{
@@ -157,7 +157,11 @@ where
             .wrap_with_cost(cost);
         }
         let value_bytes = walker.tree().value_as_slice();
-        if let Ok(elem) = Element::deserialize(value_bytes, grove_version) {
+        // The tag names every tree a full decode finds, wrapped or not, so only
+        // a tree's bytes are decoded, rather than copying every row's payload.
+        if ElementType::from_serialized_value(value_bytes).is_ok_and(|kind| kind.is_tree())
+            && let Ok(elem) = Element::deserialize(value_bytes, grove_version)
+        {
             let inner = elem.into_underlying();
             if inner.is_non_empty_tree() {
                 return Err(Error::InvalidProofError(

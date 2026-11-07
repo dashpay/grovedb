@@ -7,11 +7,12 @@
 use std::collections::LinkedList;
 
 use grovedb_costs::OperationCost;
+use grovedb_element::Element;
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
 use super::{
-    local_count_offset_page_from_view, pinned_view::PinnedViewSource,
+    local_count_offset_page_from_view, pinned_view::PinnedViewSource, read_value_from_view,
     verify_count_offset_on_range_proof,
 };
 use crate::{
@@ -154,6 +155,103 @@ fn should_fetch_pinned_view_nodes_without_a_mutation_baseline() {
     assert_eq!(fetched.old_value, None);
     assert_eq!(fetched.inner, mutable.inner);
     assert_eq!(mutable.old_value.as_ref(), Some(mutable.value_ref()));
+}
+
+/// A caller outside the walk gets only a value, charged as a storage `get`
+/// charges the node holding it.
+#[test]
+fn should_read_only_the_value_stored_at_a_key_through_a_view() {
+    let v = GroveVersion::latest();
+    let (merk, _) = make_15_key_provable_count_tree(v);
+    let stored = merk
+        .storage
+        .get(b"c")
+        .unwrap()
+        .unwrap()
+        .expect("c is stored");
+    let mut view = merk.storage.raw_iter();
+
+    let present = read_value_from_view(&mut view, b"c");
+    assert_eq!(
+        present.cost,
+        OperationCost {
+            seek_count: 1,
+            storage_loaded_bytes: stored.len() as u64,
+            ..Default::default()
+        }
+    );
+    assert_eq!(present.unwrap().unwrap(), Some(vec![2]));
+
+    for missing in [b"cc".as_slice(), b"z".as_slice()] {
+        let absent = read_value_from_view(&mut view, missing);
+        assert_eq!(
+            absent.cost,
+            OperationCost {
+                seek_count: 1,
+                ..Default::default()
+            }
+        );
+        assert_eq!(absent.unwrap().unwrap(), None);
+    }
+}
+
+/// A populated tree has no row form a page can return, wrapped or not, while
+/// an empty tree is an ordinary row. A read and a proof refuse alike.
+#[test]
+fn local_count_unit_pages_refuse_exposed_populated_trees() {
+    let v = GroveVersion::latest();
+    let range = QueryItem::RangeInclusive(b"c".to_vec()..=b"c".to_vec());
+    let page_with = |tree: Element| {
+        let mut merk = TempMerk::new_with_tree_type(v, TreeType::ProvableCountTree);
+        let entries: Vec<(Vec<u8>, Op)> = (b'a'..=b'o')
+            .map(|key| {
+                let value = if key == b'c' {
+                    tree.serialize(v).expect("the tree serializes")
+                } else {
+                    vec![key]
+                };
+                (vec![key], Op::Put(value, ProvableCountedMerkNode(1)))
+            })
+            .collect();
+        merk.apply::<_, Vec<_>>(&entries, &[], None, v)
+            .unwrap()
+            .expect("apply should succeed");
+        merk.commit(v);
+        let read = local_count_offset_page_from_view(
+            merk.storage.raw_iter(),
+            merk.root_key(),
+            TreeType::ProvableCountTree,
+            &range,
+            0,
+            Some(1),
+            true,
+            v,
+        )
+        .unwrap()
+        .map(|rows| rows.len());
+        let proof = merk
+            .prove_local_count_offset_on_range(&range, 0, Some(1), true, v)
+            .unwrap()
+            .map(|page| page.returned as usize);
+        [read, proof]
+    };
+
+    for populated in [
+        Element::new_tree(Some(b"x".to_vec())),
+        Element::new_not_summed(Element::new_sum_tree(Some(b"x".to_vec())))
+            .expect("a sum tree may be wrapped"),
+    ] {
+        for page in page_with(populated.clone()) {
+            let error = page.expect_err("a populated tree cannot be a page row");
+            assert!(
+                error.to_string().contains("non-empty tree"),
+                "{populated}: {error}"
+            );
+        }
+    }
+    for page in page_with(Element::new_tree(None)) {
+        assert_eq!(page.expect("an empty tree is an ordinary row"), 1);
+    }
 }
 
 #[test]

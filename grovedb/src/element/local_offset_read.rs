@@ -12,7 +12,7 @@
 use grovedb_costs::{cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt};
 use grovedb_merk::{
     element::tree_type::ElementTreeTypeExtensions,
-    proofs::query::count_offset::{local_count_offset_page_from_view, read_only_node_from_view},
+    proofs::query::count_offset::{local_count_offset_page_from_view, read_value_from_view},
     tree_type::TreeType,
 };
 use grovedb_path::SubtreePath;
@@ -69,16 +69,16 @@ fn walk_offset_path(
     for depth in from..path.len() {
         let prefix = RocksDbStorage::build_prefix(path[..depth].into()).unwrap_add_cost(&mut cost);
         view = view.retarget(prefix);
-        let node = cost_return_on_error!(
+        let value = cost_return_on_error!(
             &mut cost,
-            read_only_node_from_view(&mut view, path[depth]).map_err(Error::MerkError)
+            read_value_from_view(&mut view, path[depth]).map_err(Error::MerkError)
         );
-        let Some(node) = node else {
+        let Some(value) = value else {
             return Ok(true).wrap_with_cost(cost);
         };
         let element = cost_return_on_error_no_add!(
             cost,
-            Element::deserialize(node.value_as_slice(), v).map_err(Error::from)
+            Element::deserialize(&value, v).map_err(Error::from)
         );
         if !element.is_any_tree() || element.uses_non_merk_data_storage() {
             return Err(Error::InvalidQuery(NON_MERK_ON_OFFSET_PATH)).wrap_with_cost(cost);
@@ -135,7 +135,7 @@ pub(super) fn read_local_count_page(
     let mut view = parent_context.raw_iter();
     let host = cost_return_on_error!(
         &mut cost,
-        read_only_node_from_view(&mut view, host_key).map_err(Error::MerkError)
+        read_value_from_view(&mut view, host_key).map_err(Error::MerkError)
     );
     let Some(host) = host else {
         // Direct range reads treat a missing storage layer as empty under
@@ -156,10 +156,8 @@ pub(super) fn read_local_count_page(
         ))
         .wrap_with_cost(cost);
     };
-    let element = cost_return_on_error_no_add!(
-        cost,
-        Element::deserialize(host.value_as_slice(), v).map_err(Error::from)
-    );
+    let element =
+        cost_return_on_error_no_add!(cost, Element::deserialize(&host, v).map_err(Error::from));
     if !element.is_any_tree() || element.uses_non_merk_data_storage() {
         return Err(Error::InvalidQuery(NON_MERK_ON_OFFSET_PATH)).wrap_with_cost(cost);
     }
