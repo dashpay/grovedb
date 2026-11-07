@@ -1,6 +1,7 @@
 //! Trusted local pages reuse the count-skip traversal and read the rows it
-//! selects. Boundary paths, returned rows and the root of each collapsed
-//! subtree are loaded; a collapsed subtree's contents are not.
+//! selects. Boundary paths and returned rows are loaded; a collapsed subtree is
+//! not, since its parent's link carries its count. Every node is charged as an
+//! ordinary fetch charges it.
 //!
 //! A page comes from one pinned storage view: the host element, its root and
 //! every traversal fetch go through one raw iterator, which pins the committed
@@ -11,7 +12,8 @@
 use grovedb_costs::{cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt};
 use grovedb_merk::{
     element::tree_type::ElementTreeTypeExtensions,
-    proofs::query::count_offset::local_count_offset_page_from_view, tree_type::TreeType,
+    proofs::query::count_offset::{local_count_offset_page_from_view, read_only_node_from_view},
+    tree_type::TreeType,
 };
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
@@ -24,7 +26,6 @@ use super::{
     path_query_push_args::PathQueryPushArgs, query_budget::QueryBudget, query_options::QueryOptions,
 };
 use crate::{
-    operations::indexed_tree::snapshot_fetch_node,
     query_result_type::{QueryResultElements, QueryResultType},
     util::{validate_path_segment_lengths, TxRef},
     Element, Error, SizedQuery, Transaction, TransactionArg,
@@ -68,7 +69,10 @@ fn walk_offset_path(
     for depth in from..path.len() {
         let prefix = RocksDbStorage::build_prefix(path[..depth].into()).unwrap_add_cost(&mut cost);
         view = view.retarget(prefix);
-        let node = cost_return_on_error!(&mut cost, snapshot_fetch_node(&mut view, path[depth], v));
+        let node = cost_return_on_error!(
+            &mut cost,
+            read_only_node_from_view(&mut view, path[depth]).map_err(Error::MerkError)
+        );
         let Some(node) = node else {
             return Ok(true).wrap_with_cost(cost);
         };
@@ -129,7 +133,10 @@ pub(super) fn read_local_count_page(
         .get_transactional_storage_context(parent_path.into(), None, tx.as_ref())
         .unwrap_add_cost(&mut cost);
     let mut view = parent_context.raw_iter();
-    let host = cost_return_on_error!(&mut cost, snapshot_fetch_node(&mut view, host_key, v));
+    let host = cost_return_on_error!(
+        &mut cost,
+        read_only_node_from_view(&mut view, host_key).map_err(Error::MerkError)
+    );
     let Some(host) = host else {
         // Direct range reads treat a missing storage layer as empty under
         // either strict-path option. Intermediate descents enforce that option.

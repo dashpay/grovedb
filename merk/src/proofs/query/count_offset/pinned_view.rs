@@ -48,25 +48,39 @@ impl<I: RawIterator> PinnedViewSource<I> {
     }
 
     pub(super) fn fetch_key(&self, key: &[u8]) -> CostResult<TreeNode, Error> {
-        let mut cost = OperationCost::default();
         let mut view = self.view.borrow_mut();
-        view.seek(key).unwrap_add_cost(&mut cost);
-        // A failed seek reports no record, as a missing key does.
-        cost_return_on_error_no_add!(cost, view.status().map_err(Error::StorageError));
-        let found = view
-            .key()
-            .unwrap_add_cost(&mut cost)
-            .is_some_and(|found| found == key);
         // A key this view's own parent or element names must be in this view,
         // so a miss is corruption rather than a race.
-        if !found {
-            return Err(Error::KeyNotFoundError("Key not found for fetch")).wrap_with_cost(cost);
-        }
-        let Some(bytes) = view.value().unwrap_add_cost(&mut cost) else {
-            return Err(Error::KeyNotFoundError("Key not found for fetch")).wrap_with_cost(cost);
-        };
-        TreeNode::decode_raw_for_read_only_walk(key.to_vec(), bytes).wrap_with_cost(cost)
+        read_only_node_from_view(&mut *view, key)
+            .map_ok(|node| node.ok_or(Error::KeyNotFoundError("Key not found for fetch")))
+            .flatten()
     }
+}
+
+/// Fetches the node stored at `key` through `view`, or `None` when the view
+/// holds no such key. It is charged as an ordinary node fetch through a storage
+/// `get` is, with one seek and the stored bytes, so the same nodes cost the
+/// same however they are read. The iterator's own charges for reading the key,
+/// once to compare it and again inside its value read, are not billed. The node
+/// skips the copy of its value a commit needs, so it must never reach one.
+pub fn read_only_node_from_view<I: RawIterator>(
+    view: &mut I,
+    key: &[u8],
+) -> CostResult<Option<TreeNode>, Error> {
+    let mut cost = OperationCost::default();
+    view.seek(key).unwrap_add_cost(&mut cost);
+    // A failed seek reports no record, as a missing key does.
+    cost_return_on_error_no_add!(cost, view.status().map_err(Error::StorageError));
+    if view.key().unwrap() != Some(key) {
+        return Ok(None).wrap_with_cost(cost);
+    }
+    let Some(bytes) = view.value().unwrap() else {
+        return Ok(None).wrap_with_cost(cost);
+    };
+    cost.storage_loaded_bytes += bytes.len() as u64;
+    TreeNode::decode_raw_for_read_only_walk(key.to_vec(), bytes)
+        .map(Some)
+        .wrap_with_cost(cost)
 }
 
 impl<I: RawIterator> Fetch for PinnedViewSource<I> {

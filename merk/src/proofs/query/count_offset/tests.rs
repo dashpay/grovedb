@@ -289,23 +289,22 @@ fn local_count_unit_pages_skip_hidden_nested_counts_in_committed_units() {
 /// The work bound below would still pass if a fetch stopped being charged, so
 /// this states what a small page costs from the nodes it must load. The fixture
 /// balances to `h` over `d` and `l`, with `b`, `f`, `j` and `n` below them. A
-/// walk loads a collapsed child to read its count, and nothing below it.
+/// proof loads a collapsed child for the hashes it commits to, and nothing below
+/// it. A read takes a collapsed child's count from its parent's link, so it
+/// loads only the nodes it opens, each charged as a storage `get` charges it.
 #[test]
 fn should_charge_exactly_the_nodes_a_local_page_loads() {
-    // The prefixed key a pinned view charges for its own read and again for the
-    // validity check inside its value read. A storage `get` charges neither.
-    const VIEW_KEY_CHARGES: u64 = 2 * (32 + 1);
-
     let v = GroveVersion::latest();
     let range = QueryItem::RangeFull(..);
     let (mut merk, _) = make_15_key_provable_count_tree(v);
-    let cases: [(u64, bool, &[u8], &[u8]); 4] = [
-        (5, true, b"hdbfegl", b"fgh"),
-        (5, false, b"hlnjkid", b"jih"),
-        (15, true, b"h", b""),
-        (15, false, b"h", b""),
+    // (offset, ascending, nodes a read loads, nodes a proof loads, rows)
+    let cases: [(u64, bool, &[u8], &[u8], &[u8]); 4] = [
+        (5, true, b"hdfg", b"hdbfegl", b"fgh"),
+        (5, false, b"hlji", b"hlnjkid", b"jih"),
+        (15, true, b"h", b"h", b""),
+        (15, false, b"h", b"h", b""),
     ];
-    for (offset, left_to_right, loaded, rows) in cases {
+    for (offset, left_to_right, read_loaded, loaded, rows) in cases {
         let stored_bytes = |nodes: &[u8]| -> u64 {
             nodes
                 .iter()
@@ -316,8 +315,8 @@ fn should_charge_exactly_the_nodes_a_local_page_loads() {
                 .sum()
         };
         let read_cost = OperationCost {
-            seek_count: loaded.len() as u32,
-            storage_loaded_bytes: stored_bytes(loaded) + loaded.len() as u64 * VIEW_KEY_CHARGES,
+            seek_count: read_loaded.len() as u32,
+            storage_loaded_bytes: stored_bytes(read_loaded),
             ..Default::default()
         };
         // A proof walks from the root the open Merk already holds.

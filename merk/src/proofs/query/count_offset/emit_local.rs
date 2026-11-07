@@ -4,7 +4,9 @@
 
 use std::collections::LinkedList;
 
-use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+};
 use grovedb_element::Element;
 use grovedb_version::version::GroveVersion;
 
@@ -64,21 +66,7 @@ where
         Err(e) => return Err(e).wrap_with_cost(cost),
     };
 
-    let collapse_action = match class {
-        SubtreeClassification::Disjoint => Some(CollapseAction::Disjoint),
-        SubtreeClassification::Contained => {
-            if state.offset_remaining == 0 && state.limit_remaining == Some(0) {
-                Some(CollapseAction::PastLimit)
-            } else if state.offset_remaining > 0 && subtree_count <= state.offset_remaining {
-                Some(CollapseAction::SkippedByOffset)
-            } else {
-                None
-            }
-        }
-        SubtreeClassification::Boundary => None,
-    };
-
-    if let Some(action) = collapse_action {
+    if let Some(action) = collapse_action(class, subtree_count, state) {
         let kv_hash = *walker.tree().kv_hash();
         let left_child_hash = walker
             .tree()
@@ -112,9 +100,7 @@ where
                 Op::PushInverted(node)
             });
         }
-        if matches!(action, CollapseAction::SkippedByOffset) {
-            state.offset_remaining = state.offset_remaining.saturating_sub(subtree_count);
-        }
+        settle_collapsed(action, subtree_count, state);
         return Ok(subtree_count).wrap_with_cost(cost);
     }
 
@@ -191,47 +177,29 @@ where
     } else {
         (false, true)
     };
-
-    let first_emitted = if walker.tree().link(first_dir).is_some() {
-        let (child_lo, child_hi) = if first_dir {
+    let child_bounds = |left: bool| {
+        if left {
             (subtree_lo_excl, Some(node_key.as_slice()))
         } else {
             (Some(node_key.as_slice()), subtree_hi_excl)
-        };
-        let walked = cost_return_on_error!(
-            &mut cost,
-            walker.walk(
-                first_dir,
-                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-                grove_version,
-            )
-        );
-        let mut child_walker = match walked {
-            Some(w) => w,
-            None => {
-                return Err(Error::CorruptedState(
-                    "tree.link(first_dir) was Some but walk returned None",
-                ))
-                .wrap_with_cost(cost)
-            }
-        };
-        cost_return_on_error!(
-            &mut cost,
-            emit_local_count_offset_proof(
-                &mut child_walker,
-                range,
-                child_lo,
-                child_hi,
-                state,
-                output,
-                tree_type,
-                grove_version,
-            )
-        );
-        true
-    } else {
-        false
+        }
     };
+
+    let (first_lo, first_hi) = child_bounds(first_dir);
+    let first_emitted = cost_return_on_error!(
+        &mut cost,
+        emit_local_child(
+            walker,
+            first_dir,
+            range,
+            first_lo,
+            first_hi,
+            state,
+            output,
+            tree_type,
+            grove_version,
+        )
+    );
 
     let selected = if !is_in_range || own_struct == 0 {
         false
@@ -277,46 +245,21 @@ where
         }
     }
 
-    let second_emitted = if walker.tree().link(second_dir).is_some() {
-        let (child_lo, child_hi) = if second_dir {
-            (subtree_lo_excl, Some(node_key.as_slice()))
-        } else {
-            (Some(node_key.as_slice()), subtree_hi_excl)
-        };
-        let walked = cost_return_on_error!(
-            &mut cost,
-            walker.walk(
-                second_dir,
-                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-                grove_version,
-            )
-        );
-        let mut child_walker = match walked {
-            Some(w) => w,
-            None => {
-                return Err(Error::CorruptedState(
-                    "tree.link(second_dir) was Some but walk returned None",
-                ))
-                .wrap_with_cost(cost)
-            }
-        };
-        cost_return_on_error!(
-            &mut cost,
-            emit_local_count_offset_proof(
-                &mut child_walker,
-                range,
-                child_lo,
-                child_hi,
-                state,
-                output,
-                tree_type,
-                grove_version,
-            )
-        );
-        true
-    } else {
-        false
-    };
+    let (second_lo, second_hi) = child_bounds(second_dir);
+    let second_emitted = cost_return_on_error!(
+        &mut cost,
+        emit_local_child(
+            walker,
+            second_dir,
+            range,
+            second_lo,
+            second_hi,
+            state,
+            output,
+            tree_type,
+            grove_version,
+        )
+    );
 
     if second_emitted && let LocalPageOutput::Proof(ops) = output {
         ops.push_back(if state.left_to_right {
@@ -327,4 +270,99 @@ where
     }
 
     Ok(node_count).wrap_with_cost(cost)
+}
+
+/// What a collapsible subtree does without being walked, decided from its
+/// committed count, or `None` when the walk must enter it.
+fn collapse_action(
+    class: SubtreeClassification,
+    subtree_count: u64,
+    state: &EmitState,
+) -> Option<CollapseAction> {
+    match class {
+        SubtreeClassification::Disjoint => Some(CollapseAction::Disjoint),
+        SubtreeClassification::Contained => {
+            if state.offset_remaining == 0 && state.limit_remaining == Some(0) {
+                Some(CollapseAction::PastLimit)
+            } else if state.offset_remaining > 0 && subtree_count <= state.offset_remaining {
+                Some(CollapseAction::SkippedByOffset)
+            } else {
+                None
+            }
+        }
+        SubtreeClassification::Boundary => None,
+    }
+}
+
+/// Applies a collapsed subtree's effect on the page: an offset skip consumes
+/// its count units, and the other collapses leave the state alone.
+fn settle_collapsed(action: CollapseAction, subtree_count: u64, state: &mut EmitState) {
+    if matches!(action, CollapseAction::SkippedByOffset) {
+        state.offset_remaining = state.offset_remaining.saturating_sub(subtree_count);
+    }
+}
+
+/// Emits the child on `left`'s side, whose keys lie strictly between `lo` and
+/// `hi`, and returns whether there is one. A trusted read needs only a
+/// collapsed child's committed count, which the parent's link carries, so it
+/// settles that child without fetching it. A proof loads it for the hashes it
+/// commits to.
+#[allow(clippy::too_many_arguments)]
+fn emit_local_child<S>(
+    walker: &mut RefWalker<'_, S>,
+    left: bool,
+    range: &QueryItem,
+    lo: Option<&[u8]>,
+    hi: Option<&[u8]>,
+    state: &mut EmitState,
+    output: &mut LocalPageOutput<'_>,
+    tree_type: TreeType,
+    grove_version: &GroveVersion,
+) -> CostResult<bool, Error>
+where
+    S: Fetch + Sized + Clone,
+{
+    let mut cost = OperationCost::default();
+    let Some(link) = walker.tree().link(left) else {
+        return Ok(false).wrap_with_cost(cost);
+    };
+    if matches!(output, LocalPageOutput::Rows(_)) {
+        let child_count = cost_return_on_error_no_add!(
+            cost,
+            provable_count_from_aggregate(link.aggregate_data())
+        );
+        let class = classify_subtree(lo, hi, range);
+        if let Some(action) = collapse_action(class, child_count, state) {
+            settle_collapsed(action, child_count, state);
+            return Ok(true).wrap_with_cost(cost);
+        }
+    }
+    let walked = cost_return_on_error!(
+        &mut cost,
+        walker.walk(
+            left,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
+    );
+    let Some(mut child_walker) = walked else {
+        return Err(Error::CorruptedState(
+            "tree.link(left) was Some but walk returned None",
+        ))
+        .wrap_with_cost(cost);
+    };
+    cost_return_on_error!(
+        &mut cost,
+        emit_local_count_offset_proof(
+            &mut child_walker,
+            range,
+            lo,
+            hi,
+            state,
+            output,
+            tree_type,
+            grove_version,
+        )
+    );
+    Ok(true).wrap_with_cost(cost)
 }

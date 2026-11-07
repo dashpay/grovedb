@@ -114,7 +114,7 @@ mod tests;
 mod verify;
 
 #[cfg(feature = "minimal")]
-pub use pinned_view::local_count_offset_page_from_view;
+pub use pinned_view::{local_count_offset_page_from_view, read_only_node_from_view};
 #[cfg(feature = "minimal")]
 pub use prove::ProverCountOffsetResult;
 #[cfg(any(feature = "minimal", feature = "verify"))]
