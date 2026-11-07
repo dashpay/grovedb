@@ -93,6 +93,7 @@ fn v5_matches_v4_apart_from_its_gates() {
     let path_query_methods = &mut v5_as_v4.grovedb_versions.path_query_methods;
     path_query_methods.merge = GROVE_V4.grovedb_versions.path_query_methods.merge;
     path_query_methods.per_instance_query_offsets = 0;
+    v5_as_v4.grovedb_versions.apply_batch.keyless_append_repeats = 0;
     assert_eq!(format!("{v5_as_v4:?}"), format!("{GROVE_V4:?}"));
 }
 
