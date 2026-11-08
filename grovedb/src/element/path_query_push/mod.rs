@@ -12,7 +12,7 @@
 //!   slot when `decrease_limit_on_range_with_no_sub_elements` is set — even
 //!   when the emptiness was caused by `offset` skipping rows that did match
 //!   (issue #690), so e.g. `limit=2, offset=1` can return a single element.
-//! * **[v1]** — `GROVE_V4`+. Charges an empty inner result only when
+//! * **[v1]** — `GROVE_V4`. Charges an empty inner result only when
 //!   nothing was skipped (`skipped == 0`, issue #690 — offset-consumed
 //!   subqueries are pagination, not absence), serves per-instance
 //!   limits (`Query::limit`) and reconciles subquery descents by total
@@ -24,8 +24,13 @@
 //!   for `GROVE_V4`; since no grove version ever shipped it, it was
 //!   folded into this v1 rather than kept as a dead dispatch arm.)
 //!
-//! Proof generation rejects non-zero offsets and never calls
-//! `path_query_push`, so this gate has no proof surface.
+//! * **[v2]** — `GROVE_V5` onward. Serves branch-local count-unit pages
+//!   through the dedicated terminal reader and includes unbudgeted parent
+//!   echoes in trusted reads. Parent reconciliation counts charged rows
+//!   separately from these echoes.
+//!
+//! Proof generation never calls `path_query_push`; the V1 prover and verifier
+//! maintain the corresponding budget state independently.
 //!
 //! The dispatcher lives in the `ElementQueryExtensions::path_query_push`
 //! trait implementation in [`super::query`], which matches on
@@ -33,9 +38,12 @@
 //!
 //! [v0]: self::v0
 //! [v1]: self::v1
+//! [v2]: self::v2
 
 mod v0;
 mod v1;
+mod v2;
 
 pub(crate) use v0::path_query_push_v0;
 pub(crate) use v1::path_query_push_v1;
+pub(crate) use v2::path_query_push_v2;

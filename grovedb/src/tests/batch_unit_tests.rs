@@ -9,7 +9,9 @@
 mod tests {
     use grovedb_merk::tree::AggregateData;
     use grovedb_merk::tree_type::TreeType;
-    use grovedb_version::version::{v3::GROVE_V3, GroveVersion};
+    use grovedb_version::version::{
+        v1::GROVE_V1, v3::GROVE_V3, v4::GROVE_V4, v5::GROVE_V5, GroveVersion,
+    };
 
     use crate::batch::key_info::KeyInfo::KnownKey;
 
@@ -533,10 +535,86 @@ mod tests {
         );
         // Three copies of the same op
         let ops = vec![op.clone(), op.clone(), op];
-        let results = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
+        let results =
+            QualifiedGroveDbOp::verify_consistency_of_operations(&ops, GroveVersion::latest())
+                .expect("a known consistency check version");
         assert!(
             !results.is_empty(),
             "duplicate ops should be flagged as inconsistent"
+        );
+    }
+
+    fn identical_keyless_appends() -> Vec<Vec<QualifiedGroveDbOp>> {
+        let path = vec![b"root".to_vec(), b"tree_key".to_vec()];
+        [
+            QualifiedGroveDbOp::commitment_tree_insert_op(
+                path.clone(),
+                [1; 32],
+                [2; 32],
+                [3; 32],
+                vec![],
+            ),
+            QualifiedGroveDbOp::mmr_tree_append_op(path.clone(), b"data".to_vec()),
+            QualifiedGroveDbOp::bulk_append_op(path.clone(), b"data".to_vec()),
+            QualifiedGroveDbOp::dense_tree_insert_op(path.clone(), b"data".to_vec()),
+            QualifiedGroveDbOp::private_document_store_insert_op(path, b"data".to_vec()),
+        ]
+        .into_iter()
+        .map(|append_op| vec![append_op.clone(), append_op.clone(), append_op])
+        .collect()
+    }
+
+    /// V1..V4 count every operation for repeats, keyless appends included
+    /// (`keyless_append_repeats` 0); V5 counts keyed operations only (1).
+    #[test]
+    fn test_consistency_flags_identical_keyless_appends_before_v5_only() {
+        for ops in identical_keyless_appends() {
+            for version in [&GROVE_V1, &GROVE_V3, &GROVE_V4] {
+                let results = QualifiedGroveDbOp::verify_consistency_of_operations(&ops, version)
+                    .expect("a known consistency check version");
+                assert!(
+                    !results.is_empty(),
+                    "protocol version {} must flag identical keyless appends: {:?}",
+                    version.protocol_version,
+                    ops
+                );
+            }
+            // An append lands at its tree's next position: two identical ones
+            // are two appends, not a repeated operation.
+            let results = QualifiedGroveDbOp::verify_consistency_of_operations(&ops, &GROVE_V5)
+                .expect("a known consistency check version");
+            assert!(
+                results.is_empty(),
+                "GROVE_V5 must not flag identical keyless appends: {:?}",
+                ops
+            );
+        }
+    }
+
+    #[test]
+    fn test_consistency_still_flags_identical_keyed_ops_on_v5() {
+        let op = QualifiedGroveDbOp::insert_or_replace_op(
+            vec![b"root".to_vec()],
+            b"key1".to_vec(),
+            Element::new_item(b"a".to_vec()),
+        );
+        let results =
+            QualifiedGroveDbOp::verify_consistency_of_operations(&[op.clone(), op], &GROVE_V5)
+                .expect("a known consistency check version");
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn test_consistency_refuses_an_unknown_keyless_append_repeats_version() {
+        let mut version = GROVE_V5.clone();
+        version.grovedb_versions.apply_batch.keyless_append_repeats = 2;
+        let result = QualifiedGroveDbOp::verify_consistency_of_operations(
+            &identical_keyless_appends()[0],
+            &version,
+        );
+        assert!(
+            matches!(result, Err(Error::VersionError(_))),
+            "an unknown slot value must be refused, got {result:?}"
         );
     }
 
@@ -549,7 +627,9 @@ mod tests {
             ),
             QualifiedGroveDbOp::delete_op(vec![b"root".to_vec()], b"tree_key".to_vec()),
         ];
-        let results = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
+        let results =
+            QualifiedGroveDbOp::verify_consistency_of_operations(&ops, GroveVersion::latest())
+                .expect("a known consistency check version");
         assert!(
             !results.is_empty(),
             "append + delete targeting same tree should be flagged"
@@ -564,7 +644,9 @@ mod tests {
             vec![append_op.clone(), keyed_op.clone()],
             vec![keyed_op.clone(), append_op.clone()],
         ] {
-            let results = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
+            let results =
+                QualifiedGroveDbOp::verify_consistency_of_operations(&ops, GroveVersion::latest())
+                    .expect("a known consistency check version");
             assert!(
                 !results.is_empty(),
                 "append + keyed op targeting same tree should be flagged for {:?}",
@@ -670,7 +752,9 @@ mod tests {
                 Element::new_item(b"val".to_vec()),
             ),
         ];
-        let results = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
+        let results =
+            QualifiedGroveDbOp::verify_consistency_of_operations(&ops, GroveVersion::latest())
+                .expect("a known consistency check version");
         assert!(
             !results.is_empty(),
             "InsertWithKnownToNotAlreadyExist under a deleted path should be flagged"
@@ -692,7 +776,9 @@ mod tests {
                 Element::new_item(b"val".to_vec()),
             ),
         ];
-        let results = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
+        let results =
+            QualifiedGroveDbOp::verify_consistency_of_operations(&ops, GroveVersion::latest())
+                .expect("a known consistency check version");
         assert!(
             !results.is_empty(),
             "insert under a DeleteTree path should be flagged"
@@ -1667,5 +1753,451 @@ mod tests {
             result.is_err(),
             "ref chain through refresh to tree should fail"
         );
+    }
+
+    // ===================================================================
+    // Group 16: follow_reference_get_value_hash — a later hop resolves to
+    //           an empty path
+    // ===================================================================
+    //
+    // The apply arms refuse an empty path only for the reference they are
+    // processing. Keys in a path run in byte order, so `a` follows its
+    // sibling `b` before `b`'s own check runs. `b`'s pending element
+    // resolves to `[]`, and the next hop used to reach
+    // `process_reference(&[])`, whose `split_last().expect(..)` panicked.
+
+    /// Every reference path type that resolves to `[]` from a reference
+    /// stored directly under `[TEST_LEAF]`.
+    fn empty_resolving_reference_paths() -> Vec<ReferencePathType> {
+        vec![
+            ReferencePathType::AbsolutePathReference(vec![]),
+            ReferencePathType::UpstreamRootHeightReference(0, vec![]),
+            ReferencePathType::UpstreamFromElementHeightReference(1, vec![]),
+        ]
+    }
+
+    /// Applies `ops` and asserts the batch is refused with the empty-hop
+    /// error and leaves the root hash untouched.
+    fn assert_empty_hop_refused(
+        db: &crate::tests::TempGroveDb,
+        ops: Vec<QualifiedGroveDbOp>,
+        grove_version: &GroveVersion,
+        case: &str,
+    ) {
+        let root_before = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("root hash before");
+        let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+        assert!(
+            matches!(
+                result,
+                Err(Error::InvalidBatchOperation(msg)) if msg.contains("empty path")
+            ),
+            "{case}: expected the empty-hop refusal, got {result:?}"
+        );
+        let root_after = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("root hash after");
+        assert_eq!(root_before, root_after, "{case}: refused batch wrote");
+    }
+
+    #[test]
+    fn test_batch_ref_hop_to_pending_empty_reference_errors() {
+        for grove_version in grovedb_version::version::GROVE_VERSIONS {
+            for empty_path in empty_resolving_reference_paths() {
+                // InsertOrReplace and InsertWithKnownToNotAlreadyExist reach
+                // the empty hop through different match arms.
+                for insert_only in [false, true] {
+                    let case = format!(
+                        "v{} {empty_path:?} insert_only={insert_only}",
+                        grove_version.protocol_version
+                    );
+                    let db = make_test_grovedb(grove_version);
+                    let target = Element::new_reference(empty_path.clone());
+                    let target_op = if insert_only {
+                        QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
+                            vec![TEST_LEAF.to_vec()],
+                            b"b".to_vec(),
+                            target,
+                        )
+                    } else {
+                        QualifiedGroveDbOp::insert_or_replace_op(
+                            vec![TEST_LEAF.to_vec()],
+                            b"b".to_vec(),
+                            target,
+                        )
+                    };
+                    let ops = vec![
+                        QualifiedGroveDbOp::insert_or_replace_op(
+                            vec![TEST_LEAF.to_vec()],
+                            b"a".to_vec(),
+                            Element::new_reference(ReferencePathType::SiblingReference(
+                                b"b".to_vec(),
+                            )),
+                        ),
+                        target_op,
+                    ];
+                    assert_empty_hop_refused(&db, ops, grove_version, &case);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_batch_ref_hop_to_trusted_refresh_with_empty_path_errors() {
+        for grove_version in grovedb_version::version::GROVE_VERSIONS {
+            for empty_path in empty_resolving_reference_paths() {
+                let case = format!("v{} {empty_path:?}", grove_version.protocol_version);
+                let db = make_test_grovedb(grove_version);
+                // A trusted refresh carries its new path without a disk
+                // read, so `b` need not exist. `a` follows into the refresh
+                // and resolves the next hop through `process_reference`'s
+                // in-batch branch.
+                let ops = vec![
+                    QualifiedGroveDbOp::insert_or_replace_op(
+                        vec![TEST_LEAF.to_vec()],
+                        b"a".to_vec(),
+                        Element::new_reference(ReferencePathType::SiblingReference(b"b".to_vec())),
+                    ),
+                    QualifiedGroveDbOp::refresh_reference_op(
+                        vec![TEST_LEAF.to_vec()],
+                        b"b".to_vec(),
+                        empty_path,
+                        None,
+                        None,
+                        /* non_counted = */ false,
+                        true, // trust_refresh_reference
+                    ),
+                ];
+                assert_empty_hop_refused(&db, ops, grove_version, &case);
+            }
+        }
+    }
+
+    // ===================================================================
+    // Group 17: a hand-built nested element wrapper
+    // ===================================================================
+    //
+    // `Element` is a public enum, so a caller can build
+    // `NonCounted(NonCounted(item))` without the checked constructors, which
+    // refuse nesting. Execution and reference following dispatch on
+    // `underlying()`, which unwraps one level, and their wrapper arms were
+    // `unreachable!`, so a nested wrapper panicked at every grove version.
+
+    fn non_counted(inner: Element) -> Element {
+        Element::NonCounted(Box::new(inner))
+    }
+
+    fn not_summed(inner: Element) -> Element {
+        Element::NotSummed(Box::new(inner))
+    }
+
+    fn not_counted_or_summed(inner: Element) -> Element {
+        Element::NotCountedOrSummed(Box::new(inner))
+    }
+
+    /// `(case, parent tree, nested element)`. Each parent accepts the
+    /// outer wrapper, so the element passed the per-parent wrapper guard
+    /// and reached the panicking dispatch.
+    fn nested_wrapper_cases() -> Vec<(&'static str, Element, Element)> {
+        vec![
+            (
+                "NonCounted(NonCounted(Item)) under CountTree",
+                Element::empty_count_tree(),
+                non_counted(non_counted(Element::new_item(b"v".to_vec()))),
+            ),
+            (
+                "NonCounted(NotSummed(SumTree)) under CountTree",
+                Element::empty_count_tree(),
+                non_counted(not_summed(Element::empty_sum_tree())),
+            ),
+            (
+                "NotSummed(NotSummed(SumTree)) under SumTree",
+                Element::empty_sum_tree(),
+                not_summed(not_summed(Element::empty_sum_tree())),
+            ),
+            (
+                "NotSummed(NonCounted(SumTree)) under SumTree",
+                Element::empty_sum_tree(),
+                not_summed(non_counted(Element::empty_sum_tree())),
+            ),
+            (
+                "NotCountedOrSummed(NonCounted(SumTree)) under CountSumTree",
+                Element::empty_count_sum_tree(),
+                not_counted_or_summed(non_counted(Element::empty_sum_tree())),
+            ),
+        ]
+    }
+
+    /// A db with `parent` at `[TEST_LEAF, p]` and, if `existing`, an item at
+    /// `[TEST_LEAF, p, k]`.
+    fn db_with_wrapper_parent(
+        parent: &Element,
+        existing: bool,
+        grove_version: &GroveVersion,
+    ) -> crate::tests::TempGroveDb {
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"p",
+            parent.clone(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert parent tree");
+        if existing {
+            db.insert(
+                [TEST_LEAF, b"p"].as_ref(),
+                b"k",
+                Element::new_item(b"old".to_vec()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert existing item");
+        }
+        db
+    }
+
+    fn wrapper_parent_path() -> Vec<Vec<u8>> {
+        vec![TEST_LEAF.to_vec(), b"p".to_vec()]
+    }
+
+    /// Caller-facing ops that carry an element, each writing `element` at
+    /// `[TEST_LEAF, p, k]`.
+    fn element_carrying_ops(element: &Element) -> Vec<(&'static str, QualifiedGroveDbOp)> {
+        let path = wrapper_parent_path();
+        let key = b"k".to_vec();
+        vec![
+            (
+                "InsertOrReplace",
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    path.clone(),
+                    key.clone(),
+                    element.clone(),
+                ),
+            ),
+            (
+                "InsertWithKnownToNotAlreadyExist",
+                QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
+                    path.clone(),
+                    key.clone(),
+                    element.clone(),
+                ),
+            ),
+            (
+                "InsertIfNotExists",
+                QualifiedGroveDbOp::insert_if_not_exists_op(
+                    path.clone(),
+                    key.clone(),
+                    element.clone(),
+                ),
+            ),
+            (
+                "InsertIfNotExists (skip)",
+                QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+                    path.clone(),
+                    key.clone(),
+                    element.clone(),
+                ),
+            ),
+            (
+                "Replace",
+                QualifiedGroveDbOp::replace_op(path.clone(), key.clone(), element.clone()),
+            ),
+            (
+                "Patch",
+                QualifiedGroveDbOp::patch_op(path.clone(), key.clone(), element.clone(), 0),
+            ),
+            (
+                "InsertOrReplace (dont check)",
+                QualifiedGroveDbOp::insert_or_replace_op(path, key, element.clone())
+                    .dont_check_for_backwards_references(),
+            ),
+        ]
+    }
+
+    /// Asserts `result` is the nesting refusal and `db` still has
+    /// `root_before`.
+    fn assert_nested_wrapper_refused(
+        db: &crate::tests::TempGroveDb,
+        result: Result<(), Error>,
+        root_before: [u8; 32],
+        grove_version: &GroveVersion,
+        case: &str,
+    ) {
+        assert!(
+            matches!(
+                &result,
+                Err(Error::InvalidBatchOperation(msg)) if msg.contains("nested element wrappers")
+            ),
+            "{case}: expected the nested-wrapper refusal, got {result:?}"
+        );
+        let root_after = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("root hash after");
+        assert_eq!(root_before, root_after, "{case}: refused batch wrote");
+    }
+
+    #[test]
+    fn test_batch_nested_wrapper_element_is_refused() {
+        for grove_version in grovedb_version::version::GROVE_VERSIONS {
+            for (name, parent, nested) in nested_wrapper_cases() {
+                // `existing` covers Replace / Patch over a stored element and
+                // an InsertIfNotExists that would skip the write.
+                for existing in [false, true] {
+                    for (op_name, op) in element_carrying_ops(&nested) {
+                        let case = format!(
+                            "v{} {name} {op_name} existing={existing}",
+                            grove_version.protocol_version
+                        );
+                        let db = db_with_wrapper_parent(&parent, existing, grove_version);
+                        let root_before = db
+                            .root_hash(None, grove_version)
+                            .unwrap()
+                            .expect("root hash before");
+                        let result = db.apply_batch(vec![op], None, None, grove_version).unwrap();
+                        assert_nested_wrapper_refused(
+                            &db,
+                            result,
+                            root_before,
+                            grove_version,
+                            &case,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_batch_reference_to_pending_nested_wrapper_is_refused() {
+        // `a` sorts before `k`, so the reference follows into the pending
+        // nested element before `k`'s own op runs. That is why the case the
+        // parent's guard would refuse (`NonCounted` under a SumTree) also
+        // panicked here.
+        let mut cases = nested_wrapper_cases();
+        cases.push((
+            "NonCounted(NonCounted(Item)) under SumTree",
+            Element::empty_sum_tree(),
+            non_counted(non_counted(Element::new_item(b"v".to_vec()))),
+        ));
+        for grove_version in grovedb_version::version::GROVE_VERSIONS {
+            for (name, parent, nested) in &cases {
+                // InsertOrReplace and InsertWithKnownToNotAlreadyExist /
+                // InsertIfNotExists reach different arms of
+                // `follow_reference_get_value_hash`.
+                let targets = [
+                    (
+                        "InsertOrReplace",
+                        QualifiedGroveDbOp::insert_or_replace_op(
+                            wrapper_parent_path(),
+                            b"k".to_vec(),
+                            nested.clone(),
+                        ),
+                    ),
+                    (
+                        "InsertWithKnownToNotAlreadyExist",
+                        QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
+                            wrapper_parent_path(),
+                            b"k".to_vec(),
+                            nested.clone(),
+                        ),
+                    ),
+                    (
+                        "InsertIfNotExists",
+                        QualifiedGroveDbOp::insert_if_not_exists_op(
+                            wrapper_parent_path(),
+                            b"k".to_vec(),
+                            nested.clone(),
+                        ),
+                    ),
+                ];
+                for (target_name, target_op) in targets {
+                    let case = format!(
+                        "v{} {name} target={target_name}",
+                        grove_version.protocol_version
+                    );
+                    let db = db_with_wrapper_parent(parent, false, grove_version);
+                    let root_before = db
+                        .root_hash(None, grove_version)
+                        .unwrap()
+                        .expect("root hash before");
+                    let ops = vec![
+                        QualifiedGroveDbOp::insert_or_replace_op(
+                            wrapper_parent_path(),
+                            b"a".to_vec(),
+                            Element::new_reference(ReferencePathType::SiblingReference(
+                                b"k".to_vec(),
+                            )),
+                        ),
+                        target_op,
+                    ];
+                    let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+                    assert_nested_wrapper_refused(&db, result, root_before, grove_version, &case);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_partial_batch_nested_wrapper_is_refused() {
+        for grove_version in grovedb_version::version::GROVE_VERSIONS {
+            for (name, parent, nested) in nested_wrapper_cases() {
+                let nested_op = || {
+                    QualifiedGroveDbOp::insert_or_replace_op(
+                        wrapper_parent_path(),
+                        b"k".to_vec(),
+                        nested.clone(),
+                    )
+                };
+
+                // In the initial ops.
+                let case = format!("v{} {name} initial op", grove_version.protocol_version);
+                let db = db_with_wrapper_parent(&parent, false, grove_version);
+                let root_before = db
+                    .root_hash(None, grove_version)
+                    .unwrap()
+                    .expect("root hash before");
+                let result = db
+                    .apply_partial_batch(
+                        vec![nested_op()],
+                        None,
+                        |_, _| Ok(vec![]),
+                        None,
+                        grove_version,
+                    )
+                    .unwrap();
+                assert_nested_wrapper_refused(&db, result, root_before, grove_version, &case);
+
+                // Returned by the add-on callback after a valid initial op.
+                let case = format!("v{} {name} add-on op", grove_version.protocol_version);
+                let db = db_with_wrapper_parent(&parent, false, grove_version);
+                let root_before = db
+                    .root_hash(None, grove_version)
+                    .unwrap()
+                    .expect("root hash before");
+                let result = db
+                    .apply_partial_batch(
+                        vec![QualifiedGroveDbOp::insert_or_replace_op(
+                            vec![TEST_LEAF.to_vec()],
+                            b"other".to_vec(),
+                            Element::new_item(b"v".to_vec()),
+                        )],
+                        None,
+                        |_, _| Ok(vec![nested_op()]),
+                        None,
+                        grove_version,
+                    )
+                    .unwrap();
+                assert_nested_wrapper_refused(&db, result, root_before, grove_version, &case);
+            }
+        }
     }
 }

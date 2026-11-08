@@ -98,8 +98,9 @@ impl GroveOp {
         backwards_references: BackwardsReferences,
         propagate: bool,
         // The declared tree type of the layer an `InsertTreeWithRootHash`
-        // writes, which sizes it when it settles an owner change (the op
-        // carries no aggregate data from which the type could be read).
+        // writes, which sizes it when it settles an owner change (the op's
+        // aggregate data names that type only from GROVE_V4, and a batch can
+        // settle on every grove version).
         written_tree_type: Option<TreeType>,
         // The batch's options: with `settle_owner_changes`, a write that may
         // settle an owner change is charged as the insertion it then records
@@ -212,6 +213,9 @@ impl GroveOp {
             probe
         };
         match self {
+            // `estimated_case_operations_for_batch` refuses moves first.
+            GroveOp::Move { .. } => Err(crate::batch::move_element::unrefused_move_error())
+                .wrap_with_cost(OperationCost::default()),
             // The internal derived rewrite: a same-size element replace
             // whose node hash is provided precombined — the standard
             // replace model plus the two combine calls.
@@ -1326,13 +1330,34 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         // 3), silently under-sizing an indexed parent's 13/28 bytes in the
         // Replace/Insert aggregate arms. Values are zero — only the variant
         // drives estimator sizing.
-        let aggregate_kind = match layer_element_estimates.tree_type {
-            TreeType::ProvableCountIndexedTree => AggregateData::ProvableCount(0),
-            TreeType::ProvableSumIndexedTree => AggregateData::ProvableSum(0),
-            TreeType::ProvableCountProvableSumIndexedTree => {
-                AggregateData::ProvableCountAndProvableSum(0, 0)
+        let aggregate_kind = match grove_version
+            .grovedb_versions
+            .operations
+            .average_case
+            .average_case_propagated_aggregate_kind
+        {
+            // Indexed trees only: a sum, count or count-sum tree is sized as
+            // a plain one, short of its 9 bytes per aggregate axis.
+            0 => match layer_element_estimates.tree_type {
+                TreeType::ProvableCountIndexedTree => AggregateData::ProvableCount(0),
+                TreeType::ProvableSumIndexedTree => AggregateData::ProvableSum(0),
+                TreeType::ProvableCountProvableSumIndexedTree => {
+                    AggregateData::ProvableCountAndProvableSum(0, 0)
+                }
+                _ => AggregateData::NoAggregateData,
+            },
+            // Every tree type, the indexed ones mapping as above.
+            1 => AggregateData::from(layer_element_estimates.tree_type.empty_tree_feature_type()),
+            version => {
+                return Err(Error::VersionError(
+                    GroveVersionError::UnknownVersionMismatch {
+                        method: "average_case_propagated_aggregate_kind".to_string(),
+                        known_versions: vec![0, 1],
+                        received: version,
+                    },
+                ))
+                .wrap_with_cost(cost)
             }
-            _ => AggregateData::NoAggregateData,
         };
         Ok(([0u8; 32], None, aggregate_kind)).wrap_with_cost(cost)
     }
@@ -1793,9 +1818,35 @@ mod tests {
         );
     }
 
+    /// The sum tree's replaced root key is sized as a sum tree from V4, 9
+    /// replaced bytes above the plain-tree sizing V3 keeps
+    /// (`average_case_propagated_aggregate_kind`).
     #[test]
     fn test_batch_root_one_sum_item_replace_op_average_case_costs() {
-        let grove_version = GroveVersion::latest();
+        use grovedb_version::version::v3::GROVE_V3;
+        assert_eq!(
+            sum_item_replace_op_average_case_cost(&GROVE_V3)
+                .storage_cost
+                .replaced_bytes,
+            5594
+        );
+        assert_eq!(
+            sum_item_replace_op_average_case_cost(GroveVersion::latest()),
+            OperationCost {
+                seek_count: 41,
+                storage_cost: StorageCost {
+                    added_bytes: 0,
+                    replaced_bytes: 5603,
+                    removed_bytes: NoStorageRemoval,
+                },
+                storage_loaded_bytes: 7669,
+                hash_node_calls: 79,
+                sinsemilla_hash_calls: 0,
+            }
+        );
+    }
+
+    fn sum_item_replace_op_average_case_cost(grove_version: &GroveVersion) -> OperationCost {
         let ops = dont_check(vec![QualifiedGroveDbOp::replace_op(
             vec![vec![7]],
             hex::decode("46447a3b4c8939fd4cf8b610ba7da3d3f6b52b39ab2549bf91503b9b07814055")
@@ -1849,21 +1900,7 @@ mod tests {
         // because we know the object we are inserting we can know the average
         // case cost if it doesn't already exist
         assert_eq!(average_case_cost.storage_cost.added_bytes, 0);
-
-        assert_eq!(
-            average_case_cost,
-            OperationCost {
-                seek_count: 41,
-                storage_cost: StorageCost {
-                    added_bytes: 0,
-                    replaced_bytes: 5594,
-                    removed_bytes: NoStorageRemoval,
-                },
-                storage_loaded_bytes: 7669,
-                hash_node_calls: 79,
-                sinsemilla_hash_calls: 0,
-            }
-        );
+        average_case_cost
     }
 
     #[test]
@@ -3645,5 +3682,447 @@ mod tests {
             "V3 average-case CommitmentTreeInsert output changed — this breaks replay of \
              historical admission bounds",
         );
+    }
+
+    /// One batch creating an aggregating tree together with one child, and
+    /// the layer information describing it.
+    fn aggregate_tree_created_with_child(
+        tree_type: TreeType,
+        tree: Element,
+    ) -> (
+        Vec<QualifiedGroveDbOp>,
+        HashMap<KeyInfoPath, EstimatedLayerInformation>,
+    ) {
+        // A plain item, which every aggregating tree accepts: the case under
+        // test is the tree element, not its child.
+        let ops = dont_check(vec![
+            QualifiedGroveDbOp::insert_or_replace_op(vec![], b"agg".to_vec(), tree),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![b"agg".to_vec()],
+                b"k1".to_vec(),
+                Element::new_item(b"v1".to_vec()),
+            ),
+        ]);
+
+        let mut paths = HashMap::new();
+        paths.insert(
+            KeyInfoPath(vec![]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: ApproximateElements(1),
+                estimated_layer_sizes: AllSubtrees(3, NoSumTrees, None),
+            },
+        );
+        paths.insert(
+            KeyInfoPath(vec![KeyInfo::KnownKey(b"agg".to_vec())]),
+            EstimatedLayerInformation {
+                tree_type,
+                estimated_layer_count: ApproximateElements(1),
+                estimated_layer_sizes: AllItems(2, 2, None),
+            },
+        );
+        (ops, paths)
+    }
+
+    /// The average-case added bytes of [`aggregate_tree_created_with_child`].
+    fn aggregate_tree_created_with_child_estimated_added_bytes(
+        tree_type: TreeType,
+        tree: Element,
+        grove_version: &GroveVersion,
+    ) -> u32 {
+        let (ops, paths) = aggregate_tree_created_with_child(tree_type, tree);
+        GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType(paths),
+            ops,
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected to get average case costs")
+        .storage_cost
+        .added_bytes
+    }
+
+    /// Every aggregating tree created in the same batch as its contents, with
+    /// the bytes its aggregate adds to the tree element (its cost size above
+    /// a plain tree's).
+    fn aggregate_trees_with_aggregate_bytes() -> Vec<(TreeType, Element, u32)> {
+        vec![
+            (TreeType::SumTree, Element::empty_sum_tree(), 9),
+            (TreeType::BigSumTree, Element::empty_big_sum_tree(), 16),
+            (TreeType::CountTree, Element::empty_count_tree(), 9),
+            (TreeType::CountSumTree, Element::empty_count_sum_tree(), 18),
+            (
+                TreeType::ProvableCountTree,
+                Element::empty_provable_count_tree(),
+                9,
+            ),
+            (
+                TreeType::ProvableCountSumTree,
+                Element::empty_provable_count_sum_tree(),
+                18,
+            ),
+            (
+                TreeType::ProvableSumTree,
+                Element::empty_provable_sum_tree(),
+                9,
+            ),
+            (
+                TreeType::ProvableCountProvableSumTree,
+                Element::empty_provable_count_provable_sum_tree(),
+                18,
+            ),
+        ]
+    }
+
+    /// A sum, count or count-sum tree inserted in the same batch as its
+    /// contents is written as `InsertTreeWithRootHash`, which the estimator
+    /// sizes by the aggregate the tree's level reports. From V4 every level
+    /// reports the aggregate of its own type, so the estimate's added bytes
+    /// are the applied ones for every aggregating tree type.
+    #[test]
+    fn test_batch_aggregate_tree_created_with_contents_average_case_added_bytes_match_actual() {
+        let grove_version = GroveVersion::latest();
+        for (tree_type, tree, _) in aggregate_trees_with_aggregate_bytes() {
+            let estimated = aggregate_tree_created_with_child_estimated_added_bytes(
+                tree_type,
+                tree.clone(),
+                grove_version,
+            );
+            let (ops, _) = aggregate_tree_created_with_child(tree_type, tree);
+            let applied = make_empty_grovedb()
+                .apply_batch(ops, None, None, grove_version)
+                .cost_as_result()
+                .expect("expected to apply batch")
+                .storage_cost
+                .added_bytes;
+            assert_eq!(
+                estimated, applied,
+                "{tree_type}: estimated added_bytes must be the applied ones",
+            );
+        }
+    }
+
+    /// Replay guarantee: before V4 the estimator sizes these trees as plain
+    /// ones, short of exactly their aggregate bytes, because historical
+    /// admission bounds were computed that way
+    /// (`average_case_propagated_aggregate_kind`).
+    #[test]
+    fn test_batch_aggregate_tree_created_with_contents_average_case_pinned_before_v4() {
+        use grovedb_version::version::v3::GROVE_V3;
+        let grove_version = GroveVersion::latest();
+        for (tree_type, tree, aggregate_bytes) in aggregate_trees_with_aggregate_bytes() {
+            let estimated_v4 = aggregate_tree_created_with_child_estimated_added_bytes(
+                tree_type,
+                tree.clone(),
+                grove_version,
+            );
+            let estimated_v3 =
+                aggregate_tree_created_with_child_estimated_added_bytes(tree_type, tree, &GROVE_V3);
+            assert_eq!(
+                estimated_v4 - estimated_v3,
+                aggregate_bytes,
+                "{tree_type}: V3 must size the tree as a plain one",
+            );
+        }
+    }
+
+    #[test]
+    fn test_average_case_propagated_aggregate_kind_unknown_version_is_refused() {
+        use grovedb_version::version::v4::GROVE_V4;
+
+        let mut unknown = GROVE_V4.clone();
+        unknown
+            .grovedb_versions
+            .operations
+            .average_case
+            .average_case_propagated_aggregate_kind = 9;
+        let (ops, paths) =
+            aggregate_tree_created_with_child(TreeType::SumTree, Element::empty_sum_tree());
+        let result = GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType(paths),
+            ops,
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            &unknown,
+        )
+        .cost_as_result();
+        match result {
+            Err(crate::Error::VersionError(
+                grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                    method,
+                    known_versions,
+                    received,
+                },
+            )) => {
+                assert_eq!(method, "average_case_propagated_aggregate_kind");
+                assert_eq!(known_versions, vec![0, 1]);
+                assert_eq!(received, 9);
+            }
+            other => panic!("expected an unknown version error, got {other:?}"),
+        }
+    }
+
+    /// Sum-bearing items, each with the aggregating tree it is placed under:
+    /// a sum needs a sum-carrying parent, and `NonCounted` only changes
+    /// anything under a count tree.
+    fn sum_bearing_children() -> Vec<(TreeType, Element, Element)> {
+        let flags = Some(vec![1, 2, 3]);
+        let non_counted = |element| {
+            Element::new_non_counted(element).expect("expected a sum item to wrap as non-counted")
+        };
+        vec![
+            (
+                TreeType::SumTree,
+                Element::empty_sum_tree(),
+                Element::new_sum_item(-3),
+            ),
+            (
+                TreeType::SumTree,
+                Element::empty_sum_tree(),
+                Element::new_sum_item_with_flags(-3, flags.clone()),
+            ),
+            (
+                TreeType::SumTree,
+                Element::empty_sum_tree(),
+                Element::new_item_with_sum_item(b"v1".to_vec(), -3),
+            ),
+            (
+                TreeType::SumTree,
+                Element::empty_sum_tree(),
+                Element::new_item_with_sum_item_with_flags(b"v1".to_vec(), -3, flags),
+            ),
+            (
+                TreeType::CountSumTree,
+                Element::empty_count_sum_tree(),
+                non_counted(Element::new_sum_item(-3)),
+            ),
+            (
+                TreeType::CountSumTree,
+                Element::empty_count_sum_tree(),
+                non_counted(Element::new_item_with_sum_item(b"v1".to_vec(), -3)),
+            ),
+        ]
+    }
+
+    /// The average-case cost of `ops`, described by `paths`.
+    fn average_case_cost(
+        paths: HashMap<KeyInfoPath, EstimatedLayerInformation>,
+        ops: Vec<QualifiedGroveDbOp>,
+        grove_version: &GroveVersion,
+    ) -> OperationCost {
+        GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType(paths),
+            ops,
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected to get average case costs")
+    }
+
+    /// The average-case and applied costs of one batch creating an
+    /// aggregating tree `agg` together with its only child `k1`, on an empty
+    /// db.
+    fn child_created_with_its_tree_costs(
+        tree_type: TreeType,
+        tree: Element,
+        child: Element,
+        grove_version: &GroveVersion,
+    ) -> (OperationCost, OperationCost) {
+        let (_, paths) = aggregate_tree_created_with_child(tree_type, tree.clone());
+        let ops = dont_check(vec![
+            QualifiedGroveDbOp::insert_or_replace_op(vec![], b"agg".to_vec(), tree),
+            QualifiedGroveDbOp::insert_or_replace_op(vec![b"agg".to_vec()], b"k1".to_vec(), child),
+        ]);
+        let estimated = average_case_cost(paths, ops.clone(), grove_version);
+        let applied = make_empty_grovedb()
+            .apply_batch(ops, None, None, grove_version)
+            .cost_as_result()
+            .expect("expected to apply batch");
+        (estimated, applied)
+    }
+
+    /// The average-case and applied costs of a batch replacing `child`, the
+    /// only child `k1` of an aggregating tree `agg`, with itself.
+    fn child_replaced_costs(
+        tree_type: TreeType,
+        tree: Element,
+        child: Element,
+        grove_version: &GroveVersion,
+    ) -> (OperationCost, OperationCost) {
+        let (_, paths) = aggregate_tree_created_with_child(tree_type, tree.clone());
+        let db = make_empty_grovedb();
+        db.insert(EMPTY_PATH, b"agg", tree, None, None, grove_version)
+            .unwrap()
+            .expect("expected to insert the tree");
+        db.insert(
+            [b"agg".as_slice()].as_ref(),
+            b"k1",
+            child.clone(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert the child");
+        let ops = dont_check(vec![QualifiedGroveDbOp::replace_op(
+            vec![b"agg".to_vec()],
+            b"k1".to_vec(),
+            child,
+        )]);
+        let estimated = average_case_cost(paths, ops.clone(), grove_version);
+        let applied = db
+            .apply_batch(ops, None, None, grove_version)
+            .cost_as_result()
+            .expect("expected to apply batch");
+        (estimated, applied)
+    }
+
+    /// The apply writes a sum-bearing item with its specialized cost, which
+    /// charges the sum value at its fixed 9-byte width. From V4 the estimate
+    /// sizes it the same way, so the estimate's added bytes are the applied
+    /// ones (`average_case_sum_item_cost_size`).
+    #[test]
+    fn test_batch_sum_bearing_item_created_with_its_tree_average_case_added_bytes_match_actual() {
+        let grove_version = GroveVersion::latest();
+        for (tree_type, tree, child) in sum_bearing_children() {
+            let (estimated, applied) =
+                child_created_with_its_tree_costs(tree_type, tree, child.clone(), grove_version);
+            assert_eq!(
+                estimated.storage_cost.added_bytes, applied.storage_cost.added_bytes,
+                "{child}: estimated added_bytes must be the applied ones",
+            );
+        }
+    }
+
+    /// A replace estimate over-counts its propagation, so only the replaced
+    /// element's own share can be compared with the apply: replacing a
+    /// sum-bearing item rather than a plain one must raise the estimate's
+    /// replaced bytes by what it raises the applied ones. From V4 an
+    /// `ItemWithSumItem` is sized by its specialized cost, as a `SumItem`
+    /// already was (`average_case_sum_item_cost_size`).
+    #[test]
+    fn test_batch_sum_bearing_item_replace_average_case_replaced_bytes_track_actual() {
+        let grove_version = GroveVersion::latest();
+        for (tree_type, tree, child) in sum_bearing_children() {
+            let (item_estimated, item_applied) = child_replaced_costs(
+                tree_type,
+                tree.clone(),
+                Element::new_item(b"v1".to_vec()),
+                grove_version,
+            );
+            let (estimated, applied) =
+                child_replaced_costs(tree_type, tree, child.clone(), grove_version);
+            assert_eq!(
+                estimated.storage_cost.replaced_bytes - item_estimated.storage_cost.replaced_bytes,
+                applied.storage_cost.replaced_bytes - item_applied.storage_cost.replaced_bytes,
+                "{child}: estimated replaced_bytes must rise over a plain item's as the applied \
+                 ones do",
+            );
+            assert!(
+                estimated.storage_cost.replaced_bytes >= applied.storage_cost.replaced_bytes,
+                "{child}: estimated replaced_bytes must cover the applied ones",
+            );
+        }
+    }
+
+    /// Replay guarantee: before V4 a sum-bearing item is sized by its
+    /// serialized size on insert, and an `ItemWithSumItem` on replace, as
+    /// historical admission bounds were computed. Pinned to the figures from
+    /// before `average_case_sum_item_cost_size` existed.
+    #[test]
+    fn test_batch_sum_bearing_item_average_case_pinned_before_v4() {
+        use grovedb_version::version::v3::GROVE_V3;
+        // (insert added_bytes, replace replaced_bytes), per child.
+        let pinned = [
+            (271, 442),
+            (275, 446),
+            (274, 437),
+            (278, 441),
+            (288, 475),
+            (291, 470),
+        ];
+        for ((tree_type, tree, child), (added_bytes, replaced_bytes)) in
+            sum_bearing_children().into_iter().zip(pinned)
+        {
+            let (inserted, _) = child_created_with_its_tree_costs(
+                tree_type,
+                tree.clone(),
+                child.clone(),
+                &GROVE_V3,
+            );
+            assert_eq!(
+                inserted.storage_cost.added_bytes, added_bytes,
+                "{child}: V3 insert estimate must not move",
+            );
+            let (replaced, _) = child_replaced_costs(tree_type, tree, child.clone(), &GROVE_V3);
+            assert_eq!(
+                replaced.storage_cost.replaced_bytes, replaced_bytes,
+                "{child}: V3 replace estimate must not move",
+            );
+        }
+    }
+
+    #[test]
+    fn test_average_case_sum_item_cost_size_unknown_version_is_refused() {
+        use grovedb_version::version::v4::GROVE_V4;
+
+        let mut unknown = GROVE_V4.clone();
+        unknown
+            .grovedb_versions
+            .operations
+            .average_case
+            .average_case_sum_item_cost_size = 9;
+        let (_, paths) =
+            aggregate_tree_created_with_child(TreeType::SumTree, Element::empty_sum_tree());
+        let insert = QualifiedGroveDbOp::insert_or_replace_op(
+            vec![b"agg".to_vec()],
+            b"k1".to_vec(),
+            Element::new_sum_item(-3),
+        );
+        let replace = QualifiedGroveDbOp::replace_op(
+            vec![b"agg".to_vec()],
+            b"k1".to_vec(),
+            Element::new_sum_item(-3),
+        );
+        for op in [insert, replace] {
+            let result = GroveDb::estimated_case_operations_for_batch(
+                AverageCaseCostsType(paths.clone()),
+                dont_check(vec![op]),
+                None,
+                |_cost, _old_flags, _new_flags| Ok(false),
+                |_flags, _removed_key_bytes, _removed_value_bytes| {
+                    Ok((NoStorageRemoval, NoStorageRemoval))
+                },
+                &unknown,
+            )
+            .cost_as_result();
+            match result {
+                Err(crate::Error::VersionError(
+                    grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                        method,
+                        known_versions,
+                        received,
+                    },
+                )) => {
+                    assert_eq!(method, "average_case_sum_item_cost_size");
+                    assert_eq!(known_versions, vec![0, 1]);
+                    assert_eq!(received, 9);
+                }
+                other => panic!("expected an unknown version error, got {other:?}"),
+            }
+        }
     }
 }

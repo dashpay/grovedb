@@ -114,4 +114,59 @@ where
             }
         })
     }
+    /// Prove a local page by skipping committed count units without scanning
+    /// collapsed subtrees. Count units equal rows for Item-only trees; exposed
+    /// non-unit rows are refused and mixed-tree acceptance can depend on shape.
+    /// Uses the same Merk proof-version capability as
+    /// [`Self::prove_count_offset_on_range`]; GroveDB gates local query syntax
+    /// separately.
+    pub fn prove_local_count_offset_on_range(
+        &self,
+        inner_range: &QueryItem,
+        offset: u64,
+        limit: Option<u64>,
+        left_to_right: bool,
+        grove_version: &GroveVersion,
+    ) -> CostResult<ProverCountOffsetResult, Error> {
+        check_merk_v0_with_cost!(
+            "prove_local_count_offset_on_range",
+            grove_version
+                .merk_versions
+                .proof
+                .prove_count_offset_on_range
+        );
+        let tree_type = self.tree_type;
+        if !matches!(
+            tree_type,
+            crate::TreeType::ProvableCountTree
+                | crate::TreeType::ProvableCountSumTree
+                | crate::TreeType::ProvableCountProvableSumTree
+        ) {
+            return Err(Error::InvalidProofError(format!(
+                "count-offset paginated proof is only valid against ProvableCountTree, \
+                 ProvableCountSumTree, or ProvableCountProvableSumTree, got {:?}",
+                tree_type
+            )))
+            .wrap_with_cost(Default::default());
+        }
+        self.use_tree_mut(|maybe_tree| match maybe_tree {
+            None => Ok(ProverCountOffsetResult {
+                ops: LinkedList::new(),
+                returned: 0,
+                offset_remaining: offset,
+            })
+            .wrap_with_cost(Default::default()),
+            Some(tree) => {
+                let mut ref_walker = RefWalker::new(tree, self.source());
+                ref_walker.create_local_count_offset_on_range_proof(
+                    inner_range,
+                    offset,
+                    limit,
+                    left_to_right,
+                    tree_type,
+                    grove_version,
+                )
+            }
+        })
+    }
 }

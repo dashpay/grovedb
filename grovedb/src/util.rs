@@ -48,6 +48,28 @@ impl<'db> AsRef<Transaction<'db>> for TxRef<'_, 'db> {
 /// Every path segment is a key, so it bounds path segments too.
 pub(crate) const MAX_KEY_LENGTH: usize = u8::MAX as usize;
 
+/// Refuse an entry point whose capability slot is not active: slot `0`
+/// (every version before the one that ships it) means unavailable, slot `1`
+/// is the v1 implementation. The comparison is an EXACT match: accepting
+/// `slot > 1` would silently run v1 code under a future protocol version that
+/// gave the slot new semantics.
+pub(crate) fn check_v1_slot_enabled(
+    method: &str,
+    slot: grovedb_version::version::FeatureVersion,
+) -> Result<(), Error> {
+    if slot != 1 {
+        return Err(
+            grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                method: method.to_string(),
+                known_versions: vec![1],
+                received: slot,
+            }
+            .into(),
+        );
+    }
+    Ok(())
+}
+
 /// Refuse a path with a segment longer than 255 bytes.
 ///
 /// A subtree prefix records each segment length in one byte, so storage

@@ -8,11 +8,13 @@ pub mod v1;
 pub mod v2;
 pub mod v3;
 pub mod v4;
+pub mod v5;
 
 pub use versioned_feature_core::*;
 
 use crate::version::v3::GROVE_V3;
 use crate::version::v4::GROVE_V4;
+use crate::version::v5::GROVE_V5;
 use crate::version::{
     bulk_append_tree_versions::BulkAppendTreeVersions,
     commitment_tree_versions::CommitmentTreeVersions, dense_tree_versions::DenseTreeVersions,
@@ -45,4 +47,4 @@ impl GroveVersion {
     }
 }
 
-pub const GROVE_VERSIONS: &[GroveVersion] = &[GROVE_V1, GROVE_V2, GROVE_V3, GROVE_V4];
+pub const GROVE_VERSIONS: &[GroveVersion] = &[GROVE_V1, GROVE_V2, GROVE_V3, GROVE_V4, GROVE_V5];

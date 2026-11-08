@@ -35,6 +35,27 @@ impl TreeNode {
         TreeNode::decode(key, bytes, value_defined_cost_fn, grove_version).map_err(EdError)
     }
 
+    /// Decode a stored node only to read it: the fields come back without a
+    /// key, a value-defined cost, or the copy of the value a node keeps as
+    /// its mutation baseline.
+    pub fn decode_raw_for_read(bytes: &[u8]) -> Result<TreeNodeInner, Error> {
+        TreeNodeInner::decode(bytes).map_err(EdError)
+    }
+
+    /// Decode a stored node for a walk that only reads: it keeps its key but
+    /// not the copy of the value a node keeps as its mutation baseline. A commit
+    /// takes a node with no baseline for a new one with nothing to replace and
+    /// bills it so, so a node from here must never reach one.
+    pub(crate) fn decode_raw_for_read_only_walk(key: Vec<u8>, bytes: &[u8]) -> Result<Self, Error> {
+        let mut inner = TreeNode::decode_raw_for_read(bytes)?;
+        inner.kv.key = key;
+        Ok(TreeNode {
+            inner: Box::new(inner),
+            old_value: None,
+            known_storage_cost: None,
+        })
+    }
+
     /// Get value from storage given key.
     pub(crate) fn get<'db, S, K>(
         storage: &S,

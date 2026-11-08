@@ -7,7 +7,7 @@ use grovedb_merk::proofs::{
 };
 use grovedb_version::{
     error::GroveVersionError,
-    version::{GroveVersion, GROVE_VERSIONS},
+    version::{v4::GROVE_V4, GroveVersion, GROVE_VERSIONS},
 };
 
 use crate::{
@@ -536,10 +536,20 @@ fn legacy_pagination_contracts_remain_distinct() {
     }
 }
 
-/// The fixtures pin serialized queries, proof bytes, and both operations'
-/// costs against the implementation before validation was unified.
-#[test]
-fn query_proof_bytes_and_costs_match_compatibility_fixtures() {
+/// One fixture row: the serialized query, the proof bytes and the complete cost
+/// of both operations, once the read and the proof are shown to agree.
+fn fixture_row(db: &GroveDb, name: &str, query: &PathQuery, version: &GroveVersion) -> String {
+    fixture_row_checked(db, name, query, version, assert_agree)
+}
+
+/// [`fixture_row`] with the caller's check of the read against the proof.
+fn fixture_row_checked(
+    db: &GroveDb,
+    name: &str,
+    query: &PathQuery,
+    version: &GroveVersion,
+    agree: impl FnOnce(PathQueryRun, VerifiedPathQuery),
+) -> String {
     fn cost(cost: &OperationCost) -> (u32, u64, u32) {
         assert_eq!(cost.storage_cost, Default::default());
         assert_eq!(cost.sinsemilla_hash_calls, 0);
@@ -549,6 +559,35 @@ fn query_proof_bytes_and_costs_match_compatibility_fixtures() {
             cost.hash_node_calls,
         )
     }
+    let read = run(db, query, version);
+    let proof = db.prove_query(query, None, version);
+    let read_cost = cost(&read.cost);
+    let proof_cost = cost(&proof.cost);
+    let read = read.unwrap().unwrap();
+    let proof = proof.unwrap().unwrap();
+    agree(
+        read,
+        GroveDb::verify_path_query(&proof, query, version).unwrap(),
+    );
+    let encoded = bincode::encode_to_vec(
+        query,
+        bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit(),
+    )
+    .unwrap();
+    format!(
+        "v{} {name} {} {} {read_cost:?} {proof_cost:?}",
+        version.protocol_version,
+        blake3::hash(&encoded).to_hex(),
+        blake3::hash(&proof).to_hex()
+    )
+}
+
+/// The fixtures pin serialized queries, proof bytes, and both operations'
+/// costs against the implementation before validation was unified.
+#[test]
+fn query_proof_bytes_and_costs_match_compatibility_fixtures() {
     let mut fixtures = Vec::new();
     for version in GROVE_VERSIONS {
         let db = make_test_grovedb(version);
@@ -636,34 +675,196 @@ fn query_proof_bytes_and_costs_match_compatibility_fixtures() {
             ));
         }
         for (name, query) in cases {
-            let read = run(&db, &query, version);
-            let proof = db.prove_query(&query, None, version);
-            let read_cost = cost(&read.cost);
-            let proof_cost = cost(&proof.cost);
-            let read = read.unwrap().unwrap();
-            let proof = proof.unwrap().unwrap();
-            assert_agree(
-                read,
-                GroveDb::verify_path_query(&proof, &query, version).unwrap(),
-            );
-            let encoded = bincode::encode_to_vec(
-                &query,
-                bincode::config::standard()
-                    .with_big_endian()
-                    .with_no_limit(),
-            )
-            .unwrap();
-            fixtures.push(format!(
-                "v{} {name} {} {} {read_cost:?} {proof_cost:?}",
-                version.protocol_version,
-                blake3::hash(&encoded).to_hex(),
-                blake3::hash(&proof).to_hex()
-            ));
+            fixtures.push(fixture_row(&db, &name, &query, version));
         }
     }
     assert_eq!(
         fixtures.join("\n") + "\n",
         include_str!("fixtures/validated_path_query.txt"),
         "query bytes, proof bytes, or operation costs changed from the pre-refactor baseline"
+    );
+}
+
+/// Global and local count pages dereference their reference rows through one
+/// rewrite, so a fix to it must leave both pages' proofs and costs as they were.
+/// Each host's page returns a plain and a bidirectional reference, which needs
+/// GROVE_V4.
+#[test]
+fn should_pin_count_page_reference_rows() {
+    let mut fixtures = Vec::new();
+    for version in GROVE_VERSIONS
+        .iter()
+        .filter(|version| version.protocol_version >= GROVE_V4.protocol_version)
+    {
+        let db = make_test_grovedb(version);
+        insert(
+            &db,
+            &[TEST_LEAF],
+            b"plain",
+            Element::new_item(b"plain".to_vec()),
+            version,
+        );
+        let target = Element::new_item_allowing_bidirectional_references(b"target".to_vec());
+        insert(&db, &[TEST_LEAF], b"target", target, version);
+        let hosts: [(&str, &[u8], Element); 3] = [
+            ("count", b"count", Element::empty_provable_count_tree()),
+            (
+                "count-sum",
+                b"count-sum",
+                Element::empty_provable_count_sum_tree(),
+            ),
+            (
+                "count-provable-sum",
+                b"count-provable-sum",
+                Element::empty_provable_count_provable_sum_tree(),
+            ),
+        ];
+        for (_, host, tree) in &hosts {
+            insert(&db, &[TEST_LEAF], host, tree.clone(), version);
+            let to = |key: &[u8]| {
+                crate::reference_path::ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec(),
+                    key.to_vec(),
+                ])
+            };
+            let bidirectional = Element::BidirectionalReference(
+                crate::BidirectionalReference {
+                    forward_reference_path: to(b"target"),
+                    backward_references: Vec::new(),
+                    cascade_on_update: true,
+                    max_hop: None,
+                },
+                None,
+            );
+            for (key, element) in [
+                (b"a", Element::new_item(vec![1])),
+                (b"b", Element::new_reference(to(b"plain"))),
+                (b"c", bidirectional),
+                (b"d", Element::new_item(vec![4])),
+            ] {
+                insert(&db, &[TEST_LEAF, host], key, element, version);
+            }
+        }
+        let serves_local_pages = version
+            .grovedb_versions
+            .path_query_methods
+            .per_instance_query_offsets
+            == 1;
+        // A read returns the stored references, a proof the targets they reach.
+        let dereferenced = |read: PathQueryRun, verified: VerifiedPathQuery| {
+            let VerifiedPathQuery::Elements {
+                elements: proved, ..
+            } = verified
+            else {
+                panic!("expected elements, got {verified:?}");
+            };
+            let keys = |rows: &[PathKeyOptionalElementTrio]| -> Vec<Vec<u8>> {
+                rows.iter().map(|(_, key, _)| key.clone()).collect()
+            };
+            assert_eq!(keys(&elements(read)), keys(&proved));
+            assert_eq!(
+                proved
+                    .into_iter()
+                    .map(|(_, _, row)| row)
+                    .collect::<Vec<_>>(),
+                vec![
+                    Some(Element::new_item(b"plain".to_vec())),
+                    Some(Element::new_item_allowing_bidirectional_references(
+                        b"target".to_vec()
+                    )),
+                ]
+            );
+        };
+        for (name, host, _) in &hosts {
+            let path = vec![TEST_LEAF.to_vec(), host.to_vec()];
+            let mut page = Query::new();
+            page.insert_all();
+            let global = PathQuery::new(
+                path.clone(),
+                SizedQuery::new(page.clone(), Some(2), Some(1)),
+            );
+            let row_name = format!("{name}-global");
+            fixtures.push(fixture_row_checked(
+                &db,
+                &row_name,
+                &global,
+                version,
+                dereferenced,
+            ));
+            if serves_local_pages {
+                page.offset = Some(1);
+                page.limit = Some(2);
+                let local = PathQuery::new_unsized(path, page);
+                let row_name = format!("{name}-local");
+                fixtures.push(fixture_row_checked(
+                    &db,
+                    &row_name,
+                    &local,
+                    version,
+                    dereferenced,
+                ));
+            }
+        }
+    }
+    assert_eq!(
+        fixtures.join("\n") + "\n",
+        include_str!("fixtures/count_page_references.txt"),
+        "count page reference proofs or costs changed"
+    );
+}
+
+/// The `count-offset` row above is a global offset, which walks rows. A local
+/// page reaches its own reader and skip traversal, and a work bound on those
+/// would still pass if a fetch stopped being charged.
+#[test]
+fn should_pin_local_page_proof_bytes_and_costs() {
+    fn page(offset: u16, left_to_right: bool) -> Query {
+        let mut page = Query::new_with_direction(left_to_right);
+        page.insert_all();
+        page.offset = Some(offset);
+        page.limit = Some(2);
+        page
+    }
+    let leaf = |host: &[u8], page: Query| {
+        PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), host.to_vec()], page)
+    };
+    let carrier = |host: &[u8], page: Query| {
+        let mut outer = Query::new_single_key(host.to_vec());
+        outer.set_subquery(page);
+        PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], outer)
+    };
+    let mut fixtures = Vec::new();
+    for version in GROVE_VERSIONS.iter().filter(|version| {
+        version
+            .grovedb_versions
+            .path_query_methods
+            .per_instance_query_offsets
+            == 1
+    }) {
+        let db = make_test_grovedb(version);
+        for host in [b"count", b"empty"] {
+            let tree = Element::empty_provable_count_tree();
+            insert(&db, &[TEST_LEAF], host, tree, version);
+        }
+        for key in *b"abcdefg" {
+            let item = Element::new_item(vec![key]);
+            insert(&db, &[TEST_LEAF, b"count"], &[key], item, version);
+        }
+        for (name, query) in [
+            ("leaf-page-ascending", leaf(b"count", page(2, true))),
+            ("leaf-page-descending", leaf(b"count", page(2, false))),
+            ("leaf-exhausted", leaf(b"count", page(7, true))),
+            ("leaf-empty-host", leaf(b"empty", page(1, true))),
+            ("leaf-missing-host", leaf(b"missing", page(1, true))),
+            ("carrier-page", carrier(b"count", page(2, true))),
+            ("carrier-exhausted", carrier(b"count", page(7, true))),
+        ] {
+            fixtures.push(fixture_row(&db, name, &query, version));
+        }
+    }
+    assert_eq!(
+        fixtures.join("\n") + "\n",
+        include_str!("fixtures/local_count_page.txt"),
+        "local page query bytes, proof bytes, or operation costs changed"
     );
 }

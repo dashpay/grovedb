@@ -36,7 +36,7 @@ use grovedb_merk::{
     },
     tree_type::TreeType,
 };
-use grovedb_version::version::{v3::GROVE_V3, GroveVersion};
+use grovedb_version::version::{v3::GROVE_V3, v4::GROVE_V4, v5::GROVE_V5, GroveVersion};
 
 use crate::{
     batch::{
@@ -435,6 +435,130 @@ mod private_document_store {
                 &actual,
             );
         }
+    }
+
+    /// Headroom an estimate leaves over an apply, per cost dimension
+    /// (`replaced_bytes` is a worst-case placeholder at `u32::MAX` on both
+    /// sides of the comparison below, so it is left out).
+    fn headroom(estimated: &OperationCost, actual: &OperationCost) -> [i128; 4] {
+        [
+            estimated.seek_count as i128 - actual.seek_count as i128,
+            estimated.storage_cost.added_bytes as i128 - actual.storage_cost.added_bytes as i128,
+            estimated.storage_loaded_bytes as i128 - actual.storage_loaded_bytes as i128,
+            estimated.hash_node_calls as i128 - actual.hash_node_calls as i128,
+        ]
+    }
+
+    /// Creating a store costs more than creating a plain tree: the
+    /// existence check a write-once store makes and the two hashes deriving
+    /// its empty root. Both estimators must charge that extra, so the
+    /// headroom they leave over a store's creation is never below the
+    /// headroom they leave over a tree's, for every insert op a store can be
+    /// created with. Comparing against a tree isolates the store's own work
+    /// from the propagation the batch estimate adds on top.
+    #[test]
+    fn test_private_document_store_creation_is_estimated_as_its_apply_costs() {
+        let v4 = GroveVersion::latest();
+        let ops: [(&str, fn(Element) -> QualifiedGroveDbOp); 4] = [
+            ("InsertOrReplace", |element| {
+                QualifiedGroveDbOp::insert_or_replace_op(vec![], b"docs".to_vec(), element)
+            }),
+            (
+                "InsertOrReplaceDontCheckForBackwardsReferences",
+                |element| {
+                    let mut op =
+                        QualifiedGroveDbOp::insert_or_replace_op(vec![], b"docs".to_vec(), element);
+                    op.op = op.op.dont_check_for_backwards_references();
+                    op
+                },
+            ),
+            ("InsertWithKnownToNotAlreadyExist", |element| {
+                QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
+                    vec![],
+                    b"docs".to_vec(),
+                    element,
+                )
+            }),
+            ("InsertIfNotExists", |element| {
+                QualifiedGroveDbOp::insert_if_not_exists_op(vec![], b"docs".to_vec(), element)
+            }),
+        ];
+        let headrooms = |op: QualifiedGroveDbOp, chunk_power: u8| {
+            let (average, worst) = estimate(op.clone(), chunk_power);
+            let db = make_empty_grovedb();
+            let CostContext {
+                value,
+                cost: actual,
+            } = db.apply_batch(vec![op], None, None, v4);
+            value.expect("the insert should succeed");
+            (headroom(&average, &actual), headroom(&worst, &actual))
+        };
+        for chunk_power in [4, 11] {
+            for (what, op_for) in ops {
+                let store = Element::empty_private_document_store(ENTRY_SIZE, chunk_power)
+                    .expect("valid config");
+                let (store_average, store_worst) = headrooms(op_for(store), chunk_power);
+                let (tree_average, tree_worst) =
+                    headrooms(op_for(Element::empty_tree()), chunk_power);
+                for (dimension, name) in ["seeks", "added bytes", "loaded bytes", "hashes"]
+                    .into_iter()
+                    .enumerate()
+                {
+                    assert!(
+                        store_average[dimension] >= tree_average[dimension],
+                        "{what} (chunk_power {chunk_power}): the average-case estimate leaves \
+                         {} {name} of headroom over a store's creation, {} over a tree's",
+                        store_average[dimension],
+                        tree_average[dimension],
+                    );
+                    assert!(
+                        store_worst[dimension] >= tree_worst[dimension],
+                        "{what} (chunk_power {chunk_power}): the worst-case estimate leaves \
+                         {} {name} of headroom over a store's creation, {} over a tree's",
+                        store_worst[dimension],
+                        tree_worst[dimension],
+                    );
+                }
+            }
+        }
+    }
+
+    /// GroveDB 6.1.1 shipped `GROVE_V4`'s insert estimators without a store's
+    /// creation charges, and an estimate is the admission bound historical
+    /// blocks replay against, so V4 keeps them. From `GROVE_V5` a store's
+    /// creation also pays the existence check (one seek) and its empty root's
+    /// two hashes; a plain tree is estimated alike by both.
+    #[test]
+    fn test_private_document_store_creation_estimate_is_gated_to_grove_v5() {
+        const CHUNK_POWER: u8 = 4;
+        let estimates = |element: Element, grove_version: &GroveVersion| {
+            let op = QualifiedGroveDbOp::insert_or_replace_op(vec![], b"docs".to_vec(), element);
+            (
+                average_case_estimate(
+                    vec![op.clone()],
+                    b"docs",
+                    TreeType::PrivateDocumentStore(CHUNK_POWER),
+                    ENTRY_SIZE,
+                    grove_version,
+                ),
+                worst_case_estimate(vec![op], grove_version),
+            )
+        };
+        let store =
+            Element::empty_private_document_store(ENTRY_SIZE, CHUNK_POWER).expect("valid config");
+        let (v4_average, v4_worst) = estimates(store.clone(), &GROVE_V4);
+        let (v5_average, v5_worst) = estimates(store, &GROVE_V5);
+        assert_eq!(v5_average.seek_count, v4_average.seek_count + 1);
+        assert_eq!(v5_average.hash_node_calls, v4_average.hash_node_calls + 2);
+        assert!(v5_average.storage_loaded_bytes > v4_average.storage_loaded_bytes);
+        assert_eq!(v5_worst.seek_count, v4_worst.seek_count + 1);
+        assert!(v5_worst.hash_node_calls >= v4_worst.hash_node_calls + 2);
+        assert!(v5_worst.storage_loaded_bytes > v4_worst.storage_loaded_bytes);
+
+        assert_eq!(
+            estimates(Element::empty_tree(), &GROVE_V4),
+            estimates(Element::empty_tree(), &GROVE_V5)
+        );
     }
 
     /// The record model is a real tightening: at chunk_power 11 the declared

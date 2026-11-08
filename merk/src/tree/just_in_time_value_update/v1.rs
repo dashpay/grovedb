@@ -14,12 +14,12 @@ impl TreeNode {
     /// Version 1 of the just-in-time value update, selected by
     /// `merk_versions.tree.just_in_time_value_update == 1` (grove v4+).
     ///
-    /// It differs from version 0 only in what an `Unchanged` answer keeps:
-    /// when the value the update stores is not the size the last
-    /// measurement took (the first one sizes the new value with the OLD
-    /// value's flags), the replacement is measured again from the stored
+    /// It differs from version 0 only in what an unchanged answer of the
+    /// flags update keeps: when the value the update stores is not the size
+    /// the last measurement took (the first one sizes the new value with the
+    /// OLD value's flags), the replacement is measured again from the stored
     /// bytes, so the recorded cost is the cost of what is written. For that,
-    /// a `Changed` round that restores the put's value restores the put's
+    /// a changed round that restores the put's value restores the put's
     /// value-defined cost with it, so a sum item or tree is measured with
     /// the cost of the bytes it holds. The stored value's own cost is also
     /// measured once rather than on every measurement, which leaves every

@@ -1234,7 +1234,7 @@ mod tests {
     /// The estimates of those writes without the option on the latest grove
     /// version, as they were before it existed: (case, write, average case,
     /// seeks, added bytes, replaced bytes, loaded bytes, hash calls), taken
-    /// from develop at a720f7c1. The worst-case rows whose replaced bytes
+    /// from develop at 0ea327d7. The worst-case rows whose replaced bytes
     /// saturate at `u32::MAX` still pin every other figure.
     const ESTIMATES_BEFORE_THE_OPTION: &[(usize, &str, bool, u32, u32, u32, u64, u32)] = &[
         (0, "insert_or_replace", true, 34, 243, 4289, 6170, 79),
@@ -1351,13 +1351,13 @@ mod tests {
         ),
         (1, "patch_dont_check", true, 13, 0, 1271, 1379, 23),
         (1, "patch_dont_check", false, 12, 150, 409711, 394925, 274),
-        (2, "insert_or_replace", true, 34, 245, 4545, 6578, 79),
+        (2, "insert_or_replace", true, 34, 253, 4554, 6578, 79),
         (
             2,
             "insert_or_replace",
             false,
             506892,
-            229,
+            237,
             4294967295,
             27857252525,
             87703315,
@@ -1367,8 +1367,8 @@ mod tests {
             "insert_or_replace_dont_check",
             true,
             13,
-            245,
-            1095,
+            253,
+            1104,
             1451,
             23,
         ),
@@ -1377,31 +1377,31 @@ mod tests {
             "insert_or_replace_dont_check",
             false,
             12,
-            229,
+            237,
             409674,
             394925,
             275,
         ),
-        (2, "replace", true, 34, 0, 4790, 6578, 79),
+        (2, "replace", true, 34, 0, 4807, 6578, 79),
         (
             2,
             "replace",
             false,
             506892,
-            192,
+            200,
             4294967295,
             27857252525,
             87703315,
         ),
-        (2, "replace_dont_check", true, 13, 0, 1340, 1451, 23),
-        (2, "replace_dont_check", false, 12, 192, 409711, 394925, 275),
-        (3, "insert_or_replace", true, 34, 198, 4545, 6578, 78),
+        (2, "replace_dont_check", true, 13, 0, 1357, 1451, 23),
+        (2, "replace_dont_check", false, 12, 200, 409711, 394925, 275),
+        (3, "insert_or_replace", true, 34, 206, 4554, 6578, 78),
         (
             3,
             "insert_or_replace",
             false,
             506892,
-            182,
+            190,
             4294967295,
             27857252525,
             87703314,
@@ -1411,8 +1411,8 @@ mod tests {
             "insert_or_replace_dont_check",
             true,
             13,
-            198,
-            1095,
+            206,
+            1104,
             1451,
             22,
         ),
@@ -1421,12 +1421,12 @@ mod tests {
             "insert_or_replace_dont_check",
             false,
             12,
-            182,
+            190,
             409674,
             394925,
             274,
         ),
-        (3, "replace", true, 34, 0, 4751, 6578, 78),
+        (3, "replace", true, 34, 0, 4760, 6578, 78),
         (
             3,
             "replace",
@@ -1437,7 +1437,7 @@ mod tests {
             27857252525,
             87703314,
         ),
-        (3, "replace_dont_check", true, 13, 0, 1301, 1451, 22),
+        (3, "replace_dont_check", true, 13, 0, 1310, 1451, 22),
         (3, "replace_dont_check", false, 12, 0, 409864, 394925, 274),
         (4, "insert_or_replace", true, 34, 223, 4289, 6170, 79),
         (
@@ -1485,7 +1485,7 @@ mod tests {
         (4, "replace_dont_check", false, 12, 186, 409711, 394925, 275),
         (4, "refresh_trusted", true, 13, 0, 1270, 1379, 23),
         (4, "refresh_trusted", false, 12, 186, 409711, 394925, 275),
-        (5, "insert_or_replace", true, 34, 240, 4545, 6578, 79),
+        (5, "insert_or_replace", true, 34, 240, 4554, 6578, 79),
         (
             5,
             "insert_or_replace",
@@ -1502,7 +1502,7 @@ mod tests {
             true,
             13,
             240,
-            1095,
+            1104,
             1451,
             23,
         ),
@@ -1516,7 +1516,7 @@ mod tests {
             394925,
             275,
         ),
-        (5, "replace", true, 34, 0, 4785, 6578, 79),
+        (5, "replace", true, 34, 0, 4794, 6578, 79),
         (
             5,
             "replace",
@@ -1527,7 +1527,7 @@ mod tests {
             27857252525,
             87703315,
         ),
-        (5, "replace_dont_check", true, 13, 0, 1335, 1451, 23),
+        (5, "replace_dont_check", true, 13, 0, 1344, 1451, 23),
         (5, "replace_dont_check", false, 12, 187, 409711, 394925, 275),
         (6, "insert_or_replace", true, 34, 151, 4289, 6170, 80),
         (
@@ -1576,7 +1576,7 @@ mod tests {
     ];
 
     /// The same estimates on grove v3 (no backward-references fan-out),
-    /// taken from develop at a720f7c1.
+    /// taken from develop at 0ea327d7.
     const GROVE_V3_ESTIMATES_BEFORE_THE_OPTION: &[(usize, &str, bool, u32, u32, u32, u64, u32)] = &[
         (0, "insert_or_replace", true, 13, 243, 1047, 1379, 23),
         (0, "insert_or_replace", false, 12, 243, 409674, 394925, 275),

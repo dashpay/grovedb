@@ -357,6 +357,11 @@ reference back to `A` is the canonical case.
   by seeding the stored-terminal walk with the referrer's own path. `GROVE_V3`
   is live and keeps accepting the overwrite, so that outcome is preserved for
   replay.
+- A batch move (`GROVE_V4`) follows a moved reference from its new key and
+  refuses the cycle it would close, but it copies the references stored
+  inside a moved tree without following them. In a swap or a chain, one whose
+  path names a moved key can end up reaching itself or closing a cycle; see
+  [Moving an element to a new key](batch-operations.md#moving-an-element-to-a-new-key-v4).
 
 ## References in Merk — Combined Value Hashes
 

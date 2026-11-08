@@ -5,6 +5,7 @@ use crate::version::v1::GROVE_V1;
 use crate::version::v2::GROVE_V2;
 use crate::version::v3::GROVE_V3;
 use crate::version::v4::GROVE_V4;
+use crate::version::v5::GROVE_V5;
 use crate::version::{GroveVersion, GROVE_VERSIONS};
 use crate::{TryFromVersioned, TryIntoVersioned};
 
@@ -65,14 +66,73 @@ fn grove_version_first_returns_v1() {
 }
 
 #[test]
-fn grove_version_latest_returns_v4() {
+fn grove_version_latest_returns_v5() {
     let latest = GroveVersion::latest();
-    assert_eq!(latest.protocol_version, GROVE_V4.protocol_version);
+    assert_eq!(latest.protocol_version, GROVE_V5.protocol_version);
 }
 
 #[test]
 fn grove_versions_count() {
-    assert_eq!(GROVE_VERSIONS.len(), 4);
+    assert_eq!(GROVE_VERSIONS.len(), 5);
+}
+
+#[test]
+fn v5_matches_v4_apart_from_its_gates() {
+    // GROVE_V5 starts as GROVE_V4. A gate added to V5 flips its slot back
+    // here, so this test lists every slot V5 changes.
+    let mut v5_as_v4 = GROVE_V5.clone();
+    v5_as_v4.protocol_version = GROVE_V4.protocol_version;
+    let operations = &mut v5_as_v4.grovedb_versions.operations;
+    operations.private_document_store.get_range = 0;
+    operations.private_document_store.range_proof = 0;
+    operations.average_case.average_case_merk_insert_element = 0;
+    operations.worst_case.worst_case_merk_insert_element = 0;
+    operations.proof.count_offset_reference_empty_tree_rows = 0;
+    v5_as_v4.grovedb_versions.element.path_query_push =
+        GROVE_V4.grovedb_versions.element.path_query_push;
+    let path_query_methods = &mut v5_as_v4.grovedb_versions.path_query_methods;
+    path_query_methods.merge = GROVE_V4.grovedb_versions.path_query_methods.merge;
+    path_query_methods.per_instance_query_offsets = 0;
+    v5_as_v4.grovedb_versions.apply_batch.keyless_append_repeats = 0;
+    assert_eq!(format!("{v5_as_v4:?}"), format!("{GROVE_V4:?}"));
+}
+
+#[test]
+fn private_document_store_range_slots_are_gated_to_v5() {
+    // GroveDB 6.1.1 shipped GROVE_V4 without a store's range read or range
+    // proofs, and Dash Platform 5.0 runs it: turning either on in V4 would
+    // change what a live protocol version accepts.
+    for v in [&GROVE_V1, &GROVE_V2, &GROVE_V3, &GROVE_V4] {
+        let pds = &v.grovedb_versions.operations.private_document_store;
+        assert_eq!(pds.get_range, 0, "v{}", v.protocol_version);
+        assert_eq!(pds.range_proof, 0, "v{}", v.protocol_version);
+    }
+    let pds = &GROVE_V5.grovedb_versions.operations.private_document_store;
+    assert_eq!(pds.get_range, 1);
+    assert_eq!(pds.range_proof, 1);
+}
+
+#[test]
+fn store_creation_estimates_are_gated_to_v5() {
+    // The insert estimators price a store's creation as its apply does from
+    // GROVE_V5; V1..V4 keep the estimates they shipped with, which are the
+    // admission bound historical blocks replay against.
+    for v in [&GROVE_V1, &GROVE_V2, &GROVE_V3, &GROVE_V4] {
+        let operations = &v.grovedb_versions.operations;
+        assert_eq!(
+            operations.average_case.average_case_merk_insert_element, 0,
+            "v{}",
+            v.protocol_version
+        );
+        assert_eq!(
+            operations.worst_case.worst_case_merk_insert_element, 0,
+            "v{}",
+            v.protocol_version
+        );
+    }
+    let operations = &GROVE_V5.grovedb_versions.operations;
+    assert_eq!(operations.average_case.average_case_merk_insert_element, 1);
+    assert_eq!(operations.worst_case.worst_case_merk_insert_element, 1);
 }
 
 #[test]
@@ -756,4 +816,25 @@ fn bulk_append_cost_versions_are_pinned_per_protocol_version() {
         "the unversioned entry points delegate here and must stay on the \
          shipped figure"
     );
+}
+
+#[test]
+fn local_offsets_only_change_the_v5_query_slots() {
+    for old in &GROVE_VERSIONS[..4] {
+        assert_eq!(
+            old.grovedb_versions
+                .path_query_methods
+                .per_instance_query_offsets,
+            0
+        );
+    }
+    assert_eq!(
+        GROVE_V5
+            .grovedb_versions
+            .path_query_methods
+            .per_instance_query_offsets,
+        1
+    );
+    assert_eq!(GROVE_V5.grovedb_versions.path_query_methods.merge, 2);
+    assert_eq!(GROVE_V5.grovedb_versions.element.path_query_push, 2);
 }

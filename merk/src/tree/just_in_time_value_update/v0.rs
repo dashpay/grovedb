@@ -14,9 +14,10 @@ impl TreeNode {
     /// Version 0 of the just-in-time value update, selected by
     /// `merk_versions.tree.just_in_time_value_update == 0` (grove v1..v3).
     ///
-    /// It differs from version 1 only in what an `Unchanged` answer keeps:
-    /// the measurement taken with the new value carrying the OLD value's
-    /// flags, whatever the length of the flags the new value is stored with.
+    /// It differs from version 1 only in what an unchanged answer of the
+    /// flags update keeps: the measurement taken with the new value carrying
+    /// the OLD value's flags, whatever the length of the flags the new value
+    /// is stored with.
     pub(super) fn just_in_time_tree_node_value_update_v0(
         &mut self,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,

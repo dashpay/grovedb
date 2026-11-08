@@ -93,8 +93,10 @@ where
     /// stores, after the apply has run the caller's flags update on it, so
     /// that a reference written in the same batch commits to them.
     /// `target_written` says this pass has already written the target, so
-    /// the stored bytes are the ones it stores. See the module docs for the
-    /// version semantics.
+    /// the stored bytes are the ones it stores, and `runs_value_update`
+    /// whether the apply's write over them runs the just-in-time value update
+    /// (read by version 1 only). See the module docs for the version
+    /// semantics.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn process_old_element_flags<G, SR>(
         key: &[u8],
@@ -104,6 +106,7 @@ where
         in_tree_type: TreeType,
         settle_owner_changes: bool,
         target_written: bool,
+        runs_value_update: bool,
         predicted_targets: &mut HashMap<Vec<Vec<u8>>, Vec<u8>>,
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
@@ -157,6 +160,7 @@ where
                 old_serialized_element,
                 in_tree_type,
                 target_written,
+                runs_value_update,
                 predicted_targets,
                 flags_update,
                 split_removal_bytes,

@@ -7,6 +7,156 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `GROVE_V5` (`protocol_version` 5). `GROVE_V4` as 6.1.1 shipped it is what
+  Dash Platform 5.0 (protocol version 14) runs, so behaviour changes from
+  here on are gated in `GROVE_V5` and leave V1..V4 as they are. V5 is V4
+  plus the store range reads and proofs, the store creation estimates, the
+  query changes and repeated keyless appends below.
+- A `PrivateDocumentStore`'s entries can be read and proved by position
+  range from `GROVE_V5`. `GroveDb::private_document_store_get_range` reads
+  `[start, start + limit)` in append order, clamped to the store's count
+  (`PrivateDocumentStore::get_range` in the store crate).
+  `prove_bulk_position_range` / `verify_bulk_position_range_proof` accept a
+  store, and a V1 proof's subquery into a store carries its bulk append
+  tree's proof, which the verifier binds through the store's committed
+  config (`blake3("pds_state" || config_hash || bulk_state_root)`, from the
+  authenticated element). Before, V1 proofs refused subqueries into a store.
+  Gated by the new `private_document_store.get_range` and
+  `private_document_store.range_proof` slots (0 in V1..V4, 1 in V5;
+  **BREAKING** for code building `GroveDBOperationsPrivateDocumentStoreVersions`
+  by hand). The proof envelope gains no variant; the `verify` feature now
+  builds `grovedb-private-document-store` (without storage) for the store's
+  root.
+- An opt-in mode that settles storage owner changes:
+  `BatchApplyOptions::settle_owner_changes` together with
+  `StorageFlags::update_element_flags_settling_owner_changes` as the flags
+  callback. An update in place whose new storage flags name a different owner
+  than the stored flags is accounted as a deletion plus an insertion: every
+  byte of the old element, key included, counts as removed and is sectioned
+  to the old owner through its epoch map by `split_removal_bytes`, and every
+  byte of the new element, key included, counts as added and is charged to
+  the writer, who keeps the flags they wrote. Without the mode the new owner
+  took the whole element (and its refund) when the size changed, or paid for
+  an element that kept naming the old owner when it did not. Updates that
+  keep the owner, or that have no owner on either side, are unchanged. The
+  flags callback can now answer an `ElementFlagsUpdate` (`Unchanged`,
+  `Changed`, `SettleOwnerChange`, new in `grovedb_costs`) in place of a
+  `bool`; a batch refuses `SettleOwnerChange` unless the option is set, and
+  on a write that keeps the stored flags (an untrusted `RefreshReference`, or
+  a tree's root update), which brings no owner of its own, with
+  `Error::InvalidBatchOperation`. With the option, the average-case and
+  worst-case batch estimates charge every `InsertOrReplace`, `Replace`,
+  `Patch` and trusted `RefreshReference` of an element with flags, and the
+  write of a flagged tree the batch also writes under, at least the bytes its
+  node adds when inserted. For a backward-references element the worst case
+  counts the referrers it carries over at its declared capacity, each at the
+  largest entry registration admits, so a worst-case estimate is never below
+  a settled apply; the average case counts the typical referrer shape. With
+  the option off, every cost, estimate, stored element and hash is what it
+  was before. A batch with the option predicts a same-batch reference's
+  target as `GROVE_V4` does on every grove version.
+
+### Changed
+- **BREAKING**: `BatchApplyOptions` has a new public field,
+  `settle_owner_changes` (`false` by default), so a struct literal that names
+  every field without `..Default::default()` must add it.
+- **BREAKING**: Merk's just-in-time value update callback (the
+  `update_tree_value_based_on_costs` argument of
+  `Merk::apply_with_costs_just_in_time_value_update`, `Merk::apply_unchecked`,
+  `Merk::apply_unchecked_with_old_value_observer`, `Walker::apply_to`, the
+  `TreeNode` put functions and the `Walker::put_value*` family) answers
+  `(ElementFlagsUpdate, Option<ValueDefinedCostType>)` in place of
+  `(bool, Option<ValueDefinedCostType>)`. GroveDB's own flags callback (in
+  `apply_batch_with_element_flags_update`,
+  `apply_partial_batch_with_element_flags_update` and
+  `estimated_case_operations_for_batch`) takes any answer that converts into
+  an `ElementFlagsUpdate`, so a callback answering a `bool` compiles as before,
+  except one that never returns `Ok`, which now has to name its result type
+  (for example `-> Result<bool, Error>`).
+- **BREAKING**: `Query` adds the public `offset: Option<u16>` field for
+  branch-local committed-count-unit pagination. Exhaustive struct literals
+  must supply the field or use a default update. Offset-bearing queries use
+  a new native version-3 flag and a new serde version-4 frame, which older
+  decoders reject; offset-free encodings remain unchanged.
+- **BREAKING**: `QueryOptions` adds `include_parent_tree_on_subquery`.
+  Exhaustive struct literals must supply the field or use a default update.
+  It defaults to `true`, and applies to V5 raw reads (`allow_get_raw`) only:
+  non-raw reads and value projections never return parent echoes. A V5 raw
+  read refuses a nonzero global offset together with a parent echo, since
+  echoes are not rows the offset can skip. Earlier query engines ignore the
+  field.
+- **BREAKING**: `QueryBudget` adds the public `rows` field; build one with
+  `QueryBudget::new(..)`. `GroveDBPathQueryMethodVersions` adds
+  `per_instance_query_offsets`; hand-built version tables set it to 0 for
+  historical snapshots.
+- `GroveVersion::latest()` now selects `GROVE_V5`. V5 enables per-instance
+  query offsets on supported provable count trees, merge v2 for exclusive
+  branch-local pagination, and the v2 trusted query engine with parent-tree
+  echoes. Earlier Grove versions continue to reject local offsets. Merge v2
+  carries a branch's own `Query::offset` but, like v1, refuses a nonzero
+  global `SizedQuery::offset`, which skips rows rather than count units. It
+  also refuses a global limit on a body with subqueries, which a branch cap
+  could not represent because it is not charged for empty subtrees, and a node
+  that echoes parents while shared with other inputs at any depth.
+- From `GROVE_V5` a batch may carry the same keyless append
+  (`CommitmentTreeInsert`, `MmrTreeAppend`, `BulkAppend`, `DenseTreeInsert`,
+  `PrivateDocumentStoreInsert`) more than once (issue #1031). Each lands at
+  its tree's next position, so the batch stores what the same appends applied
+  one by one store. The batch consistency check counts keyed operations only
+  for repeats there; `GROVE_V1`..`V4` still count every operation and refuse
+  such a batch, as 6.1.1 does. Every other consistency check, stored data,
+  proofs and costs are unchanged. Gated by the new
+  `apply_batch.keyless_append_repeats` slot (0 in V1..V4, 1 in V5).
+  **BREAKING** for API users:
+  - `QualifiedGroveDbOp::verify_consistency_of_operations(ops, grove_version)`
+    takes the caller's `&GroveVersion` and returns
+    `Result<GroveDbOpConsistencyResults, Error>`, an error for a slot value it
+    does not know. A caller passes the version it applies the batch at and
+    handles the `Result` (for example with `?`) before reading
+    `is_empty()`.
+  - `GroveDBApplyBatchVersions` gains `keyless_append_repeats`; code building
+    it by hand sets it (0 for the V4 rule, 1 for the V5 rule).
+
+### Fixed
+- Reads through a pinned iterator view, indexed-tree pages and V5 local count
+  pages alike, report a failed seek as the storage error. A failed seek reads
+  as no record, so an indexed-tree page called it corruption and a local page
+  could have come back empty.
+- From `GROVE_V5`, insert estimates price creating a `PrivateDocumentStore`
+  as the apply does. The average- and worst-case `merk_insert_element`
+  estimators v2 (selected by `average_case_merk_insert_element: 1` and
+  `worst_case_merk_insert_element: 1`) charge the existence check a
+  write-once store makes before it is created (priced as `InsertIfNotExists`
+  prices its check) and the two blake3 calls deriving its empty root (the
+  new `EMPTY_PRIVATE_DOCUMENT_STORE_STATE_ROOT_HASH_CALLS`), and the worst
+  case prices the store as the layered tree the apply writes instead of an
+  item at its serialized size. v1, which `GROVE_V4` keeps, is unchanged
+  from 6.1.1: it estimates a store's creation one seek and two hashes (three
+  in the worst case) below its apply, which the batch estimate's
+  propagation headroom happens to cover. Estimates of every other element,
+  applied costs, stored data and proofs do not change.
+- From `GROVE_V5`, count-offset proof verification accepts pages whose rows
+  resolve through a reference to an empty tree, which earlier versions could
+  persist. The empty-tree hash check applies only to direct tree rows on the
+  global offset path (the new `proof.count_offset_reference_empty_tree_rows`
+  slot, 0 in V1..V4 and 1 in V5; **BREAKING** for code building
+  `GroveDBOperationsProofVersions` by hand) and on V5 local pages; resolved
+  references keep the target binding Merk already verifies. V1..V4 refuse
+  such a global page, as 6.1.1 did.
+
+## [6.1.1] - 2026-10-20
+
+### Fixed
+- The `grovedbg` feature unpacks the bundled GroveDBG web UI with `zip` 9
+  instead of `zip-extensions` 0.13, which pulled `zip` 6 (#1023). `zip` 6
+  and 8 are covered by RUSTSEC-2026-0367, RUSTSEC-2026-0368 and
+  RUSTSEC-2026-0369. The archive is now read from memory, so no temporary
+  `grovedbg.zip` file is written. Nothing changes outside `grovedbg`, and
+  every `GroveVersion` behaves as in 6.1.0.
+
+## [6.1.0] - 2026-10-13
+
 ### Changed
 - From `GROVE_V4` a `ProvableCountProvableSumIndexedTree` primary accepts a
   bare `SumItem` child, on the direct and the batch path, as it accepts an
@@ -20,6 +170,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stays refused at every version.
 
 ### Added
+- `GroveOp::Move` and `QualifiedGroveDbOp::move_op(path, key, new_key)`
+  rename a key within its parent in a batch (issue #1014). The element keeps
+  its bytes and node value hash, and for a tree every record under it — nested
+  Merk trees, non-Merk trees' data, indexed trees' secondary Merks — is
+  copied byte for byte to the storage prefixes of the new path, so nothing
+  below the moved key is re-hashed, rebalanced or re-resolved. A moved
+  reference is followed from its new key; when its path reaches something
+  the same batch writes, it commits to what it reaches there after the
+  batch, like a reference the batch writes, and otherwise keeps the hash it
+  was stored with. Moves can swap or chain keys in one batch; a target
+  occupied before the batch must be moved away by the same batch. The move
+  is billed as storage that stays where it is: replaced bytes, plus the
+  change in key length. Refused for backward-reference participants, a
+  moved reference that resolves through its own key (cousin and
+  removed-cousin) or that no longer resolves from the new key (it would
+  reach a key the batch moves, close a cycle, or find no target), a
+  reference directly under a moved element that appends its parent's key,
+  moves inside an indexed tree, elements with flags moving to a key of
+  another length, partial batches and cost estimates. Other references are
+  carried as stored and not followed, so keeping them valid is the
+  caller's job, as for a delete: one that names the old key reaches
+  whatever is there after the batch, which in a swap or chain can be the
+  reference itself or one leading back to it. Reads of such a reference,
+  proofs through it, `verify_grovedb` with `verify_references` and state-sync
+  finalization then fail with `CyclicReference`, as they fail for a
+  dangling reference. Likewise a moved reference whose target lies under a
+  tree the same batch deletes or replaces is not refused: it keeps its
+  stored hash and dangles afterwards. Batches accept moves from `GROVE_V4`,
+  through the new `apply_batch.move_element` slot (**BREAKING** for code
+  building `GroveDBApplyBatchVersions` by hand, or matching `GroveOp` or
+  merk's `Op` exhaustively: merk gains `Op::PutMoved` and `Op::DeleteMoved`;
+  merk's apply refuses a `PutMoved` whose former key length exceeds 255).
+  `RawIterator` gains `status()` (default `Ok(())`, overridden by the RocksDB
+  iterators), which the move's copy checks so that a read error fails the
+  batch instead of committing a partial copy; other scans still stop at a
+  read error as at the end of their records.
+  `ElementType::supports_backward_references` classifies a serialized
+  element as a backward-reference participant; `Element`'s method of the
+  same name now reads it, so it also looks through wrappers. Decoders and
+  constructors never produce a wrapped participant, but a hand-built
+  wrapper chain around one (`NonCounted(NonCounted(ItemWithBackwardsReferences(..)))`,
+  say) is now refused up front by the insert and batch gates at every
+  version: `NotSupported` / `InvalidBatchOperation` at no cost, where V1..V3
+  returned `InvalidInput` after opening the Merk, or panicked in a batch
+  under a count tree.
 - `ProofLimitMode::UpperBound` and `QueryProofVerify::execute_proof_with_limit_mode`
   verify a proof with `limit` as a ceiling instead of the exact limit the
   prover used. Once the proof has returned a result, the walk stops at the
@@ -48,71 +243,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prefix in key order, including a transaction's own uncommitted writes when
   read through it. Aux storage was reachable by exact key only, so a
   collection kept as one aux entry per member could not be read back. (#968)
-- An opt-in mode that settles storage owner changes:
-  `BatchApplyOptions::settle_owner_changes` together with
-  `StorageFlags::update_element_flags_settling_owner_changes` as the flags
-  callback. An update in place whose new storage flags name a different owner
-  than the stored flags is accounted as a deletion plus an insertion: every
-  byte of the old element, key included, counts as removed and is sectioned
-  to the old owner through its epoch map by `split_removal_bytes`, and every
-  byte of the new element, key included, counts as added and is charged to
-  the writer, who keeps the flags they wrote. Without the mode the new owner
-  took the whole element (and its refund) when the size changed, or paid for
-  an element that kept naming the old owner when it did not. Updates that
-  keep the owner, or that have no owner on either side, are unchanged. The
-  flags callback can now answer an `ElementFlagsUpdate` (`Unchanged`,
-  `Changed`, `SettleOwnerChange`, new in `grovedb_costs`) in place of a
-  `bool`; a batch refuses `SettleOwnerChange` unless the option is set, and
-  on a write that keeps the stored flags (an untrusted `RefreshReference`, or
-  a tree's root update), which brings no owner of its own, with
-  `Error::InvalidBatchOperation`. With the option, the average-case and
-  worst-case batch estimates charge every `InsertOrReplace`, `Replace`,
-  `Patch` and trusted `RefreshReference` of an element with flags, and the
-  write of a flagged tree the batch also writes under, at least the bytes its
-  node adds when inserted. For a backward-references element the worst case
-  counts the referrers it carries over at its declared capacity, each at the
-  largest entry registration admits, so a worst-case estimate is never below
-  a settled apply; the average case counts the typical referrer shape. With the option off on
-  GROVE_V1..V3, every cost, estimate, stored element and hash is what it was
-  before; GROVE_V4 also carries the two fixes below (same-batch references to
-  updated items, and replacements keeping flags of another length), which
-  change some outcomes with the option off too. A batch with the option
-  predicts a same-batch reference's target as GROVE_V4 does on every grove
-  version. `grovedb_merk::element::insert::specialized_put_cost` is new: the
-  value-defined cost an ordinary write puts an element with.
 
 ### Changed
-- **BREAKING**: `BatchApplyOptions` has a new public field,
-  `settle_owner_changes` (`false` by default), so a struct literal that names
-  every field without `..Default::default()` must add it.
-- **BREAKING**: the version tables gain two required fields,
-  `GroveDBApplyBatchVersions::same_batch_reference_target_prediction` and
-  `MerkTreeVersions::just_in_time_value_update`, so code building those
-  structs by hand must add them: `0` for a table matching GROVE_V1..V3, which
-  keeps the released behaviour, and `1` for one matching GROVE_V4.
-- **BREAKING**: Merk's just-in-time value update callback (the
-  `update_tree_value_based_on_costs` argument of
-  `Merk::apply_with_costs_just_in_time_value_update`, `Merk::apply_unchecked`,
-  `Merk::apply_unchecked_with_old_value_observer`, `Walker::apply_to`, the
-  `TreeNode` put functions and the `Walker::put_value*` family) answers
-  `(ElementFlagsUpdate, Option<ValueDefinedCostType>)` in place of
-  `(bool, Option<ValueDefinedCostType>)`. GroveDB's own flags callback (in
-  `apply_batch_with_element_flags_update`,
-  `apply_partial_batch_with_element_flags_update` and
-  `estimated_case_operations_for_batch`) takes any answer that converts into
-  an `ElementFlagsUpdate`, so a callback answering a `bool` compiles as before,
-  except one that never returns `Ok`, which now has to name its result type
-  (for example `-> Result<bool, Error>`).
 - **BREAKING**: `TreeNode::put_value_with_fixed_cost`,
   `TreeNode::put_value_with_reference_value_hash_and_value_cost`,
   `TreeNode::put_value_with_two_reference_value_hashes_and_value_cost` and
-  their `Walker` counterparts take a `&GroveVersion`, and
-  `TreeNode::provided_value_hash_put_final_value` is renamed
-  `TreeNode::predict_put_final_value` and takes the value-defined
+  their `Walker` counterparts take a `&GroveVersion`, which selects the
+  just-in-time value update (see the `merk_versions.tree.just_in_time_value_update`
+  entry under Fixed). `TreeNode::provided_value_hash_put_final_value` is
+  renamed `TreeNode::predict_put_final_value` and takes the value-defined
   cost the stored node is loaded with, the put it predicts (the new
-  `grovedb_merk::tree::PredictedPut`: an ordinary put as `TreeNode::put_value`
-  installs it at the grove version, a provided-value-hash put, or a put at a
-  specialized cost) and a `&GroveVersion`.
+  `grovedb_merk::tree::PredictedPut`: an ordinary put as
+  `TreeNode::put_value` installs it at the grove version, a
+  provided-value-hash put, or a put at a specialized cost) and a
+  `&GroveVersion`. `grovedb_merk::element::insert::specialized_put_cost`,
+  the value-defined cost an ordinary write puts an element with, and
+  `Merk::replacement_runs_value_update`, whether a write over a key runs
+  the just-in-time value update, are new.
 - **BREAKING**: `delete_operation_for_delete_internal` and
   `delete_operations_for_delete_up_tree_while_empty` take the operations
   already pending in the batch as any `impl PendingOperations` in place of a
@@ -153,30 +300,107 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an absent path. `AxisKeys::empty_for_axis` is new. (#965)
 
 ### Fixed
-- A reference written in a batch that also updates its target item, such as
-  a Drive index reference refreshed alongside its document, committed to
-  bytes the update never stores when the target was a sum item (`SumItem`,
-  `ItemWithSumItem`) whose storage flags the flags update merges: an owned
-  item updated in a later epoch, or an unowned one gaining an owner. The
-  prediction assumed a sum item keeps its stored flags, while the apply
-  stores the merged ones, so the grove no longer verified; it also refused a
-  sum item replaced by an item, or the reverse, that applies on its own. From
-  GROVE_V4 (`apply_batch.same_batch_reference_target_prediction`) a reference
-  to a target the batch has already written commits to the bytes it stores,
-  and one to a target still to be written commits to the bytes Merk's own
-  just-in-time value update predicts for the put the apply performs, once
-  per target; the reference commits to exactly the stored bytes whatever the
-  order the batch writes the two in. GROVE_V1..V3 keep the old prediction.
-- A replacement whose flags update answered `Unchanged` was charged as if the
-  new value carried the old value's flags. When its own flags had a different
-  length (a write with longer, shorter or no flags without a flags update,
-  or an unowned item gaining an owner as it grows) the commit failed with a
-  storage cost mismatch. From GROVE_V4
-  (`merk_versions.tree.just_in_time_value_update`) the replacement is
-  measured from the bytes it stores, and a sum item or tree measured again
-  after its flags update rewrote and then restored its value is measured with
-  the value-defined cost of the bytes it holds; GROVE_V1..V3 keep the old
-  measurement.
+- From `GROVE_V4`, an average-case batch estimate sizes a sum, big sum,
+  count or count-sum tree inserted in the same batch as its contents as the
+  tree it is. Before, every level except an indexed tree reported no
+  aggregate to the op writing its tree element in the parent, so the
+  element was sized as a plain tree and the estimate's added bytes came in
+  below the applied ones by the aggregate's bytes (9 per axis, 16 for a big
+  sum); a replaced root key of such a tree was under-sized the same way in
+  replaced bytes. V1..V3 keep the old sizing for replay, through the new
+  `operations.average_case.average_case_propagated_aggregate_kind` slot
+  (**BREAKING** for code building `GroveDBOperationsAverageCaseVersions` by
+  hand).
+- From `GROVE_V4`, an average-case estimate sizes a `SumItem` or
+  `ItemWithSumItem` (wrapped or not) by the specialized cost the apply
+  writes it with, which charges the sum value at its fixed 9-byte width
+  (`SUM_ITEM_COST_SIZE`). Before, `average_case_merk_insert_element` sized
+  it by its serialized size, which encodes the sum as a varint, and
+  `average_case_merk_replace_element` did the same for an
+  `ItemWithSumItem`, so the estimate came in below the applied bytes by up
+  to 8 per item: a `SumItem(-3)` was estimated at 3 value bytes and applied
+  at 11. V1..V3 keep the old sizing for replay, through the new
+  `operations.average_case.average_case_sum_item_cost_size` slot
+  (**BREAKING** for code building `GroveDBOperationsAverageCaseVersions` by
+  hand).
+- From `GROVE_V4`, a worst-case estimate sizes a `SumItem` or
+  `ItemWithSumItem` (wrapped or not) by the specialized cost the apply
+  writes it with, as the average-case estimate does since the entry above.
+  Before, `worst_case_merk_insert_element` sized it by its serialized size,
+  which encodes the sum as a varint, and `worst_case_merk_replace_element`
+  did the same for an `ItemWithSumItem` and left out a wrapped `SumItem`'s
+  wrapper byte, so the worst case came in below the applied bytes by up to
+  8 per item: a `SumItem(-3)` inserted into a normal tree was estimated at
+  142 added bytes and applied at 150. V1..V3 keep the old sizing for
+  replay, through the new
+  `operations.worst_case.worst_case_sum_item_cost_size` slot (**BREAKING**
+  for code building `GroveDBOperationsWorstCaseVersions` by hand).
+- From `GROVE_V4`, a reference a batch writes or refreshes alongside an
+  update of its target item commits to the bytes the update stores. Before,
+  the batch predicted those bytes with a hand-written copy of Merk's
+  just-in-time value update that took a sum item (`SumItem`,
+  `ItemWithSumItem`) to keep its stored flags, while the apply stores the
+  flags the flags update leaves it. When the flags update merges them (an
+  owned item updated in a later epoch, an unowned one gaining an owner) the
+  reference committed to bytes that are never stored, which
+  `verify_grovedb` reports. Drive writes this batch for a document of a
+  summable type: a refresh of a deeper index reference next to the
+  primary-storage update. The prediction also refused a sum item replaced
+  by an item, or the reverse, that applies on its own. Now a reference to
+  a target the batch has already written hashes the bytes stored there, and
+  one to a target still to be written commits to the bytes Merk's own
+  just-in-time value update gives for the put the apply performs, once per
+  target. V1..V3 keep the old prediction for replay, through the new
+  `apply_batch.same_batch_reference_target_prediction` slot (**BREAKING**
+  for code building `GroveDBApplyBatchVersions` by hand).
+- From `GROVE_V4`, a replacement whose flags update leaves the flags
+  unchanged is charged for the bytes it stores. Before, Merk measured the
+  replacement with the new value carrying the old value's flags and kept
+  that measurement, so when the new value's own flags had another length
+  (a plain `apply_batch` replacing a flagged item with longer, shorter or
+  no flags, or Drive's merging callback on an unowned item gaining an owner
+  as it grows) the commit failed with `storage_cost cost mismatch`. A round
+  that rewrites the flags and then restores the put's value now also
+  restores its value-defined cost, so a sum item or tree measured again is
+  measured with the cost of the bytes it holds. Every replacement V1..V3
+  accept is charged the same. V1..V3 keep the old measurement for replay,
+  through the new `merk_versions.tree.just_in_time_value_update` slot
+  (**BREAKING** for code building `MerkTreeVersions` by hand).
+- From `GROVE_V4`, a reference a batch resolves through a pending
+  `InsertIfNotExists` reaches the element already stored at that key when
+  there is one. Before, it always reached the op's element, so a reference
+  inserted (or moved) in the same batch as a skip-mode
+  `insert_if_not_exists_or_skip_op` over an existing key committed to an
+  element that is never written, which `verify_grovedb` reports and proofs
+  reject. The existence check is the one the insert's own level makes.
+  V1..V3 keep the old resolution for replay, through the new
+  `apply_batch.reference_through_conditional_insert` slot (**BREAKING** for
+  code building `GroveDBApplyBatchVersions` by hand).
+- A batch carrying a nested element wrapper, such as a hand-built
+  `Element::NonCounted(Box::new(Element::NonCounted(..)))`, no longer panics.
+  The checked constructors and both decoders refuse nesting, and the direct
+  insert path has refused it with an error since `NotSummed` landed. But
+  batch execution and batch reference following dispatch on `underlying()`,
+  which unwraps one level, and their wrapper arms were `unreachable!`. Any
+  element-carrying op whose parent accepted the outer wrapper panicked there,
+  and so did a reference in the same batch following into such an op. Full
+  batches, partial batches and partial-batch add-ons now refuse a nested
+  wrapper up front with `InvalidBatchOperation`, so the batch writes nothing.
+  The fix is not version-gated. A batch carrying a nested wrapper either
+  panicked or failed at every grove version, and no production caller can
+  build one, so no stored state or replayed block can change.
+- A batch whose reference chain reaches another pending reference that
+  resolves to an empty path no longer panics. `apply_batch` refused an empty
+  path only for the reference op it was processing. Keys in a path run in
+  byte order, so an earlier op could follow into a later pending reference
+  (an `AbsolutePathReference(vec![])`, say, or a trusted `RefreshReference`
+  carrying one) before that op's own check ran. The next hop then reached
+  `process_reference(&[])`, where `split_last().expect(..)` panicked. Every
+  hop now refuses an empty path with `InvalidBatchOperation`, so the batch
+  fails and writes nothing. The fix is not version-gated. A batch that took
+  this path never committed at any grove version, so no stored state or
+  replayed block can change, and a batch that succeeded before resolves the
+  same way now.
 - A V1 proof whose limit runs out before its query does verifies at its own
   limit. The walk hides what it has not reached, but still passes back up
   through the ancestors of its last result, and one of them can be a range

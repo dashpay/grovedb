@@ -103,12 +103,18 @@
 #[cfg(feature = "minimal")]
 mod emit;
 #[cfg(feature = "minimal")]
+mod emit_local;
+#[cfg(feature = "minimal")]
+mod pinned_view;
+#[cfg(feature = "minimal")]
 mod prove;
 #[cfg(test)]
 mod tests;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 mod verify;
 
+#[cfg(feature = "minimal")]
+pub use pinned_view::{local_count_offset_page_from_view, read_value_from_view};
 #[cfg(feature = "minimal")]
 pub use prove::ProverCountOffsetResult;
 #[cfg(any(feature = "minimal", feature = "verify"))]

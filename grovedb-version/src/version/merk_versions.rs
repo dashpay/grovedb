@@ -29,20 +29,21 @@ pub struct MerkTreeVersions {
     /// accounting is unchanged: it is always computed from the stored
     /// predecessor bytes.
     pub put_value: FeatureVersion,
-    /// `TreeNode::just_in_time_tree_node_value_update` — the client-driven
+    /// `TreeNode::just_in_time_tree_node_value_update`: the client-driven
     /// update a replacement of a stored value runs (flags carry-over,
     /// flags-update callback, removal sectioning).
     ///
     /// Version 0 measures the replacement with the new value carrying the
     /// OLD value's flags, and keeps that measurement when the flags-update
-    /// callback answers `Unchanged`. The new value is then stored with its
-    /// own flags, so when those differ in length from the old ones the
-    /// recorded cost does not match the bytes written and the commit fails
-    /// with a storage cost mismatch. Consensus-locked for grove v1..v3.
+    /// callback answers that it left the flags unchanged. The new value is
+    /// then stored with its own flags, so when those differ in length from
+    /// the old ones the recorded cost does not match the bytes written and
+    /// the commit fails with a storage cost mismatch. Consensus-locked for
+    /// grove v1..v3.
     ///
     /// Version 1 re-measures the replacement from the bytes it stores when
-    /// the callback answers `Unchanged` and their size differs from the
-    /// last measurement taken, and restores the put's value-defined cost
+    /// the callback answers unchanged and their size differs from the last
+    /// measurement taken, and restores the put's value-defined cost
     /// whenever it restores the put's value. Every update whose cost
     /// version 0 records for the bytes it stores is charged the same.
     pub just_in_time_value_update: FeatureVersion,
@@ -80,5 +81,7 @@ pub struct MerkProofVersions {
     ///
     /// Bump this if the prover's emitted op stream changes shape in a
     /// way that requires a coordinated verifier update.
+    /// Also gates `Merk::prove_local_count_offset_on_range`, which skips
+    /// committed count units using the same proof format and verifier.
     pub prove_count_offset_on_range: FeatureVersion,
 }

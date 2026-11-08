@@ -6,15 +6,539 @@
 
 use std::collections::LinkedList;
 
+use grovedb_costs::OperationCost;
+use grovedb_element::Element;
+use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
-use super::verify_count_offset_on_range_proof;
+use super::{
+    local_count_offset_page_from_view, pinned_view::PinnedViewSource, read_value_from_view,
+    verify_count_offset_on_range_proof,
+};
 use crate::{
     proofs::{encode_into, query::QueryItem, Op as ProofOp},
     test_utils::TempMerk,
-    tree::{Op, TreeFeatureType::ProvableCountedMerkNode},
+    tree::{kv::ValueDefinedCostType, Op, TreeFeatureType::ProvableCountedMerkNode, TreeNode},
     Merk, TreeType,
 };
+
+fn assert_local_count_page(
+    merk: &Merk<impl grovedb_storage::StorageContext<'static>>,
+    root: [u8; 32],
+    offset: u64,
+    left_to_right: bool,
+    expected_skipped: u64,
+    expected_keys: &[&[u8]],
+) {
+    let range = QueryItem::RangeFull(..);
+    let page = merk
+        .prove_local_count_offset_on_range(
+            &range,
+            offset,
+            Some(2),
+            left_to_right,
+            GroveVersion::latest(),
+        )
+        .unwrap()
+        .expect("local count page should prove");
+    let verified = verify_count_offset_on_range_proof(
+        &encode_proof(&page.ops),
+        &range,
+        offset,
+        Some(2),
+        left_to_right,
+    )
+    .unwrap()
+    .expect("local count page should verify");
+    assert_eq!(verified.root_hash, root);
+    assert_eq!(verified.skipped, expected_skipped);
+    assert_eq!(page.offset_remaining, offset - expected_skipped);
+    assert_eq!(
+        verified
+            .returned_items
+            .iter()
+            .map(|row| row.key.as_slice())
+            .collect::<Vec<_>>(),
+        expected_keys,
+    );
+}
+
+#[test]
+fn local_count_unit_pages_cover_zero_maximum_and_past_end_offsets() {
+    let v = GroveVersion::latest();
+    let (merk, root) = make_15_key_provable_count_tree(v);
+    for (left_to_right, first_page) in [
+        (true, [b"a".as_slice(), b"b".as_slice()]),
+        (false, [b"o".as_slice(), b"n".as_slice()]),
+    ] {
+        assert_local_count_page(&merk, root, 0, left_to_right, 0, &first_page);
+        for offset in [15, 16, u64::from(u16::MAX)] {
+            assert_local_count_page(&merk, root, offset, left_to_right, 15, &[]);
+        }
+    }
+}
+
+/// One traversal serves both, so a trusted read cannot drift from the proof.
+#[test]
+fn trusted_rows_are_the_rows_a_proof_returns_at_every_offset_and_limit() {
+    let v = GroveVersion::latest();
+    let (merk, _) = make_15_key_provable_count_tree(v);
+    let range = QueryItem::RangeFull(..);
+    for left_to_right in [true, false] {
+        for offset in [0, 1, 7, 14, 15, 16] {
+            for limit in [None, Some(0), Some(1), Some(2), Some(15)] {
+                let page = merk
+                    .prove_local_count_offset_on_range(&range, offset, limit, left_to_right, v)
+                    .unwrap()
+                    .expect("local count page should prove");
+                let proved: Vec<(Vec<u8>, Vec<u8>)> = verify_count_offset_on_range_proof(
+                    &encode_proof(&page.ops),
+                    &range,
+                    offset,
+                    limit,
+                    left_to_right,
+                )
+                .unwrap()
+                .expect("local count page should verify")
+                .returned_items
+                .into_iter()
+                .map(|row| (row.key, row.value))
+                .collect();
+                let rows = local_count_offset_page_from_view(
+                    merk.storage.raw_iter(),
+                    merk.root_key(),
+                    TreeType::ProvableCountTree,
+                    &range,
+                    offset,
+                    limit,
+                    left_to_right,
+                    v,
+                )
+                .unwrap()
+                .expect("local count page should read");
+                assert_eq!(
+                    rows, proved,
+                    "ltr={left_to_right} offset={offset} limit={limit:?}"
+                );
+            }
+        }
+    }
+}
+
+/// A page walk never commits, so the node it fetches holds no second copy of its
+/// value and loses nothing the walk reads, while a decode that can mutate still
+/// keeps its baseline.
+#[test]
+fn should_fetch_pinned_view_nodes_without_a_mutation_baseline() {
+    let v = GroveVersion::latest();
+    let (merk, _) = make_15_key_provable_count_tree(v);
+    let key = merk.root_key().expect("the fixture has a root");
+    let stored = merk
+        .storage
+        .get(&key)
+        .unwrap()
+        .unwrap()
+        .expect("the root is stored");
+    let mutable = TreeNode::decode_raw(
+        &stored,
+        key.clone(),
+        None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        v,
+    )
+    .unwrap();
+
+    let fetched = PinnedViewSource::new(merk.storage.raw_iter())
+        .fetch_key(&key)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(fetched.old_value, None);
+    assert_eq!(fetched.inner, mutable.inner);
+    assert_eq!(mutable.old_value.as_ref(), Some(mutable.value_ref()));
+}
+
+/// A caller outside the walk gets only a value, charged as a storage `get`
+/// charges the node holding it.
+#[test]
+fn should_read_only_the_value_stored_at_a_key_through_a_view() {
+    let v = GroveVersion::latest();
+    let (merk, _) = make_15_key_provable_count_tree(v);
+    let stored = merk
+        .storage
+        .get(b"c")
+        .unwrap()
+        .unwrap()
+        .expect("c is stored");
+    let mut view = merk.storage.raw_iter();
+
+    let present = read_value_from_view(&mut view, b"c");
+    assert_eq!(
+        present.cost,
+        OperationCost {
+            seek_count: 1,
+            storage_loaded_bytes: stored.len() as u64,
+            ..Default::default()
+        }
+    );
+    assert_eq!(present.unwrap().unwrap(), Some(vec![2]));
+
+    for missing in [b"cc".as_slice(), b"z".as_slice()] {
+        let absent = read_value_from_view(&mut view, missing);
+        assert_eq!(
+            absent.cost,
+            OperationCost {
+                seek_count: 1,
+                ..Default::default()
+            }
+        );
+        assert_eq!(absent.unwrap().unwrap(), None);
+    }
+}
+
+/// A populated tree has no row form a page can return, wrapped or not, while
+/// an empty tree is an ordinary row. A read and a proof refuse alike.
+#[test]
+fn local_count_unit_pages_refuse_exposed_populated_trees() {
+    let v = GroveVersion::latest();
+    let range = QueryItem::RangeInclusive(b"c".to_vec()..=b"c".to_vec());
+    let page_with = |tree: Element| {
+        let mut merk = TempMerk::new_with_tree_type(v, TreeType::ProvableCountTree);
+        let entries: Vec<(Vec<u8>, Op)> = (b'a'..=b'o')
+            .map(|key| {
+                let value = if key == b'c' {
+                    tree.serialize(v).expect("the tree serializes")
+                } else {
+                    vec![key]
+                };
+                (vec![key], Op::Put(value, ProvableCountedMerkNode(1)))
+            })
+            .collect();
+        merk.apply::<_, Vec<_>>(&entries, &[], None, v)
+            .unwrap()
+            .expect("apply should succeed");
+        merk.commit(v);
+        let read = local_count_offset_page_from_view(
+            merk.storage.raw_iter(),
+            merk.root_key(),
+            TreeType::ProvableCountTree,
+            &range,
+            0,
+            Some(1),
+            true,
+            v,
+        )
+        .unwrap()
+        .map(|rows| rows.len());
+        let proof = merk
+            .prove_local_count_offset_on_range(&range, 0, Some(1), true, v)
+            .unwrap()
+            .map(|page| page.returned as usize);
+        [read, proof]
+    };
+
+    for populated in [
+        Element::new_tree(Some(b"x".to_vec())),
+        Element::new_not_summed(Element::new_sum_tree(Some(b"x".to_vec())))
+            .expect("a sum tree may be wrapped"),
+    ] {
+        for page in page_with(populated.clone()) {
+            let error = page.expect_err("a populated tree cannot be a page row");
+            assert!(
+                error.to_string().contains("non-empty tree"),
+                "{populated}: {error}"
+            );
+        }
+    }
+    for page in page_with(Element::new_tree(None)) {
+        assert_eq!(page.expect("an empty tree is an ordinary row"), 1);
+    }
+}
+
+#[test]
+fn local_count_pages_use_the_merk_proof_version_instead_of_the_grove_query_gate() {
+    let mut v = GroveVersion::latest().clone();
+    let (merk, _) = make_15_key_provable_count_tree(&v);
+    v.grovedb_versions
+        .path_query_methods
+        .per_instance_query_offsets = 0;
+    let page = merk
+        .prove_local_count_offset_on_range(&QueryItem::RangeFull(..), 1, Some(2), true, &v)
+        .unwrap()
+        .expect("the GroveDB query gate must not control the low-level Merk API");
+    assert_eq!(page.returned, 2);
+    assert_eq!(page.offset_remaining, 0);
+}
+
+#[test]
+fn local_count_pages_refuse_unknown_merk_proof_versions_without_traversal() {
+    let mut v = GroveVersion::latest().clone();
+    let (merk, _) = make_15_key_provable_count_tree(&v);
+    v.merk_versions.proof.prove_count_offset_on_range = 1;
+    let result =
+        merk.prove_local_count_offset_on_range(&QueryItem::RangeFull(..), 1, Some(2), true, &v);
+    assert!(
+        result.cost.is_nothing(),
+        "version refusal must precede tree access"
+    );
+    let error = result
+        .unwrap()
+        .err()
+        .expect("unknown Merk versions must fail closed");
+    assert!(matches!(error, crate::Error::VersionError(_)), "{error}");
+    assert!(
+        error
+            .to_string()
+            .contains("prove_local_count_offset_on_range"),
+        "{error}"
+    );
+}
+
+#[test]
+fn local_count_unit_pages_refuse_exposed_zero_and_weighted_rows() {
+    let v = GroveVersion::latest();
+    for tree_type in [
+        TreeType::ProvableCountTree,
+        TreeType::ProvableCountSumTree,
+        TreeType::ProvableCountProvableSumTree,
+    ] {
+        for own in [0, 3] {
+            let (merk, _) = make_15_key_tree_with_non_unit_row_and_type(b'h', own, tree_type, v);
+            assert_eq!(merk.root_key(), Some(b"h".to_vec()));
+            for left_to_right in [true, false] {
+                for offset in [0, 2] {
+                    let error = merk
+                        .prove_local_count_offset_on_range(
+                            &QueryItem::RangeFull(..),
+                            offset,
+                            Some(1),
+                            left_to_right,
+                            v,
+                        )
+                        .unwrap()
+                        .err()
+                        .expect("an exposed non-unit row cannot represent a returned page row");
+                    assert!(
+                        error.to_string().contains("exactly one count unit"),
+                        "{error}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn local_count_unit_pages_skip_hidden_nested_counts_in_committed_units() {
+    let v = GroveVersion::latest();
+    for tree_type in [
+        TreeType::ProvableCountTree,
+        TreeType::ProvableCountSumTree,
+        TreeType::ProvableCountProvableSumTree,
+    ] {
+        for (left_to_right, weighted_key) in [(true, b'c'), (false, b'm')] {
+            for own in [0, 3] {
+                let (merk, root) =
+                    make_15_key_tree_with_non_unit_row_and_type(weighted_key, own, tree_type, v);
+                let offset = 6 + own;
+                assert_refuses_non_unit_row(
+                    &merk,
+                    QueryItem::RangeFull(..),
+                    offset,
+                    Some(1),
+                    left_to_right,
+                    v,
+                );
+                let page = merk
+                    .prove_local_count_offset_on_range(
+                        &QueryItem::RangeFull(..),
+                        offset,
+                        Some(1),
+                        left_to_right,
+                        v,
+                    )
+                    .unwrap()
+                    .expect("a hidden nested count consumes committed units, not physical rows");
+                let verified = verify_count_offset_on_range_proof(
+                    &encode_proof(&page.ops),
+                    &QueryItem::RangeFull(..),
+                    offset,
+                    Some(1),
+                    left_to_right,
+                )
+                .unwrap()
+                .expect("hidden nested counts stay bound to the authoritative root");
+                assert_eq!(verified.root_hash, root);
+                assert_eq!(verified.skipped, offset);
+                assert_eq!(verified.returned_items.len(), 1);
+                assert_eq!(verified.returned_items[0].key, b"h");
+                assert_local_count_page(
+                    &merk,
+                    root,
+                    u64::from(u16::MAX),
+                    left_to_right,
+                    14 + own,
+                    &[],
+                );
+            }
+        }
+    }
+}
+
+/// The work bound below would still pass if a fetch stopped being charged, so
+/// this states what a small page costs from the nodes it must load. The fixture
+/// balances to `h` over `d` and `l`, with `b`, `f`, `j` and `n` below them. A
+/// proof loads a collapsed child for the hashes it commits to, and nothing below
+/// it. A read takes a collapsed child's count from its parent's link, so it
+/// loads only the nodes it opens, each charged as a storage `get` charges it.
+#[test]
+fn should_charge_exactly_the_nodes_a_local_page_loads() {
+    let v = GroveVersion::latest();
+    let range = QueryItem::RangeFull(..);
+    let (mut merk, _) = make_15_key_provable_count_tree(v);
+    // (offset, ascending, nodes a read loads, nodes a proof loads, rows)
+    let cases: [(u64, bool, &[u8], &[u8], &[u8]); 4] = [
+        (5, true, b"hdfg", b"hdbfegl", b"fgh"),
+        (5, false, b"hlji", b"hlnjkid", b"jih"),
+        (15, true, b"h", b"h", b""),
+        (15, false, b"h", b"h", b""),
+    ];
+    for (offset, left_to_right, read_loaded, loaded, rows) in cases {
+        let stored_bytes = |nodes: &[u8]| -> u64 {
+            nodes
+                .iter()
+                .map(|node| {
+                    let bytes = merk.storage.get([*node]).unwrap().unwrap();
+                    bytes.expect("the node is stored").len() as u64
+                })
+                .sum()
+        };
+        let read_cost = OperationCost {
+            seek_count: read_loaded.len() as u32,
+            storage_loaded_bytes: stored_bytes(read_loaded),
+            ..Default::default()
+        };
+        // A proof walks from the root the open Merk already holds.
+        let proof_cost = OperationCost {
+            seek_count: loaded.len() as u32 - 1,
+            storage_loaded_bytes: stored_bytes(&loaded[1..]),
+            ..Default::default()
+        };
+
+        let read = local_count_offset_page_from_view(
+            merk.storage.raw_iter(),
+            merk.root_key(),
+            TreeType::ProvableCountTree,
+            &range,
+            offset,
+            Some(3),
+            left_to_right,
+            v,
+        );
+        assert_eq!(read.cost, read_cost, "read at {offset}, {left_to_right}");
+        let keys: Vec<u8> = read.unwrap().unwrap().iter().map(|row| row.0[0]).collect();
+        assert_eq!(keys, rows);
+
+        // Commit reopens the Merk, so the proof cannot reuse loaded links.
+        merk.commit(v);
+        let proof =
+            merk.prove_local_count_offset_on_range(&range, offset, Some(3), left_to_right, v);
+        assert_eq!(proof.cost, proof_cost, "proof at {offset}, {left_to_right}");
+        assert_eq!(proof.unwrap().unwrap().returned, rows.len() as u64);
+    }
+
+    let empty = TempMerk::new_with_tree_type(v, TreeType::ProvableCountTree);
+    let read = local_count_offset_page_from_view(
+        empty.storage.raw_iter(),
+        empty.root_key(),
+        TreeType::ProvableCountTree,
+        &range,
+        1,
+        Some(1),
+        true,
+        v,
+    );
+    assert_eq!(read.cost, OperationCost::default());
+    let proof = empty.prove_local_count_offset_on_range(&range, 1, Some(1), true, v);
+    assert_eq!(proof.cost, OperationCost::default());
+}
+
+#[test]
+fn local_count_unit_pages_bound_cold_seeks_at_maximum_offset() {
+    let v = GroveVersion::latest();
+    let mut merk = TempMerk::new_with_tree_type(v, TreeType::ProvableCountTree);
+    let entries: Vec<_> = (0..=u16::MAX)
+        .map(|key| {
+            (
+                key.to_be_bytes().to_vec(),
+                Op::Put(vec![1], ProvableCountedMerkNode(1)),
+            )
+        })
+        .collect();
+    merk.apply::<_, Vec<_>>(&entries, &[], None, v)
+        .unwrap()
+        .expect("apply flat history");
+    merk.commit(v);
+    let root = merk.root_hash().unwrap();
+    for left_to_right in [true, false] {
+        // Commit reopens the Merk so a previous traversal cannot hide node
+        // fetches behind loaded links in either pagination mode.
+        merk.commit(v);
+        let legacy = merk.prove_count_offset_on_range(
+            &QueryItem::RangeFull(..),
+            u64::from(u16::MAX),
+            Some(1),
+            left_to_right,
+            v,
+        );
+        let legacy_cost = legacy.cost.clone();
+        legacy
+            .unwrap()
+            .expect("legacy row page should prove on a flat history");
+        assert!(
+            legacy_cost.seek_count > 65_000,
+            "the cold fixture must expose the legacy skipped-row walk: {legacy_cost:?}"
+        );
+        merk.commit(v);
+        let local = merk.prove_local_count_offset_on_range(
+            &QueryItem::RangeFull(..),
+            u64::from(u16::MAX),
+            Some(1),
+            left_to_right,
+            v,
+        );
+        assert!(
+            local.cost.seek_count < 256,
+            "a maximum-offset page must load boundary paths, not skipped rows: {:?}",
+            local.cost
+        );
+        assert!(
+            local.cost.storage_loaded_bytes < legacy_cost.storage_loaded_bytes / 100,
+            "local pagination must not fetch the skipped rows: {:?}",
+            local.cost
+        );
+        eprintln!(
+            "left_to_right={left_to_right}: local={:?}, legacy={legacy_cost:?}",
+            local.cost
+        );
+        let local = local.unwrap().expect("local maximum-offset page");
+        let verified = verify_count_offset_on_range_proof(
+            &encode_proof(&local.ops),
+            &QueryItem::RangeFull(..),
+            u64::from(u16::MAX),
+            Some(1),
+            left_to_right,
+        )
+        .unwrap()
+        .expect("verify maximum-offset page");
+        assert_eq!(verified.root_hash, root);
+        assert_eq!(verified.skipped, u64::from(u16::MAX));
+        assert_eq!(verified.returned_items.len(), 1);
+        assert_eq!(
+            verified.returned_items[0].key,
+            if left_to_right { u16::MAX } else { 0 }.to_be_bytes()
+        );
+    }
+}
 
 /// Build the same 15-key fixture the aggregate-count tests use: keys
 /// 'a'..='o' each paired with a single-byte value carrying the key's
@@ -1907,5 +2431,98 @@ fn rejects_backward_reference_items_on_kv_value_hash_feature_type() {
                  allowlist (ltr={left_to_right}); got {res:?}"
             );
         }
+    }
+}
+
+mod pinned_view_seek_failures {
+    use grovedb_costs::{CostContext, CostsExt, OperationCost};
+    use grovedb_storage::RawIterator;
+    use grovedb_version::version::GroveVersion;
+
+    use super::super::local_count_offset_page_from_view;
+    use crate::{proofs::query::QueryItem, Error, TreeType};
+
+    /// Holds no record at any position, as an iterator past its records and one
+    /// stopped on an error both report. Only `status` tells them apart.
+    struct NoRecordIterator {
+        failure: Option<&'static str>,
+    }
+
+    impl RawIterator for NoRecordIterator {
+        fn seek_to_first(&mut self) -> CostContext<()> {
+            ().wrap_with_cost(OperationCost::with_seek_count(1))
+        }
+
+        fn seek_to_last(&mut self) -> CostContext<()> {
+            ().wrap_with_cost(OperationCost::with_seek_count(1))
+        }
+
+        fn seek<K: AsRef<[u8]>>(&mut self, _key: K) -> CostContext<()> {
+            ().wrap_with_cost(OperationCost::with_seek_count(1))
+        }
+
+        fn seek_for_prev<K: AsRef<[u8]>>(&mut self, _key: K) -> CostContext<()> {
+            ().wrap_with_cost(OperationCost::with_seek_count(1))
+        }
+
+        fn next(&mut self) -> CostContext<()> {
+            ().wrap_with_cost(OperationCost::with_seek_count(1))
+        }
+
+        fn prev(&mut self) -> CostContext<()> {
+            ().wrap_with_cost(OperationCost::with_seek_count(1))
+        }
+
+        fn value(&self) -> CostContext<Option<&[u8]>> {
+            None.wrap_with_cost(OperationCost::default())
+        }
+
+        fn key(&self) -> CostContext<Option<&[u8]>> {
+            None.wrap_with_cost(OperationCost::default())
+        }
+
+        fn valid(&self) -> CostContext<bool> {
+            false.wrap_with_cost(OperationCost::default())
+        }
+
+        fn status(&self) -> Result<(), grovedb_storage::Error> {
+            match self.failure {
+                Some(failure) => Err(grovedb_storage::Error::StorageError(failure.to_owned())),
+                None => Ok(()),
+            }
+        }
+    }
+
+    fn page_from(view: NoRecordIterator) -> CostContext<Result<Vec<(Vec<u8>, Vec<u8>)>, Error>> {
+        local_count_offset_page_from_view(
+            view,
+            Some(b"root".to_vec()),
+            TreeType::ProvableCountTree,
+            &QueryItem::RangeFull(..),
+            1,
+            Some(1),
+            true,
+            GroveVersion::latest(),
+        )
+    }
+
+    #[test]
+    fn should_report_a_failed_seek_rather_than_a_missing_key() {
+        let page = page_from(NoRecordIterator {
+            failure: Some("injected read failure"),
+        });
+        assert_eq!(page.cost.seek_count, 1, "the seek's cost must be retained");
+        assert!(matches!(
+            page.value,
+            Err(Error::StorageError(grovedb_storage::Error::StorageError(message)))
+                if message == "injected read failure"
+        ));
+    }
+
+    #[test]
+    fn should_report_a_clean_miss_as_a_missing_key() {
+        let page = page_from(NoRecordIterator { failure: None });
+        assert_eq!(page.cost.seek_count, 1);
+        assert!(matches!(page.value, Err(Error::KeyNotFoundError(_))));
     }
 }

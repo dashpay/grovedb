@@ -19,9 +19,9 @@ use grovedb_costs::{
 };
 use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
 use grovedb_path::SubtreePath;
-use grovedb_private_document_store::PrivateDocumentStore;
+use grovedb_private_document_store::{PrivateDocumentStore, RangePage};
 use grovedb_storage::{Storage, StorageBatch};
-use grovedb_version::{error::GroveVersionError, version::GroveVersion};
+use grovedb_version::version::GroveVersion;
 
 use crate::{
     batch::{GroveOp, QualifiedGroveDbOp},
@@ -51,15 +51,7 @@ pub(crate) fn check_pds_enabled(
     method: &str,
     slot: grovedb_version::version::FeatureVersion,
 ) -> Result<(), Error> {
-    if slot != 1 {
-        return Err(GroveVersionError::UnknownVersionMismatch {
-            method: method.to_string(),
-            known_versions: vec![1],
-            received: slot,
-        }
-        .into());
-    }
-    Ok(())
+    crate::util::check_v1_slot_enabled(method, slot)
 }
 
 /// The rules a `PrivateDocumentStore` element must satisfy to be created,
@@ -371,6 +363,88 @@ impl GroveDb {
         );
 
         Ok(value).wrap_with_cost(cost)
+    }
+
+    /// Get the entries of the position range `[start, start + limit)` of a
+    /// PrivateDocumentStore, in append order with their positions, clamped
+    /// to its count.
+    ///
+    /// The paginated read of a store: a reader walking "every entry since my
+    /// cursor" passes its cursor as `start` and advances by the page's
+    /// length. Each completed chunk the range overlaps is read once and each
+    /// buffered entry in it once. The returned [`RangePage`] carries the
+    /// store's `total_count`, so a page shorter than `limit` means the end of
+    /// the store was reached. Prove a page with
+    /// [`GroveDb::prove_bulk_position_range`].
+    pub fn private_document_store_get_range<'b, B, P>(
+        &self,
+        path: P,
+        key: &[u8],
+        start: u64,
+        limit: u16,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<RangePage, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let path: SubtreePath<B> = path.into();
+        let mut cost = OperationCost::default();
+
+        cost_return_on_error_no_add!(
+            cost,
+            check_pds_enabled(
+                "private_document_store_get_range",
+                grove_version
+                    .grovedb_versions
+                    .operations
+                    .private_document_store
+                    .get_range,
+            )
+        );
+
+        let tx = TxRef::new(&self.db, transaction);
+
+        let element = cost_return_on_error!(
+            &mut cost,
+            self.get_raw_caching_optional(path.clone(), key, true, transaction, grove_version)
+        );
+
+        // Look through NonCounted: a wrapped PrivateDocumentStore is still one.
+        let (total_count, entry_size, chunk_power) = match element.underlying() {
+            Element::PrivateDocumentStore(tc, es, cp, _) => (*tc, *es, *cp),
+            _ => {
+                return Err(Error::InvalidInput(
+                    "element is not a private document store",
+                ))
+                .wrap_with_cost(cost);
+            }
+        };
+
+        let store_path_vec = crate::util::subtree_path_with_key(&path, key);
+        let store_path_refs: Vec<&[u8]> = store_path_vec.iter().map(|v| v.as_slice()).collect();
+        let store_path = SubtreePath::from(store_path_refs.as_slice());
+
+        let storage_ctx = self
+            .db
+            .get_transactional_storage_context(store_path, None, tx.as_ref())
+            .unwrap_add_cost(&mut cost);
+
+        let store = cost_return_on_error!(
+            &mut cost,
+            PrivateDocumentStore::from_state(total_count, entry_size, chunk_power, storage_ctx)
+                .map(|r| r.map_err(map_pds_err))
+        );
+
+        let page = cost_return_on_error!(
+            &mut cost,
+            store
+                .get_range(start, limit)
+                .map(|r| r.map_err(map_pds_err))
+        );
+
+        Ok(page).wrap_with_cost(cost)
     }
 
     /// Get the total count of entries in a PrivateDocumentStore.

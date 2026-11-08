@@ -308,6 +308,13 @@ pub trait RawIterator {
 
     /// Check if raw iterator points into a valid record
     fn valid(&self) -> CostContext<bool>;
+
+    /// Whether the iterator stopped on an error rather than at the end of
+    /// its records, which [`valid`](Self::valid) reports alike. Iterators
+    /// that cannot fail keep the default.
+    fn status(&self) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 /// Structure to hold deferred database operations in "batched" storage

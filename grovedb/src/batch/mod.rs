@@ -20,7 +20,9 @@ pub mod estimated_costs;
 
 pub mod key_info;
 
+mod conditional_insert_target;
 mod mode;
+mod move_element;
 #[cfg(test)]
 mod multi_insert_cost_tests;
 
@@ -92,7 +94,9 @@ use grovedb_storage::{
     },
     Storage, StorageBatch, StorageContext,
 };
-use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
+use grovedb_version::{
+    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
+};
 use grovedb_visualize::{Drawer, Visualize};
 use initial_segment_footprint::InitialSegmentFootprint;
 use itertools::Itertools;
@@ -660,6 +664,14 @@ pub enum GroveOp {
         /// Entry to append (exactly `entry_size` bytes)
         entry: Vec<u8>,
     },
+    /// Move the element at this op's key to `new_key` in the same subtree,
+    /// keeping its stored bytes and, for a tree, the stored nodes of
+    /// everything under it. See [`QualifiedGroveDbOp::move_op`] for the
+    /// rules.
+    Move {
+        /// The key the element moves to.
+        new_key: Vec<u8>,
+    },
 }
 
 impl GroveOp {
@@ -787,6 +799,7 @@ impl GroveOp {
             GroveOp::InsertAggregateIndexedTreeRootKeys { .. } => 18,
             GroveOp::PrivateDocumentStoreInsert { .. } => 19,
             GroveOp::ReplaceBackwardReferenceFamilyMember { .. } => 20,
+            GroveOp::Move { .. } => 21,
         }
     }
 
@@ -829,7 +842,9 @@ impl GroveOp {
             | GroveOp::DeleteDontCheckForBackwardsReferences
             | GroveOp::DeleteTree(..)
             | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..)
-            | GroveOp::RefreshReference { .. } => true,
+            | GroveOp::RefreshReference { .. }
+            // Removes the element from its key and writes it at another.
+            | GroveOp::Move { .. } => true,
 
             // Bubble-up ops emitted by propagation. Each updates the
             // child element's bytes at the parent level — for
@@ -914,6 +929,7 @@ impl GroveOp {
             | GroveOp::DeleteTree(..)
             | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..)
             | GroveOp::RefreshReference { .. }
+            | GroveOp::Move { .. }
             | GroveOp::ReplaceTreeRootKey { .. }
             | GroveOp::InsertTreeWithRootHash { .. }
             | GroveOp::ReplaceNonMerkTreeRoot { .. }
@@ -1302,6 +1318,7 @@ impl fmt::Debug for QualifiedGroveDbOp {
             GroveOp::InsertAggregateIndexedTreeRootKeys { .. } => {
                 "Insert fresh indexed tree with primary+secondary roots".to_string()
             }
+            GroveOp::Move { new_key } => format!("Move to {}", hex::encode(new_key)),
         };
 
         f.debug_struct("GroveDbOp")
@@ -1591,6 +1608,92 @@ impl QualifiedGroveDbOp {
         }
     }
 
+    /// A move op: the element at `path` / `key` moves to `path` / `new_key`,
+    /// a rename within its parent (issue #1014). Batches accept it from the
+    /// grove version that enables `apply_batch.move_element` (`GROVE_V4`).
+    ///
+    /// - **Element**: written at `new_key` with the same bytes (flags
+    ///   included) and the same node value hash (a reference's can be
+    ///   recomputed, see below), and removed from `key`. The parent Merk
+    ///   changes like a delete plus an insert; aggregates propagate up as
+    ///   usual.
+    /// - **Subtrees**: for a tree, every record it stores — its Merk's nodes,
+    ///   a non-Merk tree's data, an indexed tree's secondary Merks, and the
+    ///   same for every nested subtree — is copied byte for byte to the
+    ///   storage prefixes of the new path, and the old prefixes are cleared.
+    ///   Root hashes, aggregates and Merk shapes below the moved key do not
+    ///   change. Below it, each Merk record's type byte is read, to find
+    ///   nested trees and refuse backward-reference participants; only a
+    ///   nested tree, or a reference directly under the moved element, is
+    ///   decoded, and nothing is re-hashed.
+    /// - **References** are copied as stored and resolve from where they now
+    ///   are. A moved reference must still resolve from `new_key`, through
+    ///   no key the batch moves and without a cycle. When its path reaches
+    ///   something the batch writes, it commits, like a reference the batch
+    ///   writes, to the value it reaches there after the batch, so a target
+    ///   the same batch replaces is reflected in its value hash; otherwise
+    ///   it keeps the hash it was stored with. Its target is checked where
+    ///   it lies: one under a tree the same batch deletes or replaces is not
+    ///   refused, keeps its stored hash and dangles afterwards, as a
+    ///   reference to it the batch writes would. One inside the moved
+    ///   subtree whose path stays inside it (any relative reference that
+    ///   does not climb above the moved element) still reaches the element
+    ///   it did. One whose path names `key` — an absolute path into the
+    ///   subtree, or an upstream reference that climbs above the moved
+    ///   element and comes back through `key` — keeps the value hash it was
+    ///   stored with but now reaches whatever is at `key` after the batch:
+    ///   nothing after a plain move, like a reference to a
+    ///   deleted element, or the element another move brings there in a swap
+    ///   or a chain. That element can be the reference itself, or one leading
+    ///   back to it: reads of the reference, proofs through it,
+    ///   `verify_grovedb` with `verify_references` and state-sync
+    ///   finalization then fail with `CyclicReference`, as they fail for a
+    ///   dangling one. References from
+    ///   outside into the subtree behave the same way. GroveDB does not
+    ///   follow them; keeping them valid is the caller's job, as for a
+    ///   delete.
+    /// - **Refused**: a missing source; `new_key` equal to `key`; a target
+    ///   that exists and that the batch does not move away; an element or
+    ///   subtree holding a backward-reference participant; a moved reference
+    ///   that resolves through its own key (cousin and removed-cousin
+    ///   references) or no longer resolves from `new_key` (it would reach a
+    ///   key the batch moves, close a cycle, or find no target before the
+    ///   batch or at a key the batch deletes); a reference stored
+    ///   directly under the moved element whose path ends with its parent's
+    ///   key (`UpstreamRootHeightWithParentPathAdditionReference`), which the
+    ///   move would retarget; a move inside an indexed tree, whose secondary
+    ///   rows are keyed by the primary key; a move of an element with flags
+    ///   to a key of another length, since its flags may count its stored
+    ///   bytes and a move does not rewrite them.
+    /// - **In a batch**: a target occupied before the batch is accepted only
+    ///   when the same batch moves its element away, so a swap (A to B and B
+    ///   to A) or a chain works in one batch. No other op may touch the
+    ///   target key or anything under the source or the target, nor delete
+    ///   an ancestor of the moved element, and no reference the batch
+    ///   resolves may lead to or under a moved key or a target. Partial
+    ///   batches and estimated costs refuse moves.
+    /// - **Costs**: a move is billed as storage that stays where it is. The
+    ///   element's node counts as replaced at the size it had under `key`,
+    ///   plus added bytes when `new_key` is longer, or removed bytes when it
+    ///   is shorter (only an element without flags changes key length). Each
+    ///   record copied below it counts as replaced at its stored size, and
+    ///   clearing the old prefixes bills nothing. A moved reference also pays
+    ///   for resolving its path, and for re-hashing its value when it is
+    ///   recommitted. The flags-update
+    ///   callback is not called for anything the move carries (ancestors
+    ///   updated by propagation go through it as in any batch). Reads and
+    ///   writes are charged as seeks and loaded bytes; the records stream
+    ///   into the storage batch, which is the only thing that grows with the
+    ///   subtree's size (the copy holds one scan per level of its depth).
+    pub fn move_op(path: Vec<Vec<u8>>, key: Vec<u8>, new_key: Vec<u8>) -> Self {
+        let path = KeyInfoPath::from_known_owned_path(path);
+        Self {
+            path,
+            key: Some(KnownKey(key)),
+            op: GroveOp::Move { new_key },
+        }
+    }
+
     /// A delete op using a known owned path and known key
     pub fn delete_op(path: Vec<Vec<u8>>, key: Vec<u8>) -> Self {
         let path = KeyInfoPath::from_known_owned_path(path);
@@ -1719,9 +1822,74 @@ impl QualifiedGroveDbOp {
         }
     }
 
-    /// Verify consistency of operations
+    /// Verify consistency of operations, by the rules `grove_version` selects
+    /// through `grovedb_versions.apply_batch.keyless_append_repeats`: `0`
+    /// (V1..V4) counts every operation for repeats, `1` (V5) counts keyed
+    /// operations only (see [`Self::repeated_keyed_ops_v1`]). Every other check
+    /// is the same on every version. A slot value it does not know is an
+    /// error.
     pub fn verify_consistency_of_operations(
         ops: &[QualifiedGroveDbOp],
+        grove_version: &GroveVersion,
+    ) -> Result<GroveDbOpConsistencyResults, Error> {
+        let repeated_ops = match grove_version
+            .grovedb_versions
+            .apply_batch
+            .keyless_append_repeats
+        {
+            0 => Self::repeated_ops_v0(ops),
+            1 => Self::repeated_keyed_ops_v1(ops),
+            version => {
+                return Err(GroveVersionError::UnknownVersionMismatch {
+                    method: "verify_consistency_of_operations".to_string(),
+                    known_versions: vec![0, 1],
+                    received: version,
+                }
+                .into())
+            }
+        };
+        Ok(Self::consistency_results_with_repeats(ops, repeated_ops))
+    }
+
+    /// The operations a batch carries more than once, with their counts,
+    /// counting every operation (V1..V4): a keyless append repeated is
+    /// refused like any other repeated operation. Frozen.
+    fn repeated_ops_v0(ops: &[QualifiedGroveDbOp]) -> Vec<(QualifiedGroveDbOp, u16)> {
+        let mut op_counts: HashMap<&QualifiedGroveDbOp, u16> = HashMap::new();
+        for op in ops.iter() {
+            *op_counts.entry(op).or_insert(0) += 1;
+        }
+        op_counts
+            .into_iter()
+            .filter(|(_, count)| *count > 1)
+            .map(|(op, count)| (op.clone(), count))
+            .collect()
+    }
+
+    /// The keyed operations a batch carries more than once, with their counts
+    /// (V5). Keyless operations (the append family: `CommitmentTreeInsert`,
+    /// `MmrTreeAppend`, `BulkAppend`, `DenseTreeInsert`,
+    /// `PrivateDocumentStoreInsert`) are left out: each appends at its tree's
+    /// next position, so two identical ones are two appends, as the same
+    /// appends applied one by one are, and the batch preprocessing keeps every
+    /// one of them in order (issue #1031).
+    fn repeated_keyed_ops_v1(ops: &[QualifiedGroveDbOp]) -> Vec<(QualifiedGroveDbOp, u16)> {
+        let mut op_counts: HashMap<&QualifiedGroveDbOp, u16> = HashMap::new();
+        for op in ops.iter().filter(|op| op.key.is_some()) {
+            *op_counts.entry(op).or_insert(0) += 1;
+        }
+        op_counts
+            .into_iter()
+            .filter(|(_, count)| *count > 1)
+            .map(|(op, count)| (op.clone(), count))
+            .collect()
+    }
+
+    /// The consistency checks every version makes, with `repeated_ops`, the
+    /// repeats the caller's version counted.
+    fn consistency_results_with_repeats(
+        ops: &[QualifiedGroveDbOp],
+        repeated_ops: Vec<(QualifiedGroveDbOp, u16)>,
     ) -> GroveDbOpConsistencyResults {
         // Reject internal-only ops that should never appear in user-submitted
         // batches. These are produced by preprocessing or propagation only.
@@ -1739,19 +1907,11 @@ impl QualifiedGroveDbOp {
             .map(|op| (op.clone(), 1))
             .collect();
 
-        // operations should not have any duplicates — O(n) via HashMap
-        let mut repeated_ops = internal_only_ops;
-        {
-            let mut op_counts: HashMap<&QualifiedGroveDbOp, u16> = HashMap::new();
-            for op in ops.iter() {
-                *op_counts.entry(op).or_insert(0) += 1;
-            }
-            for (op, count) in op_counts {
-                if count > 1 {
-                    repeated_ops.push((op.clone(), count));
-                }
-            }
-        }
+        // Operations should not have any duplicates; the caller's version
+        // counted them.
+        let mut internal_and_repeated_ops = internal_only_ops;
+        internal_and_repeated_ops.extend(repeated_ops);
+        let repeated_ops = internal_and_repeated_ops;
 
         // No double insert or delete of same key in same path — O(n) via HashMap.
         // Keyless ops (append-only tree ops) can't conflict — skip them.
@@ -1975,6 +2135,16 @@ struct TreeCacheMerkByPath<S, F, F2> {
     /// predicts the bytes it stores through Merk's own just-in-time value
     /// update on every grove version (see `just_in_time_reference_update`).
     settle_owner_changes: bool,
+    /// Trees moved by the levels executed so far, for the post-apply
+    /// storage copy.
+    moved_subtrees: Vec<move_element::MovedSubtree>,
+    /// The qualified path of every moved key and every move target in the
+    /// batch; references the batch resolves may not lead to or under them.
+    moved_positions: move_element::MovedPositions,
+    /// Pending `InsertIfNotExists` positions reference resolution found
+    /// already holding an element: the insert writes nothing there, so a
+    /// moved reference through one does not reach a write.
+    kept_by_conditional_insert: HashSet<Vec<Vec<u8>>>,
     /// The qualified paths of the targets this pass has already written. A
     /// same-batch reference to one of them commits to the bytes it now
     /// stores instead of predicting them (from
@@ -1991,7 +2161,9 @@ struct TreeCacheMerkByPath<S, F, F2> {
 /// target: a flagged `Item`, `SumItem` or `ItemWithSumItem` (through any
 /// wrapper) written by an insert-or-replace, a replace or a patch. Such a
 /// reference reads whether the pass has already written the target, so only
-/// these targets are recorded in `written_qualified_paths`.
+/// these targets are recorded in `written_qualified_paths`; the reference arm
+/// of `follow_reference_get_value_hash` predicts exactly the targets this
+/// accepts.
 fn writes_a_predicted_reference_target(op: &GroveOp) -> bool {
     match op {
         GroveOp::InsertOrReplace { element }
@@ -2035,6 +2207,9 @@ struct BatchApplyCaptures {
     /// Total secondary-mirror re-key churn bytes; rebilled as
     /// `replaced_bytes` at commit-time cost assembly.
     indexed_mirror_rekey_churn_bytes: u32,
+    /// Trees the batch moved; their storage is copied to the new prefixes
+    /// after the apply.
+    moved_subtrees: Vec<move_element::MovedSubtree>,
 }
 
 /// Rebill secondary-mirror re-key churn as the update it logically is.
@@ -2204,6 +2379,11 @@ trait TreeCache<G, SR> {
     ) {
     }
 
+    /// Called for every move the batch files, before any level executes.
+    /// Caches that resolve references keep the moved key and its target so
+    /// no reference the batch resolves leads to or under either.
+    fn remember_move(&mut self, _path: &KeyInfoPath, _key: &KeyInfo, _new_key: &[u8]) {}
+
     /// We will also be returning an op mode, this is to be used in propagation
     fn execute_ops_on_path(
         &mut self,
@@ -2262,6 +2442,13 @@ trait TreeCache<G, SR> {
     /// commit-time cost reclassification. Default impl returns 0.
     fn take_indexed_mirror_rekey_churn_bytes(&mut self) -> u32 {
         0
+    }
+
+    /// After all level processing completes, `apply_batch` calls this to
+    /// retrieve the trees the batch moved, whose storage it then copies to
+    /// their new prefixes. Default impl returns an empty Vec.
+    fn take_moved_subtrees(&mut self) -> Vec<move_element::MovedSubtree> {
+        Vec::new()
     }
 }
 
@@ -2340,7 +2527,7 @@ where
         let mut cost = OperationCost::default();
         let (key, reference_path) = qualified_path
             .split_last()
-            .expect("path validated non-empty above");
+            .expect("follow_reference_get_value_hash refuses an empty path");
 
         // Fast path: `recursions_allowed == 1` means the user-declared
         // `max_reference_hop` budget allows exactly one more hop. Under
@@ -2801,10 +2988,32 @@ where
         if recursions_allowed == 0 {
             return Err(Error::ReferenceLimit).wrap_with_cost(cost);
         }
+        // Every hop enters here, so this is the one place an empty path is
+        // refused. The apply arms check only the reference they are
+        // processing; a hop can still land on another pending reference
+        // whose path resolves to `[]` before that op's own check runs.
+        // Everything below (`process_reference` and the flagged-item arm)
+        // splits the path and relies on this check.
+        if qualified_path.is_empty() {
+            return Err(Error::InvalidBatchOperation(
+                "reference chain resolves to an empty path",
+            ))
+            .wrap_with_cost(cost);
+        }
         let path_vec = qualified_path.to_vec();
         if !visited.insert(path_vec) {
             return Err(Error::CyclicReference).wrap_with_cost(cost);
         }
+        // Every hop of every reference the batch resolves passes here, so
+        // this one check keeps them all out of every moved key and every
+        // move target, and out of everything under them.
+        cost_return_on_error_no_add!(
+            cost,
+            move_element::refuse_reference_into_moved_element(
+                qualified_path,
+                &self.moved_positions
+            )
+        );
         // If the element being referenced changes in the same batch
         // we need to set the value_hash based on the new change and not the old state.
 
@@ -2874,7 +3083,10 @@ where
                     // wrapper for hashing so the value hash matches storage.
                     match element.underlying() {
                         Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
-                            if element.get_flags().is_none() {
+                            // The same predicate decides which targets the pass
+                            // records as written, so every target predicted here
+                            // is recorded.
+                            if !writes_a_predicted_reference_target(op) {
                                 // There are no storage flags, we can just hash new element
                                 let serialized = cost_return_on_error_into_no_add!(
                                     cost,
@@ -2886,7 +3098,7 @@ where
                                 // it can be unmerged, let's get the value on disk
                                 let (key, reference_path) = qualified_path
                                     .split_last()
-                                    .expect("path validated non-empty above");
+                                    .expect("empty path refused at the top of this function");
                                 let serialized_element_result = cost_return_on_error!(
                                     &mut cost,
                                     self.get_referenced_element_bytes(
@@ -2898,11 +3110,14 @@ where
                                 if let Some((old_serialized_element, is_in_sum_tree)) =
                                     serialized_element_result
                                 {
-                                    // Recorded for exactly the ops this arm
-                                    // handles (`writes_a_predicted_reference_target`).
-                                    debug_assert!(writes_a_predicted_reference_target(op));
                                     let target_written =
                                         self.written_qualified_paths.contains(qualified_path);
+                                    // Only the version 1 prediction reads it.
+                                    let runs_value_update = !self
+                                        .tracks_written_targets(grove_version)
+                                        || self.merks.get(reference_path).is_none_or(|merk| {
+                                            merk.replacement_runs_value_update(key)
+                                        });
                                     let value_hash = cost_return_on_error!(
                                         &mut cost,
                                         Self::process_old_element_flags(
@@ -2913,6 +3128,7 @@ where
                                             is_in_sum_tree,
                                             self.settle_owner_changes,
                                             target_written,
+                                            runs_value_update,
                                             &mut self.predicted_reference_targets,
                                             flags_update,
                                             split_removal_bytes,
@@ -3010,7 +3226,9 @@ where
                             "references can not point to trees being updated",
                         ))
                         .wrap_with_cost(cost),
-                        // Wrappers are unwrapped via underlying() above.
+                        // Only a nested wrapper reaches here, and
+                        // `reject_backward_references_elements_in_batch`
+                        // refuses one before execution.
                         Element::NonCounted(_)
                         | Element::NotSummed(_)
                         | Element::NotCountedOrSummed(_) => {
@@ -3020,6 +3238,33 @@ where
                 }
                 GroveOp::InsertWithKnownToNotAlreadyExist { element }
                 | GroveOp::InsertIfNotExists { element, .. } => match element.underlying() {
+                    // A conditional insert over a key that already holds an
+                    // element writes nothing; from V4 the reference reaches
+                    // the element that stays.
+                    _ if matches!(op, GroveOp::InsertIfNotExists { .. })
+                        && cost_return_on_error!(
+                            &mut cost,
+                            self.conditional_insert_keeps_stored_element(
+                                qualified_path,
+                                element,
+                                grove_version
+                            )
+                        ) =>
+                    {
+                        self.kept_by_conditional_insert
+                            .insert(qualified_path.to_vec());
+                        self.process_reference(
+                            qualified_path,
+                            ops_by_qualified_paths,
+                            recursions_allowed,
+                            None,
+                            flags_update,
+                            split_removal_bytes,
+                            visited,
+                            grove_version,
+                        )
+                        .add_cost(cost)
+                    }
                     Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                         let serialized = cost_return_on_error_into_no_add!(
                             cost,
@@ -3097,7 +3342,9 @@ where
                         "references can not point to trees being updated",
                     ))
                     .wrap_with_cost(cost),
-                    // Wrappers are unwrapped via underlying() above.
+                    // Only a nested wrapper reaches here, and
+                    // `reject_backward_references_elements_in_batch`
+                    // refuses one before execution.
                     Element::NonCounted(_)
                     | Element::NotSummed(_)
                     | Element::NotCountedOrSummed(_) => {
@@ -3149,6 +3396,10 @@ where
                         "references can not point to something currently being deleted",
                     ))
                     .wrap_with_cost(cost)
+                }
+                // `refuse_reference_into_moved_element` refused it above.
+                GroveOp::Move { .. } => {
+                    Err(move_element::unrefused_move_error()).wrap_with_cost(cost)
                 }
             }
         } else {
@@ -3213,6 +3464,11 @@ where
         self.indexed_secondary_after_apply.remove(path)
     }
 
+    fn remember_move(&mut self, path: &KeyInfoPath, key: &KeyInfo, new_key: &[u8]) {
+        self.moved_positions
+            .insert_move(&path.to_path(), key.as_slice(), new_key);
+    }
+
     fn remember_indexed_element(&mut self, path: &KeyInfoPath, key: &KeyInfo, element: &Element) {
         let mut qualified_path = path.to_path();
         qualified_path.push(key.get_key_clone());
@@ -3236,6 +3492,10 @@ where
 
     fn take_indexed_mirror_rekey_churn_bytes(&mut self) -> u32 {
         std::mem::take(&mut self.indexed_mirror_rekey_churn_bytes)
+    }
+
+    fn take_moved_subtrees(&mut self) -> Vec<move_element::MovedSubtree> {
+        std::mem::take(&mut self.moved_subtrees)
     }
 
     fn update_base_merk_root_key(
@@ -3407,8 +3667,15 @@ where
                     })
                     .collect()
             };
+        // `(key, new_key)` of every move at this level, planned together once
+        // the loop has seen them all: a swap's two moves free each other's
+        // targets.
+        let mut level_moves: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
         for (key_info, op) in ops_at_path_by_key.into_iter() {
             match op {
+                GroveOp::Move { new_key } => {
+                    level_moves.push((key_info.get_key(), new_key));
+                }
                 // Derived by the backward-references preprocessor: write the
                 // full element with its precomputed combined node value hash
                 // (the two-layer scheme's combine for items; for referrer
@@ -4237,7 +4504,9 @@ where
                                 );
                             }
                         }
-                        // Wrappers are unwrapped via underlying() above.
+                        // Only a nested wrapper reaches here, and
+                        // `reject_backward_references_elements_in_batch`
+                        // refuses one before execution.
                         Element::NonCounted(_)
                         | Element::NotSummed(_)
                         | Element::NotCountedOrSummed(_) => {
@@ -4843,6 +5112,75 @@ where
             }
         }
 
+        if !level_moves.is_empty() {
+            let merk = self.merks.get(path).expect("the Merk is cached");
+            let planned = cost_return_on_error!(
+                &mut cost,
+                move_element::plan_level_moves(merk, path, level_moves, grove_version)
+            );
+            // A moved reference resolves from its new key as a reference the
+            // batch writes does: through no key the batch moves and without
+            // closing a cycle. When its path passes a position the batch
+            // writes, it commits to the value it reaches there after the
+            // batch; otherwise the hash it was stored with still holds, and
+            // keeping it leaves the reference as its own write committed it
+            // (the batch's hop rules differ from the stored ones for a
+            // hop-limited chain).
+            let (merk_ops, moved_subtrees) = cost_return_on_error!(
+                &mut cost,
+                planned.into_ops(|reference| {
+                    let mut cost = OperationCost::default();
+                    let target = cost_return_on_error_into_no_add!(
+                        cost,
+                        path_from_reference_path_type(
+                            reference.path.clone(),
+                            path,
+                            Some(reference.new_key.as_slice())
+                        )
+                    );
+                    let mut own_position = path.clone();
+                    own_position.push(reference.new_key.clone());
+                    let mut visited = HashSet::from([own_position.clone()]);
+                    let referenced_value_hash = cost_return_on_error!(
+                        &mut cost,
+                        self.follow_reference_get_value_hash(
+                            target.as_slice(),
+                            ops_by_qualified_paths,
+                            reference.max_hop.unwrap_or(MAX_REFERENCE_HOPS as u8),
+                            flags_update,
+                            split_removal_bytes,
+                            &mut visited,
+                            grove_version,
+                        )
+                    );
+                    // Every hop the follow took is in `visited`. The
+                    // reference's own position may hold another move's op,
+                    // and a conditional insert that keeps the stored element
+                    // writes nothing.
+                    let reaches_a_write = visited.iter().any(|hop| {
+                        *hop != own_position
+                            && ops_by_qualified_paths.contains_key(hop)
+                            && !self.kept_by_conditional_insert.contains(hop)
+                    });
+                    Ok(reaches_a_write.then_some(referenced_value_hash)).wrap_with_cost(cost)
+                })
+            );
+            batch_operations.extend(merk_ops);
+            batch_operations.sort_by(|(left, _), (right, _)| left.cmp(right));
+            // `validate_move_ops` leaves a move's keys to the moves alone; a
+            // second op on one of them would break the Merk batch's contract.
+            if batch_operations
+                .windows(2)
+                .any(|pair| pair[0].0 == pair[1].0)
+            {
+                return Err(Error::CorruptedCodeExecution(
+                    "a moved key met another operation at its level",
+                ))
+                .wrap_with_cost(cost);
+            }
+            self.moved_subtrees.extend(moved_subtrees);
+        }
+
         for (key, _) in &batch_operations {
             skipped_insert_keys.remove(key);
         }
@@ -5131,8 +5469,37 @@ where
         for qualified_path in written_qualified_paths {
             // A reference to a written target hashes the bytes it stores
             // and never reads its prediction again, so the prediction can
-            // go.
-            self.predicted_reference_targets.remove(&qualified_path);
+            // go. A reference resolved before the write committed to the
+            // prediction, so the write must have stored exactly those bytes:
+            // refuse the batch otherwise, as for a backward-references item.
+            // The read is of the node this pass just wrote and is not
+            // charged, so the check changes no cost.
+            if let (Some(predicted), Some(key)) = (
+                self.predicted_reference_targets.remove(&qualified_path),
+                qualified_path.last(),
+            ) {
+                let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                let stored = cost_return_on_error_no_add!(
+                    cost,
+                    merk.get(
+                        key,
+                        true,
+                        Some(&Element::value_defined_cost_for_serialized_value),
+                        grove_version,
+                    )
+                    .unwrap()
+                    .map_err(|e| Error::CorruptedData(e.to_string()))
+                );
+                if stored.as_deref() != Some(predicted.as_slice()) {
+                    return Err(Error::JustInTimeElementFlagsClientError(
+                        "a pending item write stored other bytes than the ones predicted \
+                         for a reference to it in the same batch; the flags callbacks must \
+                         be deterministic"
+                            .to_owned(),
+                    ))
+                    .wrap_with_cost(cost);
+                }
+            }
             self.written_qualified_paths.insert(qualified_path);
         }
         let merk = self.merks.get_mut(path).expect("the Merk is cached");
@@ -5573,6 +5940,14 @@ impl GroveDb {
                                                     ))
                                                     .wrap_with_cost(cost);
                                                 }
+                                                // `validate_move_ops` keeps every op
+                                                // out from under a moved key.
+                                                GroveOp::Move { .. } => {
+                                                    return Err(
+                                                        move_element::unrefused_move_error(),
+                                                    )
+                                                    .wrap_with_cost(cost);
+                                                }
                                             }
                                         }
                                     }
@@ -5633,6 +6008,7 @@ impl GroveDb {
                     deleted_tree_actual_types: merk_tree_cache.take_deleted_tree_actual_types(),
                     indexed_mirror_rekey_churn_bytes: merk_tree_cache
                         .take_indexed_mirror_rekey_churn_bytes(),
+                    moved_subtrees: merk_tree_cache.take_moved_subtrees(),
                 };
                 return Ok((
                     Some(ops_by_level_paths),
@@ -5650,6 +6026,7 @@ impl GroveDb {
             deleted_tree_actual_types: merk_tree_cache.take_deleted_tree_actual_types(),
             indexed_mirror_rekey_churn_bytes: merk_tree_cache
                 .take_indexed_mirror_rekey_churn_bytes(),
+            moved_subtrees: merk_tree_cache.take_moved_subtrees(),
         };
         Ok((None, captures, merk_tree_cache, ops_by_qualified_paths)).wrap_with_cost(cost)
     }
@@ -5728,6 +6105,9 @@ impl GroveDb {
                     settle_owner_changes: BatchApplyOptions::settle_owner_changes_in(
                         &batch_apply_options,
                     ),
+                    moved_subtrees: Vec::new(),
+                    moved_positions: Default::default(),
+                    kept_by_conditional_insert: HashSet::new(),
                     written_qualified_paths: Default::default(),
                     predicted_reference_targets: Default::default(),
                 },
@@ -6197,6 +6577,28 @@ impl GroveDb {
                         "Patch and RefreshReference are batch-only operations".to_string(),
                     ))
                     .wrap_with_cost(cost);
+                }
+                // A move commits its parent Merk and its storage copy
+                // together, so it runs as a batch of one. Like the other
+                // arms' converted options it drops the pause height, which
+                // only a partial batch accepts.
+                GroveOp::Move { new_key } => {
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.apply_batch(
+                            vec![QualifiedGroveDbOp {
+                                path: op.path.clone(),
+                                key: op.key.clone(),
+                                op: GroveOp::Move { new_key },
+                            }],
+                            options.clone().map(|options| BatchApplyOptions {
+                                batch_pause_height: None,
+                                ..options
+                            }),
+                            transaction,
+                            grove_version,
+                        )
+                    );
                 }
                 GroveOp::ReplaceTreeRootKey { .. }
                 | GroveOp::InsertTreeWithRootHash { .. }
@@ -6804,6 +7206,10 @@ impl GroveDb {
     /// Family payloads require full-batch planning on V4. Earlier versions
     /// and partial batches reject them because those paths cannot register
     /// their edges or plan cross-subtree reference mutations.
+    ///
+    /// Also refuses a nested element wrapper at every version, since every
+    /// batch entry point (full, partial, partial add-ons) runs this pass
+    /// before execution.
     fn reject_backward_references_elements_in_batch(
         ops: &[QualifiedGroveDbOp],
         allow_family: bool,
@@ -6829,6 +7235,17 @@ impl GroveDb {
                 | GroveOp::PatchDontCheckForBackwardsReferences { element, .. } => element,
                 _ => continue,
             };
+            // The checked constructors and both decoders refuse a wrapper
+            // inside a wrapper, but `Element` is a public enum, so a caller
+            // can build one by hand. Execution and reference following
+            // dispatch on `underlying()`, which unwraps one level, and treat
+            // a wrapper there as unreachable: a nested one panicked.
+            if element.is_wrapped() && element.underlying().is_wrapped() {
+                return Err(Error::InvalidBatchOperation(
+                    "nested element wrappers (NonCounted / NotSummed / NotCountedOrSummed) are \
+                     not allowed",
+                ));
+            }
             if element.underlying().supports_backward_references() {
                 // Never wrapped: the wrappers' constructors refuse the family
                 // and deserialization rejects the shape, so a hand-built
@@ -6973,6 +7390,10 @@ impl GroveDb {
             .wrap_with_cost(cost);
         }
 
+        // Moves are checked whatever the consistency option says: their
+        // storage copy relies on these rules.
+        cost_return_on_error_no_add!(cost, move_element::validate_move_ops(&ops, grove_version));
+
         // Check batch operation consistency BEFORE preprocessing so that
         // conflicting ops (e.g., CommitmentTreeInsert + Delete on the same
         // path/key) are caught before any work is done.
@@ -6982,7 +7403,10 @@ impl GroveDb {
             .unwrap_or(true);
 
         if check_batch_operation_consistency {
-            let consistency_result = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
+            let consistency_result = cost_return_on_error_no_add!(
+                cost,
+                QualifiedGroveDbOp::verify_consistency_of_operations(&ops, grove_version)
+            );
             if !consistency_result.is_empty() {
                 return Err(Error::InvalidBatchOperation(
                     "batch operations fail consistency checks",
@@ -7025,7 +7449,10 @@ impl GroveDb {
             // the expanded set should always be consistent; this re-check
             // is a backstop against expansion bugs.
             if check_batch_operation_consistency {
-                let consistency_result = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
+                let consistency_result = cost_return_on_error_no_add!(
+                    cost,
+                    QualifiedGroveDbOp::verify_consistency_of_operations(&ops, grove_version)
+                );
                 if !consistency_result.is_empty() {
                     return Err(Error::InvalidBatchOperation(
                         "derived backward-references operations conflict with the batch's own \
@@ -7034,6 +7461,12 @@ impl GroveDb {
                     .wrap_with_cost(cost);
                 }
             }
+            // A derived op under a moved key would be overwritten by the
+            // move's storage copy.
+            cost_return_on_error_no_add!(
+                cost,
+                move_element::validate_move_ops(&ops, grove_version)
+            );
             (ops, prepared_merks, landed_items)
         } else {
             (ops, HashMap::new(), backward_references::LandedItems::new())
@@ -7185,7 +7618,18 @@ impl GroveDb {
             cidx_overwrite_cleanup_paths,
             deleted_tree_actual_types,
             indexed_mirror_rekey_churn_bytes,
+            moved_subtrees,
         } = batch_apply_captures;
+
+        // Copy each moved tree's storage to the prefixes of its new path.
+        // The parent Merks already hold the moved elements; this brings what
+        // their value hashes commit to along.
+        for moved in &moved_subtrees {
+            cost_return_on_error!(
+                &mut cost,
+                self.move_subtree_storage(moved, tx.as_ref(), &storage_batch, grove_version)
+            );
+        }
 
         // V4+: fold the `(path, ACTUAL stored type)` pairs captured during
         // the apply into the cleanup lists (no-op on V1..V3, where the
@@ -7502,7 +7946,10 @@ impl GroveDb {
             .unwrap_or(true);
 
         if check_batch_operation_consistency {
-            let consistency_result = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
+            let consistency_result = cost_return_on_error_no_add!(
+                cost,
+                QualifiedGroveDbOp::verify_consistency_of_operations(&ops, grove_version)
+            );
             if !consistency_result.is_empty() {
                 return Err(Error::InvalidBatchOperation(
                     "batch operations fail consistency checks",
@@ -7511,6 +7958,10 @@ impl GroveDb {
             }
         }
 
+        cost_return_on_error_no_add!(
+            cost,
+            move_element::refuse_moves(&ops, move_element::PARTIAL_BATCH_MOVE_REFUSAL)
+        );
         cost_return_on_error_no_add!(
             cost,
             Self::reject_backward_references_elements_in_batch(&ops, false)
@@ -7697,14 +8148,23 @@ impl GroveDb {
             cost,
             add_on_operations(&total_current_costs, &left_over_operations)
         );
+        cost_return_on_error_no_add!(
+            cost,
+            move_element::refuse_moves(&new_operations, move_element::PARTIAL_BATCH_MOVE_REFUSAL)
+        );
 
         // Validate the add-on operations for consistency. The callback is
         // caller-provided, so the returned operations could contain duplicates,
         // internal-only ops, or inserts under paths being deleted. Apply the
         // same consistency gate used for the initial batch.
         if check_batch_operation_consistency && !new_operations.is_empty() {
-            let consistency_result =
-                QualifiedGroveDbOp::verify_consistency_of_operations(&new_operations);
+            let consistency_result = cost_return_on_error_no_add!(
+                cost,
+                QualifiedGroveDbOp::verify_consistency_of_operations(
+                    &new_operations,
+                    grove_version
+                )
+            );
             if !consistency_result.is_empty() {
                 return Err(Error::InvalidBatchOperation(
                     "add-on operations from callback fail consistency checks",
@@ -7994,12 +8454,15 @@ impl GroveDb {
             cidx_overwrite_cleanup_paths: partial_cidx_overwrite_cleanup_paths,
             deleted_tree_actual_types: partial_deleted_tree_actual_types,
             indexed_mirror_rekey_churn_bytes: partial_rekey_churn_bytes,
+            // Partial batches refuse moves up front.
+            moved_subtrees: _,
         } = partial_captures;
         let BatchApplyCaptures {
             unprepared_subtree_removals: continue_subtree_removals,
             cidx_overwrite_cleanup_paths: continue_cidx_overwrite_cleanup_paths,
             deleted_tree_actual_types: continue_deleted_tree_actual_types,
             indexed_mirror_rekey_churn_bytes: continue_rekey_churn_bytes,
+            moved_subtrees: _,
         } = continue_captures;
 
         // A removed subtree whose contents nothing in this batch reads is
@@ -8254,6 +8717,10 @@ impl GroveDb {
         if ops.is_empty() {
             return Ok(()).wrap_with_cost(cost);
         }
+        cost_return_on_error_no_add!(
+            cost,
+            move_element::refuse_moves(&ops, move_element::ESTIMATED_COSTS_MOVE_REFUSAL)
+        );
         match estimated_costs_type {
             EstimatedCostsType::AverageCaseCostsType(estimated_layer_information) => {
                 let batch_structure = cost_return_on_error!(

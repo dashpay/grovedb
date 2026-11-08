@@ -1,7 +1,9 @@
 //! Grove protocol version 4.
 //!
 //! Introduced behaviourally identical to [`GROVE_V3`](super::v3::GROVE_V3),
-//! and no longer is — gates land here as they are written. Currently flipped:
+//! and no longer is. GroveDB 6.1.1 shipped it and Dash Platform 5.0
+//! (protocol version 14) runs it, so new gates land in
+//! [`GROVE_V5`](super::v5::GROVE_V5). Flipped from V3:
 //!
 //! - `apply_batch.delete_tree_cleanup_type_source: 1` — a batch `DeleteTree`
 //!   uses the stored element's ACTUAL type to select cleanup namespaces,
@@ -155,6 +157,16 @@
 //!   tree or a tree replacement declared `Check` is scanned; a
 //!   `DeleteTree` never is, `DeleteChildren` checking the declaration on
 //!   its cleanup walk instead.
+//! - `apply_batch.move_element: 1` — batches accept `GroveOp::Move`, which
+//!   renames a key within its parent and copies the stored nodes of
+//!   everything under it to the new key's storage prefixes. A new
+//!   operation: nothing that applies on V1..V3 changes.
+//! - `apply_batch.reference_through_conditional_insert: 1` — a reference a
+//!   batch resolves through a pending `InsertIfNotExists` reaches the
+//!   element already stored at that key when there is one, instead of the
+//!   op's element, which a skip-mode insert never writes. V1..V3 commit
+//!   such a reference to the unwritten element, which `verify_grovedb`
+//!   reports; preserved for replay.
 //! - `apply_batch.non_merk_parent_keyed_ops_rejection: 1` — batch execution
 //!   refuses ordinary keyed ops at a level whose parent is a non-Merk data
 //!   tree (`CommitmentTree`, `MmrTree`, `BulkAppendTree`, `DenseTree`,
@@ -189,6 +201,35 @@
 //!   family as plain elements (their apply path rejects it in batches, so
 //!   the legacy figures were never admission-relevant) — preserved for
 //!   replay.
+//!
+//! - `operations.average_case.average_case_propagated_aggregate_kind: 1` —
+//!   each level of an average-case batch estimate reports the aggregate of
+//!   its own tree type to the op writing its tree element in the parent,
+//!   so a sum, count or count-sum tree inserted in the same batch as its
+//!   contents is sized as that tree. V1..V3 report an aggregate only for
+//!   indexed trees and size every other one as a plain tree, leaving its
+//!   aggregate bytes (9 per axis, 16 for a big sum) out of the estimate's
+//!   added bytes, below what the apply adds; preserved for replay. Gated
+//!   because the estimate is the admission bound.
+//!
+//! - `operations.average_case.average_case_sum_item_cost_size: 1` — an
+//!   average-case insert or replace sizes a `SumItem` or `ItemWithSumItem`
+//!   (wrapped or not) by the specialized cost the apply writes it with,
+//!   which charges the sum value at its fixed 9-byte width. V1..V3 size it
+//!   by its serialized size on insert, and an `ItemWithSumItem` that way on
+//!   replace, up to 8 bytes per item below what the apply charges;
+//!   preserved for replay. Gated because the estimate is the admission
+//!   bound.
+//!
+//! - `operations.worst_case.worst_case_sum_item_cost_size: 1` — a
+//!   worst-case insert or replace sizes a `SumItem` or `ItemWithSumItem`
+//!   (wrapped or not) by the specialized cost the apply writes it with,
+//!   which charges the sum value at its fixed 9-byte width and counts a
+//!   wrapper's byte. V1..V3 size it by its serialized size on insert, an
+//!   `ItemWithSumItem` that way on replace and a wrapped `SumItem` without
+//!   its wrapper byte, up to 8 bytes per item below what the apply charges,
+//!   so the "worst case" was not an upper bound; preserved for replay.
+//!   Gated because the estimate is the admission bound.
 //!
 //! - `bulk_append_tree_versions.cost.append_storage_accounting: 1` and
 //!   `commitment_tree_versions.cost.frontier_save_storage_accounting: 1` —
@@ -307,7 +348,7 @@
 //!   Identity-owned sections are unaffected; Drive accounts for the default
 //!   section as system removals, separately from identity fee refunds.
 //!
-//! - `apply_batch.same_batch_reference_target_prediction: 1` — a reference
+//! - `apply_batch.same_batch_reference_target_prediction: 1`: a reference
 //!   written in the same batch as an update of its target commits to the
 //!   bytes the target stores. A target the batch has already written is
 //!   hashed from those bytes; one still to be written is predicted once,
@@ -320,19 +361,15 @@
 //!   because it moves a committed root and flips a rejected/accepted
 //!   outcome.
 //!
-//! - `merk_versions.tree.just_in_time_value_update: 1` — a replacement
-//!   whose flags update answers `Unchanged` is charged for the bytes it
-//!   stores. V1..V3 keep the measurement taken with the old value's flags,
-//!   so a replacement whose own flags differ in length fails its commit
-//!   with a storage cost mismatch. A `Changed` round that restores the
-//!   put's value also restores its value-defined cost, so a sum item or tree
-//!   measured again is measured with the cost of the bytes it holds. Gated
-//!   because it changes tracked costs and flips a failed commit into a
-//!   successful one.
-//!
-//! Note that `GroveVersion::latest()` resolves to this version, so anything
-//! defaulting to "latest" — tests, benchmarks, tools — exercises every gate
-//! listed above rather than V3 behaviour.
+//! - `merk_versions.tree.just_in_time_value_update: 1`: a replacement
+//!   whose flags update leaves the flags unchanged is charged for the bytes
+//!   it stores. V1..V3 keep the measurement taken with the old value's
+//!   flags, so a replacement whose own flags differ in length fails its
+//!   commit with a storage cost mismatch. A round that rewrites the flags
+//!   and then restores the put's value also restores its value-defined
+//!   cost, so a sum item or tree measured again is measured with the cost
+//!   of the bytes it holds. Gated because it changes tracked costs and
+//!   flips a failed commit into a successful one.
 //!
 //! It exists so that fixes which change released behaviour have somewhere to
 //! land. GROVE_V3 is live, so a fix that alters an accepted/rejected outcome,
@@ -340,11 +377,9 @@
 //! — nodes carrying it would diverge from nodes that do not. Such a fix bumps
 //! the relevant slot here and branches on it, leaving V1..V3 untouched.
 //!
-//! When adding a gate, say what changes in the slot comment, the way
-//! `add_element_on_transaction: 1` documents the layered-subtree switch in
-//! v3.rs. `GroveVersion::latest()` returns the last entry of
-//! `GROVE_VERSIONS`, so anything defaulting to "latest" starts exercising this
-//! version as soon as it is registered.
+//! This version is now live too: a fix of that kind bumps a slot in
+//! [`GROVE_V5`](super::v5::GROVE_V5), which `GroveVersion::latest()`
+//! resolves to, and leaves V1..V4 untouched.
 
 use crate::version::grovedb_versions::GroveDBAggregateSumPathQueryMethodVersions;
 use crate::version::{
@@ -396,10 +431,17 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             // participant gate, per-op BackwardsReferences declarations, and
             // DontCheck required for DropFlat.
             backward_references_maintenance: 1,
+            // v1: batches accept `GroveOp::Move` (issue #1014).
+            move_element: 1,
+            // v1: a reference resolved through a skipped InsertIfNotExists
+            // reaches the element already stored there.
+            reference_through_conditional_insert: 1,
             // v1: a reference written in the same batch as its target's
             // update predicts the target's stored bytes through Merk's own
             // just-in-time value update.
             same_batch_reference_target_prediction: 1,
+            // v0: every operation is counted for repeats, keyless appends included.
+            keyless_append_repeats: 0,
         },
         element: GroveDBElementMethodVersions {
             delete: 0,
@@ -593,6 +635,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 chunk_proof_row_binding: 1, // bind every tree / reference row of a trunk or branch chunk proof
                 axis_descent_in_v1_envelope: 1, // axis-ordered descents in the V1 envelope (ReadMode::Axis)
                 sum_budget_in_v1_envelope: 1, // sum-budget windows in the V1 envelope (ReadMode::SumBudget)
+                count_offset_reference_empty_tree_rows: 0,
             },
             average_case: GroveDBOperationsAverageCaseVersions {
                 add_average_case_get_merk_at_path: 0,
@@ -610,6 +653,8 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 add_average_case_get_cost: 0,
                 average_case_commitment_tree_insert: 1,
                 average_case_backward_references_fan_out: 1,
+                average_case_propagated_aggregate_kind: 1,
+                average_case_sum_item_cost_size: 1,
             },
             worst_case: GroveDBOperationsWorstCaseVersions {
                 add_worst_case_get_merk_at_path: 0,
@@ -626,6 +671,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 add_worst_case_get_cost: 0,
                 worst_case_commitment_tree_insert: 1,
                 worst_case_backward_references_fan_out: 1,
+                worst_case_sum_item_cost_size: 1,
             },
             // PrivateDocumentStore activates in GROVE_V4.
             private_document_store: GroveDBOperationsPrivateDocumentStoreVersions {
@@ -633,6 +679,10 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 insert: 1,
                 get_value: 1,
                 count: 1,
+                // A store's range read and range proofs arrive in GROVE_V5:
+                // 6.1.1 shipped V4 without them.
+                get_range: 0,
+                range_proof: 0,
             },
             // Flat-subtree drop (issue #848) activates in GROVE_V4.
             flat_drop: GroveDBOperationsFlatDropVersions {
@@ -655,6 +705,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             query_items_at_path: 0,
             should_add_parent_tree_at_path: 0,
             unified_read_mode: 1,
+            per_instance_query_offsets: 0,
             per_instance_query_limits: 1, // Query::limit served on trusted reads (V4+)
         },
         storage_costs: GroveDBStorageCostVersions {
@@ -704,10 +755,10 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             // Bumped 0 -> 1: ordinary (Item / Reference) replacements of a
             // specialized value are charged from their own bytes (issue #908).
             put_value: 1,
-            // Bumped 0 -> 1: a replacement whose flags update answers
-            // `Unchanged` is measured from the bytes it stores, and a sum
-            // item or tree measured again after its value was restored is
-            // measured with that value's own value-defined cost.
+            // Bumped 0 -> 1: a replacement whose flags update leaves the
+            // flags unchanged is measured from the bytes it stores, and a
+            // sum item or tree measured again after its value was restored
+            // is measured with that value's own value-defined cost.
             just_in_time_value_update: 1,
         },
     },

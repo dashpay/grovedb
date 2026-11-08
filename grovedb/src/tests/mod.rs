@@ -52,6 +52,7 @@ mod per_instance_limit_tests;
 mod private_document_store_tests;
 mod reference_cycle_on_overwrite_tests;
 mod reference_to_tree_terminal_tests;
+mod repeated_keyless_appends_tests;
 mod unbound_empty_tree_tests;
 mod wrapped_terminal_reference_tests;
 // NOTE: the former `count_indexed_tree_tests` (~12.3k LOC) was written
@@ -105,6 +106,7 @@ mod merge_versioning_tests;
 mod merged_descending_subset_bound_tests;
 mod misc_coverage_tests;
 mod mmr_tree_tests;
+mod move_element_tests;
 mod nested_indexed_secondary_cleanup_tests;
 mod non_counted_tests;
 mod non_merk_wrapper_preservation_tests;
@@ -142,6 +144,7 @@ mod replication_session_tests;
 mod replication_utils_tests;
 mod replication_version_tests;
 mod run_path_query_tests;
+mod snapshot_fetch_node_tests;
 mod snapshot_read_transaction_tests;
 mod succinctness_gap_test;
 mod sum_budget_proof_tests;
@@ -4766,6 +4769,7 @@ mod general_tests {
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
                     limit: None,
+                    offset: None,
                 },
                 limit: None,
                 offset: None,

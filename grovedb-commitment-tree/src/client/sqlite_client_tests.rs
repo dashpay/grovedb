@@ -541,7 +541,7 @@ mod tests {
                 })
                 .unwrap();
             let err = tree
-                .append(test_leaf(1), retention.clone())
+                .append(test_leaf(1), retention)
                 .expect_err("reader must block commit");
             assert!(
                 err.to_string().contains("savepoint release failed"),

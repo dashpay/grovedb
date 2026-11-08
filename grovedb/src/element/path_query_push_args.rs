@@ -27,6 +27,8 @@ where
     pub subquery_path: Option<Path>,
     pub subquery: Option<Query>,
     pub left_to_right: bool,
+    /// Include this selected tree before descending, without charging a row.
+    pub add_parent_tree_on_subquery: bool,
     pub query_options: QueryOptions,
     pub result_type: QueryResultType,
     pub results: &'a mut Vec<QueryResultElement>,

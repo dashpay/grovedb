@@ -30,6 +30,10 @@ pub(crate) struct ValidatedPathQuery<'q> {
     query: &'q PathQuery,
     shape: PathQueryShape<'q>,
     grove_version: &'q GroveVersion,
+    /// Whether any query node carries a branch-local offset. Every layer of
+    /// a proof walk shares the query, so this is scanned once, not per layer.
+    #[cfg(feature = "minimal")]
+    has_local_offsets: bool,
 }
 
 impl<'q> ValidatedPathQuery<'q> {
@@ -37,10 +41,13 @@ impl<'q> ValidatedPathQuery<'q> {
         query: &'q PathQuery,
         grove_version: &'q GroveVersion,
     ) -> Result<Self, Error> {
+        query.reject_unserved_local_offsets(grove_version)?;
         Ok(Self {
             query,
             shape: query.classify()?,
             grove_version,
+            #[cfg(feature = "minimal")]
+            has_local_offsets: query.query.query.has_instance_offset_anywhere(),
         })
     }
 
@@ -109,6 +116,7 @@ impl<'q> ValidatedPathQuery<'q> {
             query,
             shape,
             grove_version,
+            has_local_offsets: query.query.query.has_instance_offset_anywhere(),
         };
         if prove_version == 0 {
             // Exhaustive over the shapes so adding one forces a
@@ -229,6 +237,12 @@ impl<'q> ValidatedPathQuery<'q> {
 
     pub(crate) fn shape(&self) -> PathQueryShape<'q> {
         self.shape
+    }
+
+    /// Whether any query node carries a branch-local offset.
+    #[cfg(feature = "minimal")]
+    pub(crate) fn has_local_offsets(&self) -> bool {
+        self.has_local_offsets
     }
 
     /// The aggregate terminal's depth is fixed by the leaf/carrier grammar.

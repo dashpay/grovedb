@@ -9,7 +9,9 @@
 //! commits to the item's logical hash — flags included — and a flags
 //! callback (Drive's epoch-based storage flags) rewrites flags on every
 //! cross-epoch update. [`predict_provided_value_hash_put`] runs this update
-//! through Merk's own routine to get those bytes.
+//! through Merk's own routine to get those bytes, and
+//! [`predict_put_final_bytes`] does the same for any put, which a
+//! same-batch reference to a pending item write commits to.
 
 use std::cell::Cell;
 

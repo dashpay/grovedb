@@ -21,8 +21,8 @@ use crate::{
 };
 
 impl TreeNode {
-    /// How version 1 installs an ordinary value on a node: it clears the `value_defined_cost` the
-    /// node was loaded with.
+    /// How version 1 installs an ordinary value on a node: it clears the
+    /// `value_defined_cost` the node was loaded with.
     pub(super) fn install_ordinary_value_v1(kv: KV, value: Vec<u8>) -> KV {
         kv.put_ordinary_value_no_update_of_hashes(value)
     }

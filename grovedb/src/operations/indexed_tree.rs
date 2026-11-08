@@ -3509,14 +3509,16 @@ fn counted_skip_page<I: RawIterator>(
 }
 
 /// Fetch and decode one merk node from the pinned iterator view. Returns
-/// `Ok(None)` when the key is absent from that view.
-fn snapshot_fetch_node<I: RawIterator>(
+/// `Ok(None)` when the key is absent from that view, and the storage error when
+/// the seek failed, which an iterator otherwise reports as no record.
+pub(crate) fn snapshot_fetch_node<I: RawIterator>(
     iter: &mut I,
     key: &[u8],
     grove_version: &GroveVersion,
 ) -> CostResult<Option<TreeNode>, Error> {
     let mut cost = OperationCost::default();
     iter.seek(key).unwrap_add_cost(&mut cost);
+    cost_return_on_error_no_add!(cost, iter.status().map_err(Error::StorageError));
     match iter.key().unwrap_add_cost(&mut cost) {
         Some(found) if found == key => {}
         _ => return Ok(None).wrap_with_cost(cost),

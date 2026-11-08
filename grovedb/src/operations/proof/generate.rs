@@ -35,16 +35,33 @@ use crate::{
     },
     query::{validated::ValidatedPathQuery, AggregateKind, PathQueryShape, PathTrunkChunkQuery},
     reference_path::path_from_reference_path_type,
-    Element, Error, GroveDb, PathQuery, Transaction,
+    Element, Error, GroveDb, PathQuery, Transaction, TransactionArg,
 };
 
 /// A non-Merk subtree kind a V1 proof descends into, carrying the element
 /// fields its layer prover needs.
 enum NonMerkLowerLayer {
-    Mmr { mmr_size: u64 },
-    BulkAppend { total_count: u64, chunk_power: u8 },
-    Dense { dense_count: u16, dense_height: u8 },
-    Commitment { total_count: u64, chunk_power: u8 },
+    Mmr {
+        mmr_size: u64,
+    },
+    BulkAppend {
+        total_count: u64,
+        chunk_power: u8,
+    },
+    /// A `PrivateDocumentStore`'s bulk append tree, proved as a `BulkAppendTree`'s, with the
+    /// proof generation's reads and hashes charged.
+    PrivateDocumentStore {
+        total_count: u64,
+        chunk_power: u8,
+    },
+    Dense {
+        dense_count: u16,
+        dense_height: u8,
+    },
+    Commitment {
+        total_count: u64,
+        chunk_power: u8,
+    },
 }
 
 impl GroveDb {
@@ -139,7 +156,8 @@ impl GroveDb {
 
     /// Prove the paginated position range `[start, start + limit)` of the
     /// append-only, BulkAppendTree-backed element at `path`/`key`
-    /// (`Element::BulkAppendTree` or `Element::CommitmentTree`).
+    /// (`Element::BulkAppendTree`, `Element::CommitmentTree`, or, where
+    /// `private_document_store.range_proof` is set, `Element::PrivateDocumentStore`).
     ///
     /// This is the scanning hot path: clients walking "all entries since my
     /// cursor" prove one page per call, passing their cursor as `start`. The
@@ -184,10 +202,17 @@ impl GroveDb {
         );
         match element.underlying() {
             Element::BulkAppendTree(..) | Element::CommitmentTree(..) => {}
+            Element::PrivateDocumentStore(..)
+                if grove_version
+                    .grovedb_versions
+                    .operations
+                    .private_document_store
+                    .range_proof
+                    == 1 => {}
             _ => {
                 return Err(Error::InvalidInput(
-                    "prove_bulk_position_range requires a BulkAppendTree or CommitmentTree \
-                     element",
+                    "prove_bulk_position_range requires a BulkAppendTree, CommitmentTree or \
+                     PrivateDocumentStore element",
                 ))
                 .wrap_with_cost(cost);
             }
@@ -2047,6 +2072,24 @@ impl GroveDb {
             limit_state.global
         };
 
+        if let Some(offset) = query.instance_offset {
+            return self
+                .prove_local_count_offset_layer_v1(
+                    &subtree,
+                    &path,
+                    offset,
+                    &query.items[0],
+                    query.left_to_right,
+                    limit_state,
+                    &mut frame_instance,
+                    transaction,
+                    prove_options,
+                    grove_version,
+                )
+                .add_cost(cost);
+        }
+        let local_offsets_present = validated.has_local_offsets();
+
         // Shape validation fixed the aggregate family and terminal depth.
         // The merk primitives still enforce the actual tree's eligibility.
         if let Some((kind, inner_range)) = validated.aggregate_at_depth(path.len()) {
@@ -2293,6 +2336,17 @@ impl GroveDb {
                         // the proof) keeps its wrapper byte either way.
                         let elem =
                             Element::deserialize(value, grove_version).map(|e| e.into_underlying());
+                        if let (true, Ok(element)) = (local_offsets_present, &elem) {
+                            cost_return_on_error_no_add!(
+                                cost,
+                                path_query.validate_local_offset_host(
+                                    &path,
+                                    key,
+                                    element,
+                                    grove_version
+                                )
+                            );
+                        }
                         // Normalize a bidirectional reference to its plain
                         // reference shape: proof-wise both resolve the same
                         // way. A bidirectional reference's self-hash slot in
@@ -2352,6 +2406,8 @@ impl GroveDb {
                                         count_for_ref,
                                         sum_for_ref,
                                         count_sum_for_ref,
+                                        None,
+                                        false,
                                         grove_version,
                                     )
                                 );
@@ -2555,23 +2611,50 @@ impl GroveDb {
                                 lower_layers.insert(key.clone(), layer_proof);
                             }
 
-                            // PrivateDocumentStore range-read proofs are not
-                            // implemented yet (planned at the BulkAppendTree
-                            // layer so the anchored DataCommitmentTree can
-                            // inherit them); reject subqueries instead of
-                            // shipping an unverifiable proof. Terminal
-                            // (no-subquery) queries still bind the store's
-                            // state root via the child-hash arm below.
-                            Ok(Element::PrivateDocumentStore(..))
+                            // PrivateDocumentStore with subquery: a store's
+                            // data is its bulk append tree, stored exactly as a
+                            // BulkAppendTree's, so the layer is the bulk proof;
+                            // the verifier binds its root through the store's
+                            // committed config, which the element carries.
+                            // Gated (`private_document_store.range_proof`), so
+                            // a version without it still refuses.
+                            Ok(Element::PrivateDocumentStore(total_count, _, chunk_power, _))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
-                                return Err(Error::NotSupported(
-                                    "V1 proofs do not yet support subqueries into \
-                                     PrivateDocumentStore elements"
-                                        .to_string(),
-                                ))
-                                .wrap_with_cost(cost);
+                                if grove_version
+                                    .grovedb_versions
+                                    .operations
+                                    .private_document_store
+                                    .range_proof
+                                    != 1
+                                {
+                                    return Err(Error::NotSupported(
+                                        "V1 proofs do not support subqueries into \
+                                         PrivateDocumentStore elements at this grove version"
+                                            .to_string(),
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+                                let mut lower_path = path.clone();
+                                lower_path.push(key.as_slice());
+                                let layer_proof = cost_return_on_error!(
+                                    &mut cost,
+                                    self.prove_non_merk_lower_layer_v1(
+                                        NonMerkLowerLayer::PrivateDocumentStore {
+                                            total_count,
+                                            chunk_power,
+                                        },
+                                        &lower_path,
+                                        path_query,
+                                        limit_state,
+                                        &mut frame_instance,
+                                        transaction,
+                                        grove_version,
+                                    )
+                                );
+                                has_a_result_at_level |= true;
+                                lower_layers.insert(key.clone(), layer_proof);
                             }
 
                             // Axis-ordered read of an indexed tree: the
@@ -3553,19 +3636,137 @@ impl GroveDb {
                     e
                 )))
         );
-        // Dereference reference rows before encoding.
-        //
-        // This short-circuit returns without reaching the main
-        // ref-rewriting loop below, which is why the count-offset flow
-        // used to reject reference entries outright. Running the same
-        // rewrite here closes that gap rather than bypassing it.
-        //
-        // These are ORDINARY user references, so they follow ordinary
-        // terminal-reference semantics — unlike an indexed secondary
-        // row, which binds its immediate primary node and is resolved
-        // by `indexed_axis::reference_resolution`. The two rules are
-        // deliberately separate code paths.
-        for op in prove_result.ops.iter_mut() {
+        // Dereference reference rows before encoding. This short-circuit
+        // returns without reaching the main ref-rewriting loop, which is why
+        // the count-offset flow used to reject reference entries outright.
+        cost_return_on_error!(
+            &mut cost,
+            self.rewrite_count_page_reference_rows(
+                &mut prove_result.ops,
+                path,
+                None,
+                false,
+                grove_version
+            )
+        );
+        let mut serialized = Vec::with_capacity(128);
+        encode_into(prove_result.ops.iter(), &mut serialized);
+        // Apply consumed limit slots to the outer accounting.
+        // (Count-offset queries reject per-instance limits, so
+        // `frame_instance` is always `None` here — charged anyway
+        // for uniformity.)
+        let returned_u16: u16 = prove_result.returned.min(u16::MAX as u64) as u16;
+        limit_state.charge_rows(returned_u16);
+        if let Some(instance) = frame_instance.as_mut() {
+            *instance = instance.saturating_sub(returned_u16);
+        }
+        Ok(LayerProof {
+            merk_proof: ProofBytes::Merk(serialized),
+            lower_layers: BTreeMap::new(),
+        })
+        .wrap_with_cost(cost)
+    }
+
+    /// Emit a branch-local count-unit page with this instance's effective budget.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
+    fn prove_local_count_offset_layer_v1<'a, S>(
+        &self,
+        subtree: &'a Merk<S>,
+        path: &[&[u8]],
+        offset: u16,
+        inner_range: &QueryItem,
+        left_to_right: bool,
+        limit_state: &mut super::V1LimitState,
+        frame_instance: &mut Option<u16>,
+        transaction: &Transaction,
+        prove_options: &ProveOptions,
+        grove_version: &GroveVersion,
+    ) -> CostResult<LayerProof, Error>
+    where
+        S: StorageContext<'a> + 'a,
+    {
+        let mut cost = OperationCost::default();
+        use grovedb_merk::TreeType as MerkTreeType;
+        if !matches!(
+            subtree.tree_type,
+            MerkTreeType::ProvableCountTree
+                | MerkTreeType::ProvableCountSumTree
+                | MerkTreeType::ProvableCountProvableSumTree
+        ) {
+            return Err(Error::InvalidQuery(
+                "count-offset paginated queries are only valid against \
+                 ProvableCountTree / ProvableCountSumTree / ProvableCountProvableSumTree \
+                 merks",
+            ))
+            .wrap_with_cost(cost);
+        }
+        let offset = u64::from(offset);
+        let limit_u64 = limit_state
+            .effective_layer_limit(*frame_instance)
+            .map(u64::from);
+        let mut prove_result = cost_return_on_error!(
+            &mut cost,
+            subtree
+                .prove_local_count_offset_on_range(
+                    inner_range,
+                    offset,
+                    limit_u64,
+                    left_to_right,
+                    grove_version,
+                )
+                // A page the emitter refuses is a query the data cannot
+                // serve, reported as the trusted read reports it.
+                .map_err(Error::MerkError)
+        );
+        // The verifier refuses a populated tree in a page, which legacy writes
+        // could reference, so don't emit a proof it would reject.
+        cost_return_on_error!(
+            &mut cost,
+            self.rewrite_count_page_reference_rows(
+                &mut prove_result.ops,
+                path,
+                Some(transaction),
+                true,
+                grove_version
+            )
+        );
+        let mut serialized = Vec::with_capacity(128);
+        encode_into(prove_result.ops.iter(), &mut serialized);
+        let returned_u16: u16 = prove_result.returned.min(u16::MAX as u64) as u16;
+        limit_state.charge_rows(returned_u16);
+        if returned_u16 == 0 && prove_options.decrease_limit_on_empty_sub_query_result {
+            limit_state.charge_empty_layer();
+        }
+        if let Some(instance) = frame_instance.as_mut() {
+            *instance = instance.saturating_sub(returned_u16);
+        }
+        Ok(LayerProof {
+            merk_proof: ProofBytes::Merk(serialized),
+            lower_layers: BTreeMap::new(),
+        })
+        .wrap_with_cost(cost)
+    }
+
+    /// Dereference the reference rows a count page proof returns, for global
+    /// and branch-local pages alike. These are ordinary user references, so
+    /// they follow ordinary terminal-reference semantics, unlike an indexed
+    /// secondary row, which binds its immediate primary node and is resolved
+    /// by `indexed_axis::reference_resolution`. With
+    /// `refuse_populated_targets`, a reference that resolves to a populated
+    /// tree is refused. Out of line for the frame-size reason documented on
+    /// [`Self::prove_count_offset_layer_v1`].
+    #[inline(never)]
+    fn rewrite_count_page_reference_rows(
+        &self,
+        ops: &mut LinkedList<Op>,
+        path: &[&[u8]],
+        transaction: TransactionArg,
+        refuse_populated_targets: bool,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+        for op in ops.iter_mut() {
             let node = match op {
                 Op::Push(node) | Op::PushInverted(node) => node,
                 _ => continue,
@@ -3579,14 +3780,12 @@ impl GroveDb {
                 Err(_) => continue,
             };
             // Normalize a bidirectional reference to its plain-reference
-            // shape — proof-wise both resolve identically, and the
-            // node's `value` bytes (which feed value_hash) are left
-            // untouched. Mirrors the normalization in the general
-            // subquery path below.
+            // shape: proof-wise both resolve identically, and the node's
+            // `value` bytes (which feed value_hash) are left untouched. Its
+            // self-hash slot is combine(inner, backrefs), captured here, and
+            // its declared max_hop bounds dereferencing exactly like reads
+            // (plain references keep their historical global budget).
             let mut reference_self_hash_override = None;
-            // A bidirectional edge's declared max_hop bounds proof
-            // dereferencing exactly like reads (plain references keep
-            // their historical global budget).
             let mut bidi_max_hop = None;
             let elem = match elem {
                 ref e @ Element::BidirectionalReference(..) => {
@@ -3614,75 +3813,16 @@ impl GroveDb {
             else {
                 continue;
             };
-            let absolute_path =
-                match path_from_reference_path_type(reference_path, path, Some(key.as_slice())) {
-                    Ok(p) => p,
-                    Err(e) => return Err(Error::from(e)).wrap_with_cost(cost),
-                };
-            // Resolve stored bytes first, then select the representation
-            // bound by this row. Legacy direct writes may coexist with
-            // stored-terminal commitments in the same paginated tree.
-            let referenced_elem = cost_return_on_error!(
-                &mut cost,
-                self.follow_reference_with_max_hop(
-                    absolute_path.as_slice().into(),
-                    bidi_max_hop,
-                    true,
-                    None,
-                    grove_version
-                )
-            );
-            let reference_element_hash = match reference_self_hash_override {
-                Some(hash) => hash,
-                None => value_hash(value).unwrap_add_cost(&mut cost),
-            };
-            let referenced_elem = cost_return_on_error!(
-                &mut cost,
-                Self::reference_terminal_as_committed(
-                    referenced_elem,
-                    &reference_element_hash,
-                    committed_value_hash,
-                    grove_version,
-                )
-            );
-            let serialized_referenced_elem = match referenced_elem
-                .stripped_of_backward_references()
-                .serialize(grove_version)
-            {
-                Ok(bytes) => bytes,
-                Err(_) => {
-                    return Err(Error::CorruptedData(String::from(
-                        "unable to serialize element",
-                    )))
-                    .wrap_with_cost(cost);
-                }
-            };
-            *node = match feature_type {
+            // `ProvableCountSumTree` commits only the count into its node hash
+            // (`binds_sum_into_hash` is true for PCPS alone), so its rows take
+            // the count-only node, as `emit_returned_node` picks for its
+            // directly valued rows.
+            let (count_for_ref, count_sum_for_ref) = match feature_type {
                 TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, sum) => {
-                    Node::KVRefValueHashCountSum(
-                        key.to_owned(),
-                        serialized_referenced_elem,
-                        reference_element_hash,
-                        *count,
-                        *sum,
-                    )
+                    (None, Some((*count, *sum)))
                 }
-                // `ProvableCountSumTree` is an eligible count-offset
-                // host but commits only the COUNT into its node hash
-                // (`binds_sum_into_hash` is true for PCPS alone), so
-                // its reference rows take the count-only node — the
-                // same variant `emit_returned_node` picks for its
-                // directly-valued rows. Without this arm a reference in
-                // such a tree hard-errored.
                 TreeFeatureType::ProvableCountedMerkNode(count)
-                | TreeFeatureType::ProvableCountedSummedMerkNode(count, _) => {
-                    Node::KVRefValueHashCount(
-                        key.to_owned(),
-                        serialized_referenced_elem,
-                        reference_element_hash,
-                        *count,
-                    )
-                }
+                | TreeFeatureType::ProvableCountedSummedMerkNode(count, _) => (Some(*count), None),
                 other => {
                     return Err(Error::CorruptedData(format!(
                         "count-offset proof: reference row {} carries non-count feature type \
@@ -3692,23 +3832,26 @@ impl GroveDb {
                     .wrap_with_cost(cost);
                 }
             };
+            *node = cost_return_on_error!(
+                &mut cost,
+                self.rewrite_reference_row_v1(
+                    key,
+                    value,
+                    reference_path,
+                    path,
+                    bidi_max_hop,
+                    reference_self_hash_override,
+                    Some(*committed_value_hash),
+                    count_for_ref,
+                    None,
+                    count_sum_for_ref,
+                    transaction,
+                    refuse_populated_targets,
+                    grove_version,
+                )
+            );
         }
-        let mut serialized = Vec::with_capacity(128);
-        encode_into(prove_result.ops.iter(), &mut serialized);
-        // Apply consumed limit slots to the outer accounting.
-        // (Count-offset queries reject per-instance limits, so
-        // `frame_instance` is always `None` here — charged anyway
-        // for uniformity.)
-        let returned_u16: u16 = prove_result.returned.min(u16::MAX as u64) as u16;
-        limit_state.charge_rows(returned_u16);
-        if let Some(instance) = frame_instance.as_mut() {
-            *instance = instance.saturating_sub(returned_u16);
-        }
-        Ok(LayerProof {
-            merk_proof: ProofBytes::Merk(serialized),
-            lower_layers: BTreeMap::new(),
-        })
-        .wrap_with_cost(cost)
+        Ok(()).wrap_with_cost(cost)
     }
 
     /// The `KVRefValueHash*` node a dereferenced reference row takes,
@@ -3829,8 +3972,9 @@ impl GroveDb {
     /// the current GroveVersion: a V4 reader may encounter V3 direct-written
     /// references that bind the unwrapped terminal. A bidirectional
     /// reference's self-hash slot is `combine(inner, backrefs)`, captured by
-    /// the caller before normalization. Out of line for the frame-size
-    /// reason documented on [`Self::prove_count_offset_layer_v1`].
+    /// the caller before normalization. With `refuse_populated_target`, a
+    /// reference that resolves to a populated tree is refused. Out of line for
+    /// the frame-size reason documented on [`Self::prove_count_offset_layer_v1`].
     #[inline(never)]
     #[allow(clippy::too_many_arguments)]
     fn rewrite_reference_row_v1(
@@ -3845,6 +3989,8 @@ impl GroveDb {
         count_for_ref: Option<u64>,
         sum_for_ref: Option<i64>,
         count_sum_for_ref: Option<(u64, i64)>,
+        transaction: TransactionArg,
+        refuse_populated_target: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<Node, Error> {
         let mut cost = OperationCost::default();
@@ -3859,7 +4005,7 @@ impl GroveDb {
                 absolute_path.as_slice().into(),
                 bidi_max_hop,
                 true,
-                None,
+                transaction,
                 grove_version
             )
         );
@@ -3882,6 +4028,14 @@ impl GroveDb {
                 grove_version,
             )
         );
+        if refuse_populated_target && referenced_elem.underlying().is_non_empty_tree() {
+            return Err(Error::NotSupported(format!(
+                "count-offset paginated proofs do not yet support non-empty tree return values \
+                 (key {})",
+                hex::encode(key)
+            )))
+            .wrap_with_cost(cost);
+        }
         let serialized_referenced_elem = match referenced_elem
             .stripped_of_backward_references()
             .serialize(grove_version)
@@ -3954,6 +4108,21 @@ impl GroveDb {
                     [0u8; 32], // unused parameter
                     total_count,
                     chunk_power,
+                    false,
+                    &mut non_merk_effective,
+                    transaction,
+                    grove_version,
+                ),
+                NonMerkLowerLayer::PrivateDocumentStore {
+                    total_count,
+                    chunk_power,
+                } => self.generate_bulk_append_layer_proof(
+                    lower_path,
+                    path_query,
+                    [0u8; 32], // unused parameter
+                    total_count,
+                    chunk_power,
+                    true,
                     &mut non_merk_effective,
                     transaction,
                     grove_version,
@@ -4095,6 +4264,11 @@ impl GroveDb {
     }
 
     /// Generate a BulkAppendTree layer proof for a subquery.
+    ///
+    /// `charge_proof_generation` charges the bulk proof generator's own reads and hashes
+    /// (the proved chunk blobs, the buffer's dense proof), as a `PrivateDocumentStore`'s layer
+    /// does; the `BulkAppendTree` and `CommitmentTree` layers keep the charges they always had.
+    #[allow(clippy::too_many_arguments)]
     fn generate_bulk_append_layer_proof(
         &self,
         subtree_path: &[&[u8]],
@@ -4102,6 +4276,7 @@ impl GroveDb {
         _state_root: [u8; 32],
         total_count: u64,
         chunk_power: u8,
+        charge_proof_generation: bool,
         overall_limit: &mut Option<u16>,
         tx: &crate::Transaction,
         grove_version: &GroveVersion,
@@ -4158,11 +4333,19 @@ impl GroveDb {
         };
 
         // Generate the BulkAppendTree proof
-        let bulk_proof = cost_return_on_error_no_add!(
-            cost,
-            BulkAppendTreeProof::generate(&bulk_query, &tree)
-                .map_err(|e| Error::CorruptedData(format!("{}", e)))
-        );
+        let bulk_proof = if charge_proof_generation {
+            cost_return_on_error!(
+                &mut cost,
+                BulkAppendTreeProof::generate_with_cost(&bulk_query, &tree, grove_version)
+                    .map_err(|e| Error::CorruptedData(format!("{}", e)))
+            )
+        } else {
+            cost_return_on_error_no_add!(
+                cost,
+                BulkAppendTreeProof::generate(&bulk_query, &tree)
+                    .map_err(|e| Error::CorruptedData(format!("{}", e)))
+            )
+        };
 
         // Update limit: charge the rows the query semantically matches,
         // exactly as the verifier does — NOT the width of the bounding
@@ -4247,6 +4430,7 @@ impl GroveDb {
                 [0u8; 32],
                 total_count,
                 chunk_power,
+                false,
                 overall_limit,
                 tx,
                 grove_version,

@@ -104,7 +104,31 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     ///
     /// Returns a [`CostResult`] so callers can charge the page's actual
     /// storage work (chunk MMR seeks and buffer reads) against cost limits.
+    /// The hash validating each completed chunk read from storage is not
+    /// charged, as every shipped caller expects;
+    /// [`get_range_charging_chunk_validation`](Self::get_range_charging_chunk_validation)
+    /// charges it.
     pub fn get_range(&self, start: u64, limit: u16) -> CostResult<RangePage, BulkAppendError> {
+        self.get_range_with_chunk_validation(start, limit, false)
+    }
+
+    /// [`get_range`](Self::get_range), also charging one hash call for each
+    /// completed chunk read from storage: deserializing its MMR leaf
+    /// recomputes the leaf hash over the chunk blob to validate it.
+    pub fn get_range_charging_chunk_validation(
+        &self,
+        start: u64,
+        limit: u16,
+    ) -> CostResult<RangePage, BulkAppendError> {
+        self.get_range_with_chunk_validation(start, limit, true)
+    }
+
+    fn get_range_with_chunk_validation(
+        &self,
+        start: u64,
+        limit: u16,
+        charge_chunk_validation: bool,
+    ) -> CostResult<RangePage, BulkAppendError> {
         let mut cost = OperationCost::default();
 
         let total_count = self.total_count;
@@ -129,7 +153,10 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         if start < chunk_end {
             let first_chunk = start / epoch_size;
             let last_chunk = (chunk_end - 1) / epoch_size;
-            let mmr_store = MmrStore::with_key_size(&self.dense_tree.storage, MmrKeySize::U32);
+            let mut mmr_store = MmrStore::with_key_size(&self.dense_tree.storage, MmrKeySize::U32);
+            if charge_chunk_validation {
+                mmr_store = mmr_store.charging_leaf_validation();
+            }
             let mmr = MMR::new_with_overlay(self.mmr_size(), &mmr_store, self.mmr_overlay.clone());
             for chunk_idx in first_chunk..=last_chunk {
                 let node = match mmr

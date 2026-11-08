@@ -84,6 +84,9 @@ pub struct GroveDBPathQueryMethodVersions {
     ///   expected-key projections would report keys beyond a cap as
     ///   falsely absent.
     pub per_instance_query_limits: FeatureVersion,
+    /// Local committed-count-unit pagination and matching V1 proof/read support.
+    /// Zero refuses the field; one serves it on provable count-bearing terminals.
+    pub per_instance_query_offsets: FeatureVersion,
 }
 
 /// Method versions for the standalone indexed-axis query family — the
@@ -249,6 +252,25 @@ pub struct GroveDBApplyBatchVersions {
     /// are versioned by their own `insert_on_transaction` and
     /// `delete_internal_on_transaction` slots.
     pub backward_references_maintenance: FeatureVersion,
+    /// Whether a batch accepts `GroveOp::Move`, which renames a key and
+    /// keeps the stored nodes of everything under it (issue #1014).
+    ///
+    /// - `0` (V1..V3): a batch holding a move is refused before anything is
+    ///   read.
+    /// - `1` (V4+): moves are applied. No other operation changes.
+    pub move_element: FeatureVersion,
+    /// What a reference the batch resolves through a pending
+    /// `InsertIfNotExists` reaches.
+    ///
+    /// - `0` (V1..V3): the op's element, whether or not the insert lands. A
+    ///   skip-mode insert over a key that already holds an element writes
+    ///   nothing, so the reference commits to an element that is never
+    ///   stored and `verify_grovedb` reports it. Preserved for replay.
+    /// - `1` (V4+): the element already stored at the key when there is
+    ///   one (the insert is skipped, or the batch fails on it), found by
+    ///   the same existence read the insert's own level makes; the op's
+    ///   element otherwise.
+    pub reference_through_conditional_insert: FeatureVersion,
     /// How a reference written in a batch gets the value hash of a target
     /// item the same batch updates.
     ///
@@ -270,6 +292,24 @@ pub struct GroveDBApplyBatchVersions {
     /// A batch with `settle_owner_changes` uses version `1` on every grove
     /// version: the option has no legacy behaviour to keep.
     pub same_batch_reference_target_prediction: FeatureVersion,
+    /// Whether a batch may carry the same keyless append more than once
+    /// (issue #1031). `QualifiedGroveDbOp::verify_consistency_of_operations`
+    /// reads it.
+    ///
+    /// - `0` (V1..V4): every operation is counted for repeats, so a batch
+    ///   carrying the same `CommitmentTreeInsert`, `MmrTreeAppend`,
+    ///   `BulkAppend`, `DenseTreeInsert` or `PrivateDocumentStoreInsert` twice
+    ///   fails the consistency check, though the same appends applied one by
+    ///   one are accepted.
+    /// - `1` (V5+): only keyed operations are counted. Each keyless append
+    ///   lands at its tree's next position and the batch preprocessing keeps
+    ///   every one in order, so the batch stores what the same appends applied
+    ///   one by one store.
+    ///
+    /// Every other consistency check, and every cost, is the same on both. The
+    /// slot gates an accepted/rejected outcome: a batch V1..V4 refuse is
+    /// accepted on V5+.
+    pub keyless_append_repeats: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -373,6 +413,15 @@ pub struct GroveDBOperationsPrivateDocumentStoreVersions {
     pub get_value: FeatureVersion,
     /// Reading the entry count (`private_document_store_count`).
     pub count: FeatureVersion,
+    /// Reading the entries of a position range
+    /// (`private_document_store_get_range`).
+    pub get_range: FeatureVersion,
+    /// Proving and verifying the entries of a store: a V1 proof's lower
+    /// layer for a subquery into a store (the store's bulk append tree,
+    /// bound through its committed config), and
+    /// `prove_bulk_position_range` / `verify_bulk_position_range_proof` on
+    /// a store.
+    pub range_proof: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -521,6 +570,17 @@ pub struct GroveDBOperationsProofVersions {
     /// Gated because it adds an acceptance rule to the live V1
     /// envelope, same as `axis_descent_in_v1_envelope`.
     pub sum_budget_in_v1_envelope: FeatureVersion,
+    /// Whether the global count-offset verifier (a `SizedQuery::offset`
+    /// page on a provable count tree) exempts rows resolved through a
+    /// reference from its empty-tree value-hash check. A legacy reference to
+    /// an empty tree (current writes refuse references to trees) binds its
+    /// target through `combine_hash(reference_element_hash, H(target))`,
+    /// which the direct-tree check can never match.
+    ///
+    /// 0 (V1..V4, as 6.1.1 shipped): the check applies to every tree row,
+    /// so such a page is refused. 1: resolved references are exempt. Gated
+    /// because it turns a rejected proof into an accepted one.
+    pub count_offset_reference_empty_tree_rows: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -586,6 +646,32 @@ pub struct GroveDBOperationsAverageCaseVersions {
     ///   chains, 1 referrer per reference), and the derived op itself gets
     ///   a real model.
     pub average_case_backward_references_fan_out: FeatureVersion,
+    /// The aggregate a level's average-case estimate hands up to the op that
+    /// writes its tree element in the parent, which sizes that element by
+    /// the aggregate's tree type.
+    ///
+    /// - `0` (V1..V3): only an indexed tree reports its aggregate; every
+    ///   other tree reports none and is sized as a plain tree. A sum, count
+    ///   or count-sum tree inserted in the same batch as its contents is
+    ///   then estimated without its aggregate bytes (9 per axis, 16 for a
+    ///   big sum), below the bytes the apply adds, and a replaced root key
+    ///   of one (under `average_case_merk_replace_tree: 1`) below the bytes
+    ///   it replaces. Preserved for replay of historical admission
+    ///   decisions.
+    /// - `1` (V4+): every tree reports the aggregate of its own type, so its
+    ///   element is sized as the apply writes it.
+    pub average_case_propagated_aggregate_kind: FeatureVersion,
+    /// How an average-case insert or replace sizes a sum-bearing item
+    /// (`SumItem` or `ItemWithSumItem`, wrapped or not).
+    ///
+    /// - `0` (V1..V3): an insert sizes it by its serialized size, and a
+    ///   replace sizes an `ItemWithSumItem` that way. The apply sizes it by
+    ///   its specialized cost, which charges the sum value at its fixed
+    ///   9-byte width (`SUM_ITEM_COST_SIZE`), so the estimate comes in below
+    ///   the applied bytes by up to 8 per item. Preserved for replay of
+    ///   historical admission decisions.
+    /// - `1` (V4+): both size it by the specialized cost the apply uses.
+    pub average_case_sum_item_cost_size: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -618,6 +704,18 @@ pub struct GroveDBOperationsWorstCaseVersions {
     /// `GroveDBOperationsAverageCaseVersions::average_case_backward_references_fan_out`,
     /// with the worst-case bounds charged in full.
     pub worst_case_backward_references_fan_out: FeatureVersion,
+    /// How a worst-case insert or replace sizes a sum-bearing item
+    /// (`SumItem` or `ItemWithSumItem`, wrapped or not).
+    ///
+    /// - `0` (V1..V3): an insert sizes it by its serialized size, a replace
+    ///   sizes an `ItemWithSumItem` that way and a wrapped `SumItem` without
+    ///   its wrapper byte. The apply sizes it by its specialized cost, which
+    ///   charges the sum value at its fixed 9-byte width
+    ///   (`SUM_ITEM_COST_SIZE`) and counts the wrapper byte, so the estimate
+    ///   comes in below the applied bytes by up to 8 per item and is not an
+    ///   upper bound. Preserved for replay of historical admission decisions.
+    /// - `1` (V4+): both size it by the specialized cost the apply uses.
+    pub worst_case_sum_item_cost_size: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

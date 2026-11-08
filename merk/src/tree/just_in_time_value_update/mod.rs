@@ -9,9 +9,10 @@
 //!
 //! - version 0 keeps the first measurement, taken with the new value
 //!   carrying the OLD value's flags, when the flags-update callback answers
-//!   `Unchanged`. A new value stored with flags of a different length is
-//!   then charged for bytes it does not hold, and the commit fails with a
-//!   storage cost mismatch. Grove v1..v3 are consensus-locked to this.
+//!   that it left the flags unchanged. A new value stored with flags of a
+//!   different length is then charged for bytes it does not hold, and the
+//!   commit fails with a storage cost mismatch. Grove v1..v3 are
+//!   consensus-locked to this.
 //! - version 1 measures the replacement again from the bytes it stores when
 //!   their size differs from the last measurement taken, and restores the
 //!   put's value-defined cost each time it restores the put's value. Every
@@ -53,7 +54,7 @@ pub enum PredictedPut {
 
 impl TreeNode {
     /// The value bytes an apply finally stores when `put` of `new_value`
-    /// replaces the stored `old_value` — after the just-in-time value update
+    /// replaces the stored `old_value`, after the just-in-time value update
     /// has run the client callbacks (storage-flags carry-over and rewrite).
     ///
     /// Runs the apply's own steps on a detached node: the node holding
@@ -63,7 +64,7 @@ impl TreeNode {
     /// (`just_in_time_tree_node_value_update`). With the same
     /// (deterministic) callbacks the result is byte-for-byte what the apply
     /// writes, so a caller that must commit to the final bytes BEFORE the
-    /// apply — a reference holding its target's hash — can compute them.
+    /// apply (a reference holding its target's hash) can compute them.
     #[allow(clippy::too_many_arguments)]
     pub fn predict_put_final_value(
         key: Vec<u8>,
@@ -231,6 +232,7 @@ mod tests {
     use grovedb_version::version::GroveVersion;
 
     use crate::{
+        element::insert::specialized_put_cost,
         merk::NodeType,
         test_utils::TempMerk,
         tree::{
@@ -447,14 +449,13 @@ mod tests {
         }
     }
 
-    /// A `Changed` round whose rewrite changes the value-defined cost, which
-    /// the update then restores with the value, followed by `Unchanged`, is
-    /// measured exactly as an immediate `Unchanged`: the sum item it stores
-    /// is measured with its own value-defined cost, not the rewrite's.
+    /// A round that rewrites the flags and changes the value-defined cost,
+    /// which the update then restores with the value, followed by an
+    /// unchanged answer, is measured exactly as an immediate unchanged
+    /// answer: the sum item it stores is measured with its own value-defined
+    /// cost, not the rewrite's.
     #[test]
     fn a_changed_round_then_unchanged_measures_the_value_it_stores() {
-        use crate::element::insert::specialized_put_cost;
-
         let grove_version = GroveVersion::latest();
         let key = b"key".to_vec();
         let sum_item =

@@ -41,6 +41,8 @@ pub struct QueryBudget {
     /// against the global budget; reported to the parent frame for
     /// reconciliation.
     pub consumed: u16,
+    /// Result rows charged in this frame, excluding parent echoes.
+    pub rows: u16,
 }
 
 impl QueryBudget {
@@ -53,6 +55,7 @@ impl QueryBudget {
             instance,
             offset,
             consumed: 0,
+            rows: 0,
         }
     }
 
@@ -92,6 +95,7 @@ impl QueryBudget {
             *instance = instance.saturating_sub(1);
         }
         self.consumed = self.consumed.saturating_add(1);
+        self.rows = self.rows.saturating_add(1);
     }
 
     /// Charge one empty-subtree slot: always against the global budget

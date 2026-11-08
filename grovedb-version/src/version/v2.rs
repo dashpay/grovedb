@@ -44,7 +44,10 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
             add_on_op_collision: 0,
             non_merk_parent_keyed_ops_rejection: 0,
             backward_references_maintenance: 0,
+            move_element: 0,
+            reference_through_conditional_insert: 0,
             same_batch_reference_target_prediction: 0,
+            keyless_append_repeats: 0,
         },
         element: GroveDBElementMethodVersions {
             delete: 0,
@@ -191,6 +194,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
                 chunk_proof_row_binding: 0,
                 axis_descent_in_v1_envelope: 0,
                 sum_budget_in_v1_envelope: 0,
+                count_offset_reference_empty_tree_rows: 0,
             },
             average_case: GroveDBOperationsAverageCaseVersions {
                 add_average_case_get_merk_at_path: 0,
@@ -208,6 +212,8 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
                 add_average_case_get_cost: 0,
                 average_case_commitment_tree_insert: 0,
                 average_case_backward_references_fan_out: 0,
+                average_case_propagated_aggregate_kind: 0,
+                average_case_sum_item_cost_size: 0,
             },
             worst_case: GroveDBOperationsWorstCaseVersions {
                 add_worst_case_get_merk_at_path: 0,
@@ -224,6 +230,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
                 add_worst_case_get_cost: 0,
                 worst_case_commitment_tree_insert: 0,
                 worst_case_backward_references_fan_out: 0,
+                worst_case_sum_item_cost_size: 0,
             },
             // PrivateDocumentStore is unavailable before GROVE_V4: every
             // slot is 0 and the operations fail closed.
@@ -232,6 +239,8 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
                 insert: 0,
                 get_value: 0,
                 count: 0,
+                get_range: 0,
+                range_proof: 0,
             },
             // Flat-subtree drop (issue #848) is unavailable before
             // GROVE_V4: every slot is 0 and the operations fail closed.
@@ -256,6 +265,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
             query_items_at_path: 0,
             should_add_parent_tree_at_path: 0,
             unified_read_mode: 0,
+            per_instance_query_offsets: 0,
             per_instance_query_limits: 0,
         },
         storage_costs: GroveDBStorageCostVersions {
