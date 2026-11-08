@@ -28,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by hand). The proof envelope gains no variant; the `verify` feature now
   builds `grovedb-private-document-store` (without storage) for the store's
   root.
+- `StorageFlags::update_element_flags_with_written_owner`: a flags update
+  where the owner the new flags name owns the element afterwards, whether the
+  update grows it, shrinks it or keeps its size. The writer keeps an element
+  with its owner by writing that owner, and hands it over by writing another.
+  The byte accounting is unchanged: bytes the update frees are refunded to the
+  old owner through the old flags, and bytes that stay stored move with the
+  element. `StorageFlags::update_element_flags` is unchanged, including keeping
+  the old owner on an update that keeps the size or shrinks an element holding
+  bytes of one epoch.
 
 ### Changed
 - **BREAKING**: `Query` adds the public `offset: Option<u16>` field for
