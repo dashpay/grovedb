@@ -66,8 +66,8 @@ use estimated_costs::{
     worst_case_costs::WorstCaseTreeCacheKnownPaths,
 };
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_default, cost_return_on_error_into,
-    cost_return_on_error_into_no_add, cost_return_on_error_no_add,
+    cost_return_on_error, cost_return_on_error_into, cost_return_on_error_into_no_add,
+    cost_return_on_error_no_add,
     storage_cost::{
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
         transition::ElementFlagsUpdate,
@@ -6247,10 +6247,6 @@ impl GroveDb {
                 .apply_batch
                 .apply_operations_without_batching
         );
-        cost_return_on_error_default!(BatchApplyOptions::check_replacement_accounting_version(
-            &options,
-            grove_version,
-        ));
         let mut cost = OperationCost::default();
         for op in ops.into_iter() {
             let declared = op.op.backwards_references();
@@ -7281,10 +7277,8 @@ impl GroveDb {
     ///   batch if the apply stores anything else.
     ///
     /// The flags callback answers a `bool` (whether it rewrote the flags) or
-    /// an [`ElementFlagsUpdate`]; `AccountAsReplacement` is accepted only when
-    /// the options set
-    /// [`allow_replacement_accounting`](BatchApplyOptions::allow_replacement_accounting);
-    /// without it the batch fails with [`Error::InvalidBatchOperation`].
+    /// an [`ElementFlagsUpdate`]; `AccountAsReplacement` is accepted from grove
+    /// version 5, and refused before.
     pub fn apply_batch_with_element_flags_update<U: Into<ElementFlagsUpdate>>(
         &self,
         ops: Vec<QualifiedGroveDbOp>,
@@ -7305,14 +7299,9 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        cost_return_on_error_default!(BatchApplyOptions::check_replacement_accounting_version(
-            &batch_apply_options,
-            grove_version,
-        ));
         let replacement_refused = Cell::new(None);
         let update_element_flags_function = just_in_time_value_update::batch_flags_update(
             update_element_flags_function,
-            BatchApplyOptions::allow_replacement_accounting_in(&batch_apply_options),
             &replacement_refused,
         );
         self.apply_batch_with_batch_flags_update(
@@ -7870,14 +7859,9 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        cost_return_on_error_default!(BatchApplyOptions::check_replacement_accounting_version(
-            &batch_apply_options,
-            grove_version,
-        ));
         let replacement_refused = Cell::new(None);
         let update_element_flags_function = just_in_time_value_update::batch_flags_update(
             update_element_flags_function,
-            BatchApplyOptions::allow_replacement_accounting_in(&batch_apply_options),
             &replacement_refused,
         );
         self.apply_partial_batch_with_batch_flags_update(
@@ -8680,10 +8664,6 @@ impl GroveDb {
     #[cfg(feature = "estimated_costs")]
     /// Returns the estimated average or worst case cost for an entire batch of
     /// ops
-    ///
-    /// With [`allow_replacement_accounting`](BatchApplyOptions::allow_replacement_accounting)
-    /// set, every write that may be accounted as a replacement is charged at
-    /// least the bytes its element adds when inserted.
     pub fn estimated_case_operations_for_batch<U: Into<ElementFlagsUpdate>>(
         estimated_costs_type: EstimatedCostsType,
         ops: Vec<QualifiedGroveDbOp>,
@@ -8710,13 +8690,8 @@ impl GroveDb {
                 .apply_batch
                 .estimated_case_operations_for_batch
         );
-        cost_return_on_error_default!(BatchApplyOptions::check_replacement_accounting_version(
-            &batch_apply_options,
-            grove_version,
-        ));
-        // The estimators never call the flags update (an estimate follows
-        // the batch options, not the answers the flags update would give),
-        // so it only needs its answer type.
+        // The estimators never call the flags update, so it only needs its
+        // answer type.
         let update_element_flags_function =
             just_in_time_value_update::flags_update_answers(update_element_flags_function);
         let mut cost = OperationCost::default();
@@ -8963,7 +8938,6 @@ mod tests {
                     disable_operation_consistency_check: true,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
-                    allow_replacement_accounting: false,
                 }),
                 None,
                 grove_version
@@ -9569,7 +9543,6 @@ mod tests {
                     disable_operation_consistency_check: false,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
-                    allow_replacement_accounting: false,
                 }),
                 None,
                 grove_version
@@ -9611,7 +9584,6 @@ mod tests {
                     validate_insertion_does_not_override: true,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
-                    allow_replacement_accounting: false,
                 }),
                 None,
                 grove_version
@@ -9645,7 +9617,6 @@ mod tests {
                     disable_operation_consistency_check: false,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
-                    allow_replacement_accounting: false,
                 }),
                 None,
                 grove_version

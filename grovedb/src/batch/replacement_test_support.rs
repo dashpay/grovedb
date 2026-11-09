@@ -13,11 +13,7 @@ use grovedb_epoch_based_storage_flags::StorageFlags;
 use grovedb_merk::{element::costs::ElementCostExtensions, tree_type::TreeType};
 use grovedb_version::version::GroveVersion;
 
-use crate::{
-    batch::{BatchApplyOptions, QualifiedGroveDbOp},
-    tests::TempGroveDb,
-    Element, ElementFlags, Error,
-};
+use crate::{batch::QualifiedGroveDbOp, tests::TempGroveDb, Element, ElementFlags, Error};
 
 pub(crate) const OLD_OWNER: [u8; 32] = [1; 32];
 pub(crate) const NEW_OWNER: [u8; 32] = [2; 32];
@@ -82,15 +78,7 @@ pub(crate) fn split_removal_bytes(
         .map_err(|e| Error::SplitRemovalBytesClientError(e.to_string()))
 }
 
-/// The batch options of `mode`.
-pub(crate) fn options(mode: Mode) -> BatchApplyOptions {
-    BatchApplyOptions {
-        allow_replacement_accounting: mode == Mode::Replacing,
-        ..Default::default()
-    }
-}
-
-/// Applies `ops` with the flags update and options of `mode`.
+/// Applies `ops` with the flags update of `mode`.
 pub(crate) fn apply(
     db: &TempGroveDb,
     ops: Vec<QualifiedGroveDbOp>,
@@ -99,7 +87,7 @@ pub(crate) fn apply(
 ) -> Result<OperationCost, Error> {
     db.apply_batch_with_element_flags_update(
         ops,
-        Some(options(mode)),
+        None,
         flags_update(mode),
         split_removal_bytes,
         None,

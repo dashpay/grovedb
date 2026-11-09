@@ -96,8 +96,7 @@ impl StorageFlags {
     /// Every other update (same owner, or no owner on one side) is answered by
     /// [`Self::update_element_flags_with_written_owner`].
     ///
-    /// The batch accepts the answer only when its options set
-    /// `allow_replacement_accounting`.
+    /// GroveDB accepts the answer from grove version 5.
     ///
     /// Only an element written with the new owner's flags is handed over, under
     /// this helper and [`Self::update_element_flags_with_written_owner`] alike.

@@ -6,10 +6,6 @@ use grovedb_merk::MerkOptions;
 
 #[cfg(feature = "minimal")]
 use crate::operations::{delete::DeleteOptions, insert::InsertOptions};
-#[cfg(feature = "minimal")]
-use crate::Error;
-#[cfg(feature = "minimal")]
-use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
 /// Batch apply options
 #[cfg(feature = "minimal")]
@@ -82,42 +78,6 @@ pub struct BatchApplyOptions {
     /// At what height do we want to pause applying batch operations
     /// Most of the time this should be not set
     pub batch_pause_height: Option<u8>,
-    /// Account an update in place whose flags update answers
-    /// [`ElementFlagsUpdate::AccountAsReplacement`](grovedb_costs::storage_cost::transition::ElementFlagsUpdate::AccountAsReplacement)
-    /// as the removal of the old element plus the insertion of the new one.
-    ///
-    /// The old element's bytes, key included, count as removed and are
-    /// sectioned by the removal-bytes callback as a deletion sections them;
-    /// the new element's bytes, key included, count as added, and it keeps
-    /// the flags the callback leaves it with. A batch that does not set this
-    /// refuses a flags update that answers `AccountAsReplacement` with
-    /// [`Error::InvalidBatchOperation`](crate::Error::InvalidBatchOperation).
-    ///
-    /// The estimators read it too: an estimate with it set charges every
-    /// write that may be accounted so (`InsertOrReplace`, `Replace`,
-    /// `Patch` and a trusted `RefreshReference` of an element with flags, and
-    /// the write of a flagged tree the batch also writes under) at least the
-    /// bytes its element adds when inserted. The referrer entries a
-    /// backward-references element carries over are counted, in the worst
-    /// case, at its declared capacity, each at the largest entry
-    /// registration admits, so a worst-case estimate of a write it charges
-    /// so is never below what the apply records; the average case counts the
-    /// typical shape (the average item fan-out, each entry the size of one
-    /// from the write's own position). A write the caller declares new
-    /// (`InsertIfNotExists`, `InsertWithKnownToNotAlreadyExist`) is not charged
-    /// so, and its estimate holds only while the key is in fact new.
-    ///
-    /// An estimate cannot see owners, so it charges those writes whether or
-    /// not the update will change an owner. Nothing ties an estimate to its
-    /// apply: pass the same value to both, because an apply that sets this
-    /// over an estimate that does not can record more than was estimated.
-    ///
-    /// Off by default, and every cost, estimate, stored element and hash is
-    /// then what it was before the option existed. Setting it needs
-    /// `apply_batch.replacement_accounting` (GROVE_V5+); on an earlier grove
-    /// version the batch and its estimate fail with
-    /// [`Error::InvalidBatchOperation`](crate::Error::InvalidBatchOperation).
-    pub allow_replacement_accounting: bool,
 }
 
 #[cfg(feature = "minimal")]
@@ -129,48 +89,12 @@ impl Default for BatchApplyOptions {
             disable_operation_consistency_check: false,
             base_root_storage_is_free: true,
             batch_pause_height: None,
-            allow_replacement_accounting: false,
         }
     }
 }
 
 #[cfg(feature = "minimal")]
 impl BatchApplyOptions {
-    /// Whether the batch options `options`, when given, set
-    /// [`Self::allow_replacement_accounting`].
-    pub(crate) fn allow_replacement_accounting_in(options: &Option<BatchApplyOptions>) -> bool {
-        options
-            .as_ref()
-            .is_some_and(|options| options.allow_replacement_accounting)
-    }
-
-    /// Refuses options that set [`Self::allow_replacement_accounting`] on a
-    /// grove version that does not have it.
-    pub(crate) fn check_replacement_accounting_version(
-        options: &Option<BatchApplyOptions>,
-        grove_version: &GroveVersion,
-    ) -> Result<(), Error> {
-        if !Self::allow_replacement_accounting_in(options) {
-            return Ok(());
-        }
-        match grove_version
-            .grovedb_versions
-            .apply_batch
-            .replacement_accounting
-        {
-            0 => Err(Error::InvalidBatchOperation(
-                "replacement accounting needs grove version 5 or later",
-            )),
-            1 => Ok(()),
-            version => Err(GroveVersionError::UnknownVersionMismatch {
-                method: "check_replacement_accounting_version".to_string(),
-                known_versions: vec![0, 1],
-                received: version,
-            }
-            .into()),
-        }
-    }
-
     /// As insert options
     pub(crate) fn as_insert_options(&self) -> InsertOptions {
         InsertOptions {

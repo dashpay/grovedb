@@ -317,8 +317,7 @@ fn same_batch_referrers_of_an_updated_item_commit_to_the_landed_bytes() {
     assert_referrers_bound(&db, &[TEST_LEAF], &[b"n1"], b"world", grove_version);
 }
 
-/// An update that hands a flagged item to a new owner is a replacement under
-/// `allow_replacement_accounting`: the item lands with the new owner's flags as
+/// An update that hands a flagged item to a new owner as a replacement: the item lands with the new owner's flags as
 /// written, and its referrers, old and same-batch, commit to those bytes.
 #[test]
 fn a_replacement_keeps_referrers_bound() {
@@ -371,10 +370,7 @@ fn a_replacement_keeps_referrers_bound() {
                     sibling_bidi(b"value"),
                 ),
             ],
-            Some(crate::batch::BatchApplyOptions {
-                allow_replacement_accounting: true,
-                ..Default::default()
-            }),
+            None,
             crate::batch::replacement_test_support::replacing_flags_update,
             crate::batch::replacement_test_support::split_removal_bytes,
             None,

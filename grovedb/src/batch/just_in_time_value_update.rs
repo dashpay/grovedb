@@ -38,16 +38,9 @@ use integer_encoding::VarInt;
 use crate::{Element, ElementFlags, Error};
 
 /// Why a batch whose flags update answered `AccountAsReplacement` was
-/// refused: its options do not set `allow_replacement_accounting`.
-pub(crate) const REPLACEMENT_ACCOUNTING_NOT_ALLOWED: &str =
-    "the flags update answered AccountAsReplacement, but the batch options do not set \
-     allow_replacement_accounting";
-
-/// Why a batch whose flags update answered `AccountAsReplacement` was
 /// refused: the write's flags are byte-equal to the stored ones. An untrusted
 /// reference refresh and a tree's root update write the stored flags back, so
-/// they bring no flags of their own to account for and the estimators do not
-/// charge them as replacements. The callback cannot tell those from a write
+/// they bring no flags of their own to account for. The callback cannot tell those from a write
 /// that happens to bring identical flags, which hands nothing over anyway, so
 /// that one is refused too.
 pub(crate) const REPLACED_A_WRITE_KEEPING_ITS_FLAGS: &str =
@@ -55,8 +48,7 @@ pub(crate) const REPLACED_A_WRITE_KEEPING_ITS_FLAGS: &str =
 
 /// The caller's flags-update callback as a batch runs it: its answer as an
 /// [`ElementFlagsUpdate`] (a `bool` answer is `Changed` or `Unchanged`).
-/// `AccountAsReplacement` is refused unless the batch's options set
-/// `allow_replacement_accounting`, and refused on a write whose flags are
+/// `AccountAsReplacement` is refused on a write whose flags are
 /// byte-equal to the stored ones, whatever the callback does with them: only
 /// a write that brings different flags can be accounted so. A refusal records
 /// its reason in `refused`, so the batch reports it with
@@ -67,7 +59,6 @@ pub(crate) fn batch_flags_update<U>(
         Option<ElementFlags>,
         &mut ElementFlags,
     ) -> Result<U, Error>,
-    allow_replacement_accounting: bool,
     refused: &Cell<Option<&'static str>>,
 ) -> impl FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<ElementFlagsUpdate, Error>
 where
@@ -76,23 +67,14 @@ where
     move |storage_cost: &StorageCost,
           old_flags: Option<ElementFlags>,
           new_flags: &mut ElementFlags| {
-        // Compared before the callback, which may rewrite the flags. Without
-        // the option any such answer is refused anyway.
-        let keeps_stored_flags =
-            allow_replacement_accounting && old_flags.as_deref() == Some(new_flags.as_slice());
+        // Compared before the callback, which may rewrite the flags.
+        let keeps_stored_flags = old_flags.as_deref() == Some(new_flags.as_slice());
         let update = flags_update(storage_cost, old_flags, new_flags)?.into();
-        if update == ElementFlagsUpdate::AccountAsReplacement {
-            let refusal = if !allow_replacement_accounting {
-                Some(REPLACEMENT_ACCOUNTING_NOT_ALLOWED)
-            } else if keeps_stored_flags {
-                Some(REPLACED_A_WRITE_KEEPING_ITS_FLAGS)
-            } else {
-                None
-            };
-            if let Some(reason) = refusal {
-                refused.set(Some(reason));
-                return Err(Error::JustInTimeElementFlagsClientError(reason.to_owned()));
-            }
+        if update == ElementFlagsUpdate::AccountAsReplacement && keeps_stored_flags {
+            refused.set(Some(REPLACED_A_WRITE_KEEPING_ITS_FLAGS));
+            return Err(Error::JustInTimeElementFlagsClientError(
+                REPLACED_A_WRITE_KEEPING_ITS_FLAGS.to_owned(),
+            ));
         }
         Ok(update)
     }
