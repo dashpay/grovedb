@@ -42,16 +42,11 @@
 //!   batch, as 6.1.1 did. Gated because it flips an accepted/rejected outcome
 //!   (issue #1031).
 //!
-//! - `apply_batch.replacement_accounting: 1`: a batch may set
-//!   `allow_replacement_accounting`, so a flags update can have an update
-//!   accounted as the removal of the old element plus the insertion of the
-//!   new one. V4 refuses the option. Gated because the accounting and the
-//!   stored flags are consensus-relevant once a caller uses it.
-//!
 //! - `merk_versions.tree.just_in_time_value_update: 2`: Merk accepts that
 //!   answer and records the removal plus the insertion. Versions 0 and 1
 //!   refuse it, so grove v1..v4 cannot account an update as a replacement at
-//!   any layer. Gated with the option above, for the same reason.
+//!   any layer. Gated because the accounting and the stored flags are
+//!   consensus-relevant once a caller uses it.
 //!
 //! It exists so that changes made after GroveDB 6.1.1 have somewhere to
 //! land. GROVE_V4 as 6.1.1 shipped it is what Dash Platform 5.0 (protocol
@@ -86,7 +81,6 @@ pub const GROVE_V5: GroveVersion = GroveVersion {
     grovedb_versions: GroveDBVersions {
         apply_batch: GroveDBApplyBatchVersions {
             keyless_append_repeats: 1, // changed: a batch may repeat a keyless append
-            replacement_accounting: 1, // changed: a batch may account an update as a replacement
             ..GROVE_V4.grovedb_versions.apply_batch
         },
         element: GroveDBElementMethodVersions {

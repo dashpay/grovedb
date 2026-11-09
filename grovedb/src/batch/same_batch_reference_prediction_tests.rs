@@ -22,8 +22,8 @@ mod tests {
     use crate::{
         batch::{
             replacement_test_support::{
-                apply, flags_update, options, owned_flags, split_removal_bytes, unowned_flags,
-                value_bytes, write_op, Mode, KEY, NEW_OWNER, OLD_OWNER,
+                apply, flags_update, owned_flags, split_removal_bytes, unowned_flags, value_bytes,
+                write_op, Mode, KEY, NEW_OWNER, OLD_OWNER,
             },
             BatchApplyOptions, QualifiedGroveDbOp,
         },
@@ -753,7 +753,7 @@ mod tests {
             let db = grove_with(&old, TreeType::SumTree, false, grove_version);
             db.apply_partial_batch_with_element_flags_update(
                 vec![write_op(&new)],
-                Some(options(mode)),
+                None,
                 flags_update(mode),
                 split_removal_bytes,
                 |_cost, _leftover_operations| Ok(vec![reference_op(vec![], b"root reference")]),
@@ -806,7 +806,7 @@ mod tests {
                 partial
                     .apply_partial_batch_with_element_flags_update(
                         vec![write_op(&first)],
-                        Some(options(mode)),
+                        None,
                         flags_update(mode),
                         split_removal_bytes,
                         |_cost, _leftover_operations| {
@@ -869,7 +869,7 @@ mod tests {
             );
             db.apply_partial_batch_with_element_flags_update(
                 vec![write(&inserted)],
-                Some(options(mode)),
+                None,
                 flags_update(mode),
                 split_removal_bytes,
                 |_cost, _leftover_operations| Ok(vec![write(&rewritten), reference.clone()]),

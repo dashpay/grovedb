@@ -14,9 +14,8 @@
 use std::collections::BTreeMap;
 
 use grovedb::{
-    batch::{BatchApplyOptions, QualifiedGroveDbOp},
-    reference_path::ReferencePathType,
-    Element, ElementFlags, Error, GroveDb,
+    batch::QualifiedGroveDbOp, reference_path::ReferencePathType, Element, ElementFlags, Error,
+    GroveDb,
 };
 use grovedb_costs::{
     storage_cost::{
@@ -255,10 +254,7 @@ fn should_refund_the_old_owner_in_full_and_charge_the_new_owner_for_everything()
         let cost = db
             .apply_batch_with_element_flags_update(
                 vec![write_op(new_element.clone())],
-                Some(BatchApplyOptions {
-                    allow_replacement_accounting: true,
-                    ..Default::default()
-                }),
+                None,
                 |cost, old_flags, new_flags| {
                     StorageFlags::update_element_flags_replacing_on_owner_change(
                         cost, old_flags, new_flags,
