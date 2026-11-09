@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use grovedb_costs::{
     cost_return_on_error_into_no_add, cost_return_on_error_no_add,
-    storage_cost::{removal::StorageRemovedBytes, StorageCost},
+    storage_cost::{removal::StorageRemovedBytes, transition::ElementFlagsUpdate, StorageCost},
     CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::{
@@ -46,7 +46,11 @@ pub(super) fn process_old_element_flags_v1<G, SR>(
     grove_version: &GroveVersion,
 ) -> CostResult<CryptoHash, Error>
 where
-    G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+    G: FnMut(
+        &StorageCost,
+        Option<ElementFlags>,
+        &mut ElementFlags,
+    ) -> Result<ElementFlagsUpdate, Error>,
     SR: FnMut(
         &mut ElementFlags,
         u32,

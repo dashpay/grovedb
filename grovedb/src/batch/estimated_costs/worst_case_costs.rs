@@ -43,7 +43,34 @@ use crate::{BackwardsReferences, Element};
 
 #[cfg(feature = "minimal")]
 impl GroveOp {
+    /// [`Self::worst_case_cost_with_options`] with the default batch
+    /// options.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
     fn worst_case_cost(
+        &self,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        in_parent_tree_type: TreeType,
+        worst_case_layer_element_estimates: &WorstCaseLayerInformation,
+        backwards_references: BackwardsReferences,
+        propagate: bool,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        self.worst_case_cost_with_options(
+            path,
+            key,
+            in_parent_tree_type,
+            worst_case_layer_element_estimates,
+            backwards_references,
+            propagate,
+            &BatchApplyOptions::default(),
+            grove_version,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn worst_case_cost_with_options(
         &self,
         // The op's own path: sizes the inverted-registration growth bound
         // (every `invert()` output is built from the origin's qualified
@@ -58,6 +85,10 @@ impl GroveOp {
         // it declares `Check`.
         backwards_references: BackwardsReferences,
         propagate: bool,
+        // The batch's options: with `allow_replacement_accounting`, a write that may
+        // be accounted as a replacement is charged as the insertion it then
+        // records too.
+        batch_apply_options: &BatchApplyOptions,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let propagate_if_input = || {
@@ -67,6 +98,13 @@ impl GroveOp {
                 None
             }
         };
+        let replacement = super::ReplacementAccounting::new(
+            batch_apply_options,
+            key,
+            super::WORST_CASE_REPLACEMENT_NODE_TYPE,
+            super::CarriedReferrers::Worst,
+            grove_version,
+        );
         let fan_out_version = grove_version
             .grovedb_versions
             .operations
@@ -80,20 +118,10 @@ impl GroveOp {
             }
             match element {
                 Some(Element::BidirectionalReference(..)) => {
-                    // The registration entry appended to the target: an
-                    // inverted path built from the referrer's qualified
-                    // origin (this op's path segments plus its key — an
-                    // absolute inversion serializes them all), the cascade
-                    // flag, and framing.
-                    let origin_bytes: u32 = path
-                        .0
-                        .iter()
-                        .map(|segment| 4 + segment.max_length() as u32)
-                        .sum::<u32>()
-                        .saturating_add(4 + key.max_length() as u32);
-                    let entry_bound = origin_bytes.saturating_add(16);
+                    // The registration entry appended to the target, whose
+                    // referrer is this op itself.
                     Some(super::BackwardReferencesFanOut::worst_reference(
-                        entry_bound,
+                        super::backward_reference_entry_bound(path, key),
                     ))
                 }
                 // A backward-references ITEM write carries its own referrer
@@ -199,19 +227,40 @@ impl GroveOp {
                 not_summed,
                 not_counted_or_summed,
                 ..
-            } => GroveDb::worst_case_merk_insert_tree(
-                key,
+            } => replacement.raise_tree(
+                GroveDb::worst_case_merk_insert_tree(
+                    key,
+                    flags,
+                    aggregate_data.parent_tree_type(),
+                    in_parent_tree_type,
+                    // See the comment in the corresponding average-case arm.
+                    super::wrapper_overhead_for(*non_counted, *not_summed, *not_counted_or_summed),
+                    propagate_if_input(),
+                    grove_version,
+                ),
+                // The write of a tree the batch also writes under may be
+                // accounted as a replacement as a write of its element is.
+                super::WORST_CASE_REPLACEMENT_TREE_TYPE,
                 flags,
-                aggregate_data.parent_tree_type(),
-                in_parent_tree_type,
-                // See the comment in the corresponding average-case arm.
-                super::wrapper_overhead_for(*non_counted, *not_summed, *not_counted_or_summed),
-                propagate_if_input(),
-                grove_version,
+                *non_counted,
+                *not_summed,
+                *not_counted_or_summed,
             ),
             GroveOp::InsertOrReplace { element }
-            | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
-            | GroveOp::InsertWithKnownToNotAlreadyExist { element } => with_fan_out(
+            | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element } => with_fan_out(
+                replacement.raise(
+                    GroveDb::worst_case_merk_insert_element(
+                        key,
+                        element,
+                        in_parent_tree_type,
+                        propagate_if_input(),
+                        grove_version,
+                    ),
+                    element,
+                ),
+                backward_references_fan_out(Some(element)),
+            ),
+            GroveOp::InsertWithKnownToNotAlreadyExist { element } => with_fan_out(
                 GroveDb::worst_case_merk_insert_element(
                     key,
                     element,
@@ -286,22 +335,26 @@ impl GroveOp {
                 } else {
                     inner
                 };
-                GroveDb::worst_case_merk_replace_element(
+                let replace_cost = GroveDb::worst_case_merk_replace_element(
                     key,
                     &element,
                     in_parent_tree_type,
                     propagate_if_input(),
                     grove_version,
-                )
+                );
+                replacement.raise_refresh(replace_cost, &element, mode)
             }
             GroveOp::Replace { element }
             | GroveOp::ReplaceDontCheckForBackwardsReferences { element } => with_fan_out(
-                GroveDb::worst_case_merk_replace_element(
-                    key,
+                replacement.raise(
+                    GroveDb::worst_case_merk_replace_element(
+                        key,
+                        element,
+                        in_parent_tree_type,
+                        propagate_if_input(),
+                        grove_version,
+                    ),
                     element,
-                    in_parent_tree_type,
-                    propagate_if_input(),
-                    grove_version,
                 ),
                 backward_references_fan_out(Some(element)),
             ),
@@ -313,12 +366,15 @@ impl GroveOp {
                 element,
                 change_in_bytes: _,
             } => with_fan_out(
-                GroveDb::worst_case_merk_replace_element(
-                    key,
+                replacement.raise(
+                    GroveDb::worst_case_merk_replace_element(
+                        key,
+                        element,
+                        in_parent_tree_type,
+                        propagate_if_input(),
+                        grove_version,
+                    ),
                     element,
-                    in_parent_tree_type,
-                    propagate_if_input(),
-                    grove_version,
                 ),
                 backward_references_fan_out(Some(element)),
             ),
@@ -855,7 +911,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         path: &KeyInfoPath,
         ops_at_path_by_key: BTreeMap<KeyInfo, GroveOp>,
         _ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, GroveOp>,
-        _batch_apply_options: &BatchApplyOptions,
+        batch_apply_options: &BatchApplyOptions,
         _flags_update: &mut G,
         _split_removal_bytes: &mut SR,
         grove_version: &GroveVersion,
@@ -905,13 +961,14 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
             }
             cost_return_on_error!(
                 &mut cost,
-                op.worst_case_cost(
+                op.worst_case_cost_with_options(
                     path,
                     &key,
                     TreeType::NormalTree,
                     worst_case_layer_element_estimates,
                     op.backwards_references(),
                     false,
+                    batch_apply_options,
                     grove_version
                 )
             );

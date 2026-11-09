@@ -13,8 +13,11 @@
 //! [`predict_put_final_bytes`] does the same for any put, which a
 //! same-batch reference to a pending item write commits to.
 
+use std::cell::Cell;
+
 use grovedb_costs::storage_cost::{
     removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
+    transition::ElementFlagsUpdate,
     StorageCost,
 };
 use grovedb_merk::{
@@ -33,6 +36,101 @@ use grovedb_version::version::GroveVersion;
 use integer_encoding::VarInt;
 
 use crate::{Element, ElementFlags, Error};
+
+/// Why a batch whose flags update answered `AccountAsReplacement` was
+/// refused: its options do not set `allow_replacement_accounting`.
+pub(crate) const REPLACEMENT_ACCOUNTING_NOT_ALLOWED: &str =
+    "the flags update answered AccountAsReplacement, but the batch options do not set \
+     allow_replacement_accounting";
+
+/// Why a batch whose flags update answered `AccountAsReplacement` was
+/// refused: the write's flags are byte-equal to the stored ones. An untrusted
+/// reference refresh and a tree's root update write the stored flags back, so
+/// they bring no flags of their own to account for and the estimators do not
+/// charge them as replacements. The callback cannot tell those from a write
+/// that happens to bring identical flags, which hands nothing over anyway, so
+/// that one is refused too.
+pub(crate) const REPLACED_A_WRITE_KEEPING_ITS_FLAGS: &str =
+    "the flags update answered AccountAsReplacement on a write whose flags are the stored flags";
+
+/// The caller's flags-update callback as a batch runs it: its answer as an
+/// [`ElementFlagsUpdate`] (a `bool` answer is `Changed` or `Unchanged`).
+/// `AccountAsReplacement` is refused unless the batch's options set
+/// `allow_replacement_accounting`, and refused on a write whose flags are
+/// byte-equal to the stored ones, whatever the callback does with them: only
+/// a write that brings different flags can be accounted so. A refusal records
+/// its reason in `refused`, so the batch reports it with
+/// [`replacement_refusal_error`] whatever error it surfaces as.
+pub(crate) fn batch_flags_update<U>(
+    mut flags_update: impl FnMut(
+        &StorageCost,
+        Option<ElementFlags>,
+        &mut ElementFlags,
+    ) -> Result<U, Error>,
+    allow_replacement_accounting: bool,
+    refused: &Cell<Option<&'static str>>,
+) -> impl FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<ElementFlagsUpdate, Error>
+where
+    U: Into<ElementFlagsUpdate>,
+{
+    move |storage_cost: &StorageCost,
+          old_flags: Option<ElementFlags>,
+          new_flags: &mut ElementFlags| {
+        // Compared before the callback, which may rewrite the flags. Without
+        // the option any such answer is refused anyway.
+        let keeps_stored_flags =
+            allow_replacement_accounting && old_flags.as_deref() == Some(new_flags.as_slice());
+        let update = flags_update(storage_cost, old_flags, new_flags)?.into();
+        if update == ElementFlagsUpdate::AccountAsReplacement {
+            let refusal = if !allow_replacement_accounting {
+                Some(REPLACEMENT_ACCOUNTING_NOT_ALLOWED)
+            } else if keeps_stored_flags {
+                Some(REPLACED_A_WRITE_KEEPING_ITS_FLAGS)
+            } else {
+                None
+            };
+            if let Some(reason) = refusal {
+                refused.set(Some(reason));
+                return Err(Error::JustInTimeElementFlagsClientError(reason.to_owned()));
+            }
+        }
+        Ok(update)
+    }
+}
+
+/// The error a batch run with [`batch_flags_update`] reports: the refusal of
+/// an `AccountAsReplacement` answer, as the invalid batch it is, when `refused` says
+/// one happened (the Merk and prediction layers it surfaced through report
+/// it as client or data corruption), and `error` otherwise.
+pub(crate) fn replacement_refusal_error(
+    error: Error,
+    refused: &Cell<Option<&'static str>>,
+) -> Error {
+    match refused.get() {
+        Some(reason) => Error::InvalidBatchOperation(reason),
+        None => error,
+    }
+}
+
+/// The caller's flags-update callback with its answer as an
+/// [`ElementFlagsUpdate`] (a `bool` answer is `Changed` or `Unchanged`).
+#[cfg(feature = "estimated_costs")]
+pub(crate) fn flags_update_answers<U>(
+    mut flags_update: impl FnMut(
+        &StorageCost,
+        Option<ElementFlags>,
+        &mut ElementFlags,
+    ) -> Result<U, Error>,
+) -> impl FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<ElementFlagsUpdate, Error>
+where
+    U: Into<ElementFlagsUpdate>,
+{
+    move |storage_cost: &StorageCost,
+          old_flags: Option<ElementFlags>,
+          new_flags: &mut ElementFlags| {
+        flags_update(storage_cost, old_flags, new_flags).map(Into::into)
+    }
+}
 
 /// The storage cost of the stored value a write replaces.
 pub(super) fn old_specialized_cost(
@@ -74,17 +172,22 @@ pub(super) fn new_value_with_old_flags(
 }
 
 /// Run the caller's flags-update callback on the new value's flags; when it
-/// changes them, rewrite `new_value` and return the value-defined cost the
-/// rewritten element carries.
+/// changes them or answers `AccountAsReplacement`, rewrite `new_value` with
+/// the flags it leaves and return the value-defined cost the rewritten element
+/// carries.
 pub(super) fn update_value_flags_based_on_costs<G>(
     flags_update: &mut G,
     storage_costs: &StorageCost,
     old_value: &[u8],
     new_value: &mut Vec<u8>,
     grove_version: &GroveVersion,
-) -> Result<(bool, Option<ValueDefinedCostType>), MerkError>
+) -> Result<(ElementFlagsUpdate, Option<ValueDefinedCostType>), MerkError>
 where
-    G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+    G: FnMut(
+        &StorageCost,
+        Option<ElementFlags>,
+        &mut ElementFlags,
+    ) -> Result<ElementFlagsUpdate, Error>,
 {
     // todo: change the flags without full deserialization
     let old_element = Element::deserialize(old_value, grove_version)
@@ -95,16 +198,16 @@ where
         .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
     let maybe_new_flags = new_element.get_flags_mut();
     match maybe_new_flags {
-        None => Ok((false, None)),
+        None => Ok((ElementFlagsUpdate::Unchanged, None)),
         Some(new_flags) => {
-            let changed =
+            let update =
                 (flags_update)(storage_costs, maybe_old_flags, new_flags).map_err(|e| match e {
                     Error::JustInTimeElementFlagsClientError(_) => {
                         MerkError::ClientCorruptionError(e.to_string())
                     }
                     _ => MerkError::ClientCorruptionError("non client error".to_string()),
                 })?;
-            if changed {
+            if update != ElementFlagsUpdate::Unchanged {
                 let flags_len = new_flags.len() as u32;
                 new_value.clone_from(
                     &new_element
@@ -145,14 +248,17 @@ where
                             + flags_len
                             + flags_len.required_space() as u32
                             + wrapper_overhead;
-                        Ok((true, Some(LayeredValueDefinedCost(tree_value_cost))))
+                        Ok((update, Some(LayeredValueDefinedCost(tree_value_cost))))
                     }
                     Element::SumItem(..) => {
                         let sum_item_value_cost = SUM_ITEM_COST_SIZE
                             + flags_len
                             + flags_len.required_space() as u32
                             + wrapper_overhead;
-                        Ok((true, Some(SpecializedValueDefinedCost(sum_item_value_cost))))
+                        Ok((
+                            update,
+                            Some(SpecializedValueDefinedCost(sum_item_value_cost)),
+                        ))
                     }
                     Element::ItemWithSumItem(item_value, ..) => {
                         let item_len = item_value.len() as u32;
@@ -162,12 +268,15 @@ where
                             + item_len
                             + item_len.required_space() as u32
                             + wrapper_overhead;
-                        Ok((true, Some(SpecializedValueDefinedCost(sum_item_value_cost))))
+                        Ok((
+                            update,
+                            Some(SpecializedValueDefinedCost(sum_item_value_cost)),
+                        ))
                     }
-                    _ => Ok((true, None)),
+                    _ => Ok((update, None)),
                 }
             } else {
-                Ok((false, None))
+                Ok((ElementFlagsUpdate::Unchanged, None))
             }
         }
     }
@@ -222,7 +331,11 @@ pub(crate) fn predict_put_final_bytes<G, SR>(
     grove_version: &GroveVersion,
 ) -> Result<Vec<u8>, MerkError>
 where
-    G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+    G: FnMut(
+        &StorageCost,
+        Option<ElementFlags>,
+        &mut ElementFlags,
+    ) -> Result<ElementFlagsUpdate, Error>,
     SR: FnMut(
         &mut ElementFlags,
         u32,
@@ -287,7 +400,11 @@ pub(crate) fn predict_provided_value_hash_put<G, SR>(
     grove_version: &GroveVersion,
 ) -> Result<Element, Error>
 where
-    G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+    G: FnMut(
+        &StorageCost,
+        Option<ElementFlags>,
+        &mut ElementFlags,
+    ) -> Result<ElementFlagsUpdate, Error>,
     SR: FnMut(
         &mut ElementFlags,
         u32,

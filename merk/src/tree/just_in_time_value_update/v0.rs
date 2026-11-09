@@ -1,5 +1,6 @@
 use grovedb_costs::storage_cost::{
     removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
+    transition::ElementFlagsUpdate,
     StorageCost,
 };
 
@@ -29,7 +30,7 @@ impl TreeNode {
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<
-            (bool, Option<ValueDefinedCostType>),
+            (ElementFlagsUpdate, Option<ValueDefinedCostType>),
             Error,
         >,
         section_removal_bytes: &mut impl FnMut(
@@ -72,11 +73,18 @@ impl TreeNode {
                     storage_costs.value_storage_cost.removed_bytes = value_removed_bytes;
                 }
 
-                let (flags_changed, value_defined_cost) = update_tree_value_based_on_costs(
+                let (flags_update, value_defined_cost) = update_tree_value_based_on_costs(
                     &storage_costs.value_storage_cost,
                     &old_value,
                     self.value_mut_ref(),
                 )?;
+                let flags_changed = match flags_update {
+                    ElementFlagsUpdate::Unchanged => false,
+                    ElementFlagsUpdate::Changed => true,
+                    ElementFlagsUpdate::AccountAsReplacement => {
+                        return Err(Self::replacement_accounting_refused());
+                    }
+                };
                 if !flags_changed {
                     break;
                 } else {

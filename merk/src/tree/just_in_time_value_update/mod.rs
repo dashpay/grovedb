@@ -18,11 +18,20 @@
 //!   put's value-defined cost each time it restores the put's value. Every
 //!   update whose cost version 0 records for the bytes it stores is charged
 //!   exactly as version 0 charges it.
+//!
+//! - version 2 is version 1, plus the flags-update callback's
+//!   [`ElementFlagsUpdate::AccountAsReplacement`] answer, recorded as the
+//!   removal of the old element plus the insertion of the new one. Versions 0
+//!   and 1 refuse that answer. Grove v5+ selects it.
 
 mod v0;
 mod v1;
+mod v2;
 
-use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+use grovedb_costs::storage_cost::{
+    key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes,
+    transition::ElementFlagsUpdate, StorageCost,
+};
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
 use crate::{
@@ -80,7 +89,7 @@ impl TreeNode {
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<
-            (bool, Option<ValueDefinedCostType>),
+            (ElementFlagsUpdate, Option<ValueDefinedCostType>),
             Error,
         >,
         section_removal_bytes: &mut impl FnMut(
@@ -143,7 +152,7 @@ impl TreeNode {
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<
-            (bool, Option<ValueDefinedCostType>),
+            (ElementFlagsUpdate, Option<ValueDefinedCostType>),
             Error,
         >,
         section_removal_bytes: &mut impl FnMut(
@@ -169,14 +178,66 @@ impl TreeNode {
                 update_tree_value_based_on_costs,
                 section_removal_bytes,
             ),
+            2 => self.just_in_time_tree_node_value_update_v2(
+                old_specialized_cost,
+                get_temp_new_value_with_old_flags,
+                update_tree_value_based_on_costs,
+                section_removal_bytes,
+            ),
             version => Err(Error::VersionError(
                 GroveVersionError::UnknownVersionMismatch {
                     method: "just_in_time_tree_node_value_update".to_string(),
-                    known_versions: vec![0, 1],
+                    known_versions: vec![0, 1, 2],
                     received: version,
                 },
             )),
         }
+    }
+
+    /// How versions 0 and 1 refuse an `AccountAsReplacement` answer.
+    fn replacement_accounting_refused() -> Error {
+        Error::ClientCorruptionError(
+            "accounting an update as a replacement needs just-in-time value update version 2"
+                .to_string(),
+        )
+    }
+
+    /// The storage an update accounted as a replacement records: the old
+    /// element removed, key included, with the removal sectioned through its
+    /// flags exactly as a deletion sections it, and the new element as this
+    /// node now holds it added, key included. `old_value_bytes` is the
+    /// stored value's own cost.
+    fn replacement_accounting_storage_cost(
+        &self,
+        old_value: &Vec<u8>,
+        old_value_bytes: u32,
+        section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+    ) -> Result<KeyValueStorageCost, Error> {
+        let key_bytes = KV::node_key_byte_cost_size(self.key().len() as u32);
+        let (removed_key_bytes, removed_value_bytes) =
+            section_removal_bytes(old_value, key_bytes, old_value_bytes)?;
+        Ok(KeyValueStorageCost {
+            key_storage_cost: StorageCost {
+                added_bytes: key_bytes,
+                replaced_bytes: 0,
+                removed_bytes: removed_key_bytes,
+            },
+            value_storage_cost: StorageCost {
+                added_bytes: self.value_encoding_length_with_parent_to_child_reference(),
+                replaced_bytes: 0,
+                removed_bytes: removed_value_bytes,
+            },
+            new_node: false,
+            needs_value_verification: self.inner.kv.value_defined_cost.is_none(),
+            prepaid: false,
+        })
     }
 }
 
@@ -184,13 +245,14 @@ impl TreeNode {
 mod tests {
     use grovedb_costs::storage_cost::{
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
+        transition::ElementFlagsUpdate,
         StorageCost,
     };
     use grovedb_element::{BackwardReferences, Element};
-    use grovedb_version::version::GroveVersion;
+    use grovedb_version::version::{v3::GROVE_V3, v4::GROVE_V4, GroveVersion};
 
     use crate::{
-        element::insert::specialized_put_cost,
+        element::{costs::ElementCostExtensions, insert::specialized_put_cost},
         merk::NodeType,
         test_utils::TempMerk,
         tree::{
@@ -221,7 +283,7 @@ mod tests {
         cost: &StorageCost,
         _old: &Vec<u8>,
         new: &mut Vec<u8>,
-    ) -> Result<(bool, Option<ValueDefinedCostType>), Error> {
+    ) -> Result<(ElementFlagsUpdate, Option<ValueDefinedCostType>), Error> {
         let grove_version = GroveVersion::latest();
         let mut element = Element::deserialize(new, grove_version)
             .map_err(|e| Error::ClientCorruptionError(e.to_string()))?;
@@ -236,7 +298,7 @@ mod tests {
         *new = element
             .serialize(grove_version)
             .map_err(|e| Error::ClientCorruptionError(e.to_string()))?;
-        Ok((true, None))
+        Ok((ElementFlagsUpdate::Changed, None))
     }
 
     fn basic_removal(
@@ -327,6 +389,218 @@ mod tests {
         }
     }
 
+    /// An update whose flags update answers `AccountAsReplacement` is
+    /// the removal of the old value plus the insertion of the new one: every
+    /// byte of both, key included, with the old value sectioned by the
+    /// removal callback exactly as a deletion sections it.
+    #[test]
+    fn an_update_accounted_as_a_replacement_removes_the_old_value_and_inserts_the_new_one() {
+        let grove_version = GroveVersion::latest();
+        let key = b"key".to_vec();
+        let item = |value: &[u8], flags: u8| {
+            Element::new_item_with_flags(value.to_vec(), Some(vec![flags]))
+                .serialize(grove_version)
+                .unwrap()
+        };
+        for (old, new) in [
+            (item(b"old", 1), item(b"a much longer new value", 2)),
+            (item(b"a much longer old value", 1), item(b"new", 2)),
+            (item(b"same", 1), item(b"size", 2)),
+        ] {
+            let kv = KV::from_fields(
+                key.clone(),
+                old.clone(),
+                NULL_HASH,
+                NULL_HASH,
+                BasicMerkNode,
+            );
+            let mut node = TreeNode::new_with_tree_inner(TreeNodeInner {
+                left: None,
+                right: None,
+                kv,
+            });
+            node.inner.kv = node
+                .inner
+                .kv
+                .put_ordinary_value_no_update_of_hashes(new.clone());
+
+            let mut sectioned = vec![];
+            node.just_in_time_tree_node_value_update(
+                &old_cost,
+                &no_temp_value,
+                &mut |_cost, _old, _new| Ok((ElementFlagsUpdate::AccountAsReplacement, None)),
+                &mut |value, key_bytes, value_bytes| {
+                    sectioned.push((value.clone(), key_bytes, value_bytes));
+                    basic_removal(value, key_bytes, value_bytes)
+                },
+                grove_version,
+            )
+            .expect("expected the update to apply");
+
+            let key_bytes = KV::node_key_byte_cost_size(key.len() as u32);
+            let old_value_bytes = old_cost(&key, &old).unwrap();
+            let new_value_bytes = old_cost(&key, &new).unwrap();
+            // (a shrink also sections its freed bytes before the flags
+            // update is asked, as it always did)
+            assert_eq!(
+                sectioned.last(),
+                Some(&(old.clone(), key_bytes, old_value_bytes))
+            );
+            let storage_cost = node.known_storage_cost.expect("expected a storage cost");
+            assert_eq!(
+                storage_cost.key_storage_cost,
+                StorageCost {
+                    added_bytes: key_bytes,
+                    replaced_bytes: 0,
+                    removed_bytes: BasicStorageRemoval(key_bytes),
+                }
+            );
+            assert_eq!(
+                storage_cost.value_storage_cost,
+                StorageCost {
+                    added_bytes: new_value_bytes,
+                    replaced_bytes: 0,
+                    removed_bytes: BasicStorageRemoval(old_value_bytes),
+                }
+            );
+            assert!(!storage_cost.new_node);
+            assert_eq!(node.inner.kv.value, new);
+            assert_eq!(node.old_value, Some(new));
+        }
+    }
+
+    /// The callback may resize the flags as it answers
+    /// `AccountAsReplacement`. The insertion is then measured with the
+    /// value-defined cost it answers with, for a sum item and for a tree, and
+    /// not with the cost of the bytes the put wrote.
+    #[test]
+    fn a_replacement_measures_the_new_element_with_the_cost_the_callback_answers() {
+        let grove_version = GroveVersion::latest();
+        let key = b"key".to_vec();
+        let builds: [fn(Vec<u8>) -> Element; 2] = [
+            |flags| Element::new_sum_item_with_flags(7, Some(flags)),
+            |flags| Element::empty_tree_with_flags(Some(flags)),
+        ];
+        for build in builds {
+            let value_and_cost = |flags: Vec<u8>| {
+                let element = build(flags);
+                (
+                    element.serialize(grove_version).unwrap(),
+                    element
+                        .value_defined_cost(grove_version)
+                        .expect("expected a value-defined cost"),
+                )
+            };
+            let (old, _) = value_and_cost(vec![1]);
+            let (written, written_cost) = value_and_cost(vec![2]);
+            let (rewritten, rewritten_cost) = value_and_cost(vec![2; 9]);
+            assert_ne!(written_cost, rewritten_cost);
+
+            let kv = KV::from_fields(
+                key.clone(),
+                old.clone(),
+                NULL_HASH,
+                NULL_HASH,
+                BasicMerkNode,
+            );
+            let mut node = TreeNode::new_with_tree_inner(TreeNodeInner {
+                left: None,
+                right: None,
+                kv,
+            });
+            node.inner.kv = node
+                .inner
+                .kv
+                .put_value_with_fixed_cost_no_update_of_hashes(written, written_cost);
+
+            node.just_in_time_tree_node_value_update(
+                &old_cost,
+                &no_temp_value,
+                &mut |_cost: &StorageCost, _old: &Vec<u8>, value: &mut Vec<u8>| {
+                    *value = rewritten.clone();
+                    Ok((
+                        ElementFlagsUpdate::AccountAsReplacement,
+                        Some(rewritten_cost.clone()),
+                    ))
+                },
+                &mut basic_removal,
+                grove_version,
+            )
+            .expect("expected the update to apply");
+
+            let key_len = key.len() as u32;
+            let added_bytes = match rewritten_cost {
+                ValueDefinedCostType::SpecializedValueDefinedCost(cost) => {
+                    KV::node_value_byte_cost_size(key_len, cost, NodeType::NormalNode)
+                }
+                ValueDefinedCostType::LayeredValueDefinedCost(cost) => {
+                    KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                        key_len,
+                        cost,
+                        NodeType::NormalNode,
+                    )
+                }
+            };
+            let storage_cost = node.known_storage_cost.expect("expected a storage cost");
+            assert_eq!(
+                storage_cost.value_storage_cost,
+                StorageCost {
+                    added_bytes,
+                    replaced_bytes: 0,
+                    removed_bytes: BasicStorageRemoval(old_cost(&key, &old).unwrap()),
+                }
+            );
+            assert_eq!(node.inner.kv.value, rewritten);
+            assert_eq!(node.inner.kv.value_defined_cost, Some(rewritten_cost));
+            assert_eq!(node.old_value, Some(rewritten));
+        }
+    }
+
+    /// Versions 0 and 1 refuse the answer: grove v1..v4 cannot account an
+    /// update as a replacement, whichever layer calls them, and the refusal
+    /// records no cost.
+    #[test]
+    fn an_update_accounted_as_a_replacement_is_refused_below_version_2() {
+        for (grove_version, value_update_version) in [(&GROVE_V3, 0), (&GROVE_V4, 1)] {
+            assert_eq!(
+                grove_version.merk_versions.tree.just_in_time_value_update,
+                value_update_version
+            );
+            let key = b"key".to_vec();
+            let item = |value: &[u8], flags: u8| {
+                Element::new_item_with_flags(value.to_vec(), Some(vec![flags]))
+                    .serialize(grove_version)
+                    .unwrap()
+            };
+            let old = item(b"old", 1);
+            let kv = KV::from_fields(key, old, NULL_HASH, NULL_HASH, BasicMerkNode);
+            let mut node = TreeNode::new_with_tree_inner(TreeNodeInner {
+                left: None,
+                right: None,
+                kv,
+            });
+            node.inner.kv = node
+                .inner
+                .kv
+                .put_ordinary_value_no_update_of_hashes(item(b"a much longer new value", 2));
+
+            let error = node
+                .just_in_time_tree_node_value_update(
+                    &old_cost,
+                    &no_temp_value,
+                    &mut |_cost, _old, _new| Ok((ElementFlagsUpdate::AccountAsReplacement, None)),
+                    &mut basic_removal,
+                    grove_version,
+                )
+                .expect_err("expected the answer to be refused");
+            assert!(
+                matches!(&error, Error::ClientCorruptionError(reason) if reason.contains("version 2")),
+                "version {value_update_version}: unexpected error {error}"
+            );
+            assert!(node.known_storage_cost.is_none());
+        }
+    }
+
     /// A round that rewrites the flags and changes the value-defined cost,
     /// which the update then restores with the value, followed by an
     /// unchanged answer, is measured exactly as an immediate unchanged
@@ -376,7 +650,9 @@ mod tests {
             .just_in_time_tree_node_value_update(
                 &old_cost,
                 &no_temp_value,
-                &mut |_cost: &StorageCost, _old: &Vec<u8>, _new: &mut Vec<u8>| Ok((false, None)),
+                &mut |_cost: &StorageCost, _old: &Vec<u8>, _new: &mut Vec<u8>| {
+                    Ok((ElementFlagsUpdate::Unchanged, None))
+                },
                 &mut basic_removal,
                 grove_version,
             )
@@ -393,13 +669,13 @@ mod tests {
                     if rounds == 1 {
                         *value = rewritten.clone();
                         Ok((
-                            true,
+                            ElementFlagsUpdate::Changed,
                             Some(ValueDefinedCostType::SpecializedValueDefinedCost(
                                 rewritten_cost,
                             )),
                         ))
                     } else {
-                        Ok((false, None))
+                        Ok((ElementFlagsUpdate::Unchanged, None))
                     }
                 },
                 &mut basic_removal,

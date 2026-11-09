@@ -34,6 +34,10 @@ mod just_in_time_value_update;
 mod options;
 mod refresh_reference_mode;
 #[cfg(test)]
+mod replacement_accounting_cost_tests;
+#[cfg(test)]
+pub(crate) mod replacement_test_support;
+#[cfg(test)]
 mod same_batch_reference_prediction_tests;
 #[cfg(test)]
 mod single_deletion_cost_tests;
@@ -47,6 +51,7 @@ mod single_sum_item_insert_cost_tests;
 use crate::{bidirectional_references::batch_maintains_backward_references, BackwardsReferences};
 use core::fmt;
 use std::{
+    cell::Cell,
     cmp::Ordering,
     collections::{btree_map::Entry, hash_map::Entry as HashMapEntry, BTreeMap, HashMap, HashSet},
     hash::{Hash, Hasher},
@@ -61,10 +66,11 @@ use estimated_costs::{
     worst_case_costs::WorstCaseTreeCacheKnownPaths,
 };
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_into, cost_return_on_error_into_no_add,
-    cost_return_on_error_no_add,
+    cost_return_on_error, cost_return_on_error_default, cost_return_on_error_into,
+    cost_return_on_error_into_no_add, cost_return_on_error_no_add,
     storage_cost::{
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
+        transition::ElementFlagsUpdate,
         StorageCost,
     },
     CostResult, CostsExt, OperationCost,
@@ -2502,7 +2508,11 @@ where
         grove_version: &GroveVersion,
     ) -> CostResult<CryptoHash, Error>
     where
-        G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+        G: FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> Result<ElementFlagsUpdate, Error>,
         SR: FnMut(
             &mut ElementFlags,
             u32,
@@ -2821,7 +2831,11 @@ where
         grove_version: &GroveVersion,
     ) -> CostResult<CryptoHash, Error>
     where
-        G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+        G: FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> Result<ElementFlagsUpdate, Error>,
         SR: FnMut(
             &mut ElementFlags,
             u32,
@@ -2951,7 +2965,11 @@ where
         grove_version: &GroveVersion,
     ) -> CostResult<CryptoHash, Error>
     where
-        G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+        G: FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> Result<ElementFlagsUpdate, Error>,
         SR: FnMut(
             &mut ElementFlags,
             u32,
@@ -3395,7 +3413,11 @@ where
 
 impl<'db, S, F, F2, G, SR> TreeCache<G, SR> for TreeCacheMerkByPath<S, F, F2>
 where
-    G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+    G: FnMut(
+        &StorageCost,
+        Option<ElementFlags>,
+        &mut ElementFlags,
+    ) -> Result<ElementFlagsUpdate, Error>,
     SR: FnMut(
         &mut ElementFlags,
         u32,
@@ -5663,7 +5685,11 @@ impl GroveDb {
         Error,
     >
     where
-        F: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+        F: FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> Result<ElementFlagsUpdate, Error>,
         SR: FnMut(
             &mut ElementFlags,
             u32,
@@ -6014,7 +6040,7 @@ impl GroveDb {
             &StorageCost,
             Option<ElementFlags>,
             &mut ElementFlags,
-        ) -> Result<bool, Error>,
+        ) -> Result<ElementFlagsUpdate, Error>,
         split_removed_bytes_function: impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -6106,7 +6132,7 @@ impl GroveDb {
             &StorageCost,
             Option<ElementFlags>,
             &mut ElementFlags,
-        ) -> Result<bool, Error>,
+        ) -> Result<ElementFlagsUpdate, Error>,
         split_removed_bytes_function: impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -6221,6 +6247,10 @@ impl GroveDb {
                 .apply_batch
                 .apply_operations_without_batching
         );
+        cost_return_on_error_default!(BatchApplyOptions::check_replacement_accounting_version(
+            &options,
+            grove_version,
+        ));
         let mut cost = OperationCost::default();
         for op in ops.into_iter() {
             let declared = op.op.backwards_references();
@@ -7249,7 +7279,56 @@ impl GroveDb {
     /// - Under backward-references maintenance the referrers of a flagged
     ///   backward-references item commit to them, and the batch refuses the
     ///   batch if the apply stores anything else.
-    pub fn apply_batch_with_element_flags_update(
+    ///
+    /// The flags callback answers a `bool` (whether it rewrote the flags) or
+    /// an [`ElementFlagsUpdate`]; `AccountAsReplacement` is accepted only when
+    /// the options set
+    /// [`allow_replacement_accounting`](BatchApplyOptions::allow_replacement_accounting);
+    /// without it the batch fails with [`Error::InvalidBatchOperation`].
+    pub fn apply_batch_with_element_flags_update<U: Into<ElementFlagsUpdate>>(
+        &self,
+        ops: Vec<QualifiedGroveDbOp>,
+        batch_apply_options: Option<BatchApplyOptions>,
+        update_element_flags_function: impl FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> Result<U, Error>,
+        split_removal_bytes_function: impl FnMut(
+            &mut ElementFlags,
+            u32, // key removed bytes
+            u32, // value removed bytes
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        cost_return_on_error_default!(BatchApplyOptions::check_replacement_accounting_version(
+            &batch_apply_options,
+            grove_version,
+        ));
+        let replacement_refused = Cell::new(None);
+        let update_element_flags_function = just_in_time_value_update::batch_flags_update(
+            update_element_flags_function,
+            BatchApplyOptions::allow_replacement_accounting_in(&batch_apply_options),
+            &replacement_refused,
+        );
+        self.apply_batch_with_batch_flags_update(
+            ops,
+            batch_apply_options,
+            update_element_flags_function,
+            split_removal_bytes_function,
+            transaction,
+            grove_version,
+        )
+        .map_err(|e| just_in_time_value_update::replacement_refusal_error(e, &replacement_refused))
+    }
+
+    /// [`Self::apply_batch_with_element_flags_update`] with the flags
+    /// callback as [`just_in_time_value_update::batch_flags_update`] runs it.
+    fn apply_batch_with_batch_flags_update(
         &self,
         ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
@@ -7257,7 +7336,7 @@ impl GroveDb {
             &StorageCost,
             Option<ElementFlags>,
             &mut ElementFlags,
-        ) -> Result<bool, Error>,
+        ) -> Result<ElementFlagsUpdate, Error>,
         mut split_removal_bytes_function: impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -7764,7 +7843,59 @@ impl GroveDb {
     /// The initial segment pauses at `batch_pause_height` (default: 1).
     /// Cross-segment safety checks are always enforced, even when
     /// `disable_operation_consistency_check` skips per-segment validation.
-    pub fn apply_partial_batch_with_element_flags_update(
+    ///
+    /// The flags callback is answered as in
+    /// [`Self::apply_batch_with_element_flags_update`].
+    pub fn apply_partial_batch_with_element_flags_update<U: Into<ElementFlagsUpdate>>(
+        &self,
+        ops: Vec<QualifiedGroveDbOp>,
+        batch_apply_options: Option<BatchApplyOptions>,
+        update_element_flags_function: impl FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> Result<U, Error>,
+        split_removal_bytes_function: impl FnMut(
+            &mut ElementFlags,
+            u32, // key removed bytes
+            u32, // value removed bytes
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+        add_on_operations: impl FnMut(
+            &OperationCost,
+            &Option<OpsByLevelPath>,
+        ) -> Result<Vec<QualifiedGroveDbOp>, Error>,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        cost_return_on_error_default!(BatchApplyOptions::check_replacement_accounting_version(
+            &batch_apply_options,
+            grove_version,
+        ));
+        let replacement_refused = Cell::new(None);
+        let update_element_flags_function = just_in_time_value_update::batch_flags_update(
+            update_element_flags_function,
+            BatchApplyOptions::allow_replacement_accounting_in(&batch_apply_options),
+            &replacement_refused,
+        );
+        self.apply_partial_batch_with_batch_flags_update(
+            ops,
+            batch_apply_options,
+            update_element_flags_function,
+            split_removal_bytes_function,
+            add_on_operations,
+            transaction,
+            grove_version,
+        )
+        .map_err(|e| just_in_time_value_update::replacement_refusal_error(e, &replacement_refused))
+    }
+
+    /// [`Self::apply_partial_batch_with_element_flags_update`] with the
+    /// flags callback as [`just_in_time_value_update::batch_flags_update`]
+    /// runs it.
+    fn apply_partial_batch_with_batch_flags_update(
         &self,
         ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
@@ -7772,7 +7903,7 @@ impl GroveDb {
             &StorageCost,
             Option<ElementFlags>,
             &mut ElementFlags,
-        ) -> Result<bool, Error>,
+        ) -> Result<ElementFlagsUpdate, Error>,
         mut split_removal_bytes_function: impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -8549,7 +8680,11 @@ impl GroveDb {
     #[cfg(feature = "estimated_costs")]
     /// Returns the estimated average or worst case cost for an entire batch of
     /// ops
-    pub fn estimated_case_operations_for_batch(
+    ///
+    /// With [`allow_replacement_accounting`](BatchApplyOptions::allow_replacement_accounting)
+    /// set, every write that may be accounted as a replacement is charged at
+    /// least the bytes its element adds when inserted.
+    pub fn estimated_case_operations_for_batch<U: Into<ElementFlagsUpdate>>(
         estimated_costs_type: EstimatedCostsType,
         ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
@@ -8557,7 +8692,7 @@ impl GroveDb {
             &StorageCost,
             Option<ElementFlags>,
             &mut ElementFlags,
-        ) -> Result<bool, Error>,
+        ) -> Result<U, Error>,
         split_removal_bytes_function: impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -8575,6 +8710,15 @@ impl GroveDb {
                 .apply_batch
                 .estimated_case_operations_for_batch
         );
+        cost_return_on_error_default!(BatchApplyOptions::check_replacement_accounting_version(
+            &batch_apply_options,
+            grove_version,
+        ));
+        // The estimators never call the flags update (an estimate follows
+        // the batch options, not the answers the flags update would give),
+        // so it only needs its answer type.
+        let update_element_flags_function =
+            just_in_time_value_update::flags_update_answers(update_element_flags_function);
         let mut cost = OperationCost::default();
 
         if ops.is_empty() {
@@ -8819,6 +8963,7 @@ mod tests {
                     disable_operation_consistency_check: true,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
+                    allow_replacement_accounting: false,
                 }),
                 None,
                 grove_version
@@ -9424,6 +9569,7 @@ mod tests {
                     disable_operation_consistency_check: false,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
+                    allow_replacement_accounting: false,
                 }),
                 None,
                 grove_version
@@ -9465,6 +9611,7 @@ mod tests {
                     validate_insertion_does_not_override: true,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
+                    allow_replacement_accounting: false,
                 }),
                 None,
                 grove_version
@@ -9498,6 +9645,7 @@ mod tests {
                     disable_operation_consistency_check: false,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
+                    allow_replacement_accounting: false,
                 }),
                 None,
                 grove_version

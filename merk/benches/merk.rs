@@ -29,7 +29,9 @@
 //! Merk benches
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
-use grovedb_costs::storage_cost::{removal::StorageRemovedBytes::BasicStorageRemoval, StorageCost};
+use grovedb_costs::storage_cost::{
+    removal::StorageRemovedBytes::BasicStorageRemoval, transition::ElementFlagsUpdate, StorageCost,
+};
 use grovedb_merk::{
     proofs,
     test_utils::{make_batch_rand, make_batch_seq, make_del_batch_rand, TempMerk},
@@ -55,7 +57,7 @@ fn apply_batch_default<KB: AsRef<[u8]>>(
         None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
         &|_old_value, _new_value| Ok(None),
         &mut |_costs: &StorageCost, _old_value: &Vec<u8>, _new_value: &mut Vec<u8>| {
-            Ok((false, None))
+            Ok((ElementFlagsUpdate::Unchanged, None))
         },
         &mut |_key: &Vec<u8>, key_bytes_to_remove: u32, value_bytes_to_remove: u32| {
             Ok((

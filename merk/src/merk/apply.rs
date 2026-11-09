@@ -3,6 +3,7 @@ use std::cmp::Ordering;
 use grovedb_costs::{
     storage_cost::{
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
+        transition::ElementFlagsUpdate,
         StorageCost,
     },
     CostResult, CostsExt,
@@ -81,7 +82,7 @@ where
             },
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             &|_old_value, _value| Ok(None),
-            &mut |_costs, _old_value, _value| Ok((false, None)),
+            &mut |_costs, _old_value, _value| Ok((ElementFlagsUpdate::Unchanged, None)),
             &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
                     BasicStorageRemoval(key_bytes_to_remove),
@@ -145,7 +146,7 @@ where
             old_specialized_cost,
             value_defined_cost_fn,
             &|_, _| Ok(None),
-            &mut |_costs, _old_value, _value| Ok((false, None)),
+            &mut |_costs, _old_value, _value| Ok((ElementFlagsUpdate::Unchanged, None)),
             &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
                     BasicStorageRemoval(key_bytes_to_remove),
@@ -175,12 +176,13 @@ where
     ///     &|k, v| Ok(0),
     ///     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
     ///     &|k, v| Ok(None),
-    ///     &mut |s, v, o| Ok((false, None)),
+    ///     &mut |s, v, o| Ok((ElementFlagsUpdate::Unchanged, None)),
     ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval)),
     ///     grove_version,
     /// ).unwrap().expect("");
     ///
     /// use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
+    /// use grovedb_costs::storage_cost::transition::ElementFlagsUpdate;
     /// use grovedb_merk::Op;
     /// use grovedb_merk::tree::kv::ValueDefinedCostType;
     /// use grovedb_merk::TreeFeatureType::BasicMerkNode;
@@ -200,7 +202,7 @@ where
     ///     &|k, v| Ok(0),
     ///     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
     ///     &|k, v| Ok(None),
-    ///     &mut |s, v, o| Ok((false, None)),
+    ///     &mut |s, v, o| Ok((ElementFlagsUpdate::Unchanged, None)),
     ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval)),
     ///     grove_version,
     /// ).unwrap().expect("");
@@ -223,7 +225,7 @@ where
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<
-            (bool, Option<ValueDefinedCostType>),
+            (ElementFlagsUpdate, Option<ValueDefinedCostType>),
             Error,
         >,
         section_removal_bytes: &mut impl FnMut(
@@ -291,12 +293,13 @@ where
     ///     &|k, v| Ok(0),
     ///     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
     ///     &|k, v| Ok(None),
-    ///     &mut |s, o, v| Ok((false, None)),
+    ///     &mut |s, o, v| Ok((ElementFlagsUpdate::Unchanged, None)),
     ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval)),
     ///     grove_version,
     /// ).unwrap().expect("");
     ///
     /// use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
+    /// use grovedb_costs::storage_cost::transition::ElementFlagsUpdate;
     /// use grovedb_merk::Op;
     /// use grovedb_merk::tree::kv::ValueDefinedCostType;
     /// use grovedb_merk::TreeFeatureType::BasicMerkNode;
@@ -315,7 +318,7 @@ where
     ///     &|k, v| Ok(0),
     ///     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
     ///     &|o, v| Ok(None),
-    ///     &mut |s, o, v| Ok((false, None)),
+    ///     &mut |s, o, v| Ok((ElementFlagsUpdate::Unchanged, None)),
     ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval)),
     ///     grove_version,
     /// ).unwrap().expect("");
@@ -343,7 +346,7 @@ where
             &StorageCost,
             &Vec<u8>,
             &mut Vec<u8>,
-        ) -> Result<(bool, Option<ValueDefinedCostType>), Error>,
+        ) -> Result<(ElementFlagsUpdate, Option<ValueDefinedCostType>), Error>,
         R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     {
         self.apply_unchecked_with_old_value_observer(
@@ -400,7 +403,7 @@ where
             &StorageCost,
             &Vec<u8>,
             &mut Vec<u8>,
-        ) -> Result<(bool, Option<ValueDefinedCostType>), Error>,
+        ) -> Result<(ElementFlagsUpdate, Option<ValueDefinedCostType>), Error>,
         R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
         O: FnMut(&[u8], &[u8], OldValueDisposition),
     {
