@@ -38,7 +38,6 @@ impl TreeNode {
             Error,
         >,
     ) -> Result<(), Error> {
-        let old_value = self.old_value.clone();
         let mut replacement_value_defined_cost = None;
         let outcome = self.just_in_time_tree_node_value_update_v1(
             old_specialized_cost,
@@ -53,18 +52,19 @@ impl TreeNode {
             section_removal_bytes,
         );
         // Version 1 refuses the answer as soon as it gets it, before touching
-        // the node, so the node holds the new element as the callback left it
-        // and its refusal is this version's way out of the loop. Any other
-        // outcome is version 1's own.
+        // the node, so the node holds the new element as the callback left it,
+        // still holds the stored value as its old value, and the refusal is
+        // this version's way out of the loop. Any other outcome is version 1's
+        // own.
         let (Some(value_defined_cost), Some(old_value)) =
-            (replacement_value_defined_cost, old_value)
+            (replacement_value_defined_cost, self.old_value.as_ref())
         else {
             return outcome;
         };
         self.inner.kv.value_defined_cost = value_defined_cost;
-        let old_value_bytes = old_specialized_cost(self.key_as_ref(), &old_value)?;
+        let old_value_bytes = old_specialized_cost(self.key_as_ref(), old_value)?;
         self.known_storage_cost = Some(self.replacement_accounting_storage_cost(
-            &old_value,
+            old_value,
             old_value_bytes,
             section_removal_bytes,
         )?);
