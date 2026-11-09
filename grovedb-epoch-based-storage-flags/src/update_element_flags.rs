@@ -172,8 +172,8 @@ impl StorageFlags {
     /// not the owner changes. So can stored multi-epoch flags with no owner
     /// under written flags that name one. Either way the batch is refused and
     /// nothing is written. This is known and left as it is: shipped protocol
-    /// versions depend on this merge, and callers that hand in flags of one
-    /// epoch with an owner do not reach it.
+    /// versions depend on this merge, and a write of one-epoch flags with an
+    /// owner over stored flags with an owner does not reach it.
     pub fn update_element_flags(
         cost: &StorageCost,
         old_flags: Option<ElementFlags>,
