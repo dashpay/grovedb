@@ -20,7 +20,7 @@ sqlite = ["client", "rusqlite"]
 orchard = { git = "https://github.com/dashpay/orchard.git", tag = "dashified-0.14.1", features = ["circuit"] }
 incrementalmerkletree = "0.8"
 shardtree = { version = "0.6", optional = true }
-rusqlite = { version = "0.38", features = ["bundled"], optional = true }
+rusqlite = { version = "0.41", features = ["bundled"], optional = true }
 grovedb-costs = { version = "6.1.1", path = "../costs" }
 grovedb-version = { version = "6.1.1", path = "../grovedb-version" }
 grovedb-storage = { version = "6.1.1", path = "../storage", optional = true }
