@@ -31,8 +31,7 @@ impl StorageFlags {
     /// when the new flags' epoch is later than that one. Shipped protocol
     /// versions depend on that, so it stays as it is.
     ///
-    /// Write flags of one epoch. Flags holding several can keep changing the
-    /// size they are measured at, until the batch fails with its cyclic error.
+    /// Hand in flags of one epoch, as [`Self::update_element_flags`] explains.
     pub fn update_element_flags_with_written_owner(
         cost: &StorageCost,
         old_flags: Option<ElementFlags>,
@@ -158,6 +157,23 @@ impl StorageFlags {
         }
     }
 
+    /// Merges the flags of an update with the stored flags, for a batch's
+    /// flags update callback
+    ///
+    /// # Handing in flags of one epoch
+    ///
+    /// Callers hand in `new_flags` of one epoch. What this returns may hold
+    /// several, and that is safe: the batch puts the written flags back before
+    /// every retry, so each retry starts from the same input and the size
+    /// settles.
+    ///
+    /// Written flags that already hold several epochs can make the size flip
+    /// between retries until the batch stops with its cyclic error, whether or
+    /// not the owner changes. So can stored multi-epoch flags with no owner
+    /// under written flags that name one. Either way the batch is refused and
+    /// nothing is written. This is known and left as it is: shipped protocol
+    /// versions depend on this merge, and callers that hand in flags of one
+    /// epoch with an owner do not reach it.
     pub fn update_element_flags(
         cost: &StorageCost,
         old_flags: Option<ElementFlags>,
