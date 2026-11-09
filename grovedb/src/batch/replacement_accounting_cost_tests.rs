@@ -26,7 +26,10 @@ mod tests {
         tree::kv::KV,
         tree_type::TreeType,
     };
-    use grovedb_version::version::{v3::GROVE_V3, v4::GROVE_V4, GroveVersion};
+    use grovedb_version::{
+        error::GroveVersionError,
+        version::{v3::GROVE_V3, v4::GROVE_V4, GroveVersion},
+    };
     use intmap::IntMap;
 
     use crate::batch::replacement_test_support::{
@@ -303,6 +306,27 @@ mod tests {
     /// The option needs grove v5: an earlier version refuses a batch or an
     /// estimate that sets it, before anything is written.
     #[test]
+    fn replacement_accounting_refuses_a_slot_it_does_not_know() {
+        let mut grove_version = GroveVersion::latest().clone();
+        grove_version
+            .grovedb_versions
+            .apply_batch
+            .replacement_accounting = 2;
+        let error = BatchApplyOptions::check_replacement_accounting_version(
+            &Some(options(Mode::Replacing)),
+            &grove_version,
+        )
+        .expect_err("expected an unknown slot to be refused");
+        assert!(
+            matches!(
+                error,
+                Error::VersionError(GroveVersionError::UnknownVersionMismatch { received: 2, .. })
+            ),
+            "unexpected error {error}"
+        );
+    }
+
+    #[test]
     fn replacement_accounting_is_refused_below_grove_v5() {
         for grove_version in [&GROVE_V3, &GROVE_V4] {
             let old = Element::new_item_with_flags(vec![7; 20], owned_flags(0, OLD_OWNER));
@@ -333,6 +357,21 @@ mod tests {
                 matches!(partial, Error::InvalidBatchOperation(_)),
                 "unexpected error {partial}"
             );
+
+            let unbatched = db
+                .apply_operations_without_batching(
+                    vec![write_op(&new)],
+                    Some(options(Mode::Replacing)),
+                    None,
+                    grove_version,
+                )
+                .cost_as_result()
+                .expect_err("expected the unbatched operations to be refused");
+            assert!(
+                matches!(unbatched, Error::InvalidBatchOperation(_)),
+                "unexpected error {unbatched}"
+            );
+            assert_eq!(stored(&db, grove_version), old);
 
             let estimated = GroveDb::estimated_case_operations_for_batch(
                 WorstCaseCostsType(worst_case_layers()),
@@ -828,7 +867,7 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let assert_refused = |error: Error| {
             assert!(
-                matches!(error, Error::InvalidBatchOperation(reason) if reason.contains("keeps the stored flags")),
+                matches!(error, Error::InvalidBatchOperation(reason) if reason.contains("are the stored flags")),
                 "unexpected error: {error}"
             );
         };
@@ -962,6 +1001,23 @@ mod tests {
         )
         .unwrap()
         .expect("a write bringing its own flags is accepted");
+
+        // A write bringing flags byte-equal to the stored ones cannot be told
+        // from one keeping them, and hands nothing over.
+        let same_flags = Element::new_item_with_flags(vec![8; 20], owned_flags(0, OLD_OWNER));
+        let db = grove_with(&old, TreeType::NormalTree, grove_version);
+        assert_refused(
+            db.apply_batch_with_element_flags_update(
+                vec![write_op(&same_flags)],
+                Some(options(Mode::Replacing)),
+                always_replacing,
+                split_removal_bytes,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect_err("a write with the stored flags must not be a replacement"),
+        );
     }
 
     /// A reference written in the same batch commits to the bytes the

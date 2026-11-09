@@ -27,8 +27,12 @@ impl StorageFlags {
     /// (epochs, bytes per epoch, errors) is what it gives.
     ///
     /// [`Self::update_element_flags`] keeps the old owner on an update that
-    /// keeps the size, or that shrinks an element holding bytes of one epoch.
-    /// Shipped protocol versions depend on that, so it stays as it is.
+    /// keeps the size, or that shrinks an element holding bytes of one epoch
+    /// when the new flags' epoch is later than that one. Shipped protocol
+    /// versions depend on that, so it stays as it is.
+    ///
+    /// Write flags of one epoch. Flags holding several can keep changing the
+    /// size they are measured at, until the batch fails with its cyclic error.
     pub fn update_element_flags_with_written_owner(
         cost: &StorageCost,
         old_flags: Option<ElementFlags>,
@@ -72,6 +76,13 @@ impl StorageFlags {
     ///
     /// The batch accepts the answer only when its options set
     /// `allow_replacement_accounting`.
+    ///
+    /// Only an element written with the new owner's flags is handed over, under
+    /// this helper and [`Self::update_element_flags_with_written_owner`] alike.
+    /// An untrusted reference refresh writes the stored flags back, so a caller
+    /// handing over an element and the references to it must rewrite those
+    /// references with the new flags too, or their bytes stay with the old
+    /// owner.
     pub fn update_element_flags_replacing_on_owner_change(
         cost: &StorageCost,
         old_flags: Option<ElementFlags>,
@@ -672,7 +683,7 @@ mod tests {
     }
 
     /// Every update that does not change the owner gets exactly what
-    /// `update_element_flags` gives it.
+    /// `update_element_flags_with_written_owner` gives it.
     #[test]
     fn replacing_update_matches_the_written_owner_update_without_an_owner_change() {
         let owner = [1u8; 32];

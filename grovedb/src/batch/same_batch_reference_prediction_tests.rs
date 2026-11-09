@@ -178,7 +178,10 @@ mod tests {
     /// Updates whose stored flags are not the new element's as written, nor
     /// the old element's: the flags update merges them. The sum item cases
     /// are the shape Drive writes for a document of a summable type (the
-    /// primary-storage item next to a deeper index reference to it).
+    /// primary-storage item next to a deeper index reference to it). None of
+    /// them has two differing owners, so the replacing flags update answers
+    /// them as the written-owner one does; [`handovers`] are the ones it
+    /// accounts as replacements.
     fn flag_changing_updates() -> Vec<(&'static str, Element, Element, TreeType)> {
         let mut updates = vec![];
         for growth in [1, 3, 25] {
@@ -224,6 +227,78 @@ mod tests {
             ),
         ]);
         updates
+    }
+
+    /// Updates naming a different owner than the stored flags, growing,
+    /// shrinking and keeping the size, which the replacing flags update
+    /// accounts as replacements.
+    fn handovers() -> Vec<(&'static str, Element, Element, TreeType)> {
+        let item =
+            |len: usize, value: u8, flags| Element::new_item_with_flags(vec![value; len], flags);
+        let item_with_sum = |len: usize, value: u8, sum: i64, flags| {
+            Element::new_item_with_sum_item_with_flags(vec![value; len], sum, flags)
+        };
+        vec![
+            (
+                "an item grown",
+                item(20, 7, owned_flags(0, OLD_OWNER)),
+                item(70, 8, owned_flags(2, NEW_OWNER)),
+                TreeType::NormalTree,
+            ),
+            (
+                "an item shrunk",
+                item(70, 7, owned_flags(0, OLD_OWNER)),
+                item(20, 8, owned_flags(2, NEW_OWNER)),
+                TreeType::NormalTree,
+            ),
+            (
+                "an item of the same size",
+                item(20, 7, owned_flags(0, OLD_OWNER)),
+                item(20, 8, owned_flags(2, NEW_OWNER)),
+                TreeType::NormalTree,
+            ),
+            (
+                "a sum item",
+                Element::new_sum_item_with_flags(5, owned_flags(0, OLD_OWNER)),
+                Element::new_sum_item_with_flags(900, owned_flags(2, NEW_OWNER)),
+                TreeType::SumTree,
+            ),
+            (
+                "an item with a sum item",
+                item_with_sum(20, 7, 5, owned_flags(0, OLD_OWNER)),
+                item_with_sum(45, 8, 9, owned_flags(2, NEW_OWNER)),
+                TreeType::SumTree,
+            ),
+        ]
+    }
+
+    /// A reference to a target the batch hands over commits to the bytes the
+    /// target stores, whether it resolves before the batch writes the target
+    /// or after. The target keeps its flags as written, which only the
+    /// replacement accounting leaves it with.
+    #[test]
+    fn a_reference_commits_to_a_handed_over_target_whichever_is_written_first() {
+        let grove_version = GroveVersion::latest();
+        for (label, old, new, tree_type) in handovers() {
+            for (reference_label, reference_ops, with_reference, _) in reference_ops() {
+                let db = grove_with(&old, tree_type, with_reference, grove_version);
+                let mut ops = vec![write_op(&new)];
+                ops.extend(reference_ops);
+                apply(&db, ops, Mode::Replacing, grove_version).unwrap_or_else(|e| {
+                    panic!("{label}, {reference_label}: expected to apply: {e}")
+                });
+                assert_eq!(
+                    issues(&db, grove_version),
+                    0,
+                    "{label}, {reference_label}: a reference is stale"
+                );
+                let stored = db
+                    .get([b"tree".as_slice()].as_ref(), KEY, None, grove_version)
+                    .unwrap()
+                    .expect("expected the target");
+                assert_eq!(stored, new, "{label}, {reference_label}");
+            }
+        }
     }
 
     fn issues(db: &TempGroveDb, grove_version: &GroveVersion) -> usize {
@@ -505,8 +580,8 @@ mod tests {
         }
     }
 
-    /// Grove v1..v3 keep the hand-written prediction without the option,
-    /// which takes a sum item to keep its stored flags: a reference that
+    /// Grove v1..v3 keep the hand-written prediction, which takes a sum item
+    /// to keep its stored flags: a reference that
     /// resolves before the batch writes the sum item commits to bytes that
     /// are never stored (consensus-locked).
     #[test]

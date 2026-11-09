@@ -95,6 +95,8 @@ fn v5_matches_v4_apart_from_its_gates() {
     path_query_methods.per_instance_query_offsets = 0;
     v5_as_v4.grovedb_versions.apply_batch.keyless_append_repeats = 0;
     v5_as_v4.grovedb_versions.apply_batch.replacement_accounting = 0;
+    v5_as_v4.merk_versions.tree.just_in_time_value_update =
+        GROVE_V4.merk_versions.tree.just_in_time_value_update;
     assert_eq!(format!("{v5_as_v4:?}"), format!("{GROVE_V4:?}"));
 }
 

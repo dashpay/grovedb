@@ -44,20 +44,23 @@ pub(crate) const REPLACEMENT_ACCOUNTING_NOT_ALLOWED: &str =
      allow_replacement_accounting";
 
 /// Why a batch whose flags update answered `AccountAsReplacement` was
-/// refused: the write keeps the stored flags (an untrusted reference refresh,
-/// or a tree's root update), so it brings no flags of its own to account for,
-/// and the estimators do not charge it as a replacement.
+/// refused: the write's flags are byte-equal to the stored ones. An untrusted
+/// reference refresh and a tree's root update write the stored flags back, so
+/// they bring no flags of their own to account for and the estimators do not
+/// charge them as replacements. The callback cannot tell those from a write
+/// that happens to bring identical flags, which hands nothing over anyway, so
+/// that one is refused too.
 pub(crate) const REPLACED_A_WRITE_KEEPING_ITS_FLAGS: &str =
-    "the flags update answered AccountAsReplacement on a write that keeps the stored flags";
+    "the flags update answered AccountAsReplacement on a write whose flags are the stored flags";
 
 /// The caller's flags-update callback as a batch runs it: its answer as an
 /// [`ElementFlagsUpdate`] (a `bool` answer is `Changed` or `Unchanged`).
 /// `AccountAsReplacement` is refused unless the batch's options set
-/// `allow_replacement_accounting`, and refused on a write that keeps the stored
-/// flags, whatever the callback does with them: only a write that brings
-/// flags of its own can be accounted so. A refusal records its reason in
-/// `refused`, so the batch reports it with [`replacement_refusal_error`] whatever
-/// error it surfaces as.
+/// `allow_replacement_accounting`, and refused on a write whose flags are
+/// byte-equal to the stored ones, whatever the callback does with them: only
+/// a write that brings different flags can be accounted so. A refusal records
+/// its reason in `refused`, so the batch reports it with
+/// [`replacement_refusal_error`] whatever error it surfaces as.
 pub(crate) fn batch_flags_update<U>(
     mut flags_update: impl FnMut(
         &StorageCost,

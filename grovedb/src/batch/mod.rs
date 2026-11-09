@@ -6247,6 +6247,10 @@ impl GroveDb {
                 .apply_batch
                 .apply_operations_without_batching
         );
+        cost_return_on_error_default!(BatchApplyOptions::check_replacement_accounting_version(
+            &options,
+            grove_version,
+        ));
         let mut cost = OperationCost::default();
         for op in ops.into_iter() {
             let declared = op.op.backwards_references();

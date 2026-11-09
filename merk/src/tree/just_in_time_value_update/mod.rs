@@ -19,13 +19,14 @@
 //!   update whose cost version 0 records for the bytes it stores is charged
 //!   exactly as version 0 charges it.
 //!
-//! The flags-update callback may also answer
-//! [`ElementFlagsUpdate::AccountAsReplacement`], which version 1 records as
-//! the removal of the old element plus the insertion of the new one, and
-//! version 0 refuses.
+//! - version 2 is version 1, plus the flags-update callback's
+//!   [`ElementFlagsUpdate::AccountAsReplacement`] answer, recorded as the
+//!   removal of the old element plus the insertion of the new one. Versions 0
+//!   and 1 refuse that answer. Grove v5+ selects it.
 
 mod v0;
 mod v1;
+mod v2;
 
 use grovedb_costs::storage_cost::{
     key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes,
@@ -177,14 +178,28 @@ impl TreeNode {
                 update_tree_value_based_on_costs,
                 section_removal_bytes,
             ),
+            2 => self.just_in_time_tree_node_value_update_v2(
+                old_specialized_cost,
+                get_temp_new_value_with_old_flags,
+                update_tree_value_based_on_costs,
+                section_removal_bytes,
+            ),
             version => Err(Error::VersionError(
                 GroveVersionError::UnknownVersionMismatch {
                     method: "just_in_time_tree_node_value_update".to_string(),
-                    known_versions: vec![0, 1],
+                    known_versions: vec![0, 1, 2],
                     received: version,
                 },
             )),
         }
+    }
+
+    /// How versions 0 and 1 refuse an `AccountAsReplacement` answer.
+    fn replacement_accounting_refused() -> Error {
+        Error::ClientCorruptionError(
+            "accounting an update as a replacement needs just-in-time value update version 2"
+                .to_string(),
+        )
     }
 
     /// The storage an update accounted as a replacement records: the old
@@ -234,7 +249,7 @@ mod tests {
         StorageCost,
     };
     use grovedb_element::{BackwardReferences, Element};
-    use grovedb_version::version::GroveVersion;
+    use grovedb_version::version::{v3::GROVE_V3, v4::GROVE_V4, GroveVersion};
 
     use crate::{
         element::insert::specialized_put_cost,
@@ -451,6 +466,51 @@ mod tests {
             assert!(!storage_cost.new_node);
             assert_eq!(node.inner.kv.value, new);
             assert_eq!(node.old_value, Some(new));
+        }
+    }
+
+    /// Versions 0 and 1 refuse the answer: grove v1..v4 cannot account an
+    /// update as a replacement, whichever layer calls them, and the refusal
+    /// records no cost.
+    #[test]
+    fn an_update_accounted_as_a_replacement_is_refused_below_version_2() {
+        for (grove_version, value_update_version) in [(&GROVE_V3, 0), (&GROVE_V4, 1)] {
+            assert_eq!(
+                grove_version.merk_versions.tree.just_in_time_value_update,
+                value_update_version
+            );
+            let key = b"key".to_vec();
+            let item = |value: &[u8], flags: u8| {
+                Element::new_item_with_flags(value.to_vec(), Some(vec![flags]))
+                    .serialize(grove_version)
+                    .unwrap()
+            };
+            let old = item(b"old", 1);
+            let kv = KV::from_fields(key, old, NULL_HASH, NULL_HASH, BasicMerkNode);
+            let mut node = TreeNode::new_with_tree_inner(TreeNodeInner {
+                left: None,
+                right: None,
+                kv,
+            });
+            node.inner.kv = node
+                .inner
+                .kv
+                .put_ordinary_value_no_update_of_hashes(item(b"a much longer new value", 2));
+
+            let error = node
+                .just_in_time_tree_node_value_update(
+                    &old_cost,
+                    &no_temp_value,
+                    &mut |_cost, _old, _new| Ok((ElementFlagsUpdate::AccountAsReplacement, None)),
+                    &mut basic_removal,
+                    grove_version,
+                )
+                .expect_err("expected the answer to be refused");
+            assert!(
+                matches!(&error, Error::ClientCorruptionError(reason) if reason.contains("version 2")),
+                "version {value_update_version}: unexpected error {error}"
+            );
+            assert!(node.known_storage_cost.is_none());
         }
     }
 

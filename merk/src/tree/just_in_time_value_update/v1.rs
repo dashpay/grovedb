@@ -105,17 +105,9 @@ impl TreeNode {
                         break;
                     }
                     ElementFlagsUpdate::AccountAsReplacement => {
-                        // The value now holds the new element as the callback
-                        // left it, and the update is accounted as the removal
-                        // of the old element plus the insertion of this one.
-                        self.inner.kv.value_defined_cost = value_defined_cost;
-                        self.known_storage_cost = Some(self.replacement_accounting_storage_cost(
-                            &old_value,
-                            old_value_bytes,
-                            section_removal_bytes,
-                        )?);
-                        self.old_value = Some(self.value_ref().clone());
-                        return Ok(());
+                        // Version 2 accepts this answer, and relies on the
+                        // refusal leaving the node as the callback left it.
+                        return Err(Self::replacement_accounting_refused());
                     }
                     ElementFlagsUpdate::Changed => {
                         self.inner.kv.value_defined_cost = value_defined_cost;

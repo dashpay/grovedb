@@ -81,11 +81,7 @@ impl TreeNode {
                 match flags_update {
                     ElementFlagsUpdate::Unchanged => break,
                     ElementFlagsUpdate::AccountAsReplacement => {
-                        return Err(Error::ClientCorruptionError(
-                            "accounting an update as a replacement needs just-in-time value \
-                             update version 1"
-                                .to_string(),
-                        ));
+                        return Err(Self::replacement_accounting_refused());
                     }
                     ElementFlagsUpdate::Changed => {
                         self.inner.kv.value_defined_cost = value_defined_cost;
