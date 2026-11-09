@@ -38,13 +38,36 @@ impl StorageFlags {
         old_flags: Option<ElementFlags>,
         new_flags: &mut ElementFlags,
     ) -> Result<bool, StorageFlagsError> {
-        // Read before the merge rewrites `new_flags`. Flags that do not decode
-        // name no owner here, and the merge reports them.
-        let written_owner = StorageFlags::from_element_flags_ref(new_flags)
-            .ok()
-            .flatten()
-            .and_then(|flags| flags.owner_id().copied());
-        let changed = Self::update_element_flags(cost, old_flags, new_flags)?;
+        // Without old flags the new flags are used as written.
+        let Some(old_flags) = old_flags else {
+            return Ok(false);
+        };
+        let (maybe_old_storage_flags, new_storage_flags) =
+            Self::decode_update_flags(&old_flags, new_flags)?;
+        Self::update_decoded_element_flags_with_written_owner(
+            cost,
+            maybe_old_storage_flags,
+            new_storage_flags,
+            new_flags,
+        )
+    }
+
+    /// [`Self::update_element_flags_with_written_owner`] on flags
+    /// [`Self::decode_update_flags`] decoded.
+    fn update_decoded_element_flags_with_written_owner(
+        cost: &StorageCost,
+        maybe_old_storage_flags: Option<StorageFlags>,
+        new_storage_flags: StorageFlags,
+        new_flags: &mut ElementFlags,
+    ) -> Result<bool, StorageFlagsError> {
+        // Read before the merge rewrites `new_flags`.
+        let written_owner = new_storage_flags.owner_id().copied();
+        let changed = Self::update_decoded_element_flags(
+            cost,
+            maybe_old_storage_flags,
+            new_storage_flags,
+            new_flags,
+        )?;
         let Some(written_owner) = written_owner else {
             return Ok(changed);
         };
@@ -112,8 +135,13 @@ impl StorageFlags {
         {
             return Ok(ElementFlagsUpdate::AccountAsReplacement);
         }
-        Self::update_element_flags_with_written_owner(cost, Some(old_flags), new_flags)
-            .map(ElementFlagsUpdate::from)
+        Self::update_decoded_element_flags_with_written_owner(
+            cost,
+            maybe_old_storage_flags,
+            new_storage_flags,
+            new_flags,
+        )
+        .map(ElementFlagsUpdate::from)
     }
 
     /// These flags, owned by `owner_id`.

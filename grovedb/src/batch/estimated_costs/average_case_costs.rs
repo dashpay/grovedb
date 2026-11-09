@@ -383,14 +383,7 @@ impl GroveOp {
                     propagate_if_input(),
                     grove_version,
                 );
-                // An untrusted refresh writes the stored flags back, and the
-                // batch refuses to account as a replacement a write that keeps the
-                // stored flags, so only a trusted one can be.
-                if mode.is_trusted() {
-                    replacement.raise(replace_cost, &element)
-                } else {
-                    replace_cost
-                }
+                replacement.raise_refresh(replace_cost, &element, mode)
             }
             GroveOp::Replace { element }
             | GroveOp::ReplaceDontCheckForBackwardsReferences { element } => with_fan_out(

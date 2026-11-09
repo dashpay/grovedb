@@ -78,26 +78,29 @@ impl TreeNode {
                     &old_value,
                     self.value_mut_ref(),
                 )?;
-                match flags_update {
-                    ElementFlagsUpdate::Unchanged => break,
+                let flags_changed = match flags_update {
+                    ElementFlagsUpdate::Unchanged => false,
+                    ElementFlagsUpdate::Changed => true,
                     ElementFlagsUpdate::AccountAsReplacement => {
                         return Err(Self::replacement_accounting_refused());
                     }
-                    ElementFlagsUpdate::Changed => {
-                        self.inner.kv.value_defined_cost = value_defined_cost;
-                        let after_update_tree_plus_hook_size =
-                            self.value_encoding_length_with_parent_to_child_reference();
-                        if after_update_tree_plus_hook_size == current_tree_plus_hook_size {
-                            break;
-                        }
-                        // we are calling this with merged flags that are were put in through value
-                        // mut ref
-                        let new_size_and_storage_costs =
-                            self.kv_with_parent_hook_size_and_storage_cost(old_specialized_cost)?;
-                        current_tree_plus_hook_size = new_size_and_storage_costs.0;
-                        storage_costs = new_size_and_storage_costs.1;
-                        self.set_value(original_new_value.clone())
+                };
+                if !flags_changed {
+                    break;
+                } else {
+                    self.inner.kv.value_defined_cost = value_defined_cost;
+                    let after_update_tree_plus_hook_size =
+                        self.value_encoding_length_with_parent_to_child_reference();
+                    if after_update_tree_plus_hook_size == current_tree_plus_hook_size {
+                        break;
                     }
+                    // we are calling this with merged flags that are were put in through value mut
+                    // ref
+                    let new_size_and_storage_costs =
+                        self.kv_with_parent_hook_size_and_storage_cost(old_specialized_cost)?;
+                    current_tree_plus_hook_size = new_size_and_storage_costs.0;
+                    storage_costs = new_size_and_storage_costs.1;
+                    self.set_value(original_new_value.clone())
                 }
                 if i > MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES {
                     return Err(Error::CyclicError(

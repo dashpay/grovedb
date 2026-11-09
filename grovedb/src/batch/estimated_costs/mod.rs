@@ -5,8 +5,9 @@ use std::collections::HashMap;
 
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
+    cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::{removal::StorageRemovedBytes, StorageCost},
-    OperationCost,
+    CostsExt, OperationCost,
 };
 #[cfg(feature = "minimal")]
 use grovedb_merk::estimated_costs::{
@@ -178,35 +179,6 @@ fn replacement_accounting_added_bytes(
 pub(in crate::batch) const WORST_CASE_REPLACEMENT_TREE_TYPE: grovedb_merk::tree_type::TreeType =
     grovedb_merk::tree_type::TreeType::CountSumTree;
 
-/// The empty Merk tree of `tree_type` with `flags`: its node is sized as the
-/// node of any tree of that type with those flags. An `InsertTreeWithRootHash`
-/// only writes Merk trees, so any other type is sized as
-/// [`WORST_CASE_REPLACEMENT_TREE_TYPE`].
-#[cfg(feature = "minimal")]
-fn empty_merk_tree_with_flags(
-    tree_type: grovedb_merk::tree_type::TreeType,
-    flags: Option<crate::ElementFlags>,
-) -> crate::Element {
-    use grovedb_merk::tree_type::TreeType;
-
-    use crate::Element;
-
-    match tree_type {
-        TreeType::NormalTree => Element::empty_tree_with_flags(flags),
-        TreeType::SumTree => Element::empty_sum_tree_with_flags(flags),
-        TreeType::BigSumTree => Element::empty_big_sum_tree_with_flags(flags),
-        TreeType::CountTree => Element::empty_count_tree_with_flags(flags),
-        TreeType::CountSumTree => Element::empty_count_sum_tree_with_flags(flags),
-        TreeType::ProvableCountTree => Element::empty_provable_count_tree_with_flags(flags),
-        TreeType::ProvableCountSumTree => Element::empty_provable_count_sum_tree_with_flags(flags),
-        TreeType::ProvableSumTree => Element::empty_provable_sum_tree_with_flags(flags),
-        TreeType::ProvableCountProvableSumTree => {
-            Element::empty_provable_count_provable_sum_tree_with_flags(flags)
-        }
-        _ => empty_merk_tree_with_flags(WORST_CASE_REPLACEMENT_TREE_TYPE, flags),
-    }
-}
-
 /// The raise an estimate applies to a write that may be accounted as a replacement
 /// ([`BatchApplyOptions::allow_replacement_accounting`](crate::batch::BatchApplyOptions::allow_replacement_accounting)):
 /// the write's added bytes are raised to every byte of the node it writes,
@@ -251,35 +223,59 @@ impl<'a> ReplacementAccounting<'a> {
         base: grovedb_costs::CostResult<(), crate::Error>,
         element: &crate::Element,
     ) -> grovedb_costs::CostResult<(), crate::Error> {
-        use grovedb_costs::CostsExt;
         use grovedb_storage::worst_case_costs::WorstKeyLength;
 
         if !self.allow_replacement_accounting || element.get_flags().is_none() {
             return base;
         }
-        let grovedb_costs::CostContext { value, mut cost } = base;
-        if value.is_ok() {
-            match replacement_accounting_added_bytes(
+        Self::raised_to(
+            base,
+            replacement_accounting_added_bytes(
                 self.key.max_length() as u32,
                 element,
                 self.node_type,
                 self.carried_referrers,
                 self.grove_version,
-            ) {
-                Ok(replacement_bytes) => {
-                    cost.storage_cost.added_bytes =
-                        cost.storage_cost.added_bytes.max(replacement_bytes)
-                }
-                Err(e) => return Err(e).wrap_with_cost(cost),
-            }
+            ),
+        )
+    }
+
+    /// `base`, its added bytes raised to at least `replacement_bytes`. An error
+    /// in `base` comes first and keeps its cost.
+    fn raised_to(
+        base: grovedb_costs::CostResult<(), crate::Error>,
+        replacement_bytes: Result<u32, crate::Error>,
+    ) -> grovedb_costs::CostResult<(), crate::Error> {
+        let mut cost = OperationCost::default();
+        cost_return_on_error!(&mut cost, base);
+        let replacement_bytes = cost_return_on_error_no_add!(cost, replacement_bytes);
+        cost.storage_cost.added_bytes = cost.storage_cost.added_bytes.max(replacement_bytes);
+        Ok(()).wrap_with_cost(cost)
+    }
+
+    /// [`Self::raise`] for a `RefreshReference` in `mode` writing `element`.
+    /// An untrusted refresh writes the stored flags back, and the batch
+    /// refuses to account as a replacement a write that keeps the stored
+    /// flags, so only a trusted one can be.
+    pub(in crate::batch) fn raise_refresh(
+        &self,
+        base: grovedb_costs::CostResult<(), crate::Error>,
+        element: &crate::Element,
+        mode: &crate::batch::RefreshReferenceMode,
+    ) -> grovedb_costs::CostResult<(), crate::Error> {
+        if mode.is_trusted() {
+            self.raise(base, element)
+        } else {
+            base
         }
-        value.wrap_with_cost(cost)
     }
 
     /// [`Self::raise`] for the `InsertTreeWithRootHash` that a write of a
     /// tree becomes when the batch also writes under it: the tree element
     /// that op writes, a tree of `tree_type` with `flags` in the wrapper the
-    /// op rebuilds it in.
+    /// op rebuilds it in. Sized as
+    /// [`ElementCostExtensions::value_defined_cost`](grovedb_merk::element::costs::ElementCostExtensions::value_defined_cost)
+    /// sizes that element.
     pub(in crate::batch) fn raise_tree(
         &self,
         base: grovedb_costs::CostResult<(), crate::Error>,
@@ -289,22 +285,26 @@ impl<'a> ReplacementAccounting<'a> {
         not_summed: bool,
         not_counted_or_summed: bool,
     ) -> grovedb_costs::CostResult<(), crate::Error> {
-        use crate::Element;
+        use grovedb_merk::{tree::kv::KV, tree_type::CostSize};
+        use grovedb_storage::worst_case_costs::WorstKeyLength;
+        use integer_encoding::VarInt;
 
-        if !self.allow_replacement_accounting || flags.is_none() {
+        let (true, Some(flags)) = (self.allow_replacement_accounting, flags) else {
             return base;
-        }
-        let tree = empty_merk_tree_with_flags(tree_type, flags.clone());
-        let tree = if non_counted {
-            Element::NonCounted(Box::new(tree))
-        } else if not_summed {
-            Element::NotSummed(Box::new(tree))
-        } else if not_counted_or_summed {
-            Element::NotCountedOrSummed(Box::new(tree))
-        } else {
-            tree
         };
-        self.raise(base, &tree)
+        let flags_len = flags.len() as u32;
+        let value_cost = tree_type.cost_size()
+            + flags_len
+            + flags_len.required_space() as u32
+            + wrapper_overhead_for(non_counted, not_summed, not_counted_or_summed);
+        Self::raised_to(
+            base,
+            Ok(KV::layered_node_byte_cost_size_for_key_and_value_lengths(
+                self.key.max_length() as u32,
+                value_cost,
+                self.node_type,
+            )),
+        )
     }
 }
 
@@ -989,6 +989,176 @@ mod tests {
                     "a {tree_type:?} in a tree of {node_type:?} nodes adds {replaced}, above \
                      the worst-case {raised}"
                 );
+            }
+        }
+    }
+
+    /// The raise only ever adds: an estimate above what a replacement adds
+    /// stays as it is, and an estimate that failed keeps its error and cost.
+    #[test]
+    fn the_raise_never_lowers_an_estimate_or_hides_its_error() {
+        let grove_version = GroveVersion::latest();
+        let options = replacement_options();
+        let key = KeyInfo::KnownKey(b"item".to_vec());
+        let replacement = super::ReplacementAccounting::new(
+            &options,
+            &key,
+            NodeType::NormalNode,
+            super::CarriedReferrers::Worst,
+            grove_version,
+        );
+        let element = Element::new_item_with_flags(vec![7; 20], Some(vec![0; 35]));
+        let added = |added_bytes| OperationCost {
+            storage_cost: grovedb_costs::storage_cost::StorageCost {
+                added_bytes,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let replacement_bytes = raised(&replacement, &element);
+        assert!(replacement_bytes > 0);
+
+        let above = replacement_bytes + 1000;
+        let kept = replacement.raise(Ok(()).wrap_with_cost(added(above)), &element);
+        assert_eq!(kept.cost.storage_cost.added_bytes, above);
+
+        let failed = replacement.raise(
+            Err(crate::Error::InternalError("estimate".to_string())).wrap_with_cost(added(1)),
+            &element,
+        );
+        assert_eq!(failed.cost.storage_cost.added_bytes, 1);
+        assert!(failed.value.is_err());
+    }
+
+    /// Only a trusted refresh can be a replacement, so only it is raised.
+    #[test]
+    fn only_a_trusted_refresh_is_raised() {
+        use crate::batch::RefreshReferenceMode;
+
+        let grove_version = GroveVersion::latest();
+        let options = replacement_options();
+        let key = KeyInfo::KnownKey(b"reference".to_vec());
+        let replacement = super::ReplacementAccounting::new(
+            &options,
+            &key,
+            NodeType::NormalNode,
+            super::CarriedReferrers::Worst,
+            grove_version,
+        );
+        let element = Element::new_reference_with_flags(
+            ReferencePathType::AbsolutePathReference(vec![b"target".to_vec()]),
+            Some(vec![0; 35]),
+        );
+        let replacement_bytes = raised(&replacement, &element);
+        assert!(replacement_bytes > 0);
+        for (mode, expected) in [
+            (
+                RefreshReferenceMode::PlainReferenceTrusted,
+                replacement_bytes,
+            ),
+            (
+                RefreshReferenceMode::SumItemReferenceTrusted(5),
+                replacement_bytes,
+            ),
+            (RefreshReferenceMode::PlainReferenceUntrusted, 0),
+            (
+                RefreshReferenceMode::SumItemReferenceUntrustedValueUpdate(5),
+                0,
+            ),
+            (
+                RefreshReferenceMode::SumItemReferenceUntrustedNoValueUpdate,
+                0,
+            ),
+        ] {
+            let added_bytes = replacement
+                .raise_refresh(
+                    Ok(()).wrap_with_cost(OperationCost::default()),
+                    &element,
+                    &mode,
+                )
+                .cost
+                .storage_cost
+                .added_bytes;
+            assert_eq!(added_bytes, expected, "{mode:?}");
+        }
+    }
+
+    /// A replaced tree is raised to exactly the bytes of the element its
+    /// `InsertTreeWithRootHash` writes, for every Merk tree type and wrapper.
+    #[test]
+    fn a_replaced_tree_is_raised_to_the_bytes_of_the_element_it_writes() {
+        let grove_version = GroveVersion::latest();
+        let options = replacement_options();
+        let key = KeyInfo::KnownKey(b"tree".to_vec());
+        let trees: [(TreeType, fn(Option<Vec<u8>>) -> Element); 9] = [
+            (TreeType::NormalTree, Element::empty_tree_with_flags),
+            (TreeType::SumTree, Element::empty_sum_tree_with_flags),
+            (TreeType::BigSumTree, Element::empty_big_sum_tree_with_flags),
+            (TreeType::CountTree, Element::empty_count_tree_with_flags),
+            (
+                TreeType::CountSumTree,
+                Element::empty_count_sum_tree_with_flags,
+            ),
+            (
+                TreeType::ProvableCountTree,
+                Element::empty_provable_count_tree_with_flags,
+            ),
+            (
+                TreeType::ProvableCountSumTree,
+                Element::empty_provable_count_sum_tree_with_flags,
+            ),
+            (
+                TreeType::ProvableSumTree,
+                Element::empty_provable_sum_tree_with_flags,
+            ),
+            (
+                TreeType::ProvableCountProvableSumTree,
+                Element::empty_provable_count_provable_sum_tree_with_flags,
+            ),
+        ];
+        for (tree_type, tree) in trees {
+            // 200 bytes of flags take a two-byte length prefix.
+            for flags_len in [1, 35, 200] {
+                let flags = Some(vec![0; flags_len]);
+                let plain = || tree(flags.clone());
+                for node_type in [NodeType::NormalNode, NodeType::CountSumNode] {
+                    let replacement = super::ReplacementAccounting::new(
+                        &options,
+                        &key,
+                        node_type,
+                        super::CarriedReferrers::Worst,
+                        grove_version,
+                    );
+                    for (non_counted, not_summed, not_counted_or_summed, element) in [
+                        (false, false, false, plain()),
+                        (true, false, false, Element::NonCounted(Box::new(plain()))),
+                        (false, true, false, Element::NotSummed(Box::new(plain()))),
+                        (
+                            false,
+                            false,
+                            true,
+                            Element::NotCountedOrSummed(Box::new(plain())),
+                        ),
+                    ] {
+                        let by_tree_type = replacement
+                            .raise_tree(
+                                Ok(()).wrap_with_cost(OperationCost::default()),
+                                tree_type,
+                                &flags,
+                                non_counted,
+                                not_summed,
+                                not_counted_or_summed,
+                            )
+                            .cost
+                            .storage_cost
+                            .added_bytes;
+                        assert_eq!(
+                            by_tree_type,
+                            raised(&replacement, &element),
+                            "{tree_type:?}, {flags_len} flag bytes, {node_type:?}, {element:?}"
+                        );
+                    }
+                }
             }
         }
     }
