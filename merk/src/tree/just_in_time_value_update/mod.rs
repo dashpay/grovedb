@@ -252,7 +252,7 @@ mod tests {
     use grovedb_version::version::{v3::GROVE_V3, v4::GROVE_V4, GroveVersion};
 
     use crate::{
-        element::insert::specialized_put_cost,
+        element::{costs::ElementCostExtensions, insert::specialized_put_cost},
         merk::NodeType,
         test_utils::TempMerk,
         tree::{
@@ -466,6 +466,93 @@ mod tests {
             assert!(!storage_cost.new_node);
             assert_eq!(node.inner.kv.value, new);
             assert_eq!(node.old_value, Some(new));
+        }
+    }
+
+    /// The callback may resize the flags as it answers
+    /// `AccountAsReplacement`. The insertion is then measured with the
+    /// value-defined cost it answers with, for a sum item and for a tree, and
+    /// not with the cost of the bytes the put wrote.
+    #[test]
+    fn a_replacement_measures_the_new_element_with_the_cost_the_callback_answers() {
+        let grove_version = GroveVersion::latest();
+        let key = b"key".to_vec();
+        let builds: [fn(Vec<u8>) -> Element; 2] = [
+            |flags| Element::new_sum_item_with_flags(7, Some(flags)),
+            |flags| Element::empty_tree_with_flags(Some(flags)),
+        ];
+        for build in builds {
+            let value_and_cost = |flags: Vec<u8>| {
+                let element = build(flags);
+                (
+                    element.serialize(grove_version).unwrap(),
+                    element
+                        .value_defined_cost(grove_version)
+                        .expect("expected a value-defined cost"),
+                )
+            };
+            let (old, _) = value_and_cost(vec![1]);
+            let (written, written_cost) = value_and_cost(vec![2]);
+            let (rewritten, rewritten_cost) = value_and_cost(vec![2; 9]);
+            assert_ne!(written_cost, rewritten_cost);
+
+            let kv = KV::from_fields(
+                key.clone(),
+                old.clone(),
+                NULL_HASH,
+                NULL_HASH,
+                BasicMerkNode,
+            );
+            let mut node = TreeNode::new_with_tree_inner(TreeNodeInner {
+                left: None,
+                right: None,
+                kv,
+            });
+            node.inner.kv = node
+                .inner
+                .kv
+                .put_value_with_fixed_cost_no_update_of_hashes(written, written_cost);
+
+            node.just_in_time_tree_node_value_update(
+                &old_cost,
+                &no_temp_value,
+                &mut |_cost: &StorageCost, _old: &Vec<u8>, value: &mut Vec<u8>| {
+                    *value = rewritten.clone();
+                    Ok((
+                        ElementFlagsUpdate::AccountAsReplacement,
+                        Some(rewritten_cost.clone()),
+                    ))
+                },
+                &mut basic_removal,
+                grove_version,
+            )
+            .expect("expected the update to apply");
+
+            let key_len = key.len() as u32;
+            let added_bytes = match rewritten_cost {
+                ValueDefinedCostType::SpecializedValueDefinedCost(cost) => {
+                    KV::node_value_byte_cost_size(key_len, cost, NodeType::NormalNode)
+                }
+                ValueDefinedCostType::LayeredValueDefinedCost(cost) => {
+                    KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                        key_len,
+                        cost,
+                        NodeType::NormalNode,
+                    )
+                }
+            };
+            let storage_cost = node.known_storage_cost.expect("expected a storage cost");
+            assert_eq!(
+                storage_cost.value_storage_cost,
+                StorageCost {
+                    added_bytes,
+                    replaced_bytes: 0,
+                    removed_bytes: BasicStorageRemoval(old_cost(&key, &old).unwrap()),
+                }
+            );
+            assert_eq!(node.inner.kv.value, rewritten);
+            assert_eq!(node.inner.kv.value_defined_cost, Some(rewritten_cost));
+            assert_eq!(node.old_value, Some(rewritten));
         }
     }
 
