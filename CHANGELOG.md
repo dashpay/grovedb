@@ -74,13 +74,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `GroveDBApplyBatchVersions` gains `keyless_append_repeats`; code building
     it by hand sets it (0 for the V4 rule, 1 for the V5 rule).
 - **BREAKING**: with the `sqlite` feature, `grovedb-commitment-tree` now
-  depends on and re-exports rusqlite 0.41 (libsqlite3-sys 0.39, bundled
-  SQLite 3.54), up from 0.38. This clears RUSTSEC-2026-0459. Callers that
-  pass their own `Connection` to `ClientPersistentCommitmentTree::open` or
-  `open_on_shared_connection`, or to `SqliteShardStore::new` or `new_shared`,
-  must build it with rusqlite 0.41. Because libsqlite3-sys declares
-  `links = "sqlite3"`, a build can hold only one version of it, so other
-  rusqlite users in the same build must move to 0.41 as well.
+  depends on and re-exports rusqlite 0.41 (libsqlite3-sys 0.39), up from
+  0.38. With the bundled SQLite (3.54) this clears RUSTSEC-2026-0459; builds
+  that enable `bundled-sqlcipher` or link a system SQLite need their own
+  check against the advisory. Callers that pass their own `Connection` to
+  `ClientPersistentCommitmentTree::open` or `open_on_shared_connection`, or
+  to `SqliteShardStore::new` or `new_shared`, must build it with rusqlite
+  0.41. Because libsqlite3-sys declares `links = "sqlite3"`, a build can
+  hold only one version of it, so other rusqlite users in the same build
+  must move to 0.41 as well.
 
 ### Fixed
 - Reads through a pinned iterator view, indexed-tree pages and V5 local count
