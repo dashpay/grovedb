@@ -157,10 +157,19 @@ fn replacement_accounting_added_bytes(
         }
         Some(SpecializedValueDefinedCost(value_cost)) => value_cost,
         None => match element.max_incoming_references() {
-            Some(capacity) => (element
-                .stripped_of_backward_references()
-                .serialized_size(grove_version)? as u32)
-                .saturating_add(carried_referrers.bytes(capacity)),
+            Some(capacity) => {
+                let element_bytes = if element
+                    .backward_references()
+                    .is_some_and(|refs| refs.is_empty())
+                {
+                    element.serialized_size(grove_version)?
+                } else {
+                    element
+                        .stripped_of_backward_references()
+                        .serialized_size(grove_version)?
+                };
+                (element_bytes as u32).saturating_add(carried_referrers.bytes(capacity))
+            }
             None => element.serialized_size(grove_version)? as u32,
         },
     };
