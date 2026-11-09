@@ -73,7 +73,7 @@ use std::{
 
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add,
-    storage_cost::{removal::StorageRemovedBytes, StorageCost},
+    storage_cost::{removal::StorageRemovedBytes, transition::ElementFlagsUpdate, StorageCost},
     CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::{
@@ -729,7 +729,11 @@ impl<'db, 'g> Expansion<'db, 'g> {
         split_removal_bytes: &mut SR,
     ) -> CostResult<LandedItems, Error>
     where
-        G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+        G: FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> Result<ElementFlagsUpdate, Error>,
         SR: FnMut(
             &mut ElementFlags,
             u32,
@@ -877,7 +881,11 @@ pub(super) fn expand_backward_references_ops<'db, G, SR>(
     grove_version: &GroveVersion,
 ) -> CostResult<(Vec<QualifiedGroveDbOp>, PreparedMerks<'db>, LandedItems), Error>
 where
-    G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+    G: FnMut(
+        &StorageCost,
+        Option<ElementFlags>,
+        &mut ElementFlags,
+    ) -> Result<ElementFlagsUpdate, Error>,
     SR: FnMut(
         &mut ElementFlags,
         u32,

@@ -4,6 +4,7 @@ use grovedb_costs::{
     cost_return_on_error_into_no_add, cost_return_on_error_no_add,
     storage_cost::{
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
+        transition::ElementFlagsUpdate,
         StorageCost,
     },
     CostResult, CostsExt, OperationCost,
@@ -39,7 +40,11 @@ pub(super) fn process_old_element_flags_v0<G, SR>(
     grove_version: &GroveVersion,
 ) -> CostResult<CryptoHash, Error>
 where
-    G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+    G: FnMut(
+        &StorageCost,
+        Option<ElementFlags>,
+        &mut ElementFlags,
+    ) -> Result<ElementFlagsUpdate, Error>,
     SR: FnMut(
         &mut ElementFlags,
         u32,
@@ -139,7 +144,7 @@ where
                     "element has no flags for just-in-time update",
                 ))
         );
-        let changed = cost_return_on_error_no_add!(
+        let update = cost_return_on_error_no_add!(
             cost,
             (flags_update)(&storage_costs, maybe_old_flags.clone(), new_flags).map_err(|e| {
                 match e {
@@ -150,7 +155,7 @@ where
                 }
             })
         );
-        if !changed {
+        if update == ElementFlagsUpdate::Unchanged {
             // There are no storage flags, we can just hash new element
 
             let val_hash = value_hash(&serialization_to_use).unwrap_add_cost(&mut cost);

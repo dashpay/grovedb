@@ -1263,7 +1263,10 @@ mod test {
                 &|_, _| Ok(None),
                 &mut |_, _, _| {
                     replacements += 1;
-                    Ok((false, None))
+                    Ok((
+                        grovedb_costs::storage_cost::transition::ElementFlagsUpdate::Unchanged,
+                        None,
+                    ))
                 },
                 &mut |_, key_bytes, value_bytes| {
                     Ok((

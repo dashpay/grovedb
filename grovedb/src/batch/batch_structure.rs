@@ -9,7 +9,7 @@ use std::{
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add,
-    storage_cost::{removal::StorageRemovedBytes, StorageCost},
+    storage_cost::{removal::StorageRemovedBytes, transition::ElementFlagsUpdate, StorageCost},
     CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
@@ -113,7 +113,11 @@ impl<F, SR, S: fmt::Debug> fmt::Debug for BatchStructure<S, F, SR> {
 impl<C, F, SR> BatchStructure<C, F, SR>
 where
     C: TreeCache<F, SR>,
-    F: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+    F: FnMut(
+        &StorageCost,
+        Option<ElementFlags>,
+        &mut ElementFlags,
+    ) -> Result<ElementFlagsUpdate, Error>,
     SR: FnMut(
         &mut ElementFlags,
         u32,

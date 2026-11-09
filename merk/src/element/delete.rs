@@ -1,7 +1,10 @@
 //! Delete
 //! Implements functions in Element for deleting
 
-use grovedb_costs::{storage_cost::removal::StorageRemovedBytes, CostResult, CostsExt};
+use grovedb_costs::{
+    storage_cost::{removal::StorageRemovedBytes, transition::ElementFlagsUpdate},
+    CostResult, CostsExt,
+};
 use grovedb_element::Element;
 use grovedb_storage::StorageContext;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
@@ -193,7 +196,7 @@ impl ElementDeleteFromStorageExtensions for Element {
             },
             Some(&Element::value_defined_cost_for_serialized_value),
             &|_, _| Ok(None),
-            &mut |_costs, _old_value, _value| Ok((false, None)),
+            &mut |_costs, _old_value, _value| Ok((ElementFlagsUpdate::Unchanged, None)),
             sectioned_removal,
             grove_version,
         )

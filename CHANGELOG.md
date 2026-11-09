@@ -38,6 +38,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the old owner on an update that keeps the size or shrinks an element holding
   bytes of one epoch.
 
+- A flags update can have an update in place accounted as the removal of the
+  old element plus the insertion of the new one, so a handover can refund the
+  old owner in full and charge the new owner for everything. The flags
+  callback may now answer an `ElementFlagsUpdate` (`Unchanged`, `Changed`,
+  `AccountAsReplacement`, new in `grovedb_costs`) in place of a `bool`; a
+  closure answering `bool` keeps working through `apply_batch_with_element_flags_update`,
+  `apply_partial_batch_with_element_flags_update` and
+  `estimated_case_operations_for_batch`. Every byte of the old element, key
+  included, counts as removed and is sectioned by the removal callback as a
+  deletion sections it, every byte of the new element, key included, counts as
+  added, and the element keeps the flags the callback leaves it with. GroveDB
+  does not look at owners: `StorageFlags::update_element_flags_replacing_on_owner_change`
+  answers it when the new flags name a different owner. A batch accepts the
+  answer only with the new `BatchApplyOptions::allow_replacement_accounting`,
+  and refuses it on a write that keeps the stored flags (an untrusted
+  `RefreshReference`, or a tree's root update), with
+  `Error::InvalidBatchOperation`. With the option, average-case and worst-case
+  estimates charge every `InsertOrReplace`, `Replace`, `Patch` and trusted
+  `RefreshReference` of an element with flags, and the write of a flagged tree
+  the batch also writes under, at least the bytes its node adds when inserted.
+  The option needs `apply_batch.replacement_accounting` (0 in V1..V4, 1 in V5);
+  earlier versions refuse a batch or estimate that sets it. Off, every cost,
+  estimate, stored element and hash is what it was. **BREAKING** for code
+  building `BatchApplyOptions` or `GroveDBApplyBatchVersions` field by field,
+  and for callers of Merk's just-in-time apply, whose update callback now
+  answers `(ElementFlagsUpdate, Option<ValueDefinedCostType>)`.
 ### Changed
 - **BREAKING**: `Query` adds the public `offset: Option<u16>` field for
   branch-local committed-count-unit pagination. Exhaustive struct literals

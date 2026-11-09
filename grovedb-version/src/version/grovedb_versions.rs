@@ -307,6 +307,13 @@ pub struct GroveDBApplyBatchVersions {
     /// slot gates an accepted/rejected outcome: a batch V1..V4 refuse is
     /// accepted on V5+.
     pub keyless_append_repeats: FeatureVersion,
+    /// Whether a batch may set `BatchApplyOptions::allow_replacement_accounting`.
+    ///
+    /// - `0` (grove v1..v4): a batch or estimate that sets the option is
+    ///   refused.
+    /// - `1`: the flags update may answer `AccountAsReplacement`, and an
+    ///   estimate covers it.
+    pub replacement_accounting: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

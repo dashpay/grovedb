@@ -1,15 +1,21 @@
-//! A batch that runs `StorageFlags::update_element_flags_with_written_owner`
-//! as its flags update: the owner the writer names owns the element
-//! afterwards, whichever way the update changes its size, and the bytes are
-//! accounted as for any other update.
+//! A batch that hands an element to the owner its new flags name, either way
+//! a writer can ask for:
+//!
+//! - `StorageFlags::update_element_flags_with_written_owner`: the bytes are
+//!   accounted as for any other update, and the ones that stay stored go with
+//!   the element.
+//! - `StorageFlags::update_element_flags_replacing_on_owner_change`: the old
+//!   owner is refunded for every byte and every byte of the new element is
+//!   added.
 
 #![allow(clippy::result_large_err)]
 
 use std::collections::BTreeMap;
 
 use grovedb::{
-    batch::QualifiedGroveDbOp, reference_path::ReferencePathType, Element, ElementFlags, Error,
-    GroveDb,
+    batch::{BatchApplyOptions, QualifiedGroveDbOp},
+    reference_path::ReferencePathType,
+    Element, ElementFlags, Error, GroveDb,
 };
 use grovedb_costs::{
     storage_cost::{
@@ -218,6 +224,74 @@ fn should_account_the_same_bytes_whoever_the_new_flags_name_as_owner() {
                 "{label}: the bytes still stored go to the owner afterwards"
             );
         }
+    }
+}
+
+/// A's item is handed to B by a write that answers
+/// `AccountAsReplacement`: A gets back everything deleting the item would
+/// refund, B pays for every byte of what is written, and the flags are what
+/// the writer wrote, in the writer's epoch only.
+#[test]
+fn should_refund_the_old_owner_in_full_and_charge_the_new_owner_for_everything() {
+    let grove_version = GroveVersion::latest();
+    let old = StorageFlags::MultiEpochOwned(0, BTreeMap::from([(1, 40)]), OLD_OWNER);
+    let written = StorageFlags::SingleEpochOwned(2, NEW_OWNER);
+    let delete = || QualifiedGroveDbOp::delete_op(vec![b"tree".to_vec()], KEY.to_vec());
+    for (before, after) in [(60, 90), (60, 30), (60, 60)] {
+        let label = format!("{before} to {after} bytes");
+        let (_dir, db) = grove_with(item(before, 7, &old), grove_version);
+        let deletion = apply(&db, vec![delete()], grove_version)
+            .unwrap_or_else(|e| panic!("{label}: expected to delete: {e}"));
+        let everything_stored = refunds(&deletion.storage_cost.removed_bytes);
+        assert_eq!(
+            everything_stored.keys().collect::<Vec<_>>(),
+            vec![&OLD_OWNER],
+            "{label}"
+        );
+
+        let (_dir, db) = grove_with(item(before, 7, &old), grove_version);
+        let new_element = item(after, 8, &written);
+        let cost = db
+            .apply_batch_with_element_flags_update(
+                vec![write_op(new_element.clone())],
+                Some(BatchApplyOptions {
+                    allow_replacement_accounting: true,
+                    ..Default::default()
+                }),
+                |cost, old_flags, new_flags| {
+                    StorageFlags::update_element_flags_replacing_on_owner_change(
+                        cost, old_flags, new_flags,
+                    )
+                    .map_err(|e| Error::JustInTimeElementFlagsClientError(e.to_string()))
+                },
+                split_removal_bytes,
+                None,
+                grove_version,
+            )
+            .cost_as_result()
+            .unwrap_or_else(|e| panic!("{label}: expected to apply: {e}"));
+
+        assert_eq!(
+            refunds(&cost.storage_cost.removed_bytes),
+            everything_stored,
+            "{label}: the old owner is refunded for every byte"
+        );
+        assert_eq!(stored_flags(&db, grove_version), written, "{label}");
+        assert_eq!(issues(&db, grove_version), 0, "{label}");
+
+        let new_deletion = apply(&db, vec![delete()], grove_version)
+            .unwrap_or_else(|e| panic!("{label}: expected to delete: {e}"));
+        let new_refunds = refunds(&new_deletion.storage_cost.removed_bytes);
+        assert_eq!(
+            new_refunds.keys().collect::<Vec<_>>(),
+            vec![&NEW_OWNER],
+            "{label}"
+        );
+        assert_eq!(
+            new_refunds[&NEW_OWNER].values().sum::<u32>(),
+            cost.storage_cost.added_bytes,
+            "{label}: every byte of the new element was added"
+        );
     }
 }
 

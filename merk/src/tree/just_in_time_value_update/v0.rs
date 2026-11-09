@@ -1,5 +1,6 @@
 use grovedb_costs::storage_cost::{
     removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
+    transition::ElementFlagsUpdate,
     StorageCost,
 };
 
@@ -29,7 +30,7 @@ impl TreeNode {
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<
-            (bool, Option<ValueDefinedCostType>),
+            (ElementFlagsUpdate, Option<ValueDefinedCostType>),
             Error,
         >,
         section_removal_bytes: &mut impl FnMut(
@@ -72,27 +73,35 @@ impl TreeNode {
                     storage_costs.value_storage_cost.removed_bytes = value_removed_bytes;
                 }
 
-                let (flags_changed, value_defined_cost) = update_tree_value_based_on_costs(
+                let (flags_update, value_defined_cost) = update_tree_value_based_on_costs(
                     &storage_costs.value_storage_cost,
                     &old_value,
                     self.value_mut_ref(),
                 )?;
-                if !flags_changed {
-                    break;
-                } else {
-                    self.inner.kv.value_defined_cost = value_defined_cost;
-                    let after_update_tree_plus_hook_size =
-                        self.value_encoding_length_with_parent_to_child_reference();
-                    if after_update_tree_plus_hook_size == current_tree_plus_hook_size {
-                        break;
+                match flags_update {
+                    ElementFlagsUpdate::Unchanged => break,
+                    ElementFlagsUpdate::AccountAsReplacement => {
+                        return Err(Error::ClientCorruptionError(
+                            "accounting an update as a replacement needs just-in-time value \
+                             update version 1"
+                                .to_string(),
+                        ));
                     }
-                    // we are calling this with merged flags that are were put in through value mut
-                    // ref
-                    let new_size_and_storage_costs =
-                        self.kv_with_parent_hook_size_and_storage_cost(old_specialized_cost)?;
-                    current_tree_plus_hook_size = new_size_and_storage_costs.0;
-                    storage_costs = new_size_and_storage_costs.1;
-                    self.set_value(original_new_value.clone())
+                    ElementFlagsUpdate::Changed => {
+                        self.inner.kv.value_defined_cost = value_defined_cost;
+                        let after_update_tree_plus_hook_size =
+                            self.value_encoding_length_with_parent_to_child_reference();
+                        if after_update_tree_plus_hook_size == current_tree_plus_hook_size {
+                            break;
+                        }
+                        // we are calling this with merged flags that are were put in through value
+                        // mut ref
+                        let new_size_and_storage_costs =
+                            self.kv_with_parent_hook_size_and_storage_cost(old_specialized_cost)?;
+                        current_tree_plus_hook_size = new_size_and_storage_costs.0;
+                        storage_costs = new_size_and_storage_costs.1;
+                        self.set_value(original_new_value.clone())
+                    }
                 }
                 if i > MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES {
                     return Err(Error::CyclicError(
