@@ -61,15 +61,20 @@ fn honest_proof(store: &MemStore, mmr_size: u64, leaf_indices: &[u64]) -> MmrTre
     .expect("generate proof")
 }
 
+/// A proof in a layout the prover does not emit is refused for its layout,
+/// not for the root it would compute: `verify_and_get_root` has no root to
+/// compare against, so it has to fail on the layout alone.
 fn assert_both_verifiers_reject(proof: &MmrTreeProof, root: &[u8; 32], what: &str) {
     if let Ok(leaves) = proof.verify(root) {
         panic!("{what}: verify accepted {leaves:?}");
     }
-    if let Ok((computed, leaves)) = proof.verify_and_get_root() {
-        assert_ne!(
-            &computed, root,
-            "{what}: verify_and_get_root recomputed the root for {leaves:?}"
-        );
+    match proof.verify_and_get_root() {
+        Ok((computed, leaves)) => panic!(
+            "{what}: verify_and_get_root computed a root for {leaves:?} (the trusted root: {})",
+            &computed == root
+        ),
+        Err(Error::InvalidProof(_)) => {}
+        Err(other) => panic!("{what}: unexpected error {other:?}"),
     }
 }
 
