@@ -314,8 +314,10 @@ impl GroveDb {
         // wire format that never supported `SizedQuery::offset`);
         // V1 envelopes honor a non-zero offset if and only if the query
         // validates as offset-paginated. The tree-type check
-        // (ProvableCountTree / ProvableCountSumTree) happens at
-        // leaf-dispatch time inside `run_count_offset_layer_dispatch`.
+        // (ProvableCountTree / ProvableCountSumTree /
+        // ProvableCountProvableSumTree) happens in the V1 walk, on the
+        // proved row of the tree the page reads: see
+        // `validate_count_offset_host`.
         Self::apply_count_offset_envelope_gate(proof, query)?;
 
         match proof {
@@ -648,6 +650,52 @@ impl GroveDb {
             grove_version,
         )?;
         Ok((root_hash, last_tree_feature_type, result))
+    }
+
+    /// Checks one proved row of a query with a non-zero offset: the row of
+    /// the tree the page reads (the last segment of `query.path`) must be a
+    /// `ProvableCountTree`, a `ProvableCountSumTree` or a
+    /// `ProvableCountProvableSumTree`, the hosts the prover serves
+    /// (`check_count_offset_target_tree_type`).
+    ///
+    /// A page is a statement about counts: it skips `offset` rows by reading
+    /// the aggregate each node commits as a number of rows. Only those three
+    /// trees commit a count per node. The page's proof carries no trace of
+    /// which tree it was built over, so the type has to come from here, the
+    /// parent layer, where the row's bytes are bound to the root. An empty
+    /// host has no layer to dispatch on and is refused here too, as the
+    /// prover refuses it.
+    ///
+    /// `element` is the row with its wrappers removed.
+    fn validate_count_offset_host(
+        query: &PathQuery,
+        parent: &[&[u8]],
+        key: &[u8],
+        element: &Element,
+    ) -> Result<(), Error> {
+        let Some((host_key, host_parent)) = query.path.split_last() else {
+            return Ok(());
+        };
+        let is_host = host_key.as_slice() == key
+            && host_parent.len() == parent.len()
+            && host_parent
+                .iter()
+                .zip(parent)
+                .all(|(expected, segment)| expected.as_slice() == *segment);
+        if is_host
+            && !matches!(
+                element,
+                Element::ProvableCountTree(..)
+                    | Element::ProvableCountSumTree(..)
+                    | Element::ProvableCountProvableSumTree(..)
+            )
+        {
+            return Err(Error::InvalidQuery(
+                "count-offset paginated queries are only valid against \
+                 ProvableCountTree / ProvableCountSumTree / ProvableCountProvableSumTree merks",
+            ));
+        }
+        Ok(())
     }
 
     /// Count-offset leaf dispatch for `verify_layer_proof_v1`, its only
@@ -1943,6 +1991,9 @@ impl GroveDb {
                             &element,
                             grove_version,
                         )?;
+                    }
+                    if query.has_non_zero_offset() {
+                        Self::validate_count_offset_host(query, current_path, key, &element)?;
                     }
 
                     // A raw reference can never be an honest V1 row. The
