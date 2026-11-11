@@ -2122,7 +2122,6 @@ impl GroveDb {
                                 // this lower-layer lookup, so here the
                                 // query descends the primary as usual.
                                 path.push(key);
-                                *last_parent_tree_type = element.tree_feature_type();
                                 if query.query_items_at_path(&path, grove_version)?.is_none() {
                                     // The indexed tree is itself a result and
                                     // nothing is queried below it. The element
@@ -2223,6 +2222,12 @@ impl GroveDb {
                                         break;
                                     }
                                 } else {
+                                    // The walk steps into this tree, so it is
+                                    // the parent of whatever is reported below.
+                                    // A tree that is itself the result (the
+                                    // branch above) must not record its own
+                                    // aggregate as the parent's.
+                                    *last_parent_tree_type = element.tree_feature_type();
                                     if query.should_add_parent_tree_at_path(
                                         current_path,
                                         grove_version,
@@ -2346,7 +2351,6 @@ impl GroveDb {
                                     )?;
                                 }
                                 path.push(key);
-                                *last_parent_tree_type = element.tree_feature_type();
                                 // Does the current query ask for anything BELOW
                                 // this tree, or only for the tree element
                                 // itself?
@@ -2377,6 +2381,14 @@ impl GroveDb {
                                 // tree element itself is reported instead.
                                 let has_query_below =
                                     query.query_items_at_path(&path, grove_version)?.is_some();
+                                // Only a tree the walk steps into is the
+                                // parent of the rows reported below it. With
+                                // no query below, this tree is a result row of
+                                // the layer it sits in, and that layer's own
+                                // tree stays the parent.
+                                if has_query_below {
+                                    *last_parent_tree_type = element.tree_feature_type();
+                                }
 
                                 if !has_query_below && options.verify_proof_succinctness {
                                     // Succinct mode demands the proof carry

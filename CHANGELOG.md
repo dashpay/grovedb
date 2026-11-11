@@ -231,6 +231,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GroveDBOperationsProofVersions` by hand) and on V5 local pages; resolved
   references keep the target binding Merk already verifies. V1..V4 refuse
   such a global page, as 6.1.1 did.
+- `verify_query_get_parent_tree_info` and
+  `verify_subset_query_get_parent_tree_info` report the aggregate of the tree
+  the query's path ends in when a result row is itself a tree whose lower
+  layer is in a V1 proof. They reported that row's own aggregate instead: for
+  a sum tree holding 1005 whose row `child` is a sum tree holding 1000, a
+  subset verification of the row returned `SummedMerkNode(1000)`. A populated
+  indexed tree reported as a row always carries such a layer, so that case
+  needed no subset verification. Not gated by grove version: proof
+  verification is not part of block execution. V0 proofs are unchanged.
 
 ## [6.1.1] - 2026-10-20
 
