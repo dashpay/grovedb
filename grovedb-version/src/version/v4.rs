@@ -445,6 +445,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             // v0: tree inserts of different types at one key are applied, the
             // child Merk keeping the first one's type.
             same_key_tree_type_conflict: 0,
+            tree_insert_above_emptied_level: 0,
         },
         element: GroveDBElementMethodVersions {
             delete: 0,

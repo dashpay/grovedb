@@ -49,6 +49,7 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
             same_batch_reference_target_prediction: 0,
             keyless_append_repeats: 0,
             same_key_tree_type_conflict: 0,
+            tree_insert_above_emptied_level: 0,
         },
         element: GroveDBElementMethodVersions {
             delete: 0,

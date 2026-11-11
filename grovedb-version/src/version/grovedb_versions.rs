@@ -331,6 +331,31 @@ pub struct GroveDBApplyBatchVersions {
     /// accepted/rejected outcome: a batch V1..V4 apply is refused on V5+.
     /// Any other value is an `UnknownVersionMismatch` error.
     pub same_key_tree_type_conflict: FeatureVersion,
+    /// The element a batch stores for a Merk aggregate tree (a sum or count
+    /// tree of any kind) it inserts above a level it ran and left empty: the
+    /// batch also carries operations at the tree's own path, and none of them
+    /// leaves a key there (a delete of a key that is not stored, or deletes
+    /// of every key). The batch's upward propagation reads it.
+    ///
+    /// - `0` (V1..V4): the stored element is rebuilt from the aggregate the
+    ///   level reports. An empty Merk reports none, so a plain `Tree` is
+    ///   stored in place of the tree the caller sent, and sums and counts
+    ///   written under it later never reach its parent. A `NonCounted`
+    ///   wrapper stays around that plain tree; a `NotSummed` or
+    ///   `NotCountedOrSummed` one cannot wrap it, so the batch fails.
+    /// - `1` (V5+): the tree the caller sent is stored, with a zero
+    ///   aggregate: what the same insert stores when the batch carries no
+    ///   operation under it. The worst-case estimate, whose levels report no
+    ///   aggregate, sizes such an insert as the caller's element too.
+    ///
+    /// A conditional insert (`InsertIfNotExists`) is left out and keeps the
+    /// `0` outcome on every version: with operations under its tree it is not
+    /// resolved against the stored element, so supplying its type could
+    /// replace the type of an empty tree the key already holds.
+    ///
+    /// The slot gates the stored element, so the root hash and the cost, and
+    /// an accepted/rejected outcome for the two wrapped forms.
+    pub tree_insert_above_emptied_level: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

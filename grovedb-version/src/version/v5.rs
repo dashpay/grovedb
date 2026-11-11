@@ -48,6 +48,17 @@
 //!   child Merk keeping the first insert's type whatever the last insert
 //!   asked for. Gated because it flips an accepted/rejected outcome.
 //!
+//! - `apply_batch.tree_insert_above_emptied_level: 1`: a batch that inserts
+//!   a sum or count tree and leaves the level below it empty (it only deletes
+//!   there, say a key that is not stored) stores the tree the caller sent,
+//!   with a zero aggregate, exactly as the same insert without the deletes
+//!   does. V1..V4 store a plain `Tree` there, as 6.1.1 did, so sums and
+//!   counts written under it later never reach its parent, and refuse the
+//!   batch when the tree is wrapped in `NotSummed` or `NotCountedOrSummed`.
+//!   Gated because it changes the stored element, so the root hash and the
+//!   cost, and flips that refusal. A conditional insert (`InsertIfNotExists`)
+//!   keeps the V4 outcome.
+//!
 //! - `merk_versions.tree.just_in_time_value_update: 2`: Merk accepts that
 //!   answer and records the removal plus the insertion. Versions 0 and 1
 //!   refuse it, so grove v1..v4 cannot account an update as a replacement at
@@ -88,6 +99,7 @@ pub const GROVE_V5: GroveVersion = GroveVersion {
         apply_batch: GroveDBApplyBatchVersions {
             keyless_append_repeats: 1, // changed: a batch may repeat a keyless append
             same_key_tree_type_conflict: 1, // changed: two tree types at one key are refused
+            tree_insert_above_emptied_level: 1, // changed: the inserted tree keeps its type
             ..GROVE_V4.grovedb_versions.apply_batch
         },
         element: GroveDBElementMethodVersions {

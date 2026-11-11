@@ -118,6 +118,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must move to 0.41 as well.
 
 ### Fixed
+- From `GROVE_V5`, a batch that inserts a sum or count tree and leaves the
+  level below it empty stores that tree. The batch carries operations at the
+  tree's own path and none leaves a key there, for example a delete of a key
+  that is not stored. An empty Merk reports no aggregate and the batch
+  rebuilt the stored element from the aggregate alone, so it stored a plain
+  `Tree` in place of any of the eight Merk aggregate trees: sums and counts
+  written under it later never reached its parent, and `verify_grovedb`
+  reported nothing. A `NonCounted` wrapper stayed around that plain tree,
+  and a tree wrapped in `NotSummed` or `NotCountedOrSummed` failed the batch
+  with `CorruptedCodeExecution`. Now the tree the caller sent is stored with
+  a zero aggregate, wrapper included, the state the same insert without
+  those operations leaves. The worst-case batch estimate, whose levels
+  report no aggregate, sizes a sum or count tree inserted with operations
+  under it as that tree too (9 more added bytes for a sum tree), as the
+  average-case estimate has since `GROVE_V4`. Gated by the new
+  `apply_batch.tree_insert_above_emptied_level` slot (0 in V1..V4, which
+  keep their outcome, 1 in V5; **BREAKING** for code building
+  `GroveDBApplyBatchVersions` by hand), because it changes a stored element,
+  so the root hash and the cost, and accepts a batch V1..V4 refuse. A
+  conditional insert (`InsertIfNotExists`) keeps the V1..V4 outcome: with
+  operations under its tree it is written whether or not the key already
+  holds one, so its type is not supplied over an existing empty tree's. A
+  batch that inserts a tree over one that already holds rows still orphans
+  them (#779).
 - From `GROVE_V5`, a batch applied with
   `BatchApplyOptions::disable_operation_consistency_check` is refused with
   `InvalidBatchOperation` when it inserts trees of different tree types at
