@@ -818,7 +818,7 @@ impl GroveDb {
     ///
     /// On `GROVE_V4` one supported write does: removing an entry can leave
     /// its row in every secondary (see
-    /// `apply_batch.indexed_mirror_removed_entry_post_state`). A tree
+    /// `apply_batch.indexed_mirror_entry_read`). A tree
     /// written under `GROVE_V4` may hold such rows, and this call removes
     /// them.
     ///

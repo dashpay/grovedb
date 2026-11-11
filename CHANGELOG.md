@@ -123,17 +123,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the mirror read each changed key back from the primary. The level's writes
   are still pending at that point, and for some shapes of the primary the
   read returned an entry the level had just removed, so the mirror saw no
-  change and the secondaries kept the row. The mirror now takes a key the
-  level's Merk batch deletes as absent, without the read, and a partial
-  batch's later segment does the same until it writes the key again. Gated
+  change and the secondaries kept the row. The mirror now reads an entry by
+  walking the primary's tree from its root (`Merk::observe_value_and_value_hash`),
+  before and after the apply. The walk follows the tree as it stands, so a
+  removed key is absent, in a partial batch's later segment as well. Gated
   by the new
-  `apply_batch.indexed_mirror_removed_entry_post_state` slot (0 in V1..V4,
+  `apply_batch.indexed_mirror_entry_read` slot (0 in V1..V4,
   1 in V5; **BREAKING** for code building `GroveDBApplyBatchVersions` by
   hand): on V5 such a removal commits a different secondary root and is
-  charged for the row's delete in place of the read; every other removal
-  costs what it did. `GROVE_V4` is unchanged from 6.1.1 and still keeps the row; a
-  tree written under it may hold such rows, which `verify_grovedb` reports
-  as secondary orphans and `reconcile_indexed_tree_secondaries` removes.
+  charged for the row's delete, and a write arriving from inside a child of
+  the primary is charged fewer seeks and loaded bytes (the walk loads the
+  path once and the apply reuses it, where the read fetched the key on its
+  own); storage costs are otherwise what they were. `GROVE_V4` is unchanged
+  from 6.1.1 and still keeps the row; a tree written under it may hold such
+  rows, which `verify_grovedb` reports as secondary orphans and
+  `reconcile_indexed_tree_secondaries` removes.
 - Reads through a pinned iterator view, indexed-tree pages and V5 local count
   pages alike, report a failed seek as the storage error. A failed seek reads
   as no record, so an indexed-tree page called it corruption and a local page

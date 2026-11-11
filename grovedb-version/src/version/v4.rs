@@ -442,8 +442,8 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             same_batch_reference_target_prediction: 1,
             // v0: every operation is counted for repeats, keyless appends included.
             keyless_append_repeats: 0,
-            // v0: the mirror reads a removed key back from the primary.
-            indexed_mirror_removed_entry_post_state: 0,
+            // v0: the mirror reads an entry with `Merk::get`.
+            indexed_mirror_entry_read: 0,
         },
         element: GroveDBElementMethodVersions {
             delete: 0,

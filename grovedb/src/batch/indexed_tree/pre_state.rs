@@ -5,7 +5,7 @@
 //! capture records each mutated key's old `(count, sum)` pair so the
 //! post-apply [`mirror`](super::mirror) can compute old → new transitions.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
@@ -173,17 +173,9 @@ fn validate_indexed_child_ops(
 /// count-mutation: a canonical row binds the primary node's commitment,
 /// so a non-Merk append (which leaves `(count, sum)` alone but writes a
 /// new root into the entry) must be mirrored too.
-///
-/// `removed_keys` is the batch cache's record, for this primary, of the keys
-/// it removed and has not written since. Such a key is absent and is not
-/// read: its removal is still pending, so a read could return the entry from
-/// storage. Only the version 1 mirror records removals
-/// (`apply_batch.indexed_mirror_removed_entry_post_state`), so on V1..V4
-/// the record is empty and every key is read.
 pub(crate) fn capture_indexed_pre_state<'db, S: StorageContext<'db>>(
     primary_merk: &Merk<S>,
     ops_at_path_by_key: &BTreeMap<KeyInfo, GroveOp>,
-    removed_keys: Option<&BTreeSet<Vec<u8>>>,
     grove_version: &GroveVersion,
 ) -> CostResult<BTreeMap<Vec<u8>, MaybeEntryState>, Error> {
     let mut cost = OperationCost::default();
@@ -204,15 +196,10 @@ pub(crate) fn capture_indexed_pre_state<'db, S: StorageContext<'db>>(
         // nested-cidx bug class (commit a8bb34fb) and, since rows became
         // references, against the unmirrored-commitment class too.
         if op.can_mutate_indexed_secondary_row() && !pre.contains_key(&key_bytes) {
-            let known_removed = removed_keys.is_some_and(|removed| removed.contains(&key_bytes));
-            let old_aggregates = if known_removed {
-                None
-            } else {
-                cost_return_on_error!(
-                    &mut cost,
-                    read_entry_aggregates(primary_merk, &key_bytes, "pre", grove_version)
-                )
-            };
+            let old_aggregates = cost_return_on_error!(
+                &mut cost,
+                read_entry_aggregates(primary_merk, &key_bytes, "pre", grove_version)
+            );
             pre.insert(key_bytes, old_aggregates);
         }
     }

@@ -307,26 +307,29 @@ pub struct GroveDBApplyBatchVersions {
     /// slot gates an accepted/rejected outcome: a batch V1..V4 refuse is
     /// accepted on V5+.
     pub keyless_append_repeats: FeatureVersion,
-    /// How the indexed-tree mirror learns what a key of the primary holds
-    /// after the level's apply, when the level removed that key.
+    /// How the indexed-tree mirror reads an entry of the primary, before
+    /// the level's apply (the old state) and after it (the new state).
     ///
-    /// - `0` (V1..V4): the mirror reads the key back from the primary, like
-    ///   every other captured key. The level's writes are still pending in
-    ///   the storage batch, and a Merk read that reaches a node the apply
-    ///   did not load fetches the key from storage, where the removed entry
-    ///   still is. The mirror then sees no change and leaves the entry's row
-    ///   in every secondary. Whether it happens depends on the shape of the
-    ///   primary around the removed node.
-    /// - `1` (V5+): a key the level's Merk batch deletes is absent after the
-    ///   apply, with no read, so its rows are always removed. It stays
-    ///   absent, unread, to a later segment of the same partial batch until
-    ///   that batch writes it again.
+    /// - `0` (V1..V4): with `Merk::get`. Where the path to the key leaves
+    ///   the nodes in memory, that read fetches the key from storage. The
+    ///   level's writes are only pending there, so an entry the level
+    ///   removed can still be returned. The mirror then sees no change and
+    ///   leaves the entry's row in every secondary. Whether it happens
+    ///   depends on the shape of the primary around the removed node.
+    /// - `1` (V5+): by walking the primary's tree from its root. The walk
+    ///   follows the tree as it stands, pending writes included, so a
+    ///   removed key is absent and its rows are always removed, in a later
+    ///   segment of a partial batch as well.
     ///
-    /// Gated because, for a removal that kept its row, it changes a committed
-    /// root (the secondary no longer holds the row) and a tracked cost (the
-    /// row's delete in place of the read). Every other removal stores and
-    /// costs the same on both.
-    pub indexed_mirror_removed_entry_post_state: FeatureVersion,
+    /// Gated because it changes a committed root (for a removal that kept
+    /// its row, the secondary no longer holds it) and tracked costs. That
+    /// removal is charged for the row's delete. A write whose path the
+    /// batch had not loaded before the capture (one arriving from inside a
+    /// child of the primary) is charged fewer seeks and loaded bytes: the
+    /// walk loads the path once and the apply reuses it, where version 0
+    /// reads the key from storage on its own. Storage costs are otherwise
+    /// the same on both.
+    pub indexed_mirror_entry_read: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

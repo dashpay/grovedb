@@ -97,7 +97,7 @@ fn v5_matches_v4_apart_from_its_gates() {
     v5_as_v4
         .grovedb_versions
         .apply_batch
-        .indexed_mirror_removed_entry_post_state = 0;
+        .indexed_mirror_entry_read = 0;
     v5_as_v4.merk_versions.tree.just_in_time_value_update =
         GROVE_V4.merk_versions.tree.just_in_time_value_update;
     assert_eq!(format!("{v5_as_v4:?}"), format!("{GROVE_V4:?}"));

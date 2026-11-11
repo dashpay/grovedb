@@ -1,13 +1,12 @@
 //! The per-axis secondary mirror, run after the primary merk's batch apply.
 //!
 //! Each configured axis maintains a secondary Merk ordered by that axis's
-//! sort key. The mirror takes every captured key's post-apply aggregates
-//! (read back from the primary, or absent for a key the batch removed),
+//! sort key. The mirror re-reads every captured key's post-apply aggregates,
 //! turns each old → new transition into that axis's row moves, and applies
 //! them as ONE atomic Merk batch so the secondary makes a single pre/post
 //! transition.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
@@ -18,10 +17,10 @@ use grovedb_merk::{
         costs::ElementCostExtensions, delete::ElementDeleteFromStorageExtensions,
         insert::ElementInsertToStorageExtensions, tree_type::ElementTreeTypeExtensions,
     },
-    BatchEntry, CryptoHash, Merk, Op,
+    BatchEntry, CryptoHash, Merk,
 };
 use grovedb_storage::StorageContext;
-use grovedb_version::{error::GroveVersionError, version::GroveVersion};
+use grovedb_version::version::GroveVersion;
 
 use super::{read_entry_aggregates, AggregateTransition, MaybeEntryState};
 use crate::{
@@ -50,41 +49,11 @@ fn enforce_axis_item_key_bound<'a>(
     Ok(())
 }
 
-/// Whether a Merk op removes its key from the tree.
-///
-/// EXHAUSTIVE on purpose, with no `_` arm, so a new op variant is classified
-/// here rather than read back by default.
-fn removes_its_key(op: &Op) -> bool {
-    match op {
-        Op::Delete
-        | Op::DeleteMaybeSpecialized
-        | Op::DeleteLayered
-        | Op::DeleteLayeredMaybeSpecialized
-        | Op::DeleteMoved => true,
-        Op::Put(..)
-        | Op::PutWithSpecializedCost(..)
-        | Op::PutCombinedReference(..)
-        | Op::PutWithProvidedValueHash(..)
-        | Op::PutLayeredReference(..)
-        | Op::ReplaceLayeredReference(..)
-        | Op::PutLayeredCountIndexedReference(..)
-        | Op::ReplaceLayeredCountIndexedReference(..)
-        | Op::PutMoved(..) => false,
-    }
-}
-
-/// Pair each captured key's pre-state with its state after the primary
-/// apply, into one transition per key.
-///
-/// `applied_ops` is the Merk batch the level just applied to the primary.
-/// `removed_keys` is the batch cache's record, for this primary, of the keys
-/// it removed and has not written since. Dispatches on
-/// `apply_batch.indexed_mirror_removed_entry_post_state`: `0` (V1..V4) is
-/// [`read_post_apply_transitions_v0`], `1` (V5+) is
-/// [`read_post_apply_transitions_v1`].
+/// Re-read each captured key's aggregates after the primary apply, pairing
+/// them with the captured pre-state into one transition per key.
 ///
 /// Called ONCE per level, not once per axis: the `(count, sum)` transitions
-/// are axis-independent, only the sort-key encoding differs per axis, so
+/// are axis-independent — only the sort-key encoding differs per axis — so
 /// the caller computes them once and hands the same slice to every axis's
 /// [`apply_indexed_secondary_mirror_post_apply`]. Re-reading inside the
 /// per-axis call charged a PCPSIT batch three primary reads per key where
@@ -93,43 +62,6 @@ fn removes_its_key(op: &Op) -> bool {
 /// The result is key-sorted (built from the `BTreeMap` capture), which is
 /// what makes each axis's assembled batch deterministic.
 pub(crate) fn read_post_apply_transitions<'db, S: StorageContext<'db>>(
-    primary_merk: &Merk<S>,
-    pre: &BTreeMap<Vec<u8>, MaybeEntryState>,
-    applied_ops: &[BatchEntry<Vec<u8>>],
-    removed_keys: &mut BTreeSet<Vec<u8>>,
-    grove_version: &GroveVersion,
-) -> CostResult<Vec<AggregateTransition>, Error> {
-    match grove_version
-        .grovedb_versions
-        .apply_batch
-        .indexed_mirror_removed_entry_post_state
-    {
-        0 => read_post_apply_transitions_v0(primary_merk, pre, grove_version),
-        1 => read_post_apply_transitions_v1(
-            primary_merk,
-            pre,
-            applied_ops,
-            removed_keys,
-            grove_version,
-        ),
-        version => Err(GroveVersionError::UnknownVersionMismatch {
-            method: "read_post_apply_transitions".to_string(),
-            known_versions: vec![0, 1],
-            received: version,
-        }
-        .into())
-        .wrap_with_cost(OperationCost::default()),
-    }
-}
-
-/// Version 0 (V1..V4): every captured key is read back from the primary.
-///
-/// Frozen, with its fault: the level's writes are still pending in the
-/// storage batch, and a Merk read that meets a link the apply did not load
-/// fetches the key from storage, where an entry the level removed still is.
-/// Such a key reads as unchanged and its row stays in every secondary. It
-/// records no removed keys.
-fn read_post_apply_transitions_v0<'db, S: StorageContext<'db>>(
     primary_merk: &Merk<S>,
     pre: &BTreeMap<Vec<u8>, MaybeEntryState>,
     grove_version: &GroveVersion,
@@ -141,47 +73,6 @@ fn read_post_apply_transitions_v0<'db, S: StorageContext<'db>>(
             &mut cost,
             read_entry_aggregates(primary_merk, key, "post", grove_version)
         );
-        transitions.push((key.clone(), *old_aggregates, new_aggregates));
-    }
-    Ok(transitions).wrap_with_cost(cost)
-}
-
-/// Version 1 (V5+): a removed key is absent, and is not read.
-///
-/// First brings `removed_keys` up to date with `applied_ops`: a key the
-/// level deletes joins it, a key the level writes leaves it. A captured key
-/// in the set is then absent after the apply. Every other key is read back;
-/// the apply loaded the path to each key it wrote, so those reads never
-/// leave the cached tree.
-///
-/// The set outlives the level because the primary's cached Merk does: a
-/// partial batch's continuation runs on it while the removal is still
-/// pending, and its pre-state capture takes the same keys as absent.
-fn read_post_apply_transitions_v1<'db, S: StorageContext<'db>>(
-    primary_merk: &Merk<S>,
-    pre: &BTreeMap<Vec<u8>, MaybeEntryState>,
-    applied_ops: &[BatchEntry<Vec<u8>>],
-    removed_keys: &mut BTreeSet<Vec<u8>>,
-    grove_version: &GroveVersion,
-) -> CostResult<Vec<AggregateTransition>, Error> {
-    let mut cost = OperationCost::default();
-    for (key, op) in applied_ops {
-        if removes_its_key(op) {
-            removed_keys.insert(key.clone());
-        } else {
-            removed_keys.remove(key);
-        }
-    }
-    let mut transitions: Vec<AggregateTransition> = Vec::with_capacity(pre.len());
-    for (key, old_aggregates) in pre {
-        let new_aggregates = if removed_keys.contains(key) {
-            None
-        } else {
-            cost_return_on_error!(
-                &mut cost,
-                read_entry_aggregates(primary_merk, key, "post", grove_version)
-            )
-        };
         transitions.push((key.clone(), *old_aggregates, new_aggregates));
     }
     Ok(transitions).wrap_with_cost(cost)
