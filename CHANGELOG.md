@@ -118,6 +118,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must move to 0.41 as well.
 
 ### Fixed
+- An indexed tree's axis proof carries, for each row, the entry the row
+  points at and a label saying how that entry's bytes fold into its committed
+  hash (`IndexedTargetCommitment`). The verifier now requires the label to be
+  the one the entry's own element takes: `Reference` for a reference,
+  `Simple` for an item, `IndexedSingle` / `IndexedMulti` for an indexed tree
+  and `Layered` for any other tree. It used to take the label as given, and a
+  reference and a tree fold the same way, so a reference entry labelled
+  `Layered` over its target's hash verified and returned the reference itself
+  instead of the element it resolves to. Such a proof is now refused with
+  `CorruptedData`. Not gated by grove version: the prover has always written
+  the element's own label, and proof verification is not part of block
+  execution.
 - Reads through a pinned iterator view, indexed-tree pages and V5 local count
   pages alike, report a failed seek as the storage error. A failed seek reads
   as no record, so an indexed-tree page called it corruption and a local page
