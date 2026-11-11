@@ -44,6 +44,7 @@ mod non_merk_subtree_discovery_tests;
 #[cfg(feature = "unsafe-dump-load")]
 mod non_merk_integrity_audit_tests;
 mod non_merk_limited_page_tests;
+mod non_merk_mmr_proof_shape_tests;
 mod ordinary_replacement_cost_tests;
 mod partial_batch_add_on_collision_tests;
 mod pcpsit_sum_item_children_tests;
