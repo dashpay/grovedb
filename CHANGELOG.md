@@ -118,6 +118,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must move to 0.41 as well.
 
 ### Fixed
+- From `GROVE_V5`, a batch applied with
+  `BatchApplyOptions::disable_operation_consistency_check` is refused with
+  `InvalidBatchOperation` when it inserts trees of different tree types at
+  one key. The child Merk was reserved with the first insert's tree type
+  and a later insert did not change it, so when the batch also wrote under
+  the key a `Tree` then a `SumTree` was stored as a `Tree` with the sum
+  lost, and a `SumTree` then a `Tree` was stored as a `Tree` over a child
+  written as a sum tree, which `verify_grovedb` reports. `GROVE_V1`..`V4`
+  still apply such a batch, as 6.1.1 does. Repeated tree inserts of one
+  tree type, the consistency check (which refuses any two operations at one
+  key) and the cost estimates are unchanged. Gated by the new
+  `apply_batch.same_key_tree_type_conflict` slot (0 in V1..V4, 1 in V5;
+  **BREAKING** for code building `GroveDBApplyBatchVersions` by hand).
 - Reads through a pinned iterator view, indexed-tree pages and V5 local count
   pages alike, report a failed seek as the storage error. A failed seek reads
   as no record, so an indexed-tree page called it corruption and a local page

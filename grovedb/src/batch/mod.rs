@@ -2363,6 +2363,13 @@ trait TreeCache<G, SR> {
 
     fn get_batch_run_mode(&self) -> BatchRunMode;
 
+    /// The tree type of the empty Merk an earlier tree insert reserved at
+    /// `path`/`key` ([`Self::insert`]) and nothing has been applied to yet,
+    /// if there is one. A cache that reserves no Merk has none.
+    fn reserved_tree_type(&self, _path: &KeyInfoPath, _key: &KeyInfo) -> Option<TreeType> {
+        None
+    }
+
     /// Called for every indexed-tree element the batch inserts, before any
     /// level executes. Caches that open secondaries keep the element so the
     /// primary's axes are known even when no stored element exists yet.
@@ -3449,6 +3456,15 @@ where
         }
 
         Ok(()).wrap_with_cost(cost)
+    }
+
+    fn reserved_tree_type(&self, path: &KeyInfoPath, key: &KeyInfo) -> Option<TreeType> {
+        let mut reserved_path = path.to_path();
+        reserved_path.push(key.get_key_clone());
+        if !self.unused_new_merks.contains(&reserved_path) {
+            return None;
+        }
+        self.merks.get(&reserved_path).map(|merk| merk.tree_type)
     }
 
     fn take_cidx_secondary_after_apply(

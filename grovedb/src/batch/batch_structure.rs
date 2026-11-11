@@ -178,6 +178,15 @@ where
                 .add_on_op_collision
                 >= 1;
 
+        // Tree inserts of different tree types at one key reach this point
+        // only with the consistency check disabled. V1..V4 apply them, the
+        // child Merk keeping the first insert's type; V5 refuses the batch.
+        let refuse_tree_type_conflicts = grove_version
+            .grovedb_versions
+            .apply_batch
+            .same_key_tree_type_conflict
+            >= 1;
+
         let mut ops_by_level_paths: OpsByLevelPath = previous_ops.unwrap_or_default();
         let mut current_last_level: u32 =
             ops_by_level_paths.iter().map(|(k, _)| k).max().unwrap_or(0);
@@ -277,6 +286,20 @@ where
                 | GroveOp::PatchDontCheckForBackwardsReferences { element, .. }
                 | GroveOp::ReplaceBackwardReferenceFamilyMember { element, .. } => {
                     if let Some(tree_type) = element.tree_type() {
+                        // The Merk an earlier insert reserved under this key
+                        // keeps that insert's tree type, so the child would
+                        // be written as one type under an element of
+                        // another.
+                        if refuse_tree_type_conflicts
+                            && let Some(reserved_tree_type) =
+                                merk_tree_cache.reserved_tree_type(&op_path, &key)
+                            && reserved_tree_type != tree_type
+                        {
+                            return Err(Error::InvalidBatchOperation(
+                                "batch inserts trees of different tree types at one key",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
                         cost_return_on_error!(
                             &mut cost,
                             merk_tree_cache.insert(&op_path, &key, tree_type)
