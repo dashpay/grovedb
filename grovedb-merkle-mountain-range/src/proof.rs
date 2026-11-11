@@ -275,6 +275,23 @@ fn calculate_peak_root<'a, I: Iterator<Item = &'a MmrNode>>(
     ))
 }
 
+/// The hash of every peak up to the one holding the last proved leaf, then
+/// one hash for all the peaks right of it, if there are any.
+///
+/// This walks the one shape [`MMR::gen_proof`](crate::MMR::gen_proof) emits
+/// for `leaves` in an MMR of `mmr_size`, and the proof decides none of it:
+/// a peak with no proved leaf takes exactly one proof item, and the peaks
+/// right of the last proved leaf take exactly one between them (the peak
+/// itself when there is one, their bag when there are more).
+///
+/// The shape has to be fixed because bagging two peaks is the same hash as
+/// merging two siblings ([`MmrNode::merge`]). A walk that stopped wherever
+/// the proof items ran out rebuilt the root *inside* a mountain: with three
+/// leaves the root is `merge(leaf 2, node 2)`, which is also what leaf 2's
+/// hash and node 2 merge to as siblings under position 2, so the value of
+/// leaf 2 verified as leaf 0. With every peak accounted for, each hash the
+/// verifier computes sits where the honest tree has it, and a leaf can only
+/// verify at the position it is stored at.
 fn calculate_peaks_hashes<'a, I: Iterator<Item = &'a MmrNode>>(
     mut leaves: Vec<(u64, MmrNode)>,
     mmr_size: u64,
@@ -286,44 +303,44 @@ fn calculate_peaks_hashes<'a, I: Iterator<Item = &'a MmrNode>>(
         return Err(Error::NodeProofsNotSupported);
     }
 
-    // special handle the only 1 leaf MMR
-    if mmr_size == 1 && leaves.len() == 1 && leaves[0].0 == 0 {
-        return Ok(leaves.into_iter().map(|(_pos, item)| item).collect());
-    }
     // ensure leaves are sorted and unique
     leaves.sort_by_key(|(pos, _)| *pos);
     leaves.dedup_by(|a, b| a.0 == b.0);
     let peaks = get_peaks(mmr_size);
 
-    let mut peaks_hashes: Vec<MmrNode> = Vec::with_capacity(peaks.len() + 1);
-    for peak_pos in peaks {
+    let Some(last_leaf_pos) = leaves.last().map(|(pos, _)| *pos) else {
+        return Err(Error::InvalidProof("no leaves to prove".into()));
+    };
+    let Some(last_proved_peak) = peaks.iter().position(|peak_pos| last_leaf_pos <= *peak_pos)
+    else {
+        return Err(Error::InvalidProof("unprocessed leaves remain".into()));
+    };
+    let (walked_peaks, right_hand_peaks) = peaks.split_at(last_proved_peak + 1);
+
+    let mut peaks_hashes: Vec<MmrNode> = Vec::with_capacity(walked_peaks.len() + 1);
+    for &peak_pos in walked_peaks {
         let mut leaves: Vec<_> = take_while_vec(&mut leaves, |(pos, _)| *pos <= peak_pos);
         let peak_root = if leaves.len() == 1 && leaves[0].0 == peak_pos {
             // leaf is the peak
             leaves.remove(0).1
         } else if leaves.is_empty() {
-            // if empty, means the next proof is a peak root or rhs bagged root
-            if let Some(peak_root) = proof_iter.next() {
-                peak_root.clone()
-            } else {
-                // means that either all right peaks are bagged, or proof is corrupted
-                // so we break loop and check no items left
-                break;
-            }
+            proof_iter
+                .next()
+                .ok_or(Error::InvalidProof(
+                    "not enough proof items for a peak left of a proved leaf".into(),
+                ))?
+                .clone()
         } else {
             calculate_peak_root(leaves, peak_pos, &mut proof_iter)?
         };
-        peaks_hashes.push(peak_root.clone());
+        peaks_hashes.push(peak_root);
     }
 
-    // ensure nothing left in leaves
-    if !leaves.is_empty() {
-        return Err(Error::InvalidProof("unprocessed leaves remain".into()));
-    }
-
-    // check rhs peaks
-    if let Some(rhs_peaks_hashes) = proof_iter.next() {
-        peaks_hashes.push(rhs_peaks_hashes.clone());
+    if !right_hand_peaks.is_empty() {
+        let right_hand_hash = proof_iter.next().ok_or(Error::InvalidProof(
+            "not enough proof items for the peaks right of the proved leaves".into(),
+        ))?;
+        peaks_hashes.push(right_hand_hash.clone());
     }
     // ensure nothing left in proof_iter
     if proof_iter.next().is_some() {
