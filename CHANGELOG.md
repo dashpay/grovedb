@@ -143,6 +143,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GroveDBOperationsProofVersions` by hand) and on V5 local pages; resolved
   references keep the target binding Merk already verifies. V1..V4 refuse
   such a global page, as 6.1.1 did.
+- From `GROVE_V5`, deleting an element of a `NormalTree` refunds what its
+  insertion was charged. Before, a delete there that did not declare a tree
+  refunded the raw value bytes: an empty `Tree` removed by a batch `Delete`
+  gave back 31 bytes more than it was charged (23 for a `SumTree` or
+  `CountTree`), because a tree does not pay for its value hash, and a
+  `SumItem` gave back up to 8 bytes less, because it is charged a fixed
+  size. Such a delete now reads the stored element, as deletes in every
+  other tree type already did (the `element.delete`,
+  `element.delete_with_sectioned_removal_bytes` and
+  `element.delete_into_batch_operations` slots, 0 in V1..V4 and 1 in V5).
+  Refunds of items, references and declared tree deletes, stored data and
+  root hashes do not change.
 
 ## [6.1.1] - 2026-10-20
 

@@ -90,6 +90,15 @@ fn v5_matches_v4_apart_from_its_gates() {
     operations.proof.count_offset_reference_empty_tree_rows = 0;
     v5_as_v4.grovedb_versions.element.path_query_push =
         GROVE_V4.grovedb_versions.element.path_query_push;
+    v5_as_v4.grovedb_versions.element.delete = 0;
+    v5_as_v4
+        .grovedb_versions
+        .element
+        .delete_with_sectioned_removal_bytes = 0;
+    v5_as_v4
+        .grovedb_versions
+        .element
+        .delete_into_batch_operations = 0;
     let path_query_methods = &mut v5_as_v4.grovedb_versions.path_query_methods;
     path_query_methods.merge = GROVE_V4.grovedb_versions.path_query_methods.merge;
     path_query_methods.per_instance_query_offsets = 0;
