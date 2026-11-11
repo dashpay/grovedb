@@ -329,6 +329,10 @@ pub struct GroveDBApplyBatchVersions {
     /// walk loads the path once and the apply reuses it, where version 0
     /// reads the key from storage on its own. Storage costs are otherwise
     /// the same on both.
+    ///
+    /// The average-case batch estimate reads this slot too, so it reserves
+    /// what the selected read can fetch: four nodes per touched entry on
+    /// `0`, two walks of the primary's estimated levels on `1`.
     pub indexed_mirror_entry_read: FeatureVersion,
 }
 

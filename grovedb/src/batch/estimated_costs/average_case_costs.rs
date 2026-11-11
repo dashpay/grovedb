@@ -893,6 +893,54 @@ fn indexed_axes_for_tree_type(tree_type: TreeType) -> Vec<grovedb_element::index
 }
 
 #[cfg(feature = "minimal")]
+/// Primary node fetches version 0 of the mirror's entry read makes for one
+/// touched key: a `Merk::get` and a `Merk::get_value_hash`, before and after
+/// the primary's apply.
+const INDEXED_MIRROR_DIRECT_READ_FETCHES: u32 = 4;
+
+#[cfg(feature = "minimal")]
+/// Primary node fetches reserved for the mirror's pre- and post-state reads
+/// of one touched entry in a primary of `levels` estimated levels.
+///
+/// Dispatches on `apply_batch.indexed_mirror_entry_read`, the slot the reads
+/// themselves follow, so the estimate cannot describe a read the batch does
+/// not make:
+///
+/// - `0` (V1..V4): each read fetches the key directly, so the four fetches
+///   do not depend on the tree's height.
+/// - `1` (V5+): each read walks the tree from its root. The pre-state walk
+///   loads the path to the key. The post-state walk of a removed key runs
+///   on to a missing edge, through nodes the removal did not load, so a
+///   removal high in a deep tree fetches more than four nodes. Each walk is
+///   reserved at the height propagation counts (`levels`, plus one above a
+///   single level), and never below version 0's four.
+fn indexed_mirror_entry_read_node_fetches(
+    levels: u32,
+    grove_version: &GroveVersion,
+) -> Result<u32, Error> {
+    match grove_version
+        .grovedb_versions
+        .apply_batch
+        .indexed_mirror_entry_read
+    {
+        0 => Ok(INDEXED_MIRROR_DIRECT_READ_FETCHES),
+        1 => {
+            let walk_fetches = levels.saturating_add(u32::from(levels > 1));
+            Ok(walk_fetches
+                .saturating_mul(2)
+                .max(INDEXED_MIRROR_DIRECT_READ_FETCHES))
+        }
+        version => Err(Error::VersionError(
+            GroveVersionError::UnknownVersionMismatch {
+                method: "indexed_mirror_entry_read_node_fetches".to_string(),
+                known_versions: vec![0, 1],
+                received: version,
+            },
+        )),
+    }
+}
+
+#[cfg(feature = "minimal")]
 /// Cache for subtree paths for average case scenario costs.
 #[derive(Default)]
 pub(in crate::batch) struct AverageCaseTreeCacheKnownPaths {
@@ -1180,14 +1228,16 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
             let axes = indexed_axes_for_tree_type(layer_element_estimates.tree_type);
             // The mirror brackets the primary apply with a pre- and a
             // post-state read of each touched entry
-            // (`read_entry_aggregates`, pre and post), each a `Merk::get`
-            // plus a `Merk::get_value_hash` on the primary node — the
-            // node's STORED hash is what the row must bind, and for tree-
-            // or reference-shaped entries it is a combined hash that
-            // cannot be recomputed from the element bytes. Four node
-            // fetches per touched key, charged at the uncached bound (the
-            // post-apply pair usually hits the in-memory tree, so this
-            // leans over rather than under). Charged HERE and not inside
+            // (`read_entry_aggregates`, pre and post) on the primary node —
+            // the node's STORED hash is what the row must bind, and for
+            // tree- or reference-shaped entries it is a combined hash that
+            // cannot be recomputed from the element bytes. How many nodes
+            // the two reads fetch follows the read's version
+            // (`indexed_mirror_entry_read_node_fetches`): four per touched
+            // key while the key is read directly, two walks of the tree
+            // once it is walked. Charged at the uncached bound (a read
+            // often hits the in-memory tree, so this leans over rather
+            // than under). Charged HERE and not inside
             // `average_case_indexed_secondary_mirror` because the reads
             // are per-key while that function is per-axis additive — one
             // capture feeds every axis's rewrite.
@@ -1201,10 +1251,19 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                     .value_with_feature_and_flags_size(grove_version)
                     .map_err(Error::MerkError)
             );
+            let entry_read_node_fetches = cost_return_on_error_no_add!(
+                cost,
+                indexed_mirror_entry_read_node_fetches(
+                    layer_element_estimates
+                        .estimated_layer_count
+                        .estimate_levels(),
+                    grove_version,
+                )
+            );
             // Once per mutated key, not once per level: the mirror rewrites
             // every captured key's row on every axis.
             for _ in 0..mirrored_key_count {
-                for _ in 0..4 {
+                for _ in 0..entry_read_node_fetches {
                     cost_return_on_error_no_add!(
                         cost,
                         add_average_case_get_merk_node(
@@ -1328,10 +1387,14 @@ mod tests {
         },
         tree_type::TreeType,
     };
-    use grovedb_version::version::GroveVersion;
+    use grovedb_version::{
+        error::GroveVersionError,
+        version::{v4::GROVE_V4, GroveVersion},
+    };
 
     use grovedb_merk::tree::AggregateData;
 
+    use super::indexed_mirror_entry_read_node_fetches;
     use crate::{
         batch::{
             estimated_costs::EstimatedCostsType::AverageCaseCostsType, key_info::KeyInfo, GroveOp,
@@ -1339,7 +1402,7 @@ mod tests {
         },
         reference_path::ReferencePathType,
         tests::{common::EMPTY_PATH, make_empty_grovedb},
-        Element, GroveDb,
+        Element, Error, GroveDb,
     };
 
     #[test]
@@ -4030,5 +4093,183 @@ mod tests {
                 other => panic!("expected an unknown version error, got {other:?}"),
             }
         }
+    }
+
+    /// Estimate and actual cost of removing each entry, one at a time, from
+    /// a full indexed primary of `2^height - 1` large items. Returns the
+    /// estimate (the same for every key) and the costliest removal seen in
+    /// each dimension.
+    fn indexed_single_delete_estimate_and_costliest_actual(
+        height: u32,
+        value_len: usize,
+        grove_version: &GroveVersion,
+    ) -> (OperationCost, OperationCost) {
+        let entry_count = (1u32 << height) - 1;
+        let db = make_empty_grovedb();
+        db.insert(
+            EMPTY_PATH,
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create pcit");
+        for i in 0..entry_count {
+            db.insert_into_count_indexed_tree(
+                [b"cidx".as_ref()].as_ref(),
+                format!("k{i:04}").as_bytes(),
+                Element::new_item(vec![7u8; value_len]),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("seed entry");
+        }
+
+        let mut paths = HashMap::new();
+        paths.insert(
+            KeyInfoPath(vec![]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: ApproximateElements(1),
+                estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+            },
+        );
+        paths.insert(
+            KeyInfoPath(vec![KeyInfo::KnownKey(b"cidx".to_vec())]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::ProvableCountIndexedTree,
+                estimated_layer_count: ApproximateElements(entry_count),
+                // A serialized item is its bytes behind a variant byte, a
+                // length varint and a flags byte.
+                estimated_layer_sizes: AllItems(5, value_len as u32 + 4, None),
+            },
+        );
+
+        let mut estimate = OperationCost::default();
+        let mut costliest = OperationCost::default();
+        for i in 0..entry_count {
+            let ops = dont_check(vec![QualifiedGroveDbOp::delete_op(
+                vec![b"cidx".to_vec()],
+                format!("k{i:04}").into_bytes(),
+            )]);
+            estimate = GroveDb::estimated_case_operations_for_batch(
+                AverageCaseCostsType(paths.clone()),
+                ops.clone(),
+                None,
+                |_cost, _old_flags, _new_flags| Ok(false),
+                |_flags, _removed_key_bytes, _removed_value_bytes| {
+                    Ok((NoStorageRemoval, NoStorageRemoval))
+                },
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("estimate");
+            // Each removal runs in its own transaction, dropped afterwards,
+            // so every one meets the same full tree with nothing in memory.
+            let tx = db.start_transaction();
+            let actual = db
+                .apply_batch(ops, None, Some(&tx), grove_version)
+                .cost_as_result()
+                .expect("apply delete");
+            drop(tx);
+            costliest.seek_count = costliest.seek_count.max(actual.seek_count);
+            costliest.storage_loaded_bytes = costliest
+                .storage_loaded_bytes
+                .max(actual.storage_loaded_bytes);
+            costliest.hash_node_calls = costliest.hash_node_calls.max(actual.hash_node_calls);
+        }
+        (estimate, costliest)
+    }
+
+    /// From `GROVE_V5` the mirror reads an entry by walking the primary, and
+    /// the walk that finds a removed key gone runs through nodes the removal
+    /// did not load. How many depends on the tree's height, so the fixtures
+    /// above, a handful of entries each, cannot show an estimate that
+    /// reserves a fixed four fetches falling short. This one removes every
+    /// entry of a nine-level primary of large items in turn and holds the
+    /// estimate above the costliest of them.
+    #[test]
+    fn test_batch_indexed_delete_average_case_cost_is_not_under_actual_in_a_deep_primary() {
+        let (est, costliest) =
+            indexed_single_delete_estimate_and_costliest_actual(9, 2000, GroveVersion::latest());
+
+        assert!(
+            est.seek_count >= costliest.seek_count,
+            "estimated seeks {} must not be under actual {}",
+            est.seek_count,
+            costliest.seek_count
+        );
+        assert!(
+            est.storage_loaded_bytes >= costliest.storage_loaded_bytes,
+            "estimated storage_loaded_bytes {} must not be under actual {}",
+            est.storage_loaded_bytes,
+            costliest.storage_loaded_bytes
+        );
+        assert!(
+            est.hash_node_calls >= costliest.hash_node_calls,
+            "estimated hash_node_calls {} must not be under actual {}",
+            est.hash_node_calls,
+            costliest.hash_node_calls
+        );
+        // The costliest removal fetches more than the four direct reads
+        // would reserve: the bound is the walk's, not a coincidence of slack.
+        assert_eq!(
+            (costliest.seek_count, costliest.storage_loaded_bytes),
+            (54, 38523)
+        );
+    }
+
+    /// `GROVE_V4` reads the key directly, so its estimate keeps the four
+    /// fetches it has always reserved: the figures a shipped version
+    /// produces do not move.
+    #[test]
+    fn test_batch_indexed_delete_average_case_cost_is_unchanged_on_grove_v4() {
+        let (est, costliest) =
+            indexed_single_delete_estimate_and_costliest_actual(9, 2000, &GROVE_V4);
+
+        assert_eq!((est.seek_count, est.storage_loaded_bytes), (46, 35385));
+        assert!(est.storage_loaded_bytes >= costliest.storage_loaded_bytes);
+    }
+
+    /// The reserved fetches follow the version of the read they describe.
+    #[test]
+    fn test_indexed_mirror_entry_read_node_fetches_follow_the_read_version() {
+        let mut version = GroveVersion::latest().clone();
+
+        version
+            .grovedb_versions
+            .apply_batch
+            .indexed_mirror_entry_read = 0;
+        for levels in [0, 1, 9, 32] {
+            assert_eq!(
+                indexed_mirror_entry_read_node_fetches(levels, &version).expect("version 0"),
+                4
+            );
+        }
+
+        version
+            .grovedb_versions
+            .apply_batch
+            .indexed_mirror_entry_read = 1;
+        for (levels, fetches) in [(0, 4), (1, 4), (2, 6), (9, 20), (32, 66)] {
+            assert_eq!(
+                indexed_mirror_entry_read_node_fetches(levels, &version).expect("version 1"),
+                fetches
+            );
+        }
+
+        version
+            .grovedb_versions
+            .apply_batch
+            .indexed_mirror_entry_read = 2;
+        assert!(matches!(
+            indexed_mirror_entry_read_node_fetches(9, &version),
+            Err(Error::VersionError(
+                GroveVersionError::UnknownVersionMismatch { received: 2, .. }
+            ))
+        ));
     }
 }

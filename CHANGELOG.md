@@ -134,7 +134,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   charged for the row's delete, and a write arriving from inside a child of
   the primary is charged fewer seeks and loaded bytes (the walk loads the
   path once and the apply reuses it, where the read fetched the key on its
-  own); storage costs are otherwise what they were. `GROVE_V4` is unchanged
+  own); storage costs are otherwise what they were. The batch estimate
+  follows the same slot: on V5 it reserves two walks of the primary per
+  touched entry in place of four node fetches, so it grows with the
+  primary's estimated levels and stays above a removal whose post-state
+  walk loads nodes the removal did not. `GROVE_V4` is unchanged
   from 6.1.1 and still keeps the row; a tree written under it may hold such
   rows, which `verify_grovedb` reports as secondary orphans and
   `reconcile_indexed_tree_secondaries` removes.
