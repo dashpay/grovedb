@@ -142,6 +142,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   holds one, so its type is not supplied over an existing empty tree's. A
   batch that inserts a tree over one that already holds rows still orphans
   them (#779).
+- From `GROVE_V5`, a batch applied with
+  `BatchApplyOptions::disable_operation_consistency_check` is refused with
+  `InvalidBatchOperation` when it inserts trees of different tree types at
+  one key. The child Merk was reserved with the first insert's tree type
+  and a later insert did not change it, so when the batch also wrote under
+  the key a `Tree` then a `SumTree` was stored as a `Tree` with the sum
+  lost, and a `SumTree` then a `Tree` was stored as a `Tree` over a child
+  written as a sum tree, which `verify_grovedb` reports. `GROVE_V1`..`V4`
+  still apply such a batch, as 6.1.1 does. Repeated tree inserts of one
+  tree type, the consistency check (which refuses any two operations at one
+  key) and the cost estimates are unchanged. Gated by the new
+  `apply_batch.same_key_tree_type_conflict` slot (0 in V1..V4, 1 in V5;
+  **BREAKING** for code building `GroveDBApplyBatchVersions` by hand).
 - MMR proof verification (`MerkleProof::calculate_root`, `verify`,
   `calculate_root_with_new_leaf` and `verify_incremental`,
   `MmrTreeProof::verify` and `verify_and_get_root`, and through them the
@@ -157,6 +170,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   items for a one-leaf MMR is `InvalidProof`, and so is
   `MerkleProof::calculate_root` with no leaves. Not version-gated: no hash
   changes and every proof `gen_proof` emits verifies as before.
+- An indexed tree's axis proof carries, for each row, the entry the row
+  points at and a label saying how that entry's bytes fold into its committed
+  hash (`IndexedTargetCommitment`). The verifier now requires the label to be
+  the one the entry's own element takes: `Reference` for a reference,
+  `Simple` for an item, `IndexedSingle` / `IndexedMulti` for an indexed tree
+  and `Layered` for any other tree. It used to take the label as given, and a
+  reference and a tree fold the same way, so a reference entry labelled
+  `Layered` over its target's hash verified and returned the reference itself
+  instead of the element it resolves to. Such a proof is now refused with
+  `CorruptedData`. Not gated by grove version: the prover has always written
+  the element's own label, and proof verification is not part of block
+  execution.
 - Reads through a pinned iterator view, indexed-tree pages and V5 local count
   pages alike, report a failed seek as the storage error. A failed seek reads
   as no record, so an indexed-tree page called it corruption and a local page

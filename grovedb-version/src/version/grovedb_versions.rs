@@ -307,6 +307,30 @@ pub struct GroveDBApplyBatchVersions {
     /// slot gates an accepted/rejected outcome: a batch V1..V4 refuse is
     /// accepted on V5+.
     pub keyless_append_repeats: FeatureVersion,
+    /// What a batch does with tree inserts of different tree types at one
+    /// key. Only a batch applied with
+    /// `BatchApplyOptions::disable_operation_consistency_check` gets this
+    /// far: the consistency check refuses any two operations at one key.
+    ///
+    /// - `0` (V1..V4): the batch is applied. The child Merk is reserved with
+    ///   the first insert's tree type and the later insert does not change
+    ///   it, while the stored element takes the last insert's flags. When
+    ///   the batch also writes under the key, a `Tree` then a `SumTree` is
+    ///   stored as a `Tree` and the sum is lost, and a `SumTree` then a
+    ///   `Tree` is stored as a `Tree` over a child written as a sum tree,
+    ///   which `verify_grovedb` reports. Preserved for replay.
+    /// - `1` (V5+): the batch is refused with `InvalidBatchOperation`
+    ///   before anything is written.
+    ///
+    /// Repeated tree inserts of one tree type are unchanged on every
+    /// version (the last one's flags are stored), and so are the
+    /// estimated-cost structures, which do not make this check. The two
+    /// inserts are also told apart when the child Merk was already open
+    /// before the first of them, as in the second segment of a partial
+    /// batch whose first segment read under the key. The slot gates an
+    /// accepted/rejected outcome: a batch V1..V4 apply is refused on V5+.
+    /// Any other value is an `UnknownVersionMismatch` error.
+    pub same_key_tree_type_conflict: FeatureVersion,
     /// The element a batch stores for a Merk aggregate tree (a sum or count
     /// tree of any kind) it inserts above a level it ran and left empty: the
     /// batch also carries operations at the tree's own path, and none of them
