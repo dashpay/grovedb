@@ -73,6 +73,16 @@
 //!   any layer. Gated because the accounting and the stored flags are
 //!   consensus-relevant once a caller uses it.
 //!
+//! - `element.delete: 1`, `element.delete_with_sectioned_removal_bytes: 1`
+//!   and `element.delete_into_batch_operations: 1`: deleting an element of a
+//!   `NormalTree` without declaring it a tree refunds what the stored
+//!   element was charged, as it does in every other tree type. V1..V4 refund
+//!   its raw value bytes there: a tree removed by a batch `Delete` gives
+//!   back more than it was charged (it never paid for its value hash), and a
+//!   sum item gives back less (it was charged a fixed size). Items,
+//!   references and declared tree deletes are refunded the same in every
+//!   version. Gated because it changes a tracked cost.
+//!
 //! It exists so that changes made after GroveDB 6.1.1 have somewhere to
 //! land. GROVE_V4 as 6.1.1 shipped it is what Dash Platform 5.0 (protocol
 //! version 14) runs, so a change that alters an accepted/rejected outcome, a
@@ -112,6 +122,10 @@ pub const GROVE_V5: GroveVersion = GroveVersion {
             ..GROVE_V4.grovedb_versions.apply_batch
         },
         element: GroveDBElementMethodVersions {
+            // changed: a delete in a `NormalTree` refunds from the stored element
+            delete: 1,
+            delete_with_sectioned_removal_bytes: 1,
+            delete_into_batch_operations: 1,
             path_query_push: 2, // changed: local count pages and trusted parent echo
             ..GROVE_V4.grovedb_versions.element
         },

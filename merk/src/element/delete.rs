@@ -2,16 +2,102 @@
 //! Implements functions in Element for deleting
 
 use grovedb_costs::{
+    cost_return_on_error_default,
     storage_cost::{removal::StorageRemovedBytes, transition::ElementFlagsUpdate},
-    CostResult, CostsExt,
+    CostResult, CostsExt, OperationCost,
 };
 use grovedb_element::Element;
 use grovedb_storage::StorageContext;
-use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
+use grovedb_version::{
+    error::GroveVersionError,
+    version::{FeatureVersion, GroveVersion},
+};
 
 use crate::{
     element::costs::ElementCostExtensions, BatchEntry, Error, Merk, MerkOptions, Op, TreeType,
 };
+
+/// The Merk op that deletes an element from a tree of `in_tree_type`.
+///
+/// `is_layered` is what the caller declares about the element: a tree or not.
+/// `version` is the feature version of the calling `method`, and selects
+/// [`delete_op_v0`] or [`delete_op_v1`].
+fn delete_op(
+    method: &str,
+    version: FeatureVersion,
+    in_tree_type: TreeType,
+    is_layered: bool,
+) -> Result<Op, Error> {
+    match version {
+        0 => Ok(delete_op_v0(in_tree_type, is_layered)),
+        1 => Ok(delete_op_v1(in_tree_type, is_layered)),
+        received => Err(GroveVersionError::UnknownVersionMismatch {
+            method: method.to_string(),
+            known_versions: vec![0, 1],
+            received,
+        }
+        .into()),
+    }
+}
+
+/// Version 0 of the delete op selection.
+///
+/// In every tree type but `NormalTree` the op reads the stored element and
+/// refunds what its insertion was charged. In a `NormalTree` an element that
+/// is not declared a tree is refunded by its raw value bytes. That is more
+/// than a tree was charged, since a tree does not pay for its value hash, and
+/// less than a sum item was charged, since a sum item pays for a fixed size.
+fn delete_op_v0(in_tree_type: TreeType, is_layered: bool) -> Op {
+    match (in_tree_type, is_layered) {
+        (TreeType::NormalTree, true) => Op::DeleteLayered,
+        (TreeType::NormalTree, false) => Op::Delete,
+        (TreeType::SumTree, true)
+        | (TreeType::BigSumTree, true)
+        | (TreeType::CountTree, true)
+        | (TreeType::CountSumTree, true)
+        | (TreeType::ProvableCountTree, true)
+        | (TreeType::ProvableCountSumTree, true)
+        | (TreeType::ProvableSumTree, true)
+        | (TreeType::ProvableCountProvableSumTree, true)
+        | (TreeType::CommitmentTree(_), true)
+        | (TreeType::MmrTree, true)
+        | (TreeType::BulkAppendTree(_), true)
+        | (TreeType::DenseAppendOnlyFixedSizeTree(_), true)
+        | (TreeType::ProvableSumIndexedTree, true)
+        | (TreeType::ProvableCountProvableSumIndexedTree, true)
+        | (TreeType::PrivateDocumentStore(_), true)
+        | (TreeType::ProvableCountIndexedTree, true) => Op::DeleteLayeredMaybeSpecialized,
+        (TreeType::SumTree, false)
+        | (TreeType::BigSumTree, false)
+        | (TreeType::CountTree, false)
+        | (TreeType::CountSumTree, false)
+        | (TreeType::ProvableCountTree, false)
+        | (TreeType::ProvableCountSumTree, false)
+        | (TreeType::ProvableSumTree, false)
+        | (TreeType::ProvableCountProvableSumTree, false)
+        | (TreeType::CommitmentTree(_), false)
+        | (TreeType::MmrTree, false)
+        | (TreeType::BulkAppendTree(_), false)
+        | (TreeType::DenseAppendOnlyFixedSizeTree(_), false)
+        | (TreeType::ProvableSumIndexedTree, false)
+        | (TreeType::ProvableCountProvableSumIndexedTree, false)
+        | (TreeType::PrivateDocumentStore(_), false)
+        | (TreeType::ProvableCountIndexedTree, false) => Op::DeleteMaybeSpecialized,
+    }
+}
+
+/// Version 1 of the delete op selection.
+///
+/// As [`delete_op_v0`], except that an element of a `NormalTree` that is not
+/// declared a tree is refunded from the stored element as well. A delete then
+/// gives back what the insertion took in every tree type, whatever the
+/// caller declares.
+fn delete_op_v1(in_tree_type: TreeType, is_layered: bool) -> Op {
+    match (in_tree_type, is_layered) {
+        (TreeType::NormalTree, false) => Op::DeleteMaybeSpecialized,
+        _ => delete_op_v0(in_tree_type, is_layered),
+    }
+}
 
 /// Extension trait for deleting elements from Merk storage.
 pub trait ElementDeleteFromStorageExtensions {
@@ -61,43 +147,12 @@ impl ElementDeleteFromStorageExtensions for Element {
         in_tree_type: TreeType,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_grovedb_v0_with_cost!("delete", grove_version.grovedb_versions.element.delete);
-        let op = match (in_tree_type, is_layered) {
-            (TreeType::NormalTree, true) => Op::DeleteLayered,
-            (TreeType::NormalTree, false) => Op::Delete,
-            (TreeType::SumTree, true)
-            | (TreeType::BigSumTree, true)
-            | (TreeType::CountTree, true)
-            | (TreeType::CountSumTree, true)
-            | (TreeType::ProvableCountTree, true)
-            | (TreeType::ProvableCountSumTree, true)
-            | (TreeType::ProvableSumTree, true)
-            | (TreeType::ProvableCountProvableSumTree, true)
-            | (TreeType::CommitmentTree(_), true)
-            | (TreeType::MmrTree, true)
-            | (TreeType::BulkAppendTree(_), true)
-            | (TreeType::DenseAppendOnlyFixedSizeTree(_), true)
-            | (TreeType::ProvableSumIndexedTree, true)
-            | (TreeType::ProvableCountProvableSumIndexedTree, true)
-            | (TreeType::PrivateDocumentStore(_), true)
-            | (TreeType::ProvableCountIndexedTree, true) => Op::DeleteLayeredMaybeSpecialized,
-            (TreeType::SumTree, false)
-            | (TreeType::BigSumTree, false)
-            | (TreeType::CountTree, false)
-            | (TreeType::CountSumTree, false)
-            | (TreeType::ProvableCountTree, false)
-            | (TreeType::ProvableCountSumTree, false)
-            | (TreeType::ProvableSumTree, false)
-            | (TreeType::ProvableCountProvableSumTree, false)
-            | (TreeType::CommitmentTree(_), false)
-            | (TreeType::MmrTree, false)
-            | (TreeType::BulkAppendTree(_), false)
-            | (TreeType::DenseAppendOnlyFixedSizeTree(_), false)
-            | (TreeType::ProvableSumIndexedTree, false)
-            | (TreeType::ProvableCountProvableSumIndexedTree, false)
-            | (TreeType::PrivateDocumentStore(_), false)
-            | (TreeType::ProvableCountIndexedTree, false) => Op::DeleteMaybeSpecialized,
-        };
+        let op = cost_return_on_error_default!(delete_op(
+            "delete",
+            grove_version.grovedb_versions.element.delete,
+            in_tree_type,
+            is_layered,
+        ));
         let batch = [(key, op)];
         // todo not sure we get it again, we need to see if this is necessary
         let tree_type = merk.tree_type;
@@ -135,49 +190,15 @@ impl ElementDeleteFromStorageExtensions for Element {
             -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_grovedb_v0_with_cost!(
+        let op = cost_return_on_error_default!(delete_op(
             "delete_with_sectioned_removal_bytes",
             grove_version
                 .grovedb_versions
                 .element
-                .delete_with_sectioned_removal_bytes
-        );
-        let op = match (in_tree_type, is_layered) {
-            (TreeType::NormalTree, true) => Op::DeleteLayered,
-            (TreeType::NormalTree, false) => Op::Delete,
-            (TreeType::SumTree, true)
-            | (TreeType::BigSumTree, true)
-            | (TreeType::CountTree, true)
-            | (TreeType::CountSumTree, true)
-            | (TreeType::ProvableCountTree, true)
-            | (TreeType::ProvableCountSumTree, true)
-            | (TreeType::ProvableSumTree, true)
-            | (TreeType::ProvableCountProvableSumTree, true)
-            | (TreeType::CommitmentTree(_), true)
-            | (TreeType::MmrTree, true)
-            | (TreeType::BulkAppendTree(_), true)
-            | (TreeType::DenseAppendOnlyFixedSizeTree(_), true)
-            | (TreeType::ProvableSumIndexedTree, true)
-            | (TreeType::ProvableCountProvableSumIndexedTree, true)
-            | (TreeType::PrivateDocumentStore(_), true)
-            | (TreeType::ProvableCountIndexedTree, true) => Op::DeleteLayeredMaybeSpecialized,
-            (TreeType::SumTree, false)
-            | (TreeType::BigSumTree, false)
-            | (TreeType::CountTree, false)
-            | (TreeType::CountSumTree, false)
-            | (TreeType::ProvableCountTree, false)
-            | (TreeType::ProvableCountSumTree, false)
-            | (TreeType::ProvableSumTree, false)
-            | (TreeType::ProvableCountProvableSumTree, false)
-            | (TreeType::CommitmentTree(_), false)
-            | (TreeType::MmrTree, false)
-            | (TreeType::BulkAppendTree(_), false)
-            | (TreeType::DenseAppendOnlyFixedSizeTree(_), false)
-            | (TreeType::ProvableSumIndexedTree, false)
-            | (TreeType::ProvableCountProvableSumIndexedTree, false)
-            | (TreeType::PrivateDocumentStore(_), false)
-            | (TreeType::ProvableCountIndexedTree, false) => Op::DeleteMaybeSpecialized,
-        };
+                .delete_with_sectioned_removal_bytes,
+            in_tree_type,
+            is_layered,
+        ));
         let batch = [(key, op)];
         // todo not sure we get it again, we need to see if this is necessary
         let tree_type = merk.tree_type;
@@ -211,51 +232,77 @@ impl ElementDeleteFromStorageExtensions for Element {
         batch_operations: &mut Vec<BatchEntry<K>>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_grovedb_v0_with_cost!(
+        let op = cost_return_on_error_default!(delete_op(
             "delete_into_batch_operations",
             grove_version
                 .grovedb_versions
                 .element
-                .delete_into_batch_operations
-        );
-        let op = match (in_tree_type, is_layered) {
-            (TreeType::NormalTree, true) => Op::DeleteLayered,
-            (TreeType::NormalTree, false) => Op::Delete,
-            (TreeType::SumTree, true)
-            | (TreeType::BigSumTree, true)
-            | (TreeType::CountTree, true)
-            | (TreeType::CountSumTree, true)
-            | (TreeType::ProvableCountTree, true)
-            | (TreeType::ProvableCountSumTree, true)
-            | (TreeType::ProvableSumTree, true)
-            | (TreeType::ProvableCountProvableSumTree, true)
-            | (TreeType::CommitmentTree(_), true)
-            | (TreeType::MmrTree, true)
-            | (TreeType::BulkAppendTree(_), true)
-            | (TreeType::DenseAppendOnlyFixedSizeTree(_), true)
-            | (TreeType::ProvableSumIndexedTree, true)
-            | (TreeType::ProvableCountProvableSumIndexedTree, true)
-            | (TreeType::PrivateDocumentStore(_), true)
-            | (TreeType::ProvableCountIndexedTree, true) => Op::DeleteLayeredMaybeSpecialized,
-            (TreeType::SumTree, false)
-            | (TreeType::BigSumTree, false)
-            | (TreeType::CountTree, false)
-            | (TreeType::CountSumTree, false)
-            | (TreeType::ProvableCountTree, false)
-            | (TreeType::ProvableCountSumTree, false)
-            | (TreeType::ProvableSumTree, false)
-            | (TreeType::ProvableCountProvableSumTree, false)
-            | (TreeType::CommitmentTree(_), false)
-            | (TreeType::MmrTree, false)
-            | (TreeType::BulkAppendTree(_), false)
-            | (TreeType::DenseAppendOnlyFixedSizeTree(_), false)
-            | (TreeType::ProvableSumIndexedTree, false)
-            | (TreeType::ProvableCountProvableSumIndexedTree, false)
-            | (TreeType::PrivateDocumentStore(_), false)
-            | (TreeType::ProvableCountIndexedTree, false) => Op::DeleteMaybeSpecialized,
-        };
+                .delete_into_batch_operations,
+            in_tree_type,
+            is_layered,
+        ));
         let entry = (key, op);
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_refund_raw_bytes_only_for_an_undeclared_delete_in_a_normal_tree_at_version_0() {
+        assert!(matches!(
+            delete_op("delete", 0, TreeType::NormalTree, false),
+            Ok(Op::Delete)
+        ));
+        assert!(matches!(
+            delete_op("delete", 1, TreeType::NormalTree, false),
+            Ok(Op::DeleteMaybeSpecialized)
+        ));
+        for version in [0, 1] {
+            assert!(matches!(
+                delete_op("delete", version, TreeType::NormalTree, true),
+                Ok(Op::DeleteLayered)
+            ));
+            assert!(matches!(
+                delete_op("delete", version, TreeType::SumTree, false),
+                Ok(Op::DeleteMaybeSpecialized)
+            ));
+            assert!(matches!(
+                delete_op("delete", version, TreeType::SumTree, true),
+                Ok(Op::DeleteLayeredMaybeSpecialized)
+            ));
+        }
+    }
+
+    #[test]
+    fn should_refuse_a_feature_version_it_does_not_know() {
+        let mut grove_version = GroveVersion::latest().clone();
+        grove_version
+            .grovedb_versions
+            .element
+            .delete_into_batch_operations = 2;
+        let mut batch_operations: Vec<BatchEntry<Vec<u8>>> = vec![];
+
+        let result = Element::delete_into_batch_operations(
+            b"key".to_vec(),
+            false,
+            TreeType::NormalTree,
+            &mut batch_operations,
+            &grove_version,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            result,
+            Err(Error::VersionError(GroveVersionError::UnknownVersionMismatch {
+                ref method,
+                ref known_versions,
+                received: 2,
+            })) if method == "delete_into_batch_operations" && known_versions == &[0, 1]
+        ));
+        assert!(batch_operations.is_empty());
     }
 }
