@@ -94,9 +94,35 @@ fn v5_matches_v4_apart_from_its_gates() {
     path_query_methods.merge = GROVE_V4.grovedb_versions.path_query_methods.merge;
     path_query_methods.per_instance_query_offsets = 0;
     v5_as_v4.grovedb_versions.apply_batch.keyless_append_repeats = 0;
+    v5_as_v4
+        .grovedb_versions
+        .apply_batch
+        .same_key_tree_type_conflict = 0;
     v5_as_v4.merk_versions.tree.just_in_time_value_update =
         GROVE_V4.merk_versions.tree.just_in_time_value_update;
     assert_eq!(format!("{v5_as_v4:?}"), format!("{GROVE_V4:?}"));
+}
+
+#[test]
+fn same_key_tree_type_conflict_is_gated_to_v5() {
+    // GROVE_V4 as GroveDB 6.1.1 shipped it applies a batch inserting trees of
+    // different tree types at one key (consistency check disabled), and Dash
+    // Platform 5.0 runs it: refusing the batch there would change what a
+    // live protocol version accepts.
+    for v in [&GROVE_V1, &GROVE_V2, &GROVE_V3, &GROVE_V4] {
+        assert_eq!(
+            v.grovedb_versions.apply_batch.same_key_tree_type_conflict, 0,
+            "v{}",
+            v.protocol_version
+        );
+    }
+    assert_eq!(
+        GROVE_V5
+            .grovedb_versions
+            .apply_batch
+            .same_key_tree_type_conflict,
+        1
+    );
 }
 
 #[test]

@@ -42,6 +42,12 @@
 //!   batch, as 6.1.1 did. Gated because it flips an accepted/rejected outcome
 //!   (issue #1031).
 //!
+//! - `apply_batch.same_key_tree_type_conflict: 1`: a batch applied with its
+//!   consistency check disabled is refused when it inserts trees of
+//!   different tree types at one key. V4 applies it, as 6.1.1 did, with the
+//!   child Merk keeping the first insert's type whatever the last insert
+//!   asked for. Gated because it flips an accepted/rejected outcome.
+//!
 //! - `merk_versions.tree.just_in_time_value_update: 2`: Merk accepts that
 //!   answer and records the removal plus the insertion. Versions 0 and 1
 //!   refuse it, so grove v1..v4 cannot account an update as a replacement at
@@ -81,6 +87,7 @@ pub const GROVE_V5: GroveVersion = GroveVersion {
     grovedb_versions: GroveDBVersions {
         apply_batch: GroveDBApplyBatchVersions {
             keyless_append_repeats: 1, // changed: a batch may repeat a keyless append
+            same_key_tree_type_conflict: 1, // changed: two tree types at one key are refused
             ..GROVE_V4.grovedb_versions.apply_batch
         },
         element: GroveDBElementMethodVersions {
