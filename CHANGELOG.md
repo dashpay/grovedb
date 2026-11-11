@@ -118,6 +118,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must move to 0.41 as well.
 
 ### Fixed
+- MMR proof verification (`MerkleProof::calculate_root`, `verify`,
+  `calculate_root_with_new_leaf` and `verify_incremental`,
+  `MmrTreeProof::verify` and `verify_and_get_root`, and through them the
+  chunk proofs of bulk append, commitment and private document store trees)
+  accepts a proof only in the layout `MMR::gen_proof` emits for the proved
+  leaves: one item for each peak with no proved leaf that is left of the
+  last proved leaf, and exactly one item for all the peaks right of it (the
+  peak itself when there is one, their bag when there are more). The
+  verifier used to stop at the peak where the proof's items ran out and bag
+  what it had, so the number of items chose how many peaks were walked; the
+  layout now follows from `mmr_size` and the leaf positions alone. A proof
+  with too few items, with the right-hand peaks sent one by one, or with
+  items for a one-leaf MMR is `InvalidProof`, and so is
+  `MerkleProof::calculate_root` with no leaves. Not version-gated: no hash
+  changes and every proof `gen_proof` emits verifies as before.
 - An indexed tree's axis proof carries, for each row, the entry the row
   points at and a label saying how that entry's bytes fold into its committed
   hash (`IndexedTargetCommitment`). The verifier now requires the label to be
