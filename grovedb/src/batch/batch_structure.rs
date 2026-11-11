@@ -16,7 +16,7 @@ use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
 #[cfg(feature = "minimal")]
 use grovedb_storage::worst_case_costs::WorstKeyLength;
 #[cfg(feature = "minimal")]
-use grovedb_version::version::GroveVersion;
+use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 #[cfg(feature = "minimal")]
 use grovedb_visualize::{DebugByteVectors, DebugBytes};
 #[cfg(feature = "minimal")]
@@ -34,6 +34,28 @@ pub type OpsByPath = BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, GroveOp>>;
 /// Level, path, key, op
 #[cfg(feature = "minimal")]
 pub type OpsByLevelPath = IntMap<u32, OpsByPath>;
+
+/// Whether a batch that inserts trees of different tree types at one key is
+/// refused, as `grovedb_versions.apply_batch.same_key_tree_type_conflict`
+/// selects: `0` (V1..V4) applies it, `1` (V5) refuses it. A slot value it
+/// does not know is an error.
+#[cfg(feature = "minimal")]
+fn refuses_same_key_tree_type_conflict(grove_version: &GroveVersion) -> Result<bool, Error> {
+    match grove_version
+        .grovedb_versions
+        .apply_batch
+        .same_key_tree_type_conflict
+    {
+        0 => Ok(false),
+        1 => Ok(true),
+        version => Err(GroveVersionError::UnknownVersionMismatch {
+            method: "continue_from_ops".to_string(),
+            known_versions: vec![0, 1],
+            received: version,
+        }
+        .into()),
+    }
+}
 
 /// Build the synthetic key under which a keyless append-only op is filed.
 ///
@@ -181,11 +203,8 @@ where
         // Tree inserts of different tree types at one key reach this point
         // only with the consistency check disabled. V1..V4 apply them, the
         // child Merk keeping the first insert's type; V5 refuses the batch.
-        let refuse_tree_type_conflicts = grove_version
-            .grovedb_versions
-            .apply_batch
-            .same_key_tree_type_conflict
-            >= 1;
+        let refuse_tree_type_conflicts =
+            cost_return_on_error_no_add!(cost, refuses_same_key_tree_type_conflict(grove_version));
 
         let mut ops_by_level_paths: OpsByLevelPath = previous_ops.unwrap_or_default();
         let mut current_last_level: u32 =

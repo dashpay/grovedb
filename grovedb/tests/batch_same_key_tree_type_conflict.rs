@@ -15,7 +15,10 @@ use grovedb::{
     reference_path::ReferencePathType,
     Element, Error, GroveDb,
 };
-use grovedb_version::version::{v4::GROVE_V4, v5::GROVE_V5, GroveVersion};
+use grovedb_version::{
+    error::GroveVersionError,
+    version::{v4::GROVE_V4, v5::GROVE_V5, GroveVersion},
+};
 use tempfile::TempDir;
 
 const PARENT: &[u8] = b"parent";
@@ -444,4 +447,34 @@ fn should_keep_the_stored_tree_type_over_a_tree_the_first_segment_read_on_v4() {
         Element::new_sum_item(7)
     );
     assert_eq!(issues(&db, grove_version), 0);
+}
+
+/// The slot knows `0` and `1`. Another value selects neither rule, for a
+/// batch with a tree insert and for one without.
+#[test]
+fn should_refuse_a_batch_under_an_unknown_tree_type_conflict_version() {
+    let mut grove_version = GROVE_V5.clone();
+    grove_version
+        .grovedb_versions
+        .apply_batch
+        .same_key_tree_type_conflict = 2;
+    let (_dir, db) = grove(&GROVE_V5);
+    for element in [Element::empty_tree(), Element::new_item(vec![1])] {
+        let result = apply_without_consistency_check(&db, vec![at_key(element)], &grove_version);
+        assert!(
+            matches!(
+                &result,
+                Err(Error::VersionError(GroveVersionError::UnknownVersionMismatch {
+                    known_versions,
+                    received: 2,
+                    ..
+                })) if known_versions == &vec![0, 1]
+            ),
+            "expected an unknown version error, got {result:?}"
+        );
+    }
+    assert!(matches!(
+        stored_at_key(&db, &GROVE_V5),
+        Err(Error::PathKeyNotFound(_))
+    ));
 }

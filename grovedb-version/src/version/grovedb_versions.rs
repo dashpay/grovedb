@@ -329,6 +329,7 @@ pub struct GroveDBApplyBatchVersions {
     /// before the first of them, as in the second segment of a partial
     /// batch whose first segment read under the key. The slot gates an
     /// accepted/rejected outcome: a batch V1..V4 apply is refused on V5+.
+    /// Any other value is an `UnknownVersionMismatch` error.
     pub same_key_tree_type_conflict: FeatureVersion,
 }
 
