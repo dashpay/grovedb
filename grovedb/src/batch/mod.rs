@@ -5521,6 +5521,12 @@ where
 /// the same batch wrote) and by the partial-batch continuation, where an
 /// add-on op from the callback lands on a key whose propagation is still
 /// pending (issue #708).
+///
+/// A Merk aggregate tree is rebuilt at apply from `aggregate_data` alone, so
+/// the caller passes the aggregate that names the element's own type: the
+/// propagation resolves a level that reports none through
+/// [`aggregate_above_level`], and the continuation refuses an add-on whose
+/// type the pending aggregate does not name.
 #[cfg(feature = "minimal")]
 pub(in crate::batch) fn insert_op_with_propagated_root(
     element: &Element,
@@ -5643,6 +5649,57 @@ pub(in crate::batch) fn insert_op_with_propagated_root(
         _ => Err(Error::InvalidBatchOperation(
             "insertion of element under a non tree",
         )),
+    }
+}
+
+/// The aggregate a batch stores for `element`, a tree it inserts above a level
+/// it ran, which reported `aggregate_data`.
+///
+/// `GroveOp::InsertTreeWithRootHash` rebuilds the stored element from that
+/// aggregate alone, and a level left empty reports
+/// `AggregateData::NoAggregateData` whatever tree it belongs to. Selected by
+/// `grovedb_versions.apply_batch.tree_insert_above_emptied_level`:
+///
+/// - `0` (V1..V4): the reported aggregate, as it is. A batch that inserts a
+///   sum tree and leaves it empty stores a plain `Tree`. Frozen.
+/// - `1` (V5): for a sum or count tree (wrapped or not) above a level that
+///   reports no aggregate, the zero aggregate of that tree's own type, so
+///   the tree the caller sent is stored. Anything else as reported.
+#[cfg(feature = "minimal")]
+fn aggregate_above_level(
+    element: &Element,
+    aggregate_data: AggregateData,
+    grove_version: &GroveVersion,
+) -> Result<AggregateData, Error> {
+    match grove_version
+        .grovedb_versions
+        .apply_batch
+        .tree_insert_above_emptied_level
+    {
+        0 => Ok(aggregate_data),
+        1 => Ok(match (aggregate_data, element.underlying()) {
+            (
+                AggregateData::NoAggregateData,
+                tree @ (Element::SumTree(..)
+                | Element::BigSumTree(..)
+                | Element::CountTree(..)
+                | Element::CountSumTree(..)
+                | Element::ProvableCountTree(..)
+                | Element::ProvableCountSumTree(..)
+                | Element::ProvableSumTree(..)
+                | Element::ProvableCountProvableSumTree(..)),
+            ) => tree
+                .tree_type()
+                .map(|tree_type| AggregateData::from(tree_type.empty_tree_feature_type()))
+                .unwrap_or(aggregate_data),
+            _ => aggregate_data,
+        }),
+        version => Err(GroveVersionError::UnknownVersionMismatch {
+            method: "aggregate_above_level".to_string(),
+            known_versions: vec![0, 1],
+            received: version,
+        }
+        .into()),
     }
 }
 
@@ -5860,6 +5917,14 @@ impl GroveDb {
                                                 | GroveOp::ReplaceDontCheckForBackwardsReferences { element }
                                                 | GroveOp::Patch { element, .. }
                                                 | GroveOp::PatchDontCheckForBackwardsReferences { element, .. } => {
+                                                    let aggregate_data = cost_return_on_error_no_add!(
+                                                        cost,
+                                                        aggregate_above_level(
+                                                            element,
+                                                            aggregate_data,
+                                                            grove_version,
+                                                        )
+                                                    );
                                                     *mutable_occupied_entry = cost_return_on_error_no_add!(
                                                         cost,
                                                         insert_op_with_propagated_root(

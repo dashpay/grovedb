@@ -442,6 +442,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             same_batch_reference_target_prediction: 1,
             // v0: every operation is counted for repeats, keyless appends included.
             keyless_append_repeats: 0,
+            tree_insert_above_emptied_level: 0,
         },
         element: GroveDBElementMethodVersions {
             delete: 0,
