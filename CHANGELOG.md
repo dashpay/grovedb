@@ -124,7 +124,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are still pending at that point, and for some shapes of the primary the
   read returned an entry the level had just removed, so the mirror saw no
   change and the secondaries kept the row. The mirror now takes a key the
-  level's Merk batch deletes as absent, without the read. Gated by the new
+  level's Merk batch deletes as absent, without the read, and a partial
+  batch's later segment does the same until it writes the key again. Gated
+  by the new
   `apply_batch.indexed_mirror_removed_entry_post_state` slot (0 in V1..V4,
   1 in V5; **BREAKING** for code building `GroveDBApplyBatchVersions` by
   hand): on V5 such a removal commits a different secondary root and is

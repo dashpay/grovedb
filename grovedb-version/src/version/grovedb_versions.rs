@@ -318,7 +318,9 @@ pub struct GroveDBApplyBatchVersions {
     ///   in every secondary. Whether it happens depends on the shape of the
     ///   primary around the removed node.
     /// - `1` (V5+): a key the level's Merk batch deletes is absent after the
-    ///   apply, with no read, so its rows are always removed.
+    ///   apply, with no read, so its rows are always removed. It stays
+    ///   absent, unread, to a later segment of the same partial batch until
+    ///   that batch writes it again.
     ///
     /// Gated because, for a removal that kept its row, it changes a committed
     /// root (the secondary no longer holds the row) and a tracked cost (the

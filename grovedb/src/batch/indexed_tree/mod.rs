@@ -36,7 +36,7 @@
 //!   `apply_with_specialized_costs` returns:
 //!   [`read_post_apply_transitions`] pairs each captured key's old
 //!   aggregates with its new ones (absent, from GROVE_V5, for a key the
-//!   level's Merk batch deletes; read back otherwise), and
+//!   batch removed and has not written since; read back otherwise), and
 //!   [`apply_indexed_secondary_mirror_post_apply`] assembles one atomic Merk
 //!   batch of row moves for
 //!   that axis's secondary, applies it, and returns the secondary's

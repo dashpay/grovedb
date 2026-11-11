@@ -9,9 +9,15 @@
 //! removed node; `smallest_case_keys` builds the smallest such shape.
 //!
 //! From GROVE_V5 the mirror takes a key the level's Merk batch deletes as
-//! absent (`apply_batch.indexed_mirror_removed_entry_post_state` 1). GROVE_V4
-//! keeps the read, as GroveDB 6.1.1 shipped it.
+//! absent (`apply_batch.indexed_mirror_removed_entry_post_state` 1), and so
+//! does a later segment of the same partial batch, whose pre-state capture
+//! would otherwise read the removed entry the same way. GROVE_V4 keeps the
+//! read, as GroveDB 6.1.1 shipped it.
 
+use grovedb_costs::{
+    storage_cost::{removal::StorageRemovedBytes::BasicStorageRemoval, StorageCost},
+    OperationCost,
+};
 use grovedb_path::SubtreePath;
 use grovedb_version::version::{v4::GROVE_V4, GroveVersion};
 
@@ -52,6 +58,16 @@ impl Variant {
             Variant::Count => Element::new_item(b"v".to_vec()),
             Variant::Sum => Element::new_sum_item(sum),
             Variant::CountSum => Element::new_item_with_sum_item(b"v".to_vec(), sum),
+        }
+    }
+
+    /// A child that differs from every `child(sum)` the fixtures insert, in
+    /// its value and, where the variant has one, its sum.
+    fn changed_child(self) -> Element {
+        match self {
+            Variant::Count => Element::new_item(b"changed".to_vec()),
+            Variant::Sum => Element::new_sum_item(100),
+            Variant::CountSum => Element::new_item_with_sum_item(b"changed".to_vec(), 100),
         }
     }
 
@@ -348,29 +364,196 @@ fn only_a_removal_that_kept_its_row_costs_differently_from_grove_v5() {
     // The gate moves no other cost: a removal whose row GROVE_V4 does remove
     // costs the same on both, and the one whose row it keeps is charged for
     // the row's delete from GROVE_V5.
+    let removal_cost = |key: &[u8], grove_version: &GroveVersion| {
+        let db = indexed_tree_with(Variant::Count, &smallest_case_keys(), &GROVE_V4);
+        let result = db.delete_from_count_indexed_tree(
+            [TEST_LEAF, INDEXED].as_ref(),
+            key,
+            None,
+            grove_version,
+        );
+        assert!(
+            matches!(result.value, Ok(true)),
+            "removing {key:?}: {:?}",
+            result.value
+        );
+        result.cost
+    };
     for key in smallest_case_keys() {
-        let cost_at = |grove_version: &GroveVersion| {
-            let db = indexed_tree_with(Variant::Count, &smallest_case_keys(), &GROVE_V4);
-            db.delete_from_count_indexed_tree(
-                [TEST_LEAF, INDEXED].as_ref(),
-                &key,
-                None,
-                grove_version,
-            )
-            .cost
-        };
-        let v4 = cost_at(&GROVE_V4);
-        let v5 = cost_at(GroveVersion::latest());
+        let v4 = removal_cost(&key, &GROVE_V4);
+        let v5 = removal_cost(&key, GroveVersion::latest());
         if key == b"k2" {
-            assert!(
-                v5.storage_cost.removed_bytes.total_removed_bytes()
-                    > v4.storage_cost.removed_bytes.total_removed_bytes(),
-                "the row's bytes are removed: {v4:?} against {v5:?}"
+            assert_eq!(
+                v4,
+                OperationCost {
+                    seek_count: 24,
+                    storage_cost: StorageCost {
+                        added_bytes: 0,
+                        replaced_bytes: 546,
+                        removed_bytes: BasicStorageRemoval(159),
+                    },
+                    storage_loaded_bytes: 1772,
+                    hash_node_calls: 27,
+                    sinsemilla_hash_calls: 0,
+                },
+                "GROVE_V4 keeps the row and charges the read"
+            );
+            assert_eq!(
+                v5,
+                OperationCost {
+                    seek_count: 29,
+                    storage_cost: StorageCost {
+                        added_bytes: 0,
+                        replaced_bytes: 1005,
+                        removed_bytes: BasicStorageRemoval(355),
+                    },
+                    storage_loaded_bytes: 1802,
+                    hash_node_calls: 31,
+                    sinsemilla_hash_calls: 0,
+                },
+                "GROVE_V5 removes the row and charges its delete"
             );
         } else {
             assert_eq!(v4, v5, "removing {key:?}");
         }
     }
+}
+
+/// Removes `key` in a partial batch's initial segment and writes `written`
+/// at the same key from the add-on callback, so the second segment runs
+/// while the removal is still pending.
+fn remove_then_write_in_one_partial_batch(
+    db: &GroveDb,
+    key: &[u8],
+    written: Element,
+    grove_version: &GroveVersion,
+) {
+    let path = vec![TEST_LEAF.to_vec(), INDEXED.to_vec()];
+    db.apply_partial_batch(
+        vec![QualifiedGroveDbOp::delete_op(path.clone(), key.to_vec())],
+        None,
+        |_, _| {
+            Ok(vec![QualifiedGroveDbOp::insert_or_replace_op(
+                path.clone(),
+                key.to_vec(),
+                written.clone(),
+            )])
+        },
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("remove then write in one partial batch");
+}
+
+/// The same two steps as two batches, the removal committed before the write.
+fn remove_then_write_in_two_batches(
+    db: &GroveDb,
+    key: &[u8],
+    written: Element,
+    grove_version: &GroveVersion,
+) {
+    let path = vec![TEST_LEAF.to_vec(), INDEXED.to_vec()];
+    db.apply_batch(
+        vec![QualifiedGroveDbOp::delete_op(path.clone(), key.to_vec())],
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("remove");
+    db.apply_batch(
+        vec![QualifiedGroveDbOp::insert_or_replace_op(
+            path,
+            key.to_vec(),
+            written,
+        )],
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("write");
+}
+
+#[test]
+fn a_partial_batch_that_removes_an_entry_and_writes_it_again_keeps_its_row() {
+    // The second segment captures its pre-state on the primary the first
+    // segment removed the key from. Reading the key there can return the
+    // removed entry: an identical write then looks like no change and the
+    // row the first segment removed never comes back.
+    let grove_version = GroveVersion::latest();
+    let keys = smallest_case_keys();
+    for variant in [Variant::Count, Variant::Sum, Variant::CountSum] {
+        for (position, key) in keys.iter().enumerate() {
+            let identical = variant.child(position as i64 + 1);
+            for written in [identical, variant.changed_child()] {
+                let context = format!("{variant:?}, {key:?}, writing {written:?}");
+
+                let partial = indexed_tree_with(variant, &keys, grove_version);
+                remove_then_write_in_one_partial_batch(
+                    &partial,
+                    key,
+                    written.clone(),
+                    grove_version,
+                );
+                assert_clean(&partial, grove_version, &context);
+
+                let sequential = indexed_tree_with(variant, &keys, grove_version);
+                remove_then_write_in_two_batches(&sequential, key, written.clone(), grove_version);
+                assert_clean(&sequential, grove_version, &context);
+
+                assert_eq!(
+                    partial
+                        .get([TEST_LEAF, INDEXED].as_ref(), key, None, grove_version)
+                        .unwrap()
+                        .expect("the entry is back"),
+                    written,
+                    "{context}"
+                );
+                assert_eq!(
+                    partial
+                        .root_hash(None, grove_version)
+                        .unwrap()
+                        .expect("root"),
+                    sequential
+                        .root_hash(None, grove_version)
+                        .unwrap()
+                        .expect("root"),
+                    "one partial batch commits what two batches do: {context}"
+                );
+                assert_reconcile_changes_nothing(&partial, grove_version);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_partial_batch_that_removes_an_entry_twice_removes_its_row_once() {
+    let grove_version = GroveVersion::latest();
+    let db = indexed_tree_with(Variant::Count, &smallest_case_keys(), grove_version);
+    let path = vec![TEST_LEAF.to_vec(), INDEXED.to_vec()];
+    db.apply_partial_batch(
+        vec![QualifiedGroveDbOp::delete_op(path.clone(), b"k2".to_vec())],
+        None,
+        |_, _| {
+            Ok(vec![QualifiedGroveDbOp::delete_op(
+                path.clone(),
+                b"k2".to_vec(),
+            )])
+        },
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("remove k2 in both segments");
+    assert!(matches!(
+        db.get([TEST_LEAF, INDEXED].as_ref(), b"k2", None, grove_version)
+            .unwrap(),
+        Err(Error::PathKeyNotFound(_))
+    ));
+    assert_clean(&db, grove_version, "removed in both segments");
+    assert_reconcile_changes_nothing(&db, grove_version);
 }
 
 #[test]

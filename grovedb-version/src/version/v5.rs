@@ -44,7 +44,8 @@
 //!
 //! - `apply_batch.indexed_mirror_removed_entry_post_state: 1`: the
 //!   indexed-tree mirror takes a key the level's Merk batch deletes as
-//!   absent after the apply instead of reading it back. On V4 that read can
+//!   absent after the apply instead of reading it back, and so does a
+//!   partial batch's later segment before its own apply. On V4 that read can
 //!   return the entry just removed (the delete is still pending in the
 //!   storage batch), and the entry's row then stays in every secondary.
 //!   Gated because it changes a committed secondary root and a tracked cost.

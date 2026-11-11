@@ -53,7 +53,9 @@ use core::fmt;
 use std::{
     cell::Cell,
     cmp::Ordering,
-    collections::{btree_map::Entry, hash_map::Entry as HashMapEntry, BTreeMap, HashMap, HashSet},
+    collections::{
+        btree_map::Entry, hash_map::Entry as HashMapEntry, BTreeMap, BTreeSet, HashMap, HashSet,
+    },
     hash::{Hash, Hasher},
     ops::{Add, AddAssign},
     slice::Iter,
@@ -2092,6 +2094,15 @@ struct TreeCacheMerkByPath<S, F, F2> {
     /// continuation's own ops, and the parent Merk's copy of the element is
     /// only pending.
     pending_indexed_elements: HashMap<Vec<Vec<u8>>, Element>,
+    /// Keys this cache removed from an indexed primary and has not written
+    /// since, keyed by the primary's path. Recorded by the mirror from
+    /// GROVE_V5 (`apply_batch.indexed_mirror_removed_entry_post_state` 1),
+    /// empty before. A removal stays pending for the life of the cache, and
+    /// a Merk read of such a key can return the entry from storage, so the
+    /// mirror and the pre-state capture take these keys as absent instead of
+    /// reading them. That covers a partial batch's continuation, which runs
+    /// on the primary the initial segment removed the key from.
+    indexed_removed_keys: HashMap<Vec<Vec<u8>>, BTreeSet<Vec<u8>>>,
     get_merk_fn: F,
     /// Opens EVERY configured axis secondary for an indexed primary, given
     /// the primary's path. Used when ops mutate an indexed primary so the
@@ -3588,8 +3599,8 @@ where
         // For cidx primaries, capture the pre-apply count value of every
         // key that this level's ops will mutate. After
         // `merk.apply_with_specialized_costs` runs we take each key's
-        // post-apply element (absent, from GROVE_V5, for a key the level's
-        // Merk batch deletes; read back otherwise) and use the (old, new)
+        // post-apply element (absent, from GROVE_V5, for a key this cache
+        // removed and has not written since; read back otherwise) and use the (old, new)
         // count pair to
         // mirror the change in the secondary Merk. Then we store the
         // post-mirror secondary state in `cidx_secondary_after_apply`
@@ -3605,7 +3616,12 @@ where
             let merk = self.merks.get(path).expect("the Merk is cached");
             Some(cost_return_on_error!(
                 &mut cost,
-                indexed_tree::capture_indexed_pre_state(merk, &ops_at_path_by_key, grove_version,)
+                indexed_tree::capture_indexed_pre_state(
+                    merk,
+                    &ops_at_path_by_key,
+                    self.indexed_removed_keys.get(path),
+                    grove_version,
+                )
             ))
         } else {
             None
@@ -5438,13 +5454,15 @@ where
             // (count, sum) transitions are axis-independent, only the sort-key
             // encoding differs. Reading inside the per-axis call charged a
             // PCPSIT batch three primary reads per key where one suffices.
-            // The level's own Merk batch says which keys it removed.
+            // The level's own Merk batch says which keys it removed; the
+            // record of them lasts as long as this cache.
             let transitions = cost_return_on_error!(
                 &mut cost,
                 indexed_tree::read_post_apply_transitions(
                     primary_merk,
                     &pre,
                     &batch_operations,
+                    self.indexed_removed_keys.entry(path.to_vec()).or_default(),
                     grove_version
                 )
             );
@@ -6098,6 +6116,7 @@ impl GroveDb {
                     skipped_insert_paths: Default::default(),
                     secondary_merks: Default::default(),
                     pending_indexed_elements: Default::default(),
+                    indexed_removed_keys: Default::default(),
                     get_merk_fn,
                     get_secondary_merks_fn,
                     indexed_secondary_after_apply: Default::default(),
