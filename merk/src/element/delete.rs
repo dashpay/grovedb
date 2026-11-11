@@ -235,3 +235,63 @@ impl ElementDeleteFromStorageExtensions for Element {
         Ok(()).wrap_with_cost(Default::default())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_refund_raw_bytes_only_for_an_undeclared_delete_in_a_normal_tree_at_version_0() {
+        assert!(matches!(
+            delete_op("delete", 0, TreeType::NormalTree, false),
+            Ok(Op::Delete)
+        ));
+        assert!(matches!(
+            delete_op("delete", 1, TreeType::NormalTree, false),
+            Ok(Op::DeleteMaybeSpecialized)
+        ));
+        for version in [0, 1] {
+            assert!(matches!(
+                delete_op("delete", version, TreeType::NormalTree, true),
+                Ok(Op::DeleteLayered)
+            ));
+            assert!(matches!(
+                delete_op("delete", version, TreeType::SumTree, false),
+                Ok(Op::DeleteMaybeSpecialized)
+            ));
+            assert!(matches!(
+                delete_op("delete", version, TreeType::SumTree, true),
+                Ok(Op::DeleteLayeredMaybeSpecialized)
+            ));
+        }
+    }
+
+    #[test]
+    fn should_refuse_a_feature_version_it_does_not_know() {
+        let mut grove_version = GroveVersion::latest().clone();
+        grove_version
+            .grovedb_versions
+            .element
+            .delete_into_batch_operations = 2;
+        let mut batch_operations: Vec<BatchEntry<Vec<u8>>> = vec![];
+
+        let result = Element::delete_into_batch_operations(
+            b"key".to_vec(),
+            false,
+            TreeType::NormalTree,
+            &mut batch_operations,
+            &grove_version,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            result,
+            Err(Error::VersionError(GroveVersionError::UnknownVersionMismatch {
+                ref method,
+                ref known_versions,
+                received: 2,
+            })) if method == "delete_into_batch_operations" && known_versions == &[0, 1]
+        ));
+        assert!(batch_operations.is_empty());
+    }
+}
