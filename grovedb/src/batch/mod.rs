@@ -5659,12 +5659,10 @@ pub(in crate::batch) fn insert_op_with_propagated_root(
 /// aggregate alone, and a level left empty reports
 /// `AggregateData::NoAggregateData` whatever tree it belongs to. Selected by
 /// `grovedb_versions.apply_batch.tree_insert_above_emptied_level`:
+/// [`aggregate_above_level_v0`] (V1..V4) or [`aggregate_above_level_v1`] (V5).
 ///
-/// - `0` (V1..V4): the reported aggregate, as it is. A batch that inserts a
-///   sum tree and leaves it empty stores a plain `Tree`. Frozen.
-/// - `1` (V5): for a sum or count tree (wrapped or not) above a level that
-///   reports no aggregate, the zero aggregate of that tree's own type, so
-///   the tree the caller sent is stored. Anything else as reported.
+/// Not called for `GroveOp::InsertIfNotExists`, whose level's aggregate is
+/// used as reported on every version (see the propagation's own arm for it).
 #[cfg(feature = "minimal")]
 fn aggregate_above_level(
     element: &Element,
@@ -5676,30 +5674,45 @@ fn aggregate_above_level(
         .apply_batch
         .tree_insert_above_emptied_level
     {
-        0 => Ok(aggregate_data),
-        1 => Ok(match (aggregate_data, element.underlying()) {
-            (
-                AggregateData::NoAggregateData,
-                tree @ (Element::SumTree(..)
-                | Element::BigSumTree(..)
-                | Element::CountTree(..)
-                | Element::CountSumTree(..)
-                | Element::ProvableCountTree(..)
-                | Element::ProvableCountSumTree(..)
-                | Element::ProvableSumTree(..)
-                | Element::ProvableCountProvableSumTree(..)),
-            ) => tree
-                .tree_type()
-                .map(|tree_type| AggregateData::from(tree_type.empty_tree_feature_type()))
-                .unwrap_or(aggregate_data),
-            _ => aggregate_data,
-        }),
+        0 => Ok(aggregate_above_level_v0(aggregate_data)),
+        1 => Ok(aggregate_above_level_v1(element, aggregate_data)),
         version => Err(GroveVersionError::UnknownVersionMismatch {
             method: "aggregate_above_level".to_string(),
             known_versions: vec![0, 1],
             received: version,
         }
         .into()),
+    }
+}
+
+/// The reported aggregate, as it is (V1..V4): a batch that inserts a sum tree
+/// and leaves it empty stores a plain `Tree`. Frozen.
+#[cfg(feature = "minimal")]
+fn aggregate_above_level_v0(aggregate_data: AggregateData) -> AggregateData {
+    aggregate_data
+}
+
+/// For a sum or count tree (wrapped or not) above a level that reports no
+/// aggregate, the zero aggregate of that tree's own type, so the tree the
+/// caller sent is stored (V5). Anything else as reported.
+#[cfg(feature = "minimal")]
+fn aggregate_above_level_v1(element: &Element, aggregate_data: AggregateData) -> AggregateData {
+    match (aggregate_data, element.underlying()) {
+        (
+            AggregateData::NoAggregateData,
+            tree @ (Element::SumTree(..)
+            | Element::BigSumTree(..)
+            | Element::CountTree(..)
+            | Element::CountSumTree(..)
+            | Element::ProvableCountTree(..)
+            | Element::ProvableCountSumTree(..)
+            | Element::ProvableSumTree(..)
+            | Element::ProvableCountProvableSumTree(..)),
+        ) => tree
+            .tree_type()
+            .map(|tree_type| AggregateData::from(tree_type.empty_tree_feature_type()))
+            .unwrap_or(aggregate_data),
+        _ => aggregate_data,
     }
 }
 
@@ -5912,7 +5925,6 @@ impl GroveDb {
                                                 | GroveOp::InsertWithKnownToNotAlreadyExist {
                                                     element,
                                                 }
-                                                | GroveOp::InsertIfNotExists { element, .. }
                                                 | GroveOp::Replace { element }
                                                 | GroveOp::ReplaceDontCheckForBackwardsReferences { element }
                                                 | GroveOp::Patch { element, .. }
@@ -5925,6 +5937,25 @@ impl GroveDb {
                                                             grove_version,
                                                         )
                                                     );
+                                                    *mutable_occupied_entry = cost_return_on_error_no_add!(
+                                                        cost,
+                                                        insert_op_with_propagated_root(
+                                                            element,
+                                                            root_hash,
+                                                            calculated_root_key,
+                                                            aggregate_data,
+                                                            cidx_secondary_state,
+                                                        )
+                                                    );
+                                                }
+                                                // A conditional insert with operations under
+                                                // its tree is not resolved against the stored
+                                                // element: the tree is written whether or not
+                                                // the key holds one. Its level's aggregate is
+                                                // used as reported on every version, so
+                                                // `aggregate_above_level` does not let the
+                                                // op's type replace an existing empty tree's.
+                                                GroveOp::InsertIfNotExists { element, .. } => {
                                                     *mutable_occupied_entry = cost_return_on_error_no_add!(
                                                         cost,
                                                         insert_op_with_propagated_root(

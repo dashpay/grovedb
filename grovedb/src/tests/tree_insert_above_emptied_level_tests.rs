@@ -246,6 +246,72 @@ fn grove_v4_keeps_its_outcome_for_wrapped_trees() {
     }
 }
 
+/// A conditional insert with operations under its tree is not resolved
+/// against the stored element, so the slot leaves it alone: GROVE_V5 stores
+/// what GROVE_V4 stores, and an empty plain tree the key already holds does
+/// not become the sum tree the skipped insert names.
+#[test]
+fn conditional_insert_keeps_its_grove_v4_outcome() {
+    let existing_trees = [
+        ("no tree", None),
+        ("an empty plain tree", Some(Element::empty_tree())),
+        ("an empty sum tree", Some(Element::empty_sum_tree())),
+    ];
+    for (name, existing) in existing_trees {
+        for error_if_exists in [false, true] {
+            let stored_on = |grove_version: &GroveVersion| {
+                let db = db_with_parent(Element::empty_count_sum_tree(), grove_version);
+                if let Some(existing) = &existing {
+                    db.insert(
+                        [PARENT_KEY].as_ref(),
+                        TREE_KEY,
+                        existing.clone(),
+                        None,
+                        None,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .expect("insert the existing tree");
+                }
+                let path = vec![PARENT_KEY.to_vec()];
+                let conditional_insert = if error_if_exists {
+                    QualifiedGroveDbOp::insert_if_not_exists_op(
+                        path,
+                        TREE_KEY.to_vec(),
+                        Element::empty_sum_tree(),
+                    )
+                } else {
+                    QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+                        path,
+                        TREE_KEY.to_vec(),
+                        Element::empty_sum_tree(),
+                    )
+                };
+                db.apply_batch(
+                    vec![conditional_insert, delete_under_tree(MISSING_KEY)],
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .unwrap_or_else(|e| panic!("over {name}: the batch applies, got {e:?}"));
+                stored(&db, TREE_KEY, grove_version)
+            };
+
+            assert_eq!(
+                stored_on(GroveVersion::latest()),
+                Element::empty_tree(),
+                "over {name}, error_if_exists {error_if_exists}"
+            );
+            assert_eq!(
+                stored_on(&GROVE_V4),
+                Element::empty_tree(),
+                "over {name}, error_if_exists {error_if_exists}"
+            );
+        }
+    }
+}
+
 #[test]
 fn unknown_slot_version_is_refused() {
     let mut version = GroveVersion::latest().clone();

@@ -136,9 +136,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `apply_batch.tree_insert_above_emptied_level` slot (0 in V1..V4, which
   keep their outcome, 1 in V5; **BREAKING** for code building
   `GroveDBApplyBatchVersions` by hand), because it changes a stored element,
-  so the root hash and the cost, and accepts a batch V1..V4 refuse. A batch
-  that inserts a tree over one that already holds rows still orphans them
-  (#779).
+  so the root hash and the cost, and accepts a batch V1..V4 refuse. A
+  conditional insert (`InsertIfNotExists`) keeps the V1..V4 outcome: with
+  operations under its tree it is written whether or not the key already
+  holds one, so its type is not supplied over an existing empty tree's. A
+  batch that inserts a tree over one that already holds rows still orphans
+  them (#779).
 - Reads through a pinned iterator view, indexed-tree pages and V5 local count
   pages alike, report a failed seek as the storage error. A failed seek reads
   as no record, so an indexed-tree page called it corruption and a local page

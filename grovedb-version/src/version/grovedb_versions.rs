@@ -324,6 +324,11 @@ pub struct GroveDBApplyBatchVersions {
     ///   operation under it. The worst-case estimate, whose levels report no
     ///   aggregate, sizes such an insert as the caller's element too.
     ///
+    /// A conditional insert (`InsertIfNotExists`) is left out and keeps the
+    /// `0` outcome on every version: with operations under its tree it is not
+    /// resolved against the stored element, so supplying its type could
+    /// replace the type of an empty tree the key already holds.
+    ///
     /// The slot gates the stored element, so the root hash and the cost, and
     /// an accepted/rejected outcome for the two wrapped forms.
     pub tree_insert_above_emptied_level: FeatureVersion,

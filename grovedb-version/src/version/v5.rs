@@ -50,7 +50,8 @@
 //!   counts written under it later never reach its parent, and refuse the
 //!   batch when the tree is wrapped in `NotSummed` or `NotCountedOrSummed`.
 //!   Gated because it changes the stored element, so the root hash and the
-//!   cost, and flips that refusal.
+//!   cost, and flips that refusal. A conditional insert (`InsertIfNotExists`)
+//!   keeps the V4 outcome.
 //!
 //! - `merk_versions.tree.just_in_time_value_update: 2`: Merk accepts that
 //!   answer and records the removal plus the insertion. Versions 0 and 1
