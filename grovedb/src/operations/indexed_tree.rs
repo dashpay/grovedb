@@ -802,8 +802,8 @@ impl GroveDb {
     ///
     /// **When you need this: normally, never.**
     ///
-    /// This is a repair API. No supported write can desync a secondary
-    /// any more, so nothing in ordinary operation requires calling it:
+    /// This is a repair API. From `GROVE_V5` no supported write can desync
+    /// a secondary, so nothing in ordinary operation requires calling it:
     ///
     /// - The dedicated `insert_into_*` / `delete_from_*` APIs maintain
     ///   the secondaries inline.
@@ -815,6 +815,12 @@ impl GroveDb {
     ///   propagates up into the primary's element bytes — keeps the index
     ///   in sync through both paths, pinned by
     ///   `a_deep_write_under_an_indexed_child_keeps_the_secondary_in_sync`.
+    ///
+    /// On `GROVE_V4` one supported write does: removing an entry can leave
+    /// its row in every secondary (see
+    /// `apply_batch.indexed_mirror_entry_read`). A tree
+    /// written under `GROVE_V4` may hold such rows, and this call removes
+    /// them.
     ///
     /// What remains is repair of secondaries damaged by something outside
     /// those paths: storage-level corruption, a partially applied

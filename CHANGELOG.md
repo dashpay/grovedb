@@ -118,6 +118,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must move to 0.41 as well.
 
 ### Fixed
+- From `GROVE_V5`, a batch that inserts a sum or count tree and leaves the
+  level below it empty stores that tree. The batch carries operations at the
+  tree's own path and none leaves a key there, for example a delete of a key
+  that is not stored. An empty Merk reports no aggregate and the batch
+  rebuilt the stored element from the aggregate alone, so it stored a plain
+  `Tree` in place of any of the eight Merk aggregate trees: sums and counts
+  written under it later never reached its parent, and `verify_grovedb`
+  reported nothing. A `NonCounted` wrapper stayed around that plain tree,
+  and a tree wrapped in `NotSummed` or `NotCountedOrSummed` failed the batch
+  with `CorruptedCodeExecution`. Now the tree the caller sent is stored with
+  a zero aggregate, wrapper included, the state the same insert without
+  those operations leaves. The worst-case batch estimate, whose levels
+  report no aggregate, sizes a sum or count tree inserted with operations
+  under it as that tree too (9 more added bytes for a sum tree), as the
+  average-case estimate has since `GROVE_V4`. Gated by the new
+  `apply_batch.tree_insert_above_emptied_level` slot (0 in V1..V4, which
+  keep their outcome, 1 in V5; **BREAKING** for code building
+  `GroveDBApplyBatchVersions` by hand), because it changes a stored element,
+  so the root hash and the cost, and accepts a batch V1..V4 refuse. A
+  conditional insert (`InsertIfNotExists`) keeps the V1..V4 outcome: with
+  operations under its tree it is written whether or not the key already
+  holds one, so its type is not supplied over an existing empty tree's. A
+  batch that inserts a tree over one that already holds rows still orphans
+  them (#779).
+- From `GROVE_V5`, a batch applied with
+  `BatchApplyOptions::disable_operation_consistency_check` is refused with
+  `InvalidBatchOperation` when it inserts trees of different tree types at
+  one key. The child Merk was reserved with the first insert's tree type
+  and a later insert did not change it, so when the batch also wrote under
+  the key a `Tree` then a `SumTree` was stored as a `Tree` with the sum
+  lost, and a `SumTree` then a `Tree` was stored as a `Tree` over a child
+  written as a sum tree, which `verify_grovedb` reports. `GROVE_V1`..`V4`
+  still apply such a batch, as 6.1.1 does. Repeated tree inserts of one
+  tree type, the consistency check (which refuses any two operations at one
+  key) and the cost estimates are unchanged. Gated by the new
+  `apply_batch.same_key_tree_type_conflict` slot (0 in V1..V4, 1 in V5;
+  **BREAKING** for code building `GroveDBApplyBatchVersions` by hand).
+- From `GROVE_V5`, removing an entry from an indexed tree (PCIT, PSIT or
+  PCPSIT) always removes its row from every secondary. After a level's apply
+  the mirror read each changed key back from the primary. The level's writes
+  are still pending at that point, and for some shapes of the primary the
+  read returned an entry the level had just removed, so the mirror saw no
+  change and the secondaries kept the row. The mirror now reads an entry by
+  walking the primary's tree from its root (`Merk::observe_value_and_value_hash`),
+  before and after the apply. The walk follows the tree as it stands, so a
+  removed key is absent, in a partial batch's later segment as well. Gated
+  by the new
+  `apply_batch.indexed_mirror_entry_read` slot (0 in V1..V4,
+  1 in V5; **BREAKING** for code building `GroveDBApplyBatchVersions` by
+  hand): on V5 such a removal commits a different secondary root and is
+  charged for the row's delete, and a write arriving from inside a child of
+  the primary is charged fewer seeks and loaded bytes (the walk loads the
+  path once and the apply reuses it, where the read fetched the key on its
+  own); storage costs are otherwise what they were. The batch estimate
+  follows the same slot: on V5 it reserves two walks of the primary per
+  touched entry in place of four node fetches, so it grows with the
+  primary's estimated levels and stays above a removal whose post-state
+  walk loads nodes the removal did not. `GROVE_V4` is unchanged
+  from 6.1.1 and still keeps the row; a tree written under it may hold such
+  rows, which `verify_grovedb` reports as secondary orphans and
+  `reconcile_indexed_tree_secondaries` removes.
+- MMR proof verification (`MerkleProof::calculate_root`, `verify`,
+  `calculate_root_with_new_leaf` and `verify_incremental`,
+  `MmrTreeProof::verify` and `verify_and_get_root`, and through them the
+  chunk proofs of bulk append, commitment and private document store trees)
+  accepts a proof only in the layout `MMR::gen_proof` emits for the proved
+  leaves: one item for each peak with no proved leaf that is left of the
+  last proved leaf, and exactly one item for all the peaks right of it (the
+  peak itself when there is one, their bag when there are more). The
+  verifier used to stop at the peak where the proof's items ran out and bag
+  what it had, so the number of items chose how many peaks were walked; the
+  layout now follows from `mmr_size` and the leaf positions alone. A proof
+  with too few items, with the right-hand peaks sent one by one, or with
+  items for a one-leaf MMR is `InvalidProof`, and so is
+  `MerkleProof::calculate_root` with no leaves. Not version-gated: no hash
+  changes and every proof `gen_proof` emits verifies as before.
+- An indexed tree's axis proof carries, for each row, the entry the row
+  points at and a label saying how that entry's bytes fold into its committed
+  hash (`IndexedTargetCommitment`). The verifier now requires the label to be
+  the one the entry's own element takes: `Reference` for a reference,
+  `Simple` for an item, `IndexedSingle` / `IndexedMulti` for an indexed tree
+  and `Layered` for any other tree. It used to take the label as given, and a
+  reference and a tree fold the same way, so a reference entry labelled
+  `Layered` over its target's hash verified and returned the reference itself
+  instead of the element it resolves to. Such a proof is now refused with
+  `CorruptedData`. Not gated by grove version: the prover has always written
+  the element's own label, and proof verification is not part of block
+  execution.
 - Reads through a pinned iterator view, indexed-tree pages and V5 local count
   pages alike, report a failed seek as the storage error. A failed seek reads
   as no record, so an indexed-tree page called it corruption and a local page
@@ -143,6 +231,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GroveDBOperationsProofVersions` by hand) and on V5 local pages; resolved
   references keep the target binding Merk already verifies. V1..V4 refuse
   such a global page, as 6.1.1 did.
+- `verify_query_get_parent_tree_info` and
+  `verify_subset_query_get_parent_tree_info` report the aggregate of the tree
+  the query's path ends in when a result row is itself a tree whose lower
+  layer is in a V1 proof. They reported that row's own aggregate instead: for
+  a sum tree holding 1005 whose row `child` is a sum tree holding 1000, a
+  subset verification of the row returned `SummedMerkNode(1000)`. A populated
+  indexed tree reported as a row always carries such a layer, so that case
+  needed no subset verification. Not gated by grove version: proof
+  verification is not part of block execution. V0 proofs are unchanged.
 - From `GROVE_V5`, deleting an element of a `NormalTree` refunds what its
   insertion was charged. Before, a delete there that did not declare a tree
   refunded the raw value bytes: an empty `Tree` removed by a batch `Delete`

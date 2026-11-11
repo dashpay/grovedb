@@ -314,8 +314,10 @@ impl GroveDb {
         // wire format that never supported `SizedQuery::offset`);
         // V1 envelopes honor a non-zero offset if and only if the query
         // validates as offset-paginated. The tree-type check
-        // (ProvableCountTree / ProvableCountSumTree) happens at
-        // leaf-dispatch time inside `run_count_offset_layer_dispatch`.
+        // (ProvableCountTree / ProvableCountSumTree /
+        // ProvableCountProvableSumTree) happens in the V1 walk, on the
+        // proved row of the tree the page reads: see
+        // `validate_count_offset_host`.
         Self::apply_count_offset_envelope_gate(proof, query)?;
 
         match proof {
@@ -648,6 +650,52 @@ impl GroveDb {
             grove_version,
         )?;
         Ok((root_hash, last_tree_feature_type, result))
+    }
+
+    /// Checks one proved row of a query with a non-zero offset: the row of
+    /// the tree the page reads (the last segment of `query.path`) must be a
+    /// `ProvableCountTree`, a `ProvableCountSumTree` or a
+    /// `ProvableCountProvableSumTree`, the hosts the prover serves
+    /// (`check_count_offset_target_tree_type`).
+    ///
+    /// A page is a statement about counts: it skips `offset` rows by reading
+    /// the aggregate each node commits as a number of rows. Only those three
+    /// trees commit a count per node. The page's proof carries no trace of
+    /// which tree it was built over, so the type has to come from here, the
+    /// parent layer, where the row's bytes are bound to the root. An empty
+    /// host has no layer to dispatch on and is refused here too, as the
+    /// prover refuses it.
+    ///
+    /// `element` is the row with its wrappers removed.
+    fn validate_count_offset_host(
+        query: &PathQuery,
+        parent: &[&[u8]],
+        key: &[u8],
+        element: &Element,
+    ) -> Result<(), Error> {
+        let Some((host_key, host_parent)) = query.path.split_last() else {
+            return Ok(());
+        };
+        let is_host = host_key.as_slice() == key
+            && host_parent.len() == parent.len()
+            && host_parent
+                .iter()
+                .zip(parent)
+                .all(|(expected, segment)| expected.as_slice() == *segment);
+        if is_host
+            && !matches!(
+                element,
+                Element::ProvableCountTree(..)
+                    | Element::ProvableCountSumTree(..)
+                    | Element::ProvableCountProvableSumTree(..)
+            )
+        {
+            return Err(Error::InvalidQuery(
+                "count-offset paginated queries are only valid against \
+                 ProvableCountTree / ProvableCountSumTree / ProvableCountProvableSumTree merks",
+            ));
+        }
+        Ok(())
     }
 
     /// Count-offset leaf dispatch for `verify_layer_proof_v1`, its only
@@ -1944,6 +1992,9 @@ impl GroveDb {
                             grove_version,
                         )?;
                     }
+                    if query.has_non_zero_offset() {
+                        Self::validate_count_offset_host(query, current_path, key, &element)?;
+                    }
 
                     // A raw reference can never be an honest V1 row. The
                     // prover rewrites every reference the verifier will
@@ -2071,7 +2122,6 @@ impl GroveDb {
                                 // this lower-layer lookup, so here the
                                 // query descends the primary as usual.
                                 path.push(key);
-                                *last_parent_tree_type = element.tree_feature_type();
                                 if query.query_items_at_path(&path, grove_version)?.is_none() {
                                     // The indexed tree is itself a result and
                                     // nothing is queried below it. The element
@@ -2172,6 +2222,12 @@ impl GroveDb {
                                         break;
                                     }
                                 } else {
+                                    // The walk steps into this tree, so it is
+                                    // the parent of whatever is reported below.
+                                    // A tree that is itself the result (the
+                                    // branch above) must not record its own
+                                    // aggregate as the parent's.
+                                    *last_parent_tree_type = element.tree_feature_type();
                                     if query.should_add_parent_tree_at_path(
                                         current_path,
                                         grove_version,
@@ -2295,7 +2351,6 @@ impl GroveDb {
                                     )?;
                                 }
                                 path.push(key);
-                                *last_parent_tree_type = element.tree_feature_type();
                                 // Does the current query ask for anything BELOW
                                 // this tree, or only for the tree element
                                 // itself?
@@ -2326,6 +2381,14 @@ impl GroveDb {
                                 // tree element itself is reported instead.
                                 let has_query_below =
                                     query.query_items_at_path(&path, grove_version)?.is_some();
+                                // Only a tree the walk steps into is the
+                                // parent of the rows reported below it. With
+                                // no query below, this tree is a result row of
+                                // the layer it sits in, and that layer's own
+                                // tree stays the parent.
+                                if has_query_below {
+                                    *last_parent_tree_type = element.tree_feature_type();
+                                }
 
                                 if !has_query_below && options.verify_proof_succinctness {
                                     // Succinct mode demands the proof carry

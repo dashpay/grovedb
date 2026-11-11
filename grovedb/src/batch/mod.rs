@@ -2072,6 +2072,12 @@ struct TreeCacheMerkByPath<S, F, F2> {
     /// operations applied yet. A skipped insertion must not carry its
     /// unused placeholder into a continuation as if it were the stored tree.
     unused_new_merks: HashSet<Vec<Vec<u8>>>,
+    /// The tree type the first tree insert at each qualified path asked for.
+    /// A later insert at that key reuses the Merk already cached there, be it
+    /// the one that first insert reserved or one a read opened before it, so
+    /// this is what tells a later insert of another tree type apart
+    /// (`apply_batch.same_key_tree_type_conflict`).
+    requested_tree_types: HashMap<Vec<Vec<u8>>, TreeType>,
     /// Conditional insertions that emitted no Merk write. Their proposed
     /// elements must not seed reference resolution in the next segment.
     skipped_insert_paths: HashSet<Vec<Vec<u8>>>,
@@ -2354,12 +2360,16 @@ fn classify_captured_delete_trees(
 
 #[allow(dead_code)] // get_batch_run_mode is defined for future use
 trait TreeCache<G, SR> {
+    /// Called for every tree element the batch inserts at `path`/`key`,
+    /// while its operations are scanned. Returns the tree type an earlier
+    /// insert of this batch asked for at that key, when the cache keeps
+    /// track of it (the estimated-cost caches do not).
     fn insert(
         &mut self,
         path: &KeyInfoPath,
         key: &KeyInfo,
         tree_type: TreeType,
-    ) -> CostResult<(), Error>;
+    ) -> CostResult<Option<TreeType>, Error>;
 
     fn get_batch_run_mode(&self) -> BatchRunMode;
 
@@ -3435,20 +3445,25 @@ where
         path: &KeyInfoPath,
         key: &KeyInfo,
         tree_type: TreeType,
-    ) -> CostResult<(), Error> {
+    ) -> CostResult<Option<TreeType>, Error> {
         let mut cost = OperationCost::default();
 
         let mut inserted_path = path.to_path();
         inserted_path.push(key.get_key_clone());
-        if let HashMapEntry::Vacant(e) = self.merks.entry(inserted_path.clone()) {
+        let earlier_tree_type = self.requested_tree_types.get(&inserted_path).copied();
+        if earlier_tree_type.is_none() {
+            self.requested_tree_types
+                .insert(inserted_path.clone(), tree_type);
+        }
+        if !self.merks.contains_key(&inserted_path) {
             let mut merk =
                 cost_return_on_error!(&mut cost, (self.get_merk_fn)(&inserted_path, true));
             merk.tree_type = tree_type;
-            e.insert(merk);
+            self.merks.insert(inserted_path.clone(), merk);
             self.unused_new_merks.insert(inserted_path);
         }
 
-        Ok(()).wrap_with_cost(cost)
+        Ok(earlier_tree_type).wrap_with_cost(cost)
     }
 
     fn take_cidx_secondary_after_apply(
@@ -5521,6 +5536,12 @@ where
 /// the same batch wrote) and by the partial-batch continuation, where an
 /// add-on op from the callback lands on a key whose propagation is still
 /// pending (issue #708).
+///
+/// A Merk aggregate tree is rebuilt at apply from `aggregate_data` alone, so
+/// the caller passes the aggregate that names the element's own type: the
+/// propagation resolves a level that reports none through
+/// [`aggregate_above_level`], and the continuation refuses an add-on whose
+/// type the pending aggregate does not name.
 #[cfg(feature = "minimal")]
 pub(in crate::batch) fn insert_op_with_propagated_root(
     element: &Element,
@@ -5643,6 +5664,70 @@ pub(in crate::batch) fn insert_op_with_propagated_root(
         _ => Err(Error::InvalidBatchOperation(
             "insertion of element under a non tree",
         )),
+    }
+}
+
+/// The aggregate a batch stores for `element`, a tree it inserts above a level
+/// it ran, which reported `aggregate_data`.
+///
+/// `GroveOp::InsertTreeWithRootHash` rebuilds the stored element from that
+/// aggregate alone, and a level left empty reports
+/// `AggregateData::NoAggregateData` whatever tree it belongs to. Selected by
+/// `grovedb_versions.apply_batch.tree_insert_above_emptied_level`:
+/// [`aggregate_above_level_v0`] (V1..V4) or [`aggregate_above_level_v1`] (V5).
+///
+/// Not called for `GroveOp::InsertIfNotExists`, whose level's aggregate is
+/// used as reported on every version (see the propagation's own arm for it).
+#[cfg(feature = "minimal")]
+fn aggregate_above_level(
+    element: &Element,
+    aggregate_data: AggregateData,
+    grove_version: &GroveVersion,
+) -> Result<AggregateData, Error> {
+    match grove_version
+        .grovedb_versions
+        .apply_batch
+        .tree_insert_above_emptied_level
+    {
+        0 => Ok(aggregate_above_level_v0(aggregate_data)),
+        1 => Ok(aggregate_above_level_v1(element, aggregate_data)),
+        version => Err(GroveVersionError::UnknownVersionMismatch {
+            method: "aggregate_above_level".to_string(),
+            known_versions: vec![0, 1],
+            received: version,
+        }
+        .into()),
+    }
+}
+
+/// The reported aggregate, as it is (V1..V4): a batch that inserts a sum tree
+/// and leaves it empty stores a plain `Tree`. Frozen.
+#[cfg(feature = "minimal")]
+fn aggregate_above_level_v0(aggregate_data: AggregateData) -> AggregateData {
+    aggregate_data
+}
+
+/// For a sum or count tree (wrapped or not) above a level that reports no
+/// aggregate, the zero aggregate of that tree's own type, so the tree the
+/// caller sent is stored (V5). Anything else as reported.
+#[cfg(feature = "minimal")]
+fn aggregate_above_level_v1(element: &Element, aggregate_data: AggregateData) -> AggregateData {
+    match (aggregate_data, element.underlying()) {
+        (
+            AggregateData::NoAggregateData,
+            tree @ (Element::SumTree(..)
+            | Element::BigSumTree(..)
+            | Element::CountTree(..)
+            | Element::CountSumTree(..)
+            | Element::ProvableCountTree(..)
+            | Element::ProvableCountSumTree(..)
+            | Element::ProvableSumTree(..)
+            | Element::ProvableCountProvableSumTree(..)),
+        ) => tree
+            .tree_type()
+            .map(|tree_type| AggregateData::from(tree_type.empty_tree_feature_type()))
+            .unwrap_or(aggregate_data),
+        _ => aggregate_data,
     }
 }
 
@@ -5855,11 +5940,37 @@ impl GroveDb {
                                                 | GroveOp::InsertWithKnownToNotAlreadyExist {
                                                     element,
                                                 }
-                                                | GroveOp::InsertIfNotExists { element, .. }
                                                 | GroveOp::Replace { element }
                                                 | GroveOp::ReplaceDontCheckForBackwardsReferences { element }
                                                 | GroveOp::Patch { element, .. }
                                                 | GroveOp::PatchDontCheckForBackwardsReferences { element, .. } => {
+                                                    let aggregate_data = cost_return_on_error_no_add!(
+                                                        cost,
+                                                        aggregate_above_level(
+                                                            element,
+                                                            aggregate_data,
+                                                            grove_version,
+                                                        )
+                                                    );
+                                                    *mutable_occupied_entry = cost_return_on_error_no_add!(
+                                                        cost,
+                                                        insert_op_with_propagated_root(
+                                                            element,
+                                                            root_hash,
+                                                            calculated_root_key,
+                                                            aggregate_data,
+                                                            cidx_secondary_state,
+                                                        )
+                                                    );
+                                                }
+                                                // A conditional insert with operations under
+                                                // its tree is not resolved against the stored
+                                                // element: the tree is written whether or not
+                                                // the key holds one. Its level's aggregate is
+                                                // used as reported on every version, so
+                                                // `aggregate_above_level` does not let the
+                                                // op's type replace an existing empty tree's.
+                                                GroveOp::InsertIfNotExists { element, .. } => {
                                                     *mutable_occupied_entry = cost_return_on_error_no_add!(
                                                         cost,
                                                         insert_op_with_propagated_root(
@@ -6087,6 +6198,7 @@ impl GroveDb {
                     unprepared_subtree_removals: Vec::new(),
                     merks: Default::default(),
                     unused_new_merks: Default::default(),
+                    requested_tree_types: Default::default(),
                     skipped_insert_paths: Default::default(),
                     secondary_merks: Default::default(),
                     pending_indexed_elements: Default::default(),
@@ -6167,6 +6279,7 @@ impl GroveDb {
         for path in merk_tree_cache.skipped_insert_paths.drain() {
             previous_ops_by_qualified_paths.remove(&path);
             merk_tree_cache.pending_indexed_elements.remove(&path);
+            merk_tree_cache.requested_tree_types.remove(&path);
             if merk_tree_cache.unused_new_merks.remove(&path) {
                 merk_tree_cache.merks.remove(&path);
             }

@@ -307,6 +307,83 @@ pub struct GroveDBApplyBatchVersions {
     /// slot gates an accepted/rejected outcome: a batch V1..V4 refuse is
     /// accepted on V5+.
     pub keyless_append_repeats: FeatureVersion,
+    /// What a batch does with tree inserts of different tree types at one
+    /// key. Only a batch applied with
+    /// `BatchApplyOptions::disable_operation_consistency_check` gets this
+    /// far: the consistency check refuses any two operations at one key.
+    ///
+    /// - `0` (V1..V4): the batch is applied. The child Merk is reserved with
+    ///   the first insert's tree type and the later insert does not change
+    ///   it, while the stored element takes the last insert's flags. When
+    ///   the batch also writes under the key, a `Tree` then a `SumTree` is
+    ///   stored as a `Tree` and the sum is lost, and a `SumTree` then a
+    ///   `Tree` is stored as a `Tree` over a child written as a sum tree,
+    ///   which `verify_grovedb` reports. Preserved for replay.
+    /// - `1` (V5+): the batch is refused with `InvalidBatchOperation`
+    ///   before anything is written.
+    ///
+    /// Repeated tree inserts of one tree type are unchanged on every
+    /// version (the last one's flags are stored), and so are the
+    /// estimated-cost structures, which do not make this check. The two
+    /// inserts are also told apart when the child Merk was already open
+    /// before the first of them, as in the second segment of a partial
+    /// batch whose first segment read under the key. The slot gates an
+    /// accepted/rejected outcome: a batch V1..V4 apply is refused on V5+.
+    /// Any other value is an `UnknownVersionMismatch` error.
+    pub same_key_tree_type_conflict: FeatureVersion,
+    /// The element a batch stores for a Merk aggregate tree (a sum or count
+    /// tree of any kind) it inserts above a level it ran and left empty: the
+    /// batch also carries operations at the tree's own path, and none of them
+    /// leaves a key there (a delete of a key that is not stored, or deletes
+    /// of every key). The batch's upward propagation reads it.
+    ///
+    /// - `0` (V1..V4): the stored element is rebuilt from the aggregate the
+    ///   level reports. An empty Merk reports none, so a plain `Tree` is
+    ///   stored in place of the tree the caller sent, and sums and counts
+    ///   written under it later never reach its parent. A `NonCounted`
+    ///   wrapper stays around that plain tree; a `NotSummed` or
+    ///   `NotCountedOrSummed` one cannot wrap it, so the batch fails.
+    /// - `1` (V5+): the tree the caller sent is stored, with a zero
+    ///   aggregate: what the same insert stores when the batch carries no
+    ///   operation under it. The worst-case estimate, whose levels report no
+    ///   aggregate, sizes such an insert as the caller's element too.
+    ///
+    /// A conditional insert (`InsertIfNotExists`) is left out and keeps the
+    /// `0` outcome on every version: with operations under its tree it is not
+    /// resolved against the stored element, so supplying its type could
+    /// replace the type of an empty tree the key already holds.
+    ///
+    /// The slot gates the stored element, so the root hash and the cost, and
+    /// an accepted/rejected outcome for the two wrapped forms.
+    pub tree_insert_above_emptied_level: FeatureVersion,
+
+    /// How the indexed-tree mirror reads an entry of the primary, before
+    /// the level's apply (the old state) and after it (the new state).
+    ///
+    /// - `0` (V1..V4): with `Merk::get`. Where the path to the key leaves
+    ///   the nodes in memory, that read fetches the key from storage. The
+    ///   level's writes are only pending there, so an entry the level
+    ///   removed can still be returned. The mirror then sees no change and
+    ///   leaves the entry's row in every secondary. Whether it happens
+    ///   depends on the shape of the primary around the removed node.
+    /// - `1` (V5+): by walking the primary's tree from its root. The walk
+    ///   follows the tree as it stands, pending writes included, so a
+    ///   removed key is absent and its rows are always removed, in a later
+    ///   segment of a partial batch as well.
+    ///
+    /// Gated because it changes a committed root (for a removal that kept
+    /// its row, the secondary no longer holds it) and tracked costs. That
+    /// removal is charged for the row's delete. A write whose path the
+    /// batch had not loaded before the capture (one arriving from inside a
+    /// child of the primary) is charged fewer seeks and loaded bytes: the
+    /// walk loads the path once and the apply reuses it, where version 0
+    /// reads the key from storage on its own. Storage costs are otherwise
+    /// the same on both.
+    ///
+    /// The average-case batch estimate reads this slot too, so it reserves
+    /// what the selected read can fetch: four nodes per touched entry on
+    /// `0`, two walks of the primary's estimated levels on `1`.
+    pub indexed_mirror_entry_read: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

@@ -25,6 +25,16 @@
 //! at the referenced path is stale state, not an unsound proof — and
 //! `verify_grovedb`'s stale-target-hash check is what detects that.
 //!
+//! # The shape is the element's, not the prover's
+//!
+//! Each node says how its bytes fold into a commitment (its
+//! [`IndexedTargetCommitment`]). Two shapes can fold the same bytes to the
+//! same hash: a reference and a tree both commit
+//! `combine_hash(H(value), x)`. Rebuilding the hash therefore does not pin
+//! the shape, and the shape decides which element the caller is handed.
+//! So the verifier takes the shape from the element each node decodes to
+//! and refuses a node that claims any other (`decode_node`).
+//!
 //! # Feature split
 //!
 //! BUILDING a chain reads storage, so it needs `minimal`. AUTHENTICATING
@@ -396,6 +406,49 @@ fn shape_commitment(node: &IndexedTargetNode) -> Result<CryptoHash, Error> {
     })
 }
 
+/// Decode one node's element and refuse a commitment shape that is not
+/// the one that element takes.
+///
+/// The mapping is the one `build_commitment` applies when the chain is
+/// built, so an honest chain always passes. Without it the shape would be
+/// the prover's word alone; see the module doc.
+fn decode_node(node: &IndexedTargetNode, grove_version: &GroveVersion) -> Result<Element, Error> {
+    let element = Element::deserialize(&node.value, grove_version).map_err(|e| {
+        Error::CorruptedData(format!("indexed target chain: undecodable element: {e}"))
+    })?;
+    let underlying = element.underlying();
+    let (claimed, shape_is_the_elements_own) = match &node.commitment {
+        IndexedTargetCommitment::Simple => (
+            "Simple",
+            !underlying.is_reference() && !underlying.is_any_tree(),
+        ),
+        IndexedTargetCommitment::Layered(_) => (
+            "Layered",
+            underlying.is_any_tree() && !underlying.is_indexed_tree(),
+        ),
+        IndexedTargetCommitment::IndexedSingle { .. } => (
+            "IndexedSingle",
+            matches!(
+                underlying,
+                Element::ProvableCountIndexedTree(..) | Element::ProvableSumIndexedTree(..)
+            ),
+        ),
+        IndexedTargetCommitment::IndexedMulti { .. } => (
+            "IndexedMulti",
+            matches!(underlying, Element::ProvableCountProvableSumIndexedTree(..)),
+        ),
+        IndexedTargetCommitment::Reference => ("Reference", underlying.is_reference()),
+    };
+    if !shape_is_the_elements_own {
+        return Err(Error::CorruptedData(format!(
+            "indexed target chain: an entry claims the {claimed} commitment shape but decodes \
+             to a {}; the commitment shape must be the one its own element takes",
+            element.type_str()
+        )));
+    }
+    Ok(element)
+}
+
 /// Authenticate a chain and return `(immediate primary element, its
 /// committed value hash, terminal element)`.
 ///
@@ -413,14 +466,9 @@ pub(crate) fn authenticate_target_chain(
                 .to_string(),
         ));
     }
-    let decode = |bytes: &[u8]| -> Result<Element, Error> {
-        Element::deserialize(bytes, grove_version).map_err(|e| {
-            Error::CorruptedData(format!("indexed target chain: undecodable element: {e}"))
-        })
-    };
     let head = &chain.nodes[0];
 
-    let (immediate_commitment, terminal) = match chain.nodes.len() {
+    match chain.nodes.len() {
         1 => {
             if head.is_reference() {
                 return Err(Error::CorruptedData(
@@ -429,7 +477,8 @@ pub(crate) fn authenticate_target_chain(
                         .to_string(),
                 ));
             }
-            (shape_commitment(head)?, decode(&head.value)?)
+            let immediate = decode_node(head, grove_version)?;
+            Ok((immediate.clone(), shape_commitment(head)?, immediate))
         }
         2 => {
             let terminal_node = &chain.nodes[1];
@@ -447,25 +496,20 @@ pub(crate) fn authenticate_target_chain(
                         .to_string(),
                 ));
             }
+            let immediate = decode_node(head, grove_version)?;
+            let terminal = decode_node(terminal_node, grove_version)?;
             // The head commits the TERMINAL's commitment directly, however
             // many hops the reference path actually takes.
             let terminal_commitment = shape_commitment(terminal_node)?;
             let head_hash = value_hash(&head.value).value().to_owned();
-            (
-                combine_hash(&head_hash, &terminal_commitment)
-                    .value()
-                    .to_owned(),
-                decode(&terminal_node.value)?,
-            )
+            let immediate_commitment = combine_hash(&head_hash, &terminal_commitment)
+                .value()
+                .to_owned();
+            Ok((immediate, immediate_commitment, terminal))
         }
-        n => {
-            return Err(Error::CorruptedData(format!(
-                "indexed target chain has {n} entries; a chain is either a directly-valued \
-                 primary or a reference plus its terminal"
-            )));
-        }
-    };
-
-    let immediate = decode(&head.value)?;
-    Ok((immediate, immediate_commitment, terminal))
+        n => Err(Error::CorruptedData(format!(
+            "indexed target chain has {n} entries; a chain is either a directly-valued primary \
+             or a reference plus its terminal"
+        ))),
+    }
 }

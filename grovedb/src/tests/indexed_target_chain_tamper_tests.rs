@@ -15,8 +15,11 @@
 
 #[cfg(test)]
 mod tests {
+    use std::mem::discriminant;
+
     use bincode::config::standard;
-    use grovedb_element::reference_path::ReferencePathType;
+    use grovedb_element::{indexed::IndexAxis, reference_path::ReferencePathType};
+    use grovedb_merk::tree::value_hash;
     use grovedb_version::version::GroveVersion;
 
     use crate::{
@@ -130,6 +133,81 @@ mod tests {
         db
     }
 
+    /// A PCIT whose entry is itself an indexed tree: `nested` decides which
+    /// one, and so which indexed commitment shape the chain carries.
+    fn db_with_nested_indexed_entry(nested: Element, gv: &GroveVersion) -> TempGroveDb {
+        let db = make_test_grovedb(gv);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("PCIT");
+        db.insert_into_count_indexed_tree([TEST_LEAF, b"cidx"].as_ref(), b"a", nested, None, gv)
+            .unwrap()
+            .expect("nested indexed entry");
+        db
+    }
+
+    /// One fixture per commitment shape a head can honestly take, paired
+    /// with that shape. The array holds a placeholder of the shape: only
+    /// its variant is compared.
+    fn fixture_per_shape(
+        gv: &GroveVersion,
+    ) -> Vec<(&'static str, TempGroveDb, IndexedTargetCommitment)> {
+        let multi_axis = Element::empty_provable_count_provable_sum_indexed_tree(vec![(
+            IndexAxis::Count.tag(),
+            None,
+        )])
+        .expect("PCPSIT");
+        vec![
+            (
+                "item",
+                db_with_item_entry(gv),
+                IndexedTargetCommitment::Simple,
+            ),
+            (
+                "tree",
+                db_with_tree_entry(gv),
+                IndexedTargetCommitment::Layered([0; 32]),
+            ),
+            (
+                "single-axis indexed tree",
+                db_with_nested_indexed_entry(Element::empty_provable_count_indexed_tree(), gv),
+                IndexedTargetCommitment::IndexedSingle {
+                    primary_root_hash: [0; 32],
+                    secondary_root_hash: [0; 32],
+                },
+            ),
+            (
+                "multi-axis indexed tree",
+                db_with_nested_indexed_entry(multi_axis, gv),
+                IndexedTargetCommitment::IndexedMulti {
+                    primary_root_hash: [0; 32],
+                    axes: Vec::new(),
+                },
+            ),
+            (
+                "reference",
+                db_with_reference_entry(gv),
+                IndexedTargetCommitment::Reference,
+            ),
+        ]
+    }
+
+    fn honest_chains(proof: &[u8]) -> Vec<IndexedTargetChain> {
+        let (envelope, _): (IndexedAxisRangeProof, _) =
+            bincode::decode_from_slice(proof, standard()).expect("decode envelope");
+        envelope.target_chains
+    }
+
+    /// The refusal of a label that is not the element's own.
+    const SHAPE_GUARD: &str = "the commitment shape must be the one its own element takes";
+
     fn honest_proof(db: &TempGroveDb, gv: &GroveVersion) -> Vec<u8> {
         db.prove_indexed_count_top_k(PATH.as_ref(), 5, true, None, gv)
             .unwrap()
@@ -179,12 +257,13 @@ mod tests {
     #[test]
     fn honest_chains_verify_for_every_target_shape() {
         let gv = GroveVersion::latest();
-        for (label, db) in [
-            ("item", db_with_item_entry(gv)),
-            ("tree", db_with_tree_entry(gv)),
-            ("reference", db_with_reference_entry(gv)),
-        ] {
+        for (label, db, shape) in fixture_per_shape(gv) {
             let proof = honest_proof(&db, gv);
+            assert_eq!(
+                discriminant(&honest_chains(&proof)[0].nodes[0].commitment),
+                discriminant(&shape),
+                "{label}: the fixture must carry the shape it is named for"
+            );
             let result = GroveDb::verify_indexed_count_top_k(&proof, PATH.as_ref(), 5, true, gv)
                 .unwrap_or_else(|e| panic!("{label} chain must verify: {e}"));
             assert_eq!(
@@ -286,6 +365,97 @@ mod tests {
             });
         });
         assert_rejected(&forged, gv, "a direct head promoted to a reference");
+    }
+
+    /// A reference and a tree fold the same way: both commit
+    /// `combine_hash(H(value), x)`. Relabelling a reference head `Layered`
+    /// over its terminal's commitment and dropping the terminal therefore
+    /// rebuilds the committed hash exactly, and would hand back the
+    /// reference itself where `db.get` gives the terminal. No hash check
+    /// can refuse this one; only holding the label to the element does.
+    #[test]
+    fn a_reference_head_relabelled_as_layered_is_rejected() {
+        let gv = GroveVersion::latest();
+        let db = db_with_reference_entry(gv);
+        let honest = honest_proof(&db, gv);
+        let forged = forge(&honest, |chains| {
+            let terminal_commitment = value_hash(&chains[0].nodes[1].value).unwrap();
+            chains[0].nodes[0].commitment = IndexedTargetCommitment::Layered(terminal_commitment);
+            chains[0].nodes.truncate(1);
+        });
+        assert_rejected_because(
+            &forged,
+            gv,
+            SHAPE_GUARD,
+            "a reference head relabelled as a tree over its terminal",
+        );
+    }
+
+    /// The general rule behind the test above: a head may carry only the
+    /// shape its own element takes. Each fixture's head is relabelled with
+    /// every other shape, in a chain laid out the way that shape requires
+    /// (a `Reference` head needs a terminal, any other head must stand
+    /// alone), so the label check is the guard that runs.
+    #[test]
+    fn a_head_label_that_is_not_the_elements_own_is_rejected() {
+        let gv = GroveVersion::latest();
+        let shapes: Vec<IndexedTargetCommitment> = fixture_per_shape(gv)
+            .into_iter()
+            .map(|(_, _, shape)| shape)
+            .collect();
+        for (label, db, own_shape) in fixture_per_shape(gv) {
+            let honest = honest_proof(&db, gv);
+            for wrong_shape in &shapes {
+                if discriminant(wrong_shape) == discriminant(&own_shape) {
+                    continue;
+                }
+                let forged = forge(&honest, |chains| {
+                    chains[0].nodes.truncate(1);
+                    chains[0].nodes[0].commitment = wrong_shape.clone();
+                    if matches!(wrong_shape, IndexedTargetCommitment::Reference) {
+                        chains[0].nodes.push(IndexedTargetNode {
+                            value: Element::new_item(b"terminal".to_vec())
+                                .serialize(gv)
+                                .expect("serialize"),
+                            commitment: IndexedTargetCommitment::Simple,
+                        });
+                    }
+                });
+                assert_rejected_because(
+                    &forged,
+                    gv,
+                    SHAPE_GUARD,
+                    &format!("the {label} fixture's head relabelled {wrong_shape:?}"),
+                );
+            }
+        }
+    }
+
+    /// The same rule one hop out: the terminal's label is held to the
+    /// terminal's element. (`Reference` on a terminal is refused earlier,
+    /// by [`a_terminal_that_is_itself_a_reference_is_rejected`].)
+    #[test]
+    fn a_terminal_label_that_is_not_the_elements_own_is_rejected() {
+        let gv = GroveVersion::latest();
+        let db = db_with_reference_entry(gv);
+        let honest = honest_proof(&db, gv);
+        for (_, _, wrong_shape) in fixture_per_shape(gv) {
+            if matches!(
+                wrong_shape,
+                IndexedTargetCommitment::Simple | IndexedTargetCommitment::Reference
+            ) {
+                continue;
+            }
+            let forged = forge(&honest, |chains| {
+                chains[0].nodes[1].commitment = wrong_shape.clone();
+            });
+            assert_rejected_because(
+                &forged,
+                gv,
+                SHAPE_GUARD,
+                &format!("an item terminal relabelled {wrong_shape:?}"),
+            );
+        }
     }
 
     /// A reference head with its terminal stripped. The head commits the

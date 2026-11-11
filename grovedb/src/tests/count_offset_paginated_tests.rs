@@ -8,7 +8,7 @@
 
 #[cfg(test)]
 mod tests {
-    use grovedb_version::version::GroveVersion;
+    use grovedb_version::version::{v4::GROVE_V4, GroveVersion};
 
     use crate::{
         operations::proof::util::ProvedPathKeyValues, tests::make_test_grovedb, Element, GroveDb,
@@ -2229,5 +2229,227 @@ mod tests {
             feature_type
         );
         assert_eq!(rows.len(), 2);
+    }
+
+    // ──────── Host tree type, checked by the verifier ────────
+    //
+    // The prover serves a count-offset page only from a ProvableCountTree, a
+    // ProvableCountSumTree or a ProvableCountProvableSumTree. The verifier
+    // holds the same line on its own, from the host's proved row, so the
+    // answer does not depend on what the page's proof bytes look like.
+
+    /// Every Merk tree a count-offset page may not read, with a row to
+    /// populate it.
+    fn non_count_hosts() -> Vec<(&'static str, Element, Element)> {
+        vec![
+            ("Tree", Element::empty_tree(), Element::new_item(vec![1])),
+            (
+                "SumTree",
+                Element::empty_sum_tree(),
+                Element::new_sum_item(1),
+            ),
+            (
+                "BigSumTree",
+                Element::empty_big_sum_tree(),
+                Element::new_sum_item(1),
+            ),
+            (
+                "CountTree",
+                Element::empty_count_tree(),
+                Element::new_item(vec![1]),
+            ),
+            (
+                "CountSumTree",
+                Element::empty_count_sum_tree(),
+                Element::new_sum_item(1),
+            ),
+            (
+                "ProvableSumTree",
+                Element::empty_provable_sum_tree(),
+                Element::new_sum_item(1),
+            ),
+        ]
+    }
+
+    /// Proves a plain page over each non-count host holding `rows` rows, then
+    /// verifies that proof against the same query with an offset. The proof
+    /// is honest and verifies for the query it was made for; the offset is
+    /// what the host cannot serve.
+    fn assert_verifier_refuses_offset_on_non_count_hosts(rows: u8, v: &GroveVersion) {
+        for (name, host, row) in non_count_hosts() {
+            let db = make_test_grovedb(v);
+            db.insert(&[] as &[&[u8]], b"host", host, None, None, v)
+                .unwrap()
+                .expect("insert host");
+            for i in 0..rows {
+                db.insert(&[b"host"], &[b'a' + i], row.clone(), None, None, v)
+                    .unwrap()
+                    .expect("insert row");
+            }
+
+            let mut all = Query::new();
+            all.insert_all();
+            let plain = PathQuery::new(
+                vec![b"host".to_vec()],
+                SizedQuery::new(all.clone(), Some(3), None),
+            );
+            let page = PathQuery::new(
+                vec![b"host".to_vec()],
+                SizedQuery::new(all, Some(3), Some(1)),
+            );
+
+            let refused = db.prove_query(&page, None, v).unwrap();
+            assert!(
+                matches!(refused, Err(crate::Error::InvalidQuery(_))),
+                "{name} with {rows} rows: the prover must refuse the page; got {refused:?}"
+            );
+
+            let proof = db
+                .prove_query(&plain, None, v)
+                .unwrap()
+                .expect("prove the plain page");
+            let (root_hash, plain_rows) = GroveDb::verify_query_raw(&proof, &plain, v)
+                .expect("the proof verifies for the query it was made for");
+            assert_eq!(
+                root_hash,
+                db.root_hash(None, v).unwrap().expect("root"),
+                "{name} with {rows} rows"
+            );
+            assert_eq!(plain_rows.len(), usize::from(rows.min(3)));
+
+            let outcomes = [
+                (
+                    "verify_query_raw",
+                    GroveDb::verify_query_raw(&proof, &page, v).map(|_| ()),
+                ),
+                (
+                    "verify_query",
+                    GroveDb::verify_query(&proof, &page, v).map(|_| ()),
+                ),
+                (
+                    "verify_subset_query",
+                    GroveDb::verify_subset_query(&proof, &page, v).map(|_| ()),
+                ),
+            ];
+            for (entry, outcome) in outcomes {
+                assert!(
+                    matches!(
+                        &outcome,
+                        Err(crate::Error::InvalidQuery(message))
+                            if message.contains("only valid against")
+                    ),
+                    "{name} with {rows} rows: {entry} must refuse the offset on the host's \
+                     tree type; got {outcome:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn verifier_refuses_offset_on_populated_non_count_hosts() {
+        assert_verifier_refuses_offset_on_non_count_hosts(5, &GROVE_V4);
+        assert_verifier_refuses_offset_on_non_count_hosts(5, GroveVersion::latest());
+    }
+
+    /// An empty host has no proof layer of its own, so nothing below the
+    /// parent layer can object: the host's row has to.
+    #[test]
+    fn verifier_refuses_offset_on_empty_non_count_hosts() {
+        assert_verifier_refuses_offset_on_non_count_hosts(0, &GROVE_V4);
+        assert_verifier_refuses_offset_on_non_count_hosts(0, GroveVersion::latest());
+    }
+
+    /// The same host rule applies one level down, where the host's row sits
+    /// in a parent that is not the root.
+    #[test]
+    fn verifier_refuses_offset_on_nested_provable_sum_tree() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            &[] as &[&[u8]],
+            b"outer",
+            Element::empty_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert outer");
+        db.insert(
+            &[b"outer"],
+            b"host",
+            Element::empty_provable_sum_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert host");
+        // A sibling that IS a count host, to show the rule reads the row at
+        // the query's path and not any count tree the proof happens to pass.
+        db.insert(
+            &[b"outer"],
+            b"counts",
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert sibling");
+        for i in 0..5u8 {
+            db.insert(
+                &[b"outer".as_slice(), b"host".as_slice()],
+                &[b'a' + i],
+                Element::new_sum_item(1),
+                None,
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("insert sum row");
+            db.insert(
+                &[b"outer".as_slice(), b"counts".as_slice()],
+                &[b'a' + i],
+                Element::new_item(vec![i]),
+                None,
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("insert counted row");
+        }
+
+        let mut all = Query::new();
+        all.insert_all();
+        let path = vec![b"outer".to_vec(), b"host".to_vec()];
+        let plain = PathQuery::new(path.clone(), SizedQuery::new(all.clone(), Some(3), None));
+        let page = PathQuery::new(path, SizedQuery::new(all.clone(), Some(3), Some(1)));
+        let proof = db
+            .prove_query(&plain, None, v)
+            .unwrap()
+            .expect("prove the plain page");
+        let outcome = GroveDb::verify_query_raw(&proof, &page, v);
+        assert!(
+            matches!(
+                &outcome,
+                Err(crate::Error::InvalidQuery(message)) if message.contains("only valid against")
+            ),
+            "got {outcome:?}"
+        );
+
+        // The sibling count tree still serves the same page.
+        let proved = round_trip_offset(
+            &db,
+            vec![b"outer".to_vec(), b"counts".to_vec()],
+            all,
+            Some(3),
+            Some(1),
+            v,
+        );
+        assert_eq!(
+            proved_keys(&proved),
+            vec![b"b".to_vec(), b"c".to_vec(), b"d".to_vec()]
+        );
     }
 }
