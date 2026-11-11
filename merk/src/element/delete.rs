@@ -20,38 +20,37 @@ use crate::{
 /// The Merk op that deletes an element from a tree of `in_tree_type`.
 ///
 /// `is_layered` is what the caller declares about the element: a tree or not.
-/// `version` is the feature version of the calling `method`.
-///
-/// In every tree type but `NormalTree` the op reads the stored element and
-/// refunds what its insertion was charged. In a `NormalTree`, version 0
-/// refunds an element that is not declared a tree by its raw value bytes.
-/// That is more than a tree was charged, since a tree does not pay for its
-/// value hash, and less than a sum item was charged, since a sum item pays
-/// for a fixed size. From version 1 a `NormalTree` refunds from the stored
-/// element as well, so a delete gives back what the insertion took whatever
-/// the caller declares.
+/// `version` is the feature version of the calling `method`, and selects
+/// [`delete_op_v0`] or [`delete_op_v1`].
 fn delete_op(
     method: &str,
     version: FeatureVersion,
     in_tree_type: TreeType,
     is_layered: bool,
 ) -> Result<Op, Error> {
-    let refunds_raw_value_bytes = match version {
-        0 => true,
-        1 => false,
-        received => {
-            return Err(GroveVersionError::UnknownVersionMismatch {
-                method: method.to_string(),
-                known_versions: vec![0, 1],
-                received,
-            }
-            .into())
+    match version {
+        0 => Ok(delete_op_v0(in_tree_type, is_layered)),
+        1 => Ok(delete_op_v1(in_tree_type, is_layered)),
+        received => Err(GroveVersionError::UnknownVersionMismatch {
+            method: method.to_string(),
+            known_versions: vec![0, 1],
+            received,
         }
-    };
-    let op = match (in_tree_type, is_layered) {
+        .into()),
+    }
+}
+
+/// Version 0 of the delete op selection.
+///
+/// In every tree type but `NormalTree` the op reads the stored element and
+/// refunds what its insertion was charged. In a `NormalTree` an element that
+/// is not declared a tree is refunded by its raw value bytes. That is more
+/// than a tree was charged, since a tree does not pay for its value hash, and
+/// less than a sum item was charged, since a sum item pays for a fixed size.
+fn delete_op_v0(in_tree_type: TreeType, is_layered: bool) -> Op {
+    match (in_tree_type, is_layered) {
         (TreeType::NormalTree, true) => Op::DeleteLayered,
-        (TreeType::NormalTree, false) if refunds_raw_value_bytes => Op::Delete,
-        (TreeType::NormalTree, false) => Op::DeleteMaybeSpecialized,
+        (TreeType::NormalTree, false) => Op::Delete,
         (TreeType::SumTree, true)
         | (TreeType::BigSumTree, true)
         | (TreeType::CountTree, true)
@@ -84,8 +83,20 @@ fn delete_op(
         | (TreeType::ProvableCountProvableSumIndexedTree, false)
         | (TreeType::PrivateDocumentStore(_), false)
         | (TreeType::ProvableCountIndexedTree, false) => Op::DeleteMaybeSpecialized,
-    };
-    Ok(op)
+    }
+}
+
+/// Version 1 of the delete op selection.
+///
+/// As [`delete_op_v0`], except that an element of a `NormalTree` that is not
+/// declared a tree is refunded from the stored element as well. A delete then
+/// gives back what the insertion took in every tree type, whatever the
+/// caller declares.
+fn delete_op_v1(in_tree_type: TreeType, is_layered: bool) -> Op {
+    match (in_tree_type, is_layered) {
+        (TreeType::NormalTree, false) => Op::DeleteMaybeSpecialized,
+        _ => delete_op_v0(in_tree_type, is_layered),
+    }
 }
 
 /// Extension trait for deleting elements from Merk storage.

@@ -12,8 +12,12 @@
 use grovedb::{
     batch::{QualifiedGroveDbOp, SubelementsDeletionBehavior},
     reference_path::ReferencePathType,
-    Element, ElementFlags, GroveDb,
+    Element, ElementFlags, Error, GroveDb,
 };
+use grovedb_costs::storage_cost::removal::{
+    StorageRemovalPerEpochByIdentifier, StorageRemovedBytes,
+};
+use grovedb_epoch_based_storage_flags::StorageFlags;
 use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
 use grovedb_version::version::{v4::GROVE_V4, v5::GROVE_V5, GroveVersion, GROVE_VERSIONS};
 use tempfile::TempDir;
@@ -52,8 +56,9 @@ fn root_hash(db: &GroveDb, grove_version: &GroveVersion) -> [u8; 32] {
         .expect("expected the root hash")
 }
 
-/// Inserts `element` under a `NormalTree` and removes it by `route`.
-fn insert_then_delete(element: Element, route: Route, grove_version: &GroveVersion) -> Outcome {
+/// A grove holding `element` under a `NormalTree`, and what inserting it was
+/// charged.
+fn grove_holding(element: Element, grove_version: &GroveVersion) -> (TempDir, GroveDb, u32) {
     let dir = TempDir::new().expect("expected a temporary directory");
     let db = GroveDb::open(dir.path()).expect("expected to open the grove");
     db.apply_batch(
@@ -78,12 +83,9 @@ fn insert_then_delete(element: Element, route: Route, grove_version: &GroveVersi
     .unwrap()
     .expect("expected to set up the grove");
 
-    let path = vec![PARENT.to_vec()];
-    let tree_type = element.tree_type();
-
     let insert = db.apply_batch(
         vec![QualifiedGroveDbOp::insert_or_replace_op(
-            path.clone(),
+            vec![PARENT.to_vec()],
             KEY.to_vec(),
             element,
         )],
@@ -93,6 +95,14 @@ fn insert_then_delete(element: Element, route: Route, grove_version: &GroveVersi
     );
     insert.value.expect("expected to insert the element");
     let charged = insert.cost.storage_cost.added_bytes;
+    (dir, db, charged)
+}
+
+/// Inserts `element` under a `NormalTree` and removes it by `route`.
+fn insert_then_delete(element: Element, route: Route, grove_version: &GroveVersion) -> Outcome {
+    let path = vec![PARENT.to_vec()];
+    let tree_type = element.tree_type();
+    let (_dir, db, charged) = grove_holding(element, grove_version);
     let root_hash_after_insert = root_hash(&db, grove_version);
 
     let delete = match route {
@@ -300,5 +310,53 @@ fn should_change_only_the_refund_from_grove_v5() {
         // fills its fixed charge (`should_keep_the_raw_byte_refund_before_grove_v5`
         // pins by how much).
         assert_eq!(after.refunded, after.charged, "{label}");
+    }
+}
+
+/// Sections a refund by the removed element's storage flags, as a caller
+/// that refunds the identity which paid for the bytes does.
+fn split_removal_bytes(
+    flags: &mut ElementFlags,
+    removed_key_bytes: u32,
+    removed_value_bytes: u32,
+) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error> {
+    StorageFlags::split_removal_bytes(flags, removed_key_bytes, removed_value_bytes)
+        .map_err(|e| Error::SplitRemovalBytesClientError(e.to_string()))
+}
+
+#[test]
+fn should_refund_the_whole_charge_to_the_owner_at_the_epoch_the_flags_name() {
+    const OWNER: [u8; 32] = [4; 32];
+    const EPOCH: u16 = 3;
+    let owned = || StorageFlags::SingleEpochOwned(EPOCH, OWNER).to_some_element_flags();
+    let elements = [
+        ("Tree", Element::empty_tree_with_flags(owned())),
+        ("SumTree", Element::empty_sum_tree_with_flags(owned())),
+        ("SumItem", Element::new_sum_item_with_flags(5, owned())),
+        ("Item", Element::new_item_with_flags(vec![3; 10], owned())),
+    ];
+    for (label, element) in elements {
+        let (_dir, db, charged) = grove_holding(element, &GROVE_V5);
+
+        let delete = db.apply_batch_with_element_flags_update(
+            vec![QualifiedGroveDbOp::delete_op(
+                vec![PARENT.to_vec()],
+                KEY.to_vec(),
+            )],
+            None,
+            |_, _, _| Ok(false),
+            split_removal_bytes,
+            None,
+            &GROVE_V5,
+        );
+        delete.value.expect("expected to delete the element");
+
+        let mut expected = StorageRemovalPerEpochByIdentifier::default();
+        expected.entry(OWNER).or_default().insert(EPOCH, charged);
+        assert_eq!(
+            delete.cost.storage_cost.removed_bytes,
+            StorageRemovedBytes::SectionedStorageRemoval(expected),
+            "{label}"
+        );
     }
 }
