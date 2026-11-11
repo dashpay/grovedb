@@ -42,6 +42,13 @@
 //!   batch, as 6.1.1 did. Gated because it flips an accepted/rejected outcome
 //!   (issue #1031).
 //!
+//! - `apply_batch.indexed_mirror_removed_entry_post_state: 1`: the
+//!   indexed-tree mirror takes a key the level's Merk batch deletes as
+//!   absent after the apply instead of reading it back. On V4 that read can
+//!   return the entry just removed (the delete is still pending in the
+//!   storage batch), and the entry's row then stays in every secondary.
+//!   Gated because it changes a committed secondary root and a tracked cost.
+//!
 //! - `merk_versions.tree.just_in_time_value_update: 2`: Merk accepts that
 //!   answer and records the removal plus the insertion. Versions 0 and 1
 //!   refuse it, so grove v1..v4 cannot account an update as a replacement at
@@ -81,6 +88,7 @@ pub const GROVE_V5: GroveVersion = GroveVersion {
     grovedb_versions: GroveDBVersions {
         apply_batch: GroveDBApplyBatchVersions {
             keyless_append_repeats: 1, // changed: a batch may repeat a keyless append
+            indexed_mirror_removed_entry_post_state: 1, // changed: a removed key is absent, unread
             ..GROVE_V4.grovedb_versions.apply_batch
         },
         element: GroveDBElementMethodVersions {

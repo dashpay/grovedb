@@ -307,6 +307,24 @@ pub struct GroveDBApplyBatchVersions {
     /// slot gates an accepted/rejected outcome: a batch V1..V4 refuse is
     /// accepted on V5+.
     pub keyless_append_repeats: FeatureVersion,
+    /// How the indexed-tree mirror learns what a key of the primary holds
+    /// after the level's apply, when the level removed that key.
+    ///
+    /// - `0` (V1..V4): the mirror reads the key back from the primary, like
+    ///   every other captured key. The level's writes are still pending in
+    ///   the storage batch, and a Merk read that reaches a node the apply
+    ///   did not load fetches the key from storage, where the removed entry
+    ///   still is. The mirror then sees no change and leaves the entry's row
+    ///   in every secondary. Whether it happens depends on the shape of the
+    ///   primary around the removed node.
+    /// - `1` (V5+): a key the level's Merk batch deletes is absent after the
+    ///   apply, with no read, so its rows are always removed.
+    ///
+    /// Gated because, for a removal that kept its row, it changes a committed
+    /// root (the secondary no longer holds the row) and a tracked cost (the
+    /// row's delete in place of the read). Every other removal stores and
+    /// costs the same on both.
+    pub indexed_mirror_removed_entry_post_state: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

@@ -3587,8 +3587,10 @@ where
 
         // For cidx primaries, capture the pre-apply count value of every
         // key that this level's ops will mutate. After
-        // `merk.apply_with_specialized_costs` runs we re-read each
-        // key's post-apply element and use the (old, new) count pair to
+        // `merk.apply_with_specialized_costs` runs we take each key's
+        // post-apply element (absent, from GROVE_V5, for a key the level's
+        // Merk batch deletes; read back otherwise) and use the (old, new)
+        // count pair to
         // mirror the change in the secondary Merk. Then we store the
         // post-mirror secondary state in `cidx_secondary_after_apply`
         // so the bubble-up code can emit
@@ -5432,13 +5434,19 @@ where
                 )),
             };
             let primary_merk = self.merks.get(path).expect("the Merk is cached");
-            // One post-state read per captured key, shared by every axis: the
+            // One post-state per captured key, shared by every axis: the
             // (count, sum) transitions are axis-independent, only the sort-key
             // encoding differs. Reading inside the per-axis call charged a
             // PCPSIT batch three primary reads per key where one suffices.
+            // The level's own Merk batch says which keys it removed.
             let transitions = cost_return_on_error!(
                 &mut cost,
-                indexed_tree::read_post_apply_transitions(primary_merk, &pre, grove_version)
+                indexed_tree::read_post_apply_transitions(
+                    primary_merk,
+                    &pre,
+                    &batch_operations,
+                    grove_version
+                )
             );
             let mut per_axis = Vec::with_capacity(secondaries.len());
             for (axis, secondary_merk) in secondaries.iter_mut() {

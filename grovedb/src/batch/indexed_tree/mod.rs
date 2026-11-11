@@ -34,8 +34,11 @@
 //!   `(count, sum)` pair so the mirror can compute old → new transitions.
 //! - [`mirror`] runs once per configured axis after the primary merk's
 //!   `apply_with_specialized_costs` returns:
-//!   [`apply_indexed_secondary_mirror_post_apply`] re-reads each captured
-//!   key's new aggregates, assembles one atomic Merk batch of row moves for
+//!   [`read_post_apply_transitions`] pairs each captured key's old
+//!   aggregates with its new ones (absent, from GROVE_V5, for a key the
+//!   level's Merk batch deletes; read back otherwise), and
+//!   [`apply_indexed_secondary_mirror_post_apply`] assembles one atomic Merk
+//!   batch of row moves for
 //!   that axis's secondary, applies it, and returns the secondary's
 //!   post-mirror `(root_hash, root_key)` for the bubble-up to fold into the
 //!   parent's H1-A composition — directly for the single-axis variants,
