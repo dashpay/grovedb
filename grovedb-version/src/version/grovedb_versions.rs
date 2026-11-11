@@ -324,7 +324,10 @@ pub struct GroveDBApplyBatchVersions {
     ///
     /// Repeated tree inserts of one tree type are unchanged on every
     /// version (the last one's flags are stored), and so are the
-    /// estimated-cost structures, which reserve no Merk. The slot gates an
+    /// estimated-cost structures, which do not make this check. The two
+    /// inserts are also told apart when the child Merk was already open
+    /// before the first of them, as in the second segment of a partial
+    /// batch whose first segment read under the key. The slot gates an
     /// accepted/rejected outcome: a batch V1..V4 apply is refused on V5+.
     pub same_key_tree_type_conflict: FeatureVersion,
 }

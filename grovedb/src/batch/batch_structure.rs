@@ -286,24 +286,22 @@ where
                 | GroveOp::PatchDontCheckForBackwardsReferences { element, .. }
                 | GroveOp::ReplaceBackwardReferenceFamilyMember { element, .. } => {
                     if let Some(tree_type) = element.tree_type() {
-                        // The Merk an earlier insert reserved under this key
-                        // keeps that insert's tree type, so the child would
-                        // be written as one type under an element of
-                        // another.
+                        let earlier_tree_type = cost_return_on_error!(
+                            &mut cost,
+                            merk_tree_cache.insert(&op_path, &key, tree_type)
+                        );
+                        // The Merk cached under this key keeps the tree type
+                        // it was opened with, whatever a later insert asks
+                        // for, so the child would be written as one type
+                        // under an element of another.
                         if refuse_tree_type_conflicts
-                            && let Some(reserved_tree_type) =
-                                merk_tree_cache.reserved_tree_type(&op_path, &key)
-                            && reserved_tree_type != tree_type
+                            && earlier_tree_type.is_some_and(|earlier| earlier != tree_type)
                         {
                             return Err(Error::InvalidBatchOperation(
                                 "batch inserts trees of different tree types at one key",
                             ))
                             .wrap_with_cost(cost);
                         }
-                        cost_return_on_error!(
-                            &mut cost,
-                            merk_tree_cache.insert(&op_path, &key, tree_type)
-                        );
                     }
                     if element.is_indexed_tree() {
                         merk_tree_cache.remember_indexed_element(&op_path, &key, element);

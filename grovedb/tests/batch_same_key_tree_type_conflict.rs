@@ -12,6 +12,7 @@
 
 use grovedb::{
     batch::{BatchApplyOptions, QualifiedGroveDbOp},
+    reference_path::ReferencePathType,
     Element, Error, GroveDb,
 };
 use grovedb_version::version::{v4::GROVE_V4, v5::GROVE_V5, GroveVersion};
@@ -20,6 +21,8 @@ use tempfile::TempDir;
 const PARENT: &[u8] = b"parent";
 const KEY: &[u8] = b"key";
 const CHILD: &[u8] = b"child";
+const OLD: &[u8] = b"old";
+const REFS: &[u8] = b"refs";
 
 /// A grove holding an empty tree at `[parent]`.
 fn grove(grove_version: &GroveVersion) -> (TempDir, GroveDb) {
@@ -322,4 +325,123 @@ fn should_refuse_an_add_on_tree_of_another_type_over_a_first_segment_insert_on_e
         );
         assert_eq!(issues(&db, grove_version), 0);
     }
+}
+
+/// The second segment of a partial batch runs on the first segment's Merk
+/// cache. A reference the first segment inserted had its target read, so the
+/// Merk under the key is already open when the add-on inserts reach it and
+/// neither of them reserves one. They are told apart all the same.
+fn apply_two_tree_types_over_a_tree_the_first_segment_read(
+    db: &GroveDb,
+    grove_version: &GroveVersion,
+) -> Result<(), Error> {
+    db.insert(
+        [PARENT].as_ref(),
+        KEY,
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("expected to insert the tree");
+    db.insert(
+        [PARENT, KEY].as_ref(),
+        OLD,
+        Element::new_item(vec![1]),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("expected to insert the item");
+    db.insert(
+        [].as_ref() as &[&[u8]],
+        REFS,
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("expected to insert the references tree");
+    db.apply_partial_batch(
+        vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![REFS.to_vec()],
+            b"reference".to_vec(),
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                PARENT.to_vec(),
+                KEY.to_vec(),
+                OLD.to_vec(),
+            ])),
+        )],
+        Some(BatchApplyOptions {
+            disable_operation_consistency_check: true,
+            ..Default::default()
+        }),
+        |_cost, _leftover| {
+            Ok(vec![
+                at_key(Element::empty_tree()),
+                at_key(Element::empty_sum_tree()),
+                under_key(Element::new_sum_item(7)),
+            ])
+        },
+        None,
+        grove_version,
+    )
+    .unwrap()
+}
+
+#[test]
+fn should_refuse_two_tree_types_over_a_tree_the_first_segment_read_on_v5() {
+    let grove_version = &GROVE_V5;
+    let (_dir, db) = grove(grove_version);
+    let result = apply_two_tree_types_over_a_tree_the_first_segment_read(&db, grove_version);
+    assert!(
+        matches!(
+            result,
+            Err(Error::InvalidBatchOperation(
+                "batch inserts trees of different tree types at one key"
+            ))
+        ),
+        "expected the batch to be refused, got {result:?}"
+    );
+    // Neither segment was written.
+    assert_eq!(
+        stored_at_key(&db, grove_version).expect("expected the tree"),
+        Element::new_tree(Some(OLD.to_vec()))
+    );
+    assert!(matches!(
+        db.get([REFS].as_ref(), b"reference", None, grove_version)
+            .unwrap(),
+        Err(Error::PathKeyNotFound(_))
+    ));
+    assert_eq!(issues(&db, grove_version), 0);
+}
+
+#[test]
+fn should_keep_the_stored_tree_type_over_a_tree_the_first_segment_read_on_v4() {
+    let grove_version = &GROVE_V4;
+    let (_dir, db) = grove(grove_version);
+    apply_two_tree_types_over_a_tree_the_first_segment_read(&db, grove_version)
+        .expect("expected the batch to apply");
+    // The last insert asked for a sum tree: the tree stays a plain tree and
+    // the sum item is written beside the item it already held.
+    assert!(matches!(
+        stored_at_key(&db, grove_version).expect("expected the tree"),
+        Element::Tree(..)
+    ));
+    assert_eq!(
+        db.get([PARENT, KEY].as_ref(), OLD, None, grove_version)
+            .unwrap()
+            .expect("expected the item"),
+        Element::new_item(vec![1])
+    );
+    assert_eq!(
+        db.get([PARENT, KEY].as_ref(), CHILD, None, grove_version)
+            .unwrap()
+            .expect("expected the sum item"),
+        Element::new_sum_item(7)
+    );
+    assert_eq!(issues(&db, grove_version), 0);
 }
