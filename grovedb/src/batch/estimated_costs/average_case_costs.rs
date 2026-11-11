@@ -893,27 +893,13 @@ fn indexed_axes_for_tree_type(tree_type: TreeType) -> Vec<grovedb_element::index
 }
 
 #[cfg(feature = "minimal")]
-/// Primary node fetches version 0 of the mirror's entry read makes for one
-/// touched key: a `Merk::get` and a `Merk::get_value_hash`, before and after
-/// the primary's apply.
-const INDEXED_MIRROR_DIRECT_READ_FETCHES: u32 = 4;
-
-#[cfg(feature = "minimal")]
 /// Primary node fetches reserved for the mirror's pre- and post-state reads
 /// of one touched entry in a primary of `levels` estimated levels.
 ///
 /// Dispatches on `apply_batch.indexed_mirror_entry_read`, the slot the reads
 /// themselves follow, so the estimate cannot describe a read the batch does
-/// not make:
-///
-/// - `0` (V1..V4): each read fetches the key directly, so the four fetches
-///   do not depend on the tree's height.
-/// - `1` (V5+): each read walks the tree from its root. The pre-state walk
-///   loads the path to the key. The post-state walk of a removed key runs
-///   on to a missing edge, through nodes the removal did not load, so a
-///   removal high in a deep tree fetches more than four nodes. Each walk is
-///   reserved at the height propagation counts (`levels`, plus one above a
-///   single level), and never below version 0's four.
+/// not make: `0` (V1..V4) is [`indexed_mirror_entry_read_node_fetches_v0`],
+/// `1` (V5+) is [`indexed_mirror_entry_read_node_fetches_v1`].
 fn indexed_mirror_entry_read_node_fetches(
     levels: u32,
     grove_version: &GroveVersion,
@@ -923,13 +909,8 @@ fn indexed_mirror_entry_read_node_fetches(
         .apply_batch
         .indexed_mirror_entry_read
     {
-        0 => Ok(INDEXED_MIRROR_DIRECT_READ_FETCHES),
-        1 => {
-            let walk_fetches = levels.saturating_add(u32::from(levels > 1));
-            Ok(walk_fetches
-                .saturating_mul(2)
-                .max(INDEXED_MIRROR_DIRECT_READ_FETCHES))
-        }
+        0 => Ok(indexed_mirror_entry_read_node_fetches_v0()),
+        1 => Ok(indexed_mirror_entry_read_node_fetches_v1(levels)),
         version => Err(Error::VersionError(
             GroveVersionError::UnknownVersionMismatch {
                 method: "indexed_mirror_entry_read_node_fetches".to_string(),
@@ -938,6 +919,29 @@ fn indexed_mirror_entry_read_node_fetches(
             },
         )),
     }
+}
+
+#[cfg(feature = "minimal")]
+/// Version 0 (V1..V4): each read fetches the key directly, a `Merk::get`
+/// and a `Merk::get_value_hash`, before and after the primary's apply. Four
+/// fetches, whatever the tree's height. Frozen: shipped estimates come from
+/// this figure.
+fn indexed_mirror_entry_read_node_fetches_v0() -> u32 {
+    4
+}
+
+#[cfg(feature = "minimal")]
+/// Version 1 (V5+): each read walks the tree from its root. The pre-state
+/// walk loads the path to the key. The post-state walk of a removed key runs
+/// on to a missing edge, through nodes the removal did not load, so a
+/// removal high in a deep tree fetches more than four nodes. Each walk is
+/// reserved at the height propagation counts (`levels`, plus one above a
+/// single level), and never below what version 0 reserves.
+fn indexed_mirror_entry_read_node_fetches_v1(levels: u32) -> u32 {
+    let walk_fetches = levels.saturating_add(u32::from(levels > 1));
+    walk_fetches
+        .saturating_mul(2)
+        .max(indexed_mirror_entry_read_node_fetches_v0())
 }
 
 #[cfg(feature = "minimal")]
