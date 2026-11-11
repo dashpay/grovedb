@@ -101,6 +101,10 @@ fn v5_matches_v4_apart_from_its_gates() {
     v5_as_v4
         .grovedb_versions
         .apply_batch
+        .tree_insert_above_emptied_level = 0;
+    v5_as_v4
+        .grovedb_versions
+        .apply_batch
         .indexed_mirror_entry_read = 0;
     v5_as_v4.merk_versions.tree.just_in_time_value_update =
         GROVE_V4.merk_versions.tree.just_in_time_value_update;
