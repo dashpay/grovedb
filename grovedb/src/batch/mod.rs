@@ -2072,6 +2072,12 @@ struct TreeCacheMerkByPath<S, F, F2> {
     /// operations applied yet. A skipped insertion must not carry its
     /// unused placeholder into a continuation as if it were the stored tree.
     unused_new_merks: HashSet<Vec<Vec<u8>>>,
+    /// The tree type the first tree insert at each qualified path asked for.
+    /// A later insert at that key reuses the Merk already cached there, be it
+    /// the one that first insert reserved or one a read opened before it, so
+    /// this is what tells a later insert of another tree type apart
+    /// (`apply_batch.same_key_tree_type_conflict`).
+    requested_tree_types: HashMap<Vec<Vec<u8>>, TreeType>,
     /// Conditional insertions that emitted no Merk write. Their proposed
     /// elements must not seed reference resolution in the next segment.
     skipped_insert_paths: HashSet<Vec<Vec<u8>>>,
@@ -2354,12 +2360,16 @@ fn classify_captured_delete_trees(
 
 #[allow(dead_code)] // get_batch_run_mode is defined for future use
 trait TreeCache<G, SR> {
+    /// Called for every tree element the batch inserts at `path`/`key`,
+    /// while its operations are scanned. Returns the tree type an earlier
+    /// insert of this batch asked for at that key, when the cache keeps
+    /// track of it (the estimated-cost caches do not).
     fn insert(
         &mut self,
         path: &KeyInfoPath,
         key: &KeyInfo,
         tree_type: TreeType,
-    ) -> CostResult<(), Error>;
+    ) -> CostResult<Option<TreeType>, Error>;
 
     fn get_batch_run_mode(&self) -> BatchRunMode;
 
@@ -3435,20 +3445,25 @@ where
         path: &KeyInfoPath,
         key: &KeyInfo,
         tree_type: TreeType,
-    ) -> CostResult<(), Error> {
+    ) -> CostResult<Option<TreeType>, Error> {
         let mut cost = OperationCost::default();
 
         let mut inserted_path = path.to_path();
         inserted_path.push(key.get_key_clone());
-        if let HashMapEntry::Vacant(e) = self.merks.entry(inserted_path.clone()) {
+        let earlier_tree_type = self.requested_tree_types.get(&inserted_path).copied();
+        if earlier_tree_type.is_none() {
+            self.requested_tree_types
+                .insert(inserted_path.clone(), tree_type);
+        }
+        if !self.merks.contains_key(&inserted_path) {
             let mut merk =
                 cost_return_on_error!(&mut cost, (self.get_merk_fn)(&inserted_path, true));
             merk.tree_type = tree_type;
-            e.insert(merk);
+            self.merks.insert(inserted_path.clone(), merk);
             self.unused_new_merks.insert(inserted_path);
         }
 
-        Ok(()).wrap_with_cost(cost)
+        Ok(earlier_tree_type).wrap_with_cost(cost)
     }
 
     fn take_cidx_secondary_after_apply(
@@ -6087,6 +6102,7 @@ impl GroveDb {
                     unprepared_subtree_removals: Vec::new(),
                     merks: Default::default(),
                     unused_new_merks: Default::default(),
+                    requested_tree_types: Default::default(),
                     skipped_insert_paths: Default::default(),
                     secondary_merks: Default::default(),
                     pending_indexed_elements: Default::default(),
@@ -6167,6 +6183,7 @@ impl GroveDb {
         for path in merk_tree_cache.skipped_insert_paths.drain() {
             previous_ops_by_qualified_paths.remove(&path);
             merk_tree_cache.pending_indexed_elements.remove(&path);
+            merk_tree_cache.requested_tree_types.remove(&path);
             if merk_tree_cache.unused_new_merks.remove(&path) {
                 merk_tree_cache.merks.remove(&path);
             }

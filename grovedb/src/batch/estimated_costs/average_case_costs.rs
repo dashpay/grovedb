@@ -1013,7 +1013,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         path: &KeyInfoPath,
         key: &KeyInfo,
         tree_type: TreeType,
-    ) -> CostResult<(), Error> {
+    ) -> CostResult<Option<TreeType>, Error> {
         let mut average_case_cost = OperationCost::default();
         let mut inserted_path = path.clone();
         inserted_path.push(key.clone());
@@ -1022,7 +1022,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         // There is however a hash call that creates the prefix
         average_case_cost.hash_node_calls += 1;
         self.cached_merks.insert(inserted_path, tree_type);
-        Ok(()).wrap_with_cost(average_case_cost)
+        Ok(None).wrap_with_cost(average_case_cost)
     }
 
     fn get_batch_run_mode(&self) -> BatchRunMode {

@@ -36,6 +36,14 @@ pub struct BatchApplyOptions {
     /// the input `Vec` wins, and the earlier operation is lost without any
     /// error or warning.
     ///
+    /// Tree inserts of different tree types at one key are the exception.
+    /// From `GROVE_V5` such a batch is refused with `InvalidBatchOperation`.
+    /// On `GROVE_V1`..`V4` it is applied, but not by last-op-wins: the child
+    /// Merk keeps the **first** insert's tree type while the stored element
+    /// takes the last insert's flags, so a batch that also writes under the
+    /// key can store a tree of the wrong type, or a `Tree` over a child
+    /// written as a sum tree (which `verify_grovedb` reports).
+    ///
     /// This is safe **only** when the caller has already guaranteed that the
     /// operation list contains no conflicting entries, or when the caller
     /// intentionally relies on last-op-wins semantics (e.g., an idempotent

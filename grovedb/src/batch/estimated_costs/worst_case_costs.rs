@@ -834,7 +834,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         path: &KeyInfoPath,
         key: &KeyInfo,
         _tree_type: TreeType,
-    ) -> CostResult<(), Error> {
+    ) -> CostResult<Option<TreeType>, Error> {
         let mut worst_case_cost = OperationCost::default();
         let mut inserted_path = path.clone();
         inserted_path.push(key.clone());
@@ -843,7 +843,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         // There is however a hash call that creates the prefix
         worst_case_cost.hash_node_calls += 1;
         self.cached_merks.insert(inserted_path);
-        Ok(()).wrap_with_cost(worst_case_cost)
+        Ok(None).wrap_with_cost(worst_case_cost)
     }
 
     fn get_batch_run_mode(&self) -> BatchRunMode {
