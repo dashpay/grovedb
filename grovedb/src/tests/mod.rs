@@ -97,6 +97,7 @@ mod indexed_axis_nested_and_bounds_tests;
 mod indexed_axis_offset_proof_tests;
 mod indexed_axis_paginated_cost_tests;
 mod indexed_axis_proof_tests;
+mod indexed_mirror_removed_entry_tests;
 mod indexed_reference_row_tests;
 mod indexed_secondary_rekey_cost_tests;
 mod indexed_target_chain_tamper_tests;

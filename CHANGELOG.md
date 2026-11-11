@@ -155,6 +155,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   key) and the cost estimates are unchanged. Gated by the new
   `apply_batch.same_key_tree_type_conflict` slot (0 in V1..V4, 1 in V5;
   **BREAKING** for code building `GroveDBApplyBatchVersions` by hand).
+- From `GROVE_V5`, removing an entry from an indexed tree (PCIT, PSIT or
+  PCPSIT) always removes its row from every secondary. After a level's apply
+  the mirror read each changed key back from the primary. The level's writes
+  are still pending at that point, and for some shapes of the primary the
+  read returned an entry the level had just removed, so the mirror saw no
+  change and the secondaries kept the row. The mirror now reads an entry by
+  walking the primary's tree from its root (`Merk::observe_value_and_value_hash`),
+  before and after the apply. The walk follows the tree as it stands, so a
+  removed key is absent, in a partial batch's later segment as well. Gated
+  by the new
+  `apply_batch.indexed_mirror_entry_read` slot (0 in V1..V4,
+  1 in V5; **BREAKING** for code building `GroveDBApplyBatchVersions` by
+  hand): on V5 such a removal commits a different secondary root and is
+  charged for the row's delete, and a write arriving from inside a child of
+  the primary is charged fewer seeks and loaded bytes (the walk loads the
+  path once and the apply reuses it, where the read fetched the key on its
+  own); storage costs are otherwise what they were. The batch estimate
+  follows the same slot: on V5 it reserves two walks of the primary per
+  touched entry in place of four node fetches, so it grows with the
+  primary's estimated levels and stays above a removal whose post-state
+  walk loads nodes the removal did not. `GROVE_V4` is unchanged
+  from 6.1.1 and still keeps the row; a tree written under it may hold such
+  rows, which `verify_grovedb` reports as secondary orphans and
+  `reconcile_indexed_tree_secondaries` removes.
 - MMR proof verification (`MerkleProof::calculate_root`, `verify`,
   `calculate_root_with_new_leaf` and `verify_incremental`,
   `MmrTreeProof::verify` and `verify_and_get_root`, and through them the

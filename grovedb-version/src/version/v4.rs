@@ -446,6 +446,8 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             // child Merk keeping the first one's type.
             same_key_tree_type_conflict: 0,
             tree_insert_above_emptied_level: 0,
+            // v0: the mirror reads an entry with `Merk::get`.
+            indexed_mirror_entry_read: 0,
         },
         element: GroveDBElementMethodVersions {
             delete: 0,

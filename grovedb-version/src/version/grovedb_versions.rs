@@ -356,6 +356,34 @@ pub struct GroveDBApplyBatchVersions {
     /// The slot gates the stored element, so the root hash and the cost, and
     /// an accepted/rejected outcome for the two wrapped forms.
     pub tree_insert_above_emptied_level: FeatureVersion,
+
+    /// How the indexed-tree mirror reads an entry of the primary, before
+    /// the level's apply (the old state) and after it (the new state).
+    ///
+    /// - `0` (V1..V4): with `Merk::get`. Where the path to the key leaves
+    ///   the nodes in memory, that read fetches the key from storage. The
+    ///   level's writes are only pending there, so an entry the level
+    ///   removed can still be returned. The mirror then sees no change and
+    ///   leaves the entry's row in every secondary. Whether it happens
+    ///   depends on the shape of the primary around the removed node.
+    /// - `1` (V5+): by walking the primary's tree from its root. The walk
+    ///   follows the tree as it stands, pending writes included, so a
+    ///   removed key is absent and its rows are always removed, in a later
+    ///   segment of a partial batch as well.
+    ///
+    /// Gated because it changes a committed root (for a removal that kept
+    /// its row, the secondary no longer holds it) and tracked costs. That
+    /// removal is charged for the row's delete. A write whose path the
+    /// batch had not loaded before the capture (one arriving from inside a
+    /// child of the primary) is charged fewer seeks and loaded bytes: the
+    /// walk loads the path once and the apply reuses it, where version 0
+    /// reads the key from storage on its own. Storage costs are otherwise
+    /// the same on both.
+    ///
+    /// The average-case batch estimate reads this slot too, so it reserves
+    /// what the selected read can fetch: four nodes per touched entry on
+    /// `0`, two walks of the primary's estimated levels on `1`.
+    pub indexed_mirror_entry_read: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

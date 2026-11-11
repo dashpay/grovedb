@@ -47,6 +47,14 @@
 //!   different tree types at one key. V4 applies it, as 6.1.1 did, with the
 //!   child Merk keeping the first insert's type whatever the last insert
 //!   asked for. Gated because it flips an accepted/rejected outcome.
+//! - `apply_batch.indexed_mirror_entry_read: 1`: the
+//!   indexed-tree mirror reads an entry of the primary by walking its
+//!   tree from the root, before and after the level's apply. The walk
+//!   follows the tree as it stands, so a removed key is absent, in a
+//!   partial batch's later segment as well. On V4 the read can return the
+//!   entry just removed (the delete is still pending in the storage batch),
+//!   and the entry's row then stays in every secondary. Gated because it
+//!   changes a committed secondary root and tracked costs.
 //!
 //! - `apply_batch.tree_insert_above_emptied_level: 1`: a batch that inserts
 //!   a sum or count tree and leaves the level below it empty (it only deletes
@@ -100,6 +108,7 @@ pub const GROVE_V5: GroveVersion = GroveVersion {
             keyless_append_repeats: 1, // changed: a batch may repeat a keyless append
             same_key_tree_type_conflict: 1, // changed: two tree types at one key are refused
             tree_insert_above_emptied_level: 1, // changed: the inserted tree keeps its type
+            indexed_mirror_entry_read: 1, // changed: entries are read by walking the tree
             ..GROVE_V4.grovedb_versions.apply_batch
         },
         element: GroveDBElementMethodVersions {

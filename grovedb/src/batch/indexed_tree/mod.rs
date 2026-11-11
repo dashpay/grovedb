@@ -57,7 +57,7 @@ use grovedb_costs::{
 };
 use grovedb_merk::{element::costs::ElementCostExtensions, Merk};
 use grovedb_storage::StorageContext;
-use grovedb_version::version::GroveVersion;
+use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 pub(crate) use mirror::{apply_indexed_secondary_mirror_post_apply, read_post_apply_transitions};
 pub(crate) use overwrite::classify_cidx_overwrite;
 pub(crate) use pre_state::capture_indexed_pre_state;
@@ -83,7 +83,84 @@ type AggregateTransition = (Vec<u8>, MaybeEntryState, MaybeEntryState);
 /// for a tree-shaped or reference-shaped entry the stored hash is a
 /// combined hash that `value_hash(bytes)` cannot reproduce, and it is the
 /// stored one the row must bind.
+///
+/// Dispatches on `apply_batch.indexed_mirror_entry_read`: `0` (V1..V4) is
+/// [`read_entry_aggregates_v0`], `1` (V5+) is [`read_entry_aggregates_v1`].
 fn read_entry_aggregates<'db, S: StorageContext<'db>>(
+    primary_merk: &Merk<S>,
+    key: &[u8],
+    phase: &str,
+    grove_version: &GroveVersion,
+) -> CostResult<MaybeEntryState, Error> {
+    match grove_version
+        .grovedb_versions
+        .apply_batch
+        .indexed_mirror_entry_read
+    {
+        0 => read_entry_aggregates_v0(primary_merk, key, phase, grove_version),
+        1 => read_entry_aggregates_v1(primary_merk, key, phase, grove_version),
+        version => Err(GroveVersionError::UnknownVersionMismatch {
+            method: "read_entry_aggregates".to_string(),
+            known_versions: vec![0, 1],
+            received: version,
+        }
+        .into())
+        .wrap_with_cost(OperationCost::default()),
+    }
+}
+
+/// Version 1 (V5+): the entry is found by walking the primary's tree from
+/// its root, fetching each node the walk reaches that is not yet in memory.
+///
+/// The walk follows the links of the tree as it now stands, pending writes
+/// included, so a key this Merk removed is absent and a key it wrote reads
+/// as written, in a later segment of a partial batch as well. It keeps the
+/// nodes it fetches, so the apply that follows a capture reuses them.
+fn read_entry_aggregates_v1<'db, S: StorageContext<'db>>(
+    primary_merk: &Merk<S>,
+    key: &[u8],
+    phase: &str,
+    grove_version: &GroveVersion,
+) -> CostResult<MaybeEntryState, Error> {
+    let mut cost = OperationCost::default();
+    let stored = cost_return_on_error!(
+        &mut cost,
+        primary_merk
+            .observe_value_and_value_hash(
+                key,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            )
+            .map_err(|e| Error::CorruptedData(format!(
+                "indexed {phase}-state read for key {}: {e}",
+                hex::encode(key)
+            )))
+    );
+    let Some((bytes, value_hash)) = stored else {
+        return Ok(None).wrap_with_cost(cost);
+    };
+    let elem = cost_return_on_error_no_add!(
+        cost,
+        Element::deserialize(bytes.as_slice(), grove_version)
+            .map_err(|e| Error::CorruptedData(format!("indexed {phase}-state deserialize: {e}")))
+    );
+    let (count, sum) = elem.count_sum_value_or_default();
+    Ok(Some(IndexedEntryState {
+        count,
+        sum,
+        value_hash,
+    }))
+    .wrap_with_cost(cost)
+}
+
+/// Version 0 (V1..V4): the key is read with `Merk::get`.
+///
+/// Frozen, with its fault: where the path to the key leaves the nodes in
+/// memory, that read fetches the key from storage. This Merk's writes are
+/// only pending there, so an entry it removed can still be returned. Read
+/// after the level's apply, such a key looks unchanged and its row stays in
+/// every secondary.
+fn read_entry_aggregates_v0<'db, S: StorageContext<'db>>(
     primary_merk: &Merk<S>,
     key: &[u8],
     phase: &str,
