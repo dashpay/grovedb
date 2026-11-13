@@ -64,7 +64,7 @@
 //! live data.
 //!
 //! A path below an element that is not a tree resolves to nothing, so a
-//! record whose parent key came to hold an item is reclaimed. When the
+//! record whose path came to run through an item is reclaimed. When the
 //! check cannot tell (the read fails for any reason other than the path
 //! being absent), the record is left in place and reported as unresolved,
 //! and the drain goes on to the records after it.
@@ -464,10 +464,12 @@ impl GroveDb {
             // Opening the parent Merk reports `CorruptedPath` when the
             // parent's own key holds an element that is not a tree. Nothing
             // resolves below such an element, so the dropped path is not
-            // live. The variant alone is not taken as that proof: the
-            // parent's element is read and has to be a non-tree.
+            // live. The variant alone is not taken as that proof, and the
+            // layer above the parent may itself no longer be a tree: the
+            // parent path is read again from the root down and has to stop
+            // before its end.
             Err(Error::CorruptedPath(_))
-                if self.holds_a_non_tree_element(parent_segments, grove_version) =>
+                if self.path_stops_before_its_end(parent_segments, grove_version) =>
             {
                 Ok(false)
             }
@@ -475,17 +477,22 @@ impl GroveDb {
         }
     }
 
-    /// Whether the committed state holds, at `path`, an element that is
-    /// not a tree. `false` for the root, for an absent element, for any
-    /// tree and when the read fails.
-    fn holds_a_non_tree_element(&self, path: &[Vec<u8>], grove_version: &GroveVersion) -> bool {
-        let Some((key, parent_segments)) = path.split_last() else {
-            return false;
-        };
-        let parent_path: SubtreePath<Vec<u8>> = parent_segments.into();
-        matches!(
-            self.get_raw(parent_path, key, None, grove_version).unwrap(),
-            Ok(element) if element.root_key_and_tree_type().is_none()
-        )
+    /// Whether the committed state proves that `path` does not lead to a
+    /// tree: read from the root down, one of its layers is absent from its
+    /// parent tree or holds an element that is not a tree. Each layer is
+    /// read inside a tree that the step before found, so the answer does
+    /// not depend on storage that is left behind below a layer which is no
+    /// longer a tree. `false` when every layer is a tree and when a read
+    /// fails for any other reason.
+    fn path_stops_before_its_end(&self, path: &[Vec<u8>], grove_version: &GroveVersion) -> bool {
+        for (depth, key) in path.iter().enumerate() {
+            let parent_path: SubtreePath<Vec<u8>> = path[..depth].into();
+            match self.get_raw(parent_path, key, None, grove_version).unwrap() {
+                Ok(element) if element.root_key_and_tree_type().is_some() => {}
+                Ok(_) | Err(Error::PathKeyNotFound(_)) => return true,
+                Err(_) => return false,
+            }
+        }
+        false
     }
 }
