@@ -647,13 +647,9 @@ impl Query {
     /// Check if there is a subquery
     pub fn has_subquery(&self) -> bool {
         // checks if a query has subquery items
-        if self.default_subquery_branch.subquery.is_some()
+        self.default_subquery_branch.subquery.is_some()
             || self.default_subquery_branch.subquery_path.is_some()
             || self.conditional_subquery_branches.is_some()
-        {
-            return true;
-        }
-        false
     }
 
     /// Check if there are only keys
