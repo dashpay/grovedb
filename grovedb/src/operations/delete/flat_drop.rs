@@ -63,6 +63,12 @@
 //! degrades to a bounded, reported storage leak, never to destruction of
 //! live data.
 //!
+//! A path below an element that is not a tree resolves to nothing, so a
+//! record whose parent key came to hold an item is reclaimed. When the
+//! check cannot tell (the read fails for any reason other than the path
+//! being absent), the record is left in place and reported as unresolved,
+//! and the drain goes on to the records after it.
+//!
 //! # Dangling references
 //!
 //! As with every delete operation, incoming references to the dropped
@@ -93,6 +99,7 @@ use grovedb_storage::{
     Storage, StorageBatch, StorageContext,
 };
 use grovedb_version::version::{FeatureVersion, GroveVersion};
+use grovedb_visualize::DebugByteVectors;
 
 use crate::{util::TxRef, Element, Error, GroveDb, TransactionArg};
 
@@ -182,7 +189,7 @@ pub(crate) fn add_flat_drop_record_put_estimate(
 
 /// Outcome of one [`GroveDb::flush_pending_prefix_drops`] pass, for
 /// telemetry only — never consensus.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PendingPrefixDropsReport {
     /// Records whose doomed prefixes were tombstoned and which were then
     /// removed from the queue.
@@ -192,6 +199,15 @@ pub struct PendingPrefixDropsReport {
     /// contract violation). Their storage stays leaked and the records
     /// remain, so the condition keeps being reported.
     pub skipped_live: u64,
+    /// Records left in the queue because the check of whether their path
+    /// is live again failed without an answer (a storage fault, bytes that
+    /// do not decode). Their prefixes are not tombstoned, the pass goes on
+    /// to the next record, and the next pass checks them again.
+    pub unresolved_records: u64,
+    /// The dropped path and the error of the first unresolved record of
+    /// this pass, for the caller's log. `None` when `unresolved_records`
+    /// is 0.
+    pub first_unresolved_error: Option<String>,
 }
 
 impl GroveDb {
@@ -373,6 +389,14 @@ impl GroveDb {
     /// here (and roll back with it), so a drop can never be reclaimed
     /// before it is durably committed.
     ///
+    /// Each record is handled on its own. A record whose liveness check
+    /// fails without an answer is counted in
+    /// [`PendingPrefixDropsReport::unresolved_records`] and left in place
+    /// for the next pass, and the pass goes on to the records after it.
+    /// `Err` is returned only when the drain itself fails: the records
+    /// cannot be listed, or a tombstone or a record removal cannot be
+    /// written. Records already reclaimed by that pass stay reclaimed.
+    ///
     /// Deliberately not version-gated: it only reclaims storage that a
     /// gated operation already orphaned, and is a no-op when no records
     /// exist. Hosts should call it after committing a transaction that
@@ -387,33 +411,81 @@ impl GroveDb {
             // Liveness guard: never tombstone a prefix whose path resolves
             // to a live element (the dropped path was re-created — a caller
             // contract violation; leak instead of destroying live data).
-            let live = match record.path.split_last() {
-                // A record with an empty path cannot be produced by
-                // `drop_flat_subtree`; treat it as unsafe to act on.
-                None => true,
-                Some((key, parent_segments)) => {
-                    let parent_path: SubtreePath<Vec<u8>> = parent_segments.into();
-                    match self.get_raw(parent_path, key, None, grove_version).unwrap() {
-                        Ok(_) => true,
-                        Err(
-                            Error::PathKeyNotFound(_)
-                            | Error::PathNotFound(_)
-                            | Error::PathParentLayerNotFound(_)
-                            | Error::InvalidParentLayerPath(_),
-                        ) => false,
-                        Err(e) => return Err(e),
+            match self.dropped_path_is_live(&record.path, grove_version) {
+                Ok(true) => report.skipped_live += 1,
+                Ok(false) => {
+                    self.db.delete_prefix_ranges(&record.doomed_prefixes)?;
+                    self.db
+                        .remove_pending_prefix_drop_record(&record.primary_prefix)?;
+                    report.reclaimed_records += 1;
+                }
+                // The check gave no answer: nothing is tombstoned and the
+                // record stays for the next pass.
+                Err(e) => {
+                    report.unresolved_records += 1;
+                    if report.first_unresolved_error.is_none() {
+                        report.first_unresolved_error = Some(format!(
+                            "dropped path {:?}: {e}",
+                            DebugByteVectors(record.path)
+                        ));
                     }
                 }
-            };
-            if live {
-                report.skipped_live += 1;
-                continue;
             }
-            self.db.delete_prefix_ranges(&record.doomed_prefixes)?;
-            self.db
-                .remove_pending_prefix_drop_record(&record.primary_prefix)?;
-            report.reclaimed_records += 1;
         }
         Ok(report)
+    }
+
+    /// The drain's liveness guard for one record: does the dropped path
+    /// resolve to an element in the committed state?
+    ///
+    /// `Ok(false)` only when the read proves the path resolves to nothing.
+    /// Any other failure of the read is returned as `Err`: it proves
+    /// neither answer, and the caller must not tombstone on it.
+    fn dropped_path_is_live(
+        &self,
+        dropped_path: &[Vec<u8>],
+        grove_version: &GroveVersion,
+    ) -> Result<bool, Error> {
+        // A record with an empty path cannot be produced by
+        // `drop_flat_subtree`; treat it as unsafe to act on.
+        let Some((key, parent_segments)) = dropped_path.split_last() else {
+            return Ok(true);
+        };
+        let parent_path: SubtreePath<Vec<u8>> = parent_segments.into();
+        match self.get_raw(parent_path, key, None, grove_version).unwrap() {
+            Ok(_) => Ok(true),
+            // The key, or a layer above it, is absent.
+            Err(
+                Error::PathKeyNotFound(_)
+                | Error::PathNotFound(_)
+                | Error::PathParentLayerNotFound(_)
+                | Error::InvalidParentLayerPath(_),
+            ) => Ok(false),
+            // Opening the parent Merk reports `CorruptedPath` when the
+            // parent's own key holds an element that is not a tree. Nothing
+            // resolves below such an element, so the dropped path is not
+            // live. The variant alone is not taken as that proof: the
+            // parent's element is read and has to be a non-tree.
+            Err(Error::CorruptedPath(_))
+                if self.holds_a_non_tree_element(parent_segments, grove_version) =>
+            {
+                Ok(false)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Whether the committed state holds, at `path`, an element that is
+    /// not a tree. `false` for the root, for an absent element, for any
+    /// tree and when the read fails.
+    fn holds_a_non_tree_element(&self, path: &[Vec<u8>], grove_version: &GroveVersion) -> bool {
+        let Some((key, parent_segments)) = path.split_last() else {
+            return false;
+        };
+        let parent_path: SubtreePath<Vec<u8>> = parent_segments.into();
+        matches!(
+            self.get_raw(parent_path, key, None, grove_version).unwrap(),
+            Ok(element) if element.root_key_and_tree_type().is_none()
+        )
     }
 }
