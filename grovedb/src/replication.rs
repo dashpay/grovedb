@@ -17,11 +17,18 @@
 //!   of a request proportional to the local tree rather than to the
 //!   request (issue #883);
 //! - the tree type a global chunk id carries must be the one the addressed
-//!   Merk's stored nodes were written under. The source opens the subtree
-//!   with the peer's type as-is, and hashing nodes under a type of another
-//!   aggregate family trips the fail-closed `panic!` in
-//!   `TreeNode::hash_for_link`, so every Merk opened for a peer passes
-//!   [`ensure_served_merk_family`] before anything is hashed.
+//!   rows were written under. The source opens the subtree with the peer's
+//!   prefix, root key and type as-is, and hashing a node under a type of
+//!   another aggregate family is what `TreeNode::hash_for_link` answers
+//!   with a fail-closed `panic!`. Two checks keep a request from reaching
+//!   it. [`ensure_served_merk_family`] compares the root the request names
+//!   with the type before anything is hashed, which settles it for a
+//!   prefix that holds a Merk. The Merk chunk producer ([`ChunkProducer`])
+//!   then checks every node it emits or hashes and hashes fallibly, which
+//!   settles it for a prefix that does not: the raw entries of a non-Merk
+//!   tree are not nodes of one Merk, yet entries can have a stored node's
+//!   byte layout, differ in family and link to each other. The root hashes
+//!   of an indexed header go through [`served_merk_root_hash`].
 //!
 //! Every limit is one an honest target never exceeds: the target only asks
 //! for ids the source itself handed it in earlier chunks.
@@ -33,7 +40,11 @@ mod verify;
 
 use std::pin::Pin;
 
-use grovedb_merk::{tree::hash::CryptoHash, tree_type::TreeType, ChunkProducer, Merk};
+use grovedb_merk::{
+    tree::{hash::CryptoHash, NULL_HASH},
+    tree_type::TreeType,
+    ChunkProducer, Merk,
+};
 use grovedb_path::SubtreePath;
 use grovedb_storage::rocksdb_storage::PrefixedRocksDbTransactionContext;
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
@@ -353,10 +364,13 @@ impl GroveDb {
     ///   depth (see the module docs); an id longer than the subtree is deep
     ///   is refused by the chunk producer with a `BadTraversalInstruction`
     ///   error, surfaced here as `Error::CorruptedData`.
-    /// - The tree type in each global chunk id is peer-chosen. A Merk
-    ///   subtree whose stored nodes belong to another aggregate family than
-    ///   that type is refused with `Error::CorruptedData` before any node is
-    ///   hashed (see [`ensure_served_merk_family`]).
+    /// - The prefix, root key and tree type in each global chunk id are
+    ///   peer-chosen. A request whose root belongs to another aggregate
+    ///   family than that type is refused with `Error::CorruptedData` before
+    ///   any node is hashed (see [`ensure_served_merk_family`]), and so is a
+    ///   request that reaches a node of another family, a row that is not a
+    ///   node, or a node to hash whose aggregate cannot be computed, further
+    ///   down: the chunk producer checks every node it emits or hashes.
     /// - Non-Merk append-only subtrees (`CommitmentTree`, `MmrTree`,
     ///   `BulkAppendTree`, `DenseAppendOnlyFixedSizeTree`,
     ///   `PrivateDocumentStore`) are served as cursor-based entry pages
@@ -639,12 +653,23 @@ impl GroveDb {
 /// peer could crash the serving node with one byte. Comparing the families
 /// before anything is hashed turns that into a descriptive error.
 ///
-/// Every node of a Merk shares its root's family (restore enforces the same
-/// rule node by node in `Restorer::write_chunk`), so the root decides for
-/// the whole subtree. An empty Merk has no node to hash and passes. An
-/// honest target always names the type the element it restored carries,
-/// which is the type the nodes were written under, so this never refuses a
-/// request an honest target sends.
+/// This is the first of two checks, and it only looks at the root. Every
+/// node of a Merk shares its root's family (restore enforces the same rule
+/// node by node in `Restorer::write_chunk`), so for a prefix that holds a
+/// Merk the root decides for the whole subtree and a mismatched request is
+/// refused here with a message naming both sides. The prefix and the root
+/// key are peer-chosen too, though, and a prefix need not hold a Merk: a
+/// non-Merk tree keeps raw entries there, which can have a stored node's
+/// byte layout, belong to different families and link to each other. A root
+/// that passes says nothing about the rows it links to, so the chunk
+/// producer checks every node it emits or hashes as well
+/// (`ChunkProducer`, "Node checks"), and a caller that hashes the root
+/// itself uses [`served_merk_root_hash`].
+///
+/// An empty Merk has no node to hash and passes. An honest target always
+/// names the type the element it restored carries, which is the type the
+/// nodes were written under, so this never refuses a request an honest
+/// target sends.
 pub(crate) fn ensure_served_merk_family(
     merk: &Merk<PrefixedRocksDbTransactionContext<'_>>,
     chunk_prefix: &SubtreePrefix,
@@ -660,6 +685,34 @@ pub(crate) fn ensure_served_merk_family(
         ))),
         _ => Ok(()),
     }
+}
+
+/// The root hash of a Merk opened for a peer, under the tree type the peer
+/// named.
+///
+/// `Merk::root_hash` hashes through `TreeNode::hash_for_link`, which aborts
+/// the process when the root does not belong to the tree type or its
+/// aggregate cannot be computed (its own count or sum plus its children's
+/// overflows). Both are possible when the prefix, root key and type come
+/// from a peer, so the family is checked first
+/// ([`ensure_served_merk_family`]) and the hash is taken fallibly. An empty
+/// Merk hashes to the null hash, as `Merk::root_hash` has it.
+pub(crate) fn served_merk_root_hash(
+    merk: &Merk<PrefixedRocksDbTransactionContext<'_>>,
+    chunk_prefix: &SubtreePrefix,
+) -> Result<CryptoHash, Error> {
+    ensure_served_merk_family(merk, chunk_prefix)?;
+    let tree_type = merk.tree_type;
+    merk.walk(|root| match root {
+        None => Ok(NULL_HASH),
+        Some(root) => root.tree().try_hash_for_link(tree_type).value.map_err(|e| {
+            Error::CorruptedData(format!(
+                "state sync request names a {tree_type} for subtree {}, whose root cannot be \
+                     hashed under it: {e}",
+                hex::encode(chunk_prefix),
+            ))
+        }),
+    })
 }
 
 pub(crate) mod utils {

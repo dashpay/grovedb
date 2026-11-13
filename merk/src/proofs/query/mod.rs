@@ -188,9 +188,17 @@ where
 
     /// Creates a `Node::Hash` from the hash of the node, using tree type
     /// aware hashing. For ProvableCountTree and ProvableCountSumTree, this
-    /// uses `hash_for_link` which includes the count in the hash computation.
-    pub(crate) fn to_hash_node_for_tree_type(&self, tree_type: TreeType) -> CostContext<Node> {
-        self.tree().hash_for_link(tree_type).map(Node::Hash)
+    /// uses the tree type's link hash, which includes the count in the hash
+    /// computation.
+    ///
+    /// Fallible (`try_hash_for_link`, not `hash_for_link`): a proof is built
+    /// on a read path, where a node that does not belong to `tree_type` is an
+    /// error to report, not a reason to abort the process.
+    pub(crate) fn to_hash_node_for_tree_type(
+        &self,
+        tree_type: TreeType,
+    ) -> CostResult<Node, Error> {
+        self.tree().try_hash_for_link(tree_type).map_ok(Node::Hash)
     }
 
     /// Creates a `Node::KVHashCount` from the kv hash and count of the root

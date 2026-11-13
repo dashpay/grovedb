@@ -62,7 +62,7 @@ use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use crate::{
     operations::indexed_tree::axis_secondary_tree_type,
     replication::{
-        ensure_served_merk_family,
+        served_merk_root_hash,
         utils::{encode_vec_ops, pack_nested_bytes},
     },
     Element, Error, GroveDb, SubtreePrefix, Transaction,
@@ -290,10 +290,11 @@ impl GroveDb {
                     hex::encode(chunk_prefix)
                 ))
             })?;
-        // `root_hash` hashes under the peer-chosen `tree_type`; refuse a
-        // type of another family than the stored nodes before it panics.
-        ensure_served_merk_family(&merk, &chunk_prefix)?;
-        let primary_root_hash = merk.root_hash().unwrap();
+        // The root is hashed under the peer-chosen `tree_type`: a root of
+        // another family, or one whose aggregate cannot be computed, is
+        // refused here. The nodes below it are checked by the chunk
+        // producer when the root chunk is built.
+        let primary_root_hash = served_merk_root_hash(&merk, &chunk_prefix)?;
 
         let mut axes = Vec::with_capacity(request.axes.len());
         for (tag, secondary_root_key) in &request.axes {
@@ -320,8 +321,10 @@ impl GroveDb {
             // The secondary's type and its prefix both follow from the
             // tag, so a mismatch here needs corrupt storage; checked anyway
             // so no Merk is hashed for a peer unchecked.
-            ensure_served_merk_family(&secondary_merk, &secondary_prefix)?;
-            axes.push((*tag, secondary_merk.root_hash().unwrap()));
+            axes.push((
+                *tag,
+                served_merk_root_hash(&secondary_merk, &secondary_prefix)?,
+            ));
         }
 
         let header = IndexedHeader {

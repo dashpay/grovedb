@@ -963,6 +963,82 @@ impl TreeNode {
         }
     }
 
+    /// [`hash_for_link`](Self::hash_for_link) for a caller that has not
+    /// established that this node belongs to `tree_type`: where that function
+    /// panics, this one returns an error.
+    ///
+    /// The write path builds every node from the tree type it hashes under,
+    /// so a mismatch there is an invariant break and `hash_for_link` aborts
+    /// on it. A reader that takes the tree type from outside (state sync
+    /// serves a subtree under the type a peer names) has no such guarantee
+    /// and must not abort the process on it. The two failures are the ones
+    /// `hash_for_link` panics on: `aggregate_data()` fails (the node's own
+    /// aggregate plus its children's overflows), or the aggregate is not the
+    /// one a `Provable*` type hashes. For every other input the hash is the
+    /// one `hash_for_link` returns.
+    pub fn try_hash_for_link(&self, tree_type: TreeType) -> CostResult<CryptoHash, Error> {
+        let mismatch = || {
+            Err(Error::CorruptedState(
+                "the node's feature type does not belong to the tree type it is hashed under",
+            ))
+            .wrap_with_cost(Default::default())
+        };
+        match tree_type {
+            TreeType::ProvableCountTree
+            | TreeType::ProvableCountIndexedTree
+            | TreeType::ProvableCountSumTree
+            | TreeType::ProvableSumTree
+            | TreeType::ProvableSumIndexedTree
+            | TreeType::ProvableCountProvableSumTree
+            | TreeType::ProvableCountProvableSumIndexedTree => {
+                let aggregate_data = match self.aggregate_data() {
+                    Ok(aggregate_data) => aggregate_data,
+                    Err(e) => return Err(e).wrap_with_cost(Default::default()),
+                };
+                match (tree_type, aggregate_data) {
+                    (
+                        TreeType::ProvableCountTree | TreeType::ProvableCountIndexedTree,
+                        AggregateData::ProvableCount(count),
+                    )
+                    | (
+                        TreeType::ProvableCountSumTree,
+                        AggregateData::ProvableCountAndSum(count, _),
+                    ) => node_hash_with_count(
+                        self.inner.kv.hash(),
+                        self.child_hash(true),
+                        self.child_hash(false),
+                        count,
+                    )
+                    .map(Ok),
+                    (
+                        TreeType::ProvableSumTree | TreeType::ProvableSumIndexedTree,
+                        AggregateData::ProvableSum(sum),
+                    ) => node_hash_with_sum(
+                        self.inner.kv.hash(),
+                        self.child_hash(true),
+                        self.child_hash(false),
+                        sum,
+                    )
+                    .map(Ok),
+                    (
+                        TreeType::ProvableCountProvableSumTree
+                        | TreeType::ProvableCountProvableSumIndexedTree,
+                        AggregateData::ProvableCountAndProvableSum(count, sum),
+                    ) => node_hash_with_count_and_sum(
+                        self.inner.kv.hash(),
+                        self.child_hash(true),
+                        self.child_hash(false),
+                        count,
+                        sum,
+                    )
+                    .map(Ok),
+                    _ => mismatch(),
+                }
+            }
+            _ => self.hash().map(Ok),
+        }
+    }
+
     /// Computes and returns the aggregate data for this node by combining its
     /// own value with the aggregate data of its children.
     ///
@@ -2242,5 +2318,115 @@ mod test {
             .expect("commit failed");
 
         let _ = tree.hash_for_link(TreeType::ProvableCountProvableSumTree);
+    }
+
+    /// Every tree type a peer can name, for the `try_hash_for_link` tests.
+    fn every_merk_tree_type() -> Vec<crate::TreeType> {
+        use crate::TreeType;
+        vec![
+            TreeType::NormalTree,
+            TreeType::SumTree,
+            TreeType::BigSumTree,
+            TreeType::CountTree,
+            TreeType::CountSumTree,
+            TreeType::ProvableCountTree,
+            TreeType::ProvableCountSumTree,
+            TreeType::ProvableSumTree,
+            TreeType::ProvableCountProvableSumTree,
+            TreeType::ProvableSumIndexedTree,
+            TreeType::ProvableCountIndexedTree,
+            TreeType::ProvableCountProvableSumIndexedTree,
+        ]
+    }
+
+    /// A committed leaf of `feature_type`.
+    fn committed_leaf(feature_type: crate::TreeFeatureType) -> TreeNode {
+        let mut tree = TreeNode::new(vec![0], vec![1], None, feature_type).unwrap();
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
+        tree
+    }
+
+    /// `try_hash_for_link` is `hash_for_link` with the two panics turned
+    /// into errors: for a node of the tree type's own family the two return
+    /// the same hash, on every tree type.
+    #[test]
+    fn should_hash_a_matching_node_like_hash_for_link() {
+        for tree_type in every_merk_tree_type() {
+            let tree = committed_leaf(tree_type.empty_tree_feature_type());
+            assert_eq!(
+                tree.try_hash_for_link(tree_type)
+                    .unwrap()
+                    .expect("a node of the tree type's family hashes"),
+                tree.hash_for_link(tree_type).unwrap(),
+                "{tree_type:?}"
+            );
+        }
+    }
+
+    /// A node of another family is an error under every `Provable*` type,
+    /// where `hash_for_link` panics, and hashes as `hash_for_link` does under
+    /// the other types, which do not look at the aggregate.
+    #[test]
+    fn should_return_an_error_where_hash_for_link_panics_on_a_mismatch() {
+        use crate::merk::NodeType;
+
+        for tree_type in every_merk_tree_type() {
+            for node_type in every_merk_tree_type() {
+                if node_type.inner_node_type() == tree_type.inner_node_type() {
+                    continue;
+                }
+                let tree = committed_leaf(node_type.empty_tree_feature_type());
+                let hashed = tree.try_hash_for_link(tree_type).unwrap();
+                let provable = matches!(
+                    tree_type.inner_node_type(),
+                    NodeType::ProvableCountNode
+                        | NodeType::ProvableCountSumNode
+                        | NodeType::ProvableSumNode
+                        | NodeType::ProvableCountProvableSumNode
+                );
+                if provable {
+                    assert!(
+                        matches!(hashed, Err(crate::Error::CorruptedState(_))),
+                        "{node_type:?} node under {tree_type:?}: {hashed:?}"
+                    );
+                } else {
+                    assert_eq!(
+                        hashed.expect("a type that ignores the aggregate hashes any node"),
+                        tree.hash_for_link(tree_type).unwrap(),
+                        "{node_type:?} node under {tree_type:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A node whose aggregate cannot be computed is an error as well:
+    /// `hash_for_link` panics on it under a `Provable*` type.
+    #[test]
+    fn should_return_an_error_when_the_aggregate_overflows() {
+        use crate::{tree::Link, TreeFeatureType, TreeType};
+
+        let left = Link::Reference {
+            hash: [1; 32],
+            child_heights: (0, 0),
+            key: vec![0],
+            aggregate_data: AggregateData::ProvableCount(1),
+        };
+        let tree = TreeNode::from_fields(
+            vec![1],
+            vec![1],
+            [2; 32],
+            Some(left),
+            None,
+            TreeFeatureType::ProvableCountedMerkNode(u64::MAX),
+        )
+        .unwrap();
+        let hashed = tree.try_hash_for_link(TreeType::ProvableCountTree).unwrap();
+        assert!(
+            matches!(hashed, Err(crate::Error::Overflow(_))),
+            "{hashed:?}"
+        );
     }
 }
