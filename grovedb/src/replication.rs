@@ -40,11 +40,7 @@ mod verify;
 
 use std::pin::Pin;
 
-use grovedb_merk::{
-    tree::{hash::CryptoHash, NULL_HASH},
-    tree_type::TreeType,
-    ChunkProducer, Merk,
-};
+use grovedb_merk::{tree::hash::CryptoHash, tree_type::TreeType, ChunkProducer, Merk};
 use grovedb_path::SubtreePath;
 use grovedb_storage::rocksdb_storage::PrefixedRocksDbTransactionContext;
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
@@ -690,28 +686,24 @@ pub(crate) fn ensure_served_merk_family(
 /// The root hash of a Merk opened for a peer, under the tree type the peer
 /// named.
 ///
-/// `Merk::root_hash` hashes through `TreeNode::hash_for_link`, which aborts
-/// the process when the root does not belong to the tree type or its
-/// aggregate cannot be computed (its own count or sum plus its children's
-/// overflows). Both are possible when the prefix, root key and type come
-/// from a peer, so the family is checked first
-/// ([`ensure_served_merk_family`]) and the hash is taken fallibly. An empty
-/// Merk hashes to the null hash, as `Merk::root_hash` has it.
+/// `Merk::root_hash` aborts the process when the root does not belong to the
+/// tree type or its aggregate cannot be computed (its own count or sum plus
+/// its children's overflows). Both are possible when the prefix, root key and
+/// type come from a peer, so the family is checked first
+/// ([`ensure_served_merk_family`]) and the hash is taken with
+/// `Merk::try_root_hash`, which returns an error there.
 pub(crate) fn served_merk_root_hash(
     merk: &Merk<PrefixedRocksDbTransactionContext<'_>>,
     chunk_prefix: &SubtreePrefix,
 ) -> Result<CryptoHash, Error> {
     ensure_served_merk_family(merk, chunk_prefix)?;
-    let tree_type = merk.tree_type;
-    merk.walk(|root| match root {
-        None => Ok(NULL_HASH),
-        Some(root) => root.tree().try_hash_for_link(tree_type).value.map_err(|e| {
-            Error::CorruptedData(format!(
-                "state sync request names a {tree_type} for subtree {}, whose root cannot be \
-                     hashed under it: {e}",
-                hex::encode(chunk_prefix),
-            ))
-        }),
+    merk.try_root_hash().value.map_err(|e| {
+        Error::CorruptedData(format!(
+            "state sync request names a {} for subtree {}, whose root cannot be hashed under it: \
+             {e}",
+            merk.tree_type,
+            hex::encode(chunk_prefix),
+        ))
     })
 }
 

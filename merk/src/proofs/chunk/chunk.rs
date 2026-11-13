@@ -104,8 +104,14 @@ where
         if remaining_depth == 0 {
             // Use tree_type-aware hashing so ProvableCountTree/ProvableCountSumTree
             // include the count in their hash computation
-            let hash_node =
-                cost_return_on_error!(&mut cost, self.to_hash_node_for_tree_type(tree_type));
+            //
+            // The hash's own cost is dropped, as it always was here: trunk
+            // and branch proofs return this function's cost to their caller,
+            // so charging it would change the cost of a request that succeeds.
+            let hash_node = match self.to_hash_node_for_tree_type(tree_type).value {
+                Ok(hash_node) => hash_node,
+                Err(e) => return Err(e).wrap_with_cost(cost),
+            };
             proof.push(Op::Push(hash_node));
             return Ok(()).wrap_with_cost(cost);
         }
@@ -402,6 +408,7 @@ pub fn verify_height_tree(height_proof_tree: &Tree) -> Result<usize, Error> {
 #[cfg(test)]
 pub mod tests {
     use ed::Encode;
+    use grovedb_costs::OperationCost;
     use grovedb_version::version::GroveVersion;
 
     use crate::{
@@ -963,6 +970,43 @@ pub mod tests {
                 Op::Child,
             ]
         );
+    }
+
+    /// A chunk proof has never been charged for the hashes it takes at its
+    /// boundary, and that stays so now that those hashes are fallible: the
+    /// cost of a trunk or branch proof is returned to the caller, so charging
+    /// them would change the cost of a request that succeeds. The tree is
+    /// fully in memory, so the walk loads nothing and the whole cost would be
+    /// the boundary hashes.
+    #[test]
+    fn should_not_charge_for_the_hashes_at_a_chunk_boundary() {
+        let grove_version = GroveVersion::latest();
+        let mut tree = build_tree_10_nodes();
+        let mut tree_walker = RefWalker::new(&mut tree, PanicSource {});
+
+        // Depth 2 under a height 4 tree: the third layer is hashed.
+        let trunk =
+            tree_walker.traverse_and_build_chunk(&[], 2, TreeType::NormalTree, grove_version);
+        assert!(trunk
+            .value
+            .expect("should build chunk")
+            .iter()
+            .any(|op| matches!(op, Op::Push(Node::Hash(_)))));
+        assert_eq!(trunk.cost, OperationCost::default());
+
+        let restore_chunk = tree_walker.traverse_and_build_chunk_with_features(
+            &[RIGHT],
+            2,
+            TreeType::NormalTree,
+            true,
+            grove_version,
+        );
+        assert!(restore_chunk
+            .value
+            .expect("should build chunk")
+            .iter()
+            .any(|op| matches!(op, Op::Push(Node::Hash(_)))));
+        assert_eq!(restore_chunk.cost, OperationCost::default());
     }
 
     #[test]

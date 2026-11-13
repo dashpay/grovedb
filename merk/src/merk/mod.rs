@@ -345,6 +345,25 @@ where
         })
     }
 
+    /// The root hash, as [`Merk::root_hash`] has it, for a Merk whose rows are
+    /// not trusted to belong to its tree type.
+    ///
+    /// `root_hash` hashes through `TreeNode::hash_for_link`, which aborts the
+    /// process when the root node is not of the tree type's family or its
+    /// aggregate cannot be computed (its own count or sum plus its
+    /// children's overflows). This returns an error there instead
+    /// (`TreeNode::try_hash_for_link`). Use it wherever the tree type or the
+    /// root key was not established by this database's own writes, such as a
+    /// Merk opened for a state sync peer. An empty Merk hashes to the null
+    /// hash.
+    pub fn try_root_hash(&self) -> CostResult<CryptoHash, Error> {
+        let tree_type = self.tree_type;
+        self.use_tree(|tree| match tree {
+            None => Ok(NULL_HASH).wrap_with_cost(Default::default()),
+            Some(tree) => tree.try_hash_for_link(tree_type),
+        })
+    }
+
     /// Returns if the merk has a root tree set
     pub fn has_root_key(&self) -> bool {
         let tree = self.tree.take();
@@ -1094,8 +1113,12 @@ mod test {
 
     use super::{Merk, RefWalker};
     use crate::{
-        merk::source::MerkSource, test_utils::*, tree::kv::ValueDefinedCostType,
-        tree_type::TreeType, Error, Op, TreeFeatureType::BasicMerkNode,
+        merk::source::MerkSource,
+        test_utils::*,
+        tree::{kv::ValueDefinedCostType, NULL_HASH},
+        tree_type::TreeType,
+        Error, Op,
+        TreeFeatureType::BasicMerkNode,
     };
     // TODO: Close and then reopen test
 
@@ -1124,6 +1147,47 @@ mod test {
                 218, 90, 71, 153, 240, 47, 227, 168, 1, 104, 239, 237, 140, 147
             ]
         );
+    }
+
+    /// `try_root_hash` is `root_hash` (value and cost) for a Merk whose rows
+    /// belong to its tree type, empty or not, and an error where `root_hash`
+    /// aborts: a root node of another aggregate family.
+    #[test]
+    fn should_return_the_root_hash_or_an_error_from_try_root_hash() {
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new(grove_version);
+
+        let empty = merk.try_root_hash();
+        assert_eq!(empty.cost, merk.root_hash().cost);
+        assert_eq!(empty.value.expect("an empty Merk hashes"), NULL_HASH);
+
+        let batch = make_batch_seq(0..20);
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+            .unwrap()
+            .expect("apply failed");
+        let honest = merk.try_root_hash();
+        let expected = merk.root_hash();
+        assert_eq!(honest.cost, expected.cost);
+        assert_eq!(
+            honest.value.expect("a matching root hashes"),
+            expected.value
+        );
+
+        // The same rows read under a type whose hash folds in an aggregate
+        // they do not carry.
+        for tree_type in [
+            TreeType::ProvableCountTree,
+            TreeType::ProvableCountSumTree,
+            TreeType::ProvableSumTree,
+            TreeType::ProvableCountProvableSumTree,
+        ] {
+            (*merk).tree_type = tree_type;
+            let result = merk.try_root_hash().unwrap();
+            assert!(
+                matches!(result, Err(Error::CorruptedState(_))),
+                "{tree_type:?}: expected an error, got {result:?}"
+            );
+        }
     }
 
     /// A Merk holding `aaa`, `mmm` and `zzz`, each with a distinct value.

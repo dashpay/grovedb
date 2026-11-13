@@ -279,10 +279,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   against the tree type it serves under (`CorruptedState` on a mismatch)
   and takes the hashes at a chunk's boundary fallibly; the root hashes of
   an indexed header are taken the same way. New
-  `TreeNode::try_hash_for_link` returns an error where `hash_for_link`
-  panics; `hash_for_link` and the write path are unchanged. Not gated by
-  grove version: an honest target never sends such a request, and the
-  chunks it is served do not change.
+  `TreeNode::try_hash_for_link` and `Merk::try_root_hash` return an error
+  where `hash_for_link` and `Merk::root_hash` panic; those two and the write
+  path are unchanged. Not gated by grove version: an honest target never
+  sends such a request, the chunks it is served do not change, and neither
+  does the cost of a trunk or branch chunk proof.
 
 ## [6.1.1] - 2026-10-20
 
