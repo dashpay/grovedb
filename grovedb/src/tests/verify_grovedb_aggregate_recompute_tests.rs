@@ -20,6 +20,7 @@ mod tests {
             reconstruct::ElementReconstructExtensions,
         },
         tree::{kv::ValueDefinedCostType, TreeFeatureType},
+        tree_type::TreeType,
         CryptoHash,
     };
     use grovedb_path::SubtreePath;
@@ -1048,6 +1049,245 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
+    // A stored aggregate of another kind than the tree's
+    // -----------------------------------------------------------------
+
+    /// One node of every feature type.
+    fn every_feature_type() -> [TreeFeatureType; 9] {
+        [
+            TreeFeatureType::BasicMerkNode,
+            TreeFeatureType::SummedMerkNode(1),
+            TreeFeatureType::BigSummedMerkNode(1),
+            TreeFeatureType::CountedMerkNode(1),
+            TreeFeatureType::CountedSummedMerkNode(1, 1),
+            TreeFeatureType::ProvableCountedMerkNode(1),
+            TreeFeatureType::ProvableCountedSummedMerkNode(1, 1),
+            TreeFeatureType::ProvableSummedMerkNode(1),
+            TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(1, 1),
+        ]
+    }
+
+    /// The label for a root node whose aggregate is not of the kind the
+    /// tree's root hash commits to.
+    fn another_kind_label(stored: AggregateData, tree_type: TreeType) -> String {
+        format!(
+            "stored aggregate {stored:?} is not the kind the root hash of a {tree_type:?} commits \
+             to"
+        )
+    }
+
+    /// The aggregate the Merk of the tree at `path` stores.
+    fn stored_aggregate(db: &GroveDb, path: &[&[u8]], gv: &GroveVersion) -> AggregateData {
+        let tx = db.start_transaction();
+        let path: SubtreePath<&[u8]> = path.into();
+        db.open_transactional_merk_at_path(path, &tx, None, gv)
+            .unwrap()
+            .expect("open the tree's Merk")
+            .aggregate_data()
+            .expect("the stored aggregate can be read")
+    }
+
+    /// The aggregate the count secondary of the indexed tree at `tree_path`
+    /// stores.
+    fn count_secondary_stored_aggregate(
+        db: &GroveDb,
+        tree_path: &[&[u8]],
+        gv: &GroveVersion,
+    ) -> AggregateData {
+        let (tree_key, parent_path) = tree_path.split_last().expect("non-root indexed tree");
+        let indexed_tree = get(db, parent_path, tree_key, gv);
+        let tx = db.start_transaction();
+        let path: SubtreePath<&[u8]> = tree_path.into();
+        db.open_indexed_secondary_at_path(
+            path,
+            IndexAxis::Count,
+            recorded_secondary_root_key(&indexed_tree, IndexAxis::Count),
+            &tx,
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("open the secondary")
+        .aggregate_data()
+        .expect("the stored aggregate can be read")
+    }
+
+    #[test]
+    fn should_report_a_root_node_whose_aggregate_is_of_another_kind_than_its_tree() {
+        let gv = GroveVersion::latest();
+
+        // (tree, its type, the feature type its own nodes carry when the
+        // root hash commits to the aggregate).
+        let trees = [
+            (Element::empty_tree(), TreeType::NormalTree, None),
+            (Element::empty_sum_tree(), TreeType::SumTree, None),
+            (Element::empty_big_sum_tree(), TreeType::BigSumTree, None),
+            (Element::empty_count_tree(), TreeType::CountTree, None),
+            (
+                Element::empty_count_sum_tree(),
+                TreeType::CountSumTree,
+                None,
+            ),
+            (
+                Element::empty_provable_count_tree(),
+                TreeType::ProvableCountTree,
+                Some(TreeFeatureType::ProvableCountedMerkNode(1)),
+            ),
+            (
+                Element::empty_provable_count_sum_tree(),
+                TreeType::ProvableCountSumTree,
+                Some(TreeFeatureType::ProvableCountedSummedMerkNode(1, 1)),
+            ),
+            (
+                Element::empty_provable_sum_tree(),
+                TreeType::ProvableSumTree,
+                Some(TreeFeatureType::ProvableSummedMerkNode(1)),
+            ),
+            (
+                Element::empty_provable_count_provable_sum_tree(),
+                TreeType::ProvableCountProvableSumTree,
+                Some(TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(
+                    1, 1,
+                )),
+            ),
+        ];
+
+        for (tree, tree_type, own_feature_type) in trees {
+            for planted in every_feature_type() {
+                let db = make_test_grovedb(gv);
+                insert(&db, &[TEST_LEAF], b"tree", tree.clone(), gv);
+                // A single element, so the planted node is the tree's root.
+                insert(
+                    &db,
+                    &[TEST_LEAF, b"tree"],
+                    b"a",
+                    Element::new_item(b"v".to_vec()),
+                    gv,
+                );
+                plant_node_aggregate_without_propagating(
+                    &db,
+                    &[TEST_LEAF, b"tree"],
+                    b"a",
+                    &Element::new_item(b"v".to_vec()),
+                    planted,
+                    gv,
+                );
+
+                // Whatever was planted, verification returns.
+                let issues = verify(&db, gv);
+                let reported = issues.get(&owned(&[TEST_LEAF, b"tree"]));
+                let another_kind = placeholder(&another_kind_label(
+                    stored_aggregate(&db, &[TEST_LEAF, b"tree"], gv),
+                    tree_type,
+                ));
+                let of_another_kind =
+                    own_feature_type.is_some_and(|own_feature_type| own_feature_type != planted);
+                if of_another_kind {
+                    let (root, _, actual) = reported.unwrap_or_else(|| {
+                        panic!("{planted:?} in a {tree_type:?} is reported: {issues:?}")
+                    });
+                    assert_eq!(*root, [0u8; 32], "{planted:?} in a {tree_type:?}");
+                    assert_eq!(*actual, another_kind, "{planted:?} in a {tree_type:?}");
+                    assert_eq!(
+                        issues.len(),
+                        1,
+                        "{planted:?} in a {tree_type:?}: {issues:?}"
+                    );
+                } else {
+                    // The tree's own kind, or a tree whose root hash does
+                    // not commit to the aggregate: the root hash is there to
+                    // compute, and any drift is reported as drift.
+                    assert!(
+                        reported.is_none_or(|(_, _, actual)| *actual != another_kind),
+                        "{planted:?} in a {tree_type:?}: {issues:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn should_report_an_indexed_tree_whose_root_aggregate_is_of_another_kind() {
+        let gv = GroveVersion::latest();
+
+        // `b` is the root of the primary of `a`, `b`, `c`, and its row the
+        // root of the secondary.
+        for planted in every_feature_type() {
+            // Primary.
+            {
+                let db = make_test_grovedb(gv);
+                make_count_indexed_tree(&db, gv);
+                plant_node_aggregate_without_propagating(
+                    &db,
+                    &[TEST_LEAF, b"cidx"],
+                    b"b",
+                    &Element::new_item(b"b".to_vec()),
+                    planted,
+                    gv,
+                );
+
+                let issues = verify(&db, gv);
+                if planted != TreeFeatureType::ProvableCountedMerkNode(1) {
+                    assert_eq!(
+                        issues.keys().cloned().collect::<Vec<_>>(),
+                        vec![owned(&[TEST_LEAF, b"cidx"])],
+                        "{planted:?}: {issues:?}"
+                    );
+                    let (root, _, actual) = issues[&owned(&[TEST_LEAF, b"cidx"])];
+                    assert_eq!(root, [0u8; 32], "{planted:?}");
+                    assert_eq!(
+                        actual,
+                        placeholder(&another_kind_label(
+                            stored_aggregate(&db, &[TEST_LEAF, b"cidx"], gv),
+                            TreeType::ProvableCountIndexedTree
+                        )),
+                        "{planted:?}"
+                    );
+                } else {
+                    assert!(issues.is_empty(), "{planted:?}: {issues:?}");
+                }
+            }
+
+            // Secondary.
+            {
+                let db = make_test_grovedb(gv);
+                make_count_indexed_tree(&db, gv);
+                plant_secondary_row_aggregate(
+                    &db,
+                    &[TEST_LEAF, b"cidx"],
+                    IndexAxis::Count,
+                    b"b",
+                    &make_axis_secondary_key(IndexAxis::Count, 1, 0, b"b"),
+                    planted,
+                    gv,
+                );
+
+                let issues = verify(&db, gv);
+                let sentinel = owned(&[TEST_LEAF, b"cidx", b"__cidx_secondary_aggregate__"]);
+                if planted != TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(1, 1) {
+                    assert_eq!(
+                        issues.keys().cloned().collect::<Vec<_>>(),
+                        vec![sentinel.clone()],
+                        "{planted:?}: {issues:?}"
+                    );
+                    let (root, _, actual) = issues[&sentinel];
+                    assert_eq!(root, [0u8; 32], "{planted:?}");
+                    assert_eq!(
+                        actual,
+                        placeholder(&another_kind_label(
+                            count_secondary_stored_aggregate(&db, &[TEST_LEAF, b"cidx"], gv),
+                            TreeType::ProvableCountProvableSumTree
+                        )),
+                        "{planted:?}"
+                    );
+                } else {
+                    assert!(issues.is_empty(), "{planted:?}: {issues:?}");
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------
     // A clean database stays clean
     // -----------------------------------------------------------------
 
@@ -1465,7 +1705,10 @@ mod tests {
         let mut contributed = ElementsAggregate::default();
         contributed.add(TreeFeatureType::SummedMerkNode(5));
         assert_eq!(
-            elements_aggregate_labels(&contributed, &Err("sum is overflowing".to_string())),
+            elements_aggregate_labels(
+                &contributed,
+                &Err("cannot be read: sum is overflowing".to_string())
+            ),
             Some((
                 "elements contribute count 0 sum 5".to_string(),
                 "stored aggregate cannot be read: sum is overflowing".to_string(),

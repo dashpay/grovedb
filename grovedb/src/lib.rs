@@ -241,6 +241,7 @@ pub use grovedb_merk::tree_type::{MaybeTree, TreeType};
 #[cfg(feature = "minimal")]
 use grovedb_merk::{
     self,
+    merk::NodeType,
     tree::{combine_hash, combine_hash_three, value_hash},
     BatchEntry, CryptoHash, KVIterator, Merk,
 };
@@ -1983,7 +1984,8 @@ impl GroveDb {
     /// the tree holds. A tree failing either is reported at its path. Each
     /// secondary of an indexed tree is compared with its own rows as well and
     /// reported under a `secondary_aggregate` sentinel below the tree's path.
-    /// A stored aggregate that cannot be read is reported the same way,
+    /// A stored aggregate that cannot be read, or that is not of the kind a
+    /// provable tree's root hash commits to, is reported the same way,
     /// without hashing the tree it belongs to.
     pub fn verify_grovedb(
         &self,
@@ -2520,7 +2522,7 @@ impl GroveDb {
                             grove_version,
                         )
                         .unwrap()?;
-                    let primary_root_hash = root_hash_if_aggregate_readable(&primary_merk);
+                    let primary_root_hash = root_hash_if_computable(&primary_merk);
 
                     let secondary_root_key = match element {
                         Element::ProvableCountIndexedTree(_, ref s, ..) => s.clone(),
@@ -2536,12 +2538,12 @@ impl GroveDb {
                             grove_version,
                         )
                         .unwrap()?;
-                    let secondary_root_hash = root_hash_if_aggregate_readable(&secondary_merk);
+                    let secondary_root_hash = root_hash_if_computable(&secondary_merk);
 
                     // The parent binds both root hashes, so its hash can be
                     // recomputed only when both can be. A Merk whose stored
                     // aggregate cannot be read has no root hash to compute
-                    // (see `root_hash_if_aggregate_readable`) and is reported
+                    // (see `root_hash_if_computable`) and is reported
                     // by its own check below: the primary by its walk, the
                     // secondary by `verify_indexed_axis_content`.
                     record_indexed_tree_hash_mismatch(
@@ -2621,10 +2623,10 @@ impl GroveDb {
                             grove_version,
                         )
                         .unwrap()?;
-                    let Some(merk_root_hash) = root_hash_if_aggregate_readable(&inner_merk) else {
+                    let Some(merk_root_hash) = root_hash_if_computable(&inner_merk) else {
                         // The stored aggregate of this tree's Merk cannot be
                         // read, so the Merk has no root hash to compute (see
-                        // `root_hash_if_aggregate_readable`) and none of the
+                        // `root_hash_if_computable`) and none of the
                         // checks below, which all start from that hash or
                         // from the aggregate, can run. The tree is reported
                         // at its own path instead, and what it holds is still
@@ -3075,7 +3077,7 @@ impl GroveDb {
                             grove_version,
                         )
                         .unwrap()?;
-                    let primary_root_hash = root_hash_if_aggregate_readable(&primary_merk);
+                    let primary_root_hash = root_hash_if_computable(&primary_merk);
 
                     let secondary_root_key = match element {
                         Element::ProvableSumIndexedTree(_, ref s, ..) => s.clone(),
@@ -3091,7 +3093,7 @@ impl GroveDb {
                             grove_version,
                         )
                         .unwrap()?;
-                    let secondary_root_hash = root_hash_if_aggregate_readable(&secondary_merk);
+                    let secondary_root_hash = root_hash_if_computable(&secondary_merk);
 
                     // Recomputed only when both root hashes can be computed;
                     // a Merk whose stored aggregate cannot be read is
@@ -3169,7 +3171,7 @@ impl GroveDb {
                             grove_version,
                         )
                         .unwrap()?;
-                    let primary_root_hash = root_hash_if_aggregate_readable(&primary_merk);
+                    let primary_root_hash = root_hash_if_computable(&primary_merk);
 
                     let axes = match element {
                         Element::ProvableCountProvableSumIndexedTree(_, _, _, ref a, _) => {
@@ -3199,7 +3201,7 @@ impl GroveDb {
                                 grove_version,
                             )
                             .unwrap()?;
-                        match root_hash_if_aggregate_readable(&secondary_merk) {
+                        match root_hash_if_computable(&secondary_merk) {
                             Some(secondary_root_hash) => {
                                 axis_hashes.push((*tag, secondary_root_hash))
                             }
@@ -3839,10 +3841,7 @@ fn elements_aggregate_labels(
     let stored = match stored {
         Ok(stored) => stored,
         Err(reason) => {
-            return Some((
-                contributed_label,
-                format!("stored aggregate cannot be read: {reason}"),
-            ));
+            return Some((contributed_label, format!("stored aggregate {reason}")));
         }
     };
     if contributed.count == Some(stored.as_count_u64())
@@ -3881,7 +3880,7 @@ fn decode_element_adding_its_contribution(
 ///
 /// Nothing is compared when the primary's root hash or the secondary's
 /// commitment is `None`: a Merk whose stored aggregate cannot be read has no
-/// root hash to compute (see [`root_hash_if_aggregate_readable`]) and is
+/// root hash to compute (see [`root_hash_if_computable`]) and is
 /// reported by its own check.
 #[cfg(feature = "minimal")]
 fn record_indexed_tree_hash_mismatch(
@@ -3930,7 +3929,7 @@ fn record_recorded_aggregate_issue<'db, S: StorageContext<'db>>(
     issues: &mut VerificationIssues,
 ) {
     // The caller holds this Merk's root hash, so its stored aggregate can be
-    // read (see `root_hash_if_aggregate_readable`); a tree whose aggregate
+    // read (see `root_hash_if_computable`); a tree whose aggregate
     // cannot be read is reported before it gets here.
     let Ok(actual_aggregate) = inner_merk.aggregate_data() else {
         return;
@@ -3957,7 +3956,7 @@ fn record_recorded_aggregate_issue<'db, S: StorageContext<'db>>(
 /// cannot be read) in the "actual" slot. The "root" slot carries the Merk's
 /// root hash for locality, or zeroes when the stored aggregate cannot be
 /// read, since the root hash cannot be computed then (see
-/// [`root_hash_if_aggregate_readable`]).
+/// [`root_hash_if_computable`]).
 #[cfg(feature = "minimal")]
 fn record_elements_aggregate_issue<'db, S: StorageContext<'db>>(
     merk: &Merk<S>,
@@ -3965,7 +3964,7 @@ fn record_elements_aggregate_issue<'db, S: StorageContext<'db>>(
     issue_path: Vec<Vec<u8>>,
     issues: &mut VerificationIssues,
 ) {
-    let stored_aggregate = merk.aggregate_data().map_err(|e| e.to_string());
+    let stored_aggregate = hashable_stored_aggregate(merk);
     let Some((contributed_label, stored_label)) =
         elements_aggregate_labels(contributed, &stored_aggregate)
     else {
@@ -3983,20 +3982,72 @@ fn record_elements_aggregate_issue<'db, S: StorageContext<'db>>(
         .or_insert((root_hash, expected_placeholder, actual_placeholder));
 }
 
-/// The root hash of `merk`, or `None` when the aggregate its root stores
-/// cannot be read (it overflows, or a link carries an aggregate the tree type
-/// cannot hold).
+/// The root hash of `merk`, or `None` when it cannot be computed from the
+/// aggregate the Merk's root stores (see [`hashable_stored_aggregate`]).
 ///
 /// The root hash of a provable tree commits to that aggregate, and
-/// `Merk::root_hash` panics when reading it fails. `verify_grovedb` reports
-/// such a tree as an issue instead, so it asks here before it hashes.
+/// `Merk::root_hash` panics when the aggregate cannot be read or is of
+/// another kind. `verify_grovedb` reports such a tree as an issue instead, so
+/// it asks here before it hashes.
 #[cfg(feature = "minimal")]
-fn root_hash_if_aggregate_readable<'db, S: StorageContext<'db>>(
-    merk: &Merk<S>,
-) -> Option<CryptoHash> {
-    merk.aggregate_data()
+fn root_hash_if_computable<'db, S: StorageContext<'db>>(merk: &Merk<S>) -> Option<CryptoHash> {
+    hashable_stored_aggregate(merk)
         .ok()
         .map(|_| merk.root_hash().unwrap())
+}
+
+/// The aggregate the root of `merk` stores, or, as `Err`, why the Merk's root
+/// hash cannot be computed from it:
+///
+/// - it cannot be read: it overflows, or a link carries an aggregate the tree
+///   type cannot hold;
+/// - it is not of the kind the root hash of this tree type commits to (see
+///   [`root_hash_takes_aggregate`]), which a root node carrying the feature
+///   type of another tree type gives.
+///
+/// The reason completes the sentence "stored aggregate ...", which is how
+/// [`elements_aggregate_labels`] reports it.
+#[cfg(feature = "minimal")]
+fn hashable_stored_aggregate<'db, S: StorageContext<'db>>(
+    merk: &Merk<S>,
+) -> Result<AggregateData, String> {
+    let aggregate = merk
+        .aggregate_data()
+        .map_err(|e| format!("cannot be read: {e}"))?;
+    // An empty Merk has no root node: nothing is hashed over its aggregate.
+    if merk.has_root_key() && !root_hash_takes_aggregate(merk.tree_type, &aggregate) {
+        return Err(format!(
+            "{aggregate:?} is not the kind the root hash of a {:?} commits to",
+            merk.tree_type
+        ));
+    }
+    Ok(aggregate)
+}
+
+/// Whether the root hash of a Merk of `tree_type` with a root node can be
+/// computed when that node's aggregate is `aggregate`.
+///
+/// The node hash of a provable tree commits to the node's aggregate, and
+/// `Tree::hash_for_link` panics when the aggregate is of another kind than
+/// the tree type's own. The other tree types hash without their aggregate, so
+/// any kind hashes. The match is over every node type on purpose: a new one
+/// has to be placed here.
+#[cfg(feature = "minimal")]
+fn root_hash_takes_aggregate(tree_type: TreeType, aggregate: &AggregateData) -> bool {
+    let node_type = tree_type.inner_node_type();
+    match node_type {
+        NodeType::ProvableCountNode
+        | NodeType::ProvableCountSumNode
+        | NodeType::ProvableSumNode
+        | NodeType::ProvableCountProvableSumNode => {
+            aggregate.parent_tree_type().inner_node_type() == node_type
+        }
+        NodeType::NormalNode
+        | NodeType::SumNode
+        | NodeType::BigSumNode
+        | NodeType::CountNode
+        | NodeType::CountSumNode => true,
+    }
 }
 
 /// Inspect a tree-bearing Element together with the actual aggregate data of
