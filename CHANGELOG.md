@@ -118,6 +118,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must move to 0.41 as well.
 
 ### Fixed
+- `query_aggregate_sums` with a range query item no longer panics on a path
+  with a segment longer than 255 bytes. It returns
+  `Error::InvalidInput("path segment length must be at most 255 bytes")`,
+  as the same call with a key query item and every other path-building call
+  already did (#680). Not version-gated, since the call used to panic.
 - From `GROVE_V5`, a batch that inserts a sum or count tree and leaves the
   level below it empty stores that tree. The batch carries operations at the
   tree's own path and none leaves a key there, for example a delete of a key

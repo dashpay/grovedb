@@ -603,7 +603,7 @@ impl ElementAggregateSumQueryExtensions for Element {
     ) -> CostResult<(), Error> {
         use grovedb_storage::Storage;
 
-        use crate::util::{compat, TxRef};
+        use crate::util::{compat, validate_path_segment_lengths, TxRef};
 
         check_grovedb_v0_with_cost!(
             "aggregate_sum_query_item",
@@ -710,6 +710,7 @@ impl ElementAggregateSumQueryExtensions for Element {
             }
         } else {
             // this is a query on a range
+            cost_return_on_error_no_add!(cost, validate_path_segment_lengths(&subtree_path));
             let ctx = storage
                 .get_transactional_storage_context(subtree_path, None, tx.as_ref())
                 .unwrap_add_cost(&mut cost);
