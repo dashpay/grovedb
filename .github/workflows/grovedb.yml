@@ -16,20 +16,19 @@ concurrency:
 
 # Where the jobs run
 #
-# Every job runs on a GitHub-hosted runner unless a variable names another
-# pool. Both variables are unset by default.
+# The jobs run on the organisation's own runners, which do not queue for the
+# GitHub-hosted slots every repository in the organisation shares.
 #
-# - RUST_CI_RUNNER_LABELS: the labels of the organisation's self-hosted Rust
-#   runners, as a JSON list, for example ["self-hosted","Linux","rust-ci"].
-#   The test shards, Linting, Formatting and Bincode then run there.
-# - GROVEDB_LIGHT_RUNNER: the label of the organisation's light runner pool.
-#   Detect Changes then runs there.
+# - The test shards, Linting, Formatting and Bincode run on the self-hosted
+#   Rust runners, [self-hosted, Linux, rust-ci].
+# - Detect Changes runs on the light runner pool, which the organisation
+#   variable DASH_LIGHT_RUNNER names.
 #
 # Those runners are persistent, so they never run a pull request from a fork:
-# such a pull request stays on GitHub-hosted runners whatever the variables
-# say. The steps below that install tools or restore caches run only on a
-# hosted runner (runner.environment == 'github-hosted'); a self-hosted runner
-# takes its tools from its image and keeps target/ between jobs, see
+# such a pull request runs on GitHub-hosted runners instead. The steps below
+# that install tools or restore caches therefore run only on a hosted runner
+# (runner.environment == 'github-hosted'); a self-hosted runner takes its
+# tools from its image and keeps target/ between jobs, see
 # .github/actions/persistent-runner.
 
 jobs:
@@ -40,7 +39,7 @@ jobs:
     runs-on: >-
       ${{ (github.event_name != 'pull_request'
       || github.event.pull_request.head.repo.full_name == github.repository)
-      && vars.GROVEDB_LIGHT_RUNNER || 'ubuntu-latest' }}
+      && vars.DASH_LIGHT_RUNNER || 'ubuntu-latest' }}
     outputs:
       any-code: ${{ steps.filter.outputs.any-code }}
       needs-tests: ${{ steps.decide.outputs.needs-tests }}
@@ -105,11 +104,10 @@ jobs:
     runs-on: >-
       ${{ fromJSON((github.event_name != 'pull_request'
       || github.event.pull_request.head.repo.full_name == github.repository)
-      && vars.RUST_CI_RUNNER_LABELS || '"ubuntu-latest"') }}
+      && '["self-hosted","Linux","rust-ci"]' || '"ubuntu-latest"') }}
     # A stuck job must not hold a self-hosted runner for the six hours a
-    # job may run by default (360 minutes, the value kept while the variable
-    # is unset).
-    timeout-minutes: ${{ vars.RUST_CI_RUNNER_LABELS && 60 || 360 }}
+    # job may run by default.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -187,8 +185,8 @@ jobs:
     runs-on: >-
       ${{ fromJSON((github.event_name != 'pull_request'
       || github.event.pull_request.head.repo.full_name == github.repository)
-      && vars.RUST_CI_RUNNER_LABELS || '"ubuntu-latest"') }}
-    timeout-minutes: ${{ vars.RUST_CI_RUNNER_LABELS && 30 || 360 }}
+      && '["self-hosted","Linux","rust-ci"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -244,8 +242,8 @@ jobs:
     runs-on: >-
       ${{ fromJSON((github.event_name != 'pull_request'
       || github.event.pull_request.head.repo.full_name == github.repository)
-      && vars.RUST_CI_RUNNER_LABELS || '"ubuntu-latest"') }}
-    timeout-minutes: ${{ vars.RUST_CI_RUNNER_LABELS && 30 || 360 }}
+      && '["self-hosted","Linux","rust-ci"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -280,8 +278,8 @@ jobs:
     runs-on: >-
       ${{ fromJSON((github.event_name != 'pull_request'
       || github.event.pull_request.head.repo.full_name == github.repository)
-      && vars.RUST_CI_RUNNER_LABELS || '"ubuntu-latest"') }}
-    timeout-minutes: ${{ vars.RUST_CI_RUNNER_LABELS && 30 || 360 }}
+      && '["self-hosted","Linux","rust-ci"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -312,7 +310,8 @@ jobs:
 
   security:
     name: Security Audit
-    # Stays hosted: it installs cargo-audit on every run and takes seconds.
+    # Stays hosted: it installs cargo-audit on every run, which a job may not
+    # do on a persistent runner, and no other job waits for it.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
