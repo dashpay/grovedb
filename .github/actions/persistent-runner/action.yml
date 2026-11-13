@@ -1,0 +1,134 @@
+name: Prepare a persistent runner
+description: >-
+  Makes the workspace a self-hosted runner keeps between jobs safe to build
+  in. Call it right after a checkout with `clean: false`, and only when
+  runner.environment is 'self-hosted'. A GitHub-hosted runner starts empty and
+  needs none of this.
+inputs:
+  tools:
+    description: Commands the job needs from the runner image, separated by spaces
+    required: false
+    default: ""
+
+# A self-hosted runner keeps its work directory, its home directory and its
+# rustup toolchains from one job to the next, and every GroveDB job that lands
+# on it builds in the same checkout. The jobs keep target/ so a build starts
+# warm, which replaces the caches a hosted runner restores, and this action
+# removes everything else an earlier job could have left behind.
+#
+# One runner executes one job at a time and each runner has its own work
+# directory, so two jobs never build in the same target/ at once.
+runs:
+  using: composite
+  steps:
+    # The runner is not root and its image is the versioned CI environment: a
+    # job reports a missing tool, it does not install one.
+    - name: Verify the runner image provides the tools
+      shell: bash
+      env:
+        TOOLS: ${{ inputs.tools }}
+      run: |
+        missing=()
+        for tool in git rustup $TOOLS; do
+          command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+        done
+        if [ ${#missing[@]} -gt 0 ]; then
+          echo "::error::The runner image is missing: ${missing[*]}"
+          echo "::error::Jobs do not install tools on a persistent runner; add them to the image."
+          exit 1
+        fi
+
+    # `stable` moves with every Rust release, so the toolchain step updates it
+    # in the runner's rustup home every six weeks. An update cut short by a
+    # cancelled job can leave a toolchain that is listed but does not run;
+    # remove it, so the toolchain step installs it afresh.
+    - name: Remove a stable toolchain that does not run
+      shell: bash
+      run: |
+        if rustup toolchain list | grep '^stable-' >/dev/null; then
+          if ! rustup run stable rustc --version >/dev/null 2>&1 \
+            || ! rustup run stable cargo --version >/dev/null 2>&1; then
+            echo "The installed stable toolchain does not run; removing it"
+            rustup toolchain uninstall stable
+          fi
+        fi
+
+    - name: Remove files left by earlier jobs
+      shell: bash
+      run: |
+        # Everything untracked or ignored goes, except target/. That covers
+        # Cargo.lock, which is not committed: a hosted run resolves the
+        # dependencies afresh, and a kept lock file would pin this runner to
+        # whatever an earlier job resolved. It also covers lcov.info, which
+        # the coverage upload would otherwise send for a run whose tests did
+        # not produce one.
+        git clean -ffdx -e /target
+
+        if [ -d target ]; then
+          # Profile data of an earlier coverage run, possibly cancelled before
+          # its own cleanup, must not reach this run's report.
+          find target \( -name '*.profraw' -o -name '*.profdata' \) -delete || true
+
+          # grovedb/build.rs downloads grovedbg.zip into the build directory
+          # only when the file is absent, then checks its hash. A download cut
+          # short, or an archive kept from a commit that names another
+          # version, would fail every later build on this runner. Remove an
+          # archive that does not match this commit; the build script runs
+          # again and downloads it.
+          expected=$(grep -oE '[0-9a-f]{64}' grovedb/build.rs | head -n 1 || true)
+          if [ -n "$expected" ]; then
+            while IFS= read -r -d '' archive; do
+              actual=$(sha256sum "$archive" | awk '{print $1}')
+              if [ "$actual" != "$expected" ]; then
+                echo "Removing $archive: it does not match the hash in grovedb/build.rs"
+                rm -f "$archive"
+              fi
+            done < <(find target -name grovedbg.zip -print0)
+          fi
+        fi
+
+    # Artifacts of older compilers and older dependency versions pile up in a
+    # kept target/. The runner's disk is shared with the other repositories
+    # that use it, so GroveDB keeps a modest share and gives it up first when
+    # the disk runs low. The next build is then a cold one, not a failed one.
+    - name: Drop target/ when it or the disk is too full
+      shell: bash
+      run: |
+        total=$(df -m . | awk 'NR == 2 {print $2}')
+        free=$(df -m . | awk 'NR == 2 {print $4}')
+        size=0
+        if [ -d target ]; then
+          size=$(du -sm target | awk '{print $1}')
+        fi
+        total=${total:-0}
+        free=${free:-0}
+        size=${size:-0}
+
+        # Absolute caps, clamped to a share of the volume so a small runner
+        # does not drop target/ on every job.
+        target_max_mb=40000
+        min_free_mb=60000
+        if [ "$total" -gt 0 ]; then
+          if [ $((total / 8)) -lt "$target_max_mb" ]; then
+            target_max_mb=$((total / 8))
+          fi
+          if [ $((total / 5)) -lt "$min_free_mb" ]; then
+            min_free_mb=$((total / 5))
+          fi
+        fi
+
+        echo "volume size: ${total}MB"
+        echo "target/ size: ${size}MB (cap ${target_max_mb}MB)"
+        echo "available disk: ${free}MB (floor ${min_free_mb}MB)"
+        if [ "$size" -gt "$target_max_mb" ] || [ "$free" -lt "$min_free_mb" ]; then
+          echo "target/ exceeds ${target_max_mb}MB or the disk is below ${min_free_mb}MB free; removing target/"
+          rm -rf target
+        fi
+
+    # The tests create their databases under the temporary directory. A
+    # cancelled job never removes them, and this workflow cancels a run
+    # whenever its branch gets a new commit. The runner empties RUNNER_TEMP
+    # around every job, so nothing is left to fill the disk.
+    - name: Keep temporary files in the job's own directory
+      shell: bash
+      run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"

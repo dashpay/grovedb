@@ -14,10 +14,32 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
+# Where the jobs run
+#
+# The jobs run on the organisation's own runners, which do not queue for the
+# GitHub-hosted slots every repository in the organisation shares.
+#
+# - The test shards, Linting, Formatting and Bincode run on the self-hosted
+#   Rust runners, [self-hosted, Linux, rust-ci].
+# - Detect Changes runs on the light runner pool, which the organisation
+#   variable DASH_LIGHT_RUNNER names.
+#
+# Those runners are persistent, so they never run a pull request from a fork:
+# such a pull request runs on GitHub-hosted runners instead. The steps below
+# that install tools or restore caches therefore run only on a hosted runner
+# (runner.environment == 'github-hosted'); a self-hosted runner takes its
+# tools from its image and keeps target/ between jobs, see
+# .github/actions/persistent-runner.
+
 jobs:
   detect-changes:
     name: Detect Changes
-    runs-on: ubuntu-latest
+    # The other jobs wait for this one. It only reads the diff, with
+    # tools every runner image has (git, grep, sed).
+    runs-on: >-
+      ${{ (github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository)
+      && vars.DASH_LIGHT_RUNNER || 'ubuntu-latest' }}
     outputs:
       any-code: ${{ steps.filter.outputs.any-code }}
       needs-tests: ${{ steps.decide.outputs.needs-tests }}
@@ -29,17 +51,25 @@ jobs:
       - uses: dorny/paths-filter@v3
         id: filter
         with:
+          # A change to this workflow or to the action it uses runs every job,
+          # so the change is exercised before it merges.
           filters: |
             any-code:
               - '**/*.rs'
               - '**/Cargo.toml'
               - 'Cargo.lock'
+              - '.github/workflows/grovedb.yml'
+              - '.github/actions/**'
             build-files:
               - '**/Cargo.toml'
               - 'Cargo.lock'
+              - '.github/workflows/grovedb.yml'
+              - '.github/actions/**'
             bincode:
               - 'grovedb-bincode/**'
               - 'grovedb-bincode-derive/**'
+              - '.github/workflows/grovedb.yml'
+              - '.github/actions/**'
       - name: Check if Rust changes are doc-comment-only
         id: doc-check
         if: >-
@@ -71,7 +101,13 @@ jobs:
     name: Test Ubuntu (${{ matrix.partition }}/3)
     needs: detect-changes
     if: needs.detect-changes.outputs.needs-tests == 'true'
-    runs-on: ubuntu-latest
+    runs-on: >-
+      ${{ fromJSON((github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository)
+      && '["self-hosted","Linux","rust-ci"]' || '"ubuntu-latest"') }}
+    # A stuck job must not hold a self-hosted runner for the six hours a
+    # job may run by default.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -80,15 +116,26 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+          # Keep target/ on a self-hosted runner. A hosted runner starts
+          # with an empty work directory, where this changes nothing.
+          clean: false
+      - name: Prepare a persistent runner
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/persistent-runner
+        with:
+          tools: clang cmake cargo-llvm-cov cargo-nextest
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           cache-on-failure: "false"
           workspaces: ". -> target/llvm-cov-target"
       - uses: taiki-e/install-action@cargo-llvm-cov
+        if: runner.environment == 'github-hosted'
       - uses: taiki-e/install-action@cargo-nextest
+        if: runner.environment == 'github-hosted'
       - name: Run tests (shard ${{ matrix.partition }}/3)
         # --exclude removes the imported crates from both tests and coverage.
         # Their own checks run in the bincode job only when their files change.
@@ -116,27 +163,56 @@ jobs:
           flags: shard-${{ matrix.partition }}
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: true
+          # `files` adds to what the uploader finds by searching. A kept
+          # target/ is large and holds other builds' output, so a self-hosted
+          # runner uploads lcov.info alone and runs no report plugins.
+          disable_search: ${{ runner.environment == 'self-hosted' }}
+          plugins: ${{ runner.environment == 'self-hosted' && 'noop' || '' }}
+      # The instrumented build stays in target/llvm-cov-target for the next
+      # job; the profile data of this run does not.
+      - name: Remove per-run coverage profile data
+        if: always() && runner.environment == 'self-hosted'
+        run: |
+          if [ -d target/llvm-cov-target ]; then
+            find target/llvm-cov-target \( -name '*.profraw' -o -name '*.profdata' \) -delete || true
+            du -sh target/llvm-cov-target || true
+          fi
 
   linting:
     name: Linting
     needs: detect-changes
     if: needs.detect-changes.outputs.any-code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: >-
+      ${{ fromJSON((github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository)
+      && '["self-hosted","Linux","rust-ci"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+          clean: false
+      - name: Prepare a persistent runner
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/persistent-runner
+        with:
+          tools: clang cmake
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           cache-on-failure: "false"
+      # sccache stores its objects in the GitHub cache. A self-hosted runner
+      # keeps target/ instead, so the steps below run cargo without a wrapper
+      # there (an empty RUSTC_WRAPPER means none).
       - uses: mozilla-actions/sccache-action@v0.0.9
+        if: runner.environment == 'github-hosted'
       - name: Run clippy
         env:
           SCCACHE_GHA_ENABLED: "true"
-          RUSTC_WRAPPER: sccache
+          RUSTC_WRAPPER: ${{ runner.environment == 'github-hosted' && 'sccache' || '' }}
         run: >
           cargo clippy --workspace
           --exclude grovedb-bincode --exclude grovedb-bincode-derive
@@ -148,7 +224,7 @@ jobs:
       - name: Check all targets build
         env:
           SCCACHE_GHA_ENABLED: "true"
-          RUSTC_WRAPPER: sccache
+          RUSTC_WRAPPER: ${{ runner.environment == 'github-hosted' && 'sccache' || '' }}
         run: >
           cargo check --workspace
           --exclude grovedb-bincode --exclude grovedb-bincode-derive
@@ -156,16 +232,29 @@ jobs:
       - name: Check verify feature
         env:
           SCCACHE_GHA_ENABLED: "true"
-          RUSTC_WRAPPER: sccache
+          RUSTC_WRAPPER: ${{ runner.environment == 'github-hosted' && 'sccache' || '' }}
         run: cargo build --no-default-features --features verify -p grovedb
 
   formatting:
     name: Formatting
     needs: detect-changes
     if: needs.detect-changes.outputs.any-code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: >-
+      ${{ fromJSON((github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository)
+      && '["self-hosted","Linux","rust-ci"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          # This job builds nothing, but it shares the work directory with
+          # the jobs that keep target/ there.
+          clean: false
+      - name: Prepare a persistent runner
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/persistent-runner
+        with:
+          tools: jq
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -186,13 +275,23 @@ jobs:
     name: Bincode
     needs: detect-changes
     if: needs.detect-changes.outputs.bincode == 'true'
-    runs-on: ubuntu-latest
+    runs-on: >-
+      ${{ fromJSON((github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository)
+      && '["self-hosted","Linux","rust-ci"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          clean: false
+      - name: Prepare a persistent runner
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/persistent-runner
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           cache-on-failure: "false"
       - name: Run upstream and compatibility tests
@@ -211,6 +310,8 @@ jobs:
 
   security:
     name: Security Audit
+    # Stays hosted: it installs cargo-audit on every run, which a job may not
+    # do on a persistent runner, and no other job waits for it.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
