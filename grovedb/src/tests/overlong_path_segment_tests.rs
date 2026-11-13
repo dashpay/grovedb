@@ -329,6 +329,13 @@ mod tests {
                     .unwrap()
                     .map(drop)
             }),
+            ("query_aggregate_sums over a range", |db, path, _, v| {
+                let query =
+                    AggregateSumPathQuery::new_single_query_item(path.to_vec(), range(), 10, None);
+                db.query_aggregate_sums(&query, true, true, None, v)
+                    .unwrap()
+                    .map(drop)
+            }),
             ("prove_trunk_chunk", |db, path, _, v| {
                 db.prove_trunk_chunk(&PathTrunkChunkQuery::new(path.to_vec(), 2), v)
                     .unwrap()

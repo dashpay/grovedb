@@ -14,6 +14,10 @@
 //! - draining is idempotent, resumable after a simulated crash, and
 //!   refuses to tombstone a re-created (live) path — leaking instead of
 //!   destroying;
+//! - one record does not hold up the others: a record below an element
+//!   that is not a tree is reclaimed, and a record whose liveness check
+//!   fails is counted as unresolved, left in place and checked again by
+//!   the next drain;
 //! - both entry points fail closed before `GROVE_V4`;
 //! - absence of the dropped element is provable against the post-drop root
 //!   hash, and references into the dropped subtree dangle with the typed
@@ -24,6 +28,7 @@ mod tests {
     use crate::BackwardsReferences;
     use grovedb_costs::OperationCost;
     use grovedb_merk::tree_type::TreeType;
+    use grovedb_path::SubtreePath;
     use grovedb_storage::{
         rocksdb_storage::{pending_prefix_drops_namespace, RocksDbStorage},
         RawIterator, Storage, StorageContext,
@@ -32,8 +37,8 @@ mod tests {
 
     use crate::{
         batch::{QualifiedGroveDbOp, SubelementsDeletionBehavior},
-        tests::{make_test_grovedb, TempGroveDb, TEST_LEAF},
-        Element, Error,
+        tests::{make_test_grovedb, TempGroveDb, ANOTHER_TEST_LEAF, TEST_LEAF},
+        Element, Error, PendingPrefixDropsReport,
     };
 
     /// Number of keys physically present in the data namespace under
@@ -78,8 +83,19 @@ mod tests {
 
     /// A populated flat tree at `[TEST_LEAF]/key` with `entries` items.
     fn seed_flat_tree(db: &TempGroveDb, key: &[u8], entries: u32, grove_version: &GroveVersion) {
+        seed_flat_tree_at(db, &[TEST_LEAF], key, entries, grove_version);
+    }
+
+    /// A populated flat tree at `parent`/`key` with `entries` items.
+    fn seed_flat_tree_at(
+        db: &TempGroveDb,
+        parent: &[&[u8]],
+        key: &[u8],
+        entries: u32,
+        grove_version: &GroveVersion,
+    ) {
         db.insert(
-            [TEST_LEAF].as_ref(),
+            parent,
             key,
             Element::empty_tree(),
             None,
@@ -88,9 +104,11 @@ mod tests {
         )
         .unwrap()
         .expect("insert flat tree");
+        let mut tree_path = parent.to_vec();
+        tree_path.push(key);
         for i in 0..entries {
             db.insert(
-                [TEST_LEAF, key].as_ref(),
+                tree_path.as_slice(),
                 format!("key_{i:08}").as_bytes(),
                 Element::new_item(b"value_bytes_0000".to_vec()),
                 None,
@@ -100,6 +118,69 @@ mod tests {
             .unwrap()
             .expect("insert item");
         }
+    }
+
+    /// Flat-drop `parent`/`key` through a caller transaction and commit it,
+    /// so no drain runs and the redo record stays pending.
+    fn drop_flat_and_leave_pending(
+        db: &TempGroveDb,
+        parent: &[&[u8]],
+        key: &[u8],
+        grove_version: &GroveVersion,
+    ) {
+        let tx = db.start_transaction();
+        db.drop_flat_subtree(
+            parent,
+            key,
+            BackwardsReferences::DontCheck,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("drop in tx");
+        db.commit_transaction(tx).unwrap().expect("commit");
+    }
+
+    /// `count` keys under `[parent]` whose subtree prefixes sort after
+    /// `after`. The drain visits records in prefix order, so the drops of
+    /// these keys are visited after the record keyed by `after`.
+    fn keys_drained_after(parent: &[u8], after: [u8; 32], count: usize) -> Vec<Vec<u8>> {
+        (0u32..)
+            .map(|i| format!("flat_{i}").into_bytes())
+            .filter(|key| prefix_of(&[parent, key]) > after)
+            .take(count)
+            .collect()
+    }
+
+    /// Write `value` at `key` straight into the data storage of the subtree
+    /// at `path`, bypassing Merk.
+    fn put_raw(db: &TempGroveDb, path: &[&[u8]], key: &[u8], value: &[u8]) {
+        let tx = db.start_transaction();
+        let storage = db
+            .db
+            .get_immediate_storage_context(path.into(), &tx)
+            .unwrap();
+        storage
+            .put(key, value, None, None)
+            .unwrap()
+            .expect("raw put");
+        drop(storage);
+        db.commit_transaction(tx).unwrap().expect("commit raw put");
+    }
+
+    /// The bytes stored at `key` in the data storage of the subtree at
+    /// `path`, read without Merk.
+    fn get_raw_bytes(db: &TempGroveDb, path: &[&[u8]], key: &[u8]) -> Vec<u8> {
+        let tx = db.start_transaction();
+        let storage = db
+            .db
+            .get_immediate_storage_context(path.into(), &tx)
+            .unwrap();
+        storage
+            .get(key)
+            .unwrap()
+            .expect("raw get")
+            .expect("raw value present")
     }
 
     fn assert_grove_verifies(db: &TempGroveDb, grove_version: &GroveVersion) {
@@ -438,6 +519,480 @@ mod tests {
             polluted,
             "recreated-path pollution should be visible to verify_grovedb"
         );
+    }
+
+    // ── A record the drain cannot resolve ───────────────────────────────
+
+    #[test]
+    fn should_reclaim_unrelated_drops_when_an_ancestor_of_a_dropped_path_holds_an_item() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // One flat tree under `[TEST_LEAF]/parent`, and three unrelated ones
+        // directly under `[TEST_LEAF]` whose records the drain visits after
+        // it.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"parent",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert parent tree");
+        seed_flat_tree_at(&db, &[TEST_LEAF, b"parent"], b"nested", 10, grove_version);
+        let nested_prefix = prefix_of(&[TEST_LEAF, b"parent", b"nested"]);
+        let unrelated_keys = keys_drained_after(TEST_LEAF, nested_prefix, 3);
+        for key in &unrelated_keys {
+            seed_flat_tree(&db, key, 10, grove_version);
+        }
+
+        drop_flat_and_leave_pending(&db, &[TEST_LEAF, b"parent"], b"nested", grove_version);
+        for key in &unrelated_keys {
+            drop_flat_and_leave_pending(&db, &[TEST_LEAF], key, grove_version);
+        }
+
+        // The dropped tree's parent is removed and an item takes its key
+        // before the drain runs.
+        db.delete([TEST_LEAF].as_ref(), b"parent", None, None, grove_version)
+            .unwrap()
+            .expect("delete the emptied parent tree");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"parent",
+            Element::new_item(b"not a tree".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert an item at the parent's key");
+
+        // Nothing can live below an item, so every record is reclaimed,
+        // the one under the item included.
+        let report = db.flush_pending_prefix_drops(grove_version).expect("flush");
+        assert_eq!(
+            report,
+            PendingPrefixDropsReport {
+                reclaimed_records: 4,
+                skipped_live: 0,
+                unresolved_records: 0,
+                first_unresolved_error: None,
+            }
+        );
+        assert_eq!(data_namespace_key_count(&db, nested_prefix), 0);
+        assert!(!record_exists(&db, nested_prefix));
+        for key in &unrelated_keys {
+            let prefix = prefix_of(&[TEST_LEAF, key]);
+            assert_eq!(data_namespace_key_count(&db, prefix), 0);
+            assert!(!record_exists(&db, prefix));
+        }
+
+        // The item is untouched and the grove is consistent.
+        assert_eq!(
+            db.get_raw([TEST_LEAF].as_ref().into(), b"parent", None, grove_version)
+                .unwrap()
+                .expect("item at the parent's key"),
+            Element::new_item(b"not a tree".to_vec())
+        );
+        assert_grove_verifies(&db, grove_version);
+    }
+
+    /// `[TEST_LEAF]/outer/inner/nested`, a populated flat tree, dropped
+    /// with its record left pending. Returns the prefix of `nested`.
+    fn seed_and_drop_nested_two_layers_down(
+        db: &TempGroveDb,
+        outer: &[u8],
+        grove_version: &GroveVersion,
+    ) -> [u8; 32] {
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            outer,
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert outer tree");
+        db.insert(
+            [TEST_LEAF, outer].as_ref(),
+            b"inner",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert inner tree");
+        seed_flat_tree_at(
+            db,
+            &[TEST_LEAF, outer, b"inner"],
+            b"nested",
+            10,
+            grove_version,
+        );
+        drop_flat_and_leave_pending(db, &[TEST_LEAF, outer, b"inner"], b"nested", grove_version);
+        prefix_of(&[TEST_LEAF, outer, b"inner", b"nested"])
+    }
+
+    /// Remove the emptied tree at `parent`/`key` and put an item at its key.
+    fn replace_empty_tree_with_item(
+        db: &TempGroveDb,
+        parent: &[&[u8]],
+        key: &[u8],
+        grove_version: &GroveVersion,
+    ) {
+        db.delete(parent, key, None, None, grove_version)
+            .unwrap()
+            .expect("delete the emptied tree");
+        db.insert(
+            parent,
+            key,
+            Element::new_item(b"not a tree".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert an item at the tree's key");
+    }
+
+    #[test]
+    fn should_reclaim_a_record_when_a_higher_ancestor_of_its_path_holds_an_item() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let nested_prefix = seed_and_drop_nested_two_layers_down(&db, b"outer", grove_version);
+
+        // `inner` and then `outer` are emptied and removed, and an item
+        // takes `outer`'s key: the dropped path now runs through an item
+        // two layers up.
+        db.delete(
+            [TEST_LEAF, b"outer"].as_ref(),
+            b"inner",
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("delete the emptied inner tree");
+        replace_empty_tree_with_item(&db, &[TEST_LEAF], b"outer", grove_version);
+
+        let report = db.flush_pending_prefix_drops(grove_version).expect("flush");
+        assert_eq!(
+            report,
+            PendingPrefixDropsReport {
+                reclaimed_records: 1,
+                skipped_live: 0,
+                unresolved_records: 0,
+                first_unresolved_error: None,
+            }
+        );
+        assert_eq!(data_namespace_key_count(&db, nested_prefix), 0);
+        assert!(!record_exists(&db, nested_prefix));
+        assert_grove_verifies(&db, grove_version);
+    }
+
+    #[test]
+    fn should_reclaim_a_record_below_an_item_when_a_dropped_ancestor_holds_an_item_too() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let nested_prefix = seed_and_drop_nested_two_layers_down(&db, b"outer", grove_version);
+
+        // An item takes `inner`'s key. Then `outer`, which now holds only
+        // that item, is flat-dropped as well and an item takes its key
+        // before any drain. `outer`'s storage is not reclaimed (its path is
+        // live again), so it still shows `inner` as an item, while `outer`
+        // itself can no longer be opened as a tree.
+        replace_empty_tree_with_item(&db, &[TEST_LEAF, b"outer"], b"inner", grove_version);
+        drop_flat_and_leave_pending(&db, &[TEST_LEAF], b"outer", grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"outer",
+            Element::new_item(b"not a tree".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert an item at outer's key");
+
+        // Read from the root, the dropped path stops at the item at
+        // `outer`, so `nested` is reclaimed. `outer`'s own record is skipped
+        // as live.
+        let report = db.flush_pending_prefix_drops(grove_version).expect("flush");
+        assert_eq!(
+            report,
+            PendingPrefixDropsReport {
+                reclaimed_records: 1,
+                skipped_live: 1,
+                unresolved_records: 0,
+                first_unresolved_error: None,
+            }
+        );
+        assert_eq!(data_namespace_key_count(&db, nested_prefix), 0);
+        assert!(!record_exists(&db, nested_prefix));
+        assert!(record_exists(&db, prefix_of(&[TEST_LEAF, b"outer"])));
+        assert_grove_verifies(&db, grove_version);
+    }
+
+    #[test]
+    fn should_reclaim_a_record_below_an_item_when_a_dropped_ancestor_is_gone() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Pick `outer` so that the drain visits the record of `nested`
+        // before the record of `outer`, while `outer`'s storage is still
+        // there.
+        let outer = (0u32..)
+            .map(|i| format!("outer_{i}").into_bytes())
+            .find(|outer| {
+                prefix_of(&[TEST_LEAF, outer, b"inner", b"nested"]) < prefix_of(&[TEST_LEAF, outer])
+            })
+            .expect("a key with the wanted drain order");
+        let nested_prefix = seed_and_drop_nested_two_layers_down(&db, &outer, grove_version);
+
+        // An item takes `inner`'s key, then `outer` is flat-dropped and
+        // nothing takes its place.
+        replace_empty_tree_with_item(&db, &[TEST_LEAF, &outer], b"inner", grove_version);
+        drop_flat_and_leave_pending(&db, &[TEST_LEAF], &outer, grove_version);
+
+        // `outer` is absent from `[TEST_LEAF]`, so nothing resolves below
+        // it and one pass reclaims both records.
+        let report = db.flush_pending_prefix_drops(grove_version).expect("flush");
+        assert_eq!(
+            report,
+            PendingPrefixDropsReport {
+                reclaimed_records: 2,
+                skipped_live: 0,
+                unresolved_records: 0,
+                first_unresolved_error: None,
+            }
+        );
+        assert_eq!(data_namespace_key_count(&db, nested_prefix), 0);
+        assert!(!record_exists(&db, nested_prefix));
+        assert!(!record_exists(&db, prefix_of(&[TEST_LEAF, &outer])));
+        assert_grove_verifies(&db, grove_version);
+    }
+
+    #[test]
+    fn should_count_a_record_whose_liveness_check_fails_and_keep_draining() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // `stuck` lives under `[TEST_LEAF]` and is the record the drain
+        // visits first; three more under `[ANOTHER_TEST_LEAF]` follow. The
+        // item keeps the `[TEST_LEAF]` Merk non-empty after the drop.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"keep",
+            Element::new_item(b"kept".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert item");
+        seed_flat_tree(&db, b"stuck", 10, grove_version);
+        let stuck_prefix = prefix_of(&[TEST_LEAF, b"stuck"]);
+        let later_keys = keys_drained_after(ANOTHER_TEST_LEAF, stuck_prefix, 3);
+        for key in &later_keys {
+            seed_flat_tree_at(&db, &[ANOTHER_TEST_LEAF], key, 10, grove_version);
+        }
+        drop_flat_and_leave_pending(&db, &[TEST_LEAF], b"stuck", grove_version);
+        for key in &later_keys {
+            drop_flat_and_leave_pending(&db, &[ANOTHER_TEST_LEAF], key, grove_version);
+        }
+
+        // Simulate a fault in the liveness check of `stuck`: the root node
+        // of the `[TEST_LEAF]` Merk no longer decodes, so the read of
+        // `[TEST_LEAF]/stuck` fails instead of answering found or not
+        // found.
+        let Element::Tree(Some(root_key), _) = db
+            .get_raw(SubtreePath::empty(), TEST_LEAF, None, grove_version)
+            .unwrap()
+            .expect("the parent tree's element")
+        else {
+            panic!("the parent is a non-empty tree");
+        };
+        let root_node = get_raw_bytes(&db, &[TEST_LEAF], &root_key);
+        put_raw(&db, &[TEST_LEAF], &root_key, b"\xffnot a merk node");
+        let read = db
+            .get_raw([TEST_LEAF].as_ref().into(), b"stuck", None, grove_version)
+            .unwrap();
+        assert!(
+            matches!(
+                read,
+                Err(ref e) if !matches!(
+                    e,
+                    Error::PathKeyNotFound(_)
+                        | Error::PathNotFound(_)
+                        | Error::PathParentLayerNotFound(_)
+                        | Error::InvalidParentLayerPath(_)
+                        | Error::CorruptedPath(_)
+                )
+            ),
+            "the simulated fault must not read as found or as not found: {read:?}"
+        );
+
+        // The faulty record is counted and left alone; the later records
+        // are reclaimed.
+        let report = db.flush_pending_prefix_drops(grove_version).expect("flush");
+        assert_eq!(report.reclaimed_records, 3);
+        assert_eq!(report.skipped_live, 0);
+        assert_eq!(report.unresolved_records, 1);
+        assert!(report.first_unresolved_error.is_some());
+        assert!(record_exists(&db, stuck_prefix));
+        assert!(data_namespace_key_count(&db, stuck_prefix) > 0);
+        for key in &later_keys {
+            let prefix = prefix_of(&[ANOTHER_TEST_LEAF, key]);
+            assert_eq!(data_namespace_key_count(&db, prefix), 0);
+            assert!(!record_exists(&db, prefix));
+        }
+
+        // While the fault lasts, every pass checks the record again and
+        // reports it again.
+        let report = db.flush_pending_prefix_drops(grove_version).expect("flush");
+        assert_eq!(report.reclaimed_records, 0);
+        assert_eq!(report.unresolved_records, 1);
+        assert!(record_exists(&db, stuck_prefix));
+        assert!(data_namespace_key_count(&db, stuck_prefix) > 0);
+
+        // Once the fault is gone, the next pass reclaims it.
+        put_raw(&db, &[TEST_LEAF], &root_key, &root_node);
+        let report = db.flush_pending_prefix_drops(grove_version).expect("flush");
+        assert_eq!(
+            report,
+            PendingPrefixDropsReport {
+                reclaimed_records: 1,
+                skipped_live: 0,
+                unresolved_records: 0,
+                first_unresolved_error: None,
+            }
+        );
+        assert!(!record_exists(&db, stuck_prefix));
+        assert_eq!(data_namespace_key_count(&db, stuck_prefix), 0);
+        assert_grove_verifies(&db, grove_version);
+    }
+
+    #[test]
+    fn should_skip_a_recreated_path_as_live_while_other_records_drain() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"parent",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert parent tree");
+        seed_flat_tree_at(&db, &[TEST_LEAF, b"parent"], b"nested", 10, grove_version);
+        seed_flat_tree(&db, b"recreated", 10, grove_version);
+        seed_flat_tree(&db, b"plain", 10, grove_version);
+        let nested_prefix = prefix_of(&[TEST_LEAF, b"parent", b"nested"]);
+        let recreated_prefix = prefix_of(&[TEST_LEAF, b"recreated"]);
+        let plain_prefix = prefix_of(&[TEST_LEAF, b"plain"]);
+
+        drop_flat_and_leave_pending(&db, &[TEST_LEAF, b"parent"], b"nested", grove_version);
+        drop_flat_and_leave_pending(&db, &[TEST_LEAF], b"recreated", grove_version);
+        drop_flat_and_leave_pending(&db, &[TEST_LEAF], b"plain", grove_version);
+
+        // One dropped tree ends up below an item, another is re-created
+        // (a contract violation) before the drain runs.
+        db.delete([TEST_LEAF].as_ref(), b"parent", None, None, grove_version)
+            .unwrap()
+            .expect("delete the emptied parent tree");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"parent",
+            Element::new_item(b"not a tree".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert an item at the parent's key");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"recreated",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("recreate tree");
+        db.insert(
+            [TEST_LEAF, b"recreated"].as_ref(),
+            b"fresh",
+            Element::new_item(b"fresh_value".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert fresh item");
+
+        // The live path is skipped on every pass; the other two records
+        // are reclaimed on the first.
+        let report = db.flush_pending_prefix_drops(grove_version).expect("flush");
+        assert_eq!(
+            report,
+            PendingPrefixDropsReport {
+                reclaimed_records: 2,
+                skipped_live: 1,
+                unresolved_records: 0,
+                first_unresolved_error: None,
+            }
+        );
+        let report = db.flush_pending_prefix_drops(grove_version).expect("flush");
+        assert_eq!(report.reclaimed_records, 0);
+        assert_eq!(report.skipped_live, 1);
+
+        assert!(!record_exists(&db, nested_prefix));
+        assert_eq!(data_namespace_key_count(&db, nested_prefix), 0);
+        assert!(!record_exists(&db, plain_prefix));
+        assert_eq!(data_namespace_key_count(&db, plain_prefix), 0);
+        assert!(record_exists(&db, recreated_prefix));
+        assert_eq!(
+            db.get_raw(
+                [TEST_LEAF, b"recreated"].as_ref().into(),
+                b"fresh",
+                None,
+                grove_version
+            )
+            .unwrap()
+            .expect("fresh item survives"),
+            Element::new_item(b"fresh_value".to_vec())
+        );
+    }
+
+    #[test]
+    fn should_reclaim_an_ordinary_drop_and_report_nothing_unresolved() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        seed_flat_tree(&db, b"flat", 10, grove_version);
+        let prefix = prefix_of(&[TEST_LEAF, b"flat"]);
+        drop_flat_and_leave_pending(&db, &[TEST_LEAF], b"flat", grove_version);
+
+        let report = db.flush_pending_prefix_drops(grove_version).expect("flush");
+        assert_eq!(
+            report,
+            PendingPrefixDropsReport {
+                reclaimed_records: 1,
+                skipped_live: 0,
+                unresolved_records: 0,
+                first_unresolved_error: None,
+            }
+        );
+        assert!(!record_exists(&db, prefix));
+        assert_eq!(data_namespace_key_count(&db, prefix), 0);
+        assert_grove_verifies(&db, grove_version);
     }
 
     // ── Indexed primaries ───────────────────────────────────────────────

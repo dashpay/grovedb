@@ -141,6 +141,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   panicked hashing a provable tree.
   Not version gated: the check only reads and is not on a consensus path. No
   write path is known to leave such a state.
+- `query_aggregate_sums` with a range query item no longer panics on a path
+  with a segment longer than 255 bytes. It returns
+  `Error::InvalidInput("path segment length must be at most 255 bytes")`,
+  as the same call with a key query item and every other path-building call
+  already did (#680). Not version-gated, since the call used to panic.
 - From `GROVE_V5`, a batch that inserts a sum or count tree and leaves the
   level below it empty stores that tree. The batch carries operations at the
   tree's own path and none leaves a key there, for example a delete of a key
@@ -275,6 +280,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `element.delete_into_batch_operations` slots, 0 in V1..V4 and 1 in V5).
   Refunds of items, references and declared tree deletes, stored data and
   root hashes do not change.
+- `GroveDb::flush_pending_prefix_drops` handles each pending flat-drop
+  record on its own. Before, the first record whose liveness check failed
+  made the whole call return that error, so the records after it were never
+  reclaimed, on that call or on any later one. A record whose parent key
+  came to hold an element that is not a tree did this (`CorruptedPath`):
+  nothing resolves below such an element, so that record is now reclaimed.
+  A record whose check fails any other way is left in place, counted in the
+  new `PendingPrefixDropsReport::unresolved_records` (with the first such
+  error in `first_unresolved_error`), and checked again by the next call,
+  while the records after it are reclaimed. A path that resolves to a live
+  element is still skipped and never tombstoned. The call still returns
+  `Err` when the records cannot be listed or a tombstone or record removal
+  cannot be written. No root hash or cost changes on any `GroveVersion`:
+  the drain only reads, and writes only to storage no element reaches.
+  **BREAKING** for code building or exhaustively destructuring
+  `PendingPrefixDropsReport`, which also no longer implements `Copy`.
 
 ## [6.1.1] - 2026-10-20
 
