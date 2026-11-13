@@ -1976,6 +1976,11 @@ impl GroveDb {
 
     /// Method to check that the value_hash of Element::Tree nodes are computed
     /// correctly.
+    ///
+    /// Also checks every tree's aggregate two ways: the aggregate recorded in
+    /// the parent's tree element against the one the tree's Merk stores, and
+    /// the one the Merk stores against the total recomputed from the elements
+    /// the tree holds. A tree failing either is reported at its path.
     pub fn verify_grovedb(
         &self,
         transaction: TransactionArg,
@@ -2421,12 +2426,27 @@ impl GroveDb {
 
         let mut issues = HashMap::new();
         let mut element_iterator = KVIterator::new(merk.storage.raw_iter(), &all_query).unwrap();
+        // What the elements of this Merk contribute to its aggregate, added
+        // up as the walk decodes them. Compared with the aggregate the Merk
+        // stores once the walk is done.
+        let mut contributed = ElementsAggregate::default();
 
         while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
+            let stored_element = Element::raw_decode(&element_value, grove_version)?;
+            // The contribution comes from the element as stored: the
+            // `NonCounted` / `NotSummed` / `NotCountedOrSummed` wrappers
+            // decide it, so it is taken before they are looked through.
+            // `get_feature_type` is the rule every write uses to derive a
+            // node's own aggregate from its element.
+            contributed.add(
+                stored_element
+                    .get_feature_type(merk.tree_type)
+                    .map_err(MerkError)?,
+            );
             // Look through NonCounted: verification dispatches on inner type.
             // The on-disk value bytes are still the wrapper bytes, so the
             // hash checks below operate on those.
-            let element = Element::raw_decode(&element_value, grove_version)?.into_underlying();
+            let element = stored_element.into_underlying();
             match element {
                 // CountIndexedTree / ProvableCountIndexedTree integrity:
                 // open both child Merks, read their root hashes, and
@@ -2516,15 +2536,18 @@ impl GroveDb {
                         grove_version,
                     )?;
 
-                    issues.extend(self.verify_merk_and_submerks_in_transaction(
-                        primary_merk,
-                        &new_path_ref,
-                        batch,
-                        transaction,
-                        verify_references,
-                        true,
-                        grove_version,
-                    )?);
+                    merge_child_issues(
+                        &mut issues,
+                        self.verify_merk_and_submerks_in_transaction(
+                            primary_merk,
+                            &new_path_ref,
+                            batch,
+                            transaction,
+                            verify_references,
+                            true,
+                            grove_version,
+                        )?,
+                    );
                 }
                 Element::SumTree(..)
                 | Element::Tree(..)
@@ -2741,15 +2764,18 @@ impl GroveDb {
                     // verify_merk_and_submerks would try to deserialize
                     // those entries as Elements and fail.
                     if !element.uses_non_merk_data_storage() {
-                        issues.extend(self.verify_merk_and_submerks_in_transaction(
-                            inner_merk,
-                            &new_path_ref,
-                            batch,
-                            transaction,
-                            verify_references,
-                            true,
-                            grove_version,
-                        )?);
+                        merge_child_issues(
+                            &mut issues,
+                            self.verify_merk_and_submerks_in_transaction(
+                                inner_merk,
+                                &new_path_ref,
+                                batch,
+                                transaction,
+                                verify_references,
+                                true,
+                                grove_version,
+                            )?,
+                        );
                     }
                 }
                 Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
@@ -3061,15 +3087,18 @@ impl GroveDb {
                     // secondary element stored at the right key is the one
                     // canonically derived from the primary element.
 
-                    issues.extend(self.verify_merk_and_submerks_in_transaction(
-                        primary_merk,
-                        &new_path_ref,
-                        batch,
-                        transaction,
-                        verify_references,
-                        true,
-                        grove_version,
-                    )?);
+                    merge_child_issues(
+                        &mut issues,
+                        self.verify_merk_and_submerks_in_transaction(
+                            primary_merk,
+                            &new_path_ref,
+                            batch,
+                            transaction,
+                            verify_references,
+                            true,
+                            grove_version,
+                        )?,
+                    );
                 }
                 // ProvableCountProvableSumIndexedTree integrity: open
                 // each axis's secondary Merk, build the canonical
@@ -3168,20 +3197,57 @@ impl GroveDb {
                         );
                     }
 
-                    issues.extend(self.verify_merk_and_submerks_in_transaction(
-                        primary_merk,
-                        &new_path_ref,
-                        batch,
-                        transaction,
-                        verify_references,
-                        true,
-                        grove_version,
-                    )?);
+                    merge_child_issues(
+                        &mut issues,
+                        self.verify_merk_and_submerks_in_transaction(
+                            primary_merk,
+                            &new_path_ref,
+                            batch,
+                            transaction,
+                            verify_references,
+                            true,
+                            grove_version,
+                        )?,
+                    );
                 }
                 Element::NonCounted(_) | Element::NotSummed(_) | Element::NotCountedOrSummed(_) => {
                     unreachable!("unwrapped above")
                 }
             }
+        }
+        drop(element_iterator);
+
+        // The aggregate this Merk stores (its root node's own value plus what
+        // its links record for the subtrees below) must be the total its
+        // elements contribute. The check in the parent's walk only compares
+        // two stored values, the parent element's recorded aggregate and this
+        // same stored aggregate, so node aggregates that drifted from the
+        // elements pass it. A Merk without an aggregate contributes and
+        // stores nothing, so it compares equal here.
+        //
+        // An indexed tree's primary is covered because it is walked through
+        // this function; its secondaries are not (their rows are checked
+        // against the primary by `verify_indexed_axis_content`), so nothing
+        // is added up twice.
+        //
+        // Reported at this Merk's own path, in the placeholder form the
+        // recorded-aggregate check uses: the total recomputed from the
+        // elements in the "expected" slot, the stored aggregate in the
+        // "actual" slot. `or_insert` keeps an issue already recorded at this
+        // path, and the caller merges this map the same way, so a hash
+        // mismatch found for this tree is never replaced by this one.
+        let stored_aggregate = merk.aggregate_data().map_err(|e| e.to_string());
+        if let Some((contributed_label, stored_label)) =
+            elements_aggregate_labels(&contributed, &stored_aggregate)
+        {
+            let expected_placeholder: CryptoHash =
+                blake3::hash(contributed_label.as_bytes()).into();
+            let actual_placeholder: CryptoHash = blake3::hash(stored_label.as_bytes()).into();
+            issues.entry(path.to_vec()).or_insert((
+                merk.root_hash().unwrap(),
+                expected_placeholder,
+                actual_placeholder,
+            ));
         }
         Ok(issues)
     }
@@ -3618,6 +3684,97 @@ impl GroveDb {
                 element.type_str()
             ))),
         }
+    }
+}
+
+/// Add a child Merk's verification issues to its parent's, keeping an issue
+/// the parent already recorded at the same path. The only path both can
+/// report is the child Merk's own, where the parent records a hash-chain or
+/// recorded-aggregate mismatch and the child a recomputed-aggregate one; the
+/// parent's is the more specific and stays.
+#[cfg(feature = "minimal")]
+fn merge_child_issues(issues: &mut VerificationIssues, child_issues: VerificationIssues) {
+    for (path, issue) in child_issues {
+        issues.entry(path).or_insert(issue);
+    }
+}
+
+/// The count and sum the elements of one Merk contribute to its aggregate,
+/// added up by `verify_grovedb` as it walks them.
+///
+/// Each field turns `None` when adding to it overflows, so an overflow is
+/// reported as an issue instead of wrapping or panicking. The sum is kept as
+/// an `i128` for every tree type: a total outside `i64` in a tree whose
+/// aggregate is an `i64` then simply fails to equal the stored value.
+#[cfg(feature = "minimal")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ElementsAggregate {
+    count: Option<u64>,
+    sum: Option<i128>,
+}
+
+#[cfg(feature = "minimal")]
+impl Default for ElementsAggregate {
+    fn default() -> Self {
+        Self {
+            count: Some(0),
+            sum: Some(0),
+        }
+    }
+}
+
+#[cfg(feature = "minimal")]
+impl ElementsAggregate {
+    /// Add one element's contribution, given as the feature type the write
+    /// path derives for it (`Element::get_feature_type`).
+    fn add(&mut self, contribution: TreeFeatureType) {
+        let contribution = AggregateData::from(contribution);
+        self.count = self
+            .count
+            .and_then(|count| count.checked_add(contribution.as_count_u64()));
+        self.sum = self
+            .sum
+            .and_then(|sum| sum.checked_add(contribution.as_summed_i128()));
+    }
+}
+
+/// Compare the total a Merk's elements contribute with the aggregate the Merk
+/// stores. Returns `Some((contributed_label, stored_label))` when they
+/// disagree, when adding up the contributions overflowed, or when the stored
+/// aggregate cannot be read (`Err` with the reason), and `None` when they
+/// agree.
+///
+/// Both sides are compared as a count and a sum, whatever the tree type: an
+/// aggregate that does not carry one of the two reports 0 for it on both
+/// sides, as does an empty Merk or one without an aggregate. The labels are
+/// meant to be hashed into placeholder `CryptoHash` values for
+/// `VerificationIssues`, like those of [`aggregate_consistency_labels`].
+#[cfg(feature = "minimal")]
+fn elements_aggregate_labels(
+    contributed: &ElementsAggregate,
+    stored: &Result<AggregateData, String>,
+) -> Option<(String, String)> {
+    let contributed_label = match (contributed.count, contributed.sum) {
+        (Some(count), Some(sum)) => format!("elements contribute count {count} sum {sum}"),
+        (None, Some(sum)) => format!("elements contribute an overflowing count, sum {sum}"),
+        (Some(count), None) => format!("elements contribute count {count}, an overflowing sum"),
+        (None, None) => "elements contribute an overflowing count and sum".to_string(),
+    };
+    let stored = match stored {
+        Ok(stored) => stored,
+        Err(reason) => {
+            return Some((
+                contributed_label,
+                format!("stored aggregate cannot be read: {reason}"),
+            ));
+        }
+    };
+    if contributed.count == Some(stored.as_count_u64())
+        && contributed.sum == Some(stored.as_summed_i128())
+    {
+        None
+    } else {
+        Some((contributed_label, format!("stored aggregate {stored:?}")))
     }
 }
 

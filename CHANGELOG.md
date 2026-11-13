@@ -118,6 +118,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must move to 0.41 as well.
 
 ### Fixed
+- `GroveDb::verify_grovedb` recomputes each tree's aggregate from the
+  elements the tree holds and reports a tree whose stored aggregate differs.
+  It compared the aggregate recorded in the parent's tree element with the
+  aggregate stored on the Merk's root node, two stored values, so a `SumTree`
+  storing 1,000,007 over sum items worth 12 was reported clean. Each element
+  now contributes what a write gives its node (`Element::get_feature_type`:
+  a sum item or `ItemWithSumItem` its value, a child tree its recorded
+  aggregate, with the `NonCounted`, `NotSummed` and `NotCountedOrSummed`
+  wrappers respected), the contributions are added with checked arithmetic,
+  and the total is compared with the Merk's `aggregate_data()` for every
+  tree type, an indexed tree's primary included. A mismatch, or a total that
+  overflows, is one more issue at the tree's path in the existing
+  `VerificationIssues` shape; an issue already recorded for that path, such
+  as a hash mismatch, is kept. Not version gated: the check only reads and
+  is not on a consensus path. No write path is known to leave such a state.
 - From `GROVE_V5`, a batch that inserts a sum or count tree and leaves the
   level below it empty stores that tree. The batch carries operations at the
   tree's own path and none leaves a key there, for example a delete of a key
