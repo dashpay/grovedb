@@ -138,7 +138,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cannot be read (it overflows), or whose root node stores an aggregate of
   another kind than the one a provable tree's root hash commits to, is
   reported as an issue as well, where `verify_grovedb` returned an error or
-  panicked hashing a provable tree.
+  panicked hashing a provable tree. The aggregate an indexed tree element
+  records is compared with the one its primary stores, as it already was
+  for the other aggregate trees.
   Not version gated: the check only reads and is not on a consensus path. No
   write path is known to leave such a state.
 - `query_aggregate_sums` with a range query item no longer panics on a path

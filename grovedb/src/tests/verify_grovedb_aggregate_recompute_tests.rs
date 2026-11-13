@@ -28,6 +28,7 @@ mod tests {
     use grovedb_version::version::GroveVersion;
 
     use crate::{
+        aggregate_consistency_labels,
         batch::QualifiedGroveDbOp,
         elements_aggregate_labels, merge_child_issues,
         operations::indexed_tree::make_axis_secondary_key,
@@ -257,8 +258,14 @@ mod tests {
 
     /// Rebind the count indexed tree element at `tree_path` to the root
     /// hashes its primary and its secondary have now, and propagate, so the
-    /// hash chain is whole again after a write to the secondary.
-    fn rebind_count_indexed_tree(db: &GroveDb, tree_path: &[&[u8]], gv: &GroveVersion) {
+    /// hash chain is whole again after a write to the secondary. The element
+    /// records the primary's aggregate, or `recorded` when one is given.
+    fn rebind_count_indexed_tree(
+        db: &GroveDb,
+        tree_path: &[&[u8]],
+        recorded: Option<AggregateData>,
+        gv: &GroveVersion,
+    ) {
         let tx = db.start_transaction();
         let batch = StorageBatch::new();
         let path: SubtreePath<&[u8]> = tree_path.into();
@@ -295,7 +302,11 @@ mod tests {
             .expect("secondary root state");
 
         indexed_tree
-            .reconstruct_with_two_root_keys(primary_root_key, secondary_root_key, primary_aggregate)
+            .reconstruct_with_two_root_keys(
+                primary_root_key,
+                secondary_root_key,
+                recorded.unwrap_or(primary_aggregate),
+            )
             .expect("reconstruct the indexed tree element")
             .insert_count_indexed_subtree(
                 &mut parent_merk,
@@ -318,6 +329,17 @@ mod tests {
             .unwrap()
             .expect("commit");
         tx.commit().expect("tx commit");
+    }
+
+    /// The root hash of the Merk of the tree at `path`.
+    fn root_hash(db: &GroveDb, path: &[&[u8]], gv: &GroveVersion) -> CryptoHash {
+        let tx = db.start_transaction();
+        let path: SubtreePath<&[u8]> = path.into();
+        db.open_transactional_merk_at_path(path, &tx, None, gv)
+            .unwrap()
+            .expect("open the tree's Merk")
+            .root_hash()
+            .unwrap()
     }
 
     /// The reason the Merk of the tree at `path` gives for not being able to
@@ -745,7 +767,7 @@ mod tests {
             TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(5, 1),
             gv,
         );
-        rebind_count_indexed_tree(&db, &[TEST_LEAF, b"cidx"], gv);
+        rebind_count_indexed_tree(&db, &[TEST_LEAF, b"cidx"], None, gv);
 
         // Every row is still the one the primary implies and every hash
         // matches: only the recomputed total tells.
@@ -880,6 +902,97 @@ mod tests {
         }
     }
 
+    #[test]
+    fn should_report_an_indexed_tree_whose_recorded_aggregate_differs_from_its_primary() {
+        let gv = GroveVersion::latest();
+        let db = make_test_grovedb(gv);
+        make_count_indexed_tree(&db, gv);
+        assert!(verify(&db, gv).is_empty());
+
+        // The element is rewritten recording 99 entries over a primary and a
+        // secondary that hold 3, bound to their root hashes, and propagated:
+        // every hash and every row is sound.
+        rebind_count_indexed_tree(
+            &db,
+            &[TEST_LEAF, b"cidx"],
+            Some(AggregateData::ProvableCount(99)),
+            gv,
+        );
+        assert!(matches!(
+            get(&db, &[TEST_LEAF], b"cidx", gv),
+            Element::ProvableCountIndexedTree(_, _, 99, _)
+        ));
+
+        assert_only_aggregate_issue(
+            &verify(&db, gv),
+            &[TEST_LEAF, b"cidx"],
+            &format!(
+                "{} recorded aggregate ProvableCount(99)",
+                get(&db, &[TEST_LEAF], b"cidx", gv).type_str()
+            ),
+            "inner aggregate ProvableCount(3)",
+        );
+    }
+
+    #[test]
+    fn should_compare_what_each_indexed_tree_records_with_its_primary_aggregate() {
+        let count = Element::ProvableCountIndexedTree(None, None, 4, None);
+        assert!(aggregate_consistency_labels(&count, &AggregateData::ProvableCount(4)).is_none());
+        assert!(aggregate_consistency_labels(&count, &AggregateData::ProvableCount(5)).is_some());
+        // Another kind is a mismatch even when the numbers agree.
+        assert!(aggregate_consistency_labels(&count, &AggregateData::Count(4)).is_some());
+
+        let sum = Element::ProvableSumIndexedTree(None, None, -7, None);
+        assert!(aggregate_consistency_labels(&sum, &AggregateData::ProvableSum(-7)).is_none());
+        assert_eq!(
+            aggregate_consistency_labels(&sum, &AggregateData::ProvableSum(7)),
+            Some((
+                format!("{} recorded aggregate ProvableSum(-7)", sum.type_str()),
+                "inner aggregate ProvableSum(7)".to_string(),
+            ))
+        );
+
+        let both = Element::ProvableCountProvableSumIndexedTree(None, 2, 30, Vec::new(), None);
+        assert!(aggregate_consistency_labels(
+            &both,
+            &AggregateData::ProvableCountAndProvableSum(2, 30)
+        )
+        .is_none());
+        assert!(aggregate_consistency_labels(
+            &both,
+            &AggregateData::ProvableCountAndProvableSum(2, 31)
+        )
+        .is_some());
+        assert!(aggregate_consistency_labels(
+            &both,
+            &AggregateData::ProvableCountAndProvableSum(3, 30)
+        )
+        .is_some());
+
+        // An empty primary reports no aggregate: only a recorded zero matches.
+        for (empty, recorded) in [
+            (
+                Element::ProvableCountIndexedTree(None, None, 0, None),
+                Element::ProvableCountIndexedTree(None, None, 1, None),
+            ),
+            (
+                Element::ProvableSumIndexedTree(None, None, 0, None),
+                Element::ProvableSumIndexedTree(None, None, 1, None),
+            ),
+            (
+                Element::ProvableCountProvableSumIndexedTree(None, 0, 0, Vec::new(), None),
+                Element::ProvableCountProvableSumIndexedTree(None, 0, 1, Vec::new(), None),
+            ),
+        ] {
+            assert!(
+                aggregate_consistency_labels(&empty, &AggregateData::NoAggregateData).is_none()
+            );
+            assert!(
+                aggregate_consistency_labels(&recorded, &AggregateData::NoAggregateData).is_some()
+            );
+        }
+    }
+
     // -----------------------------------------------------------------
     // A stored aggregate that cannot be read
     // -----------------------------------------------------------------
@@ -912,10 +1025,48 @@ mod tests {
             "elements contribute count 0 sum 2",
             &format!("stored aggregate cannot be read: {reason}"),
         );
+        // A sum tree's root hash does not commit to its sum, so it is still
+        // there to show.
         assert_eq!(
             issues[&owned(&[TEST_LEAF, b"sum"])].0,
-            [0u8; 32],
-            "there is no root hash to show for the tree"
+            root_hash(&db, &[TEST_LEAF, b"sum"], gv),
+        );
+    }
+
+    #[test]
+    fn should_still_check_the_hash_chain_of_a_sum_tree_whose_stored_sum_cannot_be_read() {
+        let gv = GroveVersion::latest();
+        let db = make_test_grovedb(gv);
+        insert(&db, &[TEST_LEAF], b"sum", Element::empty_sum_tree(), gv);
+        for key in [b"a", b"b"] {
+            insert(&db, &[TEST_LEAF, b"sum"], key, Element::new_sum_item(1), gv);
+        }
+
+        // As above, and the element changes too: without propagation the
+        // parent still binds the tree's former root hash.
+        plant_node_aggregate_without_propagating(
+            &db,
+            &[TEST_LEAF, b"sum"],
+            b"a",
+            &Element::new_sum_item(2),
+            TreeFeatureType::SummedMerkNode(i64::MAX),
+            gv,
+        );
+        let reason = unreadable_aggregate_reason(&db, &[TEST_LEAF, b"sum"], gv);
+
+        // The hash mismatch is found, and it is the issue kept for the path.
+        let issues = verify(&db, gv);
+        assert_eq!(
+            issues.keys().cloned().collect::<Vec<_>>(),
+            vec![owned(&[TEST_LEAF, b"sum"])],
+            "{issues:?}"
+        );
+        let (root, _, actual) = issues[&owned(&[TEST_LEAF, b"sum"])];
+        assert_eq!(root, root_hash(&db, &[TEST_LEAF, b"sum"], gv));
+        assert_ne!(
+            actual,
+            placeholder(&format!("stored aggregate cannot be read: {reason}")),
+            "the hash mismatch is reported, not the aggregate placeholder"
         );
     }
 
