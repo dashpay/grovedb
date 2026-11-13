@@ -118,6 +118,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must move to 0.41 as well.
 
 ### Fixed
+- `GroveDb::verify_grovedb` recomputes each tree's aggregate from the
+  elements the tree holds and reports a tree whose stored aggregate differs.
+  It compared the aggregate recorded in the parent's tree element with the
+  aggregate stored on the Merk's root node, two stored values, so a `SumTree`
+  storing 1,000,007 over sum items worth 12 was reported clean. Each element
+  now contributes what a write gives its node (`Element::get_feature_type`:
+  a sum item or `ItemWithSumItem` its value, a child tree its recorded
+  aggregate, with the `NonCounted`, `NotSummed` and `NotCountedOrSummed`
+  wrappers respected), the contributions are added with checked arithmetic,
+  and the total is compared with the Merk's `aggregate_data()` for every
+  tree type, an indexed tree's primary included. A mismatch, or a total that
+  overflows, is one more issue at the tree's path in the existing
+  `VerificationIssues` shape; an issue already recorded for that path, such
+  as a hash mismatch, is kept. Each secondary of an indexed tree is compared
+  with its own rows the same way and reported under
+  `__<prefix>secondary_aggregate__` below the tree's path, next to the other
+  secondary checks. A tree, primary or secondary whose stored aggregate
+  cannot be read (it overflows), or whose root node stores an aggregate of
+  another kind than the one a provable tree's root hash commits to, is
+  reported as an issue as well, where `verify_grovedb` returned an error or
+  panicked hashing a provable tree. The aggregate an indexed tree element
+  records is compared with the one its primary stores, as it already was
+  for the other aggregate trees.
+  Not version gated: the check only reads and is not on a consensus path. No
+  write path is known to leave such a state.
 - `query_aggregate_sums` with a range query item no longer panics on a path
   with a segment longer than 255 bytes. It returns
   `Error::InvalidInput("path segment length must be at most 255 bytes")`,
