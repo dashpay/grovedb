@@ -298,6 +298,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the drain only reads, and writes only to storage no element reaches.
   **BREAKING** for code building or exhaustively destructuring
   `PendingPrefixDropsReport`, which also no longer implements `Copy`.
+- `GroveDb::fetch_chunk` refuses a state sync request whose tree type does
+  not match the stored rows with `CorruptedData`. The prefix, root key and
+  tree type of a chunk request come from the requesting peer, and only the
+  root the request named was compared with the tree type. That settles it
+  for a prefix holding a Merk, whose nodes share one aggregate family, but
+  not for rows that are not nodes of one Merk of that type, where a request
+  could stop the serving process instead of being refused. The Merk chunk
+  producer (`ChunkProducer`) now checks every node it emits or hashes
+  against the tree type it serves under (`CorruptedState` on a mismatch)
+  and takes the hashes at a chunk's boundary fallibly; the root hashes of
+  an indexed header are taken the same way. New
+  `TreeNode::try_hash_for_link` and `Merk::try_root_hash` return an error
+  where `hash_for_link` and `Merk::root_hash` panic; those two and the write
+  path are unchanged. Not gated by grove version: an honest target never
+  sends such a request, the chunks it is served do not change, and neither
+  does the cost of a trunk or branch chunk proof.
 
 ## [6.1.1] - 2026-10-20
 

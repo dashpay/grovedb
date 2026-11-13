@@ -79,17 +79,39 @@ where
         proof: &mut Vec<Op>,
         remaining_depth: usize,
         tree_type: TreeType,
-        preserve_features: bool,
+        for_restore: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
+
+        // A restore chunk is produced for whoever asks, under the tree type
+        // the request names (state sync takes the prefix, the root key and
+        // the tree type from a peer). Nothing ties that type to the rows the
+        // walk reaches, so every node the chunk emits or hashes is checked
+        // against it here, the rule the restorer applies to every node it
+        // receives. Checking the root alone is not enough: rows that are not
+        // nodes of one Merk can link to rows of another family.
+        if for_restore && self.tree().node_type() != tree_type.inner_node_type() {
+            return Err(Error::CorruptedState(
+                "a node under the requested root does not belong to the tree type the chunk is \
+                 produced under",
+            ))
+            .wrap_with_cost(cost);
+        }
 
         // at some point we will reach the depth
         // here we need to put the node hash
         if remaining_depth == 0 {
             // Use tree_type-aware hashing so ProvableCountTree/ProvableCountSumTree
             // include the count in their hash computation
-            let hash_node = self.to_hash_node_for_tree_type(tree_type).unwrap();
+            //
+            // The hash's own cost is dropped, as it always was here: trunk
+            // and branch proofs return this function's cost to their caller,
+            // so charging it would change the cost of a request that succeeds.
+            let hash_node = match self.to_hash_node_for_tree_type(tree_type).value {
+                Ok(hash_node) => hash_node,
+                Err(e) => return Err(e).wrap_with_cost(cost),
+            };
             proof.push(Op::Push(hash_node));
             return Ok(()).wrap_with_cost(cost);
         }
@@ -112,7 +134,7 @@ where
                     proof,
                     remaining_depth - 1,
                     tree_type,
-                    preserve_features,
+                    for_restore,
                     grove_version
                 )
             );
@@ -123,7 +145,7 @@ where
         // including for opaque values that happen to encode an Element.
         // Trunk/branch proofs keep their existing node selection: their
         // verifiers require value-binding node types for Item elements.
-        let node = if preserve_features
+        let node = if for_restore
             && matches!(
                 tree_type,
                 TreeType::SumTree
@@ -158,7 +180,7 @@ where
                     proof,
                     remaining_depth - 1,
                     tree_type,
-                    preserve_features,
+                    for_restore,
                     grove_version
                 )
             );
@@ -235,14 +257,15 @@ where
         )
     }
 
-    /// The chunk producer preserves restoration metadata, while trunk and
-    /// branch query proofs use their established compact node types.
+    /// The chunk producer (`for_restore`) preserves restoration metadata and
+    /// checks every node it emits or hashes against `tree_type`, while trunk
+    /// and branch query proofs use their established compact node types.
     pub(crate) fn traverse_and_build_chunk_with_features(
         &mut self,
         instructions: &[bool],
         depth: usize,
         tree_type: TreeType,
-        preserve_features: bool,
+        for_restore: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<Op>, Error> {
         let mut cost = OperationCost::default();
@@ -257,7 +280,7 @@ where
                     &mut proof,
                     depth,
                     tree_type,
-                    preserve_features,
+                    for_restore,
                     grove_version
                 )
             );
@@ -290,7 +313,7 @@ where
                 &instructions[1..],
                 depth,
                 tree_type,
-                preserve_features,
+                for_restore,
                 grove_version,
             )
             .add_cost(cost)
@@ -385,6 +408,7 @@ pub fn verify_height_tree(height_proof_tree: &Tree) -> Result<usize, Error> {
 #[cfg(test)]
 pub mod tests {
     use ed::Encode;
+    use grovedb_costs::OperationCost;
     use grovedb_version::version::GroveVersion;
 
     use crate::{
@@ -946,6 +970,43 @@ pub mod tests {
                 Op::Child,
             ]
         );
+    }
+
+    /// A chunk proof has never been charged for the hashes it takes at its
+    /// boundary, and that stays so now that those hashes are fallible: the
+    /// cost of a trunk or branch proof is returned to the caller, so charging
+    /// them would change the cost of a request that succeeds. The tree is
+    /// fully in memory, so the walk loads nothing and the whole cost would be
+    /// the boundary hashes.
+    #[test]
+    fn should_not_charge_for_the_hashes_at_a_chunk_boundary() {
+        let grove_version = GroveVersion::latest();
+        let mut tree = build_tree_10_nodes();
+        let mut tree_walker = RefWalker::new(&mut tree, PanicSource {});
+
+        // Depth 2 under a height 4 tree: the third layer is hashed.
+        let trunk =
+            tree_walker.traverse_and_build_chunk(&[], 2, TreeType::NormalTree, grove_version);
+        assert!(trunk
+            .value
+            .expect("should build chunk")
+            .iter()
+            .any(|op| matches!(op, Op::Push(Node::Hash(_)))));
+        assert_eq!(trunk.cost, OperationCost::default());
+
+        let restore_chunk = tree_walker.traverse_and_build_chunk_with_features(
+            &[RIGHT],
+            2,
+            TreeType::NormalTree,
+            true,
+            grove_version,
+        );
+        assert!(restore_chunk
+            .value
+            .expect("should build chunk")
+            .iter()
+            .any(|op| matches!(op, Op::Push(Node::Hash(_)))));
+        assert_eq!(restore_chunk.cost, OperationCost::default());
     }
 
     #[test]

@@ -143,6 +143,7 @@ mod replication_checkpoint_prune_tests;
 mod replication_fuzz_tests;
 mod replication_incremental_commit_tests;
 mod replication_scale_tests;
+mod replication_served_node_type_tests;
 mod replication_serving_tree_type_tests;
 mod replication_session_tests;
 mod replication_utils_tests;

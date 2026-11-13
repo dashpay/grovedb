@@ -94,6 +94,19 @@ impl MultiChunk {
 /// cost of a request is proportional to the tree, never to the request.
 /// This bound is enforced here, on the producer itself, so that every
 /// caller gets it regardless of the transport that delivered the id.
+///
+/// # Node checks
+///
+/// A chunk is produced under the tree type the `Merk` was opened with, and
+/// a caller may have taken that type, the prefix and the root key from a
+/// peer (state sync does). Every node a chunk emits or hashes must
+/// therefore be of that type's family
+/// ([`TreeType::inner_node_type`](crate::TreeType::inner_node_type)); a
+/// node of another family, a node hashed at the chunk's boundary whose
+/// aggregate cannot be computed, a row that does not decode as a node and a
+/// link to a missing row are each refused with an error. The root alone
+/// does not decide it: a prefix that does not hold one Merk can hold rows
+/// of several families that link to each other.
 pub struct ChunkProducer<'db, S> {
     /// Represents the max height of the Merk tree
     height: usize,
@@ -482,7 +495,7 @@ mod test {
         },
         test_utils::{make_batch_seq, TempMerk},
         tree::RefWalker,
-        PanicSource,
+        PanicSource, TreeType,
     };
 
     #[derive(Default)]
@@ -1281,5 +1294,53 @@ mod test {
             .chunk(&[1u8, 1u8, 1u8], grove_version)
             .expect("length-3 id recovers to chunk 2");
         assert_eq!(next_from_leaf, next_from_boundary);
+    }
+
+    /// The producer serves a Merk under the tree type it was opened with,
+    /// and a caller may have taken that type from a peer. Every node of a
+    /// chunk is checked against it, so a type of another family is an error
+    /// whether the node would have been hashed (the `Provable*` types, which
+    /// used to abort in `hash_for_link`) or only emitted (the others).
+    #[test]
+    fn should_refuse_to_chunk_a_merk_under_a_tree_type_of_another_family() {
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new(grove_version);
+        let batch = make_batch_seq(0..15);
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+            .unwrap()
+            .expect("apply failed");
+        assert_eq!(merk.height(), Some(4));
+
+        for tree_type in [
+            TreeType::SumTree,
+            TreeType::BigSumTree,
+            TreeType::CountTree,
+            TreeType::CountSumTree,
+            TreeType::ProvableCountTree,
+            TreeType::ProvableCountSumTree,
+            TreeType::ProvableSumTree,
+            TreeType::ProvableCountProvableSumTree,
+            TreeType::ProvableCountIndexedTree,
+            TreeType::ProvableSumIndexedTree,
+            TreeType::ProvableCountProvableSumIndexedTree,
+        ] {
+            (*merk).tree_type = tree_type;
+            let mut chunk_producer =
+                ChunkProducer::new(&merk).expect("should create chunk producer");
+            for chunk_id in [vec![], vec![1u8, 1], vec![0u8, 0]] {
+                let result = chunk_producer.chunk(&chunk_id, grove_version);
+                assert!(
+                    matches!(result, Err(Error::CorruptedState(_))),
+                    "{tree_type:?}, chunk id {chunk_id:?}: expected a refusal, got {result:?}"
+                );
+            }
+        }
+
+        // Under its own type the same Merk is served.
+        (*merk).tree_type = TreeType::NormalTree;
+        let mut chunk_producer = ChunkProducer::new(&merk).expect("should create chunk producer");
+        chunk_producer
+            .chunk(&[], grove_version)
+            .expect("the root chunk is served");
     }
 }
