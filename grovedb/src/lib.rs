@@ -1980,7 +1980,11 @@ impl GroveDb {
     /// Also checks every tree's aggregate two ways: the aggregate recorded in
     /// the parent's tree element against the one the tree's Merk stores, and
     /// the one the Merk stores against the total recomputed from the elements
-    /// the tree holds. A tree failing either is reported at its path.
+    /// the tree holds. A tree failing either is reported at its path. Each
+    /// secondary of an indexed tree is compared with its own rows as well and
+    /// reported under a `secondary_aggregate` sentinel below the tree's path.
+    /// A stored aggregate that cannot be read is reported the same way,
+    /// without hashing the tree it belongs to.
     pub fn verify_grovedb(
         &self,
         transaction: TransactionArg,
@@ -2162,7 +2166,26 @@ impl GroveDb {
         let mut actual: HashMap<Vec<u8>, Vec<(Vec<u8>, Element, Option<CryptoHash>)>> =
             HashMap::new();
         let mut sec_iter = KVIterator::new(secondary_merk.storage.raw_iter(), &all_query).unwrap();
+        // What the rows of this secondary contribute to its aggregate, added
+        // up as they are decoded. `None` once a row's contribution cannot be
+        // told (a row under a malformed key that does not decode either).
+        let mut rows_contributed = Some(ElementsAggregate::default());
         while let Some((sec_key, sec_value)) = sec_iter.next_kv().unwrap() {
+            let sec_elem = Element::raw_decode(&sec_value, grove_version);
+            // Every row counts towards the secondary's aggregate, a row under
+            // a malformed key included, so the contribution is taken before
+            // the key is looked at.
+            let row_contribution = sec_elem
+                .as_ref()
+                .ok()
+                .and_then(|row| row.get_feature_type(secondary_merk.tree_type).ok());
+            rows_contributed = match (rows_contributed, row_contribution) {
+                (Some(mut total), Some(contribution)) => {
+                    total.add(contribution);
+                    Some(total)
+                }
+                _ => None,
+            };
             if sec_key.len() < sort_len {
                 let mut p = new_path.to_vec();
                 p.push(sentinel("secondary_malformed_key"));
@@ -2170,7 +2193,7 @@ impl GroveDb {
                 issues.insert(p, ([0u8; 32], [0u8; 32], [0u8; 32]));
                 continue;
             }
-            let sec_elem = Element::raw_decode(&sec_value, grove_version)?;
+            let sec_elem = sec_elem?;
             // The row's COMMITTED value hash: for a canonical combined
             // reference this is `combine_hash(H(ref bytes), target hash)`, so
             // it is what proves the row still binds the primary entry's
@@ -2314,6 +2337,21 @@ impl GroveDb {
             }
         }
 
+        // The aggregate the secondary stores must be the total its rows
+        // contribute: counts, sums and averages over the index are answered
+        // from it. The checks above compare the rows with the primary, and
+        // the rows can all be canonical while a node's stored aggregate is
+        // not what its row is worth. The secondary is not walked as a tree of
+        // its own (its rows are not GroveDB elements with subtrees), so it is
+        // checked here, against its own Merk only, and reported under its own
+        // sentinel. Skipped when a row's contribution could not be told; that
+        // row is already reported above.
+        if let Some(rows_contributed) = rows_contributed {
+            let mut p = new_path.to_vec();
+            p.push(sentinel("secondary_aggregate"));
+            record_elements_aggregate_issue(secondary_merk, &rows_contributed, p, issues);
+        }
+
         Ok(())
     }
 
@@ -2429,24 +2467,23 @@ impl GroveDb {
         // What the elements of this Merk contribute to its aggregate, added
         // up as the walk decodes them. Compared with the aggregate the Merk
         // stores once the walk is done.
+        //
+        // This function calls itself once per tree level and its frame is
+        // large, so the aggregate checks live in helpers: what they would
+        // keep on this frame would be paid again at every level.
         let mut contributed = ElementsAggregate::default();
 
         while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
-            let stored_element = Element::raw_decode(&element_value, grove_version)?;
-            // The contribution comes from the element as stored: the
-            // `NonCounted` / `NotSummed` / `NotCountedOrSummed` wrappers
-            // decide it, so it is taken before they are looked through.
-            // `get_feature_type` is the rule every write uses to derive a
-            // node's own aggregate from its element.
-            contributed.add(
-                stored_element
-                    .get_feature_type(merk.tree_type)
-                    .map_err(MerkError)?,
-            );
             // Look through NonCounted: verification dispatches on inner type.
             // The on-disk value bytes are still the wrapper bytes, so the
             // hash checks below operate on those.
-            let element = stored_element.into_underlying();
+            let element = decode_element_adding_its_contribution(
+                &element_value,
+                merk.tree_type,
+                &mut contributed,
+                grove_version,
+            )?
+            .into_underlying();
             match element {
                 // CountIndexedTree / ProvableCountIndexedTree integrity:
                 // open both child Merks, read their root hashes, and
@@ -2483,7 +2520,7 @@ impl GroveDb {
                             grove_version,
                         )
                         .unwrap()?;
-                    let primary_root_hash = primary_merk.root_hash().unwrap();
+                    let primary_root_hash = root_hash_if_aggregate_readable(&primary_merk);
 
                     let secondary_root_key = match element {
                         Element::ProvableCountIndexedTree(_, ref s, ..) => s.clone(),
@@ -2499,26 +2536,22 @@ impl GroveDb {
                             grove_version,
                         )
                         .unwrap()?;
-                    let secondary_root_hash = secondary_merk.root_hash().unwrap();
+                    let secondary_root_hash = root_hash_if_aggregate_readable(&secondary_merk);
 
-                    let actual_value_hash = value_hash(&kv_value).unwrap();
-                    let combined_value_hash = combine_hash_three(
-                        &actual_value_hash,
-                        &primary_root_hash,
-                        &secondary_root_hash,
-                    )
-                    .unwrap();
-
-                    if combined_value_hash != element_value_hash {
-                        // Use the primary root hash in the issues record;
-                        // verifying the secondary separately would
-                        // double-count if the same parent had multiple
-                        // mismatches in the same scan.
-                        issues.insert(
-                            new_path.to_vec(),
-                            (primary_root_hash, combined_value_hash, element_value_hash),
-                        );
-                    }
+                    // The parent binds both root hashes, so its hash can be
+                    // recomputed only when both can be. A Merk whose stored
+                    // aggregate cannot be read has no root hash to compute
+                    // (see `root_hash_if_aggregate_readable`) and is reported
+                    // by its own check below: the primary by its walk, the
+                    // secondary by `verify_indexed_axis_content`.
+                    record_indexed_tree_hash_mismatch(
+                        &kv_value,
+                        element_value_hash,
+                        primary_root_hash,
+                        secondary_root_hash,
+                        new_path.to_vec(),
+                        &mut issues,
+                    );
 
                     // Per-entry content walk (see
                     // `verify_indexed_axis_content`): the H1-A check above
@@ -2588,7 +2621,26 @@ impl GroveDb {
                             grove_version,
                         )
                         .unwrap()?;
-                    let merk_root_hash = inner_merk.root_hash().unwrap();
+                    let Some(merk_root_hash) = root_hash_if_aggregate_readable(&inner_merk) else {
+                        // The stored aggregate of this tree's Merk cannot be
+                        // read, so the Merk has no root hash to compute (see
+                        // `root_hash_if_aggregate_readable`) and none of the
+                        // checks below, which all start from that hash or
+                        // from the aggregate, can run. The tree is reported
+                        // at its own path instead, and what it holds is still
+                        // walked.
+                        self.verify_tree_with_unreadable_aggregate(
+                            &element,
+                            inner_merk,
+                            &new_path_ref,
+                            batch,
+                            transaction,
+                            verify_references,
+                            grove_version,
+                            &mut issues,
+                        )?;
+                        continue;
+                    };
 
                     // Non-Merk tree types use their own root hash as the
                     // Merk child hash (not the inner Merk root, which is
@@ -2725,7 +2777,6 @@ impl GroveDb {
                     // still catches software-bug corruption that the hash chain
                     // alone cannot detect.
                     if !element.uses_non_merk_data_storage() {
-                        let actual_aggregate = inner_merk.aggregate_data().map_err(MerkError)?;
                         // No indexed-primary exemption: a child's recorded
                         // aggregate is always a claim about its own inner Merk,
                         // never a free-standing ordering key. An earlier
@@ -2737,25 +2788,13 @@ impl GroveDb {
                         // exemption has nothing left to permit and its absence
                         // restores the stricter check the rest of the codebase
                         // already assumes.
-                        if let Some((recorded_label, actual_label)) =
-                            aggregate_consistency_labels(&element, &actual_aggregate)
-                        {
-                            let expected_placeholder: CryptoHash =
-                                blake3::hash(recorded_label.as_bytes()).into();
-                            let actual_placeholder: CryptoHash =
-                                blake3::hash(actual_label.as_bytes()).into();
-                            // Use `.entry().or_insert(...)` so we don't
-                            // clobber an earlier cryptographic
-                            // (`combined_value_hash != element_value_hash`)
-                            // entry inserted above for this same path —
-                            // the real Merk-hash chain mismatch is more
-                            // diagnostic than the aggregate placeholder.
-                            issues.entry(new_path.to_vec()).or_insert((
-                                root_hash,
-                                expected_placeholder,
-                                actual_placeholder,
-                            ));
-                        }
+                        record_recorded_aggregate_issue(
+                            &element,
+                            &inner_merk,
+                            root_hash,
+                            new_path.to_vec(),
+                            &mut issues,
+                        );
                     }
 
                     // Non-Merk data trees (CommitmentTree, MmrTree,
@@ -3036,7 +3075,7 @@ impl GroveDb {
                             grove_version,
                         )
                         .unwrap()?;
-                    let primary_root_hash = primary_merk.root_hash().unwrap();
+                    let primary_root_hash = root_hash_if_aggregate_readable(&primary_merk);
 
                     let secondary_root_key = match element {
                         Element::ProvableSumIndexedTree(_, ref s, ..) => s.clone(),
@@ -3052,22 +3091,20 @@ impl GroveDb {
                             grove_version,
                         )
                         .unwrap()?;
-                    let secondary_root_hash = secondary_merk.root_hash().unwrap();
+                    let secondary_root_hash = root_hash_if_aggregate_readable(&secondary_merk);
 
-                    let actual_value_hash = value_hash(&kv_value).unwrap();
-                    let combined_value_hash = combine_hash_three(
-                        &actual_value_hash,
-                        &primary_root_hash,
-                        &secondary_root_hash,
-                    )
-                    .unwrap();
-
-                    if combined_value_hash != element_value_hash {
-                        issues.insert(
-                            new_path.to_vec(),
-                            (primary_root_hash, combined_value_hash, element_value_hash),
-                        );
-                    }
+                    // Recomputed only when both root hashes can be computed;
+                    // a Merk whose stored aggregate cannot be read is
+                    // reported by its own check below (see the count indexed
+                    // arm).
+                    record_indexed_tree_hash_mismatch(
+                        &kv_value,
+                        element_value_hash,
+                        primary_root_hash,
+                        secondary_root_hash,
+                        new_path.to_vec(),
+                        &mut issues,
+                    );
 
                     // Per-entry content walk over the sum axis (see
                     // `verify_indexed_axis_content`).
@@ -3132,7 +3169,7 @@ impl GroveDb {
                             grove_version,
                         )
                         .unwrap()?;
-                    let primary_root_hash = primary_merk.root_hash().unwrap();
+                    let primary_root_hash = root_hash_if_aggregate_readable(&primary_merk);
 
                     let axes = match element {
                         Element::ProvableCountProvableSumIndexedTree(_, _, _, ref a, _) => {
@@ -3142,6 +3179,9 @@ impl GroveDb {
                     };
                     let mut axis_hashes: Vec<(u8, grovedb_merk::CryptoHash)> =
                         Vec::with_capacity(axes.len());
+                    // False once an axis's secondary has no root hash to
+                    // compute because its stored aggregate cannot be read.
+                    let mut every_axis_root_hash_known = true;
                     for (tag, sec_root_key) in &axes {
                         let axis = grovedb_element::indexed::IndexAxis::try_from_tag(*tag)
                             .map_err(|e| {
@@ -3159,7 +3199,12 @@ impl GroveDb {
                                 grove_version,
                             )
                             .unwrap()?;
-                        axis_hashes.push((*tag, secondary_merk.root_hash().unwrap()));
+                        match root_hash_if_aggregate_readable(&secondary_merk) {
+                            Some(secondary_root_hash) => {
+                                axis_hashes.push((*tag, secondary_root_hash))
+                            }
+                            None => every_axis_root_hash_known = false,
+                        }
                         // Per-axis content walk while this axis's secondary
                         // is open (see `verify_indexed_axis_content`).
                         Self::verify_indexed_axis_content(
@@ -3180,22 +3225,24 @@ impl GroveDb {
                     // `.unwrap()`ed and its cost dropped), so we follow the
                     // same convention rather than thread a cost through purely
                     // for the verifier.
-                    let axes_digest_value = grovedb_merk::tree::axes_digest(&axis_hashes).unwrap();
+                    //
+                    // The digest covers every axis, so there is one only when
+                    // every axis's root hash could be computed.
+                    let axes_digest_value = every_axis_root_hash_known
+                        .then(|| grovedb_merk::tree::axes_digest(&axis_hashes).unwrap());
 
-                    let actual_value_hash = value_hash(&kv_value).unwrap();
-                    let combined_value_hash = combine_hash_three(
-                        &actual_value_hash,
-                        &primary_root_hash,
-                        &axes_digest_value,
-                    )
-                    .unwrap();
-
-                    if combined_value_hash != element_value_hash {
-                        issues.insert(
-                            new_path.to_vec(),
-                            (primary_root_hash, combined_value_hash, element_value_hash),
-                        );
-                    }
+                    // Recomputed only when the primary's and every axis's
+                    // root hash can be computed; a Merk whose stored
+                    // aggregate cannot be read is reported by its own check
+                    // (see the count indexed arm).
+                    record_indexed_tree_hash_mismatch(
+                        &kv_value,
+                        element_value_hash,
+                        primary_root_hash,
+                        axes_digest_value,
+                        new_path.to_vec(),
+                        &mut issues,
+                    );
 
                     merge_child_issues(
                         &mut issues,
@@ -3226,30 +3273,59 @@ impl GroveDb {
         // stores nothing, so it compares equal here.
         //
         // An indexed tree's primary is covered because it is walked through
-        // this function; its secondaries are not (their rows are checked
-        // against the primary by `verify_indexed_axis_content`), so nothing
-        // is added up twice.
+        // this function. Its secondaries are not walked through it; each is
+        // compared with its own rows by `verify_indexed_axis_content`, so
+        // nothing is added up twice.
         //
-        // Reported at this Merk's own path, in the placeholder form the
-        // recorded-aggregate check uses: the total recomputed from the
-        // elements in the "expected" slot, the stored aggregate in the
-        // "actual" slot. `or_insert` keeps an issue already recorded at this
-        // path, and the caller merges this map the same way, so a hash
-        // mismatch found for this tree is never replaced by this one.
-        let stored_aggregate = merk.aggregate_data().map_err(|e| e.to_string());
-        if let Some((contributed_label, stored_label)) =
-            elements_aggregate_labels(&contributed, &stored_aggregate)
-        {
-            let expected_placeholder: CryptoHash =
-                blake3::hash(contributed_label.as_bytes()).into();
-            let actual_placeholder: CryptoHash = blake3::hash(stored_label.as_bytes()).into();
-            issues.entry(path.to_vec()).or_insert((
-                merk.root_hash().unwrap(),
-                expected_placeholder,
-                actual_placeholder,
-            ));
-        }
+        // Reported at this Merk's own path. An issue already recorded at this
+        // path is kept, and the caller merges this map the same way, so a
+        // hash mismatch found for this tree is never replaced by this one.
+        record_elements_aggregate_issue(&merk, &contributed, path.to_vec(), &mut issues);
         Ok(issues)
+    }
+
+    /// Report a tree whose Merk has no root hash to compute because its
+    /// stored aggregate cannot be read, and verify what it holds.
+    ///
+    /// A tree backed by a Merk is walked like any other: its walk records the
+    /// unreadable aggregate at the tree's path when it is done. A non-Merk
+    /// data tree is not walked (its data is not elements); its inner Merk is
+    /// empty by design and contributes nothing, so it is reported against
+    /// that.
+    #[allow(clippy::too_many_arguments)]
+    fn verify_tree_with_unreadable_aggregate<'db, B: AsRef<[u8]>, S: StorageContext<'db>>(
+        &'db self,
+        element: &Element,
+        inner_merk: Merk<S>,
+        path: &SubtreePath<B>,
+        batch: Option<&'db StorageBatch>,
+        transaction: &Transaction,
+        verify_references: bool,
+        grove_version: &GroveVersion,
+        issues: &mut VerificationIssues,
+    ) -> Result<(), Error> {
+        if element.uses_non_merk_data_storage() {
+            record_elements_aggregate_issue(
+                &inner_merk,
+                &ElementsAggregate::default(),
+                path.to_vec(),
+                issues,
+            );
+        } else {
+            merge_child_issues(
+                issues,
+                self.verify_merk_and_submerks_in_transaction(
+                    inner_merk,
+                    path,
+                    batch,
+                    transaction,
+                    verify_references,
+                    true,
+                    grove_version,
+                )?,
+            );
+        }
+        Ok(())
     }
 
     /// Run the PrivateDocumentStore entry-size integrity walk, returning a
@@ -3776,6 +3852,151 @@ fn elements_aggregate_labels(
     } else {
         Some((contributed_label, format!("stored aggregate {stored:?}")))
     }
+}
+
+/// Decode one stored element of a Merk of `tree_type` and add what it
+/// contributes to that Merk's aggregate to `contributed`.
+///
+/// The contribution comes from the element as stored: the `NonCounted` /
+/// `NotSummed` / `NotCountedOrSummed` wrappers decide it, so it is taken
+/// before the caller looks through them. `get_feature_type` is the rule every
+/// write uses to derive a node's own aggregate from its element.
+#[cfg(feature = "minimal")]
+fn decode_element_adding_its_contribution(
+    value: &[u8],
+    tree_type: TreeType,
+    contributed: &mut ElementsAggregate,
+    grove_version: &GroveVersion,
+) -> Result<Element, Error> {
+    let element = Element::raw_decode(value, grove_version)?;
+    contributed.add(element.get_feature_type(tree_type).map_err(MerkError)?);
+    Ok(element)
+}
+
+/// Recompute the hash an indexed tree's parent binds for it, the
+/// three-input combine of the element's value hash, the primary's root hash
+/// and the secondary's commitment (its root hash, or the digest of every
+/// axis's root hash), and record a mismatch with the stored
+/// `element_value_hash` at `issue_path`.
+///
+/// Nothing is compared when the primary's root hash or the secondary's
+/// commitment is `None`: a Merk whose stored aggregate cannot be read has no
+/// root hash to compute (see [`root_hash_if_aggregate_readable`]) and is
+/// reported by its own check.
+#[cfg(feature = "minimal")]
+fn record_indexed_tree_hash_mismatch(
+    kv_value: &[u8],
+    element_value_hash: CryptoHash,
+    primary_root_hash: Option<CryptoHash>,
+    secondary_commitment: Option<CryptoHash>,
+    issue_path: Vec<Vec<u8>>,
+    issues: &mut VerificationIssues,
+) {
+    let (Some(primary_root_hash), Some(secondary_commitment)) =
+        (primary_root_hash, secondary_commitment)
+    else {
+        return;
+    };
+    let actual_value_hash = value_hash(kv_value).unwrap();
+    let combined_value_hash = combine_hash_three(
+        &actual_value_hash,
+        &primary_root_hash,
+        &secondary_commitment,
+    )
+    .unwrap();
+    if combined_value_hash != element_value_hash {
+        // The primary root hash goes in the issue's root slot; verifying the
+        // secondary separately would double-count if the same parent had
+        // several mismatches in one scan.
+        issues.insert(
+            issue_path,
+            (primary_root_hash, combined_value_hash, element_value_hash),
+        );
+    }
+}
+
+/// Compare the aggregate recorded in a tree element with the one its inner
+/// Merk stores (see [`aggregate_consistency_labels`]) and record a
+/// disagreement at `issue_path`, with `root_hash` in the issue's root slot.
+///
+/// An issue already recorded at that path is kept: a hash-chain mismatch
+/// found for the same tree is more diagnostic than the aggregate placeholder.
+#[cfg(feature = "minimal")]
+fn record_recorded_aggregate_issue<'db, S: StorageContext<'db>>(
+    element: &Element,
+    inner_merk: &Merk<S>,
+    root_hash: CryptoHash,
+    issue_path: Vec<Vec<u8>>,
+    issues: &mut VerificationIssues,
+) {
+    // The caller holds this Merk's root hash, so its stored aggregate can be
+    // read (see `root_hash_if_aggregate_readable`); a tree whose aggregate
+    // cannot be read is reported before it gets here.
+    let Ok(actual_aggregate) = inner_merk.aggregate_data() else {
+        return;
+    };
+    let Some((recorded_label, actual_label)) =
+        aggregate_consistency_labels(element, &actual_aggregate)
+    else {
+        return;
+    };
+    let expected_placeholder: CryptoHash = blake3::hash(recorded_label.as_bytes()).into();
+    let actual_placeholder: CryptoHash = blake3::hash(actual_label.as_bytes()).into();
+    issues
+        .entry(issue_path)
+        .or_insert((root_hash, expected_placeholder, actual_placeholder));
+}
+
+/// Compare the total a Merk's elements contribute with the aggregate the Merk
+/// stores, and record a disagreement at `issue_path`, keeping an issue
+/// already recorded there.
+///
+/// The issue is in the placeholder form the recorded-aggregate check uses
+/// (see [`elements_aggregate_labels`]): the total recomputed from the
+/// elements in the "expected" slot, the stored aggregate (or the reason it
+/// cannot be read) in the "actual" slot. The "root" slot carries the Merk's
+/// root hash for locality, or zeroes when the stored aggregate cannot be
+/// read, since the root hash cannot be computed then (see
+/// [`root_hash_if_aggregate_readable`]).
+#[cfg(feature = "minimal")]
+fn record_elements_aggregate_issue<'db, S: StorageContext<'db>>(
+    merk: &Merk<S>,
+    contributed: &ElementsAggregate,
+    issue_path: Vec<Vec<u8>>,
+    issues: &mut VerificationIssues,
+) {
+    let stored_aggregate = merk.aggregate_data().map_err(|e| e.to_string());
+    let Some((contributed_label, stored_label)) =
+        elements_aggregate_labels(contributed, &stored_aggregate)
+    else {
+        return;
+    };
+    let root_hash = if stored_aggregate.is_ok() {
+        merk.root_hash().unwrap()
+    } else {
+        [0u8; 32]
+    };
+    let expected_placeholder: CryptoHash = blake3::hash(contributed_label.as_bytes()).into();
+    let actual_placeholder: CryptoHash = blake3::hash(stored_label.as_bytes()).into();
+    issues
+        .entry(issue_path)
+        .or_insert((root_hash, expected_placeholder, actual_placeholder));
+}
+
+/// The root hash of `merk`, or `None` when the aggregate its root stores
+/// cannot be read (it overflows, or a link carries an aggregate the tree type
+/// cannot hold).
+///
+/// The root hash of a provable tree commits to that aggregate, and
+/// `Merk::root_hash` panics when reading it fails. `verify_grovedb` reports
+/// such a tree as an issue instead, so it asks here before it hashes.
+#[cfg(feature = "minimal")]
+fn root_hash_if_aggregate_readable<'db, S: StorageContext<'db>>(
+    merk: &Merk<S>,
+) -> Option<CryptoHash> {
+    merk.aggregate_data()
+        .ok()
+        .map(|_| merk.root_hash().unwrap())
 }
 
 /// Inspect a tree-bearing Element together with the actual aggregate data of

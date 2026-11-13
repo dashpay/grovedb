@@ -13,8 +13,14 @@
 mod tests {
     use std::collections::HashMap;
 
+    use grovedb_element::indexed::IndexAxis;
     use grovedb_merk::{
-        element::insert::ElementInsertToStorageExtensions, tree::TreeFeatureType, CryptoHash,
+        element::{
+            get::ElementFetchFromStorageExtensions, insert::ElementInsertToStorageExtensions,
+            reconstruct::ElementReconstructExtensions,
+        },
+        tree::{kv::ValueDefinedCostType, TreeFeatureType},
+        CryptoHash,
     };
     use grovedb_path::SubtreePath;
     use grovedb_storage::{Storage, StorageBatch};
@@ -23,6 +29,7 @@ mod tests {
     use crate::{
         batch::QualifiedGroveDbOp,
         elements_aggregate_labels, merge_child_issues,
+        operations::indexed_tree::make_axis_secondary_key,
         reference_path::ReferencePathType,
         tests::{make_test_grovedb, TEST_LEAF},
         AggregateData, Element, ElementsAggregate, GroveDb, VerificationIssues,
@@ -121,6 +128,208 @@ mod tests {
             placeholder(stored_label),
             "the actual slot carries the stored aggregate"
         );
+    }
+
+    /// Write `element` at `key` of the tree at `path` with `feature_type` as
+    /// its node's own aggregate and commit, without propagating. For a
+    /// planted value that makes the tree's stored aggregate unreadable:
+    /// propagation reads that aggregate and fails.
+    fn plant_node_aggregate_without_propagating(
+        db: &GroveDb,
+        path: &[&[u8]],
+        key: &[u8],
+        element: &Element,
+        feature_type: TreeFeatureType,
+        gv: &GroveVersion,
+    ) {
+        let tx = db.start_transaction();
+        let batch = StorageBatch::new();
+        let path: SubtreePath<&[u8]> = path.into();
+        let mut merk = db
+            .open_transactional_merk_at_path(path, &tx, Some(&batch), gv)
+            .unwrap()
+            .expect("open the tree's Merk");
+        let mut operations = Vec::new();
+        element
+            .insert_into_batch_operations(key, &mut operations, feature_type, gv)
+            .unwrap()
+            .expect("build the put");
+        merk.apply::<_, Vec<u8>>(&operations, &[], None, gv)
+            .unwrap()
+            .expect("apply the put");
+        drop(merk);
+        db.db
+            .commit_multi_context_batch(batch, Some(&tx))
+            .unwrap()
+            .expect("commit");
+        tx.commit().expect("tx commit");
+    }
+
+    /// The root key the indexed tree element records for its `axis`
+    /// secondary.
+    fn recorded_secondary_root_key(indexed_tree: &Element, axis: IndexAxis) -> Option<Vec<u8>> {
+        match indexed_tree.underlying() {
+            Element::ProvableCountIndexedTree(_, secondary_root_key, ..)
+            | Element::ProvableSumIndexedTree(_, secondary_root_key, ..) => {
+                secondary_root_key.clone()
+            }
+            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => axes
+                .iter()
+                .find(|(tag, _)| IndexAxis::try_from_tag(*tag).expect("axis tag") == axis)
+                .and_then(|(_, secondary_root_key)| secondary_root_key.clone()),
+            other => panic!("not an indexed tree: {other:?}"),
+        }
+    }
+
+    /// In the `axis` secondary of the indexed tree at `tree_path`, write the
+    /// row at `row_key` (the row of the entry `item_key`) back unchanged with
+    /// `feature_type` as its node's own aggregate, and commit. Every row
+    /// stays the one the primary implies, bound to its entry as before; only
+    /// the node's stored aggregate and its row disagree. Nothing is
+    /// propagated: rewriting an existing key leaves the secondary's root key
+    /// where the indexed tree element records it.
+    fn plant_secondary_row_aggregate(
+        db: &GroveDb,
+        tree_path: &[&[u8]],
+        axis: IndexAxis,
+        item_key: &[u8],
+        row_key: &[u8],
+        feature_type: TreeFeatureType,
+        gv: &GroveVersion,
+    ) {
+        let (tree_key, parent_path) = tree_path.split_last().expect("non-root indexed tree");
+        let indexed_tree = get(db, parent_path, tree_key, gv);
+
+        let tx = db.start_transaction();
+        let batch = StorageBatch::new();
+        let path: SubtreePath<&[u8]> = tree_path.into();
+        // A row is a reference committed together with the value hash of the
+        // primary entry it points at.
+        let entry_value_hash = db
+            .open_transactional_merk_at_path(path.clone(), &tx, Some(&batch), gv)
+            .unwrap()
+            .expect("open the primary")
+            .get_value_hash(
+                item_key,
+                true,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                gv,
+            )
+            .unwrap()
+            .expect("read the entry's value hash")
+            .expect("the entry is there");
+        let mut secondary = db
+            .open_indexed_secondary_at_path(
+                path,
+                axis,
+                recorded_secondary_root_key(&indexed_tree, axis),
+                &tx,
+                Some(&batch),
+                gv,
+            )
+            .unwrap()
+            .expect("open the secondary");
+        let row = Element::get(&secondary, row_key, true, gv)
+            .unwrap()
+            .expect("the row is there");
+        let mut operations = Vec::new();
+        row.insert_reference_into_batch_operations(
+            row_key,
+            entry_value_hash,
+            &mut operations,
+            feature_type,
+            gv,
+        )
+        .unwrap()
+        .expect("build the put");
+        secondary
+            .apply::<_, Vec<u8>>(&operations, &[], None, gv)
+            .unwrap()
+            .expect("apply the put");
+        drop(secondary);
+        db.db
+            .commit_multi_context_batch(batch, Some(&tx))
+            .unwrap()
+            .expect("commit");
+        tx.commit().expect("tx commit");
+    }
+
+    /// Rebind the count indexed tree element at `tree_path` to the root
+    /// hashes its primary and its secondary have now, and propagate, so the
+    /// hash chain is whole again after a write to the secondary.
+    fn rebind_count_indexed_tree(db: &GroveDb, tree_path: &[&[u8]], gv: &GroveVersion) {
+        let tx = db.start_transaction();
+        let batch = StorageBatch::new();
+        let path: SubtreePath<&[u8]> = tree_path.into();
+        let (parent_path, tree_key) = path.derive_parent().expect("non-root indexed tree");
+
+        let (primary_root_hash, primary_root_key, primary_aggregate) = db
+            .open_transactional_merk_at_path(path.clone(), &tx, Some(&batch), gv)
+            .unwrap()
+            .expect("open the primary")
+            .root_hash_key_and_aggregate_data()
+            .unwrap()
+            .expect("primary root state");
+
+        let mut parent_merk = db
+            .open_transactional_merk_at_path(parent_path.clone(), &tx, Some(&batch), gv)
+            .unwrap()
+            .expect("open the parent");
+        let indexed_tree = Element::get(&parent_merk, tree_key, true, gv)
+            .unwrap()
+            .expect("indexed tree element");
+        let (secondary_root_hash, secondary_root_key, _) = db
+            .open_indexed_secondary_at_path(
+                path,
+                IndexAxis::Count,
+                recorded_secondary_root_key(&indexed_tree, IndexAxis::Count),
+                &tx,
+                Some(&batch),
+                gv,
+            )
+            .unwrap()
+            .expect("open the secondary")
+            .root_hash_key_and_aggregate_data()
+            .unwrap()
+            .expect("secondary root state");
+
+        indexed_tree
+            .reconstruct_with_two_root_keys(primary_root_key, secondary_root_key, primary_aggregate)
+            .expect("reconstruct the indexed tree element")
+            .insert_count_indexed_subtree(
+                &mut parent_merk,
+                tree_key,
+                primary_root_hash,
+                secondary_root_hash,
+                None,
+                gv,
+            )
+            .unwrap()
+            .expect("rebind the indexed tree element");
+
+        let mut merk_cache = HashMap::new();
+        merk_cache.insert(parent_path.clone(), parent_merk);
+        db.propagate_changes_with_transaction(merk_cache, parent_path, &tx, &batch, gv)
+            .unwrap()
+            .expect("propagate");
+        db.db
+            .commit_multi_context_batch(batch, Some(&tx))
+            .unwrap()
+            .expect("commit");
+        tx.commit().expect("tx commit");
+    }
+
+    /// The reason the Merk of the tree at `path` gives for not being able to
+    /// read its stored aggregate.
+    fn unreadable_aggregate_reason(db: &GroveDb, path: &[&[u8]], gv: &GroveVersion) -> String {
+        let tx = db.start_transaction();
+        let path: SubtreePath<&[u8]> = path.into();
+        db.open_transactional_merk_at_path(path, &tx, None, gv)
+            .unwrap()
+            .expect("open the tree's Merk")
+            .aggregate_data()
+            .expect_err("the stored aggregate cannot be read")
+            .to_string()
     }
 
     // -----------------------------------------------------------------
@@ -486,6 +695,356 @@ mod tests {
             &format!("elements contribute count 0 sum {}", 2 * (i64::MAX as i128)),
             "stored aggregate Sum(2)",
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Indexed tree secondaries
+    // -----------------------------------------------------------------
+
+    /// A count indexed tree at `[TEST_LEAF, cidx]` holding the items `a`,
+    /// `b` and `c`.
+    fn make_count_indexed_tree(db: &GroveDb, gv: &GroveVersion) {
+        insert(
+            db,
+            &[TEST_LEAF],
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            gv,
+        );
+        for key in [b"a", b"b", b"c"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                key,
+                Element::new_item(key.to_vec()),
+                None,
+                gv,
+            )
+            .unwrap()
+            .expect("count indexed tree entry");
+        }
+    }
+
+    #[test]
+    fn should_report_an_indexed_tree_secondary_whose_stored_aggregate_differs_from_its_rows() {
+        let gv = GroveVersion::latest();
+        let db = make_test_grovedb(gv);
+        make_count_indexed_tree(&db, gv);
+        assert!(verify(&db, gv).is_empty());
+
+        // Each item counts 1, so its row sits under count 1 and is worth one
+        // row carrying 1. The node of `a`'s row is planted as five rows; the
+        // row itself is written back as it was, and the indexed tree element
+        // is rebound so the hash chain holds.
+        plant_secondary_row_aggregate(
+            &db,
+            &[TEST_LEAF, b"cidx"],
+            IndexAxis::Count,
+            b"a",
+            &make_axis_secondary_key(IndexAxis::Count, 1, 0, b"a"),
+            TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(5, 1),
+            gv,
+        );
+        rebind_count_indexed_tree(&db, &[TEST_LEAF, b"cidx"], gv);
+
+        // Every row is still the one the primary implies and every hash
+        // matches: only the recomputed total tells.
+        assert_only_aggregate_issue(
+            &verify(&db, gv),
+            &[TEST_LEAF, b"cidx", b"__cidx_secondary_aggregate__"],
+            "elements contribute count 3 sum 3",
+            "stored aggregate ProvableCountAndProvableSum(7, 3)",
+        );
+    }
+
+    #[test]
+    fn should_report_drift_in_the_secondary_of_every_indexed_tree_axis() {
+        let gv = GroveVersion::latest();
+
+        // (axis, sentinel, node planted for `a`'s row, stored aggregate).
+        // The entries are worth sums 10 and 20, and count 1 each.
+        let sum_drift = (
+            TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(1, 11),
+            "stored aggregate ProvableCountAndProvableSum(2, 31)",
+        );
+
+        // Sum indexed tree: one sum axis.
+        {
+            let db = make_test_grovedb(gv);
+            insert(
+                &db,
+                &[TEST_LEAF],
+                b"psit",
+                Element::empty_provable_sum_indexed_tree(),
+                gv,
+            );
+            for (key, sum) in [(b"a", 10), (b"b", 20)] {
+                db.insert_into_provable_sum_indexed_tree(
+                    [TEST_LEAF, b"psit"].as_ref(),
+                    key,
+                    Element::new_sum_item(sum),
+                    None,
+                    gv,
+                )
+                .unwrap()
+                .expect("sum indexed tree entry");
+            }
+            assert!(verify(&db, gv).is_empty());
+
+            plant_secondary_row_aggregate(
+                &db,
+                &[TEST_LEAF, b"psit"],
+                IndexAxis::Sum,
+                b"a",
+                &make_axis_secondary_key(IndexAxis::Sum, 1, 10, b"a"),
+                sum_drift.0,
+                gv,
+            );
+
+            let issues = verify(&db, gv);
+            let sentinel = owned(&[TEST_LEAF, b"psit", b"__psit_secondary_aggregate__"]);
+            let (_, expected, actual) = issues
+                .get(&sentinel)
+                .unwrap_or_else(|| panic!("the sum secondary is reported: {issues:?}"));
+            assert_eq!(*expected, placeholder("elements contribute count 2 sum 30"));
+            assert_eq!(*actual, placeholder(sum_drift.1));
+        }
+
+        // Count and sum indexed tree: a count, a sum and an average axis.
+        for (axis, sentinel, planted, contributed_label, stored_label) in [
+            (
+                IndexAxis::Count,
+                &b"__pcpsit_count_secondary_aggregate__"[..],
+                TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(1, 2),
+                "elements contribute count 2 sum 2",
+                "stored aggregate ProvableCountAndProvableSum(2, 3)",
+            ),
+            (
+                IndexAxis::Sum,
+                &b"__pcpsit_sum_secondary_aggregate__"[..],
+                sum_drift.0,
+                "elements contribute count 2 sum 30",
+                sum_drift.1,
+            ),
+            (
+                IndexAxis::Avg,
+                &b"__pcpsit_avg_secondary_aggregate__"[..],
+                sum_drift.0,
+                "elements contribute count 2 sum 30",
+                sum_drift.1,
+            ),
+        ] {
+            let db = make_test_grovedb(gv);
+            insert(
+                &db,
+                &[TEST_LEAF],
+                b"pcpsit",
+                Element::empty_provable_count_provable_sum_indexed_tree(vec![
+                    (0u8, None),
+                    (1u8, None),
+                    (2u8, None),
+                ])
+                .expect("canonical axes"),
+                gv,
+            );
+            for (key, sum) in [(b"a", 10), (b"b", 20)] {
+                db.insert_into_provable_count_provable_sum_indexed_tree(
+                    [TEST_LEAF, b"pcpsit"].as_ref(),
+                    key,
+                    Element::new_item_with_sum_item(b"v".to_vec(), sum),
+                    None,
+                    gv,
+                )
+                .unwrap()
+                .expect("count and sum indexed tree entry");
+            }
+            assert!(verify(&db, gv).is_empty());
+
+            plant_secondary_row_aggregate(
+                &db,
+                &[TEST_LEAF, b"pcpsit"],
+                axis,
+                b"a",
+                &make_axis_secondary_key(axis, 1, 10, b"a"),
+                planted,
+                gv,
+            );
+
+            let issues = verify(&db, gv);
+            let sentinel = owned(&[TEST_LEAF, b"pcpsit", sentinel]);
+            let (_, expected, actual) = issues
+                .get(&sentinel)
+                .unwrap_or_else(|| panic!("the {axis:?} secondary is reported: {issues:?}"));
+            assert_eq!(*expected, placeholder(contributed_label), "{axis:?}");
+            assert_eq!(*actual, placeholder(stored_label), "{axis:?}");
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // A stored aggregate that cannot be read
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn should_report_a_sum_tree_whose_stored_sum_cannot_be_read() {
+        let gv = GroveVersion::latest();
+        let db = make_test_grovedb(gv);
+        insert(&db, &[TEST_LEAF], b"sum", Element::empty_sum_tree(), gv);
+        for key in [b"a", b"b"] {
+            insert(&db, &[TEST_LEAF, b"sum"], key, Element::new_sum_item(1), gv);
+        }
+
+        // One node worth i64::MAX next to one worth 1: the tree's total does
+        // not fit, so its stored aggregate cannot be read.
+        plant_node_aggregate_without_propagating(
+            &db,
+            &[TEST_LEAF, b"sum"],
+            b"a",
+            &Element::new_sum_item(1),
+            TreeFeatureType::SummedMerkNode(i64::MAX),
+            gv,
+        );
+        let reason = unreadable_aggregate_reason(&db, &[TEST_LEAF, b"sum"], gv);
+
+        let issues = verify(&db, gv);
+        assert_only_aggregate_issue(
+            &issues,
+            &[TEST_LEAF, b"sum"],
+            "elements contribute count 0 sum 2",
+            &format!("stored aggregate cannot be read: {reason}"),
+        );
+        assert_eq!(
+            issues[&owned(&[TEST_LEAF, b"sum"])].0,
+            [0u8; 32],
+            "there is no root hash to show for the tree"
+        );
+    }
+
+    #[test]
+    fn should_report_a_provable_count_tree_whose_stored_count_cannot_be_read() {
+        let gv = GroveVersion::latest();
+        let db = make_test_grovedb(gv);
+        insert(
+            &db,
+            &[TEST_LEAF],
+            b"pct",
+            Element::empty_provable_count_tree(),
+            gv,
+        );
+        for key in [b"a", b"b"] {
+            insert(
+                &db,
+                &[TEST_LEAF, b"pct"],
+                key,
+                Element::new_item(b"v".to_vec()),
+                gv,
+            );
+        }
+        // A tree below it, to see the walk still goes down.
+        insert(
+            &db,
+            &[TEST_LEAF, b"pct"],
+            b"sum",
+            Element::empty_sum_tree(),
+            gv,
+        );
+        insert(
+            &db,
+            &[TEST_LEAF, b"pct", b"sum"],
+            b"x",
+            Element::new_sum_item(5),
+            gv,
+        );
+        plant_node_aggregate(
+            &db,
+            &[TEST_LEAF, b"pct", b"sum"],
+            b"x",
+            &Element::new_sum_item(5),
+            TreeFeatureType::SummedMerkNode(6),
+            gv,
+        );
+
+        // The root hash of a provable count tree commits to its count, so
+        // hashing this tree is not possible either.
+        plant_node_aggregate_without_propagating(
+            &db,
+            &[TEST_LEAF, b"pct"],
+            b"a",
+            &Element::new_item(b"v".to_vec()),
+            TreeFeatureType::ProvableCountedMerkNode(u64::MAX),
+            gv,
+        );
+        let reason = unreadable_aggregate_reason(&db, &[TEST_LEAF, b"pct"], gv);
+
+        let issues = verify(&db, gv);
+        let mut reported: Vec<_> = issues.keys().cloned().collect();
+        reported.sort();
+        assert_eq!(
+            reported,
+            vec![
+                owned(&[TEST_LEAF, b"pct"]),
+                owned(&[TEST_LEAF, b"pct", b"sum"]),
+            ],
+            "the tree and the drifted tree below it are reported: {issues:?}"
+        );
+        let (root, expected, actual) = issues[&owned(&[TEST_LEAF, b"pct"])];
+        assert_eq!(root, [0u8; 32]);
+        assert_eq!(expected, placeholder("elements contribute count 3 sum 0"));
+        assert_eq!(
+            actual,
+            placeholder(&format!("stored aggregate cannot be read: {reason}"))
+        );
+    }
+
+    #[test]
+    fn should_report_an_indexed_tree_whose_primary_or_secondary_aggregate_cannot_be_read() {
+        let gv = GroveVersion::latest();
+
+        // Primary.
+        {
+            let db = make_test_grovedb(gv);
+            make_count_indexed_tree(&db, gv);
+            plant_node_aggregate_without_propagating(
+                &db,
+                &[TEST_LEAF, b"cidx"],
+                b"a",
+                &Element::new_item(b"a".to_vec()),
+                TreeFeatureType::ProvableCountedMerkNode(u64::MAX),
+                gv,
+            );
+            let reason = unreadable_aggregate_reason(&db, &[TEST_LEAF, b"cidx"], gv);
+
+            assert_only_aggregate_issue(
+                &verify(&db, gv),
+                &[TEST_LEAF, b"cidx"],
+                "elements contribute count 3 sum 0",
+                &format!("stored aggregate cannot be read: {reason}"),
+            );
+        }
+
+        // Secondary.
+        {
+            let db = make_test_grovedb(gv);
+            make_count_indexed_tree(&db, gv);
+            plant_secondary_row_aggregate(
+                &db,
+                &[TEST_LEAF, b"cidx"],
+                IndexAxis::Count,
+                b"a",
+                &make_axis_secondary_key(IndexAxis::Count, 1, 0, b"a"),
+                TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(u64::MAX, 1),
+                gv,
+            );
+
+            let issues = verify(&db, gv);
+            let sentinel = owned(&[TEST_LEAF, b"cidx", b"__cidx_secondary_aggregate__"]);
+            assert_eq!(
+                issues.keys().cloned().collect::<Vec<_>>(),
+                vec![sentinel.clone()],
+                "only the secondary is reported: {issues:?}"
+            );
+            let (root, expected, _) = issues[&sentinel];
+            assert_eq!(root, [0u8; 32]);
+            assert_eq!(expected, placeholder("elements contribute count 3 sum 3"));
+        }
     }
 
     // -----------------------------------------------------------------

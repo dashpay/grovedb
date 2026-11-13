@@ -131,8 +131,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tree type, an indexed tree's primary included. A mismatch, or a total that
   overflows, is one more issue at the tree's path in the existing
   `VerificationIssues` shape; an issue already recorded for that path, such
-  as a hash mismatch, is kept. Not version gated: the check only reads and
-  is not on a consensus path. No write path is known to leave such a state.
+  as a hash mismatch, is kept. Each secondary of an indexed tree is compared
+  with its own rows the same way and reported under
+  `__<prefix>secondary_aggregate__` below the tree's path, next to the other
+  secondary checks. A tree, primary or secondary whose stored aggregate
+  cannot be read (it overflows) is reported as an issue as well, where
+  `verify_grovedb` returned an error or panicked hashing a provable tree.
+  Not version gated: the check only reads and is not on a consensus path. No
+  write path is known to leave such a state.
 - From `GROVE_V5`, a batch that inserts a sum or count tree and leaves the
   level below it empty stores that tree. The batch carries operations at the
   tree's own path and none leaves a key there, for example a delete of a key
