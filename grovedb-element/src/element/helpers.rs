@@ -128,6 +128,7 @@ impl Element {
             | Element::ProvableCountTree(_, count_value, _)
             | Element::ProvableCountSumTree(_, count_value, ..)
             | Element::ProvableCountProvableSumTree(_, count_value, ..)
+            | Element::ProvableCountProvableBigSumTree(_, count_value, ..)
             | Element::ProvableCountIndexedTree(.., count_value, _) => *count_value,
             // PCPSIT: count_value is the second field.
             Element::ProvableCountProvableSumIndexedTree(_, count_value, ..) => *count_value,
@@ -167,6 +168,9 @@ impl Element {
                 (*count_value, *sum_value)
             }
             Element::ProvableCountTree(_, count_value, _) => (*count_value, 0),
+            // A big sum does not fit the i64 axis, so like a `BigSumTree` it
+            // contributes no sum here; its count still propagates.
+            Element::ProvableCountProvableBigSumTree(_, count_value, ..) => (*count_value, 0),
             Element::ProvableCountIndexedTree(.., count_value, _) => (*count_value, 0),
             // PSIT contributes (1, sum) like a plain sum-bearing leaf.
             Element::ProvableSumIndexedTree(_, _, sum_value, _) => (1, *sum_value),
@@ -202,9 +206,25 @@ impl Element {
             Element::ProvableCountProvableSumIndexedTree(_, _, sum_value, _, _) => {
                 *sum_value as i128
             }
-            Element::BigSumTree(_, sum_value, _) => *sum_value,
+            Element::BigSumTree(_, sum_value, _)
+            | Element::ProvableCountProvableBigSumTree(_, _, sum_value, _) => *sum_value,
             _ => 0,
         }
+    }
+
+    /// The count and the 128-bit sum this element contributes to a parent
+    /// that aggregates both, i.e. a `ProvableCountProvableBigSumTree`.
+    ///
+    /// The count is [`Self::count_value_or_default`] and the sum is
+    /// [`Self::big_sum_value_or_default`], so the wrappers behave as they do
+    /// for the narrower trees: `NonCounted` gives `(0, inner_sum)`,
+    /// `NotSummed` gives `(inner_count, 0)` and `NotCountedOrSummed` gives
+    /// `(0, 0)`.
+    pub fn count_big_sum_value_or_default(&self) -> (u64, i128) {
+        (
+            self.count_value_or_default(),
+            self.big_sum_value_or_default(),
+        )
     }
 
     /// Decoded the integer value in the SumItem element type. Looks through
@@ -351,6 +371,40 @@ impl Element {
         }
     }
 
+    /// Check if the element is a `ProvableCountProvableBigSumTree`. Looks
+    /// through wrappers.
+    pub fn is_provable_count_provable_big_sum_tree(&self) -> bool {
+        matches!(
+            self.underlying(),
+            Element::ProvableCountProvableBigSumTree(..)
+        )
+    }
+
+    /// Decoded (count, sum) from a `ProvableCountProvableBigSumTree`. Looks
+    /// through wrappers.
+    pub fn as_provable_count_provable_big_sum_tree_value(
+        &self,
+    ) -> Result<(u64, i128), ElementError> {
+        match self.underlying() {
+            Element::ProvableCountProvableBigSumTree(_, count, sum, _) => Ok((*count, *sum)),
+            _ => Err(ElementError::WrongElementType(
+                "expected a provable count provable big sum tree",
+            )),
+        }
+    }
+
+    /// Owned variant of [`Self::as_provable_count_provable_big_sum_tree_value`].
+    pub fn into_provable_count_provable_big_sum_tree_value(
+        self,
+    ) -> Result<(u64, i128), ElementError> {
+        match self.into_underlying() {
+            Element::ProvableCountProvableBigSumTree(_, count, sum, _) => Ok((count, sum)),
+            _ => Err(ElementError::WrongElementType(
+                "expected a provable count provable big sum tree",
+            )),
+        }
+    }
+
     /// Check if the element is a tree but not a sum tree. Looks through
     /// `NonCounted`.
     pub fn is_basic_tree(&self) -> bool {
@@ -370,6 +424,7 @@ impl Element {
                 | Element::ProvableCountSumTree(..)
                 | Element::ProvableSumTree(..)
                 | Element::ProvableCountProvableSumTree(..)
+                | Element::ProvableCountProvableBigSumTree(..)
                 | Element::CommitmentTree(..)
                 | Element::MmrTree(..)
                 | Element::BulkAppendTree(..)
@@ -494,6 +549,7 @@ impl Element {
                 | Element::ProvableCountSumTree(Some(_), ..)
                 | Element::ProvableSumTree(Some(_), ..)
                 | Element::ProvableCountProvableSumTree(Some(_), ..)
+                | Element::ProvableCountProvableBigSumTree(Some(_), ..)
                 | Element::CommitmentTree(..)
                 | Element::MmrTree(..)
                 | Element::BulkAppendTree(..)
@@ -526,6 +582,7 @@ impl Element {
                 | Element::ProvableCountSumTree(Some(_), ..)
                 | Element::ProvableSumTree(Some(_), ..)
                 | Element::ProvableCountProvableSumTree(Some(_), ..)
+                | Element::ProvableCountProvableBigSumTree(Some(_), ..)
                 | Element::ProvableSumIndexedTree(Some(_), ..)
                 | Element::ProvableSumIndexedTree(_, Some(_), ..)
                 | Element::ProvableCountIndexedTree(Some(_), ..)
@@ -706,6 +763,7 @@ impl Element {
             | Element::ProvableCountSumTree(.., flags)
             | Element::ProvableSumTree(.., flags)
             | Element::ProvableCountProvableSumTree(.., flags)
+            | Element::ProvableCountProvableBigSumTree(.., flags)
             | Element::ItemWithSumItem(.., flags)
             | Element::CommitmentTree(.., flags)
             | Element::MmrTree(.., flags)
@@ -743,6 +801,7 @@ impl Element {
             | Element::ProvableCountSumTree(.., flags)
             | Element::ProvableSumTree(.., flags)
             | Element::ProvableCountProvableSumTree(.., flags)
+            | Element::ProvableCountProvableBigSumTree(.., flags)
             | Element::ItemWithSumItem(.., flags)
             | Element::CommitmentTree(.., flags)
             | Element::MmrTree(.., flags)
@@ -780,6 +839,7 @@ impl Element {
             | Element::ProvableCountSumTree(.., flags)
             | Element::ProvableSumTree(.., flags)
             | Element::ProvableCountProvableSumTree(.., flags)
+            | Element::ProvableCountProvableBigSumTree(.., flags)
             | Element::ItemWithSumItem(.., flags)
             | Element::CommitmentTree(.., flags)
             | Element::MmrTree(.., flags)
@@ -816,6 +876,7 @@ impl Element {
             | Element::ProvableCountSumTree(.., flags)
             | Element::ProvableSumTree(.., flags)
             | Element::ProvableCountProvableSumTree(.., flags)
+            | Element::ProvableCountProvableBigSumTree(.., flags)
             | Element::ItemWithSumItem(.., flags)
             | Element::CommitmentTree(.., flags)
             | Element::MmrTree(.., flags)

@@ -198,6 +198,9 @@ mod tests {
                 Node::KVCountSum(k, ..) => k.clone(),
                 Node::KVDigestCountSum(k, ..) => k.clone(),
                 Node::KVRefValueHashCountSum(k, ..) => k.clone(),
+                Node::KVCountBigSum(k, ..) => k.clone(),
+                Node::KVDigestCountBigSum(k, ..) => k.clone(),
+                Node::KVRefValueHashCountBigSum(k, ..) => k.clone(),
                 Node::KVHashCount(..) => vec![],
                 Node::Hash(_) | Node::KVHash(_) => vec![],
                 // HashWithCount is keyless (collapsed subtree representation
@@ -205,6 +208,7 @@ mod tests {
                 Node::HashWithCount(..) => vec![],
                 Node::KVHashSum(..) | Node::HashWithSum(..) => vec![],
                 Node::KVHashCountSum(..) | Node::HashWithCountAndSum(..) => vec![],
+                Node::KVHashCountBigSum(..) | Node::HashWithCountAndBigSum(..) => vec![],
             };
             results.push((key, count));
         }

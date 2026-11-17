@@ -80,6 +80,9 @@ pub enum TreeCostType {
     TreeFeatureUsesTwoVarIntsCostAs16Bytes,
     /// This is for big sum trees
     TreeFeatureUses16Bytes,
+    /// This is for provable count provable big sum trees: a count varint
+    /// charged as 8 bytes followed by a fixed 16-byte sum
+    TreeFeatureUsesVarIntCostAs8BytesAnd16Bytes,
 }
 
 impl TreeCostType {
@@ -88,6 +91,7 @@ impl TreeCostType {
             TreeCostType::TreeFeatureUsesVarIntCostAs8Bytes => 8,
             TreeCostType::TreeFeatureUsesTwoVarIntsCostAs16Bytes => 16,
             TreeCostType::TreeFeatureUses16Bytes => 16,
+            TreeCostType::TreeFeatureUsesVarIntCostAs8BytesAnd16Bytes => 24,
         }
     }
 }

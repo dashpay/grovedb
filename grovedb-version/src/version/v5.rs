@@ -83,6 +83,14 @@
 //!   references and declared tree deletes are refunded the same in every
 //!   version. Gated because it changes a tracked cost.
 //!
+//! - `operations.insert.provable_count_provable_big_sum_tree_creation: 1`:
+//!   an `Element::ProvableCountProvableBigSumTree` can be created, by a
+//!   direct or a batch insert. The tree commits its element count and a
+//!   128-bit sum into every node hash: the wide counterpart of
+//!   `ProvableCountProvableSumTree`, for totals that can pass the `i64`
+//!   range. V1..V4 refuse the creation, as 6.1.1 does not know the element.
+//!   Gated because it flips an accepted/rejected outcome.
+//!
 //! It exists so that changes made after GroveDB 6.1.1 have somewhere to
 //! land. GROVE_V4 as 6.1.1 shipped it is what Dash Platform 5.0 (protocol
 //! version 14) runs, so a change that alters an accepted/rejected outcome, a
@@ -100,9 +108,10 @@
 use super::{
     grovedb_versions::{
         GroveDBApplyBatchVersions, GroveDBElementMethodVersions,
-        GroveDBOperationsAverageCaseVersions, GroveDBOperationsPrivateDocumentStoreVersions,
-        GroveDBOperationsProofVersions, GroveDBOperationsVersions,
-        GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBVersions,
+        GroveDBOperationsAverageCaseVersions, GroveDBOperationsInsertVersions,
+        GroveDBOperationsPrivateDocumentStoreVersions, GroveDBOperationsProofVersions,
+        GroveDBOperationsVersions, GroveDBOperationsWorstCaseVersions,
+        GroveDBPathQueryMethodVersions, GroveDBVersions,
     },
     merk_versions::{MerkTreeVersions, MerkVersions},
     v4::GROVE_V4,
@@ -137,6 +146,11 @@ pub const GROVE_V5: GroveVersion = GroveVersion {
             worst_case: GroveDBOperationsWorstCaseVersions {
                 worst_case_merk_insert_element: 1, // changed: prices a store's creation
                 ..GROVE_V4.grovedb_versions.operations.worst_case
+            },
+            insert: GroveDBOperationsInsertVersions {
+                // changed: the wide count and sum tree can be created
+                provable_count_provable_big_sum_tree_creation: 1,
+                ..GROVE_V4.grovedb_versions.operations.insert
             },
             private_document_store: GroveDBOperationsPrivateDocumentStoreVersions {
                 get_range: 1,   // changed: a store's position-range read

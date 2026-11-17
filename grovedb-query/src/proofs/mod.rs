@@ -260,6 +260,54 @@ pub enum Node {
     ///
     /// Contains: `(kv_hash, left_child_hash, right_child_hash, count, sum)`
     HashWithCountAndSum(CryptoHash, CryptoHash, CryptoHash, u64, i64),
+
+    /// Key, value, count, and big sum. For queried Items in
+    /// `ProvableCountProvableBigSumTree`.
+    ///
+    /// The wide counterpart of `KVCountSum`: the verifier recomputes
+    /// `node_hash = node_hash_with_count_and_big_sum(kv_hash, left, right,
+    /// count, sum)`, so a forged count OR forged sum produces a hash
+    /// divergence at the parent boundary.
+    ///
+    /// Contains: `(key, value, count, sum)`
+    KVCountBigSum(Vec<u8>, Vec<u8>, u64, i128),
+
+    /// KV hash, count, and big sum. For non-queried nodes in
+    /// `ProvableCountProvableBigSumTree`.
+    ///
+    /// The wide counterpart of `KVHashCountSum`.
+    ///
+    /// Contains: `(kv_hash, count, sum)`
+    KVHashCountBigSum(CryptoHash, u64, i128),
+
+    /// Key, referenced value, reference element hash, count, and big sum.
+    /// For queried References in `ProvableCountProvableBigSumTree`.
+    ///
+    /// The wide counterpart of `KVRefValueHashCountSum`.
+    ///
+    /// Contains: `(key, referenced_value, reference_element_hash, count, sum)`
+    KVRefValueHashCountBigSum(Vec<u8>, Vec<u8>, CryptoHash, u64, i128),
+
+    /// Key, value_hash, count, and big sum. For proving absence in
+    /// `ProvableCountProvableBigSumTree`.
+    ///
+    /// The wide counterpart of `KVDigestCountSum`.
+    ///
+    /// Contains: `(key, value_hash, count, sum)`
+    KVDigestCountBigSum(Vec<u8>, CryptoHash, u64, i128),
+
+    /// A self-verifying compressed subtree for aggregate range proofs
+    /// against a `ProvableCountProvableBigSumTree`.
+    ///
+    /// The wide counterpart of `HashWithCountAndSum`: encodes the
+    /// subtree's *root* node as
+    /// `(kv_hash, left_child_hash, right_child_hash, count, sum)`. The
+    /// verifier reconstructs the subtree's root `node_hash` as
+    /// `node_hash_with_count_and_big_sum(kv_hash, left, right, count, sum)`
+    /// and uses that hash exactly as `Hash(...)` would.
+    ///
+    /// Contains: `(kv_hash, left_child_hash, right_child_hash, count, sum)`
+    HashWithCountAndBigSum(CryptoHash, CryptoHash, CryptoHash, u64, i128),
 }
 
 use std::fmt;
@@ -405,6 +453,51 @@ impl fmt::Display for Node {
             Node::HashWithCountAndSum(kv_hash, left_child_hash, right_child_hash, count, sum) => {
                 format!(
                     "HashWithCountAndSum(kv_hash=HASH[{}], left=HASH[{}], right=HASH[{}], \
+                     count={}, sum={})",
+                    hex::encode(kv_hash),
+                    hex::encode(left_child_hash),
+                    hex::encode(right_child_hash),
+                    count,
+                    sum
+                )
+            }
+            Node::KVCountBigSum(key, value, count, sum) => format!(
+                "KVCountBigSum({}, {}, count={}, sum={})",
+                hex_to_ascii(key),
+                hex_to_ascii(value),
+                count,
+                sum
+            ),
+            Node::KVHashCountBigSum(kv_hash, count, sum) => format!(
+                "KVHashCountBigSum(HASH[{}], count={}, sum={})",
+                hex::encode(kv_hash),
+                count,
+                sum
+            ),
+            Node::KVRefValueHashCountBigSum(key, value, value_hash, count, sum) => format!(
+                "KVRefValueHashCountBigSum({}, {}, HASH[{}], count={}, sum={})",
+                hex_to_ascii(key),
+                hex_to_ascii(value),
+                hex::encode(value_hash),
+                count,
+                sum
+            ),
+            Node::KVDigestCountBigSum(key, value_hash, count, sum) => format!(
+                "KVDigestCountBigSum({}, HASH[{}], count={}, sum={})",
+                hex_to_ascii(key),
+                hex::encode(value_hash),
+                count,
+                sum
+            ),
+            Node::HashWithCountAndBigSum(
+                kv_hash,
+                left_child_hash,
+                right_child_hash,
+                count,
+                sum,
+            ) => {
+                format!(
+                    "HashWithCountAndBigSum(kv_hash=HASH[{}], left=HASH[{}], right=HASH[{}], \
                      count={}, sum={})",
                     hex::encode(kv_hash),
                     hex::encode(left_child_hash),
@@ -859,6 +952,109 @@ mod tests {
                     op
                 );
             }
+        }
+    }
+
+    /// The five wide count and sum nodes round-trip as `Push` and
+    /// `PushInverted`, with small and large values and sums outside the
+    /// `i64` range, under tag bytes of their own (0x60..=0x6D), and their
+    /// predicted encoding length is the encoded length.
+    #[test]
+    fn wide_count_and_sum_nodes_round_trip() {
+        use ed::Encode;
+
+        let past_i64 = i64::MAX as i128 * 3;
+        let below_i64 = i64::MIN as i128 * 3;
+        let nodes = [
+            Node::KVCountBigSum(b"k".to_vec(), b"v".to_vec(), 3, -7),
+            Node::KVCountBigSum(b"k".to_vec(), vec![0xAA; 70_000], u64::MAX, past_i64),
+            Node::KVHashCountBigSum([0xAB; HASH_LENGTH], 42, below_i64),
+            Node::KVRefValueHashCountBigSum(
+                b"k".to_vec(),
+                b"v".to_vec(),
+                [0xCD; HASH_LENGTH],
+                7,
+                past_i64,
+            ),
+            Node::KVRefValueHashCountBigSum(
+                b"k".to_vec(),
+                vec![0xBB; 70_000],
+                [0xCD; HASH_LENGTH],
+                0,
+                i128::MIN,
+            ),
+            Node::KVDigestCountBigSum(b"k".to_vec(), [0xEF; HASH_LENGTH], u64::MAX, i128::MAX),
+            Node::HashWithCountAndBigSum(
+                [0x11; HASH_LENGTH],
+                [0x22; HASH_LENGTH],
+                [0x33; HASH_LENGTH],
+                100,
+                past_i64,
+            ),
+        ];
+
+        for node in nodes {
+            round_trip_push(node.clone());
+            for op in [Op::Push(node.clone()), Op::PushInverted(node.clone())] {
+                let mut buf = Vec::new();
+                <Op as Encode>::encode_into(&op, &mut buf).expect("encode");
+                assert!(
+                    (0x60..=0x6D).contains(&buf[0]),
+                    "{op:?} must use a wide tag byte, got {:#x}",
+                    buf[0]
+                );
+                assert_eq!(
+                    buf.len(),
+                    <Op as Encode>::encoding_length(&op).expect("encoding_length"),
+                    "encoding_length must match the encoded length of {op:?}"
+                );
+            }
+        }
+    }
+
+    /// Each wide node is displayed under its own name, with its count and
+    /// sum.
+    #[test]
+    fn wide_count_and_sum_nodes_display() {
+        let sum = i64::MAX as i128 * 3;
+        for (node, name) in [
+            (
+                Node::KVCountBigSum(b"k".to_vec(), b"v".to_vec(), 3, sum),
+                "KVCountBigSum(",
+            ),
+            (
+                Node::KVHashCountBigSum([0xAB; HASH_LENGTH], 3, sum),
+                "KVHashCountBigSum(",
+            ),
+            (
+                Node::KVRefValueHashCountBigSum(
+                    b"k".to_vec(),
+                    b"v".to_vec(),
+                    [0xCD; HASH_LENGTH],
+                    3,
+                    sum,
+                ),
+                "KVRefValueHashCountBigSum(",
+            ),
+            (
+                Node::KVDigestCountBigSum(b"k".to_vec(), [0xEF; HASH_LENGTH], 3, sum),
+                "KVDigestCountBigSum(",
+            ),
+            (
+                Node::HashWithCountAndBigSum(
+                    [0x11; HASH_LENGTH],
+                    [0x22; HASH_LENGTH],
+                    [0x33; HASH_LENGTH],
+                    3,
+                    sum,
+                ),
+                "HashWithCountAndBigSum(",
+            ),
+        ] {
+            let display = format!("{node}");
+            assert!(display.starts_with(name), "got: {display}");
+            assert!(display.contains("count=3"), "got: {display}");
+            assert!(display.contains(&format!("sum={sum}")), "got: {display}");
         }
     }
 }

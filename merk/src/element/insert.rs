@@ -318,6 +318,7 @@ impl ElementInsertToStorageExtensions for Element {
                     | TreeType::ProvableCountSumTree
                     | TreeType::ProvableSumTree
                     | TreeType::ProvableCountProvableSumTree
+                    | TreeType::ProvableCountProvableBigSumTree
             )
         {
             return Err(Error::InvalidInputError(

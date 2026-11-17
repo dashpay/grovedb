@@ -719,6 +719,10 @@ where
             // count + sum out of `aggregate_data()` directly).
             walker.to_kv_count_sum_node()
         }
+        // Unreachable: the entry point refuses a
+        // `ProvableCountProvableBigSumTree` host, the only one that yields
+        // this kind. Emit the node a regular proof of that host would.
+        ProofNodeType::KvCountBigSum => walker.to_kv_count_big_sum_node(),
         ProofNodeType::KvSum => {
             // Reaching this branch would mean a SumItem (not a
             // CountAndSumItem) is sitting under a count tree, which the
@@ -742,6 +746,7 @@ where
         | ProofNodeType::KvRefValueHash
         | ProofNodeType::KvRefValueHashCount
         | ProofNodeType::KvRefValueHashSum
-        | ProofNodeType::KvRefValueHashCountSum => walker.to_kv_value_hash_feature_type_node(),
+        | ProofNodeType::KvRefValueHashCountSum
+        | ProofNodeType::KvRefValueHashCountBigSum => walker.to_kv_value_hash_feature_type_node(),
     }
 }

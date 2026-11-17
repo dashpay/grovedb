@@ -117,6 +117,7 @@ fn add_key_value_storage_costs_handles_tree_cost_variants() {
         TreeCostType::TreeFeatureUsesVarIntCostAs8Bytes,
         TreeCostType::TreeFeatureUsesTwoVarIntsCostAs16Bytes,
         TreeCostType::TreeFeatureUses16Bytes,
+        TreeCostType::TreeFeatureUsesVarIntCostAs8BytesAnd16Bytes,
     ] {
         let mut op_cost = OperationCost::default();
         let key_len = 5;

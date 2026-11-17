@@ -52,8 +52,8 @@ use grovedb_version::version::GroveVersion;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use hash::{
     axes_digest, combine_hash, combine_hash_three, kv_digest_to_kv_hash, kv_hash, node_hash,
-    node_hash_with_count, node_hash_with_count_and_sum, node_hash_with_sum, value_hash, CryptoHash,
-    HASH_LENGTH, NULL_HASH,
+    node_hash_with_count, node_hash_with_count_and_big_sum, node_hash_with_count_and_sum,
+    node_hash_with_sum, value_hash, CryptoHash, HASH_LENGTH, NULL_HASH,
 };
 #[cfg(feature = "minimal")]
 pub use hash::{HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH_U32, HASH_LENGTH_U32_X2};
@@ -656,6 +656,9 @@ impl TreeNode {
                     AggregateData::ProvableCountAndProvableSum(c, s) => {
                         c.encode_var_vec().len() as u32 + s.encode_var_vec().len() as u32
                     }
+                    AggregateData::ProvableCountAndProvableBigSum(c, _) => {
+                        c.encode_var_vec().len() as u32 + 16_u32
+                    }
                 },
             )
         })
@@ -745,6 +748,10 @@ impl TreeNode {
                 // component for sum aggregation; the count is collected
                 // by `child_aggregate_count_data_as_u64`.
                 AggregateData::ProvableCountAndProvableSum(_, s) => Ok(s),
+                // A 128-bit sum cannot be narrowed, exactly as for `BigSum`.
+                AggregateData::ProvableCountAndProvableBigSum(..) => Err(
+                    Error::BigSumTreeUnderNormalSumTree("for aggregate data as i64".to_string()),
+                ),
             },
             _ => Ok(0),
         }
@@ -779,6 +786,7 @@ impl TreeNode {
                 // `ProvableCountAndProvableSum` contributes its count
                 // component for count aggregation.
                 AggregateData::ProvableCountAndProvableSum(c, _) => Ok(c),
+                AggregateData::ProvableCountAndProvableBigSum(c, _) => Ok(c),
             },
             _ => Ok(0),
         }
@@ -811,6 +819,7 @@ impl TreeNode {
                 // `ProvableCountAndProvableSum` widens its sum component
                 // to i128 the same way.
                 AggregateData::ProvableCountAndProvableSum(_, s) => s as i128,
+                AggregateData::ProvableCountAndProvableBigSum(_, s) => s,
             },
             _ => 0,
         }
@@ -959,6 +968,30 @@ impl TreeNode {
                     );
                 }
             }
+            TreeType::ProvableCountProvableBigSumTree => {
+                // For ProvableCountProvableBigSumTree, include BOTH the
+                // aggregate count AND the aggregate 128-bit sum in the hash
+                // via `node_hash_with_count_and_big_sum`.
+                let aggregate_data = self.aggregate_data().expect(
+                    "ProvableCountProvableBigSumTree::hash_for_link: aggregate_data() failed",
+                );
+                if let AggregateData::ProvableCountAndProvableBigSum(count, sum) = aggregate_data {
+                    node_hash_with_count_and_big_sum(
+                        self.inner.kv.hash(),
+                        self.child_hash(true),
+                        self.child_hash(false),
+                        count,
+                        sum,
+                    )
+                } else {
+                    panic!(
+                        "ProvableCountProvableBigSumTree::hash_for_link: expected \
+                         AggregateData::ProvableCountAndProvableBigSum, got {:?}; the node's \
+                         feature_type is inconsistent with its tree_type",
+                        aggregate_data
+                    );
+                }
+            }
             _ => self.hash(),
         }
     }
@@ -990,7 +1023,8 @@ impl TreeNode {
             | TreeType::ProvableSumTree
             | TreeType::ProvableSumIndexedTree
             | TreeType::ProvableCountProvableSumTree
-            | TreeType::ProvableCountProvableSumIndexedTree => {
+            | TreeType::ProvableCountProvableSumIndexedTree
+            | TreeType::ProvableCountProvableBigSumTree => {
                 let aggregate_data = match self.aggregate_data() {
                     Ok(aggregate_data) => aggregate_data,
                     Err(e) => return Err(e).wrap_with_cost(Default::default()),
@@ -1025,6 +1059,17 @@ impl TreeNode {
                         | TreeType::ProvableCountProvableSumIndexedTree,
                         AggregateData::ProvableCountAndProvableSum(count, sum),
                     ) => node_hash_with_count_and_sum(
+                        self.inner.kv.hash(),
+                        self.child_hash(true),
+                        self.child_hash(false),
+                        count,
+                        sum,
+                    )
+                    .map(Ok),
+                    (
+                        TreeType::ProvableCountProvableBigSumTree,
+                        AggregateData::ProvableCountAndProvableBigSum(count, sum),
+                    ) => node_hash_with_count_and_big_sum(
                         self.inner.kv.hash(),
                         self.child_hash(true),
                         self.child_hash(false),
@@ -1175,6 +1220,32 @@ impl TreeNode {
                     .ok_or(Overflow("provable sum is overflowing"))?;
 
                 Ok(AggregateData::ProvableCountAndProvableSum(
+                    aggregated_count_value,
+                    aggregated_sum_value,
+                ))
+            }
+            // `ProvableCountedAndProvableBigSummedMerkNode` aggregates the
+            // count like the node above and the sum in i128 like
+            // `BigSummedMerkNode`, so a child's i64 sum widens instead of
+            // being able to overflow the total.
+            TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(
+                count_value,
+                sum_value,
+            ) => {
+                let left_count = self.child_aggregate_count_data_as_u64(true)?;
+                let right_count = self.child_aggregate_count_data_as_u64(false)?;
+
+                let aggregated_count_value = count_value
+                    .checked_add(left_count)
+                    .and_then(|a| a.checked_add(right_count))
+                    .ok_or(Overflow("count is overflowing"))?;
+
+                let aggregated_sum_value = sum_value
+                    .checked_add(self.child_aggregate_sum_data_as_i128(true))
+                    .and_then(|a| a.checked_add(self.child_aggregate_sum_data_as_i128(false)))
+                    .ok_or(Overflow("provable big sum is overflowing"))?;
+
+                Ok(AggregateData::ProvableCountAndProvableBigSum(
                     aggregated_count_value,
                     aggregated_sum_value,
                 ))
@@ -1755,6 +1826,16 @@ impl TreeNode {
                         )
                         .unwrap_add_cost(&mut cost)
                     }
+                    AggregateData::ProvableCountAndProvableBigSum(count, sum) => {
+                        node_hash_with_count_and_big_sum(
+                            tree.inner.kv.hash(),
+                            tree.child_hash(true),
+                            tree.child_hash(false),
+                            *count,
+                            *sum,
+                        )
+                        .unwrap_add_cost(&mut cost)
+                    }
                     _ => tree.hash().unwrap_add_cost(&mut cost),
                 };
                 self.inner.left = Some(Link::Loaded {
@@ -1805,6 +1886,16 @@ impl TreeNode {
                     .unwrap_add_cost(&mut cost),
                     AggregateData::ProvableCountAndProvableSum(count, sum) => {
                         node_hash_with_count_and_sum(
+                            tree.inner.kv.hash(),
+                            tree.child_hash(true),
+                            tree.child_hash(false),
+                            *count,
+                            *sum,
+                        )
+                        .unwrap_add_cost(&mut cost)
+                    }
+                    AggregateData::ProvableCountAndProvableBigSum(count, sum) => {
+                        node_hash_with_count_and_big_sum(
                             tree.inner.kv.hash(),
                             tree.child_hash(true),
                             tree.child_hash(false),

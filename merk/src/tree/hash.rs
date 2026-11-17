@@ -610,6 +610,47 @@ pub fn node_hash_with_count_and_sum(
     })
 }
 
+#[cfg(any(feature = "minimal", feature = "verify"))]
+/// Hashes a node for a `ProvableCountProvableBigSumTree`, including BOTH the
+/// aggregate count AND the aggregate 128-bit sum.
+///
+/// The wide counterpart of [`node_hash_with_count_and_sum`]: the u64 count
+/// is appended in big-endian (8 fixed bytes), followed by the i128 sum in
+/// big-endian (16 fixed bytes). Negative sums hash via their
+/// two's-complement big-endian form.
+///
+/// Hash layout: `Blake3(kv || left || right || count_be8 || sum_be16)`.
+///
+/// The 120-byte input is longer than the input of every other node hash, so
+/// a node of this tree cannot share a hash input with a node of another tree
+/// type.
+pub fn node_hash_with_count_and_big_sum(
+    kv: &CryptoHash,
+    left: &CryptoHash,
+    right: &CryptoHash,
+    count: u64,
+    sum: i128,
+) -> CostContext<CryptoHash> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(kv);
+    hasher.update(left);
+    hasher.update(right);
+    hasher.update(&count.to_be_bytes());
+    hasher.update(&sum.to_be_bytes());
+
+    // The input is kv (32) + left (32) + right (32) + count (8) + sum (16) =
+    // 120 bytes, which still fits in 2 Blake3 blocks.
+    let hashes = 2;
+
+    let res = hasher.finalize();
+    let mut hash: CryptoHash = Default::default();
+    hash.copy_from_slice(res.as_bytes());
+    hash.wrap_with_cost(OperationCost {
+        hash_node_calls: hashes,
+        ..Default::default()
+    })
+}
+
 #[cfg(test)]
 #[cfg(feature = "minimal")]
 mod node_hash_with_sum_tests {
@@ -765,5 +806,48 @@ mod node_hash_with_sum_tests {
         let neg_one_a = node_hash_with_count_and_sum(&kv, &l, &r, 42, -1).unwrap();
         let neg_one_b = node_hash_with_count_and_sum(&kv, &l, &r, 42, -1).unwrap();
         assert_eq!(neg_one_a, neg_one_b);
+    }
+
+    #[test]
+    fn node_hash_with_count_and_big_sum_binds_every_input() {
+        use super::node_hash_with_count_and_big_sum;
+
+        let kv = h(1);
+        let l = h(2);
+        let r = h(3);
+        let sum = i128::from(i64::MAX) * 3;
+        let baseline = node_hash_with_count_and_big_sum(&kv, &l, &r, 10, sum).unwrap();
+        assert_eq!(
+            baseline,
+            node_hash_with_count_and_big_sum(&kv, &l, &r, 10, sum).unwrap()
+        );
+        for other in [
+            node_hash_with_count_and_big_sum(&h(40), &l, &r, 10, sum).unwrap(),
+            node_hash_with_count_and_big_sum(&kv, &h(50), &r, 10, sum).unwrap(),
+            node_hash_with_count_and_big_sum(&kv, &l, &h(60), 10, sum).unwrap(),
+            node_hash_with_count_and_big_sum(&kv, &l, &r, 11, sum).unwrap(),
+            node_hash_with_count_and_big_sum(&kv, &l, &r, 10, sum + 1).unwrap(),
+            node_hash_with_count_and_big_sum(&kv, &l, &r, 10, -sum).unwrap(),
+            // A sum that differs only above the low 64 bits.
+            node_hash_with_count_and_big_sum(&kv, &l, &r, 10, sum + (1i128 << 64)).unwrap(),
+        ] {
+            assert_ne!(other, baseline);
+        }
+
+        // The wide hash is not the narrow one, even for a sum both can hold.
+        assert_ne!(
+            node_hash_with_count_and_big_sum(&kv, &l, &r, 10, 20).unwrap(),
+            node_hash_with_count_and_sum(&kv, &l, &r, 10, 20).unwrap()
+        );
+        assert_ne!(
+            node_hash_with_count_and_big_sum(&kv, &l, &r, 0, 0).unwrap(),
+            node_hash(&kv, &l, &r).unwrap()
+        );
+        assert_eq!(
+            node_hash_with_count_and_big_sum(&kv, &l, &r, 10, sum)
+                .cost
+                .hash_node_calls,
+            2
+        );
     }
 }

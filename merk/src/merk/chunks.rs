@@ -558,6 +558,12 @@ mod test {
                 Node::KVDigestCountSum(..) => counts.kv_digest += 1,
                 Node::KVRefValueHashCountSum(..) => counts.kv_ref_value_hash += 1,
                 Node::HashWithCountAndSum(..) => counts.hash += 1,
+                // ProvableCountProvableBigSumTree proof variants likewise.
+                Node::KVCountBigSum(..) => counts.kv += 1,
+                Node::KVHashCountBigSum(..) => counts.kv_hash += 1,
+                Node::KVDigestCountBigSum(..) => counts.kv_digest += 1,
+                Node::KVRefValueHashCountBigSum(..) => counts.kv_ref_value_hash += 1,
+                Node::HashWithCountAndBigSum(..) => counts.hash += 1,
             };
         });
 

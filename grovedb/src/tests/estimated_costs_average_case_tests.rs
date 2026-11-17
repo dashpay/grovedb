@@ -750,3 +750,48 @@ fn test_average_case_merk_replace_tree_indexed_variants() {
         );
     }
 }
+
+/// Creating a `ProvableCountProvableBigSumTree` is estimated, in the average
+/// and the worst case, 7 bytes above the narrow tree: its element carries a
+/// 16-byte sum where the narrow one carries 9.
+#[test]
+fn test_estimates_size_a_provable_count_provable_big_sum_tree() {
+    let grove_version = GroveVersion::latest();
+    let key = KnownKey(b"tree".to_vec());
+
+    let average = |tree_type| {
+        let result = GroveDb::average_case_merk_insert_tree(
+            &key,
+            &None,
+            tree_type,
+            TreeType::NormalTree,
+            0,
+            None,
+            grove_version,
+        );
+        result.value.as_ref().expect("the estimate should succeed");
+        result.cost.storage_cost.added_bytes
+    };
+    let worst = |tree_type| {
+        let result = GroveDb::worst_case_merk_insert_tree(
+            &key,
+            &None,
+            tree_type,
+            TreeType::NormalTree,
+            0,
+            None,
+            grove_version,
+        );
+        result.value.as_ref().expect("the estimate should succeed");
+        result.cost.storage_cost.added_bytes
+    };
+
+    assert_eq!(
+        average(TreeType::ProvableCountProvableBigSumTree),
+        average(TreeType::ProvableCountProvableSumTree) + 7
+    );
+    assert_eq!(
+        worst(TreeType::ProvableCountProvableBigSumTree),
+        worst(TreeType::ProvableCountProvableSumTree) + 7
+    );
+}

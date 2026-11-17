@@ -355,8 +355,11 @@ impl QueryProofVerify for Query {
                                 // key-bearing nodes are also acceptable
                                 // bound-proving boundaries.
                                 Some(Node::KVCountSum(..)) => {}
+                                Some(Node::KVCountBigSum(..)) => {}
                                 Some(Node::KVDigestCountSum(..)) => {}
+                                Some(Node::KVDigestCountBigSum(..)) => {}
                                 Some(Node::KVRefValueHashCountSum(..)) => {}
+                                Some(Node::KVRefValueHashCountBigSum(..)) => {}
 
                                 // cannot verify lower bound - we have an abridged
                                 // tree, so we cannot tell what the preceding key was
@@ -398,8 +401,11 @@ impl QueryProofVerify for Query {
                                 // key-bearing nodes are also acceptable
                                 // upper-bound-proving boundaries.
                                 Some(Node::KVCountSum(..)) => {}
+                                Some(Node::KVCountBigSum(..)) => {}
                                 Some(Node::KVDigestCountSum(..)) => {}
+                                Some(Node::KVDigestCountBigSum(..)) => {}
                                 Some(Node::KVRefValueHashCountSum(..)) => {}
+                                Some(Node::KVRefValueHashCountBigSum(..)) => {}
 
                                 // cannot verify upper bound - we have an abridged
                                 // tree so we cannot tell what the previous key was
@@ -731,6 +737,7 @@ impl QueryProofVerify for Query {
                 | Node::KVHash(_)
                 | Node::KVHashCount(..)
                 | Node::KVHashSum(..)
+                | Node::KVHashCountBigSum(..)
                 | Node::KVHashCountSum(..) => {
                     if in_range {
                         // `in_range` is only set by a node the current item
@@ -797,6 +804,16 @@ impl QueryProofVerify for Query {
                             .to_string(),
                     ));
                 }
+                Node::HashWithCountAndBigSum(..) => {
+                    // Same fail-fast rationale: the wide compressed-subtree
+                    // node is reserved for the aggregate verifiers against
+                    // `ProvableCountProvableBigSumTree`.
+                    return Err(Error::InvalidProofError(
+                        "HashWithCountAndBigSum node is only valid in aggregate proofs; \
+                         encountered in regular query verification"
+                            .to_string(),
+                    ));
+                }
                 Node::KVSum(key, value, _sum) => {
                     #[cfg(feature = "proof_debug")]
                     {
@@ -836,6 +853,27 @@ impl QueryProofVerify for Query {
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVRefValueHashCountSum node");
+                    }
+                    execute_node(key, Some(value), *value_hash, false, false)?;
+                }
+                Node::KVCountBigSum(key, value, _count, _sum) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVCountBigSum node");
+                    }
+                    execute_node(key, Some(value), value_hash(value).unwrap(), false, false)?;
+                }
+                Node::KVDigestCountBigSum(key, value_hash, _count, _sum) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVDigestCountBigSum node");
+                    }
+                    execute_node(key, None, *value_hash, false, false)?;
+                }
+                Node::KVRefValueHashCountBigSum(key, value, value_hash, _count, _sum) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVRefValueHashCountBigSum node");
                     }
                     execute_node(key, Some(value), *value_hash, false, false)?;
                 }
@@ -881,8 +919,11 @@ impl QueryProofVerify for Query {
                     // ProvableCountProvableSumTree (dual-axis) key-bearing
                     // nodes are also acceptable absence-proof boundaries.
                     Some(Node::KVCountSum(..)) => {}
+                    Some(Node::KVCountBigSum(..)) => {}
                     Some(Node::KVDigestCountSum(..)) => {}
+                    Some(Node::KVDigestCountBigSum(..)) => {}
                     Some(Node::KVRefValueHashCountSum(..)) => {}
+                    Some(Node::KVRefValueHashCountBigSum(..)) => {}
 
                     // Upper-bound mode: the prover stopped after the results so
                     // far and hid the rest; the remaining items are unproven.
@@ -1087,6 +1128,8 @@ pub fn key_exists_as_boundary_in_proof(proof_bytes: &[u8], key: &[u8]) -> Result
             | Op::PushInverted(Node::KVDigestSum(k, _, _))
             | Op::Push(Node::KVDigestCountSum(k, _, _, _))
             | Op::PushInverted(Node::KVDigestCountSum(k, _, _, _))
+            | Op::Push(Node::KVDigestCountBigSum(k, _, _, _))
+            | Op::PushInverted(Node::KVDigestCountBigSum(k, _, _, _))
                 if k.as_slice() == key =>
             {
                 return Ok(true);
@@ -1484,7 +1527,9 @@ pub fn boundaries_in_proof(proof_bytes: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
             | Op::Push(Node::KVDigestSum(k, _, _))
             | Op::PushInverted(Node::KVDigestSum(k, _, _))
             | Op::Push(Node::KVDigestCountSum(k, _, _, _))
-            | Op::PushInverted(Node::KVDigestCountSum(k, _, _, _)) => {
+            | Op::PushInverted(Node::KVDigestCountSum(k, _, _, _))
+            | Op::Push(Node::KVDigestCountBigSum(k, _, _, _))
+            | Op::PushInverted(Node::KVDigestCountBigSum(k, _, _, _)) => {
                 keys.push(k);
             }
             _ => {}

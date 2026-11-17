@@ -658,6 +658,11 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
                         count, sum,
                     )
                 }
+                TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(count, sum) => {
+                    grovedbg_types::TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(
+                        count, sum,
+                    )
+                }
             };
             MerkProofNode::KVValueHashFeatureType(
                 key,
@@ -727,6 +732,11 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
                 }
                 TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, sum) => {
                     grovedbg_types::TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(
+                        count, sum,
+                    )
+                }
+                TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(count, sum) => {
+                    grovedbg_types::TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(
                         count, sum,
                     )
                 }
@@ -876,6 +886,76 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
                 },
                 computed_node_hash,
                 grovedbg_types::TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(
+                    count, sum,
+                ),
+            )
+        }
+        // ProvableCountProvableBigSumTree proof-node variants, flattened
+        // the same way with `ProvableCountedAndProvableBigSummedMerkNode`
+        // as the embedded feature type.
+        Node::KVCountBigSum(key, value, count, sum) => {
+            let element = crate::Element::deserialize(&value, GroveVersion::latest())?;
+            let val_hash = value_hash(&value).unwrap();
+            MerkProofNode::KVValueHashFeatureType(
+                key,
+                proof_element_to_grovedbg(element),
+                val_hash,
+                grovedbg_types::TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(
+                    count, sum,
+                ),
+            )
+        }
+        Node::KVHashCountBigSum(hash, count, sum) => MerkProofNode::KVValueHashFeatureType(
+            vec![],
+            grovedbg_types::Element::Item {
+                value: vec![],
+                element_flags: None,
+            },
+            hash,
+            grovedbg_types::TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(
+                count, sum,
+            ),
+        ),
+        Node::KVRefValueHashCountBigSum(key, value, hash, count, sum) => {
+            let element = crate::Element::deserialize(&value, GroveVersion::latest())?;
+            MerkProofNode::KVValueHashFeatureType(
+                key,
+                proof_element_to_grovedbg(element),
+                hash,
+                grovedbg_types::TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(
+                    count, sum,
+                ),
+            )
+        }
+        Node::KVDigestCountBigSum(key, hash, count, sum) => MerkProofNode::KVValueHashFeatureType(
+            key,
+            grovedbg_types::Element::Item {
+                value: vec![],
+                element_flags: None,
+            },
+            hash,
+            grovedbg_types::TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(
+                count, sum,
+            ),
+        ),
+        Node::HashWithCountAndBigSum(kv_hash, left_child_hash, right_child_hash, count, sum) => {
+            use grovedb_merk::tree::node_hash_with_count_and_big_sum;
+            let computed_node_hash = node_hash_with_count_and_big_sum(
+                &kv_hash,
+                &left_child_hash,
+                &right_child_hash,
+                count,
+                sum,
+            )
+            .unwrap();
+            MerkProofNode::KVValueHashFeatureType(
+                vec![],
+                grovedbg_types::Element::Item {
+                    value: vec![],
+                    element_flags: None,
+                },
+                computed_node_hash,
+                grovedbg_types::TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(
                     count, sum,
                 ),
             )
@@ -1196,6 +1276,14 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
                 element_flags,
             }
         }
+        crate::Element::ProvableCountProvableBigSumTree(root_key, count, sum, element_flags) => {
+            grovedbg_types::Element::ProvableCountProvableBigSumTree {
+                root_key,
+                count,
+                sum,
+                element_flags,
+            }
+        }
         crate::Element::CommitmentTree(_, _, element_flags) => grovedbg_types::Element::Subtree {
             root_key: None,
             element_flags,
@@ -1300,6 +1388,11 @@ fn node_to_update(
             }
             TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, sum) => {
                 grovedbg_types::TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(
+                    count, sum,
+                )
+            }
+            TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(count, sum) => {
+                grovedbg_types::TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(
                     count, sum,
                 )
             }

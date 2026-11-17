@@ -159,6 +159,7 @@ impl GroveDb {
             Node::KVRefValueHash(..)
             | Node::KVRefValueHashCount(..)
             | Node::KVRefValueHashSum(..)
+            | Node::KVRefValueHashCountBigSum(..)
             | Node::KVRefValueHashCountSum(..) => reject(format!(
                 "trunk/branch proof contains unexpected KVRefValueHash node at key {}",
                 hex::encode(key),

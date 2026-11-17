@@ -358,6 +358,10 @@ impl Link {
                     //    sum_len for sum vale
                     key.len() + 52 // 1 + 32 + 2 + 1 + 16
                 }
+                AggregateData::ProvableCountAndProvableBigSum(..) => {
+                    // as above, with 8 for the count and 16 for the sum
+                    key.len() + 60 // 1 + 32 + 2 + 1 + 24
+                }
             },
             Link::Modified { .. } => {
                 return Err(ed::Error::IOError(std::io::Error::new(
@@ -387,6 +391,9 @@ impl Link {
                 | AggregateData::ProvableCountAndSum(..)
                 | AggregateData::ProvableCountAndProvableSum(..) => {
                     tree.key().len() + 52 // 1 + 32 + 2 + 1 + 16
+                }
+                AggregateData::ProvableCountAndProvableBigSum(..) => {
+                    tree.key().len() + 60 // 1 + 32 + 2 + 1 + 24
                 }
             },
         })
@@ -484,6 +491,14 @@ impl Encode for Link {
                 out.write_varint(*count_value)?;
                 out.write_varint(*sum_value)?;
             }
+            // Tag byte 9 parallels
+            // `TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode`:
+            // the count as a varint, then the sum as 16 big-endian bytes.
+            AggregateData::ProvableCountAndProvableBigSum(count_value, big_sum_value) => {
+                out.write_all(&[9])?;
+                out.write_varint(*count_value)?;
+                out.write_i128::<BigEndian>(*big_sum_value)?;
+            }
         }
 
         Ok(())
@@ -558,6 +573,10 @@ impl Encode for Link {
                     let encoded_count_value = count.encode_var_vec();
                     key.len() + encoded_sum_value.len() + encoded_count_value.len() + 36
                 }
+                AggregateData::ProvableCountAndProvableBigSum(count, _) => {
+                    let encoded_count_value = count.encode_var_vec();
+                    key.len() + encoded_count_value.len() + 52 // 1 + 32 + 2 + 1 + 16
+                }
             },
             Link::Modified { .. } => {
                 return Err(ed::Error::IOError(std::io::Error::new(
@@ -609,6 +628,10 @@ impl Encode for Link {
                     let encoded_sum_value = sum.encode_var_vec();
                     let encoded_count_value = count.encode_var_vec();
                     tree.key().len() + encoded_sum_value.len() + encoded_count_value.len() + 36
+                }
+                AggregateData::ProvableCountAndProvableBigSum(count, _) => {
+                    let encoded_count_value = count.encode_var_vec();
+                    tree.key().len() + encoded_count_value.len() + 52 // 1 + 32 + 2 + 1 + 16
                 }
             },
         })
@@ -701,6 +724,12 @@ impl Decode for Link {
                     let encoded_count: u64 = input.read_varint()?;
                     let encoded_sum: i64 = input.read_varint()?;
                     AggregateData::ProvableCountAndProvableSum(encoded_count, encoded_sum)
+                }
+                // ProvableCountAndProvableBigSum decode, matching encode tag 9.
+                9 => {
+                    let encoded_count: u64 = input.read_varint()?;
+                    let encoded_big_sum: i128 = input.read_i128::<BigEndian>()?;
+                    AggregateData::ProvableCountAndProvableBigSum(encoded_count, encoded_big_sum)
                 }
                 byte => return Err(ed::Error::UnexpectedByte(byte)),
             };
@@ -1012,6 +1041,46 @@ mod test {
             assert_eq!(key, vec![9, 9, 9]);
         } else {
             panic!("expected Link::Reference after decode");
+        }
+    }
+
+    /// `AggregateData::ProvableCountAndProvableBigSum` encodes on a link as
+    /// tag byte 9, the count as a varint and the sum as 16 big-endian bytes,
+    /// and round-trips for sums outside the `i64` range. The predicted
+    /// length is the encoded length.
+    #[test]
+    fn round_trip_aggregate_data_provable_count_and_provable_big_sum() {
+        for (count, sum) in [
+            (0u64, 0i128),
+            (3, i128::from(i64::MAX) * 3),
+            (300, i128::from(i64::MIN) * 3),
+            (u64::MAX, i128::MAX),
+            (u64::MAX, i128::MIN),
+        ] {
+            let aggregate_data = AggregateData::ProvableCountAndProvableBigSum(count, sum);
+            let original = Link::Reference {
+                hash: [55; 32],
+                aggregate_data,
+                child_heights: (1, 2),
+                key: vec![9, 9, 9],
+            };
+            let mut bytes = vec![];
+            original.encode_into(&mut bytes).expect("encode the link");
+            // key length, key, hash, child heights, then the aggregate.
+            assert_eq!(bytes[1 + 3 + 32 + 2], 9, "the aggregate tag byte");
+            assert_eq!(&bytes[bytes.len() - 16..], &sum.to_be_bytes());
+            assert_eq!(
+                bytes.len(),
+                original.encoding_length().expect("encoding_length")
+            );
+            // The cost charges the count as 8 bytes and the sum as 16,
+            // whatever the varint takes.
+            assert_eq!(original.encoding_cost().expect("encoding_cost"), 3 + 60);
+
+            let decoded = Link::decode(bytes.as_slice()).expect("decode the link");
+            assert_eq!(decoded.aggregate_data(), aggregate_data);
+            // A truncated sum is refused.
+            assert!(Link::decode(&bytes[..bytes.len() - 1]).is_err());
         }
     }
 }

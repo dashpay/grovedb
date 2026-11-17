@@ -915,6 +915,7 @@ where
             TreeType::ProvableCountTree
                 | TreeType::ProvableCountSumTree
                 | TreeType::ProvableCountProvableSumTree
+                | TreeType::ProvableCountProvableBigSumTree
         );
         let chunk_depths = if let Some(min) = min_depth {
             if is_provable_count_tree {
@@ -2250,5 +2251,93 @@ mod test {
              above is vacuous",
             result.tree_depth, max_depth, min_depth,
         );
+    }
+
+    /// A `ProvableCountProvableBigSumTree` Merk aggregates its count and a
+    /// 128-bit sum, serves trunk queries as a count-bearing tree (through
+    /// the privacy depth split when a minimum depth is asked), and refuses
+    /// the range aggregates and count offsets, which are not offered on it.
+    #[test]
+    fn test_provable_count_provable_big_sum_tree_merk() {
+        use grovedb_query::QueryItem;
+
+        use crate::{
+            proofs::branch::depth::calculate_chunk_depths_with_minimum, tree::AggregateData,
+            TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode,
+        };
+        let grove_version = GroveVersion::latest();
+        let mut merk =
+            TempMerk::new_with_tree_type(grove_version, TreeType::ProvableCountProvableBigSumTree);
+        let own_sum = i128::from(i64::MAX);
+        let batch: Vec<(Vec<u8>, crate::Op)> = (0u64..25)
+            .map(|n| {
+                (
+                    n.to_be_bytes().to_vec(),
+                    crate::Op::Put(
+                        vec![123; 60],
+                        ProvableCountedAndProvableBigSummedMerkNode(1, own_sum),
+                    ),
+                )
+            })
+            .collect();
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+            .unwrap()
+            .expect("apply");
+
+        assert_eq!(
+            merk.aggregate_data().expect("aggregate data"),
+            AggregateData::ProvableCountAndProvableBigSum(25, 25 * own_sum)
+        );
+
+        let result = merk
+            .trunk_query(8, None, grove_version)
+            .unwrap()
+            .expect("a count-bearing tree serves trunk queries");
+        assert!(!result.proof.is_empty());
+        assert_eq!(
+            result.chunk_depths.iter().sum::<u8>(),
+            result.tree_depth,
+            "chunk depths should sum to tree depth"
+        );
+        let with_minimum = merk
+            .trunk_query(4, Some(4), grove_version)
+            .unwrap()
+            .expect("a trunk query with a minimum depth");
+        assert_eq!(
+            with_minimum.chunk_depths,
+            calculate_chunk_depths_with_minimum(with_minimum.tree_depth, 4, 4)
+                .expect("the privacy depth split"),
+            "a provable count tree must use the privacy depth split"
+        );
+
+        let range = QueryItem::RangeFull(std::ops::RangeFull);
+        assert!(merk
+            .prove_aggregate_count_on_range(&range, grove_version)
+            .unwrap()
+            .is_err());
+        assert!(merk
+            .prove_aggregate_sum_on_range(&range, grove_version)
+            .unwrap()
+            .is_err());
+        assert!(merk
+            .prove_aggregate_count_and_sum_on_range(&range, grove_version)
+            .unwrap()
+            .is_err());
+        assert!(merk
+            .count_aggregate_on_range(&range, grove_version)
+            .unwrap()
+            .is_err());
+        assert!(merk
+            .sum_aggregate_on_range(&range, grove_version)
+            .unwrap()
+            .is_err());
+        assert!(merk
+            .count_and_sum_aggregate_on_range(&range, grove_version)
+            .unwrap()
+            .is_err());
+        assert!(merk
+            .prove_count_offset_on_range(&range, 0, Some(5), true, grove_version)
+            .unwrap()
+            .is_err());
     }
 }

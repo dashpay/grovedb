@@ -10,9 +10,34 @@ use grovedb_storage::{Storage, StorageBatch};
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
 use crate::{
-    util::{TxRef, MAX_KEY_LENGTH},
+    util::{check_v1_slot_enabled, TxRef, MAX_KEY_LENGTH},
     Element, Error, GroveDb, TransactionArg,
 };
+
+/// Refuse creating a `ProvableCountProvableBigSumTree`, bare or wrapped,
+/// under a grove version that predates the element. Every other element
+/// passes.
+///
+/// Shared by the direct insert path (every `add_element_on_transaction`
+/// version) and the batch insert arm, so the two cannot disagree on which
+/// versions know the element.
+pub(crate) fn check_provable_count_provable_big_sum_tree_creation(
+    element: &Element,
+    method: &str,
+    grove_version: &GroveVersion,
+) -> Result<(), Error> {
+    if !element.is_provable_count_provable_big_sum_tree() {
+        return Ok(());
+    }
+    check_v1_slot_enabled(
+        method,
+        grove_version
+            .grovedb_versions
+            .operations
+            .insert
+            .provable_count_provable_big_sum_tree_creation,
+    )
+}
 
 /// Versioned dispatch for `add_element_on_transaction` (the non-batch insert
 /// path). Consensus-critical — see the module docs.

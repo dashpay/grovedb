@@ -83,6 +83,8 @@ pub enum EstimatedSumTrees {
     AllProvableCountSumTrees,
     /// All `ProvableCountProvableSumTree` leaves.
     AllProvableCountProvableSumTrees,
+    /// All `ProvableCountProvableBigSumTree` leaves.
+    AllProvableCountProvableBigSumTrees,
 }
 
 // `EstimatedSumTrees::estimated_size` and its v0/v1/v2 implementations
@@ -1085,6 +1087,16 @@ mod tests {
                 .inner_node_type()
                 .cost(),
         );
+        // The wide tree's nodes carry a count and a 16-byte sum, under
+        // every version of the estimate.
+        for version in grovedb_version::version::GROVE_VERSIONS {
+            assert_eq!(
+                EstimatedSumTrees::AllProvableCountProvableBigSumTrees
+                    .estimated_size(version)
+                    .unwrap(),
+                24,
+            );
+        }
     }
 
     /// v0 formula output is pinned to its historical value so the v2

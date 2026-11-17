@@ -106,6 +106,11 @@ impl EstimatedSumTrees {
                     .inner_node_type()
                     .cost())
             }
+            EstimatedSumTrees::AllProvableCountProvableBigSumTrees => {
+                Ok(TreeType::ProvableCountProvableBigSumTree
+                    .inner_node_type()
+                    .cost())
+            }
         }
     }
 }

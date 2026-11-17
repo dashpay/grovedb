@@ -1295,6 +1295,170 @@ mod tests {
         assert_eq!(source_hash, dest_hash);
     }
 
+    /// A grove holding `ProvableCountProvableBigSumTree`s: one with children
+    /// totalling past the `i64` range (sum items, a reference with a sum, a
+    /// nested wide tree), an empty one, and one wrapped in `NotSummed` under
+    /// a `BigSumTree`.
+    fn source_with_big_sum_trees(grove_version: &GroveVersion) -> TempGroveDb {
+        use crate::reference_path::ReferencePathType;
+
+        let source = make_test_grovedb(grove_version);
+        let insert = |path: &[&[u8]], key: &[u8], element: Element| {
+            source
+                .insert(path, key, element, None, None, grove_version)
+                .unwrap()
+                .expect("should insert");
+        };
+
+        insert(
+            &[TEST_LEAF],
+            b"big",
+            Element::empty_provable_count_provable_big_sum_tree(),
+        );
+        for index in 0u8..40 {
+            insert(
+                &[TEST_LEAF, b"big"],
+                &[index],
+                Element::new_sum_item(i64::MAX - i64::from(index)),
+            );
+        }
+        insert(
+            &[TEST_LEAF],
+            b"target",
+            Element::new_item(b"referenced".to_vec()),
+        );
+        insert(
+            &[TEST_LEAF, b"big"],
+            b"reference",
+            Element::new_reference_with_sum_item(
+                ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec(),
+                    b"target".to_vec(),
+                ]),
+                i64::MAX,
+            ),
+        );
+        insert(
+            &[TEST_LEAF, b"big"],
+            b"nested",
+            Element::empty_provable_count_provable_big_sum_tree(),
+        );
+        for index in 0u8..10 {
+            insert(
+                &[TEST_LEAF, b"big", b"nested"],
+                &[index],
+                Element::new_sum_item(i64::MIN + i64::from(index)),
+            );
+        }
+        insert(
+            &[TEST_LEAF],
+            b"empty_big",
+            Element::empty_provable_count_provable_big_sum_tree(),
+        );
+
+        insert(
+            &[ANOTHER_TEST_LEAF],
+            b"big_sum",
+            Element::empty_big_sum_tree(),
+        );
+        insert(
+            &[ANOTHER_TEST_LEAF, b"big_sum"],
+            b"hidden",
+            Element::new_not_summed(Element::empty_provable_count_provable_big_sum_tree())
+                .expect("a sum-bearing tree can be not summed"),
+        );
+        insert(
+            &[ANOTHER_TEST_LEAF, b"big_sum", b"hidden"],
+            b"a",
+            Element::new_sum_item(i64::MAX),
+        );
+        source
+    }
+
+    /// State sync restores `ProvableCountProvableBigSumTree`s to the source's
+    /// root hash, with their counts and 128-bit sums, whether the subtrees
+    /// are fetched many per request or one at a time.
+    #[test]
+    fn state_sync_provable_count_provable_big_sum_trees_round_trip() {
+        let grove_version = GroveVersion::latest();
+        let source = source_with_big_sum_trees(grove_version);
+        let source_hash = source
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("should get source hash");
+
+        for subtrees_batch_size in [64, 1] {
+            let dest = run_sync(&source, grove_version, subtrees_batch_size, None)
+                .expect("state sync should succeed");
+            assert_eq!(
+                dest.root_hash(None, grove_version)
+                    .unwrap()
+                    .expect("should get dest hash"),
+                source_hash
+            );
+            for (path, key) in [
+                (vec![TEST_LEAF], b"big".as_slice()),
+                (vec![TEST_LEAF, b"big".as_slice()], b"nested".as_slice()),
+                (vec![TEST_LEAF], b"empty_big".as_slice()),
+                (
+                    vec![ANOTHER_TEST_LEAF, b"big_sum".as_slice()],
+                    b"hidden".as_slice(),
+                ),
+            ] {
+                let restored = dest
+                    .get(path.as_slice(), key, None, grove_version)
+                    .unwrap()
+                    .expect("should get the restored tree");
+                let original = source
+                    .get(path.as_slice(), key, None, grove_version)
+                    .unwrap()
+                    .expect("should get the source tree");
+                assert_eq!(restored, original);
+                assert!(restored.is_provable_count_provable_big_sum_tree());
+            }
+            let (count, sum) = dest
+                .get([TEST_LEAF].as_ref(), b"big", None, grove_version)
+                .unwrap()
+                .expect("should get the restored tree")
+                .as_provable_count_provable_big_sum_tree_value()
+                .expect("the tree's count and sum");
+            assert_eq!(count, 51);
+            assert!(sum > i128::from(i64::MAX));
+            let issues = dest
+                .verify_grovedb(None, true, false, grove_version)
+                .expect("should verify the restored database");
+            assert!(issues.is_empty(), "unexpected issues: {issues:?}");
+        }
+    }
+
+    /// A chunk of a `ProvableCountProvableBigSumTree` altered in flight is
+    /// refused: the sync does not complete.
+    #[test]
+    fn state_sync_refuses_an_altered_provable_count_provable_big_sum_tree_chunk() {
+        let grove_version = GroveVersion::latest();
+        let source = source_with_big_sum_trees(grove_version);
+
+        let altered = std::cell::Cell::new(0u32);
+        let result = run_sync_with_version(
+            &source,
+            grove_version,
+            1,
+            None,
+            Some(&|tree_type, _, mut payload: Vec<u8>| {
+                if tree_type == grovedb_merk::tree_type::TreeType::ProvableCountProvableBigSumTree
+                    && let Some(last) = payload.last_mut()
+                {
+                    *last ^= 0xFF;
+                    altered.set(altered.get() + 1);
+                }
+                payload
+            }),
+            CURRENT_STATE_SYNC_VERSION,
+        );
+        assert!(altered.get() > 0, "a wide tree chunk must have been served");
+        assert!(result.is_err(), "an altered chunk must fail the sync");
+    }
+
     /// The other end of the empty-payload check: an entirely empty grove
     /// is the one case where the ROOT subtree legitimately answers with
     /// no chunk at all. Its restorer carries the `app_hash` directly

@@ -47,6 +47,8 @@ pub enum QueryItemOrSumReturnType {
     CountValue(CountValue),
     /// A count and sum value
     CountSumValue(CountValue, SumValue),
+    /// A count and a 128-bit sum, from a `ProvableCountProvableBigSumTree`
+    CountBigSumValue(CountValue, BigSumValue),
     /// an Item in serialized form with a Sum Value
     ItemDataWithSumValue(Vec<u8>, SumValue),
 }
@@ -339,7 +341,8 @@ where {
             | Element::ProvableCountTree(..)
             | Element::ProvableCountSumTree(..)
             | Element::ProvableSumTree(..)
-            | Element::ProvableCountProvableSumTree(..) => {
+            | Element::ProvableCountProvableSumTree(..)
+            | Element::ProvableCountProvableBigSumTree(..) => {
                 // Public results carry the logical (stripped) form; the
                 // referrer list is internal bookkeeping.
                 Ok(element.stripped_of_backward_references())
@@ -530,6 +533,7 @@ where {
                         | Element::ProvableCountSumTree(..)
                         | Element::ProvableSumTree(..)
                         | Element::ProvableCountProvableSumTree(..)
+                        | Element::ProvableCountProvableBigSumTree(..)
                         | Element::CommitmentTree(..)
                         | Element::MmrTree(..)
                         | Element::BulkAppendTree(..)
@@ -695,6 +699,15 @@ where {
                                             count_value,
                                             sum_value,
                                         )),
+                                        Element::ProvableCountProvableBigSumTree(
+                                            _,
+                                            count_value,
+                                            big_sum_value,
+                                            _,
+                                        ) => Ok(QueryItemOrSumReturnType::CountBigSumValue(
+                                            count_value,
+                                            big_sum_value,
+                                        )),
                                         Element::ProvableCountIndexedTree(.., count_value, _) => {
                                             Ok(QueryItemOrSumReturnType::CountValue(count_value))
                                         }
@@ -762,6 +775,15 @@ where {
                         Element::ProvableCountProvableSumTree(_, count_value, sum_value, _) => Ok(
                             QueryItemOrSumReturnType::CountSumValue(count_value, sum_value),
                         ),
+                        Element::ProvableCountProvableBigSumTree(
+                            _,
+                            count_value,
+                            big_sum_value,
+                            _,
+                        ) => Ok(QueryItemOrSumReturnType::CountBigSumValue(
+                            count_value,
+                            big_sum_value,
+                        )),
                         Element::ProvableCountIndexedTree(.., count_value, _) => {
                             Ok(QueryItemOrSumReturnType::CountValue(count_value))
                         }
@@ -1282,6 +1304,7 @@ where {
                         | Element::ProvableCountSumTree(..)
                         | Element::ProvableSumTree(..)
                         | Element::ProvableCountProvableSumTree(..)
+                        | Element::ProvableCountProvableBigSumTree(..)
                         | Element::CommitmentTree(..)
                         | Element::MmrTree(..)
                         | Element::BulkAppendTree(..)

@@ -214,6 +214,7 @@ where
                     | Element::ProvableCountSumTree(..)
                     | Element::ProvableSumTree(..)
                     | Element::ProvableCountProvableSumTree(..)
+                    | Element::ProvableCountProvableBigSumTree(..)
                     | Element::CommitmentTree(..)
                     | Element::MmrTree(..)
                     | Element::BulkAppendTree(..)

@@ -34,6 +34,7 @@
 | 21 | `ProvableSumIndexedTree` | 13 (ProvableSumIndexedTree) | `(primary_root_key, secondary_root_key, sum: i64, flags)` | 13 | ProvableSumTree-shaped primary + sum-ordered secondary index — see chapter "Indexed Trees" |
 | 22 | `ProvableCountIndexedTree` | 14 (ProvableCountIndexedTree) | `(primary_root_key, secondary_root_key, count: u64, flags)` | 13 | ProvableCountTree-shaped primary + count-ordered secondary index |
 | 23 | `ProvableCountProvableSumIndexedTree` | 15 (ProvableCountProvableSumIndexedTree) | `(primary_root_key, count: u64, sum: i64, axes: TLV, flags)` | 13 | ProvableCountProvableSumTree-shaped primary + 1..=3 secondary indexes (count / sum / avg) |
+| 29 | `ProvableCountProvableBigSumTree` | 17 (ProvableCountProvableBigSumTree) | `(root_key, count: u64, sum: i128, flags)` | COUNT_BIG_SUM_TREE_COST_SIZE | Count and a 128-bit sum both baked into the hash, for sums that can pass the `i64` range. Can be created from `GROVE_V5`; range aggregates and count offsets are not offered on it |
 
 **Notes:**
 - Discriminants 11–14 are **non-Merk trees**: data lives outside a child Merk subtree
@@ -47,6 +48,7 @@
 - There is no `CountIndexedTree` (non-provable) variant: an earlier draft introduced one at byte 20, but indexed trees ship provable-only and byte 20 now holds `ProvableCountProvableSumTree`.
 - `NonCounted` synthetic discriminants (`NonCountedXxx`) are 128–142 (= 0x80 | base) for inner discriminants 0–14, plus 146–151 (= 0x80 | base) for inner discriminants 18–23 (`NonCountedReferenceWithSumItem` = 146 through `NonCountedProvableCountProvableSumIndexedTree` = 151). Discriminants 143, 144 and 145 are unallocated by construction (their inner-byte slots are the wrapper bytes 15, 16 and 17).
 - `NotSummed` synthetic discriminants (`NotSummedXxx`) are 180, 181, 183, 186 (= 0xb0 | base) for `SumTree`, `BigSumTree`, `CountSumTree` and `ProvableCountSumTree`, plus the two hand-assigned twins 177 (`NotSummedProvableSumTree`) and 178 (`NotSummedProvableCountProvableSumTree`), which cannot use the `0xb0 | base` formula because their base discriminants would collide.
+- `ProvableCountProvableBigSumTree` (29) takes a twin in each wrapper family: 157 (`NonCounted`, = 0x80 | 29), 179 (`NotSummed`, hand-assigned 0xB3) and 195 (`NotCountedOrSummed`, hand-assigned 0xC3). Its nodes carry `ProvableCountedAndProvableBigSummedMerkNode(count, sum)` and hash through `node_hash_with_count_and_big_sum`; its proofs use the `KVCountBigSum` node family. A child's `i64` sum widens to `i128`, as under a `BigSumTree`; under a parent whose sum is an `i64` the tree contributes its count and no sum.
 - Indexed-tree item keys (the keys inserted into an indexed primary's content) are capped below the generic 255-byte limit because the secondary key prefixes a sort key: **247 bytes** for the count axis (`count_be`, 8 bytes) and the sum axis (`sum` sign-flipped big-endian, 8 bytes), and **239 bytes** for the avg axis (`avg` fixed-point i128, 16 bytes). Merk's invariant requires keys `< 256 bytes`.
 
 ---

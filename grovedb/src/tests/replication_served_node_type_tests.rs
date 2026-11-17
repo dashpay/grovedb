@@ -76,6 +76,9 @@ fn link_aggregate(feature: TreeFeatureType) -> AggregateData {
         TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, sum) => {
             AggregateData::ProvableCountAndProvableSum(count, sum)
         }
+        TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(count, sum) => {
+            AggregateData::ProvableCountAndProvableBigSum(count, sum)
+        }
     }
 }
 

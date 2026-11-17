@@ -64,6 +64,19 @@ enum NonMerkLowerLayer {
     },
 }
 
+/// The count and sum that the host of a reference row commits into its node
+/// hash, when the host commits both: the reference's proof node has to carry
+/// them for the verifier to rebuild that hash.
+#[derive(Clone, Copy)]
+enum CountSumForRef {
+    /// A `ProvableCountProvableSumTree` host: the row becomes a
+    /// `KVRefValueHashCountSum`.
+    Sum(u64, i64),
+    /// A `ProvableCountProvableBigSumTree` host: the row becomes a
+    /// `KVRefValueHashCountBigSum`.
+    BigSum(u64, i128),
+}
+
 impl GroveDb {
     /// Prove one or more path queries.
     /// If we have more than one path query, we merge into a single path query
@@ -835,6 +848,19 @@ impl GroveDb {
             ))
             .wrap_with_cost(cost);
         }
+        // The same holds for the wide counterpart, whose proof nodes the V0
+        // post-processor does not know either.
+        if matches!(
+            subtree.tree_type,
+            grovedb_merk::TreeType::ProvableCountProvableBigSumTree
+        ) {
+            return Err(Error::NotSupported(
+                "ProvableCountProvableBigSumTree hosts require V1 proof envelopes; \
+                 upgrade the grove version producing the proof to v3 or later"
+                    .to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
 
         let limit = if path.len() < path_query.path.len() {
             // There is no need for a limit because we are only asking for a single item
@@ -1158,6 +1184,7 @@ impl GroveDb {
                             | Ok(Element::ProvableCountSumTree(Some(_), ..))
                             | Ok(Element::ProvableSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountProvableSumTree(Some(_), ..))
+                            | Ok(Element::ProvableCountProvableBigSumTree(Some(_), ..))
                             | Ok(Element::CommitmentTree(..))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
@@ -1231,6 +1258,7 @@ impl GroveDb {
                             | Ok(Element::ProvableCountSumTree(..))
                             | Ok(Element::ProvableSumTree(..))
                             | Ok(Element::ProvableCountProvableSumTree(..))
+                            | Ok(Element::ProvableCountProvableBigSumTree(..))
                             | Ok(Element::CommitmentTree(..))
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
@@ -1291,6 +1319,7 @@ impl GroveDb {
                             | Ok(Element::ProvableCountSumTree(..))
                             | Ok(Element::ProvableSumTree(..))
                             | Ok(Element::ProvableCountProvableSumTree(..))
+                            | Ok(Element::ProvableCountProvableBigSumTree(..))
                             | Ok(Element::CommitmentTree(..))
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
@@ -2239,6 +2268,8 @@ impl GroveDb {
                     | Op::PushInverted(Node::KVSum(..))
                     | Op::Push(Node::KVCountSum(..))
                     | Op::PushInverted(Node::KVCountSum(..))
+                    | Op::Push(Node::KVCountBigSum(..))
+                    | Op::PushInverted(Node::KVCountBigSum(..))
             );
             let count_for_ref = match op {
                 Op::Push(Node::KVValueHashFeatureType(_, _, _, ft))
@@ -2271,7 +2302,10 @@ impl GroveDb {
                 Op::Push(Node::KVValueHashFeatureType(_, _, _, ft))
                 | Op::PushInverted(Node::KVValueHashFeatureType(_, _, _, ft)) => match ft {
                     TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, sum) => {
-                        Some((*count, *sum))
+                        Some(CountSumForRef::Sum(*count, *sum))
+                    }
+                    TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(count, sum) => {
+                        Some(CountSumForRef::BigSum(*count, *sum))
                     }
                     _ => None,
                 },
@@ -2300,6 +2334,7 @@ impl GroveDb {
                     | Node::KVValueHash(key, value, ..)
                     | Node::KVCount(key, value, _)
                     | Node::KVSum(key, value, _)
+                    | Node::KVCountBigSum(key, value, ..)
                     | Node::KVCountSum(key, value, ..)
                     | Node::KVValueHashFeatureType(key, value, ..)
                         if done_with_results
@@ -2327,6 +2362,7 @@ impl GroveDb {
                     | Node::KVBackwardsReferencesValueHash(key, value, ..)
                     | Node::KVCount(key, value, _)
                     | Node::KVSum(key, value, _)
+                    | Node::KVCountBigSum(key, value, ..)
                     | Node::KVCountSum(key, value, ..)
                     | Node::KVValueHashFeatureType(key, value, ..)
                         if !done_with_results =>
@@ -3114,6 +3150,7 @@ impl GroveDb {
                             | Ok(Element::ProvableCountSumTree(Some(_), ..))
                             | Ok(Element::ProvableSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountProvableSumTree(Some(_), ..))
+                            | Ok(Element::ProvableCountProvableBigSumTree(Some(_), ..))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
@@ -3202,6 +3239,7 @@ impl GroveDb {
                             | Ok(Element::ProvableCountSumTree(Some(_), ..))
                             | Ok(Element::ProvableSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountProvableSumTree(Some(_), ..))
+                            | Ok(Element::ProvableCountProvableBigSumTree(Some(_), ..))
                                 if !done_with_results =>
                             {
                                 // Non-empty tree without subquery: inject child
@@ -3328,6 +3366,7 @@ impl GroveDb {
                             Ok(Element::ProvableCountTree(None, ..))
                             | Ok(Element::ProvableCountSumTree(None, ..))
                             | Ok(Element::ProvableCountProvableSumTree(None, ..))
+                            | Ok(Element::ProvableCountProvableBigSumTree(None, ..))
                                 if !done_with_results
                                     && is_aggregate_count_query
                                     && descends_into_empty_aggregate_tree
@@ -3373,6 +3412,7 @@ impl GroveDb {
                             // it as sum = 0).
                             Ok(Element::ProvableSumTree(None, ..))
                             | Ok(Element::ProvableCountProvableSumTree(None, ..))
+                            | Ok(Element::ProvableCountProvableBigSumTree(None, ..))
                                 if !done_with_results
                                     && is_aggregate_sum_query
                                     && descends_into_empty_aggregate_tree
@@ -3460,6 +3500,7 @@ impl GroveDb {
                             | Ok(Element::ProvableCountSumTree(None, ..))
                             | Ok(Element::ProvableSumTree(None, ..))
                             | Ok(Element::ProvableCountProvableSumTree(None, ..))
+                            | Ok(Element::ProvableCountProvableBigSumTree(None, ..))
                             | Ok(Element::ProvableSumIndexedTree(None, ..))
                             | Ok(Element::ProvableCountIndexedTree(None, ..))
                             // PCPSIT empty form: primary root key is None AND the axes TLV is
@@ -3515,6 +3556,7 @@ impl GroveDb {
                             | Ok(Element::ProvableCountSumTree(..))
                             | Ok(Element::ProvableSumTree(..))
                             | Ok(Element::ProvableCountProvableSumTree(..))
+                            | Ok(Element::ProvableCountProvableBigSumTree(..))
                             | Ok(Element::CommitmentTree(..))
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
@@ -3819,7 +3861,7 @@ impl GroveDb {
             // directly valued rows.
             let (count_for_ref, count_sum_for_ref) = match feature_type {
                 TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, sum) => {
-                    (None, Some((*count, *sum)))
+                    (None, Some(CountSumForRef::Sum(*count, *sum)))
                 }
                 TreeFeatureType::ProvableCountedMerkNode(count)
                 | TreeFeatureType::ProvableCountedSummedMerkNode(count, _) => (Some(*count), None),
@@ -3864,16 +3906,25 @@ impl GroveDb {
         reference_element_hash: grovedb_merk::CryptoHash,
         count_for_ref: Option<u64>,
         sum_for_ref: Option<i64>,
-        count_sum_for_ref: Option<(u64, i64)>,
+        count_sum_for_ref: Option<CountSumForRef>,
     ) -> Node {
-        if let Some((count, sum)) = count_sum_for_ref {
-            Node::KVRefValueHashCountSum(
-                key.to_owned(),
-                serialized_referenced_elem,
-                reference_element_hash,
-                count,
-                sum,
-            )
+        if let Some(count_sum) = count_sum_for_ref {
+            match count_sum {
+                CountSumForRef::Sum(count, sum) => Node::KVRefValueHashCountSum(
+                    key.to_owned(),
+                    serialized_referenced_elem,
+                    reference_element_hash,
+                    count,
+                    sum,
+                ),
+                CountSumForRef::BigSum(count, sum) => Node::KVRefValueHashCountBigSum(
+                    key.to_owned(),
+                    serialized_referenced_elem,
+                    reference_element_hash,
+                    count,
+                    sum,
+                ),
+            }
         } else if let Some(sum) = sum_for_ref {
             Node::KVRefValueHashSum(
                 key.to_owned(),
@@ -3911,7 +3962,7 @@ impl GroveDb {
         path: &[&[u8]],
         count_for_ref: Option<u64>,
         sum_for_ref: Option<i64>,
-        count_sum_for_ref: Option<(u64, i64)>,
+        count_sum_for_ref: Option<CountSumForRef>,
         grove_version: &GroveVersion,
     ) -> CostResult<Node, Error> {
         let mut cost = OperationCost::default();
@@ -3988,7 +4039,7 @@ impl GroveDb {
         committed_value_hash: Option<grovedb_merk::CryptoHash>,
         count_for_ref: Option<u64>,
         sum_for_ref: Option<i64>,
-        count_sum_for_ref: Option<(u64, i64)>,
+        count_sum_for_ref: Option<CountSumForRef>,
         transaction: TransactionArg,
         refuse_populated_target: bool,
         grove_version: &GroveVersion,

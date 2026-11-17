@@ -323,6 +323,7 @@ fn carried(element: &Element) -> Carried<'_> {
         | Element::ProvableCountSumTree(..)
         | Element::ProvableSumTree(..)
         | Element::ProvableCountProvableSumTree(..)
+        | Element::ProvableCountProvableBigSumTree(..)
         | Element::CommitmentTree(..)
         | Element::MmrTree(..)
         | Element::BulkAppendTree(..)

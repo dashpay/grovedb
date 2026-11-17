@@ -44,7 +44,7 @@ use grovedb_path::SubtreePath;
 use grovedb_storage::{rocksdb_storage::PrefixedRocksDbTransactionContext, StorageBatch};
 use grovedb_version::version::GroveVersion;
 
-use super::super::InsertOptions;
+use super::super::{check_provable_count_provable_big_sum_tree_creation, InsertOptions};
 use crate::{Element, Error, GroveDb, Transaction};
 
 impl GroveDb {
@@ -110,6 +110,17 @@ impl GroveDb {
             }
         }
 
+        // A grove version that predates the wide count and sum tree refuses
+        // to create one.
+        cost_return_on_error_no_add!(
+            cost,
+            check_provable_count_provable_big_sum_tree_creation(
+                &element,
+                "insert Element::ProvableCountProvableBigSumTree",
+                grove_version,
+            )
+        );
+
         // Dispatch via the underlying element so a NonCounted wrapper takes
         // the same path as its inner element. The actual `element.insert*`
         // calls operate on the outer wrapper, which is what we want — the
@@ -163,7 +174,8 @@ impl GroveDb {
             | Element::BigSumTree(value, ..)
             | Element::CountTree(value, ..)
             | Element::ProvableSumTree(value, ..)
-            | Element::ProvableCountProvableSumTree(value, ..) => {
+            | Element::ProvableCountProvableSumTree(value, ..)
+            | Element::ProvableCountProvableBigSumTree(value, ..) => {
                 if value.is_some() {
                     return Err(Error::InvalidCodeExecution(
                         "a tree should be empty at the moment of insertion when not using batches",

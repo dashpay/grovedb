@@ -1303,6 +1303,45 @@ fn node_to_string(node: &Node) -> Result<String, fmt::Error> {
                 sum
             )
         }
+        Node::KVCountBigSum(key, value, count, sum) => format!(
+            "KVCountBigSum({}, {}, count={}, sum={})",
+            hex_to_ascii(key),
+            element_hex_to_ascii(value)?,
+            count,
+            sum
+        ),
+        Node::KVHashCountBigSum(kv_hash, count, sum) => format!(
+            "KVHashCountBigSum(HASH[{}], count={}, sum={})",
+            hex::encode(kv_hash),
+            count,
+            sum
+        ),
+        Node::KVRefValueHashCountBigSum(key, value, value_hash, count, sum) => format!(
+            "KVRefValueHashCountBigSum({}, {}, HASH[{}], count={}, sum={})",
+            hex_to_ascii(key),
+            element_hex_to_ascii(value)?,
+            hex::encode(value_hash),
+            count,
+            sum
+        ),
+        Node::KVDigestCountBigSum(key, value_hash, count, sum) => format!(
+            "KVDigestCountBigSum({}, HASH[{}], count={}, sum={})",
+            hex_to_ascii(key),
+            hex::encode(value_hash),
+            count,
+            sum
+        ),
+        Node::HashWithCountAndBigSum(kv_hash, left_child_hash, right_child_hash, count, sum) => {
+            format!(
+                "HashWithCountAndBigSum(kv_hash=HASH[{}], left=HASH[{}], right=HASH[{}], count={}, \
+                 sum={})",
+                hex::encode(kv_hash),
+                hex::encode(left_child_hash),
+                hex::encode(right_child_hash),
+                count,
+                sum
+            )
+        }
     };
     Ok(s)
 }
