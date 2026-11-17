@@ -442,15 +442,19 @@ impl Tree {
                 let combined_value_hash = combine_hash(node_value_hash, &referenced_value_hash)
                     .unwrap_add_cost(&mut cost);
 
-                kv_digest_to_kv_hash(key.as_slice(), &combined_value_hash).flat_map(|kv_hash| {
-                    node_hash_with_count_and_big_sum(
-                        &kv_hash,
-                        &self.child_hash(true),
-                        &self.child_hash(false),
-                        *count,
-                        *sum,
-                    )
-                })
+                // The cost includes hashing the referenced value and
+                // combining it with the node's value hash.
+                kv_digest_to_kv_hash(key.as_slice(), &combined_value_hash)
+                    .flat_map(|kv_hash| {
+                        node_hash_with_count_and_big_sum(
+                            &kv_hash,
+                            &self.child_hash(true),
+                            &self.child_hash(false),
+                            *count,
+                            *sum,
+                        )
+                    })
+                    .add_cost(cost)
             }
         }
     }
@@ -1528,6 +1532,34 @@ mod test {
             result,
             Err(Error::InvalidProofError(s)) if s == "Stack underflow"
         ));
+    }
+
+    /// The wide reference node hashes to what a digest node holding the
+    /// combined value hash does, and its cost is that node's plus the two
+    /// hashes that derive the combined value hash.
+    #[test]
+    fn wide_reference_node_hash_costs_its_referenced_value_hashes() {
+        let key = vec![3];
+        let referenced_value = vec![4; 200];
+        let node_value_hash = [5; 32];
+
+        let mut value_hash_cost = OperationCost::default();
+        let referenced_value_hash =
+            value_hash(referenced_value.as_slice()).unwrap_add_cost(&mut value_hash_cost);
+        let combined_value_hash = combine_hash(&node_value_hash, &referenced_value_hash)
+            .unwrap_add_cost(&mut value_hash_cost);
+        assert!(value_hash_cost.hash_node_calls > 0);
+
+        let digest: ProofTree =
+            Node::KVDigestCountBigSum(key.clone(), combined_value_hash, 9, i128::MAX).into();
+        let digest_hash = digest.hash();
+        let reference: ProofTree =
+            Node::KVRefValueHashCountBigSum(key, referenced_value, node_value_hash, 9, i128::MAX)
+                .into();
+        let reference_hash = reference.hash();
+
+        assert_eq!(reference_hash.value, digest_hash.value);
+        assert_eq!(reference_hash.cost, digest_hash.cost + value_hash_cost);
     }
 
     #[test]
