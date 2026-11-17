@@ -2255,8 +2255,8 @@ mod test {
 
     /// A `ProvableCountProvableBigSumTree` Merk aggregates its count and a
     /// 128-bit sum, serves trunk queries as a count-bearing tree (through
-    /// the privacy depth split when a minimum depth is asked), and refuses
-    /// the range aggregates and count offsets, which are not offered on it.
+    /// the privacy depth split when a minimum depth is asked), and answers
+    /// range aggregates through the big sum entry points only.
     #[test]
     fn test_provable_count_provable_big_sum_tree_merk() {
         use grovedb_query::QueryItem;
@@ -2310,21 +2310,15 @@ mod test {
             "a provable count tree must use the privacy depth split"
         );
 
+        // The range aggregates named for an `i64` sum stay refused: the wide
+        // tree is served by the big sum entry points.
         let range = QueryItem::RangeFull(std::ops::RangeFull);
-        assert!(merk
-            .prove_aggregate_count_on_range(&range, grove_version)
-            .unwrap()
-            .is_err());
         assert!(merk
             .prove_aggregate_sum_on_range(&range, grove_version)
             .unwrap()
             .is_err());
         assert!(merk
             .prove_aggregate_count_and_sum_on_range(&range, grove_version)
-            .unwrap()
-            .is_err());
-        assert!(merk
-            .count_aggregate_on_range(&range, grove_version)
             .unwrap()
             .is_err());
         assert!(merk
@@ -2335,9 +2329,11 @@ mod test {
             .count_and_sum_aggregate_on_range(&range, grove_version)
             .unwrap()
             .is_err());
-        assert!(merk
-            .prove_count_offset_on_range(&range, 0, Some(5), true, grove_version)
-            .unwrap()
-            .is_err());
+        assert_eq!(
+            merk.count_and_big_sum_aggregate_on_range(&range, grove_version)
+                .unwrap()
+                .expect("the wide count and sum"),
+            (25, 25 * own_sum)
+        );
     }
 }

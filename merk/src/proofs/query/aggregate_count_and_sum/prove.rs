@@ -11,7 +11,8 @@ use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use grovedb_version::version::GroveVersion;
 
 use super::{
-    emit::emit_count_and_sum_proof, is_provable_count_and_sum_bearing, walk::walk_count_and_sum,
+    emit::emit_count_and_sum_proof, is_provable_count_and_big_sum_bearing,
+    is_provable_count_and_sum_bearing, walk::walk_count_and_sum,
 };
 use crate::{
     proofs::{query::QueryItem, Op},
@@ -129,6 +130,58 @@ where
             walk_count_and_sum(self, inner_range, None, None, grove_version)
         );
         narrow_count_and_sum(count_u128, sum_i128).wrap_with_cost(cost)
+    }
+
+    /// The wide form of
+    /// [`Self::create_aggregate_count_and_sum_on_range_proof`], for a
+    /// `ProvableCountProvableBigSumTree`: the same walk, emitting the wide
+    /// proof nodes, with the in-range sum returned as an `i128`.
+    ///
+    /// `tree_type` must be `ProvableCountProvableBigSumTree`; any other is
+    /// rejected with `Error::InvalidProofError` before walking.
+    pub fn create_aggregate_count_and_big_sum_on_range_proof(
+        &mut self,
+        inner_range: &QueryItem,
+        tree_type: TreeType,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(LinkedList<Op>, u64, i128), Error> {
+        if !is_provable_count_and_big_sum_bearing(tree_type) {
+            return Err(Error::InvalidProofError(format!(
+                "a big sum AggregateCountAndSumOnRange is only valid against \
+                 ProvableCountProvableBigSumTree, got {:?}",
+                tree_type
+            )))
+            .wrap_with_cost(OperationCost::default());
+        }
+        let mut cost = OperationCost::default();
+        let mut ops = LinkedList::new();
+        let (count, sum) = cost_return_on_error!(
+            &mut cost,
+            emit_count_and_sum_proof(self, inner_range, None, None, &mut ops, grove_version)
+        );
+        Ok((ops, count, sum)).wrap_with_cost(cost)
+    }
+
+    /// The wide form of [`Self::count_and_sum_aggregate_on_range`]: the
+    /// in-range `(count, sum)` with the sum as an `i128`, without a proof.
+    pub fn count_and_big_sum_aggregate_on_range(
+        &mut self,
+        inner_range: &QueryItem,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(u64, i128), Error> {
+        let mut cost = OperationCost::default();
+        let (count_u128, sum) = cost_return_on_error!(
+            &mut cost,
+            walk_count_and_sum(self, inner_range, None, None, grove_version)
+        );
+        match u64::try_from(count_u128) {
+            Ok(count) => Ok((count, sum)).wrap_with_cost(cost),
+            Err(_) => Err(Error::CorruptedData(format!(
+                "no-proof aggregate-count-and-sum: in-range count overflowed u64 ({})",
+                count_u128
+            )))
+            .wrap_with_cost(cost),
+        }
     }
 }
 

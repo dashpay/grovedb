@@ -142,6 +142,7 @@ pub(super) fn is_provable_count_bearing(tree_type: TreeType) -> bool {
         TreeType::ProvableCountTree
             | TreeType::ProvableCountSumTree
             | TreeType::ProvableCountProvableSumTree
+            | TreeType::ProvableCountProvableBigSumTree
     )
 }
 
@@ -159,6 +160,25 @@ pub(super) fn binds_sum_into_hash(tree_type: TreeType) -> bool {
     matches!(tree_type, TreeType::ProvableCountProvableSumTree)
 }
 
+/// Returns true when the host tree binds its count and a 128-bit sum into
+/// its node hash (`ProvableCountProvableBigSumTree`). The emit and verify
+/// paths then use the wide node variants (`HashWithCountAndBigSum`,
+/// `KVDigestCountBigSum`, `KVCountBigSum`) so the verifier can rebuild
+/// `node_hash_with_count_and_big_sum`.
+#[cfg(feature = "minimal")]
+pub(super) fn binds_big_sum_into_hash(tree_type: TreeType) -> bool {
+    matches!(tree_type, TreeType::ProvableCountProvableBigSumTree)
+}
+
+/// The 128-bit sum of a wide aggregate, `None` for every other aggregate.
+#[cfg(feature = "minimal")]
+pub(super) fn provable_big_sum_from_aggregate(data: AggregateData) -> Option<i128> {
+    match data {
+        AggregateData::ProvableCountAndProvableBigSum(_, s) => Some(s),
+        _ => None,
+    }
+}
+
 /// Pull the count out of a `ProvableCount` / `ProvableCountAndSum` /
 /// `ProvableCountAndProvableSum` aggregate. Returns `Err(InvalidProofError)`
 /// for any other variant — the entry point gates `tree_type` so reaching
@@ -170,6 +190,7 @@ pub(super) fn provable_count_from_aggregate(data: AggregateData) -> Result<u64, 
         AggregateData::ProvableCount(c) => Ok(c),
         AggregateData::ProvableCountAndSum(c, _) => Ok(c),
         AggregateData::ProvableCountAndProvableSum(c, _) => Ok(c),
+        AggregateData::ProvableCountAndProvableBigSum(c, _) => Ok(c),
         other => Err(Error::InvalidProofError(format!(
             "expected ProvableCount aggregate data on a provable count tree, got {:?}",
             other

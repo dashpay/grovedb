@@ -633,6 +633,7 @@ impl GroveDb {
             MerkTreeType::ProvableCountTree
                 | MerkTreeType::ProvableCountSumTree
                 | MerkTreeType::ProvableCountProvableSumTree
+                | MerkTreeType::ProvableCountProvableBigSumTree
         ) {
             return Err(Error::InvalidQuery(
                 "count-offset paginated queries are only valid against \
@@ -2129,6 +2130,41 @@ impl GroveDb {
                         subtree
                             .prove_aggregate_count_on_range(inner_range, grove_version)
                             .map_err(Error::MerkError)
+                    );
+                    ops
+                }
+                // The same query runs on a tree of either sum width: a
+                // `ProvableCountProvableBigSumTree` is proved by the wide
+                // primitive, with its own proof nodes, and every other tree
+                // by the narrow one, which refuses the tree types it cannot
+                // serve.
+                AggregateKind::Sum
+                    if subtree.tree_type
+                        == grovedb_merk::TreeType::ProvableCountProvableBigSumTree =>
+                {
+                    let (ops, _) = cost_return_on_error!(
+                        &mut cost,
+                        subtree
+                            .prove_aggregate_big_sum_on_range(inner_range, grove_version)
+                            .map_err(|e| Error::CorruptedData(format!(
+                                "prove_aggregate_big_sum_on_range failed: {}",
+                                e
+                            )))
+                    );
+                    ops
+                }
+                AggregateKind::CountAndSum
+                    if subtree.tree_type
+                        == grovedb_merk::TreeType::ProvableCountProvableBigSumTree =>
+                {
+                    let (ops, _, _) = cost_return_on_error!(
+                        &mut cost,
+                        subtree
+                            .prove_aggregate_count_and_big_sum_on_range(inner_range, grove_version)
+                            .map_err(|e| Error::CorruptedData(format!(
+                                "prove_aggregate_count_and_big_sum_on_range failed: {}",
+                                e
+                            )))
                     );
                     ops
                 }
@@ -3640,6 +3676,7 @@ impl GroveDb {
             MerkTreeType::ProvableCountTree
                 | MerkTreeType::ProvableCountSumTree
                 | MerkTreeType::ProvableCountProvableSumTree
+                | MerkTreeType::ProvableCountProvableBigSumTree
         ) {
             return Err(Error::InvalidQuery(
                 "count-offset paginated queries are only valid against \
@@ -3735,6 +3772,7 @@ impl GroveDb {
             MerkTreeType::ProvableCountTree
                 | MerkTreeType::ProvableCountSumTree
                 | MerkTreeType::ProvableCountProvableSumTree
+                | MerkTreeType::ProvableCountProvableBigSumTree
         ) {
             return Err(Error::InvalidQuery(
                 "count-offset paginated queries are only valid against \
@@ -3862,6 +3900,9 @@ impl GroveDb {
             let (count_for_ref, count_sum_for_ref) = match feature_type {
                 TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, sum) => {
                     (None, Some(CountSumForRef::Sum(*count, *sum)))
+                }
+                TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(count, sum) => {
+                    (None, Some(CountSumForRef::BigSum(*count, *sum)))
                 }
                 TreeFeatureType::ProvableCountedMerkNode(count)
                 | TreeFeatureType::ProvableCountedSummedMerkNode(count, _) => (Some(*count), None),

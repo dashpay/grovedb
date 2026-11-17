@@ -688,6 +688,7 @@ impl GroveDb {
                 Element::ProvableCountTree(..)
                     | Element::ProvableCountSumTree(..)
                     | Element::ProvableCountProvableSumTree(..)
+                    | Element::ProvableCountProvableBigSumTree(..)
             )
         {
             return Err(Error::InvalidQuery(

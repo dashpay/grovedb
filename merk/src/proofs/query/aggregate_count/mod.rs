@@ -58,6 +58,7 @@ pub(super) fn is_provable_count_bearing(tree_type: TreeType) -> bool {
         TreeType::ProvableCountTree
             | TreeType::ProvableCountSumTree
             | TreeType::ProvableCountProvableSumTree
+            | TreeType::ProvableCountProvableBigSumTree
     )
 }
 
@@ -74,6 +75,7 @@ pub(super) fn provable_count_from_aggregate(data: AggregateData) -> Result<u64, 
         AggregateData::ProvableCount(c) => Ok(c),
         AggregateData::ProvableCountAndSum(c, _) => Ok(c),
         AggregateData::ProvableCountAndProvableSum(c, _) => Ok(c),
+        AggregateData::ProvableCountAndProvableBigSum(c, _) => Ok(c),
         other => Err(Error::CorruptedData(format!(
             "expected ProvableCount aggregate data on a provable count tree, got {:?}",
             other

@@ -124,12 +124,14 @@ pub(super) fn enforce_lower_chain(
             Element::ProvableCountTree(..)
                 | Element::ProvableCountSumTree(..)
                 | Element::ProvableCountProvableSumTree(..)
+                | Element::ProvableCountProvableBigSumTree(..)
         ) {
             return Err(Error::InvalidProof(
                 path_query.clone(),
                 format!(
                     "aggregate-count proof's terminal path element at key {} must be a \
-                     ProvableCountTree, ProvableCountSumTree, or ProvableCountProvableSumTree \
+                     ProvableCountTree, ProvableCountSumTree, ProvableCountProvableSumTree, or \
+                     ProvableCountProvableBigSumTree \
                      (got {}); a count aggregate is only meaningful against a tree that binds \
                      its count into the node hash",
                     hex::encode(target_key),

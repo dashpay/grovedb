@@ -500,10 +500,12 @@ where
             crate::TreeType::ProvableCountTree
                 | crate::TreeType::ProvableCountSumTree
                 | crate::TreeType::ProvableCountProvableSumTree
+                | crate::TreeType::ProvableCountProvableBigSumTree
         ) {
             return Err(Error::InvalidProofError(format!(
                 "AggregateCountOnRange is only valid against ProvableCountTree, \
-                 ProvableCountSumTree, or ProvableCountProvableSumTree, got {:?}",
+                 ProvableCountSumTree, ProvableCountProvableSumTree, or \
+                 ProvableCountProvableBigSumTree, got {:?}",
                 tree_type
             )))
             .wrap_with_cost(Default::default());
@@ -622,6 +624,61 @@ where
             Some(tree) => {
                 let mut ref_walker = RefWalker::new(tree, self.source());
                 ref_walker.count_and_sum_aggregate_on_range(inner_range, grove_version)
+            }
+        })
+    }
+
+    /// The wide form of [`Self::sum_aggregate_on_range`]: the in-range sum
+    /// of a `ProvableCountProvableBigSumTree` as an `i128`, without a proof.
+    /// Any other tree type is rejected with `Error::InvalidProofError`
+    /// before walking. On an empty merk this returns `sum = 0`.
+    pub fn big_sum_aggregate_on_range(
+        &self,
+        inner_range: &QueryItem,
+        grove_version: &GroveVersion,
+    ) -> CostResult<i128, Error> {
+        let tree_type = self.tree_type;
+        if !matches!(tree_type, crate::TreeType::ProvableCountProvableBigSumTree) {
+            return Err(Error::InvalidProofError(format!(
+                "a big sum AggregateSumOnRange is only valid against \
+                 ProvableCountProvableBigSumTree, got {:?}",
+                tree_type
+            )))
+            .wrap_with_cost(Default::default());
+        }
+        self.use_tree_mut(|maybe_tree| match maybe_tree {
+            None => Ok(0i128).wrap_with_cost(Default::default()),
+            Some(tree) => {
+                let mut ref_walker = RefWalker::new(tree, self.source());
+                ref_walker.big_sum_aggregate_on_range(inner_range, grove_version)
+            }
+        })
+    }
+
+    /// The wide form of [`Self::count_and_sum_aggregate_on_range`]: the
+    /// in-range `(count, sum)` of a `ProvableCountProvableBigSumTree`, the
+    /// sum as an `i128`, without a proof. Any other tree type is rejected
+    /// with `Error::InvalidProofError` before walking. On an empty merk this
+    /// returns `(0, 0)`.
+    pub fn count_and_big_sum_aggregate_on_range(
+        &self,
+        inner_range: &QueryItem,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(u64, i128), Error> {
+        let tree_type = self.tree_type;
+        if !matches!(tree_type, crate::TreeType::ProvableCountProvableBigSumTree) {
+            return Err(Error::InvalidProofError(format!(
+                "a big sum AggregateCountAndSumOnRange is only valid against \
+                 ProvableCountProvableBigSumTree, got {:?}",
+                tree_type
+            )))
+            .wrap_with_cost(Default::default());
+        }
+        self.use_tree_mut(|maybe_tree| match maybe_tree {
+            None => Ok((0u64, 0i128)).wrap_with_cost(Default::default()),
+            Some(tree) => {
+                let mut ref_walker = RefWalker::new(tree, self.source());
+                ref_walker.count_and_big_sum_aggregate_on_range(inner_range, grove_version)
             }
         })
     }

@@ -13,7 +13,8 @@ use grovedb_version::version::GroveVersion;
 use super::{
     binds_sum_into_hash,
     emit::{emit_returned_node, non_unit_row_error, CollapseAction, EmitState},
-    provable_count_from_aggregate, provable_sum_from_dual_axis_aggregate,
+    provable_big_sum_from_aggregate, provable_count_from_aggregate,
+    provable_sum_from_dual_axis_aggregate,
 };
 use crate::{
     proofs::{
@@ -78,7 +79,15 @@ where
             .link(false)
             .map(|l| *l.hash())
             .unwrap_or(NULL_HASH);
-        let node = if binds_sum_into_hash(tree_type) {
+        let node = if let Some(subtree_sum) = provable_big_sum_from_aggregate(aggregate) {
+            Node::HashWithCountAndBigSum(
+                kv_hash,
+                left_child_hash,
+                right_child_hash,
+                subtree_count,
+                subtree_sum,
+            )
+        } else if binds_sum_into_hash(tree_type) {
             let subtree_sum = match provable_sum_from_dual_axis_aggregate(aggregate) {
                 Ok(s) => s,
                 Err(e) => return Err(e).wrap_with_cost(cost),
@@ -107,6 +116,8 @@ where
     let node_key: Vec<u8> = walker.tree().key().to_vec();
     let node_value_hash: CryptoHash = *walker.tree().value_hash();
     let node_count: u64 = subtree_count;
+    // A wide host's node carries its 128-bit sum instead.
+    let node_big_sum: Option<i128> = provable_big_sum_from_aggregate(aggregate);
     let node_sum: i64 = if binds_sum_into_hash(tree_type) {
         match aggregate {
             AggregateData::ProvableCountAndProvableSum(_, s) => s,
@@ -224,6 +235,13 @@ where
         LocalPageOutput::Proof(ops) => {
             let self_node = if selected {
                 emit_returned_node(walker, node_count, tree_type)
+            } else if let Some(node_big_sum) = node_big_sum {
+                Node::KVDigestCountBigSum(
+                    node_key.clone(),
+                    node_value_hash,
+                    node_count,
+                    node_big_sum,
+                )
             } else if binds_sum_into_hash(tree_type) {
                 Node::KVDigestCountSum(node_key.clone(), node_value_hash, node_count, node_sum)
             } else {

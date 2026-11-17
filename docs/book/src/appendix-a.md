@@ -34,7 +34,7 @@
 | 21 | `ProvableSumIndexedTree` | 13 (ProvableSumIndexedTree) | `(primary_root_key, secondary_root_key, sum: i64, flags)` | 13 | ProvableSumTree-shaped primary + sum-ordered secondary index — see chapter "Indexed Trees" |
 | 22 | `ProvableCountIndexedTree` | 14 (ProvableCountIndexedTree) | `(primary_root_key, secondary_root_key, count: u64, flags)` | 13 | ProvableCountTree-shaped primary + count-ordered secondary index |
 | 23 | `ProvableCountProvableSumIndexedTree` | 15 (ProvableCountProvableSumIndexedTree) | `(primary_root_key, count: u64, sum: i64, axes: TLV, flags)` | 13 | ProvableCountProvableSumTree-shaped primary + 1..=3 secondary indexes (count / sum / avg) |
-| 29 | `ProvableCountProvableBigSumTree` | 17 (ProvableCountProvableBigSumTree) | `(root_key, count: u64, sum: i128, flags)` | COUNT_BIG_SUM_TREE_COST_SIZE | Count and a 128-bit sum both baked into the hash, for sums that can pass the `i64` range. Can be created from `GROVE_V5`; range aggregates and count offsets are not offered on it |
+| 29 | `ProvableCountProvableBigSumTree` | 17 (ProvableCountProvableBigSumTree) | `(root_key, count: u64, sum: i128, flags)` | COUNT_BIG_SUM_TREE_COST_SIZE | Count and a 128-bit sum both baked into the hash, for sums that can pass the `i64` range. Can be created from `GROVE_V5`. Range aggregates on it return the sum as an `i128` through the `big_sum` entry points |
 
 **Notes:**
 - Discriminants 11–14 are **non-Merk trees**: data lives outside a child Merk subtree

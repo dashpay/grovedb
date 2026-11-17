@@ -216,6 +216,12 @@ pub fn verify_count_offset_on_range_proof(
             | Node::HashWithCountAndSum(_, _, _, _, _)
             | Node::KVDigestCountSum(_, _, _, _)
             | Node::KVCountSum(_, _, _, _)
+            // The wide counterparts, for a `ProvableCountProvableBigSumTree`
+            // host.
+            | Node::HashWithCountAndBigSum(_, _, _, _, _)
+            | Node::KVDigestCountBigSum(_, _, _, _)
+            | Node::KVCountBigSum(_, _, _, _)
+            | Node::KVRefValueHashCountBigSum(_, _, _, _, _)
             // Resolved-reference returns. GroveDB's post-pass rewrites a
             // reference row's `KVValueHashFeatureType` into these before
             // encoding, so the value bytes are the dereferenced target's
@@ -293,6 +299,11 @@ fn aggregate_of_proof_tree_node(tree: &ProofTree) -> Result<u64, Error> {
         Node::HashWithCountAndSum(_, _, _, c, _) => Ok(*c),
         Node::KVDigestCountSum(_, _, c, _) => Ok(*c),
         Node::KVCountSum(_, _, c, _) => Ok(*c),
+        // Wide variants: the count sits at the same position.
+        Node::HashWithCountAndBigSum(_, _, _, c, _) => Ok(*c),
+        Node::KVDigestCountBigSum(_, _, c, _) => Ok(*c),
+        Node::KVCountBigSum(_, _, c, _) => Ok(*c),
+        Node::KVRefValueHashCountBigSum(_, _, _, c, _) => Ok(*c),
         // Resolved-reference returns carry their aggregates in the same
         // conceptual position as the value-bearing variants.
         Node::KVRefValueHashCount(_, _, _, c) => Ok(*c),
@@ -301,6 +312,7 @@ fn aggregate_of_proof_tree_node(tree: &ProofTree) -> Result<u64, Error> {
             TreeFeatureType::ProvableCountedMerkNode(c) => Ok(*c),
             TreeFeatureType::ProvableCountedSummedMerkNode(c, _) => Ok(*c),
             TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(c, _) => Ok(*c),
+            TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(c, _) => Ok(*c),
             other => Err(Error::InvalidProofError(format!(
                 "count-offset proof: KVValueHashFeatureType carries non-count feature type \
                  {:?} — expected ProvableCountedMerkNode / ProvableCountedSummedMerkNode / \
@@ -362,6 +374,7 @@ fn verify_count_offset_shape(
     if let Some(count) = match &tree.node {
         Node::HashWithCount(_, _, _, c) => Some(*c),
         Node::HashWithCountAndSum(_, _, _, c, _) => Some(*c),
+        Node::HashWithCountAndBigSum(_, _, _, c, _) => Some(*c),
         _ => None,
     } {
         let count = &count;
@@ -454,6 +467,10 @@ fn verify_count_offset_shape(
         // Resolved-reference per-element variants.
         Node::KVRefValueHashCount(key, _, _, _) => key.as_slice(),
         Node::KVRefValueHashCountSum(key, _, _, _, _) => key.as_slice(),
+        // Wide per-element variants.
+        Node::KVDigestCountBigSum(key, _, _, _) => key.as_slice(),
+        Node::KVCountBigSum(key, _, _, _) => key.as_slice(),
+        Node::KVRefValueHashCountBigSum(key, _, _, _, _) => key.as_slice(),
         // Reaching here would require:
         //   - the `execute_with_options` allowlist accepted a node
         //     that doesn't carry a key (only `HashWithCount` /
@@ -568,7 +585,9 @@ fn classify_self<'a>(
     own_count: u64,
 ) -> Result<BoundaryKind<'a>, Error> {
     match node {
-        Node::KVDigestCount(_, _, _) | Node::KVDigestCountSum(_, _, _, _) => {
+        Node::KVDigestCount(_, _, _)
+        | Node::KVDigestCountSum(_, _, _, _)
+        | Node::KVDigestCountBigSum(_, _, _, _) => {
             // KVDigestCount / KVDigestCountSum sit at four allowed
             // positions:
             //   - Out-of-range path node (own=0 OR own=1 — the value
@@ -652,6 +671,28 @@ fn classify_self<'a>(
             if own_count != 1 {
                 return Err(Error::InvalidProofError(format!(
                     "count-offset proof: KVCountSum at own_count={} (expected 1)",
+                    own_count
+                )));
+            }
+            let vh = compute_value_hash(value.as_slice()).unwrap();
+            Ok(BoundaryKind::ValueReturned {
+                resolved_from_reference: false,
+                key: key.as_slice(),
+                value: value.as_slice(),
+                value_hash: vh,
+            })
+        }
+        Node::KVCountBigSum(key, value, _, _) => {
+            // The wide counterpart of the arm above, for a
+            // `ProvableCountProvableBigSumTree` host.
+            if !in_range {
+                return Err(Error::InvalidProofError(
+                    "count-offset proof: KVCountBigSum at an out-of-range position".to_string(),
+                ));
+            }
+            if own_count != 1 {
+                return Err(Error::InvalidProofError(format!(
+                    "count-offset proof: KVCountBigSum at own_count={} (expected 1)",
                     own_count
                 )));
             }
@@ -798,6 +839,30 @@ fn classify_self<'a>(
             if own_count != 1 {
                 return Err(Error::InvalidProofError(format!(
                     "count-offset proof: KVRefValueHashCountSum at own_count={} (expected 1)",
+                    own_count
+                )));
+            }
+            Ok(BoundaryKind::ValueReturned {
+                resolved_from_reference: true,
+                key: key.as_slice(),
+                value: value.as_slice(),
+                value_hash: crate::tree::combine_hash(
+                    reference_element_hash,
+                    &compute_value_hash(value.as_slice()).unwrap(),
+                )
+                .unwrap(),
+            })
+        }
+        Node::KVRefValueHashCountBigSum(key, value, reference_element_hash, _, _) => {
+            if !in_range {
+                return Err(Error::InvalidProofError(
+                    "count-offset proof: KVRefValueHashCountBigSum at an out-of-range position"
+                        .to_string(),
+                ));
+            }
+            if own_count != 1 {
+                return Err(Error::InvalidProofError(format!(
+                    "count-offset proof: KVRefValueHashCountBigSum at own_count={} (expected 1)",
                     own_count
                 )));
             }

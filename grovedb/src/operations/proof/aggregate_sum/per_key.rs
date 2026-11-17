@@ -21,7 +21,7 @@ use crate::{
             classification::AggregateSumClassification,
             helpers::{
                 enforce_lower_chain, execute_carrier_layer_proof, expect_merk_bytes,
-                verify_single_key_layer_proof_v0, verify_sum_leaf, OuterMatch,
+                verify_single_key_layer_proof_v0, verify_sum_leaf, OuterMatch, SumWidth,
             },
         },
         LayerProof,
@@ -31,15 +31,15 @@ use crate::{
 
 /// Entry point for the per-key carrier walker. Wraps the recursive
 /// [`verify_v1_per_key`] with `depth = 0`.
-pub(super) fn verify_v1_with_classification(
+pub(super) fn verify_v1_with_classification<W: SumWidth>(
     layer: &LayerProof,
     path_query: &PathQuery,
     path_keys: &[&[u8]],
     classification: &AggregateSumClassification,
     limit_mode: ProofLimitMode,
     grove_version: &GroveVersion,
-) -> Result<(CryptoHash, Vec<(Vec<u8>, i64)>, bool), Error> {
-    verify_v1_per_key(
+) -> Result<(CryptoHash, Vec<(Vec<u8>, W::Sum)>, bool), Error> {
+    verify_v1_per_key::<W>(
         layer,
         path_query,
         path_keys,
@@ -55,7 +55,7 @@ pub(super) fn verify_v1_with_classification(
 /// once it reaches the carrier merk it dispatches on the classification
 /// shape: leaf collapses to a one-entry result vector, carrier executes
 /// the multi-key proof and fans out via [`verify_v1_carrier_layer`].
-fn verify_v1_per_key(
+fn verify_v1_per_key<W: SumWidth>(
     layer: &LayerProof,
     path_query: &PathQuery,
     path_keys: &[&[u8]],
@@ -63,7 +63,7 @@ fn verify_v1_per_key(
     classification: &AggregateSumClassification,
     limit_mode: ProofLimitMode,
     grove_version: &GroveVersion,
-) -> Result<(CryptoHash, Vec<(Vec<u8>, i64)>, bool), Error> {
+) -> Result<(CryptoHash, Vec<(Vec<u8>, W::Sum)>, bool), Error> {
     let merk_bytes = expect_merk_bytes(&layer.merk_proof, path_query)?;
 
     if depth < path_keys.len() {
@@ -79,7 +79,7 @@ fn verify_v1_per_key(
                 ),
             )
         })?;
-        let (lower_hash, results, exhausted) = verify_v1_per_key(
+        let (lower_hash, results, exhausted) = verify_v1_per_key::<W>(
             lower_layer,
             path_query,
             path_keys,
@@ -97,7 +97,7 @@ fn verify_v1_per_key(
         // `verify_v1_carrier_layer` / `verify_v1_subquery_path`.
         let is_terminal =
             depth + 1 == path_keys.len() && classification.carrier_outer_items.is_none();
-        enforce_lower_chain(
+        enforce_lower_chain::<W>(
             path_query,
             &next_key,
             &proven_value_bytes,
@@ -112,10 +112,10 @@ fn verify_v1_per_key(
     match &classification.carrier_outer_items {
         None => {
             let (root, sum) =
-                verify_sum_leaf(merk_bytes, &classification.leaf_inner_range, path_query)?;
+                verify_sum_leaf::<W>(merk_bytes, &classification.leaf_inner_range, path_query)?;
             Ok((root, vec![(Vec::new(), sum)], true))
         }
-        Some(outer_items) => verify_v1_carrier_layer(
+        Some(outer_items) => verify_v1_carrier_layer::<W>(
             layer,
             merk_bytes,
             path_query,
@@ -143,7 +143,7 @@ fn verify_v1_per_key(
 /// [`ProofLimitMode::UpperBound`] it is only a ceiling and the proof may
 /// end the walk earlier; the returned flag says whether the walk was
 /// proven exhausted.
-fn verify_v1_carrier_layer(
+fn verify_v1_carrier_layer<W: SumWidth>(
     layer: &LayerProof,
     merk_bytes: &[u8],
     path_query: &PathQuery,
@@ -152,7 +152,7 @@ fn verify_v1_carrier_layer(
     classification: &AggregateSumClassification,
     limit_mode: ProofLimitMode,
     grove_version: &GroveVersion,
-) -> Result<(CryptoHash, Vec<(Vec<u8>, i64)>, bool), Error> {
+) -> Result<(CryptoHash, Vec<(Vec<u8>, W::Sum)>, bool), Error> {
     let (carrier_root, matched, exhausted) = execute_carrier_layer_proof(
         merk_bytes,
         outer_items,
@@ -193,7 +193,7 @@ fn verify_v1_carrier_layer(
             )
         })?;
 
-        let (lower_root, sum) = verify_v1_subquery_path(
+        let (lower_root, sum) = verify_v1_subquery_path::<W>(
             lower_layer,
             path_query,
             subquery_path,
@@ -207,7 +207,7 @@ fn verify_v1_carrier_layer(
         // depth > 0, the leaf-terminal check fires inside
         // `verify_v1_subquery_path` instead.
         let is_terminal = subquery_path.is_empty();
-        enforce_lower_chain(
+        enforce_lower_chain::<W>(
             path_query,
             &outer_key,
             &value_bytes,
@@ -225,17 +225,17 @@ fn verify_v1_carrier_layer(
 /// Walk the carrier's `subquery_path` (zero or more intermediate
 /// single-key layers between an outer match and the leaf merk),
 /// terminating in the merk-level sum verifier.
-fn verify_v1_subquery_path(
+fn verify_v1_subquery_path<W: SumWidth>(
     layer: &LayerProof,
     path_query: &PathQuery,
     subquery_path: &[Vec<u8>],
     depth: usize,
     inner_range: &QueryItem,
     grove_version: &GroveVersion,
-) -> Result<(CryptoHash, i64), Error> {
+) -> Result<(CryptoHash, W::Sum), Error> {
     let merk_bytes = expect_merk_bytes(&layer.merk_proof, path_query)?;
     if depth == subquery_path.len() {
-        return verify_sum_leaf(merk_bytes, inner_range, path_query);
+        return verify_sum_leaf::<W>(merk_bytes, inner_range, path_query);
     }
     let next_key = subquery_path[depth].clone();
     let (proven_value_bytes, parent_root_hash, parent_proof_hash) =
@@ -249,7 +249,7 @@ fn verify_v1_subquery_path(
             ),
         )
     })?;
-    let (lower_hash, sum) = verify_v1_subquery_path(
+    let (lower_hash, sum) = verify_v1_subquery_path::<W>(
         lower_layer,
         path_query,
         subquery_path,
@@ -258,7 +258,7 @@ fn verify_v1_subquery_path(
         grove_version,
     )?;
     let is_terminal = depth + 1 == subquery_path.len();
-    enforce_lower_chain(
+    enforce_lower_chain::<W>(
         path_query,
         &next_key,
         &proven_value_bytes,

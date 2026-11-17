@@ -132,6 +132,49 @@ pub fn verify_aggregate_count_and_sum_on_range_proof(
     Ok((root_hash, count, sum)).wrap_with_cost(cost)
 }
 
+/// The wide form of [`verify_aggregate_count_and_sum_on_range_proof`], for a
+/// proof against a `ProvableCountProvableBigSumTree`: the same
+/// reconstruction and shape walk over the wide proof nodes
+/// (`HashWithCountAndBigSum`, `KVDigestCountBigSum`), with the in-range sum
+/// returned as an `i128`.
+///
+/// It accepts the wide nodes only, as the narrow verifier accepts the narrow
+/// ones only: the caller names the width it expects by the function it
+/// calls.
+pub fn verify_aggregate_count_and_big_sum_on_range_proof(
+    proof_bytes: &[u8],
+    inner_range: &QueryItem,
+) -> CostResult<(CryptoHash, u64, i128), Error> {
+    if proof_bytes.is_empty() {
+        // Empty merk → empty proof → count = 0, sum = 0, hash = NULL_HASH.
+        return Ok((NULL_HASH, 0u64, 0i128)).wrap_with_cost(OperationCost::default());
+    }
+
+    let mut cost = OperationCost::default();
+    let decoder = Decoder::new(proof_bytes);
+
+    let tree_result: CostResult<ProofTree, Error> =
+        execute_with_options(decoder, false, false, |node| match node {
+            Node::HashWithCountAndBigSum(_, _, _, _, _) | Node::KVDigestCountBigSum(_, _, _, _) => {
+                Ok(())
+            }
+            other => Err(Error::InvalidProofError(format!(
+                "unexpected node type in aggregate count+big sum proof: {}",
+                other
+            ))),
+        });
+    let tree = cost_return_on_error!(&mut cost, tree_result);
+
+    let (count, sum, _struct_count, _struct_sum) =
+        match verify_count_and_sum_shape(&tree, inner_range, None, None) {
+            Ok(quad) => quad,
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        };
+
+    let root_hash = tree.hash().unwrap_add_cost(&mut cost);
+    Ok((root_hash, count, sum)).wrap_with_cost(cost)
+}
+
 /// Recursive shape-walk over the reconstructed proof tree. Returns the
 /// quadruple `(in_range_count, in_range_sum_i128, structural_count,
 /// structural_sum_i128)`:
@@ -178,6 +221,7 @@ fn verify_count_and_sum_shape(
             // `own_count` / `own_sum` derivations.
             let (count, sum) = match &tree.node {
                 Node::HashWithCountAndSum(_, _, _, c, s) => (*c, *s as i128),
+                Node::HashWithCountAndBigSum(_, _, _, c, s) => (*c, *s),
                 other => {
                     return Err(Error::InvalidProofError(format!(
                         "aggregate-count-and-sum proof: expected HashWithCountAndSum at \
@@ -200,6 +244,7 @@ fn verify_count_and_sum_shape(
             // in-range contributions.
             let (count, sum) = match &tree.node {
                 Node::HashWithCountAndSum(_, _, _, c, s) => (*c, *s as i128),
+                Node::HashWithCountAndBigSum(_, _, _, c, s) => (*c, *s),
                 other => {
                     return Err(Error::InvalidProofError(format!(
                         "aggregate-count-and-sum proof: expected HashWithCountAndSum at \
@@ -222,6 +267,7 @@ fn verify_count_and_sum_shape(
             // fall strictly inside the inherited subtree window.
             let (key, agg_count, agg_sum) = match &tree.node {
                 Node::KVDigestCountSum(key, _, c, s) => (key, *c, *s as i128),
+                Node::KVDigestCountBigSum(key, _, c, s) => (key, *c, *s),
                 other => {
                     return Err(Error::InvalidProofError(format!(
                         "aggregate-count-and-sum proof: expected KVDigestCountSum at Boundary \
@@ -269,7 +315,14 @@ fn verify_count_and_sum_shape(
             // check makes sense for signed sums (a negative own_sum is
             // legal). The hash chain catches any wrong arithmetic via
             // root-hash mismatch.
-            let own_sum = agg_sum - left_struct_s - right_struct_s;
+            //
+            // The subtraction wraps and the addition below is checked:
+            // narrow values cannot leave the `i128` range, and wide ones,
+            // which can, must neither panic nor wrap into a sum that was
+            // not proved.
+            let own_sum = agg_sum
+                .wrapping_sub(left_struct_s)
+                .wrapping_sub(right_struct_s);
             let (self_count_contribution, self_sum_contribution) = if range.contains(key_slice) {
                 (own_count, own_sum)
             } else {
@@ -283,7 +336,14 @@ fn verify_count_and_sum_shape(
                         "aggregate-count-and-sum proof: in-range count overflowed u64".to_string(),
                     )
                 })?;
-            let in_range_sum = left_in_s + right_in_s + self_sum_contribution;
+            let in_range_sum = left_in_s
+                .checked_add(right_in_s)
+                .and_then(|s| s.checked_add(self_sum_contribution))
+                .ok_or_else(|| {
+                    Error::InvalidProofError(
+                        "aggregate-count-and-sum proof: in-range sum overflowed i128".to_string(),
+                    )
+                })?;
             Ok((in_range_count, in_range_sum, agg_count, agg_sum))
         }
     }

@@ -21,15 +21,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aggregate (tag 9) and wrapper twins (157, 179, 195). Creating it is gated
   by the new `operations.insert.provable_count_provable_big_sum_tree_creation`
   slot (0 in V1..V4, which refuse it; 1 in V5; **BREAKING** for code
-  building `GroveDBOperationsInsertVersions` by hand). The range aggregates
-  (`AggregateCountOnRange`, `AggregateSumOnRange`,
-  `AggregateCountAndSumOnRange`) and count offsets are not offered on it
-  yet and are refused. **BREAKING** for exhaustive matches: the new
+  building `GroveDBOperationsInsertVersions` by hand). **BREAKING** for
+  exhaustive matches: the new
   variants of `Element`, `ElementType`, `TreeType`, `TreeFeatureType`,
   `NodeType`, `AggregateData`, `Node`, `ProofNodeType`, `TreeCostType`
   (`TreeFeatureUsesVarIntCostAs8BytesAnd16Bytes`), `EstimatedSumTrees`
   (`AllProvableCountProvableBigSumTrees`) and `QueryItemOrSumReturnType`
   (`CountBigSumValue`).
+- Range aggregates and count offsets on a
+  `ProvableCountProvableBigSumTree`. `AggregateCountOnRange`, count-offset
+  pages and local offsets work on it through the existing entry points,
+  which carry no sum. `AggregateSumOnRange` and
+  `AggregateCountAndSumOnRange` are the same queries on it, and their sum is
+  an `i128`, returned by new entry points:
+  `GroveDb::verify_aggregate_big_sum_query`,
+  `verify_aggregate_count_and_big_sum_query` (each with `_per_key` and
+  `_per_key_up_to_limit` forms), `query_aggregate_big_sum`,
+  `query_aggregate_count_and_big_sum` (each with a `_per_key` form), and in
+  Merk `prove_aggregate_big_sum_on_range`,
+  `prove_aggregate_count_and_big_sum_on_range`,
+  `big_sum_aggregate_on_range`, `count_and_big_sum_aggregate_on_range`,
+  `verify_aggregate_big_sum_on_range_proof` and
+  `verify_aggregate_count_and_big_sum_on_range_proof`. The width is the
+  caller's to name: the `i64` entry points keep refusing the wide tree and
+  its proofs, and the `i128` ones refuse a tree with an `i64` sum, so no
+  call narrows or widens a sum silently. `run_path_query` keeps returning
+  `i64` sums and refuses the wide tree for the two sum queries.
 - `GROVE_V5` (`protocol_version` 5). `GROVE_V4` as 6.1.1 shipped it is what
   Dash Platform 5.0 (protocol version 14) runs, so behaviour changes from
   here on are gated in `GROVE_V5` and leave V1..V4 as they are. V5 is V4

@@ -6,6 +6,8 @@ pub use grovedb_query::*;
 mod limit_cut_bound_tests;
 #[cfg(test)]
 mod merk_integration_tests;
+#[cfg(test)]
+mod wide_tree_aggregate_tests;
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 mod aggregate_common;

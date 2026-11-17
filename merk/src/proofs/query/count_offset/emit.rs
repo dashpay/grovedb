@@ -52,7 +52,8 @@ use grovedb_element::{Element, ElementType, ProofNodeType};
 use grovedb_version::version::GroveVersion;
 
 use super::{
-    binds_sum_into_hash, provable_count_from_aggregate, provable_sum_from_dual_axis_aggregate,
+    binds_big_sum_into_hash, binds_sum_into_hash, provable_big_sum_from_aggregate,
+    provable_count_from_aggregate, provable_sum_from_dual_axis_aggregate,
 };
 use crate::{
     proofs::{
@@ -194,7 +195,15 @@ where
             .link(false)
             .map(|l| *l.hash())
             .unwrap_or(NULL_HASH);
-        let node = if binds_sum_into_hash(tree_type) {
+        let node = if let Some(subtree_sum) = provable_big_sum_from_aggregate(aggregate) {
+            Node::HashWithCountAndBigSum(
+                kv_hash,
+                left_child_hash,
+                right_child_hash,
+                subtree_count,
+                subtree_sum,
+            )
+        } else if binds_sum_into_hash(tree_type) {
             let subtree_sum = match provable_sum_from_dual_axis_aggregate(aggregate) {
                 Ok(s) => s,
                 Err(e) => return Err(e).wrap_with_cost(cost),
@@ -231,6 +240,8 @@ where
     // For PCPS hosts we also need the per-node sum so we can emit
     // `KVDigestCountSum` (carrying both axes) at boundary positions.
     // Single-axis hosts ignore this.
+    // A wide host's node carries its 128-bit sum instead.
+    let node_big_sum: Option<i128> = provable_big_sum_from_aggregate(aggregate);
     let node_sum: i64 = if binds_sum_into_hash(tree_type) {
         match aggregate {
             AggregateData::ProvableCountAndProvableSum(_, s) => s,
@@ -443,7 +454,9 @@ where
     // `KVDigestCountSum` carrying both axes; for single-axis hosts the
     // count-only `KVDigestCount`.
     let make_boundary_node = || {
-        if binds_sum_into_hash(tree_type) {
+        if let Some(node_big_sum) = node_big_sum {
+            Node::KVDigestCountBigSum(node_key.clone(), node_value_hash, node_count, node_big_sum)
+        } else if binds_sum_into_hash(tree_type) {
             Node::KVDigestCountSum(node_key.clone(), node_value_hash, node_count, node_sum)
         } else {
             Node::KVDigestCount(node_key.clone(), node_value_hash, node_count)
@@ -697,7 +710,9 @@ where
     let parent_tree_type = tree_type.to_element_type();
     let kind = ElementType::from_serialized_value(value_bytes)
         .map(|et| et.proof_node_type(parent_tree_type))
-        .unwrap_or(if binds_sum_into_hash(tree_type) {
+        .unwrap_or(if binds_big_sum_into_hash(tree_type) {
+            ProofNodeType::KvCountBigSum
+        } else if binds_sum_into_hash(tree_type) {
             ProofNodeType::KvCountSum
         } else {
             ProofNodeType::KvCount
@@ -719,9 +734,8 @@ where
             // count + sum out of `aggregate_data()` directly).
             walker.to_kv_count_sum_node()
         }
-        // Unreachable: the entry point refuses a
-        // `ProvableCountProvableBigSumTree` host, the only one that yields
-        // this kind. Emit the node a regular proof of that host would.
+        // `ProvableCountProvableBigSumTree` host, Item-flavored entry: the
+        // wide counterpart of the arm above.
         ProofNodeType::KvCountBigSum => walker.to_kv_count_big_sum_node(),
         ProofNodeType::KvSum => {
             // Reaching this branch would mean a SumItem (not a
@@ -729,7 +743,9 @@ where
             // batch layer should never produce. Fall back to the
             // host-appropriate count-bearing variant so the proof
             // shape stays valid.
-            if binds_sum_into_hash(tree_type) {
+            if binds_big_sum_into_hash(tree_type) {
+                walker.to_kv_count_big_sum_node()
+            } else if binds_sum_into_hash(tree_type) {
                 walker.to_kv_count_sum_node()
             } else {
                 Node::KVCount(key, value_bytes.to_vec(), count)

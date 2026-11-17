@@ -133,7 +133,17 @@ where
         // ProvableCountAndProvableSum variant — `provable_count_from_aggregate`
         // already accepted this aggregate above, so its variant tag is
         // known to be one we can read both fields from.
-        if binds_sum_into_hash(tree_type) {
+        if let AggregateData::ProvableCountAndProvableBigSum(_, subtree_sum) = aggregate {
+            // A `ProvableCountProvableBigSumTree` host: its nodes hash their
+            // count and 128-bit sum, so the collapsed subtree carries both.
+            ops.push_back(Op::Push(Node::HashWithCountAndBigSum(
+                kv_hash,
+                left_child_hash,
+                right_child_hash,
+                subtree_count,
+                subtree_sum,
+            )));
+        } else if binds_sum_into_hash(tree_type) {
             let subtree_sum = match aggregate {
                 AggregateData::ProvableCountAndProvableSum(_, s) => s,
                 other => {
@@ -266,7 +276,14 @@ where
     // left_struct − right_struct`. This is what makes NonCounted entries
     // fall out of the count: a NonCounted leaf has node_count = 0 and
     // no children, so own_count = 0.
-    if binds_sum_into_hash(tree_type) {
+    if let AggregateData::ProvableCountAndProvableBigSum(_, node_sum) = node_aggregate {
+        ops.push_back(Op::Push(Node::KVDigestCountBigSum(
+            node_key.clone(),
+            node_value_hash,
+            node_count,
+            node_sum,
+        )));
+    } else if binds_sum_into_hash(tree_type) {
         let node_sum = match node_aggregate {
             AggregateData::ProvableCountAndProvableSum(_, s) => s,
             other => {

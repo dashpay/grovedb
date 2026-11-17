@@ -27,7 +27,7 @@ use std::collections::LinkedList;
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use grovedb_version::version::GroveVersion;
 
-use super::provable_count_and_sum_from_aggregate;
+use super::{provable_count_and_wide_sum_from_aggregate, sum_on_range_overflow};
 use crate::{
     proofs::{
         query::{
@@ -36,7 +36,7 @@ use crate::{
         },
         Node, Op,
     },
-    tree::{kv::ValueDefinedCostType, Fetch, RefWalker},
+    tree::{kv::ValueDefinedCostType, AggregateData, Fetch, RefWalker},
     CryptoHash, Error,
 };
 
@@ -92,10 +92,11 @@ where
                     .wrap_with_cost(cost);
             }
         };
-        let (subtree_count, subtree_sum) = match provable_count_and_sum_from_aggregate(aggregate) {
-            Ok(pair) => pair,
-            Err(e) => return Err(e).wrap_with_cost(cost),
-        };
+        let (subtree_count, subtree_sum) =
+            match provable_count_and_wide_sum_from_aggregate(aggregate) {
+                Ok(pair) => pair,
+                Err(e) => return Err(e).wrap_with_cost(cost),
+            };
         let kv_hash = *walker.tree().kv_hash();
         let left_child_hash = walker
             .tree()
@@ -107,17 +108,24 @@ where
             .link(false)
             .map(|l| *l.hash())
             .unwrap_or(NULL_HASH);
-        ops.push_back(Op::Push(Node::HashWithCountAndSum(
-            kv_hash,
-            left_child_hash,
-            right_child_hash,
-            subtree_count,
-            subtree_sum,
-        )));
+        // The node's width is its host's: a
+        // `ProvableCountProvableBigSumTree` carries a wide aggregate.
+        ops.push_back(Op::Push(match aggregate {
+            AggregateData::ProvableCountAndProvableSum(count, sum) => {
+                Node::HashWithCountAndSum(kv_hash, left_child_hash, right_child_hash, count, sum)
+            }
+            _ => Node::HashWithCountAndBigSum(
+                kv_hash,
+                left_child_hash,
+                right_child_hash,
+                subtree_count,
+                subtree_sum,
+            ),
+        }));
         // Contained subtree contributes its full count and sum;
         // Disjoint contributes 0 to both.
         let (count_contribution, sum_contribution) = match class {
-            SubtreeClassification::Contained => (subtree_count, subtree_sum as i128),
+            SubtreeClassification::Contained => (subtree_count, subtree_sum),
             SubtreeClassification::Disjoint => (0u64, 0i128),
             SubtreeClassification::Boundary => unreachable!(),
         };
@@ -138,7 +146,7 @@ where
         Ok(a) => a,
         Err(e) => return Err(e).wrap_with_cost(cost),
     };
-    let (node_count, node_sum) = match provable_count_and_sum_from_aggregate(node_aggregate) {
+    let (node_count, node_sum) = match provable_count_and_wide_sum_from_aggregate(node_aggregate) {
         Ok(pair) => pair,
         Err(e) => return Err(e).wrap_with_cost(cost),
     };
@@ -152,7 +160,7 @@ where
         .link(true)
         .map(|l| {
             let agg = l.aggregate_data();
-            (agg.as_count_u64(), agg.as_sum_i64() as i128)
+            (agg.as_count_u64(), agg.as_summed_i128())
         })
         .unwrap_or((0, 0));
     let right_link_count_sum: (u64, i128) = walker
@@ -160,7 +168,7 @@ where
         .link(false)
         .map(|l| {
             let agg = l.aggregate_data();
-            (agg.as_count_u64(), agg.as_sum_i64() as i128)
+            (agg.as_count_u64(), agg.as_summed_i128())
         })
         .unwrap_or((0, 0));
     let left_link_present = walker.tree().link(true).is_some();
@@ -202,7 +210,10 @@ where
             )
         );
         total_count = total_count.saturating_add(lc);
-        total_sum = total_sum.saturating_add(ls);
+        total_sum = match total_sum.checked_add(ls) {
+            Some(total_sum) => total_sum,
+            None => return Err(sum_on_range_overflow()).wrap_with_cost(cost),
+        };
         true
     } else {
         false
@@ -212,12 +223,12 @@ where
     // attach left as its left child. The node's own contribution to the
     // in-range totals is `(own_count, own_sum)` derived as
     // `node_aggregate − left_struct − right_struct` for each axis.
-    ops.push_back(Op::Push(Node::KVDigestCountSum(
-        node_key.clone(),
-        node_value_hash,
-        node_count,
-        node_sum,
-    )));
+    ops.push_back(Op::Push(match node_aggregate {
+        AggregateData::ProvableCountAndProvableSum(count, sum) => {
+            Node::KVDigestCountSum(node_key.clone(), node_value_hash, count, sum)
+        }
+        _ => Node::KVDigestCountBigSum(node_key.clone(), node_value_hash, node_count, node_sum),
+    }));
     if left_emitted {
         ops.push_back(Op::Parent);
     }
@@ -227,9 +238,17 @@ where
             .saturating_sub(right_link_count_sum.0);
         // Sum arithmetic is signed; widen to i128 for the subtraction
         // and keep the running sum in i128 throughout.
-        let own_sum = (node_sum as i128) - left_link_count_sum.1 - right_link_count_sum.1;
+        // The subtraction wraps: a node's own sum always fits an `i128`,
+        // and wrapping arithmetic gives it exactly even where a step on the
+        // way leaves the range, which only wide aggregates can do.
+        let own_sum = node_sum
+            .wrapping_sub(left_link_count_sum.1)
+            .wrapping_sub(right_link_count_sum.1);
         total_count = total_count.saturating_add(own_count);
-        total_sum = total_sum.saturating_add(own_sum);
+        total_sum = match total_sum.checked_add(own_sum) {
+            Some(total_sum) => total_sum,
+            None => return Err(sum_on_range_overflow()).wrap_with_cost(cost),
+        };
     }
 
     // Step 5: handle the RIGHT child.
@@ -265,7 +284,10 @@ where
             )
         );
         total_count = total_count.saturating_add(rc);
-        total_sum = total_sum.saturating_add(rs);
+        total_sum = match total_sum.checked_add(rs) {
+            Some(total_sum) => total_sum,
+            None => return Err(sum_on_range_overflow()).wrap_with_cost(cost),
+        };
         true
     } else {
         false

@@ -113,7 +113,9 @@ pub fn verify_aggregate_count_on_range_proof(
             Node::HashWithCount(_, _, _, _)
             | Node::KVDigestCount(_, _, _)
             | Node::HashWithCountAndSum(_, _, _, _, _)
-            | Node::KVDigestCountSum(_, _, _, _) => Ok(()),
+            | Node::KVDigestCountSum(_, _, _, _)
+            | Node::HashWithCountAndBigSum(_, _, _, _, _)
+            | Node::KVDigestCountBigSum(_, _, _, _) => Ok(()),
             other => Err(Error::InvalidProofError(format!(
                 "unexpected node type in aggregate count proof: {}",
                 other
@@ -183,6 +185,7 @@ fn verify_count_shape(
             let count = match &tree.node {
                 Node::HashWithCount(_, _, _, count) => *count,
                 Node::HashWithCountAndSum(_, _, _, count, _) => *count,
+                Node::HashWithCountAndBigSum(_, _, _, count, _) => *count,
                 other => {
                     return Err(Error::InvalidProofError(format!(
                         "aggregate-count proof: expected HashWithCount or HashWithCountAndSum \
@@ -208,6 +211,7 @@ fn verify_count_shape(
             let count = match &tree.node {
                 Node::HashWithCount(_, _, _, count) => *count,
                 Node::HashWithCountAndSum(_, _, _, count, _) => *count,
+                Node::HashWithCountAndBigSum(_, _, _, count, _) => *count,
                 other => {
                     return Err(Error::InvalidProofError(format!(
                         "aggregate-count proof: expected HashWithCount or HashWithCountAndSum \
@@ -234,6 +238,7 @@ fn verify_count_shape(
             let (key, aggregate) = match &tree.node {
                 Node::KVDigestCount(key, _, aggregate) => (key, *aggregate),
                 Node::KVDigestCountSum(key, _, aggregate, _) => (key, *aggregate),
+                Node::KVDigestCountBigSum(key, _, aggregate, _) => (key, *aggregate),
                 other => {
                     return Err(Error::InvalidProofError(format!(
                         "aggregate-count proof: expected KVDigestCount or KVDigestCountSum at \

@@ -172,6 +172,7 @@ pub(super) fn read_local_count_page(
         TreeType::ProvableCountTree
             | TreeType::ProvableCountSumTree
             | TreeType::ProvableCountProvableSumTree
+            | TreeType::ProvableCountProvableBigSumTree
     ) {
         return Err(Error::InvalidQuery(
             "local count-unit offsets require a provable count-bearing host",

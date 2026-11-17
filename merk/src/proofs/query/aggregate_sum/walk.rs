@@ -6,7 +6,7 @@ use grovedb_costs::{
 };
 use grovedb_version::version::GroveVersion;
 
-use super::provable_sum_from_aggregate;
+use super::{provable_wide_sum_from_aggregate, sum_on_range_overflow};
 use crate::{
     proofs::query::{
         aggregate_common::{classify_subtree, SubtreeClassification},
@@ -19,7 +19,7 @@ use crate::{
 /// Read the provable-sum aggregate off the walker's current tree node.
 /// Shared error-mapping helper used by [`walk_sum_only`] at both the
 /// Contained-leaf and Boundary positions.
-fn provable_sum_from_walker<S>(walker: &RefWalker<'_, S>) -> Result<i64, Error>
+fn provable_sum_from_walker<S>(walker: &RefWalker<'_, S>) -> Result<i128, Error>
 where
     S: Fetch + Sized + Clone,
 {
@@ -27,7 +27,7 @@ where
         .tree()
         .aggregate_data()
         .map_err(|e| Error::CorruptedData(format!("aggregate_data: {}", e)))?;
-    provable_sum_from_aggregate(aggregate)
+    provable_wide_sum_from_aggregate(aggregate)
 }
 
 /// No-proof variant of [`super::emit::emit_sum_proof`]: walks the same
@@ -66,7 +66,7 @@ where
         // aggregate is 0 by the wrapper's contract).
         SubtreeClassification::Contained => {
             let sum = cost_return_on_error_no_add!(cost, provable_sum_from_walker(walker));
-            Ok(sum as i128).wrap_with_cost(cost)
+            Ok(sum).wrap_with_cost(cost)
         }
         // Boundary: descend into both children and add own_sum.
         SubtreeClassification::Boundary => {
@@ -75,15 +75,15 @@ where
             // borrows on walker.tree() before calling it.
             let node_key: Vec<u8> = walker.tree().key().to_vec();
             let node_sum = cost_return_on_error_no_add!(cost, provable_sum_from_walker(walker));
-            let left_link_aggregate: i64 = walker
+            let left_link_aggregate: i128 = walker
                 .tree()
                 .link(true)
-                .map(|l| l.aggregate_data().as_sum_i64())
+                .map(|l| l.aggregate_data().as_summed_i128())
                 .unwrap_or(0);
-            let right_link_aggregate: i64 = walker
+            let right_link_aggregate: i128 = walker
                 .tree()
                 .link(false)
-                .map(|l| l.aggregate_data().as_sum_i64())
+                .map(|l| l.aggregate_data().as_summed_i128())
                 .unwrap_or(0);
             let left_link_present = walker.tree().link(true).is_some();
             let right_link_present = walker.tree().link(false).is_some();
@@ -123,7 +123,10 @@ where
                         grove_version,
                     )
                 );
-                total = total.saturating_add(s);
+                total = match total.checked_add(s) {
+                    Some(total) => total,
+                    None => return Err(sum_on_range_overflow()).wrap_with_cost(cost),
+                };
             }
 
             // Current node's own_sum: when the key is in range, the
@@ -135,10 +138,13 @@ where
             // contract. `i128` accumulation keeps adversarial inputs
             // from wrapping mid-walk.
             if range.contains(&node_key) {
-                let own_sum: i128 = (node_sum as i128)
-                    .wrapping_sub(left_link_aggregate as i128)
-                    .wrapping_sub(right_link_aggregate as i128);
-                total = total.saturating_add(own_sum);
+                let own_sum: i128 = node_sum
+                    .wrapping_sub(left_link_aggregate)
+                    .wrapping_sub(right_link_aggregate);
+                total = match total.checked_add(own_sum) {
+                    Some(total) => total,
+                    None => return Err(sum_on_range_overflow()).wrap_with_cost(cost),
+                };
             }
 
             // RIGHT child — same fail-fast pattern as LEFT.
@@ -170,7 +176,10 @@ where
                         grove_version,
                     )
                 );
-                total = total.saturating_add(s);
+                total = match total.checked_add(s) {
+                    Some(total) => total,
+                    None => return Err(sum_on_range_overflow()).wrap_with_cost(cost),
+                };
             }
 
             Ok(total).wrap_with_cost(cost)

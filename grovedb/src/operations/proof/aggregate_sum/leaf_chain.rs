@@ -18,7 +18,7 @@ use crate::{
     operations::proof::{
         aggregate_sum::helpers::{
             enforce_lower_chain, expect_merk_bytes, verify_single_key_layer_proof_v0,
-            verify_sum_leaf,
+            verify_sum_leaf, SumWidth,
         },
         LayerProof,
     },
@@ -30,14 +30,14 @@ use crate::{
 /// delegating to [`verify_sum_leaf`] at the leaf. At each non-leaf step,
 /// the chain check `combine_hash(H(value), lower_root) ==
 /// parent_value_hash` ties the layer's sum to the GroveDB root hash.
-pub(super) fn verify_v1_leaf_chain(
+pub(super) fn verify_v1_leaf_chain<W: SumWidth>(
     layer: &LayerProof,
     path_query: &PathQuery,
     path_keys: &[&[u8]],
     depth: usize,
     inner_range: &QueryItem,
     grove_version: &GroveVersion,
-) -> Result<(CryptoHash, i64), Error> {
+) -> Result<(CryptoHash, W::Sum), Error> {
     let merk_bytes = expect_merk_bytes(&layer.merk_proof, path_query)?;
 
     if depth == path_keys.len() {
@@ -57,7 +57,7 @@ pub(super) fn verify_v1_leaf_chain(
                     .to_string(),
             ));
         }
-        return verify_sum_leaf(merk_bytes, inner_range, path_query);
+        return verify_sum_leaf::<W>(merk_bytes, inner_range, path_query);
     }
 
     let next_key = path_keys[depth].to_vec();
@@ -96,7 +96,7 @@ pub(super) fn verify_v1_leaf_chain(
             ),
         )
     })?;
-    let (lower_hash, sum) = verify_v1_leaf_chain(
+    let (lower_hash, sum) = verify_v1_leaf_chain::<W>(
         lower_layer,
         path_query,
         path_keys,
@@ -106,7 +106,7 @@ pub(super) fn verify_v1_leaf_chain(
     )?;
 
     let is_terminal = depth + 1 == path_keys.len();
-    enforce_lower_chain(
+    enforce_lower_chain::<W>(
         path_query,
         &next_key,
         &proven_value_bytes,

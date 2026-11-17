@@ -49,6 +49,8 @@ mod helpers;
 mod leaf_chain;
 mod per_key;
 
+use helpers::{NarrowSum, SumWidth, WideSum};
+
 use grovedb_merk::{proofs::query::ProofLimitMode, CryptoHash};
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
@@ -124,7 +126,7 @@ impl GroveDb {
         let path_keys: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
 
         let root_layer = require_v1_envelope(&grovedb_proof, path_query)?;
-        leaf_chain::verify_v1_leaf_chain(
+        leaf_chain::verify_v1_leaf_chain::<NarrowSum>(
             root_layer,
             path_query,
             &path_keys,
@@ -186,7 +188,7 @@ impl GroveDb {
                 .verify_query_with_options
         );
         let (root_hash, entries, _exhausted) =
-            verify_per_key(proof, path_query, ProofLimitMode::Exact, grove_version)?;
+            verify_per_key::<NarrowSum>(proof, path_query, ProofLimitMode::Exact, grove_version)?;
         Ok((root_hash, entries))
     }
 
@@ -225,20 +227,105 @@ impl GroveDb {
                 .verify_query_with_options
         );
         refuse_zero_ceiling(path_query)?;
-        let (root_hash, entries, exhausted) =
-            verify_per_key(proof, path_query, ProofLimitMode::UpperBound, grove_version)?;
+        let (root_hash, entries, exhausted) = verify_per_key::<NarrowSum>(
+            proof,
+            path_query,
+            ProofLimitMode::UpperBound,
+            grove_version,
+        )?;
+        up_to_limit_page(root_hash, entries, exhausted, |entry| &entry.0, path_query)
+    }
+    /// The wide form of [`Self::verify_aggregate_sum_query`], for a query
+    /// whose path ends at a `ProvableCountProvableBigSumTree`: the same
+    /// `AggregateSumOnRange` query and the same verification, with the sum
+    /// returned as an `i128`.
+    ///
+    /// The width is the caller's to name. This function refuses a proof
+    /// made against a tree with an `i64` sum, and
+    /// [`Self::verify_aggregate_sum_query`] refuses one made against a
+    /// `ProvableCountProvableBigSumTree`.
+    pub fn verify_aggregate_big_sum_query(
+        proof: &[u8],
+        path_query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<(CryptoHash, i128), Error> {
+        check_grovedb_v0!(
+            "verify_aggregate_big_sum_query",
+            grove_version
+                .grovedb_versions
+                .operations
+                .proof
+                .verify_query_with_options
+        );
+        let inner_range = path_query.validate_leaf_aggregate_sum_on_range()?.clone();
+        let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
+        let path_keys: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
+        let root_layer = require_v1_envelope(&grovedb_proof, path_query)?;
+        leaf_chain::verify_v1_leaf_chain::<WideSum>(
+            root_layer,
+            path_query,
+            &path_keys,
+            0,
+            &inner_range,
+            grove_version,
+        )
+    }
+
+    /// The wide form of [`Self::verify_aggregate_sum_query_per_key`]: one
+    /// `i128` sum per matched outer key, each over a
+    /// `ProvableCountProvableBigSumTree`.
+    pub fn verify_aggregate_big_sum_query_per_key(
+        proof: &[u8],
+        path_query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<(CryptoHash, Vec<(Vec<u8>, i128)>), Error> {
+        check_grovedb_v0!(
+            "verify_aggregate_big_sum_query_per_key",
+            grove_version
+                .grovedb_versions
+                .operations
+                .proof
+                .verify_query_with_options
+        );
+        let (root_hash, entries, _exhausted) =
+            verify_per_key::<WideSum>(proof, path_query, ProofLimitMode::Exact, grove_version)?;
+        Ok((root_hash, entries))
+    }
+
+    /// The wide form of
+    /// [`Self::verify_aggregate_sum_query_per_key_up_to_limit`].
+    pub fn verify_aggregate_big_sum_query_per_key_up_to_limit(
+        proof: &[u8],
+        path_query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<(CryptoHash, CarrierAggregatePage<(Vec<u8>, i128)>), Error> {
+        check_grovedb_v0!(
+            "verify_aggregate_big_sum_query_per_key_up_to_limit",
+            grove_version
+                .grovedb_versions
+                .operations
+                .proof
+                .verify_query_with_options
+        );
+        refuse_zero_ceiling(path_query)?;
+        let (root_hash, entries, exhausted) = verify_per_key::<WideSum>(
+            proof,
+            path_query,
+            ProofLimitMode::UpperBound,
+            grove_version,
+        )?;
         up_to_limit_page(root_hash, entries, exhausted, |entry| &entry.0, path_query)
     }
 }
 
 /// Shared body of the per-key entry points; `limit_mode` says how the
 /// carrier's `SizedQuery::limit` is read (see [`ProofLimitMode`]).
-fn verify_per_key(
+fn verify_per_key<W: SumWidth>(
     proof: &[u8],
     path_query: &PathQuery,
     limit_mode: ProofLimitMode,
     grove_version: &GroveVersion,
-) -> Result<(CryptoHash, Vec<(Vec<u8>, i64)>, bool), Error> {
+) -> Result<(CryptoHash, Vec<(Vec<u8>, W::Sum)>, bool), Error> {
     // Classify the query and extract the leaf inner range plus the
     // optional carrier subquery_path. For leaf queries the carrier
     // descent below is skipped (carrier_outer_items is None).
@@ -248,7 +335,7 @@ fn verify_per_key(
     let path_keys: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
 
     let root_layer = require_v1_envelope(&grovedb_proof, path_query)?;
-    per_key::verify_v1_with_classification(
+    per_key::verify_v1_with_classification::<W>(
         root_layer,
         path_query,
         &path_keys,
