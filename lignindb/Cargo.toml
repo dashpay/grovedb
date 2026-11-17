@@ -1,0 +1,11 @@
+[package]
+name = "lignindb"
+description = "LigninDB storage engine: transactions, snapshots, savepoints, checkpoints and verify"
+version = "6.1.1"
+edition = "2024"
+license = "MIT"
+homepage = "https://www.grovedb.org"
+repository = "https://github.com/dashpay/grovedb"
+publish = false
+
+[dependencies]

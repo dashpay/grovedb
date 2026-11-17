@@ -1,0 +1,11 @@
+[package]
+name = "lignin-store"
+description = "LigninDB page store: buffer pool, write-ahead log, segments, page table, recovery and cleaner"
+version = "6.1.1"
+edition = "2024"
+license = "MIT"
+homepage = "https://www.grovedb.org"
+repository = "https://github.com/dashpay/grovedb"
+publish = false
+
+[dependencies]

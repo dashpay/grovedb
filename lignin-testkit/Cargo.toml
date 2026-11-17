@@ -1,0 +1,11 @@
+[package]
+name = "lignin-testkit"
+description = "LigninDB test kit: workloads, golden corpus, differential fuzzer, crash simulation and benchmarks"
+version = "6.1.1"
+edition = "2024"
+license = "MIT"
+homepage = "https://www.grovedb.org"
+repository = "https://github.com/dashpay/grovedb"
+publish = false
+
+[dependencies]

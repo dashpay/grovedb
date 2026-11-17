@@ -1,0 +1,11 @@
+[package]
+name = "lignin-format"
+description = "LigninDB on-disk byte formats: page images, delta records, log records, segments, manifest and value log"
+version = "6.1.1"
+edition = "2024"
+license = "MIT"
+homepage = "https://www.grovedb.org"
+repository = "https://github.com/dashpay/grovedb"
+publish = false
+
+[dependencies]

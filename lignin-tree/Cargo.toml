@@ -1,0 +1,11 @@
+[package]
+name = "lignin-tree"
+description = "LigninDB tree layer: Merkle host, flat keyspace, subtree directory, lazy hashing and cursors"
+version = "6.1.1"
+edition = "2024"
+license = "MIT"
+homepage = "https://www.grovedb.org"
+repository = "https://github.com/dashpay/grovedb"
+publish = false
+
+[dependencies]
