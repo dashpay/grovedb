@@ -2427,6 +2427,7 @@ mod test {
             TreeType::ProvableSumIndexedTree,
             TreeType::ProvableCountIndexedTree,
             TreeType::ProvableCountProvableSumIndexedTree,
+            TreeType::ProvableCountProvableBigSumTree,
         ]
     }
 
@@ -2476,6 +2477,7 @@ mod test {
                         | NodeType::ProvableCountSumNode
                         | NodeType::ProvableSumNode
                         | NodeType::ProvableCountProvableSumNode
+                        | NodeType::ProvableCountProvableBigSumNode
                 );
                 if provable {
                     assert!(

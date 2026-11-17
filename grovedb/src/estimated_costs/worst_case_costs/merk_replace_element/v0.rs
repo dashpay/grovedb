@@ -15,7 +15,10 @@ use grovedb_merk::{
         add_cost_case_merk_replace_same_size,
         worst_case_costs::{add_worst_case_merk_propagate, WorstCaseLayerInformation},
     },
-    tree_type::{TreeType, SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE},
+    tree_type::{
+        TreeType, COUNT_BIG_SUM_TREE_COST_SIZE, SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE,
+        TREE_COST_SIZE,
+    },
 };
 use grovedb_storage::worst_case_costs::WorstKeyLength;
 use grovedb_version::version::GroveVersion;
@@ -37,6 +40,23 @@ impl GroveDb {
         // Look through wrapper variants for cost dispatch.
         let wrapper_overhead = if value.is_wrapped() { 1u32 } else { 0 };
         match value.underlying() {
+            // The wide count and sum tree is written as a layered tree of
+            // its own cost size. The other count-and-sum and provable trees
+            // are not listed here and keep the estimate they have always
+            // had.
+            Element::ProvableCountProvableBigSumTree(.., flags) => {
+                let flags_len = flags.as_ref().map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = COUNT_BIG_SUM_TREE_COST_SIZE + flags_len + wrapper_overhead;
+                add_cost_case_merk_replace_layered(
+                    &mut cost,
+                    key_len,
+                    value_len,
+                    in_parent_tree_type,
+                )
+            }
             Element::Tree(_, flags) | Element::SumTree(_, _, flags) => {
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;

@@ -6,10 +6,11 @@
 
 use grovedb_costs::OperationCost;
 use grovedb_merk::{
-    estimated_costs::average_case_costs::{
-        EstimatedLayerCount, EstimatedLayerInformation, EstimatedLayerSizes,
+    estimated_costs::{
+        add_cost_case_merk_replace_layered,
+        average_case_costs::{EstimatedLayerCount, EstimatedLayerInformation, EstimatedLayerSizes},
     },
-    tree_type::TreeType,
+    tree_type::{TreeType, COUNT_BIG_SUM_TREE_COST_SIZE},
 };
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::GroveVersion;
@@ -794,4 +795,92 @@ fn test_estimates_size_a_provable_count_provable_big_sum_tree() {
         worst(TreeType::ProvableCountProvableBigSumTree),
         worst(TreeType::ProvableCountProvableSumTree) + 7
     );
+}
+
+/// Inserting or replacing a `ProvableCountProvableBigSumTree` element is
+/// estimated as the layered tree it is written as, at its own cost size, by
+/// the element estimators as well as the tree ones.
+#[test]
+fn test_element_estimates_treat_a_provable_count_provable_big_sum_tree_as_layered() {
+    let grove_version = GroveVersion::latest();
+    let key = KnownKey(b"tree".to_vec());
+    let key_len = 4;
+    let element = Element::empty_provable_count_provable_big_sum_tree();
+    let tree_type = TreeType::ProvableCountProvableBigSumTree;
+
+    let average_insert = GroveDb::average_case_merk_insert_element(
+        &key,
+        &element,
+        TreeType::NormalTree,
+        None,
+        grove_version,
+    );
+    average_insert
+        .value
+        .as_ref()
+        .expect("the estimate should succeed");
+    let average_insert_tree = GroveDb::average_case_merk_insert_tree(
+        &key,
+        &None,
+        tree_type,
+        TreeType::NormalTree,
+        0,
+        None,
+        grove_version,
+    );
+    assert_eq!(average_insert.cost, average_insert_tree.cost);
+
+    let worst_insert = GroveDb::worst_case_merk_insert_element(
+        &key,
+        &element,
+        TreeType::NormalTree,
+        None,
+        grove_version,
+    );
+    worst_insert
+        .value
+        .as_ref()
+        .expect("the estimate should succeed");
+    let worst_insert_tree = GroveDb::worst_case_merk_insert_tree(
+        &key,
+        &None,
+        tree_type,
+        TreeType::NormalTree,
+        0,
+        None,
+        grove_version,
+    );
+    assert_eq!(worst_insert.cost, worst_insert_tree.cost);
+
+    let mut layered_replace = OperationCost::default();
+    add_cost_case_merk_replace_layered(
+        &mut layered_replace,
+        key_len,
+        COUNT_BIG_SUM_TREE_COST_SIZE,
+        TreeType::NormalTree,
+    );
+    let average_replace = GroveDb::average_case_merk_replace_element(
+        &key,
+        &element,
+        TreeType::NormalTree,
+        None,
+        grove_version,
+    );
+    average_replace
+        .value
+        .as_ref()
+        .expect("the estimate should succeed");
+    assert_eq!(average_replace.cost, layered_replace);
+    let worst_replace = GroveDb::worst_case_merk_replace_element(
+        &key,
+        &element,
+        TreeType::NormalTree,
+        None,
+        grove_version,
+    );
+    worst_replace
+        .value
+        .as_ref()
+        .expect("the estimate should succeed");
+    assert_eq!(worst_replace.cost, layered_replace);
 }

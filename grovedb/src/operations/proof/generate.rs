@@ -3453,6 +3453,7 @@ impl GroveDb {
                             // leaf emits an empty proof (count = 0,
                             // sum = 0).
                             Ok(Element::ProvableCountProvableSumTree(None, ..))
+                            | Ok(Element::ProvableCountProvableBigSumTree(None, ..))
                                 if !done_with_results
                                     && is_aggregate_count_and_sum_query
                                     && descends_into_empty_aggregate_tree
