@@ -199,6 +199,11 @@ fn provable_families() -> Vec<(&'static str, TreeFeatureType, Vec<TreeType>)> {
                 TreeType::ProvableCountProvableSumIndexedTree,
             ],
         ),
+        (
+            "count_provable_big_sum",
+            TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(1, 1),
+            vec![TreeType::ProvableCountProvableBigSumTree],
+        ),
     ]
 }
 
@@ -222,6 +227,10 @@ fn every_feature() -> Vec<(&'static str, TreeFeatureType)> {
         (
             "p_count_p_sum",
             TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(1, 1),
+        ),
+        (
+            "p_count_p_big_sum",
+            TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(1, 1),
         ),
     ]
 }

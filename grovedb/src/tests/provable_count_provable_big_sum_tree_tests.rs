@@ -1581,6 +1581,108 @@ mod tests {
         );
     }
 
+    /// A group whose wide tree is empty aggregates to a count of 0 and a
+    /// sum of 0 next to a group that holds items: proved and verified
+    /// against the root, and read without a proof to the same values, for
+    /// the count, the sum and both together.
+    #[test]
+    fn per_key_range_aggregates_include_an_empty_big_sum_tree() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert(&db, &[], b"groups", Element::empty_tree(), grove_version);
+        for group in [b"x", b"y"] {
+            insert(
+                &db,
+                &[b"groups"],
+                group,
+                Element::empty_tree(),
+                grove_version,
+            );
+            insert_big_tree(&db, &[b"groups", group], b"values", grove_version);
+        }
+        for index in 0..8u8 {
+            insert(
+                &db,
+                &[b"groups", b"y", b"values"],
+                &[index],
+                Element::new_sum_item(i64::MAX - index as i64),
+                grove_version,
+            );
+        }
+        let root_hash = db.root_hash(None, grove_version).unwrap().unwrap();
+        let per_group = |aggregate: Query| {
+            let mut carrier = Query::new();
+            carrier.insert_key(b"x".to_vec());
+            carrier.insert_key(b"y".to_vec());
+            carrier.set_subquery_path(vec![b"values".to_vec()]);
+            carrier.set_subquery(aggregate);
+            PathQuery::new(
+                vec![b"groups".to_vec()],
+                SizedQuery::new(carrier, None, None),
+            )
+        };
+        let inner = QueryItem::Range(vec![2]..vec![10]);
+        let expected: Vec<(Vec<u8>, u64, i128)> =
+            vec![(b"x".to_vec(), 0, 0), (b"y".to_vec(), 6, sum_of(2..8))];
+        let expected_sums: Vec<(Vec<u8>, i128)> = expected
+            .iter()
+            .map(|(key, _, sum)| (key.clone(), *sum))
+            .collect();
+        let expected_counts: Vec<(Vec<u8>, u64)> = expected
+            .iter()
+            .map(|(key, count, _)| (key.clone(), *count))
+            .collect();
+
+        let both_query = per_group(Query::new_aggregate_count_and_sum_on_range(inner.clone()));
+        let proof = db
+            .prove_query(&both_query, None, grove_version)
+            .unwrap()
+            .expect("should prove the counts and sums");
+        assert_eq!(
+            GroveDb::verify_aggregate_count_and_big_sum_query_per_key(
+                &proof,
+                &both_query,
+                grove_version
+            )
+            .expect("should verify the counts and sums"),
+            (root_hash, expected.clone())
+        );
+        assert_eq!(
+            db.query_aggregate_count_and_big_sum_per_key(&both_query, None, grove_version)
+                .unwrap()
+                .expect("should read the counts and sums"),
+            expected
+        );
+
+        let sum_query = per_group(Query::new_aggregate_sum_on_range(inner.clone()));
+        let proof = db
+            .prove_query(&sum_query, None, grove_version)
+            .unwrap()
+            .expect("should prove the sums");
+        assert_eq!(
+            GroveDb::verify_aggregate_big_sum_query_per_key(&proof, &sum_query, grove_version)
+                .expect("should verify the sums"),
+            (root_hash, expected_sums.clone())
+        );
+        assert_eq!(
+            db.query_aggregate_big_sum_per_key(&sum_query, None, grove_version)
+                .unwrap()
+                .expect("should read the sums"),
+            expected_sums
+        );
+
+        let count_query = per_group(Query::new_aggregate_count_on_range(inner));
+        let proof = db
+            .prove_query(&count_query, None, grove_version)
+            .unwrap()
+            .expect("should prove the counts");
+        assert_eq!(
+            GroveDb::verify_aggregate_count_query_per_key(&proof, &count_query, grove_version)
+                .expect("should verify the counts"),
+            (root_hash, expected_counts)
+        );
+    }
+
     /// A proved range sum whose proof was altered no longer verifies.
     #[test]
     fn altered_range_aggregate_proof_of_a_big_sum_tree_is_refused() {

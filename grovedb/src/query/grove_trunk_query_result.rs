@@ -134,11 +134,20 @@ impl GroveTrunkQueryResult {
     fn get_node_count(tree: &Tree) -> Option<u64> {
         match &tree.node {
             Node::KVCount(_, _, count) => Some(*count),
+            // The trees that commit a sum beside the count carry the count
+            // in their own node kinds and feature types.
+            Node::KVCountSum(_, _, count, _) | Node::KVCountBigSum(_, _, count, _) => Some(*count),
             Node::KVValueHashFeatureType(_, _, _, feature_type)
             | Node::KVValueHashFeatureTypeWithChildHash(_, _, _, feature_type, _) => {
                 match feature_type {
                     TreeFeatureType::ProvableCountedMerkNode(count) => Some(*count),
                     TreeFeatureType::ProvableCountedSummedMerkNode(count, _) => Some(*count),
+                    TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, _) => {
+                        Some(*count)
+                    }
+                    TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(count, _) => {
+                        Some(*count)
+                    }
                     _ => None,
                 }
             }

@@ -27,7 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NodeType`, `AggregateData`, `Node`, `ProofNodeType`, `TreeCostType`
   (`TreeFeatureUsesVarIntCostAs8BytesAnd16Bytes`), `EstimatedSumTrees`
   (`AllProvableCountProvableBigSumTrees`) and `QueryItemOrSumReturnType`
-  (`CountBigSumValue`).
+  (`CountBigSumValue`). `EstimatedSumTrees::SomeSumTrees` gains the
+  `provable_count_provable_big_sum_trees_weight` field (**BREAKING** for
+  code building or destructuring it), which the mixed-layer size estimate
+  of `GROVE_V3` and later weighs at 24 bytes; a weight of 0 leaves the
+  estimate as it was. The element cost estimators size the tree as the
+  layered tree it is written as.
 - Range aggregates and count offsets on a
   `ProvableCountProvableBigSumTree`. `AggregateCountOnRange`, count-offset
   pages and local offsets work on it through the existing entry points,
@@ -157,6 +162,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must move to 0.41 as well.
 
 ### Fixed
+- Trunk and branch query results (`get_ancestor`) read the count of a
+  `ProvableCountProvableSumTree` node, which they skipped before, and of
+  a `ProvableCountProvableBigSumTree` node.
 - `GroveDb::verify_grovedb` recomputes each tree's aggregate from the
   elements the tree holds and reports a tree whose stored aggregate differs.
   It compared the aggregate recorded in the parent's tree element with the

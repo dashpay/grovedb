@@ -131,6 +131,10 @@ mod tests {
             Node::KVCountSum(_, _, count, _) => Some(*count),
             Node::KVDigestCountSum(_, _, count, _) => Some(*count),
             Node::KVRefValueHashCountSum(_, _, _, count, _) => Some(*count),
+            // The same nodes of the wide count and sum tree.
+            Node::KVCountBigSum(_, _, count, _) => Some(*count),
+            Node::KVDigestCountBigSum(_, _, count, _) => Some(*count),
+            Node::KVRefValueHashCountBigSum(_, _, _, count, _) => Some(*count),
             Node::KVValueHashFeatureType(
                 _,
                 _,
@@ -168,6 +172,19 @@ mod tests {
                 _,
                 _,
                 TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, _),
+                _,
+            ) => Some(*count),
+            Node::KVValueHashFeatureType(
+                _,
+                _,
+                _,
+                TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(count, _),
+            )
+            | Node::KVValueHashFeatureTypeWithChildHash(
+                _,
+                _,
+                _,
+                TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(count, _),
                 _,
             ) => Some(*count),
             _ => None,
