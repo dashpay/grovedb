@@ -356,42 +356,82 @@ fn altered_wide_aggregates_do_not_verify_against_the_root() {
     }
 }
 
-/// A proof whose sums are at the ends of the `i128` range is refused with
-/// an error instead of wrapping or panicking.
-#[test]
-fn wide_sum_verifier_refuses_a_sum_that_overflows_i128() {
-    let range = QueryItem::RangeFull(..);
-    // A boundary node between two contained subtrees at i128::MAX each.
-    let leaf = |byte: u8| {
+/// A proof for the range `[2, ..)` over a root at key 5 whose left subtree
+/// (rooted at key 2) and right subtree each hold `i128::MAX` in the range,
+/// with the root's aggregate chosen so that its own sum is `own`. Of the
+/// five entries, four are in the range.
+fn proof_with_sums_at_the_end_of_the_range(own: i128) -> Vec<u8> {
+    let leaf = |byte: u8, sum: i128| {
         ProofOp::Push(Node::HashWithCountAndBigSum(
-            [byte; 32],
-            NULL_HASH,
-            NULL_HASH,
-            1,
-            i128::MAX,
+            [byte; 32], NULL_HASH, NULL_HASH, 1, sum,
         ))
     };
     let mut ops = LinkedList::new();
-    ops.push_back(leaf(1));
+    // The left subtree: the entries below key 2 are outside the range,
+    // key 2 holds 0 and the entries between 2 and 5 hold `i128::MAX`.
+    ops.push_back(leaf(1, 0));
     ops.push_back(ProofOp::Push(Node::KVDigestCountBigSum(
-        vec![5],
-        [9; 32],
+        vec![2],
+        [8; 32],
         3,
         i128::MAX,
     )));
     ops.push_back(ProofOp::Parent);
-    ops.push_back(leaf(2));
+    ops.push_back(leaf(3, i128::MAX));
     ops.push_back(ProofOp::Child);
-    let proof = encode_proof(&ops);
+    ops.push_back(ProofOp::Push(Node::KVDigestCountBigSum(
+        vec![5],
+        [9; 32],
+        5,
+        own.wrapping_add(i128::MAX).wrapping_add(i128::MAX),
+    )));
+    ops.push_back(ProofOp::Parent);
+    ops.push_back(leaf(6, i128::MAX));
+    ops.push_back(ProofOp::Child);
+    encode_proof(&ops)
+}
 
-    assert!(verify_aggregate_big_sum_on_range_proof(&proof, &range)
-        .unwrap()
-        .is_err());
-    assert!(
+/// A proof whose in-range sum leaves the `i128` range is refused with an
+/// error instead of wrapping or panicking.
+#[test]
+fn wide_sum_verifier_refuses_a_sum_that_overflows_i128() {
+    let range = QueryItem::RangeFrom(vec![2]..);
+    let proof = proof_with_sums_at_the_end_of_the_range(1);
+
+    let overflowed = |result: Result<(), crate::Error>| {
+        matches!(
+            result,
+            Err(crate::Error::InvalidProofError(message)) if message.contains("overflowed i128")
+        )
+    };
+    assert!(overflowed(
+        verify_aggregate_big_sum_on_range_proof(&proof, &range)
+            .unwrap()
+            .map(|_| ())
+    ));
+    assert!(overflowed(
         verify_aggregate_count_and_big_sum_on_range_proof(&proof, &range)
             .unwrap()
-            .is_err()
-    );
+            .map(|_| ())
+    ));
+}
+
+/// The verifiers add a node's sums in the prover's order: left, own, right.
+/// Sums that cancel (`MAX - MAX + MAX`) stay in range in that order, where
+/// adding the two children first would overflow.
+#[test]
+fn wide_sum_verifier_adds_in_the_order_of_the_prover() {
+    let range = QueryItem::RangeFrom(vec![2]..);
+    let proof = proof_with_sums_at_the_end_of_the_range(-i128::MAX);
+
+    let (_, sum) = verify_aggregate_big_sum_on_range_proof(&proof, &range)
+        .unwrap()
+        .expect("the sum stays in range");
+    assert_eq!(sum, i128::MAX);
+    let (_, count, sum) = verify_aggregate_count_and_big_sum_on_range_proof(&proof, &range)
+        .unwrap()
+        .expect("the sum stays in range");
+    assert_eq!((count, sum), (4, i128::MAX));
 }
 
 /// A count-offset page of a wide tree returns the rows after the skipped

@@ -200,7 +200,7 @@ pub fn verify_aggregate_count_and_big_sum_on_range_proof(
 /// - Require the node's type to match the classification (and reject
 ///   any children attached under a leaf-shape classification).
 /// - Recurse with tightened bounds at `Boundary` nodes, summing with
-///   `checked_add` (count) / saturating i128 arithmetic (sum). The
+///   `checked_add` (count, and the sum in the prover's order). The
 ///   `own_count` derivation uses `checked_sub` to catch the
 ///   "children's structural count exceeds parent's" inconsistency
 ///   exactly like the single-axis count verifier. The corresponding
@@ -336,9 +336,12 @@ fn verify_count_and_sum_shape(
                         "aggregate-count-and-sum proof: in-range count overflowed u64".to_string(),
                     )
                 })?;
+            // Added in the prover's order (left, own, right), so that a
+            // proof the prover could produce is not refused over an
+            // intermediate sum the prover never formed.
             let in_range_sum = left_in_s
-                .checked_add(right_in_s)
-                .and_then(|s| s.checked_add(self_sum_contribution))
+                .checked_add(self_sum_contribution)
+                .and_then(|s| s.checked_add(right_in_s))
                 .ok_or_else(|| {
                     Error::InvalidProofError(
                         "aggregate-count-and-sum proof: in-range sum overflowed i128".to_string(),

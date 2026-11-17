@@ -90,7 +90,8 @@ where
         ) {
             return Err(Error::InvalidProofError(format!(
                 "count-offset paginated proof is only valid against ProvableCountTree, \
-                 ProvableCountSumTree, or ProvableCountProvableSumTree, got {:?}",
+                 ProvableCountSumTree, ProvableCountProvableSumTree, or \
+                 ProvableCountProvableBigSumTree, got {:?}",
                 tree_type
             )))
             .wrap_with_cost(Default::default());
@@ -146,7 +147,8 @@ where
         ) {
             return Err(Error::InvalidProofError(format!(
                 "count-offset paginated proof is only valid against ProvableCountTree, \
-                 ProvableCountSumTree, or ProvableCountProvableSumTree, got {:?}",
+                 ProvableCountSumTree, ProvableCountProvableSumTree, or \
+                 ProvableCountProvableBigSumTree, got {:?}",
                 tree_type
             )))
             .wrap_with_cost(Default::default());

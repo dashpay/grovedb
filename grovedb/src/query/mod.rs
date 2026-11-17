@@ -1015,7 +1015,8 @@ impl PathQuery {
             return Err(Error::InvalidQuery(
                 "count-offset paginated queries may not target the root merk: \
                  the GroveDB root is always a NormalTree, never a \
-                 ProvableCountTree / ProvableCountSumTree / ProvableCountProvableSumTree",
+                 ProvableCountTree / ProvableCountSumTree / ProvableCountProvableSumTree / \
+                 ProvableCountProvableBigSumTree",
             ));
         }
         self.query.validate_count_offset_paginated()

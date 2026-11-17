@@ -693,7 +693,8 @@ impl GroveDb {
         {
             return Err(Error::InvalidQuery(
                 "count-offset paginated queries are only valid against \
-                 ProvableCountTree / ProvableCountSumTree / ProvableCountProvableSumTree merks",
+                 ProvableCountTree / ProvableCountSumTree / ProvableCountProvableSumTree / \
+                 ProvableCountProvableBigSumTree merks",
             ));
         }
         Ok(())

@@ -330,9 +330,12 @@ fn verify_sum_shape(
             } else {
                 0
             };
+            // Added in the prover's order (left, own, right), so that a
+            // proof the prover could produce is not refused over an
+            // intermediate sum the prover never formed.
             let in_range = left_in
-                .checked_add(right_in)
-                .and_then(|sum| sum.checked_add(self_contribution))
+                .checked_add(self_contribution)
+                .and_then(|sum| sum.checked_add(right_in))
                 .ok_or_else(|| {
                     Error::InvalidProofError(
                         "aggregate-sum proof: in-range sum overflowed i128".to_string(),
