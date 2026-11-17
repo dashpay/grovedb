@@ -13,7 +13,9 @@ use std::collections::LinkedList;
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use grovedb_version::version::GroveVersion;
 
-use super::{emit::emit_sum_proof, is_provable_sum_bearing, walk::walk_sum_only};
+use super::{
+    emit::emit_sum_proof, is_provable_big_sum_bearing, is_provable_sum_bearing, walk::walk_sum_only,
+};
 use crate::{
     proofs::{query::QueryItem, Op},
     tree::{Fetch, RefWalker},
@@ -141,5 +143,52 @@ where
             )))
             .wrap_with_cost(cost),
         }
+    }
+
+    /// The wide form of [`Self::create_aggregate_sum_on_range_proof`], for a
+    /// `ProvableCountProvableBigSumTree`: the same walk, emitting the wide
+    /// proof nodes, with the in-range sum returned as an `i128`.
+    ///
+    /// `tree_type` must be `ProvableCountProvableBigSumTree`; any other is
+    /// rejected with `Error::InvalidProofError` before walking.
+    pub fn create_aggregate_big_sum_on_range_proof(
+        &mut self,
+        inner_range: &QueryItem,
+        tree_type: TreeType,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(LinkedList<Op>, i128), Error> {
+        if !is_provable_big_sum_bearing(tree_type) {
+            return Err(Error::InvalidProofError(format!(
+                "a big sum AggregateSumOnRange is only valid against \
+                 ProvableCountProvableBigSumTree, got {:?}",
+                tree_type
+            )))
+            .wrap_with_cost(OperationCost::default());
+        }
+        let mut cost = OperationCost::default();
+        let mut ops = LinkedList::new();
+        let sum = cost_return_on_error!(
+            &mut cost,
+            emit_sum_proof(
+                self,
+                inner_range,
+                None,
+                None,
+                &mut ops,
+                tree_type,
+                grove_version,
+            )
+        );
+        Ok((ops, sum)).wrap_with_cost(cost)
+    }
+
+    /// The wide form of [`Self::sum_aggregate_on_range`]: the in-range sum
+    /// as an `i128`, without a proof.
+    pub fn big_sum_aggregate_on_range(
+        &mut self,
+        inner_range: &QueryItem,
+        grove_version: &GroveVersion,
+    ) -> CostResult<i128, Error> {
+        walk_sum_only(self, inner_range, None, None, grove_version)
     }
 }

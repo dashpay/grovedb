@@ -112,6 +112,7 @@ pub(crate) fn path_query_push_v2(
             Element::ProvableCountTree(..)
                 | Element::ProvableCountSumTree(..)
                 | Element::ProvableCountProvableSumTree(..)
+                | Element::ProvableCountProvableBigSumTree(..)
         )
     {
         return Err(Error::InvalidQuery(

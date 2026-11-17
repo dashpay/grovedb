@@ -54,7 +54,7 @@ mod verify;
 mod walk;
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
-pub use verify::verify_aggregate_sum_on_range_proof;
+pub use verify::{verify_aggregate_big_sum_on_range_proof, verify_aggregate_sum_on_range_proof};
 
 #[cfg(feature = "minimal")]
 use crate::{
@@ -75,6 +75,33 @@ pub(super) fn is_provable_sum_bearing(tree_type: TreeType) -> bool {
         tree_type,
         TreeType::ProvableSumTree | TreeType::ProvableCountProvableSumTree
     )
+}
+
+/// Returns true if `tree_type` hosts the wide form of the query, whose sum is
+/// an `i128`: `ProvableCountProvableBigSumTree`, which binds its count and
+/// 128-bit sum into the node hash via `node_hash_with_count_and_big_sum`.
+#[cfg(feature = "minimal")]
+pub(super) fn is_provable_big_sum_bearing(tree_type: TreeType) -> bool {
+    matches!(tree_type, TreeType::ProvableCountProvableBigSumTree)
+}
+
+/// The sum of an aggregate of either width, widened to `i128`. Same
+/// classification of any other variant as [`provable_sum_from_aggregate`].
+#[cfg(feature = "minimal")]
+pub(super) fn provable_wide_sum_from_aggregate(data: AggregateData) -> Result<i128, Error> {
+    match data {
+        AggregateData::ProvableCountAndProvableBigSum(_, s) => Ok(s),
+        narrow => provable_sum_from_aggregate(narrow).map(i128::from),
+    }
+}
+
+/// The error for an in-range sum that does not fit an `i128`. No tree
+/// reaches it: every stored aggregate fits, and the children of a
+/// `ProvableCountProvableBigSumTree` contribute an `i64` each unless they are
+/// themselves trees near the end of the `i128` range.
+#[cfg(feature = "minimal")]
+pub(super) fn sum_on_range_overflow() -> Error {
+    Error::Overflow("aggregate sum on range is overflowing")
 }
 
 /// Pull the sum out of a `ProvableSum` / `ProvableCountAndProvableSum`

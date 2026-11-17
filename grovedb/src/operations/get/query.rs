@@ -1184,6 +1184,101 @@ where {
         Ok(count_and_sum).wrap_with_cost(cost)
     }
 
+    /// The wide form of [`Self::query_aggregate_sum`], for a path that ends
+    /// at a `ProvableCountProvableBigSumTree`: the same leaf
+    /// `AggregateSumOnRange` query, answered without a proof, with the sum
+    /// returned as an `i128`. A tree with an `i64` sum is refused, as
+    /// [`Self::query_aggregate_sum`] refuses a `ProvableCountProvableBigSumTree`.
+    pub fn query_aggregate_big_sum(
+        &self,
+        path_query: &PathQuery,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<i128, Error> {
+        check_grovedb_v0_with_cost!(
+            "query_aggregate_big_sum",
+            grove_version
+                .grovedb_versions
+                .operations
+                .query
+                .query_aggregate_sum_on_range
+        );
+
+        let mut cost = OperationCost::default();
+        let inner_range = cost_return_on_error_no_add!(
+            cost,
+            path_query.validate_leaf_aggregate_sum_on_range().cloned()
+        );
+        let tx = TxRef::new(&self.db, transaction);
+        let path_slices: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
+        let subtree = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                SubtreePath::from(path_slices.as_slice()),
+                tx.as_ref(),
+                None,
+                grove_version,
+            )
+        );
+        let sum = cost_return_on_error!(
+            &mut cost,
+            subtree
+                .big_sum_aggregate_on_range(&inner_range, grove_version)
+                .map_err(|e| Error::CorruptedData(format!(
+                    "query_aggregate_big_sum at path {:?}: {}",
+                    path_slices, e
+                )))
+        );
+        Ok(sum).wrap_with_cost(cost)
+    }
+
+    /// The wide form of [`Self::query_aggregate_count_and_sum`], for a path
+    /// that ends at a `ProvableCountProvableBigSumTree`: the same leaf
+    /// `AggregateCountAndSumOnRange` query, answered without a proof, with
+    /// the sum returned as an `i128`.
+    pub fn query_aggregate_count_and_big_sum(
+        &self,
+        path_query: &PathQuery,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(u64, i128), Error> {
+        let version_slot = grove_version
+            .grovedb_versions
+            .operations
+            .query
+            .query_aggregate_count_and_sum_on_range;
+        check_grovedb_v0_with_cost!("query_aggregate_count_and_big_sum", version_slot);
+
+        let mut cost = OperationCost::default();
+        let inner_range = cost_return_on_error_no_add!(
+            cost,
+            path_query
+                .validate_leaf_aggregate_count_and_sum_on_range()
+                .cloned()
+        );
+        let tx = TxRef::new(&self.db, transaction);
+        let path_slices: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
+        let subtree = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                SubtreePath::from(path_slices.as_slice()),
+                tx.as_ref(),
+                None,
+                grove_version,
+            )
+        );
+        let count_and_sum = cost_return_on_error!(
+            &mut cost,
+            subtree
+                .count_and_big_sum_aggregate_on_range(&inner_range, grove_version)
+                .map_err(|e| Error::CorruptedData(format!(
+                    "query_aggregate_count_and_big_sum at path {:?}: {}",
+                    path_slices, e
+                )))
+        );
+        Ok(count_and_sum).wrap_with_cost(cost)
+    }
+
     /// Retrieves SumItem values that match a regular [`PathQuery`], returning
     /// a `Vec<i64>` of the raw sum values and the number of skipped elements.
     ///

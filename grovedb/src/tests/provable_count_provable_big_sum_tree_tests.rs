@@ -1086,27 +1086,103 @@ mod tests {
         }
     }
 
-    /// The range aggregates are not offered on this tree type: each is
-    /// refused when proved, and the tree stays readable.
-    #[test]
-    fn range_aggregates_are_refused_on_a_big_sum_tree() {
-        let grove_version = GroveVersion::latest();
-        let db = db_with_three_max_items(grove_version);
-        let inner = QueryItem::RangeFull(std::ops::RangeFull);
-
-        for query in [
-            Query::new_aggregate_count_on_range(inner.clone()),
-            Query::new_aggregate_sum_on_range(inner.clone()),
-            Query::new_aggregate_count_and_sum_on_range(inner.clone()),
-        ] {
-            let path_query = PathQuery::new_unsized(vec![BIG.to_vec()], query);
-            let proved = db.prove_query(&path_query, None, grove_version).unwrap();
-            assert!(
-                proved.is_err(),
-                "a range aggregate must be refused on this tree type"
+    /// A wide tree of the sum items `0..20`, the item at `index` holding
+    /// `i64::MAX - index`.
+    fn db_with_twenty_items(grove_version: &GroveVersion) -> TempGroveDb {
+        let db = make_test_grovedb(grove_version);
+        insert_big_tree(&db, &[], BIG, grove_version);
+        for index in 0u8..20 {
+            insert(
+                &db,
+                &[BIG],
+                &[index],
+                Element::new_sum_item(i64::MAX - index as i64),
+                grove_version,
             );
         }
-        assert_eq!(recorded(&db, &[], BIG, grove_version), (3, THREE_MAX));
+        db
+    }
+
+    /// The sum of the items `keys` of [`db_with_twenty_items`].
+    fn sum_of(keys: std::ops::Range<u8>) -> i128 {
+        keys.map(|index| i64::MAX as i128 - index as i128).sum()
+    }
+
+    /// The three range aggregates are proved on the tree and verified
+    /// against the database root: the count, the 128-bit sum and both.
+    #[test]
+    fn range_aggregates_of_a_big_sum_tree_prove_against_the_root() {
+        let grove_version = GroveVersion::latest();
+        let db = db_with_twenty_items(grove_version);
+        let root_hash = db.root_hash(None, grove_version).unwrap().unwrap();
+
+        for (inner, keys) in [
+            (QueryItem::RangeTo(..vec![4]), 0u8..4),
+            (QueryItem::RangeInclusive(vec![0]..=vec![19]), 0..20),
+            (QueryItem::Range(vec![3]..vec![9]), 3..9),
+            (QueryItem::RangeInclusive(vec![3]..=vec![9]), 3..10),
+            (QueryItem::RangeFrom(vec![15]..), 15..20),
+            (QueryItem::Range(vec![30]..vec![40]), 0..0),
+        ] {
+            let count = keys.len() as u64;
+            let sum = sum_of(keys);
+
+            let path_query = PathQuery::new_unsized(
+                vec![BIG.to_vec()],
+                Query::new_aggregate_count_on_range(inner.clone()),
+            );
+            let proof = db
+                .prove_query(&path_query, None, grove_version)
+                .unwrap()
+                .expect("should prove the count");
+            assert_eq!(
+                GroveDb::verify_aggregate_count_query(&proof, &path_query, grove_version)
+                    .expect("should verify the count"),
+                (root_hash, count)
+            );
+
+            let path_query = PathQuery::new_unsized(
+                vec![BIG.to_vec()],
+                Query::new_aggregate_sum_on_range(inner.clone()),
+            );
+            let proof = db
+                .prove_query(&path_query, None, grove_version)
+                .unwrap()
+                .expect("should prove the sum");
+            assert_eq!(
+                GroveDb::verify_aggregate_big_sum_query(&proof, &path_query, grove_version)
+                    .expect("should verify the sum"),
+                (root_hash, sum)
+            );
+            // The i64 entry point refuses a proof of the wide tree.
+            assert!(
+                GroveDb::verify_aggregate_sum_query(&proof, &path_query, grove_version).is_err()
+            );
+
+            let path_query = PathQuery::new_unsized(
+                vec![BIG.to_vec()],
+                Query::new_aggregate_count_and_sum_on_range(inner.clone()),
+            );
+            let proof = db
+                .prove_query(&path_query, None, grove_version)
+                .unwrap()
+                .expect("should prove the count and sum");
+            assert_eq!(
+                GroveDb::verify_aggregate_count_and_big_sum_query(
+                    &proof,
+                    &path_query,
+                    grove_version
+                )
+                .expect("should verify the count and sum"),
+                (root_hash, count, sum)
+            );
+            assert!(GroveDb::verify_aggregate_count_and_sum_query(
+                &proof,
+                &path_query,
+                grove_version
+            )
+            .is_err());
+        }
     }
 
     /// `verify_grovedb` recomputes each tree's aggregate from its elements
@@ -1252,32 +1328,542 @@ mod tests {
         );
     }
 
-    /// Count offsets are not offered on this tree type: a query that asks
-    /// for one is refused when proved.
+    /// The range aggregates are read without a proof to the same values the
+    /// proofs give, through the big sum entry points; the `i64` ones keep
+    /// refusing the tree.
     #[test]
-    fn count_offsets_are_refused_on_a_big_sum_tree() {
+    fn range_aggregates_of_a_big_sum_tree_are_read_without_a_proof() {
+        let grove_version = GroveVersion::latest();
+        let db = db_with_twenty_items(grove_version);
+        let inner = QueryItem::Range(vec![3]..vec![9]);
+        let sum = sum_of(3..9);
+
+        let count_query = PathQuery::new_unsized(
+            vec![BIG.to_vec()],
+            Query::new_aggregate_count_on_range(inner.clone()),
+        );
+        assert_eq!(
+            db.query_aggregate_count(&count_query, None, grove_version)
+                .unwrap()
+                .expect("should read the count"),
+            6
+        );
+
+        let sum_query = PathQuery::new_unsized(
+            vec![BIG.to_vec()],
+            Query::new_aggregate_sum_on_range(inner.clone()),
+        );
+        assert_eq!(
+            db.query_aggregate_big_sum(&sum_query, None, grove_version)
+                .unwrap()
+                .expect("should read the sum"),
+            sum
+        );
+        assert_eq!(
+            db.query_aggregate_big_sum_per_key(&sum_query, None, grove_version)
+                .unwrap()
+                .expect("should read the sum per key"),
+            vec![(Vec::new(), sum)]
+        );
+        assert!(db
+            .query_aggregate_sum(&sum_query, None, grove_version)
+            .unwrap()
+            .is_err());
+
+        let both_query = PathQuery::new_unsized(
+            vec![BIG.to_vec()],
+            Query::new_aggregate_count_and_sum_on_range(inner),
+        );
+        assert_eq!(
+            db.query_aggregate_count_and_big_sum(&both_query, None, grove_version)
+                .unwrap()
+                .expect("should read the count and sum"),
+            (6, sum)
+        );
+        assert_eq!(
+            db.query_aggregate_count_and_big_sum_per_key(&both_query, None, grove_version)
+                .unwrap()
+                .expect("should read the count and sum per key"),
+            vec![(Vec::new(), 6, sum)]
+        );
+        assert!(db
+            .query_aggregate_count_and_sum(&both_query, None, grove_version)
+            .unwrap()
+            .is_err());
+    }
+
+    /// The big sum entry points refuse a tree whose sum is an `i64`, proved
+    /// or not: the caller names the width, and a mismatch is an error
+    /// rather than a narrowed or widened answer.
+    #[test]
+    fn big_sum_range_aggregates_refuse_a_narrow_tree() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
-        insert_big_tree(&db, &[], BIG, grove_version);
-        for index in 0u8..20 {
+        insert(
+            &db,
+            &[],
+            b"narrow",
+            Element::empty_provable_count_provable_sum_tree(),
+            grove_version,
+        );
+        for index in 0u8..10 {
             insert(
                 &db,
-                &[BIG],
+                &[b"narrow"],
                 &[index],
-                Element::new_sum_item(i64::MAX),
+                Element::new_sum_item(index as i64),
                 grove_version,
             );
         }
+        let inner = QueryItem::Range(vec![3]..vec![9]);
+
+        let sum_query = PathQuery::new_unsized(
+            vec![b"narrow".to_vec()],
+            Query::new_aggregate_sum_on_range(inner.clone()),
+        );
+        assert!(db
+            .query_aggregate_big_sum(&sum_query, None, grove_version)
+            .unwrap()
+            .is_err());
+        let proof = db
+            .prove_query(&sum_query, None, grove_version)
+            .unwrap()
+            .expect("should prove the narrow sum");
+        GroveDb::verify_aggregate_sum_query(&proof, &sum_query, grove_version)
+            .expect("the i64 entry point verifies it");
+        assert!(
+            GroveDb::verify_aggregate_big_sum_query(&proof, &sum_query, grove_version).is_err()
+        );
+
+        let both_query = PathQuery::new_unsized(
+            vec![b"narrow".to_vec()],
+            Query::new_aggregate_count_and_sum_on_range(inner),
+        );
+        assert!(db
+            .query_aggregate_count_and_big_sum(&both_query, None, grove_version)
+            .unwrap()
+            .is_err());
+        let proof = db
+            .prove_query(&both_query, None, grove_version)
+            .unwrap()
+            .expect("should prove the narrow count and sum");
+        assert!(GroveDb::verify_aggregate_count_and_big_sum_query(
+            &proof,
+            &both_query,
+            grove_version
+        )
+        .is_err());
+    }
+
+    /// A grove with a plain `groups` tree whose children `x`, `y` and `z`
+    /// each hold a wide tree `values` of the sum items `0..count`, the item
+    /// at `index` holding `i64::MAX - index`.
+    fn db_with_groups(grove_version: &GroveVersion) -> TempGroveDb {
+        let db = make_test_grovedb(grove_version);
+        insert(&db, &[], b"groups", Element::empty_tree(), grove_version);
+        for (group, count) in [(b"x", 4u8), (b"y", 8), (b"z", 12)] {
+            insert(
+                &db,
+                &[b"groups"],
+                group,
+                Element::empty_tree(),
+                grove_version,
+            );
+            insert_big_tree(&db, &[b"groups", group], b"values", grove_version);
+            for index in 0..count {
+                insert(
+                    &db,
+                    &[b"groups", group, b"values"],
+                    &[index],
+                    Element::new_sum_item(i64::MAX - index as i64),
+                    grove_version,
+                );
+            }
+        }
+        db
+    }
+
+    /// A query that fans out over the groups and aggregates the range
+    /// `[2, 10)` of each group's wide tree.
+    fn per_group_query(aggregate: Query) -> PathQuery {
+        let mut carrier = Query::new();
+        for group in [b"x", b"y", b"z"] {
+            carrier.insert_key(group.to_vec());
+        }
+        carrier.set_subquery_path(vec![b"values".to_vec()]);
+        carrier.set_subquery(aggregate);
+        PathQuery::new(
+            vec![b"groups".to_vec()],
+            SizedQuery::new(carrier, None, None),
+        )
+    }
+
+    /// A range aggregate per outer key, each over a wide tree: proved and
+    /// verified against the root, and read without a proof to the same
+    /// values.
+    #[test]
+    fn per_key_range_aggregates_over_big_sum_trees() {
+        let grove_version = GroveVersion::latest();
+        let db = db_with_groups(grove_version);
+        let root_hash = db.root_hash(None, grove_version).unwrap().unwrap();
+        let inner = QueryItem::Range(vec![2]..vec![10]);
+        // The groups hold 4, 8 and 12 items: 2, 6 and 8 of them in range.
+        let expected: Vec<(Vec<u8>, u64, i128)> = vec![
+            (b"x".to_vec(), 2, sum_of(2..4)),
+            (b"y".to_vec(), 6, sum_of(2..8)),
+            (b"z".to_vec(), 8, sum_of(2..10)),
+        ];
+        let expected_sums: Vec<(Vec<u8>, i128)> = expected
+            .iter()
+            .map(|(key, _, sum)| (key.clone(), *sum))
+            .collect();
+
+        let sum_query = per_group_query(Query::new_aggregate_sum_on_range(inner.clone()));
+        let proof = db
+            .prove_query(&sum_query, None, grove_version)
+            .unwrap()
+            .expect("should prove the sums");
+        assert_eq!(
+            GroveDb::verify_aggregate_big_sum_query_per_key(&proof, &sum_query, grove_version)
+                .expect("should verify the sums"),
+            (root_hash, expected_sums.clone())
+        );
+        assert!(
+            GroveDb::verify_aggregate_sum_query_per_key(&proof, &sum_query, grove_version).is_err()
+        );
+        assert_eq!(
+            db.query_aggregate_big_sum_per_key(&sum_query, None, grove_version)
+                .unwrap()
+                .expect("should read the sums"),
+            expected_sums
+        );
+
+        let both_query =
+            per_group_query(Query::new_aggregate_count_and_sum_on_range(inner.clone()));
+        let proof = db
+            .prove_query(&both_query, None, grove_version)
+            .unwrap()
+            .expect("should prove the counts and sums");
+        assert_eq!(
+            GroveDb::verify_aggregate_count_and_big_sum_query_per_key(
+                &proof,
+                &both_query,
+                grove_version
+            )
+            .expect("should verify the counts and sums"),
+            (root_hash, expected.clone())
+        );
+        assert!(GroveDb::verify_aggregate_count_and_sum_query_per_key(
+            &proof,
+            &both_query,
+            grove_version
+        )
+        .is_err());
+        assert_eq!(
+            db.query_aggregate_count_and_big_sum_per_key(&both_query, None, grove_version)
+                .unwrap()
+                .expect("should read the counts and sums"),
+            expected
+        );
+
+        let count_query = per_group_query(Query::new_aggregate_count_on_range(inner));
+        let proof = db
+            .prove_query(&count_query, None, grove_version)
+            .unwrap()
+            .expect("should prove the counts");
+        assert_eq!(
+            GroveDb::verify_aggregate_count_query_per_key(&proof, &count_query, grove_version)
+                .expect("should verify the counts"),
+            (
+                root_hash,
+                vec![(b"x".to_vec(), 2), (b"y".to_vec(), 6), (b"z".to_vec(), 8)]
+            )
+        );
+    }
+
+    /// A group whose wide tree is empty aggregates to a count of 0 and a
+    /// sum of 0 next to a group that holds items: proved and verified
+    /// against the root, and read without a proof to the same values, for
+    /// the count, the sum and both together.
+    #[test]
+    fn per_key_range_aggregates_include_an_empty_big_sum_tree() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert(&db, &[], b"groups", Element::empty_tree(), grove_version);
+        for group in [b"x", b"y"] {
+            insert(
+                &db,
+                &[b"groups"],
+                group,
+                Element::empty_tree(),
+                grove_version,
+            );
+            insert_big_tree(&db, &[b"groups", group], b"values", grove_version);
+        }
+        for index in 0..8u8 {
+            insert(
+                &db,
+                &[b"groups", b"y", b"values"],
+                &[index],
+                Element::new_sum_item(i64::MAX - index as i64),
+                grove_version,
+            );
+        }
+        let root_hash = db.root_hash(None, grove_version).unwrap().unwrap();
+        let per_group = |aggregate: Query| {
+            let mut carrier = Query::new();
+            carrier.insert_key(b"x".to_vec());
+            carrier.insert_key(b"y".to_vec());
+            carrier.set_subquery_path(vec![b"values".to_vec()]);
+            carrier.set_subquery(aggregate);
+            PathQuery::new(
+                vec![b"groups".to_vec()],
+                SizedQuery::new(carrier, None, None),
+            )
+        };
+        let inner = QueryItem::Range(vec![2]..vec![10]);
+        let expected: Vec<(Vec<u8>, u64, i128)> =
+            vec![(b"x".to_vec(), 0, 0), (b"y".to_vec(), 6, sum_of(2..8))];
+        let expected_sums: Vec<(Vec<u8>, i128)> = expected
+            .iter()
+            .map(|(key, _, sum)| (key.clone(), *sum))
+            .collect();
+        let expected_counts: Vec<(Vec<u8>, u64)> = expected
+            .iter()
+            .map(|(key, count, _)| (key.clone(), *count))
+            .collect();
+
+        let both_query = per_group(Query::new_aggregate_count_and_sum_on_range(inner.clone()));
+        let proof = db
+            .prove_query(&both_query, None, grove_version)
+            .unwrap()
+            .expect("should prove the counts and sums");
+        assert_eq!(
+            GroveDb::verify_aggregate_count_and_big_sum_query_per_key(
+                &proof,
+                &both_query,
+                grove_version
+            )
+            .expect("should verify the counts and sums"),
+            (root_hash, expected.clone())
+        );
+        assert_eq!(
+            db.query_aggregate_count_and_big_sum_per_key(&both_query, None, grove_version)
+                .unwrap()
+                .expect("should read the counts and sums"),
+            expected
+        );
+
+        let sum_query = per_group(Query::new_aggregate_sum_on_range(inner.clone()));
+        let proof = db
+            .prove_query(&sum_query, None, grove_version)
+            .unwrap()
+            .expect("should prove the sums");
+        assert_eq!(
+            GroveDb::verify_aggregate_big_sum_query_per_key(&proof, &sum_query, grove_version)
+                .expect("should verify the sums"),
+            (root_hash, expected_sums.clone())
+        );
+        assert_eq!(
+            db.query_aggregate_big_sum_per_key(&sum_query, None, grove_version)
+                .unwrap()
+                .expect("should read the sums"),
+            expected_sums
+        );
+
+        let count_query = per_group(Query::new_aggregate_count_on_range(inner));
+        let proof = db
+            .prove_query(&count_query, None, grove_version)
+            .unwrap()
+            .expect("should prove the counts");
+        assert_eq!(
+            GroveDb::verify_aggregate_count_query_per_key(&proof, &count_query, grove_version)
+                .expect("should verify the counts"),
+            (root_hash, expected_counts)
+        );
+    }
+
+    /// A proved range sum whose proof was altered no longer verifies.
+    #[test]
+    fn altered_range_aggregate_proof_of_a_big_sum_tree_is_refused() {
+        let grove_version = GroveVersion::latest();
+        let db = db_with_twenty_items(grove_version);
+        let root_hash = db.root_hash(None, grove_version).unwrap().unwrap();
+        let path_query = PathQuery::new_unsized(
+            vec![BIG.to_vec()],
+            Query::new_aggregate_count_and_sum_on_range(QueryItem::Range(vec![3]..vec![9])),
+        );
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should prove the count and sum");
+
+        // Flip each byte of the proof in turn: no altered proof may verify
+        // to the database root with another answer.
+        let honest =
+            GroveDb::verify_aggregate_count_and_big_sum_query(&proof, &path_query, grove_version)
+                .expect("should verify as is");
+        for index in 0..proof.len() {
+            let mut altered = proof.clone();
+            altered[index] ^= 0x01;
+            if let Ok(result) = GroveDb::verify_aggregate_count_and_big_sum_query(
+                &altered,
+                &path_query,
+                grove_version,
+            ) {
+                assert!(
+                    result.0 != root_hash || result == honest,
+                    "byte {index}: an altered proof verified to the root with another answer"
+                );
+            }
+        }
+    }
+
+    /// A count-offset page of the tree skips the offset and returns the
+    /// rows after it, in both directions, verified against the root.
+    #[test]
+    fn count_offset_pages_of_a_big_sum_tree_prove_against_the_root() {
+        let grove_version = GroveVersion::latest();
+        let db = db_with_twenty_items(grove_version);
+        let root_hash = db.root_hash(None, grove_version).unwrap().unwrap();
+
+        for (left_to_right, expected_keys) in [(true, vec![5u8, 6, 7]), (false, vec![14u8, 13, 12])]
+        {
+            let mut query = Query::new_with_direction(left_to_right);
+            query.insert_range_inclusive(vec![0]..=vec![19]);
+            let path_query =
+                PathQuery::new(vec![BIG.to_vec()], SizedQuery::new(query, Some(3), Some(5)));
+            let proof = db
+                .prove_query(&path_query, None, grove_version)
+                .unwrap()
+                .expect("should prove the page");
+            let (proven_root, rows) = GroveDb::verify_query_raw(&proof, &path_query, grove_version)
+                .expect("should verify the page");
+            assert_eq!(proven_root, root_hash);
+            assert_eq!(
+                rows.iter().map(|row| row.key[0]).collect::<Vec<_>>(),
+                expected_keys
+            );
+        }
+    }
+
+    /// A count-offset page that returns a reference row: the row is carried
+    /// by the wide reference node, and verifies to the value it points at.
+    #[test]
+    fn count_offset_page_of_a_big_sum_tree_returns_a_reference_row() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_big_tree(&db, &[], BIG, grove_version);
+        insert(&db, &[], b"values", Element::empty_tree(), grove_version);
+        insert(
+            &db,
+            &[b"values"],
+            b"target",
+            Element::new_item(b"referenced".to_vec()),
+            grove_version,
+        );
+        for index in 0u8..10 {
+            let element = if index == 6 {
+                Element::new_reference_with_sum_item(
+                    ReferencePathType::AbsolutePathReference(vec![
+                        b"values".to_vec(),
+                        b"target".to_vec(),
+                    ]),
+                    i64::MAX,
+                )
+            } else {
+                Element::new_sum_item(i64::MAX)
+            };
+            insert(&db, &[BIG], &[index], element, grove_version);
+        }
+        let root_hash = db.root_hash(None, grove_version).unwrap().unwrap();
 
         let mut query = Query::new();
-        query.insert_all();
+        query.insert_range_inclusive(vec![0]..=vec![9]);
         let path_query =
-            PathQuery::new(vec![BIG.to_vec()], SizedQuery::new(query, Some(5), Some(3)));
-        assert!(
-            db.prove_query(&path_query, None, grove_version)
-                .unwrap()
-                .is_err(),
-            "a count offset must be refused on this tree type"
+            PathQuery::new(vec![BIG.to_vec()], SizedQuery::new(query, Some(3), Some(5)));
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should prove the page");
+        let (proven_root, rows) = GroveDb::verify_query(&proof, &path_query, grove_version)
+            .expect("should verify the page");
+        assert_eq!(proven_root, root_hash);
+        assert_eq!(
+            rows.iter().map(|(_, key, _)| key[0]).collect::<Vec<_>>(),
+            vec![5, 6, 7]
         );
+        assert_eq!(rows[1].2, Some(Element::new_item(b"referenced".to_vec())));
+    }
+
+    /// A local offset pages each wide tree a query fans out over: every
+    /// group skips its own first rows, read without a proof and proved to
+    /// the same rows.
+    #[test]
+    fn local_offset_pages_each_big_sum_tree() {
+        use crate::query_result_type::QueryResultType;
+
+        let grove_version = GroveVersion::latest();
+        let db = db_with_groups(grove_version);
+        let root_hash = db.root_hash(None, grove_version).unwrap().unwrap();
+
+        let mut page = Query::new_range_full();
+        page.offset = Some(2);
+        page.limit = Some(3);
+        let mut carrier = Query::new();
+        for group in [b"x", b"y", b"z"] {
+            carrier.insert_key(group.to_vec());
+        }
+        carrier.set_subquery_path(vec![b"values".to_vec()]);
+        carrier.set_subquery(page);
+        let path_query = PathQuery::new(
+            vec![b"groups".to_vec()],
+            SizedQuery::new(carrier, None, None),
+        );
+
+        // The groups hold 4, 8 and 12 items: after skipping two, `x` has two
+        // left and the others fill their page of three.
+        let expected: Vec<(Vec<u8>, u8)> = vec![
+            (b"x".to_vec(), 2),
+            (b"x".to_vec(), 3),
+            (b"y".to_vec(), 2),
+            (b"y".to_vec(), 3),
+            (b"y".to_vec(), 4),
+            (b"z".to_vec(), 2),
+            (b"z".to_vec(), 3),
+            (b"z".to_vec(), 4),
+        ];
+
+        let (elements, _) = db
+            .query(
+                &path_query,
+                true,
+                true,
+                true,
+                QueryResultType::QueryPathKeyElementTrioResultType,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should read the pages");
+        let read: Vec<(Vec<u8>, u8)> = elements
+            .to_path_key_elements()
+            .into_iter()
+            .map(|(path, key, _)| (path[1].clone(), key[0]))
+            .collect();
+        assert_eq!(read, expected);
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should prove the pages");
+        let (proven_root, rows) = GroveDb::verify_query(&proof, &path_query, grove_version)
+            .expect("should verify the pages");
+        assert_eq!(proven_root, root_hash);
+        let proved: Vec<(Vec<u8>, u8)> = rows
+            .into_iter()
+            .map(|(path, key, _)| (path[1].clone(), key[0]))
+            .collect();
+        assert_eq!(proved, expected);
     }
 }

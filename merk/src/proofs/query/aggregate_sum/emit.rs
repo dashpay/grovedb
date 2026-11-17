@@ -20,7 +20,7 @@ use std::collections::LinkedList;
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use grovedb_version::version::GroveVersion;
 
-use super::provable_sum_from_aggregate;
+use super::{provable_sum_from_aggregate, provable_wide_sum_from_aggregate, sum_on_range_overflow};
 use crate::{
     proofs::{
         query::{
@@ -104,6 +104,32 @@ where
                     .wrap_with_cost(cost);
             }
         };
+        // A `ProvableCountProvableBigSumTree` host: its nodes hash their
+        // count and 128-bit sum, so the collapsed subtree carries both.
+        if let AggregateData::ProvableCountAndProvableBigSum(subtree_count, subtree_sum) = aggregate
+        {
+            ops.push_back(Op::Push(Node::HashWithCountAndBigSum(
+                *walker.tree().kv_hash(),
+                walker
+                    .tree()
+                    .link(true)
+                    .map(|l| *l.hash())
+                    .unwrap_or(NULL_HASH),
+                walker
+                    .tree()
+                    .link(false)
+                    .map(|l| *l.hash())
+                    .unwrap_or(NULL_HASH),
+                subtree_count,
+                subtree_sum,
+            )));
+            let in_range_contribution: i128 = match class {
+                SubtreeClassification::Contained => subtree_sum,
+                SubtreeClassification::Disjoint => 0,
+                SubtreeClassification::Boundary => unreachable!(),
+            };
+            return Ok(in_range_contribution).wrap_with_cost(cost);
+        }
         let subtree_sum = match provable_sum_from_aggregate(aggregate) {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(cost),
@@ -181,7 +207,7 @@ where
         Ok(a) => a,
         Err(e) => return Err(e).wrap_with_cost(cost),
     };
-    let node_sum: i64 = match provable_sum_from_aggregate(node_aggregate) {
+    let node_sum: i128 = match provable_wide_sum_from_aggregate(node_aggregate) {
         Ok(s) => s,
         Err(e) => return Err(e).wrap_with_cost(cost),
     };
@@ -190,15 +216,15 @@ where
     // itself (avoids loading the child for this lookup). The verifier needs
     // these to compute `own_sum = node_sum − left_struct − right_struct`
     // at this boundary node.
-    let left_link_aggregate: i64 = walker
+    let left_link_aggregate: i128 = walker
         .tree()
         .link(true)
-        .map(|l| l.aggregate_data().as_sum_i64())
+        .map(|l| l.aggregate_data().as_summed_i128())
         .unwrap_or(0);
-    let right_link_aggregate: i64 = walker
+    let right_link_aggregate: i128 = walker
         .tree()
         .link(false)
-        .map(|l| l.aggregate_data().as_sum_i64())
+        .map(|l| l.aggregate_data().as_summed_i128())
         .unwrap_or(0);
     let left_link_present = walker.tree().link(true).is_some();
     let right_link_present = walker.tree().link(false).is_some();
@@ -242,7 +268,10 @@ where
         // realistic depths a Merk tree reaches, so no saturating-add
         // safeguard here (the i128 range is ~3.4e38, more than enough for
         // any tree of i64 children).
-        total += n;
+        total = match total.checked_add(n) {
+            Some(total) => total,
+            None => return Err(sum_on_range_overflow()).wrap_with_cost(cost),
+        };
         true
     } else {
         false
@@ -253,9 +282,16 @@ where
     // contribution to the in-range sum is `own_sum = node_sum −
     // left_struct − right_struct`. `NotSummed` wrapping forces
     // `node_sum = 0` so its own contribution is 0 by construction.
-    if binds_count_into_hash(tree_type) {
-        let node_count = match node_aggregate {
-            AggregateData::ProvableCountAndProvableSum(c, _) => c,
+    if let AggregateData::ProvableCountAndProvableBigSum(node_count, node_sum) = node_aggregate {
+        ops.push_back(Op::Push(Node::KVDigestCountBigSum(
+            node_key.clone(),
+            node_value_hash,
+            node_count,
+            node_sum,
+        )));
+    } else if binds_count_into_hash(tree_type) {
+        let (node_count, node_sum) = match node_aggregate {
+            AggregateData::ProvableCountAndProvableSum(c, s) => (c, s),
             other => {
                 return Err(Error::CorruptedData(format!(
                     "expected ProvableCountAndProvableSum for \
@@ -272,6 +308,10 @@ where
             node_sum,
         )));
     } else {
+        let node_sum = match provable_sum_from_aggregate(node_aggregate) {
+            Ok(s) => s,
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        };
         ops.push_back(Op::Push(Node::KVDigestSum(
             node_key.clone(),
             node_value_hash,
@@ -286,9 +326,17 @@ where
         // accumulator. Saturating semantics would silently mask malformed
         // intermediates; we propagate the literal arithmetic here and the
         // verifier rejects any overflow at the final i64-narrow step.
-        let own_sum_i128 =
-            (node_sum as i128) - (left_link_aggregate as i128) - (right_link_aggregate as i128);
-        total += own_sum_i128;
+        //
+        // The subtraction wraps: a node's own sum always fits an `i128`,
+        // and wrapping arithmetic gives it exactly even where a step on the
+        // way leaves the range, which only wide aggregates can do.
+        let own_sum_i128 = node_sum
+            .wrapping_sub(left_link_aggregate)
+            .wrapping_sub(right_link_aggregate);
+        total = match total.checked_add(own_sum_i128) {
+            Some(total) => total,
+            None => return Err(sum_on_range_overflow()).wrap_with_cost(cost),
+        };
     }
 
     // Step 5: handle the RIGHT child.
@@ -324,7 +372,10 @@ where
                 grove_version,
             )
         );
-        total += n;
+        total = match total.checked_add(n) {
+            Some(total) => total,
+            None => return Err(sum_on_range_overflow()).wrap_with_cost(cost),
+        };
         true
     } else {
         false

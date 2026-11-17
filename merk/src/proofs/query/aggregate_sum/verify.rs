@@ -133,6 +133,49 @@ pub fn verify_aggregate_sum_on_range_proof(
     Ok((root_hash, sum)).wrap_with_cost(cost)
 }
 
+/// The wide form of [`verify_aggregate_sum_on_range_proof`], for a proof
+/// against a `ProvableCountProvableBigSumTree`: the same reconstruction and
+/// shape walk over the wide proof nodes (`HashWithCountAndBigSum` for
+/// collapsed subtrees, `KVDigestCountBigSum` for boundary nodes), with the
+/// in-range sum returned as an `i128`.
+///
+/// It accepts the wide nodes only, as the narrow verifier accepts the narrow
+/// ones only: a proof names the width of the tree it was made from by the
+/// nodes it carries, and the caller names the width it expects by the
+/// function it calls.
+pub fn verify_aggregate_big_sum_on_range_proof(
+    proof_bytes: &[u8],
+    inner_range: &QueryItem,
+) -> CostResult<(CryptoHash, i128), Error> {
+    if proof_bytes.is_empty() {
+        // Empty merk → empty proof → sum = 0, hash = NULL_HASH.
+        return Ok((NULL_HASH, 0i128)).wrap_with_cost(OperationCost::default());
+    }
+
+    let mut cost = OperationCost::default();
+    let decoder = Decoder::new(proof_bytes);
+
+    let tree_result: CostResult<ProofTree, Error> =
+        execute_with_options(decoder, false, false, |node| match node {
+            Node::HashWithCountAndBigSum(_, _, _, _, _) | Node::KVDigestCountBigSum(_, _, _, _) => {
+                Ok(())
+            }
+            other => Err(Error::InvalidProofError(format!(
+                "unexpected node type in aggregate big sum proof: {}",
+                other
+            ))),
+        });
+    let tree = cost_return_on_error!(&mut cost, tree_result);
+
+    let (sum, _structural) = match verify_sum_shape(&tree, inner_range, None, None) {
+        Ok(pair) => pair,
+        Err(e) => return Err(e).wrap_with_cost(cost),
+    };
+
+    let root_hash = tree.hash().unwrap_add_cost(&mut cost);
+    Ok((root_hash, sum)).wrap_with_cost(cost)
+}
+
 /// Recursive shape-walk over the reconstructed proof tree. Returns the
 /// pair `(in_range_sum_i128, structural_sum_i128)`:
 ///
@@ -186,9 +229,10 @@ fn verify_sum_shape(
             // dual-axis hash-with-sum variants — they carry the same `sum`
             // field, with the dual-axis variant additionally binding the
             // count into the hash.
-            let sum = match &tree.node {
-                Node::HashWithSum(_, _, _, sum) => *sum,
-                Node::HashWithCountAndSum(_, _, _, _, sum) => *sum,
+            let sum: i128 = match &tree.node {
+                Node::HashWithSum(_, _, _, sum) => i128::from(*sum),
+                Node::HashWithCountAndSum(_, _, _, _, sum) => i128::from(*sum),
+                Node::HashWithCountAndBigSum(_, _, _, _, sum) => *sum,
                 other => {
                     return Err(Error::InvalidProofError(format!(
                         "aggregate-sum proof: expected HashWithSum or HashWithCountAndSum at \
@@ -204,14 +248,15 @@ fn verify_sum_shape(
                         .to_string(),
                 ));
             }
-            Ok((0i128, sum as i128))
+            Ok((0i128, sum))
         }
         SubtreeClassification::Contained => {
             // Contained subtree's structural sum (excluding NotSummed
             // entries) is exactly its in-range sum.
-            let sum = match &tree.node {
-                Node::HashWithSum(_, _, _, sum) => *sum,
-                Node::HashWithCountAndSum(_, _, _, _, sum) => *sum,
+            let sum: i128 = match &tree.node {
+                Node::HashWithSum(_, _, _, sum) => i128::from(*sum),
+                Node::HashWithCountAndSum(_, _, _, _, sum) => i128::from(*sum),
+                Node::HashWithCountAndBigSum(_, _, _, _, sum) => *sum,
                 other => {
                     return Err(Error::InvalidProofError(format!(
                         "aggregate-sum proof: expected HashWithSum or HashWithCountAndSum at \
@@ -227,16 +272,17 @@ fn verify_sum_shape(
                         .to_string(),
                 ));
             }
-            Ok((sum as i128, sum as i128))
+            Ok((sum, sum))
         }
         SubtreeClassification::Boundary => {
             // Boundary: accept KVDigestSum (single-axis) or KVDigestCountSum
             // (dual-axis). Both carry the sum we need; the count in the
             // dual-axis variant is used during hash reconstruction only
             // (already handled by Phase 1's node-hash recomputation).
-            let (key, aggregate) = match &tree.node {
-                Node::KVDigestSum(key, _, aggregate) => (key, *aggregate),
-                Node::KVDigestCountSum(key, _, _, aggregate) => (key, *aggregate),
+            let (key, aggregate): (_, i128) = match &tree.node {
+                Node::KVDigestSum(key, _, aggregate) => (key, i128::from(*aggregate)),
+                Node::KVDigestCountSum(key, _, _, aggregate) => (key, i128::from(*aggregate)),
+                Node::KVDigestCountBigSum(key, _, _, aggregate) => (key, *aggregate),
                 other => {
                     return Err(Error::InvalidProofError(format!(
                         "aggregate-sum proof: expected KVDigestSum or KVDigestCountSum at \
@@ -270,14 +316,31 @@ fn verify_sum_shape(
             // one negative, etc.). The hash chain binds the values
             // regardless, so any wrong arithmetic here would change
             // the reconstructed root hash.
-            let aggregate_i128 = aggregate as i128;
-            let own_sum = aggregate_i128 - left_struct - right_struct;
+            //
+            // The subtraction wraps and the additions are checked: narrow
+            // values cannot leave the `i128` range, and wide ones, which
+            // can, must neither panic nor wrap into a sum that was not
+            // proved.
+            let aggregate_i128 = aggregate;
+            let own_sum = aggregate_i128
+                .wrapping_sub(left_struct)
+                .wrapping_sub(right_struct);
             let self_contribution = if range.contains(key_slice) {
                 own_sum
             } else {
                 0
             };
-            let in_range = left_in + right_in + self_contribution;
+            // Added in the prover's order (left, own, right), so that a
+            // proof the prover could produce is not refused over an
+            // intermediate sum the prover never formed.
+            let in_range = left_in
+                .checked_add(self_contribution)
+                .and_then(|sum| sum.checked_add(right_in))
+                .ok_or_else(|| {
+                    Error::InvalidProofError(
+                        "aggregate-sum proof: in-range sum overflowed i128".to_string(),
+                    )
+                })?;
             Ok((in_range, aggregate_i128))
         }
     }

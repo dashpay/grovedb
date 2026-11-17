@@ -199,6 +199,7 @@ impl PathQuery {
                 crate::Element::ProvableCountTree(..)
                     | crate::Element::ProvableCountSumTree(..)
                     | crate::Element::ProvableCountProvableSumTree(..)
+                    | crate::Element::ProvableCountProvableBigSumTree(..)
             )
         {
             return Err(Error::InvalidQuery(

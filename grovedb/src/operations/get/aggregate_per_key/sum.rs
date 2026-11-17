@@ -124,4 +124,53 @@ impl GroveDb {
 
         Ok(results).wrap_with_cost(cost)
     }
+
+    /// The wide form of [`Self::query_aggregate_sum_per_key`]: one `i128`
+    /// sum per matched outer key, each over a
+    /// `ProvableCountProvableBigSumTree`, without a proof.
+    pub fn query_aggregate_big_sum_per_key(
+        &self,
+        path_query: &PathQuery,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<(Vec<u8>, i128)>, Error> {
+        check_grovedb_v0_with_cost!(
+            "query_aggregate_big_sum_per_key",
+            grove_version
+                .grovedb_versions
+                .operations
+                .query
+                .query_aggregate_sum_on_range
+        );
+
+        let mut cost = OperationCost::default();
+        let inner_range = cost_return_on_error_no_add!(
+            cost,
+            path_query.validate_aggregate_sum_on_range().cloned()
+        );
+
+        if path_query.query.query.aggregate_sum_on_range().is_some() {
+            let sum = cost_return_on_error!(
+                &mut cost,
+                self.query_aggregate_big_sum(path_query, transaction, grove_version)
+            );
+            return Ok(vec![(Vec::new(), sum)]).wrap_with_cost(cost);
+        }
+
+        let tx = TxRef::new(&self.db, transaction);
+        let results = cost_return_on_error!(
+            &mut cost,
+            self.query_aggregate_carrier_per_key(
+                path_query,
+                &inner_range,
+                "carrier aggregate-sum matched a non-tree element; outer items must resolve to \
+                 tree elements",
+                Merk::big_sum_aggregate_on_range,
+                tx.as_ref(),
+                transaction,
+                grove_version,
+            )
+        );
+        Ok(results).wrap_with_cost(cost)
+    }
 }

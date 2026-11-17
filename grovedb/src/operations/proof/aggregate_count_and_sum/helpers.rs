@@ -17,7 +17,11 @@
 
 use grovedb_merk::{
     proofs::query::{
-        aggregate_count_and_sum::verify_aggregate_count_and_sum_on_range_proof, ProofLimitMode,
+        aggregate_count_and_sum::{
+            verify_aggregate_count_and_big_sum_on_range_proof,
+            verify_aggregate_count_and_sum_on_range_proof,
+        },
+        ProofLimitMode,
     },
     tree::{combine_hash, value_hash},
     CryptoHash,
@@ -32,23 +36,79 @@ pub(super) use super::super::aggregate_common::{verify_single_key_layer_proof_v0
 
 use crate::{operations::proof::ProofBytes, Element, Error, PathQuery};
 
+/// The width of the sum a combined count-and-sum proof is verified for. As
+/// for the sum-only query, the width decides which leaf verifier reads the
+/// proof, the type of the sum it returns, and which tree the terminal path
+/// element must be.
+pub(in crate::operations::proof) trait CountAndSumWidth {
+    /// The verified in-range sum.
+    type Sum;
+    /// The tree a proof of this width terminates at, for diagnostics.
+    const TERMINAL_TREE: &'static str;
+    /// Verify a leaf aggregate proof, returning its root hash, count and
+    /// sum.
+    fn verify_leaf(
+        leaf_bytes: &[u8],
+        inner_range: &QueryItem,
+    ) -> Result<(CryptoHash, u64, Self::Sum), grovedb_merk::Error>;
+    /// Whether `element` is the tree a proof of this width terminates at.
+    fn is_terminal_tree(element: &Element) -> bool;
+}
+
+/// An `i64` sum, proved against a `ProvableCountProvableSumTree`.
+pub(in crate::operations::proof) struct NarrowSum;
+
+impl CountAndSumWidth for NarrowSum {
+    type Sum = i64;
+
+    const TERMINAL_TREE: &'static str = "ProvableCountProvableSumTree";
+
+    fn verify_leaf(
+        leaf_bytes: &[u8],
+        inner_range: &QueryItem,
+    ) -> Result<(CryptoHash, u64, i64), grovedb_merk::Error> {
+        verify_aggregate_count_and_sum_on_range_proof(leaf_bytes, inner_range).unwrap()
+    }
+
+    fn is_terminal_tree(element: &Element) -> bool {
+        matches!(element, Element::ProvableCountProvableSumTree(..))
+    }
+}
+
+/// An `i128` sum, proved against a `ProvableCountProvableBigSumTree`.
+pub(in crate::operations::proof) struct WideSum;
+
+impl CountAndSumWidth for WideSum {
+    type Sum = i128;
+
+    const TERMINAL_TREE: &'static str = "ProvableCountProvableBigSumTree";
+
+    fn verify_leaf(
+        leaf_bytes: &[u8],
+        inner_range: &QueryItem,
+    ) -> Result<(CryptoHash, u64, i128), grovedb_merk::Error> {
+        verify_aggregate_count_and_big_sum_on_range_proof(leaf_bytes, inner_range).unwrap()
+    }
+
+    fn is_terminal_tree(element: &Element) -> bool {
+        matches!(element, Element::ProvableCountProvableBigSumTree(..))
+    }
+}
+
 /// Verify the leaf layer: bytes are the encoded combined-aggregate
 /// proof Op stream; the inner range is the same one the prover
 /// aggregated over.
-pub(super) fn verify_count_and_sum_leaf(
+pub(super) fn verify_count_and_sum_leaf<W: CountAndSumWidth>(
     leaf_bytes: &[u8],
     inner_range: &QueryItem,
     path_query: &PathQuery,
-) -> Result<(CryptoHash, u64, i64), Error> {
-    let (root_hash, count, sum) =
-        verify_aggregate_count_and_sum_on_range_proof(leaf_bytes, inner_range)
-            .unwrap()
-            .map_err(|e| {
-                Error::InvalidProof(
-                    path_query.clone(),
-                    format!("combined-aggregate leaf proof failed to verify: {}", e),
-                )
-            })?;
+) -> Result<(CryptoHash, u64, W::Sum), Error> {
+    let (root_hash, count, sum) = W::verify_leaf(leaf_bytes, inner_range).map_err(|e| {
+        Error::InvalidProof(
+            path_query.clone(),
+            format!("combined-aggregate leaf proof failed to verify: {}", e),
+        )
+    })?;
     Ok((root_hash, count, sum))
 }
 
@@ -98,7 +158,7 @@ pub(super) fn execute_carrier_layer_proof(
 /// The honest prover-side gate in
 /// `Merk::prove_aggregate_count_and_sum_on_range` already rejects
 /// non-PCPS inputs; this is the matching verifier-side gate.
-pub(super) fn enforce_lower_chain(
+pub(super) fn enforce_lower_chain<W: CountAndSumWidth>(
     path_query: &PathQuery,
     target_key: &[u8],
     proven_value_bytes: &[u8],
@@ -120,14 +180,15 @@ pub(super) fn enforce_lower_chain(
         })?
         .into_underlying();
     if is_terminal {
-        if !matches!(element, Element::ProvableCountProvableSumTree(..)) {
+        if !W::is_terminal_tree(&element) {
             return Err(Error::InvalidProof(
                 path_query.clone(),
                 format!(
                     "combined-aggregate proof's terminal path element at key {} must be a \
-                     ProvableCountProvableSumTree (got {}); a combined count+sum aggregate is \
+                     {} (got {}); a combined count+sum aggregate is \
                      only meaningful against a tree that binds both axes into the node hash",
                     hex::encode(target_key),
+                    W::TERMINAL_TREE,
                     element.type_str()
                 ),
             ));

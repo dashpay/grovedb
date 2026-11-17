@@ -61,7 +61,10 @@ mod verify;
 mod walk;
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
-pub use verify::verify_aggregate_count_and_sum_on_range_proof;
+pub use verify::{
+    verify_aggregate_count_and_big_sum_on_range_proof,
+    verify_aggregate_count_and_sum_on_range_proof,
+};
 
 #[cfg(feature = "minimal")]
 use crate::{tree::AggregateData, Error, TreeType};
@@ -77,6 +80,33 @@ use crate::{tree::AggregateData, Error, TreeType};
 #[cfg(feature = "minimal")]
 pub(super) fn is_provable_count_and_sum_bearing(tree_type: TreeType) -> bool {
     matches!(tree_type, TreeType::ProvableCountProvableSumTree)
+}
+
+/// Returns true if `tree_type` hosts the wide form of the query, whose sum is
+/// an `i128`: `ProvableCountProvableBigSumTree`.
+#[cfg(feature = "minimal")]
+pub(super) fn is_provable_count_and_big_sum_bearing(tree_type: TreeType) -> bool {
+    matches!(tree_type, TreeType::ProvableCountProvableBigSumTree)
+}
+
+/// The `(count, sum)` pair of an aggregate of either width, the sum widened
+/// to `i128`. Same classification of any other variant as
+/// [`provable_count_and_sum_from_aggregate`].
+#[cfg(feature = "minimal")]
+pub(super) fn provable_count_and_wide_sum_from_aggregate(
+    data: AggregateData,
+) -> Result<(u64, i128), Error> {
+    match data {
+        AggregateData::ProvableCountAndProvableBigSum(c, s) => Ok((c, s)),
+        narrow => provable_count_and_sum_from_aggregate(narrow).map(|(c, s)| (c, i128::from(s))),
+    }
+}
+
+/// The error for an in-range sum that does not fit an `i128`, which no tree
+/// reaches (see the sum-only query's `sum_on_range_overflow`).
+#[cfg(feature = "minimal")]
+pub(super) fn sum_on_range_overflow() -> Error {
+    Error::Overflow("aggregate count and sum on range is overflowing")
 }
 
 /// Pull the `(count, sum)` pair out of a

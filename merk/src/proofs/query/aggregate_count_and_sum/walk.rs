@@ -9,7 +9,7 @@ use grovedb_costs::{
 };
 use grovedb_version::version::GroveVersion;
 
-use super::provable_count_and_sum_from_aggregate;
+use super::{provable_count_and_wide_sum_from_aggregate, sum_on_range_overflow};
 use crate::{
     proofs::query::{
         aggregate_common::{classify_subtree, SubtreeClassification},
@@ -22,7 +22,7 @@ use crate::{
 /// Read the `(count, sum)` provable aggregate off the walker's current
 /// tree node. Shared error-mapping helper used by [`walk_count_and_sum`]
 /// at both the Contained-leaf and Boundary positions.
-fn provable_count_and_sum_from_walker<S>(walker: &RefWalker<'_, S>) -> Result<(u64, i64), Error>
+fn provable_count_and_sum_from_walker<S>(walker: &RefWalker<'_, S>) -> Result<(u64, i128), Error>
 where
     S: Fetch + Sized + Clone,
 {
@@ -30,7 +30,7 @@ where
         .tree()
         .aggregate_data()
         .map_err(|e| Error::CorruptedData(format!("aggregate_data: {}", e)))?;
-    provable_count_and_sum_from_aggregate(aggregate)
+    provable_count_and_wide_sum_from_aggregate(aggregate)
 }
 
 /// No-proof variant of [`super::emit::emit_count_and_sum_proof`]:
@@ -77,7 +77,7 @@ where
         SubtreeClassification::Contained => {
             let (count, sum) =
                 cost_return_on_error_no_add!(cost, provable_count_and_sum_from_walker(walker));
-            Ok((count as u128, sum as i128)).wrap_with_cost(cost)
+            Ok((count as u128, sum)).wrap_with_cost(cost)
         }
         // Boundary: descend into both children and add own contribution.
         SubtreeClassification::Boundary => {
@@ -92,20 +92,20 @@ where
                 .link(true)
                 .map(|l| l.aggregate_data().as_count_u64())
                 .unwrap_or(0);
-            let left_link_sum: i64 = walker
+            let left_link_sum: i128 = walker
                 .tree()
                 .link(true)
-                .map(|l| l.aggregate_data().as_sum_i64())
+                .map(|l| l.aggregate_data().as_summed_i128())
                 .unwrap_or(0);
             let right_link_count: u64 = walker
                 .tree()
                 .link(false)
                 .map(|l| l.aggregate_data().as_count_u64())
                 .unwrap_or(0);
-            let right_link_sum: i64 = walker
+            let right_link_sum: i128 = walker
                 .tree()
                 .link(false)
-                .map(|l| l.aggregate_data().as_sum_i64())
+                .map(|l| l.aggregate_data().as_summed_i128())
                 .unwrap_or(0);
             let left_link_present = walker.tree().link(true).is_some();
             let right_link_present = walker.tree().link(false).is_some();
@@ -147,7 +147,10 @@ where
                     )
                 );
                 total_count = total_count.saturating_add(c);
-                total_sum = total_sum.saturating_add(s);
+                total_sum = match total_sum.checked_add(s) {
+                    Some(total_sum) => total_sum,
+                    None => return Err(sum_on_range_overflow()).wrap_with_cost(cost),
+                };
             }
 
             // Current node's own contribution. Both axes derive
@@ -169,11 +172,14 @@ where
                         "child structural counts exceed parent's aggregate count",
                     ));
                 let own_count = cost_return_on_error_no_add!(cost, own_count);
-                let own_sum: i128 = (node_sum as i128)
-                    .wrapping_sub(left_link_sum as i128)
-                    .wrapping_sub(right_link_sum as i128);
+                let own_sum: i128 = node_sum
+                    .wrapping_sub(left_link_sum)
+                    .wrapping_sub(right_link_sum);
                 total_count = total_count.saturating_add(own_count as u128);
-                total_sum = total_sum.saturating_add(own_sum);
+                total_sum = match total_sum.checked_add(own_sum) {
+                    Some(total_sum) => total_sum,
+                    None => return Err(sum_on_range_overflow()).wrap_with_cost(cost),
+                };
             }
 
             // RIGHT child — same fail-fast pattern as LEFT.
@@ -206,7 +212,10 @@ where
                     )
                 );
                 total_count = total_count.saturating_add(c);
-                total_sum = total_sum.saturating_add(s);
+                total_sum = match total_sum.checked_add(s) {
+                    Some(total_sum) => total_sum,
+                    None => return Err(sum_on_range_overflow()).wrap_with_cost(cost),
+                };
             }
 
             Ok((total_count, total_sum)).wrap_with_cost(cost)
