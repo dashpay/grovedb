@@ -58,6 +58,7 @@ pub(super) const SUBTREE_KEYS: &[&[u8]] = &[
     b"pcs",
     b"ps",
     b"pcps",
+    b"pcpbs",
     b"empty",
     b"pcit",
     b"psit",
@@ -96,6 +97,11 @@ pub(super) fn every_subtree_kind_source(grove_version: &GroveVersion) -> TempGro
         (
             b"pcps",
             Element::empty_provable_count_provable_sum_tree(),
+            true,
+        ),
+        (
+            b"pcpbs",
+            Element::empty_provable_count_provable_big_sum_tree(),
             true,
         ),
     ] {
@@ -520,7 +526,7 @@ mod tests {
                     .chain(synthetic_locals())
                     .collect();
                 for root_key in &root_keys {
-                    for type_byte in (0..=16u8).chain([17, 128, u8::MAX]) {
+                    for type_byte in (0..=17u8).chain([18, 128, u8::MAX]) {
                         for locals in &shapes {
                             let request = pack_nested_bytes(vec![global_chunk_id_with_type_byte(
                                 target.prefix,
@@ -555,7 +561,7 @@ mod tests {
                                 Served::Ok if must_refuse_family(target, root_key, type_byte) => {
                                     panic!("{case}: a mismatched family must be refused")
                                 }
-                                Served::Ok if type_byte > 16 => {
+                                Served::Ok if type_byte > 17 => {
                                     panic!("{case}: an unknown tree type must be refused")
                                 }
                                 Served::Ok | Served::Err(_) => {}
@@ -623,7 +629,7 @@ mod tests {
                 honest_locals: Vec::new(),
             };
             for root_key in [grove_root_key.clone(), None] {
-                for type_byte in 0..=16u8 {
+                for type_byte in 0..=17u8 {
                     for locals in synthetic_locals() {
                         let request = pack_nested_bytes(vec![global_chunk_id_with_type_byte(
                             target.prefix,

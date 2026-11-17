@@ -131,6 +131,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
                 insert_if_not_exists_return_existing_element: 0,
                 insert_if_changed_value: 0,
                 validate_indexed_child_for_variant: 0,
+                provable_count_provable_big_sum_tree_creation: 0,
             },
             delete: GroveDBOperationsDeleteVersions {
                 delete: 0,

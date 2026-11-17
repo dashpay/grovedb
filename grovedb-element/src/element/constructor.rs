@@ -603,6 +603,48 @@ impl Element {
         Element::ProvableCountProvableSumTree(maybe_root_key, count_value, sum_value, flags)
     }
 
+    /// Set element to default empty provable count provable big sum tree
+    /// without flags.
+    ///
+    /// `ProvableCountProvableBigSumTree` is the wide counterpart of
+    /// `ProvableCountProvableSumTree`: it bakes BOTH the per-node count AND
+    /// a 128-bit per-node sum into the node hash.
+    pub fn empty_provable_count_provable_big_sum_tree() -> Self {
+        Element::new_provable_count_provable_big_sum_tree(Default::default())
+    }
+
+    /// Set element to default empty provable count provable big sum tree
+    /// with flags.
+    pub fn empty_provable_count_provable_big_sum_tree_with_flags(
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::new_provable_count_provable_big_sum_tree_with_flags(Default::default(), flags)
+    }
+
+    /// Set element to a provable count provable big sum tree without flags.
+    pub fn new_provable_count_provable_big_sum_tree(maybe_root_key: Option<Vec<u8>>) -> Self {
+        Element::ProvableCountProvableBigSumTree(maybe_root_key, 0, 0, None)
+    }
+
+    /// Set element to a provable count provable big sum tree with flags.
+    pub fn new_provable_count_provable_big_sum_tree_with_flags(
+        maybe_root_key: Option<Vec<u8>>,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::ProvableCountProvableBigSumTree(maybe_root_key, 0, 0, flags)
+    }
+
+    /// Set element to a provable count provable big sum tree with flags,
+    /// count, and big sum value.
+    pub fn new_provable_count_provable_big_sum_tree_with_flags_and_sum_and_count_value(
+        maybe_root_key: Option<Vec<u8>>,
+        count_value: CountValue,
+        big_sum_value: BigSumValue,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::ProvableCountProvableBigSumTree(maybe_root_key, count_value, big_sum_value, flags)
+    }
+
     /// Set element to an empty commitment tree.
     ///
     /// Returns `InvalidInput` if `chunk_power > 31`.
@@ -973,11 +1015,14 @@ impl Element {
             | Element::CountSumTree(..)
             | Element::ProvableCountSumTree(..)
             | Element::ProvableSumTree(..)
-            | Element::ProvableCountProvableSumTree(..) => Ok(Element::NotSummed(Box::new(inner))),
+            | Element::ProvableCountProvableSumTree(..)
+            | Element::ProvableCountProvableBigSumTree(..) => {
+                Ok(Element::NotSummed(Box::new(inner)))
+            }
             _ => Err(ElementError::InvalidInput(
                 "NotSummed inner element must be a sum-tree variant (SumTree, BigSumTree, \
-                 CountSumTree, ProvableCountSumTree, ProvableSumTree, or \
-                 ProvableCountProvableSumTree)",
+                 CountSumTree, ProvableCountSumTree, ProvableSumTree, \
+                 ProvableCountProvableSumTree, or ProvableCountProvableBigSumTree)",
             )),
         }
     }
@@ -1030,13 +1075,14 @@ impl Element {
             | Element::CountSumTree(..)
             | Element::ProvableCountSumTree(..)
             | Element::ProvableSumTree(..)
-            | Element::ProvableCountProvableSumTree(..) => {
+            | Element::ProvableCountProvableSumTree(..)
+            | Element::ProvableCountProvableBigSumTree(..) => {
                 Ok(Element::NotCountedOrSummed(Box::new(inner)))
             }
             _ => Err(ElementError::InvalidInput(
                 "NotCountedOrSummed inner element must be a sum-bearing tree variant (SumTree, \
-                 BigSumTree, CountSumTree, ProvableCountSumTree, ProvableSumTree, or \
-                 ProvableCountProvableSumTree)",
+                 BigSumTree, CountSumTree, ProvableCountSumTree, ProvableSumTree, \
+                 ProvableCountProvableSumTree, or ProvableCountProvableBigSumTree)",
             )),
         }
     }

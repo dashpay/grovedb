@@ -15,7 +15,7 @@ use crate::{
     reference_path::ReferencePathType,
 };
 
-const ELEMENT_VARIANTS: AllowedEnumVariants = AllowedEnumVariants::Range { min: 0, max: 28 };
+const ELEMENT_VARIANTS: AllowedEnumVariants = AllowedEnumVariants::Range { min: 0, max: 29 };
 
 // Keep discriminants and domain checks in one schema. Each expansion calls only
 // the selected trait for fields and its matching helper for wrapper recursion.
@@ -129,6 +129,7 @@ macro_rules! element_decoder {
                                 | Self::ProvableCountSumTree(..)
                                 | Self::ProvableSumTree(..)
                                 | Self::ProvableCountProvableSumTree(..)
+                                | Self::ProvableCountProvableBigSumTree(..)
                         ) {
                             return Err(DecodeError::Other(
                                 "NotSummed inner element must be a sum-bearing tree",
@@ -146,6 +147,7 @@ macro_rules! element_decoder {
                                 | Self::ProvableCountSumTree(..)
                                 | Self::ProvableSumTree(..)
                                 | Self::ProvableCountProvableSumTree(..)
+                                | Self::ProvableCountProvableBigSumTree(..)
                         ) {
                             return Err(DecodeError::Other(
                                 "NotCountedOrSummed inner element must be a sum-bearing tree",
@@ -213,6 +215,12 @@ macro_rules! element_decoder {
                         $decode_trait::$decode(decoder)?,
                         i64::$decode(decoder)?,
                         BackwardReferences::$decode(decoder)?,
+                        $decode_trait::$decode(decoder)?,
+                    )),
+                    29 => Ok(Self::ProvableCountProvableBigSumTree(
+                        $decode_trait::$decode(decoder)?,
+                        u64::$decode(decoder)?,
+                        i128::$decode(decoder)?,
                         $decode_trait::$decode(decoder)?,
                     )),
                     found => Err(DecodeError::UnexpectedVariant {

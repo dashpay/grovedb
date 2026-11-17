@@ -47,6 +47,11 @@ pub enum AggregateData {
     /// so `ProvableCountAndProvableSum` cannot be unified with
     /// `ProvableCountAndSum` even though the fields are identical.
     ProvableCountAndProvableSum(u64, i64),
+    /// A provable count AND a provable 128-bit sum, with BOTH baked into
+    /// the node hash via `node_hash_with_count_and_big_sum`. The wide
+    /// counterpart of `ProvableCountAndProvableSum`, carried by a
+    /// `ProvableCountProvableBigSumTree`.
+    ProvableCountAndProvableBigSum(u64, i128),
 }
 
 #[cfg(feature = "minimal")]
@@ -64,6 +69,9 @@ impl AggregateData {
             AggregateData::ProvableSum(_) => TreeType::ProvableSumTree,
             AggregateData::ProvableCountAndProvableSum(..) => {
                 TreeType::ProvableCountProvableSumTree
+            }
+            AggregateData::ProvableCountAndProvableBigSum(..) => {
+                TreeType::ProvableCountProvableBigSumTree
             }
         }
     }
@@ -103,7 +111,7 @@ impl AggregateData {
         match self {
             AggregateData::NoAggregateData => 0,
             AggregateData::Sum(s) => *s,
-            AggregateData::BigSum(i) => {
+            AggregateData::BigSum(i) | AggregateData::ProvableCountAndProvableBigSum(_, i) => {
                 if *i > i64::MAX as i128 {
                     i64::MAX
                 } else if *i < i64::MIN as i128 {
@@ -133,6 +141,7 @@ impl AggregateData {
             AggregateData::ProvableCountAndSum(c, _) => *c,
             AggregateData::ProvableSum(_) => 0,
             AggregateData::ProvableCountAndProvableSum(c, _) => *c,
+            AggregateData::ProvableCountAndProvableBigSum(c, _) => *c,
         }
     }
 
@@ -148,6 +157,7 @@ impl AggregateData {
             AggregateData::ProvableCountAndSum(_, s) => *s as i128,
             AggregateData::ProvableSum(s) => *s as i128,
             AggregateData::ProvableCountAndProvableSum(_, s) => *s as i128,
+            AggregateData::ProvableCountAndProvableBigSum(_, s) => *s,
         }
     }
 }
@@ -178,6 +188,9 @@ impl From<TreeFeatureType> for AggregateData {
             // count) — see `AggregateData::ProvableCountAndProvableSum`.
             TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, sum) => {
                 AggregateData::ProvableCountAndProvableSum(count, sum)
+            }
+            TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(count, sum) => {
+                AggregateData::ProvableCountAndProvableBigSum(count, sum)
             }
         }
     }
@@ -410,5 +423,45 @@ mod tests {
         assert_eq!(agg_min.as_sum_i64(), i64::MIN);
         assert_eq!(agg_min.as_count_u64(), 0);
         assert_eq!(agg_min.as_summed_i128(), i64::MIN as i128);
+    }
+
+    /// `ProvableCountAndProvableBigSum` belongs to the wide tree, carries
+    /// its count and its 128-bit sum exactly, narrows to an `i64` only by
+    /// saturating, and is what the wide feature type converts to.
+    #[test]
+    fn aggregate_data_provable_count_and_provable_big_sum_helpers() {
+        let past_i64 = i128::from(i64::MAX) * 3;
+        let below_i64 = i128::from(i64::MIN) * 3;
+
+        let agg = AggregateData::ProvableCountAndProvableBigSum(7, past_i64);
+        assert_eq!(
+            agg.parent_tree_type(),
+            TreeType::ProvableCountProvableBigSumTree
+        );
+        assert_eq!(agg.indexed_parent_tree_type(), None);
+        assert_eq!(agg.as_count_u64(), 7);
+        assert_eq!(agg.as_summed_i128(), past_i64);
+        assert_eq!(agg.as_sum_i64(), i64::MAX);
+        assert_eq!(
+            AggregateData::ProvableCountAndProvableBigSum(0, below_i64).as_sum_i64(),
+            i64::MIN
+        );
+        assert_eq!(
+            AggregateData::ProvableCountAndProvableBigSum(0, -42).as_sum_i64(),
+            -42
+        );
+
+        assert_eq!(
+            AggregateData::from(
+                TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(7, past_i64)
+            ),
+            agg
+        );
+        assert_eq!(
+            AggregateData::from(
+                TreeType::ProvableCountProvableBigSumTree.empty_tree_feature_type()
+            ),
+            AggregateData::ProvableCountAndProvableBigSum(0, 0)
+        );
     }
 }

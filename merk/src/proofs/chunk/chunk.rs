@@ -219,6 +219,7 @@ where
             ProofNodeType::KvCount => self.to_kv_count_node(),
             ProofNodeType::KvSum => self.to_kv_sum_node(),
             ProofNodeType::KvCountSum => self.to_kv_count_sum_node(),
+            ProofNodeType::KvCountBigSum => self.to_kv_count_big_sum_node(),
             ProofNodeType::KvValueHash => self.to_kv_value_hash_node(),
             // Chunks must restore the FULL element (the referrer list is
             // state), so the stripped/backrefs query node cannot be used.
@@ -236,6 +237,7 @@ where
             ProofNodeType::KvRefValueHashCount => self.to_kv_value_hash_feature_type_node(),
             ProofNodeType::KvRefValueHashSum => self.to_kv_value_hash_feature_type_node(),
             ProofNodeType::KvRefValueHashCountSum => self.to_kv_value_hash_feature_type_node(),
+            ProofNodeType::KvRefValueHashCountBigSum => self.to_kv_value_hash_feature_type_node(),
         }
     }
 

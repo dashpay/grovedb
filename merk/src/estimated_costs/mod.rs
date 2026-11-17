@@ -55,6 +55,12 @@ pub const SUM_AND_COUNT_LAYER_COST_SIZE: u32 =
 pub const BIG_SUM_LAYER_COST_SIZE: u32 = LAYER_COST_SIZE + BIG_SUM_VALUE_EXTRA_COST;
 
 #[cfg(feature = "minimal")]
+/// The cost of a counted and big summed subtree layer
+/// This is the layer size + 9 for the encoded count + 16 for the encoded sum
+pub const BIG_SUM_AND_COUNT_LAYER_COST_SIZE: u32 =
+    LAYER_COST_SIZE + BIG_SUM_VALUE_EXTRA_COST + COUNT_VALUE_EXTRA_COST;
+
+#[cfg(feature = "minimal")]
 impl KV {
     fn encoded_kv_node_size(element_size: u32, node_type: NodeType) -> u32 {
         // We always charge 8 bytes for the sum node (even though

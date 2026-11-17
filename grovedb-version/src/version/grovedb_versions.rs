@@ -809,6 +809,18 @@ pub struct GroveDBOperationsInsertVersions {
     /// - `1` (`GROVE_V4`+): it also accepts a bare `SumItem`, which it
     ///   aggregates as a count of one and its sum.
     pub validate_indexed_child_for_variant: FeatureVersion,
+    /// Creating a `ProvableCountProvableBigSumTree` element (discriminant
+    /// 29), by a direct or a batch insert, bare or wrapped. A capability
+    /// gate, like the `PrivateDocumentStore` slots:
+    ///
+    /// - `0` (`GROVE_V1`..`GROVE_V4`): refused with a version-mismatch
+    ///   error. The released versions do not know the element, so a node
+    ///   running one could not read it back.
+    /// - `1` (`GROVE_V5`+): the element can be created.
+    ///
+    /// Like those slots it does not gate `Element::deserialize`: the element
+    /// codec stays independent of the version.
+    pub provable_count_provable_big_sum_tree_creation: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

@@ -320,6 +320,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                     | Node::KVValueHash(..)
                     | Node::KVCount(..)
                     | Node::KVSum(..)
+                    | Node::KVCountBigSum(..)
                     | Node::KVCountSum(..)
             ) {
                 kv_count += 1;
@@ -574,6 +575,25 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                             value.clone(),
                             vh,
                             TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(*count, *sum),
+                        )
+                        .unwrap();
+
+                        *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
+                        *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
+
+                        family_check(&tree)?;
+                        let bytes = tree.encode();
+                        batch.put(key, &bytes, None, None).map_err(CostsError)
+                    }
+                    Node::KVCountBigSum(key, value, count, sum) => {
+                        // Items in ProvableCountProvableBigSumTree: the wide
+                        // counterpart of the arm above.
+                        let vh = value_hash(value.as_slice()).unwrap();
+                        let mut tree = TreeNode::new_with_value_hash(
+                            key.clone(),
+                            value.clone(),
+                            vh,
+                            TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(*count, *sum),
                         )
                         .unwrap();
 
@@ -1174,7 +1194,8 @@ fn provable_count_of(data: AggregateData) -> u64 {
     match data {
         AggregateData::ProvableCount(count)
         | AggregateData::ProvableCountAndSum(count, _)
-        | AggregateData::ProvableCountAndProvableSum(count, _) => count,
+        | AggregateData::ProvableCountAndProvableSum(count, _)
+        | AggregateData::ProvableCountAndProvableBigSum(count, _) => count,
         _ => 0,
     }
 }
@@ -1186,6 +1207,15 @@ fn provable_sum_of(data: AggregateData) -> i64 {
         AggregateData::ProvableSum(sum)
         | AggregateData::ProvableCountAndSum(_, sum)
         | AggregateData::ProvableCountAndProvableSum(_, sum) => sum,
+        _ => 0,
+    }
+}
+
+/// The provable 128-bit sum carried by a child's recomputed aggregate, or
+/// zero for an aggregate that carries none.
+fn provable_big_sum_of(data: AggregateData) -> i128 {
+    match data {
+        AggregateData::ProvableCountAndProvableBigSum(_, sum) => sum,
         _ => 0,
     }
 }
@@ -1234,6 +1264,16 @@ fn own_contribution_from_subtree_total(
             ))
     };
 
+    let own_big_sum = |total: i128| -> Result<i128, Error> {
+        total
+            // Undone in the same order as `own_sum`.
+            .checked_sub(provable_big_sum_of(right))
+            .and_then(|rest| rest.checked_sub(provable_big_sum_of(left)))
+            .ok_or(Error::CorruptedState(
+                "chunk-carried subtree big sum does not decompose against its children's sums",
+            ))
+    };
+
     Ok(match subtree_total {
         TreeFeatureType::ProvableCountedMerkNode(count) => {
             TreeFeatureType::ProvableCountedMerkNode(own_count(count)?)
@@ -1248,6 +1288,12 @@ fn own_contribution_from_subtree_total(
             TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(
                 own_count(count)?,
                 own_sum(sum)?,
+            )
+        }
+        TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(count, sum) => {
+            TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(
+                own_count(count)?,
+                own_big_sum(sum)?,
             )
         }
         own => own,
@@ -2774,6 +2820,66 @@ mod tests {
                 drive_multi_node_chunk_round_trip(tree_type, batch);
             }
         }
+    }
+
+    /// A `ProvableCountProvableBigSumTree` restores from chunks to the
+    /// source's root hash and aggregate, as the narrower provable trees do:
+    /// a single leaf, a multi-node tree of GroveDB elements whose total is
+    /// past the `i64` range in either direction, and raw values whose
+    /// features travel as subtree totals and are decomposed in `i128`.
+    #[test]
+    fn restore_provable_count_provable_big_sum_tree_round_trips() {
+        let grove_version = GroveVersion::latest();
+        let tree_type = TreeType::ProvableCountProvableBigSumTree;
+        let past_i64 = i128::from(i64::MAX) * 3;
+
+        single_leaf_chunk_round_trip(
+            tree_type,
+            TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(1, past_i64),
+        );
+
+        // Twelve children near either end of the i64 range: a total no
+        // i64 aggregate holds.
+        multi_node_provable_chunk_round_trip(tree_type, |i| {
+            Element::new_sum_item(i64::MAX - i64::from(i))
+        });
+        multi_node_provable_chunk_round_trip(tree_type, |i| {
+            Element::new_item_with_sum_item(vec![i], i64::MIN + i64::from(i))
+        });
+
+        // Raw values: own contributions outside the i64 range, and
+        // alternating signs that cancel.
+        multi_node_raw_provable_chunk_round_trip(tree_type, |i| {
+            TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(
+                1,
+                past_i64 - i128::from(i),
+            )
+        });
+        multi_node_raw_provable_chunk_round_trip(tree_type, |i| {
+            TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(
+                1,
+                if i % 2 == 0 {
+                    i128::MAX / 16
+                } else {
+                    i128::MIN / 16
+                },
+            )
+        });
+
+        // Raw Merk callers choose features independently of their opaque
+        // value bytes, even when those bytes encode a valid Element.
+        let batch = (0u8..12)
+            .map(|i| {
+                (
+                    vec![i],
+                    crate::tree::Op::Put(
+                        Element::new_item(vec![i]).serialize(grove_version).unwrap(),
+                        TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(7, past_i64),
+                    ),
+                )
+            })
+            .collect();
+        drive_multi_node_chunk_round_trip(tree_type, batch);
     }
 
     #[test]

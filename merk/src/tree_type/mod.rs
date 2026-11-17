@@ -100,6 +100,14 @@ pub enum TreeType {
     /// the entry size lives only in the Element (it does not affect Merk
     /// node layout).
     PrivateDocumentStore(u8),
+    /// A tree that maintains BOTH a provable count AND a provable 128-bit
+    /// sum: the wide counterpart of `ProvableCountProvableSumTree`, for
+    /// sums that can pass the i64 range. Both aggregates are baked into
+    /// every node's hash via `node_hash_with_count_and_big_sum`. Uses
+    /// dedicated proof-node families (`KVCountBigSum`,
+    /// `KVHashCountBigSum`, `KVDigestCountBigSum`,
+    /// `KVRefValueHashCountBigSum`, `HashWithCountAndBigSum`).
+    ProvableCountProvableBigSumTree,
 }
 
 impl TreeType {
@@ -125,6 +133,7 @@ impl TreeType {
             TreeType::ProvableCountIndexedTree => 14,
             TreeType::ProvableCountProvableSumIndexedTree => 15,
             TreeType::PrivateDocumentStore(_) => 16,
+            TreeType::ProvableCountProvableBigSumTree => 17,
         }
     }
 }
@@ -151,7 +160,8 @@ impl TryFrom<u8> for TreeType {
             14 => Ok(TreeType::ProvableCountIndexedTree),
             15 => Ok(TreeType::ProvableCountProvableSumIndexedTree),
             16 => Ok(TreeType::PrivateDocumentStore(0)),
-            n => Err(Error::UnknownTreeType(format!("got {}, max is 16", n))),
+            17 => Ok(TreeType::ProvableCountProvableBigSumTree),
+            n => Err(Error::UnknownTreeType(format!("got {}, max is 17", n))),
         }
     }
 }
@@ -178,6 +188,7 @@ impl fmt::Display for TreeType {
                 "Provable Count Provable Sum Indexed Tree"
             }
             TreeType::PrivateDocumentStore(_) => "Private Document Store",
+            TreeType::ProvableCountProvableBigSumTree => "Provable Count Provable Big Sum Tree",
         };
         write!(f, "{}", s)
     }
@@ -212,6 +223,7 @@ impl TreeType {
                 | TreeType::ProvableCountTree
                 | TreeType::ProvableCountSumTree
                 | TreeType::ProvableCountProvableSumTree
+                | TreeType::ProvableCountProvableBigSumTree
                 | TreeType::ProvableCountIndexedTree
                 | TreeType::ProvableCountProvableSumIndexedTree
         )
@@ -251,6 +263,7 @@ impl TreeType {
                 | TreeType::ProvableCountSumTree
                 | TreeType::ProvableSumTree
                 | TreeType::ProvableCountProvableSumTree
+                | TreeType::ProvableCountProvableBigSumTree
                 | TreeType::ProvableSumIndexedTree
                 | TreeType::ProvableCountProvableSumIndexedTree
         )
@@ -272,6 +285,7 @@ impl TreeType {
             TreeType::CountSumTree
                 | TreeType::ProvableCountSumTree
                 | TreeType::ProvableCountProvableSumTree
+                | TreeType::ProvableCountProvableBigSumTree
                 | TreeType::ProvableCountProvableSumIndexedTree
         )
     }
@@ -332,6 +346,7 @@ impl TreeType {
             TreeType::ProvableCountIndexedTree => false,
             TreeType::ProvableCountProvableSumIndexedTree => true,
             TreeType::PrivateDocumentStore(_) => false,
+            TreeType::ProvableCountProvableBigSumTree => true,
         }
     }
 
@@ -362,6 +377,7 @@ impl TreeType {
             // a ProvableCountProvableSumTree.
             TreeType::ProvableCountProvableSumIndexedTree => NodeType::ProvableCountProvableSumNode,
             TreeType::PrivateDocumentStore(_) => NodeType::NormalNode,
+            TreeType::ProvableCountProvableBigSumTree => NodeType::ProvableCountProvableBigSumNode,
         }
     }
 
@@ -395,6 +411,9 @@ impl TreeType {
                 TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(0, 0)
             }
             TreeType::PrivateDocumentStore(_) => TreeFeatureType::BasicMerkNode,
+            TreeType::ProvableCountProvableBigSumTree => {
+                TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(0, 0)
+            }
         }
     }
 
@@ -429,6 +448,9 @@ impl TreeType {
                 Some(ElementType::ProvableCountProvableSumIndexedTree)
             }
             TreeType::PrivateDocumentStore(_) => Some(ElementType::PrivateDocumentStore),
+            TreeType::ProvableCountProvableBigSumTree => {
+                Some(ElementType::ProvableCountProvableBigSumTree)
+            }
         }
     }
 }
@@ -454,6 +476,7 @@ mod tests {
             TreeType::ProvableSumTree,
             TreeType::ProvableCountProvableSumTree,
             TreeType::PrivateDocumentStore(4),
+            TreeType::ProvableCountProvableBigSumTree,
         ];
         for v in &variants {
             let d = v.discriminant();
@@ -465,7 +488,7 @@ mod tests {
 
     #[test]
     fn tree_type_try_from_invalid() {
-        assert!(TreeType::try_from(17u8).is_err());
+        assert!(TreeType::try_from(18u8).is_err());
         assert!(TreeType::try_from(255u8).is_err());
     }
 
@@ -857,5 +880,43 @@ mod tests {
             TreeType::ProvableCountProvableSumTree.to_element_type(),
             Some(ElementType::ProvableCountProvableSumTree)
         );
+    }
+
+    /// The wide count and sum tree: discriminant 17, a Merk-backed tree
+    /// that carries a count and a sum, takes sum items, and, committing
+    /// both into its node hashes, refuses children that hide either.
+    #[test]
+    fn provable_count_provable_big_sum_tree_type() {
+        let tree_type = TreeType::ProvableCountProvableBigSumTree;
+        assert_eq!(tree_type.discriminant(), 17);
+        assert_eq!(TreeType::try_from(17u8).unwrap(), tree_type);
+        assert_eq!(
+            tree_type.to_string(),
+            "Provable Count Provable Big Sum Tree"
+        );
+
+        assert!(!tree_type.uses_non_merk_data_storage());
+        assert!(tree_type.is_count_bearing());
+        assert!(tree_type.is_sum_bearing());
+        assert!(tree_type.is_count_and_sum_bearing());
+        assert!(!tree_type.is_indexed_primary());
+        assert!(tree_type.allows_sum_item());
+        assert!(!tree_type.accepts_non_counted_children());
+        assert!(!tree_type.accepts_not_counted_or_summed_children());
+
+        assert_eq!(
+            tree_type.inner_node_type(),
+            NodeType::ProvableCountProvableBigSumNode
+        );
+        assert_eq!(
+            tree_type.empty_tree_feature_type(),
+            TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(0, 0)
+        );
+        assert_eq!(
+            tree_type.to_element_type(),
+            Some(ElementType::ProvableCountProvableBigSumTree)
+        );
+        // Layer (3) + count (9) + big sum (16).
+        assert_eq!(tree_type.cost_size(), 28);
     }
 }

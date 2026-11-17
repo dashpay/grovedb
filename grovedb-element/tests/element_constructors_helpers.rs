@@ -1142,3 +1142,141 @@ fn reference_with_sum_item_round_trips_through_bincode() {
     let back = Element::deserialize(&wrapped_bytes, grove_version).expect("deserialize ok");
     assert_eq!(back, wrapped);
 }
+
+/// Every `ProvableCountProvableBigSumTree` constructor and helper: what the
+/// constructors build, what the tree contributes to each kind of parent, how
+/// the wrappers change that, and its serialized form.
+#[test]
+fn provable_count_provable_big_sum_tree_constructors_and_helpers() {
+    let grove_version = GroveVersion::latest();
+    let past_i64 = i128::from(i64::MAX) * 3;
+
+    assert_eq!(
+        Element::empty_provable_count_provable_big_sum_tree(),
+        Element::ProvableCountProvableBigSumTree(None, 0, 0, None)
+    );
+    assert_eq!(
+        Element::empty_provable_count_provable_big_sum_tree_with_flags(sample_flags()),
+        Element::ProvableCountProvableBigSumTree(None, 0, 0, sample_flags())
+    );
+    assert_eq!(
+        Element::new_provable_count_provable_big_sum_tree(Some(vec![29])),
+        Element::ProvableCountProvableBigSumTree(Some(vec![29]), 0, 0, None)
+    );
+    assert_eq!(
+        Element::new_provable_count_provable_big_sum_tree_with_flags(
+            Some(vec![29]),
+            sample_flags()
+        ),
+        Element::ProvableCountProvableBigSumTree(Some(vec![29]), 0, 0, sample_flags())
+    );
+    let tree = Element::new_provable_count_provable_big_sum_tree_with_flags_and_sum_and_count_value(
+        Some(vec![29]),
+        7,
+        past_i64,
+        sample_flags(),
+    );
+    assert_eq!(
+        tree,
+        Element::ProvableCountProvableBigSumTree(Some(vec![29]), 7, past_i64, sample_flags())
+    );
+
+    assert!(tree.is_provable_count_provable_big_sum_tree());
+    assert!(!tree.is_provable_count_provable_sum_tree());
+    assert!(!tree.is_big_sum_tree());
+    assert!(tree.is_any_tree());
+    assert!(tree.is_non_empty_tree());
+    assert!(tree.is_non_empty_merk_tree());
+    assert!(!Element::empty_provable_count_provable_big_sum_tree().is_non_empty_tree());
+    assert_eq!(tree.get_flags(), &sample_flags());
+    assert_eq!(
+        tree.as_provable_count_provable_big_sum_tree_value()
+            .expect("the tree's count and sum"),
+        (7, past_i64)
+    );
+    assert_eq!(
+        tree.clone()
+            .into_provable_count_provable_big_sum_tree_value()
+            .expect("the tree's count and sum"),
+        (7, past_i64)
+    );
+    let item = Element::new_item(vec![1]);
+    assert!(matches!(
+        item.as_provable_count_provable_big_sum_tree_value(),
+        Err(ElementError::WrongElementType(_))
+    ));
+    assert!(matches!(
+        item.into_provable_count_provable_big_sum_tree_value(),
+        Err(ElementError::WrongElementType(_))
+    ));
+
+    // What the tree contributes: its count to a count, its sum to a 128-bit
+    // sum, and no sum to an i64 sum, which cannot hold it.
+    assert_eq!(tree.count_value_or_default(), 7);
+    assert_eq!(tree.big_sum_value_or_default(), past_i64);
+    assert_eq!(tree.count_big_sum_value_or_default(), (7, past_i64));
+    assert_eq!(tree.sum_value_or_default(), 0);
+    assert_eq!(tree.count_sum_value_or_default(), (7, 0));
+
+    // What other elements contribute to a tree of this type.
+    assert_eq!(
+        Element::new_sum_item(i64::MIN).count_big_sum_value_or_default(),
+        (1, i128::from(i64::MIN))
+    );
+    assert_eq!(
+        Element::new_item(vec![1]).count_big_sum_value_or_default(),
+        (1, 0)
+    );
+    assert_eq!(
+        Element::new_count_sum_tree_with_flags_and_sum_and_count_value(None, 4, -9, None)
+            .count_big_sum_value_or_default(),
+        (4, -9)
+    );
+    assert_eq!(
+        Element::new_big_sum_tree_with_flags_and_sum_value(None, past_i64, None)
+            .count_big_sum_value_or_default(),
+        (1, past_i64)
+    );
+
+    // The wrappers hide what they name.
+    let non_counted = Element::new_non_counted(tree.clone()).expect("a tree can be non counted");
+    assert_eq!(non_counted.count_big_sum_value_or_default(), (0, past_i64));
+    assert!(non_counted.is_provable_count_provable_big_sum_tree());
+    let not_summed = Element::new_not_summed(tree.clone()).expect("a sum tree can be not summed");
+    assert_eq!(not_summed.count_big_sum_value_or_default(), (7, 0));
+    let not_counted_or_summed = Element::new_not_counted_or_summed(tree.clone())
+        .expect("a sum tree can be not counted or summed");
+    assert_eq!(
+        not_counted_or_summed.count_big_sum_value_or_default(),
+        (0, 0)
+    );
+
+    // Serialized form: discriminant 29, and each wrapper byte before it.
+    let bytes = tree.serialize(grove_version).expect("serialize ok");
+    assert_eq!(bytes[0], 29, "first byte must be discriminant 29");
+    assert_eq!(
+        Element::deserialize(&bytes, grove_version).expect("deserialize ok"),
+        tree
+    );
+    for (wrapped, wrapper_byte) in [
+        (non_counted, 15u8),
+        (not_summed, 16),
+        (not_counted_or_summed, 17),
+    ] {
+        let bytes = wrapped.serialize(grove_version).expect("serialize ok");
+        assert_eq!(bytes[0], wrapper_byte);
+        assert_eq!(bytes[1], 29);
+        assert_eq!(
+            Element::deserialize(&bytes, grove_version).expect("deserialize ok"),
+            wrapped
+        );
+    }
+
+    assert_eq!(
+        format!(
+            "{}",
+            Element::ProvableCountProvableBigSumTree(None, 3, -5, None)
+        ),
+        "ProvableCountProvableBigSumTree(None, 3, -5)"
+    );
+}

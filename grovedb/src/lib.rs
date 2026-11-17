@@ -2596,6 +2596,7 @@ impl GroveDb {
                 | Element::ProvableCountSumTree(..)
                 | Element::ProvableSumTree(..)
                 | Element::ProvableCountProvableSumTree(..)
+                | Element::ProvableCountProvableBigSumTree(..)
                 | Element::CommitmentTree(..)
                 | Element::MmrTree(..)
                 | Element::BulkAppendTree(..)
@@ -4055,7 +4056,8 @@ fn root_hash_commits_to_aggregate(tree_type: TreeType) -> bool {
         NodeType::ProvableCountNode
         | NodeType::ProvableCountSumNode
         | NodeType::ProvableSumNode
-        | NodeType::ProvableCountProvableSumNode => true,
+        | NodeType::ProvableCountProvableSumNode
+        | NodeType::ProvableCountProvableBigSumNode => true,
         NodeType::NormalNode
         | NodeType::SumNode
         | NodeType::BigSumNode
@@ -4245,6 +4247,25 @@ fn aggregate_consistency_labels(
                 ))
             }
         }
+        (
+            Element::ProvableCountProvableBigSumTree(_, recorded_count, recorded_sum, _),
+            AggregateData::ProvableCountAndProvableBigSum(actual_count, actual_sum),
+        ) => {
+            if recorded_count == actual_count && recorded_sum == actual_sum {
+                None
+            } else {
+                Some((
+                    format!(
+                        "ProvableCountProvableBigSumTree recorded count {} sum {}",
+                        recorded_count, recorded_sum
+                    ),
+                    format!(
+                        "inner aggregate ProvableCountAndProvableBigSum count {} sum {}",
+                        actual_count, actual_sum
+                    ),
+                ))
+            }
+        }
 
         // --- Empty-merk edge case: an empty Merk returns NoAggregateData
         // for any tree type. This is the correct initial state for a
@@ -4280,6 +4301,10 @@ fn aggregate_consistency_labels(
         ) if *recorded_count == 0 && *recorded_sum == 0 => None,
         (
             Element::ProvableCountProvableSumTree(_, recorded_count, recorded_sum, _),
+            AggregateData::NoAggregateData,
+        ) if *recorded_count == 0 && *recorded_sum == 0 => None,
+        (
+            Element::ProvableCountProvableBigSumTree(_, recorded_count, recorded_sum, _),
             AggregateData::NoAggregateData,
         ) if *recorded_count == 0 && *recorded_sum == 0 => None,
 

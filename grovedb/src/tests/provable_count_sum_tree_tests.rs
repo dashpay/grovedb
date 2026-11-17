@@ -131,6 +131,10 @@ mod tests {
             Node::KVCountSum(_, _, count, _) => Some(*count),
             Node::KVDigestCountSum(_, _, count, _) => Some(*count),
             Node::KVRefValueHashCountSum(_, _, _, count, _) => Some(*count),
+            // The same nodes of the wide count and sum tree.
+            Node::KVCountBigSum(_, _, count, _) => Some(*count),
+            Node::KVDigestCountBigSum(_, _, count, _) => Some(*count),
+            Node::KVRefValueHashCountBigSum(_, _, _, count, _) => Some(*count),
             Node::KVValueHashFeatureType(
                 _,
                 _,
@@ -168,6 +172,19 @@ mod tests {
                 _,
                 _,
                 TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, _),
+                _,
+            ) => Some(*count),
+            Node::KVValueHashFeatureType(
+                _,
+                _,
+                _,
+                TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(count, _),
+            )
+            | Node::KVValueHashFeatureTypeWithChildHash(
+                _,
+                _,
+                _,
+                TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(count, _),
                 _,
             ) => Some(*count),
             _ => None,
@@ -198,6 +215,9 @@ mod tests {
                 Node::KVCountSum(k, ..) => k.clone(),
                 Node::KVDigestCountSum(k, ..) => k.clone(),
                 Node::KVRefValueHashCountSum(k, ..) => k.clone(),
+                Node::KVCountBigSum(k, ..) => k.clone(),
+                Node::KVDigestCountBigSum(k, ..) => k.clone(),
+                Node::KVRefValueHashCountBigSum(k, ..) => k.clone(),
                 Node::KVHashCount(..) => vec![],
                 Node::Hash(_) | Node::KVHash(_) => vec![],
                 // HashWithCount is keyless (collapsed subtree representation
@@ -205,6 +225,7 @@ mod tests {
                 Node::HashWithCount(..) => vec![],
                 Node::KVHashSum(..) | Node::HashWithSum(..) => vec![],
                 Node::KVHashCountSum(..) | Node::HashWithCountAndSum(..) => vec![],
+                Node::KVHashCountBigSum(..) | Node::HashWithCountAndBigSum(..) => vec![],
             };
             results.push((key, count));
         }

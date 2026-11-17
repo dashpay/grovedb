@@ -66,6 +66,11 @@ pub enum EstimatedSumTrees {
         /// (16 bytes), but BOTH the count and the sum are
         /// hash-committed.
         provable_count_provable_sum_trees_weight: Weight,
+        /// `ProvableCountProvableBigSumTree` leaves. Their nodes carry a
+        /// count and a 16-byte sum (24 bytes), both hash-committed. Read by
+        /// the v2 formula only: v0 and v1 predate the tree and keep their
+        /// historical results.
+        provable_count_provable_big_sum_trees_weight: Weight,
     },
     /// All sum trees
     AllSumTrees,
@@ -83,6 +88,8 @@ pub enum EstimatedSumTrees {
     AllProvableCountSumTrees,
     /// All `ProvableCountProvableSumTree` leaves.
     AllProvableCountProvableSumTrees,
+    /// All `ProvableCountProvableBigSumTree` leaves.
+    AllProvableCountProvableBigSumTrees,
 }
 
 // `EstimatedSumTrees::estimated_size` and its v0/v1/v2 implementations
@@ -384,6 +391,7 @@ mod tests {
             provable_count_trees_weight: 0,
             provable_count_sum_trees_weight: 0,
             provable_count_provable_sum_trees_weight: 0,
+            provable_count_provable_big_sum_trees_weight: 0,
         };
         let err = estimated
             .estimated_size(GroveVersion::latest())
@@ -403,6 +411,7 @@ mod tests {
             provable_count_trees_weight: 0,
             provable_count_sum_trees_weight: 0,
             provable_count_provable_sum_trees_weight: 0,
+            provable_count_provable_big_sum_trees_weight: 0,
         };
         let size = estimated.estimated_size(GroveVersion::first()).unwrap();
         assert_eq!(size, 6);
@@ -1085,6 +1094,51 @@ mod tests {
                 .inner_node_type()
                 .cost(),
         );
+        // The wide tree's nodes carry a count and a 16-byte sum, under
+        // every version of the estimate.
+        for version in grovedb_version::version::GROVE_VERSIONS {
+            assert_eq!(
+                EstimatedSumTrees::AllProvableCountProvableBigSumTrees
+                    .estimated_size(version)
+                    .unwrap(),
+                24,
+            );
+        }
+    }
+
+    /// The wide tree's weight in a mixed layer is read by the v2 formula,
+    /// which averages its 24-byte feature with the other trees', and ignored
+    /// by v0 and v1, which predate the tree and keep their results.
+    #[test]
+    fn test_estimated_sum_trees_mixed_layer_weighs_the_wide_tree() {
+        use grovedb_version::version::{v1::GROVE_V1, v2::GROVE_V2};
+
+        let mixed = |wide_weight| EstimatedSumTrees::SomeSumTrees {
+            sum_trees_weight: 1,
+            big_sum_trees_weight: 0,
+            count_trees_weight: 0,
+            count_sum_trees_weight: 0,
+            non_sum_trees_weight: 0,
+            provable_sum_trees_weight: 0,
+            provable_count_trees_weight: 0,
+            provable_count_sum_trees_weight: 0,
+            provable_count_provable_sum_trees_weight: 0,
+            provable_count_provable_big_sum_trees_weight: wide_weight,
+        };
+
+        let latest = GroveVersion::latest();
+        // One sum tree (8 bytes) alone, then with three wide trees (24).
+        assert_eq!(mixed(0).estimated_size(latest).unwrap(), 8);
+        assert_eq!(mixed(3).estimated_size(latest).unwrap(), (8 + 3 * 24) / 4);
+
+        for older in [&GROVE_V1, &GROVE_V2] {
+            assert_eq!(
+                mixed(3).estimated_size(older).unwrap(),
+                mixed(0).estimated_size(older).unwrap(),
+                "protocol version {}",
+                older.protocol_version
+            );
+        }
     }
 
     /// v0 formula output is pinned to its historical value so the v2
@@ -1105,6 +1159,7 @@ mod tests {
             provable_count_trees_weight: 0,
             provable_count_sum_trees_weight: 0,
             provable_count_provable_sum_trees_weight: 0,
+            provable_count_provable_big_sum_trees_weight: 0,
         };
         let with_provable = EstimatedSumTrees::SomeSumTrees {
             sum_trees_weight: 1,
@@ -1116,6 +1171,7 @@ mod tests {
             provable_count_trees_weight: 7,
             provable_count_sum_trees_weight: 9,
             provable_count_provable_sum_trees_weight: 11,
+            provable_count_provable_big_sum_trees_weight: 0,
         };
 
         let v0 = GroveVersion::first();
@@ -1147,6 +1203,7 @@ mod tests {
             provable_count_trees_weight: 0,
             provable_count_sum_trees_weight: 0,
             provable_count_provable_sum_trees_weight: 0,
+            provable_count_provable_big_sum_trees_weight: 0,
         };
         let with_provable = EstimatedSumTrees::SomeSumTrees {
             sum_trees_weight: 2,
@@ -1158,6 +1215,7 @@ mod tests {
             provable_count_trees_weight: 6,
             provable_count_sum_trees_weight: 8,
             provable_count_provable_sum_trees_weight: 10,
+            provable_count_provable_big_sum_trees_weight: 0,
         };
 
         assert_eq!(
@@ -1183,6 +1241,7 @@ mod tests {
             provable_count_trees_weight: 0,
             provable_count_sum_trees_weight: 0,
             provable_count_provable_sum_trees_weight: 0,
+            provable_count_provable_big_sum_trees_weight: 0,
         };
         let with_pcps = EstimatedSumTrees::SomeSumTrees {
             sum_trees_weight: 1,
@@ -1194,6 +1253,7 @@ mod tests {
             provable_count_trees_weight: 0,
             provable_count_sum_trees_weight: 0,
             provable_count_provable_sum_trees_weight: 3, // PCPS dominates
+            provable_count_provable_big_sum_trees_weight: 0,
         };
 
         let baseline_size = baseline.estimated_size(v).unwrap();
@@ -1223,6 +1283,7 @@ mod tests {
                     provable_count_trees_weight: 0,
                     provable_count_sum_trees_weight: 0,
                     provable_count_provable_sum_trees_weight: 0,
+                    provable_count_provable_big_sum_trees_weight: 0,
                 },
                 EstimatedSumTrees::AllProvableSumTrees,
             ),
@@ -1237,6 +1298,7 @@ mod tests {
                     provable_count_trees_weight: 5,
                     provable_count_sum_trees_weight: 0,
                     provable_count_provable_sum_trees_weight: 0,
+                    provable_count_provable_big_sum_trees_weight: 0,
                 },
                 EstimatedSumTrees::AllProvableCountTrees,
             ),
@@ -1251,6 +1313,7 @@ mod tests {
                     provable_count_trees_weight: 0,
                     provable_count_sum_trees_weight: 6,
                     provable_count_provable_sum_trees_weight: 0,
+                    provable_count_provable_big_sum_trees_weight: 0,
                 },
                 EstimatedSumTrees::AllProvableCountSumTrees,
             ),
@@ -1265,6 +1328,7 @@ mod tests {
                     provable_count_trees_weight: 0,
                     provable_count_sum_trees_weight: 0,
                     provable_count_provable_sum_trees_weight: 7,
+                    provable_count_provable_big_sum_trees_weight: 0,
                 },
                 EstimatedSumTrees::AllProvableCountProvableSumTrees,
             ),
@@ -1294,6 +1358,7 @@ mod tests {
             provable_count_trees_weight: 0,
             provable_count_sum_trees_weight: 0,
             provable_count_provable_sum_trees_weight: 0,
+            provable_count_provable_big_sum_trees_weight: 0,
         };
         let err = all_zero.estimated_size(v).unwrap_err();
         assert!(matches!(err, Error::DivideByZero("weights add up to 0")));
@@ -1316,6 +1381,7 @@ mod tests {
             provable_count_trees_weight: 0,
             provable_count_sum_trees_weight: 0,
             provable_count_provable_sum_trees_weight: 0,
+            provable_count_provable_big_sum_trees_weight: 0,
         };
         let err = big_only.estimated_size(GroveVersion::first()).unwrap_err();
         assert!(matches!(err, Error::DivideByZero("weights add up to 0")));
@@ -1341,6 +1407,7 @@ mod tests {
             provable_count_trees_weight: 0,
             provable_count_sum_trees_weight: 0,
             provable_count_provable_sum_trees_weight: 0,
+            provable_count_provable_big_sum_trees_weight: 0,
         };
         let err = any.estimated_size(&bad_version).unwrap_err();
         assert!(matches!(

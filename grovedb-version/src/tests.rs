@@ -88,6 +88,9 @@ fn v5_matches_v4_apart_from_its_gates() {
     operations.average_case.average_case_merk_insert_element = 0;
     operations.worst_case.worst_case_merk_insert_element = 0;
     operations.proof.count_offset_reference_empty_tree_rows = 0;
+    operations
+        .insert
+        .provable_count_provable_big_sum_tree_creation = 0;
     v5_as_v4.grovedb_versions.element.path_query_push =
         GROVE_V4.grovedb_versions.element.path_query_push;
     v5_as_v4.grovedb_versions.element.delete = 0;
@@ -118,6 +121,31 @@ fn v5_matches_v4_apart_from_its_gates() {
     v5_as_v4.merk_versions.tree.just_in_time_value_update =
         GROVE_V4.merk_versions.tree.just_in_time_value_update;
     assert_eq!(format!("{v5_as_v4:?}"), format!("{GROVE_V4:?}"));
+}
+
+#[test]
+fn provable_count_provable_big_sum_tree_creation_is_gated_to_v5() {
+    // GROVE_V1..GROVE_V4 as released do not know the element: creating it
+    // there would write a value a node on a released build cannot read.
+    for v in [&GROVE_V1, &GROVE_V2, &GROVE_V3, &GROVE_V4] {
+        assert_eq!(
+            v.grovedb_versions
+                .operations
+                .insert
+                .provable_count_provable_big_sum_tree_creation,
+            0,
+            "v{}",
+            v.protocol_version
+        );
+    }
+    assert_eq!(
+        GROVE_V5
+            .grovedb_versions
+            .operations
+            .insert
+            .provable_count_provable_big_sum_tree_creation,
+        1
+    );
 }
 
 #[test]

@@ -2335,6 +2335,7 @@ impl GroveDb {
                             | Element::ProvableCountSumTree(Some(_), ..)
                             | Element::ProvableSumTree(Some(_), ..)
                             | Element::ProvableCountProvableSumTree(Some(_), ..)
+                            | Element::ProvableCountProvableBigSumTree(Some(_), ..)
                             | Element::CommitmentTree(..)
                             | Element::MmrTree(..)
                             | Element::BulkAppendTree(..)
@@ -2699,6 +2700,7 @@ impl GroveDb {
                             | Element::ProvableCountSumTree(None, ..)
                             | Element::ProvableSumTree(None, ..)
                             | Element::ProvableCountProvableSumTree(None, ..)
+                            | Element::ProvableCountProvableBigSumTree(None, ..)
                             | Element::SumItem(..)
                             | Element::Item(..)
                             | Element::ItemWithSumItem(..)
@@ -3714,7 +3716,8 @@ impl GroveDb {
                             | Element::ProvableCountTree(Some(_), ..)
                             | Element::ProvableCountSumTree(Some(_), ..)
                             | Element::ProvableSumTree(Some(_), ..)
-                            | Element::ProvableCountProvableSumTree(Some(_), ..) => {
+                            | Element::ProvableCountProvableSumTree(Some(_), ..)
+                            | Element::ProvableCountProvableBigSumTree(Some(_), ..) => {
                                 path.push(key);
                                 *last_parent_tree_type = element.tree_feature_type();
                                 if query.query_items_at_path(&path, grove_version)?.is_none() {
@@ -3839,6 +3842,7 @@ impl GroveDb {
                             | Element::ProvableCountSumTree(None, ..)
                             | Element::ProvableSumTree(None, ..)
                             | Element::ProvableCountProvableSumTree(None, ..)
+                            | Element::ProvableCountProvableBigSumTree(None, ..)
                             | Element::CommitmentTree(..)
                             | Element::MmrTree(..)
                             | Element::BulkAppendTree(..)
@@ -4957,6 +4961,7 @@ impl GroveDb {
                 // Dual-axis (PCPS) variants — count lives at the same
                 // position as the single-axis count.
                 Node::KVCountSum(_, _, count, _) => Some(*count),
+                Node::KVCountBigSum(_, _, count, _) => Some(*count),
                 _ => None,
             };
 
@@ -5011,12 +5016,15 @@ impl GroveDb {
             | Node::KVRefValueHashCount(key, value, ..)
             | Node::KVSum(key, value, ..)
             | Node::KVRefValueHashSum(key, value, ..)
+            | Node::KVCountBigSum(key, value, ..)
             | Node::KVCountSum(key, value, ..)
+            | Node::KVRefValueHashCountBigSum(key, value, ..)
             | Node::KVRefValueHashCountSum(key, value, ..) => Some((key.clone(), value.clone())),
             // These nodes don't have values, only key+hash or just hash
             Node::KVDigest(..)
             | Node::KVDigestCount(..)
             | Node::KVDigestSum(..)
+            | Node::KVDigestCountBigSum(..)
             | Node::KVDigestCountSum(..)
             | Node::Hash(_)
             | Node::KVHash(_)
@@ -5024,7 +5032,9 @@ impl GroveDb {
             | Node::HashWithCount(..)
             | Node::KVHashSum(..)
             | Node::HashWithSum(..)
+            | Node::KVHashCountBigSum(..)
             | Node::KVHashCountSum(..)
+            | Node::HashWithCountAndBigSum(..)
             | Node::HashWithCountAndSum(..) => None,
         }
     }
@@ -5039,7 +5049,8 @@ impl GroveDb {
             | Element::CountSumTree(_, count, ..)
             | Element::ProvableCountTree(_, count, _)
             | Element::ProvableCountSumTree(_, count, ..)
-            | Element::ProvableCountProvableSumTree(_, count, ..) => Some(*count),
+            | Element::ProvableCountProvableSumTree(_, count, ..)
+            | Element::ProvableCountProvableBigSumTree(_, count, ..) => Some(*count),
             _ => None,
         }
     }

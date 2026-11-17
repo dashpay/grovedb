@@ -41,7 +41,11 @@ impl GroveDb {
             Element::Tree(_, flags)
             | Element::SumTree(_, _, flags)
             | Element::BigSumTree(_, _, flags)
-            | Element::CountTree(_, _, flags) => {
+            | Element::CountTree(_, _, flags)
+            // The wide count and sum tree is written as a layered tree too.
+            // The other count-and-sum and provable trees are not listed here
+            // and keep the estimate they have always had.
+            | Element::ProvableCountProvableBigSumTree(.., flags) => {
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32

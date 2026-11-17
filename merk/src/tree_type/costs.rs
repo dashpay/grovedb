@@ -1,7 +1,7 @@
 use crate::{
     estimated_costs::{
-        BIG_SUM_LAYER_COST_SIZE, LAYER_COST_SIZE, SUM_AND_COUNT_LAYER_COST_SIZE,
-        SUM_LAYER_COST_SIZE, SUM_VALUE_EXTRA_COST,
+        BIG_SUM_AND_COUNT_LAYER_COST_SIZE, BIG_SUM_LAYER_COST_SIZE, LAYER_COST_SIZE,
+        SUM_AND_COUNT_LAYER_COST_SIZE, SUM_LAYER_COST_SIZE, SUM_VALUE_EXTRA_COST,
     },
     TreeType,
 };
@@ -27,6 +27,9 @@ pub const COUNT_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 12
 
 /// The cost of a count sum tree
 pub const COUNT_SUM_TREE_COST_SIZE: u32 = SUM_AND_COUNT_LAYER_COST_SIZE; // 21
+
+/// The cost of a provable count provable big sum tree
+pub const COUNT_BIG_SUM_TREE_COST_SIZE: u32 = BIG_SUM_AND_COUNT_LAYER_COST_SIZE; // 28
 
 /// The cost of a commitment tree (9 bytes total_count (u64 varint worst case)
 /// + 1 byte chunk_power (u8) + 2 bytes overhead)
@@ -104,6 +107,7 @@ impl CostSize for TreeType {
                 PROVABLE_COUNT_PROVABLE_SUM_INDEXED_TREE_COST_SIZE
             }
             TreeType::PrivateDocumentStore(_) => PRIVATE_DOCUMENT_STORE_COST_SIZE,
+            TreeType::ProvableCountProvableBigSumTree => COUNT_BIG_SUM_TREE_COST_SIZE,
         }
     }
 }

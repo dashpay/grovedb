@@ -144,6 +144,9 @@ where
                 TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, sum)
             }
             Ok(AggregateData::ProvableSum(sum)) => TreeFeatureType::ProvableSummedMerkNode(sum),
+            Ok(AggregateData::ProvableCountAndProvableBigSum(count, sum)) => {
+                TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(count, sum)
+            }
             _ => self.tree().feature_type(),
         };
         Node::KVValueHashFeatureType(
@@ -275,6 +278,46 @@ where
             _ => (0, 0),
         };
         Node::KVHashCountSum(*self.tree().kv_hash(), count, sum)
+    }
+
+    /// Creates a `Node::KVCountBigSum` from the key/value pair and
+    /// (count, big sum) of the root node. Used for Items in
+    /// `ProvableCountProvableBigSumTree`, the wide counterpart of
+    /// `to_kv_count_sum_node`.
+    pub(crate) fn to_kv_count_big_sum_node(&self) -> Node {
+        let (count, sum) = match self.tree().aggregate_data() {
+            Ok(AggregateData::ProvableCountAndProvableBigSum(c, s)) => (c, s),
+            _ => (0, 0),
+        };
+        Node::KVCountBigSum(
+            self.tree().key().to_vec(),
+            self.tree().value_as_slice().to_vec(),
+            count,
+            sum,
+        )
+    }
+
+    /// Boundary (absence-proof) analogue of `to_kv_count_big_sum_node`.
+    pub(crate) fn to_kvdigest_count_big_sum_node(&self) -> Node {
+        let (count, sum) = match self.tree().aggregate_data() {
+            Ok(AggregateData::ProvableCountAndProvableBigSum(c, s)) => (c, s),
+            _ => (0, 0),
+        };
+        Node::KVDigestCountBigSum(
+            self.tree().key().to_vec(),
+            *self.tree().value_hash(),
+            count,
+            sum,
+        )
+    }
+
+    /// Non-queried-path analogue of `to_kv_count_big_sum_node`.
+    pub(crate) fn to_kvhash_count_big_sum_node(&self) -> Node {
+        let (count, sum) = match self.tree().aggregate_data() {
+            Ok(AggregateData::ProvableCountAndProvableBigSum(c, s)) => (c, s),
+            _ => (0, 0),
+        };
+        Node::KVHashCountBigSum(*self.tree().kv_hash(), count, sum)
     }
 
     /// Creates a `Node::KVDigestSum` from the key/value_hash pair and sum
@@ -507,20 +550,30 @@ where
             self.tree().feature_type(),
             TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(..)
         );
+        // ProvableCountProvableBigSumTree carries a count and a 128-bit
+        // sum in its feature_type; both are baked into the node hash.
+        let is_provable_count_and_provable_big_sum_tree = matches!(
+            self.tree().feature_type(),
+            TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(..)
+        );
         // Combined predicate used by the boundary / non-queried-path
         // selectors below to gate the aggregate emission.
         let is_provable_count_tree =
             is_provable_count_only_tree || is_provable_count_and_provable_sum_tree;
         let is_provable_sum_tree =
             is_provable_sum_only_tree || is_provable_count_and_provable_sum_tree;
-        let is_provable_aggregate_tree = is_provable_count_tree || is_provable_sum_tree;
+        let is_provable_aggregate_tree = is_provable_count_tree
+            || is_provable_sum_tree
+            || is_provable_count_and_provable_big_sum_tree;
 
         // Convert the tree kind to an `ElementType` so `proof_node_type()`
         // can dispatch — three mutually-exclusive families:
         //   - count-only      → `ProvableCountTree`
         //   - sum-only        → `ProvableSumTree`
         //   - count-and-sum   → `ProvableCountProvableSumTree`
-        let parent_tree_type = if is_provable_count_and_provable_sum_tree {
+        let parent_tree_type = if is_provable_count_and_provable_big_sum_tree {
+            Some(ElementType::ProvableCountProvableBigSumTree)
+        } else if is_provable_count_and_provable_sum_tree {
             Some(ElementType::ProvableCountProvableSumTree)
         } else if is_provable_count_only_tree {
             Some(ElementType::ProvableCountTree)
@@ -559,6 +612,7 @@ where
                 ProofNodeType::KvCount => self.to_kv_count_node(),
                 ProofNodeType::KvSum => self.to_kv_sum_node(),
                 ProofNodeType::KvCountSum => self.to_kv_count_sum_node(),
+                ProofNodeType::KvCountBigSum => self.to_kv_count_big_sum_node(),
                 ProofNodeType::KvValueHash => self.to_kv_value_hash_node(),
                 // Backward-references elements: emit the dedicated wire
                 // node — STRIPPED bytes plus the referrer-list hash — so
@@ -618,6 +672,11 @@ where
                 // then GroveDB post-processes to KVRefValueHashCountSum
                 // with the dereferenced value.
                 ProofNodeType::KvRefValueHashCountSum => self.to_kv_value_hash_feature_type_node(),
+                // ProvableCountProvableBigSumTree references: the same,
+                // post-processed to KVRefValueHashCountBigSum.
+                ProofNodeType::KvRefValueHashCountBigSum => {
+                    self.to_kv_value_hash_feature_type_node()
+                }
             };
 
             if proof_params.left_to_right {
@@ -631,7 +690,9 @@ where
             // aggregate kind. The combined ProvableCountProvableSumTree
             // family is checked first because it is a member of BOTH the
             // count and sum families.
-            let node = if is_provable_count_and_provable_sum_tree {
+            let node = if is_provable_count_and_provable_big_sum_tree {
+                self.to_kvdigest_count_big_sum_node()
+            } else if is_provable_count_and_provable_sum_tree {
                 self.to_kvdigest_count_sum_node()
             } else if is_provable_count_only_tree {
                 self.to_kvdigest_count_node()
@@ -650,7 +711,9 @@ where
             // verifier can recompute the node hash. Check the combined
             // family first for the same reason as the boundary path
             // above.
-            let node = if is_provable_count_and_provable_sum_tree {
+            let node = if is_provable_count_and_provable_big_sum_tree {
+                self.to_kvhash_count_big_sum_node()
+            } else if is_provable_count_and_provable_sum_tree {
                 self.to_kvhash_count_sum_node()
             } else if is_provable_count_only_tree {
                 self.to_kvhash_count_node()

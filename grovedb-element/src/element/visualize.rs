@@ -328,6 +328,17 @@ impl Visualize for Element {
                     drawer = f.visualize(drawer)?;
                 }
             }
+            Element::ProvableCountProvableBigSumTree(root_key, count_value, sum_value, flags) => {
+                drawer.write(b"provable_count_provable_big_sum_tree: ")?;
+                drawer = root_key.as_deref().visualize(drawer)?;
+                drawer.write(format!("count: {count_value}, sum {sum_value}").as_bytes())?;
+
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
+                }
+            }
             Element::NotCountedOrSummed(inner) => {
                 drawer.write(b"not_counted_or_summed(")?;
                 drawer = inner.visualize(drawer)?;

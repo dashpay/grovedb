@@ -8,6 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `Element::ProvableCountProvableBigSumTree` (discriminant 29, tree type
+  17): a tree that commits its element count and a 128-bit sum into every
+  node hash, the wide counterpart of `ProvableCountProvableSumTree`. An
+  `i64` total refuses a write that takes it past its range; this tree's
+  children still contribute an `i64` each, and its total is an `i128`. It
+  is inserted, read, deleted, batched, proved (V1 envelopes), synced and
+  verified like the other provable trees, with its own proof nodes
+  (`KVCountBigSum`, `KVHashCountBigSum`, `KVRefValueHashCountBigSum`,
+  `KVDigestCountBigSum`, `HashWithCountAndBigSum`, tags 0x60..=0x6D), node
+  hash (`node_hash_with_count_and_big_sum`), feature type and link
+  aggregate (tag 9) and wrapper twins (157, 179, 195). Creating it is gated
+  by the new `operations.insert.provable_count_provable_big_sum_tree_creation`
+  slot (0 in V1..V4, which refuse it; 1 in V5; **BREAKING** for code
+  building `GroveDBOperationsInsertVersions` by hand). The range aggregates
+  (`AggregateCountOnRange`, `AggregateSumOnRange`,
+  `AggregateCountAndSumOnRange`) and count offsets are not offered on it
+  yet and are refused. **BREAKING** for exhaustive matches: the new
+  variants of `Element`, `ElementType`, `TreeType`, `TreeFeatureType`,
+  `NodeType`, `AggregateData`, `Node`, `ProofNodeType`, `TreeCostType`
+  (`TreeFeatureUsesVarIntCostAs8BytesAnd16Bytes`), `EstimatedSumTrees`
+  (`AllProvableCountProvableBigSumTrees`) and `QueryItemOrSumReturnType`
+  (`CountBigSumValue`). `EstimatedSumTrees::SomeSumTrees` gains the
+  `provable_count_provable_big_sum_trees_weight` field (**BREAKING** for
+  code building or destructuring it), which the mixed-layer size estimate
+  of `GROVE_V3` and later weighs at 24 bytes; a weight of 0 leaves the
+  estimate as it was. The element cost estimators size the tree as the
+  layered tree it is written as.
 - `GROVE_V5` (`protocol_version` 5). `GROVE_V4` as 6.1.1 shipped it is what
   Dash Platform 5.0 (protocol version 14) runs, so behaviour changes from
   here on are gated in `GROVE_V5` and leave V1..V4 as they are. V5 is V4
@@ -118,6 +145,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must move to 0.41 as well.
 
 ### Fixed
+- Trunk and branch query results (`get_ancestor`) read the count of a
+  `ProvableCountProvableSumTree` node, which they skipped before, and of
+  a `ProvableCountProvableBigSumTree` node.
 - `GroveDb::verify_grovedb` recomputes each tree's aggregate from the
   elements the tree holds and reports a tree whose stored aggregate differs.
   It compared the aggregate recorded in the parent's tree element with the

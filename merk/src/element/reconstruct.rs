@@ -106,6 +106,14 @@ impl ElementReconstructExtensions for Element {
                     f.clone(),
                 ))
             }
+            Element::ProvableCountProvableBigSumTree(.., f) => {
+                Some(Element::ProvableCountProvableBigSumTree(
+                    maybe_root_key,
+                    aggregate_data.as_count_u64(),
+                    aggregate_data.as_summed_i128(),
+                    f.clone(),
+                ))
+            }
             Element::CommitmentTree(tc, cp, f) => {
                 Some(Element::CommitmentTree(*tc, *cp, f.clone()))
             }

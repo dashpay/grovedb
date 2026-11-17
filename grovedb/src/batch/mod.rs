@@ -111,7 +111,10 @@ use crate::{
     batch::{batch_structure::BatchStructure, mode::BatchRunMode},
     bidirectional_references::BidirectionalReference,
     element::{MaxReferenceHop, SumValue},
-    operations::{delete::DeleteOptions, get::MAX_REFERENCE_HOPS, proof::util::hex_to_ascii},
+    operations::{
+        delete::DeleteOptions, get::MAX_REFERENCE_HOPS,
+        insert::check_provable_count_provable_big_sum_tree_creation, proof::util::hex_to_ascii,
+    },
     reference_path::{
         path_from_reference_path_type, path_from_reference_qualified_path_type, ReferencePathType,
     },
@@ -2934,6 +2937,7 @@ where
             | Element::ProvableCountSumTree(..)
             | Element::ProvableSumTree(..)
             | Element::ProvableCountProvableSumTree(..)
+            | Element::ProvableCountProvableBigSumTree(..)
             | Element::CommitmentTree(..)
             | Element::MmrTree(..)
             | Element::BulkAppendTree(..)
@@ -3219,6 +3223,7 @@ where
                         | Element::ProvableCountSumTree(..)
                         | Element::ProvableSumTree(..)
                         | Element::ProvableCountProvableSumTree(..)
+                        | Element::ProvableCountProvableBigSumTree(..)
                         | Element::CommitmentTree(..)
                         | Element::MmrTree(..)
                         | Element::BulkAppendTree(..)
@@ -3335,6 +3340,7 @@ where
                     | Element::ProvableCountSumTree(..)
                     | Element::ProvableSumTree(..)
                     | Element::ProvableCountProvableSumTree(..)
+                    | Element::ProvableCountProvableBigSumTree(..)
                     | Element::CommitmentTree(..)
                     | Element::MmrTree(..)
                     | Element::BulkAppendTree(..)
@@ -3877,6 +3883,16 @@ where
                         ))
                         .wrap_with_cost(cost);
                     }
+                    // A grove version that predates the wide count and sum
+                    // tree refuses to create one, as the direct path does.
+                    cost_return_on_error_no_add!(
+                        cost,
+                        check_provable_count_provable_big_sum_tree_creation(
+                            &element,
+                            "batch insert Element::ProvableCountProvableBigSumTree",
+                            grove_version,
+                        )
+                    );
                     // Look through NonCounted; methods called on `element`
                     // (serialize, get_feature_type, insert_*_into_batch_operations,
                     // element_at_key_already_exists) are wrapper-aware via the
@@ -4206,6 +4222,7 @@ where
                         | Element::ProvableCountSumTree(..)
                         | Element::ProvableSumTree(..)
                         | Element::ProvableCountProvableSumTree(..)
+                        | Element::ProvableCountProvableBigSumTree(..)
                         | Element::MmrTree(..)
                         | Element::BulkAppendTree(..)
                         | Element::DenseAppendOnlyFixedSizeTree(..) => {
@@ -4941,6 +4958,14 @@ where
                                 flags,
                             )
                         }
+                        AggregateData::ProvableCountAndProvableBigSum(count_value, sum_value) => {
+                            Element::new_provable_count_provable_big_sum_tree_with_flags_and_sum_and_count_value(
+                                root_key,
+                                count_value,
+                                sum_value,
+                                flags,
+                            )
+                        }
                     };
                     // Re-wrap if the original element was wrapped, so the
                     // on-disk bytes preserve the wrapper and the parent's
@@ -5595,7 +5620,10 @@ pub(in crate::batch) fn insert_op_with_propagated_root(
         | Element::ProvableCountTree(.., flags)
         | Element::ProvableCountSumTree(.., flags)
         | Element::ProvableSumTree(.., flags)
-        | Element::ProvableCountProvableSumTree(.., flags) => Ok(merk_tree(flags, aggregate_data)),
+        | Element::ProvableCountProvableSumTree(.., flags)
+        | Element::ProvableCountProvableBigSumTree(.., flags) => {
+            Ok(merk_tree(flags, aggregate_data))
+        }
         Element::CommitmentTree(total_count, chunk_power, flags) => Ok(non_merk_tree(
             flags,
             NonMerkTreeMeta::CommitmentTree {
@@ -5722,7 +5750,8 @@ fn aggregate_above_level_v1(element: &Element, aggregate_data: AggregateData) ->
             | Element::ProvableCountTree(..)
             | Element::ProvableCountSumTree(..)
             | Element::ProvableSumTree(..)
-            | Element::ProvableCountProvableSumTree(..)),
+            | Element::ProvableCountProvableSumTree(..)
+            | Element::ProvableCountProvableBigSumTree(..)),
         ) => tree
             .tree_type()
             .map(|tree_type| AggregateData::from(tree_type.empty_tree_feature_type()))

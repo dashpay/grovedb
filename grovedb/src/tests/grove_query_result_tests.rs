@@ -730,4 +730,92 @@ mod tests {
         );
         assert_eq!(traced.1.count, Some(7), "should carry the count");
     }
+
+    /// The count of an ancestor is read from every node kind a tree that
+    /// commits a sum beside its count proves with: the value node and the
+    /// feature type of the narrow tree and of the wide one. Both a trunk and
+    /// a branch result read it.
+    #[test]
+    fn test_get_ancestor_reads_the_count_of_count_and_sum_trees() {
+        let wide_sum = i128::from(i64::MAX) * 3;
+        let interior_nodes: Vec<(&str, Box<dyn Fn(&[u8], u64) -> Tree>)> = vec![
+            (
+                "KVCountSum",
+                Box::new(|key, count| {
+                    Tree::from(Node::KVCountSum(key.to_vec(), b"v".to_vec(), count, 7))
+                }),
+            ),
+            (
+                "KVCountBigSum",
+                Box::new(move |key, count| {
+                    Tree::from(Node::KVCountBigSum(
+                        key.to_vec(),
+                        b"v".to_vec(),
+                        count,
+                        wide_sum,
+                    ))
+                }),
+            ),
+            (
+                "narrow feature type",
+                Box::new(|key, count| {
+                    Tree::from(Node::KVValueHashFeatureType(
+                        key.to_vec(),
+                        b"v".to_vec(),
+                        [0u8; 32],
+                        TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, 7),
+                    ))
+                }),
+            ),
+            (
+                "wide feature type",
+                Box::new(move |key, count| {
+                    Tree::from(Node::KVValueHashFeatureType(
+                        key.to_vec(),
+                        b"v".to_vec(),
+                        [0u8; 32],
+                        TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(
+                            count, wide_sum,
+                        ),
+                    ))
+                }),
+            ),
+        ];
+
+        for (name, node) in interior_nodes {
+            //         m (100)
+            //        /       \
+            //     d (50)    t (50)
+            //      |          |
+            //      a          z
+            let build = || {
+                let d = with_left(node(b"d", 50), make_kv_tree(b"a", b"val_a"));
+                let t = with_right(node(b"t", 50), make_kv_tree(b"z", b"val_z"));
+                with_right(with_left(node(b"m", 100), d), t)
+            };
+
+            let trunk = GroveTrunkQueryResult {
+                elements: BTreeMap::new(),
+                leaf_keys: BTreeMap::new(),
+                chunk_depths: vec![],
+                max_tree_depth: 3,
+                tree: build(),
+            };
+            let (levels_up, count, key, _) = trunk
+                .get_ancestor(b"a", 40)
+                .unwrap_or_else(|| panic!("{name}: the trunk should find an ancestor"));
+            assert_eq!((levels_up, count, key), (1, 50, b"d".to_vec()), "{name}");
+
+            let branch = GroveBranchQueryResult {
+                elements: BTreeMap::new(),
+                leaf_keys: BTreeMap::new(),
+                branch_root_hash: [0u8; 32],
+                tree: build(),
+            };
+            let (levels_up, count, key, _) = branch
+                .get_ancestor(b"z", 40)
+                .unwrap_or_else(|| panic!("{name}: the branch should find an ancestor"));
+            assert_eq!((levels_up, count, key), (1, 50, b"t".to_vec()), "{name}");
+        }
+    }
 }

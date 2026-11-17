@@ -24,6 +24,7 @@ impl EstimatedSumTrees {
                 provable_count_trees_weight,
                 provable_count_sum_trees_weight,
                 provable_count_provable_sum_trees_weight,
+                provable_count_provable_big_sum_trees_weight,
             } => {
                 let total_weight = (*sum_trees_weight as u32)
                     .checked_add(*big_sum_trees_weight as u32)
@@ -34,6 +35,9 @@ impl EstimatedSumTrees {
                     .and_then(|w| w.checked_add(*provable_count_trees_weight as u32))
                     .and_then(|w| w.checked_add(*provable_count_sum_trees_weight as u32))
                     .and_then(|w| w.checked_add(*provable_count_provable_sum_trees_weight as u32))
+                    .and_then(|w| {
+                        w.checked_add(*provable_count_provable_big_sum_trees_weight as u32)
+                    })
                     .ok_or(Error::Overflow(
                         "Estimated size total weight calculation overflowed",
                     ))?;
@@ -82,6 +86,14 @@ impl EstimatedSumTrees {
                                 .cost(),
                     )
                 })
+                .and_then(|sum| {
+                    sum.checked_add(
+                        *provable_count_provable_big_sum_trees_weight as u32
+                            * TreeType::ProvableCountProvableBigSumTree
+                                .inner_node_type()
+                                .cost(),
+                    )
+                })
                 .ok_or(Error::Overflow("Estimated size calculation overflowed"))?;
 
                 Ok(estimated_size / total_weight)
@@ -103,6 +115,11 @@ impl EstimatedSumTrees {
             }
             EstimatedSumTrees::AllProvableCountProvableSumTrees => {
                 Ok(TreeType::ProvableCountProvableSumTree
+                    .inner_node_type()
+                    .cost())
+            }
+            EstimatedSumTrees::AllProvableCountProvableBigSumTrees => {
+                Ok(TreeType::ProvableCountProvableBigSumTree
                     .inner_node_type()
                     .cost())
             }

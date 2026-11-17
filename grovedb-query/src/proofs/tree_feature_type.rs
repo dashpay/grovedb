@@ -10,8 +10,8 @@ use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 
 use self::TreeFeatureType::{
     BasicMerkNode, BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode,
-    ProvableCountedAndProvableSummedMerkNode, ProvableCountedMerkNode, ProvableSummedMerkNode,
-    SummedMerkNode,
+    ProvableCountedAndProvableBigSummedMerkNode, ProvableCountedAndProvableSummedMerkNode,
+    ProvableCountedMerkNode, ProvableSummedMerkNode, SummedMerkNode,
 };
 use crate::proofs::TreeFeatureType::ProvableCountedSummedMerkNode;
 
@@ -44,6 +44,12 @@ pub enum NodeType {
     /// layout (count varint + sum varint, 17-byte feature length) but
     /// extends the hash to bind both aggregates.
     ProvableCountProvableSumNode,
+    /// Provable count + provable big sum node. Both the u64 count AND the
+    /// i128 sum are included in the node hash via
+    /// `node_hash_with_count_and_big_sum`. The count is a varint and the
+    /// sum is 16 fixed big-endian bytes, like `BigSumNode`'s (25-byte
+    /// feature length).
+    ProvableCountProvableBigSumNode,
 }
 
 impl NodeType {
@@ -59,6 +65,7 @@ impl NodeType {
             NodeType::ProvableCountSumNode => 17,
             NodeType::ProvableSumNode => 9,
             NodeType::ProvableCountProvableSumNode => 17,
+            NodeType::ProvableCountProvableBigSumNode => 25,
         }
     }
 
@@ -74,6 +81,7 @@ impl NodeType {
             NodeType::ProvableCountSumNode => 16,
             NodeType::ProvableSumNode => 8,
             NodeType::ProvableCountProvableSumNode => 16,
+            NodeType::ProvableCountProvableBigSumNode => 24,
         }
     }
 }
@@ -106,6 +114,13 @@ pub enum TreeFeatureType {
     /// varints) but the hash computation binds both aggregates rather
     /// than just the count.
     ProvableCountedAndProvableSummedMerkNode(u64, i64),
+    /// Provable Counted AND Provable Big Summed Merk Tree Node: both the u64
+    /// count AND the i128 sum are baked into the node hash via
+    /// `node_hash_with_count_and_big_sum`. The wide counterpart of
+    /// `ProvableCountedAndProvableSummedMerkNode` (tag byte 9, a count
+    /// varint followed by 16 fixed big-endian sum bytes), for sums that can
+    /// pass the i64 range.
+    ProvableCountedAndProvableBigSummedMerkNode(u64, i128),
 }
 
 impl TreeFeatureType {
@@ -119,7 +134,8 @@ impl TreeFeatureType {
             | ProvableCountedMerkNode(count)
             | CountedSummedMerkNode(count, _)
             | ProvableCountedSummedMerkNode(count, _)
-            | ProvableCountedAndProvableSummedMerkNode(count, _) => Some(*count),
+            | ProvableCountedAndProvableSummedMerkNode(count, _)
+            | ProvableCountedAndProvableBigSummedMerkNode(count, _) => Some(*count),
             BasicMerkNode
             | SummedMerkNode(_)
             | BigSummedMerkNode(_)
@@ -140,6 +156,7 @@ impl TreeFeatureType {
             CountedSummedMerkNode(count, _)
             | ProvableCountedSummedMerkNode(count, _)
             | ProvableCountedAndProvableSummedMerkNode(count, _) => *count = 0,
+            ProvableCountedAndProvableBigSummedMerkNode(count, _) => *count = 0,
             BasicMerkNode
             | SummedMerkNode(_)
             | BigSummedMerkNode(_)
@@ -157,7 +174,9 @@ impl TreeFeatureType {
     pub fn zero_sum(&mut self) {
         match self {
             SummedMerkNode(sum) | ProvableSummedMerkNode(sum) => *sum = 0,
-            BigSummedMerkNode(sum) => *sum = 0,
+            BigSummedMerkNode(sum) | ProvableCountedAndProvableBigSummedMerkNode(_, sum) => {
+                *sum = 0
+            }
             CountedSummedMerkNode(_, sum)
             | ProvableCountedSummedMerkNode(_, sum)
             | ProvableCountedAndProvableSummedMerkNode(_, sum) => *sum = 0,
@@ -177,6 +196,9 @@ impl TreeFeatureType {
             ProvableCountedSummedMerkNode(..) => NodeType::ProvableCountSumNode,
             ProvableSummedMerkNode(_) => NodeType::ProvableSumNode,
             ProvableCountedAndProvableSummedMerkNode(..) => NodeType::ProvableCountProvableSumNode,
+            ProvableCountedAndProvableBigSummedMerkNode(..) => {
+                NodeType::ProvableCountProvableBigSumNode
+            }
         }
     }
 
@@ -193,6 +215,7 @@ impl TreeFeatureType {
             ProvableCountedSummedMerkNode(..) => 17,
             ProvableSummedMerkNode(_) => 9,
             ProvableCountedAndProvableSummedMerkNode(..) => 17,
+            ProvableCountedAndProvableBigSummedMerkNode(..) => 25,
         }
     }
 }
@@ -233,6 +256,10 @@ impl TreeFeatureType {
             ProvableCountedAndProvableSummedMerkNode(count, sum) => Some((
                 TreeCostType::TreeFeatureUsesTwoVarIntsCostAs16Bytes,
                 count.encode_var_vec().len() as u32 + sum.encode_var_vec().len() as u32,
+            )),
+            ProvableCountedAndProvableBigSummedMerkNode(count, _) => Some((
+                TreeCostType::TreeFeatureUsesVarIntCostAs8BytesAnd16Bytes,
+                count.encode_var_vec().len() as u32 + 16,
             )),
         }
     }
@@ -289,6 +316,12 @@ impl Encode for TreeFeatureType {
                 dest.write_varint(*sum)?;
                 Ok(())
             }
+            ProvableCountedAndProvableBigSummedMerkNode(count, sum) => {
+                dest.write_all(&[9])?;
+                dest.write_varint(*count)?;
+                dest.write_i128::<BigEndian>(*sum)?;
+                Ok(())
+            }
         }
     }
 
@@ -324,6 +357,9 @@ impl Encode for TreeFeatureType {
             ProvableCountedAndProvableSummedMerkNode(count, sum) => {
                 let encoded_lengths = count.encode_var_vec().len() + sum.encode_var_vec().len();
                 Ok(1 + encoded_lengths)
+            }
+            ProvableCountedAndProvableBigSummedMerkNode(count, _) => {
+                Ok(1 + count.encode_var_vec().len() + 16)
             }
         }
     }
@@ -372,6 +408,14 @@ impl Decode for TreeFeatureType {
                 let encoded_count: u64 = input.read_varint()?;
                 let encoded_sum: i64 = input.read_varint()?;
                 Ok(ProvableCountedAndProvableSummedMerkNode(
+                    encoded_count,
+                    encoded_sum,
+                ))
+            }
+            [9] => {
+                let encoded_count: u64 = input.read_varint()?;
+                let encoded_sum: i128 = input.read_i128::<BigEndian>()?;
+                Ok(ProvableCountedAndProvableBigSummedMerkNode(
                     encoded_count,
                     encoded_sum,
                 ))
@@ -588,14 +632,84 @@ mod tests {
         assert_eq!(n, ProvableCountedAndProvableSummedMerkNode(7, 0));
     }
 
-    /// Decoder rejects an unknown leading tag byte. Tag byte 9 is the
-    /// next unallocated slot above 8 (`ProvableCountedAndProvableSummed`),
-    /// so it exercises the byte-mismatch path without colliding with any
-    /// existing variant.
+    /// Decoder rejects an unknown leading tag byte. Tag byte 10 is the
+    /// next unallocated slot above 9
+    /// (`ProvableCountedAndProvableBigSummed`), so it exercises the
+    /// byte-mismatch path without colliding with any existing variant.
     #[test]
-    fn decode_rejects_tag_byte_9() {
-        let buf = [9u8, 0];
+    fn decode_rejects_tag_byte_10() {
+        let buf = [10u8, 0];
         let res = TreeFeatureType::decode(&buf[..]);
-        assert!(res.is_err(), "decode must reject unknown tag byte");
+        assert!(
+            matches!(res, Err(ed::Error::UnexpectedByte(10))),
+            "decode must reject unknown tag byte"
+        );
+    }
+
+    /// `ProvableCountedAndProvableBigSummedMerkNode` round-trips through
+    /// `Encode`/`Decode` with tag byte 9, a count varint and 16 big-endian
+    /// sum bytes, across sums inside and outside the `i64` range.
+    #[test]
+    fn provable_counted_and_provable_big_summed_round_trip() {
+        for &(count, sum) in &[
+            (0u64, 0i128),
+            (1, 1),
+            (1, -1),
+            (42, i64::MAX as i128 * 3),
+            (42, i64::MIN as i128 * 3),
+            (u64::MAX, i128::MAX),
+            (u64::MAX, i128::MIN),
+        ] {
+            let original = ProvableCountedAndProvableBigSummedMerkNode(count, sum);
+            let mut buf = Vec::new();
+            original.encode_into(&mut buf).expect("encode");
+            assert_eq!(buf[0], 9, "tag byte for the wide feature type");
+            assert_eq!(
+                buf.len(),
+                original.encoding_length().expect("encoding_length"),
+                "encoding_length must match the actual byte count"
+            );
+            assert_eq!(&buf[buf.len() - 16..], &sum.to_be_bytes());
+            let back = TreeFeatureType::decode(&buf[..]).expect("decode");
+            assert_eq!(back, original);
+            // A truncated sum is refused.
+            assert!(TreeFeatureType::decode(&buf[..buf.len() - 1]).is_err());
+        }
+    }
+
+    /// The wide node type is sized as a count (charged as 8 bytes) plus a
+    /// fixed 16-byte sum, and behaves as a count-and-sum node for the
+    /// accessors.
+    #[test]
+    fn provable_count_provable_big_sum_node_layout_and_accessors() {
+        let node = ProvableCountedAndProvableBigSummedMerkNode(7, -42);
+        assert_eq!(node.node_type(), NodeType::ProvableCountProvableBigSumNode);
+        assert_eq!(NodeType::ProvableCountProvableBigSumNode.feature_len(), 25);
+        assert_eq!(NodeType::ProvableCountProvableBigSumNode.cost(), 24);
+        assert_eq!(node.encoding_cost(), 25);
+        assert_eq!(node.count(), Some(7));
+
+        let mut zeroed = node;
+        zeroed.zero_count();
+        assert_eq!(zeroed, ProvableCountedAndProvableBigSummedMerkNode(0, -42));
+        let mut zeroed = node;
+        zeroed.zero_sum();
+        assert_eq!(zeroed, ProvableCountedAndProvableBigSummedMerkNode(7, 0));
+    }
+
+    /// The storage cost of the wide feature is its own cost type, with the
+    /// stored length a count varint plus 16 bytes.
+    #[cfg(feature = "blockchain")]
+    #[test]
+    fn provable_count_provable_big_sum_node_cost_type() {
+        let (cost_type, length) = ProvableCountedAndProvableBigSummedMerkNode(300, 1)
+            .tree_feature_specialized_type_and_length()
+            .expect("the wide feature has a specialized cost");
+        assert!(matches!(
+            cost_type,
+            TreeCostType::TreeFeatureUsesVarIntCostAs8BytesAnd16Bytes
+        ));
+        // 300 encodes as a 2-byte varint.
+        assert_eq!(length, 2 + 16);
     }
 }
