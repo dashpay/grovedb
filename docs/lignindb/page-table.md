@@ -425,14 +425,14 @@ no page version, and has no link.
 
 "Covers" speaks of commits. A background change, which a page step makes
 and which has no version (PV6 of `transactions.md`), is vouched for by its
-place in the log: when the checkpoint is begun, no background change whose
-record is before the place of the checkpoint's sample is still to be
-written back, with the same exception (DU5 of `transactions.md`). Replay
-looks at none of them (K13), so each must be in a block that a link points
-to when the chain of its page is copied. Writing them all back before the
-first chain is copied makes sure of that, and is more than recovery needs:
-a page that is written back while the checkpoint copies other chains, and
-before its own, is as good.
+place in the log: every background change whose record is before the place
+of the checkpoint's sample is in a block that a link points to when the
+chain of its page is copied, with the same exception (DU5 of
+`transactions.md`). Replay looks at none of them (K13). Writing them all
+back before the first chain is copied makes sure of that, and is more than
+recovery needs: a page that is written back while the checkpoint copies
+other chains, and before its own, is as good. For the commits up to *C*
+the time is as above, when the checkpoint is begun.
 
 **K2. A checkpoint is a copy of every chain, not a cut at *C*.** It holds
 the chains as the table had them, which can include links of versions above
@@ -713,7 +713,7 @@ through `CheckpointInfo::log_needed` (K4) and up to
 | --- | --- | --- | --- |
 | `write`, before step 1 | the place of the sample is after the end of the log | `SampleAhead` | K14, 1 |
 | `write`, in step 2 | the counts of the sample are out of order, or two are of one file | `Format` | P17 |
-| `write`, in step 2, at the end record | the place of the sample is one the file cannot hold: before offset 62 of its log file, or past the largest offset | `Format` | P18 |
+| `write`, in step 2, at the end record | the place of the sample is one the file cannot hold: an offset from 45 to 61 of its log file, before the end of the first mark a file can hold (a `LogPlace` has no offset below 45 or above the largest) | `Format` | P18 |
 | `install` | the manifest or the segment store is of another directory | `Store(WrongDirectory)` | |
 | `install` | the log is durable through an earlier version than the checkpoint covers, reaches or lost a free link of | `LogBehind` | K4, K10 |
 | `install` | the log is durable up to an earlier place than its end when the last chain was copied, which is not before the place of the sample | `LogBehindCopy` | K14, 2 |
@@ -760,7 +760,7 @@ in use at that version, and no other (K1, K4, K10).
 
 | Failed | Left behind |
 | --- | --- |
-| Steps 1 to 3 | No new checkpoint: the file is removed. Its id is not used again in this session. |
+| Steps 1 to 3 | No new checkpoint. The file is removed; if that fails as well, it stays in `table/` with no manifest naming it, until a later call or the next session removes it (K9). Its id is not used again in this session. |
 | Step 4, or step 5 before its rename | The old manifest and its checkpoint, in force. The new checkpoint can be installed again or discarded. |
 | Step 5, in its rename or the sync of the directory | The old manifest or the new one. Neither checkpoint file is deleted until the manifest has been opened again. |
 | Step 6 | The new manifest, in force, and the old file, which the next call or the next session deletes. |
@@ -774,7 +774,7 @@ named.
 | Task | What it does for a checkpoint |
 | --- | --- |
 | STORE-01 Write-ahead log | Says where the log ends: the place after its last record, which never goes back, and is after the record of every change that has reached a block. Says how far the log is durable after a sync, as the version of the last group and as a place. Keeps the log file that `CheckpointInfo::log_kept_from` names, and every file after it, for each checkpoint K14 lists: also a file that ends with the mark and holds only covered commits. Keeps the log from the group of *C* + 1 as well (K1). |
-| STORE-06 Delta write-back | 1. Takes the sample under the counts lock and appends its mark there; the end of the mark is the place (LG29), and it is not before the place of the sample before it (K15). 2. Writes back the commits up to *C*, and every page that a page step changed before that place, each before its chain is copied; all of them before step 3 is the simple way (K1). 3. Calls `write(&table, C, &sample, log_end)`, where `log_end` reads the end of the log from STORE-01 each time it is called: `SampleAhead` if the log had not reached the place of the sample. 4. Syncs the log, after `write` has returned, through `log_needed` and up to `log_place_needed`. 5. Calls `install` with what that sync made durable: `LogBehind`, `LogBehindCopy`. 6. Tells STORE-01 the place the log is kept from, when a checkpoint is written and when one is in force or discarded (K14, 3). It writes back nothing older than a free link (T18). |
+| STORE-06 Delta write-back | 1. Takes the sample under the counts lock and appends its mark there; the end of the mark is the place (LG29), and it is not before the place of the sample before it (K15). 2. Has written back the commits up to *C* when it begins step 3 (K1). Writes back every page that a page step changed before that place, before the chain of that page is copied; all such pages before step 3 is the simple way (K1). 3. Calls `write(&table, C, &sample, log_end)`, where `log_end` reads the end of the log from STORE-01 each time it is called: `SampleAhead` if the log had not reached the place of the sample. 4. Syncs the log, after `write` has returned, through `log_needed` and up to `log_place_needed`. 5. Calls `install` with what that sync made durable: `LogBehind`, `LogBehindCopy`. 6. Tells STORE-01 the place the log is kept from, when a checkpoint is written and when one is in force or discarded (K14, 3). It writes back nothing older than a free link (T18). |
 | STORE-07 Recovery | Loads the checkpoint the manifest names. Reads the log file of `log_kept_from` from its start, and the item that ends at the place must be a mark that covers what the checkpoint covers (LG29). From the place on: every count change, and every background change for its page by LG28. From the group of *C* + 1 on: the commits, with K3 and K11. Deletes no log file from the file of the place on while that checkpoint is in force. With no checkpoint named: the whole log, from empty counts. |
 
 ## 5. Sizes

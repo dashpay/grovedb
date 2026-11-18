@@ -248,7 +248,7 @@
 //!
 //! | Failed | Left behind |
 //! | --- | --- |
-//! | [`TableCheckpoints::write`] | No new checkpoint: its file is removed. The id is not used again in this session. |
+//! | [`TableCheckpoints::write`] | No new checkpoint. Its file is removed, or, if that fails as well, is left with no manifest naming it, for a later call or the next session to remove. The id is not used again in this session. |
 //! | [`TableCheckpoints::install`], before the rename of the manifest | The old manifest and its checkpoint, in force. The new checkpoint can be installed again or discarded. |
 //! | [`TableCheckpoints::install`], in the rename or the sync of the directory | The old manifest or the new one, whole, with its checkpoint. Neither checkpoint file is touched until the manifest has been opened again and [`TableCheckpoints::manifest_replaced`] called. |
 //! | The deletion of the checkpoint that was replaced | The new manifest, in force, and the old file, which the next call or the next session deletes ([`PageTableError::NotDeleted`]). |

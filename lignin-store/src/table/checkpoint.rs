@@ -382,7 +382,9 @@ impl TableCheckpoints {
     ///   ([`CheckpointInfo::log_place_needed`]).
     ///
     /// If this fails, the file is removed again and the id is not used a
-    /// second time in this session.
+    /// second time in this session. If the removal fails as well, the file
+    /// is left with no manifest naming it, and a later call that is told of
+    /// a manifest, or the next session, removes it.
     pub fn write(
         &self,
         table: &PageTable,

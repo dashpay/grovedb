@@ -1002,10 +1002,12 @@ sample comes before the first chain is copied; the log is synced after the
 last chain is copied and before the checkpoint is named; and the file the
 place names is kept. K13 now points to LG28 for background changes, and
 K14 has since been changed to state the other three (the owner's decision
-D-063, item 4): `TableCheckpoints::write` refuses a sample whose mark is
-not in the log before it copies its first chain, and
-`TableCheckpoints::install` refuses a log that is durable less far than
-its end when the last chain was copied.
+D-063, item 4): before it copies its first chain,
+`TableCheckpoints::write` refuses a sample whose place is after the end of
+the log, and `TableCheckpoints::install` refuses a log that is durable less
+far than its end when the last chain was copied. The first compares two
+places: that the item which ends at the place is the mark, and covers what
+the checkpoint covers, is still recovery's to check (LG29).
 
 ## 12. Choices made here that the plan left open
 
