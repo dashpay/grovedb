@@ -12,6 +12,8 @@ pub mod kv;
 #[cfg(test)]
 pub(crate) mod mem;
 #[cfg(test)]
+pub(crate) mod recording;
+#[cfg(test)]
 mod tests;
 
 use grovedb_costs::{
