@@ -8,6 +8,7 @@
 
 pub mod checksum;
 pub mod error;
+pub mod flat_page;
 pub mod header;
 pub mod ids;
 
