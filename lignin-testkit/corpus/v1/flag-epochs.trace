@@ -1,0 +1,220 @@
+lignin-golden-trace 1
+name flag-epochs
+seed 0x1
+grove-version 1
+engine f101691960d8eb7b679f19e72853c8a04ff7502c
+workload flag-epochs
+c3268r66eb
+  step 0
+  # Write(Insert { path: [], key: [101, 112, 111, 99, 104, 115], element: tree: None })
+  cost seeks=3 loaded=0 added=119 replaced=0 removed=- hashes=3 sinsemilla=0
+  root 147d20e8045a75760638b8848fac748926838ff8a03e72430827d579810403f7
+cb7ddr66eb
+  step 1
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 147d20e8045a75760638b8848fac748926838ff8a03e72430827d579810403f7
+c6a4frc8fb
+  step 2
+  # FlagsBatch([InsertOnly { path: [[101, 112, 111, 99, 104, 115]], key: [108, 97, 100, 100, 101, 114], element: item: [hex: e7dc3a94..b3d1b1e1][hex: 024a769b..dba10000] }])
+  cost seeks=6 loaded=156 added=248 replaced=80 removed=- hashes=11 sinsemilla=0
+  root c121d4368e51107e55f16a4004ff3e2cd913f59c1a0351e5655a755c98802a63
+c6278r85e3
+c9819r9a72
+c7d5fre05d
+c049arfebd
+c28far8d7c
+cf37br0003
+c9c40r23a7
+c2d26r4f58
+cd547r9cc4
+c0c1br33f1
+c87ebr8b9d
+cbba0rc08a
+cb7ddrc08a
+cb00evdef1
+  step 16
+  # Read(Rows { query: PathQuery { path: [[101, 112, 111, 99, 104, 115]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit: None, offset: None } }, raw: true })
+  cost seeks=3 loaded=2199 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 1
+  row 65706f636873 6c6164646572 00fb0652f7ebf7c59a0bead8458508837a492a6bc91d4621c938e9143a6d272cebd795e1f152201b46675ddce9c82b315b9afc51ce7ca13d442b4e97409d9421f11d5dd946a436420ad80948d2d651b1cf68ce8392a3ffd5adebf9854242ae154966fad27d9f660e39a6f7a91f7939c016ed63e1e01fe2ca0e50d48e84ef3aeadb459ea47ce80bf1ba9debc7c6dafaf520fcdbd173ba4de6f69776519d8279b0995cea2685fbdd7a8c3673cb013c1faa61d6593a567f098e56b0a92b6ebecd38336e5f7049b372af060be35eb6a4a167e701028c083786a390ab5ba37f512bbaab6a95c4cdf69f162995c6ac4f0225b325d3d75fa2cc3f94b1582290e1d06f73a36b355a24eee8f8724288718cd0063febf972b6eb896f227ff742db0a41b10294b6b95545c69f9fe475493f478fcb7c48da386199c67bd1df4ad700c1831e4f2862932e17664a9e1e1aa9601c9ff83eef2985603af2f3b691390e4456724bf4ea77003f910a02368fac57f9703a2cc4c20933738d50267a7f3ccc64aba9a3cb8cae267fb084ae8f2c08bc0206442fd38ed1c298a24c52dc82c546628f09181c98205c255097c246cb165b3d2c9d35ff01c808ccb3c41b6a900bbdb404707526f3d4ede8b5da4f0db0507b27c21a7b7a3b178c21c8ebfe5a1547497c8d8fb4c918c12899eacd815c1c235a586c22bc46cf00e8e21616e4b873a877f53e04b31fae8310295699d2b6063d54604cf7f6ca49680a69d5e48c3f8b7c6d02da1f262dd726f8bd0eba4d3bf6b28714ad879486d7417efaebae38c8b1115af825c87faa9718b50c68f815ca5776118f548f9c82ed0f0a0fb7fa112a8fb422704c8da3f6104f3bde413e094cdaa11eb4ff40879307d7a7ba67a42871767cc2c4fd119faa6fb8686d79a38fac95dc2412217ac63b8d62f11143c24547b4270f5451d7668f19566343eb035cfd29cce8dc2553691ecc55959cd6da78c99a4d410214b29608308dd825135193058a24bd2fe70cbffd76bb4cc76c557a1f58a7c80c7ead976b36ee70f55b4a812e6104cd497e36da826a6a7d7d1d6f5bf987b6ad51e00076560e99bccf6b447535e7bbe2123007bcf0d206a975cdfb882bc691366784af508571681a2a1af25f49343164ada93c46164196a538ef92f914ae481806d2e0d827db19c1354f8894cf5fc0aaa6e6f607e1deba91f629b9d6a44012bba72528ccdefcbaa16fdcb06d42f195b6b69b23cfab0c6053744434ff8dfcb61cee17f91be42f2f915886b8245640ab2140b5b41a7d0474b428fbafac87fe7b5f5bef0513e892f5f132ddcfdd147408c1c88b5e3eb74d2645f2528081f3eec103c12a372303647512d87cd9055e4b095e1753be66a9aeca34dd5c1348fc0fd902fa10611501bde94cd5f326422dcdb66d0c13b5d9593cdda5cba54bde833b4410c71ff4fcd3284493560582ed7f89b838c1b0704ae1f9b88650d245ca872116a1311e7209c9b3107eb87baee76c32bdcf283dfe9f461af23d3dc2c3a843a395eac0f2cd447072ec2c7137fdbd1ae40e43ddb21ff08e7270576ed42771746bec0d24a7a7140268163b376e8646e9da6166dff657e9449c7dfa96dff1971059d5022bbcaf5f39f6e0479b4fcd4d86f0e5282b53c70fe7bbc382b0d2c90ff218923e2e92ea51747a9282f2e35067c248890650f08892cb26fb635de82a5b6c6f7bfbb66136d570b9befcb813f9f7868a4e73db0b386c126ad01b51be253606eafa572a29cd5c3845bfd86ae7756771026d527989d74d148968b212ecf1cf60a87b9bcfcebc618285b92ada07e7918d36f7f16116f9374c0b05f25907e24ac3022fe922017c3b23389b70385566635eed06bbd8cf3a43353b372415617060066ef5fd9f4e4bd9add86753e83c3b7b6758112ab78feddeba5ca5227cc6069c65498d96dd6e0eb2e784b7fce186d2f6f63cf55169f8b0e9383ead6fd9f74b6a4bc9c05fbbfe7a512e7c37151f065b5da539c7db0a5af1d28c97199f2ec20f1de10692a478dc54d186e1e018a55c08cc358a52839ce642c658b01fa5bdf083581e5fc9a085dab536c3772edab9d19f721215ab78516484315a115d4548af87ce3e331951288af80b457b8e2dfb96d88f4535aff69908bcd7f3e7dbd5d5cfd1fe5839ce756cba3aaa2da719cdbc9683127c8b810748025851d080e329a5d30f1e09770b9882d811158fdc31fea76d1dab1de53ae33dba894a42b7df779716579e0483702980ca9d7b14cab25672421b42dfcab3730a79547412f48215e77d400144034a769b1b152c594f10044b9b9a9dbd7aa1be6ecbcfc490edc0b7e33d5425dba100000001850100027a00038c0200047c0005670006850200079c0100088f0100099a02
+  skipped 0
+cb00evdef1q68a5p8407
+cf50brc7bb
+  step 18
+  # FlagsBatch([Replace { path: [[101, 112, 111, 99, 104, 115]], key: [108, 97, 100, 100, 101, 114], element: item: [hex: cf4ea3a2..cbf4278f][hex: 024a769b..dba1000a] }])
+  cost seeks=7 loaded=1922 added=0 replaced=1713 removed={4a769b1b152c594f10044b9b9a9dbd7aa1be6ecbcfc490edc0b7e33d5425dba1/9=168} hashes=33 sinsemilla=0
+  root 06a77f9d492917474d4c097339b9f751259167417ce30e9940e4a361c1f78694
+c28a5r46aa
+  step 19
+  # FlagsBatch([Replace { path: [[101, 112, 111, 99, 104, 115]], key: [108, 97, 100, 100, 101, 114], element: item: [hex: 3743bdb4..2c7a9ee7][hex: 024a769b..dba1000b] }])
+  cost seeks=7 loaded=1754 added=0 replaced=1582 removed={4a769b1b152c594f10044b9b9a9dbd7aa1be6ecbcfc490edc0b7e33d5425dba1/8=20,4a769b1b152c594f10044b9b9a9dbd7aa1be6ecbcfc490edc0b7e33d5425dba1/9=111} hashes=31 sinsemilla=0
+  root b209ebf6e053949d20cb32b3748c44bae4269acad10fc0f48fb0f6a1495bcf0d
+c91afr16b7
+c2f50r4521
+c84e2rfdcb
+cd83bra187
+c783ar2511
+c37e2r546f
+cf146r98a4
+cba46rc96a
+cc695r90e3
+c1ee0ra176
+cb7ddra176
+c5dc4v156a
+c5dc4v156aqa989pb81b
+  step 32
+  # Read(PathQuery { query: PathQuery { path: [[101, 112, 111, 99, 104, 115]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit: None, offset: None } }, proven: true }… (401 characters)
+  cost seeks=3 loaded=733 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 1
+  row 65706f636873 6c6164646572 00b7b25043867384cfdb39092662706016440d50a6c52c03ac7a40ddff0ecb913e4645c9900aac65a18d1eb9f003981b7db6ce0694cfa693f1f0d2fddf3842516c49908d13ed6f47cd3ac281af2460a8c9fb4a8f1df730528fc4aae1c412b3cd8cf7ac1aa68ba4477d782ae4da27ac93930a938abc87b4827e5aa07b8e397ae961b2586d4a2484e14595c1053546d630e7b02da0f24e77cc31e68cff3128cab8826eedffd48f16bc1ab2a5b3c4501fa69f1de48c5d19bae8560127034a769b1b152c594f10044b9b9a9dbd7aa1be6ecbcfc490edc0b7e33d5425dba1000000158c01
+  skipped 0
+  prove-cost seeks=4 loaded=456 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  proof 301 0034040665706f636873000a0201066c6164646572005723787349560c60036af30d7ec8ad0e74b36407016177f71bb1f6a478e26a43010665706f636873ec03066c616464657200e200b7b25043867384cfdb39092662706016440d50a6c52c03ac7a40ddff0ecb913e4645c9900aac65a18d1eb9f003981b7db6ce0694cfa693f1f0d2fddf3842516c49908d13ed6f47cd3ac281af2460a8c9fb4a8f1df730528fc4aae1c412b3cd8cf7ac1aa68ba4477d782ae4da27ac93930a938abc87b4827e5aa07b8e397ae961b2586d4a2484e14595c1053546d630e7b02da0f24e77cc31e68cff3128cab8826eedffd48f16bc1ab2a5b3c4501fa69f1de48c5d19bae8560127034a769b1b152c594f10044b9b9a9dbd7aa1be6ecbcfc490edc0b7e33d5425dba1000000158c010001
+  verification verified
+c6cfar3b00
+cf299rfa53
+c6c9cra319
+c49f2r0e51
+c1eaer5b33
+c5bc0r5200
+c8949r66eb
+cb7ddr66eb
+c95dbvbb7c
+c95dbvbb7cqb30dpca46
+cd98br2312
+cabd1r464a
+ce9b0ra828
+cd138r75f1
+c47b3rd61f
+c6a08r83d5
+cb7ddr83d5
+ca488va92b
+ca488va92bq4754pe34e
+ca2d4r7ced
+c7b7ara499
+c3c14r4763
+c3c19r8b22
+cb7ddr8b22
+ce9e9v8448
+ce9e9v8448q6894p85a8
+c9794r812d
+ce447rf4b9
+  step 60
+  # FlagsHandoverBatch(HandoverBatch { ops: [Replace { path: [[101, 112, 111, 99, 104, 115]], key: [104, 45, 109, 111, 118, 101, 100], element: item: [hex: 12901c87..c211565c][hex: 02b4c76f..3f280025] }], full_handover_owners: {} })
+  cost seeks=7 loaded=412 added=0 replaced=290 removed=- hashes=11 sinsemilla=0
+  root 1fbce51ca26fa68868bab4f4459025fca88f09d602247102fe66de8d10a1173c
+c8ffdrb89d
+  step 61
+  # FlagsHandoverBatch(HandoverBatch { ops: [Replace { path: [[101, 112, 111, 99, 104, 115]], key: [104, 45, 109, 111, 118, 101, 100], element: item: [hex: 94af098f..faa58163][hex: 024a769b..dba10026] }], full_handover_owners: {} })
+  cost seeks=7 loaded=412 added=0 replaced=274 removed={b4c76fa8bb5e4a9fa8246d9c42e3375dadbf65c4cc86f03ed449488dbf4a3f28/36=16} hashes=11 sinsemilla=0
+  root 9a3add42487e46ee105f67f405b437644314e60f29950fe171899263aed7b729
+cef7arb4ec
+c6256r12a9
+c5240r4e50
+cb7ddr4e50
+c832bvf298
+c832bvf298q94a1p81aa
+c40d9r06b8
+c0db7r5cc1
+c78f7r9d60
+cf499r0cab
+cdc5frad3d
+c03dar3d52
+ccaf2r3c10
+cb7ddr3c10
+c77bev70e6
+c77bev70e6q1a2ep40ac
+cb958r4e50
+cb7ddr4e50
+c832bvf298
+c832bvf298q94a1p81aa
+ca796r2050
+c03edrc0da
+cb7ddrc0da
+cc99bv5fb7
+cc99bv5fb7q6356pc110
+cac6dr2d7b
+cb7ddr2d7b
+c18f6va542
+c18f6va542qb88apdb4c
+c530er9e85
+ce5c1r48aa
+cf2e1rfdd3
+cb7ddrfdd3
+c7bdevd4ed
+c7bdevd4edq8b15pfab6
+cdf8dva1edrd45b
+  step 97
+  # FlagsPartialBatch(PartialBatch { ops: [InsertOnly { path: [[101, 112, 111, 99, 104, 115]], key: [112, 45, 103, 114, 111, 119, 110], element: item: [hex: 7b669206..0cfe6677][hex: 024a769b..dba10034] }], add_on: [], pause_height: None })
+  cost seeks=10 loaded=829 added=250 replaced=748 removed=- hashes=15 sinsemilla=0
+  result written-in-segments
+  first-segment seeks=6 loaded=745 added=250 replaced=668 removed=- hashes=10 sinsemilla=0
+  root 24f59151946725589817ed7a48e774dd4c0bcc2350228f128054c8de36d56b3b
+c5033v39f8rf522
+c0767vd635r33eb
+cd0edvd10drc164
+c0bf4va9ebr765e
+  step 101
+  # FlagsPartialBatch(PartialBatch { ops: [Replace { path: [[101, 112, 111, 99, 104, 115]], key: [112, 45, 103, 114, 111, 119, 110], element: item: [hex: e23ca564..dfb597a5][hex: 024a769b..dba10038] }], add_on: [], pause_height: None })
+  cost seeks=11 loaded=1353 added=0 replaced=985 removed={4a769b1b152c594f10044b9b9a9dbd7aa1be6ecbcfc490edc0b7e33d5425dba1/53=31,4a769b1b152c594f10044b9b9a9dbd7aa1be6ecbcfc490edc0b7e33d5425dba1/54=110,4a769b1b152c594f10044b9b9a9dbd7aa1be6ecbcfc490edc0b7e33d5425dba1/55=105} hashes=17 sinsemilla=0
+  result written-in-segments
+  first-segment seeks=7 loaded=1269 added=0 replaced=905 removed={4a769b1b152c594f10044b9b9a9dbd7aa1be6ecbcfc490edc0b7e33d5425dba1/53=31,4a769b1b152c594f10044b9b9a9dbd7aa1be6ecbcfc490edc0b7e33d5425dba1/54=110,4a769b1b152c594f10044b9b9a9dbd7aa1be6ecbcfc490edc0b7e33d5425dba1/55=105} hashes=12 sinsemilla=0
+  root cbd38c8aa10c045f8eac6eb7176dfcf06ab5ad38f9f4d08b7957e6a4adad752c
+cb7ddr765e
+c1458vebee
+c1458vebeeqf254p1003
+c875cvd8fbra5b5
+c875cvd8fbr86fa
+c4c83v6aaar9de1
+c5dfcvd08cr8611
+  step 108
+  # FlagsPartialBatch(PartialBatch { ops: [Replace { path: [[101, 112, 111, 99, 104, 115]], key: [112, 45, 107, 101, 112, 116], element: item: [hex: e6c31699..51d843a0][hex: 02b4c76f..3f28003b] }], add_on: [], pause_height: None })
+  cost seeks=9 loaded=928 added=0 replaced=747 removed={4a769b1b152c594f10044b9b9a9dbd7aa1be6ecbcfc490edc0b7e33d5425dba1/58=16} hashes=14 sinsemilla=0
+  result written-in-segments
+  first-segment seeks=5 loaded=844 added=0 replaced=667 removed={4a769b1b152c594f10044b9b9a9dbd7aa1be6ecbcfc490edc0b7e33d5425dba1/58=16} hashes=9 sinsemilla=0
+  root 7b35726568e56974ff1aac99387933a05cd14a7f12e3fcee6f1af8f58948871b
+cc57bv1a1dr39dc
+ce8b2v0706rc2cb
+c4741v461fr3326
+cb7ddr3326
+cb27evbdaa
+cb27evbdaaq8958p9a36
+c18b6r38b5
+c7abcr15ef
+c3bfarc152
+ccc40rb37f
+ccbc5r963d
+cd167r8813
+cb672r0017
+c42b2r1e71
+c22f5re7c9
+c7d8ard979
+cb7ddrd979
+cb99fva758
+cb99fva758qbb02p4251
+cd7fbr743f
+  step 128
+  # Write(SectionalDelete { path: [[101, 112, 111, 99, 104, 115]], key: [100, 45, 108, 111, 110, 101] })
+  cost seeks=17 loaded=3448 added=0 replaced=1220 removed={4a769b1b152c594f10044b9b9a9dbd7aa1be6ecbcfc490edc0b7e33d5425dba1/61=257,4a769b1b152c594f10044b9b9a9dbd7aa1be6ecbcfc490edc0b7e33d5425dba1/62=150,4a769b1b152c594f10044b9b9a9dbd7aa1be6ecbcfc490edc0b7e33d5425dba1/63=121,4a769b1b152c594f10044b9b9a9dbd7aa1be6ecbcfc490edc0b7e33d5425dba1/64=257} hashes=13 sinsemilla=0
+  root 3cfe7dee2670d5fb808d97657000fab74b6e543e0e4d82f3bdb00a60869d9076
+c6889rb228
+  step 129
+  # Write(SectionalDelete { path: [[101, 112, 111, 99, 104, 115]], key: [100, 45, 104, 101, 108, 100] })
+  cost seeks=32 loaded=5673 added=0 replaced=913 removed={0000000000000000000000000000000000000000000000000000000000000000/65535=708,b4c76fa8bb5e4a9fa8246d9c42e3375dadbf65c4cc86f03ed449488dbf4a3f28/65=155} hashes=20 sinsemilla=0
+  root 941d939a5ec7cf9e7a62c5b85e712620370e5203587a9cc0bfdd76f317526763
+c7cdcv0325r5537
+  step 130
+  # Write(SectionalDeleteUpTree { path: [[101, 112, 111, 99, 104, 115], [100, 45, 116, 111, 112], [117, 112, 112, 101, 114], [108, 111, 119, 101, 114]], key: [108, 101, 97, 102], stop_path_height: Some(1) })
+  cost seeks=21 loaded=2098 added=0 replaced=739 removed={4a769b1b152c594f10044b9b9a9dbd7aa1be6ecbcfc490edc0b7e33d5425dba1/65=153,b4c76fa8bb5e4a9fa8246d9c42e3375dadbf65c4cc86f03ed449488dbf4a3f28/65=403,b4c76fa8bb5e4a9fa8246d9c42e3375dadbf65c4cc86f03ed449488dbf4a3f28/68=150,b4c76fa8bb5e4a9fa8246d9c42e3375dadbf65c4cc86f03ed449488dbf4a3f28/69=147} hashes=21 sinsemilla=0
+  result deleted
+  deleted 3
+  root 5da752d3c58cdf7b9b1ae98d6df3d1e29a6f855d8e694d2ddb6f38056fcfa147
+cb7ddr5537
+c775ev5320
+c775ev5320q3971p72f9
+stream 134 5017afba2d920608f20aee805680023722304556d126043993c7caa4b83ab519
+tally failed=0 unproved=0 unverified=0
+end 134 2031a7f5a157de1ba46421503796562f188ed484659eda41982a07f725a762ed

@@ -13,9 +13,18 @@
 //!   the engine returns them: `only_the_hand_written_cases_record_a_failure`.
 //! - Every read GroveDB proves is recorded with its proof:
 //!   `every_proven_read_is_recorded_with_its_proof`.
+//! - The corpus holds the storage fees Drive's callbacks split by owner and
+//!   epoch: `the_storage_fee_splits_are_in_the_corpus`.
+//! - The corpus holds the charge for a deleted tree in each of the states
+//!   its transaction can find it in:
+//!   `the_charge_for_a_deleted_tree_is_in_the_corpus`.
 //! - The files are text: `every_trace_file_is_text`.
 
-use std::{collections::BTreeSet, fs, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::PathBuf,
+};
 
 use grovedb::{Element, GroveDb};
 use grovedb_version::version::GROVE_VERSIONS;
@@ -30,7 +39,7 @@ use lignin_testkit::{
         run::provable,
         trace::{Detail, Entry, Tally, Trace},
     },
-    workload::{drive::Documents, Op},
+    workload::{adversarial::TreeDeletes, drive::Documents, BatchOp, Features, Op, Write},
 };
 
 fn recorded(file: &str) -> Trace {
@@ -297,6 +306,161 @@ fn proof(detail: &Detail) -> Vec<u8> {
     assert_eq!(len.parse::<usize>().expect("a length"), bytes.len());
     assert_eq!(field(detail, "verification"), "verified");
     bytes
+}
+
+/// The traces of the two workloads that apply their batches with Drive's
+/// storage-flag callbacks write out, on every grove version, a cost that
+/// splits freed bytes over several epochs of one owner: by a batch, by a
+/// partial batch and by each of the two deletes that take the callback. For
+/// a batch they also write out one that frees nothing and one that names
+/// one epoch. A batch that updates a document is written out in both, and
+/// where a grove version takes a full handover, so is one that frees the
+/// element it replaces across its epochs.
+#[test]
+fn the_storage_fee_splits_are_in_the_corpus() {
+    // The epochs of each owner a cost names freed bytes by.
+    let split = |detail: &Detail| -> Vec<usize> {
+        let (_, removed) = field(detail, "cost")
+            .split_once("removed=")
+            .expect("a cost names what was freed");
+        let removed = removed.split(' ').next().expect("the freed bytes");
+        let Some(sections) = removed.strip_prefix('{') else {
+            return Vec::new();
+        };
+        let mut owners: Vec<&str> = sections
+            .trim_end_matches('}')
+            .split(',')
+            .map(|section| section.split_once('/').expect("an owner and an epoch").0)
+            .collect();
+        owners.sort_unstable();
+        owners
+            .chunk_by(|one, other| one == other)
+            .map(<[&str]>::len)
+            .collect()
+    };
+    let kinds = [
+        "FlagsBatch",
+        "FlagsPartialBatch",
+        "Write(SectionalDelete ",
+        "Write(SectionalDeleteUpTree ",
+    ];
+    for grove_version in GROVE_VERSIONS {
+        let version = grove_version.protocol_version;
+        for (workload, kinds) in [("storage-fees", &kinds[..1]), ("flag-epochs", &kinds[..])] {
+            let trace = recorded(&format!("v{version}/{workload}.trace"));
+            for kind in kinds {
+                let splits: Vec<Vec<usize>> = trace
+                    .details()
+                    .filter(|detail| detail.remarks[0].starts_with(kind))
+                    .map(split)
+                    .collect();
+                let has = |wanted: fn(&Vec<usize>) -> bool| splits.iter().any(wanted);
+                let batch = *kind == "FlagsBatch";
+                assert!(
+                    has(|epochs| epochs.iter().any(|epochs| *epochs > 1))
+                        && (!batch
+                            || (has(|epochs| epochs.is_empty()) && has(|epochs| epochs == &[1]))),
+                    "v{version}/{workload}: {kind} frees {splits:?}"
+                );
+            }
+            let handovers: Vec<Vec<usize>> = trace
+                .details()
+                .filter(|detail| detail.remarks[0].starts_with("FlagsHandoverBatch"))
+                .map(split)
+                .collect();
+            let frees_across_epochs = handovers
+                .iter()
+                .any(|epochs| epochs.iter().any(|epochs| *epochs > 1));
+            let full_handovers = Features::for_grove_version(grove_version).full_handovers;
+            assert!(
+                !handovers.is_empty()
+                    && (workload != "flag-epochs" || frees_across_epochs == full_handovers),
+                "v{version}/{workload}: a handover frees {handovers:?}"
+            );
+        }
+    }
+}
+
+/// The `tree-deletes` trace writes out every step, so the costs of deleting
+/// a tree in each of its three states stand next to each other. They show
+/// that what a deleted tree held is charged by the committed state: the
+/// tree the transaction rewrote frees what its untouched twin frees, where
+/// only values were replaced, and loads more, and the tree the transaction
+/// filled frees less than either and loads less.
+#[test]
+fn the_charge_for_a_deleted_tree_is_in_the_corpus() {
+    // The bytes a cost names as freed and as loaded.
+    let cost = |detail: &Detail| -> (u64, u64) {
+        let number = |text: &str| text.parse::<u64>().expect("a number of bytes");
+        let cost = field(detail, "cost");
+        let value = |key: &str| {
+            let (_, rest) = cost.split_once(key).expect("a cost names it");
+            rest.split(' ').next().expect("a value")
+        };
+        let removed = value("removed=");
+        let freed = match removed.strip_prefix('{') {
+            None => number(removed),
+            Some(sections) => sections
+                .trim_end_matches('}')
+                .split(',')
+                .map(|section| number(section.split_once('=').expect("bytes").1))
+                .sum(),
+        };
+        (freed, number(value("loaded=")))
+    };
+    let workload = TreeDeletes::default();
+    for grove_version in GROVE_VERSIONS {
+        let version = grove_version.protocol_version;
+        let trace = recorded(&format!("v{version}/tree-deletes.trace"));
+        let ops: Vec<Op> = workload.stream(SEED).collect();
+        let details: Vec<&Detail> = trace.details().collect();
+        assert_eq!(details.len(), ops.len(), "every step is written out");
+        let mut costs: BTreeMap<(String, String), [(u64, u64); 3]> = BTreeMap::new();
+        for (op, detail) in ops.iter().zip(details) {
+            let key = match op {
+                Op::Write(Write::Delete { key, .. } | Write::SectionalDelete { key, .. }) => key,
+                Op::Batch(ops) | Op::FlagsBatch(ops) => match ops.as_slice() {
+                    [BatchOp::DeleteTree { key, .. }] => key,
+                    _ => continue,
+                },
+                _ => continue,
+            };
+            let name = String::from_utf8(key.clone()).expect("a tree is named in text");
+            let (state, rest) = name.split_once('-').expect("a state");
+            let states = ["fresh", "rewritten", "untouched"];
+            let state = states.iter().position(|known| *known == state);
+            let state = state.expect("one of the three states");
+            costs.entry(split_way(rest)).or_default()[state] = cost(detail);
+        }
+        assert_eq!(costs.len(), 4 * workload.rounds as usize);
+        for ((way, round), [fresh, rewritten, untouched]) in costs {
+            let context = format!("v{version}/tree-deletes: {way}, round {round}");
+            assert!(
+                fresh.0 > 0 && rewritten.0 > 0 && untouched.0 > 0,
+                "{context}: a tree in each state"
+            );
+            // The two trees hold records of the same lengths, so a charge
+            // by what the transaction sees would be the same for both, but
+            // for the four bytes their own keys differ by.
+            assert!(
+                fresh.0 * 2 < untouched.0 && fresh.1 < untouched.1,
+                "{context}"
+            );
+            assert!(rewritten.1 != untouched.1, "{context}");
+            if round == "0" || round == "2" {
+                assert_eq!(rewritten.0, untouched.0, "{context}");
+            } else {
+                assert!(rewritten.0 < untouched.0, "{context}");
+            }
+        }
+    }
+}
+
+/// The way a tree of `tree-deletes` is deleted and its round, from the
+/// rest of its key.
+fn split_way(rest: &str) -> (String, String) {
+    let (way, round) = rest.rsplit_once('-').expect("a way and a round");
+    (way.to_string(), round.to_string())
 }
 
 /// The sizes of the reference workload's two named proofs, by the protocol

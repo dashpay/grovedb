@@ -9,6 +9,11 @@
 //! GroveDB writes to it), and a second pass replaces, refreshes and deletes
 //! part of what the first stored. What gets stored is fixed by the features;
 //! the seed only chooses values, sizes and the order.
+//!
+//! Two trees are not here: `CountBigSumTree` and `ProvableBigSumTree` came
+//! to GroveDB after the streams of the zoo were pinned, and a stream that
+//! is pinned does not change. [`super::adversarial::WideSums`] produces
+//! them.
 
 use grovedb::{element::reference_path::ReferencePathType, Element, TreeType};
 use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
@@ -33,7 +38,8 @@ const PRIVATE_DOCUMENT_ENTRY_SIZE: u32 = 16;
 const PRIVATE_DOCUMENT_CHUNK_POWER: u8 = 1;
 const BATCH_SIZE: usize = 6;
 
-/// The workload producing every element and tree type.
+/// The workload producing every element and tree type but the two trees
+/// of [`super::adversarial::WideSums`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ElementZoo {
     /// What the target grove version can store.

@@ -21,6 +21,7 @@ mod aggregates;
 mod blocks;
 mod conditional;
 mod expiry;
+mod fees;
 mod identity_reads;
 mod keys;
 mod rekey;
@@ -33,6 +34,7 @@ pub use self::{
     blocks::BlockExecution,
     conditional::ConditionalWrites,
     expiry::Expiration,
+    fees::StorageFees,
     identity_reads::IdentityReads,
     keys::IdentityKeys,
     rekey::{IndexRekey, MAX_INDEX_VALUES},
@@ -69,6 +71,7 @@ const DOMAIN_INDEX_AGGREGATES: u64 = 0xD0C9;
 const DOMAIN_CONDITIONAL: u64 = 0xD0CA;
 const DOMAIN_IDENTITY_READS: u64 = 0x1D02;
 const DOMAIN_BLOCKS: u64 = 0xB10C;
+const DOMAIN_STORAGE_FEES: u64 = 0xFEE5;
 
 /// Drive's root tree keys.
 const ROOT_DOCUMENTS: &[u8] = &[64];

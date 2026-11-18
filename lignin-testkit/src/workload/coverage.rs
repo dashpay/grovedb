@@ -25,8 +25,9 @@ use grovedb::{
 use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
 
 use super::{
+    flags::{Histories, Update},
     op::{
-        AppendEntry, BatchOp, ChunkIds, Fetch, IndexedTree, Op, Prove, Read, TransactionOp,
+        AppendEntry, BatchOp, ChunkIds, Fetch, IndexedTree, Op, Path, Prove, Read, TransactionOp,
         TreeRead, Write,
     },
     Features,
@@ -296,6 +297,46 @@ operations! {
         SavepointKept = "A savepoint still on the stack when its transaction commits.",
         SnapshotRead = "A read through `GroveDb::start_snapshot_read_transaction`.",
         SnapshotReadAfterCommit = "A read through a snapshot older than the last commit.";
+    "storage-flag callbacks":
+        FlagsBatch = "`GroveDb::apply_batch_with_element_flags_update`, with Drive's callbacks.",
+        FlagsPartialBatch =
+            "`GroveDb::apply_partial_batch_with_element_flags_update`, with Drive's callbacks.",
+        SectionalDelete = "`GroveDb::delete_with_sectional_storage_function`.",
+        SectionalDeleteUpTree =
+            "`GroveDb::delete_up_tree_while_empty_with_sectional_storage`.",
+        FlagsHandoverBatch =
+            "`GroveDb::apply_batch_with_element_flags_update`, with the callback Drive passes \
+             with a batch that updates a document.",
+        FlagsHandover =
+            "An update in such a batch whose flags name another owner, who is stored.",
+        FlagsFullHandover =
+            "The same between two owners of whom one is a gas sponsor: the update is accounted \
+             as a replacement.",
+        FlagsGrowth = "An update that makes an element longer in a later epoch than its first.",
+        FlagsShrinkAcrossEpochs =
+            "An update that frees every byte one epoch added and bytes of an earlier one.",
+        FlagsSameSize = "An update in a later epoch that keeps the length, and the stored flags.",
+        FlagsOwnerChange = "An update whose flags name another owner than the stored ones.",
+        FlagsRemoved = "An element without flags stored over one with flags.",
+        FlagsDelete = "A delete of an element whose flags hold several epochs.",
+        PartialFlagsGrowth = "The same growth in a partial batch.",
+        PartialFlagsShrinkAcrossEpochs = "The same shrinking in a partial batch.",
+        PartialFlagsSameSize =
+            "An update in a partial batch that keeps the length, and stores the flags written.",
+        PartialFlagsOwnerChange =
+            "An update in a partial batch whose flags name another owner, where it accepts \
+             one: it keeps the length, or shortens an element whose flags hold one epoch.",
+        PartialFlagsHistoryDropped =
+            "The same update over flags of several epochs, whose history the flags written \
+             replace.",
+        PartialFlagsDelete = "A delete in a partial batch of an element whose flags hold several \
+                              epochs.";
+    "deletes of filled trees":
+        TreeDeleteFilledInTransaction =
+            "A tree deleted with what it holds by the transaction that created and filled it.",
+        TreeDeleteRewrittenInTransaction =
+            "A tree deleted with what it holds by a transaction that wrote into it first.",
+        TreeDeleteCommitted = "A tree deleted with what it holds as it was committed.";
 }
 
 impl Features {
@@ -413,7 +454,30 @@ impl Features {
             | Operation::NestedSavepoint
             | Operation::SavepointKept
             | Operation::SnapshotRead
-            | Operation::SnapshotReadAfterCommit => true,
+            | Operation::SnapshotReadAfterCommit
+            | Operation::FlagsBatch
+            | Operation::FlagsPartialBatch
+            | Operation::SectionalDelete
+            | Operation::SectionalDeleteUpTree
+            | Operation::FlagsGrowth
+            | Operation::FlagsShrinkAcrossEpochs
+            | Operation::FlagsSameSize
+            | Operation::FlagsOwnerChange
+            | Operation::FlagsDelete
+            | Operation::PartialFlagsGrowth
+            | Operation::PartialFlagsShrinkAcrossEpochs
+            | Operation::PartialFlagsSameSize
+            | Operation::PartialFlagsOwnerChange
+            | Operation::PartialFlagsDelete
+            | Operation::TreeDeleteFilledInTransaction
+            | Operation::TreeDeleteRewrittenInTransaction
+            | Operation::TreeDeleteCommitted
+            | Operation::FlagsHandoverBatch
+            | Operation::FlagsHandover => true,
+            Operation::FlagsRemoved | Operation::PartialFlagsHistoryDropped => {
+                self.flag_length_changes
+            }
+            Operation::FlagsFullHandover => self.full_handovers,
         }
     }
 }
@@ -429,6 +493,16 @@ pub struct Coverage {
     savepoints: u32,
     /// How many blocks were committed since the open snapshot was opened.
     commits_under_snapshot: Option<u32>,
+    /// What the flags of the elements written under Drive's callbacks hold.
+    histories: Histories,
+    /// The subtrees a key was written into and that no operation has
+    /// deleted since.
+    filled: BTreeSet<Path>,
+    /// The subtrees the open transaction wrote a key into or deleted one
+    /// from.
+    written: BTreeSet<Path>,
+    /// The trees the open transaction created.
+    created: BTreeSet<Path>,
 }
 
 impl Coverage {
@@ -451,8 +525,11 @@ impl Coverage {
     /// An element counts under its outermost variant. A tree counts under
     /// the type of the subtree it creates, looked up through a wrapper. The
     /// operations that depend on what came before, such as a savepoint set
-    /// inside another, are counted as the stream is recorded in order.
+    /// inside another or an update of an element stored in an earlier
+    /// epoch, are counted as the stream is recorded in order.
     pub fn record(&mut self, op: &Op) {
+        self.record_flags(op);
+        self.record_tree_deletes(op);
         for element in op.elements() {
             self.elements.insert(element_variant(element));
             if let Some(tree_type) = element.tree_type() {
@@ -469,16 +546,7 @@ impl Coverage {
                 _ => {}
             }
         }
-        let batch_ops: Vec<&BatchOp> = match op {
-            Op::Batch(ops) => ops.iter().collect(),
-            Op::PartialBatch(batch) => batch.ops.iter().chain(&batch.add_on).collect(),
-            Op::Write(_)
-            | Op::Read(_)
-            | Op::Commit
-            | Op::FlushPendingDrops
-            | Op::Transaction(_) => Vec::new(),
-        };
-        for batch_op in batch_ops {
+        for batch_op in op.batch_ops() {
             match batch_op {
                 BatchOp::RefreshReference { reference, .. } => {
                     self.reference_paths
@@ -504,6 +572,9 @@ impl Coverage {
         }
         match op {
             Op::PartialBatch(_) => self.produced(Operation::PartialBatch),
+            Op::FlagsBatch(_) => self.produced(Operation::FlagsBatch),
+            Op::FlagsPartialBatch(_) => self.produced(Operation::FlagsPartialBatch),
+            Op::FlagsHandoverBatch(_) => self.produced(Operation::FlagsHandoverBatch),
             Op::FlushPendingDrops => self.produced(Operation::PendingDropsFlush),
             Op::Batch(_) => self.produced(Operation::Batch),
             Op::Write(write) => self.produced(write_operation(write)),
@@ -524,6 +595,157 @@ impl Coverage {
 
     fn produced(&mut self, operation: Operation) {
         self.operations.insert(operation);
+    }
+
+    /// Counts the trees an operation deletes with what they hold, by what
+    /// the open transaction did to them before. A tree counts as holding
+    /// something once something was written into it, whatever was deleted
+    /// from it since, and a rollback is not followed: what it undid counts
+    /// as written.
+    fn record_tree_deletes(&mut self, op: &Op) {
+        match op {
+            Op::Write(
+                Write::Insert { path, key, element }
+                | Write::InsertIfNotExists {
+                    path, key, element, ..
+                }
+                | Write::InsertIfChanged { path, key, element },
+            ) => self.put(path, key, element),
+            Op::Write(Write::Delete { path, key } | Write::SectionalDelete { path, key }) => {
+                self.delete(path, key, true);
+            }
+            Op::Write(Write::DropFlat { path, key }) => self.delete(path, key, false),
+            Op::Write(_)
+            | Op::Read(_)
+            | Op::Commit
+            | Op::FlushPendingDrops
+            | Op::Transaction(_) => {}
+            Op::Batch(_)
+            | Op::PartialBatch(_)
+            | Op::FlagsBatch(_)
+            | Op::FlagsPartialBatch(_)
+            | Op::FlagsHandoverBatch(_) => {
+                for batch_op in op.batch_ops() {
+                    match batch_op {
+                        BatchOp::InsertOrReplace { path, key, element }
+                        | BatchOp::InsertOnly { path, key, element }
+                        | BatchOp::InsertIfNotExists { path, key, element }
+                        | BatchOp::Replace { path, key, element }
+                        | BatchOp::Patch {
+                            path, key, element, ..
+                        } => self.put(path, key, element),
+                        BatchOp::Delete { path, key } | BatchOp::DeleteTree { path, key, .. } => {
+                            self.delete(path, key, true);
+                        }
+                        BatchOp::DropFlat { path, key, .. } => self.delete(path, key, false),
+                        BatchOp::RefreshReference { .. }
+                        | BatchOp::Append { .. }
+                        | BatchOp::Move { .. } => {}
+                    }
+                }
+            }
+        }
+        if op.ends_transaction() {
+            self.written.clear();
+            self.created.clear();
+        }
+    }
+
+    /// An element stored at `key` in the subtree at `path`.
+    fn put(&mut self, path: &Path, key: &[u8], element: &Element) {
+        self.filled.insert(path.clone());
+        self.written.insert(path.clone());
+        if element.is_any_tree() {
+            let mut tree = path.clone();
+            tree.push(key.to_vec());
+            if !self.filled.contains(&tree) {
+                self.created.insert(tree);
+            }
+        }
+    }
+
+    /// The key deleted from the subtree at `path`. Where it held a tree
+    /// that something was written into, the tree goes with what it holds,
+    /// which counts when `walked` is set: a tree dropped flat is not
+    /// walked, and its records are reclaimed later.
+    fn delete(&mut self, path: &Path, key: &[u8], walked: bool) {
+        let mut tree = path.clone();
+        tree.push(key.to_vec());
+        if self.filled.contains(&tree) {
+            if walked {
+                self.produced(if self.created.contains(&tree) {
+                    Operation::TreeDeleteFilledInTransaction
+                } else if self.written.contains(&tree) {
+                    Operation::TreeDeleteRewrittenInTransaction
+                } else {
+                    Operation::TreeDeleteCommitted
+                });
+            }
+            for subtrees in [&mut self.filled, &mut self.written, &mut self.created] {
+                // The tree and what is under it sort next to each other.
+                let under: Vec<Path> = subtrees
+                    .range::<Path, _>(&tree..)
+                    .take_while(|subtree| subtree.starts_with(&tree))
+                    .cloned()
+                    .collect();
+                for subtree in under {
+                    subtrees.remove(&subtree);
+                }
+            }
+        }
+        self.written.insert(path.clone());
+    }
+
+    /// Counts what an operation that runs Drive's callbacks does to the
+    /// flags of the elements it replaces and deletes.
+    fn record_flags(&mut self, op: &Op) {
+        let seen = self.histories.record(op);
+        let partial = matches!(op, Op::FlagsPartialBatch(_));
+        let handover = matches!(op, Op::FlagsHandoverBatch(_));
+        let Update {
+            grew_in_later_epoch,
+            shrank_across_epochs,
+            kept_size,
+            named_another_owner,
+            dropped_history,
+            removed_flags,
+            replaced,
+        } = seen.update;
+        // What was seen, and the operation it is in a batch and in a
+        // partial batch.
+        use Operation::*;
+        let cases = [
+            (grew_in_later_epoch, FlagsGrowth, PartialFlagsGrowth),
+            (
+                shrank_across_epochs,
+                FlagsShrinkAcrossEpochs,
+                PartialFlagsShrinkAcrossEpochs,
+            ),
+            (kept_size, FlagsSameSize, PartialFlagsSameSize),
+            (
+                named_another_owner && !handover,
+                FlagsOwnerChange,
+                PartialFlagsOwnerChange,
+            ),
+            (
+                named_another_owner && handover && !replaced,
+                FlagsHandover,
+                FlagsHandover,
+            ),
+            (replaced, FlagsFullHandover, FlagsFullHandover),
+            (
+                dropped_history,
+                PartialFlagsHistoryDropped,
+                PartialFlagsHistoryDropped,
+            ),
+            (removed_flags, FlagsRemoved, FlagsRemoved),
+            (seen.deleted_several_epochs, FlagsDelete, PartialFlagsDelete),
+        ];
+        for (seen, whole, in_segments) in cases {
+            if seen {
+                self.produced(if partial { in_segments } else { whole });
+            }
+        }
     }
 
     fn record_transaction_op(&mut self, step: &TransactionOp) {
@@ -665,6 +887,8 @@ fn write_operation(write: &Write) -> Operation {
         },
         Write::ReconcileIndexed { .. } => Operation::IndexedReconcile,
         Write::CommitmentInsert { .. } => Operation::CommitmentInsert,
+        Write::SectionalDelete { .. } => Operation::SectionalDelete,
+        Write::SectionalDeleteUpTree { .. } => Operation::SectionalDeleteUpTree,
     }
 }
 

@@ -1,0 +1,507 @@
+lignin-golden-trace 1
+name tree-deletes
+seed 0x1
+grove-version 2
+engine f101691960d8eb7b679f19e72853c8a04ff7502c
+workload tree-deletes
+c0bf0r70c2
+  step 0
+  # Write(Insert { path: [], key: [116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], element: tree: None })
+  cost seeks=3 loaded=0 added=131 replaced=0 removed=- hashes=3 sinsemilla=0
+  root b3846719995968ea2aad7ee02beeab238805badb742b1072252e193e500fcc3b
+c913er88d2
+  step 1
+  # Write(Insert { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [115, 116, 97, 121, 115], element: item: [hex: bf1e8cb2..b66eb187] })
+  cost seeks=5 loaded=168 added=180 replaced=86 removed=- hashes=8 sinsemilla=0
+  root 3a4d561f688f0bc4d42f2d984703c48179a96353c6e7226acbc53171cddf9656
+cb7ddr88d2
+  step 2
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 3a4d561f688f0bc4d42f2d984703c48179a96353c6e7226acbc53171cddf9656
+ccbf4re72a
+  step 3
+  # Batch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 100, 105, 114, 101, 99, 116, 45, 48], element: tree: None }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 100, 105, 114, 101, 99, 116, 45, 48]], key: [0, 0, 0, 0], elemen… (1836 characters)
+  cost seeks=15 loaded=276 added=2039 replaced=228 removed=- hashes=53 sinsemilla=0
+  root 82ad367a1f9880dad2a6a429b6d6ad1838c6df2c20ac1987946f9d90ea152a17
+cbd18rbc95
+  step 4
+  # Batch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 100, 105, 114, 101, 99, 116, 45, 48], element: tree: None }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 100, 105, 114, 101, 99, 116, 45, 48]], key: [0, 0, 0, 0], element:… (1828 characters)
+  cost seeks=15 loaded=330 added=2039 replaced=228 removed=- hashes=53 sinsemilla=0
+  root cdae44569495d6724ab42c030cc10a3af18e61229dbc11244fdaa8eafec01bb6
+cc11ara544
+  step 5
+  # Batch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 98, 97, 116, 99, 104, 45, 48], element: tree: None }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 98, 97, 116, 99, 104, 45, 48]], key: [0, 0, 0, 0], element: item: [hex:… (1780 characters)
+  cost seeks=17 loaded=459 added=2037 replaced=320 removed=- hashes=55 sinsemilla=0
+  root 652d6f346c19a4cb40fb9852cd7e478caf35e66b13aaca6329547cfa1755e76c
+cc11ar13b0
+  step 6
+  # Batch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 98, 97, 116, 99, 104, 45, 48], element: tree: None }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 98, 97, 116, 99, 104, 45, 48]], key: [0, 0, 0, 0], element: item: [hex: 3… (1772 characters)
+  cost seeks=17 loaded=459 added=2037 replaced=320 removed=- hashes=55 sinsemilla=0
+  root 55d5e6dad5491b6df145f289474bf538fffb1ada0ddacdc8fd2e70bc0f74585f
+cc524red6c
+  step 7
+  # FlagsBatch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 115, 101, 99, 116, 105, 111, 110, 97, 108, 45, 48], element: tree: None[hex: 023fb669..38f00000] }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 115, 101, 99, 116, 1… (2153 characters)
+  cost seeks=17 loaded=512 added=2333 replaced=320 removed=- hashes=58 sinsemilla=0
+  root 89bf983ebd4e0eac3d8e08e7dea360b3221f0400d7dd102f28c8c2ccea0550ba
+cc524r7fa1
+  step 8
+  # FlagsBatch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 115, 101, 99, 116, 105, 111, 110, 97, 108, 45, 48], element: tree: None[hex: 023fb669..38f00000] }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 115, 101, 99, 116, 105… (2145 characters)
+  cost seeks=17 loaded=512 added=2333 replaced=320 removed=- hashes=58 sinsemilla=0
+  root 89ac1ba7547a46466fc72d5b59c3352acd6e617ce64d1828125b8f6642344907
+caa2cr06c7
+  step 9
+  # FlagsBatch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 102, 108, 97, 103, 115, 45, 98, 97, 116, 99, 104, 45, 48], element: tree: None[hex: 023fb669..38f00000] }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 102, 108, 97,… (2209 characters)
+  cost seeks=19 loaded=680 added=2337 replaced=451 removed=- hashes=60 sinsemilla=0
+  root 81c15dc2027004cefbdcfe3b3760ba619748f536abe461bfaa77a585544dd971
+caa2crbafa
+  step 10
+  # FlagsBatch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 102, 108, 97, 103, 115, 45, 98, 97, 116, 99, 104, 45, 48], element: tree: None[hex: 023fb669..38f00000] }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 102, 108, 97, 1… (2201 characters)
+  cost seeks=19 loaded=680 added=2337 replaced=451 removed=- hashes=60 sinsemilla=0
+  root a957ab1797de4da476d266bf814f178bd358472a95b10587460cbc2a4c7fd05f
+cb7ddrbafa
+  step 11
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root a957ab1797de4da476d266bf814f178bd358472a95b10587460cbc2a4c7fd05f
+c7a5brfa0e
+  step 12
+  # Batch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [102, 114, 101, 115, 104, 45, 100, 105, 114, 101, 99, 116, 45, 48], element: tree: None }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [102, 114, 101, 115, 104, 45, 100, 105, 114, 101, 99, 116, 45, 48]], key: [0, 0, 0, 0], element: item: [hex: c645ef55..1d298305] }, In… (1676 characters)
+  cost seeks=19 loaded=644 added=2031 replaced=411 removed=- hashes=57 sinsemilla=0
+  root e8779efca464c18e8ac674b1fb0339bdbdd992a26153b364f7c26f46cd46a8e8
+c4678r3aac
+  step 13
+  # Batch([Replace { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 100, 105, 114, 101, 99, 116, 45, 48]], key: [0, 0, 0, 0], element: item: [hex: c4f1d799..12a3352b] }, Replace { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 100, 105, 114, 101, 99, 116, 45, 48… (467 characters)
+  cost seeks=17 loaded=1619 added=100 replaced=1033 removed=20 hashes=29 sinsemilla=0
+  root 65bc2aecc970b4cbd541f79cf3deb38660e0a4977ad5a688154739c1e6512e44
+ca98drdf52
+  step 14
+  # Write(Delete { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [102, 114, 101, 115, 104, 45, 100, 105, 114, 101, 99, 116, 45, 48] })
+  cost seeks=52 loaded=6080 added=0 replaced=411 removed=401 hashes=20 sinsemilla=0
+  root 0b33a1dde4eb1dbea3552a555aa81d2a0c3ab3d0ba34373896c9cfb16a0727d6
+c37dfr4024
+  step 15
+  # Write(Delete { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 100, 105, 114, 101, 99, 116, 45, 48] })
+  cost seeks=54 loaded=8027 added=0 replaced=583 removed=2013 hashes=22 sinsemilla=0
+  root 9038fc310647cbf7bf4bc2b902486238b376e5b6116fd4e87da8b2ce1838775f
+cb754r9f24
+  step 16
+  # Write(Delete { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 100, 105, 114, 101, 99, 116, 45, 48] })
+  cost seeks=54 loaded=7962 added=0 replaced=583 removed=2013 hashes=22 sinsemilla=0
+  root 5b83b098366d3550a4d1a41d3f02e49489abb82f5feba0fe40524018a6439d00
+c9081r9cb8
+  step 17
+  # Batch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [102, 114, 101, 115, 104, 45, 98, 97, 116, 99, 104, 45, 48], element: tree: None }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [102, 114, 101, 115, 104, 45, 98, 97, 116, 99, 104, 45, 48]], key: [0, 0, 0, 0], element: item: [hex: 4df00244..eb389ab3] }, InsertOnly { pat… (1620 characters)
+  cost seeks=19 loaded=690 added=2029 replaced=452 removed=- hashes=57 sinsemilla=0
+  root dba4431ae142ae858692bb8cd8f2d5474a58cc5eaf5b5f1fb7ecc4905da2bfdf
+cd506r8d4c
+  step 18
+  # Batch([Replace { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 98, 97, 116, 99, 104, 45, 48]], key: [0, 0, 0, 0], element: item: [hex: cc4d1d08..bfb6ac17] }, Replace { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 98, 97, 116, 99, 104, 45, 48]], key: [0, 0… (453 characters)
+  cost seeks=19 loaded=1727 added=100 replaced=1165 removed=20 hashes=31 sinsemilla=0
+  root d50ff6a14f4519b6dfe37c41bed7843a37e4889463c48186315e6187f8af8266
+c7468r73e1
+  step 19
+  # Batch([DeleteTree { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [102, 114, 101, 115, 104, 45, 98, 97, 116, 99, 104, 45, 48], tree_type: NormalTree }])
+  cost seeks=43 loaded=4247 added=0 replaced=452 removed=399 hashes=14 sinsemilla=0
+  root a94bb26b9323680748678942e2bfcf9a94b6e9cdd8eb083e6e2e9f673f656f03
+ce05erc90d
+  step 20
+  # Batch([DeleteTree { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 98, 97, 116, 99, 104, 45, 48], tree_type: NormalTree }])
+  cost seeks=41 loaded=5800 added=0 replaced=361 removed=2011 hashes=12 sinsemilla=0
+  root 78aa8fab2bc2cba8454da4107b6ca48ecf7f34e3f097d7e0bd3ac82c67a3ebda
+c3a2fr3396
+  step 21
+  # Batch([DeleteTree { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 98, 97, 116, 99, 104, 45, 48], tree_type: NormalTree }])
+  cost seeks=41 loaded=5720 added=0 replaced=361 removed=2011 hashes=12 sinsemilla=0
+  root 6d2e8f62d356aee11a861d3c1fa107b69a45a5dce383ddb8fec7c7e7d3c99f0e
+c5738r76f6
+  step 22
+  # FlagsBatch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [102, 114, 101, 115, 104, 45, 115, 101, 99, 116, 105, 111, 110, 97, 108, 45, 48], element: tree: None[hex: 023fb669..38f00001] }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [102, 114, 101, 115, 104, 45, 115, 101, 99, 116, 105, 111, 110, 97, 108, 45, 48]], key: [0… (1993 characters)
+  cost seeks=17 loaded=562 added=2325 replaced=361 removed=- hashes=58 sinsemilla=0
+  root c6fead285e1ee7123ab4d935a48418c443477ad6ec346abcec0c030595b6b99f
+cc039r910d
+  step 23
+  # FlagsBatch([Replace { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 115, 101, 99, 116, 105, 111, 110, 97, 108, 45, 48]], key: [0, 0, 0, 0], element: item: [hex: 74b257c4..bfbaaf51][hex: 023fb669..38f00001] }, Replace { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, … (550 characters)
+  cost seeks=19 loaded=1849 added=103 replaced=1313 removed={3fb6694a29c32ffbe8a5457f0b7d8760807ff3b5a9c63bcfa3cb0775403238f0/0=20} hashes=32 sinsemilla=0
+  root eb4bfb2755df4374df514202474c06bbccaf74fcb157cdd645491dae6de8a0c0
+c6503rf422
+  step 24
+  # Write(SectionalDelete { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [102, 114, 101, 115, 104, 45, 115, 101, 99, 116, 105, 111, 110, 97, 108, 45, 48] })
+  cost seeks=50 loaded=6420 added=0 replaced=361 removed={0000000000000000000000000000000000000000000000000000000000000000/65535=266,3fb6694a29c32ffbe8a5457f0b7d8760807ff3b5a9c63bcfa3cb0775403238f0/1=177} hashes=18 sinsemilla=0
+  root 87747046a581e87bf57d9b6cf91881f3759340177a3a8b0429767e2ce0b85933
+c69c2rfba2
+  step 25
+  # Write(SectionalDelete { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 115, 101, 99, 116, 105, 111, 110, 97, 108, 45, 48] })
+  cost seeks=50 loaded=8303 added=0 replaced=361 removed={0000000000000000000000000000000000000000000000000000000000000000/65535=2122,3fb6694a29c32ffbe8a5457f0b7d8760807ff3b5a9c63bcfa3cb0775403238f0/0=185} hashes=18 sinsemilla=0
+  root 3c24663d60674634233d5740fd20823bb268bc477408fc567781a4b560781bd3
+c8668rf2f2
+  step 26
+  # Write(SectionalDelete { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 115, 101, 99, 116, 105, 111, 110, 97, 108, 45, 48] })
+  cost seeks=50 loaded=8220 added=0 replaced=361 removed={0000000000000000000000000000000000000000000000000000000000000000/65535=2122,3fb6694a29c32ffbe8a5457f0b7d8760807ff3b5a9c63bcfa3cb0775403238f0/0=185} hashes=18 sinsemilla=0
+  root bd134247b664eae4129d6cac54bdff15cb2dc8c39c21e36357a773fc2c809e94
+c4199r16a2
+  step 27
+  # FlagsBatch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [102, 114, 101, 115, 104, 45, 102, 108, 97, 103, 115, 45, 98, 97, 116, 99, 104, 45, 48], element: tree: None[hex: 023fb669..38f00001] }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [102, 114, 101, 115, 104, 45, 102, 108, 97, 103, 115, 45, 98, 97, 116, 99, 104, 45,… (2049 characters)
+  cost seeks=17 loaded=505 added=2329 replaced=361 removed=- hashes=58 sinsemilla=0
+  root 02472100de0fccf9f10e2ab5312ca2a857c2fdc89bc6e9d67129575f638ea88b
+ca12dr55ca
+  step 28
+  # FlagsBatch([Replace { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 102, 108, 97, 103, 115, 45, 98, 97, 116, 99, 104, 45, 48]], key: [0, 0, 0, 0], element: item: [hex: dda67e88..e79fe0c2][hex: 023fb669..38f00001] }, Replace { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116… (564 characters)
+  cost seeks=17 loaded=1740 added=103 replaced=1182 removed={3fb6694a29c32ffbe8a5457f0b7d8760807ff3b5a9c63bcfa3cb0775403238f0/0=20} hashes=30 sinsemilla=0
+  root 6bcf9aba5f4b4ead1648f7d4a33852693a1cff4ddf4e7f4fa0ab12896c0c6507
+ceb02r49ce
+  step 29
+  # FlagsBatch([DeleteTree { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [102, 114, 101, 115, 104, 45, 102, 108, 97, 103, 115, 45, 98, 97, 116, 99, 104, 45, 48], tree_type: NormalTree }])
+  cost seeks=41 loaded=4356 added=0 replaced=361 removed={0000000000000000000000000000000000000000000000000000000000000000/65535=266,3fb6694a29c32ffbe8a5457f0b7d8760807ff3b5a9c63bcfa3cb0775403238f0/1=181} hashes=12 sinsemilla=0
+  root 116f88df265cabf8a74e998a74c2a61527d105012e79fe9c921f66d84e10f9fc
+cd5b2rfd6e
+  step 30
+  # FlagsBatch([DeleteTree { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 102, 108, 97, 103, 115, 45, 98, 97, 116, 99, 104, 45, 48], tree_type: NormalTree }])
+  cost seeks=39 loaded=6122 added=0 replaced=228 removed={0000000000000000000000000000000000000000000000000000000000000000/65535=2122,3fb6694a29c32ffbe8a5457f0b7d8760807ff3b5a9c63bcfa3cb0775403238f0/0=189} hashes=10 sinsemilla=0
+  root f14f6eaf60cd7749c4ae44f700988ae457ed53c0aade6e3e0cffd8ba43a2635b
+c0448r88d2
+  step 31
+  # FlagsBatch([DeleteTree { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 102, 108, 97, 103, 115, 45, 98, 97, 116, 99, 104, 45, 48], tree_type: NormalTree }])
+  cost seeks=39 loaded=5980 added=0 replaced=228 removed={0000000000000000000000000000000000000000000000000000000000000000/65535=2122,3fb6694a29c32ffbe8a5457f0b7d8760807ff3b5a9c63bcfa3cb0775403238f0/0=189} hashes=10 sinsemilla=0
+  root 3a4d561f688f0bc4d42f2d984703c48179a96353c6e7226acbc53171cddf9656
+cb7ddr88d2
+  step 32
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 3a4d561f688f0bc4d42f2d984703c48179a96353c6e7226acbc53171cddf9656
+c4584v18d9q1253p2cae
+  step 33
+  # Read(PathQuery { query: PathQuery { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit: None, of… (431 characters)
+  cost seeks=3 loaded=538 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 1
+  row 747265652d64656c65746573 7374617973 0020bf1e8cb2f4e563a2c8c11cedb91bfe189dece64860b124da429302aab66eb18700
+  skipped 0
+  prove-cost seeks=4 loaded=276 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  proof 120 0039040c747265652d64656c657465730009020105737461797300db6e6d433bc313cfd245b28a83766292043256a3c3033b9604f1b453d2212874010c747265652d64656c657465732c0305737461797300230020bf1e8cb2f4e563a2c8c11cedb91bfe189dece64860b124da429302aab66eb187000001
+  verification verified
+ca8c1r1d7b
+  step 34
+  # Batch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 100, 105, 114, 101, 99, 116, 45, 49], element: tree: None }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 100, 105, 114, 101, 99, 116, 45, 49]], key: [0, 0, 0, 0], elemen… (1836 characters)
+  cost seeks=15 loaded=276 added=1915 replaced=228 removed=- hashes=50 sinsemilla=0
+  root 77f0b5565fe51107e654e61e812b06178a77a0ca4f633f32aae6aa22c9cc4a6c
+c2bcerc53d
+  step 35
+  # Batch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 100, 105, 114, 101, 99, 116, 45, 49], element: tree: None }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 100, 105, 114, 101, 99, 116, 45, 49]], key: [0, 0, 0, 0], element:… (1828 characters)
+  cost seeks=15 loaded=330 added=1915 replaced=228 removed=- hashes=50 sinsemilla=0
+  root e241dce334ddf9d9de9a6b14e49ae9030887055891635359a5606993a9cf0553
+c4068r72da
+  step 36
+  # Batch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 98, 97, 116, 99, 104, 45, 49], element: tree: None }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 98, 97, 116, 99, 104, 45, 49]], key: [0, 0, 0, 0], element: item: [hex:… (1780 characters)
+  cost seeks=17 loaded=459 added=1913 replaced=320 removed=- hashes=52 sinsemilla=0
+  root 1bfd525443dd0e923e5fef2eb63d5f2d98a067d6bb9850b5cf5b08913a5b35fd
+c4068r071f
+  step 37
+  # Batch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 98, 97, 116, 99, 104, 45, 49], element: tree: None }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 98, 97, 116, 99, 104, 45, 49]], key: [0, 0, 0, 0], element: item: [hex: 4… (1772 characters)
+  cost seeks=17 loaded=459 added=1913 replaced=320 removed=- hashes=52 sinsemilla=0
+  root 31ae48348ada7ae7c9c8b2596dae0fb15abbcd12a49e23ff551cd47a8c4f4736
+c0ecfr8328
+  step 38
+  # FlagsBatch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 115, 101, 99, 116, 105, 111, 110, 97, 108, 45, 49], element: tree: None[hex: 023fb669..38f00002] }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 115, 101, 99, 116, 1… (2153 characters)
+  cost seeks=17 loaded=512 added=2210 replaced=320 removed=- hashes=56 sinsemilla=0
+  root 8997723b438b14aabd1450efcbbab3c55f3bd19702c99f673d721e8a5ed24796
+c0ecfrf5a0
+  step 39
+  # FlagsBatch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 115, 101, 99, 116, 105, 111, 110, 97, 108, 45, 49], element: tree: None[hex: 023fb669..38f00002] }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 115, 101, 99, 116, 105… (2145 characters)
+  cost seeks=17 loaded=512 added=2210 replaced=320 removed=- hashes=56 sinsemilla=0
+  root bcc98b52ce2b0fb79253825862108357081ab7af39a8e7e3abfac162058f83d1
+c55bcr872e
+  step 40
+  # FlagsBatch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 102, 108, 97, 103, 115, 45, 98, 97, 116, 99, 104, 45, 49], element: tree: None[hex: 023fb669..38f00002] }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 102, 108, 97,… (2209 characters)
+  cost seeks=19 loaded=680 added=2214 replaced=451 removed=- hashes=58 sinsemilla=0
+  root c3133942eab8ff22ba8f14245dfcd6de045b6ba65d5263d07045ef2182410f87
+c55bcr03b9
+  step 41
+  # FlagsBatch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 102, 108, 97, 103, 115, 45, 98, 97, 116, 99, 104, 45, 49], element: tree: None[hex: 023fb669..38f00002] }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 102, 108, 97, 1… (2201 characters)
+  cost seeks=19 loaded=680 added=2214 replaced=451 removed=- hashes=58 sinsemilla=0
+  root b8c01a93af728027cdcbfde0bb75c0e7cdbcd77805dd7f8761542e0f04b21992
+cb7ddr03b9
+  step 42
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root b8c01a93af728027cdcbfde0bb75c0e7cdbcd77805dd7f8761542e0f04b21992
+cc0f0r328a
+  step 43
+  # Batch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [102, 114, 101, 115, 104, 45, 100, 105, 114, 101, 99, 116, 45, 49], element: tree: None }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [102, 114, 101, 115, 104, 45, 100, 105, 114, 101, 99, 116, 45, 49]], key: [0, 0, 0, 0], element: item: [hex: 1510bcac..876dd6a0] }, In… (1676 characters)
+  cost seeks=19 loaded=644 added=1907 replaced=411 removed=- hashes=54 sinsemilla=0
+  root 5fe9b6e8c4c1f785280023cedcd394aaa6c0ca4a08f10a4d808025bbc8b7735b
+c8193rad65
+  step 44
+  # Batch([Replace { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 100, 105, 114, 101, 99, 116, 45, 49]], key: [0, 0, 0, 0], element: item: [hex: ddb9d499..fd2d77ef] }, Replace { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 100, 105, 114, 101, 99, 116, 45, 49… (887 characters)
+  cost seeks=24 loaded=2163 added=307 replaced=1428 removed=245 hashes=37 sinsemilla=0
+  root 244626f33e6b04a1a3d1f13fdbbd0a48da954225b7011e6e913ca686eedf4e30
+c93e0r1796
+  step 45
+  # Write(Delete { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [102, 114, 101, 115, 104, 45, 100, 105, 114, 101, 99, 116, 45, 49] })
+  cost seeks=52 loaded=5915 added=0 replaced=411 removed=401 hashes=20 sinsemilla=0
+  root cc961a7df1d8c226c9a4edf9d96e80b27459869f6290db677d927e496fd388d8
+c249drcfcd
+  step 46
+  # Write(Delete { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 100, 105, 114, 101, 99, 116, 45, 49] })
+  cost seeks=54 loaded=7573 added=0 replaced=583 removed=1741 hashes=22 sinsemilla=0
+  root b53f0181ca6e6e4369d6d4c88786f82a16196ea52b17635bd84d672a5cefaabd
+c4ee1ra6d0
+  step 47
+  # Write(Delete { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 100, 105, 114, 101, 99, 116, 45, 49] })
+  cost seeks=54 loaded=7674 added=0 replaced=583 removed=1890 hashes=22 sinsemilla=0
+  root ec08058d3e83b125e55f6513619167433d4a6c5510327726a359efb57f1a7b47
+cf605r6129
+  step 48
+  # Batch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [102, 114, 101, 115, 104, 45, 98, 97, 116, 99, 104, 45, 49], element: tree: None }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [102, 114, 101, 115, 104, 45, 98, 97, 116, 99, 104, 45, 49]], key: [0, 0, 0, 0], element: item: [hex: b199adf7..da873732] }, InsertOnly { pat… (1620 characters)
+  cost seeks=19 loaded=690 added=1905 replaced=452 removed=- hashes=54 sinsemilla=0
+  root e0f150032b25d85328ec78914bd290562e58289821d7aca2b80160cf24453b9f
+c39f8r5cf6
+  step 49
+  # Batch([Replace { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 98, 97, 116, 99, 104, 45, 49]], key: [0, 0, 0, 0], element: item: [hex: da9dc1e5..f99c7643] }, Replace { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 98, 97, 116, 99, 104, 45, 49]], key: [0, 0… (859 characters)
+  cost seeks=26 loaded=2271 added=307 replaced=1560 removed=245 hashes=39 sinsemilla=0
+  root dfa4fcf9df8c2296efabeefa13c10cb0ff1c06023d358247a827aa31a5af2a6e
+c09d8r5eaa
+  step 50
+  # Batch([DeleteTree { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [102, 114, 101, 115, 104, 45, 98, 97, 116, 99, 104, 45, 49], tree_type: NormalTree }])
+  cost seeks=43 loaded=4124 added=0 replaced=452 removed=399 hashes=14 sinsemilla=0
+  root 716174f479f8186edd0342bfe9673c448814705189e669e19ace15fbfc701fea
+cb1cfr0946
+  step 51
+  # Batch([DeleteTree { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 98, 97, 116, 99, 104, 45, 49], tree_type: NormalTree }])
+  cost seeks=41 loaded=5388 added=0 replaced=361 removed=1739 hashes=12 sinsemilla=0
+  root c17891a2ed2c863a74c8b789f0dd4707a78355aff04297707ed53ee9a112633d
+ce46ar4bb1
+  step 52
+  # Batch([DeleteTree { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 98, 97, 116, 99, 104, 45, 49], tree_type: NormalTree }])
+  cost seeks=41 loaded=5474 added=0 replaced=361 removed=1888 hashes=12 sinsemilla=0
+  root 41261a8057cb9d0f5934d35e4fc5dafe2d16b3d9d9a411484646fe128d7e8d26
+c466cr18bc
+  step 53
+  # FlagsBatch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [102, 114, 101, 115, 104, 45, 115, 101, 99, 116, 105, 111, 110, 97, 108, 45, 49], element: tree: None[hex: 023fb669..38f00003] }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [102, 114, 101, 115, 104, 45, 115, 101, 99, 116, 105, 111, 110, 97, 108, 45, 49]], key: [0… (1993 characters)
+  cost seeks=17 loaded=562 added=2202 replaced=361 removed=- hashes=56 sinsemilla=0
+  root 44ebc4196a61e57ccddd4d7f654d00fef5f5330650285218a1377434a0b53f7b
+ceda0rff51
+  step 54
+  # FlagsBatch([Replace { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 115, 101, 99, 116, 105, 111, 110, 97, 108, 45, 49]], key: [0, 0, 0, 0], element: item: [hex: e8658c77..6cd8973b][hex: 023fb669..38f00003] }, Replace { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, … (1023 characters)
+  cost seeks=26 loaded=2501 added=346 replaced=1781 removed={3fb6694a29c32ffbe8a5457f0b7d8760807ff3b5a9c63bcfa3cb0775403238f0/2=281} hashes=41 sinsemilla=0
+  root 41e6ccddfc4fc3887a17db76df81979681c080ee9b035fcedf4ea4f29e84c85c
+c23barcacb
+  step 55
+  # Write(SectionalDelete { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [102, 114, 101, 115, 104, 45, 115, 101, 99, 116, 105, 111, 110, 97, 108, 45, 49] })
+  cost seeks=50 loaded=6255 added=0 replaced=361 removed={0000000000000000000000000000000000000000000000000000000000000000/65535=266,3fb6694a29c32ffbe8a5457f0b7d8760807ff3b5a9c63bcfa3cb0775403238f0/3=177} hashes=18 sinsemilla=0
+  root f1bd2e602186798bd8aa77e7056d7ded78d0c7c85f3effa2aa4d7bb7fbe78367
+c89b8rbc42
+  step 56
+  # Write(SectionalDelete { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 115, 101, 99, 116, 105, 111, 110, 97, 108, 45, 49] })
+  cost seeks=50 loaded=7813 added=0 replaced=361 removed={0000000000000000000000000000000000000000000000000000000000000000/65535=1814,3fb6694a29c32ffbe8a5457f0b7d8760807ff3b5a9c63bcfa3cb0775403238f0/2=185} hashes=18 sinsemilla=0
+  root 97c17becae4e717e7a343ea0abf2514d023688bcf1b3dc634333e6ad0e9ad1af
+cb687re796
+  step 57
+  # Write(SectionalDelete { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 115, 101, 99, 116, 105, 111, 110, 97, 108, 45, 49] })
+  cost seeks=50 loaded=7932 added=0 replaced=361 removed={0000000000000000000000000000000000000000000000000000000000000000/65535=1999,3fb6694a29c32ffbe8a5457f0b7d8760807ff3b5a9c63bcfa3cb0775403238f0/2=185} hashes=18 sinsemilla=0
+  root e63390bf8bd2abf1bb18051f1cbc9ea236b5989d55cd46f005d94f4fe599c124
+cf825r6d83
+  step 58
+  # FlagsBatch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [102, 114, 101, 115, 104, 45, 102, 108, 97, 103, 115, 45, 98, 97, 116, 99, 104, 45, 49], element: tree: None[hex: 023fb669..38f00003] }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [102, 114, 101, 115, 104, 45, 102, 108, 97, 103, 115, 45, 98, 97, 116, 99, 104, 45,… (2049 characters)
+  cost seeks=17 loaded=505 added=2206 replaced=361 removed=- hashes=56 sinsemilla=0
+  root 3d2b7bc486753ef7d1d0226155fde15d098ece676e7e925d7a69f65b1601c6b3
+cb79drfee2
+  step 59
+  # FlagsBatch([Replace { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 102, 108, 97, 103, 115, 45, 98, 97, 116, 99, 104, 45, 49]], key: [0, 0, 0, 0], element: item: [hex: 8a1215e5..a9dcaec3][hex: 023fb669..38f00003] }, Replace { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116… (1051 characters)
+  cost seeks=24 loaded=2392 added=346 replaced=1650 removed={3fb6694a29c32ffbe8a5457f0b7d8760807ff3b5a9c63bcfa3cb0775403238f0/2=281} hashes=39 sinsemilla=0
+  root b43348275a00c60a47164d7c943992e888837566247a3815d80dbd36bf5291a8
+c5564r68fc
+  step 60
+  # FlagsBatch([DeleteTree { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [102, 114, 101, 115, 104, 45, 102, 108, 97, 103, 115, 45, 98, 97, 116, 99, 104, 45, 49], tree_type: NormalTree }])
+  cost seeks=41 loaded=4233 added=0 replaced=361 removed={0000000000000000000000000000000000000000000000000000000000000000/65535=266,3fb6694a29c32ffbe8a5457f0b7d8760807ff3b5a9c63bcfa3cb0775403238f0/3=181} hashes=12 sinsemilla=0
+  root fbab57f7b097a311977a4843d2fb8dec814debf04748bf1143c4eafd70408c80
+cedf9r740c
+  step 61
+  # FlagsBatch([DeleteTree { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 102, 108, 97, 103, 115, 45, 98, 97, 116, 99, 104, 45, 49], tree_type: NormalTree }])
+  cost seeks=39 loaded=5674 added=0 replaced=228 removed={0000000000000000000000000000000000000000000000000000000000000000/65535=1814,3fb6694a29c32ffbe8a5457f0b7d8760807ff3b5a9c63bcfa3cb0775403238f0/2=189} hashes=10 sinsemilla=0
+  root 7f0c2377cbbb699e18862db2f9e99c372cbef1774843a27a4a1ef29130da1179
+cf35br88d2
+  step 62
+  # FlagsBatch([DeleteTree { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 102, 108, 97, 103, 115, 45, 98, 97, 116, 99, 104, 45, 49], tree_type: NormalTree }])
+  cost seeks=39 loaded=5734 added=0 replaced=228 removed={0000000000000000000000000000000000000000000000000000000000000000/65535=1999,3fb6694a29c32ffbe8a5457f0b7d8760807ff3b5a9c63bcfa3cb0775403238f0/2=189} hashes=10 sinsemilla=0
+  root 3a4d561f688f0bc4d42f2d984703c48179a96353c6e7226acbc53171cddf9656
+cb7ddr88d2
+  step 63
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 3a4d561f688f0bc4d42f2d984703c48179a96353c6e7226acbc53171cddf9656
+c4584v18d9q1253p2cae
+  step 64
+  # Read(PathQuery { query: PathQuery { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit: None, of… (431 characters)
+  cost seeks=3 loaded=538 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 1
+  row 747265652d64656c65746573 7374617973 0020bf1e8cb2f4e563a2c8c11cedb91bfe189dece64860b124da429302aab66eb18700
+  skipped 0
+  prove-cost seeks=4 loaded=276 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  proof 120 0039040c747265652d64656c657465730009020105737461797300db6e6d433bc313cfd245b28a83766292043256a3c3033b9604f1b453d2212874010c747265652d64656c657465732c0305737461797300230020bf1e8cb2f4e563a2c8c11cedb91bfe189dece64860b124da429302aab66eb187000001
+  verification verified
+c9e5dr8dcd
+  step 65
+  # Batch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 100, 105, 114, 101, 99, 116, 45, 50], element: tree: None }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 100, 105, 114, 101, 99, 116, 45, 50]], key: [0, 0, 0, 0], elemen… (2596 characters)
+  cost seeks=18 loaded=276 added=2260 replaced=228 removed=- hashes=63 sinsemilla=0
+  root feb5b9e9f05191b1f06906f651529551cb25a8018b7b15d692db285406e37119
+cd509rf5db
+  step 66
+  # Batch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 100, 105, 114, 101, 99, 116, 45, 50], element: tree: None }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 100, 105, 114, 101, 99, 116, 45, 50]], key: [0, 0, 0, 0], element:… (2585 characters)
+  cost seeks=18 loaded=330 added=2260 replaced=228 removed=- hashes=63 sinsemilla=0
+  root 7052d756539a3fe5b895652ecf3896bfaf63eb450615c8caffb5e7f00629dcb9
+c3d91r8445
+  step 67
+  # Batch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 98, 97, 116, 99, 104, 45, 50], element: tree: None }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 98, 97, 116, 99, 104, 45, 50]], key: [0, 0, 0, 0], element: item: [hex:… (2519 characters)
+  cost seeks=20 loaded=459 added=2258 replaced=320 removed=- hashes=65 sinsemilla=0
+  root 8e3a61e8bf7c330dc0a7f859e9c38de6967e1bda5de635f5e8a51c40ca13c00f
+c3d91r1a3c
+  step 68
+  # Batch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 98, 97, 116, 99, 104, 45, 50], element: tree: None }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 98, 97, 116, 99, 104, 45, 50]], key: [0, 0, 0, 0], element: item: [hex: 9… (2508 characters)
+  cost seeks=20 loaded=459 added=2258 replaced=320 removed=- hashes=65 sinsemilla=0
+  root 36fcc8f73a53aeb17e454da1b2662e5eb975b5b2d6f5e0f8f975671ff28940b8
+c4448r1f2e
+  step 69
+  # FlagsBatch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 115, 101, 99, 116, 105, 111, 110, 97, 108, 45, 50], element: tree: None[hex: 023fb669..38f00004] }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 115, 101, 99, 116, 1… (3030 characters)
+  cost seeks=20 loaded=512 added=2666 replaced=320 removed=- hashes=70 sinsemilla=0
+  root 38aa537f7ab85a5681e17be4856e5490a935221c52c0a731ac8841e3b1cd5d80
+c4448rb029
+  step 70
+  # FlagsBatch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 115, 101, 99, 116, 105, 111, 110, 97, 108, 45, 50], element: tree: None[hex: 023fb669..38f00004] }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 115, 101, 99, 116, 105… (3019 characters)
+  cost seeks=20 loaded=512 added=2666 replaced=320 removed=- hashes=70 sinsemilla=0
+  root b3b87e47e9eb9b42762da513761726ac5919ca29a3d997ab130aa6f3b3085ba2
+cf5d8r5163
+  step 71
+  # FlagsBatch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 102, 108, 97, 103, 115, 45, 98, 97, 116, 99, 104, 45, 50], element: tree: None[hex: 023fb669..38f00004] }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 102, 108, 97,… (3107 characters)
+  cost seeks=22 loaded=680 added=2670 replaced=451 removed=- hashes=72 sinsemilla=0
+  root db52a80b062cc3e27d1e0baf4560653a72528a1c291e3374d8699bdb6febcddc
+cf5d8r6163
+  step 72
+  # FlagsBatch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 102, 108, 97, 103, 115, 45, 98, 97, 116, 99, 104, 45, 50], element: tree: None[hex: 023fb669..38f00004] }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 102, 108, 97, 1… (3096 characters)
+  cost seeks=22 loaded=680 added=2670 replaced=451 removed=- hashes=72 sinsemilla=0
+  root 61ba0adef386802ae97da02de7049c4138e6388aa12bd21cb27dccdfaeadb5ff
+cb7ddr6163
+  step 73
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 61ba0adef386802ae97da02de7049c4138e6388aa12bd21cb27dccdfaeadb5ff
+cba2dr662a
+  step 74
+  # Batch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [102, 114, 101, 115, 104, 45, 100, 105, 114, 101, 99, 116, 45, 50], element: tree: None }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [102, 114, 101, 115, 104, 45, 100, 105, 114, 101, 99, 116, 45, 50]], key: [0, 0, 0, 0], element: item: [hex: 61e6725d..09b72726] }, In… (2376 characters)
+  cost seeks=22 loaded=644 added=2252 replaced=411 removed=- hashes=67 sinsemilla=0
+  root 7a612c6f8de7cff87953d400762cb0e713d0bd927d9c196bda612dd4cfd925d4
+ce19br5113
+  step 75
+  # Batch([Replace { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 100, 105, 114, 101, 99, 116, 45, 50]], key: [0, 0, 0, 0], element: item: [hex: 37334c01..9f25b6c7] }, Replace { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 100, 105, 114, 101, 99, 116, 45, 50… (467 characters)
+  cost seeks=19 loaded=1759 added=100 replaced=1173 removed=20 hashes=30 sinsemilla=0
+  root e66caf7dc1b508adab79d756778d08b60d96a0c7e53aebcc82fac394e7e69511
+c241fr8301
+  step 76
+  # Write(Delete { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [102, 114, 101, 115, 104, 45, 100, 105, 114, 101, 99, 116, 45, 50] })
+  cost seeks=69 loaded=8156 added=0 replaced=411 removed=517 hashes=26 sinsemilla=0
+  root 2e584910e51832cd360b6eb9678ab51a165474dfee9b6aeb4a1fcdb0dc3993f3
+cb9b2r0edd
+  step 77
+  # Write(Delete { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 100, 105, 114, 101, 99, 116, 45, 50] })
+  cost seeks=71 loaded=10212 added=0 replaced=583 removed=2237 hashes=28 sinsemilla=0
+  root 01695d636b36dec5df0953000fc914a2437e2baff30f3e0739f60d7ac3837b4e
+cc2bar8dc7
+  step 78
+  # Write(Delete { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 100, 105, 114, 101, 99, 116, 45, 50] })
+  cost seeks=71 loaded=10147 added=0 replaced=583 removed=2237 hashes=28 sinsemilla=0
+  root 1c0913bdbae9586ff6cdd5cd9a0dbeedc1ed15023c2971f0e349d8abd98f186a
+c3b38r80a7
+  step 79
+  # Batch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [102, 114, 101, 115, 104, 45, 98, 97, 116, 99, 104, 45, 50], element: tree: None }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [102, 114, 101, 115, 104, 45, 98, 97, 116, 99, 104, 45, 50]], key: [0, 0, 0, 0], element: item: [hex: d2ab260f..0897d9d9] }, InsertOnly { pat… (2299 characters)
+  cost seeks=22 loaded=690 added=2250 replaced=452 removed=- hashes=67 sinsemilla=0
+  root 040845d325ec8c899332931cbc966c541f37c16489710527425f0c0d5998717b
+cc740r0d11
+  step 80
+  # Batch([Replace { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 98, 97, 116, 99, 104, 45, 50]], key: [0, 0, 0, 0], element: item: [hex: fcec5609..d189c5e0] }, Replace { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 98, 97, 116, 99, 104, 45, 50]], key: [0, 0… (453 characters)
+  cost seeks=21 loaded=1867 added=100 replaced=1305 removed=20 hashes=32 sinsemilla=0
+  root c849ef37d4f53aa04b2767baad885d051967eb099b5c1cf40b41e85731a7c552
+c58fcr91fd
+  step 81
+  # Batch([DeleteTree { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [102, 114, 101, 115, 104, 45, 98, 97, 116, 99, 104, 45, 50], tree_type: NormalTree }])
+  cost seeks=57 loaded=5482 added=0 replaced=452 removed=515 hashes=16 sinsemilla=0
+  root e6c8374fa096369423010b24796e2d94ec61622fb6d6a7b338683a90fc2ba6de
+cf3aarab24
+  step 82
+  # Batch([DeleteTree { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 98, 97, 116, 99, 104, 45, 50], tree_type: NormalTree }])
+  cost seeks=55 loaded=7144 added=0 replaced=361 removed=2235 hashes=14 sinsemilla=0
+  root 04fd40dc2dd975f3a744d3a23b4dca022802093602142cd8e5efeba377a0e3a4
+c422crbfcd
+  step 83
+  # Batch([DeleteTree { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 98, 97, 116, 99, 104, 45, 50], tree_type: NormalTree }])
+  cost seeks=55 loaded=7064 added=0 replaced=361 removed=2235 hashes=14 sinsemilla=0
+  root edd487187ba91926fd9fcdda45afbfd4392d033ffc3835bb5381db1606dbfa17
+c0c5br967e
+  step 84
+  # FlagsBatch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [102, 114, 101, 115, 104, 45, 115, 101, 99, 116, 105, 111, 110, 97, 108, 45, 50], element: tree: None[hex: 023fb669..38f00005] }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [102, 114, 101, 115, 104, 45, 115, 101, 99, 116, 105, 111, 110, 97, 108, 45, 50]], key: [0… (2810 characters)
+  cost seeks=20 loaded=562 added=2658 replaced=361 removed=- hashes=70 sinsemilla=0
+  root 8d7ee94580de15dc6b331d271ff3a10b3df96d148bd6790aaf1d34cd42a34cca
+c0dfcrf0b5
+  step 85
+  # FlagsBatch([Replace { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 115, 101, 99, 116, 105, 111, 110, 97, 108, 45, 50]], key: [0, 0, 0, 0], element: item: [hex: 67c9e4b4..fe1ce6e6][hex: 023fb669..38f00005] }, Replace { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, … (550 characters)
+  cost seeks=21 loaded=2025 added=103 replaced=1489 removed={3fb6694a29c32ffbe8a5457f0b7d8760807ff3b5a9c63bcfa3cb0775403238f0/4=20} hashes=33 sinsemilla=0
+  root cfb288a51a23220c34070e6c99b878014b5bdd10ea6581d79796e364507018b8
+ce7cdr8f6f
+  step 86
+  # Write(SectionalDelete { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [102, 114, 101, 115, 104, 45, 115, 101, 99, 116, 105, 111, 110, 97, 108, 45, 50] })
+  cost seeks=67 loaded=8604 added=0 replaced=361 removed={0000000000000000000000000000000000000000000000000000000000000000/65535=382,3fb6694a29c32ffbe8a5457f0b7d8760807ff3b5a9c63bcfa3cb0775403238f0/5=177} hashes=24 sinsemilla=0
+  root b5d57ff5c62187bfef84981d80cc2f8140302dcd1cde0613ec4ab66b79f97fdf
+c7d83r881f
+  step 87
+  # Write(SectionalDelete { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 115, 101, 99, 116, 105, 111, 110, 97, 108, 45, 50] })
+  cost seeks=67 loaded=10704 added=0 replaced=361 removed={0000000000000000000000000000000000000000000000000000000000000000/65535=2457,3fb6694a29c32ffbe8a5457f0b7d8760807ff3b5a9c63bcfa3cb0775403238f0/4=185} hashes=24 sinsemilla=0
+  root 6daa73c0901b2fd034904613d3fa222b2570448390528f40d4a83285c80b004c
+cc7cfr758a
+  step 88
+  # Write(SectionalDelete { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 115, 101, 99, 116, 105, 111, 110, 97, 108, 45, 50] })
+  cost seeks=67 loaded=10621 added=0 replaced=361 removed={0000000000000000000000000000000000000000000000000000000000000000/65535=2457,3fb6694a29c32ffbe8a5457f0b7d8760807ff3b5a9c63bcfa3cb0775403238f0/4=185} hashes=24 sinsemilla=0
+  root 6f2f8a3aa7cd39efbeaceb1ab384437c2701be152d3a8e2ab5f3c62674c758cc
+cdd5cred43
+  step 89
+  # FlagsBatch([InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [102, 114, 101, 115, 104, 45, 102, 108, 97, 103, 115, 45, 98, 97, 116, 99, 104, 45, 50], element: tree: None[hex: 023fb669..38f00005] }, InsertOnly { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [102, 114, 101, 115, 104, 45, 102, 108, 97, 103, 115, 45, 98, 97, 116, 99, 104, 45,… (2887 characters)
+  cost seeks=20 loaded=505 added=2662 replaced=361 removed=- hashes=70 sinsemilla=0
+  root 3695cd786c22996da12d0ac0eaca025cb54dc996f20ff7765fd6741af0860c58
+c2cc1r6b8a
+  step 90
+  # FlagsBatch([Replace { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 102, 108, 97, 103, 115, 45, 98, 97, 116, 99, 104, 45, 50]], key: [0, 0, 0, 0], element: item: [hex: 78e29947..10475690][hex: 023fb669..38f00005] }, Replace { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115], [114, 101, 119, 114, 105, 116, 116… (564 characters)
+  cost seeks=19 loaded=1916 added=103 replaced=1358 removed={3fb6694a29c32ffbe8a5457f0b7d8760807ff3b5a9c63bcfa3cb0775403238f0/4=20} hashes=31 sinsemilla=0
+  root 85564385ffb99302209c2c58671b00f83d2e0503574d3ebb489bc729f2b6e876
+c8caarb87e
+  step 91
+  # FlagsBatch([DeleteTree { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [102, 114, 101, 115, 104, 45, 102, 108, 97, 103, 115, 45, 98, 97, 116, 99, 104, 45, 50], tree_type: NormalTree }])
+  cost seeks=55 loaded=5699 added=0 replaced=361 removed={0000000000000000000000000000000000000000000000000000000000000000/65535=382,3fb6694a29c32ffbe8a5457f0b7d8760807ff3b5a9c63bcfa3cb0775403238f0/5=181} hashes=14 sinsemilla=0
+  root 3afb00c04cb1f34dadedea6c18032d7651178dfef6cb783d819a96fb6d158c0b
+cf394rf739
+  step 92
+  # FlagsBatch([DeleteTree { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [114, 101, 119, 114, 105, 116, 116, 101, 110, 45, 102, 108, 97, 103, 115, 45, 98, 97, 116, 99, 104, 45, 50], tree_type: NormalTree }])
+  cost seeks=53 loaded=7682 added=0 replaced=228 removed={0000000000000000000000000000000000000000000000000000000000000000/65535=2457,3fb6694a29c32ffbe8a5457f0b7d8760807ff3b5a9c63bcfa3cb0775403238f0/4=189} hashes=12 sinsemilla=0
+  root 003e63a96b3f3d5398172bf41e738739281de9f239ba331b0efea814da96ee19
+c0d41r88d2
+  step 93
+  # FlagsBatch([DeleteTree { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], key: [117, 110, 116, 111, 117, 99, 104, 101, 100, 45, 102, 108, 97, 103, 115, 45, 98, 97, 116, 99, 104, 45, 50], tree_type: NormalTree }])
+  cost seeks=53 loaded=7540 added=0 replaced=228 removed={0000000000000000000000000000000000000000000000000000000000000000/65535=2457,3fb6694a29c32ffbe8a5457f0b7d8760807ff3b5a9c63bcfa3cb0775403238f0/4=189} hashes=12 sinsemilla=0
+  root 3a4d561f688f0bc4d42f2d984703c48179a96353c6e7226acbc53171cddf9656
+cb7ddr88d2
+  step 94
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 3a4d561f688f0bc4d42f2d984703c48179a96353c6e7226acbc53171cddf9656
+c4584v18d9q1253p2cae
+  step 95
+  # Read(PathQuery { query: PathQuery { path: [[116, 114, 101, 101, 45, 100, 101, 108, 101, 116, 101, 115]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit: None, of… (431 characters)
+  cost seeks=3 loaded=538 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 1
+  row 747265652d64656c65746573 7374617973 0020bf1e8cb2f4e563a2c8c11cedb91bfe189dece64860b124da429302aab66eb18700
+  skipped 0
+  prove-cost seeks=4 loaded=276 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  proof 120 0039040c747265652d64656c657465730009020105737461797300db6e6d433bc313cfd245b28a83766292043256a3c3033b9604f1b453d2212874010c747265652d64656c657465732c0305737461797300230020bf1e8cb2f4e563a2c8c11cedb91bfe189dece64860b124da429302aab66eb187000001
+  verification verified
+stream 96 b85e2cebee162a67848b7f9e51001329a58a24612782efd7ecd94ef926ea2a07
+tally failed=0 unproved=0 unverified=0
+end 96 240af1fad7cef8626c2c6dc9eb8a9cbc96f9e6bc1f0f5becd1f154f8a818a434

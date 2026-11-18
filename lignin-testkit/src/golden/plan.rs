@@ -4,7 +4,8 @@
 //! has:
 //!
 //! - one trace per workload of [`Workload::suite`], each on a database of
-//!   its own, generated from [`SEED`];
+//!   its own, generated from [`SEED`]. It writes out the first step of each
+//!   kind, or every step for a workload of [`WRITTEN_IN_FULL`];
 //! - `suite`: every workload of the suite, one after another on one
 //!   database, generated from [`SUITE_SEED`], so the root tree holds many
 //!   subtrees and every stream is recorded for a second seed;
@@ -38,6 +39,12 @@ pub const HAND_WRITTEN_SEED: u64 = 0;
 
 /// The most bytes of results and proofs a sampled step has.
 pub const SAMPLE_MAX_PAYLOAD: usize = 2048;
+
+/// The workloads whose own trace writes out every step: short ones in
+/// which each step is a case of a cost rule that a reader compares with the
+/// steps next to it. `tree-deletes` deletes the same tree in three states,
+/// and what differs between them is the cost.
+pub const WRITTEN_IN_FULL: &[&str] = &["tree-deletes"];
 
 /// How many steps of the reference trace lie between two checkpoints.
 pub const REFERENCE_CHECKPOINT_EVERY: u64 = 1000;
@@ -115,7 +122,13 @@ pub fn standard(grove_version: &'static GroveVersion) -> Vec<Planned> {
     };
     let mut planned: Vec<Planned> = suite
         .iter()
-        .map(|workload| trace(workload.name(), SEED, vec![segment(workload)]))
+        .map(|workload| {
+            let mut segment = segment(workload);
+            if WRITTEN_IN_FULL.contains(&workload.name()) {
+                segment.sample = Sample::Everything;
+            }
+            trace(workload.name(), SEED, vec![segment])
+        })
         .collect();
     planned.push(trace(
         "suite",
@@ -214,7 +227,17 @@ mod tests {
                 assert_eq!(planned.spec.grove_version.protocol_version, version);
                 assert_eq!(planned.spec.segments.len(), 1);
                 assert_eq!(planned.spec.segments[0].workload, workload.name());
+                assert_eq!(
+                    planned.spec.segments[0].sample == Sample::Everything,
+                    WRITTEN_IN_FULL.contains(&workload.name())
+                );
                 assert!(!planned.hand_written);
+            }
+            for name in WRITTEN_IN_FULL {
+                assert!(
+                    suite.iter().any(|workload| workload.name() == *name),
+                    "{name} is no workload of the suite"
+                );
             }
             let whole = &traces[suite.len()];
             assert_eq!(whole.file, format!("v{version}/suite.trace"));

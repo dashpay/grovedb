@@ -121,7 +121,13 @@ pub fn simulate(
                 );
                 verify(&observer, &transaction, transitions);
             }
-            Op::Write(_) | Op::Batch(_) | Op::PartialBatch(_) | Op::Transaction(_) => {
+            Op::Write(_)
+            | Op::Batch(_)
+            | Op::PartialBatch(_)
+            | Op::FlagsBatch(_)
+            | Op::FlagsPartialBatch(_)
+            | Op::FlagsHandoverBatch(_)
+            | Op::Transaction(_) => {
                 if matches!(op, Op::Transaction(TransactionOp::Abandon)) {
                     transaction = db.start_transaction();
                 } else {
