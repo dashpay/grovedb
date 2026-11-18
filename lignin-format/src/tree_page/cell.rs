@@ -494,6 +494,16 @@ pub struct TreeCell<'a> {
     layout: Layout,
 }
 
+/// Two cells are equal when their bytes are: everything a cell holds is in
+/// them.
+impl PartialEq for TreeCell<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.bytes == other.bytes
+    }
+}
+
+impl Eq for TreeCell<'_> {}
+
 impl<'a> TreeCell<'a> {
     /// Bytes of a cell before its links: the header and the node's two
     /// hashes.

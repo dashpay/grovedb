@@ -3,33 +3,33 @@
 
 use super::*;
 
-pub(super) struct Rng(SplitMix64);
+pub(crate) struct Rng(SplitMix64);
 
 impl Rng {
-    pub(super) fn new(seed: u64) -> Self {
+    pub(crate) fn new(seed: u64) -> Self {
         Self(SplitMix64::new(seed))
     }
 
-    pub(super) fn below(&mut self, bound: usize) -> usize {
+    pub(crate) fn below(&mut self, bound: usize) -> usize {
         (self.0.next_u64() % bound as u64) as usize
     }
 
-    pub(super) fn chance(&mut self, percent: usize) -> bool {
+    pub(crate) fn chance(&mut self, percent: usize) -> bool {
         self.below(100) < percent
     }
 
-    pub(super) fn bytes(&mut self, len: usize) -> Vec<u8> {
+    pub(crate) fn bytes(&mut self, len: usize) -> Vec<u8> {
         self.0.bytes(len)
     }
 
-    pub(super) fn hash(&mut self) -> Hash {
+    pub(crate) fn hash(&mut self) -> Hash {
         let mut hash = [0; HASH_LEN];
         hash.copy_from_slice(&self.0.bytes(HASH_LEN));
         hash
     }
 
     /// An address in `own` page about half of the time.
-    pub(super) fn address(&mut self, own: PageId) -> CellAddress {
+    pub(crate) fn address(&mut self, own: PageId) -> CellAddress {
         let page = match self.chance(50) {
             true => own,
             false => page_id(self.0.next_u64() as u32 | 1),
@@ -37,7 +37,7 @@ impl Rng {
         CellAddress::new(page, slot(1 + self.below(400) as u16))
     }
 
-    pub(super) fn pointer(&mut self) -> ValuePointer {
+    pub(crate) fn pointer(&mut self) -> ValuePointer {
         let offset = 20 + self.0.next_u64() % (1 << 40);
         pointer(
             1 + self.below(50) as u32,
@@ -54,7 +54,7 @@ impl Rng {
         }
     }
 
-    pub(super) fn link(&mut self, own: PageId) -> ModelLink {
+    pub(crate) fn link(&mut self, own: PageId) -> ModelLink {
         let aggregate_len = match self.below(12) {
             0 => 255,
             1..=4 => [9, 17, 25, 1][self.below(4)],
@@ -69,7 +69,7 @@ impl Rng {
         }
     }
 
-    pub(super) fn value(&mut self, max_inline: usize) -> ModelValue {
+    pub(crate) fn value(&mut self, max_inline: usize) -> ModelValue {
         match self.below(10) {
             0..=3 => ModelValue::OutOfLine(self.pointer()),
             4 => ModelValue::Inline(Vec::new()),
@@ -84,7 +84,7 @@ impl Rng {
         }
     }
 
-    pub(super) fn hosted(&mut self, own: PageId) -> Vec<Option<CellAddress>> {
+    pub(crate) fn hosted(&mut self, own: PageId) -> Vec<Option<CellAddress>> {
         let count = match self.below(40) {
             0 => 255,
             1..=8 => 1 + self.below(4),
@@ -96,7 +96,7 @@ impl Rng {
     }
 
     /// A cell with inline values of up to `max_inline` bytes.
-    pub(super) fn cell(&mut self, own: PageId, max_inline: usize) -> ModelCell {
+    pub(crate) fn cell(&mut self, own: PageId, max_inline: usize) -> ModelCell {
         let key_len = self.short_len(40, 255);
         let feature_len = self.short_len(27, 255);
         ModelCell {
@@ -114,16 +114,16 @@ impl Rng {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ModelLink {
-    pub(super) child: CellAddress,
-    pub(super) hash: Hash,
-    pub(super) heights: (u8, u8),
-    pub(super) child_key_len: u8,
-    pub(super) aggregate: Vec<u8>,
+pub(crate) struct ModelLink {
+    pub(crate) child: CellAddress,
+    pub(crate) hash: Hash,
+    pub(crate) heights: (u8, u8),
+    pub(crate) child_key_len: u8,
+    pub(crate) aggregate: Vec<u8>,
 }
 
 impl ModelLink {
-    pub(super) fn link(&self) -> TreeLink<'_> {
+    pub(crate) fn link(&self) -> TreeLink<'_> {
         TreeLink {
             child: self.child,
             hash: &self.hash,
@@ -154,27 +154,27 @@ impl ModelLink {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum ModelValue {
+pub(crate) enum ModelValue {
     Inline(Vec<u8>),
     OutOfLine(ValuePointer),
 }
 
 impl ModelValue {
-    pub(super) fn value(&self) -> CellValue<'_> {
+    pub(crate) fn value(&self) -> CellValue<'_> {
         match self {
             Self::Inline(value) => CellValue::Inline(value),
             Self::OutOfLine(pointer) => CellValue::OutOfLine(*pointer),
         }
     }
 
-    pub(super) fn read(value: CellValue<'_>) -> Self {
+    pub(crate) fn read(value: CellValue<'_>) -> Self {
         match value {
             CellValue::Inline(value) => Self::Inline(value.to_vec()),
             CellValue::OutOfLine(pointer) => Self::OutOfLine(pointer),
         }
     }
 
-    pub(super) fn value_len(&self) -> u32 {
+    pub(crate) fn value_len(&self) -> u32 {
         match self {
             Self::Inline(value) => value.len() as u32,
             Self::OutOfLine(pointer) => pointer.value_len(),
@@ -183,21 +183,21 @@ impl ModelValue {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ModelCell {
-    pub(super) key: Vec<u8>,
-    pub(super) feature: Vec<u8>,
-    pub(super) value_hash: Hash,
-    pub(super) kv_hash: Hash,
-    pub(super) left: Option<ModelLink>,
-    pub(super) right: Option<ModelLink>,
-    pub(super) hosted: Vec<Option<CellAddress>>,
-    pub(super) value: ModelValue,
-    pub(super) fragment_root: bool,
+pub(crate) struct ModelCell {
+    pub(crate) key: Vec<u8>,
+    pub(crate) feature: Vec<u8>,
+    pub(crate) value_hash: Hash,
+    pub(crate) kv_hash: Hash,
+    pub(crate) left: Option<ModelLink>,
+    pub(crate) right: Option<ModelLink>,
+    pub(crate) hosted: Vec<Option<CellAddress>>,
+    pub(crate) value: ModelValue,
+    pub(crate) fragment_root: bool,
 }
 
 impl ModelCell {
     /// A leaf with nothing but a key and a value.
-    pub(super) fn leaf(key: &[u8], value: &[u8]) -> Self {
+    pub(crate) fn leaf(key: &[u8], value: &[u8]) -> Self {
         Self {
             key: key.to_vec(),
             feature: Vec::new(),
@@ -211,7 +211,7 @@ impl ModelCell {
         }
     }
 
-    pub(super) fn content(&self) -> CellContent<'_> {
+    pub(crate) fn content(&self) -> CellContent<'_> {
         CellContent {
             key: &self.key,
             feature: &self.feature,
@@ -225,21 +225,21 @@ impl ModelCell {
         }
     }
 
-    pub(super) fn link(&self, side: Side) -> &Option<ModelLink> {
+    pub(crate) fn link(&self, side: Side) -> &Option<ModelLink> {
         match side {
             Side::Left => &self.left,
             Side::Right => &self.right,
         }
     }
 
-    pub(super) fn link_mut(&mut self, side: Side) -> &mut Option<ModelLink> {
+    pub(crate) fn link_mut(&mut self, side: Side) -> &mut Option<ModelLink> {
         match side {
             Side::Left => &mut self.left,
             Side::Right => &mut self.right,
         }
     }
 
-    pub(super) fn hash_mut(&mut self, field: HashField) -> Option<&mut Hash> {
+    pub(crate) fn hash_mut(&mut self, field: HashField) -> Option<&mut Hash> {
         match field {
             HashField::Value => Some(&mut self.value_hash),
             HashField::KeyValue => Some(&mut self.kv_hash),
@@ -247,7 +247,7 @@ impl ModelCell {
         }
     }
 
-    pub(super) fn hash(&self, field: HashField) -> Option<&Hash> {
+    pub(crate) fn hash(&self, field: HashField) -> Option<&Hash> {
         match field {
             HashField::Value => Some(&self.value_hash),
             HashField::KeyValue => Some(&self.kv_hash),
@@ -256,7 +256,7 @@ impl ModelCell {
     }
 
     /// What every accessor of `cell` returns.
-    pub(super) fn read(cell: TreeCell<'_>) -> Self {
+    pub(crate) fn read(cell: TreeCell<'_>) -> Self {
         Self {
             key: cell.key().to_vec(),
             feature: cell.feature().to_vec(),
@@ -271,7 +271,7 @@ impl ModelCell {
     }
 
     /// The cell's bytes, laid out by hand from the specification.
-    pub(super) fn assemble(&self) -> Vec<u8> {
+    pub(crate) fn assemble(&self) -> Vec<u8> {
         let mut flags = 0;
         if self.left.is_some() {
             flags |= 1;
@@ -318,12 +318,12 @@ impl ModelCell {
         out
     }
 
-    pub(super) fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.assemble().len()
     }
 
     /// Checks every accessor of `cell` against this cell.
-    pub(super) fn assert_is(&self, cell: TreeCell<'_>) {
+    pub(crate) fn assert_is(&self, cell: TreeCell<'_>) {
         assert_eq!(Self::read(cell), *self);
         let bytes = self.assemble();
         assert_eq!(cell.as_bytes(), bytes);
@@ -356,14 +356,14 @@ impl ModelCell {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ModelPage {
-    pub(super) id: PageId,
-    pub(super) departures: u64,
-    pub(super) cells: BTreeMap<u16, ModelCell>,
+pub(crate) struct ModelPage {
+    pub(crate) id: PageId,
+    pub(crate) departures: u64,
+    pub(crate) cells: BTreeMap<u16, ModelCell>,
 }
 
 impl ModelPage {
-    pub(super) fn new(id: u32, departures: u64) -> Self {
+    pub(crate) fn new(id: u32, departures: u64) -> Self {
         Self {
             id: page_id(id),
             departures,
@@ -371,27 +371,27 @@ impl ModelPage {
         }
     }
 
-    pub(super) fn slot_count(&self) -> usize {
+    pub(crate) fn slot_count(&self) -> usize {
         self.cells.keys().next_back().map_or(0, |&raw| raw.into())
     }
 
-    pub(super) fn lowest_free_slot(&self) -> u16 {
+    pub(crate) fn lowest_free_slot(&self) -> u16 {
         (1..)
             .find(|raw| !self.cells.contains_key(raw))
             .expect("a free slot")
     }
 
     /// The length of the page's image.
-    pub(super) fn image_len(&self) -> usize {
+    pub(crate) fn image_len(&self) -> usize {
         22 + 2 * self.slot_count() + self.cells.values().map(ModelCell::len).sum::<usize>()
     }
 
-    pub(super) fn free_bytes(&self, size: TreePageSize) -> usize {
+    pub(crate) fn free_bytes(&self, size: TreePageSize) -> usize {
         size.image_capacity() - self.image_len()
     }
 
     /// The page's image, laid out by hand from the specification.
-    pub(super) fn assemble(&self) -> Vec<u8> {
+    pub(crate) fn assemble(&self) -> Vec<u8> {
         let slot_count = self.slot_count();
         let mut directory = vec![0u8; 2 * slot_count];
         let mut cells = Vec::new();
@@ -415,7 +415,7 @@ impl ModelPage {
     }
 
     /// The slots of the cells no cell of the page points at.
-    pub(super) fn unnamed(&self) -> Vec<u16> {
+    pub(crate) fn unnamed(&self) -> Vec<u16> {
         let named: Vec<CellAddress> = self
             .cells
             .values()
@@ -436,7 +436,7 @@ impl ModelPage {
 
     /// Checks every accessor of `page` against this page, and that its image
     /// is this page's and reads back.
-    pub(super) fn assert_is(&self, page: TreePage<'_>, size: TreePageSize) {
+    pub(crate) fn assert_is(&self, page: TreePage<'_>, size: TreePageSize) {
         page.check(size).expect("a valid page");
         assert_eq!(page.version(), V1);
         assert_eq!(page.id(), self.id);
