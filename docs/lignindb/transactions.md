@@ -16,7 +16,8 @@ fixes the rules every transaction task builds on:
 - how the flusher, the cleaner, page id reuse and checkpoints respect all of
   that (sections 10 and 11), and what a crash leaves (section 12)
 - every pair of concurrent actors, with the rule that governs it (section 13)
-- how a GroveDB write maps onto the conflict rule (section 14)
+- how GroveDB's use of the RocksDB engine maps onto these rules, and every
+  place where LigninDB deliberately differs from it (section 14)
 
 It defines no Rust API and no data structure. Those belong to TXN-02 to
 TXN-09, STORE-08 and STORE-10. Section 15 says what each of them takes from
@@ -43,9 +44,15 @@ from those documents are written with the document's name, for example
 - **Record**, **record key**, **range**: section 2.
 - **Handle**: what a caller reads or writes through. There are two kinds: a
   **snapshot** and a **write transaction**.
-- **Operation**: one call into the engine through a handle. A point read, a
-  node fetch, one cursor step, the application of one batch of writes, the
-  end of a scope and a commit are each one operation.
+- **Operation**: one call into the engine through a handle, of the size of
+  one storage call today. Each of these is one operation: reading one record
+  (a point read in any column, or the fetch of one Merk node); opening a
+  cursor; one cursor step; applying one batch of writes, or one write
+  through an immediate context; ending a scope; a commit. A Merk traversal,
+  a proof and a GroveDB query are many operations.
+- **Caller operation**: one call of the layer above the engine, for example
+  one GroveDB `get`, `insert` or `apply_batch`. It is made of many
+  operations.
 - **Foreign commit**: for an open write transaction *T*, any commit other
   than *T*'s own that is published while *T* is open.
 - **Page version**: the content one commit gave to one page id (section 6).
@@ -112,11 +119,12 @@ deltas, which value-log entry) is never part of it.
 elements (TREE-05). It belongs to a version like everything else: at every
 version it agrees with the records of that version.
 
-**ST4. A range is a set of record keys** given without listing them. Three
+**ST4. A range is a set of record keys** given without listing them. Four
 shapes exist:
 
 - every key of one column under one subtree
 - the keys of one column under one subtree inside a key interval
+- every key of every column under one subtree (a subtree drop, CV9)
 - every key of every column (wipe)
 
 A range contains a key whether or not a record exists under it.
@@ -151,14 +159,16 @@ and a run of log groups can be checked for a missing version.
 | Takes a version | Takes no version |
 | --- | --- |
 | commit of a write transaction with a non-empty write set | rollback, and a commit with an empty write set |
-| a write made with no transaction (RD7) | every read |
-| wipe (TXN-07): one commit that deletes the range "everything" | the flusher: write-back, consolidation, table checkpoints |
-| a range delete or a bulk load made outside a transaction | the cleaner: relocation, deleting files, value-log cleaning |
-|  | reclaiming the pages of a dropped subtree |
+| a write made with no transaction (RD7), whatever it holds: puts, deletes, a range delete or a bulk load. One commit. | every read |
+| wipe (TXN-07): exactly one commit, which deletes the range "everything" | the flusher: write-back, consolidation, table checkpoints |
+|  | the cleaner: relocation, deleting files, value-log cleaning |
+|  | reclaiming the pages of a dropped subtree (CV9) |
 |  | creating, opening or deleting a checkpoint |
 
-Because wipe is one commit, a crash during a wipe leaves the database either
-unchanged or empty (P-23).
+Because wipe is one commit, no handle ever sees a database that is wiped in
+one column and not in another, and a crash during a wipe leaves the database
+either unchanged or empty (P-23, VER-04). The RocksDB engine wipes in four
+steps (14.5).
 
 **CV4. *L* is one atomic value.** Publishing a commit is storing the new *L*.
 Commits are therefore totally ordered, and "the latest committed state" is
@@ -167,12 +177,21 @@ well defined at every instant.
 **CV5. Versions are assigned under the commit lock** (CM2), so they are dense
 and never out of order.
 
-**CV6. A version that a crash loses is assigned again.** Commits are not
-fsynced one by one (DEC-04). After a crash, recovery lands on some version
-*Lr* (DU2), and the next commit is *Lr* + 1, even if a commit with that number
-was acknowledged before the crash. format.md 3.2 says a version is never
-reused: that holds for every version that survives. A lost version was never
-durable, and nothing on disk still names it after recovery (DU3).
+**CV6. Along the history that survives, versions are dense, never reused
+and never go down.** These are the three properties of format.md 3.2. They
+are properties of the database's history, and a crash can shorten that
+history: commits are not fsynced one by one (DEC-04), so recovery can land on
+a version *Lr* below the last one the process published (DU2). The commits
+above *Lr* are then not part of the database. Recovery must leave nothing
+that names them (DU3), and the next commit takes *Lr* + 1.
+
+That number was carried, before the crash, by a commit that no longer
+exists. No other choice satisfies both documents: leaving the lost numbers
+unused would put a gap into the count, which format.md 3.2 rules out and on
+which the log format relies (consecutive groups differ by one). format.md
+3.2 does not spell this case out. This document cannot change it; section 17
+item 1 asks the owner to add the qualification there. Until then, this rule
+is how the transaction and recovery tasks read it.
 
 **CV7. `CommitVersion::NONE` means "not yet".** A structure that records the
 version at which something stopped being current (PV1) stores `NONE` while it
@@ -182,14 +201,22 @@ is still current.
 state a version other than 0. Nothing may treat equal states as equal
 versions, or compare versions of two database directories (format.md 3.2).
 
+**CV9. Dropping a subtree is a write of the transaction that drops it.** A
+subtree drop (TREE-09) is a range delete (ST4) of every record under the
+dropped prefixes. It is an entry in the write set of the transaction that
+makes it, and it takes effect for every other handle at that transaction's
+commit. Reclaiming the dropped pages afterwards changes no record and takes
+no version (CL6). The RocksDB engine removes those records later, in
+separate steps (14.5).
+
 ## 4. What each handle reads
 
 | Handle | Reads | Sees a commit made after it was opened | Sees uncommitted writes |
 | --- | --- | --- | --- |
 | Snapshot | *S(s)*, for the one version *s* it pinned | never | never |
-| Read with no transaction | a snapshot held for one operation of the caller (RD2) | not during that operation | never |
+| Read with no transaction | a snapshot held for one caller operation (RD2) | not during that operation | never |
 | Write transaction | its own writes, and otherwise *S(L)* at the moment of each read (RD3) | yes, for every key it has not written | only its own |
-| Write with no transaction | a write transaction held for one operation of the caller (RD7) | as a write transaction | only its own |
+| Write with no transaction | a write transaction held for one caller operation (RD7) | as a write transaction | only its own |
 
 **RD1. A snapshot reads one version.** Taking a snapshot pins *s* = *L* at
 that instant. Every read through it, at any later time and from any thread,
@@ -197,8 +224,8 @@ returns exactly *S(s)*. A snapshot is read-only: a write or a commit through
 it fails with a typed error (`ReadOnly`), and rollback is a no-op. This is
 what `start_snapshot_read_transaction` gives today (P-11).
 
-**RD2. A read with no transaction is a snapshot held for one operation of
-the caller**, for example one GroveDB `get` or one query. RocksDB reads the
+**RD2. A read with no transaction is a snapshot held for one caller
+operation**, for example one GroveDB `get` or one query. RocksDB reads the
 latest state at each storage read inside such an operation, so an operation
 that makes several reads can see a commit land between them. Pinning gives
 the result RocksDB gives when that commit lands just after the operation,
@@ -222,6 +249,12 @@ read of any key *T* has not written, and invisible for the keys it has.
 through a write transaction reads committed records from one version: the *L*
 of some instant between the call and its return. An operation never mixes two
 versions. Between two operations *L* may have moved.
+
+An operation is as small as section 1 defines it, so this is no stronger than
+RocksDB. There each of these is one call (`get`, an iterator, the application
+of a batch), and each sees one state. Fetching several nodes of one Merk is
+several operations, and a commit can land between two of them on either
+engine; RD5 says what is then read.
 
 **RD5. The overlay is by record, also for Merk.** RD3 applies to each node
 record on its own. A link in a node that *T* wrote is followed by the child's
@@ -247,7 +280,7 @@ run on RocksDB.
 A cursor on a snapshot reads *S(s)* for its whole life (TREE-06).
 
 **RD7. A write with no transaction is a write transaction of its own, opened
-and committed around one operation of the caller.** It reads by RD3, and its
+and committed around one caller operation.** It reads by RD3, and its
 commit follows section 8 like any other, including the conflict rule. It
 never waits for another open write transaction, and another open write
 transaction never sees its writes before it commits. Once it has committed,
@@ -272,7 +305,7 @@ long as someone may ask for that version. An operation guard keeps
 | Holder | Version | Held |
 | --- | --- | --- |
 | a snapshot | *s* | from creation to drop |
-| a read with no transaction | *L* at its start | for that one operation of the caller (RD2) |
+| a read with no transaction | *L* at its start | for that caller operation (RD2) |
 | a cursor of a write transaction | *L* when it was opened | until the cursor is dropped |
 | a write transaction with a non-empty write set | its base *B(T)* | until it is rebased, committed or rolled back |
 | a checkpoint being created | the version it captures | until its files are linked (CK3) |
@@ -330,6 +363,30 @@ engine's own clock of retirements (the "epoch" of TXN-02).
 costs disk space, never correctness: it holds back the cleaner (CL1) and page
 id reuse (ID2). STORE-08 bounds and reports that cost.
 
+**PN8. A location is good only at the version it was read at.** A location is
+a page id, with or without a slot. An id names a page only together with a
+version (format.md 3.1), so a location that outlives its operation needs
+care. Views are covered by their guard (PN5). This rule is about what a
+caller keeps after the view is gone: a pointer in a Merk link, a path cache,
+a Merk cache owned by a scope (GROVE-12).
+
+- Kept under a snapshot, a location stays good for the snapshot's life: the
+  pin holds the page and its id (PN2).
+- Kept through a write transaction, a location is good only as long as the
+  transaction still reads the base it was taken at, and no rollback, rollback
+  to a savepoint, scope rollback or scope merge has replaced the frame it
+  points into. A write transaction with an empty write set pins nothing
+  between operations (PN1), so for it every foreign commit ends the life of
+  every location it holds.
+- A location is never kept outside the handle it was read through.
+
+The engine must make it impossible to follow a location that is no longer
+good: an operation that is handed one must be able to tell, and must then
+find the record by its key (RD5) instead. One way: the transaction counts
+its rebases and rollbacks, a location carries the count at which it was
+issued, and a mismatch means "resolve by key". TXN-03 and MERK-01 choose the
+mechanism.
+
 ## 6. Page versions
 
 The rules above speak of content at a version. This section says what that
@@ -364,6 +421,10 @@ leave every visible page version with the same logical content. Such a change
 is applied either to every needed page version it affects, or only to the
 current one while the old representation, and whatever it points to, stays
 live for the older ones.
+
+A location that was good for a page version stays good for it (PN8).
+Background work does not renumber anything that a pointer in another page,
+the subtree directory, the value log or an open handle refers to.
 
 **PV5. A page version records its born version where the store keeps it.**
 Deltas and base images carry the version that produced them, in memory and
@@ -406,7 +467,8 @@ never a source of information that its write set does not have.
 
 **WT5. First-write version.** When an operation adds an entry *e* to *T*'s
 write set, *fw(e)* is the *L* that operation read (RD4). A batch of writes
-applied in one operation gets one value for all its entries. The moment that
+applied in one operation adds one entry for each key the batch ends up
+holding (TXN-08, GM0), and all of them get the same value. The moment that
 counts is when the engine applies the write to the transaction, not when the
 caller started to compute it (16.2).
 
@@ -525,33 +587,36 @@ commit returns a typed error, and the transaction stays open and unchanged:
 - the transaction has no pending mark (`NotFinalized`, SC9)
 
 **CM2. One commit at a time.** Commit holds the **commit lock** from step 2
-to step 7 of CM3. Besides commits, only the sampling step of a checkpoint
+to step 8 of CM3. Besides commits, only the sampling step of a checkpoint
 takes it (CK2). Readers, writers in other transactions, the flusher and the
 cleaner never wait for it.
 
 **CM3. The steps of a commit**, in order:
 
 1. If the write set is empty, return success (CV2).
-2. Take the commit lock. *L* is now fixed until step 7.
+2. Take the commit lock. *L* is now fixed until step 8.
 3. Evaluate the conflict rule (CF2) against that *L*. On a conflict, release
    the lock and return `Conflict`.
 4. If *B(T)* is not *L*, rebase (WT7a; the overlap set is empty, or step 3
    would have failed).
 5. Evaluate every hash that is still dirty (TREE-04). After this step no
    stored hash differs from its recomputation.
-6. Take version *v* = *L* + 1. Append one log group for *v*: new values,
+6. Take version *v* = *L* + 1 and append one log group for *v*: new values,
    structure deltas, one record per changed hash, flat records and range
-   deletes (STORE-01). Then turn the private frames into page versions born
+   deletes (STORE-01). This is the last step that can fail. If it fails, the
+   commit ends with a storage error and CM9 applies.
+7. Install, in memory only: turn the private frames into page versions born
    at *v*, mark the page versions they replace as superseded at *v*, and
-   retire the page ids the commit frees. None of this is visible yet: no
-   reader looks at a page version born after the version it reads (PV1).
-7. Publish: store *v* into *L*. Record the commit's key set for the conflict
+   retire the page ids the commit frees. This step writes to no file and
+   cannot fail. None of it is visible yet: no reader looks at a page version
+   born after the version it reads (PV1).
+8. Publish: store *v* into *L*. Record the commit's key set for the conflict
    checks of the other open write transactions (CF3). Release the lock.
 
 Hashes may be evaluated before the lock is taken, to keep it short. Step 5
 finishes whatever is still dirty then.
 
-**CM4. Step 7 is the commit point.** A pin taken before it sees none of the
+**CM4. Step 8 is the commit point.** A pin taken before it sees none of the
 commit. A pin taken after it sees all of it. There is no moment at which a
 handle sees part of a commit.
 
@@ -562,9 +627,9 @@ handle sees part of a commit.
 | success | ended | *L* is *v* |
 | `ScopesOpen`, `NotFinalized` | still open, unchanged | unchanged |
 | `Conflict` | ended, its writes discarded | unchanged |
-| a storage error before step 7, for example no space | ended, its writes discarded | unchanged and still readable (OPS-08) |
+| a storage error up to and including step 6, for example no space | ended, its writes discarded | unchanged and still readable (CM9, OPS-08) |
 
-A crash between steps 6 and 7 can leave a complete log group for *v*.
+A crash between steps 6 and 8 can leave a complete log group for *v*.
 Recovery then includes *v* (DU2), though the caller never saw success. No
 crash leaves part of *v*.
 
@@ -578,6 +643,23 @@ section 12).
 **CM8. Commit waits only for the commit lock and for flusher backpressure**
 (FL5). It never waits for a reader, for another open write transaction, for
 the cleaner or for the creation of a checkpoint beyond its sampling step.
+
+**CM9. A commit that fails leaves no trace.** When step 6 fails, whether the
+group was not written, written in part, or written in full but not confirmed:
+
+1. Nothing was installed (step 7 had not run). *L* is unchanged, no page
+   version born at *v* exists, and the transaction is ended as by WT9.
+2. The bytes of the failed group that reached the log must never be replayed
+   as a commit, by a recovery now or at any later time. This needs an
+   action, for two reasons: the next commit that succeeds will also be
+   version *v*, and recovery stops reading a log file at its first
+   incomplete group. So before another commit is published, the engine must
+   have put the failed group out of every later recovery's reach. One way:
+   end that log file at its last complete group, record that length where
+   recovery reads it, and go on in a new file. STORE-01 and OPS-08 choose.
+3. While it cannot do that, for example because the disk is still full, the
+   engine accepts no commit. Every read keeps working.
+4. Whatever else the transaction wrote to data files is dead space (FL1).
 
 ### 8.2 The conflict rule
 
@@ -630,13 +712,15 @@ forgotten with it (CF4).
 | rolling back a scope | the same (SC6) |
 | rolling back the whole transaction | everything leaves (case A14) |
 
-**CF5. Ranges.** A range delete inside *T* is one write-set entry with its
-own first-write version. A range delete in a foreign commit meets every
-entry of *T* whose keys lie in the range. Wipe is a commit whose key set is
-everything, so it meets every entry. A bulk load into a subtree, inside *T*
-or outside it, may be counted for this rule as one write of the range "that
-subtree's column", in place of one entry per loaded key. What is read back
-under those keys is the loaded records (RD3).
+**CF5. Ranges.** A range delete inside *T*, such as a subtree drop (CV9), is
+one write-set entry with its own first-write version. A range delete in a
+foreign commit meets every entry of *T* whose keys lie in the range. Wipe is
+a commit whose key set is everything, so it meets every entry.
+
+A bulk load into a subtree, inside *T* or outside it, may be counted for
+this rule as one write of the range "that subtree's column", in place of one
+entry per loaded key. What is read back under those keys is the loaded
+records (RD3).
 
 **CF6. `Conflict` is one typed error, used for this and for nothing else.**
 GROVE-01 maps it to the engine-neutral conflict error of SEAM-04, the one
@@ -654,9 +738,10 @@ key sets do not meet, both commit (cases A13, A13b, B9, B10).
 transaction (RD7). Its commit fails only if another thread commits a write to
 one of its keys between its write and its commit.
 
-**CF9. Where this differs from RocksDB.** In each case RocksDB's own result
-depends on the state of its memtables, which differs from node to node, so
-no consensus result can depend on it.
+**CF9. Where the conflict rule differs from RocksDB.** In each case RocksDB's
+own result depends on the state of its memtables, which differs from node to
+node, so no consensus result can depend on it. Section 14.5 lists these
+together with the differences that are not about conflicts.
 
 | Situation | RocksDB | LigninDB | Reachable in Platform |
 | --- | --- | --- | --- |
@@ -951,8 +1036,22 @@ directory may be incomplete. Removing it is the caller's job (P-18).
 
 **DU1. Published is not durable.** A commit is visible from its commit point
 (CM4) and durable only once the log is fsynced through it: by `flush()`, by a
-checkpoint (CK4), or by the sync policy (STORE-01). `flush()` makes every
-version up to the *L* of its call durable (P-05).
+checkpoint (CK4), or by the sync policy (STORE-01).
+
+**DU1a. `flush()` has a target version.** `flush()` reads *L* once, after it
+has been called. That value is its target *F*. When `flush()` returns
+success, every commit up to *F* is durable: a crash at any later time
+recovers to a version at or above *F* (P-05). A commit published after *F*
+was read may or may not be covered. If the fsync fails, `flush()` returns the
+error and promises nothing.
+
+No lock is needed for this. A commit appends its whole log group before it is
+published (CM3 steps 6 and 8), so when *F* is read every group up to *F* is
+already in the log, and `flush()` only has to fsync the log files that hold
+them. It holds an operation guard on those files (PN5), so none is deleted
+under it, and it makes no reader, writer or committer wait. A checkpoint
+running at the same time fsyncs for itself (CK4); the two do not need an
+order.
 
 **DU2. After a crash the state is one committed version.** Recovery lands on
 *S(Lr)* for a single *Lr*, with *Ld* ≤ *Lr* ≤ *Lc*, where *Ld* is the newest
@@ -962,7 +1061,15 @@ two.
 
 **DU3. Nothing else survives.** No uncommitted write, no private frame, no
 pin, no scope and no page version born after *Lr* is reachable after
-recovery (FL4). Version numbers above *Lr* are assigned again (CV6).
+recovery (FL4).
+
+Version numbers above *Lr* are assigned again (CV6). So that this is safe,
+recovery must have durably recorded, before the first commit of the new
+session is published, where each file of the earlier session stops being
+valid. No later recovery may then replay a log group, or reach a page
+version, that the earlier session wrote for a version above *Lr*, even if its
+bytes are complete on disk. The same holds for a failed commit within a
+session (CM9).
 
 **DU4. Recovery runs alone.** No handle exists and no background actor runs
 until it has finished, so it is in no interleaving.
@@ -987,12 +1094,12 @@ whether either can be made to wait for the other.
 | 7a | Writer, writer in the same transaction | units, private frames, the transaction's merged writes | SC3, SC4, SC6, SC7, LT1 to LT5 | one physical step (LT3); a claim never waits |
 | 7b | Writer, writer in another transaction | nothing until one commits | RD8, WT1, WT4 | never |
 | 8a | Writer, commit of its own transaction | the write set | CM1, SC8 | commit is refused while a scope is open |
-| 8b | Writer, a foreign commit | *L*, and the keys both wrote | RD3, RD4, WT7, WT7a, WT7b, CF2, CF3 | never; the writer rebases at its next operation |
+| 8b | Writer, a foreign commit | *L*, the keys both wrote, and locations the writer kept | RD3, RD4, WT7, WT7a, WT7b, PN8, CF2, CF3 | never; the writer rebases at its next operation |
 | 9 | Writer, flusher | nothing: the flusher never touches private frames | FL1, WT4 | never |
-| 10 | Writer, cleaner | the committed pages under the writer's frames, and page ids | PN1 (base pin), PN5, ID1, ID2 | never |
+| 10 | Writer, cleaner | the committed pages under the writer's frames, page ids, and locations the writer kept | PN1 (base pin), PN5, PN8, PV4, ID1, ID2 | never |
 | 11 | Writer, checkpoint | nothing: uncommitted writes are not captured | CK1, CK8 | never |
 | 12 | Committer, committer | *L*, the log, versions | CM2, CV4, CV5, CF2, CF7, CF8 | the second waits for the commit lock |
-| 13 | Committer, flusher | the log, the page versions just born | CM3 step 6, FL1, FL4, FL5, FL6 | the committer, before it takes the lock (FL5) |
+| 13 | Committer, flusher | the log, the page versions just born | CM3 steps 6 and 7, CM9, FL1, FL4, FL5, FL6 | the committer, before it takes the lock (FL5) |
 | 14 | Committer, cleaner | page-table entries; pages and ids the commit frees | CL4, CL6, ID2, PN6 | one step on a page-table entry |
 | 15 | Committer, checkpoint | *L*, the log's length, the file set | CK2, CK5, LT7 | each waits for the other's hold on the commit lock; the checkpoint holds it only for sampling |
 | 16 | Flusher, flusher | the pages being written back | PV4, FL3, LT7 level 5 | one step on a page-table entry |
@@ -1023,14 +1130,18 @@ thread and are covered by the rules of that thread's row:
 | rollback of a transaction, rollback to a savepoint, pop | WT8, WT9, CF4 |
 | scope merge and scope rollback | SC6 |
 | rebase | WT7 |
-| `flush()` | DU1; it is an fsync and takes no lock that a reader or writer needs |
+| a commit that fails | CM5, CM9 |
+| `flush()` | DU1a; it is an fsync and takes no lock that a reader, a writer or the committer needs |
 | wipe | CV3, CF5; it is a commit, so a snapshot taken before it keeps reading its own version (RD1) |
+| subtree drop | CV9, CF5; reclaiming its pages is the cleaner's (CL6) |
 | crash and recovery | section 12 |
 
-## 14. How a GroveDB write maps onto the conflict rule
+## 14. How GroveDB's use of the RocksDB engine maps onto these rules
 
 The engine sees record keys. GroveDB callers think in elements and paths.
-This section connects the two, for the GroveVersions that exist today.
+This section connects the two, for the GroveVersions that exist today, and
+then lists every place where LigninDB deliberately differs from the RocksDB
+engine (14.5).
 
 ### 14.1 Which keys a GroveDB write writes
 
@@ -1055,6 +1166,27 @@ not while Merk computes them (WT5). On RocksDB that is the call to
 `commit_multi_context_batch` with the transaction. Most operations apply one
 batch, at their end; the append-only trees apply their flat entries first
 and the tree changes after.
+
+**GM0. What an operation writes is what its storage batch ends up holding.**
+A `StorageBatch` is a map from key to the final put or delete of that key,
+not a list of everything Merk did (TXN-08). The write-set entries of an
+operation are those final entries, one per key. First-write versions are
+tracked over them, not over Merk's steps.
+
+- A key that Merk deleted and put again inside one batch is one entry.
+- An operation that applies an empty batch adds nothing to the write set. It
+  can neither cause a conflict nor suffer one. That is the case for
+  `insert_if_not_exists` on a key that exists (case B18),
+  `insert_if_changed_value` with an equal element (case B20), an operation
+  that fails before it applies its batch (case B22), and every read.
+- A plain `insert` writes even when the element equals the stored one (case
+  B19). So does a delete (case B21).
+
+One read in today's write path does not go through the transaction: when a
+delete carries no cost information, `continue_write_batch` reads the
+record's size from the committed state, not from the transaction's own
+writes. On LigninDB that is a read with no transaction at that moment (RD2).
+The cost model (BASE-06, SEAM-05) says when it happens.
 
 ### 14.2 What follows
 
@@ -1088,11 +1220,13 @@ B4). Two writers of the same aux key do meet (case B15).
 before the outside commit has been rolled back, *T* commits (case B6). If one
 from before the savepoint remains, it does not (case B7).
 
-Three kinds of write do not follow GM1, because they do not propagate to the
+Two kinds of write do not follow GM1, because they do not propagate to the
 root: a state-sync restore, which writes nodes directly in its own
-transaction; the replacement for `ingest_subtree_sst` (GROVE-09); and
-`replace_subtree_root`. CF2 applies to them through the keys they actually
-write.
+transaction, and the replacement for `ingest_subtree_sst` (GROVE-09), which
+loads a subtree's records outside any transaction. CF2 applies to them
+through the keys they actually write. `replace_subtree_root`, which follows
+such a load, is an ordinary tree change: it rewrites the parent element and
+propagates to the root, so GM1 and GM2 hold for it.
 
 ### 14.3 The mainnet case, step by step
 
@@ -1135,33 +1269,59 @@ commit succeeds with both changes. A foreign commit to *M* itself still
 conflicts (GM3). RocksDB is gone by then, so there is nothing to match;
 GROVE-11 should state this where it defines finalize.
 
+### 14.5 Every deliberate difference from the RocksDB engine
+
+On existing GroveVersions LigninDB must behave as the RocksDB engine does.
+These are the places where this document asks for something else. Each is
+either a case in which RocksDB's result depends on node-local state, or a
+case its callers are told not to rely on. The table is meant to be complete
+for the reads, the commit outcomes and the atomicity that a caller of
+GroveDB can observe. A further difference in those is a defect, of this
+document or of the engine.
+
+| # | What | RocksDB engine today | LigninDB | Why, and who can see it |
+| --- | --- | --- | --- | --- |
+| D1 | A read with no transaction | reads the latest state at each storage read | pins one version for the operation (RD2) | The result is one RocksDB can also give. Visible only when a commit lands during the operation. |
+| D2 | Wipe | four range deletes, one column family after another, each its own write (`storage.rs:871-881`) | one commit (CV3) | P-23 and VER-04 ask for a wipe that a crash leaves whole or undone. On RocksDB a reader, a checkpoint or a crash between two steps sees some columns wiped. |
+| D3 | Flat subtree drop | the drop's commit deletes the element and writes a pending-drop record. The subtree's records stay until `flush_pending_prefix_drops` deletes them: one range delete per prefix and column family, then one delete of the record, each its own write (`storage.rs:928-966,994-1005`) | the subtree's records are removed in the drop's commit (CV9). The flush checks liveness as today, reclaims the pages, which takes no version (CL6), and deletes each pending-drop record with a write with no transaction: one commit per record | TREE-09 unlinks at the drop. The records in question are unreachable from any element. They can be seen only by reading a dropped prefix directly, or by re-creating the dropped path before the flush, which callers are told not to do. |
+| D4 | Commit when the memtable history is too short | `TryAgain` | CF2 decided exactly (CF9) | node-local |
+| D5 | A range delete outside *T* over a key *T* wrote | `Busy` or success, depending on the memtables | `Conflict` (CF9) | node-local; not reached by Platform's call sites |
+| D6 | Records loaded outside *T* under a key *T* wrote | success | `Conflict` (CF9) | devnet seeding only; not reached there |
+
+Three things that might look like differences are not. A second write
+transaction is allowed on both engines and conflicts by the same rule (CF7).
+Both engines end the transaction when a commit fails (CM6). Version numbers
+are internal to the engine: nothing above it sees how many a wipe or a flush
+took.
+
 ## 15. What the tasks take from here
 
 ### 15.1 By task
 
 | Task | Takes from here | Still its own |
 | --- | --- | --- |
-| SEAM-01, MERK-01 | ST6: a change set names exactly the node records Merk writes today. Fetch by link must be answerable by child key (RD5). | The trait and the change-set types. |
+| SEAM-01, MERK-01 | ST6: a change set names exactly the node records Merk writes today. Fetch by link must be answerable by child key (RD5). A location kept in a link is checked before it is followed (PN8). | The trait and the change-set types. |
 | SEAM-04, GROVE-01 | The four handle rows of section 4. `Conflict` maps to the engine-neutral conflict error (CF6). `ReadOnly` maps to `SnapshotReadOnlyTransaction`. A read with no transaction is a snapshot per operation (RD2), a write with no transaction a transaction per operation (RD7). The seven steps of 14.3. | How scopes map to operations in iteration one (SC1). |
 | TXN-02 | RD1, section 5, PV1 to PV3, LT6. | The pin and epoch mechanism (PN4, PN6). |
-| TXN-03 | RD3 to RD6, section 7. | Frame and write-set structures; how to rebase (WT7); spilling (WT4). |
+| TXN-03 | RD3 to RD6, section 7, PN8. | Frame and write-set structures; how to rebase (WT7); how a stale location is detected (PN8); spilling (WT4). |
 | TXN-04 | WT8, SC8. | The undo marks. |
-| TXN-05 | Section 8. | The log group; how CF3 is kept. |
+| TXN-05 | Section 8, including the failed commit (CM9). | The log group; how CF3 is kept. |
 | TXN-06 | Section 11, DU1. | Linking, the copy fallback, the checkpoint manifest. |
-| TXN-07 | Wipe is one commit over the range "everything" (CV3, CF5). `flush()` is DU1. | The facade. |
-| TXN-08 | A batch is one operation: one read of *L*, one first-write version (RD4, WT5). | Batch semantics. |
+| TXN-07 | Wipe is one commit over the range "everything" (CV3, CF5). `flush()` is DU1a. | The facade. |
+| TXN-08 | A batch is one operation: one read of *L*, one first-write version, one entry per key it ends up holding (RD4, WT5, GM0). | Batch semantics. |
 | TXN-09 | Section 9. | Claim tables, merge, the scope's undo. |
 | TREE-01 | LT1, LT4: what must hold when two Merks share a page. | Whether they may, and placement. |
 | TREE-06 | RD6. | The cursor. |
-| TREE-09 | A drop inside a transaction is a range write (CF5); its pages are reclaimed under CL6. | The unlink. |
+| TREE-09 | A drop is a range delete in its transaction's write set (CV9, CF5); its pages are reclaimed under CL6. | The unlink. |
 | STORE-04 | LT2 to LT6, PN5. | Frames, latches, eviction. |
-| STORE-06, STORE-07 | FL1 to FL6, PV5, DU2, DU3. | Thresholds, the table checkpoint, replay. |
+| STORE-01, STORE-06, STORE-07 | FL1 to FL6, PV5, DU1a, DU2, DU3, CM9. | Thresholds, the table checkpoint, replay, how a failed group is put out of reach. |
 | STORE-08 | CL1 to CL7, PN6, CK3. | Liveness accounting, throttling. |
 | STORE-10 | ID1 to ID3. | The allocator. |
-| GROVE-05 | If pending-drop reclamation is a logical range delete, it is a commit (CV3) and CF5 applies; if the subtree was unlinked at the drop, reclamation is CL6 and takes no version. | Which of the two. |
-| GROVE-11, GROVE-12 | SC9 (pending marks), 14.4, SC3 and SC7. | Stop points, finalize, the GroveDB scope. |
+| GROVE-05 | The drop removes the subtree's records in its own commit (CV9). The flush reclaims pages without a version (CL6) and removes each pending-drop record with one commit (14.5 D3). | The liveness check and the report. |
+| GROVE-11, GROVE-12 | SC9 (pending marks), 14.4, SC3 and SC7. A scope's Merk cache keeps locations only under PN8. | Stop points, finalize, the GroveDB scope. |
 | VER-05 | Section 13, and the models and scenarios of 15.2. | The models. |
 | VER-08 | 14.3: the three mainnet heights run in the state of WT7b. | The replay. |
+| OPS-08 | CM9: what a commit that fails for lack of space must leave. | The ENOSPC campaign. |
 
 Which crate can enforce what follows from the layering in the plan.
 `lignin-store` knows no keys: it enforces sections 5, 6 and 10, LT2 to LT6
@@ -1184,6 +1344,10 @@ same result.
 - T-RD4: the seven steps of 14.3 give the same root hashes and the same
   `OperationCost` for every operation. Both engines.
 - T-RD5: writes and commit through a snapshot fail with `ReadOnly` (B13).
+- T-RD6: a location kept across a foreign commit, a rebase, a rollback, a
+  rollback to a savepoint and a scope rollback is never followed: the read
+  returns the record RD3 names (PN8). Run with page ids being freed and
+  reused in between.
 
 **Conflict rule (TXN-05, GROVE-01)**
 
@@ -1197,6 +1361,14 @@ same result.
   directions: no missed conflict and no extra one.
 - T-CF4: after 400 MiB of foreign writes during an open transaction (the
   setup of case A11b), LigninDB still answers CF2 exactly.
+- T-CF5: operations that apply an empty batch add nothing (cases B18, B20,
+  B22), and a plain insert of an equal element does write (B19). Both
+  engines.
+- T-CM1: the log append of a commit is made to fail at every write boundary
+  (IO-02). Afterwards every handle reads what it read before, the next
+  commit takes the same version and succeeds once space is back, and a crash
+  at any later point recovers to a version the model says was committed,
+  never to the failed one (CM9).
 
 **Rebase (TXN-03)**
 
@@ -1246,15 +1418,25 @@ VER-05)**
   (CK3), and afterwards deleting any live file leaves the checkpoint
   readable (CK7).
 - T-DU1: after a crash at any write boundary the state is *S(Lr)* for one
-  *Lr* at or after the last `flush()` (DU2).
+  *Lr* at or after the target of the last successful `flush()` (DU1a, DU2).
+- T-DU2: `flush()` racing commits: every commit acknowledged before
+  `flush()` was called is recovered after a crash that follows its return
+  (DU1a).
+- T-DU3: a database that lost commits in a crash, then committed again under
+  the same version numbers, and then crashed again, never recovers a group
+  or a page version of the lost commits (DU3, CV6).
+- T-WP1: a wipe racing readers, a checkpoint and a crash: each sees the
+  database either as it was or empty in all four columns (CV3).
 
 **Loom models owed by VER-05**: pin against publication and reclamation
 (PN4); page-version install and publication against a reader (CM3, CM4);
 claims (SC3); scope merge against scope read (SC6); rebase against the
-transaction's other operations (WT7); making a page private once (LT5);
+transaction's other operations (WT7); a kept location against a rebase and
+against page id reuse (PN8); making a page private once (LT5);
 latch order (LT3); commit lock against checkpoint sampling and manifest
-replacement (CK2, LT7); relocation against supersession (CL4); page id
-retirement against reuse (ID2, ID3).
+replacement (CK2, LT7); `flush()` against a commit in progress (DU1a);
+relocation against supersession (CL4); page id retirement against reuse
+(ID2, ID3).
 
 **Combined scenarios for the stress test (VER-05)**: readers on snapshots of
 different ages, one block transaction with several scopes, writes with no
@@ -1290,7 +1472,9 @@ Paths under `storage/` are in this repository. The others are in the RocksDB
 | A write through a transactional context goes into a `StorageBatch`, not into the transaction. It enters the transaction when the batch is applied: `commit_multi_context_batch` calls `rebuild_from_writebatch`. | `context_tx.rs:126-160`; `storage.rs:768-785,1215-1226` |
 | A write through an immediate context goes into the transaction at once. | `storage_context/context_immediate.rs:94-184` |
 | A GroveDB operation given no transaction starts one, uses it, and commits it. Every production caller of `commit_multi_context_batch` passes a transaction. | `grovedb/src/util.rs:8-35` |
-| Three writes bypass transactions: `wipe` and `delete_prefix_ranges` (range deletes) and `remove_pending_prefix_drop_record` (a point delete), plus `ingest_subtree_sst` behind `unsafe-dump-load`. | `storage.rs:871-911,928-966,994-1005,811-829` |
+| Three writes bypass transactions: `wipe` and `delete_prefix_ranges` (range deletes, one `delete_range_cf` call per column family) and `remove_pending_prefix_drop_record` (a point delete), plus `ingest_subtree_sst` behind `unsafe-dump-load`. | `storage.rs:871-911,928-966,994-1005,811-829` |
+| Two reads bypass transactions: the size of a record deleted without cost information, and the list of pending-drop records. Both read the committed state. | `storage.rs:645-761,975-990` |
+| A `StorageBatch` keeps one final entry per key. | `storage/src/storage.rs:319-378` |
 | `commit_transaction` takes the transaction by value and returns RocksDB's error. | `storage.rs:324-327,1140-1147` |
 
 **What RocksDB does**
@@ -1380,6 +1564,11 @@ the root, at `GroveVersion::latest()`. "None" is a call with no transaction.
 | B15 | *T* puts aux key `x`; None puts aux key `x`; *T* commits | `Busy` | `Conflict` |
 | B16 | *T* puts aux key `x`; None puts aux key `y`; *T* reads `y`; *T* commits | found; success | same |
 | B17 | *T* inserts `A/a1`; `wipe()`; *T* commits | `Busy` (the trees were still in the memtable) | `Conflict` |
+| B18 | `A/a1` exists; *T* calls `insert_if_not_exists` for `A/a1`; None inserts `B/b1`; *T* commits | success: *T* wrote nothing | same |
+| B19 | `A/a1` exists; *T* inserts `A/a1` with the same value; None inserts `B/b1`; *T* commits | `Busy` | `Conflict` |
+| B20 | `A/a1` exists; *T* calls `insert_if_changed_value` for `A/a1` with the same value; None inserts `B/b1`; *T* commits | success: *T* wrote nothing | same |
+| B21 | `A/a1` exists; *T* deletes `A/a1`; None inserts `B/b1`; *T* commits | `Busy` | `Conflict` |
+| B22 | *T* deletes a key that does not exist, which fails; None inserts `B/b1`; *T* commits | success: *T* wrote nothing | same |
 
 ### 16.5 How this was checked
 
@@ -1387,8 +1576,8 @@ the root, at `GroveVersion::latest()`. "None" is a call with no transaction.
   `librocksdb-sys` 0.19.0+11.8.1, at the lines given.
 - The cases of 16.3 and 16.4 were run by one scratch program built against
   `rocksdb` 0.25.0 and this branch's `grovedb`. It prints the observed
-  result beside the result predicted from the source, for the 47 cases other
-  than B8. 46 predictions matched. The one that did not was A10c: the
+  result beside the result predicted from the source, for the 52 cases other
+  than B8. 51 predictions matched. The one that did not was A10c: the
   prediction had overlooked that a flushed memtable stays in the history that
   the check reads. A10d was added to show the other side of that. B8 is a
   trace; its seven results are in 14.3.
@@ -1403,10 +1592,14 @@ the root, at `GroveVersion::latest()`. "None" is a call with no transaction.
 Each is a decision the plan did not make and that later tasks build on. They
 are listed so the owner can overrule one before code depends on it.
 
-1. **Commit versions stay dense** (section 3). No change to format.md is
-   asked for. Two clarifications of format.md 3.2: a commit with an empty
-   write set takes no version (CV2), and a version lost in a crash is
-   assigned again (CV6).
+1. **Commit versions stay dense** (section 3), and **format.md 3.2 needs one
+   qualification that only the owner can merge.** It says a version is never
+   reused and never goes down. With DEC-04 a crash can lose the newest
+   commits, and the next commit then takes a number a lost commit had (CV6).
+   The sentence should read "along the history that survives a crash".
+   Keeping lost numbers unused instead would break "no gaps". DU3 adds the
+   recovery rule that makes the reuse safe. A second, smaller point: a
+   commit with an empty write set takes no version (CV2).
 2. **The state is modelled as records keyed as RocksDB keys them** (ST1,
    ST2), and the conflict rule is over those keys, not over pages. A
    page-level rule would be simpler to build and would not be RocksDB's.
@@ -1448,3 +1641,16 @@ are listed so the owner can overrule one before code depends on it.
     continue during the fsync and the linking (CK5).
 17. **In iteration two the conflict rule reaches less far** (14.4), because
     ancestors are written at finalize. GROVE-11 should state it.
+18. **Wipe is one commit** (CV3), where the RocksDB engine takes four steps
+    (14.5 D2).
+19. **A subtree drop removes its records in the drop's commit** (CV9), where
+    the RocksDB engine removes them at the later flush (14.5 D3). This
+    follows TREE-09 and fixes what GROVE-05 maps the flush to.
+20. **An operation is the size of one storage call** (section 1, RD4), so
+    that the read rule is exactly as fine-grained as RocksDB's.
+21. **A location kept between operations must be checked before it is
+    followed** (PN8). This binds the path cache of PERF-03 and the scope
+    caches of GROVE-12.
+22. **A failed commit must be put out of recovery's reach before the next
+    commit** (CM9), and **`flush()` covers the commits published before it
+    read *L*** (DU1a).
