@@ -10,7 +10,7 @@ use std::{
 
 use lignin_format::{
     manifest::{Manifest, TableCheckpoint},
-    table::{self, Decoder, Encoder, Record},
+    table::{self, Decoder, Encoder, LogPlace, Record, ValueCount},
     CommitVersion, FileHeader, FileId, FileKind, PageId,
 };
 use lignin_io::{EntryKind, OpenMode, Vfs, VfsFile};
@@ -25,13 +25,42 @@ use crate::segment::{
     SegmentStoreError,
 };
 
+/// A sample of the count of live values of every value-log file, as a
+/// checkpoint stores it for recovery.
+///
+/// The table does not read it. Whoever takes a checkpoint takes the sample
+/// from the value log, with the place the log had reached, and whoever
+/// recovers gives it back to the value log.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CountSample {
+    /// The sample's place in the log: the counts include every change whose
+    /// record is before it and none whose record is after it. `None` is the
+    /// place before every record of the log.
+    pub place: Option<LogPlace>,
+    /// The count of each value-log file that has one, in ascending order of
+    /// file id.
+    pub counts: Vec<ValueCount>,
+}
+
+/// How far the log is durable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LogDurable {
+    /// The log is durable through the commit of this version.
+    pub version: CommitVersion,
+    /// Every record of the log before this place is durable. `None` if
+    /// none is known to be.
+    pub place: Option<LogPlace>,
+}
+
 /// What a checkpoint holds, apart from its links.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckpointInfo {
     named: TableCheckpoint,
     reaches: Option<CommitVersion>,
+    trimmed_free: Option<CommitVersion>,
     links: u64,
     segments: BTreeMap<FileId, u64>,
+    sample: CountSample,
 }
 
 impl CheckpointInfo {
@@ -56,6 +85,33 @@ impl CheckpointInfo {
     /// has no links. It can be above [`Self::covers`].
     pub fn reaches(&self) -> Option<CommitVersion> {
         self.reaches
+    }
+
+    /// The newest version of a free link that had been trimmed out of the
+    /// table when the checkpoint was written ([`PageTable::trimmed_free`]),
+    /// or `None` if there was none. The checkpoint may hold no link of a
+    /// page that was freed at or before this version.
+    ///
+    /// The file does not hold this. It is `None` for a checkpoint that was
+    /// loaded: the log was durable through it before the checkpoint was
+    /// named.
+    pub fn trimmed_free(&self) -> Option<CommitVersion> {
+        self.trimmed_free
+    }
+
+    /// The commit version the log must be durable through before a manifest
+    /// names the checkpoint: the newest of [`Self::covers`],
+    /// [`Self::reaches`] and [`Self::trimmed_free`].
+    pub fn log_needed(&self) -> CommitVersion {
+        let held = self.reaches.max(self.trimmed_free);
+        held.map_or(self.covers(), |held| held.max(self.covers()))
+    }
+
+    /// The sample of the value log's counts that the checkpoint holds. A
+    /// recovery from the checkpoint starts the counts from it, and the log
+    /// is needed from its place on.
+    pub fn sample(&self) -> &CountSample {
+        &self.sample
     }
 
     /// The number of links in the checkpoint.
@@ -274,12 +330,18 @@ impl TableCheckpoints {
     /// written as it is at one moment, and the pages are not all taken at
     /// the same moment.
     ///
+    /// `sample` is stored in the checkpoint as it is given, and
+    /// [`CheckpointInfo::sample`] gives it back when the checkpoint is
+    /// loaded. Its counts must be in ascending order of file id, one for a
+    /// file. A database with no value-log file has an empty sample.
+    ///
     /// If this fails, the file is removed again and the id is not used a
     /// second time in this session.
     pub fn write(
         &self,
         table: &PageTable,
         covers: CommitVersion,
+        sample: &CountSample,
     ) -> Result<CheckpointInfo, PageTableError> {
         let id = {
             let mut files = self.files();
@@ -294,7 +356,7 @@ impl TableCheckpoints {
             files.on_disk.insert(id);
             files.waiting.insert(id);
         }
-        let written = write_records(&*file, &self.path(id), id, table, covers);
+        let written = write_records(&*file, &self.path(id), id, table, covers, sample);
         drop(file);
         if written.is_err() {
             self.files().waiting.remove(&id);
@@ -306,11 +368,19 @@ impl TableCheckpoints {
     /// Replaces the manifest with one that names `checkpoint`, which
     /// [`Self::write`] returned, and deletes the checkpoint it named before.
     ///
-    /// `log_durable` is the commit version the log is durable through. The
-    /// checkpoint is refused if it covers, or holds a link of, a later
-    /// version ([`PageTableError::LogBehind`]): sync the log through
-    /// [`CheckpointInfo::reaches`] first. A recovery then never lands below
-    /// a link of the checkpoint it loads.
+    /// `log` is how far the log is durable. The checkpoint is refused if it
+    /// needs the log durable through a later version than
+    /// [`LogDurable::version`] ([`PageTableError::LogBehind`]): if it covers
+    /// a later version, holds a link of one, or was written after a free
+    /// link of one had been trimmed out of the table. Sync the log through
+    /// [`CheckpointInfo::log_needed`] first. A recovery then never lands
+    /// below a link of the checkpoint it loads, and never where a page that
+    /// the checkpoint has no link of is still in use.
+    ///
+    /// It is also refused if the place of its sample of the value counts is
+    /// after [`LogDurable::place`] ([`PageTableError::LogBehindSample`]):
+    /// a recovery applies to the sample the changes after its place, so the
+    /// log it finds must reach that place.
     ///
     /// Then every segment is synced, so that the blocks the checkpoint
     /// points to are durable. The new manifest names the segments as they
@@ -330,20 +400,25 @@ impl TableCheckpoints {
     pub fn install(
         &self,
         checkpoint: &CheckpointInfo,
-        log_durable: CommitVersion,
+        log: LogDurable,
         manifest: &mut ManifestStore,
         segments: &SegmentStore,
     ) -> Result<(), PageTableError> {
         self.check_same_dir(manifest.dir())?;
         self.check_same_dir(segments.dir())?;
-        let covers = checkpoint.covers();
-        let needed = checkpoint
-            .reaches()
-            .map_or(covers, |reaches| reaches.max(covers));
-        if needed > log_durable {
+        let needed = checkpoint.log_needed();
+        if needed > log.version {
             return Err(PageTableError::LogBehind {
                 needed,
-                durable: log_durable,
+                durable: log.version,
+            });
+        }
+        if let Some(needed) = checkpoint.sample.place
+            && Some(needed) > log.place
+        {
+            return Err(PageTableError::LogBehindSample {
+                needed,
+                durable: log.place,
             });
         }
         segments.sync()?;
@@ -433,6 +508,7 @@ fn write_records(
     id: FileId,
     table: &PageTable,
     covers: CommitVersion,
+    sample: &CountSample,
 ) -> Result<CheckpointInfo, PageTableError> {
     let mut end = Appender {
         file,
@@ -456,9 +532,22 @@ fn write_records(
             end.append(&mut records)?;
         }
     }
+    // Read after the last chain was copied: a free link that a trim removed
+    // before its chain was copied is then no newer than this.
+    let trimmed_free = table.trimmed_free();
+    for count in &sample.counts {
+        let offset = end.len + records.len() as u64;
+        encoder
+            .push_value_count(*count, &mut records)
+            .map_err(PageTableError::format(path, offset))?;
+        if records.len() >= table::MAX_RECORD_LEN {
+            end.append(&mut records)?;
+        }
+    }
+    let offset = end.len + records.len() as u64;
     let totals = encoder
-        .finish(covers, &mut records)
-        .map_err(PageTableError::format(path, end.len))?;
+        .finish(covers, sample.place, &mut records)
+        .map_err(PageTableError::format(path, offset))?;
     end.append(&mut records)?;
     file.sync_data().map_err(PageTableError::io("sync", path))?;
 
@@ -466,16 +555,19 @@ fn write_records(
         named: TableCheckpoint::new(id, end.len, covers)
             .map_err(PageTableError::format(path, 0))?,
         reaches: totals.reaches,
+        trimmed_free,
         links: totals.links,
         segments: extents.finish(),
+        sample: sample.clone(),
     })
 }
 
 impl PageTable {
     /// Reads the checkpoint that `manifest` names, in the database directory
     /// `dir`, and returns the table it holds with what else the checkpoint
-    /// says. A manifest that names no checkpoint gives an empty table and
-    /// `None`.
+    /// says, the sample of the value counts among it
+    /// ([`CheckpointInfo::sample`]). A manifest that names no checkpoint
+    /// gives an empty table and `None`.
     ///
     /// The file must be at least as long as its valid length, start with the
     /// header of a checkpoint of that id, hold whole records up to exactly
@@ -520,6 +612,7 @@ impl PageTable {
         let mut decoder = Decoder::new(version);
         let mut chains = Chains::new();
         let mut extents = Extents::default();
+        let mut counts = Vec::new();
         let mut offset = FileHeader::ENCODED_LEN as u64;
         let end = loop {
             let window = (valid_len - offset).min(table::MAX_RECORD_LEN as u64) as usize;
@@ -543,6 +636,7 @@ impl PageTable {
                             .map_err(|source| PageTableError::Link { page, source })?;
                     }
                 }
+                Record::ValueCounts(record) => counts.extend(record),
                 Record::End(end) => break end,
             }
         };
@@ -563,8 +657,13 @@ impl PageTable {
         let info = CheckpointInfo {
             named,
             reaches: end.reaches,
+            trimmed_free: None,
             links: end.links,
             segments: extents.finish(),
+            sample: CountSample {
+                place: end.place,
+                counts,
+            },
         };
         info.check_covered_by(manifest)?;
         Ok((Self::from_chains(chains), Some(info)))

@@ -308,11 +308,13 @@ fn a_trim_past_the_freeing_version_removes_the_mark_and_everything_before_it() {
     assert!(!table.trim(page(1), version(7), &mut removed));
     assert!(removed.is_empty());
     assert_eq!(table.links(), 3);
+    assert_eq!(table.trimmed_free(), None);
     assert!(table.trim(page(1), version(8), &mut removed));
     assert_eq!(removed, [delta(6, change), base(5, image)]);
     assert_eq!((table.pages(), table.links()), (0, 0));
     assert_eq!(table.newest(page(1)), None);
     assert_eq!(table.high_water(), Some(page(1)));
+    assert_eq!(table.trimmed_free(), Some(version(8)));
     table.push(page(1), base(3, reused)).unwrap();
 
     let table = PageTable::new();
@@ -326,13 +328,55 @@ fn a_trim_past_the_freeing_version_removes_the_mark_and_everything_before_it() {
     assert_eq!(chain_of(&table, 1), [base(12, reused), delta(13, change)]);
     assert_eq!(read_at(&table, 1, 10), None);
     assert_eq!((table.pages(), table.links()), (1, 2));
+    assert_eq!(table.trimmed_free(), Some(version(8)));
 
     let table = PageTable::new();
     table.push(page(1), free(2)).unwrap();
     assert!(!table.trim(page(1), version(1), &mut removed));
+    assert_eq!(table.trimmed_free(), None);
     assert!(table.trim(page(1), version(2), &mut removed));
     assert_eq!(removed, [base(5, image)]);
     assert_eq!(table.pages(), 0);
+    assert_eq!(table.trimmed_free(), Some(version(2)));
+}
+
+#[test]
+fn the_table_remembers_the_newest_free_link_a_trim_removed() {
+    let table = PageTable::new();
+    let mut removed = Vec::new();
+    for (raw_page, freed) in [(1, 9), (2, 4), (3, 7)] {
+        table
+            .push(
+                page(raw_page),
+                base(1, at(1, 20 + 64 * u64::from(raw_page))),
+            )
+            .unwrap();
+        table.push(page(raw_page), free(freed)).unwrap();
+    }
+    table.push(page(3), base(8, at(2, 20))).unwrap();
+    assert_eq!(table.trimmed_free(), None);
+
+    assert!(table.trim(page(2), version(20), &mut removed));
+    assert_eq!(table.trimmed_free(), Some(version(4)));
+    assert!(table.trim(page(1), version(20), &mut removed));
+    assert_eq!(table.trimmed_free(), Some(version(9)));
+    assert!(!table.trim(page(3), version(20), &mut removed));
+    assert_eq!(chain_of(&table, 3), [base(8, at(2, 20))]);
+    assert_eq!(table.trimmed_free(), Some(version(9)));
+
+    let table = PageTable::new();
+    table.push(page(1), free(3)).unwrap();
+    table.push(page(1), base(5, at(1, 20))).unwrap();
+    table.push(page(1), free(6)).unwrap();
+    table.push(page(1), base(6, at(1, 84))).unwrap();
+    assert!(!table.trim(page(1), version(5), &mut removed));
+    assert_eq!(table.trimmed_free(), Some(version(3)));
+    assert!(!table.trim(page(1), version(6), &mut removed));
+    assert_eq!(chain_of(&table, 1), [base(6, at(1, 84))]);
+    assert_eq!(table.trimmed_free(), Some(version(6)));
+
+    assert_eq!(table.discard_after(version(0)), 1);
+    assert_eq!(table.trimmed_free(), Some(version(6)));
 }
 
 #[test]
@@ -442,6 +486,7 @@ fn check_against(table: &PageTable, model: &ModelTable, newest: u64) {
     assert_eq!(all_links(table), model.links());
     assert_eq!(table.links(), model.links().len() as u64);
     assert_eq!(table.pages(), model.chains.len() as u64);
+    assert_eq!(table.trimmed_free(), model.trimmed_free);
     for raw in PAGES {
         assert_eq!(chain_of(table, raw), model.chain(raw));
         assert_eq!(table.newest(page(raw)), model.chain(raw).last().copied());

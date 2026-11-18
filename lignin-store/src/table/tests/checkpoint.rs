@@ -3,7 +3,7 @@
 
 use std::{
     collections::BTreeMap,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     thread,
 };
 
@@ -151,7 +151,7 @@ fn a_checkpoint_is_written_named_and_loaded() {
         written.segments(),
         &BTreeMap::from([(fixture.writer.file_id(), fixture.writer.end())])
     );
-    let len = 20 + 8 + 1 + links.len() as u64 * 28 + 33;
+    let len = 20 + 8 + 1 + links.len() as u64 * 28 + 53;
     assert_eq!(written.named().valid_len(), len);
     assert_eq!(bytes_of(&fixture.fs, &checkpoint_path(1)).len() as u64, len);
 
@@ -246,7 +246,15 @@ fn installing_tells_the_segment_store_of_the_new_manifest() {
         written.segments().keys().copied().collect::<Vec<_>>(),
         [second]
     );
-    assert_eq!(fixture.db.load().unwrap().1, Some(written));
+    assert_eq!(written.trimmed_free(), Some(version(newest)));
+    assert_eq!(written.log_needed(), version(newest + 1));
+    let loaded = fixture.db.load().unwrap().1.expect("a checkpoint");
+    assert_eq!(loaded.trimmed_free(), None);
+    assert_eq!(
+        (loaded.named(), loaded.reaches(), loaded.links()),
+        (written.named(), written.reaches(), written.links())
+    );
+    assert_eq!(loaded.segments(), written.segments());
 }
 
 #[test]
@@ -262,7 +270,7 @@ fn a_database_without_a_checkpoint_has_an_empty_table() {
 fn a_checkpoint_of_an_empty_table_is_a_header_and_an_end_record() {
     let mut fixture = Fixture::new();
     let written = fixture.checkpoint(0);
-    assert_eq!(written.named().valid_len(), 53);
+    assert_eq!(written.named().valid_len(), 73);
     assert_eq!(written.reaches(), None);
     assert_eq!(written.links(), 0);
     assert!(written.segments().is_empty());
@@ -289,7 +297,10 @@ fn each_checkpoint_takes_the_next_id_and_the_one_before_is_deleted() {
     let again = Db::open(&fixture.fs).unwrap();
     let (loaded, _) = again.load().unwrap();
     assert_eq!(all_links(&loaded), all_links(&fixture.table));
-    let written = again.checkpoints.write(&loaded, version(0)).unwrap();
+    let written = again
+        .checkpoints
+        .write(&loaded, version(0), &CountSample::default())
+        .unwrap();
     assert_eq!(written.file(), id(5));
 }
 
@@ -302,7 +313,10 @@ fn opening_removes_the_checkpoints_the_manifest_does_not_name() {
     assert_eq!(written.file(), id(2));
     let Fixture { fs, db, table, .. } = fixture;
 
-    let unnamed = db.checkpoints.write(&table, version(newest)).unwrap();
+    let unnamed = db
+        .checkpoints
+        .write(&table, version(newest), &CountSample::default())
+        .unwrap();
     assert_eq!(unnamed.file(), id(3));
     put(&fs, &checkpoint_path(1), b"left by a crash");
     put(&fs, &checkpoint_path(7), &[]);
@@ -323,7 +337,10 @@ fn opening_removes_the_checkpoints_the_manifest_does_not_name() {
     let (loaded, info) = db.load().unwrap();
     assert_eq!(info, Some(written));
     assert_eq!(all_links(&loaded), all_links(&table));
-    let next = db.checkpoints.write(&loaded, version(newest)).unwrap();
+    let next = db
+        .checkpoints
+        .write(&loaded, version(newest), &CountSample::default())
+        .unwrap();
     assert_eq!(next.file(), id(3));
 }
 
@@ -344,7 +361,7 @@ fn a_checkpoint_the_manifest_cannot_vouch_for_is_not_installed() {
     let written = fixture
         .db
         .checkpoints
-        .write(&fixture.table, version(10))
+        .write(&fixture.table, version(10), &CountSample::default())
         .unwrap();
     let db = &mut fixture.db;
     let error = db
@@ -374,7 +391,7 @@ fn a_checkpoint_the_manifest_cannot_vouch_for_is_not_installed() {
     let written = fixture
         .db
         .checkpoints
-        .write(&fixture.table, version(10))
+        .write(&fixture.table, version(10), &CountSample::default())
         .unwrap();
     assert_eq!(written.file(), id(3));
     let db = &mut fixture.db;
@@ -417,7 +434,7 @@ fn a_checkpoint_never_covers_less_than_the_one_before_it() {
     let written = fixture
         .db
         .checkpoints
-        .write(&fixture.table, version(newest - 1))
+        .write(&fixture.table, version(newest - 1), &CountSample::default())
         .unwrap();
     let db = &mut fixture.db;
     let error = db
@@ -452,7 +469,10 @@ fn a_checkpoint_is_not_named_before_the_log_is_durable_through_all_it_holds() {
     assert_eq!(chain_of(&fixture.table, 1), [base(3, new)]);
 
     let db = &mut fixture.db;
-    let written = db.checkpoints.write(&fixture.table, version(2)).unwrap();
+    let written = db
+        .checkpoints
+        .write(&fixture.table, version(2), &CountSample::default())
+        .unwrap();
     assert_eq!(
         (written.covers(), written.reaches()),
         (version(2), Some(version(3)))
@@ -460,7 +480,7 @@ fn a_checkpoint_is_not_named_before_the_log_is_durable_through_all_it_holds() {
     for durable in [0, 2] {
         let error = db
             .checkpoints
-            .install(&written, version(durable), &mut db.manifest, &db.segments)
+            .install(&written, log(durable), &mut db.manifest, &db.segments)
             .unwrap_err();
         assert!(matches!(
             error,
@@ -470,14 +490,17 @@ fn a_checkpoint_is_not_named_before_the_log_is_durable_through_all_it_holds() {
         assert_eq!(db.named(), None);
     }
     db.checkpoints
-        .install(&written, version(3), &mut db.manifest, &db.segments)
+        .install(&written, log(3), &mut db.manifest, &db.segments)
         .unwrap();
     assert_eq!(db.named(), Some(written.named()));
 
-    let ahead = db.checkpoints.write(&fixture.table, version(5)).unwrap();
+    let ahead = db
+        .checkpoints
+        .write(&fixture.table, version(5), &CountSample::default())
+        .unwrap();
     let error = db
         .checkpoints
-        .install(&ahead, version(4), &mut db.manifest, &db.segments)
+        .install(&ahead, log(4), &mut db.manifest, &db.segments)
         .unwrap_err();
     assert!(matches!(
         error,
@@ -485,14 +508,17 @@ fn a_checkpoint_is_not_named_before_the_log_is_durable_through_all_it_holds() {
     ));
     assert_eq!(db.named(), Some(written.named()));
     db.checkpoints
-        .install(&ahead, version(5), &mut db.manifest, &db.segments)
+        .install(&ahead, log(5), &mut db.manifest, &db.segments)
         .unwrap();
 
-    let empty = db.checkpoints.write(&PageTable::new(), version(6)).unwrap();
+    let empty = db
+        .checkpoints
+        .write(&PageTable::new(), version(6), &CountSample::default())
+        .unwrap();
     assert_eq!(empty.reaches(), None);
     let error = db
         .checkpoints
-        .install(&empty, version(5), &mut db.manifest, &db.segments)
+        .install(&empty, log(5), &mut db.manifest, &db.segments)
         .unwrap_err();
     assert!(matches!(
         error,
@@ -502,6 +528,52 @@ fn a_checkpoint_is_not_named_before_the_log_is_durable_through_all_it_holds() {
     assert_eq!(fixture.table_files(), [checkpoint_name(2)]);
 }
 
+/// The page is in use at version 1 and freed by commit 2. Once no reader
+/// needs it the trim leaves no link of it, so a checkpoint has no trace of
+/// the page. If that checkpoint were named with the log durable only through
+/// 1, a crash could lose commit 2, and recovery would land on version 1 with
+/// a table that does not hold the page.
+#[test]
+fn a_checkpoint_that_lost_a_freed_page_is_not_named_before_the_log_is_durable_through_the_free() {
+    let mut fixture = Fixture::new();
+    let image = fixture.block(1, BlockContent::Base, 50);
+    fixture.table.push(page(1), base(1, image)).unwrap();
+    let before = fixture.checkpoint(1);
+    fixture.table.push(page(1), free(2)).unwrap();
+    let mut removed = Vec::new();
+    assert!(fixture.table.trim(page(1), version(2), &mut removed));
+    assert_eq!(removed, [base(1, image)]);
+
+    let db = &mut fixture.db;
+    let written = db
+        .checkpoints
+        .write(&fixture.table, version(1), &CountSample::default())
+        .unwrap();
+    assert_eq!((written.links(), written.reaches()), (0, None));
+    let refused = db
+        .checkpoints
+        .install(&written, log(1), &mut db.manifest, &db.segments);
+    assert!(
+        matches!(
+            refused,
+            Err(PageTableError::LogBehind { needed, durable })
+                if needed == version(2) && durable == version(1)
+        ),
+        "{refused:?}"
+    );
+
+    assert_eq!(db.named(), Some(before.named()));
+    let (loaded, _) = db.load().unwrap();
+    assert_eq!(read_at(&loaded, 1, 1), Some((version(1), vec![image])));
+
+    db.checkpoints
+        .install(&written, log(2), &mut db.manifest, &db.segments)
+        .unwrap();
+    assert_eq!(db.named(), Some(written.named()));
+    let (loaded, _) = db.load().unwrap();
+    assert_eq!(read_at(&loaded, 1, 2), None);
+}
+
 #[test]
 fn an_older_checkpoint_does_not_replace_a_newer_one() {
     let mut fixture = Fixture::new();
@@ -509,11 +581,11 @@ fn an_older_checkpoint_does_not_replace_a_newer_one() {
     let db = &mut fixture.db;
     let older = db
         .checkpoints
-        .write(&fixture.table, version(newest))
+        .write(&fixture.table, version(newest), &CountSample::default())
         .unwrap();
     let newer = db
         .checkpoints
-        .write(&fixture.table, version(newest))
+        .write(&fixture.table, version(newest), &CountSample::default())
         .unwrap();
     db.checkpoints
         .install(&newer, LOG, &mut db.manifest, &db.segments)
@@ -551,7 +623,7 @@ fn the_parts_of_another_directory_are_refused() {
     let written = fixture
         .db
         .checkpoints
-        .write(&fixture.table, version(0))
+        .write(&fixture.table, version(0), &CountSample::default())
         .unwrap();
     let db = &mut fixture.db;
 
@@ -602,7 +674,10 @@ fn a_checkpoint_of_many_pages_takes_several_records() {
     }
     let far = page(3_000_000);
     table.push(far, base(7, at(9, 1 << 40))).unwrap();
-    let written = db.checkpoints.write(&table, version(6)).unwrap();
+    let written = db
+        .checkpoints
+        .write(&table, version(6), &CountSample::default())
+        .unwrap();
     assert_eq!(written.links(), u64::from(pages + pages / 4 + 1));
     assert_eq!(written.reaches(), Some(version(7)));
     let extents: Vec<(u32, u64)> = written
@@ -667,7 +742,11 @@ fn a_checkpoint_written_while_the_table_changes_holds_each_chain_as_it_once_was(
             }
         });
         for _ in 0..4 {
-            checkpoints.push(db.checkpoints.write(&table, version(0)).unwrap());
+            checkpoints.push(
+                db.checkpoints
+                    .write(&table, version(0), &CountSample::default())
+                    .unwrap(),
+            );
         }
         done.store(true, Ordering::Release);
     });
@@ -738,7 +817,10 @@ fn a_checkpoint_written_while_chains_are_consolidated_and_trimmed_holds_whole_pa
         });
         for _ in 0..6 {
             let started_at = table.newest(page(1)).unwrap().version;
-            let written = db.checkpoints.write(&table, started_at).unwrap();
+            let written = db
+                .checkpoints
+                .write(&table, started_at, &CountSample::default())
+                .unwrap();
             checkpoints.push((started_at, written));
         }
         done.store(true, Ordering::Release);
@@ -768,6 +850,360 @@ fn a_checkpoint_written_while_chains_are_consolidated_and_trimmed_holds_whole_pa
     }
     println!("{consolidated} consolidated chains, {freed} pages found freed");
     assert!(consolidated > 0);
+}
+
+/// Tells the other thread of a test to stop, also when this one fails.
+struct Stop<'a>(&'a AtomicBool);
+
+impl Drop for Stop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+/// Pages are freed and trimmed out of the table from the highest id down,
+/// commit after commit, while checkpoints are written. A checkpoint that has
+/// no link of a page lost it to a trim that came before the page's chain
+/// was copied, and must say so, also when the trim came after the write
+/// began.
+#[test]
+fn a_checkpoint_written_while_freed_pages_are_trimmed_says_which_free_links_it_lost() {
+    const PER_WRITE: u64 = 300;
+    let fs = sim_fs(SimConfig::new(6));
+    let db = Db::create(&fs);
+    let table = PageTable::new();
+    let pages = 6 * format::LINKS_PER_RECORD as u64;
+    let image = |raw_page: u64| at(1, 20 + raw_page * 64);
+    for raw_page in 1..=pages {
+        table
+            .push(page(raw_page as u32), base(0, image(raw_page)))
+            .unwrap();
+    }
+    // Commit `n` frees page `pages + 1 - n`. `allowed` is how many commits
+    // may have run, and `freed` how many have.
+    let allowed = AtomicU64::new(0);
+    let freed = AtomicU64::new(0);
+    let done = AtomicBool::new(false);
+    let (mut during, mut rounds) = (0, 0);
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            let _stop = Stop(&done);
+            let mut removed = Vec::new();
+            let mut commit = 0;
+            while !done.load(Ordering::Acquire) {
+                if commit == allowed.load(Ordering::Acquire) {
+                    thread::yield_now();
+                    continue;
+                }
+                commit += 1;
+                let raw_page = (pages + 1 - commit) as u32;
+                table.push(page(raw_page), free(commit)).unwrap();
+                assert!(table.trim(page(raw_page), version(commit), &mut removed));
+                freed.store(commit, Ordering::Release);
+            }
+        });
+        let _stop = Stop(&done);
+        while during == 0 && rounds < 60 {
+            rounds += 1;
+            let before = freed.load(Ordering::Acquire);
+            assert_eq!(
+                table.trimmed_free(),
+                CommitVersion::new(before).filter(|_| before > 0)
+            );
+            allowed.fetch_add(PER_WRITE, Ordering::AcqRel);
+            let written = db
+                .checkpoints
+                .write(&table, version(0), &CountSample::default())
+                .unwrap();
+            let after = freed.load(Ordering::Acquire);
+
+            let manifest = manifest_naming(written.named(), &[(1, u64::MAX)]);
+            let (loaded, _) = PageTable::load(&fs, db_dir(), &manifest).unwrap();
+            let lowest_lost = (1..=pages)
+                .find(|raw_page| loaded.newest(page(*raw_page as u32)).is_none())
+                .expect("a page that was trimmed");
+            let lost = pages + 1 - lowest_lost;
+            assert!(
+                written.trimmed_free() >= Some(version(lost)),
+                "{:?}, and the commit {lost} is lost",
+                written.trimmed_free()
+            );
+            assert!(written.trimmed_free() <= Some(version(after)).max(table.trimmed_free()));
+            assert_eq!(written.log_needed(), written.trimmed_free().unwrap());
+            during += usize::from(lost > before);
+            while freed.load(Ordering::Acquire) < allowed.load(Ordering::Acquire) {
+                assert!(!done.load(Ordering::Acquire), "the other thread stopped");
+                thread::yield_now();
+            }
+        }
+    });
+    println!("{during} checkpoints lost a free link while they were written, of {rounds}");
+    assert!(during > 0);
+}
+
+/// A page that was freed and trimmed away, and whose id names a new page
+/// since: the link of the new page is what the checkpoint reaches, and it
+/// is newer than the free link that was lost.
+#[test]
+fn what_a_checkpoint_needs_of_the_log_is_the_newest_of_what_it_covers_holds_and_lost() {
+    let mut fixture = Fixture::new();
+    let (first, second) = (
+        fixture.block(1, BlockContent::Base, 50),
+        fixture.block(2, BlockContent::Base, 50),
+    );
+    fixture.table.push(page(1), base(1, first)).unwrap();
+    fixture.table.push(page(2), base(2, second)).unwrap();
+    let whole = fixture
+        .db
+        .checkpoints
+        .write(&fixture.table, version(1), &CountSample::default())
+        .unwrap();
+    assert_eq!(
+        (whole.reaches(), whole.trimmed_free()),
+        (Some(version(2)), None)
+    );
+    assert_eq!(whole.log_needed(), version(2));
+
+    fixture.table.push(page(2), free(5)).unwrap();
+    let mut removed = Vec::new();
+    assert!(fixture.table.trim(page(2), version(5), &mut removed));
+    let lost = fixture
+        .db
+        .checkpoints
+        .write(&fixture.table, version(3), &CountSample::default())
+        .unwrap();
+    assert_eq!(
+        (lost.reaches(), lost.trimmed_free()),
+        (Some(version(1)), Some(version(5)))
+    );
+    assert_eq!(lost.log_needed(), version(5));
+
+    let reused = fixture.block(2, BlockContent::Base, 50);
+    fixture.table.push(page(2), base(7, reused)).unwrap();
+    let again = fixture
+        .db
+        .checkpoints
+        .write(&fixture.table, version(3), &CountSample::default())
+        .unwrap();
+    assert_eq!(
+        (again.reaches(), again.trimmed_free()),
+        (Some(version(7)), Some(version(5)))
+    );
+    assert_eq!(again.log_needed(), version(7));
+    let covering = fixture
+        .db
+        .checkpoints
+        .write(&fixture.table, version(8), &CountSample::default())
+        .unwrap();
+    assert_eq!(covering.log_needed(), version(8));
+
+    let db = &mut fixture.db;
+    for (written, needed) in [(&whole, 2), (&lost, 5), (&again, 7), (&covering, 8)] {
+        let refused =
+            db.checkpoints
+                .install(written, log(needed - 1), &mut db.manifest, &db.segments);
+        assert!(
+            matches!(
+                refused,
+                Err(PageTableError::LogBehind { needed: asked, durable })
+                    if asked == version(needed) && durable == version(needed - 1)
+            ),
+            "{refused:?}"
+        );
+        db.checkpoints
+            .install(written, log(needed), &mut db.manifest, &db.segments)
+            .unwrap();
+        assert_eq!(db.named(), Some(written.named()));
+    }
+
+    // What the next session loads has lost nothing a crash can bring back:
+    // the log was durable through the free link before the checkpoint was
+    // named.
+    let (loaded, info) = db.load().unwrap();
+    assert_eq!(loaded.trimmed_free(), None);
+    let info = info.expect("a checkpoint");
+    assert_eq!((info.trimmed_free(), info.log_needed()), (None, version(8)));
+}
+
+fn count(file: u32, values: u64) -> ValueCount {
+    ValueCount {
+        file: id(file),
+        values,
+        bytes: values * 4096 + 17,
+        miscounted: values % 5 == 4,
+    }
+}
+
+fn place(file: u32, offset: u64) -> LogPlace {
+    LogPlace::new(id(file), offset).expect("a place")
+}
+
+fn log_up_to(raw_version: u64, place: Option<LogPlace>) -> LogDurable {
+    LogDurable {
+        version: version(raw_version),
+        place,
+    }
+}
+
+#[test]
+fn a_checkpoint_gives_back_the_sample_of_the_value_counts_it_was_written_with() {
+    let mut fixture = Fixture::new();
+    let newest = fixture.fill();
+    let none = fixture.checkpoint(newest);
+    assert_eq!(none.sample(), &CountSample::default());
+    let (_, loaded) = fixture.db.load().unwrap();
+    assert_eq!(loaded.unwrap().sample(), &CountSample::default());
+    let len_without = none.named().valid_len();
+
+    let few = CountSample {
+        place: Some(place(3, 4020)),
+        counts: vec![
+            count(2, 9),
+            count(5, 0),
+            ValueCount {
+                file: id(9),
+                values: u64::MAX,
+                bytes: u64::MAX,
+                miscounted: true,
+            },
+        ],
+    };
+    let many = CountSample {
+        place: Some(place(3, 4020)),
+        counts: (1..=2 * format::VALUE_COUNTS_PER_RECORD as u32 + 3)
+            .map(|file| count(file, u64::from(file)))
+            .collect(),
+    };
+    let only_a_place = CountSample {
+        place: Some(place(4, 20)),
+        counts: Vec::new(),
+    };
+    for (sample, records) in [(&few, 1), (&many, 3), (&only_a_place, 0)] {
+        let db = &mut fixture.db;
+        let written = db
+            .checkpoints
+            .write(&fixture.table, version(newest), sample)
+            .unwrap();
+        assert_eq!(written.sample(), sample);
+        assert_eq!(
+            written.named().valid_len(),
+            len_without + records * 9 + sample.counts.len() as u64 * 24
+        );
+        db.checkpoints
+            .install(&written, LOG, &mut db.manifest, &db.segments)
+            .unwrap();
+        let (table, loaded) = db.load().unwrap();
+        let loaded = loaded.expect("a checkpoint");
+        assert_eq!(loaded.sample(), sample);
+        assert_eq!(loaded.named(), written.named());
+        assert_eq!(all_links(&table), all_links(&fixture.table));
+    }
+}
+
+#[test]
+fn a_checkpoint_is_not_named_before_the_log_is_durable_up_to_its_sample() {
+    let mut fixture = Fixture::new();
+    let newest = fixture.fill();
+    let before = fixture.checkpoint(newest);
+    let sample = CountSample {
+        place: Some(place(3, 500)),
+        counts: vec![count(1, 2)],
+    };
+    let db = &mut fixture.db;
+    let written = db
+        .checkpoints
+        .write(&fixture.table, version(newest), &sample)
+        .unwrap();
+    for durable in [
+        None,
+        Some(place(1, 20)),
+        Some(place(2, u64::MAX)),
+        Some(place(3, 499)),
+    ] {
+        let refused = db.checkpoints.install(
+            &written,
+            log_up_to(newest, durable),
+            &mut db.manifest,
+            &db.segments,
+        );
+        assert!(
+            matches!(
+                refused,
+                Err(PageTableError::LogBehindSample { needed, durable: found })
+                    if Some(needed) == sample.place && found == durable
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(db.named(), Some(before.named()));
+    }
+    // The version is asked for first.
+    let refused = db.checkpoints.install(
+        &written,
+        log_up_to(newest - 1, None),
+        &mut db.manifest,
+        &db.segments,
+    );
+    assert!(
+        matches!(refused, Err(PageTableError::LogBehind { .. })),
+        "{refused:?}"
+    );
+    db.checkpoints
+        .install(
+            &written,
+            log_up_to(newest, sample.place),
+            &mut db.manifest,
+            &db.segments,
+        )
+        .unwrap();
+    assert_eq!(db.named(), Some(written.named()));
+
+    // A sample from before every record of the log asks nothing of it, and a
+    // log that is durable further than the sample's place will do.
+    for (place_of_sample, durable) in [(None, None), (Some(place(3, 500)), Some(place(4, 20)))] {
+        let sample = CountSample {
+            place: place_of_sample,
+            counts: Vec::new(),
+        };
+        let written = db
+            .checkpoints
+            .write(&fixture.table, version(newest), &sample)
+            .unwrap();
+        db.checkpoints
+            .install(
+                &written,
+                log_up_to(newest, durable),
+                &mut db.manifest,
+                &db.segments,
+            )
+            .unwrap();
+        assert_eq!(db.load().unwrap().1.unwrap().sample(), &sample);
+    }
+}
+
+#[test]
+fn a_sample_whose_counts_are_not_in_order_is_not_written() {
+    let mut fixture = Fixture::new();
+    let newest = fixture.fill();
+    fixture.checkpoint(newest);
+    for counts in [
+        vec![count(2, 1), count(2, 1)],
+        vec![count(3, 1), count(1, 1)],
+    ] {
+        let sample = CountSample {
+            place: None,
+            counts,
+        };
+        let error = fixture
+            .db
+            .checkpoints
+            .write(&fixture.table, version(newest), &sample)
+            .unwrap_err();
+        let (_, source) = format_error(error);
+        assert_eq!(source, format::TableError::CountsOutOfOrder.into());
+        assert_eq!(fixture.table_files(), [checkpoint_name(1)]);
+    }
+    let next = fixture.checkpoint(newest);
+    assert_eq!(next.file(), id(4));
 }
 
 #[test]
@@ -845,9 +1281,9 @@ fn a_load_is_refused_when_the_file_is_not_the_checkpoint_the_manifest_names() {
     assert_eq!(offset, 20);
     assert!(matches!(source, FormatError::ChecksumMismatch { .. }));
 
-    let other_id = format::encode(id(2), version(newest), []).unwrap();
+    let other_id = format::encode(id(2), version(newest), [], None, []).unwrap();
     put(&fs, &path, &other_id);
-    let (offset, source) = format_error(load_under(&fs, &named(53, newest)).unwrap_err());
+    let (offset, source) = format_error(load_under(&fs, &named(73, newest)).unwrap_err());
     assert_eq!(
         (offset, source),
         (
@@ -892,7 +1328,8 @@ fn checkpoint_ids_run_out() {
     assert_eq!(names_in(&fs, &table_dir()), ["4294967295.pt"]);
     for _ in 0..2 {
         assert!(matches!(
-            db.checkpoints.write(&table, version(0)),
+            db.checkpoints
+                .write(&table, version(0), &CountSample::default()),
             Err(PageTableError::FileIdsExhausted)
         ));
     }

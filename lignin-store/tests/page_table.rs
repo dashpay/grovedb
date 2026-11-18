@@ -13,7 +13,7 @@ use lignin_format::{
 use lignin_io::{StdVfs, Vfs};
 use lignin_store::{
     segment::{BlockLocation, FileNames, ManifestStore},
-    table::{Link, PageTable, TableCheckpoints},
+    table::{CountSample, Link, PageTable, TableCheckpoints},
 };
 
 const PAGES: u32 = 1_000_000;
@@ -89,14 +89,14 @@ fn the_table_for_a_million_pages_fits_in_32_megabytes() {
     let checkpoints = TableCheckpoints::open(&manifest).expect("the checkpoints open");
     let start = Instant::now();
     let written = checkpoints
-        .write(&table, version(999))
+        .write(&table, version(999), &CountSample::default())
         .expect("the checkpoint is written");
     let wrote = start.elapsed();
     let path = FileNames::PAGE_TABLE.path(dir.path(), written.file());
     let on_disk = std::fs::metadata(&path).expect("the file").len();
     println!("on disk: {on_disk} bytes, written and synced in {wrote:?}");
     assert_eq!(on_disk, written.named().valid_len());
-    assert_eq!(on_disk, 28_002_258);
+    assert_eq!(on_disk, 28_002_278);
     assert!(on_disk <= LIMIT);
 
     let segments: Vec<LiveFile> = written

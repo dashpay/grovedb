@@ -23,9 +23,24 @@ use crate::segment::{
     BlockLocation, FileNames, ManifestStore, SegmentStore, SegmentStoreError,
 };
 
-/// A log that is durable through every version, for the tests that are not
-/// about the log.
-const LOG: CommitVersion = CommitVersion::MAX;
+/// A log that is durable through every version and up to its last place,
+/// for the tests that are not about the log.
+const LOG: LogDurable = LogDurable {
+    version: CommitVersion::MAX,
+    place: match LogPlace::new(FileId::MAX, u64::MAX) {
+        Ok(place) => Some(place),
+        Err(_) => None,
+    },
+};
+
+/// A log that is durable through the commit of `raw_version`, with nothing
+/// said of the place that is.
+fn log(raw_version: u64) -> LogDurable {
+    LogDurable {
+        version: version(raw_version),
+        place: None,
+    }
+}
 
 fn id(raw: u32) -> FileId {
     FileId::new(raw).expect("not zero")
@@ -151,7 +166,9 @@ impl Db {
         table: &PageTable,
         covers: u64,
     ) -> Result<CheckpointInfo, PageTableError> {
-        let written = self.checkpoints.write(table, version(covers))?;
+        let written = self
+            .checkpoints
+            .write(table, version(covers), &CountSample::default())?;
         self.checkpoints
             .install(&written, LOG, &mut self.manifest, &self.segments)?;
         Ok(written)

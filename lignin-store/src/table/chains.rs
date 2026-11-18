@@ -163,6 +163,8 @@ pub(super) struct Chains {
     pages: u64,
     links: u64,
     high_water: u32,
+    /// The newest version of a free link that a trim has removed.
+    trimmed_free: Option<CommitVersion>,
 }
 
 impl Chains {
@@ -179,6 +181,7 @@ impl Chains {
             pages: 0,
             links: 0,
             high_water: 0,
+            trimmed_free: None,
         }
     }
 
@@ -192,6 +195,10 @@ impl Chains {
 
     pub(super) fn high_water(&self) -> Option<PageId> {
         PageId::new(self.high_water)
+    }
+
+    pub(super) fn trimmed_free(&self) -> Option<CommitVersion> {
+        self.trimmed_free
     }
 
     pub(super) fn memory_usage(&self) -> usize {
@@ -272,12 +279,21 @@ impl Chains {
         self.spare = place;
     }
 
-    /// Takes the links from `place` on to the oldest out of the arena, and
-    /// tells `removed` of each one that points to a block.
+    /// Takes note of `node`, which a trim is removing, and tells `removed` of
+    /// it if it points to a block.
+    fn trimmed(&mut self, node: Node, removed: &mut Vec<Link>) {
+        if node.code() == FREE {
+            self.trimmed_free = self.trimmed_free.max(Some(node.version()));
+        }
+        removed.extend(node.link().filter(|link| link.location().is_some()));
+        self.links -= 1;
+    }
+
+    /// Takes the links from `place` on to the oldest out of the arena, for
+    /// a trim.
     fn release(&mut self, mut place: u32, removed: &mut Vec<Link>) {
         while let Some(node) = self.older(place) {
-            removed.extend(node.link().filter(|link| link.location().is_some()));
-            self.links -= 1;
+            self.trimmed(node, removed);
             self.free(place);
             place = node.older;
         }
@@ -448,8 +464,8 @@ impl Chains {
             }
             _ => {
                 *self.head_mut(page) = Node::EMPTY;
-                self.links -= 1;
                 self.pages -= 1;
+                self.trimmed(node, removed);
                 self.release(node.older, removed);
                 Trimmed { vacant: true }
             }

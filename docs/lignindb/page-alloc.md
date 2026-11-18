@@ -288,8 +288,8 @@ by other rules:
   frees the page if it reaches *w*, and reports the new page if it reaches
   *x*.
 
-One case is not covered by the page table as it stands: see choice 9 of
-section 8.
+One more case, a chain that was trimmed away before the freeing commit was
+durable, is closed by page-table.md K10: see choice 9 of section 8.
 
 ## 6. The model check
 
@@ -441,13 +441,14 @@ STORE-08 and VER-07 build on it.
    it is an error** (R7), not something to drop silently: STORE-07 has then
    read a group it should not have, or loaded a checkpoint that K4 should
    have refused.
-9. **A freed page's chain must not be trimmed away while a recovery could
-   still land below the version that freed it. Nothing enforces that
-   yet.** T11 removes a free link with everything older once no reader
-   needs it, and the page then has no link. A checkpoint that is written
-   after that has no link of the page, so its "reaches" does not include
-   the freeing version, and K4 lets it be named with the log durable only
-   through the version it covers. If it covers a version below the freeing
+9. **A freed page's chain must not be forgotten while a recovery could
+   still land below the version that freed it. The page table enforces
+   that since page-table.md K10; it did not when this task was done.** T11
+   removes a free link with everything older once no reader needs it, and
+   the page then has no link. A checkpoint that is written after that has
+   no link of the page, so its "reaches" does not include the freeing
+   version, and K4 alone let it be named with the log durable only through
+   the version it covers. If it covers a version below the freeing
    one and the crash loses the freeing commit, recovery lands where the
    page is in use, and its chain is gone. This was reproduced on
    `lignin-store::table` as merged: base image at version 1, free link at
@@ -458,7 +459,8 @@ STORE-08 and VER-07 build on it.
    smaller of the oldest pin and the version the log is durable through
    when the newest link is a free link; or the table remembers the newest
    free link it trimmed away and `TableCheckpoints::install` asks for the
-   log to be durable through it. R5 relies on one of them.
+   log to be durable through it. The second was taken (page-table.md T17,
+   K10), and R5 relies on it.
 10. **An id space that runs out is an error, not a wait** (A2). At 2^32 − 1
     pages the page table alone is 112 GiB (format.md 3.1).
 
