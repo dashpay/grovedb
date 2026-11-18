@@ -65,30 +65,12 @@ pub struct NodePageMut<'a, S = ()> {
     sink: S,
 }
 
-impl<'a> NodePageMut<'a> {
-    /// Opens the tree page at the start of `frame`, a frame of pages of
-    /// `size`, for changes that no one is told of.
-    pub fn open(frame: &'a mut [u8], size: PageSize, lease: Lease) -> Result<Self, NodeError> {
-        Self::open_recording(frame, size, lease, ())
-    }
-
-    /// Starts an empty page with the id `page` in `frame`, with no one told.
-    pub fn create(
-        frame: &'a mut [u8],
-        size: PageSize,
-        page: PageId,
-        lease: Lease,
-    ) -> Result<Self, NodeError> {
-        Self::create_recording(frame, size, page, lease, ())
-    }
-}
-
 impl<'a, S: ChangeSink> NodePageMut<'a, S> {
     /// Opens the tree page at the start of `frame`, a frame of pages of
-    /// `size`. Every change is told to `sink`.
+    /// `size`. Every change is told to `sink`: `()` where no one is told.
     ///
     /// Handles are issued and followed under `lease`.
-    pub fn open_recording(
+    pub fn open(
         frame: &'a mut [u8],
         size: PageSize,
         lease: Lease,
@@ -105,7 +87,7 @@ impl<'a, S: ChangeSink> NodePageMut<'a, S> {
     /// before: a handle into that page is of an earlier lease. So a page is
     /// started once under a lease, and a holder that starts a page again
     /// under an id it has read takes a new lease first (see [`Lease`]).
-    pub fn create_recording(
+    pub fn create(
         frame: &'a mut [u8],
         size: PageSize,
         page: PageId,
@@ -122,13 +104,13 @@ impl<'a, S: ChangeSink> NodePageMut<'a, S> {
     }
 
     /// The page as it is now, for reading.
-    pub fn nodes(&self) -> NodePage<'_> {
+    pub fn view(&self) -> NodePage<'_> {
         NodePage::of(self.page.page(), self.lease)
     }
 
     /// The page's id.
     pub fn id(&self) -> PageId {
-        self.nodes().id()
+        self.page.page().id()
     }
 
     /// The bytes the page still has for cells and their slots.
@@ -158,14 +140,14 @@ impl<'a, S: ChangeSink> NodePageMut<'a, S> {
 
     /// The node in `slot`, to change it. `None` if the slot is free.
     pub fn node_mut(&mut self, slot: SlotId) -> Option<NodeMut<'_, 'a, S>> {
-        self.nodes().node(slot)?;
+        self.view().node(slot)?;
         Some(NodeMut { page: self, slot })
     }
 
     /// The node `handle` names, to change it. `None` if the handle is no
     /// longer good here ([`NodePage::resolve`]).
     pub fn resolve_mut(&mut self, handle: NodeHandle) -> Option<NodeMut<'_, 'a, S>> {
-        self.nodes().resolve(handle)?;
+        self.view().resolve(handle)?;
         Some(NodeMut {
             page: self,
             slot: handle.slot(),
@@ -174,8 +156,7 @@ impl<'a, S: ChangeSink> NodePageMut<'a, S> {
 
     fn inserted(&mut self, slot: SlotId) -> Result<NodeHandle, NodeError> {
         let page = NodePage::of(self.page.page(), self.lease);
-        let address = CellAddress::new(page.id(), slot);
-        let node = page.node(slot).ok_or(NodeError::NoNode { address })?;
+        let node = page.node(slot).expect("the slot was just filled");
         self.sink.changed(
             page.id(),
             &Delta::Insert {
@@ -206,7 +187,7 @@ impl<S: ChangeSink> NodeMut<'_, '_, S> {
     /// The node as it is now.
     pub fn node(&self) -> NodeRef<'_> {
         self.page
-            .nodes()
+            .view()
             .node(self.slot)
             .expect("the slot holds a cell while its page is held")
     }
@@ -220,41 +201,53 @@ impl<S: ChangeSink> NodeMut<'_, '_, S> {
     /// value log, or by a pending value. The node's hashes and links keep
     /// their bytes.
     pub fn set_value(&mut self, value: CellValue<'_>) -> Result<(), NodeError> {
-        let slot = self.slot;
-        self.page.change(&Delta::Value { slot, value })
+        self.page.change(&Delta::Value {
+            slot: self.slot,
+            value,
+        })
     }
 
     /// Sets, replaces or, with `None`, removes the link to the child on
     /// `side`.
     pub fn set_link(&mut self, side: Side, link: Option<TreeLink<'_>>) -> Result<(), NodeError> {
-        let slot = self.slot;
-        self.page.change(&Delta::Link { slot, side, link })
+        self.page.change(&Delta::Link {
+            slot: self.slot,
+            side,
+            link,
+        })
     }
 
     /// Overwrites the address in the link to the child on `side`: the
     /// child's cell was carried, or another cell took its place.
     pub fn set_child(&mut self, side: Side, child: CellAddress) -> Result<(), NodeError> {
-        let slot = self.slot;
-        self.page.change(&Delta::Child { slot, side, child })
+        self.page.change(&Delta::Child {
+            slot: self.slot,
+            side,
+            child,
+        })
     }
 
     /// Overwrites one of the hashes the node stores, where it is.
     pub fn set_hash(&mut self, field: HashField, hash: &Hash) -> Result<(), NodeError> {
-        let slot = self.slot;
-        self.page.change(&Delta::Hash { slot, field, hash })
+        self.page.change(&Delta::Hash {
+            slot: self.slot,
+            field,
+            hash,
+        })
     }
 
     /// Replaces the node's feature type with its aggregate data.
     pub fn set_feature(&mut self, feature: &[u8]) -> Result<(), NodeError> {
-        let slot = self.slot;
-        self.page.change(&Delta::Feature { slot, feature })
+        self.page.change(&Delta::Feature {
+            slot: self.slot,
+            feature,
+        })
     }
 
     /// Marks the node as the root of a fragment, or takes the mark off.
     pub fn set_fragment_root(&mut self, fragment_root: bool) -> Result<(), NodeError> {
-        let slot = self.slot;
         self.page.change(&Delta::FragmentRoot {
-            slot,
+            slot: self.slot,
             fragment_root,
         })
     }
@@ -266,16 +259,18 @@ impl<S: ChangeSink> NodeMut<'_, '_, S> {
         index: u8,
         root: Option<CellAddress>,
     ) -> Result<(), NodeError> {
-        let slot = self.slot;
-        self.page.change(&Delta::HostedRoot { slot, index, root })
+        self.page.change(&Delta::HostedRoot {
+            slot: self.slot,
+            index,
+            root,
+        })
     }
 
     /// Replaces all pointers to the roots of the Merks the node hosts, which
     /// may change their number.
     pub fn set_hosted_roots(&mut self, roots: &[Option<CellAddress>]) -> Result<(), NodeError> {
-        let slot = self.slot;
         self.page.change(&Delta::HostedRoots {
-            slot,
+            slot: self.slot,
             roots: roots.into(),
         })
     }
@@ -284,8 +279,10 @@ impl<S: ChangeSink> NodeMut<'_, '_, S> {
     /// the same key. That it is the same node, and not a node of another
     /// Merk with an equal key, is the caller's to know (`tree-page.md` W1).
     pub fn replace(&mut self, cell: TreeCell<'_>) -> Result<(), NodeError> {
-        let slot = self.slot;
-        self.page.change(&Delta::Replace { slot, cell })
+        self.page.change(&Delta::Replace {
+            slot: self.slot,
+            cell,
+        })
     }
 
     /// Takes the node's cell out of the page: the node was deleted, or its
@@ -295,7 +292,6 @@ impl<S: ChangeSink> NodeMut<'_, '_, S> {
     /// the page ends, those of the nodes that stay among them. A holder that
     /// still needs one takes it again from a view.
     pub fn remove(self) -> Result<(), NodeError> {
-        let slot = self.slot;
-        self.page.change(&Delta::Remove { slot })
+        self.page.change(&Delta::Remove { slot: self.slot })
     }
 }

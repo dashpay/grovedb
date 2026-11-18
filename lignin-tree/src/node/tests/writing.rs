@@ -12,60 +12,46 @@ use super::*;
 struct Run<'o> {
     page: PageId,
     created: Option<u64>,
-    records: Vec<u8>,
+    writer: DeltaRunWriter<'o>,
     count: usize,
-    out: &'o mut Vec<u8>,
 }
 
 impl<'o> Run<'o> {
-    fn of(page: PageId, out: &'o mut Vec<u8>) -> Self {
+    /// A run of `page`, which it creates with a count of `created`.
+    fn of(page: PageId, created: Option<u64>, out: &'o mut Vec<u8>) -> Self {
         Self {
             page,
-            created: None,
-            records: Vec::new(),
+            created,
+            writer: DeltaRunWriter::new(page, created, out),
             count: 0,
-            out,
         }
     }
 
-    /// The run's bytes, as `DeltaRunWriter` frames the records that were
-    /// told.
+    /// Ends the run, if anything was told, and returns how many changes
+    /// were.
     fn finish(self) -> usize {
-        if self.count == 0 {
-            return 0;
+        if self.count > 0 {
+            self.writer.finish().expect("a run");
         }
-        let mut bytes = self.page.encode().to_vec();
-        bytes.extend_from_slice(&self.records);
-        let run = DeltaRun::decode(&bytes, FRAME_FORMAT).expect("the records that were told");
-        let mut writer = DeltaRunWriter::new(self.page, self.created, self.out);
-        for change in run.deltas() {
-            writer.push(&change).expect("a page took it");
-        }
-        writer.finish().expect("a run");
         self.count
     }
 }
 
 impl ChangeSink for Run<'_> {
     fn created(&mut self, page: PageId, departures: u64) {
-        assert_eq!((page, self.count), (self.page, 0));
-        self.created = Some(departures);
+        assert_eq!(
+            (page, Some(departures), self.count),
+            (self.page, self.created, 0)
+        );
     }
 
     fn changed(&mut self, page: PageId, change: &Delta<'_>) {
         assert_eq!(page, self.page);
-        change
-            .encode_into(&mut self.records)
+        self.writer
+            .push(change)
             .expect("a record that a page took is one a run takes");
         self.count += 1;
     }
-}
-
-fn image(frame: &[u8]) -> Vec<u8> {
-    NodePage::open(frame, Lease::take())
-        .expect("a tree page")
-        .tree_page()
-        .to_image()
 }
 
 /// The image that `base` and the run in `run` give.
@@ -84,7 +70,7 @@ fn pointer(offset: u64, len: u32) -> ValuePointer {
 fn a_new_node_takes_the_lowest_free_slot() {
     let lease = Lease::take();
     let mut frame = frame();
-    let mut nodes = NodePageMut::create(&mut frame, SIZE, page(9), lease).expect("a page");
+    let mut nodes = NodePageMut::create(&mut frame, SIZE, page(9), lease, ()).expect("a page");
     assert_eq!(nodes.id(), page(9));
     let free = nodes.free_bytes();
     let handles: Vec<_> = [b"a", b"b", b"c"]
@@ -115,9 +101,8 @@ fn every_change_is_made_and_told() {
     let id = page(6);
     let mut frame = frame();
     let mut run = Vec::new();
-    let mut sink = Run::of(id, &mut run);
-    let mut nodes =
-        NodePageMut::create_recording(&mut frame, SIZE, id, lease, &mut sink).expect("a page");
+    let mut sink = Run::of(id, Some(0), &mut run);
+    let mut nodes = NodePageMut::create(&mut frame, SIZE, id, lease, &mut sink).expect("a page");
 
     let parent = nodes
         .insert(&leaf(b"parent", &[1], b"value"))
@@ -209,16 +194,15 @@ fn every_change_is_made_and_told() {
 
     let base = image(&frame);
     let mut run = Vec::new();
-    let mut sink = Run::of(id, &mut run);
-    let mut nodes =
-        NodePageMut::open_recording(&mut frame, SIZE, lease, &mut sink).expect("a tree page");
+    let mut sink = Run::of(id, None, &mut run);
+    let mut nodes = NodePageMut::open(&mut frame, SIZE, lease, &mut sink).expect("a tree page");
     nodes
         .node_mut(slot(1))
         .expect("a node")
         .set_value(CellValue::Inline(b""))
         .expect("an empty value");
     nodes.insert(&leaf(b"new", &[], b"")).expect("fits");
-    assert_eq!((sink.created, sink.finish()), (None, 2));
+    assert_eq!(sink.finish(), 2);
     assert_eq!(replayed(id, Some(&base), &run), image(&frame));
 }
 
@@ -230,18 +214,17 @@ fn the_changes_that_are_told_rebuild_the_page() {
     let id = page(11);
     let mut rng = Rng(0xD317A);
     let mut frame = frame();
-    NodePageMut::create(&mut frame, SIZE, id, lease).expect("a page");
+    NodePageMut::create(&mut frame, SIZE, id, lease, ()).expect("a page");
     let (mut told, mut refused) = (0, 0);
 
     for round in 0..300 {
         let base = image(&frame);
         let before = frame.clone();
         let mut run = Vec::new();
-        let mut sink = Run::of(id, &mut run);
-        let mut nodes =
-            NodePageMut::open_recording(&mut frame, SIZE, lease, &mut sink).expect("a tree page");
+        let mut sink = Run::of(id, None, &mut run);
+        let mut nodes = NodePageMut::open(&mut frame, SIZE, lease, &mut sink).expect("a tree page");
         for _ in 0..rng.below(12) {
-            let occupied: Vec<_> = nodes.nodes().nodes().map(|node| node.handle()).collect();
+            let occupied: Vec<_> = nodes.view().nodes().map(|node| node.handle()).collect();
             let picked = (!occupied.is_empty()).then(|| occupied[rng.below(occupied.len())]);
             let hash = [rng.next() as u8; 32];
             let bytes = vec![rng.next() as u8; rng.below(700)];
@@ -302,7 +285,7 @@ fn a_change_that_is_refused_changes_nothing_and_is_not_told() {
     let lease = Lease::take();
     let id = page(4);
     let mut frame = frame();
-    let mut nodes = NodePageMut::create(&mut frame, SIZE, id, lease).expect("a page");
+    let mut nodes = NodePageMut::create(&mut frame, SIZE, id, lease, ()).expect("a page");
     let handle = nodes
         .insert(&CellContent {
             hosted_roots: &[None],
@@ -318,9 +301,8 @@ fn a_change_that_is_refused_changes_nothing_and_is_not_told() {
     let before = frame.clone();
 
     let mut run = Vec::new();
-    let mut sink = Run::of(id, &mut run);
-    let mut nodes =
-        NodePageMut::open_recording(&mut frame, SIZE, lease, &mut sink).expect("a tree page");
+    let mut sink = Run::of(id, None, &mut run);
+    let mut nodes = NodePageMut::open(&mut frame, SIZE, lease, &mut sink).expect("a tree page");
     let refused = |result: Result<(), NodeError>| match result {
         Err(NodeError::Page(FormatError::TreePage(error))) => error,
         other => panic!("{other:?}"),
@@ -395,7 +377,7 @@ fn a_change_that_is_refused_changes_nothing_and_is_not_told() {
 fn a_node_is_opened_for_changes_by_its_slot_or_by_its_handle() {
     let lease = Lease::take();
     let mut frame = frame();
-    let mut nodes = NodePageMut::create(&mut frame, SIZE, page(4), lease).expect("a page");
+    let mut nodes = NodePageMut::create(&mut frame, SIZE, page(4), lease, ()).expect("a page");
     let first = nodes.insert(&leaf(b"first", &[], b"1")).expect("fits");
     let second = nodes.insert(&leaf(b"second", &[], b"2")).expect("fits");
 
@@ -425,14 +407,14 @@ fn a_cell_is_carried_to_another_page_as_its_bytes() {
     let lease = Lease::take();
     let (mut above, mut below, mut beside) = (frame(), frame(), frame());
     let hash = [0x44; 32];
-    let mut nodes = NodePageMut::create(&mut below, SIZE, page(2), lease).expect("a page");
+    let mut nodes = NodePageMut::create(&mut below, SIZE, page(2), lease, ()).expect("a page");
     let child = nodes
         .insert(&CellContent {
             value: CellValue::OutOfLine(pointer(8_192, 5_000)),
             ..leaf(b"child", &[1], b"")
         })
         .expect("fits");
-    let mut nodes = NodePageMut::create(&mut above, SIZE, page(1), lease).expect("a page");
+    let mut nodes = NodePageMut::create(&mut above, SIZE, page(1), lease, ()).expect("a page");
     let parent = nodes
         .insert(&CellContent {
             left: Some(link(child.address(), &hash, &[])),
@@ -442,14 +424,14 @@ fn a_cell_is_carried_to_another_page_as_its_bytes() {
 
     let from = NodePage::open(&below, lease).expect("a tree page");
     let cell = from.resolve(child).expect("good").cell();
-    let mut to = NodePageMut::create(&mut beside, SIZE, page(3), lease).expect("a page");
+    let mut to = NodePageMut::create(&mut beside, SIZE, page(3), lease, ()).expect("a page");
     let carried = to.insert_cell(cell).expect("fits");
-    let mut from = NodePageMut::open(&mut below, SIZE, lease).expect("a tree page");
+    let mut from = NodePageMut::open(&mut below, SIZE, lease, ()).expect("a tree page");
     from.resolve_mut(child)
         .expect("good")
         .remove()
         .expect("it leaves");
-    let mut nodes = NodePageMut::open(&mut above, SIZE, lease).expect("a tree page");
+    let mut nodes = NodePageMut::open(&mut above, SIZE, lease, ()).expect("a tree page");
     nodes
         .resolve_mut(parent)
         .expect("no cell has left the parent's page")

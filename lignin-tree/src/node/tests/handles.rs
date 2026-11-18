@@ -30,7 +30,7 @@ fn a_handle_is_an_address_a_count_and_a_lease() {
 
     let lease = Lease::take();
     let mut frame = frame();
-    let mut nodes = NodePageMut::create(&mut frame, SIZE, page(7), lease).expect("a page");
+    let mut nodes = NodePageMut::create(&mut frame, SIZE, page(7), lease, ()).expect("a page");
     nodes.insert(&leaf(b"a", &[1], b"one")).expect("fits");
     let second = nodes.insert(&leaf(b"b", &[2], b"two")).expect("fits");
     nodes
@@ -38,7 +38,7 @@ fn a_handle_is_an_address_a_count_and_a_lease() {
         .expect("a node")
         .remove()
         .expect("it leaves");
-    let handle = nodes.nodes().node(second.slot()).expect("a node").handle();
+    let handle = nodes.view().node(second.slot()).expect("a node").handle();
 
     assert_eq!(handle.address(), address(7, 2));
     assert_eq!((handle.page(), handle.slot()), (page(7), slot(2)));
@@ -54,6 +54,7 @@ fn a_handle_is_an_address_a_count_and_a_lease() {
 /// have left.
 struct Model {
     id: PageId,
+    lease: Lease,
     frame: Vec<u8>,
     slots: Vec<Option<u64>>,
     departures: u64,
@@ -62,13 +63,22 @@ struct Model {
 impl Model {
     fn new(id: PageId, lease: Lease) -> Self {
         let mut frame = frame();
-        NodePageMut::create(&mut frame, SIZE, id, lease).expect("a page");
+        NodePageMut::create(&mut frame, SIZE, id, lease, ()).expect("a page");
         Self {
             id,
+            lease,
             frame,
             slots: Vec::new(),
             departures: 0,
         }
+    }
+
+    fn view(&self) -> NodePage<'_> {
+        NodePage::open(&self.frame, self.lease).expect("a tree page")
+    }
+
+    fn open(&mut self) -> NodePageMut<'_> {
+        NodePageMut::open(&mut self.frame, SIZE, self.lease, ()).expect("a tree page")
     }
 
     fn occupied(&self) -> Vec<SlotId> {
@@ -113,10 +123,7 @@ fn a_handle_names_its_node_until_a_cell_leaves_its_page() {
         let roll = rng.below(100);
         let occupied = pages[which].occupied();
         let picked = (!occupied.is_empty()).then(|| occupied[rng.below(occupied.len())]);
-        let has_room = |model: &Model| {
-            let nodes = NodePage::open(&model.frame, lease).expect("a tree page");
-            nodes.tree_page().free_bytes(SIZE) >= 1_000
-        };
+        let has_room = |model: &Model| model.view().tree_page().free_bytes(SIZE) >= 1_000;
         let room = has_room(&pages[which]);
         let room_beside = has_room(&pages[1 - which]);
 
@@ -127,8 +134,7 @@ fn a_handle_names_its_node_until_a_cell_leaves_its_page() {
                 let key = [b'k', rng.below(3) as u8];
                 let value = vec![0xEE; rng.below(300)];
                 let model = &mut pages[which];
-                let mut nodes =
-                    NodePageMut::open(&mut model.frame, SIZE, lease).expect("a tree page");
+                let mut nodes = model.open();
                 let handle = nodes
                     .insert(&leaf(&key, &next_node.to_le_bytes(), &value))
                     .expect("the page has room");
@@ -143,15 +149,10 @@ fn a_handle_names_its_node_until_a_cell_leaves_its_page() {
                 } else {
                     (second, first)
                 };
-                let cell = NodePage::open(&from.frame, lease)
-                    .expect("a tree page")
-                    .node(at)
-                    .expect("a node")
-                    .cell();
-                let mut nodes = NodePageMut::open(&mut to.frame, SIZE, lease).expect("a tree page");
+                let cell = from.view().node(at).expect("a node").cell();
+                let mut nodes = to.open();
                 let handle = nodes.insert_cell(cell).expect("the page has room");
-                let mut nodes =
-                    NodePageMut::open(&mut from.frame, SIZE, lease).expect("a tree page");
+                let mut nodes = from.open();
                 nodes
                     .node_mut(at)
                     .expect("a node")
@@ -164,8 +165,7 @@ fn a_handle_names_its_node_until_a_cell_leaves_its_page() {
             }
             (35..=94, Some(at)) if room => {
                 let model = &mut pages[which];
-                let mut nodes =
-                    NodePageMut::open(&mut model.frame, SIZE, lease).expect("a tree page");
+                let mut nodes = model.open();
                 let mut node = nodes.node_mut(at).expect("a node");
                 match roll % 4 {
                     0 => node.set_value(CellValue::Inline(&vec![0xAB; rng.below(300)])),
@@ -177,12 +177,12 @@ fn a_handle_names_its_node_until_a_cell_leaves_its_page() {
                     _ => node.set_link(Side::Left, None),
                 }
                 .expect("the change is made");
-                issued.push((node.handle(), model.slots[at.index()].expect("a node")));
+                let handle = node.handle();
+                issued.push((handle, model.slots[at.index()].expect("a node")));
             }
             (_, Some(at)) => {
                 let model = &mut pages[which];
-                let mut nodes =
-                    NodePageMut::open(&mut model.frame, SIZE, lease).expect("a tree page");
+                let mut nodes = model.open();
                 nodes
                     .node_mut(at)
                     .expect("a node")
@@ -202,10 +202,7 @@ fn a_handle_names_its_node_until_a_cell_leaves_its_page() {
                 .find(|model| model.id == handle.page())
                 .expect("a page of the test");
             let good = model.departures == handle.departures();
-            let found = NodePage::open(&model.frame, lease)
-                .expect("a tree page")
-                .resolve(handle)
-                .map(|found| node_id(&found));
+            let found = model.view().resolve(handle).map(|found| node_id(&found));
             assert_eq!(found, good.then_some(node), "{handle}");
             if good {
                 assert_eq!(model.slots[handle.slot().index()], Some(node));
@@ -213,7 +210,7 @@ fn a_handle_names_its_node_until_a_cell_leaves_its_page() {
             } else {
                 refused += 1;
             }
-            let mut nodes = NodePageMut::open(&mut model.frame, SIZE, lease).expect("a tree page");
+            let mut nodes = model.open();
             let found = nodes
                 .resolve_mut(handle)
                 .map(|found| node_id(&found.node()));
@@ -231,7 +228,7 @@ fn a_handle_names_its_node_until_a_cell_leaves_its_page() {
 fn the_key_of_the_cell_that_is_found_proves_nothing() {
     let lease = Lease::take();
     let mut frame = frame();
-    let mut nodes = NodePageMut::create(&mut frame, SIZE, page(5), lease).expect("a page");
+    let mut nodes = NodePageMut::create(&mut frame, SIZE, page(5), lease, ()).expect("a page");
     let first = nodes
         .insert(&leaf(b"same", &[1], b"of one Merk"))
         .expect("fits");
@@ -244,7 +241,7 @@ fn the_key_of_the_cell_that_is_found_proves_nothing() {
         .insert(&leaf(b"same", &[2], b"of another"))
         .expect("fits");
 
-    let nodes = nodes.nodes();
+    let nodes = nodes.view();
     assert_eq!(second.address(), first.address());
     let found = nodes.node(first.slot()).expect("a node");
     assert_eq!((found.key(), found.feature()), (&b"same"[..], &[2][..]));
@@ -257,9 +254,9 @@ fn a_handle_is_followed_in_its_own_page_and_under_its_own_lease() {
     let lease = Lease::take();
     let other_lease = Lease::take();
     let (mut first, mut second) = (frame(), frame());
-    let mut nodes = NodePageMut::create(&mut first, SIZE, page(5), lease).expect("a page");
+    let mut nodes = NodePageMut::create(&mut first, SIZE, page(5), lease, ()).expect("a page");
     let handle = nodes.insert(&leaf(b"key", &[1], b"here")).expect("fits");
-    let mut nodes = NodePageMut::create(&mut second, SIZE, page(6), lease).expect("a page");
+    let mut nodes = NodePageMut::create(&mut second, SIZE, page(6), lease, ()).expect("a page");
     let twin = nodes.insert(&leaf(b"key", &[2], b"there")).expect("fits");
     assert_eq!(
         (twin.slot(), twin.departures()),
@@ -278,7 +275,7 @@ fn a_handle_is_followed_in_its_own_page_and_under_its_own_lease() {
     let elsewhere = NodePage::open(&first, other_lease).expect("a tree page");
     assert_eq!(elsewhere.lease(), other_lease);
     assert_eq!(elsewhere.resolve(handle), None);
-    let mut nodes = NodePageMut::open(&mut first, SIZE, other_lease).expect("a tree page");
+    let mut nodes = NodePageMut::open(&mut first, SIZE, other_lease, ()).expect("a tree page");
     assert!(nodes.resolve_mut(handle).is_none());
     assert!(nodes.node_mut(handle.slot()).is_some());
 }
@@ -291,14 +288,14 @@ fn a_handle_is_followed_in_its_own_page_and_under_its_own_lease() {
 fn a_frame_that_goes_back_needs_a_new_lease() {
     let lease = Lease::take();
     let mut frame = frame();
-    let mut nodes = NodePageMut::create(&mut frame, SIZE, page(8), lease).expect("a page");
+    let mut nodes = NodePageMut::create(&mut frame, SIZE, page(8), lease, ()).expect("a page");
     let kept = nodes.insert(&leaf(b"kept", &[1], b"stays")).expect("fits");
     let other = nodes
         .insert(&leaf(b"other", &[2], b"stays too"))
         .expect("fits");
     let savepoint = frame.clone();
 
-    let mut nodes = NodePageMut::open(&mut frame, SIZE, lease).expect("a tree page");
+    let mut nodes = NodePageMut::open(&mut frame, SIZE, lease, ()).expect("a tree page");
     nodes
         .resolve_mut(kept)
         .expect("good")
@@ -310,7 +307,7 @@ fn a_frame_that_goes_back_needs_a_new_lease() {
     assert_eq!((late.slot(), late.departures()), (kept.slot(), 1));
 
     frame.copy_from_slice(&savepoint);
-    let mut nodes = NodePageMut::open(&mut frame, SIZE, lease).expect("a tree page");
+    let mut nodes = NodePageMut::open(&mut frame, SIZE, lease, ()).expect("a tree page");
     nodes
         .resolve_mut(other)
         .expect("good")

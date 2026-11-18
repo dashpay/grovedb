@@ -32,6 +32,14 @@ fn frame() -> Vec<u8> {
     vec![0; SIZE.get()]
 }
 
+/// The image of the tree page at the start of `frame`.
+fn image(frame: &[u8]) -> Vec<u8> {
+    NodePage::open(frame, Lease::take())
+        .expect("a tree page")
+        .tree_page()
+        .to_image()
+}
+
 /// A node with no child, whose feature tells it from every other node.
 fn leaf<'a>(key: &'a [u8], feature: &'a [u8], value: &'a [u8]) -> CellContent<'a> {
     CellContent {

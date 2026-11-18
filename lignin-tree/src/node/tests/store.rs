@@ -58,8 +58,10 @@ impl Disk {
     /// The commit `born` wrote the tree page in `frame`, and write-back
     /// stored its image.
     fn base(&mut self, born: u64, frame: &[u8]) {
-        let nodes = NodePage::open(frame, Lease::take()).expect("a tree page");
-        self.image(nodes.id(), born, &nodes.tree_page().to_image());
+        let id = NodePage::open(frame, Lease::take())
+            .expect("a tree page")
+            .id();
+        self.image(id, born, &image(frame));
     }
 
     fn image(&mut self, id: PageId, born: u64, image: &[u8]) {
@@ -107,7 +109,7 @@ fn pool() -> BufferPool {
 /// slot 3.
 fn family(id: PageId) -> Vec<u8> {
     let mut frame = frame();
-    let mut nodes = NodePageMut::create(&mut frame, SIZE, id, Lease::take()).expect("a page");
+    let mut nodes = NodePageMut::create(&mut frame, SIZE, id, Lease::take(), ()).expect("a page");
     let hash = [0x61; 32];
     nodes
         .insert(&CellContent {
@@ -157,13 +159,13 @@ fn a_node_is_read_from_a_page_that_is_loaded_and_then_from_the_pool() {
     assert_eq!((pinned.id(), pinned.born()), (page(7), version(1)));
     assert_eq!(pinned.frame().page(), page(7));
     assert_eq!((pool.stats().misses, pool.stats().hits), (1, 0));
-    let root = pinned.node(slot(1)).expect("a node");
+    let root = pinned.view().node(slot(1)).expect("a node");
     assert_eq!(
         (root.key(), root.value()),
         (&b"root"[..], CellValue::Inline(b"root value"))
     );
-    assert_eq!(pinned.nodes().len(), 3);
-    assert_eq!(pinned.resolve(root.handle()), Some(root));
+    assert_eq!(pinned.view().len(), 3);
+    assert_eq!(pinned.view().resolve(root.handle()), Some(root));
 
     let child = root.link(Side::Left).expect("a link").child;
     let copy = reader;
@@ -177,7 +179,10 @@ fn a_node_is_read_from_a_page_that_is_loaded_and_then_from_the_pool() {
 
     let again = left.clone().into_page();
     drop((pinned, left));
-    assert_eq!(again.clone().node(slot(3)).expect("a node").key(), b"spare");
+    assert_eq!(
+        again.clone().view().node(slot(3)).expect("a node").key(),
+        b"spare"
+    );
 }
 
 #[test]
@@ -317,7 +322,7 @@ fn a_handle_does_not_reach_the_page_that_took_its_id() {
     disk.table.push(id, Link::free(version(2))).expect("a link");
     pool.free(id, version(2)).expect("a later version");
     let mut frame = frame();
-    let mut nodes = NodePageMut::create(&mut frame, SIZE, id, Lease::take()).expect("a page");
+    let mut nodes = NodePageMut::create(&mut frame, SIZE, id, Lease::take(), ()).expect("a page");
     nodes.insert(&leaf(b"usurper", &[7], b"")).expect("fits");
     disk.base(3, &frame);
     let loader = disk.loader(&pool);
@@ -356,7 +361,7 @@ fn a_handle_does_not_reach_the_page_that_took_its_id() {
     assert_eq!(usurper.node().key(), b"usurper");
     assert_eq!(usurper.handle().departures(), handle.departures());
     assert_ne!(usurper.handle(), handle);
-    assert!(usurper.page().resolve(handle).is_none());
+    assert!(usurper.page().view().resolve(handle).is_none());
     assert!(reader
         .resolve(handle, &mut buffers)
         .expect("nothing is read")
@@ -389,7 +394,7 @@ fn a_write_transaction_changes_its_private_copy_under_the_copys_latch() {
     // The transaction reads the committed page, and keeps a handle.
     let reader = NodeReader::new(loader, &guard, lease, version(1));
     let committed = reader.pin(id, &mut buffers).expect("the page loads");
-    let left = committed.node(slot(2)).expect("a node").handle();
+    let left = committed.view().node(slot(2)).expect("a node").handle();
 
     // It changes a node of the page, in its own copy. The handle is good in
     // the copy: the copy is the page, one step on.
@@ -398,7 +403,7 @@ fn a_write_transaction_changes_its_private_copy_under_the_copys_latch() {
         .expect("the page is pinned");
     {
         let mut latch = copy.write().expect("the copy is private");
-        let mut nodes = NodePageMut::open(&mut latch, SIZE, lease).expect("a tree page");
+        let mut nodes = NodePageMut::open(&mut latch, SIZE, lease, ()).expect("a tree page");
         let mut node = nodes.resolve_mut(left).expect("no cell has left the page");
         node.set_value(CellValue::Inline(b"a new and longer value"))
             .expect("the page has room");
@@ -412,7 +417,7 @@ fn a_write_transaction_changes_its_private_copy_under_the_copys_latch() {
         assert_eq!(node.value(), CellValue::Inline(b"a new and longer value"));
     }
     assert_eq!(
-        committed.resolve(left).expect("good").value(),
+        committed.view().resolve(left).expect("good").value(),
         CellValue::Inline(b"left value")
     );
 
@@ -420,7 +425,7 @@ fn a_write_transaction_changes_its_private_copy_under_the_copys_latch() {
     let created = pool.new_private(owner, page(12)).expect("a new page");
     let fresh = {
         let mut latch = created.write().expect("the copy is private");
-        let mut nodes = NodePageMut::create(&mut latch, SIZE, page(12), lease).expect("a page");
+        let mut nodes = NodePageMut::create(&mut latch, SIZE, page(12), lease, ()).expect("a page");
         nodes.insert(&leaf(b"fresh", &[4], b"new")).expect("fits")
     };
 
@@ -463,7 +468,7 @@ fn a_page_step_keeps_the_handles_into_its_page() {
     let mut disk = Disk::new();
     let id = page(7);
     let mut frame = frame();
-    let mut nodes = NodePageMut::create(&mut frame, SIZE, id, Lease::take()).expect("a page");
+    let mut nodes = NodePageMut::create(&mut frame, SIZE, id, Lease::take(), ()).expect("a page");
     let old = ValuePointer::new(FileId::MIN, 4_096, 5_000).expect("a value pointer");
     let new = ValuePointer::new(FileId::MIN, 90_000, 5_000).expect("a value pointer");
     nodes
@@ -487,7 +492,7 @@ fn a_page_step_keeps_the_handles_into_its_page() {
     let current = step.current().expect("the page is in the pool");
     let mut blank = pool.blank();
     blank.copy_from(&current);
-    NodePageMut::open(&mut blank, SIZE, Lease::take())
+    NodePageMut::open(&mut blank, SIZE, Lease::take(), ())
         .expect("a tree page")
         .node_mut(slot(1))
         .expect("a node")
@@ -509,10 +514,7 @@ fn a_page_step_keeps_the_handles_into_its_page() {
 #[test]
 fn a_page_that_cannot_be_read_is_an_error_and_not_a_stale_handle() {
     let mut disk = Disk::new();
-    let image = NodePage::open(&family(page(7)), Lease::take())
-        .expect("a tree page")
-        .tree_page()
-        .to_image();
+    let image = image(&family(page(7)));
     disk.image(page(8), 1, &image);
     let pool = pool();
     let (guard, lease) = (Guard, Lease::take());

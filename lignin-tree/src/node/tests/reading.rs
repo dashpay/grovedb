@@ -39,7 +39,7 @@ fn a_view_gives_every_part_of_its_node() {
     };
 
     let mut frame = frame();
-    let mut nodes = NodePageMut::create(&mut frame, SIZE, page(7), lease).expect("a page");
+    let mut nodes = NodePageMut::create(&mut frame, SIZE, page(7), lease, ()).expect("a page");
     let handles = [&inner, &left, &empty].map(|node| nodes.insert(node).expect("fits"));
     let nodes = NodePage::open(&frame, lease).expect("a tree page");
     assert_eq!((nodes.id(), nodes.departures()), (page(7), 0));
@@ -93,9 +93,9 @@ fn a_view_gives_every_part_of_its_node() {
 fn the_nodes_of_a_page_come_in_slot_order() {
     let lease = Lease::take();
     let mut frame = frame();
-    let mut nodes = NodePageMut::create(&mut frame, SIZE, page(2), lease).expect("a page");
-    assert!(nodes.nodes().is_empty());
-    assert_eq!(nodes.nodes().nodes().next(), None);
+    let mut nodes = NodePageMut::create(&mut frame, SIZE, page(2), lease, ()).expect("a page");
+    assert!(nodes.view().is_empty());
+    assert_eq!(nodes.view().nodes().next(), None);
     for key in [b"d", b"a", b"c", b"b"] {
         nodes.insert(&leaf(key, &[], b"value")).expect("fits");
     }
@@ -156,13 +156,13 @@ fn a_frame_that_holds_no_tree_page_is_refused() {
     ));
 
     let mut frame = zeros;
-    let error = NodePageMut::open(&mut frame, SIZE, lease).expect_err("no page");
+    let error = NodePageMut::open(&mut frame, SIZE, lease, ()).expect_err("no page");
     assert!(matches!(
         error,
         NodeError::Page(FormatError::UnknownRecordKind { code: 0 })
     ));
-    let error =
-        NodePageMut::create(&mut frame[..100], SIZE, page(1), lease).expect_err("a short frame");
+    let error = NodePageMut::create(&mut frame[..100], SIZE, page(1), lease, ())
+        .expect_err("a short frame");
     let short = FormatError::from(TreePageError::BufferTooSmall {
         len: 100,
         needed: SIZE.image_capacity(),

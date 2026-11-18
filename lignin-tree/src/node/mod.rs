@@ -41,7 +41,7 @@
 //!
 //! // A write transaction changes its private copy of a page.
 //! let mut frame = vec![0; size.get()];
-//! let mut page = NodePageMut::create(&mut frame, size, PageId::MIN, lease)?;
+//! let mut page = NodePageMut::create(&mut frame, size, PageId::MIN, lease, ())?;
 //! let apple = page.insert(&leaf(b"apple", b"red"))?;
 //! let pear = page.insert(&leaf(b"pear", b"green"))?;
 //!

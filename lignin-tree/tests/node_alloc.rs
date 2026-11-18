@@ -95,7 +95,7 @@ fn version(raw: u64) -> CommitVersion {
 fn tree_page(id: PageId) -> (Vec<u8>, Vec<u8>) {
     let beside = |n: u16| page((id.get() + u32::from(n)) % PAGES + 1);
     let mut frame = vec![0; SIZE.get()];
-    let mut nodes = NodePageMut::create(&mut frame, SIZE, id, Lease::take()).expect("a page");
+    let mut nodes = NodePageMut::create(&mut frame, SIZE, id, Lease::take(), ()).expect("a page");
     let hash = [0xC4; 32];
     let hosted = [Some(CellAddress::new(beside(0), slot(1))), None];
     for n in 1..=NODES {
@@ -129,7 +129,7 @@ fn tree_page(id: PageId) -> (Vec<u8>, Vec<u8>) {
             })
             .expect("the node fits");
     }
-    let image = nodes.nodes().tree_page().to_image();
+    let image = nodes.view().tree_page().to_image();
 
     let mut run = Vec::new();
     let mut records = DeltaRunWriter::new(id, None, &mut run);
@@ -197,13 +197,13 @@ fn read_all(
     let mut kept = handles.iter_mut();
     for raw in 1..=PAGES {
         let pinned = reader.pin(page(raw), buffers).expect("the page loads");
-        for node in pinned.nodes().nodes() {
+        for node in pinned.view().nodes() {
             total += read(&node);
             nodes += 1;
             *kept.next().expect("room for every handle") = Some(node.handle());
 
             let left = node.link(Side::Left).map(|link| link.child);
-            if let Some(child) = left.and_then(|child| pinned.node(child.slot())) {
+            if let Some(child) = left.and_then(|child| pinned.view().node(child.slot())) {
                 total += read(&child);
                 nodes += 1;
             }
@@ -328,16 +328,16 @@ fn reading_a_node_allocates_nothing() {
     }
     {
         let mut latch = copy.write().expect("the copy is private");
-        let mut nodes = NodePageMut::open(&mut latch, SIZE, lease).expect("a tree page");
+        let mut nodes = NodePageMut::open(&mut latch, SIZE, lease, ()).expect("a tree page");
         for handle in handles.iter().flatten().take(usize::from(NODES)) {
             let mut node = nodes
                 .resolve_mut(*handle)
                 .expect("no cell has left the page");
-            let (link, value_len) = {
+            let (child, heights, child_key_len, value_len) = {
                 let read = node.node();
                 let link = read.link(Side::Right).expect("a right link");
                 let value_len = read.value().inline().map(<[u8]>::len);
-                ((link.child, link.heights, link.child_key_len), value_len)
+                (link.child, link.heights, link.child_key_len, value_len)
             };
             node.set_hash(HashField::KeyValue, &[0xE1; 32])
                 .expect("a hash");
@@ -348,10 +348,10 @@ fn reading_a_node_allocates_nothing() {
             node.set_link(
                 Side::Right,
                 Some(TreeLink {
-                    child: link.0,
+                    child,
                     hash: &[0xE3; 32],
-                    heights: link.1,
-                    child_key_len: link.2,
+                    heights,
+                    child_key_len,
                     aggregate: &[3, 2, 0, 0, 0, 0, 0, 0, 0],
                 }),
             )

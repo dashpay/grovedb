@@ -123,11 +123,11 @@ impl<'r, G: OperationGuard + ?Sized> NodeReader<'r, G> {
             ) => return Ok(None),
             Err(error) => return Err(error),
         };
-        let slot = handle.slot();
-        Ok(page
-            .resolve(handle)
-            .is_some()
-            .then(|| PinnedNode { page, slot }))
+        let followed = page.view().resolve(handle).is_some();
+        Ok(followed.then_some(PinnedNode {
+            page,
+            slot: handle.slot(),
+        }))
     }
 }
 
@@ -165,7 +165,7 @@ impl<'r> PinnedPage<'r> {
     }
 
     /// The nodes of the page.
-    pub fn nodes(&self) -> NodePage<'_> {
+    pub fn view(&self) -> NodePage<'_> {
         NodePage::open(&self.frame, self.lease).expect("a tree page, checked when it was pinned")
     }
 
@@ -177,17 +177,6 @@ impl<'r> PinnedPage<'r> {
     /// The commit that bore this page version.
     pub fn born(&self) -> CommitVersion {
         self.frame.born()
-    }
-
-    /// The node in `slot`, or `None` if the slot is free.
-    pub fn node(&self, slot: SlotId) -> Option<NodeRef<'_>> {
-        self.nodes().node(slot)
-    }
-
-    /// The node `handle` names, or `None` if the handle is no longer good
-    /// here ([`NodePage::resolve`]).
-    pub fn resolve(&self, handle: NodeHandle) -> Option<NodeRef<'_>> {
-        self.nodes().resolve(handle)
     }
 
     /// The pinned frame.
@@ -208,13 +197,14 @@ pub struct PinnedNode<'r> {
 
 impl<'r> PinnedNode<'r> {
     fn new(page: PinnedPage<'r>, slot: SlotId) -> Option<Self> {
-        page.node(slot)?;
+        page.view().node(slot)?;
         Some(Self { page, slot })
     }
 
     /// The node.
     pub fn node(&self) -> NodeRef<'_> {
         self.page
+            .view()
             .node(self.slot)
             .expect("the slot held a cell when the node was pinned")
     }
