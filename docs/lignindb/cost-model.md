@@ -8,6 +8,8 @@ It builds on the [storage surface inventory](storage-surface.md) (BASE-04), the 
 
 **Pinned commit:** the engine sources of `feat/LigninDB` at `54e36fb4` ("Merge BASE-01: the remaining cost-bearing operations"), which are those of `develop` `22f163c2`. Functions are cited by name, with the line at the pinned commit. Since then `develop` has been merged up to `f1016919` and the golden corpus recorded again from that commit (`lignin-testkit/corpus/README.md`). The rules below predict every cost of the new corpus as they did of the old, and the citations have not been moved.
 
+**Since SEAM-05** the storage rules of section 5 are the functions of `grovedb_costs::cost_model`, and the RocksDB engine charges only through them. Section 14 says which function is which rule. The citations of section 5 are of the code at the pinned commit, where the rules were written out in the storage contexts.
+
 **Result:** the storage rules of section 5, applied to a logical state that holds no node record, reproduce every `OperationCost` of the golden corpus: 290 traces and 216,069 steps on grove versions 1 to 5 at the standard scale, and the five reference traces of 1,050,008 operations each. Section 12 says how that is run, what it shows and what it does not. One thing it does not show: the corpus cannot tell whether a delete with no writer's cost is charged from the committed state or from the transaction's view (rule D2), because the two differ only for a record the same transaction wrote, and the corpus deletes such records only in an operation whose cost GroveDB drops. The storage crate's tests pin that instead.
 
 ## 1. How to read this document
@@ -22,7 +24,7 @@ A cost has three sources, in three layers:
 
 Sections 5 and 4 are the specification of the first layer. They are what a new engine has to reproduce, and they are what the check of section 12 computes from sizes alone. Sections 6 and 7 describe the other two layers: what they pass down, and every place where they add to a cost themselves. That code runs unchanged on both engines, so it is described here, not re-specified.
 
-Section 9 is for FMT-02: for each charged quantity, the sizes it depends on and what an engine has to keep. Section 10 is for SEAM-05.
+Section 9 is for FMT-02: for each charged quantity, the sizes it depends on and what an engine has to keep. Section 10 is for SEAM-05, and section 14 is what SEAM-05 did with it.
 
 ## 2. The cost record
 
@@ -697,4 +699,77 @@ The model counts every application of a rule, by case. `check.sh` prints the cou
 2. **Reading the committed version inside a write transaction** (section 9, D2). TXN-03 and MERK-05 have to offer it for `clear` and `Merk::clear`.
 3. **`GroveDb::clear_subtree` returns no cost.** Whether it should is outside this task; while it does not, nothing can compare its cost across engines.
 4. **The committed view of D2 is not in the corpus** (section 12.3), nor in Merk's or GroveDB's tests. A workload that fills a tree and deletes it whole in the same transaction, on every grove version, would record it: `GroveDb::delete` returns its cost, and section 11.1 shows that the cost differs. It fits the unit of BASE-01 that is still to be merged, or a follow-up to it, since BASE-02 records again then.
-5. **The order of a batch** (B1) shows in the removed bytes of a batch that is applied, on grove versions 1 to 3, and in the cost that comes back with a refused put. No test of the engine asserts either; the comparisons with RocksDB are in `cost_model/against_rocksdb.rs`. SEAM-05 should pin both in the storage crate's own tests.
+5. **The order of a batch** (B1) shows in the removed bytes of a batch that is applied, on grove versions 1 to 3, and in the cost that comes back with a refused put. No test of the engine asserted either; the comparisons with RocksDB are in `cost_model/against_rocksdb.rs`. SEAM-05 pinned both in the storage crate's own tests (section 14.4). Closed.
+
+## 14. Where the storage rules are now (SEAM-05)
+
+LigninDB task SEAM-05 ([task register 1](https://github.com/dashpay/grovedb/issues/1052#issuecomment-6960582299)) moved the rules of section 5 out of the RocksDB storage contexts. They are functions of logical sizes in `grovedb_costs::cost_model` (`costs/src/cost_model/`). The RocksDB engine calls them for every cost it reports and works out none itself. No rule changed: sections 2 to 13 describe the same charges as before.
+
+### 14.1 The functions
+
+`StorageCostModel` is the version of the rules, and every rule is a method of it. It has one version, `V0`: what grove versions 1 to 5 charge (`cost_model/v0.rs`). A caller holds a `StorageCostModel` and never names a version at a call site, so a second version is a new variant, and the compiler lists every rule that has to say what it charges.
+
+| Rule | Function of `StorageCostModel` | Where the RocksDB engine calls it |
+| --- | --- | --- |
+| P1 | `open_by_path(segment_lens)` | `RocksDbStorage::build_prefix`. `get_storage_context_cost` calls it with the longest length each segment may have. |
+| P2 | `open_by_prefix()` | the two openers that take a prefix |
+| P3 | `secondary_prefix()` | `secondary_prefix_for` |
+| R1 | `read(found)` | the four reads of a deferred context |
+| R2 | `read_immediate()` | the four reads of an immediate context |
+| `W-tx`, `B-part` | `staged_write()` | every write staged through a deferred context, and its `commit_batch` |
+| a write refused for want of a batch | `refused_write()` | the same nine methods |
+| W1 | `complete_new_key_cost(cost_info, stored_key_len)` | the data `put` of a deferred context and of both batch types |
+| W2, W3, W4, with K | `batch()`, then `BatchCharge::put(keyspace, stored_key_len, value_len, children_sizes, cost_info)` | `continue_write_batch`, for each put of the batch |
+| D1 | `BatchCharge::delete(cost_info)` | the same, for each delete with a writer's cost |
+| D2 | `BatchCharge::delete_uncosted(stored_key_len, committed_value_len)` | the same, for each delete with none. The engine reads the committed record and hands over the outcome of the read. |
+| B1 | `batch_order()`; `BatchCharge::finish(written)`; `BatchCharge::into_parts()` with `batch_written(on_success, written)` | `commit_multi_context_batch`; `build_write_batch`, `continue_write_batch` and `commit_db_write_batch`, which GroveDB's partial batches call apart |
+| M1 | `write_immediate()` | the eight writes of an immediate context |
+| M2 | `immediate_batch()`, then `ImmediateBatchCharge::put`, `delete` and `finish` | `PrefixedRocksDbBatch`, and `commit_batch` of an immediate context |
+| C1 | `cursor_move()` | the six moves of `PrefixedRocksDbRawIterator` |
+| C2 | `cursor_key(on_record)` | `key` and `valid` |
+| C3 | `cursor_value(on_record)` | `value` |
+| C4 | `clear_walk(stored_key_lens)` | not called. `FlatStore::clear` makes the walk, and each step is charged by C1, C2 and D2. The function is the same sum for an engine that clears a keyspace in one step. |
+| N1 | `node_record_len(value_len, feature_len, left, right)`, and `grovedb_merk::cost_model::node_record_len(model, node)` for a node Merk holds | not called. On RocksDB the record length is the length of the stored bytes, which is the same number. |
+| section 5.6 | `transaction_commit()` | `commit_transaction` |
+
+How the functions are to be read:
+
+- **Lengths.** A function takes the length of the **stored key**, the 32-byte prefix and the caller's key, because that is what the rules are defined on. RocksDB has that key. An engine that keeps only the caller's key calls `stored_key_len(key_len)`. A record length is a number of bytes, for a node the result of N1.
+- **Rule K** stays where it was, `OperationCost::add_key_value_storage_costs`. `BatchCharge::put` and `ImmediateBatchCharge::put` are the only callers left outside tests.
+- **A batch** is charged through a `BatchCharge`, which keeps the two parts of B1 apart: what is owed at once (seeks, loaded bytes) and the storage cost, owed once the writes are taken. The engine adds the operations in the order of `batch_order()` and by stored key, and ends with `finish(written)`. A put that is refused returns the error; `finish(false)` is then what is owed.
+- **The committed read of D2** is the one thing a rule needs that is not a size the engine has at hand. The engine makes the read outside the transaction and passes its outcome; the function charges the two seeks whether it succeeded or not.
+- **What charges nothing** is a function too (`open_by_prefix`, `read_immediate`, `write_immediate`, `staged_write`, `refused_write`, `transaction_commit`), so that a later version can charge it and no engine decides by itself that an event is free.
+
+### 14.2 Versions
+
+`grovedb_merk::cost_model::storage_cost_model(grove_version)` gives the version of the storage rules a grove version charges by. It is `V0` for all five. `grovedb_merk::cost_model` re-exports the functions, so Merk and the stores under it name one module.
+
+The storage contexts of `grovedb-storage` are opened with no grove version: nothing in the `Storage` trait carries one, and `build_prefix` and `secondary_prefix_for` are associated functions. So the RocksDB engine charges by one fixed version (`rocksdb_storage::storage::COST_MODEL`, `V0`). That is correct while every grove version maps to `V0`. A grove version that is given other storage rules (GROVE-13) has to reach those contexts as well, if RocksDB is still an engine then.
+
+### 14.3 What did not move
+
+Sections 6 and 7, as section 10 says: Merk's account of what a key and a value cost, which nodes are fetched, the hash counts, the element read that replaces loaded bytes, the pinned-view read, the client's callbacks, and the charges GroveDB and the append-only trees make themselves. `FlatStore::clear` still performs its walk. `StorageBatch` still decides the order of a batch by the order it is iterated in; `batch_order()` states that order and a test holds the two together.
+
+### 14.4 How the move was checked
+
+| What | Where | Holds |
+| --- | --- | --- |
+| The corpus on RocksDB | `cargo test -p lignin-testkit --test golden` | 290 traces replay as recorded with the engine charging through the functions |
+| The corpus on the model | `lignin-testkit/cost-model-storage/check.sh` | The second implementation of the rules (`lignin-testkit/src/cost_model/rules.rs`), which SEAM-05 left as it was, still predicts every step |
+| The engine against the second implementation | `cargo test -p lignin-testkit --lib cost_model` | `against_rocksdb.rs` runs the same batches, reads and cursor walks on RocksDB and on `rules.rs` |
+| Each number | `costs/src/cost_model/tests.rs` | One test per rule, and that a charge meets a running cost exactly as the parts were added before the move, for every combination of removal forms and both removal arithmetics |
+| The order of a batch | `storage/src/rocksdb_storage/tests.rs`, module `charging` | By keyspace (all six pairs), by key within a keyspace, by prefix across subtrees, and the key of a put before its value, each through the removed bytes of an applied batch |
+| A refused put | the same module | For a refusal in each keyspace: the cost returned holds the seeks and loaded bytes of every operation before it in batch order and of the refused put, and no storage cost; nothing was written |
+| A batch that is not written | the same module | The storage cost is not owed, what was charged at once is |
+| C4 and P1 | the same module | `FlatStore::clear` costs `clear_walk`; a handle, a prefix and the estimate cost `open_by_path` |
+| N1 | `merk/src/cost_model.rs` | The length from sizes is the length of the record Merk encodes, for every feature and link aggregate |
+| That nothing else charges | `storage/tests/charging.rs` | The sources of the RocksDB engine build no cost, touch no field of one and do none of the arithmetic |
+
+The tests of the `charging` module were also run against the storage contexts as they were before the move, with only the functions added to `grovedb-costs`: they pass there unchanged.
+
+### 14.5 For later tasks
+
+- **SEAM-08.** `get_storage_context_cost` is one call of `open_by_path` with no engine in it; it can leave the `Storage` trait as it is.
+- **MERK-03.** `grovedb_merk::cost_model` is the module to extend. Every storage charge of the LigninDB path is a call of a function above: `read` with `node_record_len` for a fetch, `BatchCharge` for a commit, the cursor functions with `node_record_len` for a record under a cursor. `NodeWriteCost` already carries the link sizes N1 takes.
+- **GROVE-04, MERK-05, TXN-08.** A `FlatStore` on LigninDB is an adapter that takes each cost from these functions. A batch has to be charged in the order of `batch_order()` and by stored key, which is prefix first. A range delete reports `clear_walk` and stages its deletes for D2.
+- **GROVE-13.** New storage rules are a new variant of `StorageCostModel`, and `storage_cost_model` maps the new grove version to it (section 14.2).
