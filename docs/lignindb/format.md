@@ -147,9 +147,13 @@ A commit version counts the commits of one database.
   (`CommitVersion::EMPTY`). It is a valid version to read at, and no commit
   ever has it.
 - **Each committed write transaction takes the previous version plus one.**
-  The first commit produces version 1. There are no gaps, a version is never
-  reused and it never goes down. A transaction that rolls back takes no
-  version. A reader can therefore check a run of commits for a missing one.
+  The first commit produces version 1. There are no gaps, and along the
+  history that survives a crash a version is never reused and never goes
+  down. A commit lost in a crash gives its number back to the next commit:
+  commits are not fsynced one by one (DEC-04), and recovery leaves nothing
+  that names a lost one (rule DU3 of [`transactions.md`](transactions.md)).
+  A transaction that rolls back takes no version. A reader can therefore
+  check a run of commits for a missing one.
 - **It belongs to one database directory.** A checkpoint that is opened as a
   database continues from the version it was taken at, on its own line. The
   same number in two directories can mean different states, so versions are
