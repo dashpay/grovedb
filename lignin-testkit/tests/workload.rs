@@ -1008,3 +1008,245 @@ fn the_commitment_payload_length_matches_grovedb() {
         ciphertext_payload_size::<DashMemo>()
     );
 }
+
+/// One operation of every kind the second unit added, and one query for
+/// every construct of GroveDB's query grammar.
+fn one_of_each_new_kind() -> Vec<Op> {
+    use grovedb::{
+        AggregateSumPathQuery, AxisProjection, AxisQuery, PathQuery, Query, QueryItem, SizedQuery,
+        TreeType,
+    };
+    use grovedb_merk::proofs::query::{AggregateFold, AggregateSumQuery, IndexAxis};
+    use lignin_testkit::workload::PartialBatch;
+
+    let path = vec![b"tree".to_vec()];
+    let key = b"key".to_vec();
+    let bytes = |byte: u8| vec![byte; 2];
+    let mut ops = vec![
+        Op::Write(Write::PutAux {
+            key: key.clone(),
+            value: bytes(1),
+        }),
+        Op::Write(Write::DeleteAux { key: key.clone() }),
+        Op::Write(Write::DropFlat {
+            path: path.clone(),
+            key: key.clone(),
+        }),
+        Op::Batch(vec![
+            BatchOp::Patch {
+                path: path.clone(),
+                key: key.clone(),
+                element: Element::new_item(bytes(2)),
+                change_in_bytes: -3,
+            },
+            BatchOp::Move {
+                path: path.clone(),
+                key: key.clone(),
+                new_key: bytes(3),
+            },
+            BatchOp::DropFlat {
+                path: path.clone(),
+                key: key.clone(),
+                tree_type: TreeType::BulkAppendTree(4),
+            },
+        ]),
+        Op::PartialBatch(PartialBatch {
+            ops: vec![BatchOp::Delete {
+                path: path.clone(),
+                key: key.clone(),
+            }],
+            add_on: vec![BatchOp::InsertOnly {
+                path: path.clone(),
+                key: key.clone(),
+                element: Element::new_sum_item(5),
+            }],
+            pause_height: Some(2),
+        }),
+        Op::PartialBatch(PartialBatch {
+            ops: Vec::new(),
+            add_on: Vec::new(),
+            pause_height: None,
+        }),
+        Op::FlushPendingDrops,
+        Op::Read(Read::GetAux { key: key.clone() }),
+        Op::Read(Read::AuxByPrefix {
+            prefix: key.clone(),
+        }),
+    ];
+    for (skip_non_sum_items, ignore_references) in [(false, true), (true, false)] {
+        ops.push(Op::Read(Read::SumBudget {
+            query: Box::new(AggregateSumPathQuery::new(
+                path.clone(),
+                AggregateSumQuery {
+                    items: vec![QueryItem::Key(key.clone())],
+                    left_to_right: skip_non_sum_items,
+                    sum_limit: 600,
+                    limit_of_items_to_check: ignore_references.then_some(7),
+                },
+            )),
+            skip_non_sum_items,
+            ignore_references,
+        }));
+    }
+
+    let items = [
+        QueryItem::Key(bytes(1)),
+        QueryItem::Range(bytes(1)..bytes(2)),
+        QueryItem::RangeInclusive(bytes(1)..=bytes(2)),
+        QueryItem::RangeFull(..),
+        QueryItem::RangeFrom(bytes(1)..),
+        QueryItem::RangeTo(..bytes(2)),
+        QueryItem::RangeToInclusive(..=bytes(2)),
+        QueryItem::RangeAfter(bytes(1)..),
+        QueryItem::RangeAfterTo(bytes(1)..bytes(2)),
+        QueryItem::RangeAfterToInclusive(bytes(1)..=bytes(2)),
+        QueryItem::AggregateCountOnRange(Box::new(QueryItem::RangeFrom(bytes(1)..))),
+        QueryItem::AggregateSumOnRange(Box::new(QueryItem::RangeFrom(bytes(1)..))),
+        QueryItem::AggregateCountAndSumOnRange(Box::new(QueryItem::RangeFrom(bytes(1)..))),
+    ];
+    let mut queries: Vec<PathQuery> = items
+        .into_iter()
+        .map(|item| PathQuery::new_single_query_item(path.clone(), item))
+        .collect();
+
+    let mut nested = Query::new_single_query_item_with_direction(QueryItem::RangeFull(..), false);
+    nested.limit = Some(3);
+    nested.offset = Some(4);
+    let mut branching = Query::new_range_full();
+    branching.set_subquery_path(vec![bytes(5), bytes(6)]);
+    branching.set_subquery(nested.clone());
+    branching.add_conditional_subquery(QueryItem::Key(bytes(7)), Some(vec![bytes(8)]), None);
+    branching.add_conditional_subquery(QueryItem::RangeFrom(bytes(9)..), None, Some(nested));
+    branching.add_parent_tree_on_subquery = true;
+    queries.push(PathQuery::new(
+        path.clone(),
+        SizedQuery::new(branching.clone(), Some(10), None),
+    ));
+    queries.push(PathQuery::new(
+        path.clone(),
+        SizedQuery::new(branching, None, Some(11)),
+    ));
+    queries.push(PathQuery::new(
+        path.clone(),
+        SizedQuery::new(Query::new_range_full(), Some(12), Some(13)),
+    ));
+    let mut carrier = Query::new_single_key(bytes(1));
+    carrier.set_subquery(Query::new_aggregate_count_on_range(QueryItem::RangeTo(
+        ..bytes(2),
+    )));
+    queries.push(PathQuery::new_unsized(path.clone(), carrier));
+
+    let axis_queries = [
+        AxisQuery::top_k(IndexAxis::Count, 3, 4, true),
+        AxisQuery::bottom_k(IndexAxis::Sum, 3, 4),
+        AxisQuery::bounded(IndexAxis::Avg, -5, 6, 7, false),
+        AxisQuery::rank_of_key(IndexAxis::Count, key.clone(), true),
+        AxisQuery::aggregate_over_value_range(IndexAxis::Sum, -5, 6, AggregateFold::Population),
+        AxisQuery::aggregate_over_value_range(IndexAxis::Sum, -5, 6, AggregateFold::Total),
+        AxisQuery::top_k(IndexAxis::Count, 3, 4, true).with_projection(AxisProjection::Keys),
+    ];
+    for axis_query in axis_queries {
+        queries.push(PathQuery::new_axis(path.clone(), axis_query));
+    }
+    queries.push(PathQuery::new_branched_axis(
+        path.clone(),
+        vec![bytes(1), bytes(2)],
+        vec![bytes(3)],
+        AxisQuery::top_k(IndexAxis::Count, 3, 0, false),
+    ));
+    for match_limit in [None, Some(9)] {
+        queries.push(PathQuery::new_sum_budget(
+            path.clone(),
+            vec![QueryItem::RangeFull(..)],
+            true,
+            700,
+            match_limit,
+        ));
+    }
+
+    for query in queries {
+        for proven in [false, true] {
+            ops.push(Op::Read(Read::PathQuery {
+                query: Box::new(query.clone()),
+                proven,
+            }));
+        }
+        ops.push(Op::Read(Read::Rows {
+            query: Box::new(query),
+            raw: true,
+        }));
+    }
+    ops
+}
+
+const PINNED_NEW_KINDS: &str = "5368330087c18a31ec1b92a3e88630c0cc0f5d3850232eb1f451b12f3c695469";
+
+/// The canonical encoding of the kinds the second unit added: each one
+/// differs from every other, and the bytes are pinned, so a change to the
+/// encoding cannot pass as a change to a workload.
+#[test]
+fn the_new_kinds_have_a_pinned_encoding() {
+    let ops = one_of_each_new_kind();
+    let mut encodings = BTreeSet::new();
+    for op in &ops {
+        let mut bytes = Vec::new();
+        op.encode(&mut bytes);
+        assert!(encodings.insert(bytes), "two operations encode as {op:?}");
+        assert_eq!(*op, op.clone());
+    }
+    let digest = StreamDigest::of(&ops);
+    assert_eq!(digest.ops(), ops.len() as u64);
+    assert_eq!(digest.hex(), PINNED_NEW_KINDS);
+
+    let coverage = Coverage::of(&ops);
+    assert_eq!(coverage.missing_operations(), Vec::<Operation>::new());
+    let offset_with_subquery = ops
+        .iter()
+        .filter(|op| match op {
+            Op::Read(Read::PathQuery { query, .. }) => {
+                query.query.offset.is_some() && query.query.query.has_subquery()
+            }
+            _ => false,
+        })
+        .map(|op| Coverage::of([op]));
+    for coverage in offset_with_subquery {
+        assert!(
+            coverage.operations().contains(&Operation::QueryOffset)
+                && !coverage.operations().contains(&Operation::CountOffsetPage),
+            "only a single range is paged by count"
+        );
+    }
+    let stored: Vec<Element> = ops
+        .iter()
+        .flat_map(|op| op.elements().into_iter().cloned())
+        .collect();
+    assert_eq!(
+        stored,
+        [Element::new_item(vec![2; 2]), Element::new_sum_item(5)]
+    );
+    assert!(ops
+        .iter()
+        .all(|op| op.follows_a_commit() == matches!(op, Op::Read(_) | Op::FlushPendingDrops)));
+}
+
+/// A query GroveDB's grammar refuses counts as none of the operations.
+#[test]
+fn a_malformed_query_is_no_operation() {
+    use grovedb::{PathQuery, Query, QueryItem, SizedQuery};
+
+    let mut two_aggregates = Query::new();
+    two_aggregates.items = vec![
+        QueryItem::AggregateCountOnRange(Box::new(QueryItem::RangeFrom(vec![1]..))),
+        QueryItem::AggregateSumOnRange(Box::new(QueryItem::RangeFrom(vec![1]..))),
+    ];
+    let malformed = PathQuery::new(
+        vec![b"tree".to_vec()],
+        SizedQuery::new(two_aggregates, None, None),
+    );
+    assert!(malformed.classify().is_err());
+    let op = Op::Read(Read::PathQuery {
+        query: Box::new(malformed),
+        proven: false,
+    });
+    assert!(Coverage::of([&op]).operations().is_empty());
+}

@@ -130,6 +130,10 @@ pub fn apply(
     }
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "GroveDB fixes the error type of the callback"
+)]
 fn apply_partial_batch(
     db: &GroveDb,
     batch: &PartialBatch,

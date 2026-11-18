@@ -361,9 +361,11 @@ impl Op {
     /// Appends the canonical encoding of the op to `out`.
     ///
     /// The encoding is what [`StreamDigest`] hashes. Integers are fixed-width
-    /// little-endian, byte strings and lists carry a `u32` length, and an
-    /// element is written as its GroveDB serialization, which is consensus
-    /// data and the same on every grove version.
+    /// little-endian, byte strings and lists carry a `u32` length, an
+    /// optional value follows a presence byte, and an element is written as
+    /// its GroveDB serialization, which is consensus data and the same on
+    /// every grove version. A GroveDB query is written field by field in
+    /// the same conventions.
     pub fn encode(&self, out: &mut Vec<u8>) {
         match self {
             Op::Write(write) => {

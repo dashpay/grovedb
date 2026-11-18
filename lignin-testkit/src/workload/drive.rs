@@ -7,8 +7,15 @@
 //! token under a big sum tree. Each state transition is one batch.
 //!
 //! The submodules hold the shapes around the operations that reach storage
-//! in a way of their own: identity keys ([`IdentityKeys`]: patch,
-//! conditional subqueries, pages by offset).
+//! in a way of their own:
+//!
+//! - [`IdentityKeys`]: keys patched in place, searched through conditional
+//!   subqueries and paged by offset.
+//! - [`PlatformState`]: the records Drive keeps in auxiliary storage.
+//! - [`IndexRekey`]: the value keys of an index moved to another encoding.
+//! - [`Expiration`]: index entries dropped flat, which writes meta records.
+//! - [`IndexAggregates`]: indexes that count, sum and rank, read by
+//!   aggregate queries.
 
 mod aggregates;
 mod expiry;

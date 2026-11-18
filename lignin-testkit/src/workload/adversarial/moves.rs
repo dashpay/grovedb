@@ -233,7 +233,7 @@ impl Generator {
             && movable.key != b"flagged"
             && !movable.key.starts_with(b"a:")
             && !movable.key.starts_with(b"b:");
-        if resizable && round % 2 == 0 && self.rng.chance(1, 2) {
+        if resizable && round.is_multiple_of(2) && self.rng.chance(1, 2) {
             key.extend_from_slice(b"-longer");
         }
         key

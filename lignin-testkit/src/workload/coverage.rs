@@ -405,8 +405,11 @@ fn query_operations(path_query: &PathQuery, proven: bool) -> Vec<Operation> {
     if query.has_instance_offset_anywhere() {
         operations.push(Operation::InstanceOffset);
     }
+    let shape = path_query.classify();
     if path_query.query.offset.is_some_and(|offset| offset > 0) {
-        operations.push(if proven {
+        let paged_by_count =
+            proven && matches!(shape, Ok(PathQueryShape::CountOffsetPaginated { .. }));
+        operations.push(if paged_by_count {
             Operation::CountOffsetPage
         } else {
             Operation::QueryOffset
@@ -418,7 +421,7 @@ fn query_operations(path_query: &PathQuery, proven: bool) -> Vec<Operation> {
         AxisTraversal::RankOfKey { .. } => Operation::AxisRankOfKey,
         AxisTraversal::AggregateOverValueRange { .. } => Operation::AxisAggregate,
     };
-    match path_query.classify() {
+    match shape {
         Ok(PathQueryShape::AggregateLeaf { kind, .. }) => operations.push(match kind {
             AggregateKind::Count => Operation::AggregateCount,
             AggregateKind::Sum => Operation::AggregateSum,

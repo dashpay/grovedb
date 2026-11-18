@@ -12,14 +12,21 @@
 //!
 //! - [`drive`]: the shapes Dash Platform's Drive stores. Documents with
 //!   index references, identity balances in sum trees, tokens in count
-//!   trees.
+//!   trees, identity keys, the platform state, an index whose keys are
+//!   rewritten, documents that expire and indexes that aggregate.
 //! - [`adversarial`] and [`zoo`]: deep nesting, 255-byte keys, large values,
-//!   thousands of tiny subtrees, delete-heavy streams, reference chains, and
-//!   every element and tree type, the append-only trees included.
+//!   thousands of tiny subtrees, delete-heavy streams, reference chains,
+//!   every element and tree type, the append-only trees included, and flat
+//!   drops, moves, partial batches and pages over every kind of tree.
+//!
+//! Between them they produce the GroveDB operations that reach storage in a
+//! way of their own ([`coverage::Operation`]): patch, move, partial batches,
+//! aux and meta records, query offsets, conditional subqueries and aggregate
+//! queries.
 //!
 //! [`Workload`] lists them all. [`apply`] turns an operation into GroveDB
-//! calls, and [`coverage`] reports which element and tree types a stream
-//! produced.
+//! calls, and [`coverage`] reports which element types, tree types and
+//! operations a stream produced.
 
 pub mod adversarial;
 pub mod apply;
@@ -287,7 +294,9 @@ impl Workload {
     /// Every workload at its default size, generated for `features`.
     ///
     /// Each one writes under root keys of its own, so the streams of a suite
-    /// can also be applied one after another to the same database.
+    /// can also be applied one after another to the same database. The
+    /// order is fixed: a workload added later goes last, so the suite keeps
+    /// the streams it had as a prefix.
     pub fn suite(features: Features) -> Vec<Workload> {
         vec![
             Workload::Documents(drive::Documents::default()),

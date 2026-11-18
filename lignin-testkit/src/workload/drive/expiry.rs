@@ -163,7 +163,7 @@ impl Expiration {
     ) {
         if !self.features.flat_drop {
             ops.push(build::delete(index_path, time_key));
-        } else if block % 3 == 0 {
+        } else if block.is_multiple_of(3) {
             ops.push(Op::Batch(vec![batch::drop_flat(
                 time_path,
                 PRIMARY_KEY,

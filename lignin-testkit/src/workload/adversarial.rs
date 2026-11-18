@@ -6,7 +6,9 @@
 //! length and kind of reference chains.
 //!
 //! The submodules do the same for the operations that reach storage in a way
-//! of their own: flat drops of every type of tree ([`FlatDrops`]).
+//! of their own: flat drops ([`FlatDrops`]) and moves ([`Moves`]) of every
+//! type of tree, batches applied in two segments ([`PartialBatches`]), and
+//! every way a query pages, budgets and ranks ([`Pagination`]).
 
 mod drops;
 mod moves;
