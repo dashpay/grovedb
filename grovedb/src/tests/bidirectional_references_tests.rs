@@ -1322,10 +1322,10 @@ fn delete_with_flag_rejects_rows_of_indexed_primaries() {
 }
 
 /// The design invariant of on-element referrer lists: registering a new
-/// referrer rewrites only the TARGET node (its referrer list, hence its
-/// combined value hash) — referrers that already point at it keep their
-/// stored node hashes bit-for-bit, because they commit to the target's
-/// LOGICAL (stripped) hash, which the registration does not touch.
+/// referrer rewrites only the TARGET's stored bytes (its referrer list).
+/// No value hash moves: the target's is taken over its bytes with the list
+/// emptied, and referrers that already point at it commit to that same
+/// hash.
 #[test]
 fn registering_a_referrer_leaves_existing_referrer_nodes_untouched() {
     use grovedb_merk::element::get::ElementFetchFromStorageExtensions;
@@ -1378,9 +1378,10 @@ fn registering_a_referrer_leaves_existing_referrer_nodes_untouched() {
     .unwrap()
     .unwrap();
 
-    // The target node re-hashed (its referrer list grew)...
-    assert_ne!(node_hash(&tx, b"value"), target_before);
-    // ...while the first referrer's stored node hash is untouched.
+    // The target's value hash is untouched (its referrer list is outside
+    // the hash)...
+    assert_eq!(node_hash(&tx, b"value"), target_before);
+    // ...and so is the first referrer's.
     assert_eq!(node_hash(&tx, b"ra"), ra_before);
 
     // The referrer list lives on the element at the merk level (both
@@ -1408,16 +1409,65 @@ fn registering_a_referrer_leaves_existing_referrer_nodes_untouched() {
         .is_empty());
 }
 
-/// Proofs over backward-references items ship the dedicated
-/// `KVBackwardsReferencesValueHash` node: the payload is the STRIPPED
-/// element and the referrer list rides along only as its 32-byte hash.
-/// The verifier recombines the two, so tampering with either the payload
-/// or the referrer-list hash breaks the root-hash chain.
+/// A referrer list is kept in a canonical order, so the bytes stored on a
+/// target depend on which referrers exist and not on the order they
+/// registered in.
 #[test]
-fn proofs_carry_stripped_payload_and_bind_the_referrer_hash() {
+fn referrer_lists_do_not_depend_on_registration_order() {
+    use grovedb_merk::element::get::ElementFetchFromStorageExtensions;
+
+    let grove_version = GroveVersion::latest();
+    let stored_target = |order: [&[u8]; 3]| {
+        let db = db_with_bwr_item();
+        for referrer in order {
+            db.insert(
+                &[TEST_LEAF],
+                referrer,
+                sibling_bidi(b"value", true),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+        }
+        let tx = db.start_transaction();
+        let merk = db
+            .open_transactional_merk_at_path(
+                SubtreePath::from(&[TEST_LEAF]),
+                &tx,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+        Element::get(&merk, b"value", true, grove_version)
+            .unwrap()
+            .unwrap()
+    };
+
+    let ascending = stored_target([b"ra", b"rb", b"rc"]);
+    let entries = ascending.backward_references().unwrap();
+    assert_eq!(entries.len(), 3);
+    assert!(grovedb_element::backward_references_are_canonical(entries));
+    for order in [[b"rc".as_slice(), b"rb", b"ra"], [b"rb", b"rc", b"ra"]] {
+        assert_eq!(
+            stored_target(order).serialize(grove_version).unwrap(),
+            ascending.serialize(grove_version).unwrap(),
+            "registered in order {order:?}"
+        );
+    }
+}
+
+/// Proofs over backward-references items use the ordinary `KV` node: the
+/// payload is the STRIPPED element, whose hash is the node's value hash,
+/// and the referrer list is in no hash. The verifier recomputes the hash
+/// from the payload, so tampering with it breaks the root-hash chain.
+#[test]
+fn proofs_carry_the_stripped_payload_in_an_ordinary_node() {
     let grove_version = GroveVersion::latest();
     let db = db_with_bwr_item();
-    // A registered referrer, so the node's referrer-list hash is non-trivial.
+    // A registered referrer, so the stored bytes differ from the proved ones.
     db.insert(
         &[TEST_LEAF],
         b"ref",
@@ -1453,37 +1503,65 @@ fn proofs_carry_stripped_payload_and_bind_the_referrer_hash() {
         )]
     );
 
-    // Tampering with the referrer-list hash breaks verification.
-    let tampered = tamper_backward_references_node(&proof, &path_query, |value, backrefs_hash| {
-        backrefs_hash[0] ^= 1;
-        let _ = value;
-    })
-    .expect("proof must contain a KVBackwardsReferencesValueHash node");
-    assert!(
-        GroveDb::verify_query(&tampered, &path_query, grove_version).is_err(),
-        "flipped referrer-list hash must be rejected"
-    );
+    // The proved bytes are the element with its referrer list emptied,
+    // carried by a plain `KV` node.
+    let stripped = Element::new_item_allowing_bidirectional_references(b"hello".to_vec())
+        .serialize(grove_version)
+        .unwrap();
+    let mut proved = None;
+    tamper_backward_references_node(&proof, &path_query, |value| proved = Some(value.clone()))
+        .expect("proof must carry the item in a KV node");
+    assert_eq!(proved, Some(stripped));
 
-    // So does tampering with the stripped payload bytes.
-    let tampered = tamper_backward_references_node(&proof, &path_query, |value, _| {
+    // Tampering with the stripped payload bytes breaks verification.
+    let tampered = tamper_backward_references_node(&proof, &path_query, |value| {
         let last = value.len() - 1;
         value[last] ^= 1;
     })
-    .expect("proof must contain a KVBackwardsReferencesValueHash node");
+    .expect("proof must carry the item in a KV node");
     assert!(
         GroveDb::verify_query(&tampered, &path_query, grove_version).is_err(),
         "flipped payload byte must be rejected"
     );
+
+    // So does presenting the STORED bytes, referrer list included: the
+    // value hash is taken over the stripped bytes only.
+    let stored = {
+        use grovedb_merk::element::get::ElementFetchFromStorageExtensions;
+        let tx = db.start_transaction();
+        let merk = db
+            .open_transactional_merk_at_path(
+                SubtreePath::from(&[TEST_LEAF]),
+                &tx,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+        Element::get(&merk, b"value", true, grove_version)
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(stored.backward_references().unwrap().len(), 1);
+    let stored_bytes = stored.serialize(grove_version).unwrap();
+    let tampered = tamper_backward_references_node(&proof, &path_query, |value| {
+        *value = stored_bytes.clone();
+    })
+    .expect("proof must carry the item in a KV node");
+    assert!(
+        GroveDb::verify_query(&tampered, &path_query, grove_version).is_err(),
+        "the stored bytes do not hash to the value hash"
+    );
 }
 
 /// Decode the GroveDB proof envelope, walk to the leaf merk proof, apply
-/// `mutate` to the first `KVBackwardsReferencesValueHash` node's
-/// (stripped-value, referrer-list-hash) pair, and re-encode. `None` if the
-/// leaf proof holds no such node.
+/// `mutate` to the value of the first `KV` node that carries a
+/// backward-references item, and re-encode. `None` if the leaf proof holds
+/// no such node.
 fn tamper_backward_references_node(
     proof: &[u8],
     path_query: &PathQuery,
-    mutate: impl Fn(&mut Vec<u8>, &mut [u8; 32]),
+    mut mutate: impl FnMut(&mut Vec<u8>),
 ) -> Option<Vec<u8>> {
     use bincode::config;
     use grovedb_merk::proofs::{encoding::encode_into, Decoder, Node, Op};
@@ -1514,9 +1592,10 @@ fn tamper_backward_references_node(
     let mut tampered = false;
     for op in ops.iter_mut() {
         match op {
-            Op::Push(Node::KVBackwardsReferencesValueHash(_, value, backrefs_hash))
-            | Op::PushInverted(Node::KVBackwardsReferencesValueHash(_, value, backrefs_hash)) => {
-                mutate(value, backrefs_hash);
+            Op::Push(Node::KV(_, value)) | Op::PushInverted(Node::KV(_, value))
+                if is_backward_references_item_bytes(value) =>
+            {
+                mutate(value);
                 tampered = true;
                 break;
             }
@@ -1536,6 +1615,12 @@ fn tamper_backward_references_node(
         config::standard().with_big_endian().with_no_limit(),
     )
     .ok()
+}
+
+fn is_backward_references_item_bytes(value: &[u8]) -> bool {
+    grovedb_element::ElementType::from_serialized_value(value)
+        .map(|element_type| element_type.is_backward_references_item())
+        .unwrap_or(false)
 }
 
 /// Proving a bidirectional reference through the main V1 subquery loop:
@@ -2063,48 +2148,16 @@ fn retargeting_tolerates_targets_rewritten_without_bookkeeping() {
         .is_empty());
 }
 
-/// Every Provable* aggregate parent refuses backward-references items, and
-/// a bidirectional reference cannot be written through the plain
-/// `Element::insert` (it must carry its resolved end hash).
+/// A bidirectional reference cannot be written through the plain
+/// `Element::insert` (it must carry its resolved end hash). Provable
+/// parents accepting the family is covered in
+/// `backward_references_in_provable_trees_tests`.
 #[test]
-fn provable_parents_and_direct_inserts_reject_the_family() {
+fn direct_inserts_reject_a_bidirectional_reference() {
     use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
 
     let grove_version = GroveVersion::latest();
     let db = make_test_grovedb(grove_version);
-    for (key, tree, item) in [
-        (
-            b"pc".as_slice(),
-            Element::new_provable_count_tree(None),
-            Element::new_item_allowing_bidirectional_references(b"x".to_vec()),
-        ),
-        (
-            b"ps",
-            Element::new_provable_sum_tree(None),
-            Element::new_sum_item_allowing_bidirectional_references(1),
-        ),
-        (
-            b"pcs",
-            Element::new_provable_count_sum_tree(None),
-            Element::new_sum_item_allowing_bidirectional_references(1),
-        ),
-        (
-            b"pcps",
-            Element::new_provable_count_provable_sum_tree(None),
-            Element::new_sum_item_allowing_bidirectional_references(1),
-        ),
-    ] {
-        db.insert(&[TEST_LEAF], key, tree, None, None, grove_version)
-            .unwrap()
-            .unwrap();
-        assert!(
-            db.insert(&[TEST_LEAF, key], b"k", item, None, None, grove_version)
-                .unwrap()
-                .is_err(),
-            "Provable* parent {} must reject the family",
-            String::from_utf8_lossy(key)
-        );
-    }
 
     let tx = db.start_transaction();
     let mut merk = db
@@ -2120,12 +2173,12 @@ fn provable_parents_and_direct_inserts_reject_the_family() {
     );
 }
 
-/// The verifier refuses backward-references elements smuggled inside the
-/// PLAIN value-carrying node kinds: their value hash is `H(value)` there,
-/// which would let forged bytes ride unbound on the carried hash. It also
-/// refuses the dedicated node kind inside a frozen V0 envelope.
+/// The V1 verifier refuses backward-references items inside the node kinds
+/// that carry a value hash instead of recomputing it: the value bytes
+/// would ride unbound on the carried hash. A V0 envelope is checked by the
+/// frozen V0 rules.
 #[test]
-fn verifier_rejects_family_smuggled_into_plain_nodes_and_v0_envelopes() {
+fn verifier_rejects_family_items_in_carried_hash_nodes() {
     use bincode::config;
     use grovedb_merk::{proofs::Node, TreeFeatureType};
 
@@ -2155,12 +2208,12 @@ fn verifier_rejects_family_smuggled_into_plain_nodes_and_v0_envelopes() {
         .unwrap()
         .unwrap();
 
-    // Rebuild the honest node as a plain KVValueHash: rejected by node-type
-    // triage regardless of the carried hash.
-    let forged = swap_backward_references_node(&proof, &path_query, |key, value, backrefs| {
-        Node::KVValueHash(key, value, backrefs)
+    // Rebuild the honest node as a KVValueHash carrying the genuine value
+    // hash: rejected by node-type triage even though the root still matches.
+    let forged = swap_backward_references_node(&proof, &path_query, |key, value, value_hash| {
+        Node::KVValueHash(key, value, value_hash)
     })
-    .expect("proof must contain a KVBackwardsReferencesValueHash node");
+    .expect("proof must carry the item in a KV node");
     let err = GroveDb::verify_query(&forged, &path_query, grove_version)
         .expect_err("KVValueHash smuggling must fail");
     assert!(
@@ -2170,10 +2223,10 @@ fn verifier_rejects_family_smuggled_into_plain_nodes_and_v0_envelopes() {
     );
 
     // Same through KVValueHashFeatureType.
-    let forged = swap_backward_references_node(&proof, &path_query, |key, value, backrefs| {
-        Node::KVValueHashFeatureType(key, value, backrefs, TreeFeatureType::BasicMerkNode)
+    let forged = swap_backward_references_node(&proof, &path_query, |key, value, value_hash| {
+        Node::KVValueHashFeatureType(key, value, value_hash, TreeFeatureType::BasicMerkNode)
     })
-    .expect("proof must contain a KVBackwardsReferencesValueHash node");
+    .expect("proof must carry the item in a KV node");
     let err = GroveDb::verify_query(&forged, &path_query, grove_version)
         .expect_err("KVValueHashFeatureType smuggling must fail");
     assert!(
@@ -2182,8 +2235,10 @@ fn verifier_rejects_family_smuggled_into_plain_nodes_and_v0_envelopes() {
         "got: {err}"
     );
 
-    // Downgrade the honest V1 envelope to V0 wholesale: the V0 verifier
-    // must refuse the node kind (frozen wire format).
+    // Downgrade the honest V1 envelope to V0 wholesale. The V0 prover
+    // refuses the family, so no honest V0 proof carries it; the V0
+    // verifier has no rule for it and checks the `KV` row like any other,
+    // by recomputing the value hash from the carried bytes.
     let cfg = config::standard()
         .with_big_endian()
         .with_limit::<{ 256 * 1024 * 1024 }>();
@@ -2210,17 +2265,25 @@ fn verifier_rejects_family_smuggled_into_plain_nodes_and_v0_envelopes() {
     });
     let v0_bytes =
         bincode::encode_to_vec(v0, config::standard().with_big_endian().with_no_limit()).unwrap();
-    let err = GroveDb::verify_query(&v0_bytes, &path_query, grove_version)
-        .expect_err("V0 envelopes must not carry the node kind");
-    assert!(
-        err.to_string().contains("not allowed in V0 proofs"),
-        "got: {err}"
+    let (root, rows) = GroveDb::verify_query(&v0_bytes, &path_query, grove_version)
+        .expect("a V0 envelope carries the row in a hash-checked KV node");
+    assert_eq!(root, db.root_hash(None, grove_version).unwrap().unwrap());
+    assert_eq!(
+        rows,
+        vec![(
+            vec![TEST_LEAF.to_vec()],
+            b"value".to_vec(),
+            Some(Element::new_item_allowing_bidirectional_references(
+                b"hello".to_vec()
+            ))
+        )]
     );
 }
 
-/// Replace the first `KVBackwardsReferencesValueHash` node in the leaf
-/// merk proof with whatever `build` returns from its parts, re-encoding
-/// the envelope. `None` if no such node exists.
+/// Replace the first `KV` node carrying a backward-references item in the
+/// leaf merk proof with whatever `build` returns from its key, its value
+/// and the value's hash, re-encoding the envelope. `None` if no such node
+/// exists.
 fn swap_backward_references_node(
     proof: &[u8],
     path_query: &PathQuery,
@@ -2253,11 +2316,13 @@ fn swap_backward_references_node(
     let mut swapped = false;
     for op in ops.iter_mut() {
         let rebuilt = match op {
-            Op::Push(Node::KVBackwardsReferencesValueHash(key, value, hash)) => {
-                Op::Push(build(key.clone(), value.clone(), *hash))
+            Op::Push(Node::KV(key, value)) if is_backward_references_item_bytes(value) => {
+                let hash = grovedb_merk::tree::value_hash(value).unwrap();
+                Op::Push(build(key.clone(), value.clone(), hash))
             }
-            Op::PushInverted(Node::KVBackwardsReferencesValueHash(key, value, hash)) => {
-                Op::PushInverted(build(key.clone(), value.clone(), *hash))
+            Op::PushInverted(Node::KV(key, value)) if is_backward_references_item_bytes(value) => {
+                let hash = grovedb_merk::tree::value_hash(value).unwrap();
+                Op::PushInverted(build(key.clone(), value.clone(), hash))
             }
             _ => continue,
         };
@@ -3372,7 +3437,7 @@ fn verify_grovedb_reports_forged_referrer_entries() {
     let tx = db.start_transaction();
 
     // Forge an item claiming `value` refers to it — with a CONSISTENT
-    // combined hash, so only the reciprocity audit can catch it.
+    // value hash, so only the reciprocity audit can catch it.
     let forged_element = Element::ItemWithBackwardsReferences(
         b"x".to_vec(),
         vec![crate::bidirectional_references::BackwardReference {
@@ -3384,11 +3449,9 @@ fn verify_grovedb_reports_forged_referrer_entries() {
     );
     use grovedb_merk::element::ElementExt;
     let combined = forged_element
-        .backward_references_hashes(grove_version)
+        .logical_value_hash(grove_version)
         .unwrap()
-        .unwrap()
-        .unwrap()
-        .combined;
+        .unwrap();
     let bytes = forged_element.serialize(grove_version).unwrap();
     let batch = StorageBatch::new();
     let mut merk = db
@@ -3472,8 +3535,8 @@ fn item_with_sum_item_twin_works_end_to_end() {
     .unwrap()
     .unwrap();
 
-    // A bidirectional reference can target it; registration changes only
-    // the twin's node hash.
+    // A bidirectional reference can target it; registration changes no
+    // existing node's value hash.
     let node_hash = |tx, key: &[u8]| {
         Element::get_value_hash(
             &db.open_transactional_merk_at_path(
@@ -3504,7 +3567,7 @@ fn item_with_sum_item_twin_works_end_to_end() {
     )
     .unwrap()
     .unwrap();
-    assert_ne!(node_hash(&tx, b"twin"), twin_before);
+    assert_eq!(node_hash(&tx, b"twin"), twin_before);
     assert_eq!(node_hash(&tx, b"plain"), plain_before);
 
     // The parent sum totals all three contributions (9 + 5 + 0 for the ref).
@@ -3568,7 +3631,7 @@ fn item_with_sum_item_twin_works_end_to_end() {
         .unwrap();
     assert_eq!(values, vec![9, 9]);
 
-    // The whole graph verifies, including the twin's combined hash and the
+    // The whole graph verifies, including the twin's value hash and the
     // reciprocal registration.
     assert!(db
         .verify_grovedb(Some(&tx), true, true, grove_version)
@@ -3576,8 +3639,8 @@ fn item_with_sum_item_twin_works_end_to_end() {
         .is_empty());
     db.commit_transaction(tx).unwrap().unwrap();
 
-    // Proof roundtrip: the twin arrives stripped via the recombining node,
-    // directly and dereferenced.
+    // Proof roundtrip: the twin arrives stripped, directly and
+    // dereferenced.
     let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"sums".to_vec()], query);
     let proof = db
         .prove_query(&path_query, None, grove_version)
@@ -3598,35 +3661,15 @@ fn item_with_sum_item_twin_works_end_to_end() {
         );
     }
 
-    // Tampering with the recombining node still fails.
-    let tampered = tamper_backward_references_node(&proof, &path_query, |_, backrefs_hash| {
-        backrefs_hash[0] ^= 1;
+    // Tampering with the twin's proved bytes still fails.
+    let tampered = tamper_backward_references_node(&proof, &path_query, |value| {
+        let last = value.len() - 1;
+        value[last] ^= 1;
     })
-    .expect("proof must carry the twin's recombining node");
+    .expect("proof must carry the twin in a value-carrying node");
     assert!(GroveDb::verify_query(&tampered, &path_query, grove_version).is_err());
 
     // Family fail-closed rules hold for the twin.
-    db.insert(
-        &[TEST_LEAF],
-        b"pst",
-        Element::new_provable_sum_tree(None),
-        None,
-        None,
-        grove_version,
-    )
-    .unwrap()
-    .unwrap();
-    assert!(db
-        .insert(
-            &[TEST_LEAF, b"pst"],
-            b"k",
-            Element::new_item_with_sum_item_allowing_bidirectional_references(b"x".to_vec(), 1),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .is_err());
     {
         use crate::batch::QualifiedGroveDbOp;
         assert!(db
@@ -3833,11 +3876,9 @@ fn verify_grovedb_reports_missing_forward_registration_and_empty_inverse() {
     // but the forward-membership audit can notice.
     let stripped_target = Element::new_item_allowing_bidirectional_references(b"hello".to_vec());
     let combined = stripped_target
-        .backward_references_hashes(grove_version)
+        .logical_value_hash(grove_version)
         .unwrap()
-        .unwrap()
-        .unwrap()
-        .combined;
+        .unwrap();
     let bytes = stripped_target.serialize(grove_version).unwrap();
     let batch = StorageBatch::new();
     let mut merk = db
@@ -3888,12 +3929,7 @@ fn verify_grovedb_reports_missing_forward_registration_and_empty_inverse() {
         .into(),
         None,
     );
-    let combined = forged
-        .backward_references_hashes(grove_version)
-        .unwrap()
-        .unwrap()
-        .unwrap()
-        .combined;
+    let combined = forged.logical_value_hash(grove_version).unwrap().unwrap();
     let bytes = forged.serialize(grove_version).unwrap();
     let batch = StorageBatch::new();
     let mut merk = db

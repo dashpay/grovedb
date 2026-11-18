@@ -1,6 +1,7 @@
 //! Tests
 
 pub mod common;
+pub(crate) mod faultable_reads;
 
 mod query_tests;
 
@@ -18,6 +19,7 @@ mod append_layer_limit_accounting_tests;
 mod append_storage_accounting_tests;
 mod automatic_backward_references_tests;
 mod backward_references_flags_update_tests;
+mod backward_references_in_provable_trees_tests;
 mod batch_backward_references_cost_tests;
 mod batch_backward_references_tests;
 mod batch_coverage_tests;
@@ -36,6 +38,7 @@ mod chunk_proof_row_binding_tests;
 mod clear_append_tree_tests;
 mod commitment_tree_cost_bound_tests;
 mod commitment_tree_tests;
+mod conditional_branch_without_subquery_tests;
 mod coverage_round7_tests;
 mod non_merk_completeness_budget_tests;
 mod non_merk_subtree_discovery_tests;
@@ -56,6 +59,7 @@ mod reference_to_tree_terminal_tests;
 mod repeated_keyless_appends_tests;
 mod tree_insert_above_emptied_level_tests;
 mod unbound_empty_tree_tests;
+mod unreported_empty_tree_row_budget_tests;
 mod wrapped_terminal_reference_tests;
 // NOTE: the former `count_indexed_tree_tests` (~12.3k LOC) was written
 // against the now-removed non-provable `Element::CountIndexedTree` and was
@@ -71,6 +75,7 @@ mod wrapped_terminal_reference_tests;
 // `generic_writes_against_pcit_primary_are_rejected`.
 mod axis_descent_proof_tests;
 mod axis_read_projection_tests;
+mod big_sum_tree_twins_tests;
 mod count_offset_backward_ref_forgery_tests;
 mod count_offset_paginated_tests;
 mod count_sum_tree_tests;
@@ -117,6 +122,7 @@ mod not_counted_or_summed_tests;
 mod not_summed_tests;
 mod operations_coverage_tests;
 mod overlong_path_segment_tests;
+mod parent_read_fault_tests;
 mod parent_tree_info_result_row_tests;
 mod partial_batch_coherence_tests;
 mod partial_batch_consistency_tests;

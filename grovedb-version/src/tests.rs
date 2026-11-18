@@ -88,9 +88,12 @@ fn v5_matches_v4_apart_from_its_gates() {
     operations.average_case.average_case_merk_insert_element = 0;
     operations.worst_case.worst_case_merk_insert_element = 0;
     operations.proof.count_offset_reference_empty_tree_rows = 0;
+    operations.proof.unreported_empty_tree_row_charge = 0;
+    operations.proof.subquery_descent_on_key = 0;
     operations
         .insert
         .provable_count_provable_big_sum_tree_creation = 0;
+    operations.insert.big_sum_tree_twins_creation = 0;
     v5_as_v4.grovedb_versions.element.path_query_push =
         GROVE_V4.grovedb_versions.element.path_query_push;
     v5_as_v4.grovedb_versions.element.delete = 0;
@@ -910,4 +913,29 @@ fn local_offsets_only_change_the_v5_query_slots() {
     );
     assert_eq!(GROVE_V5.grovedb_versions.path_query_methods.merge, 2);
     assert_eq!(GROVE_V5.grovedb_versions.element.path_query_push, 2);
+}
+
+#[test]
+fn big_sum_tree_twins_creation_is_gated_to_v5() {
+    // GROVE_V1..GROVE_V4 as released do not know the elements: creating
+    // them there would write a value a node on a released build cannot read.
+    for v in [&GROVE_V1, &GROVE_V2, &GROVE_V3, &GROVE_V4] {
+        assert_eq!(
+            v.grovedb_versions
+                .operations
+                .insert
+                .big_sum_tree_twins_creation,
+            0,
+            "v{}",
+            v.protocol_version
+        );
+    }
+    assert_eq!(
+        GROVE_V5
+            .grovedb_versions
+            .operations
+            .insert
+            .big_sum_tree_twins_creation,
+        1
+    );
 }

@@ -79,10 +79,15 @@ pub(super) fn is_provable_sum_bearing(tree_type: TreeType) -> bool {
 
 /// Returns true if `tree_type` hosts the wide form of the query, whose sum is
 /// an `i128`: `ProvableCountProvableBigSumTree`, which binds its count and
-/// 128-bit sum into the node hash via `node_hash_with_count_and_big_sum`.
+/// 128-bit sum into the node hash via `node_hash_with_count_and_big_sum`,
+/// and `ProvableBigSumTree`, which binds its 128-bit sum via
+/// `node_hash_with_big_sum`.
 #[cfg(feature = "minimal")]
 pub(super) fn is_provable_big_sum_bearing(tree_type: TreeType) -> bool {
-    matches!(tree_type, TreeType::ProvableCountProvableBigSumTree)
+    matches!(
+        tree_type,
+        TreeType::ProvableCountProvableBigSumTree | TreeType::ProvableBigSumTree
+    )
 }
 
 /// The sum of an aggregate of either width, widened to `i128`. Same
@@ -90,7 +95,9 @@ pub(super) fn is_provable_big_sum_bearing(tree_type: TreeType) -> bool {
 #[cfg(feature = "minimal")]
 pub(super) fn provable_wide_sum_from_aggregate(data: AggregateData) -> Result<i128, Error> {
     match data {
-        AggregateData::ProvableCountAndProvableBigSum(_, s) => Ok(s),
+        AggregateData::ProvableCountAndProvableBigSum(_, s) | AggregateData::ProvableBigSum(s) => {
+            Ok(s)
+        }
         narrow => provable_sum_from_aggregate(narrow).map(i128::from),
     }
 }

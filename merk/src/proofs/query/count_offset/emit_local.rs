@@ -234,7 +234,7 @@ where
     match output {
         LocalPageOutput::Proof(ops) => {
             let self_node = if selected {
-                emit_returned_node(walker, node_count, tree_type)
+                emit_returned_node(walker, node_count, tree_type, grove_version)
             } else if let Some(node_big_sum) = node_big_sum {
                 Node::KVDigestCountBigSum(
                     node_key.clone(),

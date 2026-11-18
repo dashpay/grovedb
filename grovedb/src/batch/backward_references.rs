@@ -34,8 +34,9 @@
 //! flags update on every write over a stored value (see
 //! [`Expansion::settle_end_hashes`]).
 //!
-//! Derived writes carry their final node value hash (the two-layer
-//! combine), computed here exactly as the live applier computes it, and
+//! Derived writes carry their final node value hash (the hash of the
+//! element with its referrer list emptied, combined with the end hash for
+//! a reference), computed here exactly as the live applier computes it, and
 //! execute through [`super::GroveOp::ReplaceBackwardReferenceFamilyMember`].
 //! A user `BidirectionalReference` op is itself converted into that derived
 //! form (its end hash resolved against the overlay); an identical-edge
@@ -429,9 +430,9 @@ fn is_family_item(element: &Element) -> bool {
     )
 }
 
-/// The node value hash a derived write installs: for a bidirectional
-/// reference `combine(combined, end_hash)`, for the item variants the
-/// element's own combined hash — exactly what the live applier's writes
+/// The node value hash a derived write installs: the hash of the element's
+/// serialization with its referrer list emptied, combined with `end_hash`
+/// for a bidirectional reference — exactly what the live applier's writes
 /// produce.
 fn derived_node_value_hash(
     element: &Element,
@@ -439,22 +440,19 @@ fn derived_node_value_hash(
     version: &GroveVersion,
 ) -> CostResult<CryptoHash, Error> {
     let mut cost = OperationCost::default();
-    let hashes = match element
-        .backward_references_hashes(version)
-        .unwrap_add_cost(&mut cost)
-    {
-        Ok(Some(hashes)) => hashes,
-        Ok(None) => {
-            return Err(Error::CorruptedCodeExecution(
-                "derived write for an element outside the backward-references family",
-            ))
-            .wrap_with_cost(cost)
-        }
-        Err(e) => return Err(e.into()).wrap_with_cost(cost),
-    };
+    if !element.supports_backward_references() {
+        return Err(Error::CorruptedCodeExecution(
+            "derived write for an element outside the backward-references family",
+        ))
+        .wrap_with_cost(cost);
+    }
+    let inner = cost_return_on_error!(
+        &mut cost,
+        element.logical_value_hash(version).map_err(Error::from)
+    );
     match (element, end_hash) {
         (Element::BidirectionalReference(..), Some(end_hash)) => {
-            let combined = grovedb_merk::tree::hash::combine_hash(&hashes.combined, &end_hash)
+            let combined = grovedb_merk::tree::hash::combine_hash(&inner, &end_hash)
                 .unwrap_add_cost(&mut cost);
             Ok(combined).wrap_with_cost(cost)
         }
@@ -462,7 +460,7 @@ fn derived_node_value_hash(
             "a derived bidirectional-reference rewrite requires its end hash",
         ))
         .wrap_with_cost(cost),
-        _ => Ok(hashes.combined).wrap_with_cost(cost),
+        _ => Ok(inner).wrap_with_cost(cost),
     }
 }
 

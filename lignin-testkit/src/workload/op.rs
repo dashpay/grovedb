@@ -1472,7 +1472,9 @@ fn put_tree_type(out: &mut Vec<u8>, tree_type: TreeType) {
         | TreeType::ProvableSumIndexedTree
         | TreeType::ProvableCountIndexedTree
         | TreeType::ProvableCountProvableSumIndexedTree
-        | TreeType::ProvableCountProvableBigSumTree => 0,
+        | TreeType::ProvableCountProvableBigSumTree
+        | TreeType::CountBigSumTree
+        | TreeType::ProvableBigSumTree => 0,
     };
     out.push(parameter);
 }

@@ -85,6 +85,8 @@ named_variants! {
     SumItemWithBackwardsReferences,
     ItemWithSumItemWithBackwardsReferences,
     ProvableCountProvableBigSumTree,
+    CountBigSumTree,
+    ProvableBigSumTree,
 }
 
 named_variants! {
@@ -110,6 +112,8 @@ named_variants! {
     ProvableCountProvableSumIndexedTree,
     PrivateDocumentStore,
     ProvableCountProvableBigSumTree,
+    CountBigSumTree,
+    ProvableBigSumTree,
 }
 
 named_variants! {

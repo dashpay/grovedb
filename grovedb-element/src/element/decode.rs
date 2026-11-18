@@ -15,7 +15,7 @@ use crate::{
     reference_path::ReferencePathType,
 };
 
-const ELEMENT_VARIANTS: AllowedEnumVariants = AllowedEnumVariants::Range { min: 0, max: 29 };
+const ELEMENT_VARIANTS: AllowedEnumVariants = AllowedEnumVariants::Range { min: 0, max: 31 };
 
 // Keep discriminants and domain checks in one schema. Each expansion calls only
 // the selected trait for fields and its matching helper for wrapper recursion.
@@ -126,8 +126,10 @@ macro_rules! element_decoder {
                             Self::SumTree(..)
                                 | Self::BigSumTree(..)
                                 | Self::CountSumTree(..)
+                                | Self::CountBigSumTree(..)
                                 | Self::ProvableCountSumTree(..)
                                 | Self::ProvableSumTree(..)
+                                | Self::ProvableBigSumTree(..)
                                 | Self::ProvableCountProvableSumTree(..)
                                 | Self::ProvableCountProvableBigSumTree(..)
                         ) {
@@ -144,8 +146,10 @@ macro_rules! element_decoder {
                             Self::SumTree(..)
                                 | Self::BigSumTree(..)
                                 | Self::CountSumTree(..)
+                                | Self::CountBigSumTree(..)
                                 | Self::ProvableCountSumTree(..)
                                 | Self::ProvableSumTree(..)
+                                | Self::ProvableBigSumTree(..)
                                 | Self::ProvableCountProvableSumTree(..)
                                 | Self::ProvableCountProvableBigSumTree(..)
                         ) {
@@ -220,6 +224,17 @@ macro_rules! element_decoder {
                     29 => Ok(Self::ProvableCountProvableBigSumTree(
                         $decode_trait::$decode(decoder)?,
                         u64::$decode(decoder)?,
+                        i128::$decode(decoder)?,
+                        $decode_trait::$decode(decoder)?,
+                    )),
+                    30 => Ok(Self::CountBigSumTree(
+                        $decode_trait::$decode(decoder)?,
+                        u64::$decode(decoder)?,
+                        i128::$decode(decoder)?,
+                        $decode_trait::$decode(decoder)?,
+                    )),
+                    31 => Ok(Self::ProvableBigSumTree(
+                        $decode_trait::$decode(decoder)?,
                         i128::$decode(decoder)?,
                         $decode_trait::$decode(decoder)?,
                     )),

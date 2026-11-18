@@ -344,7 +344,6 @@ impl QueryProofVerify for Query {
                                 Some(Node::KVDigestSum(..)) => {}
                                 Some(Node::KVRefValueHash(..)) => {}
                                 Some(Node::KVValueHash(..)) => {}
-                                Some(Node::KVBackwardsReferencesValueHash(..)) => {}
                                 Some(Node::KVValueHashFeatureType(..)) => {}
                                 Some(Node::KVValueHashFeatureTypeWithChildHash(..)) => {}
                                 Some(Node::KVRefValueHashCount(..)) => {}
@@ -360,6 +359,10 @@ impl QueryProofVerify for Query {
                                 Some(Node::KVDigestCountBigSum(..)) => {}
                                 Some(Node::KVRefValueHashCountSum(..)) => {}
                                 Some(Node::KVRefValueHashCountBigSum(..)) => {}
+                                // ProvableBigSumTree key-bearing nodes.
+                                Some(Node::KVBigSum(..)) => {}
+                                Some(Node::KVDigestBigSum(..)) => {}
+                                Some(Node::KVRefValueHashBigSum(..)) => {}
 
                                 // cannot verify lower bound - we have an abridged
                                 // tree, so we cannot tell what the preceding key was
@@ -390,7 +393,6 @@ impl QueryProofVerify for Query {
                                 Some(Node::KVDigestSum(..)) => {}
                                 Some(Node::KVRefValueHash(..)) => {}
                                 Some(Node::KVValueHash(..)) => {}
-                                Some(Node::KVBackwardsReferencesValueHash(..)) => {}
                                 Some(Node::KVValueHashFeatureType(..)) => {}
                                 Some(Node::KVValueHashFeatureTypeWithChildHash(..)) => {}
                                 Some(Node::KVRefValueHashCount(..)) => {}
@@ -406,6 +408,10 @@ impl QueryProofVerify for Query {
                                 Some(Node::KVDigestCountBigSum(..)) => {}
                                 Some(Node::KVRefValueHashCountSum(..)) => {}
                                 Some(Node::KVRefValueHashCountBigSum(..)) => {}
+                                // ProvableBigSumTree key-bearing nodes.
+                                Some(Node::KVBigSum(..)) => {}
+                                Some(Node::KVDigestBigSum(..)) => {}
+                                Some(Node::KVRefValueHashBigSum(..)) => {}
 
                                 // cannot verify upper bound - we have an abridged
                                 // tree so we cannot tell what the previous key was
@@ -564,19 +570,15 @@ impl QueryProofVerify for Query {
                                 "KVValueHash node must not contain an item element".to_string(),
                             ));
                         }
-                        // Backward-references elements must come through
-                        // KVBackwardsReferencesValueHash, whose combined
-                        // hash is RECOMPUTED — as a KVValueHash the value
-                        // bytes would ride unbound on the carried hash.
-                        if matches!(
-                            element_type.base(),
-                            ElementType::ItemWithBackwardsReferences
-                                | ElementType::SumItemWithBackwardsReferences
-                                | ElementType::ItemWithSumItemWithBackwardsReferences
-                        ) {
+                        // Backward-references items are items too: they
+                        // come through the value-carrying nodes, whose
+                        // value hash is RECOMPUTED from the carried bytes
+                        // (their serialization with the referrer list
+                        // emptied). As a KVValueHash the value bytes would
+                        // ride unbound on the carried hash.
+                        if element_type.is_backward_references_item() {
                             return Err(Error::InvalidProofError(
-                                "KVValueHash node must not contain a backward-references \
-                                 element; use KVBackwardsReferencesValueHash"
+                                "KVValueHash node must not contain a backward-references item"
                                     .to_string(),
                             ));
                         }
@@ -603,34 +605,6 @@ impl QueryProofVerify for Query {
                         println!("Processing KVRefValueHash node");
                     }
                     execute_node(key, Some(value), *value_hash, false, false)?;
-                }
-                Node::KVBackwardsReferencesValueHash(key, value, backrefs_hash) => {
-                    #[cfg(feature = "proof_debug")]
-                    {
-                        println!("Processing KVBackwardsReferencesValueHash node");
-                    }
-                    // The node kind was introduced with GROVE_V4 / V1
-                    // envelopes; a V0 proof carrying it would be accepted
-                    // here but rejected by every released verifier.
-                    if proof_version == 0 {
-                        return Err(Error::InvalidProofError(
-                            "KVBackwardsReferencesValueHash nodes are not allowed in V0 proofs"
-                                .to_string(),
-                        ));
-                    }
-                    // The node's combined hash is recomputed from the
-                    // stripped payload bytes it carries, so the bytes are
-                    // bound; the result set receives the stripped element.
-                    // The row is reported as hash-bound (`combine_hash(H(value),
-                    // backrefs_hash) == value_hash` was checked end to end),
-                    // the same evidence a child-hash node yields — readers that
-                    // classify rows from their bytes may trust these bytes.
-                    let combined = value_hash(value)
-                        .unwrap()
-                        .wrap_with_cost(Default::default())
-                        .flat_map(|inner| crate::tree::hash::combine_hash(&inner, backrefs_hash))
-                        .unwrap();
-                    execute_node(key, Some(value), combined, true, false)?;
                 }
                 Node::KVCount(key, value, _count) => {
                     #[cfg(feature = "proof_debug")]
@@ -665,15 +639,10 @@ impl QueryProofVerify for Query {
                             ));
                         }
                         // Same rationale as the KVValueHash guard above.
-                        if matches!(
-                            element_type.base(),
-                            ElementType::ItemWithBackwardsReferences
-                                | ElementType::SumItemWithBackwardsReferences
-                                | ElementType::ItemWithSumItemWithBackwardsReferences
-                        ) {
+                        if element_type.is_backward_references_item() {
                             return Err(Error::InvalidProofError(
                                 "KVValueHashFeatureType node must not contain a \
-                                 backward-references element"
+                                 backward-references item"
                                     .to_string(),
                             ));
                         }
@@ -737,6 +706,7 @@ impl QueryProofVerify for Query {
                 | Node::KVHash(_)
                 | Node::KVHashCount(..)
                 | Node::KVHashSum(..)
+                | Node::KVHashBigSum(..)
                 | Node::KVHashCountBigSum(..)
                 | Node::KVHashCountSum(..) => {
                     if in_range {
@@ -813,6 +783,37 @@ impl QueryProofVerify for Query {
                          encountered in regular query verification"
                             .to_string(),
                     ));
+                }
+                Node::HashWithBigSum(..) => {
+                    // Same fail-fast rationale: the wide compressed-subtree
+                    // node is reserved for the aggregate-sum verifier
+                    // against `ProvableBigSumTree`.
+                    return Err(Error::InvalidProofError(
+                        "HashWithBigSum node is only valid in aggregate-sum proofs; \
+                         encountered in regular query verification"
+                            .to_string(),
+                    ));
+                }
+                Node::KVBigSum(key, value, _sum) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVBigSum node");
+                    }
+                    execute_node(key, Some(value), value_hash(value).unwrap(), false, false)?;
+                }
+                Node::KVDigestBigSum(key, value_hash, _sum) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVDigestBigSum node");
+                    }
+                    execute_node(key, None, *value_hash, false, false)?;
+                }
+                Node::KVRefValueHashBigSum(key, value, value_hash, _sum) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVRefValueHashBigSum node");
+                    }
+                    execute_node(key, Some(value), *value_hash, false, false)?;
                 }
                 Node::KVSum(key, value, _sum) => {
                     #[cfg(feature = "proof_debug")]
@@ -906,7 +907,6 @@ impl QueryProofVerify for Query {
                     Some(Node::KVDigestCount(..)) => {}
                     Some(Node::KVRefValueHash(..)) => {}
                     Some(Node::KVValueHash(..)) => {}
-                    Some(Node::KVBackwardsReferencesValueHash(..)) => {}
                     Some(Node::KVCount(..)) => {}
                     Some(Node::KVValueHashFeatureType(..)) => {}
                     Some(Node::KVValueHashFeatureTypeWithChildHash(..)) => {}
@@ -924,6 +924,10 @@ impl QueryProofVerify for Query {
                     Some(Node::KVDigestCountBigSum(..)) => {}
                     Some(Node::KVRefValueHashCountSum(..)) => {}
                     Some(Node::KVRefValueHashCountBigSum(..)) => {}
+                    // ProvableBigSumTree key-bearing nodes.
+                    Some(Node::KVBigSum(..)) => {}
+                    Some(Node::KVDigestBigSum(..)) => {}
+                    Some(Node::KVRefValueHashBigSum(..)) => {}
 
                     // Upper-bound mode: the prover stopped after the results so
                     // far and hid the rest; the remaining items are unproven.
@@ -996,8 +1000,7 @@ pub struct ProvedKeyOptionalValue {
     /// == value_hash` for this element, binding the presented value bytes
     /// through a recomputed combined hash. True for
     /// `KVValueHashFeatureTypeWithChildHash` nodes (`other` = the carried
-    /// child hash) and for `KVBackwardsReferencesValueHash` nodes (`other`
-    /// = the referrer-list hash, recomputed into the merk root itself).
+    /// child hash).
     pub child_hash_verified: bool,
 }
 
@@ -1130,6 +1133,8 @@ pub fn key_exists_as_boundary_in_proof(proof_bytes: &[u8], key: &[u8]) -> Result
             | Op::PushInverted(Node::KVDigestCountSum(k, _, _, _))
             | Op::Push(Node::KVDigestCountBigSum(k, _, _, _))
             | Op::PushInverted(Node::KVDigestCountBigSum(k, _, _, _))
+            | Op::Push(Node::KVDigestBigSum(k, _, _))
+            | Op::PushInverted(Node::KVDigestBigSum(k, _, _))
                 if k.as_slice() == key =>
             {
                 return Ok(true);
@@ -1529,7 +1534,9 @@ pub fn boundaries_in_proof(proof_bytes: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
             | Op::Push(Node::KVDigestCountSum(k, _, _, _))
             | Op::PushInverted(Node::KVDigestCountSum(k, _, _, _))
             | Op::Push(Node::KVDigestCountBigSum(k, _, _, _))
-            | Op::PushInverted(Node::KVDigestCountBigSum(k, _, _, _)) => {
+            | Op::PushInverted(Node::KVDigestCountBigSum(k, _, _, _))
+            | Op::Push(Node::KVDigestBigSum(k, _, _))
+            | Op::PushInverted(Node::KVDigestBigSum(k, _, _)) => {
                 keys.push(k);
             }
             _ => {}

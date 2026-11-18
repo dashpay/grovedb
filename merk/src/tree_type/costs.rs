@@ -108,6 +108,8 @@ impl CostSize for TreeType {
             }
             TreeType::PrivateDocumentStore(_) => PRIVATE_DOCUMENT_STORE_COST_SIZE,
             TreeType::ProvableCountProvableBigSumTree => COUNT_BIG_SUM_TREE_COST_SIZE,
+            TreeType::CountBigSumTree => COUNT_BIG_SUM_TREE_COST_SIZE,
+            TreeType::ProvableBigSumTree => BIG_SUM_TREE_COST_SIZE,
         }
     }
 }

@@ -530,7 +530,6 @@ mod test {
                 Node::KVHash(_) => counts.kv_hash += 1,
                 Node::KV(..) => counts.kv += 1,
                 Node::KVValueHash(..) => counts.kv_value_hash += 1,
-                Node::KVBackwardsReferencesValueHash(..) => counts.kv_value_hash += 1,
                 Node::KVDigest(..) => counts.kv_digest += 1,
                 Node::KVDigestCount(..) => counts.kv_digest += 1,
                 Node::KVRefValueHash(..) => counts.kv_ref_value_hash += 1,
@@ -564,6 +563,12 @@ mod test {
                 Node::KVDigestCountBigSum(..) => counts.kv_digest += 1,
                 Node::KVRefValueHashCountBigSum(..) => counts.kv_ref_value_hash += 1,
                 Node::HashWithCountAndBigSum(..) => counts.hash += 1,
+                // ProvableBigSumTree proof variants likewise.
+                Node::KVBigSum(..) => counts.kv += 1,
+                Node::KVHashBigSum(..) => counts.kv_hash += 1,
+                Node::KVDigestBigSum(..) => counts.kv_digest += 1,
+                Node::KVRefValueHashBigSum(..) => counts.kv_ref_value_hash += 1,
+                Node::HashWithBigSum(..) => counts.hash += 1,
             };
         });
 

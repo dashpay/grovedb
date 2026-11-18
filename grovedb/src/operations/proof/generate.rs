@@ -65,8 +65,8 @@ enum NonMerkLowerLayer {
 }
 
 /// The count and sum that the host of a reference row commits into its node
-/// hash, when the host commits both: the reference's proof node has to carry
-/// them for the verifier to rebuild that hash.
+/// hash, when the host commits both or commits a 128-bit sum: the reference's
+/// proof node has to carry them for the verifier to rebuild that hash.
 #[derive(Clone, Copy)]
 enum CountSumForRef {
     /// A `ProvableCountProvableSumTree` host: the row becomes a
@@ -75,6 +75,9 @@ enum CountSumForRef {
     /// A `ProvableCountProvableBigSumTree` host: the row becomes a
     /// `KVRefValueHashCountBigSum`.
     BigSum(u64, i128),
+    /// A `ProvableBigSumTree` host, which commits a 128-bit sum and no
+    /// count: the row becomes a `KVRefValueHashBigSum`.
+    BigSumOnly(i128),
 }
 
 impl GroveDb {
@@ -863,6 +866,18 @@ impl GroveDb {
             ))
             .wrap_with_cost(cost);
         }
+        // And for a `ProvableBigSumTree`, for the same reason.
+        if matches!(
+            subtree.tree_type,
+            grovedb_merk::TreeType::ProvableBigSumTree
+        ) {
+            return Err(Error::NotSupported(
+                "ProvableBigSumTree hosts require V1 proof envelopes; upgrade the grove \
+                 version producing the proof to v3 or later"
+                    .to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
 
         let limit = if path.len() < path_query.path.len() {
             // There is no need for a limit because we are only asking for a single item
@@ -1021,14 +1036,21 @@ impl GroveDb {
             };
             match op {
                 Op::Push(node) | Op::PushInverted(node) => match node {
-                    // Merk emits this node kind for backward-references
-                    // elements unconditionally; it is a V1-only wire shape
-                    // and the frozen V0 format must refuse to carry it
-                    // (released V0 verifiers reject the tag). Guard on the
-                    // NODE KIND — the element-typed rejection below cannot
-                    // fire for it because this outer match would otherwise
-                    // skip the node entirely.
-                    Node::KVBackwardsReferencesValueHash(..) => {
+                    // Backward-references items activate with GROVE_V4,
+                    // which proves through V1, and the frozen V0 format
+                    // refuses to carry them. Merk proves them in the
+                    // value-carrying nodes, so guard on the element type a
+                    // node carries, at every position: the element-typed
+                    // rejection below only sees rows inside the results.
+                    Node::KV(_, value)
+                    | Node::KVCount(_, value, _)
+                    | Node::KVSum(_, value, _)
+                    | Node::KVCountSum(_, value, ..)
+                    | Node::KVCountBigSum(_, value, ..)
+                        if grovedb_element::ElementType::from_serialized_value(value)
+                            .map(|et| et.is_backward_references_item())
+                            .unwrap_or(false) =>
+                    {
                         return Err(Error::NotSupported(
                             "backward-references elements are not supported in V0 proofs; they \
                              require GROVE_V4+, which proves through V1"
@@ -1181,10 +1203,16 @@ impl GroveDb {
                             | Ok(Element::SumTree(Some(_), ..))
                             | Ok(Element::BigSumTree(Some(_), ..))
                             | Ok(Element::CountTree(Some(_), ..))
-                            | Ok(Element::CountSumTree(Some(_), ..))
+                            | Ok(
+                                Element::CountSumTree(Some(_), ..)
+                                | Element::CountBigSumTree(Some(_), ..),
+                            )
                             | Ok(Element::ProvableCountTree(Some(_), ..))
                             | Ok(Element::ProvableCountSumTree(Some(_), ..))
-                            | Ok(Element::ProvableSumTree(Some(_), ..))
+                            | Ok(
+                                Element::ProvableSumTree(Some(_), ..)
+                                | Element::ProvableBigSumTree(Some(_), ..),
+                            )
                             | Ok(Element::ProvableCountProvableSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountProvableBigSumTree(Some(_), ..))
                             | Ok(Element::CommitmentTree(..))
@@ -1256,9 +1284,9 @@ impl GroveDb {
                             | Ok(Element::BigSumTree(..))
                             | Ok(Element::CountTree(..))
                             | Ok(Element::ProvableCountTree(..))
-                            | Ok(Element::CountSumTree(..))
+                            | Ok(Element::CountSumTree(..) | Element::CountBigSumTree(..))
                             | Ok(Element::ProvableCountSumTree(..))
-                            | Ok(Element::ProvableSumTree(..))
+                            | Ok(Element::ProvableSumTree(..) | Element::ProvableBigSumTree(..))
                             | Ok(Element::ProvableCountProvableSumTree(..))
                             | Ok(Element::ProvableCountProvableBigSumTree(..))
                             | Ok(Element::CommitmentTree(..))
@@ -1316,10 +1344,10 @@ impl GroveDb {
                             | Ok(Element::SumTree(..))
                             | Ok(Element::BigSumTree(..))
                             | Ok(Element::CountTree(..))
-                            | Ok(Element::CountSumTree(..))
+                            | Ok(Element::CountSumTree(..) | Element::CountBigSumTree(..))
                             | Ok(Element::ProvableCountTree(..))
                             | Ok(Element::ProvableCountSumTree(..))
-                            | Ok(Element::ProvableSumTree(..))
+                            | Ok(Element::ProvableSumTree(..) | Element::ProvableBigSumTree(..))
                             | Ok(Element::ProvableCountProvableSumTree(..))
                             | Ok(Element::ProvableCountProvableBigSumTree(..))
                             | Ok(Element::CommitmentTree(..))
@@ -2135,13 +2163,16 @@ impl GroveDb {
                     ops
                 }
                 // The same query runs on a tree of either sum width: a
-                // `ProvableCountProvableBigSumTree` is proved by the wide
-                // primitive, with its own proof nodes, and every other tree
-                // by the narrow one, which refuses the tree types it cannot
-                // serve.
+                // `ProvableCountProvableBigSumTree` or a `ProvableBigSumTree`
+                // is proved by the wide primitive, with its own proof nodes,
+                // and every other tree by the narrow one, which refuses the
+                // tree types it cannot serve.
                 AggregateKind::Sum
-                    if subtree.tree_type
-                        == grovedb_merk::TreeType::ProvableCountProvableBigSumTree =>
+                    if matches!(
+                        subtree.tree_type,
+                        grovedb_merk::TreeType::ProvableCountProvableBigSumTree
+                            | grovedb_merk::TreeType::ProvableBigSumTree
+                    ) =>
                 {
                     let (ops, _) = cost_return_on_error!(
                         &mut cost,
@@ -2303,6 +2334,8 @@ impl GroveDb {
                     | Op::PushInverted(Node::KVCount(..))
                     | Op::Push(Node::KVSum(..))
                     | Op::PushInverted(Node::KVSum(..))
+                    | Op::Push(Node::KVBigSum(..))
+                    | Op::PushInverted(Node::KVBigSum(..))
                     | Op::Push(Node::KVCountSum(..))
                     | Op::PushInverted(Node::KVCountSum(..))
                     | Op::Push(Node::KVCountBigSum(..))
@@ -2344,6 +2377,9 @@ impl GroveDb {
                     TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(count, sum) => {
                         Some(CountSumForRef::BigSum(*count, *sum))
                     }
+                    TreeFeatureType::ProvableBigSummedMerkNode(sum) => {
+                        Some(CountSumForRef::BigSumOnly(*sum))
+                    }
                     _ => None,
                 },
                 _ => None,
@@ -2371,6 +2407,7 @@ impl GroveDb {
                     | Node::KVValueHash(key, value, ..)
                     | Node::KVCount(key, value, _)
                     | Node::KVSum(key, value, _)
+                    | Node::KVBigSum(key, value, _)
                     | Node::KVCountBigSum(key, value, ..)
                     | Node::KVCountSum(key, value, ..)
                     | Node::KVValueHashFeatureType(key, value, ..)
@@ -2396,9 +2433,9 @@ impl GroveDb {
                     }
                     Node::KV(key, value)
                     | Node::KVValueHash(key, value, ..)
-                    | Node::KVBackwardsReferencesValueHash(key, value, ..)
                     | Node::KVCount(key, value, _)
                     | Node::KVSum(key, value, _)
+                    | Node::KVBigSum(key, value, _)
                     | Node::KVCountBigSum(key, value, ..)
                     | Node::KVCountSum(key, value, ..)
                     | Node::KVValueHashFeatureType(key, value, ..)
@@ -2423,9 +2460,10 @@ impl GroveDb {
                         // Normalize a bidirectional reference to its plain
                         // reference shape: proof-wise both resolve the same
                         // way. A bidirectional reference's self-hash slot in
-                        // KVRefValueHash* nodes is combine(inner, backrefs)
-                        // (not H(stored bytes)) — capture it here, before
-                        // normalization discards the distinction.
+                        // KVRefValueHash* nodes is the hash of its bytes
+                        // with the referrer list emptied (not H(stored
+                        // bytes)) — capture it here, before normalization
+                        // discards the distinction.
                         let mut reference_self_hash_override = None;
                         // A bidirectional edge's declared max_hop bounds
                         // proof dereferencing exactly like reads (plain
@@ -2433,13 +2471,10 @@ impl GroveDb {
                         let mut bidi_max_hop = None;
                         let elem = match elem {
                             Ok(ref e @ Element::BidirectionalReference(..)) => {
-                                let hashes = cost_return_on_error!(
+                                reference_self_hash_override = Some(cost_return_on_error!(
                                     &mut cost,
-                                    e.backward_references_hashes(grove_version)
-                                        .map_err(Error::from)
-                                )
-                                .expect("bidirectional references carry hashes");
-                                reference_self_hash_override = Some(hashes.combined);
+                                    e.logical_value_hash(grove_version).map_err(Error::from)
+                                ));
                                 let Ok(Element::BidirectionalReference(reference, reference_flags)) =
                                     elem
                                 else {
@@ -2453,6 +2488,23 @@ impl GroveDb {
                                 ))
                             }
                             other => other,
+                        };
+                        // Whether the query goes below this key. Every tree arm that
+                        // descends is guarded on it, so a tree it does not descend
+                        // into falls through to the arms that prove it as a result
+                        // row (`proof.subquery_descent_on_key`).
+                        let descends = match &elem {
+                            Ok(element) if element.is_any_tree() => cost_return_on_error_no_add!(
+                                cost,
+                                Self::query_descends_on_key(
+                                    path_query,
+                                    &query,
+                                    &path,
+                                    key,
+                                    grove_version
+                                )
+                            ),
+                            _ => false,
                         };
                         match elem {
                             // `ReferenceWithSumItem` shares this proof path
@@ -2492,10 +2544,11 @@ impl GroveDb {
                             | Ok(Element::ItemWithSumItemWithBackwardsReferences(..))
                                 if !done_with_results =>
                             {
-                                // Merk already emitted the dedicated
-                                // KVBackwardsReferencesValueHash wire node
-                                // (stripped bytes + referrer-list hash);
-                                // only result bookkeeping remains here.
+                                // Merk already emitted the value-carrying
+                                // node holding the bytes with the referrer
+                                // list emptied, which hash to the node's
+                                // value hash; only result bookkeeping
+                                // remains here.
                                 limit_state.charge_row_with_instance(&mut frame_instance);
                                 has_a_result_at_level |= true;
                             }
@@ -2589,7 +2642,7 @@ impl GroveDb {
                             // root_key is always None for MmrTree (no child Merk data)
                             Ok(Element::MmrTree(mmr_size, _))
                                 if !done_with_results
-                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                                    && descends =>
                             {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
@@ -2613,7 +2666,7 @@ impl GroveDb {
                             // root_key is always None for BulkAppendTree (no child Merk data)
                             Ok(Element::BulkAppendTree(total_count, chunk_power, _))
                                 if !done_with_results
-                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                                    && descends =>
                             {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
@@ -2640,7 +2693,7 @@ impl GroveDb {
                                 dense_height,
                                 _,
                             )) if !done_with_results
-                                && query.has_subquery_or_matching_in_path_on_key(key) =>
+                                && descends =>
                             {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
@@ -2664,7 +2717,7 @@ impl GroveDb {
                             // that includes sinsemilla_root for anchor binding
                             Ok(Element::CommitmentTree(total_count, chunk_power, _))
                                 if !done_with_results
-                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                                    && descends =>
                             {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
@@ -2693,7 +2746,7 @@ impl GroveDb {
                             // a version without it still refuses.
                             Ok(Element::PrivateDocumentStore(total_count, _, chunk_power, _))
                                 if !done_with_results
-                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                                    && descends =>
                             {
                                 if grove_version
                                     .grovedb_versions
@@ -2828,7 +2881,7 @@ impl GroveDb {
                             // the matching empty-cidx terminal arm.
                             Ok(ref cidx_elem @ Element::ProvableCountIndexedTree(Some(_), ..))
                                 if !done_with_results
-                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                                    && descends =>
                             {
                                 // Aggregate carrier queries (AggregateCountOnRange /
                                 // AggregateSumOnRange) are verified by
@@ -2947,7 +3000,7 @@ impl GroveDb {
                             // the verifier).
                             Ok(ref sidx_elem @ Element::ProvableSumIndexedTree(Some(_), ..))
                                 if !done_with_results
-                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                                    && descends =>
                             {
                                 // Aggregate carrier queries (AggregateCountOnRange /
                                 // AggregateSumOnRange) are verified by
@@ -3065,7 +3118,7 @@ impl GroveDb {
                                     ..,
                                 ),
                             ) if !done_with_results
-                                && query.has_subquery_or_matching_in_path_on_key(key) =>
+                                && descends =>
                             {
                                 // See the PCIT arm: the aggregate-carrier
                                 // verifier cannot consume an indexed envelope.
@@ -3182,14 +3235,14 @@ impl GroveDb {
                             | Ok(Element::SumTree(Some(_), ..))
                             | Ok(Element::BigSumTree(Some(_), ..))
                             | Ok(Element::CountTree(Some(_), ..))
-                            | Ok(Element::CountSumTree(Some(_), ..))
+                            | Ok(Element::CountSumTree(Some(_), ..) | Element::CountBigSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountTree(Some(_), ..))
                             | Ok(Element::ProvableCountSumTree(Some(_), ..))
-                            | Ok(Element::ProvableSumTree(Some(_), ..))
+                            | Ok(Element::ProvableSumTree(Some(_), ..) | Element::ProvableBigSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountProvableSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountProvableBigSumTree(Some(_), ..))
                                 if !done_with_results
-                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                                    && descends =>
                             {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
@@ -3272,9 +3325,9 @@ impl GroveDb {
                             | Ok(Element::BigSumTree(Some(_), ..))
                             | Ok(Element::CountTree(Some(_), ..))
                             | Ok(Element::ProvableCountTree(Some(_), ..))
-                            | Ok(Element::CountSumTree(Some(_), ..))
+                            | Ok(Element::CountSumTree(Some(_), ..) | Element::CountBigSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountSumTree(Some(_), ..))
-                            | Ok(Element::ProvableSumTree(Some(_), ..))
+                            | Ok(Element::ProvableSumTree(Some(_), ..) | Element::ProvableBigSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountProvableSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountProvableBigSumTree(Some(_), ..))
                                 if !done_with_results =>
@@ -3407,7 +3460,7 @@ impl GroveDb {
                                 if !done_with_results
                                     && is_aggregate_count_query
                                     && descends_into_empty_aggregate_tree
-                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                                    && descends =>
                             {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
@@ -3448,12 +3501,13 @@ impl GroveDb {
                             // emits an empty sum proof (verifier reads
                             // it as sum = 0).
                             Ok(Element::ProvableSumTree(None, ..))
+                            | Ok(Element::ProvableBigSumTree(None, ..))
                             | Ok(Element::ProvableCountProvableSumTree(None, ..))
                             | Ok(Element::ProvableCountProvableBigSumTree(None, ..))
                                 if !done_with_results
                                     && is_aggregate_sum_query
                                     && descends_into_empty_aggregate_tree
-                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                                    && descends =>
                             {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
@@ -3494,7 +3548,7 @@ impl GroveDb {
                                 if !done_with_results
                                     && is_aggregate_count_and_sum_query
                                     && descends_into_empty_aggregate_tree
-                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                                    && descends =>
                             {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
@@ -3534,9 +3588,9 @@ impl GroveDb {
                             | Ok(Element::BigSumTree(None, ..))
                             | Ok(Element::CountTree(None, ..))
                             | Ok(Element::ProvableCountTree(None, ..))
-                            | Ok(Element::CountSumTree(None, ..))
+                            | Ok(Element::CountSumTree(None, ..) | Element::CountBigSumTree(None, ..))
                             | Ok(Element::ProvableCountSumTree(None, ..))
-                            | Ok(Element::ProvableSumTree(None, ..))
+                            | Ok(Element::ProvableSumTree(None, ..) | Element::ProvableBigSumTree(None, ..))
                             | Ok(Element::ProvableCountProvableSumTree(None, ..))
                             | Ok(Element::ProvableCountProvableBigSumTree(None, ..))
                             | Ok(Element::ProvableSumIndexedTree(None, ..))
@@ -3549,7 +3603,7 @@ impl GroveDb {
                             | Ok(Element::CommitmentTree(..))
                                 if !done_with_results =>
                             {
-                                if query.has_subquery_or_matching_in_path_on_key(key) {
+                                if descends {
                                     // A subquery matches but the tree is
                                     // empty: an empty CHILD, not a result
                                     // row. The charge bounds walks across
@@ -3589,10 +3643,10 @@ impl GroveDb {
                             | Ok(Element::SumTree(..))
                             | Ok(Element::BigSumTree(..))
                             | Ok(Element::CountTree(..))
-                            | Ok(Element::CountSumTree(..))
+                            | Ok(Element::CountSumTree(..) | Element::CountBigSumTree(..))
                             | Ok(Element::ProvableCountTree(..))
                             | Ok(Element::ProvableCountSumTree(..))
-                            | Ok(Element::ProvableSumTree(..))
+                            | Ok(Element::ProvableSumTree(..) | Element::ProvableBigSumTree(..))
                             | Ok(Element::ProvableCountProvableSumTree(..))
                             | Ok(Element::ProvableCountProvableBigSumTree(..))
                             | Ok(Element::CommitmentTree(..))
@@ -3864,20 +3918,18 @@ impl GroveDb {
             // Normalize a bidirectional reference to its plain-reference
             // shape: proof-wise both resolve identically, and the node's
             // `value` bytes (which feed value_hash) are left untouched. Its
-            // self-hash slot is combine(inner, backrefs), captured here, and
+            // self-hash slot is the hash of its bytes with the referrer
+            // list emptied, captured here, and
             // its declared max_hop bounds dereferencing exactly like reads
             // (plain references keep their historical global budget).
             let mut reference_self_hash_override = None;
             let mut bidi_max_hop = None;
             let elem = match elem {
                 ref e @ Element::BidirectionalReference(..) => {
-                    let hashes = cost_return_on_error!(
+                    reference_self_hash_override = Some(cost_return_on_error!(
                         &mut cost,
-                        e.backward_references_hashes(grove_version)
-                            .map_err(Error::from)
-                    )
-                    .expect("bidirectional references carry hashes");
-                    reference_self_hash_override = Some(hashes.combined);
+                        e.logical_value_hash(grove_version).map_err(Error::from)
+                    ));
                     let Element::BidirectionalReference(reference, reference_flags) = elem else {
                         unreachable!("checked above");
                     };
@@ -3967,6 +4019,12 @@ impl GroveDb {
                     count,
                     sum,
                 ),
+                CountSumForRef::BigSumOnly(sum) => Node::KVRefValueHashBigSum(
+                    key.to_owned(),
+                    serialized_referenced_elem,
+                    reference_element_hash,
+                    sum,
+                ),
             }
         } else if let Some(sum) = sum_for_ref {
             Node::KVRefValueHashSum(
@@ -4013,12 +4071,10 @@ impl GroveDb {
             &mut cost,
             Element::deserialize(value, grove_version).wrap_with_cost(OperationCost::default())
         );
-        let hashes = cost_return_on_error!(
+        let reference_self_hash = cost_return_on_error!(
             &mut cost,
-            elem.backward_references_hashes(grove_version)
-                .map_err(Error::from)
-        )
-        .expect("bidirectional references carry hashes");
+            elem.logical_value_hash(grove_version).map_err(Error::from)
+        );
         let Element::BidirectionalReference(reference, _) = elem.into_underlying() else {
             return Err(Error::CorruptedCodeExecution(
                 "filler bidirectional-reference rewrite reached a non-bidirectional element",
@@ -4050,7 +4106,7 @@ impl GroveDb {
         Ok(Self::dereferenced_reference_node(
             key,
             serialized_referenced_elem,
-            hashes.combined,
+            reference_self_hash,
             count_for_ref,
             sum_for_ref,
             count_sum_for_ref,
@@ -4065,8 +4121,8 @@ impl GroveDb {
     /// The target bytes are selected by the node's existing commitment, not
     /// the current GroveVersion: a V4 reader may encounter V3 direct-written
     /// references that bind the unwrapped terminal. A bidirectional
-    /// reference's self-hash slot is `combine(inner, backrefs)`, captured by
-    /// the caller before normalization. With `refuse_populated_target`, a
+    /// reference's self-hash slot is the hash of its bytes with the referrer
+    /// list emptied, captured by the caller before normalization. With `refuse_populated_target`, a
     /// reference that resolves to a populated tree is refused. Out of line for
     /// the frame-size reason documented on [`Self::prove_count_offset_layer_v1`].
     #[inline(never)]

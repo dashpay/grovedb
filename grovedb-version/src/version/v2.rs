@@ -132,6 +132,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
                 insert_if_changed_value: 0,
                 validate_indexed_child_for_variant: 0,
                 provable_count_provable_big_sum_tree_creation: 0,
+                big_sum_tree_twins_creation: 0,
             },
             delete: GroveDBOperationsDeleteVersions {
                 delete: 0,
@@ -199,6 +200,8 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
                 axis_descent_in_v1_envelope: 0,
                 sum_budget_in_v1_envelope: 0,
                 count_offset_reference_empty_tree_rows: 0,
+                unreported_empty_tree_row_charge: 0,
+                subquery_descent_on_key: 0,
             },
             average_case: GroveDBOperationsAverageCaseVersions {
                 add_average_case_get_merk_at_path: 0,
