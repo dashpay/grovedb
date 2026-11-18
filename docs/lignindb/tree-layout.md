@@ -77,7 +77,7 @@ exactly one page. A cell holds:
 | Part | Bytes | |
 | --- | --- | --- |
 | key | 0 to 255 | Merk accepts an empty key |
-| feature type and aggregate data | as Merk encodes them | |
+| feature type and aggregate data | Merk's tag and its numbers at full width: 1, 9, 17 or 25 | [`tree-page.md`](tree-page.md), TP12 |
 | value hash | 32 | |
 | key-value hash | 32 | |
 | left link, right link | each absent or as C2 | |
@@ -96,7 +96,7 @@ the child's key.**
 | the child's hash | 32 |
 | the heights of the child's two subtrees | 2 |
 | the length of the child's key | 1 |
-| the child's aggregate data | as its writer encodes it, with its length |
+| the child's aggregate data | 1 for its length, then Merk's tag and its numbers at full width: 1, 9, 17 or 25 |
 
 Merk's link stores the child's key so that the child can be looked up. The
 cell address replaces that lookup ("pointers, not lookups"). The key is still
@@ -150,8 +150,11 @@ section 6), and `CellCosts::tree_page()` holds its sizes:
 | value pointer, in place of an out-of-line value | 12, with the value's length in the cell header | 16 (value-log-format.md, section 4) |
 | header of a value-log record | 18, once for each part of a value (value-log-format.md, section 2 and V6) | 18 |
 
-The key, the feature type, the aggregate data and the value are counted at
-the length Merk's own record has for them. So a cell is
+The key and the value are counted at the length Merk's own record has for
+them. The feature type and the aggregate data are counted as a tree page
+stores them: Merk's tag, then each count and sum at its full width
+([`tree-page.md`](tree-page.md), TP12). In a tree with no count or sum that
+is one byte each, as in Merk's record. So a cell is
 
 ```text
 2 + 8 + key + 64 + feature type and aggregates
@@ -166,7 +169,9 @@ about 190 to 275 bytes with its value in the cell.
 **Every number in sections 14 and 15 was computed with the sizes of the
 right-hand column**, which the simulation assumed before the format existed
 (`CellCosts::assumed()`; the cell was `2 + 4 + key + 64 + feature type and
-aggregates + 40 for each link + 6 for each hosted root + value, or 16`).
+aggregates + 40 for each link + 6 for each hosted root + value, or 16`,
+with the feature type and the aggregates as Merk's record has them, with
+varints).
 Those tables are not recomputed. The three targets of section 14.1 were
 measured again with the real sizes, and are still met:
 

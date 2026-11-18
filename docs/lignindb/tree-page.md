@@ -240,8 +240,9 @@ cell.
 
 A link is 42 bytes plus its aggregate. Changing the address, the hash, the
 heights, the key length, or the aggregate to one of the same length,
-overwrites the link where it is. A link that appears or goes, or whose
-aggregate changes its length, changes the length of the cell.
+overwrites the link where it is. An aggregate never changes its length
+(TP12), so a link that exists is always overwritten where it is, and a cell
+changes its length only when a link appears or goes.
 
 **TP11. The fragment-root table is one bit in each cell.** Bit 3 of the
 flags marks the cells that are the root of a fragment (F3 of
@@ -260,19 +261,61 @@ of one write a page is read while a link is ahead of the cell it names, and
 inside a transaction of iteration two a hosted-root pointer may be behind
 (T3 of `tree-layout.md`). VER-07 runs it on committed states.
 
-**TP12. The feature and the aggregates are bytes the page does not
-interpret.** The cell has a length byte for the feature and each link has
-one for its aggregate, so each is 0 to 255 bytes. Merk's feature types and
-aggregate kinds are not known here, which is what the crate layering asks
-of a format, and a new tree type needs no new format version.
+**TP12. The feature and the aggregates are Merk's tag and a payload, each
+with its length.** The cell has a length byte for the feature and each link
+has one for its aggregate, so each is 0 to 255 bytes. The page stores those
+bytes and does not interpret them: it has no list of Merk's feature types,
+which is what the crate layering asks of a format.
 
-What follows for the writer of those bytes (MERK-01): an aggregate that is
-stored as Merk encodes it, with varints, changes its length when a count or
-a sum crosses a varint boundary, and then every such update re-lays the
-cell. An encoding of fixed width for each aggregate kind (the tag, then each
-number at its full width: 0, 8, 16 or 24 bytes) keeps a cell's length the
-same under every hash update, at the price of a few bytes in each link of a
-sum or count tree. The page takes either.
+Their encoding is fixed here, for the one writer of those bytes (MERK-01):
+
+- one byte, the tag Merk itself gives the variant: `TreeFeatureType` and
+  `AggregateData` encode with the same tags
+- then the variant's numbers in the order Merk declares them, each at its
+  full width: a count is 8 bytes, a sum 8 bytes, a 128-bit sum 16 bytes,
+  little-endian, a signed number in two's complement (B1)
+
+There is no varint. So the length of a feature or an aggregate depends on
+its variant alone and never on its numbers, and it is the size Merk's own
+cost rules give the variant (the cost class of `cost-model.md`, plus the
+tag). The variants of upstream `develop` at `f1016919`:
+
+| Tag | Feature, aggregate | Numbers | Bytes with the tag |
+| --- | --- | --- | --- |
+| 0 | `BasicMerkNode`, none | | 1 |
+| 1 | `SummedMerkNode`, `Sum` | sum | 9 |
+| 2 | `BigSummedMerkNode`, `BigSum` | 128-bit sum | 17 |
+| 3 | `CountedMerkNode`, `Count` | count | 9 |
+| 4 | `CountedSummedMerkNode`, `CountAndSum` | count, sum | 17 |
+| 5 | `ProvableCountedMerkNode`, `ProvableCount` | count | 9 |
+| 6 | `ProvableCountedSummedMerkNode`, `ProvableCountAndSum` | count, sum | 17 |
+| 7 | `ProvableSummedMerkNode`, `ProvableSum` | sum | 9 |
+| 8 | `ProvableCountedAndProvableSummedMerkNode`, `ProvableCountAndProvableSum` | count, sum | 17 |
+| 9 | `ProvableCountedAndProvableBigSummedMerkNode`, `ProvableCountAndProvableBigSum` | count, 128-bit sum | 25 |
+| 10 | `CountedBigSummedMerkNode`, `CountAndBigSum` | count, 128-bit sum | 25 |
+| 11 | `ProvableBigSummedMerkNode`, `ProvableBigSum` | 128-bit sum | 17 |
+
+The table is Merk's and is here to show the widths. It is not part of the
+format, and the code of this crate does not hold it.
+
+**A link keeps its size.** Merk gives every node of a tree the variant of
+the tree's type, so every link of one Merk has an aggregate of the same
+length, and a link is 43 bytes in a tree with no count or sum, and 51, 59 or
+67 bytes in the others. The widest aggregate there is, a count with a
+128-bit sum (tags 9 and 10), is 25 bytes and its link 67. Whatever a write
+below a node changes in a link that exists, the hash, the heights, the
+numbers of the aggregate or the address, it is as long as before and is
+overwritten where it is (TP10). A cell changes its length only when a child
+appears or goes, when its value does, or when its hosted roots do.
+
+**A variant that Merk adds later needs no new page format and no new format
+version.** Its tag and its numbers are written by the rule above, and a page
+stores them as it stores any others. What it costs: one arm in MERK-01's
+encoding, and cells of such a tree that are as much longer as its numbers
+are. The limit is 255 bytes for a feature or an aggregate; the widest today
+is 25. The price of this is the length byte in each link and in each cell.
+A table of variants inside the format would save those bytes and would need
+a format version for every tree type Merk gains.
 
 **TP13. A value is in its cell or in the value log, and its length is
 always in the cell.** `value_len` is the value's length in both cases, so
@@ -494,21 +537,27 @@ A cell is
 ```
 
 bytes, plus 2 for its slot (`TreeCell::len_of`). The smallest cell, a leaf
-with an empty key and an empty value, is 72 bytes.
+with an empty key and an empty value, is 72 bytes. The feature and each
+aggregate are 1, 9, 17 or 25 bytes (TP12), so a link is 43, 51, 59 or 67
+bytes.
 
 Against the sizes `tree-layout.md` assumed for its simulation (C6): the page
 header is 22 bytes, not 32. A cell header is 8 bytes, not 4, because it has
 a length for the feature and a count of hosted roots, and a 32-bit value
 length. A link is 2 bytes more, for the two lengths. A value out of line is
-12 bytes, not 16, because the cell header already has its length. With the
-feature and the aggregates stored as Merk encodes them, one byte each in a
-tree with no aggregates, a document node of the reference workload with two
+12 bytes, not 16, because the cell header already has its length. The
+feature and the aggregates are one byte each in a tree with no count or sum,
+as in Merk's record, so a document node of the reference workload with two
 children is 205 bytes with its slot and a document leaf 119, against 201
-and 119 as assumed.
+and 119 as assumed. In a tree with counts or sums a cell is longer than
+Merk's record would suggest: each count and sum is 8 bytes where Merk's
+record has a varint, in the feature and in each link. A node of a sum tree
+with two children and sums below 64 is 21 bytes longer for it.
 
 `layout_sim::CellCosts::tree_page()` holds these sizes and is what the
-simulation now uses; a test in `lignin-testkit` compares them with the
-constants of this crate. `CellCosts::assumed()` keeps the earlier ones. The
+simulation now uses, with every count and sum at its full width; a test in
+`lignin-testkit` compares them with the constants of this crate, and one
+lays out a sum tree and a count-sum tree. `CellCosts::assumed()` keeps the earlier ones. The
 acceptance test of TREE-01 on the reference workload, one million
 transitions at 32 KiB, gives:
 
@@ -518,8 +567,10 @@ transitions at 32 KiB, gives:
 | fill, at the end and at its lowest sample | at least 70% | 75.0%, 72.1% | 74.8%, 71.9% |
 | pages dirtied per transition, over the load and in its last tenth | at most 8 | 7.04, 7.21 | 7.29, 7.21 |
 
-A page holds 2% fewer nodes, because a cell is a few bytes longer, and a
-transition dirties a quarter of a page more on average. 1.634 cells are
+The reference workload has no tree with a count or a sum, so the widths of
+TP12 do not enter these numbers. A page holds 2% fewer nodes, because a
+cell is a few bytes longer, and a transition dirties a quarter of a page
+more on average. 1.634 cells are
 carried per transition and 0.805 values are appended again (369 bytes),
 against 1.626 and 0.803 (368 bytes).
 
@@ -536,7 +587,7 @@ against 1.626 and 0.803 (368 bytes).
 | TREE-03 Fragment maintenance | `lowest_free_slot` for S4. `free_bytes`, `used_bytes` and `TreeCell::len_of` to plan what fits. `fragment_roots`, `set_fragment_root`, and `check_fragments` in tests. `insert_encoded` to carry a cell, then `set_child` in its parent. `TreePageSize::max_cell_len` is C7. | Placement. |
 | TREE-05 Subtree directory | `CellAddress`, six bytes, with all zero for "no cell". | The entry. |
 | TREE-08 Out-of-line values | `TreePageSize::max_inline_value_len` bounds the threshold (TP14). A cell stores a `ValuePointer` as 12 bytes and its length. | The threshold. |
-| MERK-01 LigninNodeStore | The link gives the child's key length, so `record_len` and Merk's link sizes are computed from the parent's cell alone. The key of a link is in the child's cell. The feature and the aggregates are MERK-01's bytes to encode (TP12). | The encoding of features and aggregates. |
+| MERK-01 LigninNodeStore | The link gives the child's key length, so `record_len` and Merk's link sizes are computed from the parent's cell alone. The key of a link is in the child's cell. The feature and the aggregates are written by the rule of TP12: Merk's tag, then each count and sum at its full width. `record_len` needs the varint lengths of those numbers, which Merk computes from the numbers. | The functions that write and read those bytes for each variant, and one more arm when Merk gains a variant. |
 | MERK-05 Iteration | A cursor's value is a node record in Merk's encoding, which repeats each child's key. Those keys come from the children's cells, by the addresses in the links. | Whether records are built, or callers move to node views (PERF-05). |
 | FMT-08 Decoder fuzzing | The decoders: `TreePage::decode`, `TreePage::from_validated` with every accessor, `TreePage::check`, `TreePage::check_fragments`, `TreeCell::decode`. `TreePageMut` is fuzzed from valid pages only (W5). The golden bytes of section 2.5. | The targets. |
 | VER-07 Physical invariant checker | `TreePage::check_fragments` for F3 and C5 inside a page, and for the key length a link states for a child in the same page. `TreePage::check` for a page in a buffer. | Links that cross pages: the address, and the key length. The heights and the aggregate in a link, which are Merk's to check: the page does not interpret them. |
@@ -568,10 +619,17 @@ owner can overrule one while version 1 is still open (U10).
 6. **The fragment-root table is a bit in each cell** (TP11), not a list. A
    list would be a third region of the page that grows and shrinks. Listing
    the roots reads one byte of each cell.
-7. **Feature and aggregates are opaque, each with a length byte** (TP12).
-   The alternative, a table of Merk's aggregate kinds with fixed widths in
-   the format, would save the length byte in each link and tie the format
-   version to Merk's tree types.
+7. **Feature and aggregates are Merk's tag and its numbers at full width,
+   each with a length byte, and the page does not interpret them** (TP12).
+   A link is then fixed in size for each variant, not one size for the
+   whole database: 43 to 67 bytes. The alternatives: a table of Merk's
+   variants in the format saves the length byte in each link and cell and
+   needs a format version for every tree type Merk gains; one link size for
+   all, wide enough for the widest aggregate, makes every link 67 bytes,
+   24 more than a tree with no count or sum needs, and still needs a format
+   version for a wider one. Full width costs up to 7 bytes for each count
+   and sum against Merk's varints, and is what keeps a link's size the same
+   under every hash update.
 8. **The value's length is in the cell header, and a value out of line
    stores 12 bytes** (TP13), as P6 of `value-log-format.md` suggests. A flat
    leaf stores the whole 16-byte pointer.
@@ -625,6 +683,7 @@ All of this is in `lignin-format::tree_page`. Run the tests with
 | TP5 to TP7, W1: slots | `SlotId`, `TreePage::lowest_free_slot`, `TreePage::departures`, `TreePageMut::{remove, replace}` | `slot_numbers_stay_and_the_lowest_free_one_is_taken_next`, `the_count_of_departures_wraps_and_never_stops`, `a_cell_is_replaced_only_by_a_cell_of_the_same_node`, and the random test, whose model counts departures. |
 | TP8: a cell is its bytes | `TreePageMut::insert_encoded`, `replace_encoded` | `a_cell_is_carried_to_another_page_as_its_bytes`, `a_cell_that_would_not_decode_is_not_taken`. |
 | TP10, section 5: in place | `TreePageMut::{set_child, set_link, set_fragment_root, set_hosted_root, set_hosted_roots, set_feature, set_value}` | `a_change_of_the_same_size_is_made_where_the_cell_is`: each change writes only the bytes of its part, and no cell moves. |
+| TP12: features and aggregates | `TreeLink`, `TreePageMut::{set_link, set_feature}` | `every_aggregate_fits_a_link_and_is_rewritten_where_it_is`: a feature and two aggregates of each width Merk has (1, 9, 17, 25 bytes), of a wider one and of 255 bytes are stored, and rewritten with other numbers where they are. |
 | TP11: fragment roots | `TreePage::fragment_roots`, `TreePage::check_fragments` | `the_fragment_roots_are_the_cells_no_cell_of_the_page_points_at`, `the_fragment_check_agrees_with_the_model_on_random_pages` (3,000 pages). |
 | TP13: values | `CellValue`, `TreeCell::value_len`, `TreePage::find_value_pointer` | `the_cell_that_holds_a_value_pointer_is_found_by_the_pointer`, and the pointer errors in `each_check_of_a_cell_has_its_error`. |
 | TP4, TP14: sizes | `TreePageSize`, `TreeCell::MAX_OUT_OF_LINE_LEN`, `TreeCell::len_of` | `a_page_size_is_8_to_64_kib`. `a_cell_is_smaller_than_half_a_page_whatever_its_key_and_value`: the largest cell with its value out of line fits three times in the smallest page; every key length from 0 to 255 fits; a value one byte above the longest inline value is refused and fits out of line. `a_cell_too_large_for_a_smaller_page_size_is_refused_on_reading`. A compile-time assertion ties the smallest page to the largest out-of-line cell. |

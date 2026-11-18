@@ -369,6 +369,15 @@ impl<'db> Walk<'_, 'db> {
             .len()
             .checked_sub(2 + link_bytes + 64 + value.len())
             .expect("a record holds two link markers, its links, two hashes and its value");
+        let meta_fixed_len = tree.feature_type().encoding_cost()
+            + links
+                .iter()
+                .flatten()
+                .map(|link| {
+                    let link_len = link.encoding_cost().expect("a stored link has a size");
+                    link_len - 35 - link.key().len()
+                })
+                .sum::<usize>();
 
         let (id, created) = match existing {
             Some(id) => (id, false),
@@ -413,6 +422,7 @@ impl<'db> Walk<'_, 'db> {
         node.value_hash_print = value_hash_print;
         node.value_len = value.len() as u32;
         node.meta_len = meta_len as u32;
+        node.meta_fixed_len = meta_fixed_len as u32;
 
         let mut children = [None, None];
         for (child, link) in children.iter_mut().zip(links) {

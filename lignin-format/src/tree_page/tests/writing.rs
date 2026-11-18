@@ -1145,3 +1145,63 @@ fn a_cell_is_replaced_only_by_a_cell_of_the_same_node() {
     model.cells.insert(3, same);
     model.assert_is(view(&frame), size);
 }
+
+#[test]
+fn every_aggregate_fits_a_link_and_is_rewritten_where_it_is() {
+    // What a feature or an aggregate takes when it is Merk's tag followed by
+    // each count and sum at its full width: no number, one of 8 bytes, a
+    // 128-bit sum or two of 8 bytes, and a count with a 128-bit sum, which is
+    // the widest Merk has. Then a wider one that Merk does not have yet, and
+    // the widest the format takes.
+    let size = TreePageSize::DEFAULT;
+    for width in [1, 9, 17, 25, 41, 255] {
+        let link = |seed: u8| ModelLink {
+            child: address(9, 2),
+            hash: [seed; 32],
+            heights: (seed, seed),
+            child_key_len: seed,
+            aggregate: vec![seed; width],
+        };
+        let mut cell = ModelCell::leaf(b"key", b"value");
+        cell.feature = vec![1; width];
+        cell.left = Some(link(2));
+        cell.right = Some(link(3));
+        assert_eq!(
+            cell.left.as_ref().expect("a link").link().encoded_len(),
+            42 + width
+        );
+        assert_eq!(cell.len(), 72 + 3 * width + 2 * 42 + 3 + 5);
+
+        let mut model = ModelPage::new(9, 0);
+        model.cells.insert(1, ModelCell::leaf(b"before", b"it"));
+        model.cells.insert(2, cell.clone());
+        model.cells.insert(3, ModelCell::leaf(b"after", b"it"));
+        let mut frame = frame_of(&model, size);
+        let cell_at = view(&frame).cell_range(slot(2)).expect("a cell");
+
+        // New numbers in the feature and in both aggregates, with new hashes
+        // and heights, as a write below this node gives them: every byte
+        // that changes is in its link or in the feature, and the cell is
+        // where it was and as long as it was.
+        let before = frame.clone();
+        cell.feature = vec![0xF1; width];
+        cell.left = Some(link(0xA2));
+        cell.right = Some(link(0xA3));
+        let mut page = open(&mut frame, size);
+        page.set_feature(slot(2), &cell.feature).expect("fits");
+        for side in Side::BOTH {
+            let link = cell.link(side).as_ref().map(ModelLink::link);
+            page.set_link(slot(2), side, link.as_ref()).expect("fits");
+        }
+        let links_and_feature = cell_at.start + 72..cell_at.start + 72 + 2 * (42 + width) + width;
+        let changed = differing(&before, &frame);
+        assert!(!changed.is_empty());
+        assert!(changed.iter().all(|at| links_and_feature.contains(at)));
+        assert_eq!(view(&frame).cell_range(slot(2)), Some(cell_at));
+        model.cells.insert(2, cell);
+        model.assert_is(view(&frame), size);
+    }
+    // A link with the widest aggregate Merk has is 67 bytes.
+    assert_eq!(TreeLink::FIXED_LEN + 25, 67);
+    assert_eq!(TreeLink::MAX_LEN, 42 + 255);
+}

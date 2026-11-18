@@ -28,6 +28,11 @@ pub struct CellCosts {
     /// What a link stores beside the child's pointer, hash, heights and
     /// aggregate: the length of the child's key and of the aggregate.
     pub link_lengths: u32,
+    /// Whether the feature type and the aggregates are stored with each
+    /// count and sum at its full width, so that their length never changes.
+    /// Without it they are counted as Merk's record encodes them, with
+    /// varints.
+    pub fixed_width_aggregates: bool,
     /// The pointer a cell stores in place of an out-of-line value.
     pub value_pointer: u32,
     /// The header of a value-log record.
@@ -39,8 +44,8 @@ pub struct CellCosts {
 
 impl CellCosts {
     /// The sizes of the tree page format, `docs/lignindb/tree-page.md`
-    /// (FMT-02), with the feature and the aggregates stored as Merk encodes
-    /// them.
+    /// (FMT-02), with the feature and the aggregates stored as it asks:
+    /// Merk's tag, then each count and sum at its full width.
     pub const fn tree_page() -> Self {
         CellCosts {
             page_header: 22,
@@ -48,6 +53,7 @@ impl CellCosts {
             cell_header: 8,
             pointer: 6,
             link_lengths: 2,
+            fixed_width_aggregates: true,
             value_pointer: 12,
             value_record_header: 18,
             value_part_max: 134_217_714,
@@ -64,6 +70,7 @@ impl CellCosts {
             cell_header: 4,
             pointer: 6,
             link_lengths: 0,
+            fixed_width_aggregates: false,
             value_pointer: 16,
             value_record_header: 18,
             value_part_max: 134_217_714,
@@ -201,11 +208,16 @@ impl Config {
         } else {
             entry.value_len
         };
+        let meta = if costs.fixed_width_aggregates {
+            entry.meta_fixed_len
+        } else {
+            entry.meta_len
+        };
         costs.slot
             + costs.cell_header
             + entry.key.len() as u32
             + 2 * HASH
-            + entry.meta_len
+            + meta
             + grove.child_links(node) * (HASH + LINK_HEIGHTS + costs.pointer + costs.link_lengths)
             + grove.hosted_roots(node) * costs.pointer
             + value
@@ -1401,6 +1413,7 @@ mod tests {
 
         let costs = CellCosts::tree_page();
         assert_eq!(costs, CellCosts::default());
+        assert!(costs.fixed_width_aggregates && !CellCosts::assumed().fixed_width_aggregates);
         assert_eq!(costs.page_header as usize, TreePage::HEADER_LEN);
         assert_eq!(costs.slot as usize, TreePage::SLOT_LEN);
         assert_eq!(costs.cell_header as usize, TreeCell::HEADER_LEN);
@@ -1413,8 +1426,8 @@ mod tests {
         assert_eq!((costs.cell_header + 2 * HASH) as usize, TreeCell::FIXED_LEN);
 
         // The same nodes as in `a_cell_counts_every_part_merk_stores`, each
-        // against the format's own formula. The model counts the feature
-        // and each aggregate as Merk encodes them: one byte each here.
+        // against the format's own formula. The feature and each aggregate
+        // are one byte here: Merk's tag, in a tree with no count or sum.
         let mut hand = Hand::new();
         let root = hand.add(MerkId::ROOT, b"key", 32);
         hand.set_root(MerkId::ROOT, Some(root));
