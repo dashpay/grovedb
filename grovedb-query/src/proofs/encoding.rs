@@ -91,22 +91,6 @@ impl Encode for Op {
                     dest.write_all(value_hash)?;
                 }
             }
-            Op::Push(Node::KVBackwardsReferencesValueHash(key, value, backrefs_hash)) => {
-                let key_len = key_len_u8(key)?;
-                if value.len() < 65536 {
-                    dest.write_all(&[0x50, key_len])?;
-                    dest.write_all(key)?;
-                    (value.len() as u16).encode_into(dest)?;
-                    dest.write_all(value)?;
-                    dest.write_all(backrefs_hash)?;
-                } else {
-                    dest.write_all(&[0x51, key_len])?;
-                    dest.write_all(key)?;
-                    (value.len() as u32).encode_into(dest)?;
-                    dest.write_all(value)?;
-                    dest.write_all(backrefs_hash)?;
-                }
-            }
             Op::Push(Node::KVValueHashFeatureType(key, value, value_hash, feature_type)) => {
                 let key_len = key_len_u8(key)?;
                 if value.len() < 65536 {
@@ -251,22 +235,6 @@ impl Encode for Op {
                 dest.write_all(&[0x0c, key_len])?;
                 dest.write_all(key)?;
                 dest.write_all(value_hash)?;
-            }
-            Op::PushInverted(Node::KVBackwardsReferencesValueHash(key, value, backrefs_hash)) => {
-                let key_len = key_len_u8(key)?;
-                if value.len() < 65536 {
-                    dest.write_all(&[0x52, key_len])?;
-                    dest.write_all(key)?;
-                    (value.len() as u16).encode_into(dest)?;
-                    dest.write_all(value)?;
-                    dest.write_all(backrefs_hash)?;
-                } else {
-                    dest.write_all(&[0x53, key_len])?;
-                    dest.write_all(key)?;
-                    (value.len() as u32).encode_into(dest)?;
-                    dest.write_all(value)?;
-                    dest.write_all(backrefs_hash)?;
-                }
             }
             Op::PushInverted(Node::KVRefValueHash(key, value, value_hash)) => {
                 let key_len = key_len_u8(key)?;
@@ -839,11 +807,6 @@ impl Encode for Op {
                 let header = if value.len() < 65536 { 4 } else { 6 };
                 header + key.len() + value.len() + HASH_LENGTH
             }
-            Op::Push(Node::KVBackwardsReferencesValueHash(key, value, _))
-            | Op::PushInverted(Node::KVBackwardsReferencesValueHash(key, value, _)) => {
-                let header = if value.len() < 65536 { 4 } else { 6 };
-                header + key.len() + value.len() + HASH_LENGTH
-            }
             Op::Push(Node::KVValueHashFeatureType(key, value, _, feature_type)) => {
                 let header = if value.len() < 65536 { 4 } else { 6 };
                 header + key.len() + value.len() + HASH_LENGTH + feature_type.encoding_length()?
@@ -1135,60 +1098,12 @@ impl Decode for Op {
 
                 Self::Push(Node::KVRefValueHash(key, value, value_hash))
             }
-            0x50 | 0x51 => {
-                let key_len: u8 = Decode::decode(&mut input)?;
-                let mut key = vec![0; key_len as usize];
-                input.read_exact(key.as_mut_slice())?;
-
-                let value_len = if variant == 0x50 {
-                    let len: u16 = Decode::decode(&mut input)?;
-                    len as usize
-                } else {
-                    let len: u32 = Decode::decode(&mut input)?;
-                    if len > MAX_VALUE_LEN {
-                        return Err(ed::Error::UnexpectedByte(0x51));
-                    }
-                    len as usize
-                };
-                let mut value = vec![0; value_len];
-                input.read_exact(value.as_mut_slice())?;
-
-                let mut backrefs_hash = [0; HASH_LENGTH];
-                input.read_exact(&mut backrefs_hash)?;
-
-                Self::Push(Node::KVBackwardsReferencesValueHash(
-                    key,
-                    value,
-                    backrefs_hash,
-                ))
-            }
-            0x52 | 0x53 => {
-                let key_len: u8 = Decode::decode(&mut input)?;
-                let mut key = vec![0; key_len as usize];
-                input.read_exact(key.as_mut_slice())?;
-
-                let value_len = if variant == 0x52 {
-                    let len: u16 = Decode::decode(&mut input)?;
-                    len as usize
-                } else {
-                    let len: u32 = Decode::decode(&mut input)?;
-                    if len > MAX_VALUE_LEN {
-                        return Err(ed::Error::UnexpectedByte(0x53));
-                    }
-                    len as usize
-                };
-                let mut value = vec![0; value_len];
-                input.read_exact(value.as_mut_slice())?;
-
-                let mut backrefs_hash = [0; HASH_LENGTH];
-                input.read_exact(&mut backrefs_hash)?;
-
-                Self::PushInverted(Node::KVBackwardsReferencesValueHash(
-                    key,
-                    value,
-                    backrefs_hash,
-                ))
-            }
+            // 0x50..=0x53 encoded `Node::KVBackwardsReferencesValueHash`
+            // (Push and PushInverted, narrow and wide value lengths). The
+            // node kind is retired: backward-references items are proved by
+            // the ordinary value-carrying nodes. These tags stay reserved
+            // and must never be assigned to another node.
+            0x50..=0x53 => return Err(ed::Error::UnexpectedByte(variant)),
             0x07 => {
                 let key_len: u8 = Decode::decode(&mut input)?;
                 let mut key = vec![0; key_len as usize];
@@ -2479,6 +2394,30 @@ mod test {
         TreeFeatureType::{BasicMerkNode, SummedMerkNode},
         HASH_LENGTH,
     };
+
+    /// 0x50..=0x53 encoded `Node::KVBackwardsReferencesValueHash`, which is
+    /// retired. The tags decode to nothing: a proof carrying one is
+    /// refused, and no other node may take them over.
+    #[test]
+    fn retired_backward_references_tags_do_not_decode() {
+        for tag in 0x50u8..=0x53 {
+            // A well-formed body of the retired node: key, value, hash.
+            let mut bytes = vec![tag, 1, b'k'];
+            if tag % 2 == 0 {
+                bytes.extend_from_slice(&1u16.to_be_bytes());
+            } else {
+                bytes.extend_from_slice(&1u32.to_be_bytes());
+            }
+            bytes.push(b'v');
+            bytes.extend_from_slice(&[7; HASH_LENGTH]);
+
+            let decoded: Vec<_> = Decoder::new(&bytes).collect();
+            assert!(
+                matches!(decoded.as_slice(), [Err(_)]),
+                "tag {tag:#04x} must not decode: {decoded:?}"
+            );
+        }
+    }
 
     #[test]
     fn encode_push_hash() {

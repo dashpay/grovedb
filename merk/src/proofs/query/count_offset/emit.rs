@@ -480,7 +480,7 @@ where
             *l -= 1;
         }
         state.returned = state.returned.saturating_add(1);
-        emit_returned_node(walker, node_count, tree_type)
+        emit_returned_node(walker, node_count, tree_type, grove_version)
     };
 
     ops.push_back(if state.left_to_right {
@@ -692,12 +692,17 @@ pub(super) fn emit_returned_node<S>(
     walker: &RefWalker<'_, S>,
     count: u64,
     tree_type: TreeType,
+    grove_version: &GroveVersion,
 ) -> Node
 where
     S: Fetch + Sized + Clone,
 {
     let value_bytes = walker.tree().value_as_slice();
     let key = walker.tree().key().to_vec();
+    // The bytes a value-carrying node holds: the stored value, or for a
+    // backward-references item its serialization with the referrer list
+    // emptied (see `RefWalker::hashed_value_bytes`).
+    let kv_count_node = |key| Node::KVCount(key, walker.hashed_value_bytes(grove_version), count);
 
     // For each host we want the count-bearing (or count+sum-bearing)
     // variant so the verifier's hash recomputation includes the
@@ -719,12 +724,8 @@ where
         });
 
     match kind {
-        ProofNodeType::Kv => walker.to_kv_node(),
-        // Unreachable: backward-references elements are rejected inside
-        // Provable* count trees at insertion; fall back to the trusted
-        // value-hash shape defensively.
-        ProofNodeType::KvBackwardsReferencesValueHash => walker.to_kv_value_hash_node(),
-        ProofNodeType::KvCount => Node::KVCount(key, value_bytes.to_vec(), count),
+        ProofNodeType::Kv => walker.to_kv_node(grove_version),
+        ProofNodeType::KvCount => kv_count_node(key),
         ProofNodeType::KvCountSum => {
             // PCPS host, Item-flavored entry: emit the dual-axis
             // `KVCountSum` so the verifier can reconstruct
@@ -732,11 +733,11 @@ where
             // `to_kv_count_sum_node()` helper for consistency with the
             // regular count-tree proof flow (it reads the aggregate
             // count + sum out of `aggregate_data()` directly).
-            walker.to_kv_count_sum_node()
+            walker.to_kv_count_sum_node(grove_version)
         }
         // `ProvableCountProvableBigSumTree` host, Item-flavored entry: the
         // wide counterpart of the arm above.
-        ProofNodeType::KvCountBigSum => walker.to_kv_count_big_sum_node(),
+        ProofNodeType::KvCountBigSum => walker.to_kv_count_big_sum_node(grove_version),
         ProofNodeType::KvSum => {
             // Reaching this branch would mean a SumItem (not a
             // CountAndSumItem) is sitting under a count tree, which the
@@ -744,11 +745,11 @@ where
             // host-appropriate count-bearing variant so the proof
             // shape stays valid.
             if binds_big_sum_into_hash(tree_type) {
-                walker.to_kv_count_big_sum_node()
+                walker.to_kv_count_big_sum_node(grove_version)
             } else if binds_sum_into_hash(tree_type) {
-                walker.to_kv_count_sum_node()
+                walker.to_kv_count_sum_node(grove_version)
             } else {
-                Node::KVCount(key, value_bytes.to_vec(), count)
+                kv_count_node(key)
             }
         }
         ProofNodeType::KvValueHash => walker.to_kv_value_hash_node(),

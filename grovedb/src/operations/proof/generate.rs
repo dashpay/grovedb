@@ -1021,14 +1021,21 @@ impl GroveDb {
             };
             match op {
                 Op::Push(node) | Op::PushInverted(node) => match node {
-                    // Merk emits this node kind for backward-references
-                    // elements unconditionally; it is a V1-only wire shape
-                    // and the frozen V0 format must refuse to carry it
-                    // (released V0 verifiers reject the tag). Guard on the
-                    // NODE KIND — the element-typed rejection below cannot
-                    // fire for it because this outer match would otherwise
-                    // skip the node entirely.
-                    Node::KVBackwardsReferencesValueHash(..) => {
+                    // Backward-references items activate with GROVE_V4,
+                    // which proves through V1, and the frozen V0 format
+                    // refuses to carry them. Merk proves them in the
+                    // value-carrying nodes, so guard on the element type a
+                    // node carries, at every position: the element-typed
+                    // rejection below only sees rows inside the results.
+                    Node::KV(_, value)
+                    | Node::KVCount(_, value, _)
+                    | Node::KVSum(_, value, _)
+                    | Node::KVCountSum(_, value, ..)
+                    | Node::KVCountBigSum(_, value, ..)
+                        if grovedb_element::ElementType::from_serialized_value(value)
+                            .map(|et| et.is_backward_references_item())
+                            .unwrap_or(false) =>
+                    {
                         return Err(Error::NotSupported(
                             "backward-references elements are not supported in V0 proofs; they \
                              require GROVE_V4+, which proves through V1"
@@ -2396,7 +2403,6 @@ impl GroveDb {
                     }
                     Node::KV(key, value)
                     | Node::KVValueHash(key, value, ..)
-                    | Node::KVBackwardsReferencesValueHash(key, value, ..)
                     | Node::KVCount(key, value, _)
                     | Node::KVSum(key, value, _)
                     | Node::KVCountBigSum(key, value, ..)
@@ -2423,9 +2429,10 @@ impl GroveDb {
                         // Normalize a bidirectional reference to its plain
                         // reference shape: proof-wise both resolve the same
                         // way. A bidirectional reference's self-hash slot in
-                        // KVRefValueHash* nodes is combine(inner, backrefs)
-                        // (not H(stored bytes)) — capture it here, before
-                        // normalization discards the distinction.
+                        // KVRefValueHash* nodes is the hash of its bytes
+                        // with the referrer list emptied (not H(stored
+                        // bytes)) — capture it here, before normalization
+                        // discards the distinction.
                         let mut reference_self_hash_override = None;
                         // A bidirectional edge's declared max_hop bounds
                         // proof dereferencing exactly like reads (plain
@@ -2433,13 +2440,10 @@ impl GroveDb {
                         let mut bidi_max_hop = None;
                         let elem = match elem {
                             Ok(ref e @ Element::BidirectionalReference(..)) => {
-                                let hashes = cost_return_on_error!(
+                                reference_self_hash_override = Some(cost_return_on_error!(
                                     &mut cost,
-                                    e.backward_references_hashes(grove_version)
-                                        .map_err(Error::from)
-                                )
-                                .expect("bidirectional references carry hashes");
-                                reference_self_hash_override = Some(hashes.combined);
+                                    e.logical_value_hash(grove_version).map_err(Error::from)
+                                ));
                                 let Ok(Element::BidirectionalReference(reference, reference_flags)) =
                                     elem
                                 else {
@@ -2492,10 +2496,11 @@ impl GroveDb {
                             | Ok(Element::ItemWithSumItemWithBackwardsReferences(..))
                                 if !done_with_results =>
                             {
-                                // Merk already emitted the dedicated
-                                // KVBackwardsReferencesValueHash wire node
-                                // (stripped bytes + referrer-list hash);
-                                // only result bookkeeping remains here.
+                                // Merk already emitted the value-carrying
+                                // node holding the bytes with the referrer
+                                // list emptied, which hash to the node's
+                                // value hash; only result bookkeeping
+                                // remains here.
                                 limit_state.charge_row_with_instance(&mut frame_instance);
                                 has_a_result_at_level |= true;
                             }
@@ -3864,20 +3869,18 @@ impl GroveDb {
             // Normalize a bidirectional reference to its plain-reference
             // shape: proof-wise both resolve identically, and the node's
             // `value` bytes (which feed value_hash) are left untouched. Its
-            // self-hash slot is combine(inner, backrefs), captured here, and
+            // self-hash slot is the hash of its bytes with the referrer
+            // list emptied, captured here, and
             // its declared max_hop bounds dereferencing exactly like reads
             // (plain references keep their historical global budget).
             let mut reference_self_hash_override = None;
             let mut bidi_max_hop = None;
             let elem = match elem {
                 ref e @ Element::BidirectionalReference(..) => {
-                    let hashes = cost_return_on_error!(
+                    reference_self_hash_override = Some(cost_return_on_error!(
                         &mut cost,
-                        e.backward_references_hashes(grove_version)
-                            .map_err(Error::from)
-                    )
-                    .expect("bidirectional references carry hashes");
-                    reference_self_hash_override = Some(hashes.combined);
+                        e.logical_value_hash(grove_version).map_err(Error::from)
+                    ));
                     let Element::BidirectionalReference(reference, reference_flags) = elem else {
                         unreachable!("checked above");
                     };
@@ -4013,12 +4016,10 @@ impl GroveDb {
             &mut cost,
             Element::deserialize(value, grove_version).wrap_with_cost(OperationCost::default())
         );
-        let hashes = cost_return_on_error!(
+        let reference_self_hash = cost_return_on_error!(
             &mut cost,
-            elem.backward_references_hashes(grove_version)
-                .map_err(Error::from)
-        )
-        .expect("bidirectional references carry hashes");
+            elem.logical_value_hash(grove_version).map_err(Error::from)
+        );
         let Element::BidirectionalReference(reference, _) = elem.into_underlying() else {
             return Err(Error::CorruptedCodeExecution(
                 "filler bidirectional-reference rewrite reached a non-bidirectional element",
@@ -4050,7 +4051,7 @@ impl GroveDb {
         Ok(Self::dereferenced_reference_node(
             key,
             serialized_referenced_elem,
-            hashes.combined,
+            reference_self_hash,
             count_for_ref,
             sum_for_ref,
             count_sum_for_ref,
@@ -4065,8 +4066,8 @@ impl GroveDb {
     /// The target bytes are selected by the node's existing commitment, not
     /// the current GroveVersion: a V4 reader may encounter V3 direct-written
     /// references that bind the unwrapped terminal. A bidirectional
-    /// reference's self-hash slot is `combine(inner, backrefs)`, captured by
-    /// the caller before normalization. With `refuse_populated_target`, a
+    /// reference's self-hash slot is the hash of its bytes with the referrer
+    /// list emptied, captured by the caller before normalization. With `refuse_populated_target`, a
     /// reference that resolves to a populated tree is refused. Out of line for
     /// the frame-size reason documented on [`Self::prove_count_offset_layer_v1`].
     #[inline(never)]

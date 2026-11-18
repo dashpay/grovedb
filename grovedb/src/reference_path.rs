@@ -122,18 +122,11 @@ pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
                 hops_left -= 1;
             }
             e => {
-                // Referrers commit to the LOGICAL value hash: for
-                // backward-references elements that is the inner (stripped)
-                // hash, not the node's stored combined hash.
-                let target_node_value_hash = if e.supports_backward_references() {
-                    cost_return_on_error!(
-                        &mut cost,
-                        e.logical_value_hash(merk_cache.version)
-                            .map_err(Error::from)
-                    )
-                } else {
-                    value_hash
-                };
+                // Referrers commit to the terminal's stored value hash.
+                // For a backward-references item that is the hash of its
+                // serialization with the referrer list emptied, so
+                // registering a referrer leaves it unchanged.
+                let target_node_value_hash = value_hash;
                 return Ok(ResolvedReference {
                     target_merk: referred_merk,
                     target_path: referred_path,
@@ -199,8 +192,11 @@ pub(crate) fn follow_reference_once<'db, 'b, 'c, B: AsRef<[u8]>>(
         })
     );
 
-    // See `follow_reference`: logical hash for backward-references elements.
-    let target_node_value_hash = if element.supports_backward_references() {
+    // A bidirectional reference met as an intermediate hop is committed to
+    // by its inner hash (its serialization with the referrer list emptied),
+    // not by its stored hash, which also folds in the end of the chain.
+    // Every other element is committed to by its stored value hash.
+    let target_node_value_hash = if matches!(element, Element::BidirectionalReference(..)) {
         cost_return_on_error!(
             &mut cost,
             element
