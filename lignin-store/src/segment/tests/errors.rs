@@ -79,6 +79,14 @@ fn every_error_says_what_went_wrong() {
             "db/seg/00000007.seg is 9000 bytes long, but the manifest does not name it and \
              records no id that high",
         ),
+        (
+            SegmentStoreError::NotDeleted {
+                path: path(),
+                source: io::Error::other("disk on fire"),
+            },
+            "the manifest no longer names db/seg/00000007.seg, but it could not be deleted: disk \
+             on fire",
+        ),
         (SegmentStoreError::UnknownSegment { file }, "no segment 7"),
         (
             SegmentStoreError::OutOfBounds {
@@ -121,7 +129,9 @@ fn every_error_says_what_went_wrong() {
         assert_eq!(error.to_string(), expected);
         let has_source = matches!(
             error,
-            SegmentStoreError::Io { .. } | SegmentStoreError::Format { .. }
+            SegmentStoreError::Io { .. }
+                | SegmentStoreError::Format { .. }
+                | SegmentStoreError::NotDeleted { .. }
         );
         assert_eq!(error.source().is_some(), has_source, "{error:?}");
     }

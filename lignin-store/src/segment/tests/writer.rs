@@ -306,6 +306,33 @@ fn a_sync_through_the_store_that_fails_stops_the_writer_too() {
 }
 
 #[test]
+fn a_sync_through_the_store_goes_on_past_a_segment_that_fails() {
+    let mut db = Db::new();
+    let mut first = db.writer();
+    let mut second = db.writer();
+    append_blocks(&mut first, 3, 1);
+    append_blocks(&mut second, 3, 9);
+    let second_end = second.end();
+
+    db.vfs.fail(Op::SyncData, SEGMENT);
+    assert_io(&db.segments.sync().unwrap_err(), "sync", SEGMENT);
+    assert_eq!(
+        db.segments.segments_named().unwrap(),
+        [segment(1, OPEN, 20), segment(2, OPEN, second_end)]
+    );
+
+    append_blocks(&mut second, 3, 20);
+    assert!(is_failed(db.segments.sync().unwrap_err()));
+    assert_eq!(
+        db.segments.segments_named().unwrap(),
+        [segment(1, OPEN, 20), segment(2, OPEN, second.end())]
+    );
+
+    drop(first);
+    db.segments.sync().unwrap();
+}
+
+#[test]
 fn a_seal_whose_sync_fails_leaves_the_footer_out() {
     let mut db = Db::new();
     let mut writer = db.writer();

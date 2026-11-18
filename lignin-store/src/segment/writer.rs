@@ -77,8 +77,11 @@ impl SegmentWriter {
     ///
     /// Fails with [`SegmentStoreError::NotNamed`] until a manifest names the
     /// segment, and with [`SegmentStoreError::SegmentFull`] once the segment
-    /// holds [`MAX_BLOCKS`] blocks. If the file layer fails the append,
-    /// nothing was appended and the writer can go on.
+    /// holds [`MAX_BLOCKS`] blocks. If the file layer fails the append, the
+    /// segment's blocks end where they did and the writer can go on. If the
+    /// file layer could not take the failed append back, every later append
+    /// and [`Self::seal`] fail as well: drop the writer and go on in another
+    /// segment.
     ///
     /// [`SegmentStore::sync`]: super::SegmentStore::sync
     pub fn append(
@@ -128,9 +131,9 @@ impl SegmentWriter {
     /// The segment takes no more blocks afterwards. The manifest names it
     /// sealed from its next replacement on.
     ///
-    /// If the footer cannot be appended, nothing has changed and the writer
-    /// can go on. If the sync fails, the segment has failed as described at
-    /// [`Self::sync`].
+    /// If the footer cannot be appended, the segment is as it was, as after
+    /// an [`append`](Self::append) that failed. If the sync fails, the
+    /// segment has failed as described at [`Self::sync`].
     pub fn seal(&mut self) -> Result<u64, SegmentStoreError> {
         let Self {
             segment,

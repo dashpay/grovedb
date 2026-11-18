@@ -148,6 +148,16 @@ pub enum SegmentStoreError {
         /// The file's length.
         len: u64,
     },
+    /// The manifest no longer names a dropped segment, but its file could not
+    /// be deleted. Everything else the call had to do was done. The deletion
+    /// is tried again whenever the store is told of a manifest, and by the
+    /// next session that opens the directory.
+    NotDeleted {
+        /// The file.
+        path: PathBuf,
+        /// The error the file layer returned.
+        source: io::Error,
+    },
     /// The store holds no segment with this id.
     UnknownSegment {
         /// The id asked for.
@@ -274,6 +284,11 @@ impl fmt::Display for SegmentStoreError {
                  high",
                 path.display()
             ),
+            Self::NotDeleted { path, source } => write!(
+                f,
+                "the manifest no longer names {}, but it could not be deleted: {source}",
+                path.display()
+            ),
             Self::UnknownSegment { file } => write!(f, "no segment {file}"),
             Self::OutOfBounds { location, end } => write!(
                 f,
@@ -297,6 +312,7 @@ impl std::error::Error for SegmentStoreError {
         match self {
             Self::Io { source, .. } => Some(source),
             Self::Format { source, .. } => Some(source),
+            Self::NotDeleted { source, .. } => Some(source),
             _ => None,
         }
     }

@@ -92,7 +92,9 @@
 //! A segment that the manifest names was written by an earlier session if
 //! this session did not create it. Such a segment is read and never written:
 //! its file is opened read-only, and if the earlier session left it open it
-//! ends at its valid length (rule M16 of the format).
+//! ends at its valid length (rule M16 of the format). The first manifest this
+//! session writes names it closed at that length, which is how rule M15 has
+//! the files of an earlier session named.
 //!
 //! # What holds after a crash
 //!

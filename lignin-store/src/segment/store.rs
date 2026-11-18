@@ -570,10 +570,16 @@ impl SegmentStore {
     ///
     /// It may run while writers append. A block is covered if its append
     /// returned before this was called.
+    ///
+    /// Every segment is synced, whatever happens to another one, and the
+    /// first error is returned. A segment whose sync has failed keeps
+    /// failing this call until its writer is dropped.
     pub fn sync(&self) -> Result<(), SegmentStoreError> {
-        self.live()
-            .iter()
-            .try_for_each(|segment| segment.sync().map(drop))
+        let mut result = Ok(());
+        for segment in self.live() {
+            result = result.and(segment.sync().map(drop));
+        }
+        result
     }
 
     /// Takes the segment `file` out of the store. It is no longer read, and
@@ -637,6 +643,10 @@ impl SegmentStore {
     /// A new segment that the durable manifest names takes blocks from now
     /// on. The file of a dropped segment that the durable manifest no longer
     /// names is deleted.
+    ///
+    /// A file that cannot be deleted does not stop the rest: the call ends
+    /// with [`SegmentStoreError::NotDeleted`], and the next call tries the
+    /// deletion again.
     pub fn manifest_replaced(&self, manifest: &ManifestStore) -> Result<(), SegmentStoreError> {
         self.check_writable()?;
         self.check_same_dir(manifest)?;
@@ -657,9 +667,12 @@ impl SegmentStore {
         };
         let mut result = Ok(());
         for (id, path) in unnamed {
-            if let Err(error) = remove_if_present(&*self.vfs, &path) {
-                self.segments_mut().dropped.insert(id, path);
-                result = result.and(Err(error));
+            match self.vfs.remove_file(&path) {
+                Err(source) if source.kind() != ErrorKind::NotFound => {
+                    self.segments_mut().dropped.insert(id, path.clone());
+                    result = result.and(Err(SegmentStoreError::NotDeleted { path, source }));
+                }
+                _ => {}
             }
         }
         result
@@ -668,6 +681,12 @@ impl SegmentStore {
     /// Replaces the manifest with one that names the store's segments as
     /// they are now: [`ManifestStore::update`] with [`Self::describe`], then
     /// [`Self::manifest_replaced`].
+    ///
+    /// After [`SegmentStoreError::NotDeleted`] the new manifest is in force.
+    /// After any other error [`ManifestStore::manifest`] tells where things
+    /// stand: it gives the old manifest, and this call can be made again, or
+    /// it fails with [`SegmentStoreError::ManifestInDoubt`], and the directory
+    /// has the old manifest or the new one.
     pub fn commit(&self, manifest: &mut ManifestStore) -> Result<(), SegmentStoreError> {
         self.check_writable()?;
         self.check_same_dir(manifest)?;

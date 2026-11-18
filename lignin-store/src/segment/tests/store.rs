@@ -1157,7 +1157,11 @@ fn a_dropped_segment_is_deleted_once_a_durable_manifest_does_not_name_it() {
 
     db.vfs.fail(Op::RemoveFile, "00000001.seg");
     let error = db.segments.commit(&mut db.manifest).unwrap_err();
-    assert_io(&error, "remove", "00000001.seg");
+    assert!(matches!(
+        &error,
+        SegmentStoreError::NotDeleted { path, source }
+            if *path == db.seg_path(1) && source.kind() == faulty::INJECTED
+    ));
     assert!(db.seg_path(1).exists());
     assert_eq!(
         db.on_disk(),
