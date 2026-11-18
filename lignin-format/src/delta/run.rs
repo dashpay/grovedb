@@ -38,8 +38,8 @@ impl<'a> DeltaRun<'a> {
     ///
     /// A run carries no checksum, so `bytes` must come from a record whose
     /// checksum was verified. The checks run in a fixed order: the page id,
-    /// that there is a record, then each record in turn, and that a create
-    /// record is the first.
+    /// that there is a record, then each record in turn, of which only the
+    /// first may be a create record.
     pub fn decode(bytes: &'a [u8], version: FormatVersion) -> Result<Self, FormatError> {
         let mut reader = Reader::new(bytes);
         let page = PageId::decode(*reader.array()?).ok_or(FormatError::MissingId)?;
