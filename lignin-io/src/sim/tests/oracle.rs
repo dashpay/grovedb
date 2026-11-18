@@ -289,8 +289,8 @@ struct Made {
 /// The contract: "a name that was created, renamed, linked or removed, and a
 /// directory that was created or removed, is durable once sync_dir returns
 /// Ok for the directory that holds the name", and "of the changes of names
-/// not yet synced a crash may keep any subset". The documentation: a change
-/// is kept only with the changes it builds on.
+/// not yet synced a crash may keep any subset in which each change comes
+/// with the earlier changes it builds on".
 #[derive(Default)]
 struct Names {
     now: BTreeMap<Name, Named>,

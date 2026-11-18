@@ -116,12 +116,13 @@ pub(super) struct NameOp {
 
 /// The unsynced changes of names in `kept`, with every change they build on.
 ///
-/// A change builds on the earlier changes of the names it touches. The
-/// removal of a directory builds on the changes that emptied it. A rename
-/// builds on the creation of the directories its two names are in. Without
-/// the changes it builds on, a kept change would leave a rename half done: a
-/// later change of one of its names would act as if the file had moved, while
-/// the other name showed that it had not.
+/// This is the rule of the contract. A change builds on the earlier changes
+/// of the names it touches. The removal of a directory builds on the changes
+/// that emptied it. A rename builds on the creation of the directories its
+/// two names are in and of every directory above them. Without the changes
+/// it builds on, a kept change would leave a rename half done: a later change
+/// of one of its names would act as if the file had moved, while the other
+/// name showed that it had not.
 pub(super) fn with_what_they_build_on(
     dirs: &BTreeMap<DirId, Dir>,
     ops: &BTreeMap<u64, NameOp>,

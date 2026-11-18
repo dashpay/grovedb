@@ -28,9 +28,10 @@
 //! A `flock` holds back this backend in every process. It does not hold back
 //! a program that opens the file some other way.
 //!
-//! The atomic rename and the undamaged bytes that the contract promises after
-//! a crash are what a journaling filesystem on sector-atomic storage gives:
-//! ext4, XFS, btrfs and APFS.
+//! The atomic rename, the changes of names that are kept only with the
+//! changes they build on, and the undamaged bytes that the contract promises
+//! after a crash are what a journaling filesystem on sector-atomic storage
+//! gives: ext4, XFS, btrfs and APFS.
 //!
 //! An append is a single `write` unless the system writes only part of the
 //! buffer, and it never overwrites: the descriptor is `O_APPEND`, so the
