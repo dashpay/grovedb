@@ -30,6 +30,42 @@ fn same<T: Debug + PartialEq>(sim: io::Result<T>, real: io::Result<T>, what: &st
     }
 }
 
+/// Compares an operation on two paths. When each path is wrong on its own,
+/// the contract does not say which error comes first, and the systems differ:
+/// either error is right.
+#[track_caller]
+fn same_for_two_paths(
+    sim: io::Result<()>,
+    real: io::Result<()>,
+    wrong: [Option<ErrorKind>; 2],
+    what: &str,
+) {
+    if let (Err(sim), Err(real), [Some(first), Some(second)]) = (&sim, &real, wrong) {
+        let either = [first, second];
+        assert!(either.contains(&sim.kind()), "{what}: {sim}");
+        assert!(either.contains(&real.kind()), "{what}: {real}");
+        return;
+    }
+    same(sim, real, what);
+}
+
+/// What is wrong with `path` as the second path of an operation: its
+/// directory, or the file or the directory that has the name already.
+fn wrong_place(
+    fs: &SimVfs,
+    path: &Path,
+    file_there: Option<ErrorKind>,
+    dir_there: Option<ErrorKind>,
+) -> Option<ErrorKind> {
+    let in_dir = fs.read_dir(path.parent().unwrap()).err();
+    let there = match fs.open(path, OpenMode::Read) {
+        Ok(_) => file_there,
+        Err(error) if error.kind() == ErrorKind::IsADirectory => dir_there,
+        Err(_) => None,
+    };
+    in_dir.map(|error| error.kind()).or(there)
+}
+
 fn pick<'a>(rng: &mut SimRng, from: &[&'a str]) -> &'a str {
     from[rng.below(from.len() as u64) as usize]
 }
@@ -74,18 +110,33 @@ fn random_operations_end_as_they_do_on_the_operating_system() {
                         continue;
                     }
                     let ((sim_from, real_from), (sim_to, real_to)) = (on(from), on(to));
-                    same(
+                    let wrong = [
+                        fs.open(&sim_from, OpenMode::Read)
+                            .err()
+                            .map(|error| error.kind()),
+                        wrong_place(&fs, &sim_to, None, Some(ErrorKind::IsADirectory)),
+                    ];
+                    same_for_two_paths(
                         fs.rename(&sim_from, &sim_to),
                         real.rename(&real_from, &real_to),
+                        wrong,
                         &format!("{what}: rename {from} {to}"),
                     );
                 }
                 7 => {
                     let (original, link) = (pick(&mut rng, &FILES), pick(&mut rng, &anything));
                     let ((sim_from, real_from), (sim_to, real_to)) = (on(original), on(link));
-                    same(
+                    let taken = Some(ErrorKind::AlreadyExists);
+                    let wrong = [
+                        fs.open(&sim_from, OpenMode::Read)
+                            .err()
+                            .map(|error| error.kind()),
+                        wrong_place(&fs, &sim_to, taken, taken),
+                    ];
+                    same_for_two_paths(
                         fs.hard_link(&sim_from, &sim_to),
                         real.hard_link(&real_from, &real_to),
+                        wrong,
                         &format!("{what}: hard_link {original} {link}"),
                     );
                 }
