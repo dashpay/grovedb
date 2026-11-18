@@ -212,6 +212,26 @@ directory stores for the root of a Merk (TREE-05). All zero is "no cell". A
 page id with no slot, or a slot with no page id, is not a valid address
 (`MissingId`).
 
+### 3.5 Page size
+
+A store has one page size, for tree pages and flat pages alike
+(`ids::PageSize`). It is not an identifier, and it is here because every
+page format and the manifest share it.
+
+- **One of four.** 8,192, 16,384, 32,768 or 65,536 bytes: a power of two
+  from 8 KiB to 64 KiB. 32,768 unless the store is told otherwise.
+  `PageSize::new` gives `InvalidPageSize` for any other number, so no value
+  of the type holds one.
+- **Recorded once.** The manifest holds it as a `u32` (M17 of
+  [`segment-manifest.md`](segment-manifest.md)) and no page image does. It
+  never changes (M18).
+- **An image is at most 65,535 bytes**, because offsets in a page are 16
+  bits (`PageSize::image_capacity`): a page of 65,536 bytes leaves its last
+  byte unused.
+
+What a tree page derives from the size (how much cells can use, how long
+one cell may be) is in [`tree-page.md`](tree-page.md), TP4 and TP14.
+
 ## 4. Checksums
 
 **C1. The function is CRC-32C.** Castagnoli polynomial `0x1EDC6F41`
@@ -595,6 +615,7 @@ All of this is in `lignin-format`. Run the tests with
 | Rule | Code | Tests |
 | --- | --- | --- |
 | Identifiers (section 3) | `ids::{PageId, FileId, CommitVersion, SlotId, CellAddress}` | Round trip in both directions over boundary and random values; the reserved pattern; byte order; ordering; `CommitVersion::next`. Every slot number; half a cell address. |
+| Page size (3.5) | `ids::PageSize`, `FormatError::InvalidPageSize` | `a_page_size_is_one_of_four_powers_of_two`: of every number from 0 to 131,072 and every larger power of two, exactly the four sizes are accepted. |
 | C1 | `checksum::Checksum` (the CRC itself is private) | RFC 3720 vectors; agreement with a bit-at-a-time reference on random input. |
 | C2, C3 | `checksum::Checksum` | Masked vectors; round trip; the same checksum however the covered bytes are split; every single-bit flip rejected; the nesting test. |
 | C4 | `checksum::Checksum` | No zero checksum for any run of 0 to 2^27 zero bytes; zero-filled bytes rejected as a file header and as a record. |

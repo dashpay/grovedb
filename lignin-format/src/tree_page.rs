@@ -110,11 +110,6 @@ pub use write::TreePageMut;
 /// page cannot take what was written to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TreePageError {
-    /// A page size outside [`PageSize::MIN`] to [`PageSize::MAX`].
-    PageSizeOutOfRange {
-        /// The page size asked for.
-        page_size: usize,
-    },
     /// The buffer given for a page is smaller than a page of that size
     /// needs.
     BufferTooSmall {
@@ -278,12 +273,6 @@ pub enum TreePageError {
 impl fmt::Display for TreePageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::PageSizeOutOfRange { page_size } => write!(
-                f,
-                "page size {page_size} is outside {} to {}",
-                PageSize::MIN.get(),
-                PageSize::MAX.get()
-            ),
             Self::BufferTooSmall { len, needed } => {
                 write!(f, "buffer of {len} bytes for a page of {needed}")
             }

@@ -658,12 +658,12 @@ fn with_page_size(manifest: &Manifest, bytes: usize) -> Manifest {
 
 #[test]
 fn the_page_size_of_the_first_manifest_is_the_stores_for_good() {
-    for created in [8_192, 32_768, 65_536] {
+    for created in [8_192, 16_384, 32_768, 65_536] {
         let first = with_page_size(&generations()[0], created);
         let (vfs, mut store, dir) = new_store(first.clone());
         assert_eq!(store.manifest().unwrap().page_size().get(), created);
 
-        for offered in [8_192, 8_193, 16_384, 32_768, 65_535, 65_536] {
+        for offered in [8_192, 16_384, 32_768, 65_536] {
             if offered == created {
                 continue;
             }
@@ -696,14 +696,14 @@ fn the_page_size_of_the_first_manifest_is_the_stores_for_good() {
 
 #[test]
 fn a_store_opened_with_another_page_size_is_refused() {
-    for created in [8_192, 32_768, 65_536] {
+    for created in [8_192, 16_384, 32_768, 65_536] {
         let (vfs, mut store, dir) = new_store(with_page_size(&full(), created));
         let created = PageSize::new(created).unwrap();
         let reopened = open_store(&vfs, dir.path()).unwrap();
         vfs.take_calls();
         for store in [&store, &reopened] {
             store.check_page_size(created).unwrap();
-            for requested in [8_192, 8_193, 16_384, 32_768, 65_535, 65_536] {
+            for requested in [8_192, 16_384, 32_768, 65_536] {
                 let requested = PageSize::new(requested).unwrap();
                 if requested == created {
                     continue;

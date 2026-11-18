@@ -7,7 +7,7 @@ use std::{
     num::{NonZeroU16, NonZeroU32},
 };
 
-use crate::{error::FormatError, tree_page::TreePageError};
+use crate::error::FormatError;
 
 macro_rules! nonzero_id {
     ($(#[$doc:meta])* $name:ident, $prefix:literal, $raw:ty, $nonzero:ty, $max:literal) => {
@@ -193,6 +193,8 @@ impl fmt::Display for CellAddress {
 
 /// The size of a store's pages, which every page of the store is read and
 /// written under. A store has one, and its manifest records it.
+///
+/// One of four: 8,192, 16,384, 32,768 or 65,536 bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PageSize(usize);
 
@@ -206,12 +208,11 @@ impl PageSize {
 
     const MAX_IMAGE_LEN: usize = u16::MAX as usize;
 
-    /// Pages of `bytes` bytes.
+    /// Pages of `bytes` bytes, or [`FormatError::InvalidPageSize`] when
+    /// `bytes` is not a power of two from [`Self::MIN`] to [`Self::MAX`].
     pub const fn new(bytes: usize) -> Result<Self, FormatError> {
-        if bytes < Self::MIN.0 || bytes > Self::MAX.0 {
-            return Err(FormatError::TreePage(TreePageError::PageSizeOutOfRange {
-                page_size: bytes,
-            }));
+        if bytes < Self::MIN.0 || bytes > Self::MAX.0 || !bytes.is_power_of_two() {
+            return Err(FormatError::InvalidPageSize { page_size: bytes });
         }
         Ok(Self(bytes))
     }
@@ -410,6 +411,51 @@ mod tests {
         assert!(low < SlotId::MAX);
         assert_eq!(low.to_string(), "258");
         assert_eq!(format!("{low:?}"), "slot#258");
+    }
+
+    #[test]
+    fn a_page_size_is_one_of_four_powers_of_two() {
+        assert_eq!(PageSize::MIN.get(), 8_192);
+        assert_eq!(PageSize::DEFAULT.get(), 32_768);
+        assert_eq!(PageSize::MAX.get(), 65_536);
+        assert_eq!(PageSize::default(), PageSize::DEFAULT);
+        assert!(PageSize::MIN < PageSize::DEFAULT && PageSize::DEFAULT < PageSize::MAX);
+
+        let sizes = [8_192, 16_384, 32_768, 65_536];
+        for bytes in sizes {
+            let size = PageSize::new(bytes).expect("one of the four");
+            assert_eq!(size.get(), bytes);
+            assert_eq!(size.image_capacity(), bytes.min(65_535));
+        }
+
+        // Every number up to twice the largest size, the powers of two above
+        // it, and the neighbours of each size.
+        let mut accepted = Vec::new();
+        for bytes in (0..=131_072).chain((18..usize::BITS).map(|bit| 1 << bit)) {
+            match PageSize::new(bytes) {
+                Ok(size) => accepted.push(size.get()),
+                Err(error) => assert_eq!(error, FormatError::InvalidPageSize { page_size: bytes }),
+            }
+        }
+        assert_eq!(accepted, sizes);
+        for bytes in [
+            0, 1, 4_096, 8_191, 8_193, 11_111, 12_288, 24_576, 49_152, 65_535, 65_537,
+        ] {
+            assert_eq!(
+                PageSize::new(bytes),
+                Err(FormatError::InvalidPageSize { page_size: bytes })
+            );
+        }
+        assert_eq!(
+            PageSize::new(usize::MAX),
+            Err(FormatError::InvalidPageSize {
+                page_size: usize::MAX
+            })
+        );
+        assert_eq!(
+            FormatError::InvalidPageSize { page_size: 12_288 }.to_string(),
+            "page size 12288 is not 8192, 16384, 32768 or 65536"
+        );
     }
 
     fn address(page: u32, slot: u16) -> CellAddress {

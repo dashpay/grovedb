@@ -179,8 +179,8 @@ on every load, and a page that is changed in a buffer could not keep it
 true. So `TreePage::decode` checks structure, not integrity, and must be
 given bytes from a record that was verified.
 
-**TP4. The page size is a parameter, from 8 KiB to 64 KiB**
-(`PageSize`). An image is as long as its content and at most the page
+**TP4. The page size is a parameter, one of 8, 16, 32 and 64 KiB**
+(`PageSize`, 3.5 of `format.md`). An image is as long as its content and at most the page
 size, and at most 65,535 bytes, because offsets in a page are 16 bits: a
 page of 64 KiB leaves its last byte unused, as a flat page does (P10 of
 `flat-page.md`). The image does not record the page size. A reader passes
@@ -660,7 +660,8 @@ owner can overrule one while version 1 is still open (U10).
 10. **Pages are 8 KiB to 64 KiB** (TP4, TP14). Below 8 KiB a cell with the
     longest of every part would not be smaller than half a page. The
     simulation of `tree-layout.md` also ran 4 KiB; this format does not
-    serve it.
+    serve it. The owner ruled that a size is a power of two (3.5 of
+    `format.md`); this format took every size in between until then.
 11. **An image has one form and a page in a buffer does not** (TP16, TP17).
     The price is that a base image is written by a pass that orders the
     cells, not by copying the frame.
@@ -703,7 +704,7 @@ All of this is in `lignin-format::tree_page`. Run the tests with
 | TP12: features and aggregates | `TreeLink`, `TreePageMut::{set_link, set_feature}` | `every_aggregate_fits_a_link_and_is_rewritten_where_it_is`: a feature and two aggregates of each width Merk has (1, 9, 17, 25 bytes), of a wider one and of 255 bytes are stored, and rewritten with other numbers where they are. |
 | TP11: fragment roots | `TreePage::fragment_roots`, `TreePage::check_fragments` | `the_fragment_roots_are_the_cells_no_cell_of_the_page_points_at`, `the_fragment_check_agrees_with_the_model_on_random_pages` (3,000 pages). |
 | TP13: values | `CellValue`, `TreeCell::value_len`, `TreePage::find_value_pointer` | `the_cell_that_holds_a_value_pointer_is_found_by_the_pointer`, and the pointer errors in `each_check_of_a_cell_has_its_error`. |
-| TP4, TP14: sizes | `PageSize`, `TreeCell::MAX_OUT_OF_LINE_LEN`, `TreeCell::len_of` | `a_page_size_is_8_to_64_kib`. `a_cell_is_smaller_than_half_a_page_whatever_its_key_and_value`: the largest cell with its value out of line fits three times in the smallest page; every key length from 0 to 255 fits; a value one byte above the longest inline value is refused and fits out of line. `a_cell_too_large_for_a_smaller_page_size_is_refused_on_reading`. A compile-time assertion ties the smallest page to the largest out-of-line cell. |
+| TP4, TP14: sizes | `PageSize`, `TreeCell::MAX_OUT_OF_LINE_LEN`, `TreeCell::len_of` | `ids::tests::a_page_size_is_one_of_four_powers_of_two`. `a_cell_and_its_slot_are_smaller_than_half_of_what_cells_can_use`: the limits at each of the four sizes; what cells can use is even at three of them and odd at the largest, whose image stops at 65,535 bytes, so the rounding is checked both ways without a size that is not a power of two. `a_cell_is_smaller_than_half_a_page_whatever_its_key_and_value`: the largest cell with its value out of line fits three times in the smallest page; every key length from 0 to 255 fits; a value one byte above the longest inline value is refused and fits out of line. `a_cell_too_large_for_a_smaller_page_size_is_refused_on_reading`. A compile-time assertion ties the smallest page to the largest out-of-line cell. |
 | Section 4 | `TreePage::decode`, `TreePage::check`, `TreeCell::decode`, `TreePageError` | Each step is rejected with its error, and in order (`each_check_of_the_header_has_its_error`, `each_check_of_the_slots_has_its_error`, `each_check_of_a_cell_has_its_error`, `the_checks_run_in_their_documented_order`, `each_check_of_a_page_in_a_buffer_has_its_error`); every shorter input; zero-filled bytes; a page longer than its store's pages. |
 | B10 | every reader | `arbitrary_bytes_are_an_error_or_a_page_and_never_a_panic`: 60,000 byte strings, a third arbitrary, a third arbitrary behind a header that passes and with slots that share an offset, a third valid images with bytes changed, through every accessor. `a_page_whose_slots_share_a_cell_is_written_out_within_a_page`. |
 | Section 5 | `TreePageMut` | `a_full_page_refuses_a_write_and_takes_it_once_there_is_room`, `the_directory_grows_past_the_cells_in_its_way`, `the_directory_grows_in_a_page_with_no_room_at_its_end`, `gathering_the_unused_bytes_gives_the_image`, `a_write_to_a_free_slot_or_a_missing_part_is_refused`, `a_page_is_opened_in_a_buffer_of_its_page_size`. In the random test every refused write is compared with what the model expects, and must leave every byte of the buffer as it was. `a_damaged_page_is_refused_where_the_damage_is_met` shows W5: a slot that leads nowhere is `InvalidSlot` to whatever touches it. |

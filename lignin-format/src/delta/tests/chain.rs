@@ -258,12 +258,7 @@ fn a_base_image_plus_any_delta_chain_is_the_consolidated_image() {
     for (seed, size, with_base, steps) in [
         (0xDE17A1, PageSize::MIN, true, 9_000),
         (0xDE17A2, PageSize::MIN, false, 9_000),
-        (
-            0xDE17A3,
-            PageSize::new(11_111).expect("in range"),
-            true,
-            6_000,
-        ),
+        (0xDE17A3, SIZES[1], true, 6_000),
         (0xDE17A4, PageSize::DEFAULT, false, 9_000),
         (0xDE17A5, PageSize::MAX, true, 9_000),
     ] {

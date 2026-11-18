@@ -12,7 +12,7 @@
 //!
 //! ```text
 //! offset  size  field of the body
-//!      0     4  page size in bytes, 8,192 to 65,536
+//!      0     4  page size in bytes: 8,192, 16,384, 32,768 or 65,536
 //!      4     4  last file id used for a log file, or 0
 //!      8     4  last file id used for a segment, or 0
 //!     12     4  last file id used for a value-log file, or 0
@@ -129,12 +129,9 @@ impl fmt::Display for ManifestError {
             Self::LengthMismatch { expected, found } => {
                 write!(f, "length is {found}, expected {expected}")
             }
-            Self::InvalidPageSize { found } => write!(
-                f,
-                "page size {found} is outside {} to {}",
-                PageSize::MIN.get(),
-                PageSize::MAX.get()
-            ),
+            Self::InvalidPageSize { found } => {
+                write!(f, "page size {found} is not 8192, 16384, 32768 or 65536")
+            }
             Self::UnknownFileState { code } => write!(f, "unknown file state code {code}"),
             Self::InvalidEntry => write!(f, "entry breaks a rule for its file kind or state"),
             Self::EntriesOutOfOrder => {
@@ -904,11 +901,7 @@ mod tests {
                 TableCheckpoint::new(file, 20 + rng.next_u64() % 9_000, covers).expect("valid")
             });
 
-            let page_size = match rng.next_u64() % 4 {
-                0 => PageSize::MIN,
-                1 => PageSize::MAX,
-                _ => PageSize::new(8_192 + (rng.next_u64() % 57_345) as usize).expect("valid"),
-            };
+            let page_size = PageSize::new(8_192 << (rng.next_u64() % 4)).expect("valid");
 
             let manifest =
                 Manifest::new(page_size, last, table, files.clone()).expect("valid manifest");
@@ -1114,8 +1107,27 @@ mod tests {
         };
         let mut unordered = ENTRIES;
         unordered.swap(0, 1);
-        let outside = [0, 1, 4_096, 8_191, 65_537, 131_072, 1 << 31, u32::MAX];
-        for found in outside {
+        let not_a_size = [
+            0,
+            1,
+            4_096,
+            8_191,
+            8_193,
+            11_111,
+            12_288,
+            16_383,
+            16_385,
+            24_576,
+            32_767,
+            32_769,
+            49_152,
+            65_535,
+            65_537,
+            131_072,
+            1 << 31,
+            u32::MAX,
+        ];
+        for found in not_a_size {
             let invalid = FormatError::Manifest(ManifestError::InvalidPageSize { found });
             assert_eq!(decode(found, &ENTRIES), Err(invalid));
             assert_eq!(decode(found, &unordered), Err(invalid));
@@ -1143,8 +1155,8 @@ mod tests {
             let no_ids = body_with(found, [0; 4], (0, 4116, 9000), &[(9, 9, 9, 0, 0)]);
             assert_eq!(Manifest::decode(&forge(&no_ids)), Err(invalid));
         }
-        for bytes in [8_192, 8_193, 11_111, 32_768, 65_535, 65_536] {
-            let page_size = PageSize::new(bytes).expect("in range");
+        for bytes in [8_192, 16_384, 32_768, 65_536] {
+            let page_size = PageSize::new(bytes).expect("one of the four");
             let manifest = decode(bytes as u32, &ENTRIES).expect("valid manifest");
             assert_eq!(manifest.page_size(), page_size);
             let same = Manifest::new(
@@ -1188,7 +1200,7 @@ mod tests {
         }
         assert_eq!(
             messages[3],
-            "manifest: page size 4096 is outside 8192 to 65536"
+            "manifest: page size 4096 is not 8192, 16384, 32768 or 65536"
         );
     }
 
@@ -1328,7 +1340,9 @@ mod tests {
                 0 => 8_191,
                 1 => 65_537,
                 2 => rng.next_u64() as u32,
-                _ => 8_192 + (rng.next_u64() % 57_345) as u32,
+                3 => 8_192 + (rng.next_u64() % 57_345) as u32,
+                4 => 1 << (rng.next_u64() % 32),
+                _ => 8_192 << (rng.next_u64() % 4),
             };
             let mut body = body_with(page_size, last, table, &entries);
             if rng.next_u64().is_multiple_of(10) {

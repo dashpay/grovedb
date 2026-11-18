@@ -15,7 +15,15 @@ mod writing;
 use model::{ModelCell, ModelLink, ModelPage, ModelValue, Rng};
 
 pub(crate) const V1: FormatVersion = FormatVersion::V1;
-pub(crate) const SIZES: [PageSize; 3] = [PageSize::MIN, PageSize::DEFAULT, PageSize::MAX];
+pub(crate) const SIZES: [PageSize; 4] = [
+    PageSize::MIN,
+    match PageSize::new(16_384) {
+        Ok(size) => size,
+        Err(_) => panic!("a page size"),
+    },
+    PageSize::DEFAULT,
+    PageSize::MAX,
+];
 
 pub(crate) fn page_id(raw: u32) -> PageId {
     PageId::new(raw).expect("non-zero")
@@ -204,45 +212,33 @@ fn sizes_are_the_documented_ones() {
     );
 }
 
+/// What cells can use is an even number of bytes at three of the sizes and
+/// an odd one at the largest, whose image stops at 65,535 bytes, so the
+/// rounding of "smaller than half" is checked both ways.
 #[test]
-fn a_page_size_is_8_to_64_kib() {
-    assert_eq!(PageSize::MIN.get(), 8_192);
-    assert_eq!(PageSize::DEFAULT.get(), 32_768);
-    assert_eq!(PageSize::MAX.get(), 65_536);
-    assert_eq!(PageSize::default(), PageSize::DEFAULT);
-    for bytes in [0, 1, 4_096, 8_191, 65_537, usize::MAX] {
-        assert_eq!(
-            PageSize::new(bytes),
-            Err(TreePageError::PageSizeOutOfRange { page_size: bytes }.into())
-        );
-    }
-    for bytes in [8_192, 8_193, 10_000, 32_768, 65_535, 65_536] {
-        let size = PageSize::new(bytes).expect("in range");
-        assert_eq!(size.get(), bytes);
-        assert_eq!(size.image_capacity(), bytes.min(65_535));
-        assert_eq!(size.cell_capacity(), bytes.min(65_535) - 22);
-        // The longest cell is the longest that, with its slot, is smaller
-        // than half of what cells can use.
-        let max = size.max_cell_len();
-        assert!(2 * (max + TreePage::SLOT_LEN) < size.cell_capacity());
-        assert!(2 * (max + 1 + TreePage::SLOT_LEN) >= size.cell_capacity());
+fn a_cell_and_its_slot_are_smaller_than_half_of_what_cells_can_use() {
+    for (size, capacity, max) in [
+        (SIZES[0], 8_170, 4_082),
+        (SIZES[1], 16_362, 8_178),
+        (SIZES[2], 32_746, 16_370),
+        (SIZES[3], 65_513, 32_754),
+    ] {
+        assert_eq!(size.cell_capacity(), capacity);
+        assert_eq!(size.cell_capacity(), size.image_capacity() - 22);
+        assert_eq!(size.max_cell_len(), max);
+        assert!(2 * (max + TreePage::SLOT_LEN) < capacity);
+        assert!(2 * (max + 1 + TreePage::SLOT_LEN) >= capacity);
         assert_eq!(size.max_inline_value_len(100), max - 100);
         assert_eq!(size.max_inline_value_len(max), 0);
         assert_eq!(size.max_inline_value_len(max + 1), 0);
     }
-    assert_eq!(PageSize::DEFAULT.max_cell_len(), 16_370);
-    assert_eq!(PageSize::MIN.max_cell_len(), 4_082);
-    assert!(PageSize::MIN < PageSize::DEFAULT);
+    assert_eq!(SIZES.map(|size| size.cell_capacity() % 2), [0, 0, 0, 1]);
 }
 
 #[test]
 fn every_error_has_its_message() {
     let slot = slot(4);
-    let cases: [(TreePageError, &str); 27] = [
-        (
-            TreePageError::PageSizeOutOfRange { page_size: 512 },
-            "page size 512 is outside 8192 to 65536",
-        ),
+    let cases: [(TreePageError, &str); 26] = [
         (
             TreePageError::BufferTooSmall {
                 len: 10,

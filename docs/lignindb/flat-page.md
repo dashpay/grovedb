@@ -343,9 +343,9 @@ owner can overrule one before TREE-07 and FMT-05 build on it.
 6. **Offsets are 16 bits, so an image is at most 65,535 bytes** (P10). The
    page size itself is not fixed here: the builders take it as a parameter,
    and any value up to 65,535 that has room for the header and the prefix
-   works. FMT-02 set the page size for tree pages (8 KiB to 64 KiB, 32 KiB
-   unless the store is told otherwise), flat pages share it, and the
-   manifest records it (P10).
+   works. FMT-02 set the page size for tree pages (8, 16, 32 or 64 KiB, 32 KiB
+   unless the store is told otherwise; 3.5 of `format.md`), flat pages share
+   it, and the manifest records it (P10).
 7. **Slot numbers in a flat page are positions** (P13), so no `SlotId` type
    was needed and none was added to `lignin-format::ids`. The positions fit in
    16 bits, as the owner decided for slots. A back pointer from the value log

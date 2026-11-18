@@ -64,6 +64,11 @@ pub enum FormatError {
     /// The bytes are not a valid value-log encoding, or a value cannot be
     /// encoded.
     ValueLog(crate::value_log::ValueLogError),
+    /// A page size that is not 8,192, 16,384, 32,768 or 65,536 bytes.
+    InvalidPageSize {
+        /// The page size asked for, in bytes.
+        page_size: usize,
+    },
     /// A field that must hold an identifier holds the "none" pattern.
     MissingId,
     /// A reserved field or bit is not zero.
@@ -107,6 +112,10 @@ impl fmt::Display for FormatError {
             Self::Table(error) => write!(f, "page-table checkpoint: {error}"),
             Self::TreePage(error) => write!(f, "tree page: {error}"),
             Self::ValueLog(error) => write!(f, "value log: {error}"),
+            Self::InvalidPageSize { page_size } => write!(
+                f,
+                "page size {page_size} is not 8192, 16384, 32768 or 65536"
+            ),
             Self::MissingId => write!(f, "identifier field holds no identifier"),
             Self::NonZeroReserved => write!(f, "reserved field is not zero"),
             Self::UnknownRecordKind { code } => write!(f, "unknown record kind code {code}"),

@@ -282,7 +282,7 @@ fn random_changes_keep_every_cell_under_its_slot() {
     for (seed, size, steps, check_every) in [
         (0x7EE1, PageSize::MIN, 12_000, 1),
         (0x7EE2, PageSize::MIN, 12_000, 1),
-        (0x7EE3, PageSize::new(11_111).expect("in range"), 6_000, 3),
+        (0x7EE3, SIZES[1], 6_000, 3),
         (0x7EE4, PageSize::DEFAULT, 9_000, 7),
         (0x7EE5, PageSize::MAX, 9_000, 11),
     ] {
@@ -324,7 +324,7 @@ fn differing(before: &[u8], after: &[u8]) -> Vec<usize> {
 
 #[test]
 fn any_stored_hash_can_be_read_or_overwritten_without_touching_the_value_bytes() {
-    for (seed, size) in [0x4A51, 0x4A52, 0x4A53].into_iter().zip(SIZES) {
+    for (seed, size) in [0x4A51, 0x4A54, 0x4A52, 0x4A53].into_iter().zip(SIZES) {
         let mut harness = full_page(seed, size);
         let slots: Vec<u16> = harness.model.cells.keys().copied().collect();
         let (mut overwritten, mut absent) = (0, 0);
@@ -528,10 +528,7 @@ fn a_change_of_the_same_size_is_made_where_the_cell_is() {
 
 #[test]
 fn a_cell_is_smaller_than_half_a_page_whatever_its_key_and_value() {
-    for size in SIZES
-        .into_iter()
-        .chain([PageSize::new(8_193).expect("in range")])
-    {
+    for size in SIZES {
         let max = size.max_cell_len();
 
         // The largest cell there is with its value out of line: the longest
