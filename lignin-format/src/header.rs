@@ -300,9 +300,15 @@ pub fn write_record(payload: &[u8], out: &mut Vec<u8>) -> Result<(), FormatError
 /// Returns its verified payload and the bytes after the record.
 pub fn read_record(bytes: &[u8], max_payload_len: usize) -> Result<(&[u8], &[u8]), FormatError> {
     let header = RecordHeader::decode(bytes, max_payload_len)?;
-    let following = &bytes[RecordHeader::ENCODED_LEN..];
-    let payload = header.verified_payload(following)?;
-    Ok((payload, &following[payload.len()..]))
+    let record_len = RecordHeader::ENCODED_LEN + header.payload_len();
+    let (record, rest) = bytes
+        .split_at_checked(record_len)
+        .ok_or(FormatError::Truncated {
+            needed: record_len,
+            available: bytes.len(),
+        })?;
+    let payload = header.verified_payload(&record[RecordHeader::ENCODED_LEN..])?;
+    Ok((payload, rest))
 }
 
 fn checked_payload_len(len: u64, max: usize) -> Result<u32, FormatError> {
@@ -485,6 +491,89 @@ mod tests {
     }
 
     #[test]
+    fn file_header_decodes_only_bytes_it_would_encode() {
+        let mut rng = SplitMix64::new(0xDEC1);
+        let (mut accepted, mut rejected) = (0, 0);
+        for _ in 0..20_000 {
+            let code = (rng.next_u64() % 8) as u16;
+            let version = (rng.next_u64() % 4) as u16;
+            let sequence = match rng.next_u64() % 4 {
+                0 => 0,
+                _ => rng.next_u64() as u32,
+            };
+            let mut bytes = [0; FileHeader::ENCODED_LEN];
+            bytes[..8].copy_from_slice(&FileHeader::MAGIC);
+            bytes[8..10].copy_from_slice(&code.to_le_bytes());
+            bytes[10..12].copy_from_slice(&version.to_le_bytes());
+            bytes[12..16].copy_from_slice(&sequence.to_le_bytes());
+            let bytes = with_checksum(bytes);
+
+            let valid = version == 1 && (code == 1 || ((2..=5).contains(&code) && sequence != 0));
+            match FileHeader::decode(&bytes) {
+                Ok(header) => {
+                    assert!(valid);
+                    assert_eq!(header.encode(), bytes);
+                    accepted += 1;
+                }
+                Err(_) => {
+                    assert!(!valid);
+                    rejected += 1;
+                }
+            }
+        }
+        assert!(accepted > 1_000 && rejected > 1_000);
+    }
+
+    #[test]
+    fn file_header_checks_run_in_the_specified_order() {
+        assert_eq!(
+            FileHeader::decode(&[0; 19]),
+            Err(FormatError::Truncated {
+                needed: 20,
+                available: 19,
+            })
+        );
+
+        let mut bytes = sample_header().encode();
+        bytes[0] ^= 1;
+        bytes[10..12].copy_from_slice(&2u16.to_le_bytes());
+        assert_eq!(FileHeader::decode(&bytes), Err(FormatError::BadMagic));
+
+        let mut bytes = sample_header().encode();
+        bytes[10..12].copy_from_slice(&2u16.to_le_bytes());
+        assert!(matches!(
+            FileHeader::decode(&bytes),
+            Err(FormatError::ChecksumMismatch { .. })
+        ));
+
+        let mut bytes = sample_header().encode();
+        bytes[8..10].copy_from_slice(&900u16.to_le_bytes());
+        bytes[10..12].copy_from_slice(&2u16.to_le_bytes());
+        bytes[12..16].copy_from_slice(&[0; 4]);
+        assert_eq!(
+            FileHeader::decode(&with_checksum(bytes)),
+            Err(FormatError::UnsupportedFormatVersion { found: 2 })
+        );
+
+        let mut bytes = sample_header().encode();
+        bytes[8..10].copy_from_slice(&900u16.to_le_bytes());
+        bytes[12..16].copy_from_slice(&[0; 4]);
+        assert_eq!(
+            FileHeader::decode(&with_checksum(bytes)),
+            Err(FormatError::UnknownFileKind { code: 900 })
+        );
+
+        let mut bytes = sample_header().encode();
+        bytes[12..16].copy_from_slice(&[0; 4]);
+        assert_eq!(
+            FileHeader::decode(&with_checksum(bytes)),
+            Err(FormatError::InvalidFileSequence {
+                kind: FileKind::Segment
+            })
+        );
+    }
+
+    #[test]
     fn file_header_rejects_every_single_bit_flip() {
         for kind in FileKind::ALL {
             let bytes = FileHeader::new(kind, FormatVersion::V1, 7)
@@ -524,17 +613,6 @@ mod tests {
                 Err(FormatError::UnsupportedFormatVersion { found })
             );
         }
-    }
-
-    #[test]
-    fn file_header_reports_the_version_before_the_kind() {
-        let mut bytes = sample_header().encode();
-        bytes[8..10].copy_from_slice(&900u16.to_le_bytes());
-        bytes[10..12].copy_from_slice(&2u16.to_le_bytes());
-        assert_eq!(
-            FileHeader::decode(&with_checksum(bytes)),
-            Err(FormatError::UnsupportedFormatVersion { found: 2 })
-        );
     }
 
     #[test]
@@ -627,23 +705,26 @@ mod tests {
         let mut record = Vec::new();
         write_record(b"twelve bytes", &mut record).expect("fits");
         for available in 0..record.len() {
-            let expected = if available < 8 {
-                FormatError::Truncated {
-                    needed: 8,
-                    available,
-                }
-            } else {
-                FormatError::Truncated {
-                    needed: 12,
-                    available: available - 8,
-                }
-            };
-            assert_eq!(read_record(&record[..available], 12), Err(expected));
+            let needed = if available < 8 { 8 } else { 20 };
+            assert_eq!(
+                read_record(&record[..available], 12),
+                Err(FormatError::Truncated { needed, available })
+            );
         }
+
+        let header = RecordHeader::decode(&record, 12).expect("valid header");
+        assert_eq!(
+            header.verified_payload(&record[8..19]),
+            Err(FormatError::Truncated {
+                needed: 12,
+                available: 11,
+            })
+        );
     }
 
     #[test]
     fn record_rejects_every_single_bit_flip() {
+        const MAX: usize = 1 << 20;
         let mut rng = SplitMix64::new(0xB17);
         for len in [0, 1, 40, 300] {
             let mut record = Vec::new();
@@ -651,23 +732,69 @@ mod tests {
             for bit in 0..record.len() * 8 {
                 let mut damaged = record.clone();
                 damaged[bit / 8] ^= 1 << (bit % 8);
-                let error = read_record(&damaged, 1 << 20).expect_err("damaged record");
-                assert!(
-                    matches!(
+                let error = read_record(&damaged, MAX).expect_err("damaged record");
+
+                let damaged_len = if bit < 32 { len ^ (1 << bit) } else { len };
+                if damaged_len > MAX {
+                    assert_eq!(
                         error,
-                        FormatError::ChecksumMismatch { .. }
-                            | FormatError::Truncated { .. }
-                            | FormatError::RecordTooLong { .. }
-                    ),
-                    "bit {bit}: {error}"
-                );
+                        FormatError::RecordTooLong {
+                            len: damaged_len as u64,
+                            max: MAX as u64,
+                        }
+                    );
+                } else if damaged_len > len {
+                    assert_eq!(
+                        error,
+                        FormatError::Truncated {
+                            needed: 8 + damaged_len,
+                            available: record.len(),
+                        }
+                    );
+                } else {
+                    assert!(
+                        matches!(error, FormatError::ChecksumMismatch { .. }),
+                        "bit {bit}: {error}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn record_header_decodes_only_bytes_it_would_encode() {
+        let mut rng = SplitMix64::new(0xDEC0);
+        for _ in 0..20_000 {
+            let mut bytes = rng.next_u64().to_le_bytes();
+            if rng.next_u64().is_multiple_of(2) {
+                bytes[2..4].fill(0);
+            }
+            let len = u32::from_le_bytes(array(&bytes[..4])) as usize;
+            let max = (rng.next_u64() % (1 << 17)) as usize;
+            match RecordHeader::decode(&bytes, max) {
+                Ok(header) => {
+                    assert!(len <= max);
+                    assert_eq!(header.payload_len(), len);
+                    assert_eq!(header.checksum().encode(), bytes[4..]);
+                    assert_eq!(header.encode(), bytes);
+                }
+                Err(error) => {
+                    assert!(len > max);
+                    assert_eq!(
+                        error,
+                        FormatError::RecordTooLong {
+                            len: len as u64,
+                            max: max as u64,
+                        }
+                    );
+                }
             }
         }
     }
 
     #[test]
     fn record_rejects_zero_filled_bytes() {
-        for len in 8..200 {
+        for len in (8..200).chain([4096, 1 << 20, 1 << 24]) {
             assert!(matches!(
                 read_record(&vec![0; len], 1 << 20),
                 Err(FormatError::ChecksumMismatch { .. })

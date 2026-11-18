@@ -7,17 +7,13 @@ use crate::error::FormatError;
 /// The most bytes one checksum may cover.
 ///
 /// CRC32C detects every error of up to three bits only while the covered
-/// bytes stay below about 256 MiB. Formats split anything larger into several
-/// records.
+/// bytes and the checksum together stay below `2^31 - 1` bits (256 MiB).
+/// Formats split anything larger into several records.
 pub const MAX_CHECKSUMMED_LEN: usize = 1 << 27;
 
 const MASK_DELTA: u32 = 0xA282_EAD8;
 
-/// CRC-32C (Castagnoli) of the concatenation of `parts`, unmasked.
-///
-/// This is the standard function: `crc32c(&[b"123456789"])` is `0xE3069283`.
-/// Stored checksums use [`Checksum`], which masks this value.
-pub fn crc32c(parts: &[&[u8]]) -> u32 {
+fn crc32c(parts: &[&[u8]]) -> u32 {
     parts
         .iter()
         .fold(0, |crc, part| ::crc32c::crc32c_append(crc, part))
@@ -170,14 +166,64 @@ mod tests {
 
     #[test]
     fn zero_filled_bytes_never_carry_a_zero_checksum() {
-        let zeros = vec![0u8; 1 << 16];
-        let mut crc = 0;
-        assert_ne!(mask(crc), 0);
-        for len in 1..=zeros.len() {
-            crc = ::crc32c::crc32c_append(crc, &zeros[len - 1..len]);
-            assert_ne!(mask(crc), 0, "{len} zero bytes");
+        let mut table = [0u32; 256];
+        for (byte, entry) in (0u32..).zip(table.iter_mut()) {
+            *entry = (0..8).fold(byte, |crc, _| {
+                (crc >> 1) ^ (0x82F6_3B78 & 0u32.wrapping_sub(crc & 1))
+            });
         }
-        assert_eq!(crc, crc32c(&[&zeros]));
+        let zeros = vec![0u8; MAX_CHECKSUMMED_LEN];
+        let crc_that_masks_to_zero = unmask(0);
+        let mut register = u32::MAX;
+        for len in 0..=MAX_CHECKSUMMED_LEN {
+            let crc = !register;
+            assert_ne!(crc, crc_that_masks_to_zero, "{len} zero bytes");
+            if len.is_power_of_two() || len == 0 || len == 65_535 {
+                assert_eq!(crc, crc32c(&[&zeros[..len]]), "{len} zero bytes");
+                assert_ne!(Checksum::of(&[&zeros[..len]]).get(), 0);
+            }
+            register = table[(register & 0xFF) as usize] ^ (register >> 8);
+        }
+    }
+
+    #[test]
+    fn the_length_limit_stays_inside_the_range_where_three_bit_errors_are_caught() {
+        const POLYNOMIAL: u64 = 0x1_1EDC_6F41;
+        const PERIOD: u64 = (1 << 31) - 1;
+
+        fn multiply(mut a: u64, mut b: u64) -> u64 {
+            let mut product = 0;
+            while b != 0 {
+                if b & 1 == 1 {
+                    product ^= a;
+                }
+                b >>= 1;
+                a <<= 1;
+                if a >> 32 == 1 {
+                    a ^= POLYNOMIAL;
+                }
+            }
+            product
+        }
+        fn x_to_the(mut exponent: u64) -> u64 {
+            let (mut power, mut square) = (1, 2);
+            while exponent != 0 {
+                if exponent & 1 == 1 {
+                    power = multiply(power, square);
+                }
+                square = multiply(square, square);
+                exponent >>= 1;
+            }
+            power
+        }
+
+        assert_eq!(POLYNOMIAL.count_ones() % 2, 0);
+        assert_eq!(x_to_the(PERIOD), 1);
+        assert_ne!(x_to_the(1), 1);
+        assert!((2..46_341).all(|divisor| !PERIOD.is_multiple_of(divisor)));
+
+        let codeword_bits = (MAX_CHECKSUMMED_LEN as u64 + Checksum::ENCODED_LEN as u64) * 8;
+        assert!(codeword_bits <= PERIOD);
     }
 
     #[test]

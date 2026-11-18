@@ -9,7 +9,8 @@ use crate::header::FileKind;
 /// Decoders never panic on untrusted bytes. They return one of these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormatError {
-    /// Fewer bytes are available than the encoding needs.
+    /// Fewer bytes are available than the encoding needs. Both counts start
+    /// at the first byte the decoder was given.
     Truncated {
         /// Bytes the encoding needs.
         needed: usize,
@@ -47,6 +48,16 @@ pub enum FormatError {
         /// The largest length allowed.
         max: u64,
     },
+    /// A field that must hold an identifier holds the "none" pattern.
+    MissingId,
+    /// A reserved field or bit is not zero.
+    NonZeroReserved,
+    /// The record kind code is zero or not defined in the file's format
+    /// version.
+    UnknownRecordKind {
+        /// The code found in the record.
+        code: u32,
+    },
 }
 
 impl fmt::Display for FormatError {
@@ -73,6 +84,9 @@ impl fmt::Display for FormatError {
                     "record payload of {len} bytes exceeds the maximum of {max}"
                 )
             }
+            Self::MissingId => write!(f, "identifier field holds no identifier"),
+            Self::NonZeroReserved => write!(f, "reserved field is not zero"),
+            Self::UnknownRecordKind { code } => write!(f, "unknown record kind code {code}"),
         }
     }
 }

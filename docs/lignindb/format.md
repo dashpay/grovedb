@@ -58,15 +58,17 @@ file offset is a `u64`. Bit 0 of a flags field is its least significant bit.
 **B5. Byte strings.** Hashes, keys, values and the magic are raw bytes in
 their own order. They are never treated as integers.
 
-**B6. Zero is never valid.** In every enumeration (file kind, record kind,
-format version) the code 0 is invalid. Page ids and file ids start at 1.
-Together with the checksum rule (C4), this means a zero-filled region never
-decodes as anything.
+**B6. Zero is never a valid code or id.** In every enumeration (file kind,
+record kind, format version) the code 0 is invalid, and page ids and file ids
+start at 1. The one number for which zero is valid is the commit version: 0 is
+the empty database (3.2). Zero-filled bytes are kept from decoding as a record
+by the checksum rule (C4), not by this one.
 
 **B7. Reserved means zero, and is checked.** A reserved field or bit is
 written as zero. A reader rejects a non-zero value: the format version says
-exactly what every byte means, so a non-zero reserved byte is damage. Giving a
-reserved field a meaning is a format change (U6).
+exactly what every byte means, so a non-zero reserved byte is damage
+(`NonZeroReserved`). Giving a reserved field a meaning is a format change
+(U6).
 
 **B8. One encoding per value.** Every value has exactly one valid byte string,
 and a decoder rejects every other one. So decoding what was encoded gives the
@@ -97,8 +99,9 @@ later record or in the manifest, which is replaced as a whole file (STORE-02).
 | Commit version | `CommitVersion` | `u64`, 8 bytes | 0 to 2^64 − 2 | 2^64 − 1: no version |
 | File id | `FileId` | `u32`, 4 bytes | 1 to 2^32 − 1 | 0: no file |
 
-A field that must hold an identifier rejects the reserved pattern. A field
-that may be empty stores the reserved pattern for "none". Each type has
+A field that must hold an identifier rejects the reserved pattern
+(`MissingId`). A field that may be empty stores the reserved pattern for
+"none". Each type has
 `encode`, `encode_optional` and `decode` for this; `decode` returns `None` for
 the reserved pattern and the format decides whether `None` is allowed there.
 
@@ -172,8 +175,10 @@ A file id is the number in a numbered file's name: `seg/00000310.seg` is file
   is used for at most one file of a kind, ever. A file that is deleted leaves
   its number unused.
 - **In the name and in the header.** The name is the number in decimal, padded
-  with zeros to at least eight digits. The file header repeats it (section 6),
-  so a renamed or misplaced file is detected.
+  with leading zeros to eight digits. A number above 99,999,999 is written in
+  full, with no padding. No other spelling names the file: `000000310.seg` is
+  not file 310. The file header repeats the number (section 6), so a renamed
+  or misplaced file is detected.
 - **The manifest has none.** `MANIFEST` is the one unnumbered file.
 
 A pointer to a place in a file is a file id plus a `u64` offset, with a length
@@ -210,17 +215,20 @@ bytes before the checksum field, then the bytes after it. That includes the
 length and kind fields. A checksum that left the length out would accept a
 zero length followed by a zero checksum.
 
-**C4. Zero-filled bytes never verify.** Every record has at least one covered
-byte, and the masked checksum of *n* zero bytes is not zero for any *n* from 0
-to 65,536 (tested). So a region that was preallocated or lost and reads back
-as zeros is never taken for a record.
+**C4. Zero-filled bytes never verify.** The masked checksum of *n* zero bytes
+is not zero for any *n* from 0 to 2^27, which is every length a checksum may
+cover (C5). The test checks each of them. The shortest run of zeros whose
+masked checksum is zero is 770,515,611 bytes long. So a region that was
+preallocated or lost and reads back as zeros is never taken for a record.
 
 **C5. One checksum covers at most 2^27 bytes (128 MiB)**
-(`MAX_CHECKSUMMED_LEN`). CRC-32C detects every error of up to three bits only
-while the covered bytes stay below about 256 MiB; beyond that, two flipped
-bits can cancel. Anything larger is split into several records. This is a
-limit on formats, not on values: a value larger than 128 MiB is stored as
-several records.
+(`MAX_CHECKSUMMED_LEN`). CRC-32C detects every error of one, two or three bits
+only while the covered bytes and the checksum together are at most 2^31 − 1
+bits, which is just under 256 MiB. Two flipped bits exactly 2^31 − 1 bits
+apart cancel, because *x*^(2^31 − 1) is 1 modulo the polynomial; a test
+checks that, and that no smaller power is. The limit is set at half of that.
+Anything larger is split into several records. This is a limit on formats,
+not on values: a value larger than 128 MiB is stored as several records.
 
 **C6. It is for accidents, not attacks.** The checksum detects torn writes,
 bit rot and misdirected reads. It is not a keyed hash, and someone who can
@@ -234,14 +242,20 @@ record ends, which it bound-checks first (B10).
 ### Implementation
 
 `lignin-format` uses the crate [`crc32c`](https://crates.io/crates/crc32c)
-(0.6.9, MIT or Apache-2.0) for C1. It is the crate's only dependency.
+(0.6.9, MIT or Apache-2.0) for C1. It is the crate's only dependency. At build
+time `crc32c` itself uses `rustc_version` and, through it, `semver`.
 
 - It is pure Rust, as DEC-07 requires: no C code and no bindings. Its build
-  script only generates lookup tables.
+  script generates lookup tables and reads the compiler version, to decide
+  whether the aarch64 path can be compiled (it can from Rust 1.80, and this
+  workspace needs a newer compiler than that).
 - It uses the CPU's CRC instruction where there is one (SSE 4.2 on x86_64, the
   CRC extension on aarch64), detected at run time, and a table-driven fallback
   elsewhere. That covers the three targets of DEC-06. On the development
   machine (Zen 5) it checks an 8 KiB page in about 0.25 µs.
+- The tests run whichever path the test machine selects. On the x86_64
+  development machine that is the SSE 4.2 path. The aarch64 path and the
+  fallback are checked only when the same tests run on such a machine.
 - `lignin-format` forbids `unsafe`, and the CPU instruction can only be
   reached through `unsafe`. So a fast checksum has to come from a dependency
   or be given up. The checksum is on the path of every page read and every
@@ -271,8 +285,8 @@ more than C5 allows.
 **R5. It lies in one file.** A record never spans files, and every record in a
 file has that file's format version. Records carry no version of their own.
 
-**R6. A record kind code is never 0, and an unknown code is an error.** A
-reader never skips what it does not understand.
+**R6. A record kind code is never 0, and an unknown code is an error**
+(`UnknownRecordKind`). A reader never skips what it does not understand.
 
 **R7. A reader reports; it does not repair.** A record that fails a check
 gives a typed error. Whether that ends a log scan, rejects a page or refuses
@@ -304,6 +318,10 @@ them.
   `RecordHeader::verified_payload` checks the payload. `read_record` does both
   on a byte string and returns what follows the record; `write_record` appends
   a framed record.
+- When too few bytes are available, `Truncated` says how many bytes the
+  decoder needed and how many it had, both counted from the first byte it was
+  given. For `read_record` that is the start of the record, so `needed` is
+  the whole record's length.
 
 Use the default frame unless a record has a tighter byte budget. Two already
 do: FMT-03's hash-only delta (48 bytes in total) and FMT-06's block (8 bytes
@@ -332,10 +350,12 @@ Every file except `LOCK` starts with the same 20 bytes (`FileHeader`).
 | 12 | 4 | sequence, `u32` |
 | 16 | 4 | checksum (section 4) of bytes 0 to 15 |
 
-**H1. These 20 bytes have the same layout in every format version, forever.**
-A later version changes what follows the header, never the header. So any
-build can tell what any file is, and can tell a damaged header from a file
-that is merely newer than it understands.
+**H1. These 20 bytes are the same in every format version, forever.** That
+covers the layout, the magic, and the header's checksum: its function, its
+masking and the bytes it covers (sections 4 and 6 as written here). A later
+version changes what follows the header, never the header. So any build can
+tell what any file is, and can tell a damaged header from a file that is
+merely newer than it understands.
 
 **H2. File kinds.**
 
@@ -444,8 +464,13 @@ database format version as it was.
 **U6. Any change to bytes or their meaning is a new version.** That includes a
 new field, a new record kind or file kind, a new code in an enumeration, a
 changed meaning of an existing field, a use for a reserved field, and a change
-to what a checksum covers. There are no compatible minor changes, because a
-reader never skips what it does not know (R6, B7).
+to a record's checksum or to what it covers. There are no compatible minor
+changes, because a reader never skips what it does not know (R6, B7).
+
+The file header is the one thing a new version cannot change (H1). A version
+may change the checksum of every record after the header, but not the
+header's own. Otherwise an older build would report a newer file as damaged,
+when U2 requires it to report an unsupported version.
 
 **U7. There is no downgrade.** Once a newer build has opened a database for
 writing, older builds refuse it (U2). The way back is a checkpoint taken
@@ -518,7 +543,8 @@ owner can overrule one before formats are built on it.
    a cell address, which is a page id plus a slot, and FMT-07 is scheduled
    before FMT-02. Whoever comes first defines the slot width for both.
 8. **`crc32c` is a dependency** (section 4), in place of a slower checksum
-   written in safe Rust inside the crate.
+   written in safe Rust inside the crate. Its software fallback is not
+   exercised by the tests on the development machine.
 9. **Version 1 is not frozen until the first release** (U10).
 10. **The code is in four modules**, not only `ids`, which is the one module
     the register names: `ids` (identifiers), `checksum`, `header` (file
@@ -536,14 +562,14 @@ All of this is in `lignin-format`. Run the tests with
 | Rule | Code | Tests |
 | --- | --- | --- |
 | Identifiers (section 3) | `ids::{PageId, FileId, CommitVersion}` | Round trip in both directions over boundary and random values; the reserved pattern; byte order; ordering; `CommitVersion::next`. |
-| C1 | `checksum::crc32c` | RFC 3720 vectors; agreement with a bit-at-a-time reference on random input. |
+| C1 | `checksum::Checksum` (the CRC itself is private) | RFC 3720 vectors; agreement with a bit-at-a-time reference on random input. |
 | C2, C3 | `checksum::Checksum` | Masked vectors; round trip; the same checksum however the covered bytes are split; every single-bit flip rejected; the nesting test. |
-| C4 | `checksum::Checksum` | No zero checksum for 0 to 65,536 zero bytes; zero-filled bytes rejected as a file header and as a record. |
-| C5 | `checksum::MAX_CHECKSUMMED_LEN`, `RecordHeader::MAX_PAYLOAD_LEN` | The length bound at, above and far above the maximum. |
-| Default frame (5.1) | `header::{RecordHeader, read_record, write_record}` | Golden bytes; round trip of records one after another; every shorter input; every single-bit flip; the length checked before the payload. |
-| File header (section 6) | `header::{FileHeader, FileKind}` | Golden bytes for each kind; round trip in both directions; every shorter input; every single-bit flip; every unreadable version and every unknown kind with a valid checksum; the order of checks; sequence 0. |
+| C4 | `checksum::Checksum` | No zero checksum for any run of 0 to 2^27 zero bytes; zero-filled bytes rejected as a file header and as a record. |
+| C5 | `checksum::MAX_CHECKSUMMED_LEN`, `RecordHeader::MAX_PAYLOAD_LEN` | The polynomial's period is 2^31 − 1 bits and the limit lies inside it; the length bound at, above and far above the maximum. |
+| Default frame (5.1) | `header::{RecordHeader, read_record, write_record}` | Golden bytes; round trip of records one after another; random 8-byte headers decode only to what encodes back to them; every shorter input; every single-bit flip, with the error each one must give; the length checked before the payload. |
+| File header (section 6) | `header::{FileHeader, FileKind}` | Golden bytes for each kind; round trip from values, and from random headers with a valid checksum; every shorter input; every single-bit flip; every unreadable version and every unknown kind with a valid checksum; each step of the order of checks (H4); sequence 0. |
 | Format version (section 7) | `header::FormatVersion` | Every `u16` either round-trips or is rejected. |
-| B10 | `error::FormatError` | Every rejection above is asserted by its error variant. |
+| B10 | `error::FormatError` | Each rejection above is asserted by its error. `MissingId`, `NonZeroReserved` and `UnknownRecordKind` are defined here for the formats that need them and have no decoder yet. |
 
 The golden bytes and checksum vectors in the tests were computed with an
 independent bit-at-a-time CRC-32C, not with the crate under test.
