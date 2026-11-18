@@ -93,11 +93,13 @@
 
 use std::fmt;
 
+pub use crate::wal::LogPlace;
 use crate::{
     error::FormatError,
     header::{read_record, write_record, FileHeader, FileKind, FormatVersion, RecordHeader},
     ids::{CommitVersion, FileId, PageId},
     segment::{DATA_START, FRAME_LEN, MAX_BODY_LEN},
+    wal::{CHECKPOINT_MARK_LEN, FIRST_ITEM_OFFSET},
 };
 
 /// Why a byte string is not a page-table checkpoint, or why one cannot be
@@ -169,9 +171,9 @@ pub enum TableError {
         /// The count in the end record.
         found: u64,
     },
-    /// The place in the log is one no log record starts or ends at: an
-    /// offset inside the header of its log file, or an offset with no log
-    /// file.
+    /// The place in the log is not the end of a checkpoint mark: an offset
+    /// before the end of the first record a log file can hold behind its
+    /// start, past the largest offset, or with no log file.
     InvalidLogPlace,
 }
 
@@ -215,7 +217,12 @@ impl fmt::Display for TableError {
                     "end record counts {found} counts, the records hold {expected}"
                 )
             }
-            Self::InvalidLogPlace => write!(f, "the place in the log is not one a record has"),
+            Self::InvalidLogPlace => {
+                write!(
+                    f,
+                    "the place in the log is not one a checkpoint mark ends at"
+                )
+            }
         }
     }
 }
@@ -253,6 +260,10 @@ pub const MAX_RECORD_LEN: usize = RecordHeader::ENCODED_LEN + MAX_PAYLOAD_LEN;
 /// Bytes of the end record, its frame included: the last bytes of a
 /// checkpoint.
 pub const END_RECORD_LEN: usize = RecordHeader::ENCODED_LEN + KIND_LEN + END_BODY_LEN;
+
+/// The smallest offset the place of a sample has: the end of a checkpoint
+/// mark that is the first item of its log file.
+pub const FIRST_SAMPLE_OFFSET: u64 = FIRST_ITEM_OFFSET + CHECKPOINT_MARK_LEN as u64;
 
 const KIND_LEN: usize = 1;
 const END_BODY_LEN: usize = 44;
@@ -416,38 +427,16 @@ impl Link {
     }
 }
 
-/// A place in the log: the offset `offset` of the log file `file`, where one
-/// record ends and the next begins.
+/// The place in the log of a sample of the counts: the end of the
+/// checkpoint mark that was written when the sample was taken.
 ///
-/// Places are in the order of the log: by file, then by offset.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct LogPlace {
-    file: FileId,
-    offset: u64,
-}
-
-impl LogPlace {
-    /// The place at `offset` of the log file `file`.
-    ///
-    /// The offset is at or after the end of the file header, where the first
-    /// record of a file starts. Anything else is
-    /// [`TableError::InvalidLogPlace`].
-    pub const fn new(file: FileId, offset: u64) -> Result<Self, FormatError> {
-        if offset < FileHeader::ENCODED_LEN as u64 {
-            return Err(FormatError::Table(TableError::InvalidLogPlace));
-        }
-        Ok(Self { file, offset })
+/// A mark is a record of its log file, behind the file's first item at
+/// the earliest. An earlier offset is [`TableError::InvalidLogPlace`].
+fn sample_place(place: LogPlace) -> Result<LogPlace, FormatError> {
+    if place.offset() < FIRST_SAMPLE_OFFSET {
+        return Err(FormatError::Table(TableError::InvalidLogPlace));
     }
-
-    /// The log file.
-    pub const fn file(&self) -> FileId {
-        self.file
-    }
-
-    /// The offset in the log file.
-    pub const fn offset(&self) -> u64 {
-        self.offset
-    }
+    Ok(place)
 }
 
 /// The live values of one value-log file, in a sample of the counts.
@@ -506,9 +495,11 @@ pub struct End {
     pub reaches: Option<CommitVersion>,
     /// The number of links in the checkpoint.
     pub links: u64,
-    /// The place in the log of the sample of the counts: the counts include
-    /// every change whose record is before it and none whose record is after
-    /// it. `None` is the place before every record of the log.
+    /// The place in the log of the sample of the counts: the end of the
+    /// checkpoint mark that was written when the sample was taken. The
+    /// counts include every change whose record is before it and none whose
+    /// record is after it. `None` is the place before every record of the
+    /// log.
     pub place: Option<LogPlace>,
     /// The number of counts in the checkpoint.
     pub value_counts: u64,
@@ -521,9 +512,9 @@ impl End {
         payload[1..9].copy_from_slice(&self.covers.encode());
         payload[9..17].copy_from_slice(&CommitVersion::encode_optional(self.reaches));
         payload[17..25].copy_from_slice(&self.links.to_le_bytes());
-        let file = self.place.map(|place| place.file);
+        let file = self.place.map(|place| place.file());
         payload[25..29].copy_from_slice(&FileId::encode_optional(file));
-        let offset = self.place.map_or(0, |place| place.offset);
+        let offset = self.place.map_or(0, |place| place.offset());
         payload[29..37].copy_from_slice(&offset.to_le_bytes());
         payload[37..].copy_from_slice(&self.value_counts.to_le_bytes());
         payload
@@ -538,7 +529,9 @@ impl End {
         };
         let offset = u64::from_le_bytes(array(&body[28..36]));
         let place = match FileId::decode(array(&body[24..28]))? {
-            Some(file) => Some(LogPlace::new(file, offset)?),
+            Some(file) => Some(sample_place(
+                LogPlace::new(file, offset).map_err(|_| TableError::InvalidLogPlace)?,
+            )?),
             None if offset == 0 => None,
             None => return Err(FormatError::Table(TableError::InvalidLogPlace)),
         };
@@ -739,6 +732,7 @@ impl Encoder {
         place: Option<LogPlace>,
         out: &mut Vec<u8>,
     ) -> Result<End, FormatError> {
+        let place = place.map(sample_place).transpose()?;
         if self.payload.len() > KIND_LEN {
             self.flush(out)?;
         }

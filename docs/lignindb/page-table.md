@@ -328,12 +328,19 @@ counts in the counts records (`TableError::ValueCountMismatch`).
 
 **P13. Nothing follows the end record** (`TableError::LengthMismatch`).
 
-**P18. The place is a place in the log, or none**
+**P18. The place is the end of a checkpoint mark in the log, or none**
 (`TableError::InvalidLogPlace`). A place is a log file and an offset in it
-at or after 20, where the first record of a log file starts: the boundary
-between two records, or the end of the file. "None" is file id 0 with
-offset 0, and stands for the place before every record of the log. Places
-are in the order of the log: by file id, then by offset.
+(`lignin_format::wal::LogPlace`, LG6 of [log-format.md](log-format.md)).
+Whoever takes a sample writes a checkpoint mark into the log as it takes
+it, and the place of the sample is the end of that mark (LG29). So the
+offset is at or after 62, the end of a mark that is the first item of its
+log file (`FIRST_SAMPLE_OFFSET`), and at most 2^63 − 1. "None" is file id 0
+with offset 0, and stands for the place before every record of the log.
+Places are in the order of the log: by file id, then by offset.
+
+The format checks the offset. That the item which ends at the place is a
+mark, and one that covers what the checkpoint covers, is checked against
+the log by whoever recovers (STORE-07).
 
 ### 3.6 Order of checks
 
@@ -552,7 +559,11 @@ after the sample's place. Replay skips that change for the page (K3) and
 still applies it to the counts: what the counts include is decided by the
 place alone. So a recovery reads the log from two points, the group of
 *C* + 1 for the pages and the place for the counts, and needs it from the
-earlier one on.
+earlier one on. A background change has no version, so K3 does not tell
+whether a page has it: from the place on, replay takes every background
+change for its page too, by the rule of [`log-format.md`](log-format.md),
+LG28, wherever the group of *C* + 1 stands. What the writer of a
+checkpoint owes the log for that is LG29 of the same document.
 
 **K14. A checkpoint is named only once the log is durable up to the place
 of its sample.** Whoever installs the checkpoint says how far the log is
@@ -767,15 +778,16 @@ STORE-10 build on it.
     it uses. The entry is defined in `lignin-format::table`, which knows
     nothing of `lignin-store`: `ValueCount` has the fields of the value
     log's `FileCount`, and whoever passes a sample converts.
-20. **A place in the log is a log file id and an offset** (P18). No task
-    has defined one yet: FMT-05 owns the log's records and STORE-01 the
-    log. The pair is what the registered file kind `wal/<n>.log` gives, and
-    its order is the log's as long as log file ids go up, which the
-    manifest's rule on ids makes sure of (M7). If FMT-05 defines a place of
-    its own, this field takes it. Until it does, the format can check only
-    that an offset is not inside the header of its file. That it is the
-    boundary of a record is for FMT-05 to define, and for whoever takes the
-    sample to keep.
+20. **A place in the log is a log file id and an offset** (P18). The pair
+    is what the registered file kind `wal/<n>.log` gives, and its order is
+    the log's as long as log file ids go up, which the manifest's rule on
+    ids makes sure of (M7). FMT-05 has since defined the log, and kept the
+    pair: the type is `lignin_format::wal::LogPlace`, which `table`
+    re-exports, and the place of a sample is the end of a checkpoint mark
+    (LG29 of log-format.md). The bytes of the end record did not change.
+    The decoder, which could check only that an offset is not inside the
+    header of its file, now refuses one before offset 62 or past the
+    largest offset.
 21. **Installing a checkpoint checks the place of its sample against the
     log** (K14), so `TableCheckpoints::install` is told how far the log is
     durable as a version and as a place (`LogDurable`). The value log asks
@@ -807,7 +819,7 @@ Run the tests with `cargo test -p lignin-format table` and
 | P12, P13 | `lignin_format::table::End` | Each total wrong; bytes after the end record. |
 | P14, P15 | `lignin_format::table::{Encoder, Decoder, ValueCounts}` | Counts records of 1, 4095, 4096, 4097 and 8197 counts, with and without links before them; a links record after a counts record, a counts record after one that is not full or after the end record, an empty one, one that is not whole counts and one of 4097; the encoder refuses a link after a count. |
 | P16, P17 | `lignin_format::table::ValueCount` | A forged count for each rule, with a valid checksum: file id 0, each reserved bit, counts out of order and two of one file, also across records; any two numbers are taken. |
-| P18 | `lignin_format::table::LogPlace` | No place; a place at 20 and at the largest offset; an offset with no file and one inside the file header; the order of places. |
+| P18 | `lignin_format::table::{LogPlace, FIRST_SAMPLE_OFFSET}` | No place; a place at 62 and at the largest offset; an offset with no file, one inside the file header or the start record, one before the end of the first mark a file can hold, and one past the largest offset; the order of places; the encoder refuses a place that the decoder would. |
 | B8, B10 | both decoders | 40,000 forged files with valid checksums, 30,056 of them with counts, decode only to what encodes back to them; arbitrary and mutated bytes give an error, never a panic. |
 | K1 to K3 | `table::{TableCheckpoints, CheckpointInfo}`, `PageTable::load` | What a checkpoint reports; a table that has no checkpoint; an empty one; several records. |
 | K5 | `TableCheckpoints::write` | Checkpoints written while another thread pushes: each loaded chain is a chain the page once had. Checkpoints written while another thread pushes, consolidates, trims, frees and reuses: each loaded chain gives a whole page version, a base image and every delta after it, no older than the page had when the write began. |

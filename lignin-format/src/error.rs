@@ -65,6 +65,8 @@ pub enum FormatError {
     /// The bytes are not a valid value-log encoding, or a value cannot be
     /// encoded.
     ValueLog(crate::value_log::ValueLogError),
+    /// The bytes are not a log, or a log cannot be written.
+    Wal(crate::wal::WalError),
     /// A page size that is not 8,192, 16,384, 32,768 or 65,536 bytes.
     InvalidPageSize {
         /// The page size asked for, in bytes.
@@ -116,6 +118,7 @@ impl fmt::Display for FormatError {
             Self::Table(error) => write!(f, "page-table checkpoint: {error}"),
             Self::TreePage(error) => write!(f, "tree page: {error}"),
             Self::ValueLog(error) => write!(f, "value log: {error}"),
+            Self::Wal(error) => write!(f, "log: {error}"),
             Self::InvalidPageSize { page_size } => write!(
                 f,
                 "page size {page_size} is not 8192, 16384, 32768 or 65536"
