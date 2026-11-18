@@ -473,7 +473,7 @@ pub enum Element {
     /// of `ProvableCountProvableSumIndexedTree`. The primary Merk uses
     /// `ProvableCountedAndProvableBigSummedMerkNode` (the count and a
     /// 128-bit sum baked into the node hash) and carries the same TLV list
-    /// of 1..=3 secondary Merks, one per selected axis (count, sum, avg).
+    /// of 1..=3 secondary Merks, one per selected axis (count, avg, big sum).
     ///
     /// Fields: `(primary_root_key, count_value, big_sum_value, axes, flags)`
     ///
