@@ -15,18 +15,19 @@ const KEPT_BUFFER_LEN: usize = 1 << 20;
 
 /// Keeps the files of values that no count includes yet.
 ///
-/// A value is appended ahead of the change that makes a cell hold its
-/// pointer: ahead of its transaction's commit, or ahead of the page step
-/// that installs a moved value. Until that change is applied the value is in
-/// no file's count, and its file could be taken for empty. The hold a value
-/// was appended under keeps its file from being deleted.
+/// A value is appended ahead of the page step that makes a cell hold its
+/// pointer: the step of write-back that places a value a commit carried in
+/// its log group, or the step that installs a moved value. Until that change
+/// is applied the value is in no file's count, and its file could be taken
+/// for empty. The hold a value was appended under keeps its file from being
+/// deleted.
 ///
-/// A transaction, or one run of background work, has one hold and passes it
-/// to every [`ValueWriter::append`] it makes. Drop the hold once the change
-/// that counts the values has been applied
+/// One run of background work (the write-back of a page, a cleaning pass)
+/// has one hold and passes it to every [`ValueWriter::append`] it makes.
+/// Drop the hold once the change that counts the values has been applied
 /// ([`ValueStore::apply`](super::ValueStore::apply)), or once the values are
-/// given up, as after a rollback: they are then dead space, which goes with
-/// their file.
+/// given up, as when the step is refused: they are then dead space, which
+/// goes with their file.
 #[derive(Debug, Default)]
 pub struct ValueHold {
     files: Vec<Arc<ValueFile>>,
