@@ -4,7 +4,7 @@ use grovedb_merk::{
         costs::ElementCostExtensions, get::ElementFetchFromStorageExtensions,
         tree_type::ElementTreeTypeExtensions,
     },
-    Merk, TreeType,
+    Error as MerkError, Merk, TreeType,
 };
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
@@ -16,7 +16,13 @@ use grovedb_version::version::GroveVersion;
 use super::validate_path_segment_lengths;
 use crate::{Element, Error, Transaction};
 
+#[cfg(test)]
+pub(crate) mod test_hooks;
+
 pub(crate) trait OpenMerkErrorsCompat {
+    /// The error for a parent element that could not be found or decoded. A
+    /// failed storage read never reaches this: [`open_merk`] returns it as
+    /// [`Error::StorageError`].
     fn parent_key_not_found<B: AsRef<[u8]>>(
         e: Error,
         parent_path: SubtreePath<B>,
@@ -48,10 +54,19 @@ where
         let parent_storage = db
             .get_transactional_storage_context(parent_path.clone(), batch, tx)
             .unwrap_add_cost(&mut cost);
+        #[cfg(test)]
+        let parent_storage = test_hooks::FaultableReads(parent_storage);
         let element = cost_return_on_error!(
             &mut cost,
-            Element::get_from_storage(&parent_storage, parent_key, grove_version)
-                .map_err(|e| C::parent_key_not_found(e.into(), parent_path, parent_key))
+            Element::get_from_storage(&parent_storage, parent_key, grove_version).map_err(|e| {
+                match e {
+                    // A read that failed says nothing about whether the
+                    // parent is there, so it is never reported as "parent
+                    // not found": callers answer that with absence.
+                    MerkError::StorageError(e) => Error::StorageError(e),
+                    e => C::parent_key_not_found(e.into(), parent_path, parent_key),
+                }
+            })
         );
         if let Some((root_key, tree_type)) = element.root_key_and_tree_type_owned() {
             Merk::open_layered_with_root_key(

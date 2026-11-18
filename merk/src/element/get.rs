@@ -382,9 +382,9 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
         let key_ref = key.as_ref();
         let node_value_opt = cost_return_on_error!(
             &mut cost,
-            storage
-                .get(key_ref)
-                .map_err(|e| Error::CorruptedData(e.to_string()))
+            // A failed read keeps its type: the caller must be able to tell
+            // it from a key that is not there.
+            storage.get(key_ref).map_err(Error::StorageError)
         );
         let maybe_tree_inner: Option<TreeNodeInner> = cost_return_on_error_no_add!(
             cost,
@@ -512,9 +512,9 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
         let key_ref = key.as_ref();
         let node_value_opt = cost_return_on_error!(
             &mut cost,
-            storage
-                .get(key_ref)
-                .map_err(|e| Error::CorruptedData(e.to_string()))
+            // A failed read keeps its type: the caller must be able to tell
+            // it from a key that is not there.
+            storage.get(key_ref).map_err(Error::StorageError)
         );
         let maybe_tree_inner: Option<TreeNodeInner> = cost_return_on_error_no_add!(
             cost,
