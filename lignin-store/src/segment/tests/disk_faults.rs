@@ -5,14 +5,9 @@
 //! it had, or the new one where the failure came once the new one was in
 //! place.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    slice,
-};
+use std::{collections::BTreeMap, slice};
 
-use lignin_io::sim::{
-    CrashImage, CrashPlan, CrashPoint, Fault, FaultRule, OpKind, OpRecord, SimConfig, SimVfs,
-};
+use lignin_io::sim::{CrashPoint, Fault, FaultRule, OpKind, OpRecord, SimConfig, SimVfs};
 
 use super::{
     model::{check_recovered, first_manifest, with_another_log, Run, SEGMENT_LIFE},
@@ -69,10 +64,13 @@ fn new_manifest_is_in_place(failed: &OpRecord) -> bool {
 
 /// Runs `workload` once for every operation of it that `disk` can fail,
 /// with the disk failing from that operation on, and checks what the failure
-/// leaves. Returns how often each kind of operation was failed.
+/// leaves: at once, after a crash that leaves a state in `plans`, and after
+/// the process has ended. Returns how often each kind of operation was
+/// failed.
 fn fail_everywhere(
     seed: u64,
     disk: Disk,
+    plans: &Plans,
     workload: impl Fn(&mut Run) -> Result<(), SegmentStoreError>,
 ) -> BTreeMap<OpKind, usize> {
     let mut failed_kinds = BTreeMap::new();
@@ -107,14 +105,9 @@ fn fail_everywhere(
         assert_eq!(&manifest_in(&fs), expected, "while the disk still fails");
 
         let image = fs.crash_image();
-        let drawn = (0..4).map(|draw| image.sample(draw));
-        for plan in [image.lose_all(), image.keep_all()]
-            .into_iter()
-            .chain(drawn)
-        {
+        for (plan, state) in crash_states(&image, plans).states {
             let context = || format!("{image:?}\n{plan:?}");
             let _context = OnFailure(&context);
-            let state = image.recover(&plan).expect("a plan of the image fits it");
             check_recovered(Arc::new(state), db_dir(), model);
         }
 
@@ -165,8 +158,8 @@ fn a_fault_at_any_operation_fails_the_step_and_leaves_a_whole_manifest() {
         (Disk::TearsAnAppend(Fault::Enospc), &[OpKind::Append]),
     ];
     for (disk, kinds) in cases {
-        let mut failed = fail_everywhere(51, disk, |run| run.script(&SEGMENT_LIFE));
-        for (kind, count) in fail_everywhere(52, disk, |run| run.run(60)) {
+        let mut failed = fail_everywhere(51, disk, &SOME_STATES, |run| run.script(&SEGMENT_LIFE));
+        for (kind, count) in fail_everywhere(52, disk, &A_FEW_STATES, |run| run.run(60)) {
             *failed.entry(kind).or_insert(0) += count;
         }
         println!("{disk:?}: {failed:?}");
@@ -177,24 +170,6 @@ fn a_fault_at_any_operation_fails_the_step_and_leaves_a_whole_manifest() {
 /// How many of the changes that follow a fault a crash is taken after.
 const CHANGES_AFTER_A_FAULT: u64 = 10;
 
-/// The states checked for each of the many crashes that follow a fault: the
-/// two ends, and each unsynced change lost alone. The last is the crash that
-/// shows a later step relying on something the failed one left undone.
-fn states_after_a_fault(image: &CrashImage) -> Vec<(CrashPlan, SimVfs)> {
-    let mut seen = BTreeSet::new();
-    let mut states = Vec::new();
-    for plan in [image.lose_all(), image.keep_all()]
-        .into_iter()
-        .chain(image.holes())
-    {
-        let state = image.recover(&plan).expect("a plan of the image fits it");
-        if seen.insert(state.fingerprint()) {
-            states.push((plan, state));
-        }
-    }
-    states
-}
-
 #[test]
 fn a_session_that_goes_on_after_a_fault_survives_a_crash_at_any_of_the_next_changes() {
     let seed = 53;
@@ -202,6 +177,7 @@ fn a_session_that_goes_on_after_a_fault_survives_a_crash_at_any_of_the_next_chan
         Disk::FailsOnce(Fault::Eio),
         Disk::FailsOnce(Fault::Enospc),
         Disk::TearsAnAppend(Fault::Eio),
+        Disk::TearsAnAppend(Fault::Enospc),
     ] {
         let (mut faults, mut crashes) = (0, 0);
         let mut from_op = 1;
@@ -245,7 +221,7 @@ fn a_session_that_goes_on_after_a_fault_survives_a_crash_at_any_of_the_next_chan
                     break;
                 }
                 let image = fs.crash_image();
-                for (plan, state) in states_after_a_fault(&image) {
+                for (plan, state) in crash_states(&image, &SOME_STATES).states {
                     let context = || format!("{later} changes later\n{image:?}\n{plan:?}");
                     let _context = OnFailure(&context);
                     check_recovered(Arc::new(state), db_dir(), &run.model);
