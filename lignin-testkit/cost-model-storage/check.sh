@@ -6,6 +6,8 @@
 #   check.sh dump --out DIR ...
 #   check.sh test -p grovedb-merk any arguments of `cargo test` follow: the
 #                                 test suite of a crate, run on the model
+#   check.sh profile [VERSION]    the cost of a few common operations on a
+#                                 grove version, with the rules applied
 #
 # The script lays out a second workspace under $LIGNIN_COST_MODEL_WORK
 # (default: target/cost-model) in which every crate is this checkout's and
@@ -22,20 +24,19 @@ work=${LIGNIN_COST_MODEL_WORK:-$repo/target/cost-model}
 workspace=$work/workspace
 storage=$workspace/storage
 
-rm -rf "$workspace"
 mkdir -p "$storage"
-
-ln -s "$repo/Cargo.toml" "$workspace/Cargo.toml"
+ln -sfn "$repo/Cargo.toml" "$workspace/Cargo.toml"
 for file in rust-toolchain.toml .rustfmt.toml .cargo; do
-    [ -e "$repo/$file" ] && ln -s "$repo/$file" "$workspace/$file"
+    [ -e "$repo/$file" ] && ln -sfn "$repo/$file" "$workspace/$file"
 done
-[ -e "$repo/Cargo.lock" ] && cp "$repo/Cargo.lock" "$workspace/Cargo.lock"
+[ -e "$workspace/Cargo.lock" ] || [ ! -e "$repo/Cargo.lock" ] ||
+    cp "$repo/Cargo.lock" "$workspace/Cargo.lock"
 for manifest in "$repo"/*/Cargo.toml; do
     member=$(basename "$(dirname "$manifest")")
-    [ "$member" = storage ] || ln -s "$repo/$member" "$workspace/$member"
+    [ "$member" = storage ] || ln -sfn "$repo/$member" "$workspace/$member"
 done
-ln -s "$here/manifest.toml" "$storage/Cargo.toml"
-ln -s "$here/src" "$storage/src"
+ln -sfn "$here/manifest.toml" "$storage/Cargo.toml"
+ln -sfn "$here/src" "$storage/src"
 
 export CARGO_TARGET_DIR=$work/target
 hits=$work/rule-hits.tsv
@@ -45,6 +46,30 @@ cd "$workspace"
 if [ "${1:-}" = test ]; then
     shift
     LIGNIN_COST_MODEL_HITS=$hits exec cargo test "$@"
+fi
+
+if [ "${1:-}" = profile ]; then
+    shift
+    mkdir -p "$work/profile/src"
+    ln -sfn "$here/profile.rs" "$work/profile/src/main.rs"
+    cat > "$work/profile/Cargo.toml" <<MANIFEST
+[package]
+name = "lignin-cost-model-profile"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+grovedb = { path = "$workspace/grovedb" }
+grovedb-costs = { path = "$workspace/costs" }
+grovedb-storage = { path = "$storage", features = ["rocksdb_storage"] }
+grovedb-version = { path = "$workspace/grovedb-version" }
+tempfile = "3"
+MANIFEST
+    cd "$work/profile"
+    exec cargo run --quiet --release -- "$@"
 fi
 
 if cargo tree -p lignin-testkit -e normal,build --prefix none | grep -qi rocksdb; then

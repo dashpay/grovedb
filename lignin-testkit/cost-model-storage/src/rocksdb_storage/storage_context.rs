@@ -473,7 +473,7 @@ pub struct PrefixedRocksDbBatch<'db> {
     prefix: SubtreePrefix,
     writes: Vec<Write>,
     cost_acc: OperationCost,
-    transaction: PhantomData<&'db Tx<'db>>,
+    transaction: PhantomData<&'db ()>,
 }
 
 impl PrefixedRocksDbBatch<'_> {

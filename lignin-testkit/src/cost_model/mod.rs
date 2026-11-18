@@ -34,3 +34,5 @@ pub mod state;
 
 #[cfg(test)]
 mod against_merk;
+#[cfg(test)]
+mod against_rocksdb;

@@ -1,11 +1,10 @@
 //! The storage, its transactions and its write batches, on the cost model.
 
 use std::{
-    cell::{Ref, RefCell},
     collections::BTreeMap,
     fmt,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::{Duration, Instant},
 };
 
@@ -33,6 +32,11 @@ pub type SubtreePrefix = [u8; 32];
 /// The name of the file the rule counts are written to when a storage is
 /// dropped, if this variable is set.
 const HITS_FILE_VARIABLE: &str = "LIGNIN_COST_MODEL_HITS";
+
+/// The databases of this process, each under the directory it was opened
+/// at, so that a storage opened there again finds what was committed. A
+/// database goes when its directory has gone.
+static DATABASES: Mutex<BTreeMap<PathBuf, Arc<Database>>> = Mutex::new(BTreeMap::new());
 
 /// The checkpoints of this process: the committed state each was taken of,
 /// under the directory that stands for it on disk.
@@ -62,7 +66,7 @@ pub struct WriteBatchWithTransaction<const TRANSACTION: bool> {
 /// A started storage transaction.
 pub struct Tx<'db> {
     db: &'db Database,
-    state: RefCell<Transaction>,
+    state: Mutex<Transaction>,
     snapshot_read_since: Option<Instant>,
 }
 
@@ -71,7 +75,7 @@ impl<'db> Tx<'db> {
         Tx {
             db,
             snapshot_read_since: state.is_pinned().then(Instant::now),
-            state: RefCell::new(state),
+            state: Mutex::new(state),
         }
     }
 
@@ -96,16 +100,16 @@ impl<'db> Tx<'db> {
         }
     }
 
-    pub(super) fn state(&self) -> Ref<'_, Transaction> {
-        self.state.borrow()
+    pub(super) fn state(&self) -> MutexGuard<'_, Transaction> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     pub(super) fn get(&self, keyspace: Keyspace, key: &StoredKey) -> Option<Record> {
-        self.state.borrow().get(self.db, keyspace, key)
+        self.state().get(self.db, keyspace, key)
     }
 
     pub(super) fn cursor(&self, keyspace: Keyspace) -> Cursor {
-        Cursor::new(keyspace, self.state.borrow().base(self.db))
+        Cursor::new(keyspace, self.state().base(self.db))
     }
 
     pub(super) fn write(
@@ -114,7 +118,7 @@ impl<'db> Tx<'db> {
         writes: impl IntoIterator<Item = Write>,
     ) -> Result<(), Error> {
         self.refuse_snapshot_write(operation)?;
-        self.state.borrow_mut().write(writes);
+        self.state().write(writes);
         Ok(())
     }
 
@@ -122,26 +126,29 @@ impl<'db> Tx<'db> {
     /// transaction.
     pub fn commit(self) -> Result<(), Error> {
         self.refuse_snapshot_write("commit")?;
-        self.state.into_inner().commit(self.db);
+        self.state
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner)
+            .commit(self.db);
         Ok(())
     }
 
     /// Roll back the transaction's pending writes.
     pub fn rollback(&self) -> Result<(), Error> {
-        self.state.borrow_mut().rollback();
+        self.state().rollback();
         Ok(())
     }
 
     /// Set a savepoint: a later [`Tx::rollback_to_savepoint`] undoes every
     /// operation in this transaction since this call.
     pub fn set_savepoint(&self) {
-        self.state.borrow_mut().set_savepoint();
+        self.state().set_savepoint();
     }
 
     /// Undo all operations in this transaction since the most recent
     /// [`Tx::set_savepoint`], popping that savepoint.
     pub fn rollback_to_savepoint(&self) -> Result<(), Error> {
-        if self.state.borrow_mut().rollback_to_savepoint() {
+        if self.state().rollback_to_savepoint() {
             Ok(())
         } else {
             Err(Error::RocksDBError(EngineError(
@@ -154,7 +161,7 @@ impl<'db> Tx<'db> {
 /// The storage GroveDB opens: the committed state of the model.
 #[derive(Default)]
 pub struct RocksDbStorage {
-    pub(super) db: Database,
+    db: Arc<Database>,
 }
 
 impl Drop for RocksDbStorage {
@@ -221,10 +228,21 @@ fn batch_op(op: AbstractBatchOperation) -> BatchOp {
 }
 
 impl RocksDbStorage {
-    /// An empty storage. The model keeps nothing on disk and does not use
-    /// `path`.
-    pub fn default_rocksdb_with_path<P: AsRef<Path>>(_path: P) -> Result<Self, Error> {
-        Ok(Self::default())
+    /// The storage at `path`. The model keeps its state in memory: `path`
+    /// is created as a directory and names the state, so that opening the
+    /// same directory again in this process finds what was committed there.
+    pub fn default_rocksdb_with_path<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+        let path = path.as_ref();
+        std::fs::create_dir_all(path).map_err(|error| {
+            Error::RocksDBError(EngineError(format!(
+                "IO error: {}: {error}",
+                path.display()
+            )))
+        })?;
+        let mut databases = DATABASES.lock().unwrap_or_else(PoisonError::into_inner);
+        databases.retain(|opened_at, _| opened_at.is_dir());
+        let db = Arc::clone(databases.entry(path.to_path_buf()).or_default());
+        Ok(RocksDbStorage { db })
     }
 
     /// Opens the checkpoint taken at `path` by a storage of this process,
@@ -239,7 +257,7 @@ impl RocksDbStorage {
             .filter(|_| path.is_dir());
         match taken {
             Some(tables) => Ok(RocksDbStorage {
-                db: Database::from_committed(tables),
+                db: Arc::new(Database::from_committed(tables)),
             }),
             None => Err(Error::RocksDBError(EngineError(format!(
                 "Invalid argument: {}: no checkpoint of this process",
@@ -501,10 +519,9 @@ impl<'db> Storage<'db> for RocksDbStorage {
                 path.display()
             )))
         })?;
-        CHECKPOINTS
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(path.to_path_buf(), self.db.committed());
+        let mut checkpoints = CHECKPOINTS.lock().unwrap_or_else(PoisonError::into_inner);
+        checkpoints.retain(|taken_at, _| taken_at.is_dir());
+        checkpoints.insert(path.to_path_buf(), self.db.committed());
         Ok(())
     }
 }
