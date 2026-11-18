@@ -212,6 +212,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must move to 0.41 as well.
 
 ### Fixed
+- A storage read that fails while a subtree is opened is returned as
+  `Error::StorageError` instead of being reported as a missing parent (first
+  part of #1030). Opening a subtree reads its parent element, and every error
+  of that read became "parent not found" (`InvalidParentLayerPath` or
+  `PathParentLayerNotFound`), which `get_raw_optional` answers with `Ok(None)`
+  and a path query's key items and subquery hops answer with an empty result.
+  A failed RocksDB read was among those errors: the element getters that read
+  straight from storage (`Element::get_from_storage`,
+  `Element::get_optional_from_storage`) had already turned it into
+  `CorruptedData`. They now return `grovedb_merk::Error::StorageError`, and
+  the open returns it as `Error::StorageError`, so those readers, and
+  `get_raw`, `get` and the other reads and direct writes that pass that
+  open's error on, fail with the storage error where the parent could not be
+  read. A batch opening an existing subtree and state sync read the parent
+  element themselves; they already failed on such a read and keep the errors
+  they returned. The getters that read an element through an open Merk
+  (`Element::get`, `get_optional`, `get_value_hash`,
+  `get_with_value_hash`) keep a failed node read typed in the same way, so
+  a GroveDB caller sees `Error::MerkError(StorageError(..))` where it saw
+  `Error::MerkError(CorruptedData(..))`. `verify_grovedb`'s reciprocity
+  audit of bidirectional references returns either storage error, where it
+  reported the reference as broken (`?missing-registration`,
+  `?no-reciprocal-forward-edge`). A parent key
+  that is not there and stored bytes that do not decode are reported as
+  before: the second is what a path below a non-Merk tree legitimately reads,
+  and telling it from a corrupt parent element is left to a later,
+  version-gated change. No `GroveVersion` gate: a read fails only on faulty
+  storage, so results and `OperationCost` on a healthy node are unchanged
+  under every version.
 - Trunk and branch query results (`get_ancestor`) read the count of a
   `ProvableCountProvableSumTree` node, which they skipped before, and of
   a `ProvableCountProvableBigSumTree` node.
