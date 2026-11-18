@@ -19,12 +19,23 @@ describes the design.
 Every trace names the commit of the engine it was recorded from, in its
 `engine` line: the newest commit that touched a workspace crate outside
 LigninDB. The corpus here was recorded from
+`f101691960d8eb7b679f19e72853c8a04ff7502c` (`develop`, "count and report
+tree result rows as the trusted read does (GROVE_V5)", #1061). The workspace
+manifest is not part of that: LigninDB adds its crates to it. `Cargo.lock`
+is not committed in this repository, so the commit pins GroveDB's own code
+and not the versions of its dependencies. `record` refuses to run when an
+engine crate has uncommitted changes.
+
+The pin has moved once. The corpus was first recorded from
 `22f163c2b82d9bc5c985a77034529a32ef9a7c04` (`develop`, "range aggregates and
-count offsets on a ProvableCountProvableBigSumTree"). The workspace manifest
-is not part of that: LigninDB adds its crates to it. `Cargo.lock` is not
-committed in this repository, so the commit pins GroveDB's own code and not
-the versions of its dependencies. `record` refuses to run when an engine
-crate has uncommitted changes.
+count offsets on a ProvableCountProvableBigSumTree"). When `develop` was
+merged into `feat/LigninDB` up to `f1016919`, it brought #1059, which takes
+the referrer list of an element that takes backward references out of every
+node hash. That changes the root hashes, costs and proofs of the six traces
+that hold such an element: `element-zoo`, `reference-chains` and `suite` on
+grove versions 4 and 5. Every other trace, the five of the reference scale
+included, came out as it was but for its `engine` line. The other commits of
+that range (#1056, #1055, #1061) changed no trace.
 
 ## Using it
 
@@ -62,21 +73,26 @@ replay that differs for any other reason is a bug in the change under test.
 
 **Recording from the pinned engine.** A recording comes from the engine
 crates of the checkout it runs in, and `feat/LigninDB` changes those crates.
-To add to the corpus without moving the pin, record in a worktree of a
-commit whose engine crates are the pinned ones, with this crate taken from
-the branch that has the new workloads, and write into that branch's corpus:
+To add to the corpus without moving the pin, record in a worktree of the
+pinned commit, with the workspace manifest and the LigninDB crates taken
+from the branch that has the new workloads, and write into that branch's
+corpus:
 
 ```text
-git worktree add <scratch>/pinned 3551b707
-git -C <scratch>/pinned checkout <branch> -- lignin-testkit
+git worktree add --detach <scratch>/pinned f1016919
+git -C <scratch>/pinned checkout <branch> -- Cargo.toml lignin-format lignin-io \
+    lignin-store lignin-tree lignindb lignin-tools lignin-testkit
+cp <checkout of the branch>/Cargo.lock <scratch>/pinned/
 cd <scratch>/pinned
 cargo run --release -p lignin-testkit --bin lignin-golden -- record \
     --corpus <checkout of the branch>/lignin-testkit/corpus
 ```
 
-`3551b707` is the commit of `feat/LigninDB` this corpus was recorded on. Its
-engine crates are those of `22f163c2`, so the traces come out naming
-`22f163c2`. A trace whose operations and recorded values did not change
+`f1016919` is a commit of `develop`, so it has no LigninDB crate: the
+checkout brings the branch's, with the manifest that lists them, and the
+copied `Cargo.lock` gives the build the branch's versions of the
+dependencies. None of these is an engine crate, so the traces come out
+naming `f1016919`. A trace whose operations and recorded values did not change
 comes out byte for byte as it was, so `git status` shows what the new
 workloads added. Then replay on the branch itself: what was recorded from
 the pinned engine has to come out the same there.

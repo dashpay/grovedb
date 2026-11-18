@@ -2,7 +2,7 @@ lignin-golden-trace 1
 name large-values
 seed 0x1
 grove-version 2
-engine 22f163c2b82d9bc5c985a77034529a32ef9a7c04
+engine f101691960d8eb7b679f19e72853c8a04ff7502c
 workload large-values
 cfb3br0a28
   step 0

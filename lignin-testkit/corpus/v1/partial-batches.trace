@@ -2,7 +2,7 @@ lignin-golden-trace 1
 name partial-batches
 seed 0x1
 grove-version 1
-engine 22f163c2b82d9bc5c985a77034529a32ef9a7c04
+engine f101691960d8eb7b679f19e72853c8a04ff7502c
 workload partial-batches
 cd353r9908
   step 0
