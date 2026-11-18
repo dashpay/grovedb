@@ -1548,4 +1548,95 @@ mod tests {
             .expect("read through the references");
         assert_eq!(results, expected);
     }
+
+    // ---------------------------------------------------------------------
+    // As an entry of an indexed tree
+    // ---------------------------------------------------------------------
+
+    /// A count indexed tree takes a count and big sum tree as an entry and
+    /// ranks it by the count its contents give it. Like every tree entry it
+    /// enters empty: a tree without a root key that claims a count or a sum
+    /// is refused, by the dedicated insert and by a batch.
+    #[test]
+    fn count_big_sum_tree_enters_an_indexed_tree_empty() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert(
+            &db,
+            &[],
+            b"ranked",
+            Element::empty_provable_count_indexed_tree(),
+            grove_version,
+        );
+        let claims = || Element::CountBigSumTree(None, 3, 5, None);
+
+        db.insert_into_count_indexed_tree(
+            [b"ranked".as_slice()].as_ref(),
+            b"a",
+            Element::empty_count_big_sum_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("an empty entry by the dedicated insert");
+        db.apply_batch(
+            vec![insert_op(
+                &[b"ranked"],
+                b"b",
+                Element::empty_count_big_sum_tree(),
+            )],
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("an empty entry by a batch");
+
+        let before = root_hash(&db, grove_version);
+        db.insert_into_count_indexed_tree(
+            [b"ranked".as_slice()].as_ref(),
+            b"c",
+            claims(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect_err("a claimed count and sum by the dedicated insert");
+        db.apply_batch(
+            vec![insert_op(&[b"ranked"], b"c", claims())],
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect_err("a claimed count and sum by a batch");
+        assert_eq!(root_hash(&db, grove_version), before);
+
+        // Filled, the entries give the indexed tree their counts.
+        for (entry, items) in [(b"a", 2u8), (b"b", 1)] {
+            for item in 0..items {
+                insert(
+                    &db,
+                    &[b"ranked", entry],
+                    &[item],
+                    Element::new_sum_item(i64::MAX),
+                    grove_version,
+                );
+            }
+        }
+        let Element::ProvableCountIndexedTree(_, _, count, _) =
+            get(&db, &[], b"ranked", grove_version)
+        else {
+            panic!("expected a ProvableCountIndexedTree");
+        };
+        assert_eq!(count, 3);
+        assert_eq!(
+            count_big_sum(&db, &[b"ranked"], b"a", grove_version),
+            (2, 2 * (i64::MAX as i128))
+        );
+        let issues = db
+            .verify_grovedb(None, true, true, grove_version)
+            .expect("verify_grovedb");
+        assert!(issues.is_empty(), "issues: {issues:?}");
+    }
 }
