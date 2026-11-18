@@ -862,15 +862,20 @@ fn allocate(layout: Layout) -> NonNull<u8> {
 
 /// The fixed part of the pool: `count` frames of `frame_len` bytes in one
 /// block of memory, with their headers.
+///
+/// The headers are a boxed slice that the arena holds as a raw pointer, so
+/// that every pointer to a header comes from that one pointer and stays good
+/// for as long as the arena lives.
 pub(super) struct Arena {
-    frames: Box<[Frame]>,
+    frames: NonNull<Frame>,
+    count: usize,
     memory: NonNull<u8>,
     layout: Layout,
     frame_len: usize,
 }
 
-// SAFETY: the arena owns its block, which is reached only through the
-// frames, and those are `Send` and `Sync`.
+// SAFETY: the arena owns its headers and its block, which are reached only
+// through the frames, and those are `Send` and `Sync`.
 unsafe impl Send for Arena {}
 // SAFETY: as above.
 unsafe impl Sync for Arena {}
@@ -878,7 +883,7 @@ unsafe impl Sync for Arena {}
 impl fmt::Debug for Arena {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Arena")
-            .field("frames", &self.frames.len())
+            .field("frames", &self.count)
             .field("frame_len", &self.frame_len)
             .finish()
     }
@@ -896,7 +901,7 @@ impl Arena {
         assert!(count > 0 && frame_len > 0);
         let layout = layout(frame_len, count)?;
         let memory = allocate(layout);
-        let frames: Box<[Frame]> = (0..count)
+        let headers: Box<[Frame]> = (0..count)
             .map(|index| {
                 // SAFETY: `index * frame_len` is below the size of the block
                 // that `memory` points to, so the result is inside it.
@@ -904,23 +909,25 @@ impl Arena {
                 Frame::new(bytes, frame_len, false)
             })
             .collect();
-        // By A3: nothing has seen these frames yet.
-        let owned = frames
-            .iter()
-            .rev()
-            .map(|frame| OwnedFrame(FramePtr(NonNull::from(frame))))
-            .collect();
+        let frames =
+            NonNull::new(Box::into_raw(headers).cast::<Frame>()).expect("a box is not null");
         let arena = Self {
             frames,
+            count,
             memory,
             layout,
             frame_len,
         };
+        // By A3: nothing has seen these frames yet.
+        let owned = (0..count)
+            .rev()
+            .map(|index| OwnedFrame(arena.pointer(index)))
+            .collect();
         Ok((arena, owned))
     }
 
     pub(super) fn len(&self) -> usize {
-        self.frames.len()
+        self.count
     }
 
     pub(super) fn frame_len(&self) -> usize {
@@ -929,11 +936,16 @@ impl Arena {
 
     /// The header of an arena frame, which lives as long as the arena.
     pub(super) fn frame(&self, index: usize) -> &Frame {
-        &self.frames[index]
+        // SAFETY: the header is in the arena's slice, which lives as long
+        // as the arena, and a header is only ever shared (A2).
+        unsafe { self.pointer(index).0.as_ref() }
     }
 
     pub(super) fn pointer(&self, index: usize) -> FramePtr {
-        FramePtr(NonNull::from(&self.frames[index]))
+        assert!(index < self.count, "no such frame");
+        // SAFETY: `index` is below the length of the slice `frames` points
+        // to, so the result is inside it.
+        FramePtr(unsafe { self.frames.add(index) })
     }
 
     /// A frame beside the arena.
@@ -941,15 +953,16 @@ impl Arena {
         let layout = layout(self.frame_len, 1).expect("the arena has this layout many times");
         let bytes = allocate(layout);
         let frame = Box::new(Frame::new(bytes, self.frame_len, true));
+        let frame = NonNull::new(Box::into_raw(frame)).expect("a box is not null");
         // By A3: nothing has seen this frame yet.
-        OwnedFrame(FramePtr(NonNull::from(Box::leak(frame))))
+        OwnedFrame(FramePtr(frame))
     }
 
     /// Gives the memory of an overflow frame back.
     pub(super) fn free_overflow(&self, frame: OwnedFrame) {
         assert!(frame.header().is_overflow(), "an arena frame is not freed");
         let layout = layout(self.frame_len, 1).expect("the arena has this layout many times");
-        // SAFETY: an overflow frame was leaked from a box by
+        // SAFETY: an overflow frame came out of a box in
         // `allocate_overflow`. Its owner is the only one who can reach it
         // (A3), and gives it up here.
         let frame = unsafe { Box::from_raw(frame.0 .0.as_ptr()) };
@@ -962,8 +975,13 @@ impl Arena {
 
 impl Drop for Arena {
     fn drop(&mut self) {
+        let headers = ptr::slice_from_raw_parts_mut(self.frames.as_ptr(), self.count);
+        // SAFETY: `frames` and `count` are the boxed slice that `new` turned
+        // into a raw pointer, and the arena is its only owner. Nothing can
+        // follow a pointer to a header any more: a pin borrows the arena.
+        drop(unsafe { Box::from_raw(headers) });
         // SAFETY: `memory` was allocated with `layout` in `new`, and the
-        // frames that point into it are dropped with the arena.
+        // headers that pointed into it are gone.
         unsafe { alloc::dealloc(self.memory.as_ptr(), self.layout) };
     }
 }

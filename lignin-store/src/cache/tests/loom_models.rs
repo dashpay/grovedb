@@ -214,6 +214,54 @@ fn a_reader_gets_the_version_it_asked_at() {
     });
 }
 
+/// A commit against another operation of its transaction that still holds
+/// the copy's latch: the commit waits for the latch, and from the install
+/// on nothing writes the frame, so a reader never sees it change.
+#[test]
+fn a_commit_waits_for_the_latch_of_the_copy_it_installs() {
+    model(3, || {
+        let pool = Arc::new(pool(2));
+        let copy = pool.new_private(owner(1), page(1)).expect("a new page");
+        content(1, 1, 0).write(&mut copy.write().expect("private"));
+        drop(copy);
+        let writer = {
+            let pool = Arc::clone(&pool);
+            thread::spawn(move || {
+                let Some(copy) = pool.private(owner(1), page(1)) else {
+                    return;
+                };
+                match copy.write() {
+                    Ok(mut latch) => content(1, 1, 1).write(&mut latch),
+                    Err(error) => assert_eq!(error, CacheError::NotPrivate { page: page(1) }),
+                };
+            })
+        };
+        let committer = {
+            let pool = Arc::clone(&pool);
+            thread::spawn(move || {
+                let copy = pool.private(owner(1), page(1)).expect("the copy");
+                let installed = pool.install(copy, version(1)).expect("a commit");
+                let seen = Content::read(&installed);
+                thread::yield_now();
+                assert_eq!(Content::read(&installed), seen);
+            })
+        };
+        let reader = {
+            let pool = Arc::clone(&pool);
+            thread::spawn(move || {
+                if let Ok(found) = pool.get(page(1), version(1)) {
+                    let seen = Content::read(&found);
+                    thread::yield_now();
+                    assert_eq!(Content::read(&found), seen);
+                }
+            })
+        };
+        join(vec![writer, committer, reader]);
+        assert!(pool.private(owner(1), page(1)).is_none());
+        check(&pool, 0);
+    });
+}
+
 /// A load against a commit: the page is on disk as version 1, a commit
 /// makes version 2 of it, and a reader of version 1 loads the page while it
 /// does. The reader gets version 1, and what it loaded never passes for the
