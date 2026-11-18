@@ -2,5 +2,6 @@
 
 #![deny(unsafe_code)]
 
+pub mod alloc;
 pub mod segment;
 pub mod table;
