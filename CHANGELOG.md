@@ -143,6 +143,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for callers of Merk's just-in-time apply, whose update callback now answers
   `(ElementFlagsUpdate, Option<ValueDefinedCostType>)`.
 ### Changed
+- **BREAKING**: The referrer list of a bidirectional-reference target is
+  no longer part of any node hash. An `ItemWithBackwardsReferences`,
+  `SumItemWithBackwardsReferences` or
+  `ItemWithSumItemWithBackwardsReferences` node's value hash is the hash
+  of the element serialized with its referrer list emptied (it was that
+  hash combined with a hash of the list), and a `BidirectionalReference`
+  commits to its own stripped hash and the resolved end hash (it also
+  committed to a hash of its own list). The stored bytes still hold the
+  list and the declared capacity (`max_incoming`) is still hashed.
+  Registering or removing a referrer therefore changes no hash by itself
+  (a flags-update callback that changes the target's flags still does, as
+  flags are hashed). The change has no version gate: no network has stored
+  an element of this family. A database that has never stored one is
+  unaffected and needs no migration. A database that did store one with an
+  earlier build holds value hashes under the old rule, which this build
+  does not reproduce: its `verify_grovedb` reports those elements and
+  their proofs do not verify.
+  - A referrer list is kept in a canonical order (ascending by inverted
+    reference path; `ReferencePathType` now implements `Ord`) instead of
+    registration order, so its bytes depend only on which referrers
+    exist. New: `register_backward_reference` and
+    `backward_references_are_canonical` in `grovedb-element`.
+  - These items are proved like the plain items they extend, in `KV` /
+    `KVCount` / `KVSum` / `KVCountSum` / `KVCountBigSum` nodes carrying the
+    stripped bytes. `Node::KVBackwardsReferencesValueHash` and
+    `ProofNodeType::KvBackwardsReferencesValueHash` are removed; proof
+    tags 0x50..=0x53 stay reserved and no longer decode.
+  - The provable aggregate trees (`ProvableCountTree`,
+    `ProvableCountSumTree`, `ProvableSumTree`,
+    `ProvableCountProvableSumTree`, `ProvableCountProvableBigSumTree`)
+    accept these elements, which they refused with "backward-references
+    elements may not live in Provable* aggregate trees". The indexed trees
+    accepted them already, and a proof of such an entry now verifies.
+  - State sync checks a restored item's bytes against the stripped hash
+    and, before a session commits, checks every restored referrer list
+    against the restored bidirectional references in both directions. A
+    list that disagrees, or is not in canonical order, fails the session
+    with "restored backward references are not reciprocal".
+    `verify_grovedb` also reports a list entry whose cascade policy
+    differs from its referrer's and a list that is out of order
+    (`?referrers-out-of-order`).
+  - Removed from `grovedb-merk`: `ElementExt::backward_references_hashes`
+    and `BackwardsReferencesHashes` (use `ElementExt::logical_value_hash`,
+    which is now the item's node value hash). Removed from
+    `grovedb-element`: `serialize_backward_references` and
+    `deserialize_backward_references`, which only fed the list hash.
+  - Writes and reference resolution on these elements make fewer hash
+    calls (`hash_node_calls`): the list hash and its combine are gone, and
+    a reference that ends on such an item uses the stored value hash
+    instead of rehashing the item.
 - **BREAKING**: `Query` adds the public `offset: Option<u16>` field for
   branch-local committed-count-unit pagination. Exhaustive struct literals
   must supply the field or use a default update. Offset-bearing queries use
@@ -198,6 +248,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must move to 0.41 as well.
 
 ### Fixed
+- A storage read that fails while a subtree is opened is returned as
+  `Error::StorageError` instead of being reported as a missing parent (first
+  part of #1030). Opening a subtree reads its parent element, and every error
+  of that read became "parent not found" (`InvalidParentLayerPath` or
+  `PathParentLayerNotFound`), which `get_raw_optional` answers with `Ok(None)`
+  and a path query's key items and subquery hops answer with an empty result.
+  A failed RocksDB read was among those errors: the element getters that read
+  straight from storage (`Element::get_from_storage`,
+  `Element::get_optional_from_storage`) had already turned it into
+  `CorruptedData`. They now return `grovedb_merk::Error::StorageError`, and
+  the open returns it as `Error::StorageError`, so those readers, and
+  `get_raw`, `get` and the other reads and direct writes that pass that
+  open's error on, fail with the storage error where the parent could not be
+  read. A batch opening an existing subtree and state sync read the parent
+  element themselves; they already failed on such a read and keep the errors
+  they returned. The getters that read an element through an open Merk
+  (`Element::get`, `get_optional`, `get_value_hash`,
+  `get_with_value_hash`) keep a failed node read typed in the same way, so
+  a GroveDB caller sees `Error::MerkError(StorageError(..))` where it saw
+  `Error::MerkError(CorruptedData(..))`. `verify_grovedb`'s reciprocity
+  audit of bidirectional references returns either storage error, where it
+  reported the reference as broken (`?missing-registration`,
+  `?no-reciprocal-forward-edge`). A parent key
+  that is not there and stored bytes that do not decode are reported as
+  before: the second is what a path below a non-Merk tree legitimately reads,
+  and telling it from a corrupt parent element is left to a later,
+  version-gated change. No `GroveVersion` gate: a read fails only on faulty
+  storage, so results and `OperationCost` on a healthy node are unchanged
+  under every version.
 - Trunk and branch query results (`get_ancestor`) read the count of a
   `ProvableCountProvableSumTree` node, which they skipped before, and of
   a `ProvableCountProvableBigSumTree` node.

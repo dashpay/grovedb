@@ -8,12 +8,14 @@
 //! - [`apply_plan`], which executes a [`Plan`]'s mutations through the same
 //!   cache in order.
 //!
-//! Backward references live ON their target element and are covered by the
-//! node hash through the two-layer scheme described in
-//! `grovedb_element::bidirectional_reference`: forward references commit to
-//! the target's INNER (stripped) hash, so registering or removing a
-//! referrer rewrites only the target itself — never the hashes stored by
-//! other referrers.
+//! Backward references live ON their target element and stay outside every
+//! node hash, as described in `grovedb_element::bidirectional_reference`:
+//! the target and its forward references commit to the target's INNER
+//! (stripped) hash, so registering or removing a referrer rewrites only the
+//! target's stored bytes and by itself moves no hash. The inner hash covers
+//! every other field, flags included: a flags-update callback that changes
+//! the target's flags because its stored value grew moves the hash like
+//! any flags change, and the referrers are then brought up to date.
 
 use grovedb_costs::{
     cost_return_on_error, storage_cost::removal::StorageRemovedBytes, CostResult, CostsExt,
@@ -133,7 +135,7 @@ impl<'c, 'db, 'b, B: AsRef<[u8]>> ChainStore for MerkCacheChainStore<'c, 'db, 'b
 
 /// Execute a single derived write through the cache. Bidirectional
 /// references are written through `insert_reference` with their resolved
-/// end hash; the item variants derive their combined hash from the bytes.
+/// end hash; the item variants derive their value hash from the bytes.
 fn apply_write(
     merk: &mut MerkHandle<'_, '_>,
     key: &[u8],

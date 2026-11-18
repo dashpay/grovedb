@@ -5,8 +5,8 @@
 //! understand the dedicated backward-references variants can opt in on
 //! each request with `x-grovedbg-backward-references: true`.
 //! In that format, stored nodes report `Some(count)` while proof elements
-//! report `None`: proofs authenticate the referrer-list hash but omit the
-//! list itself.
+//! report `None`: proofs carry these elements with the referrer list
+//! emptied.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -599,12 +599,6 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
     Ok(match node {
         Node::Hash(hash) => MerkProofNode::Hash(hash),
         Node::KVHash(hash) => MerkProofNode::KVHash(hash),
-        // grovedbg has no dedicated variant; show as a KVValueHash-style
-        // node with the backrefs hash in the hash slot.
-        Node::KVBackwardsReferencesValueHash(key, value, backrefs_hash) => {
-            let element = crate::Element::deserialize(&value, GroveVersion::latest())?;
-            MerkProofNode::KVValueHash(key, proof_element_to_grovedbg(element), backrefs_hash)
-        }
         Node::KVDigest(key, hash) => MerkProofNode::KVDigest(key, hash),
         Node::KVDigestCount(key, hash, count) => {
             // KVDigestCount is like KVDigest but with count for ProvableCountTree
@@ -2095,9 +2089,11 @@ mod tests {
                 let proof_element = layer
                     .merk_proof
                     .iter()
+                    // A backward-references item is proved in a plain `KV`
+                    // node, with its referrer list emptied.
                     .find_map(|op| match op {
-                        MerkProofOp::Push(MerkProofNode::KVValueHash(key, element, _))
-                        | MerkProofOp::PushInverted(MerkProofNode::KVValueHash(key, element, _))
+                        MerkProofOp::Push(MerkProofNode::KV(key, element))
+                        | MerkProofOp::PushInverted(MerkProofNode::KV(key, element))
                             if key == b"target" =>
                         {
                             Some(element)

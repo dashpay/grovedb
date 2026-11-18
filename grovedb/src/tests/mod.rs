@@ -1,6 +1,7 @@
 //! Tests
 
 pub mod common;
+pub(crate) mod faultable_reads;
 
 mod query_tests;
 
@@ -18,6 +19,7 @@ mod append_layer_limit_accounting_tests;
 mod append_storage_accounting_tests;
 mod automatic_backward_references_tests;
 mod backward_references_flags_update_tests;
+mod backward_references_in_provable_trees_tests;
 mod batch_backward_references_cost_tests;
 mod batch_backward_references_tests;
 mod batch_coverage_tests;
@@ -119,6 +121,7 @@ mod not_counted_or_summed_tests;
 mod not_summed_tests;
 mod operations_coverage_tests;
 mod overlong_path_segment_tests;
+mod parent_read_fault_tests;
 mod parent_tree_info_result_row_tests;
 mod partial_batch_coherence_tests;
 mod partial_batch_consistency_tests;

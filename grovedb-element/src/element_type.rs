@@ -92,18 +92,6 @@ pub enum ProofNodeType {
     ///           ProvableCountTree parent
     KvValueHash,
 
-    /// Use `Node::KVBackwardsReferencesValueHash` — the node carries the
-    /// element's STRIPPED (inner) serialization plus the 32-byte hash of
-    /// its backward-references list; the verifier recomputes
-    /// `value_hash = combine(H(stripped), backrefs_hash)`, which binds the
-    /// payload bytes without shipping (or leaking) the referrer set.
-    ///
-    /// Used for: ItemWithBackwardsReferences, SumItemWithBackwardsReferences,
-    /// ItemWithSumItemWithBackwardsReferences
-    /// (which are rejected inside Provable* aggregate parents, so no
-    /// count/sum-carrying twin is needed).
-    KvBackwardsReferencesValueHash,
-
     /// Use `Node::KVRefValueHash` - like KVValueHash but for references.
     ///
     /// At the merk layer, this generates `KVValueHash` (since merk doesn't
@@ -351,9 +339,9 @@ pub enum ElementType {
     /// discriminant 27. Hashes like `SumItem`. No wrapper twins.
     SumItemWithBackwardsReferences = 27,
     /// Item carrying an explicit sum value that supports being targeted by
-    /// bidirectional references - discriminant 28. Hashes through the
-    /// combined (stripped ‖ backrefs) scheme like the other two backward-
-    /// references item variants. No wrapper twins.
+    /// bidirectional references - discriminant 28. Hashes over its
+    /// serialization with the referrer list emptied, like the other two
+    /// backward-references item variants. No wrapper twins.
     ItemWithSumItemWithBackwardsReferences = 28,
     /// Provable count + provable big sum tree - discriminant 29. The wide
     /// counterpart of `ProvableCountProvableSumTree`: BOTH the u64 count
@@ -710,9 +698,9 @@ impl ElementType {
     }
 
     /// True for the backward-references ITEM variants — the elements whose
-    /// stored node hash is the two-layer combined hash and whose
-    /// chain-terminal commitment is the stripped LOGICAL hash. Every site
-    /// that special-cases the family by serialized type must use this
+    /// node value hash is taken over their serialization with the referrer
+    /// list emptied, not over the stored bytes. Every site that
+    /// special-cases the family by serialized type must use this
     /// predicate, so adding a member cannot silently miss a dispatch.
     #[inline]
     pub fn is_backward_references_item(self) -> bool {
@@ -826,18 +814,11 @@ impl ElementType {
             || is_provable_big_sum_only_tree;
 
         let base = self.base();
-        if matches!(
-            base,
-            ElementType::ItemWithBackwardsReferences
-                | ElementType::SumItemWithBackwardsReferences
-                | ElementType::ItemWithSumItemWithBackwardsReferences
-        ) {
-            // Combined-hash items: stripped payload + backrefs hash. These
-            // are rejected inside Provable* aggregate parents at insertion,
-            // so no aggregate-carrying variant exists.
-            ProofNodeType::KvBackwardsReferencesValueHash
-        } else if base.has_simple_value_hash() {
-            // Items (Item, SumItem, ItemWithSumItem)
+        if base.has_simple_value_hash() || base.is_backward_references_item() {
+            // Items (Item, SumItem, ItemWithSumItem) and the
+            // backward-references items, which the prover carries with
+            // their referrer list emptied: the bytes their value hash is
+            // taken over.
             if is_provable_count_and_provable_big_sum_tree {
                 ProofNodeType::KvCountBigSum
             } else if is_provable_big_sum_only_tree {
@@ -889,6 +870,11 @@ impl ElementType {
     /// These can safely use `Node::KV` in proofs because the verifier
     /// can recompute the hash from the value. Looks through the
     /// `NonCounted` wrapper.
+    ///
+    /// False for the backward-references items: their value hash is taken
+    /// over the serialization with the referrer list emptied, which differs
+    /// from the stored bytes once a referrer is registered. See
+    /// [`ElementType::is_backward_references_item`].
     #[inline]
     pub fn has_simple_value_hash(&self) -> bool {
         matches!(
@@ -906,6 +892,13 @@ impl ElementType {
     ///
     /// These must use `Node::KVValueHash` in proofs because the verifier
     /// cannot recompute the combined hash without additional information.
+    ///
+    /// This is the negation of [`Self::has_simple_value_hash`], so it is
+    /// also true for the backward-references items, although nothing is
+    /// combined into their value hash: it is the plain hash of their
+    /// serialization with the referrer list emptied, and they are proved in
+    /// the value-carrying nodes. See
+    /// [`ElementType::is_backward_references_item`].
     #[inline]
     pub fn has_combined_value_hash(&self) -> bool {
         !self.has_simple_value_hash()

@@ -583,10 +583,11 @@ pub enum GroveOp {
     /// untrusted mode.
     /// INTERNAL — derived by the backward-references batch preprocessor,
     /// never accepted from callers. Writes `element` with the explicitly
-    /// provided node value hash, already combined per the family's
-    /// two-layer scheme: a referrer rewrite carries
-    /// `combine(element_combined, end_hash)`, a lazy referrer-list cleanup
-    /// carries the cleaned element's own combined hash.
+    /// provided node value hash, already computed per the family's rule.
+    /// With `inner` the hash of the element's serialization with its
+    /// referrer list emptied, a referrer rewrite carries
+    /// `combine(inner, end_hash)` and a lazy referrer-list cleanup carries
+    /// the cleaned element's `inner`, which the cleanup does not change.
     #[non_exhaustive]
     ReplaceBackwardReferenceFamilyMember {
         /// The full family element to store (referrer lists included).
@@ -2606,33 +2607,13 @@ where
                     .wrap_with_cost(OperationCost::default())
             );
 
-            // One exception to the read-the-stored-hash shortcut: a
-            // backward-references item terminal stores the COMBINED
-            // (inner ‖ backrefs) hash, while every reference in a chain
-            // commits to the target's LOGICAL (stripped) hash — otherwise
-            // registering a referrer would ripple through chains. Sniff the
-            // type from the serialized bytes and recompute for that family
-            // only; everything else keeps the fast path unchanged.
-            if ElementType::from_serialized_value(&referenced_value)
-                .map(|et| et.is_backward_references_item())
-                .unwrap_or(false)
-            {
-                let element = cost_return_on_error_into_no_add!(
-                    cost,
-                    Element::deserialize(&referenced_value, grove_version)
-                );
-                let serialized = cost_return_on_error_into_no_add!(
-                    cost,
-                    element
-                        .stripped_of_backward_references()
-                        .serialize(grove_version)
-                );
-                let logical_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
-                return Ok(logical_hash).wrap_with_cost(cost);
-            }
+            // A backward-references item terminal needs no special case:
+            // its stored value hash is the hash of its serialization with
+            // the referrer list emptied, which is what every reference in a
+            // chain commits to.
             // A bidirectional reference here means the declared hop budget
-            // ran out one hop short of a terminal: its stored hash is the
-            // COMBINED reference hash, never the terminal logical hash a
+            // ran out one hop short of a terminal: its stored hash folds in
+            // the end of its own chain, and is never the terminal hash a
             // dependent reference commits to. Fail closed rather than bake
             // a hash that verify_grovedb will report as corrupt. (Plain
             // references keep the long-standing documented contract: an
@@ -3706,22 +3687,17 @@ where
                     level_moves.push((key_info.get_key(), new_key));
                 }
                 // Derived by the backward-references preprocessor: write the
-                // full element with its precomputed combined node value hash
-                // (the two-layer scheme's combine for items; for referrer
-                // rewrites additionally combined with the resolved end
-                // hash).
+                // full element with its precomputed node value hash (the
+                // hash of the element with its referrer list emptied; for
+                // referrer rewrites combined with the resolved end hash).
                 GroveOp::ReplaceBackwardReferenceFamilyMember {
                     element,
                     node_value_hash,
                     end_hash,
                 } => {
                     use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
-                    // The same host-tree rules as direct insertion apply:
-                    // notably, backward-references ITEM variants are not
-                    // representable in Provable* aggregate hosts (no proof
-                    // node binds both their combined value hash and the
-                    // aggregate), so a derived rewrite may not create that
-                    // combination either.
+                    // The same host-tree rules as direct insertion apply
+                    // (a sum item needs a sum-bearing host, and so on).
                     cost_return_on_error_into!(
                         &mut cost,
                         element
@@ -4317,17 +4293,16 @@ where
                             ))
                             .wrap_with_cost(cost);
                         }
-                        // Backward-references items store their COMBINED
-                        // (stripped ‖ referrer-list) hash; the preprocessor
-                        // has already replaced the caller-supplied referrer
-                        // list with the stored one.
+                        // Backward-references items store the hash of
+                        // their serialization with the referrer list
+                        // emptied; the preprocessor has already replaced
+                        // the caller-supplied referrer list with the
+                        // stored one.
                         Element::ItemWithBackwardsReferences(..)
                         | Element::SumItemWithBackwardsReferences(..)
                         | Element::ItemWithSumItemWithBackwardsReferences(..) => {
-                            // Same guard the live `Element::insert` applies:
-                            // the family's combined value hash has no
-                            // aggregate-carrying proof-node variant, so
-                            // Provable* aggregate parents refuse it.
+                            // The same host-tree rules the live
+                            // `Element::insert` applies.
                             {
                                 use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
                                 cost_return_on_error_into!(
@@ -4376,19 +4351,20 @@ where
                                     .serialize(grove_version)
                                     .wrap_with_cost(OperationCost::default())
                             );
-                            let hashes = {
+                            // The node value hash is taken over the
+                            // serialization with the referrer list emptied.
+                            let value_hash = {
                                 use grovedb_merk::element::ElementExt;
                                 cost_return_on_error_into!(
                                     &mut cost,
-                                    element.backward_references_hashes(grove_version)
+                                    element.logical_value_hash(grove_version)
                                 )
-                                .expect("backward-references elements carry hashes")
                             };
                             batch_operations.push((
                                 key_info.get_key(),
                                 Op::PutWithProvidedValueHash(
                                     serialized,
-                                    hashes.combined,
+                                    value_hash,
                                     None,
                                     merk_feature_type,
                                 ),

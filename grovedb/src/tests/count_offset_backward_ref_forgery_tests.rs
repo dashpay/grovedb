@@ -19,15 +19,20 @@
 //! not look for them either. Every public verify entry point returned the
 //! genuine root together with an attacker-chosen `ItemWithBackwardsReferences`
 //! (arbitrary item bytes), `SumItemWithBackwardsReferences` (arbitrary sum)
-//! or `ItemWithSumItemWithBackwardsReferences` (both). Provable* count
-//! trees refuse these types at insert, so an honest proof never carries
-//! one on a directly read row.
+//! or `ItemWithSumItemWithBackwardsReferences` (both).
 //!
 //! The fix turns the merk guard into an allowlist (trees and references,
 //! the only element types an honest prover puts on that node) and adds a
 //! matching allowlist on unresolved rows in the GroveDB post-filter. Both
 //! guards run on the V1 count-offset path only (V0 envelopes reject any
 //! offset), so no grove-version gate is involved.
+//!
+//! Provable* count trees accept the backward-references items. An honest
+//! page carries one like any item: on `KVCount` / `KVCountSum`, with its
+//! referrer list emptied, where the verifier recomputes `H(value)`. The
+//! GroveDB allowlist therefore admits these types; the merk allowlist
+//! still refuses them on a `KVValueHashFeatureType` node, whose hash does
+//! not bind the value bytes.
 //!
 //! Resolved reference rows stay exempt from the GroveDB-level allowlist:
 //! a reference in a count tree may point at a backward-references item
@@ -61,8 +66,6 @@ mod tests {
 
     /// Message the merk-level allowlist in `classify_self` rejects with.
     const MERK_GUARD_MSG: &str = "KVValueHashFeatureType node carries an element of type";
-    /// Message the GroveDB-level allowlist rejects with.
-    const GROVEDB_GUARD_MSG: &str = "a count tree's own rows are simple items or empty trees";
 
     #[derive(Clone, Copy, Debug)]
     enum Host {
@@ -385,14 +388,12 @@ mod tests {
         }
     }
 
-    /// The GroveDB-level allowlist fires on its own. Here the forged bytes
-    /// stay on a `KVCount` node, which the merk count-offset verifier
-    /// accepts (it recomputes `H(value)` from the bytes, so the host root
-    /// changes). The GroveDB post-filter runs before the parent layer
-    /// compares that root with the committed one, so its refusal is the
-    /// one reported.
+    /// Forged bytes left on a `KVCount` / `KVCountSum` node are accepted
+    /// by the merk count-offset verifier, which recomputes `H(value)` from
+    /// them, so the host root they reconstruct is not the committed one
+    /// and the parent layer refuses the proof.
     #[test]
-    fn grovedb_allowlist_rejects_unresolved_backward_reference_rows() {
+    fn forged_bytes_on_a_count_node_do_not_reach_the_committed_root() {
         for (version_name, gv) in versions() {
             for host in Host::ALL {
                 let (db, path_query) = fixture(host, true, gv);
@@ -405,7 +406,7 @@ mod tests {
                     let forged_bytes = forged_element
                         .serialize(gv)
                         .expect("serialize forged element");
-                    let (forged, _, _) = forge(&honest, |node| match node {
+                    let (forged, honest_ops, forged_ops) = forge(&honest, |node| match node {
                         Node::KVCount(key, _, count) => {
                             Node::KVCount(key, forged_bytes.clone(), count)
                         }
@@ -414,43 +415,91 @@ mod tests {
                         }
                         other => panic!("unexpected node {other:?}"),
                     });
-                    match GroveDb::verify_query_raw(&forged, &path_query, gv) {
-                        Err(Error::InvalidProof(_, message))
-                            if message.contains(GROVEDB_GUARD_MSG) => {}
-                        other => panic!(
-                            "{label}: the GroveDB-level allowlist must reject an unresolved \
-                             backward-references row; got {other:?}"
-                        ),
+                    assert_ne!(
+                        reconstructed_host_root(&honest_ops),
+                        reconstructed_host_root(&forged_ops),
+                        "{label}: a count node rehashes its value bytes"
+                    );
+                    for (entry_point, outcome) in verify_everywhere(&forged, &path_query, gv) {
+                        assert!(
+                            matches!(outcome, Err(Error::InvalidProof(..))),
+                            "{label}/{entry_point}: forged bytes on a count node must be \
+                             refused; got {outcome:?}"
+                        );
                     }
                 }
             }
         }
     }
 
-    /// The premise of both allowlists: a Provable* count tree refuses the
-    /// backward-references items at insert, so no honest proof carries one
-    /// as a directly read row. If this starts failing, honest proofs may
-    /// carry these rows and both allowlists need revisiting.
+    /// A Provable* count tree holds backward-references items, and an
+    /// honest offset page proves one like any item: the verifier returns
+    /// it with its referrer list emptied, under the committed root, even
+    /// while a referrer is registered on it.
     #[test]
-    fn count_hosts_refuse_backward_reference_items_at_insert() {
+    fn count_hosts_prove_backward_reference_items_in_offset_pages() {
         let gv = GroveVersion::latest();
         for host in Host::ALL {
-            let db = make_test_grovedb(gv);
-            db.insert(&[] as &[&[u8]], HOST, host.empty_element(), None, None, gv)
+            for left_to_right in [true, false] {
+                let label = format!("{host:?}/left_to_right={left_to_right}");
+                let (db, path_query) = fixture(host, left_to_right, gv);
+                // A ProvableCountTree is not a sum tree, so it takes the
+                // plain item; the two sum-bearing hosts take the sum twin.
+                let target = match host {
+                    Host::Pct => {
+                        Element::new_item_allowing_bidirectional_references(b"target".to_vec())
+                    }
+                    Host::Pcs | Host::Pcps => {
+                        Element::new_item_with_sum_item_allowing_bidirectional_references(
+                            b"target".to_vec(),
+                            7,
+                        )
+                    }
+                };
+                db.insert(&[HOST], TARGET, target.clone(), None, None, gv)
+                    .unwrap()
+                    .unwrap_or_else(|e| panic!("{label}: the host must accept the target: {e}"));
+                // Register a referrer from another subtree, so the stored
+                // bytes carry a list the proved bytes do not.
+                db.insert(
+                    &[] as &[&[u8]],
+                    b"refs",
+                    Element::empty_tree(),
+                    None,
+                    None,
+                    gv,
+                )
                 .unwrap()
-                .expect("insert host tree");
-            for (name, element) in forged_elements() {
-                // A ProvableCountTree is not a sum tree, so it refuses the
-                // two sum-carrying variants for that reason first.
-                match db.insert(&[HOST], b"row", element, None, None, gv).unwrap() {
-                    Err(Error::InvalidInput(message))
-                        if message.contains("may not live in Provable* aggregate trees")
-                            || message.contains("cannot add sum item to non sum tree") => {}
-                    other => panic!(
-                        "{host:?} must refuse a {name} at insert; the count-offset \
-                         allowlists assume no honest row has this type. Got {other:?}"
+                .expect("insert the referrer tree");
+                db.insert(
+                    &[b"refs".as_slice()],
+                    b"ref",
+                    Element::new_bidirectional_reference(
+                        crate::reference_path::ReferencePathType::AbsolutePathReference(vec![
+                            HOST.to_vec(),
+                            TARGET.to_vec(),
+                        ]),
                     ),
-                }
+                    None,
+                    None,
+                    gv,
+                )
+                .unwrap()
+                .unwrap_or_else(|e| panic!("{label}: register a referrer: {e}"));
+
+                let proof = db
+                    .prove_query(&path_query, None, gv)
+                    .unwrap()
+                    .unwrap_or_else(|e| panic!("{label}: prove the page: {e}"));
+                let (root, rows) = GroveDb::verify_query(&proof, &path_query, gv)
+                    .unwrap_or_else(|e| panic!("{label}: verify the page: {e}"));
+                assert_eq!(root, db.root_hash(None, gv).unwrap().unwrap(), "{label}");
+                let proved = rows
+                    .into_iter()
+                    .find(|(_, key, _)| key == TARGET)
+                    .and_then(|(_, _, element)| element)
+                    .unwrap_or_else(|| panic!("{label}: the page must return the target"));
+                assert_eq!(proved, target, "{label}: the row arrives with no referrers");
             }
         }
     }
