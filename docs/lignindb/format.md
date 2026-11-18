@@ -504,12 +504,12 @@ changes and U6 applies without exception.
 
 | Task | Takes from here | Still its own to define |
 | --- | --- | --- |
-| FMT-02 Tree page codec | `PageId` for cross-page pointers, with 0 for "none". A page image is a record: it has a checksum (section 4) and no version of its own (R5). | In-page slot numbers, cell layout, the page header, the value pointer. |
+| FMT-02 Tree page codec | `PageId` for cross-page pointers, with 0 for "none". A page image is a record: it has a checksum (section 4) and no version of its own (R5). | In-page slot numbers, cell layout, the page header, and how a cell stores the value pointer. The pointer's fields and its 16-byte encoding are FMT-07's. |
 | FMT-03 Page delta records | The record rules R1 to R7 and the checksum. | Its own compact header, to meet the 48-byte hash delta. |
 | FMT-04 Flat page codec | As FMT-02. | Everything inside the page. |
 | FMT-05 Log record format | `CommitVersion` for a commit group; consecutive groups differ by one (3.2). The default frame. A group above 128 MiB is several records (C5). | Group layout, record kinds, and what a failed record means for the tail (R7). |
 | FMT-06 Segment, manifest format | The file header and kind codes. The manifest's header version is the database format version (V3). `FileId` for naming live files. | Block headers, the footer index, the manifest body, the meaning of the manifest's sequence field (H3). |
-| FMT-07 Value log format | The default frame. A value above 128 MiB is several records (C5). `PageId` for the back pointer. | The record layout. The back pointer also needs an in-page slot, which FMT-02 defines (see section 9, item 7). |
+| FMT-07 Value log format | The default frame. A value above 128 MiB is several records (C5). `PageId` for the back pointer and `FileId` for the value pointer. | The record layout, the value pointer, and the rules that make the back pointer enough to find the owning cell ([`value-log-format.md`](value-log-format.md)). |
 | TREE-01 Merkle host model | A page id is logical, stable under relocation, dense and shared by all page kinds (3.1). | Everything about what goes in a page. |
 | TXN-01 Version model | The commit version is a dense count from 0, with 2^64 − 1 free as a marker (3.2). | Visibility, pins, and every rule about writers. |
 | STORE-03 Page table, STORE-10 Page id allocation | Page ids run from 1 and are dense, so a table index is the id minus one. An id is reused only under STORE-10's rule. | The table's own file format and the allocator. |
@@ -539,9 +539,10 @@ owner can overrule one before formats are built on it.
    for every old version. The bytes on disk are the same either way, so this
    can still change when version 2 is designed.
 7. **In-page slot numbers are not defined here.** They are part of the page
-   layout (FMT-02). FMT-07's back pointer and TREE-05's subtree location need
-   a cell address, which is a page id plus a slot, and FMT-07 is scheduled
-   before FMT-02. Whoever comes first defines the slot width for both.
+   layout (FMT-02). The plan has since fixed their width at 16 bits.
+   TREE-05's subtree location needs a cell address, which is a page id plus
+   a slot. FMT-07's back pointer does not: it names a page and stores no
+   slot (section 5 of `value-log-format.md`).
 8. **`crc32c` is a dependency** (section 4), in place of a slower checksum
    written in safe Rust inside the crate. Its software fallback is not
    exercised by the tests on the development machine.

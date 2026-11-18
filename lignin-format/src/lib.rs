@@ -13,6 +13,7 @@ pub mod header;
 pub mod ids;
 pub mod manifest;
 pub mod segment;
+pub mod value_log;
 
 pub use checksum::Checksum;
 pub use error::FormatError;

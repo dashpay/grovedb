@@ -138,8 +138,9 @@ depends only on the tree's content, so that equal histories give equal bytes
 **P5. A leaf value is inline or out of line.** If bit 0 of the flags is 0, the
 value bytes are the value. If it is 1, they are a pointer to a value stored
 outside the page. This format does not define that pointer or check it: the
-layout is the value pointer's, which is FMT-02's to define (format.md section
-8), and the page stores whatever bytes it is given. A value may be empty.
+layout is the value pointer's, which FMT-07 defines (section 4 of
+`value-log-format.md`), and the page stores whatever bytes it is given. A
+value may be empty.
 
 **P6. A branch with *n* separators has *n* + 1 children.** Child 0 is the
 first child, in the header. Child *i* + 1 is stored with separator *i*. Every
@@ -299,7 +300,8 @@ owner can overrule one before TREE-07 and FMT-05 build on it.
 5. **A flag for out-of-line values, with the pointer left opaque** (P5). Flat
    values can be larger than a page (bulk-append chunks, for example), so the
    leaf needs to say which kind of bytes it holds. The pointer's layout is
-   left to FMT-02 so that tree and flat cells use the same one.
+   FMT-07's (section 4 of `value-log-format.md`), so that tree and flat
+   cells use the same one.
 6. **Offsets are 16 bits, so an image is at most 65,535 bytes** (P10). The
    page size itself is not fixed here: the builders take it as a parameter,
    and any value up to 65,535 that has room for the header and the prefix
@@ -310,7 +312,7 @@ owner can overrule one before TREE-07 and FMT-05 build on it.
    16 bits, as the owner decided for slots. A back pointer from the value log
    to a flat leaf (FMT-07, STORE-09) cannot be a page id and a slot: it has to
    be a page id and a key, or the cleaner has to look for the pointer in the
-   page.
+   page. FMT-07 chose the second (section 5 of `value-log-format.md`).
 8. **The first byte of an image is a page kind code**, with 1 and 2 taken
    here. If FMT-02 puts its own kind code in the first byte of a tree page,
    with a different number, any page can be told apart from its first byte.
