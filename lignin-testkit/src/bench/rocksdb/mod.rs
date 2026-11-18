@@ -342,6 +342,8 @@ impl Engine for RocksDbEngine {
 /// It does what [`Outcome`] asks of the caller of [`apply`], as
 /// [`crate::workload::Transactions`] does, but keeps the block's transaction
 /// itself so a commit is timed alone, without starting the next block's.
+/// A snapshot lives within one block: a commit with one open is refused, as
+/// the measured workload never holds one across blocks.
 pub struct RocksDbBlock<'a> {
     db: &'a GroveDb,
     transaction: Transaction<'a>,
@@ -375,6 +377,13 @@ impl Block for RocksDbBlock<'_> {
     }
 
     fn commit(self) -> Result<(), BenchError> {
+        if self.snapshot.is_some() {
+            return Err(BenchError::Check(
+                "a snapshot read transaction is open at the end of the block; the harness \
+                 keeps one only within a block"
+                    .to_string(),
+            ));
+        }
         Ok(self.db.commit_transaction(self.transaction).value?)
     }
 }
@@ -588,6 +597,14 @@ mod tests {
         block
             .apply(&step(TransactionOp::CloseSnapshot), grove_version)
             .unwrap();
+        let mut held = engine.begin_block();
+        held.apply(&step(TransactionOp::OpenSnapshot), grove_version)
+            .unwrap();
+        assert!(held
+            .commit()
+            .unwrap_err()
+            .to_string()
+            .starts_with("a snapshot read transaction is open at the end of the block"));
         block
             .apply(&step(TransactionOp::Abandon), grove_version)
             .unwrap();

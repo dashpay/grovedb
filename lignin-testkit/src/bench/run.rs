@@ -326,7 +326,12 @@ fn sampled_count_row(id: &str, phase: &str, unit: &str, samples: Vec<f64>, sourc
 /// Key and value bytes `op` writes: each key plus its serialized element.
 fn logical_bytes(op: &Op, grove_version: &GroveVersion) -> u64 {
     match op {
-        Op::Write(Write::Insert { key, element, .. }) => entry_bytes(key, element, grove_version),
+        Op::Write(
+            Write::Insert { key, element, .. }
+            | Write::InsertIfNotExists { key, element, .. }
+            | Write::InsertIfChanged { key, element, .. }
+            | Write::IndexedInsert { key, element, .. },
+        ) => entry_bytes(key, element, grove_version),
         Op::Batch(ops) => batch_bytes(ops, grove_version),
         Op::PartialBatch(batch) => {
             batch_bytes(&batch.ops, grove_version) + batch_bytes(&batch.add_on, grove_version)
@@ -350,18 +355,24 @@ fn batch_bytes(ops: &[BatchOp], grove_version: &GroveVersion) -> u64 {
             BatchOp::InsertOrReplace { key, element, .. }
             | BatchOp::InsertOnly { key, element, .. }
             | BatchOp::InsertIfNotExists { key, element, .. }
-            | BatchOp::Replace { key, element, .. } => entry_bytes(key, element, grove_version),
+            | BatchOp::Replace { key, element, .. }
+            | BatchOp::Patch { key, element, .. } => entry_bytes(key, element, grove_version),
             BatchOp::RefreshReference {
                 key,
                 reference,
                 max_hop,
                 flags,
+                non_counted,
                 ..
-            } => entry_bytes(
-                key,
-                &Element::Reference(reference.clone(), *max_hop, flags.clone()),
-                grove_version,
-            ),
+            } => {
+                let reference = Element::Reference(reference.clone(), *max_hop, flags.clone());
+                let stored = if *non_counted {
+                    Element::NonCounted(Box::new(reference))
+                } else {
+                    reference
+                };
+                entry_bytes(key, &stored, grove_version)
+            }
             _ => 0,
         })
         .sum()
@@ -1249,6 +1260,43 @@ mod tests {
             pause_height: None,
         });
         assert_eq!(logical_bytes(&partial, grove_version), 2 * entry);
+        let item = Element::new_item(vec![1; 10]);
+        for write in [
+            Write::InsertIfNotExists {
+                path: vec![],
+                key: b"key".to_vec(),
+                element: item.clone(),
+                return_existing: false,
+            },
+            Write::InsertIfChanged {
+                path: vec![],
+                key: b"key".to_vec(),
+                element: item.clone(),
+            },
+        ] {
+            assert_eq!(logical_bytes(&Op::Write(write), grove_version), entry);
+        }
+        let patch = BatchOp::Patch {
+            path: vec![],
+            key: b"key".to_vec(),
+            element: item,
+            change_in_bytes: 0,
+        };
+        assert_eq!(logical_bytes(&Op::Batch(vec![patch]), grove_version), entry);
+        let reference = |non_counted| BatchOp::RefreshReference {
+            path: vec![],
+            key: b"key".to_vec(),
+            reference: grovedb::element::reference_path::ReferencePathType::SiblingReference(
+                b"other".to_vec(),
+            ),
+            max_hop: None,
+            flags: None,
+            non_counted,
+            trusted: true,
+        };
+        let plain = logical_bytes(&Op::Batch(vec![reference(false)]), grove_version);
+        let wrapped = logical_bytes(&Op::Batch(vec![reference(true)]), grove_version);
+        assert!(wrapped > plain, "the NonCounted wrapper is stored too");
         assert_eq!(logical_bytes(&Op::Commit, grove_version), 0);
     }
 }
