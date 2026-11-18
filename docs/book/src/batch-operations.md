@@ -175,7 +175,9 @@ insert is applied, so there a tree the batch also fills skips them.
 The checks on what the key already holds
 (`validate_insertion_does_not_override`,
 `validate_insertion_does_not_override_tree`, `InsertIfNotExists`) are not made
-for a filled tree on any version: it is written without reading its key.
+for a filled tree on any version: it is written without reading its key. The
+rule that an entry of an indexed tree without a root key claims no aggregate
+is not made for it either: the entry stores the aggregate its contents give.
 
 ## Atomic Cross-Subtree Operations
 

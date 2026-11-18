@@ -1283,3 +1283,27 @@ fn a_filled_tree_with_a_128_bit_sum_around_it_is_refused_as_the_insert_alone_is(
             .unwrap_or_else(|e| panic!("{name}: taken with the slot at 0, got {e:?}"));
     }
 }
+
+/// A slot value the batch does not know is an error, for the insert alone
+/// and for the filled tree, and nothing is written.
+#[test]
+fn an_unknown_slot_value_is_a_version_error() {
+    let mut unknown = GroveVersion::latest().clone();
+    unknown
+        .grovedb_versions
+        .apply_batch
+        .filled_tree_insert_checks = 2;
+    let db = db_with_parent(&Element::empty_tree(), &unknown);
+    let before = root_hash(&db, &unknown);
+    for ops in [
+        create(&Element::empty_tree()),
+        create_and_fill(&Element::empty_tree(), &item()),
+    ] {
+        let refused = apply(&db, ops, &unknown);
+        assert!(
+            matches!(refused, Err(Error::VersionError(_))),
+            "{refused:?}"
+        );
+    }
+    assert_eq!(root_hash(&db, &unknown), before);
+}

@@ -106,7 +106,9 @@
 //!   already holds (`validate_insertion_does_not_override`,
 //!   `validate_insertion_does_not_override_tree`, `InsertIfNotExists`) are
 //!   not part of it: a filled tree is written without reading the key on
-//!   every version.
+//!   every version. Nor is the rule that an entry of an indexed tree
+//!   without a root key claims no aggregate: a filled entry stores the
+//!   aggregate its contents give.
 //!
 //! - `merk_versions.tree.just_in_time_value_update: 2`: Merk accepts that
 //!   answer and records the removal plus the insertion. Versions 0 and 1

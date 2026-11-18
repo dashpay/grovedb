@@ -376,8 +376,17 @@ pub struct GroveDBApplyBatchVersions {
     ///   a `PrivateDocumentStore` is empty with a valid config), and a tree
     ///   written from propagated root state is checked against its parent
     ///   where it is applied (the wrapper rules, and the child rule of an
-    ///   indexed parent). The batch is refused with the error the same
-    ///   insert gives without operations under it.
+    ///   indexed parent). For these checks the batch is refused with the
+    ///   error the same insert gives without operations under it.
+    ///
+    /// Two rules of an insert are left out on every value, so the slot does
+    /// not promise that a filled tree is refused wherever the insert alone
+    /// is. An entry of an indexed tree that has no root key may not claim an
+    /// aggregate when it is inserted alone; filled, it is taken and stores
+    /// the aggregate its contents give. And the checks on what the key
+    /// already holds (`validate_insertion_does_not_override`,
+    /// `validate_insertion_does_not_override_tree`, `InsertIfNotExists`) are
+    /// not made for a filled tree, which is written without reading its key.
     ///
     /// The slot gates an accepted/rejected outcome. No tracked cost changes
     /// for a batch both values accept.

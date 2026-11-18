@@ -379,7 +379,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `validate_insertion_does_not_override_tree`, `InsertIfNotExists`). A
   filled tree is written without reading its key on every version, so they
   do not refuse it (#779 covers what a tree written over a stored one
-  leaves behind).
+  leaves behind). Nor is the rule that an entry of an indexed tree without a
+  root key claims no aggregate: alone such an entry is refused, filled it is
+  taken and stores the aggregate its contents give, on every version.
 - From `GROVE_V5`, a batch that inserts a sum or count tree and leaves the
   level below it empty stores that tree. The batch carries operations at the
   tree's own path and none leaves a key there, for example a delete of a key
