@@ -1345,7 +1345,7 @@ mod tests {
         };
         let handover = crate::workload::HandoverBatch {
             ops: ops.clone(),
-            full_handover_owners: vec![[7; 32]],
+            full_handover_owners: [[7; 32]].into(),
         };
         let pairs = [
             (Op::FlagsBatch(ops.clone()), Op::Batch(ops.clone()), entry),

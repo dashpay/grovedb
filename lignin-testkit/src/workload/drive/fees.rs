@@ -196,7 +196,7 @@ impl StorageFees {
             let op = if updates && state.hands_over {
                 Op::FlagsHandoverBatch(HandoverBatch {
                     ops: batch,
-                    full_handover_owners: state.sponsors.clone(),
+                    full_handover_owners: state.sponsors.iter().copied().collect(),
                 })
             } else {
                 Op::FlagsBatch(batch)

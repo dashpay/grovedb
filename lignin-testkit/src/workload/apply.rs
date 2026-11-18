@@ -36,6 +36,12 @@
 //! [`Op::FlagsPartialBatch`]. Every other operation runs with GroveDB's
 //! own: flags are stored as written and freed bytes are not divided.
 //!
+//! The operations of those three kinds are also built the way Drive builds
+//! every operation it puts in a batch: each declares that the value it
+//! replaces or deletes takes no part in a backward reference
+//! (`dont_check_for_backwards_references`). For the elements the streams
+//! hold, GroveDB returns the same cost, root hash and proof either way.
+//!
 //! Drive passes one of three first callbacks:
 //!
 //! - **With a batch**: [`StorageFlags::update_element_flags`]. An update
@@ -69,6 +75,8 @@
     clippy::result_large_err,
     reason = "an operation fails with GroveDB's own error, whatever its size"
 )]
+
+use std::collections::BTreeSet;
 
 use grovedb::{
     batch::{BatchApplyOptions, OpsByLevelPath, QualifiedGroveDbOp, SubelementsDeletionBehavior},
@@ -333,7 +341,7 @@ pub fn apply(
         }
         Op::FlagsBatch(ops) => db
             .apply_batch_with_element_flags_update(
-                ops.iter().map(BatchOp::to_grove_op).collect(),
+                ops.iter().map(drive_op).collect(),
                 Some(BATCH_OPTIONS),
                 merge_flags,
                 split_removed_bytes,
@@ -346,7 +354,7 @@ pub fn apply(
         }
         Op::FlagsHandoverBatch(batch) => db
             .apply_batch_with_element_flags_update(
-                batch.ops.iter().map(BatchOp::to_grove_op).collect(),
+                batch.ops.iter().map(drive_op).collect(),
                 Some(BATCH_OPTIONS),
                 |cost, stored, written| {
                     merge_flags_for_owner_change(cost, stored, written, &batch.full_handover_owners)
@@ -571,7 +579,7 @@ fn merge_flags_for_owner_change(
     cost: &StorageCost,
     stored: Option<ElementFlags>,
     written: &mut ElementFlags,
-    full_handover_owners: &[[u8; 32]],
+    full_handover_owners: &BTreeSet<[u8; 32]>,
 ) -> Result<ElementFlagsUpdate, StorageFlagsError> {
     let names_full_handover_owner = |flags: &ElementFlags| -> Result<bool, StorageFlagsError> {
         Ok(
@@ -628,6 +636,13 @@ fn split_removed_bytes_of_a_partial_batch(
     })
 }
 
+/// The GroveDB batch operation Drive builds for `op`: one that declares
+/// the value it replaces or deletes to take no part in a backward
+/// reference.
+fn drive_op(op: &BatchOp) -> QualifiedGroveDbOp {
+    op.to_grove_op().dont_check_for_backwards_references()
+}
+
 /// The callbacks a partial batch is applied with.
 #[derive(Clone, Copy)]
 enum Callbacks {
@@ -645,14 +660,18 @@ fn apply_partial_batch(
     grove_version: &GroveVersion,
 ) -> CostResult<Outcome, Error> {
     let mut first_segment = OperationCost::default();
-    let ops = batch.ops.iter().map(BatchOp::to_grove_op).collect();
+    let grove_op = match callbacks {
+        Callbacks::GroveDb => BatchOp::to_grove_op,
+        Callbacks::Drive => drive_op,
+    };
+    let ops = batch.ops.iter().map(grove_op).collect();
     let options = Some(BatchApplyOptions {
         batch_pause_height: batch.pause_height,
         ..BATCH_OPTIONS
     });
     let add_on = |cost: &OperationCost, _left_over: &Option<OpsByLevelPath>| {
         first_segment = cost.clone();
-        Ok(batch.add_on.iter().map(BatchOp::to_grove_op).collect())
+        Ok(batch.add_on.iter().map(grove_op).collect())
     };
     match callbacks {
         Callbacks::GroveDb => {

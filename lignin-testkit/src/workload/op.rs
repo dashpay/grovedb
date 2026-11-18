@@ -5,6 +5,8 @@
 //! [`super::apply()`]), record it, replay it, or read it without a database at
 //! all, as a tree-layout simulation does.
 
+use std::collections::BTreeSet;
+
 use grovedb::{
     element::reference_path::ReferencePathType, AggregateSumPathQuery, Element, ElementFlags,
     PathQuery, TreeType,
@@ -75,13 +77,14 @@ pub enum Op {
 /// element is freed whole, to its owner and by its epochs, and the element
 /// written is stored with its flags as written and charged whole. That is
 /// how a gas sponsor and the owner of a document it paid for are kept
-/// apart. GroveDB accepts that answer from grove version 5.
+/// apart. GroveDB accepts that answer from grove version 5. The owners are
+/// a set, as in Drive, and are encoded in ascending order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HandoverBatch {
     /// The operations of the batch.
     pub ops: Vec<BatchOp>,
     /// The owners a handover to or from which is a full one.
-    pub full_handover_owners: Vec<[u8; 32]>,
+    pub full_handover_owners: BTreeSet<[u8; 32]>,
 }
 
 /// A step that is neither a write nor a read of the block's state: the open

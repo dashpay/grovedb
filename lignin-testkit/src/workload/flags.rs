@@ -26,7 +26,7 @@
 //!
 //! [`Coverage`]: super::Coverage
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use grovedb::Element;
 use grovedb_epoch_based_storage_flags::StorageFlags;
@@ -64,7 +64,7 @@ enum Callbacks<'a> {
     PartialBatch,
     /// Those of an [`Op::FlagsHandoverBatch`], with the owners a handover
     /// to or from which is a full one.
-    Handover(&'a [Owner]),
+    Handover(&'a BTreeSet<Owner>),
 }
 
 /// What the flags of one stored element hold.
@@ -381,11 +381,33 @@ impl History {
     }
 }
 
+/// A key in a subtree.
+type Place = (Path, Vec<u8>);
+
+/// What the operations of a stream left at the places they wrote.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Places {
+    /// The history of each element whose flags are known.
+    followed: BTreeMap<Place, History>,
+    /// The places that may hold an element whose flags are not known.
+    unfollowed: BTreeSet<Place>,
+    /// The trees that may hold elements whose flags are not known.
+    unfollowed_trees: BTreeSet<Path>,
+}
+
 /// The history of every element a stream wrote through its flags
-/// operations.
+/// operations, in the open transaction.
+///
+/// A place holds a history only while the flags GroveDB stores there are
+/// known. An element written some other way than by a put under Drive's
+/// callbacks is followed no further, and neither is one written over it,
+/// until the place is deleted. A transaction that is taken back gives the
+/// places back as they were.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Histories {
-    elements: BTreeMap<(Path, Vec<u8>), History>,
+    now: Places,
+    committed: Places,
+    savepoints: Vec<Places>,
 }
 
 impl Histories {
@@ -396,97 +418,136 @@ impl Histories {
 
     /// The history of the element at `key` in the subtree at `path`.
     pub fn get(&self, path: &[Vec<u8>], key: &[u8]) -> Option<&History> {
-        self.elements.get(&(path.to_vec(), key.to_vec()))
+        self.now.followed.get(&(path.to_vec(), key.to_vec()))
     }
 
     /// Follows one operation: what an operation that runs Drive's
-    /// callbacks does to the flags of the elements it writes. Any other
-    /// operation ends the history of what it writes or deletes.
+    /// callbacks does to the flags of the elements it writes, what any
+    /// other operation ends the history of, and what a step on the
+    /// transaction keeps or takes back.
     pub fn record(&mut self, op: &Op) -> Seen {
         let mut seen = Seen::default();
         let callbacks = match op {
             Op::FlagsBatch(_) => Callbacks::Batch,
             Op::FlagsPartialBatch(_) => Callbacks::PartialBatch,
             Op::FlagsHandoverBatch(batch) => Callbacks::Handover(&batch.full_handover_owners),
-            Op::Write(
-                Write::SectionalDelete { path, key }
-                | Write::SectionalDeleteUpTree { path, key, .. },
-            ) => {
-                self.delete(path, key, &mut seen);
-                return seen;
-            }
             Op::Write(write) => {
-                self.forget_written(write);
+                self.now.write_directly(write, &mut seen);
                 return seen;
             }
             Op::Batch(_) | Op::PartialBatch(_) => {
                 for batch_op in op.batch_ops() {
-                    if let Some((path, key)) = batch_op.place() {
-                        self.delete(path, key, &mut Seen::default());
-                    }
+                    self.now.batch_op(batch_op, None, &mut Seen::default());
                 }
                 return seen;
             }
-            Op::Transaction(
-                TransactionOp::Rollback
-                | TransactionOp::RollbackToSavepoint
-                | TransactionOp::Abandon,
-            ) => {
-                self.elements.clear();
+            Op::Commit => {
+                self.committed = self.now.clone();
+                self.savepoints.clear();
                 return seen;
             }
-            Op::Read(_) | Op::Commit | Op::FlushPendingDrops | Op::Transaction(_) => return seen,
+            Op::Transaction(TransactionOp::Rollback | TransactionOp::Abandon) => {
+                self.now = self.committed.clone();
+                self.savepoints.clear();
+                return seen;
+            }
+            Op::Transaction(TransactionOp::SetSavepoint) => {
+                self.savepoints.push(self.now.clone());
+                return seen;
+            }
+            Op::Transaction(TransactionOp::RollbackToSavepoint) => {
+                if let Some(saved) = self.savepoints.pop() {
+                    self.now = saved;
+                }
+                return seen;
+            }
+            Op::Read(_) | Op::FlushPendingDrops | Op::Transaction(_) => return seen,
         };
         for batch_op in op.batch_ops() {
-            match batch_op {
-                BatchOp::InsertOrReplace { path, key, element }
-                | BatchOp::InsertOnly { path, key, element }
-                | BatchOp::Replace { path, key, element } => {
-                    self.write(path, key, element, callbacks, &mut seen);
-                }
-                // Whether the key is taken is not known unless its element
-                // is followed, in which case it stays as it is.
-                BatchOp::InsertIfNotExists { .. } => {}
-                BatchOp::Delete { path, key }
-                | BatchOp::DeleteTree { path, key, .. }
-                | BatchOp::DropFlat { path, key, .. } => self.delete(path, key, &mut seen),
-                BatchOp::Patch { path, key, .. } | BatchOp::Move { path, key, .. } => {
-                    self.elements.remove(&(path.clone(), key.clone()));
-                }
-                BatchOp::RefreshReference { .. } | BatchOp::Append { .. } => {}
-            }
+            self.now.batch_op(batch_op, Some(callbacks), &mut seen);
         }
         seen
     }
+}
 
-    /// Ends the history of what a direct write under GroveDB's own
-    /// callbacks stores or deletes.
-    fn forget_written(&mut self, write: &Write) {
-        let place = match write {
-            Write::Insert { path, key, .. }
-            | Write::Delete { path, key }
+impl Places {
+    /// Whether the place may hold an element whose flags are not known.
+    fn is_unfollowed(&self, path: &[Vec<u8>], key: &[u8]) -> bool {
+        self.unfollowed.contains(&(path.to_vec(), key.to_vec()))
+            || self
+                .unfollowed_trees
+                .iter()
+                .any(|tree| path.starts_with(tree))
+    }
+
+    /// What one operation of a batch does: under Drive's `callbacks`, or
+    /// under GroveDB's own.
+    fn batch_op(&mut self, op: &BatchOp, callbacks: Option<Callbacks>, seen: &mut Seen) {
+        match op {
+            BatchOp::InsertOrReplace { path, key, element }
+            | BatchOp::InsertOnly { path, key, element }
+            | BatchOp::Replace { path, key, element } => match callbacks {
+                Some(callbacks) => self.write(path, key, element, callbacks, seen),
+                None => self.unfollow(path, key, element.is_any_tree()),
+            },
+            // Whether the key is taken is not known unless its element is
+            // followed, in which case it stays as it is.
+            BatchOp::InsertIfNotExists { path, key, .. } => {
+                if callbacks.is_none() || !self.followed.contains_key(&(path.clone(), key.clone()))
+                {
+                    self.unfollow(path, key, false);
+                }
+            }
+            BatchOp::Delete { path, key }
+            | BatchOp::DeleteTree { path, key, .. }
+            | BatchOp::DropFlat { path, key, .. } => self.delete(path, key, seen),
+            BatchOp::Patch { path, key, .. } => self.unfollow(path, key, false),
+            BatchOp::Move { path, key, new_key } => {
+                self.delete(path, key, &mut Seen::default());
+                self.delete(path, new_key, &mut Seen::default());
+                self.unfollowed.insert((path.clone(), new_key.clone()));
+                self.unfollowed_trees.insert(child(path, new_key));
+            }
+            BatchOp::RefreshReference { path, key, .. } => {
+                if callbacks.is_none() {
+                    self.unfollow(path, key, false);
+                }
+            }
+            BatchOp::Append { .. } => {}
+        }
+    }
+
+    /// What a write outside a batch does. It runs GroveDB's own callbacks,
+    /// but for the two deletes that take Drive's.
+    fn write_directly(&mut self, write: &Write, seen: &mut Seen) {
+        match write {
+            Write::SectionalDelete { path, key }
+            | Write::SectionalDeleteUpTree { path, key, .. } => self.delete(path, key, seen),
+            Write::Delete { path, key }
             | Write::DropFlat { path, key }
-            | Write::InsertIfNotExists { path, key, .. }
-            | Write::InsertIfChanged { path, key, .. }
-            | Write::DeleteIfEmptyTree { path, key }
             | Write::DeleteUpTree { path, key, .. }
             | Write::DeleteBuilt { path, key }
-            | Write::IndexedInsert { path, key, .. }
-            | Write::IndexedDelete { path, key, .. } => Some((path.as_slice(), key)),
-            Write::ClearSubtree { path } => path.split_last().map(|(key, path)| (path, key)),
+            | Write::IndexedDelete { path, key, .. } => {
+                self.delete(path, key, &mut Seen::default());
+            }
+            Write::Insert { path, key, .. }
+            | Write::InsertIfNotExists { path, key, .. }
+            | Write::InsertIfChanged { path, key, .. }
+            | Write::IndexedInsert { path, key, .. } => self.unfollow(path, key, false),
+            // The tree stays, with what it holds, unless it is empty.
+            Write::DeleteIfEmptyTree { path, key } => self.unfollow(path, key, false),
+            Write::ClearSubtree { path } => {
+                self.forget_under(path);
+            }
             Write::Append { .. }
             | Write::PutAux { .. }
             | Write::DeleteAux { .. }
             | Write::ReconcileIndexed { .. }
-            | Write::CommitmentInsert { .. }
-            | Write::SectionalDelete { .. }
-            | Write::SectionalDeleteUpTree { .. } => None,
-        };
-        if let Some((path, key)) = place {
-            self.delete(path, key, &mut Seen::default());
+            | Write::CommitmentInsert { .. } => {}
         }
     }
 
+    /// A put under Drive's callbacks.
     fn write(
         &mut self,
         path: &Path,
@@ -497,17 +558,22 @@ impl Histories {
     ) {
         let place = (path.clone(), key.to_vec());
         let Some(flags) = written(element) else {
-            self.elements.remove(&place);
+            self.unfollow(path, key, element.is_any_tree());
             return;
         };
         let Some(flags) = flags else {
             // GroveDB does not ask the callbacks about an element written
-            // without flags: it is stored as it is.
-            seen.update.removed_flags |= self.elements.remove(&place).is_some();
+            // without flags: it is stored as it is, and the next flags
+            // written over it are stored as they are.
+            seen.update.removed_flags |= self.followed.remove(&place).is_some();
+            self.unfollowed.remove(&place);
             return;
         };
-        let Some(history) = self.elements.get_mut(&place) else {
-            self.elements.insert(place, flags);
+        if self.is_unfollowed(path, key) {
+            return;
+        }
+        let Some(history) = self.followed.get_mut(&place) else {
+            self.followed.insert(place, flags);
             return;
         };
         match history.update(&flags, callbacks) {
@@ -520,23 +586,58 @@ impl Histories {
                 seen.dropped_history |= update.dropped_history;
                 seen.replaced |= update.replaced;
             }
-            None => {
-                self.elements.remove(&place);
-            }
+            None => self.unfollow(path, key, false),
         }
     }
 
-    /// Forgets the element at the key and, where the key held a tree,
-    /// everything under it.
+    /// The place holds an element whose flags are not known from here on.
+    /// A tree written where something is known below is not known to hold
+    /// it any more, or anything else.
+    fn unfollow(&mut self, path: &[Vec<u8>], key: &[u8], tree: bool) {
+        let place = (path.to_vec(), key.to_vec());
+        self.followed.remove(&place);
+        self.unfollowed.insert(place);
+        let below = child(path, key);
+        if tree && self.forget_under(&below) {
+            self.unfollowed_trees.insert(below);
+        }
+    }
+
+    /// Nothing is stored at the key, or under it where it held a tree.
     fn delete(&mut self, path: &[Vec<u8>], key: &[u8], seen: &mut Seen) {
-        if let Some(history) = self.elements.remove(&(path.to_vec(), key.to_vec())) {
+        let place = (path.to_vec(), key.to_vec());
+        if let Some(history) = self.followed.remove(&place) {
             seen.deleted_several_epochs |= !history.later.is_empty();
         }
-        let mut tree = path.to_vec();
-        tree.push(key.to_vec());
-        self.elements
-            .retain(|(path, _), _| !path.starts_with(&tree));
+        self.unfollowed.remove(&place);
+        self.forget_under(&child(path, key));
     }
+
+    /// Nothing is stored under `tree`. Returns whether something was known
+    /// to be.
+    fn forget_under(&mut self, tree: &[Vec<u8>]) -> bool {
+        let before = (
+            self.followed.len(),
+            self.unfollowed.len(),
+            self.unfollowed_trees.len(),
+        );
+        self.followed.retain(|(path, _), _| !path.starts_with(tree));
+        self.unfollowed.retain(|(path, _)| !path.starts_with(tree));
+        self.unfollowed_trees.retain(|path| !path.starts_with(tree));
+        let after = (
+            self.followed.len(),
+            self.unfollowed.len(),
+            self.unfollowed_trees.len(),
+        );
+        before != after
+    }
+}
+
+/// The path of the tree at `key` in the subtree at `path`.
+fn child(path: &[Vec<u8>], key: &[u8]) -> Path {
+    let mut tree = path.to_vec();
+    tree.push(key.to_vec());
+    tree
 }
 
 #[cfg(test)]
@@ -854,8 +955,8 @@ mod tests {
         }
 
         // What an operation under GroveDB's own callbacks writes or
-        // deletes is followed no further, and neither is anything once
-        // the transaction is taken back.
+        // deletes is followed no further, and neither is what a
+        // transaction wrote once it is taken back.
         let key = || KEY.to_vec();
         let enders = [
             Op::Batch(vec![put(item(203, 1, Some(2)))]),
@@ -878,8 +979,8 @@ mod tests {
                 key: TREE.to_vec(),
             }),
             Op::Write(Write::ClearSubtree { path: tree() }),
+            Op::Write(Write::ClearSubtree { path: Vec::new() }),
             Op::Transaction(TransactionOp::Rollback),
-            Op::Transaction(TransactionOp::RollbackToSavepoint),
             Op::Transaction(TransactionOp::Abandon),
         ];
         for ender in enders {
@@ -890,7 +991,7 @@ mod tests {
                 key: key(),
                 value: vec![1],
             }),
-            Op::Write(Write::ClearSubtree { path: Vec::new() }),
+            Op::Transaction(TransactionOp::RollbackToSavepoint),
             Op::Batch(vec![BatchOp::Append {
                 path: tree(),
                 entry: crate::workload::op::AppendEntry::Mmr(vec![1]),
@@ -901,12 +1002,174 @@ mod tests {
         }
     }
 
+    /// An element GroveDB stores with flags the model does not know is
+    /// followed again only once the place has been deleted or holds an
+    /// element without flags: until then GroveDB merges what is written
+    /// with flags the model cannot name.
+    #[test]
+    fn a_place_is_followed_again_once_it_is_known_to_be_empty() {
+        let delete = Op::FlagsBatch(vec![BatchOp::Delete {
+            path: tree(),
+            key: KEY.to_vec(),
+        }]);
+        let grown = whole(item(143, 2, Some(1)));
+        let written_some_other_way = [
+            Op::Batch(vec![put(item(43, 0, Some(1)))]),
+            Op::Write(Write::Insert {
+                path: tree(),
+                key: KEY.to_vec(),
+                element: item(43, 0, Some(1)),
+            }),
+            // Flags of several epochs, which a put does not start with.
+            whole(Element::new_item_with_flags(
+                vec![7; 40],
+                Some(StorageFlags::MultiEpoch(0, [(1, 9)].into()).to_element_flags()),
+            )),
+            Op::FlagsBatch(vec![BatchOp::InsertIfNotExists {
+                path: tree(),
+                key: KEY.to_vec(),
+                element: item(43, 0, Some(1)),
+            }]),
+            Op::FlagsBatch(vec![BatchOp::Patch {
+                path: tree(),
+                key: KEY.to_vec(),
+                element: item(43, 0, Some(1)),
+                change_in_bytes: 0,
+            }]),
+            Op::Batch(vec![BatchOp::RefreshReference {
+                path: tree(),
+                key: KEY.to_vec(),
+                reference: grovedb::reference_path::ReferencePathType::SiblingReference(
+                    b"other".to_vec(),
+                ),
+                max_hop: None,
+                flags: None,
+                non_counted: false,
+                trusted: true,
+            }]),
+            Op::Write(Write::DeleteIfEmptyTree {
+                path: tree(),
+                key: KEY.to_vec(),
+            }),
+            // Moved here, and into a tree that was moved here.
+            Op::FlagsBatch(vec![BatchOp::Move {
+                path: tree(),
+                key: b"other".to_vec(),
+                new_key: KEY.to_vec(),
+            }]),
+            Op::Batch(vec![BatchOp::Move {
+                path: Vec::new(),
+                key: b"other".to_vec(),
+                new_key: TREE.to_vec(),
+            }]),
+        ];
+        for first in written_some_other_way {
+            let ops = [first.clone(), grown.clone()];
+            assert_eq!(after(&ops).0, None, "{first:?}");
+            let ops = [first.clone(), grown.clone(), grown.clone()];
+            assert_eq!(after(&ops).0, None, "{first:?}");
+        }
+        // Deleted, the place is empty, and without flags the element is
+        // stored as it is written.
+        let first = Op::Batch(vec![put(item(43, 0, Some(1)))]);
+        let ops = [first.clone(), delete, grown.clone()];
+        assert_eq!(later(&after(&ops).0), []);
+        let ops = [first, whole(Element::new_item(vec![7; 9])), grown.clone()];
+        assert_eq!(later(&after(&ops).0), []);
+
+        // A tree written over one that holds something may hold anything.
+        let over = Op::FlagsBatch(vec![BatchOp::InsertOrReplace {
+            path: Vec::new(),
+            key: TREE.to_vec(),
+            element: Element::empty_tree(),
+        }]);
+        assert_eq!(after(&[grown.clone(), over.clone(), grown.clone()]).0, None);
+        assert_eq!(later(&after(&[over, grown.clone()]).0), []);
+        // A tree that is deleted or cleared holds nothing.
+        let delete_tree = Op::Write(Write::Delete {
+            path: Vec::new(),
+            key: TREE.to_vec(),
+        });
+        let clear = Op::Write(Write::ClearSubtree { path: tree() });
+        for emptied in [delete_tree, clear] {
+            let ops = [
+                Op::Batch(vec![put(item(43, 0, Some(1)))]),
+                emptied,
+                grown.clone(),
+            ];
+            assert_eq!(later(&after(&ops).0), []);
+        }
+    }
+
+    /// A transaction that is taken back, wholly or to a savepoint, leaves
+    /// the histories as they were then.
+    #[test]
+    fn a_transaction_taken_back_gives_the_histories_back() {
+        let stored = whole(item(43, 0, Some(1)));
+        let grown = whole(item(143, 2, Some(1)));
+        let longer = whole(item(243, 4, Some(1)));
+        let step = Op::Transaction;
+        for back in [TransactionOp::Rollback, TransactionOp::Abandon] {
+            // What was committed stays, and what was not is gone.
+            let ops = [
+                stored.clone(),
+                Op::Commit,
+                grown.clone(),
+                step(back.clone()),
+            ];
+            assert_eq!(later(&after(&ops).0), [], "{back:?}");
+            let ops = [stored.clone(), step(back.clone()), grown.clone()];
+            assert_eq!(later(&after(&ops).0), [], "{back:?}");
+            let ops = [
+                stored.clone(),
+                Op::Commit,
+                step(back.clone()),
+                grown.clone(),
+            ];
+            assert_eq!(later(&after(&ops).0), [(2, 103)], "{back:?}");
+            // A savepoint does not outlive its transaction.
+            let ops = [
+                stored.clone(),
+                step(TransactionOp::SetSavepoint),
+                grown.clone(),
+                step(back),
+                step(TransactionOp::RollbackToSavepoint),
+            ];
+            assert_eq!(after(&ops).0, None);
+        }
+        // Back to the latest savepoint, which is used up, then to the one
+        // before it.
+        let ops = [
+            stored.clone(),
+            step(TransactionOp::SetSavepoint),
+            grown.clone(),
+            step(TransactionOp::SetSavepoint),
+            longer,
+            step(TransactionOp::RollbackToSavepoint),
+        ];
+        assert_eq!(later(&after(&ops).0), [(2, 103)]);
+        let mut ops = ops.to_vec();
+        ops.push(step(TransactionOp::RollbackToSavepoint));
+        assert_eq!(later(&after(&ops).0), []);
+        // A commit keeps what the transaction wrote and ends its
+        // savepoints.
+        let ops = [
+            stored,
+            step(TransactionOp::SetSavepoint),
+            grown,
+            Op::Commit,
+            step(TransactionOp::RollbackToSavepoint),
+            step(TransactionOp::Rollback),
+        ];
+        assert_eq!(later(&after(&ops).0), [(2, 103)]);
+    }
+
     #[test]
     fn a_handover_stores_the_owner_written() {
         let hand_over = |element: Element, sponsors: &[Owner]| {
             Op::FlagsHandoverBatch(crate::workload::op::HandoverBatch {
                 ops: vec![put(element)],
-                full_handover_owners: sponsors.to_vec(),
+                full_handover_owners: sponsors.iter().copied().collect(),
             })
         };
         let owner = |ops: &[Op]| after(ops).0.and_then(|history| history.owner);

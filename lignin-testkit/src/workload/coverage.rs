@@ -598,8 +598,10 @@ impl Coverage {
     }
 
     /// Counts the trees an operation deletes with what they hold, by what
-    /// the open transaction did to them before. A rollback is not followed:
-    /// what it undid counts as written.
+    /// the open transaction did to them before. A tree counts as holding
+    /// something once something was written into it, whatever was deleted
+    /// from it since, and a rollback is not followed: what it undid counts
+    /// as written.
     fn record_tree_deletes(&mut self, op: &Op) {
         match op {
             Op::Write(

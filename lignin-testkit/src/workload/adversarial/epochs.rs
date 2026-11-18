@@ -322,7 +322,7 @@ impl Script {
         let element = self.item(len, owner);
         self.push(Op::FlagsHandoverBatch(HandoverBatch {
             ops: vec![batch::replace(&self.root, key, element)],
-            full_handover_owners: sponsors.to_vec(),
+            full_handover_owners: sponsors.iter().copied().collect(),
         }));
         self.epoch += 1;
     }
