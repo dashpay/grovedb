@@ -13,12 +13,12 @@ use std::{cell::RefCell, rc::Rc};
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use grovedb_storage::RawIterator;
 use grovedb_version::{check_merk_v0_with_cost, version::GroveVersion};
 
 use super::is_provable_count_bearing;
 use crate::{
     proofs::query::QueryItem,
+    store::NodeCursor,
     tree::{kv::ValueDefinedCostType, Fetch, Link, RefWalker, TreeNode},
     Error, TreeType,
 };
@@ -40,7 +40,7 @@ impl<I> Clone for PinnedViewSource<I> {
     }
 }
 
-impl<I: RawIterator> PinnedViewSource<I> {
+impl<I: NodeCursor> PinnedViewSource<I> {
     pub(super) fn new(view: I) -> Self {
         PinnedViewSource {
             view: Rc::new(RefCell::new(view)),
@@ -67,7 +67,7 @@ impl<I: RawIterator> PinnedViewSource<I> {
 /// through a storage `get` is, with one seek and the stored bytes, so the same
 /// nodes cost the same however they are read. Only the value leaves: the node
 /// holding it is decoded without a mutation baseline.
-pub fn read_value_from_view<I: RawIterator>(
+pub fn read_value_from_view<I: NodeCursor>(
     view: &mut I,
     key: &[u8],
 ) -> CostResult<Option<Vec<u8>>, Error> {
@@ -85,7 +85,7 @@ pub fn read_value_from_view<I: RawIterator>(
 /// when the view holds no such key, charging one seek and the bytes loaded. The
 /// iterator's own charges for reading the key, once to compare it and again
 /// inside its value read, are not billed.
-fn stored_node_bytes<'v, I: RawIterator>(
+fn stored_node_bytes<'v, I: NodeCursor>(
     view: &'v mut I,
     key: &[u8],
 ) -> CostResult<Option<&'v [u8]>, Error> {
@@ -103,7 +103,7 @@ fn stored_node_bytes<'v, I: RawIterator>(
     Ok(bytes).wrap_with_cost(cost)
 }
 
-impl<I: RawIterator> Fetch for PinnedViewSource<I> {
+impl<I: NodeCursor> Fetch for PinnedViewSource<I> {
     fn fetch(
         &self,
         link: &Link,
@@ -122,7 +122,7 @@ impl<I: RawIterator> Fetch for PinnedViewSource<I> {
 /// from one stable state, and returns its `(key, value)` rows in walk order.
 /// `root_key` must have been read through the same view.
 #[allow(clippy::too_many_arguments)]
-pub fn local_count_offset_page_from_view<I: RawIterator>(
+pub fn local_count_offset_page_from_view<I: NodeCursor>(
     view: I,
     root_key: Option<Vec<u8>>,
     tree_type: TreeType,

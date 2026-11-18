@@ -1,18 +1,16 @@
 use grovedb_costs::{CostContext, CostResult, CostsExt, OperationCost};
-use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
+use crate::store::NodeStore;
 use crate::{
     proofs::query::QueryItem,
     tree::{kv::ValueDefinedCostType, Link, RefWalker, TreeNode},
-    CryptoHash, Error,
-    Error::StorageError,
-    Merk, TreeFeatureType,
+    CryptoHash, Error, Merk, TreeFeatureType,
 };
 
 impl<'db, S> Merk<S>
 where
-    S: StorageContext<'db>,
+    S: NodeStore<'db>,
 {
     /// Observe an existing value while preparing a mutation. The traversal
     /// retains every fetched node in this Merk, so applying the mutation on
@@ -131,7 +129,7 @@ where
 
     /// Gets an auxiliary value.
     pub fn get_aux(&self, key: &[u8]) -> CostResult<Option<Vec<u8>>, Error> {
-        self.storage.get_aux(key).map_err(StorageError)
+        self.storage.get_aux_record(key)
     }
 
     /// Returns if the value at the given key exists
@@ -359,7 +357,8 @@ where
         >,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
-        TreeNode::get(&self.storage, key, value_defined_cost_fn, grove_version)
+        self.storage
+            .get_node(key, value_defined_cost_fn, grove_version)
             .map_ok(|x| x.is_some())
     }
 
@@ -414,12 +413,12 @@ where
     where
         F: FnOnce(&TreeNode) -> CostContext<T>,
     {
-        TreeNode::get(&self.storage, key, value_defined_cost_fn, grove_version).flat_map_ok(
-            |maybe_node| {
+        self.storage
+            .get_node(key, value_defined_cost_fn, grove_version)
+            .flat_map_ok(|maybe_node| {
                 let mut cost = OperationCost::default();
                 Ok(maybe_node.map(|node| f(&node).unwrap_add_cost(&mut cost))).wrap_with_cost(cost)
-            },
-        )
+            })
     }
 
     /// Generic way to get a node's field

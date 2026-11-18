@@ -26,6 +26,9 @@ pub mod owner;
 /// Algorithms for generating and verifying Merkle proofs.
 pub mod proofs;
 
+#[cfg(feature = "minimal")]
+pub mod store;
+
 /// Various helpers useful for tests or benchmarks.
 #[cfg(feature = "test_utils")]
 pub mod test_utils;

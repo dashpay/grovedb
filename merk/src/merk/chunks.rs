@@ -2,9 +2,9 @@ use std::collections::VecDeque;
 
 use ed::Encode;
 use grovedb_costs::CostsExt;
-use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
+use crate::store::NodeStore;
 use crate::{
     error::Error,
     proofs::{
@@ -117,7 +117,7 @@ pub struct ChunkProducer<'db, S> {
 
 impl<'db, S> ChunkProducer<'db, S>
 where
-    S: StorageContext<'db>,
+    S: NodeStore<'db>,
 {
     /// Creates a new `ChunkProducer` for the given `Merk` instance
     pub fn new(merk: &'db Merk<S>) -> Result<Self, Error> {
@@ -455,7 +455,7 @@ where
 /// Iterate over each chunk, returning `None` after last chunk
 impl<'db, S> ChunkProducer<'db, S>
 where
-    S: StorageContext<'db>,
+    S: NodeStore<'db>,
 {
     /// Returns the next chunk in iteration order, or `None` if all chunks
     /// have been yielded.
@@ -469,7 +469,7 @@ where
 
 impl<'db, S> Merk<S>
 where
-    S: StorageContext<'db>,
+    S: NodeStore<'db>,
 {
     /// Creates a `ChunkProducer` which can return chunk proofs for replicating
     /// the entire Merk tree.

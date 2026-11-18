@@ -31,14 +31,12 @@
 
 use std::collections::BTreeMap;
 
-use grovedb_storage::{Batch, StorageContext};
 use grovedb_version::version::GroveVersion;
 
 use grovedb_element::Element;
 
 use crate::{
     element::tree_type::ElementTreeTypeExtensions,
-    merk,
     merk::MerkSource,
     proofs::{
         chunk::{
@@ -50,14 +48,13 @@ use crate::{
         tree::{execute, Child, Tree as ProofTree},
         Node, Op,
     },
+    store::{NodeChange, NodeChangeSet, NodeStore},
     tree::{
         combine_hash, hash::NULL_HASH, kv::ValueDefinedCostType, value_hash, AggregateData,
         RefWalker, TreeNode,
     },
     tree_type::TreeType,
-    CryptoHash, Error,
-    Error::{CostsError, StorageError},
-    Link, Merk, TreeFeatureType,
+    CryptoHash, Error, Link, Merk, TreeFeatureType,
 };
 
 /// Restorer handles verification of chunks and replication of Merk trees.
@@ -107,7 +104,7 @@ pub struct Restorer<S> {
     parent_keys: BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
-impl<'db, S: StorageContext<'db>> Restorer<S> {
+impl<'db, S: NodeStore<'db>> Restorer<S> {
     /// Initializes a new chunk restorer with the expected root hash for the
     /// first chunk
     pub fn new(
@@ -381,7 +378,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         grove_version: &GroveVersion,
     ) -> Result<Vec<Vec<u8>>, Error> {
         // this contains all the elements we want to write to storage
-        let mut batch = self.merk.storage.new_batch();
+        let mut change_set = self.merk.storage.change_set();
         let mut new_chunk_ids = Vec::new();
 
         // Chunk verification cannot tell feature-type families apart:
@@ -455,14 +452,13 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         // Update tree links. Heights in these links may be
                         // placeholders for Hash-node children (chunk
                         // boundaries); corrected by finalize().
-                        *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
-                        *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
+                        tree.set_link(LEFT, proof_node.left.as_ref().map(Child::as_link));
+                        tree.set_link(RIGHT, proof_node.right.as_ref().map(Child::as_link));
 
-                        // encode the node and add it to the batch
+                        // add the node to the change set
                         family_check(&tree)?;
-                        let bytes = tree.encode();
-
-                        batch.put(key, &bytes, None, None).map_err(CostsError)
+                        let node = change_set.prepare_node(&tree, NodeChange::ValueWritten);
+                        change_set.put_node(key, node, None)
                     }
                     Node::KV(key, value) => {
                         // Items in normal trees: value_hash = H(value),
@@ -476,12 +472,12 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         )
                         .unwrap();
 
-                        *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
-                        *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
+                        tree.set_link(LEFT, proof_node.left.as_ref().map(Child::as_link));
+                        tree.set_link(RIGHT, proof_node.right.as_ref().map(Child::as_link));
 
                         family_check(&tree)?;
-                        let bytes = tree.encode();
-                        batch.put(key, &bytes, None, None).map_err(CostsError)
+                        let node = change_set.prepare_node(&tree, NodeChange::ValueWritten);
+                        change_set.put_node(key, node, None)
                     }
                     Node::KVValueHash(key, value, vh) => {
                         // Backward-references ITEM variants must arrive as
@@ -515,12 +511,12 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         )
                         .unwrap();
 
-                        *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
-                        *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
+                        tree.set_link(LEFT, proof_node.left.as_ref().map(Child::as_link));
+                        tree.set_link(RIGHT, proof_node.right.as_ref().map(Child::as_link));
 
                         family_check(&tree)?;
-                        let bytes = tree.encode();
-                        batch.put(key, &bytes, None, None).map_err(CostsError)
+                        let node = change_set.prepare_node(&tree, NodeChange::ValueWritten);
+                        change_set.put_node(key, node, None)
                     }
                     Node::KVCount(key, value, count) => {
                         // Items in ProvableCountTree: value_hash = H(value),
@@ -534,12 +530,12 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         )
                         .unwrap();
 
-                        *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
-                        *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
+                        tree.set_link(LEFT, proof_node.left.as_ref().map(Child::as_link));
+                        tree.set_link(RIGHT, proof_node.right.as_ref().map(Child::as_link));
 
                         family_check(&tree)?;
-                        let bytes = tree.encode();
-                        batch.put(key, &bytes, None, None).map_err(CostsError)
+                        let node = change_set.prepare_node(&tree, NodeChange::ValueWritten);
+                        change_set.put_node(key, node, None)
                     }
                     Node::KVSum(key, value, sum) => {
                         // Items in ProvableSumTree: value_hash = H(value),
@@ -554,12 +550,12 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         )
                         .unwrap();
 
-                        *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
-                        *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
+                        tree.set_link(LEFT, proof_node.left.as_ref().map(Child::as_link));
+                        tree.set_link(RIGHT, proof_node.right.as_ref().map(Child::as_link));
 
                         family_check(&tree)?;
-                        let bytes = tree.encode();
-                        batch.put(key, &bytes, None, None).map_err(CostsError)
+                        let node = change_set.prepare_node(&tree, NodeChange::ValueWritten);
+                        change_set.put_node(key, node, None)
                     }
                     Node::KVCountSum(key, value, count, sum) => {
                         // Items in ProvableCountProvableSumTree:
@@ -578,12 +574,12 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         )
                         .unwrap();
 
-                        *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
-                        *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
+                        tree.set_link(LEFT, proof_node.left.as_ref().map(Child::as_link));
+                        tree.set_link(RIGHT, proof_node.right.as_ref().map(Child::as_link));
 
                         family_check(&tree)?;
-                        let bytes = tree.encode();
-                        batch.put(key, &bytes, None, None).map_err(CostsError)
+                        let node = change_set.prepare_node(&tree, NodeChange::ValueWritten);
+                        change_set.put_node(key, node, None)
                     }
                     Node::KVCountBigSum(key, value, count, sum) => {
                         // Items in ProvableCountProvableBigSumTree: the wide
@@ -597,12 +593,12 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         )
                         .unwrap();
 
-                        *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
-                        *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
+                        tree.set_link(LEFT, proof_node.left.as_ref().map(Child::as_link));
+                        tree.set_link(RIGHT, proof_node.right.as_ref().map(Child::as_link));
 
                         family_check(&tree)?;
-                        let bytes = tree.encode();
-                        batch.put(key, &bytes, None, None).map_err(CostsError)
+                        let node = change_set.prepare_node(&tree, NodeChange::ValueWritten);
+                        change_set.put_node(key, node, None)
                     }
                     Node::Hash(hash) => {
                         // the node hash points to the root of another chunk
@@ -629,12 +625,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             },
         )?;
 
-        // write the batch (costs intentionally discarded — restorer does not track them)
-        self.merk
-            .storage
-            .commit_batch(batch)
-            .value
-            .map_err(StorageError)?;
+        // write the change set (costs intentionally discarded — restorer does not track
+        // them)
+        self.merk.storage.commit(change_set).value?;
 
         Ok(new_chunk_ids)
     }
@@ -658,15 +651,18 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 "after successful chunk verification parent key should exist",
             )))?;
 
-        let mut parent = merk::fetch_node(
-            &self.merk.storage,
-            parent_key.as_slice(),
-            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-            grove_version,
-        )?
-        .ok_or(Error::ChunkRestoringError(InternalError(
-            "cannot find expected parent in memory, most likely state corruption issue",
-        )))?;
+        let mut parent = self
+            .merk
+            .storage
+            .get_node(
+                parent_key.as_slice(),
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
+            .value?
+            .ok_or(Error::ChunkRestoringError(InternalError(
+                "cannot find expected parent in memory, most likely state corruption issue",
+            )))?;
 
         let is_left = traversal_instruction
             .last()
@@ -682,12 +678,10 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             *aggregate_data = updated_aggregate;
         }
 
-        let parent_bytes = parent.encode();
         self.merk
             .storage
-            .put(parent_key, &parent_bytes, None, None)
-            .value
-            .map_err(StorageError)?;
+            .write_node(&parent, NodeChange::StructureChanged)
+            .value?;
 
         self.parent_keys
             .remove(chunk_id)
@@ -707,9 +701,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// correct values. Called by `finalize()` when `verify_height` detects
     /// a discrepancy.
     fn rewrite_heights(&mut self, grove_version: &GroveVersion) -> Result<(), Error> {
-        fn rewrite_child_heights<'s, 'db, S: StorageContext<'db>>(
+        fn rewrite_child_heights<'s, 'db, S: NodeStore<'db>>(
             mut walker: RefWalker<MerkSource<'s, S>>,
-            batch: &mut <S as StorageContext<'db>>::Batch,
+            change_set: &mut S::ChangeSet,
             grove_version: &GroveVersion,
         ) -> Result<(u8, u8), Error> {
             let mut cloned_node = TreeNode::decode(
@@ -733,7 +727,8 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 )
                 .value?
             {
-                let left_child_heights = rewrite_child_heights(left_walker, batch, grove_version)?;
+                let left_child_heights =
+                    rewrite_child_heights(left_walker, change_set, grove_version)?;
                 left_height = left_child_heights.0.max(left_child_heights.1) + 1;
                 *cloned_node
                     .link_mut(LEFT)
@@ -752,7 +747,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 .value?
             {
                 let right_child_heights =
-                    rewrite_child_heights(right_walker, batch, grove_version)?;
+                    rewrite_child_heights(right_walker, change_set, grove_version)?;
                 right_height = right_child_heights.0.max(right_child_heights.1) + 1;
                 *cloned_node
                     .link_mut(RIGHT)
@@ -762,15 +757,13 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                     .child_heights_mut() = right_child_heights;
             }
 
-            let bytes = cloned_node.encode();
-            batch
-                .put(walker.tree().key(), &bytes, None, None)
-                .map_err(CostsError)?;
+            let node = change_set.prepare_node(&cloned_node, NodeChange::HashOnly);
+            change_set.put_node(walker.tree().key(), node, None)?;
 
             Ok((left_height, right_height))
         }
 
-        let mut batch = self.merk.storage.new_batch();
+        let mut change_set = self.merk.storage.change_set();
         let mut tree =
             self.merk
                 .tree
@@ -780,16 +773,12 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 )))?;
         let walker = RefWalker::new(&mut tree, self.merk.source());
 
-        rewrite_child_heights(walker, &mut batch, grove_version)?;
+        rewrite_child_heights(walker, &mut change_set, grove_version)?;
 
         self.merk.tree.set(Some(tree));
 
         // costs intentionally discarded — restorer does not track them
-        self.merk
-            .storage
-            .commit_batch(batch)
-            .value
-            .map_err(StorageError)
+        self.merk.storage.commit(change_set).value
     }
 
     /// Recomputes all aggregate metadata (node OWN feature values and link
@@ -834,10 +823,10 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         grove_version: &GroveVersion,
         grove_db_elements: bool,
     ) -> Result<(), Error> {
-        fn rewrite_child_aggregates<'s, 'db, S: StorageContext<'db>>(
+        fn rewrite_child_aggregates<'s, 'db, S: NodeStore<'db>>(
             tree_type: TreeType,
             mut walker: RefWalker<MerkSource<'s, S>>,
-            batch: &mut <S as StorageContext<'db>>::Batch,
+            change_set: &mut S::ChangeSet,
             grove_version: &GroveVersion,
             grove_db_elements: bool,
         ) -> Result<AggregateData, Error> {
@@ -907,7 +896,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                     let child_aggregate = rewrite_child_aggregates(
                         tree_type,
                         child_walker,
-                        batch,
+                        change_set,
                         grove_version,
                         grove_db_elements,
                     )?;
@@ -938,17 +927,15 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 cloned_node.set_feature_type(own);
             }
 
-            let bytes = cloned_node.encode();
-            batch
-                .put(walker.tree().key(), &bytes, None, None)
-                .map_err(CostsError)?;
+            let node = change_set.prepare_node(&cloned_node, NodeChange::ValueWritten);
+            change_set.put_node(walker.tree().key(), node, None)?;
 
             cloned_node.aggregate_data().map_err(|_| {
                 Error::CorruptedState("cannot combine aggregates during aggregate rewrite")
             })
         }
 
-        let mut batch = self.merk.storage.new_batch();
+        let mut change_set = self.merk.storage.change_set();
         let Some(mut tree) = self.merk.tree.take() else {
             // Empty tree: nothing to rewrite.
             return Ok(());
@@ -959,7 +946,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         let result = rewrite_child_aggregates(
             tree_type,
             walker,
-            &mut batch,
+            &mut change_set,
             grove_version,
             grove_db_elements,
         );
@@ -968,11 +955,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         result?;
 
         // costs intentionally discarded — restorer does not track them
-        self.merk
-            .storage
-            .commit_batch(batch)
-            .value
-            .map_err(StorageError)
+        self.merk.storage.commit(change_set).value
     }
 
     /// Rebuild restoration state from partial storage state
@@ -1156,14 +1139,16 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             if let Some(left_tree) = link.tree() {
                 self.verify_tree_height(left_tree, left_height, grove_version)?;
             } else {
-                let left_tree = TreeNode::get(
-                    &self.merk.storage,
-                    link.key(),
-                    None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-                    grove_version,
-                )
-                .value?
-                .ok_or(Error::CorruptedState("link points to non-existent node"))?;
+                let left_tree = self
+                    .merk
+                    .storage
+                    .get_node(
+                        link.key(),
+                        None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                        grove_version,
+                    )
+                    .value?
+                    .ok_or(Error::CorruptedState("link points to non-existent node"))?;
                 self.verify_tree_height(&left_tree, left_height, grove_version)?;
             }
         }
@@ -1172,14 +1157,16 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             if let Some(right_tree) = link.tree() {
                 self.verify_tree_height(right_tree, right_height, grove_version)?;
             } else {
-                let right_tree = TreeNode::get(
-                    &self.merk.storage,
-                    link.key(),
-                    None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-                    grove_version,
-                )
-                .value?
-                .ok_or(Error::CorruptedState("link points to non-existent node"))?;
+                let right_tree = self
+                    .merk
+                    .storage
+                    .get_node(
+                        link.key(),
+                        None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                        grove_version,
+                    )
+                    .value?
+                    .ok_or(Error::CorruptedState("link points to non-existent node"))?;
                 self.verify_tree_height(&right_tree, right_height, grove_version)?;
             }
         }
@@ -1819,8 +1806,8 @@ mod tests {
     ) {
         assert_eq!(restored.root_hash().unwrap(), original.root_hash().unwrap());
 
-        let mut original_entries = original.storage.raw_iter();
-        let mut restored_entries = restored.storage.raw_iter();
+        let mut original_entries = original.storage.cursor();
+        let mut restored_entries = restored.storage.cursor();
         original_entries.seek_to_first().unwrap();
         restored_entries.seek_to_first().unwrap();
 

@@ -198,11 +198,12 @@ mod tests {
     use grovedb_path::SubtreePath;
     use grovedb_storage::{
         rocksdb_storage::{test_utils::TempStorage, RocksDbStorage},
-        Storage, StorageBatch, StorageContext,
+        Storage, StorageBatch,
     };
 
     use crate::{
         element::{costs::ElementCostExtensions, insert::ElementInsertToStorageExtensions},
+        store::NodeStore,
         tree::hash::NULL_HASH,
         Error, Merk, TreeType,
     };
@@ -226,7 +227,7 @@ mod tests {
 
     /// Inserts `element` at `KEY` through the default `Element` insert
     /// entry point for its kind (no custom callbacks).
-    fn put<'db, S: StorageContext<'db>>(
+    fn put<'db, S: NodeStore<'db>>(
         merk: &mut Merk<S>,
         element: &Element,
         grove_version: &GroveVersion,

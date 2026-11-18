@@ -1,8 +1,8 @@
 use grovedb_costs::CostResult;
-use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
+    store::NodeStore,
     tree::{kv::ValueDefinedCostType, Fetch, TreeNode},
     tree_type::TreeType,
     Error, Link, Merk,
@@ -10,7 +10,7 @@ use crate::{
 
 impl<'db, S> Merk<S>
 where
-    S: StorageContext<'db>,
+    S: NodeStore<'db>,
 {
     pub(in crate::merk) fn source(&self) -> MerkSource<'_, S> {
         MerkSource {
@@ -21,7 +21,7 @@ where
 }
 
 #[derive(Debug)]
-/// A `Fetch` implementation that loads tree nodes from Merk storage.
+/// A `Fetch` implementation that loads tree nodes from the Merk's node store.
 pub struct MerkSource<'s, S> {
     storage: &'s S,
     tree_type: TreeType,
@@ -38,7 +38,7 @@ impl<S> Clone for MerkSource<'_, S> {
 
 impl<'db, S> Fetch for MerkSource<'_, S>
 where
-    S: StorageContext<'db>,
+    S: NodeStore<'db>,
 {
     fn fetch(
         &self,
@@ -48,13 +48,7 @@ where
         >,
         grove_version: &GroveVersion,
     ) -> CostResult<TreeNode, Error> {
-        TreeNode::get(
-            self.storage,
-            link.key(),
-            value_defined_cost_fn,
-            grove_version,
-        )
-        .map_ok(|x| x.ok_or(Error::KeyNotFoundError("Key not found for fetch")))
-        .flatten()
+        self.storage
+            .fetch_node(link, value_defined_cost_fn, grove_version)
     }
 }

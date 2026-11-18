@@ -1147,7 +1147,7 @@ fn combined_verifier_narrow_gate_rejects_i128_overflow_via_crafted_proof() {
 /// `(count, sum)` returned by `prove_aggregate_count_and_sum_on_range`
 /// agree for the given range, and that both equal the expected pair.
 fn no_proof_matches_prover(
-    merk: &Merk<impl grovedb_storage::StorageContext<'static>>,
+    merk: &Merk<impl crate::store::NodeStore<'static>>,
     inner_range: QueryItem,
     expected_count: u64,
     expected_sum: i64,

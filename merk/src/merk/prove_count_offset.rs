@@ -11,9 +11,9 @@
 use std::collections::LinkedList;
 
 use grovedb_costs::{CostResult, CostsExt};
-use grovedb_storage::StorageContext;
 use grovedb_version::{check_merk_v0_with_cost, version::GroveVersion};
 
+use crate::store::NodeStore;
 use crate::{
     proofs::query::{count_offset::ProverCountOffsetResult, QueryItem},
     tree::RefWalker,
@@ -22,7 +22,7 @@ use crate::{
 
 impl<'db, S> Merk<S>
 where
-    S: StorageContext<'db>,
+    S: NodeStore<'db>,
 {
     /// Generate an offset-paginated proof for a single-range query
     /// against a `ProvableCountTree` or `ProvableCountSumTree`.

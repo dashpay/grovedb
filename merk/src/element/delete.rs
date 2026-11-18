@@ -7,12 +7,12 @@ use grovedb_costs::{
     CostResult, CostsExt, OperationCost,
 };
 use grovedb_element::Element;
-use grovedb_storage::StorageContext;
 use grovedb_version::{
     error::GroveVersionError,
     version::{FeatureVersion, GroveVersion},
 };
 
+use crate::store::NodeStore;
 use crate::{
     element::costs::ElementCostExtensions, BatchEntry, Error, Merk, MerkOptions, Op, TreeType,
 };
@@ -104,7 +104,7 @@ fn delete_op_v1(in_tree_type: TreeType, is_layered: bool) -> Op {
 /// Extension trait for deleting elements from Merk storage.
 pub trait ElementDeleteFromStorageExtensions {
     /// Delete an element from Merk under a key
-    fn delete<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn delete<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         merk: &mut Merk<S>,
         key: K,
         merk_options: Option<MerkOptions>,
@@ -114,7 +114,7 @@ pub trait ElementDeleteFromStorageExtensions {
     ) -> CostResult<(), Error>;
 
     /// Delete an element from Merk under a key
-    fn delete_with_sectioned_removal_bytes<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn delete_with_sectioned_removal_bytes<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         merk: &mut Merk<S>,
         key: K,
         merk_options: Option<MerkOptions>,
@@ -141,7 +141,7 @@ pub trait ElementDeleteFromStorageExtensions {
 
 impl ElementDeleteFromStorageExtensions for Element {
     /// Delete an element from Merk under a key
-    fn delete<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn delete<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         merk: &mut Merk<S>,
         key: K,
         merk_options: Option<MerkOptions>,
@@ -178,7 +178,7 @@ impl ElementDeleteFromStorageExtensions for Element {
     }
 
     /// Delete an element from Merk under a key
-    fn delete_with_sectioned_removal_bytes<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn delete_with_sectioned_removal_bytes<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         merk: &mut Merk<S>,
         key: K,
         merk_options: Option<MerkOptions>,

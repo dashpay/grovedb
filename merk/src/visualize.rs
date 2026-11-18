@@ -30,9 +30,9 @@
 
 use std::io::{Result, Write};
 
-use grovedb_storage::StorageContext;
 use grovedb_visualize::{Drawer, Visualize};
 
+use crate::store::NodeStore;
 use crate::{tree::TreeNode, Merk};
 
 /// Visualizeable Merk
@@ -65,7 +65,7 @@ impl<'a, F> VisualizableTree<'a, F> {
     }
 }
 
-impl<'db, S: StorageContext<'db>, T: Visualize, F: Fn(&[u8]) -> T + Copy> Visualize
+impl<'db, S: NodeStore<'db>, T: Visualize, F: Fn(&[u8]) -> T + Copy> Visualize
     for VisualizeableMerk<'_, S, F>
 {
     fn visualize<W: Write>(&self, mut drawer: Drawer<W>) -> Result<Drawer<W>> {
