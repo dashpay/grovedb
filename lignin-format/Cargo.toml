@@ -10,3 +10,4 @@ publish = false
 
 [dependencies]
 crc32c = "0.6.9"
+lz4_flex = { version = "0.14.2", default-features = false, features = ["std", "safe-encode", "safe-decode", "checked-decode"] }

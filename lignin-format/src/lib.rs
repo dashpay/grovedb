@@ -11,11 +11,15 @@ pub mod error;
 pub mod flat_page;
 pub mod header;
 pub mod ids;
+pub mod manifest;
+pub mod segment;
 
 pub use checksum::Checksum;
 pub use error::FormatError;
 pub use header::{FileHeader, FileKind, FormatVersion, RecordHeader};
 pub use ids::{CommitVersion, FileId, PageId};
+
+mod wire;
 
 #[cfg(test)]
 mod test_util {
