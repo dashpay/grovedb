@@ -155,7 +155,7 @@ impl Trace {
                     Entry::Detail(detail) => {
                         let _ = writeln!(out, "  step {}", detail.step);
                         for remark in &detail.remarks {
-                            let _ = writeln!(out, "  # {}", remark.replace('\n', " "));
+                            let _ = writeln!(out, "  # {}", one_line(remark));
                         }
                         for line in &detail.lines {
                             let _ = writeln!(out, "  {line}");
@@ -485,6 +485,22 @@ fn line_differences(expected: &[String], actual: &[String]) -> String {
     out
 }
 
+/// `text` as one line of a text file, the way a remark is written: a line
+/// break becomes a space and any other control character its escape, as
+/// `\u{0}` for a zero byte. A remark quotes operations and error messages,
+/// which hold keys and values as they are.
+pub(crate) fn one_line(text: &str) -> String {
+    let mut line = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '\n' => line.push(' '),
+            control if control.is_control() => line.extend(control.escape_default()),
+            printable => line.push(printable),
+        }
+    }
+    line
+}
+
 /// `line` cut to its first `limit` characters, saying how long it was.
 pub(crate) fn shortened(line: &str, limit: usize) -> String {
     match line.char_indices().nth(limit) {
@@ -662,12 +678,28 @@ mod tests {
         let Entry::Detail(detail) = &mut trace.segments[0].entries[1] else {
             panic!("the sample has a step in full");
         };
-        detail.remarks = vec!["two\nlines".to_string(), String::new()];
-        let read = Trace::parse(&trace.render()).expect("parse");
-        assert_eq!(
-            read.detail(0).expect("detail").remarks,
-            ["two lines".to_string(), String::new()]
+        detail.remarks = vec![
+            "two\nlines".to_string(),
+            String::new(),
+            "a value: \0\u{1}\t\r\u{7f}\u{85} é …".to_string(),
+        ];
+        let text = trace.render();
+        assert!(
+            !text
+                .chars()
+                .any(|character| character.is_control() && character != '\n'),
+            "{text:?}"
         );
+        let read = Trace::parse(&text).expect("parse");
+        let written = [
+            "two lines".to_string(),
+            String::new(),
+            "a value: \\u{0}\\u{1}\\t\\r\\u{7f}\\u{85} é …".to_string(),
+        ];
+        assert_eq!(read.detail(0).expect("detail").remarks, written);
+        for remark in &written {
+            assert_eq!(one_line(remark), *remark, "what is written stays as it is");
+        }
     }
 
     #[test]

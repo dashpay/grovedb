@@ -13,6 +13,7 @@
 //!   the engine returns them: `only_the_hand_written_cases_record_a_failure`.
 //! - Every read GroveDB proves is recorded with its proof:
 //!   `every_proven_read_is_recorded_with_its_proof`.
+//! - The files are text: `every_trace_file_is_text`.
 
 use std::{collections::BTreeSet, fs, path::PathBuf};
 
@@ -134,6 +135,30 @@ fn every_trace_names_its_workload_seed_and_grove_version() {
         "{engine} is not a commit"
     );
     println!("{steps} steps recorded from engine commit {engine}");
+}
+
+/// A trace quotes operations and error messages, which hold keys and values
+/// of any bytes. The file holds them escaped: a control byte in it would
+/// make it a binary file to the tools that show a difference.
+#[test]
+fn every_trace_file_is_text() {
+    for scale in [Scale::Standard, Scale::Reference] {
+        for planned in plan::plan(scale) {
+            let path = corpus_dir().join(&planned.file);
+            let text = fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            let control = text
+                .lines()
+                .enumerate()
+                .find(|(_, line)| line.chars().any(char::is_control));
+            assert!(
+                control.is_none(),
+                "{}: line {} holds a control character",
+                planned.file,
+                control.map_or(0, |(line, _)| line + 1)
+            );
+        }
+    }
 }
 
 /// A generated workload applies and proves on every grove version, so its

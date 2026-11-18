@@ -17,7 +17,7 @@ use grovedb_version::version::GroveVersion;
 use super::{
     run::{Observed, Runner},
     step::{Outcome, Step, TraceDigest, Value},
-    trace::{shortened, Detail, Entry, Segment, Tally, Trace},
+    trace::{one_line, shortened, Detail, Entry, Segment, Tally, Trace},
     Error,
 };
 use crate::workload::{Op, Read, StreamDigest, Workload, Write};
@@ -209,7 +209,7 @@ pub fn record(
             };
             if in_full {
                 let mut remarks = vec![quoted(&op)];
-                remarks.extend(observed.remarks);
+                remarks.extend(observed.remarks.iter().map(|remark| one_line(remark)));
                 entries.push(Entry::Detail(Detail {
                     step: index,
                     lines: observed.step.detail(),
@@ -245,9 +245,10 @@ fn checkpoint(digest: &TraceDigest) -> Entry {
     Entry::Checkpoint(digest.steps(), hex)
 }
 
-/// The operation as a remark, cut to a readable length.
+/// The operation as a remark: on one line of printable characters, cut to
+/// a readable length.
 fn quoted(op: &Op) -> String {
-    shortened(&format!("{op:?}"), REMARK_CHARS)
+    shortened(&one_line(&format!("{op:?}")), REMARK_CHARS)
 }
 
 /// The kind of a step, as far as sampling tells kinds apart: the kind of
@@ -640,6 +641,49 @@ mod tests {
         assert!(remark.ends_with("characters)"), "{remark}");
         assert!(remark.chars().count() < REMARK_CHARS + 40);
         assert_eq!(quoted(&Op::Commit), "Commit");
+    }
+
+    /// An operation is quoted with its keys and values, which are any
+    /// bytes. A trace stays a text file all the same, and reads back as it
+    /// was recorded.
+    #[test]
+    fn a_value_of_control_bytes_is_quoted_in_printable_characters() {
+        let ops = vec![
+            Op::Write(Write::Insert {
+                path: Vec::new(),
+                key: b"key".to_vec(),
+                element: Element::new_item(b"v\0\x01\n\r\x7f".to_vec()),
+            }),
+            Op::Commit,
+            Op::Read(Read::Get {
+                path: Vec::new(),
+                key: b"absent".to_vec(),
+            }),
+        ];
+        let remark = quoted(&ops[0]);
+        assert!(remark.contains("\\u{0}\\u{1}"), "{remark}");
+        assert!(remark.contains("\\r\\u{7f}"), "{remark}");
+        assert!(!remark.chars().any(char::is_control), "{remark:?}");
+        let spec = TraceSpec {
+            name: "bytes".to_string(),
+            seed: 0,
+            grove_version: GroveVersion::latest(),
+            segments: vec![SegmentSpec {
+                workload: "by-hand".to_string(),
+                source: Source::Ops(ops),
+                checkpoint_every: None,
+                sample: Sample::Everything,
+            }],
+        };
+        let trace = run(&spec, Detailing::Sampled);
+        let text = trace.render();
+        assert!(
+            !text
+                .chars()
+                .any(|character| character.is_control() && character != '\n'),
+            "{text:?}"
+        );
+        assert_eq!(Trace::parse(&text), Ok(trace));
     }
 
     #[test]
