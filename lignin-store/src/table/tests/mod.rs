@@ -84,14 +84,43 @@ fn chain_of(table: &PageTable, raw_page: u32) -> Vec<Link> {
 
 /// What a reader of `raw_page` at `raw_version` is given: the version its
 /// page version was born at, and the blocks.
+///
+/// [`PageTable::read_version`] must give the same, with the version of the
+/// link that follows the newest one the reader is given, or the version of
+/// the free link that says the page has no version there.
 fn read_at(
     table: &PageTable,
     raw_page: u32,
     raw_version: u64,
 ) -> Option<(CommitVersion, Vec<BlockLocation>)> {
+    let asked = version(raw_version);
     let mut chain = vec![at(99, 20)];
-    let born = table.read(page(raw_page), version(raw_version), &mut chain);
+    let born = table.read(page(raw_page), asked, &mut chain);
     assert_eq!(born.is_none(), chain.is_empty());
+
+    let mut again = vec![at(98, 20)];
+    let visible = table.read_version(page(raw_page), asked, &mut again);
+    assert_eq!(again, chain);
+    let links = chain_of(table, raw_page);
+    let newest = links.iter().rposition(|link| link.version <= asked);
+    let expected = match (born, newest) {
+        (Some(born), Some(newest)) => Ok(Visible {
+            born,
+            next: links.get(newest + 1).map(|link| link.version),
+        }),
+        (Some(_), None) => panic!("a page version with no link at {asked}"),
+        (None, newest) => Err(newest
+            .map(|newest| links[newest])
+            .filter(|link| link.kind == LinkKind::Free)
+            .map(|link| link.version)),
+    };
+    assert_eq!(visible, expected, "page {raw_page} at {asked}");
+    if let Ok(Visible {
+        next: Some(next), ..
+    }) = visible
+    {
+        assert!(next > asked);
+    }
     born.map(|born| (born, chain))
 }
 

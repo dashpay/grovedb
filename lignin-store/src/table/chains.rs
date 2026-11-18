@@ -10,7 +10,7 @@ use lignin_format::{
 
 use super::{
     error::LinkError,
-    page_table::{Link, LinkKind},
+    page_table::{Link, LinkKind, Visible},
 };
 use crate::segment::BlockLocation;
 
@@ -343,26 +343,47 @@ impl Chains {
         at: CommitVersion,
         chain: &mut Vec<BlockLocation>,
     ) -> Option<CommitVersion> {
+        self.read_version(page, at, chain)
+            .ok()
+            .map(|visible| visible.born)
+    }
+
+    pub(super) fn read_version(
+        &self,
+        page: PageId,
+        at: CommitVersion,
+        chain: &mut Vec<BlockLocation>,
+    ) -> Result<Visible, Option<CommitVersion>> {
         chain.clear();
-        let mut visible = self
-            .walk(page)
-            .map(|(_, node)| node)
-            .skip_while(|node| node.version() > at);
-        let newest = visible.next()?;
+        let mut links = self.walk(page).map(|(_, node)| node);
+        let mut next = None;
+        let newest = loop {
+            match links.next() {
+                Some(node) if node.version() > at => next = Some(node.version()),
+                Some(node) => break node,
+                None => return Err(None),
+            }
+        };
+        if newest.code() == FREE {
+            return Err(Some(newest.version()));
+        }
         let mut node = newest;
         while let Some(location) = node.location() {
             chain.push(location);
             if node.code() == BASE {
                 chain.reverse();
-                return Some(newest.version());
+                return Ok(Visible {
+                    born: newest.version(),
+                    next,
+                });
             }
-            match visible.next() {
+            match links.next() {
                 Some(older) => node = older,
                 None => break,
             }
         }
         chain.clear();
-        None
+        Err(None)
     }
 
     pub(super) fn push(&mut self, page: PageId, link: Link) -> Result<(), LinkError> {

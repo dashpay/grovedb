@@ -69,6 +69,18 @@ impl Link {
     }
 }
 
+/// The versions one page version stands for, as its chain has them
+/// ([`PageTable::read_version`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Visible {
+    /// The version at which the page version was born: the version of the
+    /// newest link a reader is given.
+    pub born: CommitVersion,
+    /// The version of the link that follows that newest link in the chain,
+    /// of whatever kind, or `None` if it is the chain's newest link.
+    pub next: Option<CommitVersion>,
+}
+
 /// The page table: for every page id, the chain of blocks that hold the
 /// page.
 ///
@@ -148,6 +160,23 @@ impl PageTable {
         chain: &mut Vec<BlockLocation>,
     ) -> Option<CommitVersion> {
         self.read_lock().read(page, at, chain)
+    }
+
+    /// Finds the blocks that hold `page` as a reader at the version `at`
+    /// sees it, as [`Self::read`] does, and returns the version at which
+    /// that page version was born with the version of the link that follows
+    /// it. Both are of one moment, which is what the buffer pool asks of a
+    /// page that is loaded.
+    ///
+    /// When the page has no version at `at`, `chain` is empty and the error
+    /// is the version of the commit that freed the page, if one did.
+    pub fn read_version(
+        &self,
+        page: PageId,
+        at: CommitVersion,
+        chain: &mut Vec<BlockLocation>,
+    ) -> Result<Visible, Option<CommitVersion>> {
+        self.read_lock().read_version(page, at, chain)
     }
 
     /// Adds every link of `page` to `out`, from the oldest to the newest.
