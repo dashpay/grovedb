@@ -111,6 +111,11 @@ const DUMP_LOAD: Status = Status::LeftOut(
 
 const AGGREGATE_READER: Status = inside("run_path_query");
 
+const WIDE_INDEXED_ENTRY: Status = Status::LeftOut(
+    "writes an entry of an indexed tree with a 128-bit sum, which GroveDB #1062 added and no \
+     workload produces yet; the BASE-01 follow-up that produces the two trees owes the call",
+);
+
 /// Every public method of `GroveDb`, the methods of the traits implemented
 /// for it included, and every public method of the transaction it hands
 /// out under the name `Transaction::…`, in alphabetical order.
@@ -270,9 +275,18 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
     ),
     ("delete_aux", produced(&[Operation::AuxDelete])),
     ("delete_checkpoint", CHECKPOINT),
+    ("delete_checkpoint_with_engine", CHECKPOINT),
     (
         "delete_from_count_indexed_tree",
         produced(&[Operation::IndexedDeleteCount]),
+    ),
+    (
+        "delete_from_provable_big_sum_indexed_tree",
+        WIDE_INDEXED_ENTRY,
+    ),
+    (
+        "delete_from_provable_count_provable_big_sum_indexed_tree",
+        WIDE_INDEXED_ENTRY,
     ),
     (
         "delete_from_provable_count_provable_sum_indexed_tree",
@@ -314,6 +328,13 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
         produced(&[Operation::DenseRootHash]),
     ),
     ("drop_flat_subtree", produced(&[Operation::FlatDrop])),
+    (
+        "engine",
+        Status::LeftOut(
+            "hands out the engine the database runs on and does nothing to the database; what \
+             an engine does is tested at the `Engine` seam",
+        ),
+    ),
     ("estimated_case_operations_for_batch", ESTIMATE),
     (
         "fetch_chunk",
@@ -346,6 +367,10 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
     ),
     ("follow_reference", inside("get_caching_optional")),
     ("follow_reference_as_stored", inside("follow_reference")),
+    (
+        "from_engine",
+        inside_but("open", "an engine the caller opened itself"),
+    ),
     ("get", produced(&[Operation::Get])),
     ("get_aux", produced(&[Operation::AuxGet])),
     ("get_aux_by_key_prefix", produced(&[Operation::AuxByPrefix])),
@@ -396,6 +421,14 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
         produced(&[Operation::IndexedInsertCount]),
     ),
     (
+        "insert_into_provable_big_sum_indexed_tree",
+        WIDE_INDEXED_ENTRY,
+    ),
+    (
+        "insert_into_provable_count_provable_big_sum_indexed_tree",
+        WIDE_INDEXED_ENTRY,
+    ),
+    (
         "insert_into_provable_count_provable_sum_indexed_tree",
         produced(&[Operation::IndexedInsertCountSum]),
     ),
@@ -420,12 +453,17 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
         ),
     ),
     ("open_checkpoint", CHECKPOINT),
+    ("open_checkpoint_with_engine", CHECKPOINT),
     (
         "open_with_cidx_integrity_check",
         Status::LeftOut(
             "`open` followed by `verify_grovedb`, each of which the consumer of a stream \
              calls by itself",
         ),
+    ),
+    (
+        "open_with_engine",
+        inside_but("open", "an engine other than the default one"),
     ),
     (
         "private_document_store_count",
@@ -550,6 +588,16 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
              GROVE-09 replaces the hatch",
         ),
     ),
+    (
+        "rollback_to_savepoint",
+        Status::LeftOut(
+            "`Transaction::rollback_to_savepoint` reached through the engine, which refuses it \
+             while a write scope of the transaction is open. No stream opens a scope, so on \
+             RocksDB it is the operation the streams reach through the transaction. An engine \
+             with a transaction of its own has no other way to it: the BASE-01 follow-up owes \
+             `workload::apply` the call",
+        ),
+    ),
     ("rollback_transaction", produced(&[Operation::Rollback])),
     ("root_hash", produced(&[Operation::RootChunk])),
     ("root_key", produced(&[Operation::RootTreeChunk])),
@@ -575,6 +623,16 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
             Operation::AxisAggregate,
             Operation::BranchedAxisRead,
         ]),
+    ),
+    (
+        "set_savepoint",
+        Status::LeftOut(
+            "`Transaction::set_savepoint` reached through the engine, which refuses it while a \
+             write scope of the transaction is open. No stream opens a scope, so on RocksDB it \
+             is the operation the streams reach through the transaction. An engine with a \
+             transaction of its own has no other way to it: the BASE-01 follow-up owes \
+             `workload::apply` the call",
+        ),
     ),
     (
         "start_snapshot_read_transaction",
