@@ -99,14 +99,27 @@ impl KeyRef<'_> {
         }
     }
 
-    pub(super) fn starts_with(&self, prefix: &[u8]) -> bool {
+    /// The key in two parts: what its page stores once, and the rest.
+    fn parts(&self) -> (&[u8], &[u8]) {
         match self {
-            Self::Whole(key) => key.starts_with(prefix),
-            Self::Page(key) => match prefix.split_at_checked(key.prefix().len()) {
-                None => key.prefix().starts_with(prefix),
-                Some((head, tail)) => head == key.prefix() && key.suffix().starts_with(tail),
-            },
+            Self::Page(key) => (key.prefix(), key.suffix()),
+            Self::Whole(key) => (key, &[]),
         }
+    }
+
+    /// The number of leading bytes the key shares with `other`.
+    fn shared(&self, other: &Self) -> usize {
+        let ((head, tail), (other_head, other_tail)) = (self.parts(), other.parts());
+        // Two keys of one page begin with the same bytes of its image.
+        if std::ptr::eq(head, other_head) {
+            return head.len() + common_prefix_len(tail, other_tail);
+        }
+        let same = |(a, b): &(&u8, &u8)| a == b;
+        let bytes = head.iter().chain(tail);
+        bytes
+            .zip(other_head.iter().chain(other_tail))
+            .take_while(same)
+            .count()
     }
 }
 
@@ -148,20 +161,22 @@ pub(super) struct BranchEntry<'a> {
     pub(super) child: PageId,
 }
 
-/// What an entry takes of a page: its key without the page's prefix, and
-/// the rest of it.
-pub(super) trait Sizes {
-    fn key_len(&self) -> usize;
-    fn rest_len(&self) -> usize;
+/// What an entry takes of a page.
+pub(super) trait Entry {
+    /// The bytes of the page's header.
+    const HEADER_LEN: usize;
 
-    fn len_under(&self, prefix_len: usize) -> usize {
-        self.key_len() - prefix_len + self.rest_len()
-    }
+    fn key(&self) -> KeyRef<'_>;
+
+    /// The bytes the entry takes beside its key.
+    fn rest_len(&self) -> usize;
 }
 
-impl Sizes for LeafEntry<'_> {
-    fn key_len(&self) -> usize {
-        self.key.len()
+impl Entry for LeafEntry<'_> {
+    const HEADER_LEN: usize = FlatLeaf::HEADER_LEN;
+
+    fn key(&self) -> KeyRef<'_> {
+        self.key
     }
 
     fn rest_len(&self) -> usize {
@@ -169,9 +184,11 @@ impl Sizes for LeafEntry<'_> {
     }
 }
 
-impl Sizes for BranchEntry<'_> {
-    fn key_len(&self) -> usize {
-        self.key.len()
+impl Entry for BranchEntry<'_> {
+    const HEADER_LEN: usize = FlatBranch::HEADER_LEN;
+
+    fn key(&self) -> KeyRef<'_> {
+        self.key
     }
 
     fn rest_len(&self) -> usize {
@@ -212,101 +229,169 @@ pub(super) fn branch_entries<'a>(
         .collect()
 }
 
-/// Whether every key of `entries`, which are in key order, starts with
-/// `prefix`: the first and the last do.
-pub(super) fn all_start_with<'a>(
-    prefix: &[u8],
-    mut keys: impl DoubleEndedIterator<Item = KeyRef<'a>>,
-) -> bool {
-    let first = keys.next();
-    let last = keys.next_back().or(first);
-    first.is_none_or(|key| key.starts_with(prefix))
-        && last.is_none_or(|key| key.starts_with(prefix))
+/// The prefix of a page that holds `entries`: what its keys share, which
+/// is what the first and the last of them share. The prefix of a page is
+/// always this one, so a page's bytes follow from what it holds.
+pub(super) fn prefix<E: Entry>(entries: &[E]) -> Vec<u8> {
+    let (Some(first), Some(last)) = (entries.first(), entries.last()) else {
+        return Vec::new();
+    };
+    let mut prefix = first.key().to_vec();
+    prefix.truncate(first.key().shared(&last.key()));
+    prefix
 }
 
-/// The length of the image of a page with a header of `header_len` bytes,
-/// the prefix `prefix_len` bytes long and `entries`.
-pub(super) fn image_len<E: Sizes>(header_len: usize, prefix_len: usize, entries: &[E]) -> usize {
-    header_len
-        + prefix_len
-        + entries
-            .iter()
-            .map(|entry| entry.len_under(prefix_len))
-            .sum::<usize>()
+/// The lengths of the pages that runs of some entries would be, each under
+/// the prefix its own keys share.
+pub(super) struct Layout {
+    header: usize,
+    /// For each entry, the bytes it takes with its whole key, summed up to
+    /// and including it.
+    sums: Vec<usize>,
+    keys: Vec<usize>,
+    /// For each entry but the last, what its key shares with the next.
+    shared: Vec<usize>,
 }
 
-/// What the two bounds of a page's key range share: the prefix a page is
-/// given when it is built for a split, a merge or a key outside the prefix
-/// it has. A range that is open on a side shares nothing.
-pub(super) fn shared<'a>(lower: Option<&'a [u8]>, upper: Option<&[u8]>) -> &'a [u8] {
-    match (lower, upper) {
-        (Some(lower), Some(upper)) => &lower[..common_prefix_len(lower, upper)],
-        _ => &[],
-    }
-}
-
-/// Cuts entries of the lengths `lens`, which together are too long for one
-/// page, into runs that each take at most `room` bytes, and returns where
-/// each run but the last ends.
-///
-/// With `skip` 0 every entry is in a run, as the entries of a leaf are.
-/// With `skip` 1 the entry at each cut is in no run, as the separator that
-/// a branch gives to the page above it. No run is empty, because any two
-/// entries fit one page.
-///
-/// `even` makes the runs about equally long. Without it each run is as
-/// long as it can be, which leaves a page full when keys arrive in order.
-pub(super) fn cuts(lens: &[usize], room: usize, skip: usize, even: bool) -> Vec<usize> {
-    let full = fill(lens, room, skip, |_, _| usize::MAX);
-    if !even {
-        return full;
-    }
-    let runs = full.len() + 1;
-    fill(lens, room, skip, |left, done| {
-        left.div_ceil(runs.saturating_sub(done).max(1))
-    })
-}
-
-/// The cuts of [`cuts`], with each run ended once it has reached
-/// `target(bytes left, runs made)`.
-fn fill(
-    lens: &[usize],
-    room: usize,
-    skip: usize,
-    target: impl Fn(usize, usize) -> usize,
-) -> Vec<usize> {
-    let mut cuts = Vec::new();
-    let mut left: usize = lens.iter().sum();
-    let mut at = 0;
-    while let Some(&first) = lens.get(at) {
-        let target = target(left, cuts.len());
-        let (mut run, mut end) = (first, at + 1);
-        while let Some(&next) = lens.get(end)
-            && run + next <= room
-            && run < target
-        {
-            run += next;
-            end += 1;
+impl Layout {
+    pub(super) fn of<E: Entry>(entries: &[E]) -> Self {
+        let mut sum = 0;
+        Self {
+            header: E::HEADER_LEN,
+            sums: entries
+                .iter()
+                .map(|entry| {
+                    sum += entry.key().len() + entry.rest_len();
+                    sum
+                })
+                .collect(),
+            keys: entries.iter().map(|entry| entry.key().len()).collect(),
+            shared: entries
+                .windows(2)
+                .map(|pair| pair[0].key().shared(&pair[1].key()))
+                .collect(),
         }
-        let Some(&cut) = lens.get(end) else { break };
-        if skip == 1 && end + 1 == lens.len() {
-            // The entry at a cut leaves the page, and here no entry would
-            // follow it. It joins this run, or the run's last entry is the
-            // one that leaves.
-            if run + cut <= room {
+    }
+
+    fn entries(&self) -> usize {
+        self.keys.len()
+    }
+
+    /// The length of the page that holds the entries from `start` up to
+    /// `end`, whose keys share `prefix` bytes.
+    fn len_under(&self, start: usize, end: usize, prefix: usize) -> usize {
+        let before = start.checked_sub(1).map_or(0, |last| self.sums[last]);
+        let whole = end.checked_sub(1).map_or(0, |last| self.sums[last]) - before;
+        self.header + prefix + whole - (end - start) * prefix
+    }
+
+    /// The length of the page that holds the entries from `start` up to
+    /// `end`, which is not before `start`.
+    fn run_len(&self, start: usize, end: usize) -> usize {
+        let shared = self.shared[start..end.max(start + 1) - 1]
+            .iter()
+            .copied()
+            .min();
+        let prefix = if start == end {
+            0
+        } else {
+            shared.unwrap_or(self.keys[start])
+        };
+        self.len_under(start, end, prefix)
+    }
+
+    /// The length of the page that holds every entry.
+    pub(super) fn len(&self) -> usize {
+        self.run_len(0, self.entries())
+    }
+
+    /// The end of the longest run from `start` that fits a page of
+    /// `capacity`. It is not empty: an entry alone fits.
+    fn fit(&self, start: usize, capacity: usize) -> usize {
+        let mut prefix = self.keys[start];
+        let mut end = start + 1;
+        while end < self.entries() {
+            let next = prefix.min(self.shared[end - 1]);
+            if self.len_under(start, end + 1, next) > capacity {
                 break;
             }
-            end -= 1;
-            run -= lens[end];
+            prefix = next;
+            end += 1;
         }
-        cuts.push(end);
-        left -= run + lens[end..end + skip].iter().sum::<usize>();
-        at = end + skip;
+        end
     }
-    cuts
+
+    /// Cuts the entries, which are too long for one page of `capacity`,
+    /// into runs that each fit one, and returns where each run but the
+    /// last ends.
+    ///
+    /// With `skip` 0 every entry is in a run, as the entries of a leaf are.
+    /// With `skip` 1 the entry at each cut is in no run, as the separator
+    /// that a branch gives to the page above it. No run is empty, because
+    /// any two entries fit one page.
+    ///
+    /// Where one cut is enough, it is put where the two runs are nearest
+    /// in length, unless the entry in position `added` is a new one that
+    /// goes on a run of keys ([`Self::run_end`]). With more cuts each run
+    /// is as long as it can be.
+    pub(super) fn cuts(&self, capacity: usize, skip: usize, added: Option<usize>) -> Vec<usize> {
+        let count = self.entries();
+        let mut cuts = Vec::new();
+        let mut start = 0;
+        while start < count {
+            let mut end = self.fit(start, capacity);
+            if end == count {
+                break;
+            }
+            // The entry at a cut leaves the page, and a run follows it.
+            if skip == 1 && end + 1 == count && end > start + 1 {
+                end -= 1;
+            }
+            cuts.push(end);
+            start = end + skip;
+        }
+        if let [cut] = cuts.as_mut_slice() {
+            let chosen = added.and_then(|added| self.run_end(added, capacity));
+            *cut = chosen
+                .or_else(|| self.middle(capacity, skip))
+                .unwrap_or(*cut);
+        }
+        cuts
+    }
+
+    /// A cut for keys that arrive in order: where the new entry in
+    /// position `added` ends a run of keys, the cut that keeps the run
+    /// together, so that the keys which follow it find room at the end of
+    /// their page and pages are left full.
+    ///
+    /// The new entry ends a run when at least two keys stand before it in
+    /// the page, and the key after it shares less with it than all of them
+    /// do, or there is no key after it. The cut is behind the new entry,
+    /// or before it if the run is a page already.
+    fn run_end(&self, added: usize, capacity: usize) -> Option<usize> {
+        let run = self.shared.get(..added)?.iter().copied().min()?;
+        if added < 2 || self.shared.get(added).is_some_and(|&next| next >= run) {
+            return None;
+        }
+        let count = self.entries();
+        let fits = |start, end| self.run_len(start, end) <= capacity;
+        [added + 1, added]
+            .into_iter()
+            .find(|&cut| cut < count && fits(0, cut) && fits(cut, count))
+    }
+
+    /// The one cut that leaves two runs nearest in length.
+    fn middle(&self, capacity: usize, skip: usize) -> Option<usize> {
+        let count = self.entries();
+        (1..count - skip)
+            .map(|cut| (cut, self.run_len(0, cut), self.run_len(cut + skip, count)))
+            .filter(|&(_, first, second)| first <= capacity && second <= capacity)
+            .min_by_key(|&(_, first, second)| first.abs_diff(second))
+            .map(|(cut, ..)| cut)
+    }
 }
 
-/// Writes the leaf `page` with the prefix `prefix` and `entries`.
+/// Writes the leaf `page` with `entries`.
 ///
 /// A value that an entry of another page held is carried to this one, and a
 /// new value is held for it.
@@ -314,10 +399,9 @@ pub(super) fn write_leaf<P: FlatPagesMut + ?Sized>(
     pages: &mut P,
     capacity: usize,
     page: PageId,
-    prefix: &[u8],
     entries: &[LeafEntry<'_>],
 ) -> Result<(), FlatError> {
-    let mut image = FlatLeafBuilder::new(page, prefix, capacity)?;
+    let mut image = FlatLeafBuilder::new(page, &prefix(entries), capacity)?;
     for entry in entries {
         let held;
         let value = match entry.value {
@@ -341,18 +425,17 @@ pub(super) fn write_leaf<P: FlatPagesMut + ?Sized>(
     pages.write(page, &image.finish())
 }
 
-/// Writes the branch `page` of `level` with the prefix `prefix`, the first
-/// child `first` and `entries`.
+/// Writes the branch `page` of `level` with the first child `first` and
+/// `entries`.
 pub(super) fn write_branch<P: FlatPagesMut + ?Sized>(
     pages: &mut P,
     capacity: usize,
     page: PageId,
     level: u8,
     first: PageId,
-    prefix: &[u8],
     entries: &[BranchEntry<'_>],
 ) -> Result<(), FlatError> {
-    let mut image = FlatBranchBuilder::new(page, prefix, capacity, level, first)?;
+    let mut image = FlatBranchBuilder::new(page, &prefix(entries), capacity, level, first)?;
     for entry in entries {
         match entry.key {
             KeyRef::Page(key) => image.push_key(key, entry.child)?,

@@ -1,10 +1,14 @@
+mod cursor;
 mod keys;
+mod log;
 mod model;
+mod moves;
+mod shape;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use lignin_format::{
-    flat_page::{FlatPage, FlatValue},
+    flat_page::{common_prefix_len, FlatPage, FlatValue},
     value_log::{PendingValue, ValuePlace, ValuePointer},
     wal::{FlatRun, FlatRunWriter, ValueMove},
     FileId, FormatVersion, PageId, PageSize,
@@ -14,7 +18,6 @@ use lignin_io::sim::SimRng;
 use super::{
     log::{is_changed, push_changes},
     long_key::Bucket,
-    node::shared,
     Cursor, FlatConfig, FlatError, FlatPages, FlatPagesMut, FlatTree,
 };
 
@@ -42,6 +45,14 @@ struct Carry {
     held: PendingValue,
 }
 
+/// What one commit wrote to the log: the run of each page it changed, and
+/// the pages it freed.
+#[derive(Debug, Default)]
+struct Commit {
+    runs: Vec<(PageId, Vec<u8>)>,
+    freed: Vec<PageId>,
+}
+
 /// The pages of a flat keyspace in memory, with the value log and the
 /// commits of a store reduced to what the tree can see of them. It checks
 /// what the tree promises an implementation of [`FlatPagesMut`].
@@ -61,6 +72,8 @@ struct Mem {
     released: Vec<ValuePointer>,
     carried: Vec<Carry>,
     held: Vec<(PageId, PendingValue)>,
+    /// What each commit wrote to the log.
+    log: Vec<Commit>,
     next_page: u32,
     next_value: u64,
     next_offset: u64,
@@ -81,6 +94,7 @@ impl Mem {
             released: Vec::new(),
             carried: Vec::new(),
             held: Vec::new(),
+            log: Vec::new(),
             next_page: 0,
             next_value: 0,
             next_offset: 20,
@@ -147,6 +161,7 @@ impl Mem {
     /// all runs.
     fn commit(&mut self) -> (Vec<PageId>, usize) {
         let (mut changed, mut logged) = (Vec::new(), 0);
+        let mut commit = Commit::default();
         for (&page, image) in &self.pages {
             let base = self.base.get(&page).map(Vec::as_slice);
             if !is_changed(base, image).expect("pages") {
@@ -169,10 +184,53 @@ impl Mem {
             assert!(bytes.len() <= 7 + image.len(), "a run longer than an image");
             changed.push(page);
             logged += bytes.len();
+            commit.runs.push((page, bytes));
         }
+        commit.freed = self
+            .base
+            .keys()
+            .filter(|page| !self.pages.contains_key(page))
+            .copied()
+            .collect();
+        self.log.push(commit);
         self.base = self.pages.clone();
         self.taken.clear();
         (changed, logged)
+    }
+
+    /// The pages that the first `commits` commits leave, made from their
+    /// runs alone, as a recovery makes them.
+    fn replay(&self, commits: usize) -> Self {
+        let mut pages = Self::new(self.config);
+        for commit in &self.log[..commits] {
+            for (page, bytes) in &commit.runs {
+                let run = FlatRun::decode(bytes, V1).expect("a run");
+                let base = pages.pages.get(page).map(Vec::as_slice);
+                let mut image = Vec::new();
+                run.apply(base, V1, self.config.capacity(), &mut image)
+                    .expect("the run applies");
+                pages.pages.insert(*page, image);
+            }
+            for page in &commit.freed {
+                assert!(pages.pages.remove(page).is_some());
+            }
+        }
+        pages
+    }
+
+    /// The changes of the run that the last commit wrote for `page`.
+    fn last_run(&self, page: PageId) -> Vec<String> {
+        let commit = self.log.last().expect("a commit");
+        let run = commit.runs.iter().find(|(of, _)| *of == page);
+        let (_, bytes) = run.expect("a run of the page");
+        FlatRun::decode(bytes, V1)
+            .expect("a run")
+            .changes()
+            .map(|change| {
+                let name = format!("{change:?}");
+                name.split([' ', '(']).next().unwrap_or_default().to_owned()
+            })
+            .collect()
     }
 
     fn name(&mut self) -> [u8; 8] {
@@ -345,10 +403,16 @@ fn records(pages: &Mem, tree: &FlatTree) -> Vec<(Vec<u8>, Vec<u8>)> {
             if let Some(above) = above {
                 assert_eq!(read.level() + 1, above, "page {page} is at the wrong level");
             }
-            assert!(
-                read.prefix().starts_with(shared(lower, upper)),
-                "page {page} has a prefix shorter than its bounds share"
-            );
+            let key = |slot: usize| match read {
+                FlatPage::Leaf(leaf) => leaf.key(slot),
+                FlatPage::Branch(branch) => branch.separator(slot),
+            };
+            let ends = (key(0), read.len().checked_sub(1).and_then(key));
+            let shared = match ends {
+                (Some(first), Some(last)) => common_prefix_len(&first.to_vec(), &last.to_vec()),
+                _ => 0,
+            };
+            assert_eq!(read.prefix().len(), shared, "the prefix of page {page}");
             let inside = |key: &[u8]| {
                 lower.is_none_or(|lower| key >= lower) && upper.is_none_or(|upper| key < upper)
             };

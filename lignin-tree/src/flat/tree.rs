@@ -4,18 +4,17 @@
 use std::cmp::Ordering;
 
 use lignin_format::{
-    flat_page::{shortest_separator, FlatBranch, FlatLeaf, FlatPage, FlatPageKind, FlatValue},
+    flat_page::{shortest_separator, FlatBranch, FlatPage, FlatPageKind, FlatValue},
     PageId,
 };
 
 use super::{
-    cursor::Cursor,
+    cursor::{prefix_end, Cursor},
     error::FlatError,
     long_key::{Bucket, Stored},
     node::{
-        all_start_with, branch, branch_entries, child, cuts, image_len, leaf, leaf_entries, place,
-        read_value, shared, view, write_branch, write_leaf, BranchEntry, KeyRef, LeafEntry, Sizes,
-        ValueRef,
+        branch, branch_entries, child, leaf, leaf_entries, place, read_value, view, write_branch,
+        write_leaf, BranchEntry, KeyRef, Layout, LeafEntry, ValueRef,
     },
     pages::{value_len, FlatConfig, FlatPages, FlatPagesMut},
 };
@@ -47,9 +46,6 @@ enum Plan {
     Children(usize, Vec<Reached>),
 }
 
-/// The two bounds of the key range of a page. `None` is an open side.
-type Bounds = (Option<Vec<u8>>, Option<Vec<u8>>);
-
 type Reached = (PageId, Option<Vec<u8>>, Option<Vec<u8>>);
 
 /// A flat keyspace: one B+tree of flat pages, named by its root page.
@@ -70,7 +66,7 @@ impl FlatTree {
         config: FlatConfig,
     ) -> Result<Self, FlatError> {
         let root = pages.allocate()?;
-        write_leaf(pages, config.capacity(), root, &[], &[])?;
+        write_leaf(pages, config.capacity(), root, &[])?;
         Ok(Self { root, config })
     }
 
@@ -205,6 +201,16 @@ impl FlatTree {
         };
         self.delete_range_stored(pages, &from, to.as_deref())
     }
+
+    /// Removes every record whose key starts with `prefix`: the range
+    /// delete of one keyspace among several that share a tree.
+    pub fn delete_prefix<P: FlatPagesMut + ?Sized>(
+        &self,
+        pages: &mut P,
+        prefix: &[u8],
+    ) -> Result<(), FlatError> {
+        self.delete_range(pages, prefix, prefix_end(prefix).as_deref())
+    }
 }
 
 /// Reading.
@@ -265,36 +271,6 @@ impl FlatTree {
         let mut steps = Vec::new();
         let (page, _) = self.walk(pages, key, Some(&mut steps))?;
         Ok((steps, page))
-    }
-
-    /// A bound of the key range of the page below `steps`: the nearest
-    /// separator on its lower or its upper side, in the branches above it.
-    /// `None` is a side with no bound.
-    pub(super) fn bound<P: FlatPages + ?Sized>(
-        pages: &P,
-        steps: &[Step],
-        upper: bool,
-    ) -> Result<Option<Vec<u8>>, FlatError> {
-        for step in steps.iter().rev() {
-            let frame = pages.page(step.page)?;
-            let slot = if upper {
-                Some(step.index)
-            } else {
-                step.index.checked_sub(1)
-            };
-            let separator = slot.and_then(|slot| view(&frame).ok()?.branch()?.separator(slot));
-            if let Some(separator) = separator {
-                return Ok(Some(separator.to_vec()));
-            }
-        }
-        Ok(None)
-    }
-
-    fn bounds<P: FlatPages + ?Sized>(pages: &P, steps: &[Step]) -> Result<Bounds, FlatError> {
-        Ok((
-            Self::bound(pages, steps, false)?,
-            Self::bound(pages, steps, true)?,
-        ))
     }
 
     fn get_stored<P: FlatPages + ?Sized>(
@@ -387,56 +363,42 @@ impl FlatTree {
         } else {
             ValueRef::Inline(value)
         };
-        let at_end = match leaf.search(key) {
+        let added = match leaf.search(key) {
             Ok(slot) => {
                 if let ValueRef::Held { place: old, .. } = entries[slot].value {
                     pages.drop_value(page, place(old)?)?;
                 }
                 entries[slot].value = value;
-                false
+                None
             }
             Err(slot) => {
                 let key = KeyRef::Whole(key);
                 entries.insert(slot, LeafEntry { key, value });
-                slot > 0 && slot + 1 == entries.len()
+                Some(slot)
             }
         };
-        self.store_leaf(pages, &steps, page, leaf.prefix(), &entries, at_end)
+        self.store_leaf(pages, &steps, page, &entries, added)
     }
 
-    /// Writes the leaf `page`, which is below `steps` and has the prefix
-    /// `prefix`, with `entries`. If they are too long for one page, the
-    /// leaf is split.
+    /// Writes the leaf `page`, which is below `steps`, with `entries`. If
+    /// they are too long for one page, the leaf is split.
     ///
-    /// `at_end` says that the last entry is a new one: the keys may be
-    /// arriving in order, and the split leaves the pages before it full.
+    /// `added` is the position of an entry that is new, if one is: where
+    /// keys arrive in order, the split leaves the pages before them full.
     fn store_leaf<P: FlatPagesMut + ?Sized>(
         &self,
         pages: &mut P,
         steps: &[Step],
         page: PageId,
-        prefix: &[u8],
         entries: &[LeafEntry<'_>],
-        at_end: bool,
+        added: Option<usize>,
     ) -> Result<(), FlatError> {
         let capacity = self.config.capacity();
-        let header = FlatLeaf::HEADER_LEN;
-        let keys = || entries.iter().map(|entry| entry.key);
-        if all_start_with(prefix, keys()) && image_len(header, prefix.len(), entries) <= capacity {
-            return write_leaf(pages, capacity, page, prefix, entries);
+        let layout = Layout::of(entries);
+        if layout.len() <= capacity {
+            return write_leaf(pages, capacity, page, entries);
         }
-        let (lower, upper) = Self::bounds(pages, steps)?;
-        let within = shared(lower.as_deref(), upper.as_deref());
-        let room = capacity - header - within.len();
-        let lens: Vec<usize> = entries
-            .iter()
-            .map(|entry| entry.len_under(within.len()))
-            .collect();
-        if lens.iter().sum::<usize>() <= room {
-            return write_leaf(pages, capacity, page, within, entries);
-        }
-
-        let cuts = cuts(&lens, room, 0, !at_end);
+        let cuts = layout.cuts(capacity, 0, added);
         let separators: Vec<Vec<u8>> = cuts
             .iter()
             .map(|&cut| {
@@ -446,19 +408,17 @@ impl FlatTree {
             .collect();
         let ids = self.pieces(pages, steps, page, cuts.len())?;
         // The page that entries are carried out of is written last.
-        for piece in (0..ids.len()).rev() {
+        for (piece, &id) in ids.iter().enumerate().rev() {
             let start = piece.checked_sub(1).map_or(0, |before| cuts[before]);
             let end = cuts.get(piece).copied().unwrap_or(entries.len());
-            let prefix = piece_prefix(&separators, piece, &lower, &upper);
-            write_leaf(pages, capacity, ids[piece], prefix, &entries[start..end])?;
+            write_leaf(pages, capacity, id, &entries[start..end])?;
         }
         self.grow(pages, steps, 1, &ids, &separators)
     }
 
-    /// Writes the branch `page`, which is below `steps`, as
+    /// Writes the branch `page` of `level`, which is below `steps`, as
     /// [`Self::store_leaf`] writes a leaf. A branch that is split gives the
     /// separator at each cut to the page above it.
-    #[allow(clippy::too_many_arguments)]
     fn store_branch<P: FlatPagesMut + ?Sized>(
         &self,
         pages: &mut P,
@@ -466,27 +426,14 @@ impl FlatTree {
         page: PageId,
         level: u8,
         first: PageId,
-        prefix: &[u8],
         entries: &[BranchEntry<'_>],
     ) -> Result<(), FlatError> {
         let capacity = self.config.capacity();
-        let header = FlatBranch::HEADER_LEN;
-        let keys = || entries.iter().map(|entry| entry.key);
-        if all_start_with(prefix, keys()) && image_len(header, prefix.len(), entries) <= capacity {
-            return write_branch(pages, capacity, page, level, first, prefix, entries);
+        let layout = Layout::of(entries);
+        if layout.len() <= capacity {
+            return write_branch(pages, capacity, page, level, first, entries);
         }
-        let (lower, upper) = Self::bounds(pages, steps)?;
-        let within = shared(lower.as_deref(), upper.as_deref());
-        let room = capacity - header - within.len();
-        let lens: Vec<usize> = entries
-            .iter()
-            .map(|entry| entry.len_under(within.len()))
-            .collect();
-        if lens.iter().sum::<usize>() <= room {
-            return write_branch(pages, capacity, page, level, first, within, entries);
-        }
-
-        let cuts = cuts(&lens, room, 1, true);
+        let cuts = layout.cuts(capacity, 1, None);
         let separators: Vec<Vec<u8>> = cuts.iter().map(|&cut| entries[cut].key.to_vec()).collect();
         let ids = self.pieces(pages, steps, page, cuts.len())?;
         for (piece, &id) in ids.iter().enumerate() {
@@ -494,9 +441,7 @@ impl FlatTree {
             let start = before.map_or(0, |cut| cut + 1);
             let end = cuts.get(piece).copied().unwrap_or(entries.len());
             let first = before.map_or(first, |cut| entries[cut].child);
-            let prefix = piece_prefix(&separators, piece, &lower, &upper);
-            let entries = &entries[start..end];
-            write_branch(pages, capacity, id, level, first, prefix, entries)?;
+            write_branch(pages, capacity, id, level, first, &entries[start..end])?;
         }
         let above = level.checked_add(1).ok_or(FlatError::Damaged {
             page,
@@ -546,7 +491,7 @@ impl FlatTree {
             });
         let Some((&Step { page, index }, above)) = steps.split_last() else {
             let added: Vec<_> = added.collect();
-            return self.store_branch(pages, &[], self.root, level, ids[0], &[], &added);
+            return self.store_branch(pages, &[], self.root, level, ids[0], &added);
         };
         let old = pages.take(page)?;
         let branch = branch(&old, page)?;
@@ -554,7 +499,7 @@ impl FlatTree {
         let at = index.min(entries.len());
         entries.splice(at..at, added);
         let (level, first) = (branch.level(), child(&branch, 0)?);
-        self.store_branch(pages, above, page, level, first, branch.prefix(), &entries)
+        self.store_branch(pages, above, page, level, first, &entries)
     }
 
     fn delete_stored<P: FlatPagesMut + ?Sized>(
@@ -579,32 +524,27 @@ impl FlatTree {
         if let ValueRef::Held { place: old, .. } = entries.remove(slot).value {
             pages.drop_value(page, place(old)?)?;
         }
-        write_leaf(pages, self.config.capacity(), page, leaf.prefix(), &entries)?;
+        write_leaf(pages, self.config.capacity(), page, &entries)?;
         self.rebalance(pages, steps, page)?;
         Ok(true)
     }
 }
 
-/// The prefix of one piece of a page that was cut at `separators`, and
-/// whose own bounds are `lower` and `upper`.
-fn piece_prefix<'a>(
-    separators: &'a [Vec<u8>],
-    piece: usize,
-    lower: &'a Option<Vec<u8>>,
-    upper: &Option<Vec<u8>>,
-) -> &'a [u8] {
-    let lower = match piece.checked_sub(1) {
-        Some(before) => separators.get(before),
-        None => lower.as_ref(),
-    };
-    let upper = separators.get(piece).or(upper.as_ref());
-    shared(lower.map(Vec::as_slice), upper.map(Vec::as_slice))
-}
-
-/// The bytes the entries of `page` take with their keys whole.
-fn spread(page: &FlatPage<'_>) -> usize {
-    let prefix = page.prefix().len();
-    page.as_bytes().len() - page.kind().header_len() - prefix + page.len() * prefix
+/// The separators of two neighbouring branches as one branch has them:
+/// those of `left`, the separator `between` that the branch above had
+/// between the two, with the first child of `right`, and those of `right`.
+fn joined<'a>(
+    left: &FlatBranch<'a>,
+    between: &'a [u8],
+    right: &FlatBranch<'a>,
+) -> Result<Vec<BranchEntry<'a>>, FlatError> {
+    let mut entries = branch_entries(left)?;
+    entries.push(BranchEntry {
+        key: KeyRef::Whole(between),
+        child: child(right, 0)?,
+    });
+    entries.extend(branch_entries(right)?);
+    Ok(entries)
 }
 
 /// Pages that shrink: merging, removing, and the root.
@@ -638,7 +578,7 @@ impl FlatTree {
             } else if len >= self.config.underfull() {
                 return Ok(());
             } else {
-                match self.merge(pages, &steps[..steps.len() - 1], parent, index)? {
+                match self.merge(pages, parent, index)? {
                     Merge::TooLong => return Ok(()),
                     Merge::Done | Merge::NoNeighbour => {}
                 }
@@ -653,79 +593,63 @@ impl FlatTree {
         self.collapse_root(pages)
     }
 
-    /// Merges the child in position `index` of the branch `parent`, which
-    /// is below `above`, with a neighbour: the one to its right, or to its
-    /// left for the last child. The left page of the two takes the entries
-    /// of both, and the right page is freed.
+    /// Merges the child in position `index` of the branch `parent` with a
+    /// neighbour: the one to its right, or to its left for the last child.
+    /// The left page of the two takes the entries of both, and the right
+    /// page is freed.
     fn merge<P: FlatPagesMut + ?Sized>(
         &self,
         pages: &mut P,
-        above: &[Step],
         parent: PageId,
         index: usize,
     ) -> Result<Merge, FlatError> {
         let capacity = self.config.capacity();
-        let (slot, left, right, separator, lower, upper) = {
+        let (slot, left, right, separator) = {
             let frame = pages.page(parent)?;
             let branch = branch(&frame, parent)?;
-            if branch.is_empty() {
+            let Some(slot) = branch.len().checked_sub(1).map(|last| index.min(last)) else {
                 return Ok(Merge::NoNeighbour);
-            }
-            let slot = index.min(branch.len() - 1);
-            let separator = |slot: usize| branch.separator(slot).map(|key| key.to_vec());
-            let lower = match slot.checked_sub(1) {
-                Some(before) => separator(before),
-                None => Self::bound(pages, above, false)?,
             };
-            let upper = match separator(slot + 1) {
-                Some(after) => Some(after),
-                None => Self::bound(pages, above, true)?,
-            };
-            let between = separator(slot).unwrap_or_default();
+            let separator = branch.separator(slot).map(|key| key.to_vec());
             let (left, right) = (child(&branch, slot)?, child(&branch, slot + 1)?);
-            (slot, left, right, between, lower, upper)
+            (slot, left, right, separator.unwrap_or_default())
         };
-        let within = shared(lower.as_deref(), upper.as_deref());
+        let mismatch = FlatError::Damaged {
+            page: parent,
+            what: "a branch over a leaf and a branch",
+        };
 
-        // The length of the merged page, from the two as they are read.
-        let merged = {
-            let (left, right) = (pages.page(left)?, pages.page(right)?);
-            let (left, right) = (view(&left)?, view(&right)?);
-            let pulled = match left.kind() {
-                FlatPageKind::Leaf => 0,
-                FlatPageKind::Branch => FlatBranch::ENTRY_OVERHEAD + separator.len() - within.len(),
+        // The two are looked at before they are taken: a page that stays
+        // as it is costs no copy.
+        let fits = {
+            let (first, second) = (pages.page(left)?, pages.page(right)?);
+            let merged = match (view(&first)?, view(&second)?) {
+                (FlatPage::Leaf(first), FlatPage::Leaf(second)) => {
+                    Layout::of(&[leaf_entries(&first), leaf_entries(&second)].concat()).len()
+                }
+                (FlatPage::Branch(first), FlatPage::Branch(second)) => {
+                    Layout::of(&joined(&first, &separator, &second)?).len()
+                }
+                _ => return Err(mismatch),
             };
-            let entries = left.len() + right.len();
-            left.kind().header_len() + within.len() + spread(&left) + spread(&right) + pulled
-                - entries * within.len()
+            merged <= self.config.merge_limit()
         };
-        if merged > self.config.merge_limit() {
+        if !fits {
             return Ok(Merge::TooLong);
         }
 
-        let (old_left, old_right) = (pages.take(left)?, pages.take(right)?);
-        match (view(&old_left)?, view(&old_right)?) {
+        let (first, second) = (pages.take(left)?, pages.take(right)?);
+        match (view(&first)?, view(&second)?) {
             (FlatPage::Leaf(first), FlatPage::Leaf(second)) => {
-                let mut entries = leaf_entries(&first);
-                entries.extend(leaf_entries(&second));
-                write_leaf(pages, capacity, left, within, &entries)?;
+                let entries = [leaf_entries(&first), leaf_entries(&second)].concat();
+                write_leaf(pages, capacity, left, &entries)?;
             }
             (FlatPage::Branch(first), FlatPage::Branch(second)) => {
-                let mut entries = branch_entries(&first)?;
-                entries.push(BranchEntry {
-                    key: KeyRef::Whole(&separator),
-                    child: child(&second, 0)?,
-                });
-                entries.extend(branch_entries(&second)?);
+                let entries = joined(&first, &separator, &second)?;
                 let (level, head) = (first.level(), child(&first, 0)?);
-                write_branch(pages, capacity, left, level, head, within, &entries)?;
+                write_branch(pages, capacity, left, level, head, &entries)?;
             }
-            _ => {
-                return Err(FlatError::Damaged {
-                    page: parent,
-                    what: "a branch over a leaf and a branch",
-                });
-            }
+            _ => return Err(mismatch),
         }
         pages.free(right)?;
 
@@ -734,15 +658,7 @@ impl FlatTree {
         let mut entries = branch_entries(&branch)?;
         entries.remove(slot.min(entries.len() - 1));
         let (level, first) = (branch.level(), child(&branch, 0)?);
-        write_branch(
-            pages,
-            capacity,
-            parent,
-            level,
-            first,
-            branch.prefix(),
-            &entries,
-        )?;
+        write_branch(pages, capacity, parent, level, first, &entries)?;
         Ok(Merge::Done)
     }
 
@@ -777,19 +693,11 @@ impl FlatTree {
                 None => first = entries.remove(0).child,
             }
             let level = branch.level();
-            write_branch(
-                pages,
-                capacity,
-                page,
-                level,
-                first,
-                branch.prefix(),
-                &entries,
-            )?;
+            write_branch(pages, capacity, page, level, first, &entries)?;
             return Ok(above + 1);
         }
         pages.take(self.root)?;
-        write_leaf(pages, capacity, self.root, &[], &[])?;
+        write_leaf(pages, capacity, self.root, &[])?;
         Ok(0)
     }
 
@@ -810,20 +718,12 @@ impl FlatTree {
             match view(&old)? {
                 FlatPage::Leaf(leaf) => {
                     let entries = leaf_entries(&leaf);
-                    write_leaf(pages, capacity, self.root, leaf.prefix(), &entries)?;
+                    write_leaf(pages, capacity, self.root, &entries)?;
                 }
                 FlatPage::Branch(branch) => {
                     let entries = branch_entries(&branch)?;
                     let (level, first) = (branch.level(), child(&branch, 0)?);
-                    write_branch(
-                        pages,
-                        capacity,
-                        self.root,
-                        level,
-                        first,
-                        branch.prefix(),
-                        &entries,
-                    )?;
+                    write_branch(pages, capacity, self.root, level, first, &entries)?;
                 }
             }
             pages.free(only)?;
@@ -918,7 +818,7 @@ impl FlatTree {
                         pages.drop_value(page, place(old)?)?;
                     }
                 }
-                write_leaf(pages, capacity, page, leaf.prefix(), &entries)?;
+                write_leaf(pages, capacity, page, &entries)?;
             }
             Plan::Children(first, reached) => {
                 let mut gone = Vec::with_capacity(reached.len());
@@ -941,7 +841,7 @@ impl FlatTree {
                         pages.free(page)?;
                         return Ok(true);
                     }
-                    write_leaf(pages, capacity, page, &[], &[])?;
+                    write_leaf(pages, capacity, page, &[])?;
                     return Ok(false);
                 };
                 let all = branch_entries(&branch)?;
@@ -949,15 +849,7 @@ impl FlatTree {
                     .filter_map(|index| all.get(index - 1).copied())
                     .collect();
                 let (level, head) = (branch.level(), child(&branch, head)?);
-                write_branch(
-                    pages,
-                    capacity,
-                    page,
-                    level,
-                    head,
-                    branch.prefix(),
-                    &entries,
-                )?;
+                write_branch(pages, capacity, page, level, head, &entries)?;
             }
         }
         Ok(false)

@@ -4,11 +4,11 @@ use std::{collections::BTreeMap, ops::Bound};
 
 use super::*;
 
-type Model = BTreeMap<Vec<u8>, Vec<u8>>;
+pub(super) type Model = BTreeMap<Vec<u8>, Vec<u8>>;
 
 /// Draws keys that meet: few different ones, long shared prefixes, every
 /// length up to the longest a page stores, and keys longer than that.
-fn key(rng: &mut SimRng, config: FlatConfig) -> Vec<u8> {
+pub(super) fn key(rng: &mut SimRng, config: FlatConfig) -> Vec<u8> {
     fn letters(rng: &mut SimRng, len: u64, of: u64) -> Vec<u8> {
         (0..len).map(|_| b'a' + rng.below(of) as u8).collect()
     }
@@ -43,7 +43,7 @@ fn key(rng: &mut SimRng, config: FlatConfig) -> Vec<u8> {
     }
 }
 
-fn value(rng: &mut SimRng, config: FlatConfig) -> Vec<u8> {
+pub(super) fn value(rng: &mut SimRng, config: FlatConfig) -> Vec<u8> {
     let len = match rng.below(10) {
         0..=4 => rng.below(40),
         5..=7 => rng.below(config.max_inline() as u64 + 1),
@@ -53,7 +53,7 @@ fn value(rng: &mut SimRng, config: FlatConfig) -> Vec<u8> {
 }
 
 /// A key of the model near a drawn one, or the drawn one.
-fn near(rng: &mut SimRng, model: &Model, config: FlatConfig) -> Vec<u8> {
+pub(super) fn near(rng: &mut SimRng, model: &Model, config: FlatConfig) -> Vec<u8> {
     let drawn = key(rng, config);
     match rng.below(3) {
         0 => drawn,
