@@ -823,6 +823,13 @@ impl Chain {
         frame.retire().then_some(OwnedFrame(pointer))
     }
 
+    /// Takes out of the chain a frame that the caller holds a pin on, and
+    /// marks it dead. Whoever gives back its last pin owns it.
+    pub(super) fn retire_pinned(&mut self, pointer: FramePtr) {
+        let owned = self.retire(pointer);
+        assert!(owned.is_none(), "the caller holds a pin on the frame");
+    }
+
     /// Gives a pin back under the lock of the bucket the frame's page is
     /// in. If that leaves the frame with no pin and `idle` holds for it, the
     /// frame is taken out of the chain in the same step, and the caller owns

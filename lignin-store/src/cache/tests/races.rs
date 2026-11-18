@@ -1,24 +1,37 @@
-//! Loom models of the pool: its own code, under every interleaving of two
-//! or three threads that the preemption bound of each model allows.
+//! Races on the pool: two or three threads that meet on one frame, one page
+//! or one private copy, each written once and run three ways.
 //!
-//! Beside what each model asserts, loom checks every access to a frame's
-//! bytes against the others (`sync::Tracked`): a write beside a read or
-//! another write fails the model, and so does one that no lock or atomic
-//! orders after the accesses before it.
+//! - **Under loom**, which runs the pool's own code under the interleavings
+//!   its partial-order reduction selects, up to the preemption bound of each
+//!   model, and checks every access to a frame's bytes against the others
+//!   (`sync::Tracked`): a write beside a read or another write fails the
+//!   model, and so does one that no lock or atomic orders after the accesses
+//!   before it.
+//!   `RUSTFLAGS="--cfg loom" cargo test -p lignin-store --release --lib cache::tests::races`.
+//!   `LOOM_MAX_PREEMPTIONS` sets another bound for all of them.
+//! - **On real threads**, in every normal test run, each race many times.
+//! - **Under Miri**, whose scheduler preempts at random points and which
+//!   reports a data race, a use after free or a leak:
+//!   `MIRIFLAGS="-Zmiri-many-seeds=0..64" cargo +nightly miri test -p lignin-store --lib cache::tests::races`.
 //!
-//! Run them with
-//! `RUSTFLAGS="--cfg loom" cargo test -p lignin-store --release --lib cache::tests::loom_models`.
-//! Each model bounds the number of preemptions it explores, so that the set
-//! runs in seconds. `LOOM_MAX_PREEMPTIONS` sets another bound for all of
-//! them.
+//! Loom's reduction keeps the last access to each atomic, not every
+//! conflicting one, so it does not reach every interleaving. The other two
+//! ways are there for what it leaves out.
 
+#[cfg(loom)]
 use ::loom::{
-    sync::{atomic::AtomicU64 as LoomU64, Arc},
+    sync::{atomic::AtomicU64 as SharedU64, Arc},
+    thread,
+};
+#[cfg(not(loom))]
+use std::{
+    sync::{atomic::AtomicU64 as SharedU64, Arc},
     thread,
 };
 
 use super::*;
 
+#[cfg(loom)]
 fn model(preemptions: usize, body: impl Fn() + Sync + Send + 'static) {
     let mut builder = ::loom::model::Builder::new();
     if builder.preemption_bound.is_none() {
@@ -26,6 +39,19 @@ fn model(preemptions: usize, body: impl Fn() + Sync + Send + 'static) {
     }
     builder.max_branches = 100_000;
     builder.check(body);
+}
+
+/// Without loom the race is run on real threads, `LIGNIN_RACE_ROUNDS` times
+/// or a few hundred.
+#[cfg(not(loom))]
+fn model(_preemptions: usize, body: impl Fn() + Sync + Send + 'static) {
+    let rounds = std::env::var("LIGNIN_RACE_ROUNDS")
+        .ok()
+        .and_then(|rounds| rounds.parse().ok())
+        .unwrap_or(if cfg!(miri) { 2 } else { 300 });
+    for _ in 0..rounds {
+        body();
+    }
 }
 
 /// Every page is on disk as version 1, and nothing follows it.
@@ -189,7 +215,7 @@ fn two_operations_of_one_owner_share_one_private_copy() {
 fn a_reader_gets_the_version_it_asked_at() {
     model(3, || {
         let pool = Arc::new(pool(2));
-        let latest = Arc::new(LoomU64::new(1));
+        let latest = Arc::new(SharedU64::new(1));
         drop(create(&pool, 1, 1));
         let mut threads = Vec::new();
         {
@@ -262,6 +288,46 @@ fn a_commit_waits_for_the_latch_of_the_copy_it_installs() {
     });
 }
 
+/// A page step on a page version that a commit is just installing: the
+/// step finds no current version yet, or it replaces the one the commit
+/// installed, and the commit still hands out a whole page.
+#[test]
+fn a_page_step_follows_a_commit_at_once() {
+    model(3, || {
+        let pool = Arc::new(pool(2));
+        let copy = pool.new_private(owner(1), page(1)).expect("a new page");
+        content(1, 1, 0).write(&mut copy.write().expect("private"));
+        drop(copy);
+        let committer = {
+            let pool = Arc::clone(&pool);
+            thread::spawn(move || {
+                let copy = pool.private(owner(1), page(1)).expect("the copy");
+                let installed = pool.install(copy, version(1)).expect("a commit");
+                assert_eq!(Content::read(&installed), content(1, 1, 0));
+            })
+        };
+        let background = {
+            let pool = Arc::clone(&pool);
+            thread::spawn(move || {
+                let step = pool.page_step(page(1));
+                let Some(current) = step.current() else {
+                    return;
+                };
+                let mut blank = pool.blank();
+                blank.copy_from(&current);
+                content(1, 1, 1).write(&mut blank);
+                drop(step.replace(&current, blank).expect("nothing in the way"));
+            })
+        };
+        join(vec![committer, background]);
+        let current = pool.get(page(1), version(1)).expect("installed");
+        assert!(Content::read(&current).revision <= 1);
+        assert_eq!(pool.oldest_unwritten(), Some(version(1)));
+        drop(current);
+        check(&pool, 0);
+    });
+}
+
 /// A load against a commit: the page is on disk as version 1, a commit
 /// makes version 2 of it, and a reader of version 1 loads the page while it
 /// does. The reader gets version 1, and what it loaded never passes for the
@@ -308,8 +374,8 @@ fn a_page_step_and_a_private_copy_agree() {
     model(3, || {
         let pool = Arc::new(pool(3));
         drop(seed(&pool, content(1, 1, 0), None));
-        let stepped = Arc::new(LoomU64::new(0));
-        let copied = Arc::new(LoomU64::new(0));
+        let stepped = Arc::new(SharedU64::new(0));
+        let copied = Arc::new(SharedU64::new(0));
         let background = {
             let (pool, stepped) = (Arc::clone(&pool), Arc::clone(&stepped));
             thread::spawn(move || {
@@ -372,7 +438,7 @@ fn a_page_step_retires_the_frame_it_replaces() {
                 assert!(seen == content(1, 1, 0) || seen == content(1, 1, 1));
             })
         };
-        let marked = Arc::new(LoomU64::new(u64::MAX));
+        let marked = Arc::new(SharedU64::new(u64::MAX));
         let flusher = {
             let (pool, marked) = (Arc::clone(&pool), Arc::clone(&marked));
             thread::spawn(move || {

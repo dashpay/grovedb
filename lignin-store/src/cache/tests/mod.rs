@@ -1,10 +1,9 @@
 mod basic;
 mod errors;
 mod flush;
-#[cfg(loom)]
-mod loom_models;
 mod model;
 mod private;
+mod races;
 mod step;
 mod threads;
 

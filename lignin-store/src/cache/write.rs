@@ -206,14 +206,13 @@ impl BufferPool {
         let step = lock(&bucket.step);
         let mut chain = write(&bucket.chain);
         let private = pin.frame().kind() == kind::PRIVATE;
-        let freed = if private { chain.retire(pointer) } else { None };
+        if private {
+            chain.retire_pinned(pointer);
+        }
         drop(chain);
         drop(step);
         drop(latch);
         self.unpin(pin);
-        if let Some(frame) = freed {
-            self.release(frame);
-        }
         if private {
             Ok(())
         } else {
@@ -282,14 +281,18 @@ impl BufferPool {
         frame.set_kind(kind::PUBLISHED);
         frame.touch();
         chain.stamp += 1;
+        // The reader's pin is taken under the table's lock, before a page
+        // step can replace the frame.
+        let frozen = pin.again().into_frozen();
         drop(chain);
         lock(&self.unwritten).add(version.get(), page);
         drop(step);
         drop(latch);
-        let frozen = pin
-            .into_frozen()
-            .expect("the frame is a page version and has had a pin since");
-        Ok(PageRef::new(self, frozen))
+        self.unpin(pin);
+        Ok(PageRef::new(
+            self,
+            frozen.expect("the frame was made a page version under this lock"),
+        ))
     }
 
     /// Records that the commit `version` freed `page` (`transactions.md` CM3
@@ -438,14 +441,11 @@ impl<'p> PageStep<'p> {
         header.set_kind(kind::PUBLISHED);
         header.touch();
         let frozen = chain.link(frame).freeze(&pool.arena);
-        let freed = chain.retire(old.pointer());
+        chain.retire_pinned(old.pointer());
         chain.stamp += 1;
         drop(chain);
         if !owed {
             lock(&pool.unwritten).add(born, page);
-        }
-        if let Some(frame) = freed {
-            pool.release(frame);
         }
         Ok(PageRef::new(
             pool,
