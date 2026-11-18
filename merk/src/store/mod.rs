@@ -178,6 +178,13 @@ pub trait NodeStore<'db> {
     /// value a node keeps as its mutation baseline.
     fn get_node_for_read(&self, key: &[u8]) -> CostResult<Option<TreeNodeInner>, Error>;
 
+    /// Whether the store holds a node under `key`, without reading the node
+    /// itself. It is charged as the lookup of that node. A store that keeps
+    /// one record per node answers from the record's presence alone, so a
+    /// record that does not decode counts as held, where
+    /// [`Self::get_node_for_read`] reports an error.
+    fn has_node(&self, key: &[u8]) -> CostResult<bool, Error>;
+
     /// The node a parent's `link` points to: the node [`Self::get_node`]
     /// returns for the link's key at that moment, or an error when there is
     /// none. A store that keeps a location in its links may follow it to that

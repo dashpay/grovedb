@@ -250,6 +250,10 @@ impl<'db> NodeStore<'db> for MemNodeStore {
         Ok(state.nodes.get(key).map(|node| node.inner(vec![]))).wrap_with_cost(Default::default())
     }
 
+    fn has_node(&self, key: &[u8]) -> CostResult<bool, Error> {
+        Ok(self.state.lock().unwrap().nodes.contains_key(key)).wrap_with_cost(Default::default())
+    }
+
     fn root_key(&self) -> CostResult<Option<Vec<u8>>, Error> {
         Ok(self.state.lock().unwrap().root_key.clone()).wrap_with_cost(Default::default())
     }

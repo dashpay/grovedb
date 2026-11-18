@@ -642,6 +642,9 @@ fn a_cursor_seeks_and_steps_in_both_directions() {
         cursor.key().unwrap().map(<[u8]>::to_vec)
     };
 
+    assert!(store.has_node(&key(4)).unwrap().unwrap());
+    assert!(!store.has_node(&key(3)).unwrap().unwrap());
+
     let mut cursor = store.cursor();
     assert!(!cursor.valid().unwrap());
     assert_eq!(cursor.value().unwrap(), None);
