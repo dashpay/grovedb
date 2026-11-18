@@ -302,11 +302,14 @@ longest value the longest cell holds (PD7). A longer one could go into no
 cell, and has no record. Whether a value fits the cell and the page it is
 meant for is for the page to say when the record is applied.
 
-A value pointer, in record 21 or in the cell of an insert, is carried as
-it is. A pointer names a file and an offset. The page that owns the value
-is in the value log's record (O1 of `value-log-format.md`), so a record
-cannot tell whether a pointer is its page's own. That is the writer's rule
-(O5, TREE-03) and the invariant checker's (VER-07).
+A record holds a value pointer as its writer gave it, in record 21 and in
+the cell of an insert or a replace, and does not interpret it. Which
+pointer a writer may give is not free: the cell of a carried node is not
+given the pointer it had in its old page (O5 of `value-log-format.md`,
+8.2). The format cannot check that. A pointer names a file and an offset,
+and the page that owns the value is in the value log's record (O1), so a
+record cannot tell whether a pointer is its page's own. It is the writer's
+rule (TREE-03) and the invariant checker's (VER-07).
 
 **PD11. A page is created by the first record of a run, and only there.**
 The create record starts an empty page under the run's page id, with the
@@ -576,8 +579,9 @@ It is used in two places:
 **What the cell holds before that is not settled, and not by this
 format.** A record carries a cell as `tree-page.md` defines it, and that
 has two forms for a value: the bytes in the cell, or the place of the
-bytes in the value log. A pending value is neither. Three ways are open,
-and the records here serve each of them unchanged:
+bytes in the value log. A pending value is neither. Three ways are open.
+The records here serve the first as they are, the second only for a value
+that fits a cell, and the third with one more kind:
 
 1. *A place that names no file yet.* The cell has its final shape, with 12
    bytes for the value's place, and those bytes hold a pattern that
@@ -589,10 +593,12 @@ and the records here serve each of them unchanged:
    the one this document recommends.
 2. *The value in the cell until it is placed.* Needs no new rule at all:
    the insert record carries the value inside the cell, and record 21
-   later shrinks the cell. It works only for a value that fits a cell,
-   16,370 bytes in a page of 32 KiB, and until write-back a page holds its
-   new values at full length, so the layout would be planned for cells
-   that are longer than they stay.
+   later shrinks the cell. It is not a whole answer. It works only for a
+   value that fits a cell, 16,370 bytes in a page of 32 KiB, and FL7 lets
+   a pending value be of any length: a longer one has no cell, and so no
+   record (PD7, PD10). And until write-back a page holds its new values at
+   full length, so the layout would be planned for cells that are longer
+   than they stay.
 3. *A third form of the cell*, marked by one of its reserved flags. That
    is a change to `tree-page.md`.
 
@@ -612,9 +618,9 @@ owner and not made here (section 10, item 13). FMT-05 needs the answer to
 tie a value in a log group to its cell, TREE-08 to read a pending value,
 and TREE-03 to write the insert of a carried cell. Until then a log cannot
 hold the insert of a cell whose value is new and out of line, or carried
-and out of line. Whatever is chosen, no byte of a record defined here
-changes for the first two ways. The third adds one kind code, for a value
-that is replaced by a pending one.
+and out of line. No byte of a record defined here changes for the first
+way, nor for the second as far as it reaches. The third adds one kind
+code, for a value that is replaced by a pending one.
 
 ## 9. What the tasks that build on this take from it
 
@@ -721,7 +727,7 @@ All of this is in `lignin-format::delta`. Run the tests with
 | PD6, B8 | `Delta::encode_into`, `DeltaRun::decode` | `what_was_written_reads_back_and_what_was_read_is_written_the_same`: 3,000 runs. `every_single_bit_flip_is_rejected_or_reads_as_what_it_says`. `a_change_that_would_not_read_back_is_not_written`. `changes_are_compared_by_what_they_change`. |
 | Section 4 | `DeltaRun::decode` | Each check has its error, in order: `each_check_of_a_run_has_its_error`, `every_kind_code_is_a_record_or_an_error`, `each_check_of_a_record_has_its_error`, `each_check_of_a_cell_in_a_record_has_its_error`. `every_prefix_of_a_run_is_a_shorter_run_or_an_error`. |
 | B10, A4 | every reader, `DeltaRun::apply` | `arbitrary_bytes_are_an_error_or_a_run_and_never_a_panic`: 60,000 byte strings, a third arbitrary, a third records of every kind with arbitrary fields, a third valid runs with bytes changed. What decodes is written back to the same bytes and applied to a full page, which must be valid afterwards. |
-| S2, S3, PD10, section 8 | `Delta::Remove`, `Delta::Insert`, `Delta::Child`, `Delta::Value` | `a_carried_cell_is_a_remove_in_one_page_and_an_insert_in_another`: the records of a carry in the page a cell leaves, in the page of its parent and in the page it arrives in, with its value pending in either of two forms and then given its new place by record 21. Afterwards no cell of either page holds the old pointer. |
+| S2, S3, PD10, section 8 | `Delta::Remove`, `Delta::Insert`, `Delta::Child`, `Delta::Value` | `a_carried_cell_is_a_remove_in_one_page_and_an_insert_in_another`: the records of a carry in the page a cell leaves, in the page of its parent and in the page it arrives in, with its value pending in either of two forms and then given its new place by record 21. After the commit's records no cell of either page holds the old pointer and the arrived cell holds the pending form; after record 21 it holds the new place. |
 | A2, A3, PD11, section 6 | `DeltaRun::apply`, `consolidate`, `DeltaError` | `a_run_is_applied_to_the_page_it_names`, `a_run_that_creates_its_page_needs_no_page`, `a_refused_change_keeps_the_changes_before_it_and_makes_none_after_it`, `a_chain_with_no_base_must_create_its_page`, `consolidation_takes_an_image_and_nothing_else`, `a_full_page_refuses_a_record_that_needs_room`, `a_change_too_long_for_a_record_is_refused_by_the_page_too`, `every_error_has_its_message`. |
 | No allocation | `DeltaRun::decode`, `DeltaRun::apply` | `tests/delta_alloc.rs` runs under a counting allocator. |
 

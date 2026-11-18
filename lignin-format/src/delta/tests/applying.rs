@@ -554,14 +554,26 @@ fn a_carried_cell_is_a_remove_in_one_page_and_an_insert_in_another() {
         decode(&leaving_run)
             .apply(&mut from_frame, size, V1)
             .expect("applies");
-        apply_chain(
-            to.id,
-            &mut to_frame,
-            size,
-            V1,
-            [&decode(&arriving_run), &decode(&placing_run)],
-        )
-        .expect("applies");
+        decode(&arriving_run)
+            .apply(&mut to_frame, size, V1)
+            .expect("applies");
+
+        // After the commit, before write-back: the cell is in its new
+        // page with its value pending, as the insert gave it, and no cell
+        // of either page holds the old pointer.
+        let mut committed = to.clone();
+        committed.cells.insert(2, arriving.clone());
+        assert_eq!(image_of(&to_frame), committed.assemble());
+        let arrived = view(&to_frame).cell(slot(2)).expect("the cell");
+        assert_eq!(arrived.value(), pending.value());
+        for frame in [&from_frame, &to_frame] {
+            assert_eq!(view(frame).find_value_pointer(&old_place), None);
+            assert_eq!(view(frame).find_value_pointer(&new_place), None);
+        }
+
+        decode(&placing_run)
+            .apply(&mut to_frame, size, V1)
+            .expect("applies");
 
         // The page the cell left: one departure, and the parent's link
         // names the cell where it is now.
