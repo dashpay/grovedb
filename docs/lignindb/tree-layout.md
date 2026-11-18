@@ -1069,10 +1069,9 @@ workloads ends by deleting much of what it built.
   write the two cells of each move and the same directory entries, and no
   cell of the moved trees.
 - **The average of pages dirtied stays below 8 on all seven**, and nodes per
-  page above 15. Single transitions go far above 8 on six of them. In
-  `deep-nesting` the whole grove is six pages, so at least 189 of the 195
-  of its largest transition are directory entries: it creates or drops a
-  chain of nested trees. The runs do not break the other peaks down.
+  page above 15. Single transitions go far above 8 on six of them: the
+  table has the largest of each. The runs do not break those peaks down
+  into tree pages and directory entries.
 - **Fill is below 70% wherever much was deleted.** M2 moves a fragment only
   out of a page below the merge threshold of 35%. A workload that deletes a
   third of everything leaves its pages near half full, above that
