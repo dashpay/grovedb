@@ -1175,6 +1175,46 @@ mod tests {
         };
         assert_eq!(count, 0, "the indexed tree is left out of the count");
         assert_verifies(&batched, v);
+
+        // Filled by a later batch, the indexed tree gives its parent its
+        // sum and stays out of the count.
+        batched
+            .apply_batch(
+                vec![insert_op(
+                    &[TEST_LEAF, b"p", b"w"],
+                    b"k",
+                    Element::new_sum_item(5),
+                )],
+                None,
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("fill the indexed tree");
+        let Element::CountBigSumTree(_, count, sum, _) = stored(&batched, b"p", v) else {
+            panic!("expected a CountBigSumTree");
+        };
+        assert_eq!((count, sum), (0, 5));
+        assert_verifies(&batched, v);
+
+        // One batch that creates the wrapped tree and fills it is refused,
+        // as for every indexed tree, and writes nothing.
+        let fresh = make_test_grovedb(v);
+        create(&fresh, b"p", Element::empty_count_big_sum_tree(), v);
+        let before = fresh.root_hash(None, v).unwrap().expect("root");
+        let refused = fresh
+            .apply_batch(
+                vec![
+                    insert_op(&[TEST_LEAF, b"p"], b"w", child()),
+                    insert_op(&[TEST_LEAF, b"p", b"w"], b"k", Element::new_sum_item(5)),
+                ],
+                None,
+                None,
+                v,
+            )
+            .unwrap();
+        assert_invalid_batch(refused, "indexed-tree elements cannot be wrapped");
+        assert_eq!(fresh.root_hash(None, v).unwrap().expect("root"), before);
     }
 
     /// An entry that is itself an indexed tree, created and filled by the
