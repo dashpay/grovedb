@@ -754,18 +754,22 @@ Sections 6 and 7, as section 10 says: Merk's account of what a key and a value c
 
 | What | Where | Holds |
 | --- | --- | --- |
-| The corpus on RocksDB | `cargo test -p lignin-testkit --test golden` | 290 traces replay as recorded with the engine charging through the functions |
+| The corpus on RocksDB | `cargo test -p lignin-testkit --test golden` | Every trace replays as recorded with the engine charging through the functions |
 | The corpus on the model | `lignin-testkit/cost-model-storage/check.sh` | The second implementation of the rules (`lignin-testkit/src/cost_model/rules.rs`), which SEAM-05 left as it was, still predicts every step |
 | The engine against the second implementation | `cargo test -p lignin-testkit --lib cost_model` | `against_rocksdb.rs` runs the same batches, reads and cursor walks on RocksDB and on `rules.rs` |
 | Each number | `costs/src/cost_model/tests.rs` | One test per rule, and that a charge meets a running cost exactly as the parts were added before the move, for every combination of removal forms and both removal arithmetics |
 | The order of a batch | `storage/src/rocksdb_storage/tests.rs`, module `charging` | By keyspace (all six pairs), by key within a keyspace, by prefix across subtrees, and the key of a put before its value, each through the removed bytes of an applied batch |
 | A refused put | the same module | For a refusal in each keyspace: the cost returned holds the seeks and loaded bytes of every operation before it in batch order and of the refused put, and no storage cost; nothing was written |
-| A batch that is not written | the same module | The storage cost is not owed, what was charged at once is |
+| A batch that is not written | the same module | The storage cost is not owed, what was charged at once is. The batch of an immediate handle is owed in full either way. |
+| A write with no batch | the same module | Each of the nine is refused and charged `refused_write()` |
+| The cursor | the same module | Every move, and `key`, `valid` and `value` on a record, on the next subtree's key, past the end and before the first seek, cost what C1 to C3 give |
 | C4 and P1 | the same module | `FlatStore::clear` costs `clear_walk`; a handle, a prefix and the estimate cost `open_by_path` |
 | N1 | `merk/src/cost_model.rs` | The length from sizes is the length of the record Merk encodes, for every feature and link aggregate |
-| That nothing else charges | `storage/tests/charging.rs` | The sources of the RocksDB engine build no cost, touch no field of one and do none of the arithmetic |
+| That nothing else charges | `storage/tests/charging.rs` | The storage crate is parsed and its code outside tests walked. No function body, constant or type alias names a type a cost is built from, calls `Default::default`, touches a field of a cost, or calls a method or macro that adds costs up; the engine adds nothing at all, and elsewhere no function that carries a cost does. Imports from `grovedb_costs` are held to a list and may not be renamed, so a cost type cannot be reached under another name. `FlatStore::clear` and `stage_pending_prefix_drop` are left out by name. |
 
-The tests of the `charging` module were also run against the storage contexts as they were before the move, with only the functions added to `grovedb-costs`: they pass there unchanged.
+The tests of the `charging` module were also run against the storage contexts as they were before the move, with only the functions added to `grovedb-costs`: they pass there unchanged, and the last row fails there.
+
+The last row is a check of the source and has the limits of one. It holds the crate to the names and operators it lists. It does not follow a call into another crate, so a function added to `grovedb-costs` outside `cost_model` that builds a cost for the engine would have to be seen in review.
 
 ### 14.5 For later tasks
 
