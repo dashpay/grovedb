@@ -1,9 +1,11 @@
 mod cursor;
+mod errors;
 mod keys;
 mod log;
 mod model;
 mod moves;
 mod shape;
+mod store;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
