@@ -132,21 +132,39 @@ fn a_page_table_error_says_what_failed_and_where() {
             false,
         ),
         (
-            PageTableError::LogBehindSample {
+            PageTableError::LogBehindCopy {
                 needed: LogPlace::new(id(4), 900).unwrap(),
                 durable: LogPlace::new(id(3), 62).ok(),
             },
-            "the checkpoint's sample of the value counts was taken at offset 900 of log file 4, \
-             and the log is durable up to offset 62 of log file 3",
+            "the log ended at offset 900 of log file 4 when the checkpoint's last chain had been \
+             copied, and it is durable up to offset 62 of log file 3",
             false,
         ),
         (
-            PageTableError::LogBehindSample {
+            PageTableError::LogBehindCopy {
                 needed: LogPlace::new(id(4), 900).unwrap(),
                 durable: None,
             },
-            "the checkpoint's sample of the value counts was taken at offset 900 of log file 4, \
-             and none of the log is durable",
+            "the log ended at offset 900 of log file 4 when the checkpoint's last chain had been \
+             copied, and none of it is durable",
+            false,
+        ),
+        (
+            PageTableError::SampleAhead {
+                place: LogPlace::new(id(4), 900).unwrap(),
+                log_end: LogPlace::new(id(4), 883).ok(),
+            },
+            "the sample of the value counts was taken at offset 900 of log file 4, and the log \
+             ended at offset 883 of log file 4 before the first chain was copied",
+            false,
+        ),
+        (
+            PageTableError::SampleAhead {
+                place: LogPlace::new(id(4), 900).unwrap(),
+                log_end: None,
+            },
+            "the sample of the value counts was taken at offset 900 of log file 4, and the log \
+             had no record before the first chain was copied",
             false,
         ),
         (

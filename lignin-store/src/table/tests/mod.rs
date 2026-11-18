@@ -43,6 +43,12 @@ fn log(raw_version: u64) -> LogDurable {
     }
 }
 
+/// The end of a log that has no record, for the tests that are not about
+/// the log.
+fn no_log() -> Option<LogPlace> {
+    None
+}
+
 fn id(raw: u32) -> FileId {
     FileId::new(raw).expect("not zero")
 }
@@ -197,9 +203,9 @@ impl Db {
         table: &PageTable,
         covers: u64,
     ) -> Result<CheckpointInfo, PageTableError> {
-        let written = self
-            .checkpoints
-            .write(table, version(covers), &CountSample::default())?;
+        let written =
+            self.checkpoints
+                .write(table, version(covers), &CountSample::default(), no_log)?;
         self.checkpoints
             .install(&written, LOG, &mut self.manifest, &self.segments)?;
         Ok(written)

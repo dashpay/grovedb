@@ -299,7 +299,7 @@ fn each_checkpoint_takes_the_next_id_and_the_one_before_is_deleted() {
     assert_eq!(all_links(&loaded), all_links(&fixture.table));
     let written = again
         .checkpoints
-        .write(&loaded, version(0), &CountSample::default())
+        .write(&loaded, version(0), &CountSample::default(), no_log)
         .unwrap();
     assert_eq!(written.file(), id(5));
 }
@@ -315,7 +315,7 @@ fn opening_removes_the_checkpoints_the_manifest_does_not_name() {
 
     let unnamed = db
         .checkpoints
-        .write(&table, version(newest), &CountSample::default())
+        .write(&table, version(newest), &CountSample::default(), no_log)
         .unwrap();
     assert_eq!(unnamed.file(), id(3));
     put(&fs, &checkpoint_path(1), b"left by a crash");
@@ -339,7 +339,7 @@ fn opening_removes_the_checkpoints_the_manifest_does_not_name() {
     assert_eq!(all_links(&loaded), all_links(&table));
     let next = db
         .checkpoints
-        .write(&loaded, version(newest), &CountSample::default())
+        .write(&loaded, version(newest), &CountSample::default(), no_log)
         .unwrap();
     assert_eq!(next.file(), id(3));
 }
@@ -361,7 +361,7 @@ fn a_checkpoint_the_manifest_cannot_vouch_for_is_not_installed() {
     let written = fixture
         .db
         .checkpoints
-        .write(&fixture.table, version(10), &CountSample::default())
+        .write(&fixture.table, version(10), &CountSample::default(), no_log)
         .unwrap();
     let db = &mut fixture.db;
     let error = db
@@ -391,7 +391,7 @@ fn a_checkpoint_the_manifest_cannot_vouch_for_is_not_installed() {
     let written = fixture
         .db
         .checkpoints
-        .write(&fixture.table, version(10), &CountSample::default())
+        .write(&fixture.table, version(10), &CountSample::default(), no_log)
         .unwrap();
     assert_eq!(written.file(), id(3));
     let db = &mut fixture.db;
@@ -434,7 +434,12 @@ fn a_checkpoint_never_covers_less_than_the_one_before_it() {
     let written = fixture
         .db
         .checkpoints
-        .write(&fixture.table, version(newest - 1), &CountSample::default())
+        .write(
+            &fixture.table,
+            version(newest - 1),
+            &CountSample::default(),
+            no_log,
+        )
         .unwrap();
     let db = &mut fixture.db;
     let error = db
@@ -471,7 +476,7 @@ fn a_checkpoint_is_not_named_before_the_log_is_durable_through_all_it_holds() {
     let db = &mut fixture.db;
     let written = db
         .checkpoints
-        .write(&fixture.table, version(2), &CountSample::default())
+        .write(&fixture.table, version(2), &CountSample::default(), no_log)
         .unwrap();
     assert_eq!(
         (written.covers(), written.reaches()),
@@ -496,7 +501,7 @@ fn a_checkpoint_is_not_named_before_the_log_is_durable_through_all_it_holds() {
 
     let ahead = db
         .checkpoints
-        .write(&fixture.table, version(5), &CountSample::default())
+        .write(&fixture.table, version(5), &CountSample::default(), no_log)
         .unwrap();
     let error = db
         .checkpoints
@@ -513,7 +518,12 @@ fn a_checkpoint_is_not_named_before_the_log_is_durable_through_all_it_holds() {
 
     let empty = db
         .checkpoints
-        .write(&PageTable::new(), version(6), &CountSample::default())
+        .write(
+            &PageTable::new(),
+            version(6),
+            &CountSample::default(),
+            no_log,
+        )
         .unwrap();
     assert_eq!(empty.reaches(), None);
     let error = db
@@ -547,7 +557,7 @@ fn a_checkpoint_that_lost_a_freed_page_is_not_named_before_the_log_is_durable_th
     let db = &mut fixture.db;
     let written = db
         .checkpoints
-        .write(&fixture.table, version(1), &CountSample::default())
+        .write(&fixture.table, version(1), &CountSample::default(), no_log)
         .unwrap();
     assert_eq!((written.links(), written.reaches()), (0, None));
     let refused = db
@@ -581,11 +591,21 @@ fn an_older_checkpoint_does_not_replace_a_newer_one() {
     let db = &mut fixture.db;
     let older = db
         .checkpoints
-        .write(&fixture.table, version(newest), &CountSample::default())
+        .write(
+            &fixture.table,
+            version(newest),
+            &CountSample::default(),
+            no_log,
+        )
         .unwrap();
     let newer = db
         .checkpoints
-        .write(&fixture.table, version(newest), &CountSample::default())
+        .write(
+            &fixture.table,
+            version(newest),
+            &CountSample::default(),
+            no_log,
+        )
         .unwrap();
     db.checkpoints
         .install(&newer, LOG, &mut db.manifest, &db.segments)
@@ -623,7 +643,7 @@ fn the_parts_of_another_directory_are_refused() {
     let written = fixture
         .db
         .checkpoints
-        .write(&fixture.table, version(0), &CountSample::default())
+        .write(&fixture.table, version(0), &CountSample::default(), no_log)
         .unwrap();
     let db = &mut fixture.db;
 
@@ -676,7 +696,7 @@ fn a_checkpoint_of_many_pages_takes_several_records() {
     table.push(far, base(7, at(9, 1 << 40))).unwrap();
     let written = db
         .checkpoints
-        .write(&table, version(6), &CountSample::default())
+        .write(&table, version(6), &CountSample::default(), no_log)
         .unwrap();
     assert_eq!(written.links(), u64::from(pages + pages / 4 + 1));
     assert_eq!(written.reaches(), Some(version(7)));
@@ -744,7 +764,7 @@ fn a_checkpoint_written_while_the_table_changes_holds_each_chain_as_it_once_was(
         for _ in 0..4 {
             checkpoints.push(
                 db.checkpoints
-                    .write(&table, version(0), &CountSample::default())
+                    .write(&table, version(0), &CountSample::default(), no_log)
                     .unwrap(),
             );
         }
@@ -789,12 +809,15 @@ fn a_checkpoint_written_while_chains_are_consolidated_and_trimmed_holds_whole_pa
             .unwrap();
     }
     let done = AtomicBool::new(false);
+    let rounds = AtomicU64::new(0);
     let mut checkpoints = Vec::new();
     thread::scope(|scope| {
         scope.spawn(|| {
+            let _stop = Stop(&done);
             let mut removed = Vec::new();
             let mut born = 0;
             while !done.load(Ordering::Acquire) && born < 900 {
+                rounds.store(born, Ordering::Release);
                 born += 1;
                 for raw_page in (1..=pages).step_by(53) {
                     let change = block(1, raw_page, born);
@@ -815,11 +838,24 @@ fn a_checkpoint_written_while_chains_are_consolidated_and_trimmed_holds_whole_pa
                 }
             }
         });
+        let _stop = Stop(&done);
+        // Every chain is consolidated in the third round, so the first
+        // checkpoint is written after it.
+        while rounds.load(Ordering::Acquire) < 3 {
+            assert!(!done.load(Ordering::Acquire), "the other thread stopped");
+            thread::yield_now();
+        }
         for _ in 0..6 {
-            let started_at = table.newest(page(1)).unwrap().version;
+            // Page 1 has no link for a moment, each time it is freed,
+            // trimmed away and made again.
+            let started_at = loop {
+                if let Some(newest) = table.newest(page(1)) {
+                    break newest.version;
+                }
+            };
             let written = db
                 .checkpoints
-                .write(&table, started_at, &CountSample::default())
+                .write(&table, started_at, &CountSample::default(), no_log)
                 .unwrap();
             checkpoints.push((started_at, written));
         }
@@ -913,7 +949,7 @@ fn a_checkpoint_written_while_freed_pages_are_trimmed_says_which_free_links_it_l
             allowed.fetch_add(PER_WRITE, Ordering::AcqRel);
             let written = db
                 .checkpoints
-                .write(&table, version(0), &CountSample::default())
+                .write(&table, version(0), &CountSample::default(), no_log)
                 .unwrap();
             let after = freed.load(Ordering::Acquire);
 
@@ -956,7 +992,7 @@ fn what_a_checkpoint_needs_of_the_log_is_the_newest_of_what_it_covers_holds_and_
     let whole = fixture
         .db
         .checkpoints
-        .write(&fixture.table, version(1), &CountSample::default())
+        .write(&fixture.table, version(1), &CountSample::default(), no_log)
         .unwrap();
     assert_eq!(
         (whole.reaches(), whole.trimmed_free()),
@@ -970,7 +1006,7 @@ fn what_a_checkpoint_needs_of_the_log_is_the_newest_of_what_it_covers_holds_and_
     let lost = fixture
         .db
         .checkpoints
-        .write(&fixture.table, version(3), &CountSample::default())
+        .write(&fixture.table, version(3), &CountSample::default(), no_log)
         .unwrap();
     assert_eq!(
         (lost.reaches(), lost.trimmed_free()),
@@ -983,7 +1019,7 @@ fn what_a_checkpoint_needs_of_the_log_is_the_newest_of_what_it_covers_holds_and_
     let again = fixture
         .db
         .checkpoints
-        .write(&fixture.table, version(3), &CountSample::default())
+        .write(&fixture.table, version(3), &CountSample::default(), no_log)
         .unwrap();
     assert_eq!(
         (again.reaches(), again.trimmed_free()),
@@ -993,7 +1029,7 @@ fn what_a_checkpoint_needs_of_the_log_is_the_newest_of_what_it_covers_holds_and_
     let covering = fixture
         .db
         .checkpoints
-        .write(&fixture.table, version(8), &CountSample::default())
+        .write(&fixture.table, version(8), &CountSample::default(), no_log)
         .unwrap();
     assert_eq!(covering.log_needed(), version(8));
 
@@ -1082,9 +1118,10 @@ fn a_checkpoint_gives_back_the_sample_of_the_value_counts_it_was_written_with() 
         let db = &mut fixture.db;
         let written = db
             .checkpoints
-            .write(&fixture.table, version(newest), sample)
+            .write(&fixture.table, version(newest), sample, || sample.place)
             .unwrap();
         assert_eq!(written.sample(), sample);
+        assert_eq!(written.log_kept_from(), sample.place);
         assert_eq!(
             written.named().valid_len(),
             len_without + records * 9 + sample.counts.len() as u64 * 24
@@ -1095,13 +1132,20 @@ fn a_checkpoint_gives_back_the_sample_of_the_value_counts_it_was_written_with() 
         let (table, loaded) = db.load().unwrap();
         let loaded = loaded.expect("a checkpoint");
         assert_eq!(loaded.sample(), sample);
+        assert_eq!(loaded.log_kept_from(), sample.place);
         assert_eq!(loaded.named(), written.named());
         assert_eq!(all_links(&table), all_links(&fixture.table));
     }
 }
 
+/// The case FMT-05 found. A sample is taken at a place in the log. Then a
+/// page step places a value: its record lies behind the sample's place, and
+/// the block with its change is linked before the chain of its page is
+/// copied. Were the checkpoint named with the log durable only up to the
+/// sample, a crash could lose the record, and the checkpoint would hold a
+/// pointer that no count includes.
 #[test]
-fn a_checkpoint_is_not_named_before_the_log_is_durable_up_to_its_sample() {
+fn a_checkpoint_is_not_named_before_the_log_is_durable_through_the_end_of_its_copy() {
     let mut fixture = Fixture::new();
     let newest = fixture.fill();
     let before = fixture.checkpoint(newest);
@@ -1109,16 +1153,25 @@ fn a_checkpoint_is_not_named_before_the_log_is_durable_up_to_its_sample() {
         place: Some(place(3, 500)),
         counts: vec![count(1, 2)],
     };
+    let placed = fixture.block(2, BlockContent::Delta, 12);
+    fixture.table.push(page(2), delta(5, placed)).unwrap();
+    let after_the_step = Some(place(3, 548));
+
     let db = &mut fixture.db;
     let written = db
         .checkpoints
-        .write(&fixture.table, version(newest), &sample)
+        .write(&fixture.table, version(newest), &sample, || after_the_step)
         .unwrap();
+    assert_eq!(written.sample(), &sample);
+    assert_eq!(written.log_place_needed(), after_the_step);
+    assert_eq!(written.log_kept_from(), sample.place);
     for durable in [
         None,
         Some(place(1, 45)),
         Some(place(2, MAX_LOG_OFFSET)),
         Some(place(3, 499)),
+        sample.place,
+        Some(place(3, 547)),
     ] {
         let refused = db.checkpoints.install(
             &written,
@@ -1129,8 +1182,8 @@ fn a_checkpoint_is_not_named_before_the_log_is_durable_up_to_its_sample() {
         assert!(
             matches!(
                 refused,
-                Err(PageTableError::LogBehindSample { needed, durable: found })
-                    if Some(needed) == sample.place && found == durable
+                Err(PageTableError::LogBehindCopy { needed, durable: found })
+                    if Some(needed) == after_the_step && found == durable
             ),
             "{refused:?}"
         );
@@ -1150,24 +1203,49 @@ fn a_checkpoint_is_not_named_before_the_log_is_durable_up_to_its_sample() {
     db.checkpoints
         .install(
             &written,
-            log_up_to(newest, sample.place),
+            log_up_to(newest, after_the_step),
             &mut db.manifest,
             &db.segments,
         )
         .unwrap();
     assert_eq!(db.named(), Some(written.named()));
+    let (loaded, info) = db.load().unwrap();
+    let info = info.expect("a checkpoint");
+    assert_eq!(chain_of(&loaded, 2).last(), Some(&delta(5, placed)));
+    // The file holds the place of the sample, and not where the copy ended.
+    assert_eq!(info.sample(), &sample);
+    assert_eq!(info.log_place_needed(), sample.place);
+    assert_eq!(info.log_kept_from(), sample.place);
 
-    // A sample from before every record of the log asks nothing of it, and a
-    // log that is durable further than the sample's place will do.
-    for (place_of_sample, durable) in [(None, None), (Some(place(3, 500)), Some(place(4, 45)))] {
+    // A log with no record asks nothing. A sample from before every record
+    // still waits for the records that the copy saw. A log that is durable
+    // further than the copy's end will do.
+    for (place_of_sample, copied, durable) in [
+        (None, None, None),
+        (None, Some(place(1, 45)), Some(place(1, 45))),
+        (Some(place(3, 500)), Some(place(3, 500)), Some(place(4, 45))),
+    ] {
         let sample = CountSample {
             place: place_of_sample,
             counts: Vec::new(),
         };
         let written = db
             .checkpoints
-            .write(&fixture.table, version(newest), &sample)
+            .write(&fixture.table, version(newest), &sample, || copied)
             .unwrap();
+        assert_eq!(written.log_place_needed(), copied);
+        if copied.is_some() {
+            let refused = db.checkpoints.install(
+                &written,
+                log_up_to(newest, None),
+                &mut db.manifest,
+                &db.segments,
+            );
+            assert!(
+                matches!(refused, Err(PageTableError::LogBehindCopy { .. })),
+                "{refused:?}"
+            );
+        }
         db.checkpoints
             .install(
                 &written,
@@ -1178,6 +1256,138 @@ fn a_checkpoint_is_not_named_before_the_log_is_durable_up_to_its_sample() {
             .unwrap();
         assert_eq!(db.load().unwrap().1.unwrap().sample(), &sample);
     }
+}
+
+/// What `write` saw of the file it was writing each time it asked for the
+/// end of the log: nothing, or its length.
+fn checkpoint_len(fs: &SimVfs, raw_id: u32) -> Option<u64> {
+    let file = fs.open(&checkpoint_path(raw_id), OpenMode::Read).ok()?;
+    Some(file.len().unwrap())
+}
+
+#[test]
+fn the_end_of_the_log_is_asked_for_before_the_first_chain_is_copied_and_after_the_last() {
+    let fs = sim_fs(SimConfig::new(8));
+    let db = Db::create(&fs);
+    let table = PageTable::new();
+    let pages = 2 * format::LINKS_PER_RECORD as u32;
+    for raw_page in 1..=pages {
+        let image = at(1, 20 + u64::from(raw_page) * 64);
+        table.push(page(raw_page), base(1, image)).unwrap();
+    }
+    let record = 9 + format::LINKS_PER_RECORD as u64 * 28;
+    let sample = CountSample {
+        place: Some(place(2, 100)),
+        counts: vec![count(1, 1)],
+    };
+
+    // The log grows while the chains are copied: the place asked of the log
+    // is its end after the last of them, when both records of links are in
+    // the file and the counts and the end record are not.
+    let seen = std::cell::RefCell::new(Vec::new());
+    let ends = [place(2, 100), place(2, 900)];
+    let written = db
+        .checkpoints
+        .write(&table, version(1), &sample, || {
+            let mut seen = seen.borrow_mut();
+            seen.push(checkpoint_len(&fs, 1));
+            Some(ends[seen.len() - 1])
+        })
+        .unwrap();
+    assert_eq!(*seen.borrow(), [None, Some(20 + 2 * record)]);
+    assert_eq!(written.named().valid_len(), 20 + 2 * record + 9 + 24 + 53);
+    assert_eq!(written.log_place_needed(), Some(place(2, 900)));
+
+    // An end that is reported earlier the second time: the checkpoint asks
+    // for the later of the two, which is not before its sample.
+    let asked = std::cell::Cell::new(0);
+    let written = db
+        .checkpoints
+        .write(&table, version(1), &sample, || {
+            asked.set(asked.get() + 1);
+            Some(place(2, 400 - 100 * asked.get()))
+        })
+        .unwrap();
+    assert_eq!(asked.get(), 2);
+    assert_eq!(written.log_place_needed(), Some(place(2, 300)));
+}
+
+/// The mark of a sample is written before the first chain is copied. A
+/// sample whose place the log had not reached then was taken later, or its
+/// mark was written later, and the checkpoint is not written.
+#[test]
+fn a_sample_whose_mark_was_not_in_the_log_before_the_first_chain_is_refused() {
+    let mut fixture = Fixture::new();
+    let newest = fixture.fill();
+    fixture.checkpoint(newest);
+    let sample = CountSample {
+        place: Some(place(3, 500)),
+        counts: vec![count(1, 2)],
+    };
+    for log_end in [
+        None,
+        Some(place(1, 45)),
+        Some(place(2, MAX_LOG_OFFSET)),
+        Some(place(3, 499)),
+    ] {
+        let refused =
+            fixture
+                .db
+                .checkpoints
+                .write(&fixture.table, version(newest), &sample, || log_end);
+        assert_eq!(
+            refused.as_ref().map(|_| ()).map_err(ToString::to_string),
+            Err(PageTableError::SampleAhead {
+                place: place(3, 500),
+                log_end,
+            }
+            .to_string()),
+        );
+        assert!(
+            matches!(
+                refused,
+                Err(PageTableError::SampleAhead { place: of_sample, log_end: found })
+                    if Some(of_sample) == sample.place && found == log_end
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(fixture.table_files(), [checkpoint_name(1)]);
+    }
+
+    // The mark is written while the chains are copied: the log reaches the
+    // place of the sample only the second time it is asked.
+    let asked = std::cell::Cell::new(0);
+    let refused = fixture
+        .db
+        .checkpoints
+        .write(&fixture.table, version(newest), &sample, || {
+            asked.set(asked.get() + 1);
+            Some(place(3, 483 + 17 * (asked.get() - 1)))
+        });
+    assert!(
+        matches!(refused, Err(PageTableError::SampleAhead { .. })),
+        "{refused:?}"
+    );
+    assert_eq!(asked.get(), 1);
+    assert_eq!(fixture.table_files(), [checkpoint_name(1)]);
+
+    // A refused sample takes no checkpoint id. A mark that is the last
+    // record of the log is in it.
+    let db = &mut fixture.db;
+    let written = db
+        .checkpoints
+        .write(&fixture.table, version(newest), &sample, || sample.place)
+        .unwrap();
+    assert_eq!(written.file(), id(2));
+    assert_eq!(written.log_place_needed(), sample.place);
+    db.checkpoints
+        .install(
+            &written,
+            log_up_to(newest, sample.place),
+            &mut db.manifest,
+            &db.segments,
+        )
+        .unwrap();
 }
 
 #[test]
@@ -1196,7 +1406,7 @@ fn a_sample_whose_counts_are_not_in_order_is_not_written() {
         let error = fixture
             .db
             .checkpoints
-            .write(&fixture.table, version(newest), &sample)
+            .write(&fixture.table, version(newest), &sample, no_log)
             .unwrap_err();
         let (_, source) = format_error(error);
         assert_eq!(source, format::TableError::CountsOutOfOrder.into());
@@ -1329,7 +1539,7 @@ fn checkpoint_ids_run_out() {
     for _ in 0..2 {
         assert!(matches!(
             db.checkpoints
-                .write(&table, version(0), &CountSample::default()),
+                .write(&table, version(0), &CountSample::default(), no_log),
             Err(PageTableError::FileIdsExhausted)
         ));
     }

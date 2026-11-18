@@ -157,15 +157,26 @@ pub enum PageTableError {
         /// The version the log is durable through.
         durable: CommitVersion,
     },
-    /// The place in the log of the sample of the value counts that the
-    /// checkpoint offered holds is after the place the log is durable up
-    /// to. Naming it could leave a recovery with a log that ends before the
-    /// sample was taken.
-    LogBehindSample {
-        /// The place of the sample.
+    /// The log ended, when the last chain of the checkpoint offered had
+    /// been copied, after the place the log is durable up to. Naming the
+    /// checkpoint could leave a recovery with a chain that holds a change
+    /// whose record is lost, or with a log that ends before the sample of
+    /// the value counts was taken.
+    LogBehindCopy {
+        /// Where the log ended when the last chain had been copied.
         needed: LogPlace,
         /// The place the log is durable up to, if any of it is.
         durable: Option<LogPlace>,
+    },
+    /// The place of the sample of the value counts that a checkpoint was to
+    /// be written with is after the end of the log, as it was before the
+    /// first chain was copied: the mark of the sample was not in the log
+    /// then. Nothing was written.
+    SampleAhead {
+        /// The place of the sample.
+        place: LogPlace,
+        /// Where the log ended, if it had a record.
+        log_end: Option<LogPlace>,
     },
     /// The manifest no longer names a checkpoint, but its file could not be
     /// deleted. Everything else the call had to do was done. The deletion is
@@ -280,27 +291,49 @@ impl fmt::Display for PageTableError {
                 "the checkpoint needs the log durable through version {needed}, and it is \
                  durable through {durable}"
             ),
-            Self::LogBehindSample {
+            Self::LogBehindCopy {
                 needed,
                 durable: Some(durable),
             } => write!(
                 f,
-                "the checkpoint's sample of the value counts was taken at offset {} of log file \
-                 {}, and the log is durable up to offset {} of log file {}",
+                "the log ended at offset {} of log file {} when the checkpoint's last chain had \
+                 been copied, and it is durable up to offset {} of log file {}",
                 needed.offset(),
                 needed.file(),
                 durable.offset(),
                 durable.file()
             ),
-            Self::LogBehindSample {
+            Self::LogBehindCopy {
                 needed,
                 durable: None,
             } => write!(
                 f,
-                "the checkpoint's sample of the value counts was taken at offset {} of log file \
-                 {}, and none of the log is durable",
+                "the log ended at offset {} of log file {} when the checkpoint's last chain had \
+                 been copied, and none of it is durable",
                 needed.offset(),
                 needed.file()
+            ),
+            Self::SampleAhead {
+                place,
+                log_end: Some(log_end),
+            } => write!(
+                f,
+                "the sample of the value counts was taken at offset {} of log file {}, and the \
+                 log ended at offset {} of log file {} before the first chain was copied",
+                place.offset(),
+                place.file(),
+                log_end.offset(),
+                log_end.file()
+            ),
+            Self::SampleAhead {
+                place,
+                log_end: None,
+            } => write!(
+                f,
+                "the sample of the value counts was taken at offset {} of log file {}, and the \
+                 log had no record before the first chain was copied",
+                place.offset(),
+                place.file()
             ),
             Self::NotDeleted { path, source } => write!(
                 f,
