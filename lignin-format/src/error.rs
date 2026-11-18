@@ -48,6 +48,8 @@ pub enum FormatError {
         /// The largest length allowed.
         max: u64,
     },
+    /// The bytes are not a flat page image, or a flat page cannot be built.
+    FlatPage(crate::flat_page::FlatPageError),
     /// A field that must hold an identifier holds the "none" pattern.
     MissingId,
     /// A reserved field or bit is not zero.
@@ -84,6 +86,7 @@ impl fmt::Display for FormatError {
                     "record payload of {len} bytes exceeds the maximum of {max}"
                 )
             }
+            Self::FlatPage(error) => write!(f, "flat page: {error}"),
             Self::MissingId => write!(f, "identifier field holds no identifier"),
             Self::NonZeroReserved => write!(f, "reserved field is not zero"),
             Self::UnknownRecordKind { code } => write!(f, "unknown record kind code {code}"),
