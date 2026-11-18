@@ -2,6 +2,8 @@
 
 #[cfg(feature = "minimal")]
 use crate::element::SumValue;
+#[cfg(feature = "minimal")]
+use crate::Engine;
 use crate::{
     element::{
         aggregate_sum_query::{
@@ -54,16 +56,16 @@ pub enum QueryItemOrSumReturnType {
 }
 
 #[cfg(feature = "minimal")]
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Encoded query for multiple path queries
     #[deprecated]
-    pub fn query_encoded_many(
-        &self,
+    pub fn query_encoded_many<'db>(
+        &'db self,
         path_queries: &[&PathQuery],
         allow_cache: bool,
         decrease_limit_on_range_with_no_sub_elements: bool,
         error_if_intermediate_path_tree_not_present: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<Vec<u8>>, Error> {
         check_grovedb_v0_with_cost!(
@@ -167,14 +169,14 @@ impl GroveDb {
     }
 
     /// Raw query for multiple path queries
-    pub fn query_many_raw(
-        &self,
+    pub fn query_many_raw<'db>(
+        &'db self,
         path_queries: &[&PathQuery],
         allow_cache: bool,
         decrease_limit_on_range_with_no_sub_elements: bool,
         error_if_intermediate_path_tree_not_present: bool,
         result_type: QueryResultType,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<QueryResultElements, Error>
 where {
@@ -190,15 +192,15 @@ where {
         )
     }
 
-    fn query_many_raw_with_parent_tree(
-        &self,
+    fn query_many_raw_with_parent_tree<'db>(
+        &'db self,
         path_queries: &[&PathQuery],
         allow_cache: bool,
         decrease_limit_on_range_with_no_sub_elements: bool,
         error_if_intermediate_path_tree_not_present: bool,
         result_type: QueryResultType,
         include_parent_tree_on_subquery: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<QueryResultElements, Error>
 where {
@@ -233,11 +235,11 @@ where {
     }
 
     /// Prove a path query as either verbose or non-verbose
-    pub fn get_proved_path_query(
-        &self,
+    pub fn get_proved_path_query<'db>(
+        &'db self,
         path_query: &PathQuery,
         prove_options: Option<ProveOptions>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<u8>, Error> {
         check_grovedb_v0_with_cost!(
@@ -258,12 +260,12 @@ where {
         }
     }
 
-    fn follow_element(
-        &self,
+    fn follow_element<'db>(
+        &'db self,
         element: Element,
         allow_cache: bool,
         cost: &mut OperationCost,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> Result<Element, Error> {
         check_grovedb_v0!(
@@ -370,14 +372,14 @@ where {
     }
 
     /// Returns the result set after applying a path query
-    pub fn query(
-        &self,
+    pub fn query<'db>(
+        &'db self,
         path_query: &PathQuery,
         allow_cache: bool,
         decrease_limit_on_range_with_no_sub_elements: bool,
         error_if_intermediate_path_tree_not_present: bool,
         result_type: QueryResultType,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(QueryResultElements, u16), Error> {
         check_grovedb_v0_with_cost!(
@@ -415,13 +417,13 @@ where {
 
     /// Queries the backing store and returns element items by their value,
     /// Sum Items are encoded as var vec
-    pub fn query_item_value(
-        &self,
+    pub fn query_item_value<'db>(
+        &'db self,
         path_query: &PathQuery,
         allow_cache: bool,
         decrease_limit_on_range_with_no_sub_elements: bool,
         error_if_intermediate_path_tree_not_present: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(Vec<Vec<u8>>, u16), Error> {
         check_grovedb_v0_with_cost!(
@@ -567,13 +569,13 @@ where {
 
     /// Queries the backing store and returns element items by their value,
     /// Sum Items are returned
-    pub fn query_item_value_or_sum(
-        &self,
+    pub fn query_item_value_or_sum<'db>(
+        &'db self,
         path_query: &PathQuery,
         allow_cache: bool,
         decrease_limit_on_range_with_no_sub_elements: bool,
         error_if_intermediate_path_tree_not_present: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(Vec<QueryItemOrSumReturnType>, u16), Error> {
         check_grovedb_v0_with_cost!(
@@ -885,10 +887,10 @@ where {
     /// trusting their own merk read path. For a verifiable sum, use
     /// [`Self::prove_query`] +
     /// [`Self::verify_aggregate_sum_query`](GroveDb::verify_aggregate_sum_query).
-    pub fn query_aggregate_sum(
-        &self,
+    pub fn query_aggregate_sum<'db>(
+        &'db self,
         path_query: &PathQuery,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<i64, Error> {
         check_grovedb_v0_with_cost!(
@@ -913,7 +915,7 @@ where {
             path_query.validate_leaf_aggregate_sum_on_range().cloned()
         );
 
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
 
         // Open the leaf merk and ask it for the sum. The merk-level entry
         // point enforces `tree_type == ProvableSumTree` and handles the
@@ -956,12 +958,12 @@ where {
     /// **See also:** [`query_sums`](Self::query_sums) for a simpler API that
     /// uses a regular [`PathQuery`] and returns raw `Vec<i64>` values without
     /// aggregate scanning limits.
-    pub fn query_aggregate_sums(
-        &self,
+    pub fn query_aggregate_sums<'db>(
+        &'db self,
         aggregate_sum_path_query: &AggregateSumPathQuery,
         allow_cache: bool,
         error_if_intermediate_path_tree_not_present: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<AggregateSumQueryResult, Error> {
         check_grovedb_v0_with_cost!(
@@ -993,11 +995,11 @@ where {
     /// Like [`query_aggregate_sums`](Self::query_aggregate_sums) but lets the
     /// caller configure error handling for non-sum items and reference
     /// following.
-    pub fn query_aggregate_sums_with_options(
-        &self,
+    pub fn query_aggregate_sums_with_options<'db>(
+        &'db self,
         aggregate_sum_path_query: &AggregateSumPathQuery,
         query_options: AggregateSumQueryOptions,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<AggregateSumQueryResult, Error> {
         check_grovedb_v0_with_cost!(
@@ -1052,10 +1054,10 @@ where {
     /// trusting their own merk read path. For a verifiable count, use
     /// [`Self::prove_query`] +
     /// [`Self::verify_aggregate_count_query`](GroveDb::verify_aggregate_count_query).
-    pub fn query_aggregate_count(
-        &self,
+    pub fn query_aggregate_count<'db>(
+        &'db self,
         path_query: &PathQuery,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<u64, Error> {
         check_grovedb_v0_with_cost!(
@@ -1079,7 +1081,7 @@ where {
             path_query.validate_leaf_aggregate_count_on_range().cloned()
         );
 
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
 
         // Open the leaf merk and ask it for the count. The merk-level entry
         // point enforces `tree_type ∈ {ProvableCountTree, ProvableCountSumTree}`
@@ -1148,10 +1150,10 @@ where {
     /// are trusting their own merk read path. For a verifiable
     /// `(count, sum)`, use [`Self::prove_query`] +
     /// [`GroveDb::verify_aggregate_count_and_sum_query`].
-    pub fn query_aggregate_count_and_sum(
-        &self,
+    pub fn query_aggregate_count_and_sum<'db>(
+        &'db self,
         path_query: &PathQuery,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(u64, i64), Error> {
         let version_slot = grove_version
@@ -1176,7 +1178,7 @@ where {
                 .cloned()
         );
 
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
 
         // Open the leaf merk and ask it for the (count, sum). The
         // merk-level entry point enforces
@@ -1211,10 +1213,10 @@ where {
     /// `AggregateSumOnRange` query, answered without a proof, with the sum
     /// returned as an `i128`. A tree with an `i64` sum is refused, as
     /// [`Self::query_aggregate_sum`] refuses a `ProvableCountProvableBigSumTree`.
-    pub fn query_aggregate_big_sum(
-        &self,
+    pub fn query_aggregate_big_sum<'db>(
+        &'db self,
         path_query: &PathQuery,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<i128, Error> {
         check_grovedb_v0_with_cost!(
@@ -1231,7 +1233,7 @@ where {
             cost,
             path_query.validate_leaf_aggregate_sum_on_range().cloned()
         );
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
         let path_slices: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
         let subtree = cost_return_on_error!(
             &mut cost,
@@ -1258,10 +1260,10 @@ where {
     /// that ends at a `ProvableCountProvableBigSumTree`: the same leaf
     /// `AggregateCountAndSumOnRange` query, answered without a proof, with
     /// the sum returned as an `i128`.
-    pub fn query_aggregate_count_and_big_sum(
-        &self,
+    pub fn query_aggregate_count_and_big_sum<'db>(
+        &'db self,
         path_query: &PathQuery,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(u64, i128), Error> {
         let version_slot = grove_version
@@ -1278,7 +1280,7 @@ where {
                 .validate_leaf_aggregate_count_and_sum_on_range()
                 .cloned()
         );
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
         let path_slices: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
         let subtree = cost_return_on_error!(
             &mut cost,
@@ -1311,13 +1313,13 @@ where {
     ///
     /// References are followed only for `AbsolutePathReference`; the resolved
     /// element must be a `SumItem`.
-    pub fn query_sums(
-        &self,
+    pub fn query_sums<'db>(
+        &'db self,
         path_query: &PathQuery,
         allow_cache: bool,
         decrease_limit_on_range_with_no_sub_elements: bool,
         error_if_intermediate_path_tree_not_present: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(Vec<i64>, u16), Error> {
         check_grovedb_v0_with_cost!(
@@ -1456,14 +1458,14 @@ where {
 
     /// Returns result elements and number of elements skipped given path query
     #[allow(clippy::too_many_arguments)]
-    pub fn query_raw(
-        &self,
+    pub fn query_raw<'db>(
+        &'db self,
         path_query: &PathQuery,
         allow_cache: bool,
         decrease_limit_on_range_with_no_sub_elements: bool,
         error_if_intermediate_path_tree_not_present: bool,
         result_type: QueryResultType,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(QueryResultElements, u16), Error> {
         self.query_raw_with_parent_tree(
@@ -1478,15 +1480,15 @@ where {
         )
     }
 
-    fn query_raw_with_parent_tree(
-        &self,
+    fn query_raw_with_parent_tree<'db>(
+        &'db self,
         path_query: &PathQuery,
         allow_cache: bool,
         decrease_limit_on_range_with_no_sub_elements: bool,
         error_if_intermediate_path_tree_not_present: bool,
         result_type: QueryResultType,
         include_parent_tree_on_subquery: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(QueryResultElements, u16), Error> {
         check_grovedb_v0_with_cost!(
@@ -1526,13 +1528,13 @@ where {
 
     /// Splits the result set of a path query by query path.
     /// If max_results is exceeded we return an error.
-    pub fn query_keys_optional(
-        &self,
+    pub fn query_keys_optional<'db>(
+        &'db self,
         path_query: &PathQuery,
         allow_cache: bool,
         decrease_limit_on_range_with_no_sub_elements: bool,
         error_if_intermediate_path_tree_not_present: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<PathKeyOptionalElementTrio>, Error> {
         check_grovedb_v0_with_cost!(
@@ -1592,13 +1594,13 @@ where {
     }
 
     /// If max_results is exceeded we return an error
-    pub fn query_raw_keys_optional(
-        &self,
+    pub fn query_raw_keys_optional<'db>(
+        &'db self,
         path_query: &PathQuery,
         allow_cache: bool,
         decrease_limit_on_range_with_no_sub_elements: bool,
         error_if_intermediate_path_tree_not_present: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<PathKeyOptionalElementTrio>, Error> {
         check_grovedb_v0_with_cost!(

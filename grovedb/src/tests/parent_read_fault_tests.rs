@@ -27,7 +27,7 @@ use crate::{
         },
         make_empty_grovedb, make_test_grovedb, TempGroveDb, TEST_LEAF,
     },
-    BackwardsReferences, Element, Error, GroveDb, PathQuery, PendingPrefixDropsReport, Query,
+    BackwardsReferences, Element, Error, PathQuery, PendingPrefixDropsReport, Query,
 };
 
 const PARENT: &[u8] = b"parent";
@@ -227,6 +227,7 @@ fn first_stored_record(db: &TempGroveDb, path: &[&[u8]]) -> (Vec<u8>, Vec<u8>) {
     let tx = db.start_transaction();
     let storage = db
         .db
+        .storage()
         .get_transactional_storage_context(path.into(), None, &tx)
         .unwrap();
     let mut iter = storage.raw_iter();
@@ -543,6 +544,7 @@ fn should_return_the_storage_error_when_a_merk_node_read_fails() {
     };
     let storage = db
         .db
+        .storage()
         .get_transactional_storage_context([TEST_LEAF].as_ref().into(), None, &tx)
         .unwrap();
     let merk = Merk::open_layered_with_root_key(
@@ -591,8 +593,7 @@ fn should_return_the_storage_error_when_a_merk_node_read_fails() {
         );
 
         // The reciprocity audit's element read passes it on.
-        let audited =
-            GroveDb::element_for_reciprocity_audit(&merk, below_root, true, grove_version);
+        let audited = crate::element_for_reciprocity_audit(&merk, below_root, true, grove_version);
         assert!(
             matches!(&audited, Err(Error::MerkError(MerkError::StorageError(_)))),
             "got {audited:?}"
@@ -602,12 +603,12 @@ fn should_return_the_storage_error_when_a_merk_node_read_fails() {
     // A key the Merk does not hold is still "no element", and a healthy
     // read returns the element.
     assert!(
-        GroveDb::element_for_reciprocity_audit(&merk, b"missing", true, grove_version)
+        crate::element_for_reciprocity_audit(&merk, b"missing", true, grove_version)
             .expect("absence, not an error")
             .is_none()
     );
     assert!(
-        GroveDb::element_for_reciprocity_audit(&merk, below_root, true, grove_version)
+        crate::element_for_reciprocity_audit(&merk, below_root, true, grove_version)
             .expect("healthy read")
             .is_some()
     );

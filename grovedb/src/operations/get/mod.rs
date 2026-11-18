@@ -6,7 +6,7 @@ mod average_case;
 mod aggregate_per_key;
 mod query;
 mod run_path_query;
-use grovedb_storage::Storage;
+use crate::engine::node_store_error;
 pub use query::QueryItemOrSumReturnType;
 pub use run_path_query::{AxisAggregateValue, PathQueryRun};
 #[cfg(feature = "estimated_costs")]
@@ -21,32 +21,63 @@ use grovedb_costs::{
 use grovedb_merk::{
     element::{get::ElementFetchFromStorageExtensions, ElementExt},
     error::MerkErrorExt,
+    store::NodeStore,
     tree::combine_hash,
     CryptoHash,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::StorageContext;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
 use crate::bidirectional_references::BidirectionalReference;
 use crate::{
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
     util::{validate_path_segment_lengths, TxRef},
-    Element, Error, GroveDb, Transaction, TransactionArg,
+    Element, Engine, Error, GroveDb, Transaction, TransactionArg,
 };
 
 /// Limit of possible indirections
 pub const MAX_REFERENCE_HOPS: usize = 10;
 
 impl GroveDb {
+    /// Select the terminal representation bound by an existing reference.
+    ///
+    /// Pre-V4 direct writes hashed the unwrapped terminal, while batch writes
+    /// and V4 direct writes hash its stored bytes. Both can coexist, even after
+    /// an upgrade, so select the legacy form only when its combined hash matches
+    /// the reference's actual commitment. Otherwise retain the stored form:
+    /// callers still detect a stale reference if neither representation matches.
+    /// This is a read-side compatibility step and must not be used for writes.
+    pub(crate) fn reference_terminal_as_committed(
+        terminal: Element,
+        reference_element_hash: &CryptoHash,
+        committed_value_hash: &CryptoHash,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Element, Error> {
+        let mut cost = OperationCost::default();
+        if terminal.is_wrapped() {
+            let legacy_terminal_hash = cost_return_on_error_into!(
+                &mut cost,
+                terminal.underlying().value_hash(grove_version)
+            );
+            let legacy_commitment = combine_hash(reference_element_hash, &legacy_terminal_hash)
+                .unwrap_add_cost(&mut cost);
+            if &legacy_commitment == committed_value_hash {
+                return Ok(terminal.into_underlying()).wrap_with_cost(cost);
+            }
+        }
+        Ok(terminal).wrap_with_cost(cost)
+    }
+}
+
+impl<E: Engine> GroveDb<E> {
     /// Get an element from the backing store
     /// Merk Caching is on by default
     /// use get_caching_optional if no caching is desired
-    pub fn get<'b, B, P>(
-        &self,
+    pub fn get<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error>
     where
@@ -60,12 +91,12 @@ impl GroveDb {
 
     /// Get an element from the backing store
     /// Merk Caching can be set
-    pub fn get_caching_optional<B: AsRef<[u8]>>(
-        &self,
+    pub fn get_caching_optional<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
         key: &[u8],
         allow_cache: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
         check_grovedb_v0_with_cost!(
@@ -150,11 +181,11 @@ impl GroveDb {
     /// [`Self::follow_reference_as_stored`] instead. GROVE_V4 writes commit to
     /// the terminal's stored bytes, wrapper included. Readers of existing nodes
     /// must also account for legacy direct writes that hashed the inner value.
-    pub fn follow_reference<B: AsRef<[u8]>>(
-        &self,
+    pub fn follow_reference<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
         allow_cache: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
         self.follow_reference_as_stored(path, allow_cache, transaction, grove_version)
@@ -180,11 +211,11 @@ impl GroveDb {
     ///
     /// Use [`Self::follow_reference`] when the caller only needs the value
     /// the reference denotes.
-    pub fn follow_reference_as_stored<B: AsRef<[u8]>>(
-        &self,
+    pub fn follow_reference_as_stored<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
         allow_cache: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
         self.follow_reference_as_stored_visiting(
@@ -210,12 +241,12 @@ impl GroveDb {
     /// and the batch resolver (`follow_reference_get_value_hash`) already
     /// account for the referrer's position; this is the direct-write
     /// equivalent.
-    pub(crate) fn follow_reference_as_stored_for_write<B: AsRef<[u8]>>(
-        &self,
+    pub(crate) fn follow_reference_as_stored_for_write<'db, B: AsRef<[u8]>>(
+        &'db self,
         referrer_qualified_path: Vec<Vec<u8>>,
         path: SubtreePath<B>,
         allow_cache: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
         self.follow_reference_as_stored_visiting(
@@ -230,12 +261,12 @@ impl GroveDb {
     /// The walk behind both `follow_reference_as_stored*` entry points.
     /// `visited` seeds the cycle check: the chain is refused as cyclic as
     /// soon as it reaches any qualified path already in the set.
-    fn follow_reference_as_stored_visiting<B: AsRef<[u8]>>(
-        &self,
+    fn follow_reference_as_stored_visiting<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
         visited: HashSet<Vec<Vec<u8>>>,
         allow_cache: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
         check_grovedb_v0_with_cost!(
@@ -262,12 +293,12 @@ impl GroveDb {
     /// additionally cap the remaining budget with their own declarations, so
     /// a chain never resolves through more hops than any of its
     /// bidirectional members allow.
-    pub(crate) fn follow_reference_with_max_hop<B: AsRef<[u8]>>(
-        &self,
+    pub(crate) fn follow_reference_with_max_hop<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
         max_hop: Option<u8>,
         allow_cache: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
         self.follow_reference_with_max_hop_visiting(
@@ -287,13 +318,13 @@ impl GroveDb {
     /// reaches any qualified path already in the set (a reference being
     /// written seeds its own position; see
     /// [`Self::follow_reference_as_stored_for_write`]).
-    fn follow_reference_with_max_hop_visiting<B: AsRef<[u8]>>(
-        &self,
+    fn follow_reference_with_max_hop_visiting<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
         max_hop: Option<u8>,
         mut visited: HashSet<Vec<Vec<u8>>>,
         allow_cache: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
         let mut cost = OperationCost::default();
@@ -386,42 +417,13 @@ impl GroveDb {
         Err(Error::ReferenceLimit).wrap_with_cost(cost)
     }
 
-    /// Select the terminal representation bound by an existing reference.
-    ///
-    /// Pre-V4 direct writes hashed the unwrapped terminal, while batch writes
-    /// and V4 direct writes hash its stored bytes. Both can coexist, even after
-    /// an upgrade, so select the legacy form only when its combined hash matches
-    /// the reference's actual commitment. Otherwise retain the stored form:
-    /// callers still detect a stale reference if neither representation matches.
-    /// This is a read-side compatibility step and must not be used for writes.
-    pub(crate) fn reference_terminal_as_committed(
-        terminal: Element,
-        reference_element_hash: &CryptoHash,
-        committed_value_hash: &CryptoHash,
-        grove_version: &GroveVersion,
-    ) -> CostResult<Element, Error> {
-        let mut cost = OperationCost::default();
-        if terminal.is_wrapped() {
-            let legacy_terminal_hash = cost_return_on_error_into!(
-                &mut cost,
-                terminal.underlying().value_hash(grove_version)
-            );
-            let legacy_commitment = combine_hash(reference_element_hash, &legacy_terminal_hash)
-                .unwrap_add_cost(&mut cost);
-            if &legacy_commitment == committed_value_hash {
-                return Ok(terminal.into_underlying()).wrap_with_cost(cost);
-            }
-        }
-        Ok(terminal).wrap_with_cost(cost)
-    }
-
     /// Get Element at specified path and key
     /// If element is a reference return as is, don't follow
-    pub fn get_raw<B: AsRef<[u8]>>(
-        &self,
+    pub fn get_raw<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
         key: &[u8],
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
         check_grovedb_v0_with_cost!(
@@ -433,12 +435,12 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub fn get_raw_caching_optional<B: AsRef<[u8]>>(
-        &self,
+    pub fn get_raw_caching_optional<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
         key: &[u8],
         allow_cache: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
         check_grovedb_v0_with_cost!(
@@ -450,7 +452,7 @@ impl GroveDb {
                 .get_raw_caching_optional
         );
 
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
 
         self.get_raw_on_transaction_caching_optional(
             path,
@@ -465,11 +467,11 @@ impl GroveDb {
     /// Get Element at specified path and key
     /// If element is a reference return as is, don't follow
     /// Return None if element is not found
-    pub fn get_raw_optional<B: AsRef<[u8]>>(
-        &self,
+    pub fn get_raw_optional<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
         key: &[u8],
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Element>, Error> {
         check_grovedb_v0_with_cost!(
@@ -485,12 +487,12 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub fn get_raw_optional_caching_optional<B: AsRef<[u8]>>(
-        &self,
+    pub fn get_raw_optional_caching_optional<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
         key: &[u8],
         allow_cache: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Element>, Error> {
         check_grovedb_v0_with_cost!(
@@ -502,7 +504,7 @@ impl GroveDb {
                 .get_raw_optional_caching_optional
         );
 
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
 
         self.get_raw_optional_on_transaction_caching_optional(
             path,
@@ -515,12 +517,12 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub(crate) fn get_raw_on_transaction_caching_optional<B: AsRef<[u8]>>(
-        &self,
+    pub(crate) fn get_raw_on_transaction_caching_optional<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
         key: &[u8],
         allow_cache: bool,
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
         let mut cost = OperationCost::default();
@@ -543,12 +545,12 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub(crate) fn get_raw_optional_on_transaction_caching_optional<B: AsRef<[u8]>>(
-        &self,
+    pub(crate) fn get_raw_optional_on_transaction_caching_optional<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
         key: &[u8],
         allow_cache: bool,
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Element>, Error> {
         let mut cost = OperationCost::default();
@@ -580,11 +582,11 @@ impl GroveDb {
 
     /// Does tree element exist without following references
     /// There is no cache for has_raw
-    pub fn has_raw<'b, B, P>(
-        &self,
+    pub fn has_raw<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error>
     where
@@ -599,18 +601,18 @@ impl GroveDb {
         let cost = OperationCost::default();
         let path: SubtreePath<B> = path.into();
         cost_return_on_error_no_add!(cost, validate_path_segment_lengths(&path));
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
 
         // Merk's items should be written into data storage and checked accordingly
         self.db
-            .get_transactional_storage_context(path, None, tx.as_ref())
-            .flat_map(|s| s.get(key).map_err(|e| e.into()).map_ok(|x| x.is_some()))
+            .subtree(path, None, tx.as_ref())
+            .flat_map(|s| NodeStore::has_node(&s, key).map_err(node_store_error))
     }
 
-    fn check_subtree_exists<B: AsRef<[u8]>>(
-        &self,
+    fn check_subtree_exists<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
         error_fn: impl FnOnce() -> Error,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -650,10 +652,10 @@ impl GroveDb {
     }
 
     /// Check that subtree exists with path not found error
-    pub(crate) fn check_subtree_exists_path_not_found<'b, B>(
-        &self,
+    pub(crate) fn check_subtree_exists_path_not_found<'db, 'b, B>(
+        &'db self,
         path: SubtreePath<'b, B>,
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
     where
@@ -676,10 +678,10 @@ impl GroveDb {
     }
 
     /// Check subtree exists with invalid path error
-    pub fn check_subtree_exists_invalid_path<B: AsRef<[u8]>>(
-        &self,
+    pub fn check_subtree_exists_invalid_path<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         check_grovedb_v0_with_cost!(
@@ -691,7 +693,7 @@ impl GroveDb {
                 .check_subtree_exists_invalid_path
         );
 
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
 
         self.check_subtree_exists(
             path,

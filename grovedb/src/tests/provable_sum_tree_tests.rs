@@ -815,6 +815,7 @@ mod tests {
             let tx = db.start_transaction();
             let storage_ctx = db
                 .db
+                .storage()
                 .get_immediate_storage_context(path.into(), &tx)
                 .unwrap();
 
@@ -900,6 +901,7 @@ mod tests {
             let tx = db.start_transaction();
             let storage_ctx = db
                 .db
+                .storage()
                 .get_immediate_storage_context(path.into(), &tx)
                 .unwrap();
 

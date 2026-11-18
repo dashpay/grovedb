@@ -6,36 +6,32 @@ use bincode::{
     config,
     config::{BigEndian, Configuration},
 };
-use grovedb_merk::{Merk, VisualizeableMerk};
+use grovedb_merk::{store::NodeStore, Merk, VisualizeableMerk};
 use grovedb_path::SubtreePathBuilder;
-use grovedb_storage::{Storage, StorageContext};
 use grovedb_version::version::GroveVersion;
 use grovedb_visualize::{visualize_stdout, Drawer, Visualize};
 
 use crate::{
     element::{elements_iterator::ElementIteratorExtensions, Element},
     util::TxRef,
-    GroveDb, TransactionArg,
+    Engine, GroveDb, TransactionArg,
 };
 
-impl GroveDb {
-    fn draw_subtree<W: Write, B: AsRef<[u8]>>(
-        &self,
+impl<E: Engine> GroveDb<E> {
+    fn draw_subtree<'db, W: Write, B: AsRef<[u8]>>(
+        &'db self,
         mut drawer: Drawer<W>,
         path: SubtreePathBuilder<'_, B>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> Result<Drawer<W>> {
         drawer.down();
 
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
 
-        let storage = self
-            .db
-            .get_transactional_storage_context((&path).into(), None, tx.as_ref())
-            .unwrap(); // unwraps CostContext (infallible — discards cost)
+        let storage = self.db.subtree((&path).into(), None, tx.as_ref()).unwrap(); // unwraps CostContext (infallible — discards cost)
 
-        let mut iter = Element::iterator(storage.raw_iter()).unwrap(); // CostContext unwrap
+        let mut iter = Element::iterator(NodeStore::cursor(&storage)).unwrap(); // CostContext unwrap
         while let Some((key, element)) = iter
             .next_element(grove_version)
             .unwrap() // unwraps CostContext (discards cost)
@@ -69,10 +65,10 @@ impl GroveDb {
         Ok(drawer)
     }
 
-    fn draw_root_tree<W: Write>(
-        &self,
+    fn draw_root_tree<'db, W: Write>(
+        &'db self,
         mut drawer: Drawer<W>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> Result<Drawer<W>> {
         drawer.down();
@@ -88,10 +84,10 @@ impl GroveDb {
         Ok(drawer)
     }
 
-    fn visualize_start<W: Write>(
-        &self,
+    fn visualize_start<'db, W: Write>(
+        &'db self,
         mut drawer: Drawer<W>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> Result<Drawer<W>> {
         drawer.write(b"root")?;
@@ -108,7 +104,7 @@ impl Visualize for GroveDb {
 }
 
 #[allow(dead_code)]
-pub fn visualize_merk_stdout<'db, S: StorageContext<'db>>(merk: &Merk<S>) {
+pub fn visualize_merk_stdout<'db, S: NodeStore<'db>>(merk: &Merk<S>) {
     visualize_stdout(&VisualizeableMerk::new(merk, |bytes: &[u8]| {
         let config = config::standard().with_big_endian().with_no_limit();
         bincode::decode_from_slice_untrusted::<Element, Configuration<BigEndian>>(bytes, config)

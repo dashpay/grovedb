@@ -4,8 +4,7 @@
 //! element.
 
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
-use grovedb_merk::Merk;
-use grovedb_storage::StorageContext;
+use grovedb_merk::{store::NodeStore, Merk};
 
 use super::super::TreeCacheMerkByPath;
 use crate::{Element, Error};
@@ -17,7 +16,7 @@ where
         &[Vec<u8>],
         Option<&Element>,
     ) -> CostResult<Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>, Error>,
-    S: StorageContext<'db>,
+    S: NodeStore<'db>,
 {
     pub(super) fn conditional_insert_keeps_stored_element_v0(&mut self) -> CostResult<bool, Error> {
         Ok(false).wrap_with_cost(OperationCost::default())

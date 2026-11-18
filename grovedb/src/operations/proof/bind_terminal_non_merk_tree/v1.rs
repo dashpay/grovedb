@@ -26,19 +26,19 @@ use grovedb_merk::{
     tree::{combine_hash, value_hash, NULL_HASH},
     CryptoHash, TreeFeatureType,
 };
-use grovedb_storage::{FlatStore, Storage};
+use grovedb_storage::FlatStore;
 use grovedb_version::version::GroveVersion;
 
-use crate::{Element, Error, GroveDb, Transaction};
+use crate::{Element, Engine, Error, GroveDb, Transaction};
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// `bind_terminal_non_merk_tree` v1 — see the module documentation.
-    pub(crate) fn bind_terminal_non_merk_tree_v1(
-        &self,
+    pub(crate) fn bind_terminal_non_merk_tree_v1<'db>(
+        &'db self,
         node: &mut Node,
         element: &Element,
         parent_path: &[&[u8]],
-        tx: &Transaction,
+        tx: &Transaction<'db, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -133,11 +133,11 @@ impl GroveDb {
     /// - `CommitmentTree` is inserted with `EMPTY_COMMITMENT_TREE_STATE_ROOT`,
     ///   which is exactly what the sinsemilla/bulk composition below yields at
     ///   count 0 — no special case needed.
-    fn non_merk_tree_child_hash(
-        &self,
+    fn non_merk_tree_child_hash<'db>(
+        &'db self,
         element: &Element,
         subtree_path: &[&[u8]],
-        tx: &Transaction,
+        tx: &Transaction<'db, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<CryptoHash, Error> {
         let mut cost = OperationCost::default();
@@ -153,7 +153,7 @@ impl GroveDb {
                 }
                 let storage_ctx = self
                     .db
-                    .get_transactional_storage_context(storage_path, None, tx)
+                    .subtree(storage_path, None, tx)
                     .unwrap_add_cost(&mut cost);
                 let store = grovedb_merkle_mountain_range::MmrStore::new(&storage_ctx);
                 let mmr = grovedb_merkle_mountain_range::MMR::new(*mmr_size, &store);
@@ -170,7 +170,7 @@ impl GroveDb {
                 }
                 let storage_ctx = self
                     .db
-                    .get_transactional_storage_context(storage_path, None, tx)
+                    .subtree(storage_path, None, tx)
                     .unwrap_add_cost(&mut cost);
                 let tree = cost_return_on_error_no_add!(
                     cost,
@@ -197,7 +197,7 @@ impl GroveDb {
                 }
                 let storage_ctx = self
                     .db
-                    .get_transactional_storage_context(storage_path, None, tx)
+                    .subtree(storage_path, None, tx)
                     .unwrap_add_cost(&mut cost);
                 let tree = cost_return_on_error_no_add!(
                     cost,
@@ -222,7 +222,7 @@ impl GroveDb {
             Element::CommitmentTree(total_count, chunk_power, _) => {
                 let storage_ctx = self
                     .db
-                    .get_transactional_storage_context(storage_path, None, tx)
+                    .subtree(storage_path, None, tx)
                     .unwrap_add_cost(&mut cost);
 
                 let sinsemilla_root = match storage_ctx
@@ -283,7 +283,7 @@ impl GroveDb {
                 }
                 let storage_ctx = self
                     .db
-                    .get_transactional_storage_context(storage_path, None, tx)
+                    .subtree(storage_path, None, tx)
                     .unwrap_add_cost(&mut cost);
                 let store = cost_return_on_error!(
                     &mut cost,

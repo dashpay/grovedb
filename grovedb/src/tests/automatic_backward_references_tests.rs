@@ -1381,6 +1381,7 @@ fn skipped_callback_delete_keeps_the_executed_deletions_cleanup() {
     let tx = db.start_transaction();
     let storage = db
         .db
+        .storage()
         .get_transactional_storage_context(SubtreePath::from(&[TEST_LEAF, b"tree"]), None, &tx)
         .unwrap();
     assert!(
@@ -1680,6 +1681,7 @@ fn callback_delete_tree_cannot_erase_the_initial_segments_cleanup() {
     let tx = db.start_transaction();
     let storage = db
         .db
+        .storage()
         .get_transactional_storage_context(SubtreePath::from(&[TEST_LEAF, b"tree"]), None, &tx)
         .unwrap();
     assert!(

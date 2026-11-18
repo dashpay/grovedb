@@ -166,6 +166,7 @@ mod tests {
         let tx = db.start_transaction();
         let ctx = db
             .db
+            .storage()
             .get_transactional_storage_context_by_subtree_prefix(prefix, None, &tx)
             .unwrap();
         let mut iter = ctx.raw_iter();

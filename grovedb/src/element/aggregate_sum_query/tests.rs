@@ -3142,6 +3142,7 @@ fn test_cyclic_reference_detected_in_aggregate_sum_query() {
         // Commit the batch to make the writes visible in the transaction
         let batch = cache.into_batch().unwrap().expect("should produce batch");
         db.db
+            .storage()
             .commit_multi_context_batch(*batch, Some(&tx))
             .unwrap()
             .expect("should commit batch");
@@ -3206,6 +3207,7 @@ fn test_self_referencing_element_detected_in_aggregate_sum_query() {
 
         let batch = cache.into_batch().unwrap().expect("should produce batch");
         db.db
+            .storage()
             .commit_multi_context_batch(*batch, Some(&tx))
             .unwrap()
             .expect("should commit batch");

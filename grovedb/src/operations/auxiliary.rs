@@ -38,21 +38,21 @@ use grovedb_costs::{
 };
 use grovedb_element::indexed::IndexAxis;
 use grovedb_path::SubtreePath;
-use grovedb_storage::{
-    rocksdb_storage::RocksDbStorage, FlatStore, RawIterator, Storage, StorageBatch,
-};
+use grovedb_storage::{rocksdb_storage::RocksDbStorage, FlatStore, RawIterator};
 use grovedb_version::version::GroveVersion;
 
-use crate::{util::TxRef, Error, GroveDb, Transaction, TransactionArg};
+use crate::{
+    engine::SubtreeHandle, util::TxRef, Engine, Error, GroveDb, Transaction, TransactionArg,
+};
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Put op for aux storage
-    pub fn put_aux<K: AsRef<[u8]>>(
-        &self,
+    pub fn put_aux<'db, K: AsRef<[u8]>>(
+        &'db self,
         key: K,
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         let tx = TxRef::new(&self.db, transaction);
@@ -60,7 +60,7 @@ impl GroveDb {
 
         let aux_storage = self
             .db
-            .get_transactional_storage_context(SubtreePath::empty(), Some(&batch), tx.as_ref())
+            .subtree(SubtreePath::empty(), Some(&batch), tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         cost_return_on_error!(
@@ -71,22 +71,21 @@ impl GroveDb {
                 .map_err(Into::into)
         );
 
+        drop(aux_storage);
         cost_return_on_error!(
             &mut cost,
-            self.db
-                .commit_multi_context_batch(batch, Some(tx.as_ref()))
-                .map_err(Into::into)
+            self.db.apply_batch(batch, tx.as_ref()).map_err(Into::into)
         );
 
         tx.commit_local().wrap_with_cost(cost)
     }
 
     /// Delete op for aux storage
-    pub fn delete_aux<K: AsRef<[u8]>>(
-        &self,
+    pub fn delete_aux<'db, K: AsRef<[u8]>>(
+        &'db self,
         key: K,
         cost_info: Option<KeyValueStorageCost>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         let tx = TxRef::new(&self.db, transaction);
@@ -94,7 +93,7 @@ impl GroveDb {
 
         let aux_storage = self
             .db
-            .get_transactional_storage_context(SubtreePath::empty(), Some(&batch), tx.as_ref())
+            .subtree(SubtreePath::empty(), Some(&batch), tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         cost_return_on_error!(
@@ -104,29 +103,28 @@ impl GroveDb {
                 .delete(key.as_ref(), cost_info)
                 .map_err(|e| e.into())
         );
+        drop(aux_storage);
 
         cost_return_on_error!(
             &mut cost,
-            self.db
-                .commit_multi_context_batch(batch, Some(tx.as_ref()))
-                .map_err(Into::into)
+            self.db.apply_batch(batch, tx.as_ref()).map_err(Into::into)
         );
 
         tx.commit_local().wrap_with_cost(cost)
     }
 
     /// Get op for aux storage
-    pub fn get_aux<K: AsRef<[u8]>>(
-        &self,
+    pub fn get_aux<'db, K: AsRef<[u8]>>(
+        &'db self,
         key: K,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
     ) -> CostResult<Option<Vec<u8>>, Error> {
         let mut cost = OperationCost::default();
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
 
         let aux_storage = self
             .db
-            .get_transactional_storage_context(SubtreePath::empty(), None, tx.as_ref())
+            .subtree(SubtreePath::empty(), None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         aux_storage
@@ -144,18 +142,18 @@ impl GroveDb {
     /// keeps a collection as one entry per member under a shared key prefix
     /// reads the collection back with this. Through a transaction the listing
     /// includes that transaction's own uncommitted puts and deletes.
-    pub fn get_aux_by_key_prefix<K: AsRef<[u8]>>(
-        &self,
+    pub fn get_aux_by_key_prefix<'db, K: AsRef<[u8]>>(
+        &'db self,
         key_prefix: K,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
     ) -> CostResult<Vec<(Vec<u8>, Vec<u8>)>, Error> {
         let mut cost = OperationCost::default();
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
         let key_prefix = key_prefix.as_ref();
 
         let aux_storage = self
             .db
-            .get_transactional_storage_context(SubtreePath::empty(), None, tx.as_ref())
+            .subtree(SubtreePath::empty(), None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         let aux = aux_storage.aux();
@@ -215,11 +213,11 @@ impl GroveDb {
     /// hold participants and keep their historical walk.
     ///
     /// `context` names the calling operation in error messages.
-    pub(crate) fn clear_subtree_storage_recursively<'db, B: AsRef<[u8]>>(
+    pub(crate) fn clear_subtree_storage_recursively<'a, 'db: 'a, B: AsRef<[u8]>>(
         &'db self,
         path: &SubtreePath<B>,
-        transaction: &'db Transaction,
-        batch: &'db StorageBatch,
+        transaction: &'a Transaction<'db, E>,
+        batch: &'a E::Batch,
         sweep_secondary_namespaces: bool,
         accounted_deletes: Option<&HashSet<Vec<Vec<u8>>>>,
         context: &str,
@@ -255,7 +253,7 @@ impl GroveDb {
             let p: SubtreePath<_> = subtree_path.as_slice().into();
             let storage = self
                 .db
-                .get_transactional_storage_context(p.clone(), Some(batch), transaction)
+                .subtree(p.clone(), Some(batch), transaction)
                 .unwrap_add_cost(&mut cost);
             cost_return_on_error!(
                 &mut cost,
@@ -276,11 +274,7 @@ impl GroveDb {
                         .unwrap_add_cost(&mut cost);
                 let secondary_storage = self
                     .db
-                    .get_transactional_storage_context_by_subtree_prefix(
-                        secondary_prefix,
-                        Some(batch),
-                        transaction,
-                    )
+                    .subtree_by_prefix(secondary_prefix, Some(batch), transaction)
                     .unwrap_add_cost(&mut cost);
                 cost_return_on_error!(
                     &mut cost,

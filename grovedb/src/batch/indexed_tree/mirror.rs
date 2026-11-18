@@ -17,9 +17,9 @@ use grovedb_merk::{
         costs::ElementCostExtensions, delete::ElementDeleteFromStorageExtensions,
         insert::ElementInsertToStorageExtensions, tree_type::ElementTreeTypeExtensions,
     },
+    store::NodeStore,
     BatchEntry, CryptoHash, Merk,
 };
-use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
 use super::{read_entry_aggregates, AggregateTransition, MaybeEntryState};
@@ -61,7 +61,7 @@ fn enforce_axis_item_key_bound<'a>(
 ///
 /// The result is key-sorted (built from the `BTreeMap` capture), which is
 /// what makes each axis's assembled batch deterministic.
-pub(crate) fn read_post_apply_transitions<'db, S: StorageContext<'db>>(
+pub(crate) fn read_post_apply_transitions<'db, S: NodeStore<'db>>(
     primary_merk: &Merk<S>,
     pre: &BTreeMap<Vec<u8>, MaybeEntryState>,
     grove_version: &GroveVersion,
@@ -268,7 +268,7 @@ fn build_axis_mirror_batch(
 /// separate Merk mutations can retain a stale row after multiple same-level
 /// changes; one atomic batch gives the secondary a single pre/post
 /// transition.
-pub(crate) fn apply_indexed_secondary_mirror_post_apply<'db, S: StorageContext<'db>>(
+pub(crate) fn apply_indexed_secondary_mirror_post_apply<'db, S: NodeStore<'db>>(
     transitions: &[AggregateTransition],
     axis: IndexAxis,
     secondary_merk: &mut Merk<S>,

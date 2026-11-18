@@ -13,13 +13,12 @@ use grovedb_costs::{
 };
 use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
 use grovedb_path::SubtreePath;
-use grovedb_storage::{Storage, StorageBatch};
 use grovedb_version::version::GroveVersion;
 
 use crate::{
     batch::{GroveOp, QualifiedGroveDbOp},
     util::TxRef,
-    Element, Error, GroveDb, Transaction, TransactionArg,
+    Element, Engine, Error, GroveDb, Transaction, TransactionArg,
 };
 
 /// Map a `BulkAppendError` to a GroveDB `Error`.
@@ -27,7 +26,7 @@ fn map_bulk_err(e: grovedb_bulk_append_tree::BulkAppendError) -> Error {
     Error::CorruptedData(format!("{}", e))
 }
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Append a value to a BulkAppendTree subtree.
     ///
     /// Auto-compacts when the buffer fills: serializes entries into a chunk
@@ -35,12 +34,12 @@ impl GroveDb {
     ///
     /// Returns `(state_root, global_position)` where global_position is the
     /// 0-based index of the appended value across all chunks and buffer.
-    pub fn bulk_append<'b, B, P>(
-        &self,
+    pub fn bulk_append<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
         value: Vec<u8>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<([u8; 32], u64), Error>
     where
@@ -75,10 +74,10 @@ impl GroveDb {
         let subtree_path_refs: Vec<&[u8]> = subtree_path_vec.iter().map(|v| v.as_slice()).collect();
         let subtree_path = SubtreePath::from(subtree_path_refs.as_slice());
 
-        let data_batch = StorageBatch::new();
+        let data_batch = E::Batch::default();
         let storage_ctx = self
             .db
-            .get_transactional_storage_context(subtree_path, Some(&data_batch), tx.as_ref())
+            .subtree(subtree_path, Some(&data_batch), tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         // 3. Load tree, append
@@ -114,16 +113,16 @@ impl GroveDb {
         // in the transaction. This is the same pattern as other direct GroveDB
         // operations — the caller is expected to rollback the tx on error.
         // The batch path (preprocess_bulk_append_ops) avoids this by using a
-        // shared StorageBatch that commits atomically with all other ops.
+        // shared E::Batch that commits atomically with all other ops.
         cost_return_on_error!(
             &mut cost,
             self.db
-                .commit_multi_context_batch(data_batch, Some(tx.as_ref()))
+                .apply_batch(data_batch, tx.as_ref())
                 .map_err(Into::into)
         );
 
         // 4. Update element in parent Merk
-        let batch = StorageBatch::new();
+        let batch = E::Batch::default();
         let mut parent_merk = cost_return_on_error!(
             &mut cost,
             self.open_transactional_merk_at_path(
@@ -139,7 +138,7 @@ impl GroveDb {
         // alone. Snapshot before the rewrite; mirror after.
         let old_indexed_state = cost_return_on_error!(
             &mut cost,
-            GroveDb::capture_indexed_entry_state(&parent_merk, key, &element, grove_version)
+            crate::capture_indexed_entry_state(&parent_merk, key, &element, grove_version)
         );
 
         let updated_element =
@@ -188,9 +187,7 @@ impl GroveDb {
         // 6. Commit
         cost_return_on_error!(
             &mut cost,
-            self.db
-                .commit_multi_context_batch(batch, Some(tx.as_ref()))
-                .map_err(Into::into)
+            self.db.apply_batch(batch, tx.as_ref()).map_err(Into::into)
         );
 
         tx.commit_local()
@@ -202,12 +199,12 @@ impl GroveDb {
     ///
     /// Transparently reads from either a completed epoch blob or the current
     /// buffer depending on the position.
-    pub fn bulk_get_value<'b, B, P>(
-        &self,
+    pub fn bulk_get_value<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
         global_position: u64,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Vec<u8>>, Error>
     where
@@ -216,7 +213,7 @@ impl GroveDb {
     {
         let path: SubtreePath<B> = path.into();
         let mut cost = OperationCost::default();
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
 
         let element = cost_return_on_error!(
             &mut cost,
@@ -242,7 +239,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_transactional_storage_context(subtree_path, None, tx.as_ref())
+            .subtree(subtree_path, None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         let tree = cost_return_on_error_no_add!(
@@ -296,13 +293,13 @@ impl GroveDb {
     /// The returned [`RangePage`] also carries the tree's `total_count`:
     /// positions `>= total_count` do not exist, so a page shorter than
     /// `limit` means the end of the tree was reached.
-    pub fn bulk_get_range<'b, B, P>(
-        &self,
+    pub fn bulk_get_range<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
         start: u64,
         limit: u16,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<RangePage, Error>
     where
@@ -311,7 +308,7 @@ impl GroveDb {
     {
         let path: SubtreePath<B> = path.into();
         let mut cost = OperationCost::default();
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
 
         let element = cost_return_on_error!(
             &mut cost,
@@ -333,7 +330,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_transactional_storage_context(subtree_path, None, tx.as_ref())
+            .subtree(subtree_path, None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         let tree = cost_return_on_error_no_add!(
@@ -354,12 +351,12 @@ impl GroveDb {
     ///
     /// Returns the raw serialized blob (length-prefixed entries) for the given
     /// chunk index, or None if the chunk hasn't been completed yet.
-    pub fn bulk_get_chunk<'b, B, P>(
-        &self,
+    pub fn bulk_get_chunk<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
         chunk_index: u64,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Vec<u8>>, Error>
     where
@@ -368,7 +365,7 @@ impl GroveDb {
     {
         let path: SubtreePath<B> = path.into();
         let mut cost = OperationCost::default();
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
 
         let element = cost_return_on_error!(
             &mut cost,
@@ -390,7 +387,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_transactional_storage_context(subtree_path, None, tx.as_ref())
+            .subtree(subtree_path, None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         let tree = cost_return_on_error_no_add!(
@@ -409,11 +406,11 @@ impl GroveDb {
     /// Get all current buffer entries from a BulkAppendTree.
     ///
     /// Returns entries that haven't been compacted into a chunk yet.
-    pub fn bulk_get_buffer<'b, B, P>(
-        &self,
+    pub fn bulk_get_buffer<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<Vec<u8>>, Error>
     where
@@ -422,7 +419,7 @@ impl GroveDb {
     {
         let path: SubtreePath<B> = path.into();
         let mut cost = OperationCost::default();
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
 
         let element = cost_return_on_error!(
             &mut cost,
@@ -444,7 +441,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_transactional_storage_context(subtree_path, None, tx.as_ref())
+            .subtree(subtree_path, None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         let tree = cost_return_on_error_no_add!(
@@ -471,11 +468,11 @@ impl GroveDb {
     }
 
     /// Get the total count of values in a BulkAppendTree.
-    pub fn bulk_count<'b, B, P>(
-        &self,
+    pub fn bulk_count<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<u64, Error>
     where
@@ -498,11 +495,11 @@ impl GroveDb {
     }
 
     /// Get the number of completed chunks in a BulkAppendTree.
-    pub fn bulk_chunk_count<'b, B, P>(
-        &self,
+    pub fn bulk_chunk_count<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<u64, Error>
     where
@@ -531,11 +528,11 @@ impl GroveDb {
     /// Groups ops by (path, key), executes all appends (including compactions)
     /// via the `grovedb-bulk-append-tree` crate, then replaces them with
     /// `ReplaceTreeRootKey` ops carrying the final state_root and total_count.
-    pub(crate) fn preprocess_bulk_append_ops(
-        &self,
+    pub(crate) fn preprocess_bulk_append_ops<'db>(
+        &'db self,
         ops: Vec<QualifiedGroveDbOp>,
-        transaction: &Transaction,
-        storage_batch: &StorageBatch,
+        transaction: &Transaction<'db, E>,
+        storage_batch: &E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
         let mut cost = OperationCost::default();
@@ -612,7 +609,7 @@ impl GroveDb {
 
             let storage_ctx = self
                 .db
-                .get_transactional_storage_context(st_path, Some(storage_batch), transaction)
+                .subtree(st_path, Some(storage_batch), transaction)
                 .unwrap_add_cost(&mut cost);
 
             // Load tree with embedded storage

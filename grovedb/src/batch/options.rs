@@ -58,7 +58,7 @@ pub struct BatchApplyOptions {
     /// uses [`GroveDb::find_subtrees`](crate::GroveDb::find_subtrees) to
     /// discover nested subtrees for storage removal. However,
     /// `find_subtrees` reads from the committed transaction state (without
-    /// the pending `StorageBatch`), so subtrees created by the same batch
+    /// the pending `E::Batch`), so subtrees created by the same batch
     /// are invisible to it. This means the newly-inserted subtree's storage
     /// prefix will not be cleaned up, resulting in orphaned data in the
     /// underlying store.

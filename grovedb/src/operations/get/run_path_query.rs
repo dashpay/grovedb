@@ -37,7 +37,7 @@ use crate::{
     query::{validated::ValidatedPathQuery, AggregateKind, PathQueryShape},
     query_result_type::AxisKeys,
     query_result_type::{QueryResultElements, QueryResultType},
-    AggregateSumPathQuery, Error, GroveDb, PathQuery, TransactionArg,
+    AggregateSumPathQuery, Engine, Error, GroveDb, PathQuery, TransactionArg,
 };
 
 /// A single aggregate scalar read off an indexed tree's per-axis
@@ -127,18 +127,68 @@ pub enum PathQueryRun {
 }
 
 impl GroveDb {
+    /// The empty answer of a single-path axis read over a path that does
+    /// not exist, per traversal: no entries and a zero skip for a ranked
+    /// page (the population is zero), no entries and no skip for a
+    /// bounded walk, a zero aggregate for a value-range aggregate. A
+    /// rank-of-key read has no empty answer — the key has no rank in a
+    /// tree that does not exist — and fails as it does for a key absent
+    /// from a present tree. The same mapping the verifier applies to a
+    /// proof with zero axis layers.
+    fn absent_axis_run(
+        axis_query: &grovedb_merk::proofs::query::AxisQuery,
+    ) -> Result<PathQueryRun, Error> {
+        let axis = axis_query.axis;
+        let keys_only = axis_query.projection == AxisProjection::Keys;
+        let empty_page = |skipped: Option<u64>| {
+            if keys_only {
+                PathQueryRun::AxisKeys {
+                    keys: AxisKeys::empty_for_axis(axis),
+                    skipped,
+                }
+            } else {
+                PathQueryRun::AxisEntries {
+                    entries: AxisEntries::empty_for_axis(axis),
+                    skipped,
+                }
+            }
+        };
+        match &axis_query.traversal {
+            AxisTraversal::RankedPage { .. } => Ok(empty_page(Some(0))),
+            AxisTraversal::Bounded { .. } => Ok(empty_page(None)),
+            AxisTraversal::RankOfKey { .. } => Err(Error::PathKeyNotFound(
+                "indexed-axis rank: the queried path does not exist, so the key has no rank"
+                    .to_string(),
+            )),
+            AxisTraversal::AggregateOverValueRange { fold, .. } => match (axis, fold) {
+                (IndexAxis::Count | IndexAxis::Sum, AggregateFold::Population) => Ok(
+                    PathQueryRun::AxisAggregate(AxisAggregateValue::Population(0)),
+                ),
+                (IndexAxis::Count | IndexAxis::Sum, AggregateFold::Total) => {
+                    Ok(PathQueryRun::AxisAggregate(AxisAggregateValue::Total(0)))
+                }
+                // classify rejects value-range aggregates on the Avg axis.
+                (IndexAxis::Avg, _) => Err(Error::CorruptedCodeExecution(
+                    "value-range aggregate on the Avg axis survived classification",
+                )),
+            },
+        }
+    }
+}
+
+impl<E: Engine> GroveDb<E> {
     /// Execute any [`PathQuery`] shape as a trusted read and return the
     /// shape's typed answer. See the module docs for routing and
     /// gating; see [`PathQuery::classify`] for the shape grammar.
     #[allow(clippy::too_many_arguments)]
-    pub fn run_path_query(
-        &self,
+    pub fn run_path_query<'db>(
+        &'db self,
         path_query: &PathQuery,
         allow_cache: bool,
         decrease_limit_on_range_with_no_sub_elements: bool,
         error_if_intermediate_path_tree_not_present: bool,
         result_type: QueryResultType,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<PathQueryRun, Error> {
         check_grovedb_v0_with_cost!(
@@ -251,7 +301,7 @@ impl GroveDb {
                         )
                     );
                     match present {
-                        None => return Self::absent_axis_run(axis).wrap_with_cost(cost),
+                        None => return GroveDb::absent_axis_run(axis).wrap_with_cost(cost),
                         // A present non-tree element part-way down: the
                         // path is not absent, it is the wrong kind, and
                         // the primitive below reports that — the same
@@ -389,63 +439,15 @@ impl GroveDb {
         }
     }
 
-    /// The empty answer of a single-path axis read over a path that does
-    /// not exist, per traversal: no entries and a zero skip for a ranked
-    /// page (the population is zero), no entries and no skip for a
-    /// bounded walk, a zero aggregate for a value-range aggregate. A
-    /// rank-of-key read has no empty answer — the key has no rank in a
-    /// tree that does not exist — and fails as it does for a key absent
-    /// from a present tree. The same mapping the verifier applies to a
-    /// proof with zero axis layers.
-    fn absent_axis_run(
-        axis_query: &grovedb_merk::proofs::query::AxisQuery,
-    ) -> Result<PathQueryRun, Error> {
-        let axis = axis_query.axis;
-        let keys_only = axis_query.projection == AxisProjection::Keys;
-        let empty_page = |skipped: Option<u64>| {
-            if keys_only {
-                PathQueryRun::AxisKeys {
-                    keys: AxisKeys::empty_for_axis(axis),
-                    skipped,
-                }
-            } else {
-                PathQueryRun::AxisEntries {
-                    entries: AxisEntries::empty_for_axis(axis),
-                    skipped,
-                }
-            }
-        };
-        match &axis_query.traversal {
-            AxisTraversal::RankedPage { .. } => Ok(empty_page(Some(0))),
-            AxisTraversal::Bounded { .. } => Ok(empty_page(None)),
-            AxisTraversal::RankOfKey { .. } => Err(Error::PathKeyNotFound(
-                "indexed-axis rank: the queried path does not exist, so the key has no rank"
-                    .to_string(),
-            )),
-            AxisTraversal::AggregateOverValueRange { fold, .. } => match (axis, fold) {
-                (IndexAxis::Count | IndexAxis::Sum, AggregateFold::Population) => Ok(
-                    PathQueryRun::AxisAggregate(AxisAggregateValue::Population(0)),
-                ),
-                (IndexAxis::Count | IndexAxis::Sum, AggregateFold::Total) => {
-                    Ok(PathQueryRun::AxisAggregate(AxisAggregateValue::Total(0)))
-                }
-                // classify rejects value-range aggregates on the Avg axis.
-                (IndexAxis::Avg, _) => Err(Error::CorruptedCodeExecution(
-                    "value-range aggregate on the Avg axis survived classification",
-                )),
-            },
-        }
-    }
-
     /// Single-path axis read: route one validated
     /// [`AxisQuery`](grovedb_merk::proofs::query::AxisQuery) to the
     /// indexed-tree primitive that serves its `(axis, traversal)` pair.
     /// The caller has established that `path` exists.
-    fn run_axis_read(
-        &self,
+    fn run_axis_read<'db>(
+        &'db self,
         path: &[&[u8]],
         axis_query: &grovedb_merk::proofs::query::AxisQuery,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<PathQueryRun, Error> {
         let mut cost = Default::default();
@@ -627,14 +629,14 @@ impl GroveDb {
     /// TopK dispatch across the three axes, normalizing into
     /// [`AxisEntries`] plus the page's attested skipped count.
     #[allow(clippy::too_many_arguments)]
-    fn axis_top_k_paginated_entries(
-        &self,
+    fn axis_top_k_paginated_entries<'db>(
+        &'db self,
         path: &[&[u8]],
         axis: IndexAxis,
         k: u16,
         offset: u64,
         descending: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(AxisEntries, u64), Error> {
         let mut cost = Default::default();
@@ -683,15 +685,15 @@ impl GroveDb {
     /// bounds into each axis's own domain (classification already
     /// rejected wholly-out-of-domain ranges).
     #[allow(clippy::too_many_arguments)]
-    fn axis_bounded_entries(
-        &self,
+    fn axis_bounded_entries<'db>(
+        &'db self,
         path: &[&[u8]],
         axis: IndexAxis,
         lo: i128,
         hi: i128,
         limit: u16,
         descending: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<AxisEntries, Error> {
         let mut cost = Default::default();
@@ -735,19 +737,19 @@ impl GroveDb {
     }
 }
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// TopK dispatch across the three axes for the keys projection —
     /// the `_keys` reads, which never open the primary — plus the
     /// page's attested skipped count.
     #[allow(clippy::too_many_arguments)]
-    fn axis_top_k_paginated_keys(
-        &self,
+    fn axis_top_k_paginated_keys<'db>(
+        &'db self,
         path: &[&[u8]],
         axis: IndexAxis,
         k: u16,
         offset: u64,
         descending: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(AxisKeys, u64), Error> {
         let mut cost = Default::default();
@@ -794,15 +796,15 @@ impl GroveDb {
 
     /// Bounded dispatch across the three axes for the keys projection.
     #[allow(clippy::too_many_arguments)]
-    fn axis_bounded_keys(
-        &self,
+    fn axis_bounded_keys<'db>(
+        &'db self,
         path: &[&[u8]],
         axis: IndexAxis,
         lo: i128,
         hi: i128,
         limit: u16,
         descending: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<AxisKeys, Error> {
         let mut cost = Default::default();

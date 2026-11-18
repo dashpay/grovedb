@@ -82,6 +82,7 @@ use grovedb_merk::{
         exists::ElementExistsInStorageExtensions, get::ElementFetchFromStorageExtensions,
         insert::ElementInsertToStorageExtensions, tree_type::ElementTreeTypeExtensions,
     },
+    store::NodeStore,
     tree::{value_hash, AggregateData, NULL_HASH},
     tree_type::TreeType,
     CryptoHash, Error as MerkError, Merk, MerkType, OldValueDisposition, Op,
@@ -90,8 +91,7 @@ use grovedb_merk::{
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
     flat::{pending_prefix_drops_namespace, stage_pending_prefix_drop, PendingPrefixDropRecord},
-    rocksdb_storage::PrefixedRocksDbTransactionContext,
-    Storage, StorageBatch, StorageContext,
+    FlatStore,
 };
 use grovedb_version::{
     check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
@@ -110,6 +110,7 @@ use crate::{
     batch::{batch_structure::BatchStructure, mode::BatchRunMode},
     bidirectional_references::BidirectionalReference,
     element::{MaxReferenceHop, SumValue},
+    engine::{EngineBatch, SubtreeHandle, WriteGroup},
     operations::{
         delete::DeleteOptions, get::MAX_REFERENCE_HOPS, insert::check_wide_sum_tree_creation,
         proof::util::hex_to_ascii,
@@ -118,7 +119,7 @@ use crate::{
         path_from_reference_path_type, path_from_reference_qualified_path_type, ReferencePathType,
     },
     util::{validate_path_segment_lengths, TxRef},
-    Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
+    Element, ElementFlags, Engine, Error, GroveDb, Transaction, TransactionArg,
 };
 
 /// Controls how a `DeleteTree` operation handles non-empty subtrees.
@@ -2467,7 +2468,7 @@ where
         &[Vec<u8>],
         Option<&Element>,
     ) -> CostResult<Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>, Error>,
-    S: StorageContext<'db>,
+    S: NodeStore<'db>,
 {
     /// Processes a reference, determining whether it can be retrieved from a
     /// batch operation.
@@ -3430,7 +3431,7 @@ where
         &[Vec<u8>],
         Option<&Element>,
     ) -> CostResult<Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>, Error>,
-    S: StorageContext<'db>,
+    S: NodeStore<'db>,
 {
     fn insert(
         &mut self,
@@ -4816,7 +4817,7 @@ where
                     let merk = self.merks.get(path).expect("the Merk is cached");
                     cost_return_on_error!(
                         &mut cost,
-                        GroveDb::update_tree_item_preserve_flag_into_batch_operations(
+                        crate::update_tree_item_preserve_flag_into_batch_operations(
                             merk,
                             key_info.get_key(),
                             root_key,
@@ -4834,7 +4835,7 @@ where
                     let merk = self.merks.get(path).expect("the Merk is cached");
                     let existing = cost_return_on_error!(
                         &mut cost,
-                        GroveDb::get_element_from_subtree(merk, key_info.as_slice(), grove_version)
+                        crate::get_element_from_subtree(merk, key_info.as_slice(), grove_version)
                     );
                     let existing_non_counted = existing.is_non_counted();
                     let existing_flags = existing.get_flags_owned();
@@ -5121,7 +5122,7 @@ where
                     let merk = self.merks.get(path).expect("the Merk is cached");
                     cost_return_on_error!(
                         &mut cost,
-                        GroveDb::update_indexed_tree_item_preserve_flag_into_batch_operations(
+                        crate::update_indexed_tree_item_preserve_flag_into_batch_operations(
                             merk,
                             key_info.get_key(),
                             primary_root_key,
@@ -5146,7 +5147,7 @@ where
                     // H1-A value hash composition the replace arm uses.
                     cost_return_on_error!(
                         &mut cost,
-                        GroveDb::insert_indexed_tree_item_into_batch_operations(
+                        crate::insert_indexed_tree_item_into_batch_operations(
                             element,
                             in_tree_type,
                             key_info.get_key(),
@@ -6185,6 +6186,189 @@ impl GroveDb {
         Ok((None, captures, merk_tree_cache, ops_by_qualified_paths)).wrap_with_cost(cost)
     }
 
+    /// Flat drop never reads the subtree it drops, so it cannot check a
+    /// participant claim: on versions that maintain backward references the
+    /// op must be the `DeleteTreeDontCheckForBackwardsReferences` twin.
+    fn reject_flat_drop_declaring_participants(
+        ops: &[QualifiedGroveDbOp],
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        if batch_maintains_backward_references(grove_version)
+            && ops.iter().any(|op| {
+                matches!(
+                    op.op,
+                    GroveOp::DeleteTree(_, SubelementsDeletionBehavior::DropFlat)
+                )
+            })
+        {
+            return Err(Error::NotSupported(
+                "flat drop requires DeleteTreeDontCheckForBackwardsReferences; use recursive delete for maintenance"
+                    .to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Family payloads require full-batch planning on V4. Earlier versions
+    /// and partial batches reject them because those paths cannot register
+    /// their edges or plan cross-subtree reference mutations.
+    ///
+    /// Also refuses a nested element wrapper at every version, since every
+    /// batch entry point (full, partial, partial add-ons) runs this pass
+    /// before execution.
+    fn reject_backward_references_elements_in_batch(
+        ops: &[QualifiedGroveDbOp],
+        allow_family: bool,
+    ) -> Result<(), Error> {
+        for op in ops {
+            // The derived write op is internal to the preprocessor; a
+            // caller supplying one could install arbitrary value hashes.
+            if matches!(op.op, GroveOp::ReplaceBackwardReferenceFamilyMember { .. }) {
+                return Err(Error::NotSupported(
+                    "ReplaceBackwardReferenceFamilyMember is derived internally and cannot be \
+                     supplied in a batch"
+                        .to_owned(),
+                ));
+            }
+            let element = match &op.op {
+                GroveOp::InsertWithKnownToNotAlreadyExist { element }
+                | GroveOp::InsertIfNotExists { element, .. }
+                | GroveOp::InsertOrReplace { element }
+                | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
+                | GroveOp::Replace { element }
+                | GroveOp::ReplaceDontCheckForBackwardsReferences { element }
+                | GroveOp::Patch { element, .. }
+                | GroveOp::PatchDontCheckForBackwardsReferences { element, .. } => element,
+                _ => continue,
+            };
+            // The checked constructors and both decoders refuse a wrapper
+            // inside a wrapper, but `Element` is a public enum, so a caller
+            // can build one by hand. Execution and reference following
+            // dispatch on `underlying()`, which unwraps one level, and treat
+            // a wrapper there as unreachable: a nested one panicked.
+            if element.is_wrapped() && element.underlying().is_wrapped() {
+                return Err(Error::InvalidBatchOperation(
+                    "nested element wrappers (NonCounted / NotSummed / NotCountedOrSummed) are \
+                     not allowed",
+                ));
+            }
+            if element.underlying().supports_backward_references() {
+                // Never wrapped: the wrappers' constructors refuse the family
+                // and deserialization rejects the shape, so a hand-built
+                // `NonCounted(family)` must not be written.
+                if element.is_wrapped() {
+                    return Err(Error::InvalidBatchOperation(
+                        "backward-references family elements cannot be wrapped in NonCounted / \
+                         NotSummed / NotCountedOrSummed",
+                    ));
+                }
+                if !allow_family {
+                    return Err(Error::NotSupported(
+                        "backward-references family elements require a full batch on \
+                         GROVE_V4+"
+                            .to_owned(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "estimated_costs")]
+    /// Returns the estimated average or worst case cost for an entire batch of
+    /// ops
+    pub fn estimated_case_operations_for_batch<U: Into<ElementFlagsUpdate>>(
+        estimated_costs_type: EstimatedCostsType,
+        ops: Vec<QualifiedGroveDbOp>,
+        batch_apply_options: Option<BatchApplyOptions>,
+        update_element_flags_function: impl FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> Result<U, Error>,
+        split_removal_bytes_function: impl FnMut(
+            &mut ElementFlags,
+            u32, // key removed bytes
+            u32, // value removed bytes
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        check_grovedb_v0_with_cost!(
+            "estimated_case_operations_for_batch",
+            grove_version
+                .grovedb_versions
+                .apply_batch
+                .estimated_case_operations_for_batch
+        );
+        // The estimators never call the flags update, so it only needs its
+        // answer type.
+        let update_element_flags_function =
+            just_in_time_value_update::flags_update_answers(update_element_flags_function);
+        let mut cost = OperationCost::default();
+
+        if ops.is_empty() {
+            return Ok(()).wrap_with_cost(cost);
+        }
+        cost_return_on_error_no_add!(
+            cost,
+            move_element::refuse_moves(&ops, move_element::ESTIMATED_COSTS_MOVE_REFUSAL)
+        );
+        match estimated_costs_type {
+            EstimatedCostsType::AverageCaseCostsType(estimated_layer_information) => {
+                let batch_structure = cost_return_on_error!(
+                    &mut cost,
+                    BatchStructure::from_ops(
+                        ops,
+                        update_element_flags_function,
+                        split_removal_bytes_function,
+                        AverageCaseTreeCacheKnownPaths::new_with_estimated_layer_information(
+                            estimated_layer_information
+                        ),
+                        grove_version
+                    )
+                );
+                cost_return_on_error!(
+                    &mut cost,
+                    GroveDb::apply_batch_structure(
+                        batch_structure,
+                        batch_apply_options,
+                        grove_version
+                    )
+                );
+            }
+
+            EstimatedCostsType::WorstCaseCostsType(worst_case_layer_information) => {
+                let batch_structure = cost_return_on_error!(
+                    &mut cost,
+                    BatchStructure::from_ops(
+                        ops,
+                        update_element_flags_function,
+                        split_removal_bytes_function,
+                        WorstCaseTreeCacheKnownPaths::new_with_worst_case_layer_information(
+                            worst_case_layer_information
+                        ),
+                        grove_version
+                    )
+                );
+                cost_return_on_error!(
+                    &mut cost,
+                    GroveDb::apply_batch_structure(
+                        batch_structure,
+                        batch_apply_options,
+                        grove_version
+                    )
+                );
+            }
+        }
+
+        Ok(()).wrap_with_cost(cost)
+    }
+}
+
+impl<E: Engine> GroveDb<E> {
     /// Method to propagate updated subtree root hashes up to GroveDB root
     /// If the pause height is set in the batch apply options
     /// Then return the list of leftover operations, together with the live
@@ -6222,7 +6406,7 @@ impl GroveDb {
         Error,
     >
     where
-        S: StorageContext<'db>,
+        S: NodeStore<'db>,
         F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
         F2: FnMut(
             &[Vec<u8>],
@@ -6266,7 +6450,7 @@ impl GroveDb {
                 grove_version
             )
         );
-        Self::apply_batch_structure(batch_structure, batch_apply_options, grove_version)
+        GroveDb::apply_batch_structure(batch_structure, batch_apply_options, grove_version)
             .add_cost(cost)
     }
 
@@ -6306,7 +6490,7 @@ impl GroveDb {
         grove_version: &GroveVersion,
     ) -> CostResult<(Option<OpsByLevelPath>, BatchApplyCaptures), Error>
     where
-        S: StorageContext<'db>,
+        S: NodeStore<'db>,
         F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
         F2: FnMut(
             &[Vec<u8>],
@@ -6366,7 +6550,7 @@ impl GroveDb {
         // which the caller drains and consumes next.
         let (leftover, captures, _merk_tree_cache, _ops_by_qualified_paths) = cost_return_on_error!(
             &mut cost,
-            Self::apply_batch_structure(batch_structure, batch_apply_options, grove_version)
+            GroveDb::apply_batch_structure(batch_structure, batch_apply_options, grove_version)
         );
         Ok((leftover, captures)).wrap_with_cost(cost)
     }
@@ -6395,11 +6579,11 @@ impl GroveDb {
     /// Use this method **only** for testing, debugging, or situations where
     /// partial application is explicitly acceptable. For production workloads
     /// that require atomicity, use [`apply_batch`](Self::apply_batch) instead.
-    pub fn apply_operations_without_batching(
-        &self,
+    pub fn apply_operations_without_batching<'db>(
+        &'db self,
         ops: Vec<QualifiedGroveDbOp>,
         options: Option<BatchApplyOptions>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         check_grovedb_v0_with_cost!(
@@ -6771,11 +6955,11 @@ impl GroveDb {
     }
 
     /// Applies batch on GroveDB
-    pub fn apply_batch(
-        &self,
+    pub fn apply_batch<'db>(
+        &'db self,
         ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         check_grovedb_v0_with_cost!(
@@ -6798,15 +6982,15 @@ impl GroveDb {
     }
 
     /// Applies batch on GroveDB
-    pub fn apply_partial_batch(
-        &self,
+    pub fn apply_partial_batch<'db>(
+        &'db self,
         ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
         cost_based_add_on_operations: impl FnMut(
             &OperationCost,
             &Option<OpsByLevelPath>,
         ) -> Result<Vec<QualifiedGroveDbOp>, Error>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         check_grovedb_v0_with_cost!(
@@ -6834,14 +7018,14 @@ impl GroveDb {
 
     /// Opens transactional merk at path with given storage batch context.
     /// Returns CostResult.
-    pub fn open_batch_transactional_merk_at_path<'db, B: AsRef<[u8]>>(
+    pub fn open_batch_transactional_merk_at_path<'a, 'db: 'a, B: AsRef<[u8]>>(
         &'db self,
-        storage_batch: &'db StorageBatch,
+        storage_batch: &'a E::Batch,
         path: SubtreePath<B>,
-        tx: &'db Transaction,
+        tx: &'a Transaction<'db, E>,
         new_merk: bool,
         grove_version: &GroveVersion,
-    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error> {
+    ) -> CostResult<Merk<E::Subtree<'a>>, Error> {
         check_grovedb_v0_with_cost!(
             "open_batch_transactional_merk_at_path",
             grove_version
@@ -6853,7 +7037,7 @@ impl GroveDb {
         cost_return_on_error_no_add!(cost, validate_path_segment_lengths(&path));
         let storage = self
             .db
-            .get_transactional_storage_context(path.clone(), Some(storage_batch), tx)
+            .subtree(path.clone(), Some(storage_batch), tx)
             .unwrap_add_cost(&mut cost);
 
         if let Some((parent_path, parent_key)) = path.derive_parent() {
@@ -6868,7 +7052,7 @@ impl GroveDb {
             } else {
                 let parent_storage = self
                     .db
-                    .get_transactional_storage_context(parent_path.clone(), Some(storage_batch), tx)
+                    .subtree(parent_path.clone(), Some(storage_batch), tx)
                     .unwrap_add_cost(&mut cost);
                 let element = cost_return_on_error!(
                     &mut cost,
@@ -6932,14 +7116,14 @@ impl GroveDb {
     /// for a caller that has ALREADY read (and paid for) the parent element
     /// at `path`: the open's own parent fetch is skipped so the read is
     /// charged exactly once. Only valid for non-root paths.
-    fn open_batch_transactional_merk_with_parent_element<'db, B: AsRef<[u8]>>(
+    fn open_batch_transactional_merk_with_parent_element<'a, 'db: 'a, B: AsRef<[u8]>>(
         &'db self,
-        storage_batch: &'db StorageBatch,
+        storage_batch: &'a E::Batch,
         path: SubtreePath<B>,
-        tx: &'db Transaction,
+        tx: &'a Transaction<'db, E>,
         parent_element: Element,
         grove_version: &GroveVersion,
-    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error> {
+    ) -> CostResult<Merk<E::Subtree<'a>>, Error> {
         let mut cost = OperationCost::default();
         if path.derive_parent().is_none() {
             return Err(Error::CorruptedCodeExecution(
@@ -6949,7 +7133,7 @@ impl GroveDb {
         }
         let storage = self
             .db
-            .get_transactional_storage_context(path, Some(storage_batch), tx)
+            .subtree(path, Some(storage_batch), tx)
             .unwrap_add_cost(&mut cost);
         if let Some((root_key, tree_type)) = parent_element.root_key_and_tree_type_owned() {
             Merk::open_layered_with_root_key(
@@ -6977,11 +7161,11 @@ impl GroveDb {
     /// stored tree type decides whether the record also dooms the per-axis
     /// secondary prefixes. Reclamation happens after the commit, outside
     /// consensus — see `operations::delete::flat_drop`.
-    fn stage_flat_drop_records<'db>(
+    fn stage_flat_drop_records<'a, 'db: 'a>(
         &'db self,
         flat_drop_records: &[(Vec<Vec<u8>>, TreeType)],
-        storage_batch: &'db StorageBatch,
-        tx: &'db Transaction,
+        storage_batch: &'a E::Batch,
+        tx: &'a Transaction<'db, E>,
         cost: &mut OperationCost,
     ) -> Result<(), Error> {
         for (qualified_path, actual_tree_type) in flat_drop_records {
@@ -6998,11 +7182,7 @@ impl GroveDb {
             };
             let namespace_ctx = self
                 .db
-                .get_transactional_storage_context_by_subtree_prefix(
-                    *pending_prefix_drops_namespace(),
-                    Some(storage_batch),
-                    tx,
-                )
+                .subtree_by_prefix(*pending_prefix_drops_namespace(), Some(storage_batch), tx)
                 .unwrap_add_cost(cost);
             stage_pending_prefix_drop(&namespace_ctx.meta(), &record)
                 .unwrap_add_cost(cost)
@@ -7032,11 +7212,11 @@ impl GroveDb {
     /// for merk types — so V4 does that single read up front, derives the
     /// ACTUAL type from it, and hands the element to the open. Same read
     /// count, same bytes: V4 charges exactly the released cost.
-    fn scan_delete_tree_ops<'db>(
+    fn scan_delete_tree_ops<'a, 'db: 'a>(
         &'db self,
         ops: &[QualifiedGroveDbOp],
-        storage_batch: &'db StorageBatch,
-        tx: &'db Transaction,
+        storage_batch: &'a E::Batch,
+        tx: &'a Transaction<'db, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<DeleteTreePreScan, Error> {
         let mut cost = OperationCost::default();
@@ -7091,11 +7271,7 @@ impl GroveDb {
                                 parent_path_vec.as_slice().into();
                             let parent_storage = self
                                 .db
-                                .get_transactional_storage_context(
-                                    parent_path,
-                                    Some(storage_batch),
-                                    tx,
-                                )
+                                .subtree(parent_path, Some(storage_batch), tx)
                                 .unwrap_add_cost(&mut cost);
                             let stored_element = cost_return_on_error!(
                                 &mut cost,
@@ -7232,11 +7408,7 @@ impl GroveDb {
                                 parent_path_vec.as_slice().into();
                             let parent_storage = self
                                 .db
-                                .get_transactional_storage_context(
-                                    parent_path,
-                                    Some(storage_batch),
-                                    tx,
-                                )
+                                .subtree(parent_path, Some(storage_batch), tx)
                                 .unwrap_add_cost(&mut cost);
                             let element = cost_return_on_error!(
                                 &mut cost,
@@ -7331,94 +7503,6 @@ impl GroveDb {
         Ok(scan).wrap_with_cost(cost)
     }
 
-    /// Flat drop never reads the subtree it drops, so it cannot check a
-    /// participant claim: on versions that maintain backward references the
-    /// op must be the `DeleteTreeDontCheckForBackwardsReferences` twin.
-    fn reject_flat_drop_declaring_participants(
-        ops: &[QualifiedGroveDbOp],
-        grove_version: &GroveVersion,
-    ) -> Result<(), Error> {
-        if batch_maintains_backward_references(grove_version)
-            && ops.iter().any(|op| {
-                matches!(
-                    op.op,
-                    GroveOp::DeleteTree(_, SubelementsDeletionBehavior::DropFlat)
-                )
-            })
-        {
-            return Err(Error::NotSupported(
-                "flat drop requires DeleteTreeDontCheckForBackwardsReferences; use recursive delete for maintenance"
-                    .to_owned(),
-            ));
-        }
-        Ok(())
-    }
-
-    /// Family payloads require full-batch planning on V4. Earlier versions
-    /// and partial batches reject them because those paths cannot register
-    /// their edges or plan cross-subtree reference mutations.
-    ///
-    /// Also refuses a nested element wrapper at every version, since every
-    /// batch entry point (full, partial, partial add-ons) runs this pass
-    /// before execution.
-    fn reject_backward_references_elements_in_batch(
-        ops: &[QualifiedGroveDbOp],
-        allow_family: bool,
-    ) -> Result<(), Error> {
-        for op in ops {
-            // The derived write op is internal to the preprocessor; a
-            // caller supplying one could install arbitrary value hashes.
-            if matches!(op.op, GroveOp::ReplaceBackwardReferenceFamilyMember { .. }) {
-                return Err(Error::NotSupported(
-                    "ReplaceBackwardReferenceFamilyMember is derived internally and cannot be \
-                     supplied in a batch"
-                        .to_owned(),
-                ));
-            }
-            let element = match &op.op {
-                GroveOp::InsertWithKnownToNotAlreadyExist { element }
-                | GroveOp::InsertIfNotExists { element, .. }
-                | GroveOp::InsertOrReplace { element }
-                | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
-                | GroveOp::Replace { element }
-                | GroveOp::ReplaceDontCheckForBackwardsReferences { element }
-                | GroveOp::Patch { element, .. }
-                | GroveOp::PatchDontCheckForBackwardsReferences { element, .. } => element,
-                _ => continue,
-            };
-            // The checked constructors and both decoders refuse a wrapper
-            // inside a wrapper, but `Element` is a public enum, so a caller
-            // can build one by hand. Execution and reference following
-            // dispatch on `underlying()`, which unwraps one level, and treat
-            // a wrapper there as unreachable: a nested one panicked.
-            if element.is_wrapped() && element.underlying().is_wrapped() {
-                return Err(Error::InvalidBatchOperation(
-                    "nested element wrappers (NonCounted / NotSummed / NotCountedOrSummed) are \
-                     not allowed",
-                ));
-            }
-            if element.underlying().supports_backward_references() {
-                // Never wrapped: the wrappers' constructors refuse the family
-                // and deserialization rejects the shape, so a hand-built
-                // `NonCounted(family)` must not be written.
-                if element.is_wrapped() {
-                    return Err(Error::InvalidBatchOperation(
-                        "backward-references family elements cannot be wrapped in NonCounted / \
-                         NotSummed / NotCountedOrSummed",
-                    ));
-                }
-                if !allow_family {
-                    return Err(Error::NotSupported(
-                        "backward-references family elements require a full batch on \
-                         GROVE_V4+"
-                            .to_owned(),
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// Applies batch of operations on GroveDB
     ///
     /// `update_element_flags_function` and `split_removal_bytes_function`
@@ -7439,8 +7523,8 @@ impl GroveDb {
     /// The flags callback answers a `bool` (whether it rewrote the flags) or
     /// an [`ElementFlagsUpdate`]; `AccountAsReplacement` is accepted from grove
     /// version 5, and refused before.
-    pub fn apply_batch_with_element_flags_update<U: Into<ElementFlagsUpdate>>(
-        &self,
+    pub fn apply_batch_with_element_flags_update<'db, U: Into<ElementFlagsUpdate>>(
+        &'db self,
         ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
         update_element_flags_function: impl FnMut(
@@ -7456,7 +7540,7 @@ impl GroveDb {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let replacement_refused = Cell::new(None);
@@ -7477,8 +7561,8 @@ impl GroveDb {
 
     /// [`Self::apply_batch_with_element_flags_update`] with the flags
     /// callback as [`just_in_time_value_update::batch_flags_update`] runs it.
-    fn apply_batch_with_batch_flags_update(
-        &self,
+    fn apply_batch_with_batch_flags_update<'db>(
+        &'db self,
         ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
         mut update_element_flags_function: impl FnMut(
@@ -7494,7 +7578,7 @@ impl GroveDb {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         check_grovedb_v0_with_cost!(
@@ -7568,13 +7652,16 @@ impl GroveDb {
         let backward_references_enabled = batch_maintains_backward_references(grove_version);
         cost_return_on_error_no_add!(
             cost,
-            Self::reject_backward_references_elements_in_batch(&ops, backward_references_enabled)
+            GroveDb::reject_backward_references_elements_in_batch(
+                &ops,
+                backward_references_enabled
+            )
         );
         cost_return_on_error_no_add!(
             cost,
-            Self::reject_flat_drop_declaring_participants(&ops, grove_version)
+            GroveDb::reject_flat_drop_declaring_participants(&ops, grove_version)
         );
-        let storage_batch = StorageBatch::new();
+        let storage_batch = E::Batch::default();
         let (ops, prepared_merks, landed_items) = if backward_references_enabled {
             let (ops, prepared_merks, landed_items) = cost_return_on_error!(
                 &mut cost,
@@ -7808,13 +7895,9 @@ impl GroveDb {
         for child_path in &non_merk_delete_paths {
             let child_subtree_path: SubtreePath<Vec<u8>> = child_path.as_slice().into();
             // Clear data namespace for all non-Merk tree types
-            let mut storage = self
+            let storage = self
                 .db
-                .get_transactional_storage_context(
-                    child_subtree_path,
-                    Some(&storage_batch),
-                    tx.as_ref(),
-                )
+                .subtree(child_subtree_path, Some(&storage_batch), tx.as_ref())
                 .unwrap_add_cost(&mut cost);
             cost_return_on_error!(
                 &mut cost,
@@ -7889,13 +7972,9 @@ impl GroveDb {
                         axis.tag(),
                     )
                     .unwrap_add_cost(&mut cost);
-                let mut secondary_storage = self
+                let secondary_storage = self
                     .db
-                    .get_transactional_storage_context_by_subtree_prefix(
-                        secondary_prefix,
-                        Some(&storage_batch),
-                        tx.as_ref(),
-                    )
+                    .subtree_by_prefix(secondary_prefix, Some(&storage_batch), tx.as_ref())
                     .unwrap_add_cost(&mut cost);
                 cost_return_on_error!(
                     &mut cost,
@@ -7945,7 +8024,7 @@ impl GroveDb {
         cost_return_on_error!(
             &mut cost,
             self.db
-                .commit_multi_context_batch(storage_batch, Some(tx.as_ref()))
+                .apply_batch(storage_batch, tx.as_ref())
                 .map_err(|e| e.into())
         );
 
@@ -7995,8 +8074,8 @@ impl GroveDb {
     ///
     /// The flags callback is answered as in
     /// [`Self::apply_batch_with_element_flags_update`].
-    pub fn apply_partial_batch_with_element_flags_update<U: Into<ElementFlagsUpdate>>(
-        &self,
+    pub fn apply_partial_batch_with_element_flags_update<'db, U: Into<ElementFlagsUpdate>>(
+        &'db self,
         ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
         update_element_flags_function: impl FnMut(
@@ -8016,7 +8095,7 @@ impl GroveDb {
             &OperationCost,
             &Option<OpsByLevelPath>,
         ) -> Result<Vec<QualifiedGroveDbOp>, Error>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let replacement_refused = Cell::new(None);
@@ -8039,8 +8118,8 @@ impl GroveDb {
     /// [`Self::apply_partial_batch_with_element_flags_update`] with the
     /// flags callback as [`just_in_time_value_update::batch_flags_update`]
     /// runs it.
-    fn apply_partial_batch_with_batch_flags_update(
-        &self,
+    fn apply_partial_batch_with_batch_flags_update<'db>(
+        &'db self,
         ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
         mut update_element_flags_function: impl FnMut(
@@ -8060,7 +8139,7 @@ impl GroveDb {
             &OperationCost,
             &Option<OpsByLevelPath>,
         ) -> Result<Vec<QualifiedGroveDbOp>, Error>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         check_grovedb_v0_with_cost!(
@@ -8111,11 +8190,11 @@ impl GroveDb {
         );
         cost_return_on_error_no_add!(
             cost,
-            Self::reject_backward_references_elements_in_batch(&ops, false)
+            GroveDb::reject_backward_references_elements_in_batch(&ops, false)
         );
         cost_return_on_error_no_add!(
             cost,
-            Self::reject_flat_drop_declaring_participants(&ops, grove_version)
+            GroveDb::reject_flat_drop_declaring_participants(&ops, grove_version)
         );
 
         cost_return_on_error!(
@@ -8128,9 +8207,9 @@ impl GroveDb {
             )
         );
 
-        // `StorageBatch` collects all operations (preprocessing + apply_body)
+        // `E::Batch` collects all operations (preprocessing + apply_body)
         // for a single atomic commit at the end.
-        let storage_batch = StorageBatch::new();
+        let storage_batch = E::Batch::default();
 
         // Preprocess CommitmentTreeInsert ops
         let ops = cost_return_on_error!(
@@ -8277,14 +8356,15 @@ impl GroveDb {
         // Drain the initial segment's pending writes into the write batch
         // so their cost can be reported to the caller. The batch object
         // stays alive (and empty): the cached Merks keep writing into it.
-        let (mut write_batch, mut pending_costs) = cost_return_on_error!(
+        let mut write_group = E::WriteGroup::default();
+        cost_return_on_error!(
             &mut cost,
             self.db
-                .build_write_batch(storage_batch.take_pending())
+                .settle_batch(&mut write_group, storage_batch.take_pending())
                 .map_err(|e| e.into())
         );
 
-        let total_current_costs = cost.clone().add(pending_costs.clone());
+        let total_current_costs = cost.clone().add(write_group.pending_cost().clone());
 
         // todo: estimate root costs
 
@@ -8445,11 +8525,11 @@ impl GroveDb {
         // carrying the family would only fail deep inside execution.
         cost_return_on_error_no_add!(
             cost,
-            Self::reject_backward_references_elements_in_batch(&new_operations, false)
+            GroveDb::reject_backward_references_elements_in_batch(&new_operations, false)
         );
         cost_return_on_error_no_add!(
             cost,
-            Self::reject_flat_drop_declaring_participants(&new_operations, grove_version)
+            GroveDb::reject_flat_drop_declaring_participants(&new_operations, grove_version)
         );
 
         // Add-on typed appends (CommitmentTreeInsert, MmrTreeAppend,
@@ -8666,13 +8746,9 @@ impl GroveDb {
         // Clean up data storage for deleted non-Merk trees.
         for child_path in &non_merk_delete_paths {
             let child_subtree_path: SubtreePath<Vec<u8>> = child_path.as_slice().into();
-            let mut storage = self
+            let storage = self
                 .db
-                .get_transactional_storage_context(
-                    child_subtree_path,
-                    Some(&storage_batch),
-                    tx.as_ref(),
-                )
+                .subtree(child_subtree_path, Some(&storage_batch), tx.as_ref())
                 .unwrap_add_cost(&mut cost);
             cost_return_on_error!(
                 &mut cost,
@@ -8734,13 +8810,9 @@ impl GroveDb {
                         axis.tag(),
                     )
                     .unwrap_add_cost(&mut cost);
-                let mut secondary_storage = self
+                let secondary_storage = self
                     .db
-                    .get_transactional_storage_context_by_subtree_prefix(
-                        secondary_prefix,
-                        Some(&storage_batch),
-                        tx.as_ref(),
-                    )
+                    .subtree_by_prefix(secondary_prefix, Some(&storage_batch), tx.as_ref())
                     .unwrap_add_cost(&mut cost);
                 cost_return_on_error!(
                     &mut cost,
@@ -8784,20 +8856,18 @@ impl GroveDb {
         }
 
         // let's build the write batch
-        let continued_pending_costs = cost_return_on_error!(
+        cost_return_on_error!(
             &mut cost,
             self.db
-                .continue_write_batch(&mut write_batch, storage_batch)
+                .settle_batch(&mut write_group, storage_batch)
                 .map_err(|e| e.into())
         );
-
-        pending_costs.add_assign(continued_pending_costs);
 
         // TODO: compute batch costs
         cost_return_on_error!(
             &mut cost,
             self.db
-                .commit_db_write_batch(write_batch, pending_costs, Some(tx.as_ref()))
+                .apply_write_group(write_group, tx.as_ref())
                 .map_err(|e| e.into())
         );
 
@@ -8816,99 +8886,6 @@ impl GroveDb {
         // _update; issue #848).
         if owns_tx && !flat_drop_records.is_empty() {
             let _ = self.flush_pending_prefix_drops(grove_version);
-        }
-
-        Ok(()).wrap_with_cost(cost)
-    }
-
-    #[cfg(feature = "estimated_costs")]
-    /// Returns the estimated average or worst case cost for an entire batch of
-    /// ops
-    pub fn estimated_case_operations_for_batch<U: Into<ElementFlagsUpdate>>(
-        estimated_costs_type: EstimatedCostsType,
-        ops: Vec<QualifiedGroveDbOp>,
-        batch_apply_options: Option<BatchApplyOptions>,
-        update_element_flags_function: impl FnMut(
-            &StorageCost,
-            Option<ElementFlags>,
-            &mut ElementFlags,
-        ) -> Result<U, Error>,
-        split_removal_bytes_function: impl FnMut(
-            &mut ElementFlags,
-            u32, // key removed bytes
-            u32, // value removed bytes
-        ) -> Result<
-            (StorageRemovedBytes, StorageRemovedBytes),
-            Error,
-        >,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(), Error> {
-        check_grovedb_v0_with_cost!(
-            "estimated_case_operations_for_batch",
-            grove_version
-                .grovedb_versions
-                .apply_batch
-                .estimated_case_operations_for_batch
-        );
-        // The estimators never call the flags update, so it only needs its
-        // answer type.
-        let update_element_flags_function =
-            just_in_time_value_update::flags_update_answers(update_element_flags_function);
-        let mut cost = OperationCost::default();
-
-        if ops.is_empty() {
-            return Ok(()).wrap_with_cost(cost);
-        }
-        cost_return_on_error_no_add!(
-            cost,
-            move_element::refuse_moves(&ops, move_element::ESTIMATED_COSTS_MOVE_REFUSAL)
-        );
-        match estimated_costs_type {
-            EstimatedCostsType::AverageCaseCostsType(estimated_layer_information) => {
-                let batch_structure = cost_return_on_error!(
-                    &mut cost,
-                    BatchStructure::from_ops(
-                        ops,
-                        update_element_flags_function,
-                        split_removal_bytes_function,
-                        AverageCaseTreeCacheKnownPaths::new_with_estimated_layer_information(
-                            estimated_layer_information
-                        ),
-                        grove_version
-                    )
-                );
-                cost_return_on_error!(
-                    &mut cost,
-                    Self::apply_batch_structure(
-                        batch_structure,
-                        batch_apply_options,
-                        grove_version
-                    )
-                );
-            }
-
-            EstimatedCostsType::WorstCaseCostsType(worst_case_layer_information) => {
-                let batch_structure = cost_return_on_error!(
-                    &mut cost,
-                    BatchStructure::from_ops(
-                        ops,
-                        update_element_flags_function,
-                        split_removal_bytes_function,
-                        WorstCaseTreeCacheKnownPaths::new_with_worst_case_layer_information(
-                            worst_case_layer_information
-                        ),
-                        grove_version
-                    )
-                );
-                cost_return_on_error!(
-                    &mut cost,
-                    Self::apply_batch_structure(
-                        batch_structure,
-                        batch_apply_options,
-                        grove_version
-                    )
-                );
-            }
         }
 
         Ok(()).wrap_with_cost(cost)

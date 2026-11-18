@@ -10,8 +10,7 @@ use std::collections::BTreeMap;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use grovedb_merk::{element::insert::ElementInsertToStorageExtensions, Merk};
-use grovedb_storage::StorageContext;
+use grovedb_merk::{element::insert::ElementInsertToStorageExtensions, store::NodeStore, Merk};
 use grovedb_version::version::GroveVersion;
 
 use super::{read_entry_aggregates, MaybeEntryState};
@@ -178,7 +177,7 @@ fn validate_indexed_child_ops(
 /// count-mutation: a canonical row binds the primary node's commitment,
 /// so a non-Merk append (which leaves `(count, sum)` alone but writes a
 /// new root into the entry) must be mirrored too.
-pub(crate) fn capture_indexed_pre_state<'db, S: StorageContext<'db>>(
+pub(crate) fn capture_indexed_pre_state<'db, S: NodeStore<'db>>(
     primary_merk: &Merk<S>,
     ops_at_path_by_key: &BTreeMap<KeyInfo, GroveOp>,
     grove_version: &GroveVersion,

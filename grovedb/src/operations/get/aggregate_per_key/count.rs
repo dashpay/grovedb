@@ -10,9 +10,9 @@ use grovedb_costs::{
 use grovedb_merk::Merk;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
-use crate::{util::TxRef, Error, GroveDb, PathQuery, TransactionArg};
+use crate::{util::TxRef, Engine, Error, GroveDb, PathQuery, TransactionArg};
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Executes an `AggregateCountOnRange` query in either the **leaf** or
     /// **carrier** shape without generating a proof, returning one
     /// `(outer_key, count)` pair per matched outer key.
@@ -59,10 +59,10 @@ impl GroveDb {
     /// callers are trusting their own merk read path. For verifiable
     /// counts, use [`Self::prove_query`] +
     /// [`GroveDb::verify_aggregate_count_query_per_key`].
-    pub fn query_aggregate_count_per_key(
-        &self,
+    pub fn query_aggregate_count_per_key<'db>(
+        &'db self,
         path_query: &PathQuery,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<(Vec<u8>, u64)>, Error> {
         check_grovedb_v0_with_cost!(
@@ -97,7 +97,7 @@ impl GroveDb {
 
         // Carrier shape: delegate to the shared carrier driver, which
         // terminates each per-key walk in the count primitive.
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
         let results = cost_return_on_error!(
             &mut cost,
             self.query_aggregate_carrier_per_key(

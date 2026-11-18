@@ -12,34 +12,34 @@
 //! compatibility.
 
 use crate::operations::indexed_tree::reject_generic_write_into_indexed_primary;
+use grovedb_storage::FlatStore;
 use std::collections::HashMap;
 
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use grovedb_merk::{element::decode::ElementDecodeExtensions, proofs::Query, KVIterator, Merk};
-use grovedb_path::SubtreePath;
-use grovedb_storage::{
-    rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch, StorageContext,
+use grovedb_merk::{
+    element::decode::ElementDecodeExtensions, proofs::Query, store::NodeStore, KVIterator, Merk,
 };
+use grovedb_path::SubtreePath;
 use grovedb_version::version::GroveVersion;
 
 use super::super::{ClearOptions, DeleteOptions};
-use crate::{util::TxRef, Element, Error, GroveDb, TransactionArg};
+use crate::{util::TxRef, Element, Engine, Error, GroveDb, TransactionArg};
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Clear a subtree — version 0 (frozen, see the module documentation).
-    pub(crate) fn clear_subtree_with_costs_v0<'b, B: AsRef<[u8]>>(
-        &self,
+    pub(crate) fn clear_subtree_with_costs_v0<'db, 'b, B: AsRef<[u8]>>(
+        &'db self,
         subtree_path: SubtreePath<'b, B>,
         options: Option<ClearOptions>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
         let tx = TxRef::new(&self.db, transaction);
 
         let mut cost = OperationCost::default();
-        let batch = StorageBatch::new();
+        let batch = E::Batch::default();
 
         let options = options.unwrap_or_default();
 
@@ -68,9 +68,9 @@ impl GroveDb {
         // entries.  We cannot iterate them with Element::iterator, so just
         // clear the storage directly.
         if merk_to_clear.tree_type.uses_non_merk_data_storage() {
-            let mut storage = self
+            let storage = self
                 .db
-                .get_transactional_storage_context(subtree_path.clone(), Some(&batch), tx.as_ref())
+                .subtree(subtree_path.clone(), Some(&batch), tx.as_ref())
                 .unwrap_add_cost(&mut cost);
             cost_return_on_error!(
                 &mut cost,
@@ -81,11 +81,11 @@ impl GroveDb {
                 })
             );
 
+            drop(merk_to_clear);
+            drop(storage);
             cost_return_on_error!(
                 &mut cost,
-                self.db
-                    .commit_multi_context_batch(batch, Some(tx.as_ref()))
-                    .map_err(Into::into)
+                self.db.apply_batch(batch, tx.as_ref()).map_err(Into::into)
             );
 
             return tx.commit_local().map(|_| true).wrap_with_cost(cost);
@@ -96,7 +96,7 @@ impl GroveDb {
             all_query.insert_all();
 
             let mut element_iterator =
-                KVIterator::new(merk_to_clear.storage.raw_iter(), &all_query).unwrap();
+                KVIterator::new(NodeStore::cursor(&merk_to_clear.storage), &all_query).unwrap();
 
             // delete all nested subtrees
             while let Some((key, element_value)) =
@@ -143,8 +143,7 @@ impl GroveDb {
         cost_return_on_error!(&mut cost, merk_to_clear.clear().map_err(Error::MerkError));
 
         // propagate changes
-        let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbTransactionContext>> =
-            HashMap::default();
+        let mut merk_cache: HashMap<SubtreePath<B>, Merk<E::Subtree<'_>>> = HashMap::default();
         merk_cache.insert(subtree_path.clone(), merk_to_clear);
         cost_return_on_error!(
             &mut cost,
@@ -159,9 +158,7 @@ impl GroveDb {
 
         cost_return_on_error!(
             &mut cost,
-            self.db
-                .commit_multi_context_batch(batch, Some(tx.as_ref()))
-                .map_err(Into::into)
+            self.db.apply_batch(batch, tx.as_ref()).map_err(Into::into)
         );
 
         tx.commit_local().map(|_| true).wrap_with_cost(cost)

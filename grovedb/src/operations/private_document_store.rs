@@ -20,13 +20,12 @@ use grovedb_costs::{
 use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
 use grovedb_path::SubtreePath;
 use grovedb_private_document_store::{PrivateDocumentStore, RangePage};
-use grovedb_storage::{Storage, StorageBatch};
 use grovedb_version::version::GroveVersion;
 
 use crate::{
     batch::{GroveOp, QualifiedGroveDbOp},
     util::TxRef,
-    Element, Error, GroveDb, Transaction, TransactionArg,
+    Element, Engine, Error, GroveDb, Transaction, TransactionArg,
 };
 
 /// Map a `PrivateDocumentStoreError` to a GroveDB `Error`.
@@ -92,7 +91,7 @@ pub(crate) fn validate_private_document_store_creation(
     Ok(())
 }
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Append an entry to a PrivateDocumentStore subtree.
     ///
     /// The entry's byte length must equal the store's committed `entry_size`;
@@ -110,12 +109,12 @@ impl GroveDb {
     ///
     /// Returns `(state_root, position)`: the new composite state root and the
     /// 0-based global position of the appended entry.
-    pub fn private_document_store_insert<'b, B, P>(
-        &self,
+    pub fn private_document_store_insert<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
         entry: Vec<u8>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<([u8; 32], u64), Error>
     where
@@ -166,10 +165,10 @@ impl GroveDb {
         let store_path_refs: Vec<&[u8]> = store_path_vec.iter().map(|v| v.as_slice()).collect();
         let store_path = SubtreePath::from(store_path_refs.as_slice());
 
-        let data_batch = StorageBatch::new();
+        let data_batch = E::Batch::default();
         let storage_ctx = self
             .db
-            .get_transactional_storage_context(store_path, Some(&data_batch), tx.as_ref())
+            .subtree(store_path, Some(&data_batch), tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         // 3. Open the store and append (validates the entry size).
@@ -202,17 +201,17 @@ impl GroveDb {
         // in the transaction. This is the same pattern as other direct GroveDB
         // operations — the caller is expected to rollback the tx on error.
         // The batch path (preprocess_private_document_store_ops) avoids this
-        // by using a shared StorageBatch that commits atomically with all
+        // by using a shared E::Batch that commits atomically with all
         // other ops.
         cost_return_on_error!(
             &mut cost,
             self.db
-                .commit_multi_context_batch(data_batch, Some(tx.as_ref()))
+                .apply_batch(data_batch, tx.as_ref())
                 .map_err(Into::into)
         );
 
         // 4. Update element in parent Merk.
-        let batch = StorageBatch::new();
+        let batch = E::Batch::default();
         let mut parent_merk = cost_return_on_error!(
             &mut cost,
             self.open_transactional_merk_at_path(
@@ -274,9 +273,7 @@ impl GroveDb {
         // 6. Commit batch and transaction.
         cost_return_on_error!(
             &mut cost,
-            self.db
-                .commit_multi_context_batch(batch, Some(tx.as_ref()))
-                .map_err(Into::into)
+            self.db.apply_batch(batch, tx.as_ref()).map_err(Into::into)
         );
 
         tx.commit_local()
@@ -289,12 +286,12 @@ impl GroveDb {
     ///
     /// Returns the raw fixed-size entry bytes, or `None` if the position is
     /// out of range (`position >= total_count`).
-    pub fn private_document_store_get_value<'b, B, P>(
-        &self,
+    pub fn private_document_store_get_value<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
         global_position: u64,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Vec<u8>>, Error>
     where
@@ -316,7 +313,7 @@ impl GroveDb {
             )
         );
 
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
 
         let element = cost_return_on_error!(
             &mut cost,
@@ -344,7 +341,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_transactional_storage_context(store_path, None, tx.as_ref())
+            .subtree(store_path, None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         let store = cost_return_on_error!(
@@ -376,13 +373,13 @@ impl GroveDb {
     /// store's `total_count`, so a page shorter than `limit` means the end of
     /// the store was reached. Prove a page with
     /// [`GroveDb::prove_bulk_position_range`].
-    pub fn private_document_store_get_range<'b, B, P>(
-        &self,
+    pub fn private_document_store_get_range<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
         start: u64,
         limit: u16,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<RangePage, Error>
     where
@@ -404,7 +401,7 @@ impl GroveDb {
             )
         );
 
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
 
         let element = cost_return_on_error!(
             &mut cost,
@@ -428,7 +425,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_transactional_storage_context(store_path, None, tx.as_ref())
+            .subtree(store_path, None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         let store = cost_return_on_error!(
@@ -448,11 +445,11 @@ impl GroveDb {
     }
 
     /// Get the total count of entries in a PrivateDocumentStore.
-    pub fn private_document_store_count<'b, B, P>(
-        &self,
+    pub fn private_document_store_count<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<u64, Error>
     where
@@ -499,11 +496,11 @@ impl GroveDb {
     ///
     /// The returned ops list contains no `PrivateDocumentStoreInsert`
     /// variants.
-    pub(crate) fn preprocess_private_document_store_ops(
-        &self,
+    pub(crate) fn preprocess_private_document_store_ops<'db>(
+        &'db self,
         ops: Vec<QualifiedGroveDbOp>,
-        transaction: &Transaction,
-        storage_batch: &StorageBatch,
+        transaction: &Transaction<'db, E>,
+        storage_batch: &E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
         let mut cost = OperationCost::default();
@@ -604,7 +601,7 @@ impl GroveDb {
 
             let storage_ctx = self
                 .db
-                .get_transactional_storage_context(st_path, Some(storage_batch), transaction)
+                .subtree(st_path, Some(storage_batch), transaction)
                 .unwrap_add_cost(&mut cost);
 
             let mut store = cost_return_on_error!(

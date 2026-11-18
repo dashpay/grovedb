@@ -47,13 +47,12 @@ mod v2;
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_merk::Merk;
 use grovedb_path::SubtreePath;
-use grovedb_storage::{rocksdb_storage::PrefixedRocksDbTransactionContext, StorageBatch};
 use grovedb_version::version::GroveVersion;
 
 use super::InsertOptions;
-use crate::{Element, Error, GroveDb, Transaction};
+use crate::{Element, Engine, Error, GroveDb, Transaction};
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Add subtree to another subtree.
     /// We want to add a new empty merk to another merk at a key
     /// first make sure other merk exist
@@ -61,16 +60,16 @@ impl GroveDb {
     /// we only care about root hash of merk to be inserted
     ///
     /// Version dispatch (consensus-critical) — see the module documentation.
-    pub(crate) fn add_element_on_transaction<'db, B: AsRef<[u8]>>(
+    pub(crate) fn add_element_on_transaction<'a, 'db: 'a, B: AsRef<[u8]>>(
         &'db self,
         path: SubtreePath<B>,
         key: &[u8],
         element: Element,
         options: InsertOptions,
-        transaction: &'db Transaction,
-        batch: &'db StorageBatch,
+        transaction: &'a Transaction<'db, E>,
+        batch: &'a E::Batch,
         grove_version: &GroveVersion,
-    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error> {
+    ) -> CostResult<Merk<E::Subtree<'a>>, Error> {
         match grove_version
             .grovedb_versions
             .operations
@@ -122,15 +121,15 @@ impl GroveDb {
     /// [`Self::add_element_on_transaction`]; only v2 exposes its body this
     /// way, so earlier slots are an unknown-version error rather than a
     /// silent fallback.
-    pub(crate) fn add_element_to_cached_merk<'db, B: AsRef<[u8]>>(
+    pub(crate) fn add_element_to_cached_merk<'a, 'db: 'a, B: AsRef<[u8]>>(
         &'db self,
-        subtree_to_insert_into: &mut Merk<PrefixedRocksDbTransactionContext<'db>>,
+        subtree_to_insert_into: &mut Merk<E::Subtree<'a>>,
         path: SubtreePath<B>,
         key: &[u8],
         element: Element,
         options: InsertOptions,
-        transaction: &'db Transaction,
-        batch: &'db StorageBatch,
+        transaction: &'a Transaction<'db, E>,
+        batch: &'a E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         match grove_version

@@ -16,12 +16,13 @@ use grovedb_merk::{
         query::{AxisTraversal, QueryItem},
         Node, Op,
     },
+    store::NodeStore,
     tree::{combine_hash, value_hash, NULL_HASH},
     Merk, ProofWithoutEncodingResult, TreeFeatureType,
 };
 use grovedb_merkle_mountain_range::MmrTreeProof;
 use grovedb_path::SubtreePath;
-use grovedb_storage::{FlatStore, Storage, StorageContext};
+use grovedb_storage::FlatStore;
 use grovedb_version::{
     check_grovedb_v0_or_v1_with_cost, check_grovedb_v0_with_cost, version::GroveVersion,
 };
@@ -35,7 +36,7 @@ use crate::{
     },
     query::{validated::ValidatedPathQuery, AggregateKind, PathQueryShape, PathTrunkChunkQuery},
     reference_path::path_from_reference_path_type,
-    Element, Error, GroveDb, PathQuery, Transaction, TransactionArg,
+    Element, Engine, Error, GroveDb, PathQuery, Transaction, TransactionArg,
 };
 
 /// A non-Merk subtree kind a V1 proof descends into, carrying the element
@@ -81,6 +82,462 @@ enum CountSumForRef {
 }
 
 impl GroveDb {
+    /// The `KVRefValueHash*` node a dereferenced reference row takes,
+    /// dispatched in priority order — dual-axis PCPS first (strictest
+    /// invariant), then single-axis Sum, then single-axis Count, then the
+    /// plain reference node.
+    fn dereferenced_reference_node(
+        key: &[u8],
+        serialized_referenced_elem: Vec<u8>,
+        reference_element_hash: grovedb_merk::CryptoHash,
+        count_for_ref: Option<u64>,
+        sum_for_ref: Option<i64>,
+        count_sum_for_ref: Option<CountSumForRef>,
+    ) -> Node {
+        if let Some(count_sum) = count_sum_for_ref {
+            match count_sum {
+                CountSumForRef::Sum(count, sum) => Node::KVRefValueHashCountSum(
+                    key.to_owned(),
+                    serialized_referenced_elem,
+                    reference_element_hash,
+                    count,
+                    sum,
+                ),
+                CountSumForRef::BigSum(count, sum) => Node::KVRefValueHashCountBigSum(
+                    key.to_owned(),
+                    serialized_referenced_elem,
+                    reference_element_hash,
+                    count,
+                    sum,
+                ),
+                CountSumForRef::BigSumOnly(sum) => Node::KVRefValueHashBigSum(
+                    key.to_owned(),
+                    serialized_referenced_elem,
+                    reference_element_hash,
+                    sum,
+                ),
+            }
+        } else if let Some(sum) = sum_for_ref {
+            Node::KVRefValueHashSum(
+                key.to_owned(),
+                serialized_referenced_elem,
+                reference_element_hash,
+                sum,
+            )
+        } else if let Some(count) = count_for_ref {
+            Node::KVRefValueHashCount(
+                key.to_owned(),
+                serialized_referenced_elem,
+                reference_element_hash,
+                count,
+            )
+        } else {
+            Node::KVRefValueHash(
+                key.to_owned(),
+                serialized_referenced_elem,
+                reference_element_hash,
+            )
+        }
+    }
+
+    /// Convert query items to position indices for dense tree proofs.
+    ///
+    /// Query keys are interpreted as BE u16 bytes representing positions.
+    fn query_items_to_positions(items: &[QueryItem], count: u16) -> Result<Vec<u16>, Error> {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+
+        const MAX_INDICES: usize = 65_535;
+        let max_idx = count - 1;
+        let mut indices = Vec::new();
+
+        for item in items {
+            match item {
+                QueryItem::Key(key) => {
+                    let idx = GroveDb::decode_be_u16(key)?;
+                    if idx < count {
+                        indices.push(idx);
+                    }
+                }
+                QueryItem::RangeInclusive(range) => {
+                    let start = GroveDb::decode_be_u16(range.start())?;
+                    let end = GroveDb::decode_be_u16(range.end())?;
+                    for idx in start..=end.min(max_idx) {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput(
+                                "query range too large for dense tree proof",
+                            ));
+                        }
+                    }
+                }
+                QueryItem::Range(range) => {
+                    let start = GroveDb::decode_be_u16(&range.start)?;
+                    let end = GroveDb::decode_be_u16(&range.end)?;
+                    for idx in start..end.min(count) {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput(
+                                "query range too large for dense tree proof",
+                            ));
+                        }
+                    }
+                }
+                QueryItem::RangeFrom(range) => {
+                    let start = GroveDb::decode_be_u16(&range.start)?;
+                    for idx in start..count {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput(
+                                "query range too large for dense tree proof",
+                            ));
+                        }
+                    }
+                }
+                QueryItem::RangeTo(range) => {
+                    let end = GroveDb::decode_be_u16(&range.end)?;
+                    for idx in 0..end.min(count) {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput(
+                                "query range too large for dense tree proof",
+                            ));
+                        }
+                    }
+                }
+                QueryItem::RangeToInclusive(range) => {
+                    let end = GroveDb::decode_be_u16(&range.end)?;
+                    for idx in 0..=end.min(max_idx) {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput(
+                                "query range too large for dense tree proof",
+                            ));
+                        }
+                    }
+                }
+                QueryItem::RangeFull(..) => {
+                    for idx in 0..count {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput(
+                                "query range too large for dense tree proof",
+                            ));
+                        }
+                    }
+                }
+                QueryItem::RangeAfter(range) => {
+                    let start = GroveDb::decode_be_u16(&range.start)?;
+                    for idx in start.saturating_add(1)..count {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput(
+                                "query range too large for dense tree proof",
+                            ));
+                        }
+                    }
+                }
+                QueryItem::RangeAfterTo(range) => {
+                    let start = GroveDb::decode_be_u16(&range.start)?;
+                    let end = GroveDb::decode_be_u16(&range.end)?;
+                    for idx in start.saturating_add(1)..end.min(count) {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput(
+                                "query range too large for dense tree proof",
+                            ));
+                        }
+                    }
+                }
+                QueryItem::RangeAfterToInclusive(range) => {
+                    let start = GroveDb::decode_be_u16(range.start())?;
+                    let end = GroveDb::decode_be_u16(range.end())?;
+                    for idx in start.saturating_add(1)..=end.min(max_idx) {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput(
+                                "query range too large for dense tree proof",
+                            ));
+                        }
+                    }
+                }
+                QueryItem::AggregateCountOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateCountOnRange is only supported on provable count trees, \
+                         not on dense fixed-size merkle trees",
+                    ));
+                }
+                QueryItem::AggregateSumOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateSumOnRange is only supported on provable sum trees, \
+                         not on dense fixed-size merkle trees",
+                    ));
+                }
+                QueryItem::AggregateCountAndSumOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateCountAndSumOnRange is only supported on \
+                         ProvableCountProvableSumTree, not on dense fixed-size merkle trees",
+                    ));
+                }
+            }
+        }
+
+        indices.sort_unstable();
+        indices.dedup();
+        Ok(indices)
+    }
+
+    /// Convert query items to leaf indices for MMR proofs.
+    ///
+    /// Query keys are interpreted as BE u64 bytes representing leaf indices.
+    fn query_items_to_leaf_indices(items: &[QueryItem], mmr_size: u64) -> Result<Vec<u64>, Error> {
+        let leaf_count = grovedb_merkle_mountain_range::mmr_size_to_leaf_count(mmr_size);
+
+        // Nothing to prove when MMR is empty
+        if leaf_count == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Cap total expansion to avoid allocating billions of indices
+        // for unbounded ranges. 10 million is generous for any real query.
+        const MAX_INDICES: usize = 10_000_000;
+
+        let max_idx = leaf_count - 1; // safe: leaf_count > 0
+        let mut indices = Vec::new();
+
+        for item in items {
+            match item {
+                QueryItem::Key(key) => {
+                    let idx = GroveDb::decode_be_u64(key)?;
+                    if idx < leaf_count {
+                        indices.push(idx);
+                    }
+                }
+                QueryItem::RangeInclusive(range) => {
+                    let start = GroveDb::decode_be_u64(range.start())?;
+                    let end = GroveDb::decode_be_u64(range.end())?;
+                    for idx in start..=end.min(max_idx) {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput("query range too large for MMR proof"));
+                        }
+                    }
+                }
+                QueryItem::Range(range) => {
+                    let start = GroveDb::decode_be_u64(&range.start)?;
+                    let end = GroveDb::decode_be_u64(&range.end)?;
+                    for idx in start..end.min(leaf_count) {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput("query range too large for MMR proof"));
+                        }
+                    }
+                }
+                QueryItem::RangeFrom(range) => {
+                    let start = GroveDb::decode_be_u64(&range.start)?;
+                    for idx in start..leaf_count {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput("query range too large for MMR proof"));
+                        }
+                    }
+                }
+                QueryItem::RangeTo(range) => {
+                    let end = GroveDb::decode_be_u64(&range.end)?;
+                    for idx in 0..end.min(leaf_count) {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput("query range too large for MMR proof"));
+                        }
+                    }
+                }
+                QueryItem::RangeToInclusive(range) => {
+                    let end = GroveDb::decode_be_u64(&range.end)?;
+                    for idx in 0..=end.min(max_idx) {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput("query range too large for MMR proof"));
+                        }
+                    }
+                }
+                QueryItem::RangeFull(..) => {
+                    for idx in 0..leaf_count {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput("query range too large for MMR proof"));
+                        }
+                    }
+                }
+                QueryItem::RangeAfter(range) => {
+                    let start = GroveDb::decode_be_u64(&range.start)?;
+                    for idx in start.saturating_add(1)..leaf_count {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput("query range too large for MMR proof"));
+                        }
+                    }
+                }
+                QueryItem::RangeAfterTo(range) => {
+                    let start = GroveDb::decode_be_u64(&range.start)?;
+                    let end = GroveDb::decode_be_u64(&range.end)?;
+                    for idx in start.saturating_add(1)..end.min(leaf_count) {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput("query range too large for MMR proof"));
+                        }
+                    }
+                }
+                QueryItem::RangeAfterToInclusive(range) => {
+                    let start = GroveDb::decode_be_u64(range.start())?;
+                    let end = GroveDb::decode_be_u64(range.end())?;
+                    for idx in start.saturating_add(1)..=end.min(max_idx) {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput("query range too large for MMR proof"));
+                        }
+                    }
+                }
+                QueryItem::AggregateCountOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateCountOnRange is only supported on provable count trees, \
+                         not on MMR trees",
+                    ));
+                }
+                QueryItem::AggregateSumOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateSumOnRange is only supported on provable sum trees, \
+                         not on MMR trees",
+                    ));
+                }
+                QueryItem::AggregateCountAndSumOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateCountAndSumOnRange is only supported on \
+                         ProvableCountProvableSumTree, not on MMR trees",
+                    ));
+                }
+            }
+        }
+
+        indices.sort_unstable();
+        indices.dedup();
+        Ok(indices)
+    }
+
+    /// Convert query items to a position range [start, end) for BulkAppendTree.
+    fn query_items_to_range(items: &[QueryItem], total_count: u64) -> Result<(u64, u64), Error> {
+        let mut min_start = total_count;
+        let mut max_end = 0u64;
+
+        for item in items {
+            match item {
+                QueryItem::Key(key) => {
+                    let pos = GroveDb::decode_be_u64(key)?;
+                    min_start = min_start.min(pos);
+                    max_end = max_end.max(pos.saturating_add(1));
+                }
+                QueryItem::RangeInclusive(range) => {
+                    let s = GroveDb::decode_be_u64(range.start())?;
+                    let e = GroveDb::decode_be_u64(range.end())?;
+                    min_start = min_start.min(s);
+                    max_end = max_end.max(e.saturating_add(1));
+                }
+                QueryItem::Range(range) => {
+                    let s = GroveDb::decode_be_u64(&range.start)?;
+                    let e = GroveDb::decode_be_u64(&range.end)?;
+                    min_start = min_start.min(s);
+                    max_end = max_end.max(e);
+                }
+                QueryItem::RangeFrom(range) => {
+                    let s = GroveDb::decode_be_u64(&range.start)?;
+                    min_start = min_start.min(s);
+                    max_end = total_count;
+                }
+                QueryItem::RangeTo(range) => {
+                    min_start = 0;
+                    let e = GroveDb::decode_be_u64(&range.end)?;
+                    max_end = max_end.max(e);
+                }
+                QueryItem::RangeToInclusive(range) => {
+                    min_start = 0;
+                    let e = GroveDb::decode_be_u64(&range.end)?;
+                    max_end = max_end.max(e.saturating_add(1));
+                }
+                QueryItem::RangeFull(..) => {
+                    min_start = 0;
+                    max_end = total_count;
+                }
+                QueryItem::RangeAfter(range) => {
+                    let s = GroveDb::decode_be_u64(&range.start)?;
+                    min_start = min_start.min(s.saturating_add(1));
+                    max_end = total_count;
+                }
+                QueryItem::RangeAfterTo(range) => {
+                    let s = GroveDb::decode_be_u64(&range.start)?;
+                    let e = GroveDb::decode_be_u64(&range.end)?;
+                    min_start = min_start.min(s.saturating_add(1));
+                    max_end = max_end.max(e);
+                }
+                QueryItem::RangeAfterToInclusive(range) => {
+                    let s = GroveDb::decode_be_u64(range.start())?;
+                    let e = GroveDb::decode_be_u64(range.end())?;
+                    min_start = min_start.min(s.saturating_add(1));
+                    max_end = max_end.max(e.saturating_add(1));
+                }
+                QueryItem::AggregateCountOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateCountOnRange is only supported on provable count trees, \
+                         not on BulkAppendTree",
+                    ));
+                }
+                QueryItem::AggregateSumOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateSumOnRange is only supported on provable sum trees, \
+                         not on BulkAppendTree",
+                    ));
+                }
+                QueryItem::AggregateCountAndSumOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateCountAndSumOnRange is only supported on \
+                         ProvableCountProvableSumTree, not on BulkAppendTree",
+                    ));
+                }
+            }
+        }
+
+        // Clamp to total_count
+        max_end = max_end.min(total_count);
+        Ok((min_start, max_end))
+    }
+
+    /// Decode a big-endian u64 from key bytes.
+    fn decode_be_u64(key: &[u8]) -> Result<u64, Error> {
+        if key.len() != 8 {
+            return Err(Error::InvalidInput(
+                "position key must be exactly 8 bytes (BE u64)",
+            ));
+        }
+        let arr: [u8; 8] = key
+            .try_into()
+            .map_err(|_| Error::InvalidInput("invalid u64 key bytes"))?;
+        Ok(u64::from_be_bytes(arr))
+    }
+
+    /// Decode a big-endian u16 from key bytes.
+    fn decode_be_u16(key: &[u8]) -> Result<u16, Error> {
+        if key.len() != 2 {
+            return Err(Error::InvalidInput(
+                "position key must be exactly 2 bytes (BE u16)",
+            ));
+        }
+        let arr: [u8; 2] = key
+            .try_into()
+            .map_err(|_| Error::InvalidInput("invalid u16 key bytes"))?;
+        Ok(u16::from_be_bytes(arr))
+    }
+}
+
+impl<E: Engine> GroveDb<E> {
     /// Prove one or more path queries.
     /// If we have more than one path query, we merge into a single path query
     /// before proving.
@@ -282,11 +739,11 @@ impl GroveDb {
     /// exactly that window: limited to the window size when a stop
     /// condition fired, unlimited when the walk exhausted the ranges
     /// (so the proof itself attests exhaustion).
-    fn build_sum_budget_window_payload(
-        &self,
+    fn build_sum_budget_window_payload<'db>(
+        &'db self,
         target_path: &[&[u8]],
         path_query: &PathQuery,
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<crate::operations::proof::SumBudgetWindowProof, Error> {
         use grovedb_merk::proofs::query::{AggregateSumQuery, ReadMode};
@@ -419,11 +876,11 @@ impl GroveDb {
     ///   the window refuses them rather than emit an unbound row.
     ///
     /// Item rows are left as the merk prover emitted them.
-    fn bind_sum_budget_window_rows(
-        &self,
+    fn bind_sum_budget_window_rows<'db>(
+        &'db self,
         ops: &mut LinkedList<Op>,
         target_path: &[&[u8]],
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -468,11 +925,11 @@ impl GroveDb {
     ///
     /// Item rows, and node shapes that carry no `value_hash`, are left as the
     /// merk prover emitted them.
-    pub(crate) fn bind_composite_row(
-        &self,
+    pub(crate) fn bind_composite_row<'db>(
+        &'db self,
         node: &mut Node,
         target_path: &[&[u8]],
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
         grove_version: &GroveVersion,
         context: &str,
     ) -> CostResult<(), Error> {
@@ -533,7 +990,7 @@ impl GroveDb {
                     let reference_element_hash = value_hash(&value).unwrap_add_cost(&mut cost);
                     cost_return_on_error!(
                         &mut cost,
-                        Self::reference_terminal_as_committed(
+                        GroveDb::reference_terminal_as_committed(
                             referenced,
                             &reference_element_hash,
                             &node_value_hash,
@@ -603,9 +1060,9 @@ impl GroveDb {
         Ok(()).wrap_with_cost(cost)
     }
 
-    fn check_count_offset_target_tree_type(
-        &self,
-        transaction: &Transaction,
+    fn check_count_offset_target_tree_type<'db>(
+        &'db self,
+        transaction: &Transaction<'db, E>,
         path_query: &PathQuery,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -787,9 +1244,9 @@ impl GroveDb {
     /// ║ instead. See `prove_query_non_serialized_v0` for the full       ║
     /// ║ rationale.                                                       ║
     /// ╚══════════════════════════════════════════════════════════════════╝
-    pub(crate) fn prove_subqueries(
-        &self,
-        transaction: &Transaction,
+    pub(crate) fn prove_subqueries<'db>(
+        &'db self,
+        transaction: &Transaction<'db, E>,
         path: Vec<&[u8]>,
         path_query: &PathQuery,
         overall_limit: &mut Option<u16>,
@@ -1410,14 +1867,14 @@ impl GroveDb {
     /// list
     fn generate_merk_proof<'a, S>(
         &self,
-        subtree: &'a Merk<S>,
+        subtree: &Merk<S>,
         query_items: &[QueryItem],
         left_to_right: bool,
         limit: Option<u16>,
         grove_version: &GroveVersion,
     ) -> CostResult<ProofWithoutEncodingResult, Error>
     where
-        S: StorageContext<'a> + 'a,
+        S: NodeStore<'a> + 'a,
     {
         subtree
             .prove_unchecked_query_items(query_items, limit, left_to_right, grove_version)
@@ -1930,10 +2387,10 @@ impl GroveDb {
     /// surfaces it as a row the verifier refuses rather than reads as
     /// absence. Mirrors the trusted reader's chain probe, so the
     /// prover's "absent path" and the reader's agree.
-    fn path_is_present(
-        &self,
+    fn path_is_present<'db>(
+        &'db self,
         path: &[Vec<u8>],
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
         let mut cost = OperationCost::default();
@@ -1967,11 +2424,11 @@ impl GroveDb {
     ///
     /// `indexed_path` is the path OF the indexed primary (i.e. the parent path
     /// with the element's key already pushed).
-    fn indexed_secondary_attestation(
-        &self,
+    fn indexed_secondary_attestation<'db>(
+        &'db self,
         element: &Element,
         indexed_path: &[&[u8]],
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<grovedb_merk::CryptoHash, Error> {
         let mut cost = OperationCost::default();
@@ -2059,9 +2516,9 @@ impl GroveDb {
     /// `limit_state.consumed_rows`, from which the caller settles its
     /// own frame budget.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn prove_subqueries_v1(
-        &self,
-        transaction: &Transaction,
+    pub(crate) fn prove_subqueries_v1<'db>(
+        &'db self,
+        transaction: &Transaction<'db, E>,
         path: Vec<&[u8]>,
         validated: &ValidatedPathQuery<'_>,
         limit_state: &mut super::V1LimitState,
@@ -2496,7 +2953,7 @@ impl GroveDb {
                         let descends = match &elem {
                             Ok(element) if element.is_any_tree() => cost_return_on_error_no_add!(
                                 cost,
-                                Self::query_descends_on_key(
+                                GroveDb::query_descends_on_key(
                                     path_query,
                                     &query,
                                     &path,
@@ -2830,7 +3287,7 @@ impl GroveDb {
                                     .wrap_with_cost(cost);
                                 }
 
-                                let payload_batch = grovedb_storage::StorageBatch::new();
+                                let payload_batch = E::Batch::default();
                                 let lower_subtree_path: grovedb_path::SubtreePath<&[u8]> =
                                     lower_path.as_slice().into();
                                 let payload = cost_return_on_error!(
@@ -3713,7 +4170,7 @@ impl GroveDb {
     #[inline(never)]
     fn prove_count_offset_layer_v1<'a, S>(
         &self,
-        subtree: &'a Merk<S>,
+        subtree: &Merk<S>,
         path: &[&[u8]],
         path_query: &PathQuery,
         inner_range: &QueryItem,
@@ -3723,7 +4180,7 @@ impl GroveDb {
         grove_version: &GroveVersion,
     ) -> CostResult<LayerProof, Error>
     where
-        S: StorageContext<'a> + 'a,
+        S: NodeStore<'a> + 'a,
     {
         let mut cost = OperationCost::default();
         use grovedb_merk::TreeType as MerkTreeType;
@@ -3805,21 +4262,21 @@ impl GroveDb {
     /// Emit a branch-local count-unit page with this instance's effective budget.
     #[allow(clippy::too_many_arguments)]
     #[inline(never)]
-    fn prove_local_count_offset_layer_v1<'a, S>(
-        &self,
-        subtree: &'a Merk<S>,
+    fn prove_local_count_offset_layer_v1<'db, 'a, S>(
+        &'db self,
+        subtree: &Merk<S>,
         path: &[&[u8]],
         offset: u16,
         inner_range: &QueryItem,
         left_to_right: bool,
         limit_state: &mut super::V1LimitState,
         frame_instance: &mut Option<u16>,
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
         prove_options: &ProveOptions,
         grove_version: &GroveVersion,
     ) -> CostResult<LayerProof, Error>
     where
-        S: StorageContext<'a> + 'a,
+        S: NodeStore<'a> + 'a,
     {
         let mut cost = OperationCost::default();
         use grovedb_merk::TreeType as MerkTreeType;
@@ -3893,11 +4350,11 @@ impl GroveDb {
     /// tree is refused. Out of line for the frame-size reason documented on
     /// [`Self::prove_count_offset_layer_v1`].
     #[inline(never)]
-    fn rewrite_count_page_reference_rows(
-        &self,
+    fn rewrite_count_page_reference_rows<'db>(
+        &'db self,
         ops: &mut LinkedList<Op>,
         path: &[&[u8]],
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         refuse_populated_targets: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -3991,64 +4448,6 @@ impl GroveDb {
         Ok(()).wrap_with_cost(cost)
     }
 
-    /// The `KVRefValueHash*` node a dereferenced reference row takes,
-    /// dispatched in priority order — dual-axis PCPS first (strictest
-    /// invariant), then single-axis Sum, then single-axis Count, then the
-    /// plain reference node.
-    fn dereferenced_reference_node(
-        key: &[u8],
-        serialized_referenced_elem: Vec<u8>,
-        reference_element_hash: grovedb_merk::CryptoHash,
-        count_for_ref: Option<u64>,
-        sum_for_ref: Option<i64>,
-        count_sum_for_ref: Option<CountSumForRef>,
-    ) -> Node {
-        if let Some(count_sum) = count_sum_for_ref {
-            match count_sum {
-                CountSumForRef::Sum(count, sum) => Node::KVRefValueHashCountSum(
-                    key.to_owned(),
-                    serialized_referenced_elem,
-                    reference_element_hash,
-                    count,
-                    sum,
-                ),
-                CountSumForRef::BigSum(count, sum) => Node::KVRefValueHashCountBigSum(
-                    key.to_owned(),
-                    serialized_referenced_elem,
-                    reference_element_hash,
-                    count,
-                    sum,
-                ),
-                CountSumForRef::BigSumOnly(sum) => Node::KVRefValueHashBigSum(
-                    key.to_owned(),
-                    serialized_referenced_elem,
-                    reference_element_hash,
-                    sum,
-                ),
-            }
-        } else if let Some(sum) = sum_for_ref {
-            Node::KVRefValueHashSum(
-                key.to_owned(),
-                serialized_referenced_elem,
-                reference_element_hash,
-                sum,
-            )
-        } else if let Some(count) = count_for_ref {
-            Node::KVRefValueHashCount(
-                key.to_owned(),
-                serialized_referenced_elem,
-                reference_element_hash,
-                count,
-            )
-        } else {
-            Node::KVRefValueHash(
-                key.to_owned(),
-                serialized_referenced_elem,
-                reference_element_hash,
-            )
-        }
-    }
-
     /// Rewrite a FILLER bidirectional-reference row (past the limit) of a V1
     /// layer proof into its bound `KVRefValueHash*` shape: the rewrite is
     /// node-hash-neutral, and the strict V1 verifier rejects raw
@@ -4103,7 +4502,7 @@ impl GroveDb {
                 .serialize(grove_version)
                 .wrap_with_cost(OperationCost::default())
         );
-        Ok(Self::dereferenced_reference_node(
+        Ok(GroveDb::dereferenced_reference_node(
             key,
             serialized_referenced_elem,
             reference_self_hash,
@@ -4127,8 +4526,8 @@ impl GroveDb {
     /// the frame-size reason documented on [`Self::prove_count_offset_layer_v1`].
     #[inline(never)]
     #[allow(clippy::too_many_arguments)]
-    fn rewrite_reference_row_v1(
-        &self,
+    fn rewrite_reference_row_v1<'db>(
+        &'db self,
         key: &[u8],
         value: &[u8],
         reference_path: grovedb_element::reference_path::ReferencePathType,
@@ -4139,7 +4538,7 @@ impl GroveDb {
         count_for_ref: Option<u64>,
         sum_for_ref: Option<i64>,
         count_sum_for_ref: Option<CountSumForRef>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         refuse_populated_target: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<Node, Error> {
@@ -4171,7 +4570,7 @@ impl GroveDb {
         );
         let referenced_elem = cost_return_on_error!(
             &mut cost,
-            Self::reference_terminal_as_committed(
+            GroveDb::reference_terminal_as_committed(
                 referenced_elem,
                 &reference_element_hash,
                 &committed_value_hash,
@@ -4198,7 +4597,7 @@ impl GroveDb {
                 .wrap_with_cost(cost);
             }
         };
-        Ok(Self::dereferenced_reference_node(
+        Ok(GroveDb::dereferenced_reference_node(
             key,
             serialized_referenced_elem,
             reference_element_hash,
@@ -4214,14 +4613,14 @@ impl GroveDb {
     /// charging the recursive frame used to do inline. Out of line for the
     /// same frame-size reason as [`Self::prove_count_offset_layer_v1`].
     #[inline(never)]
-    fn prove_non_merk_lower_layer_v1(
-        &self,
+    fn prove_non_merk_lower_layer_v1<'db>(
+        &'db self,
         layer: NonMerkLowerLayer,
         lower_path: &[&[u8]],
         path_query: &PathQuery,
         limit_state: &mut super::V1LimitState,
         frame_instance: &mut Option<u16>,
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<LayerProof, Error> {
         let mut cost = OperationCost::default();
@@ -4315,13 +4714,13 @@ impl GroveDb {
     }
 
     /// Generate an MMR tree layer proof for a subquery.
-    fn generate_mmr_layer_proof(
-        &self,
+    fn generate_mmr_layer_proof<'db>(
+        &'db self,
         subtree_path: &[&[u8]],
         path_query: &PathQuery,
         mmr_size: u64,
         overall_limit: &mut Option<u16>,
-        tx: &crate::Transaction,
+        tx: &crate::Transaction<'db, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<LayerProof, Error> {
         let mut cost = OperationCost::default();
@@ -4341,7 +4740,7 @@ impl GroveDb {
         // Convert query items to leaf indices (keys are BE u64 bytes)
         let leaf_indices = cost_return_on_error_no_add!(
             cost,
-            Self::query_items_to_leaf_indices(&sub_query.items, mmr_size)
+            GroveDb::query_items_to_leaf_indices(&sub_query.items, mmr_size)
         );
 
         // An empty MMR (mmr_size == 0) has no nodes to prove. Return an empty
@@ -4372,7 +4771,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_transactional_storage_context(storage_path, None, tx)
+            .subtree(storage_path, None, tx)
             .unwrap_add_cost(&mut cost);
 
         // Generate the MMR proof using MmrStore for correct key format
@@ -4419,8 +4818,8 @@ impl GroveDb {
     /// (the proved chunk blobs, the buffer's dense proof), as a `PrivateDocumentStore`'s layer
     /// does; the `BulkAppendTree` and `CommitmentTree` layers keep the charges they always had.
     #[allow(clippy::too_many_arguments)]
-    fn generate_bulk_append_layer_proof(
-        &self,
+    fn generate_bulk_append_layer_proof<'db>(
+        &'db self,
         subtree_path: &[&[u8]],
         path_query: &PathQuery,
         _state_root: [u8; 32],
@@ -4428,7 +4827,7 @@ impl GroveDb {
         chunk_power: u8,
         charge_proof_generation: bool,
         overall_limit: &mut Option<u16>,
-        tx: &crate::Transaction,
+        tx: &crate::Transaction<'db, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<LayerProof, Error> {
         let mut cost = OperationCost::default();
@@ -4451,7 +4850,7 @@ impl GroveDb {
         // charge below counts semantic matches rather than the span.
         let (_start, _end) = cost_return_on_error_no_add!(
             cost,
-            Self::query_items_to_range(&sub_query.items, total_count)
+            GroveDb::query_items_to_range(&sub_query.items, total_count)
         );
 
         // Open aux storage
@@ -4461,7 +4860,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_transactional_storage_context(storage_path, None, tx)
+            .subtree(storage_path, None, tx)
             .unwrap_add_cost(&mut cost);
 
         // Create BulkAppendTree from state with embedded storage
@@ -4536,14 +4935,14 @@ impl GroveDb {
     /// The proof bytes are: `sinsemilla_root (32 bytes) || bulk_append_proof`.
     /// This binds the Orchard anchor to the GroveDB root hash, allowing the
     /// verifier to reconstruct the combined state root.
-    fn generate_commitment_tree_layer_proof(
-        &self,
+    fn generate_commitment_tree_layer_proof<'db>(
+        &'db self,
         subtree_path: &[&[u8]],
         path_query: &PathQuery,
         total_count: u64,
         chunk_power: u8,
         overall_limit: &mut Option<u16>,
-        tx: &crate::Transaction,
+        tx: &crate::Transaction<'db, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<LayerProof, Error> {
         let mut cost = OperationCost::default();
@@ -4555,7 +4954,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_transactional_storage_context(storage_path, None, tx)
+            .subtree(storage_path, None, tx)
             .unwrap_add_cost(&mut cost);
 
         let sinsemilla_root = match FlatStore::get(&storage_ctx, COMMITMENT_TREE_DATA_KEY).value {
@@ -4611,14 +5010,14 @@ impl GroveDb {
     }
 
     /// Generate a DenseAppendOnlyFixedSizeTree layer proof for a subquery.
-    fn generate_dense_tree_layer_proof(
-        &self,
+    fn generate_dense_tree_layer_proof<'db>(
+        &'db self,
         subtree_path: &[&[u8]],
         path_query: &PathQuery,
         dense_count: u16,
         dense_height: u8,
         overall_limit: &mut Option<u16>,
-        tx: &crate::Transaction,
+        tx: &crate::Transaction<'db, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<LayerProof, Error> {
         let mut cost = OperationCost::default();
@@ -4638,7 +5037,7 @@ impl GroveDb {
         // Convert query items to positions (same as MMR but capped by dense_count)
         let positions = cost_return_on_error_no_add!(
             cost,
-            Self::query_items_to_positions(&sub_query.items, dense_count)
+            GroveDb::query_items_to_positions(&sub_query.items, dense_count)
         );
 
         // Open storage at the subtree path
@@ -4648,7 +5047,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_transactional_storage_context(storage_path, None, tx)
+            .subtree(storage_path, None, tx)
             .unwrap_add_cost(&mut cost);
 
         // Create dense tree with embedded storage
@@ -4687,402 +5086,6 @@ impl GroveDb {
             lower_layers: BTreeMap::new(),
         })
         .wrap_with_cost(cost)
-    }
-
-    /// Convert query items to position indices for dense tree proofs.
-    ///
-    /// Query keys are interpreted as BE u16 bytes representing positions.
-    fn query_items_to_positions(items: &[QueryItem], count: u16) -> Result<Vec<u16>, Error> {
-        if count == 0 {
-            return Ok(Vec::new());
-        }
-
-        const MAX_INDICES: usize = 65_535;
-        let max_idx = count - 1;
-        let mut indices = Vec::new();
-
-        for item in items {
-            match item {
-                QueryItem::Key(key) => {
-                    let idx = Self::decode_be_u16(key)?;
-                    if idx < count {
-                        indices.push(idx);
-                    }
-                }
-                QueryItem::RangeInclusive(range) => {
-                    let start = Self::decode_be_u16(range.start())?;
-                    let end = Self::decode_be_u16(range.end())?;
-                    for idx in start..=end.min(max_idx) {
-                        indices.push(idx);
-                        if indices.len() > MAX_INDICES {
-                            return Err(Error::InvalidInput(
-                                "query range too large for dense tree proof",
-                            ));
-                        }
-                    }
-                }
-                QueryItem::Range(range) => {
-                    let start = Self::decode_be_u16(&range.start)?;
-                    let end = Self::decode_be_u16(&range.end)?;
-                    for idx in start..end.min(count) {
-                        indices.push(idx);
-                        if indices.len() > MAX_INDICES {
-                            return Err(Error::InvalidInput(
-                                "query range too large for dense tree proof",
-                            ));
-                        }
-                    }
-                }
-                QueryItem::RangeFrom(range) => {
-                    let start = Self::decode_be_u16(&range.start)?;
-                    for idx in start..count {
-                        indices.push(idx);
-                        if indices.len() > MAX_INDICES {
-                            return Err(Error::InvalidInput(
-                                "query range too large for dense tree proof",
-                            ));
-                        }
-                    }
-                }
-                QueryItem::RangeTo(range) => {
-                    let end = Self::decode_be_u16(&range.end)?;
-                    for idx in 0..end.min(count) {
-                        indices.push(idx);
-                        if indices.len() > MAX_INDICES {
-                            return Err(Error::InvalidInput(
-                                "query range too large for dense tree proof",
-                            ));
-                        }
-                    }
-                }
-                QueryItem::RangeToInclusive(range) => {
-                    let end = Self::decode_be_u16(&range.end)?;
-                    for idx in 0..=end.min(max_idx) {
-                        indices.push(idx);
-                        if indices.len() > MAX_INDICES {
-                            return Err(Error::InvalidInput(
-                                "query range too large for dense tree proof",
-                            ));
-                        }
-                    }
-                }
-                QueryItem::RangeFull(..) => {
-                    for idx in 0..count {
-                        indices.push(idx);
-                        if indices.len() > MAX_INDICES {
-                            return Err(Error::InvalidInput(
-                                "query range too large for dense tree proof",
-                            ));
-                        }
-                    }
-                }
-                QueryItem::RangeAfter(range) => {
-                    let start = Self::decode_be_u16(&range.start)?;
-                    for idx in start.saturating_add(1)..count {
-                        indices.push(idx);
-                        if indices.len() > MAX_INDICES {
-                            return Err(Error::InvalidInput(
-                                "query range too large for dense tree proof",
-                            ));
-                        }
-                    }
-                }
-                QueryItem::RangeAfterTo(range) => {
-                    let start = Self::decode_be_u16(&range.start)?;
-                    let end = Self::decode_be_u16(&range.end)?;
-                    for idx in start.saturating_add(1)..end.min(count) {
-                        indices.push(idx);
-                        if indices.len() > MAX_INDICES {
-                            return Err(Error::InvalidInput(
-                                "query range too large for dense tree proof",
-                            ));
-                        }
-                    }
-                }
-                QueryItem::RangeAfterToInclusive(range) => {
-                    let start = Self::decode_be_u16(range.start())?;
-                    let end = Self::decode_be_u16(range.end())?;
-                    for idx in start.saturating_add(1)..=end.min(max_idx) {
-                        indices.push(idx);
-                        if indices.len() > MAX_INDICES {
-                            return Err(Error::InvalidInput(
-                                "query range too large for dense tree proof",
-                            ));
-                        }
-                    }
-                }
-                QueryItem::AggregateCountOnRange(_) => {
-                    return Err(Error::InvalidInput(
-                        "AggregateCountOnRange is only supported on provable count trees, \
-                         not on dense fixed-size merkle trees",
-                    ));
-                }
-                QueryItem::AggregateSumOnRange(_) => {
-                    return Err(Error::InvalidInput(
-                        "AggregateSumOnRange is only supported on provable sum trees, \
-                         not on dense fixed-size merkle trees",
-                    ));
-                }
-                QueryItem::AggregateCountAndSumOnRange(_) => {
-                    return Err(Error::InvalidInput(
-                        "AggregateCountAndSumOnRange is only supported on \
-                         ProvableCountProvableSumTree, not on dense fixed-size merkle trees",
-                    ));
-                }
-            }
-        }
-
-        indices.sort_unstable();
-        indices.dedup();
-        Ok(indices)
-    }
-
-    /// Convert query items to leaf indices for MMR proofs.
-    ///
-    /// Query keys are interpreted as BE u64 bytes representing leaf indices.
-    fn query_items_to_leaf_indices(items: &[QueryItem], mmr_size: u64) -> Result<Vec<u64>, Error> {
-        let leaf_count = grovedb_merkle_mountain_range::mmr_size_to_leaf_count(mmr_size);
-
-        // Nothing to prove when MMR is empty
-        if leaf_count == 0 {
-            return Ok(Vec::new());
-        }
-
-        // Cap total expansion to avoid allocating billions of indices
-        // for unbounded ranges. 10 million is generous for any real query.
-        const MAX_INDICES: usize = 10_000_000;
-
-        let max_idx = leaf_count - 1; // safe: leaf_count > 0
-        let mut indices = Vec::new();
-
-        for item in items {
-            match item {
-                QueryItem::Key(key) => {
-                    let idx = Self::decode_be_u64(key)?;
-                    if idx < leaf_count {
-                        indices.push(idx);
-                    }
-                }
-                QueryItem::RangeInclusive(range) => {
-                    let start = Self::decode_be_u64(range.start())?;
-                    let end = Self::decode_be_u64(range.end())?;
-                    for idx in start..=end.min(max_idx) {
-                        indices.push(idx);
-                        if indices.len() > MAX_INDICES {
-                            return Err(Error::InvalidInput("query range too large for MMR proof"));
-                        }
-                    }
-                }
-                QueryItem::Range(range) => {
-                    let start = Self::decode_be_u64(&range.start)?;
-                    let end = Self::decode_be_u64(&range.end)?;
-                    for idx in start..end.min(leaf_count) {
-                        indices.push(idx);
-                        if indices.len() > MAX_INDICES {
-                            return Err(Error::InvalidInput("query range too large for MMR proof"));
-                        }
-                    }
-                }
-                QueryItem::RangeFrom(range) => {
-                    let start = Self::decode_be_u64(&range.start)?;
-                    for idx in start..leaf_count {
-                        indices.push(idx);
-                        if indices.len() > MAX_INDICES {
-                            return Err(Error::InvalidInput("query range too large for MMR proof"));
-                        }
-                    }
-                }
-                QueryItem::RangeTo(range) => {
-                    let end = Self::decode_be_u64(&range.end)?;
-                    for idx in 0..end.min(leaf_count) {
-                        indices.push(idx);
-                        if indices.len() > MAX_INDICES {
-                            return Err(Error::InvalidInput("query range too large for MMR proof"));
-                        }
-                    }
-                }
-                QueryItem::RangeToInclusive(range) => {
-                    let end = Self::decode_be_u64(&range.end)?;
-                    for idx in 0..=end.min(max_idx) {
-                        indices.push(idx);
-                        if indices.len() > MAX_INDICES {
-                            return Err(Error::InvalidInput("query range too large for MMR proof"));
-                        }
-                    }
-                }
-                QueryItem::RangeFull(..) => {
-                    for idx in 0..leaf_count {
-                        indices.push(idx);
-                        if indices.len() > MAX_INDICES {
-                            return Err(Error::InvalidInput("query range too large for MMR proof"));
-                        }
-                    }
-                }
-                QueryItem::RangeAfter(range) => {
-                    let start = Self::decode_be_u64(&range.start)?;
-                    for idx in start.saturating_add(1)..leaf_count {
-                        indices.push(idx);
-                        if indices.len() > MAX_INDICES {
-                            return Err(Error::InvalidInput("query range too large for MMR proof"));
-                        }
-                    }
-                }
-                QueryItem::RangeAfterTo(range) => {
-                    let start = Self::decode_be_u64(&range.start)?;
-                    let end = Self::decode_be_u64(&range.end)?;
-                    for idx in start.saturating_add(1)..end.min(leaf_count) {
-                        indices.push(idx);
-                        if indices.len() > MAX_INDICES {
-                            return Err(Error::InvalidInput("query range too large for MMR proof"));
-                        }
-                    }
-                }
-                QueryItem::RangeAfterToInclusive(range) => {
-                    let start = Self::decode_be_u64(range.start())?;
-                    let end = Self::decode_be_u64(range.end())?;
-                    for idx in start.saturating_add(1)..=end.min(max_idx) {
-                        indices.push(idx);
-                        if indices.len() > MAX_INDICES {
-                            return Err(Error::InvalidInput("query range too large for MMR proof"));
-                        }
-                    }
-                }
-                QueryItem::AggregateCountOnRange(_) => {
-                    return Err(Error::InvalidInput(
-                        "AggregateCountOnRange is only supported on provable count trees, \
-                         not on MMR trees",
-                    ));
-                }
-                QueryItem::AggregateSumOnRange(_) => {
-                    return Err(Error::InvalidInput(
-                        "AggregateSumOnRange is only supported on provable sum trees, \
-                         not on MMR trees",
-                    ));
-                }
-                QueryItem::AggregateCountAndSumOnRange(_) => {
-                    return Err(Error::InvalidInput(
-                        "AggregateCountAndSumOnRange is only supported on \
-                         ProvableCountProvableSumTree, not on MMR trees",
-                    ));
-                }
-            }
-        }
-
-        indices.sort_unstable();
-        indices.dedup();
-        Ok(indices)
-    }
-
-    /// Convert query items to a position range [start, end) for BulkAppendTree.
-    fn query_items_to_range(items: &[QueryItem], total_count: u64) -> Result<(u64, u64), Error> {
-        let mut min_start = total_count;
-        let mut max_end = 0u64;
-
-        for item in items {
-            match item {
-                QueryItem::Key(key) => {
-                    let pos = Self::decode_be_u64(key)?;
-                    min_start = min_start.min(pos);
-                    max_end = max_end.max(pos.saturating_add(1));
-                }
-                QueryItem::RangeInclusive(range) => {
-                    let s = Self::decode_be_u64(range.start())?;
-                    let e = Self::decode_be_u64(range.end())?;
-                    min_start = min_start.min(s);
-                    max_end = max_end.max(e.saturating_add(1));
-                }
-                QueryItem::Range(range) => {
-                    let s = Self::decode_be_u64(&range.start)?;
-                    let e = Self::decode_be_u64(&range.end)?;
-                    min_start = min_start.min(s);
-                    max_end = max_end.max(e);
-                }
-                QueryItem::RangeFrom(range) => {
-                    let s = Self::decode_be_u64(&range.start)?;
-                    min_start = min_start.min(s);
-                    max_end = total_count;
-                }
-                QueryItem::RangeTo(range) => {
-                    min_start = 0;
-                    let e = Self::decode_be_u64(&range.end)?;
-                    max_end = max_end.max(e);
-                }
-                QueryItem::RangeToInclusive(range) => {
-                    min_start = 0;
-                    let e = Self::decode_be_u64(&range.end)?;
-                    max_end = max_end.max(e.saturating_add(1));
-                }
-                QueryItem::RangeFull(..) => {
-                    min_start = 0;
-                    max_end = total_count;
-                }
-                QueryItem::RangeAfter(range) => {
-                    let s = Self::decode_be_u64(&range.start)?;
-                    min_start = min_start.min(s.saturating_add(1));
-                    max_end = total_count;
-                }
-                QueryItem::RangeAfterTo(range) => {
-                    let s = Self::decode_be_u64(&range.start)?;
-                    let e = Self::decode_be_u64(&range.end)?;
-                    min_start = min_start.min(s.saturating_add(1));
-                    max_end = max_end.max(e);
-                }
-                QueryItem::RangeAfterToInclusive(range) => {
-                    let s = Self::decode_be_u64(range.start())?;
-                    let e = Self::decode_be_u64(range.end())?;
-                    min_start = min_start.min(s.saturating_add(1));
-                    max_end = max_end.max(e.saturating_add(1));
-                }
-                QueryItem::AggregateCountOnRange(_) => {
-                    return Err(Error::InvalidInput(
-                        "AggregateCountOnRange is only supported on provable count trees, \
-                         not on BulkAppendTree",
-                    ));
-                }
-                QueryItem::AggregateSumOnRange(_) => {
-                    return Err(Error::InvalidInput(
-                        "AggregateSumOnRange is only supported on provable sum trees, \
-                         not on BulkAppendTree",
-                    ));
-                }
-                QueryItem::AggregateCountAndSumOnRange(_) => {
-                    return Err(Error::InvalidInput(
-                        "AggregateCountAndSumOnRange is only supported on \
-                         ProvableCountProvableSumTree, not on BulkAppendTree",
-                    ));
-                }
-            }
-        }
-
-        // Clamp to total_count
-        max_end = max_end.min(total_count);
-        Ok((min_start, max_end))
-    }
-
-    /// Decode a big-endian u64 from key bytes.
-    fn decode_be_u64(key: &[u8]) -> Result<u64, Error> {
-        if key.len() != 8 {
-            return Err(Error::InvalidInput(
-                "position key must be exactly 8 bytes (BE u64)",
-            ));
-        }
-        let arr: [u8; 8] = key
-            .try_into()
-            .map_err(|_| Error::InvalidInput("invalid u64 key bytes"))?;
-        Ok(u64::from_be_bytes(arr))
-    }
-
-    /// Decode a big-endian u16 from key bytes.
-    fn decode_be_u16(key: &[u8]) -> Result<u16, Error> {
-        if key.len() != 2 {
-            return Err(Error::InvalidInput(
-                "position key must be exactly 2 bytes (BE u16)",
-            ));
-        }
-        let arr: [u8; 2] = key
-            .try_into()
-            .map_err(|_| Error::InvalidInput("invalid u16 key bytes"))?;
-        Ok(u16::from_be_bytes(arr))
     }
 }
 

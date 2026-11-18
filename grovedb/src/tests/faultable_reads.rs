@@ -7,11 +7,14 @@
 
 use std::cell::RefCell;
 
-use grovedb_costs::{
-    storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, CostResult,
-    CostsExt, OperationCost,
+use grovedb_costs::{CostResult, CostsExt, OperationCost};
+use grovedb_merk::{
+    store::{NodeChange, NodeStore},
+    tree::{kv::ValueDefinedCostType, TreeNode, TreeNodeInner},
+    Error, Link,
 };
-use grovedb_storage::{Error, StorageContext};
+use grovedb_storage::Error as StorageError;
+use grovedb_version::version::GroveVersion;
 
 /// The message of the injected failure.
 pub(crate) const INJECTED_READ_FAILURE: &str = "injected read failure";
@@ -104,123 +107,103 @@ pub(crate) fn with_one_failed_parent_read<T>(
     )
 }
 
-/// A storage context that is the one it wraps, except that a data read of
-/// an armed key fails.
+/// A subtree handle that is the one it wraps, except that a node read of an
+/// armed key fails.
 pub(crate) struct FaultableReads<S>(pub(crate) S);
 
-impl<'db, S: StorageContext<'db>> StorageContext<'db> for FaultableReads<S> {
-    type Batch = S::Batch;
-    type RawIterator = S::RawIterator;
-
-    fn put<K: AsRef<[u8]>>(
-        &self,
-        key: K,
-        value: &[u8],
-        children_sizes: ChildrenSizesWithIsSumTree,
-        cost_info: Option<KeyValueStorageCost>,
-    ) -> CostResult<(), Error> {
-        self.0.put(key, value, children_sizes, cost_info)
-    }
-
-    fn put_aux<K: AsRef<[u8]>>(
-        &self,
-        key: K,
-        value: &[u8],
-        cost_info: Option<KeyValueStorageCost>,
-    ) -> CostResult<(), Error> {
-        self.0.put_aux(key, value, cost_info)
-    }
-
-    fn put_root<K: AsRef<[u8]>>(
-        &self,
-        key: K,
-        value: &[u8],
-        cost_info: Option<KeyValueStorageCost>,
-    ) -> CostResult<(), Error> {
-        self.0.put_root(key, value, cost_info)
-    }
-
-    fn put_meta<K: AsRef<[u8]>>(
-        &self,
-        key: K,
-        value: &[u8],
-        cost_info: Option<KeyValueStorageCost>,
-    ) -> CostResult<(), Error> {
-        self.0.put_meta(key, value, cost_info)
-    }
-
-    fn delete<K: AsRef<[u8]>>(
-        &self,
-        key: K,
-        cost_info: Option<KeyValueStorageCost>,
-    ) -> CostResult<(), Error> {
-        self.0.delete(key, cost_info)
-    }
-
-    fn delete_aux<K: AsRef<[u8]>>(
-        &self,
-        key: K,
-        cost_info: Option<KeyValueStorageCost>,
-    ) -> CostResult<(), Error> {
-        self.0.delete_aux(key, cost_info)
-    }
-
-    fn delete_root<K: AsRef<[u8]>>(
-        &self,
-        key: K,
-        cost_info: Option<KeyValueStorageCost>,
-    ) -> CostResult<(), Error> {
-        self.0.delete_root(key, cost_info)
-    }
-
-    fn delete_meta<K: AsRef<[u8]>>(
-        &self,
-        key: K,
-        cost_info: Option<KeyValueStorageCost>,
-    ) -> CostResult<(), Error> {
-        self.0.delete_meta(key, cost_info)
-    }
-
-    fn get<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
-        let fails = ARMED.with(|armed| {
+/// The failed read of `key`, if one is armed: the seek is paid for, as on
+/// the real handle, and nothing is loaded.
+fn injected_failure<T>(key: &[u8]) -> Option<CostResult<T, Error>> {
+    ARMED
+        .with(|armed| {
             armed
                 .borrow_mut()
                 .as_mut()
-                .is_some_and(|fault| fault.fails(key.as_ref()))
-        });
-        if fails {
-            // The seek is paid for, as on the real context; nothing is loaded.
-            return Err(Error::StorageError(INJECTED_READ_FAILURE.to_owned()))
-                .wrap_with_cost(OperationCost::with_seek_count(1));
-        }
-        self.0.get(key)
+                .is_some_and(|fault| fault.fails(key))
+        })
+        .then(|| {
+            Err(Error::StorageError(StorageError::StorageError(
+                INJECTED_READ_FAILURE.to_owned(),
+            )))
+            .wrap_with_cost(OperationCost::with_seek_count(1))
+        })
+}
+
+impl<'db, S: NodeStore<'db>> NodeStore<'db> for FaultableReads<S> {
+    type ChangeSet = S::ChangeSet;
+    type Cursor = S::Cursor;
+
+    fn get_node(
+        &self,
+        key: &[u8],
+        value_defined_cost_fn: Option<
+            impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Option<TreeNode>, Error> {
+        injected_failure(key)
+            .unwrap_or_else(|| self.0.get_node(key, value_defined_cost_fn, grove_version))
     }
 
-    fn get_aux<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
-        self.0.get_aux(key)
+    fn get_node_for_read(&self, key: &[u8]) -> CostResult<Option<TreeNodeInner>, Error> {
+        injected_failure(key).unwrap_or_else(|| self.0.get_node_for_read(key))
     }
 
-    fn get_root<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
-        self.0.get_root(key)
+    fn has_node(&self, key: &[u8]) -> CostResult<bool, Error> {
+        injected_failure(key).unwrap_or_else(|| self.0.has_node(key))
     }
 
-    fn get_meta<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
-        self.0.get_meta(key)
+    fn fetch_node(
+        &self,
+        link: &Link,
+        value_defined_cost_fn: Option<
+            &impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
+        grove_version: &GroveVersion,
+    ) -> CostResult<TreeNode, Error> {
+        injected_failure(link.key()).unwrap_or_else(|| {
+            self.0
+                .fetch_node(link, value_defined_cost_fn, grove_version)
+        })
     }
 
-    fn new_batch(&self) -> Self::Batch {
-        self.0.new_batch()
+    fn write_node(&self, node: &TreeNode, change: NodeChange) -> CostResult<(), Error> {
+        self.0.write_node(node, change)
     }
 
-    fn commit_batch(&self, batch: Self::Batch) -> CostResult<(), Error> {
-        self.0.commit_batch(batch)
+    fn root_key(&self) -> CostResult<Option<Vec<u8>>, Error> {
+        self.0.root_key()
     }
 
-    fn raw_iter(&self) -> Self::RawIterator {
-        self.0.raw_iter()
+    fn set_root_key(&self, root_key: Option<&[u8]>) -> CostResult<(), Error> {
+        self.0.set_root_key(root_key)
     }
 
-    fn raw_iter_aux(&self) -> Self::RawIterator {
-        self.0.raw_iter_aux()
+    fn cursor(&self) -> Self::Cursor {
+        self.0.cursor()
+    }
+
+    fn change_set(&self) -> Self::ChangeSet {
+        self.0.change_set()
+    }
+
+    fn commit(&self, change_set: Self::ChangeSet) -> CostResult<(), Error> {
+        self.0.commit(change_set)
+    }
+
+    fn get_aux_record(&self, key: &[u8]) -> CostResult<Option<Vec<u8>>, Error> {
+        self.0.get_aux_record(key)
+    }
+
+    fn get_meta_record(&self, key: &[u8]) -> CostResult<Option<Vec<u8>>, Error> {
+        self.0.get_meta_record(key)
+    }
+
+    fn put_meta_record(&self, key: &[u8], value: &[u8]) -> CostResult<(), Error> {
+        self.0.put_meta_record(key, value)
+    }
+
+    fn delete_meta_record(&self, key: &[u8]) -> CostResult<(), Error> {
+        self.0.delete_meta_record(key)
     }
 }

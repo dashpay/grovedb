@@ -101,9 +101,10 @@ mod tests {
     /// Number of records physically present in the data namespace of
     /// `prefix` (committed state).
     fn records_in(db: &TempGroveDb, prefix: [u8; 32]) -> usize {
-        let tx = db.db.start_transaction();
+        let tx = db.db.storage().start_transaction();
         let ctx = db
             .db
+            .storage()
             .get_transactional_storage_context_by_subtree_prefix(prefix, None, &tx)
             .unwrap();
         let mut iter = ctx.raw_iter();

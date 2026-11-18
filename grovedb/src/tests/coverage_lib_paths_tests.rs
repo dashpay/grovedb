@@ -58,6 +58,7 @@ mod tests {
         {
             let ctx = db
                 .db
+                .storage()
                 .get_transactional_storage_context(subtree_path(path), Some(&batch), &tx)
                 .unwrap();
             ctx.put(key, value, None, None)
@@ -65,6 +66,7 @@ mod tests {
                 .expect("raw put into subtree namespace");
         }
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit raw put");
@@ -125,6 +127,7 @@ mod tests {
                 .expect("insert secondary row");
         }
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit");
@@ -144,6 +147,7 @@ mod tests {
         {
             let ctx = db
                 .db
+                .storage()
                 .get_transactional_storage_context_by_subtree_prefix(prefix, Some(&batch), &tx)
                 .unwrap();
             ctx.put(key, value, None, None)
@@ -151,6 +155,7 @@ mod tests {
                 .expect("raw put into secondary namespace");
         }
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit raw put");
@@ -185,6 +190,7 @@ mod tests {
                 .expect("direct merk insert");
         }
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit merk insert");
@@ -246,6 +252,7 @@ mod tests {
                 .expect("replace element with corrupt axes");
         }
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit corrupt axes");
@@ -291,6 +298,7 @@ mod tests {
         };
         if result.is_ok() {
             db.db
+                .storage()
                 .commit_multi_context_batch(batch, Some(&tx))
                 .unwrap()
                 .expect("commit propagation");
@@ -825,7 +833,7 @@ mod tests {
             .expect("open test leaf merk");
 
         let mut ops: Vec<BatchEntry<Vec<u8>>> = Vec::new();
-        let result = GroveDb::update_indexed_tree_item_preserve_flag_into_batch_operations(
+        let result = crate::update_indexed_tree_item_preserve_flag_into_batch_operations(
             &merk,
             b"plain".to_vec(),
             None,

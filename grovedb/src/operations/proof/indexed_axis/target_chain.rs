@@ -53,13 +53,13 @@ use crate::{Element, Error};
 
 #[cfg(feature = "minimal")]
 mod build {
+    use crate::Engine;
     use grovedb_costs::{
         cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
     };
     use grovedb_element::indexed::IndexAxis;
     use grovedb_merk::{element::get::ElementFetchFromStorageExtensions, tree::CryptoHash};
     use grovedb_path::{SubtreePath, SubtreePathBuilder};
-    use grovedb_storage::StorageBatch;
     use grovedb_version::version::GroveVersion;
 
     use super::super::{IndexedTargetChain, IndexedTargetCommitment, IndexedTargetNode};
@@ -70,12 +70,12 @@ mod build {
 
     /// Derive the commitment shape for one node, reading whatever roots that
     /// shape folds in.
-    fn build_commitment<'db>(
-        grovedb: &'db GroveDb,
+    fn build_commitment<'a, 'db: 'a, E: Engine>(
+        grovedb: &'db GroveDb<E>,
         element: &Element,
         qualified_path: &[Vec<u8>],
-        transaction: &'db Transaction,
-        batch: &'db StorageBatch,
+        transaction: &'a Transaction<'db, E>,
+        batch: &'a E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<IndexedTargetCommitment, Error> {
         let mut cost = OperationCost::default();
@@ -195,12 +195,12 @@ mod build {
     /// `PutCombinedReference`), so the head's commitment reaches the terminal
     /// in one step no matter how many hops the path takes. Carrying the
     /// middle of the chain would hand a verifier bytes it cannot check.
-    pub(crate) fn build_target_chain<'db>(
-        grovedb: &'db GroveDb,
+    pub(crate) fn build_target_chain<'a, 'db: 'a, E: Engine>(
+        grovedb: &'db GroveDb<E>,
         indexed_path: &[Vec<u8>],
         primary_key: &[u8],
-        transaction: &'db Transaction,
-        batch: &'db StorageBatch,
+        transaction: &'a Transaction<'db, E>,
+        batch: &'a E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<IndexedTargetChain, Error> {
         let mut cost = OperationCost::default();
@@ -340,12 +340,12 @@ mod build {
     }
 
     /// Serialize one element and derive its commitment shape.
-    fn build_chain_node<'db>(
-        grovedb: &'db GroveDb,
+    fn build_chain_node<'a, 'db: 'a, E: Engine>(
+        grovedb: &'db GroveDb<E>,
         element: &Element,
         qualified_path: &[Vec<u8>],
-        transaction: &'db Transaction,
-        batch: &'db StorageBatch,
+        transaction: &'a Transaction<'db, E>,
+        batch: &'a E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<IndexedTargetNode, Error> {
         let mut cost = OperationCost::default();

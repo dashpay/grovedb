@@ -4970,7 +4970,7 @@ impl GroveDb {
         // A row only reaches here under a genuine root hash, but the merk
         // root covers a tree's or reference's `value_hash`, not its bytes:
         // whether the node form binds them is version-gated (#859).
-        Self::check_chunk_proof_row(&tree.node, &key, &value, &element, grove_version)?;
+        GroveDb::check_chunk_proof_row(&tree.node, &key, &value, &element, grove_version)?;
 
         elements.insert(key.clone(), element);
 

@@ -7,11 +7,12 @@ use std::collections::{HashMap, HashSet};
 
 use grovedb_merk::{
     element::{costs::ElementCostExtensions, ElementExt},
+    store::NodeStore,
     tree::{combine_hash, kv::ValueDefinedCostType, value_hash, TreeNode},
     Merk,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageContext};
+use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator};
 use grovedb_version::version::GroveVersion;
 
 use crate::{
@@ -20,17 +21,17 @@ use crate::{
         indexed_tree::{axis_secondary_tree_type, decode_axis_row_reference, indexed_element_axes},
     },
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
-    Element, Error, GroveDb, Transaction,
+    Element, Engine, Error, GroveDb, Transaction,
 };
 
 /// Visit one stored node at a time without loading the whole Merk into its
 /// cache or retaining a collection of reference rows.
-fn visit_nodes<'db, S: StorageContext<'db>>(
+fn visit_nodes<'db, S: NodeStore<'db>>(
     merk: &Merk<S>,
     grove_version: &GroveVersion,
     mut visit: impl FnMut(&TreeNode) -> Result<(), Error>,
 ) -> Result<(), Error> {
-    let mut iter = merk.storage.raw_iter();
+    let mut iter = NodeStore::cursor(&merk.storage);
     iter.seek_to_first().unwrap();
     while iter.valid().unwrap() {
         let key = iter.key().unwrap().ok_or_else(|| {
@@ -52,13 +53,13 @@ fn visit_nodes<'db, S: StorageContext<'db>>(
     Ok(())
 }
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Resolve without the query API's terminal-wrapper removal. Batch
     /// references authenticate the stored terminal, including its wrapper.
-    fn restored_reference_target(
-        &self,
+    fn restored_reference_target<'db>(
+        &'db self,
         mut path: Vec<Vec<u8>>,
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
         grove_version: &GroveVersion,
     ) -> Result<Element, Error> {
         let mut visited = HashSet::new();
@@ -99,12 +100,12 @@ impl GroveDb {
 
     /// Check a restored backward-references element's referrer list
     /// against the restored bidirectional references, in both directions.
-    fn verify_restored_backward_references(
-        &self,
+    fn verify_restored_backward_references<'db>(
+        &'db self,
         element: &Element,
         path: &[Vec<u8>],
         key: &[u8],
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
         grove_version: &GroveVersion,
     ) -> Result<(), Error> {
         let path_slices: Vec<&[u8]> = path.iter().map(|p| p.as_slice()).collect();
@@ -145,9 +146,9 @@ impl GroveDb {
         Ok(())
     }
 
-    pub(super) fn verify_restored_value_hashes(
-        &self,
-        transaction: &Transaction,
+    pub(super) fn verify_restored_value_hashes<'db>(
+        &'db self,
+        transaction: &Transaction<'db, E>,
         grove_version: &GroveVersion,
     ) -> Result<(), Error> {
         // Only the subtree frontier is retained. Neither item count nor
@@ -284,7 +285,7 @@ impl GroveDb {
                     RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag()).unwrap();
                 let storage = self
                     .db
-                    .get_immediate_storage_context_by_subtree_prefix(prefix, transaction)
+                    .immediate_subtree_by_prefix(prefix, transaction)
                     .unwrap();
                 let secondary = Merk::open_layered_with_root_key(
                     storage,
