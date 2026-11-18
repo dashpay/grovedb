@@ -559,7 +559,11 @@ after the sample's place. Replay skips that change for the page (K3) and
 still applies it to the counts: what the counts include is decided by the
 place alone. So a recovery reads the log from two points, the group of
 *C* + 1 for the pages and the place for the counts, and needs it from the
-earlier one on.
+earlier one on. A background change has no version, so K3 does not tell
+whether a page has it: from the place on, replay takes every background
+change for its page too, by the rule of [`log-format.md`](log-format.md),
+LG28, wherever the group of *C* + 1 stands. What the writer of a
+checkpoint owes the log for that is LG29 of the same document.
 
 **K14. A checkpoint is named only once the log is durable up to the place
 of its sample.** Whoever installs the checkpoint says how far the log is
