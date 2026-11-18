@@ -55,9 +55,15 @@ fn opened_at(latest: u64) -> Registry {
 
 use PageState::{Free, Live, Retired};
 
+fn recovered(replay: Recovery, table: &PageTable, landed: u64) -> PageAllocator {
+    replay
+        .finish(table, version(landed))
+        .expect("nothing is above the version landed on")
+}
+
 #[test]
 fn an_empty_table_and_no_replay_give_an_empty_allocator() {
-    let ids = Recovery::new().finish(&PageTable::new());
+    let ids = recovered(Recovery::new(), &PageTable::new(), 0);
     assert_eq!(ids.census().high_water, None);
     assert_eq!(in_use(&ids), []);
     assert_eq!(ids.allocate(), Ok(page(1)));
@@ -73,7 +79,7 @@ fn the_table_says_which_ids_are_in_use_and_which_were_freed() {
         (6, &[base(2), free(3), base(5)]),
         (4100, &[base(2), delta(2)]),
     ]);
-    let ids = Recovery::default().finish(&table);
+    let ids = recovered(Recovery::default(), &table, 5);
     assert_eq!(
         states(&ids, 7),
         [Live, Live, Retired, Free, Retired, Live, Free]
@@ -105,7 +111,7 @@ fn replay_adds_the_pages_written_and_freed_after_the_checkpoint() {
     replay.wrote(page(9), version(7));
     replay.freed(page(9), version(8));
     replay.freed(page(11), version(8));
-    let ids = replay.finish(&table);
+    let ids = recovered(replay, &table, 8);
     assert_eq!(
         states(&ids, 11),
         [Retired, Live, Live, Free, Free, Free, Live, Free, Retired, Free, Retired]
@@ -140,7 +146,7 @@ fn what_replay_reports_at_or_below_a_page_s_newest_link_is_ignored() {
     replay.freed(page(4), version(4));
     replay.wrote(page(4), version(7));
     replay.freed(page(5), version(8));
-    let ids = replay.finish(&table);
+    let ids = recovered(replay, &table, 8);
     assert_eq!(states(&ids, 5), [Live, Retired, Retired, Live, Live]);
     assert_eq!(
         retired(&ids),
@@ -153,7 +159,7 @@ fn what_replay_reports_at_or_below_a_page_s_newest_link_is_ignored() {
     replay.wrote(page(3), version(7));
     replay.freed(page(4), version(8));
     replay.freed(page(5), version(9));
-    let ids = replay.finish(&table);
+    let ids = recovered(replay, &table, 9);
     assert_eq!(states(&ids, 5), [Retired, Live, Live, Retired, Retired]);
 }
 
@@ -177,8 +183,107 @@ fn the_newest_report_of_a_page_counts_whatever_the_order() {
                 replay.wrote(page(8), version(*raw_version));
             }
         }
-        let ids = replay.finish(&PageTable::new());
+        let ids = recovered(replay, &PageTable::new(), 9);
         assert_eq!(ids.state(page(8)), expected, "{reports:?}");
+    }
+}
+
+#[test]
+fn a_link_or_a_report_above_the_version_landed_on_is_refused() {
+    let table = table_of(&[(1, &[base(1)]), (2, &[base(2), delta(6)]), (3, &[free(4)])]);
+    let after = |raw_page, raw_version, landed| RecoveryError::LinkAfterLanding {
+        page: page(raw_page),
+        version: version(raw_version),
+        landed: version(landed),
+    };
+    assert_eq!(
+        Recovery::new().finish(&table, version(5)).err(),
+        Some(after(2, 6, 5))
+    );
+    assert_eq!(
+        Recovery::new().finish(&table, version(3)).err(),
+        Some(after(2, 6, 3))
+    );
+    assert_eq!(
+        Recovery::new()
+            .finish(&table_of(&[(3, &[free(4)])]), version(3))
+            .err(),
+        Some(after(3, 4, 3))
+    );
+    assert!(Recovery::new().finish(&table, version(6)).is_ok());
+
+    for freed in [false, true] {
+        let mut replay = Recovery::new();
+        replay.wrote(page(1), version(6));
+        if freed {
+            replay.freed(page(1), version(7));
+        } else {
+            replay.wrote(page(9), version(7));
+        }
+        let reported = if freed { 1 } else { 9 };
+        assert_eq!(
+            replay.finish(&table, version(6)).err(),
+            Some(RecoveryError::ReportAfterLanding {
+                page: page(reported),
+                version: version(7),
+                landed: version(6),
+            })
+        );
+    }
+
+    let mut replay = Recovery::new();
+    replay.freed(page(4), CommitVersion::EMPTY);
+    assert_eq!(
+        replay.finish(&table, version(6)).err(),
+        Some(RecoveryError::ReportOfNoCommit { page: page(4) })
+    );
+    let mut replay = Recovery::new();
+    replay.wrote(page(4), CommitVersion::EMPTY);
+    replay.wrote(page(4), version(6));
+    assert_eq!(recovered(replay, &table, 6).state(page(4)), Live);
+}
+
+#[test]
+fn a_free_that_the_crash_lost_does_not_retire_a_page_that_is_in_use() {
+    // Commit 7 freed page 1 and was lost: recovery landed on version 5, and
+    // the next commits take versions 6 and 7 again.
+    let table = table_of(&[(1, &[base(1)])]);
+    let mut replay = Recovery::new();
+    replay.freed(page(1), version(7));
+    assert!(replay.finish(&table, version(5)).is_err());
+    let ids = recovered(Recovery::new(), &table, 5);
+    assert_eq!(reclaim(&ids, &opened_at(7)), []);
+    assert_eq!(ids.state(page(1)), Live);
+}
+
+#[test]
+fn recovery_errors_print() {
+    let cases = [
+        (
+            RecoveryError::LinkAfterLanding {
+                page: page(2),
+                version: version(6),
+                landed: version(5),
+            },
+            "the page table holds page 2 at version 6, and recovery landed on version 5",
+        ),
+        (
+            RecoveryError::ReportAfterLanding {
+                page: page(3),
+                version: version(8),
+                landed: version(7),
+            },
+            "replay reported page 3 for version 8, and recovery landed on version 7",
+        ),
+        (
+            RecoveryError::ReportOfNoCommit { page: page(4) },
+            "replay reported page 4 for version 0",
+        ),
+    ];
+    for (error, text) in cases {
+        assert_eq!(error.to_string(), text);
+        let boxed: Box<dyn std::error::Error> = Box::new(error);
+        assert!(boxed.source().is_none());
     }
 }
 
@@ -293,7 +398,7 @@ fn drawn_histories_recover_the_allocator_of_the_version_landed_on() {
             }
         }
 
-        let ids = replay.finish(&table);
+        let ids = recovered(replay, &table, landed);
         let found = in_use(&ids);
         let states: Vec<_> = expected
             .iter()

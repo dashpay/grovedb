@@ -210,7 +210,9 @@ fn the_next_session_derives_the_allocator_from_the_table_and_the_log() {
     replay.wrote(page(3), version(3));
     replay.wrote(page(4), version(3));
     replay.freed(page(1), version(4));
-    let ids = replay.finish(&table);
+    let ids = replay
+        .finish(&table, version(4))
+        .expect("nothing is above version 4");
 
     let states: Vec<_> = (1..=5).map(|raw| ids.state(page(raw))).collect();
     assert_eq!(

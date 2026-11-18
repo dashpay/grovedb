@@ -119,7 +119,8 @@
 //! - **A commit** frees a page with its own version, in the step that
 //!   installs its page versions, before it is published.
 //! - **Whoever frees a page** vouches for the version it passes: no handle
-//!   that reads at that version or a later one reaches the page.
+//!   that reads at that version or a later one reaches the page. It also
+//!   vouches that the id still names that page.
 //! - **An operation** takes its guard before it reads the latest committed
 //!   version, and holds it for as long as it uses a page id.
 //!
@@ -135,8 +136,10 @@
 //! # After a crash
 //!
 //! Nothing of the allocator is on disk. [`Recovery`] derives it from the
-//! page table of the checkpoint and from the log groups that replay reads.
-//! Ids that open transactions held are free again.
+//! page table of the checkpoint and from the commits that replay takes, and
+//! refuses a link or a report of a later version than the one recovery
+//! landed on ([`RecoveryError`]). Ids that open transactions held are free
+//! again.
 
 mod allocator;
 mod error;
@@ -147,5 +150,5 @@ mod states;
 mod tests;
 
 pub use allocator::{Census, Epoch, PageAllocator, PageState, Pins};
-pub use error::AllocError;
+pub use error::{AllocError, RecoveryError};
 pub use recovery::Recovery;
