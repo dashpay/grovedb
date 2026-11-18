@@ -323,8 +323,8 @@ page needs no image").
 **PD12. A run holds at least one record.** A page that did not change has
 no run.
 
-**PD13. Records are for tree pages.** A flat page image is immutable
-(P13 of `flat-page.md`) and has no deltas.
+**PD13. Records are for tree pages.** A flat page has no deltas: every
+change to one builds a new image (P11 of `flat-page.md`).
 
 ### 3.2 Chains
 
