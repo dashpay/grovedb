@@ -22,7 +22,7 @@ cb7ddrc7c1
   root 79db57641f69d354b391d039d06d823686cea25ec417c5048a30665b753da379
 cb338rb509
   step 8
-  # Batch([InsertOnly { path: [[64], [52, 235, 239, 32, 42, 237, 116, 243, 228, 201, 208, 93, 244, 168, 5, 249, 34, 191, 85, 76, 233, 230, 6, 185, 178, 149, 60, 219, 104, 32, 158, 163], [1], [110, 111, 116, 101], [0]], key: [0, 134, 83, 171, 23, 121, 174, 244, 233, 143, 0, 15, 192, 10, 149, 153, 189, 39, 246, 6, 88, 172, 137, 147, 172, 33, 129, 255, 80, 96, 187, 201], element: item: [hex: 00701f3d..f9… (1895 characters)
+  # Batch([InsertOnly { path: [[64], [52, 235, 239, 32, 42, 237, 116, 243, 228, 201, 208, 93, 244, 168, 5, 249, 34, 191, 85, 76, 233, 230, 6, 185, 178, 149, 60, 219, 104, 32, 158, 163], [1], [110, 111, 116, 101], [0]], key: [0, 134, 83, 171, 23, 121, 174, 244, 233, 143, 0, 15, 192, 10, 149, 153, 189, 39, 246, 6, 88, 172, 137, 147, 172, 33, 129, 255, 80, 96, 187, 201], element: item: [hex: 00701f3d..f9… (1919 characters)
   cost seeks=28 loaded=1624 added=1207 replaced=944 removed=- hashes=84 sinsemilla=0
   root aefadc6f6b047c15007c786a5a8637cf2393279b7167e034b33311c55a8be02b
 c0628r15cc
@@ -18311,7 +18311,7 @@ c180brcc3c
 cb7ddrcc3c
 cfb6avd041r9e2e
   step 18157
-  # PartialBatch(PartialBatch { ops: [InsertOnly { path: [[112, 97, 114, 116, 105, 97, 108], [100, 111, 99, 117, 109, 101, 110, 116, 115], [111, 119, 110, 101, 114, 45, 50]], key: [0, 0, 0, 0, 0, 0, 0, 0], element: item: [hex: c6c45c84..5db08469][hex: 000001, str:   ] }], add_on: [Replace { path: [[112, 97, 114, 116, 105, 97, 108], [98, 97, 108, 97, 110, 99, 101, 115]], key: [111, 119, 110, 101, 114,… (595 characters)
+  # PartialBatch(PartialBatch { ops: [InsertOnly { path: [[112, 97, 114, 116, 105, 97, 108], [100, 111, 99, 117, 109, 101, 110, 116, 115], [111, 119, 110, 101, 114, 45, 50]], key: [0, 0, 0, 0, 0, 0, 0, 0], element: item: [hex: c6c45c84..5db08469][hex: 000001, str: \u{0}\u{0}\u{1}] }], add_on: [Replace { path: [[112, 97, 114, 116, 105, 97, 108], [98, 97, 108, 97, 110, 99, 101, 115]], key: [111, 119, 11… (607 characters)
   cost seeks=41 loaded=2757 added=337 replaced=1476 removed=- hashes=64 sinsemilla=0
   result written-in-segments
   first-segment seeks=13 loaded=873 added=337 replaced=353 removed=- hashes=25 sinsemilla=0
