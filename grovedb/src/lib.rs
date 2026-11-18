@@ -2707,9 +2707,11 @@ impl GroveDb {
                 | Element::BigSumTree(..)
                 | Element::CountTree(..)
                 | Element::CountSumTree(..)
+                | Element::CountBigSumTree(..)
                 | Element::ProvableCountTree(..)
                 | Element::ProvableCountSumTree(..)
                 | Element::ProvableSumTree(..)
+                | Element::ProvableBigSumTree(..)
                 | Element::ProvableCountProvableSumTree(..)
                 | Element::ProvableCountProvableBigSumTree(..)
                 | Element::CommitmentTree(..)
@@ -4116,12 +4118,14 @@ fn root_hash_commits_to_aggregate(tree_type: TreeType) -> bool {
         | NodeType::ProvableCountSumNode
         | NodeType::ProvableSumNode
         | NodeType::ProvableCountProvableSumNode
-        | NodeType::ProvableCountProvableBigSumNode => true,
+        | NodeType::ProvableCountProvableBigSumNode
+        | NodeType::ProvableBigSumNode => true,
         NodeType::NormalNode
         | NodeType::SumNode
         | NodeType::BigSumNode
         | NodeType::CountNode
-        | NodeType::CountSumNode => false,
+        | NodeType::CountSumNode
+        | NodeType::CountBigSumNode => false,
     }
 }
 
@@ -4366,6 +4370,47 @@ fn aggregate_consistency_labels(
             Element::ProvableCountProvableBigSumTree(_, recorded_count, recorded_sum, _),
             AggregateData::NoAggregateData,
         ) if *recorded_count == 0 && *recorded_sum == 0 => None,
+        (
+            Element::CountBigSumTree(_, recorded_count, recorded_sum, _),
+            AggregateData::CountAndBigSum(actual_count, actual_sum),
+        ) => {
+            if recorded_count == actual_count && recorded_sum == actual_sum {
+                None
+            } else {
+                Some((
+                    format!(
+                        "CountBigSumTree recorded count {} sum {}",
+                        recorded_count, recorded_sum
+                    ),
+                    format!(
+                        "inner aggregate CountAndBigSum count {} sum {}",
+                        actual_count, actual_sum
+                    ),
+                ))
+            }
+        }
+        (
+            Element::CountBigSumTree(_, recorded_count, recorded_sum, _),
+            AggregateData::NoAggregateData,
+        ) if *recorded_count == 0 && *recorded_sum == 0 => None,
+        (
+            Element::ProvableBigSumTree(_, recorded, _),
+            AggregateData::ProvableBigSum(actual_sum),
+        ) => {
+            if recorded == actual_sum {
+                None
+            } else {
+                Some((
+                    format!("ProvableBigSumTree recorded sum {}", recorded),
+                    format!("inner aggregate ProvableBigSum {}", actual_sum),
+                ))
+            }
+        }
+        (Element::ProvableBigSumTree(_, recorded, _), AggregateData::NoAggregateData)
+            if *recorded == 0 =>
+        {
+            None
+        }
 
         // --- Non-Merk data trees: caller skips us via
         // `uses_non_merk_data_storage`; if we end up here anyway, do not

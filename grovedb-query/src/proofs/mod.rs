@@ -293,6 +293,50 @@ pub enum Node {
     ///
     /// Contains: `(kv_hash, left_child_hash, right_child_hash, count, sum)`
     HashWithCountAndBigSum(CryptoHash, CryptoHash, CryptoHash, u64, i128),
+
+    /// Key, value, and big sum. For queried Items in `ProvableBigSumTree`.
+    ///
+    /// The wide counterpart of `KVSum`: the verifier recomputes
+    /// `node_hash = node_hash_with_big_sum(kv_hash, left, right, sum)`, so a
+    /// forged sum produces a hash divergence at the parent boundary.
+    ///
+    /// Contains: `(key, value, sum)`
+    KVBigSum(Vec<u8>, Vec<u8>, i128),
+
+    /// KV hash and big sum. For non-queried nodes in `ProvableBigSumTree`.
+    ///
+    /// The wide counterpart of `KVHashSum`.
+    ///
+    /// Contains: `(kv_hash, sum)`
+    KVHashBigSum(CryptoHash, i128),
+
+    /// Key, referenced value, reference element hash, and big sum. For
+    /// queried References in `ProvableBigSumTree`.
+    ///
+    /// The wide counterpart of `KVRefValueHashSum`.
+    ///
+    /// Contains: `(key, referenced_value, reference_element_hash, sum)`
+    KVRefValueHashBigSum(Vec<u8>, Vec<u8>, CryptoHash, i128),
+
+    /// Key, value_hash, and big sum. For proving absence in
+    /// `ProvableBigSumTree`.
+    ///
+    /// The wide counterpart of `KVDigestSum`.
+    ///
+    /// Contains: `(key, value_hash, sum)`
+    KVDigestBigSum(Vec<u8>, CryptoHash, i128),
+
+    /// A self-verifying compressed subtree for aggregate range proofs
+    /// against a `ProvableBigSumTree`.
+    ///
+    /// The wide counterpart of `HashWithSum`: encodes the subtree's *root*
+    /// node as `(kv_hash, left_child_hash, right_child_hash, sum)`. The
+    /// verifier reconstructs the subtree's root `node_hash` as
+    /// `node_hash_with_big_sum(kv_hash, left, right, sum)` and uses that
+    /// hash exactly as `Hash(...)` would.
+    ///
+    /// Contains: `(kv_hash, left_child_hash, right_child_hash, sum)`
+    HashWithBigSum(CryptoHash, CryptoHash, CryptoHash, i128),
 }
 
 use std::fmt;
@@ -482,6 +526,37 @@ impl fmt::Display for Node {
                     hex::encode(left_child_hash),
                     hex::encode(right_child_hash),
                     count,
+                    sum
+                )
+            }
+            Node::KVBigSum(key, value, sum) => format!(
+                "KVBigSum({}, {}, sum={})",
+                hex_to_ascii(key),
+                hex_to_ascii(value),
+                sum
+            ),
+            Node::KVHashBigSum(kv_hash, sum) => {
+                format!("KVHashBigSum(HASH[{}], sum={})", hex::encode(kv_hash), sum)
+            }
+            Node::KVRefValueHashBigSum(key, value, value_hash, sum) => format!(
+                "KVRefValueHashBigSum({}, {}, HASH[{}], sum={})",
+                hex_to_ascii(key),
+                hex_to_ascii(value),
+                hex::encode(value_hash),
+                sum
+            ),
+            Node::KVDigestBigSum(key, value_hash, sum) => format!(
+                "KVDigestBigSum({}, HASH[{}], sum={})",
+                hex_to_ascii(key),
+                hex::encode(value_hash),
+                sum
+            ),
+            Node::HashWithBigSum(kv_hash, left_child_hash, right_child_hash, sum) => {
+                format!(
+                    "HashWithBigSum(kv_hash=HASH[{}], left=HASH[{}], right=HASH[{}], sum={})",
+                    hex::encode(kv_hash),
+                    hex::encode(left_child_hash),
+                    hex::encode(right_child_hash),
                     sum
                 )
             }
@@ -956,6 +1031,72 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The five big sum nodes round-trip as `Push` and `PushInverted`, with
+    /// small and large values and sums outside the `i64` range, under tag
+    /// bytes of their own (0x6E..=0x7B), and their predicted encoding length
+    /// is the encoded length.
+    #[test]
+    fn big_sum_nodes_round_trip() {
+        use ed::Encode;
+
+        let past_i64 = i64::MAX as i128 * 3;
+        let below_i64 = i64::MIN as i128 * 3;
+        let nodes = [
+            Node::KVBigSum(b"k".to_vec(), b"v".to_vec(), -7),
+            Node::KVBigSum(b"k".to_vec(), vec![0xAA; 70_000], past_i64),
+            Node::KVHashBigSum([0xAB; HASH_LENGTH], below_i64),
+            Node::KVRefValueHashBigSum(b"k".to_vec(), b"v".to_vec(), [0xCD; HASH_LENGTH], past_i64),
+            Node::KVRefValueHashBigSum(
+                b"k".to_vec(),
+                vec![0xBB; 70_000],
+                [0xCD; HASH_LENGTH],
+                i128::MIN,
+            ),
+            Node::KVDigestBigSum(b"k".to_vec(), [0xEF; HASH_LENGTH], i128::MAX),
+            Node::HashWithBigSum(
+                [0x11; HASH_LENGTH],
+                [0x22; HASH_LENGTH],
+                [0x33; HASH_LENGTH],
+                past_i64,
+            ),
+        ];
+
+        let mut tags = std::collections::BTreeSet::new();
+        for node in nodes {
+            round_trip_push(node.clone());
+            for op in [Op::Push(node.clone()), Op::PushInverted(node.clone())] {
+                let mut buf = Vec::new();
+                <Op as Encode>::encode_into(&op, &mut buf).expect("encode");
+                assert!(
+                    (0x6E..=0x7B).contains(&buf[0]),
+                    "{op:?} must use a big sum tag byte, got {:#x}",
+                    buf[0]
+                );
+                tags.insert(buf[0]);
+                assert_eq!(
+                    buf.len(),
+                    <Op as Encode>::encoding_length(&op).expect("encoding_length"),
+                    "encoding_length must match the encoded length of {op:?}"
+                );
+                let decoded = <Op as ed::Decode>::decode(buf.as_slice()).expect("decode");
+                assert_eq!(decoded, op);
+                // A proof cut short is refused.
+                assert!(<Op as ed::Decode>::decode(&buf[..buf.len() - 1]).is_err());
+            }
+        }
+        assert_eq!(tags.len(), 14, "every tag in 0x6E..=0x7B is used once");
+
+        let display = format!(
+            "{}",
+            Node::KVDigestBigSum(b"k".to_vec(), [1; HASH_LENGTH], past_i64)
+        );
+        assert!(display.starts_with("KVDigestBigSum("), "got: {display}");
+        assert!(
+            display.contains(&format!("sum={past_i64}")),
+            "got: {display}"
+        );
     }
 
     /// Each wide node is displayed under its own name, with its count and

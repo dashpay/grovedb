@@ -65,8 +65,8 @@ enum NonMerkLowerLayer {
 }
 
 /// The count and sum that the host of a reference row commits into its node
-/// hash, when the host commits both: the reference's proof node has to carry
-/// them for the verifier to rebuild that hash.
+/// hash, when the host commits both or commits a 128-bit sum: the reference's
+/// proof node has to carry them for the verifier to rebuild that hash.
 #[derive(Clone, Copy)]
 enum CountSumForRef {
     /// A `ProvableCountProvableSumTree` host: the row becomes a
@@ -75,6 +75,9 @@ enum CountSumForRef {
     /// A `ProvableCountProvableBigSumTree` host: the row becomes a
     /// `KVRefValueHashCountBigSum`.
     BigSum(u64, i128),
+    /// A `ProvableBigSumTree` host, which commits a 128-bit sum and no
+    /// count: the row becomes a `KVRefValueHashBigSum`.
+    BigSumOnly(i128),
 }
 
 impl GroveDb {
@@ -863,6 +866,18 @@ impl GroveDb {
             ))
             .wrap_with_cost(cost);
         }
+        // And for a `ProvableBigSumTree`, for the same reason.
+        if matches!(
+            subtree.tree_type,
+            grovedb_merk::TreeType::ProvableBigSumTree
+        ) {
+            return Err(Error::NotSupported(
+                "ProvableBigSumTree hosts require V1 proof envelopes; upgrade the grove \
+                 version producing the proof to v3 or later"
+                    .to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
 
         let limit = if path.len() < path_query.path.len() {
             // There is no need for a limit because we are only asking for a single item
@@ -1188,10 +1203,16 @@ impl GroveDb {
                             | Ok(Element::SumTree(Some(_), ..))
                             | Ok(Element::BigSumTree(Some(_), ..))
                             | Ok(Element::CountTree(Some(_), ..))
-                            | Ok(Element::CountSumTree(Some(_), ..))
+                            | Ok(
+                                Element::CountSumTree(Some(_), ..)
+                                | Element::CountBigSumTree(Some(_), ..),
+                            )
                             | Ok(Element::ProvableCountTree(Some(_), ..))
                             | Ok(Element::ProvableCountSumTree(Some(_), ..))
-                            | Ok(Element::ProvableSumTree(Some(_), ..))
+                            | Ok(
+                                Element::ProvableSumTree(Some(_), ..)
+                                | Element::ProvableBigSumTree(Some(_), ..),
+                            )
                             | Ok(Element::ProvableCountProvableSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountProvableBigSumTree(Some(_), ..))
                             | Ok(Element::CommitmentTree(..))
@@ -1263,9 +1284,9 @@ impl GroveDb {
                             | Ok(Element::BigSumTree(..))
                             | Ok(Element::CountTree(..))
                             | Ok(Element::ProvableCountTree(..))
-                            | Ok(Element::CountSumTree(..))
+                            | Ok(Element::CountSumTree(..) | Element::CountBigSumTree(..))
                             | Ok(Element::ProvableCountSumTree(..))
-                            | Ok(Element::ProvableSumTree(..))
+                            | Ok(Element::ProvableSumTree(..) | Element::ProvableBigSumTree(..))
                             | Ok(Element::ProvableCountProvableSumTree(..))
                             | Ok(Element::ProvableCountProvableBigSumTree(..))
                             | Ok(Element::CommitmentTree(..))
@@ -1323,10 +1344,10 @@ impl GroveDb {
                             | Ok(Element::SumTree(..))
                             | Ok(Element::BigSumTree(..))
                             | Ok(Element::CountTree(..))
-                            | Ok(Element::CountSumTree(..))
+                            | Ok(Element::CountSumTree(..) | Element::CountBigSumTree(..))
                             | Ok(Element::ProvableCountTree(..))
                             | Ok(Element::ProvableCountSumTree(..))
-                            | Ok(Element::ProvableSumTree(..))
+                            | Ok(Element::ProvableSumTree(..) | Element::ProvableBigSumTree(..))
                             | Ok(Element::ProvableCountProvableSumTree(..))
                             | Ok(Element::ProvableCountProvableBigSumTree(..))
                             | Ok(Element::CommitmentTree(..))
@@ -2142,13 +2163,16 @@ impl GroveDb {
                     ops
                 }
                 // The same query runs on a tree of either sum width: a
-                // `ProvableCountProvableBigSumTree` is proved by the wide
-                // primitive, with its own proof nodes, and every other tree
-                // by the narrow one, which refuses the tree types it cannot
-                // serve.
+                // `ProvableCountProvableBigSumTree` or a `ProvableBigSumTree`
+                // is proved by the wide primitive, with its own proof nodes,
+                // and every other tree by the narrow one, which refuses the
+                // tree types it cannot serve.
                 AggregateKind::Sum
-                    if subtree.tree_type
-                        == grovedb_merk::TreeType::ProvableCountProvableBigSumTree =>
+                    if matches!(
+                        subtree.tree_type,
+                        grovedb_merk::TreeType::ProvableCountProvableBigSumTree
+                            | grovedb_merk::TreeType::ProvableBigSumTree
+                    ) =>
                 {
                     let (ops, _) = cost_return_on_error!(
                         &mut cost,
@@ -2310,6 +2334,8 @@ impl GroveDb {
                     | Op::PushInverted(Node::KVCount(..))
                     | Op::Push(Node::KVSum(..))
                     | Op::PushInverted(Node::KVSum(..))
+                    | Op::Push(Node::KVBigSum(..))
+                    | Op::PushInverted(Node::KVBigSum(..))
                     | Op::Push(Node::KVCountSum(..))
                     | Op::PushInverted(Node::KVCountSum(..))
                     | Op::Push(Node::KVCountBigSum(..))
@@ -2351,6 +2377,9 @@ impl GroveDb {
                     TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(count, sum) => {
                         Some(CountSumForRef::BigSum(*count, *sum))
                     }
+                    TreeFeatureType::ProvableBigSummedMerkNode(sum) => {
+                        Some(CountSumForRef::BigSumOnly(*sum))
+                    }
                     _ => None,
                 },
                 _ => None,
@@ -2378,6 +2407,7 @@ impl GroveDb {
                     | Node::KVValueHash(key, value, ..)
                     | Node::KVCount(key, value, _)
                     | Node::KVSum(key, value, _)
+                    | Node::KVBigSum(key, value, _)
                     | Node::KVCountBigSum(key, value, ..)
                     | Node::KVCountSum(key, value, ..)
                     | Node::KVValueHashFeatureType(key, value, ..)
@@ -2405,6 +2435,7 @@ impl GroveDb {
                     | Node::KVValueHash(key, value, ..)
                     | Node::KVCount(key, value, _)
                     | Node::KVSum(key, value, _)
+                    | Node::KVBigSum(key, value, _)
                     | Node::KVCountBigSum(key, value, ..)
                     | Node::KVCountSum(key, value, ..)
                     | Node::KVValueHashFeatureType(key, value, ..)
@@ -3187,10 +3218,10 @@ impl GroveDb {
                             | Ok(Element::SumTree(Some(_), ..))
                             | Ok(Element::BigSumTree(Some(_), ..))
                             | Ok(Element::CountTree(Some(_), ..))
-                            | Ok(Element::CountSumTree(Some(_), ..))
+                            | Ok(Element::CountSumTree(Some(_), ..) | Element::CountBigSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountTree(Some(_), ..))
                             | Ok(Element::ProvableCountSumTree(Some(_), ..))
-                            | Ok(Element::ProvableSumTree(Some(_), ..))
+                            | Ok(Element::ProvableSumTree(Some(_), ..) | Element::ProvableBigSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountProvableSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountProvableBigSumTree(Some(_), ..))
                                 if !done_with_results
@@ -3277,9 +3308,9 @@ impl GroveDb {
                             | Ok(Element::BigSumTree(Some(_), ..))
                             | Ok(Element::CountTree(Some(_), ..))
                             | Ok(Element::ProvableCountTree(Some(_), ..))
-                            | Ok(Element::CountSumTree(Some(_), ..))
+                            | Ok(Element::CountSumTree(Some(_), ..) | Element::CountBigSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountSumTree(Some(_), ..))
-                            | Ok(Element::ProvableSumTree(Some(_), ..))
+                            | Ok(Element::ProvableSumTree(Some(_), ..) | Element::ProvableBigSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountProvableSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountProvableBigSumTree(Some(_), ..))
                                 if !done_with_results =>
@@ -3453,6 +3484,7 @@ impl GroveDb {
                             // emits an empty sum proof (verifier reads
                             // it as sum = 0).
                             Ok(Element::ProvableSumTree(None, ..))
+                            | Ok(Element::ProvableBigSumTree(None, ..))
                             | Ok(Element::ProvableCountProvableSumTree(None, ..))
                             | Ok(Element::ProvableCountProvableBigSumTree(None, ..))
                                 if !done_with_results
@@ -3539,9 +3571,9 @@ impl GroveDb {
                             | Ok(Element::BigSumTree(None, ..))
                             | Ok(Element::CountTree(None, ..))
                             | Ok(Element::ProvableCountTree(None, ..))
-                            | Ok(Element::CountSumTree(None, ..))
+                            | Ok(Element::CountSumTree(None, ..) | Element::CountBigSumTree(None, ..))
                             | Ok(Element::ProvableCountSumTree(None, ..))
-                            | Ok(Element::ProvableSumTree(None, ..))
+                            | Ok(Element::ProvableSumTree(None, ..) | Element::ProvableBigSumTree(None, ..))
                             | Ok(Element::ProvableCountProvableSumTree(None, ..))
                             | Ok(Element::ProvableCountProvableBigSumTree(None, ..))
                             | Ok(Element::ProvableSumIndexedTree(None, ..))
@@ -3594,10 +3626,10 @@ impl GroveDb {
                             | Ok(Element::SumTree(..))
                             | Ok(Element::BigSumTree(..))
                             | Ok(Element::CountTree(..))
-                            | Ok(Element::CountSumTree(..))
+                            | Ok(Element::CountSumTree(..) | Element::CountBigSumTree(..))
                             | Ok(Element::ProvableCountTree(..))
                             | Ok(Element::ProvableCountSumTree(..))
-                            | Ok(Element::ProvableSumTree(..))
+                            | Ok(Element::ProvableSumTree(..) | Element::ProvableBigSumTree(..))
                             | Ok(Element::ProvableCountProvableSumTree(..))
                             | Ok(Element::ProvableCountProvableBigSumTree(..))
                             | Ok(Element::CommitmentTree(..))
@@ -3968,6 +4000,12 @@ impl GroveDb {
                     serialized_referenced_elem,
                     reference_element_hash,
                     count,
+                    sum,
+                ),
+                CountSumForRef::BigSumOnly(sum) => Node::KVRefValueHashBigSum(
+                    key.to_owned(),
+                    serialized_referenced_elem,
+                    reference_element_hash,
                     sum,
                 ),
             }

@@ -738,7 +738,7 @@ where
         // `ProvableCountProvableBigSumTree` host, Item-flavored entry: the
         // wide counterpart of the arm above.
         ProofNodeType::KvCountBigSum => walker.to_kv_count_big_sum_node(grove_version),
-        ProofNodeType::KvSum => {
+        ProofNodeType::KvSum | ProofNodeType::KvBigSum => {
             // Reaching this branch would mean a SumItem (not a
             // CountAndSumItem) is sitting under a count tree, which the
             // batch layer should never produce. Fall back to the
@@ -764,6 +764,7 @@ where
         | ProofNodeType::KvRefValueHashCount
         | ProofNodeType::KvRefValueHashSum
         | ProofNodeType::KvRefValueHashCountSum
-        | ProofNodeType::KvRefValueHashCountBigSum => walker.to_kv_value_hash_feature_type_node(),
+        | ProofNodeType::KvRefValueHashCountBigSum
+        | ProofNodeType::KvRefValueHashBigSum => walker.to_kv_value_hash_feature_type_node(),
     }
 }

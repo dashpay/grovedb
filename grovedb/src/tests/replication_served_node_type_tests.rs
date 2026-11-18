@@ -79,6 +79,10 @@ fn link_aggregate(feature: TreeFeatureType) -> AggregateData {
         TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(count, sum) => {
             AggregateData::ProvableCountAndProvableBigSum(count, sum)
         }
+        TreeFeatureType::CountedBigSummedMerkNode(count, sum) => {
+            AggregateData::CountAndBigSum(count, sum)
+        }
+        TreeFeatureType::ProvableBigSummedMerkNode(sum) => AggregateData::ProvableBigSum(sum),
     }
 }
 
@@ -204,6 +208,11 @@ fn provable_families() -> Vec<(&'static str, TreeFeatureType, Vec<TreeType>)> {
             TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(1, 1),
             vec![TreeType::ProvableCountProvableBigSumTree],
         ),
+        (
+            "provable_big_sum",
+            TreeFeatureType::ProvableBigSummedMerkNode(1),
+            vec![TreeType::ProvableBigSumTree],
+        ),
     ]
 }
 
@@ -232,6 +241,11 @@ fn every_feature() -> Vec<(&'static str, TreeFeatureType)> {
             "p_count_p_big_sum",
             TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(1, 1),
         ),
+        (
+            "counted_big_summed",
+            TreeFeatureType::CountedBigSummedMerkNode(1, 1),
+        ),
+        ("p_big_sum", TreeFeatureType::ProvableBigSummedMerkNode(1)),
     ]
 }
 

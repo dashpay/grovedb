@@ -44,7 +44,7 @@ use grovedb_path::SubtreePath;
 use grovedb_storage::{rocksdb_storage::PrefixedRocksDbTransactionContext, StorageBatch};
 use grovedb_version::version::GroveVersion;
 
-use super::super::{check_provable_count_provable_big_sum_tree_creation, InsertOptions};
+use super::super::{check_wide_sum_tree_creation, InsertOptions};
 use crate::{Element, Error, GroveDb, Transaction};
 
 impl GroveDb {
@@ -110,15 +110,11 @@ impl GroveDb {
             }
         }
 
-        // A grove version that predates the wide count and sum tree refuses
-        // to create one.
+        // A grove version that predates a tree with a 128-bit provable or
+        // counted sum refuses to create one.
         cost_return_on_error_no_add!(
             cost,
-            check_provable_count_provable_big_sum_tree_creation(
-                &element,
-                "insert Element::ProvableCountProvableBigSumTree",
-                grove_version,
-            )
+            check_wide_sum_tree_creation(&element, "insert", grove_version,)
         );
 
         // Dispatch via the underlying element so a NonCounted wrapper takes
@@ -174,6 +170,7 @@ impl GroveDb {
             | Element::BigSumTree(value, ..)
             | Element::CountTree(value, ..)
             | Element::ProvableSumTree(value, ..)
+            | Element::ProvableBigSumTree(value, ..)
             | Element::ProvableCountProvableSumTree(value, ..)
             | Element::ProvableCountProvableBigSumTree(value, ..) => {
                 if value.is_some() {
@@ -305,6 +302,7 @@ impl GroveDb {
             | Element::SumItem(..)
             | Element::ItemWithSumItem(..)
             | Element::CountSumTree(..)
+            | Element::CountBigSumTree(..)
             | Element::ProvableCountTree(..)
             | Element::ProvableCountSumTree(..) => {
                 cost_return_on_error_into!(

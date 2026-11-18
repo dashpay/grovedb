@@ -77,6 +77,12 @@ impl EstimatedSumTrees {
                     .inner_node_type()
                     .cost())
             }
+            EstimatedSumTrees::AllCountBigSumTrees => {
+                Ok(TreeType::CountBigSumTree.inner_node_type().cost())
+            }
+            EstimatedSumTrees::AllProvableBigSumTrees => {
+                Ok(TreeType::ProvableBigSumTree.inner_node_type().cost())
+            }
         }
     }
 }

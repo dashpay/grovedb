@@ -4078,6 +4078,36 @@ mod tests {
         );
     }
 
+    /// Children whose sum passes the `i64` range, so the restored totals
+    /// only fit the 128-bit trees.
+    fn wide_sum_children() -> Vec<(&'static [u8], Element)> {
+        vec![
+            (b"a", Element::new_sum_item(i64::MAX)),
+            (b"b", Element::new_sum_item(i64::MAX)),
+            (b"c", Element::new_sum_item(i64::MAX)),
+            (b"d", Element::new_sum_item(-5)),
+            (b"e", Element::new_sum_item(i64::MAX)),
+        ]
+    }
+
+    #[test]
+    fn state_sync_count_big_sum_tree_round_trip() {
+        aggregate_tree_round_trip(
+            b"count_big_sum",
+            Element::empty_count_big_sum_tree(),
+            &wide_sum_children(),
+        );
+    }
+
+    #[test]
+    fn state_sync_provable_big_sum_tree_round_trip() {
+        aggregate_tree_round_trip(
+            b"provable_big_sum",
+            Element::empty_provable_big_sum_tree(),
+            &wide_sum_children(),
+        );
+    }
+
     /// A deep (6-level), many-subtree hierarchy with mixed tree types at
     /// every level, synced with a small batch size so discovery pacing
     /// crosses batch boundaries repeatedly.

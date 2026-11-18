@@ -4,7 +4,8 @@
 //! A backward-references item commits to its serialization with the
 //! referrer list emptied, like the plain item it extends, so it proves in
 //! the value-carrying node its host uses for items (`KVCount`, `KVSum`,
-//! `KVCountSum`, `KVCountBigSum`) and the host needs no rule of its own.
+//! `KVCountSum`, `KVCountBigSum`, `KVBigSum`) and the host needs no rule of
+//! its own.
 //! These tests insert such an item into every host, directly and by batch,
 //! prove and verify it, and check that registering a referrer on it moves
 //! no hash of the host while the reference itself is committed.
@@ -36,18 +37,20 @@ mod tests {
         Sum,
         CountProvableSum,
         CountProvableBigSum,
+        BigSum,
         CountIndexed,
         SumIndexed,
         CountProvableSumIndexed,
     }
 
     impl Host {
-        const ALL: [Host; 8] = [
+        const ALL: [Host; 9] = [
             Host::Count,
             Host::CountSum,
             Host::Sum,
             Host::CountProvableSum,
             Host::CountProvableBigSum,
+            Host::BigSum,
             Host::CountIndexed,
             Host::SumIndexed,
             Host::CountProvableSumIndexed,
@@ -60,6 +63,7 @@ mod tests {
                 Host::Sum => Element::empty_provable_sum_tree(),
                 Host::CountProvableSum => Element::empty_provable_count_provable_sum_tree(),
                 Host::CountProvableBigSum => Element::empty_provable_count_provable_big_sum_tree(),
+                Host::BigSum => Element::empty_provable_big_sum_tree(),
                 Host::CountIndexed => Element::empty_provable_count_indexed_tree(),
                 Host::SumIndexed => Element::empty_provable_sum_indexed_tree(),
                 Host::CountProvableSumIndexed => {

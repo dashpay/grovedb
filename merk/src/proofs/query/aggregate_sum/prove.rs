@@ -160,7 +160,7 @@ where
         if !is_provable_big_sum_bearing(tree_type) {
             return Err(Error::InvalidProofError(format!(
                 "a big sum AggregateSumOnRange is only valid against \
-                 ProvableCountProvableBigSumTree, got {:?}",
+                 ProvableCountProvableBigSumTree or ProvableBigSumTree, got {:?}",
                 tree_type
             )))
             .wrap_with_cost(OperationCost::default());

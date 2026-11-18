@@ -25,6 +25,8 @@ impl EstimatedSumTrees {
                 provable_count_sum_trees_weight,
                 provable_count_provable_sum_trees_weight,
                 provable_count_provable_big_sum_trees_weight,
+                count_big_sum_trees_weight,
+                provable_big_sum_trees_weight,
             } => {
                 let total_weight = (*sum_trees_weight as u32)
                     .checked_add(*big_sum_trees_weight as u32)
@@ -38,6 +40,8 @@ impl EstimatedSumTrees {
                     .and_then(|w| {
                         w.checked_add(*provable_count_provable_big_sum_trees_weight as u32)
                     })
+                    .and_then(|w| w.checked_add(*count_big_sum_trees_weight as u32))
+                    .and_then(|w| w.checked_add(*provable_big_sum_trees_weight as u32))
                     .ok_or(Error::Overflow(
                         "Estimated size total weight calculation overflowed",
                     ))?;
@@ -94,6 +98,18 @@ impl EstimatedSumTrees {
                                 .cost(),
                     )
                 })
+                .and_then(|sum| {
+                    sum.checked_add(
+                        *count_big_sum_trees_weight as u32
+                            * TreeType::CountBigSumTree.inner_node_type().cost(),
+                    )
+                })
+                .and_then(|sum| {
+                    sum.checked_add(
+                        *provable_big_sum_trees_weight as u32
+                            * TreeType::ProvableBigSumTree.inner_node_type().cost(),
+                    )
+                })
                 .ok_or(Error::Overflow("Estimated size calculation overflowed"))?;
 
                 Ok(estimated_size / total_weight)
@@ -122,6 +138,12 @@ impl EstimatedSumTrees {
                 Ok(TreeType::ProvableCountProvableBigSumTree
                     .inner_node_type()
                     .cost())
+            }
+            EstimatedSumTrees::AllCountBigSumTrees => {
+                Ok(TreeType::CountBigSumTree.inner_node_type().cost())
+            }
+            EstimatedSumTrees::AllProvableBigSumTrees => {
+                Ok(TreeType::ProvableBigSumTree.inner_node_type().cost())
             }
         }
     }

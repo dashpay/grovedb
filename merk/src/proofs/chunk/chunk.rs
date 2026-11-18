@@ -152,6 +152,7 @@ where
                     | TreeType::BigSumTree
                     | TreeType::CountTree
                     | TreeType::CountSumTree
+                    | TreeType::CountBigSumTree
                     | TreeType::ProvableCountSumTree
             ) {
             self.to_kv_value_hash_feature_type_node()
@@ -240,6 +241,7 @@ where
             ProofNodeType::KvSum => self.to_kv_sum_node(grove_version),
             ProofNodeType::KvCountSum => self.to_kv_count_sum_node(grove_version),
             ProofNodeType::KvCountBigSum => self.to_kv_count_big_sum_node(grove_version),
+            ProofNodeType::KvBigSum => self.to_kv_big_sum_node(grove_version),
             ProofNodeType::KvValueHash => self.to_kv_value_hash_node(),
             ProofNodeType::KvValueHashFeatureType => self.to_kv_value_hash_feature_type_node(),
             // References: at merk level, generate same node type as non-ref counterpart
@@ -249,6 +251,7 @@ where
             ProofNodeType::KvRefValueHashSum => self.to_kv_value_hash_feature_type_node(),
             ProofNodeType::KvRefValueHashCountSum => self.to_kv_value_hash_feature_type_node(),
             ProofNodeType::KvRefValueHashCountBigSum => self.to_kv_value_hash_feature_type_node(),
+            ProofNodeType::KvRefValueHashBigSum => self.to_kv_value_hash_feature_type_node(),
         }
     }
 

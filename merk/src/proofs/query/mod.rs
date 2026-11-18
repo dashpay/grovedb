@@ -105,8 +105,8 @@ where
     S: Fetch + Sized + Clone,
 {
     /// The value bytes a value-carrying proof node (`KV`, `KVCount`,
-    /// `KVSum`, `KVCountSum`, `KVCountBigSum`) holds for the root node: the
-    /// bytes whose hash is the node's value hash.
+    /// `KVSum`, `KVCountSum`, `KVCountBigSum`, `KVBigSum`) holds for the root
+    /// node: the bytes whose hash is the node's value hash.
     ///
     /// That is the stored value for everything except a backward-references
     /// item, whose value hash is taken over its serialization with the
@@ -178,6 +178,9 @@ where
             Ok(AggregateData::ProvableSum(sum)) => TreeFeatureType::ProvableSummedMerkNode(sum),
             Ok(AggregateData::ProvableCountAndProvableBigSum(count, sum)) => {
                 TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(count, sum)
+            }
+            Ok(AggregateData::ProvableBigSum(sum)) => {
+                TreeFeatureType::ProvableBigSummedMerkNode(sum)
             }
             _ => self.tree().feature_type(),
         };
@@ -391,6 +394,43 @@ where
         )
     }
 
+    /// Creates a `Node::KVDigestBigSum` from the key/value_hash pair and
+    /// 128-bit sum of the root node. The wide counterpart of
+    /// `to_kvdigest_sum_node`, for `ProvableBigSumTree` boundary nodes.
+    pub(crate) fn to_kvdigest_big_sum_node(&self) -> Node {
+        let sum = match self.tree().aggregate_data() {
+            Ok(AggregateData::ProvableBigSum(sum)) => sum,
+            _ => 0,
+        };
+        Node::KVDigestBigSum(self.tree().key().to_vec(), *self.tree().value_hash(), sum)
+    }
+
+    /// Creates a `Node::KVHashBigSum` from the kv hash and 128-bit sum of the
+    /// root node. The wide counterpart of `to_kvhash_sum_node`, for
+    /// `ProvableBigSumTree` non-queried nodes on the path.
+    pub(crate) fn to_kvhash_big_sum_node(&self) -> Node {
+        let sum = match self.tree().aggregate_data() {
+            Ok(AggregateData::ProvableBigSum(sum)) => sum,
+            _ => 0,
+        };
+        Node::KVHashBigSum(*self.tree().kv_hash(), sum)
+    }
+
+    /// Creates a `Node::KVBigSum` from the key/value pair and 128-bit sum of
+    /// the root node. The wide counterpart of `to_kv_sum_node`, for queried
+    /// Items in a `ProvableBigSumTree`.
+    pub(crate) fn to_kv_big_sum_node(&self, grove_version: &GroveVersion) -> Node {
+        let sum = match self.tree().aggregate_data() {
+            Ok(AggregateData::ProvableBigSum(sum)) => sum,
+            _ => 0,
+        };
+        Node::KVBigSum(
+            self.tree().key().to_vec(),
+            self.hashed_value_bytes(grove_version),
+            sum,
+        )
+    }
+
     #[cfg(feature = "minimal")]
     pub(crate) fn create_proof(
         &mut self,
@@ -594,9 +634,16 @@ where
             is_provable_count_only_tree || is_provable_count_and_provable_sum_tree;
         let is_provable_sum_tree =
             is_provable_sum_only_tree || is_provable_count_and_provable_sum_tree;
+        // ProvableBigSumTree carries a 128-bit sum in its feature_type,
+        // baked into the node hash.
+        let is_provable_big_sum_only_tree = matches!(
+            self.tree().feature_type(),
+            TreeFeatureType::ProvableBigSummedMerkNode(_)
+        );
         let is_provable_aggregate_tree = is_provable_count_tree
             || is_provable_sum_tree
-            || is_provable_count_and_provable_big_sum_tree;
+            || is_provable_count_and_provable_big_sum_tree
+            || is_provable_big_sum_only_tree;
 
         // Convert the tree kind to an `ElementType` so `proof_node_type()`
         // can dispatch — three mutually-exclusive families:
@@ -611,6 +658,8 @@ where
             Some(ElementType::ProvableCountTree)
         } else if is_provable_sum_only_tree {
             Some(ElementType::ProvableSumTree)
+        } else if is_provable_big_sum_only_tree {
+            Some(ElementType::ProvableBigSumTree)
         } else {
             None // Regular tree or unknown - treated the same
         };
@@ -648,6 +697,7 @@ where
                 ProofNodeType::KvSum => self.to_kv_sum_node(grove_version),
                 ProofNodeType::KvCountSum => self.to_kv_count_sum_node(grove_version),
                 ProofNodeType::KvCountBigSum => self.to_kv_count_big_sum_node(grove_version),
+                ProofNodeType::KvBigSum => self.to_kv_big_sum_node(grove_version),
                 ProofNodeType::KvValueHash => self.to_kv_value_hash_node(),
                 ProofNodeType::KvValueHashFeatureType => self.to_kv_value_hash_feature_type_node(),
                 // References: at merk level, generate same node type as non-ref counterpart
@@ -671,6 +721,9 @@ where
                 ProofNodeType::KvRefValueHashCountBigSum => {
                     self.to_kv_value_hash_feature_type_node()
                 }
+                // ProvableBigSumTree references: the same, post-processed
+                // to KVRefValueHashBigSum.
+                ProofNodeType::KvRefValueHashBigSum => self.to_kv_value_hash_feature_type_node(),
             };
 
             if proof_params.left_to_right {
@@ -692,6 +745,8 @@ where
                 self.to_kvdigest_count_node()
             } else if is_provable_sum_only_tree {
                 self.to_kvdigest_sum_node()
+            } else if is_provable_big_sum_only_tree {
+                self.to_kvdigest_big_sum_node()
             } else {
                 self.to_kvdigest_node()
             };
@@ -711,6 +766,8 @@ where
                 self.to_kvhash_count_sum_node()
             } else if is_provable_count_only_tree {
                 self.to_kvhash_count_node()
+            } else if is_provable_big_sum_only_tree {
+                self.to_kvhash_big_sum_node()
             } else {
                 // is_provable_sum_only_tree
                 self.to_kvhash_sum_node()

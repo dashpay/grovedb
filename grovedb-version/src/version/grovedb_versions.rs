@@ -821,6 +821,15 @@ pub struct GroveDBOperationsInsertVersions {
     /// Like those slots it does not gate `Element::deserialize`: the element
     /// codec stays independent of the version.
     pub provable_count_provable_big_sum_tree_creation: FeatureVersion,
+    /// Creating one of the other trees with a 128-bit sum: a
+    /// `CountBigSumTree` (discriminant 30) or a `ProvableBigSumTree`
+    /// (discriminant 31), by a direct or a batch insert, bare or wrapped. A
+    /// capability gate like the slot above:
+    ///
+    /// - `0` (`GROVE_V1`..`GROVE_V4`): refused with a version-mismatch
+    ///   error. The released versions do not know the elements.
+    /// - `1` (`GROVE_V5`+): the elements can be created.
+    pub big_sum_tree_twins_creation: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

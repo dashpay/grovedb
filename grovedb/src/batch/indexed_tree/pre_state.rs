@@ -134,7 +134,12 @@ fn validate_indexed_child_ops(
         )?;
         let rootless_with_aggregate = match element.underlying() {
             Element::SumTree(None, sum, _) | Element::ProvableSumTree(None, sum, _) => *sum != 0,
-            Element::BigSumTree(None, big_sum, _) => *big_sum != 0,
+            Element::BigSumTree(None, big_sum, _)
+            | Element::ProvableBigSumTree(None, big_sum, _) => *big_sum != 0,
+            Element::CountBigSumTree(None, count, big_sum, _)
+            | Element::ProvableCountProvableBigSumTree(None, count, big_sum, _) => {
+                *count != 0 || *big_sum != 0
+            }
             Element::CountTree(None, count, _) | Element::ProvableCountTree(None, count, _) => {
                 *count != 0
             }
