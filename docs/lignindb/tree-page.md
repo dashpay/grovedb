@@ -18,9 +18,10 @@ on section 9 of [`cost-model.md`](cost-model.md) (BASE-06: what an engine has
 to keep for costs). Rule names such as B8, C7 and S1 refer to those documents.
 
 It does not say which page a node goes into (TREE-01, TREE-03), what a delta
-record carries (FMT-03), how an image is stored in a segment (FMT-06), or how
-Merk's feature types and aggregates are encoded (MERK-01): the page stores
-those as bytes it does not interpret.
+record carries (FMT-03), or how an image is stored in a segment (FMT-06). The
+page does not interpret Merk's feature types and aggregates: it stores them
+as bytes with a length. TP12 says what those bytes are, and MERK-01 writes
+them.
 
 The code is `lignin-format::tree_page`, with `SlotId` and `CellAddress` in
 `lignin-format::ids`. Section 7 says what later tasks take from here,
@@ -240,9 +241,12 @@ cell.
 
 A link is 42 bytes plus its aggregate. Changing the address, the hash, the
 heights, the key length, or the aggregate to one of the same length,
-overwrites the link where it is. An aggregate never changes its length
-(TP12), so a link that exists is always overwritten where it is, and a cell
-changes its length only when a link appears or goes.
+overwrites the link where it is. A link that appears or goes changes the
+length of the cell. So does a link whose aggregate changes its length: the
+writer takes one and lays the cell out again. Among the nodes of one Merk
+that does not occur, because an aggregate written by the rule of TP12 has
+the length of its variant, and so a link that exists is overwritten where
+it is.
 
 **TP11. The fragment-root table is one bit in each cell.** Bit 3 of the
 flags marks the cells that are the root of a fragment (F3 of
@@ -305,8 +309,12 @@ length, and a link is 43 bytes in a tree with no count or sum, and 51, 59 or
 128-bit sum (tags 9 and 10), is 25 bytes and its link 67. Whatever a write
 below a node changes in a link that exists, the hash, the heights, the
 numbers of the aggregate or the address, it is as long as before and is
-overwritten where it is (TP10). A cell changes its length only when a child
-appears or goes, when its value does, or when its hosted roots do.
+overwritten where it is (TP10). The same holds for the feature of a node.
+So within one Merk a cell changes its length only when a child appears or
+goes, when its value changes its length or its place, or when the number
+of its hosted roots changes. The page itself does not require this:
+`set_link` and `set_feature` take bytes of another length and lay the cell
+out again.
 
 **A variant that Merk adds later needs no new page format and no new format
 version.** Its tag and its numbers are written by the rule above, and a page
@@ -316,6 +324,12 @@ are. The limit is 255 bytes for a feature or an aggregate; the widest today
 is 25. The price of this is the length byte in each link and in each cell.
 A table of variants inside the format would save those bytes and would need
 a format version for every tree type Merk gains.
+
+Where this ends: a variant with a field that is not a count or a sum, or
+whose aggregate has another tag than its feature, needs a line here that
+says how its payload is written, and still no change to the page. A feature
+or an aggregate above 255 bytes does not fit the length byte and would need
+a new format version.
 
 **TP13. A value is in its cell or in the value log, and its length is
 always in the cell.** `value_len` is the value's length in both cases, so
