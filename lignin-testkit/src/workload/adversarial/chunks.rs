@@ -261,10 +261,22 @@ impl ChunkProofs {
                     max_depth,
                     min_depth: (merk.key == PROVEN).then_some(1),
                 }));
-                for _ in 0..4 {
+                // The keys at the bottom of a trunk are the ones a client
+                // asks the branches of. Which they are depends on the shape
+                // of the tree, so the last round asks below every key of
+                // one tree, and the others below a few.
+                let every_key = merk.key == COUNTED && round + 1 == self.rounds;
+                let asked: Vec<Vec<u8>> = if every_key {
+                    merk.keys.clone()
+                } else {
+                    (0..4)
+                        .map(|_| merk.keys[rng.index(merk.keys.len())].clone())
+                        .collect()
+                };
+                for key in asked {
                     ops.push(prove(Prove::BranchChunk {
                         path: merk.path.clone(),
-                        key: merk.keys[rng.index(merk.keys.len())].clone(),
+                        key,
                         depth: max_depth,
                     }));
                 }

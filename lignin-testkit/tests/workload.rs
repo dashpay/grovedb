@@ -13,9 +13,14 @@
 //!   least once: `the_suite_produces_every_operation`, for the suite of the
 //!   latest grove version and, for every other grove version, for exactly
 //!   the operations that version has.
+//! - The same holds for the remaining operations that charge a cost of
+//!   their own, which are part of the same list. `tests/surface.rs` checks
+//!   the list that names every public GroveDB operation as produced or as
+//!   left out.
 //! - The streams are ones GroveDB accepts:
 //!   `every_workload_applies_on_every_grove_version`, and for more seeds
-//!   `the_operation_workloads_apply_for_many_seeds`.
+//!   `the_operation_workloads_apply_for_many_seeds`. What an operation
+//!   returns is checked on the way: see [`run`].
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -524,6 +529,9 @@ fn check_answer(
     }
 }
 
+/// A key, its count where one was asked for, and its sum.
+type BigSumsPerKey = Vec<(Vec<u8>, Option<u64>, i128)>;
+
 /// A row as a proof gives it: a reference stands for the value it points
 /// at.
 fn resolved(
@@ -624,7 +632,7 @@ fn check_proof(
             Outcome::BigSumPerKey(per_key),
         ) => {
             let proof = prove(query);
-            let (proved_root, proved): (_, Vec<(Vec<u8>, Option<u64>, i128)>) = if *with_count {
+            let (proved_root, proved): (_, BigSumsPerKey) = if *with_count {
                 let (root, proved) = GroveDb::verify_aggregate_count_and_big_sum_query_per_key(
                     &proof,
                     query,
@@ -1664,8 +1672,8 @@ const PINNED_STREAMS: &[(&str, u64, u64, &str)] = &[
     ("typed-reads", 0x4c49474e494e, 309, "ff49b183beed5f3bc5150102b56064f46e1d8af88f29f728b9402f8a137de1d8"),
     ("identity-reads", 0x1, 180, "8d0bcba5a7ef510d27cb4a61bfe1f96a8023974cc8200497d009633941e3028b"),
     ("identity-reads", 0x4c49474e494e, 180, "7ac1e426b8ea750863c4439fdee37b73ab6afe80c83424f6f24b23fabd5a2664"),
-    ("chunk-proofs", 0x1, 214, "56f3836d37385d388cd12435dbfe8dca1d3f440049e559d982513c78ff634e81"),
-    ("chunk-proofs", 0x4c49474e494e, 219, "4f8a5a71fba53c3011562aac68dababe4b2f35d223aa340bb4a7c081623cfd07"),
+    ("chunk-proofs", 0x1, 262, "f341f5745226be883674d89660944dd66b7294ec7da07d658743a24d325df0a6"),
+    ("chunk-proofs", 0x4c49474e494e, 267, "4bdd019fd5874626982eb8e99692ad40fcdb14062bd1631bd3b3a0d9700442a9"),
     ("block-execution", 0x1, 713, "7ba90184be818949de2e93b9ef4e58ad977ea136e6359b28ecf8d58ab14bcc85"),
     ("block-execution", 0x4c49474e494e, 729, "7ab9efbea976847e8fd4f5602e5f71be4774857e8bd9fbb3a4bb32fd068d1e3f"),
 ];
@@ -1700,11 +1708,11 @@ fn streams_are_pinned() {
 /// features, seed [`SEED`]: protocol version, operations, digest.
 #[rustfmt::skip]
 const PINNED_SUITES: &[(u32, u64, &str)] = &[
-    (1, 21020, "007cd745c21e1c0b67012b25fce357d558a914628f535c9aa8afa1d406946223"),
-    (2, 21020, "007cd745c21e1c0b67012b25fce357d558a914628f535c9aa8afa1d406946223"),
-    (3, 21044, "608ce305c2df2df18a352f61ed65ef918cecd3c10918644832bf4ee357de895f"),
-    (4, 21526, "2495634e0f036a8d817ddb2fb067e0edb14f4e0cb7da06e0000d77f00b1912e2"),
-    (5, 21832, "fd20bfa755f50e2a15f7db6712d9343a9ec943e78a78fc697d729a986e6f1618"),
+    (1, 21068, "4671cdfa769a39f2e510693e904a4f01770e3d7d75154bce623881a9dd690e68"),
+    (2, 21068, "4671cdfa769a39f2e510693e904a4f01770e3d7d75154bce623881a9dd690e68"),
+    (3, 21092, "590be9cc12ad102ca24635d34105b673d535c42b47233d1bf7885f85733bc45a"),
+    (4, 21574, "d13447e2f56207cae32767d3abb3aec4690c00dd545dc2fe42614473b7a95552"),
+    (5, 21880, "ea204d78153ea574f98991f02d60e7f9cb7b10b028bd8fdd9baebc348aa456eb"),
 ];
 
 #[test]
@@ -2107,4 +2115,602 @@ fn a_malformed_query_is_no_operation() {
         proven: false,
     });
     assert!(Coverage::of([&op]).operations().is_empty());
+}
+
+/// One operation of every kind the third unit added, in an order that also
+/// produces the operations that depend on what came before.
+fn one_of_each_direct_kind() -> Vec<Op> {
+    use grovedb::{PathQuery, Query};
+    use lignin_testkit::workload::{ChunkIds, IndexedTree};
+
+    let path = vec![b"tree".to_vec()];
+    let key = b"key".to_vec();
+    let item = Element::new_item(vec![1; 2]);
+    let query = || {
+        Box::new(PathQuery::new_unsized(
+            path.clone(),
+            Query::new_range_full(),
+        ))
+    };
+    let step = |step: TransactionOp| Op::Transaction(step);
+    let write = |write: Write| Op::Write(write);
+
+    let mut ops = vec![
+        step(TransactionOp::SetSavepoint),
+        step(TransactionOp::SetSavepoint),
+        step(TransactionOp::RollbackToSavepoint),
+        Op::Commit,
+        step(TransactionOp::Rollback),
+        step(TransactionOp::Abandon),
+        step(TransactionOp::OpenSnapshot),
+        Op::Commit,
+        step(TransactionOp::SnapshotRead(Read::IsEmptyTree {
+            path: path.clone(),
+        })),
+        step(TransactionOp::CloseSnapshot),
+        step(TransactionOp::BlockRead(Read::IsEmptyTree {
+            path: path.clone(),
+        })),
+    ];
+    for return_existing in [false, true] {
+        ops.push(write(Write::InsertIfNotExists {
+            path: path.clone(),
+            key: key.clone(),
+            element: item.clone(),
+            return_existing,
+        }));
+    }
+    ops.push(write(Write::InsertIfChanged {
+        path: path.clone(),
+        key: key.clone(),
+        element: item.clone(),
+    }));
+    ops.push(write(Write::DeleteIfEmptyTree {
+        path: path.clone(),
+        key: key.clone(),
+    }));
+    for (stop_path_height, built) in [(None, false), (Some(3), false), (Some(3), true)] {
+        ops.push(write(Write::DeleteUpTree {
+            path: path.clone(),
+            key: key.clone(),
+            stop_path_height,
+            built,
+        }));
+    }
+    ops.push(write(Write::DeleteBuilt {
+        path: path.clone(),
+        key: key.clone(),
+    }));
+    for tree in [IndexedTree::Count, IndexedTree::Sum, IndexedTree::CountSum] {
+        ops.push(write(Write::IndexedInsert {
+            path: path.clone(),
+            key: key.clone(),
+            element: Element::new_sum_item(4),
+            tree,
+        }));
+        ops.push(write(Write::IndexedDelete {
+            path: path.clone(),
+            key: key.clone(),
+            tree,
+        }));
+    }
+    ops.push(write(Write::ReconcileIndexed { path: path.clone() }));
+    ops.push(write(Write::CommitmentInsert {
+        path: path.clone(),
+        cmx: [5; 32],
+        rho: [6; 32],
+        cv_net: [7; 32],
+        payload: vec![8; 3],
+    }));
+
+    let mut reads = vec![
+        Read::HasRaw {
+            path: path.clone(),
+            key: key.clone(),
+        },
+        Read::IsEmptyTree { path: path.clone() },
+    ];
+    for fetch in [Fetch::Resolved, Fetch::Raw, Fetch::RawOptional] {
+        for cache in [false, true] {
+            reads.push(Read::Fetch {
+                path: path.clone(),
+                key: key.clone(),
+                fetch,
+                cache,
+            });
+        }
+    }
+    let range = |start, limit| (start, limit);
+    let (start, limit) = range(9, 10);
+    for read in [
+        TreeRead::MmrValue(1),
+        TreeRead::MmrRootHash,
+        TreeRead::MmrLeafCount,
+        TreeRead::BulkValue(1),
+        TreeRead::BulkRange { start, limit },
+        TreeRead::BulkChunk(1),
+        TreeRead::BulkBuffer,
+        TreeRead::BulkCount,
+        TreeRead::BulkChunkCount,
+        TreeRead::DenseValue(1),
+        TreeRead::DenseRootHash,
+        TreeRead::DenseCount,
+        TreeRead::CommitmentValue(1),
+        TreeRead::CommitmentRange { start, limit },
+        TreeRead::CommitmentAnchor,
+        TreeRead::CommitmentCount,
+        TreeRead::PrivateDocumentValue(1),
+        TreeRead::PrivateDocumentRange { start, limit },
+        TreeRead::PrivateDocumentCount,
+    ] {
+        reads.push(Read::Tree {
+            path: path.clone(),
+            read,
+        });
+    }
+    for flag in [false, true] {
+        reads.push(Read::KeysOptional {
+            query: query(),
+            raw: flag,
+        });
+        reads.push(Read::ItemValues {
+            query: query(),
+            or_sums: flag,
+        });
+        for per_key in [false, true] {
+            reads.push(Read::BigSum {
+                query: query(),
+                with_count: flag,
+                per_key,
+            });
+        }
+    }
+    reads.push(Read::SumValues { query: query() });
+    reads.push(Read::Many {
+        queries: vec![*query(), *query()],
+    });
+    reads.push(Read::Many {
+        queries: Vec::new(),
+    });
+    let merk = |ids: &[&[u8]]| ChunkIds::Merk(ids.iter().map(|id| id.to_vec()).collect());
+    for prove in [
+        Prove::Many(vec![*query()]),
+        Prove::BulkPositionRange {
+            path: path.clone(),
+            key: key.clone(),
+            start,
+            limit,
+        },
+        Prove::TrunkChunk {
+            path: path.clone(),
+            max_depth: 3,
+            min_depth: None,
+        },
+        Prove::TrunkChunk {
+            path: path.clone(),
+            max_depth: 3,
+            min_depth: Some(2),
+        },
+        Prove::BranchChunk {
+            path: path.clone(),
+            key: key.clone(),
+            depth: 3,
+        },
+        Prove::Chunk {
+            path: Vec::new(),
+            ids: merk(&[]),
+        },
+        Prove::Chunk {
+            path: Vec::new(),
+            ids: merk(&[&[]]),
+        },
+        Prove::Chunk {
+            path: path.clone(),
+            ids: merk(&[]),
+        },
+        Prove::Chunk {
+            path: path.clone(),
+            ids: merk(&[&[1, 0], &[0]]),
+        },
+        Prove::Chunk {
+            path: path.clone(),
+            ids: ChunkIds::Entries {
+                start: 11,
+                state: 12,
+                parameter: 13,
+            },
+        },
+    ] {
+        reads.push(Read::Prove(prove));
+    }
+    ops.extend(reads.into_iter().map(Op::Read));
+    ops
+}
+
+const PINNED_DIRECT_KINDS: &str =
+    "9ec1194632b23b4f47c40feeafc6d72429385ed44e2bd1da9280f820be64cd41";
+
+/// The canonical encoding of the kinds the third unit added: each one
+/// differs from every other, and the bytes are pinned. Together they are
+/// every operation of the groups that unit added.
+#[test]
+fn the_direct_kinds_have_a_pinned_encoding() {
+    let ops = one_of_each_direct_kind();
+    let mut encodings = BTreeSet::new();
+    for op in &ops {
+        let mut bytes = Vec::new();
+        op.encode(&mut bytes);
+        // A commit and a savepoint are in the list twice, for what follows
+        // them.
+        let twice = matches!(
+            op,
+            Op::Commit | Op::Transaction(TransactionOp::SetSavepoint)
+        );
+        assert!(
+            encodings.insert(bytes) || twice,
+            "two operations encode as {op:?}"
+        );
+        assert_eq!(*op, op.clone());
+        assert!(
+            !(op.ends_transaction() && op.keeps_transaction()),
+            "{op:?} both ends and keeps the transaction"
+        );
+    }
+    let digest = StreamDigest::of(&ops);
+    assert_eq!(digest.ops(), ops.len() as u64);
+    assert_eq!(digest.hex(), PINNED_DIRECT_KINDS);
+
+    let missing: Vec<Operation> = Coverage::of(&ops)
+        .missing_operations()
+        .into_iter()
+        .filter(|operation| {
+            operation.group() != FIRST_UNIT_GROUP
+                && !SECOND_UNIT_GROUPS.contains(&operation.group())
+        })
+        .collect();
+    assert_eq!(missing, Vec::<Operation>::new());
+
+    let stored = ops.iter().flat_map(|op| op.elements()).count();
+    assert_eq!(stored, 6, "the conditional and the indexed inserts store");
+    let ends: Vec<&Op> = ops.iter().filter(|op| op.ends_transaction()).collect();
+    assert_eq!(
+        ends,
+        [
+            &Op::Commit,
+            &Op::Transaction(TransactionOp::Rollback),
+            &Op::Transaction(TransactionOp::Abandon),
+            &Op::Commit
+        ]
+    );
+    let writes = ops.iter().filter(|op| !op.keeps_transaction()).count();
+    assert_eq!(
+        writes,
+        4 + 1 + 16,
+        "ends, a savepoint rollback and the writes"
+    );
+}
+
+/// A read through a snapshot returns what was committed when the snapshot
+/// was opened, and the workload makes that differ from what is committed
+/// when the read runs.
+#[test]
+fn block_execution_reads_older_state_through_its_snapshot() {
+    on_every_grove_version(|grove_version| {
+        let (_dir, db) = open();
+        let applied = run(
+            "block-execution",
+            &db,
+            BlockExecution::default().stream(SEED),
+            grove_version,
+        );
+        assert!(
+            applied.snapshot_reads_of_older_state >= 5,
+            "only {} snapshot reads saw an older state",
+            applied.snapshot_reads_of_older_state
+        );
+    });
+}
+
+/// The branch chunks of the last round hang below every key of one tree,
+/// so those below the keys at the bottom of its trunk are verified against
+/// the hashes the trunk gives.
+#[test]
+fn chunk_proofs_verify_branches_against_their_trunk() {
+    on_every_grove_version(|grove_version| {
+        let features = Features::for_grove_version(grove_version);
+        for seed in [SEED, OTHER_SEED, 3] {
+            let (_dir, db) = open();
+            let workload = ChunkProofs {
+                features,
+                ..ChunkProofs::default()
+            };
+            let applied = run("chunk-proofs", &db, workload.stream(seed), grove_version);
+            assert!(
+                applied.branches_verified >= 2,
+                "seed {seed}: {} branches verified",
+                applied.branches_verified
+            );
+        }
+    });
+}
+
+/// Every typed read of the append-only trees returns what the stream
+/// appended: the model is the stream's own appends.
+#[test]
+fn typed_reads_return_what_was_appended() {
+    use lignin_testkit::workload::AppendEntry;
+
+    on_every_grove_version(|grove_version| {
+        let features = Features::for_grove_version(grove_version);
+        let workload = TypedReads {
+            rounds: 8,
+            features,
+        };
+        let (_dir, db) = open();
+        let mut transactions = Transactions::new(&db);
+        let mut appended: BTreeMap<Vec<Vec<u8>>, Vec<Vec<u8>>> = BTreeMap::new();
+        let mut checked = 0;
+        for op in workload.stream(SEED) {
+            let outcome = transactions
+                .apply(&op, grove_version)
+                .unwrap()
+                .unwrap_or_else(|error| panic!("{op:?} refused: {error:?}"));
+            match &op {
+                Op::Write(Write::Append { path, entry }) => {
+                    let value = match entry {
+                        AppendEntry::Mmr(value)
+                        | AppendEntry::Bulk(value)
+                        | AppendEntry::Dense(value)
+                        | AppendEntry::PrivateDocument(value) => value.clone(),
+                        AppendEntry::Commitment { .. } => panic!("commitments are typed here"),
+                    };
+                    appended.entry(path.clone()).or_default().push(value);
+                }
+                Op::Write(Write::CommitmentInsert {
+                    path,
+                    cmx,
+                    rho,
+                    cv_net,
+                    payload,
+                }) => {
+                    let value = [&cmx[..], &rho[..], &cv_net[..], payload].concat();
+                    appended.entry(path.clone()).or_default().push(value);
+                }
+                Op::Read(Read::Tree { path, read }) => {
+                    let values = &appended[path];
+                    let count = values.len() as u64;
+                    let at = |position: u64| values.get(position as usize).cloned();
+                    let page = |start: u64, limit: u16| {
+                        let end = (start + u64::from(limit)).min(count);
+                        let entries = (start..end).map(|position| {
+                            (position, at(position).expect("a position below the count"))
+                        });
+                        Outcome::Page(grovedb::RangePage {
+                            entries: entries.collect(),
+                            total_count: count,
+                        })
+                    };
+                    // A chunk of the bulk tree holds four values.
+                    let chunks = count / 4;
+                    let expected = match *read {
+                        TreeRead::MmrValue(position)
+                        | TreeRead::BulkValue(position)
+                        | TreeRead::CommitmentValue(position)
+                        | TreeRead::PrivateDocumentValue(position) => {
+                            Some(Outcome::Value(at(position)))
+                        }
+                        TreeRead::DenseValue(position) => {
+                            Some(Outcome::Value(at(u64::from(position))))
+                        }
+                        TreeRead::MmrLeafCount
+                        | TreeRead::BulkCount
+                        | TreeRead::DenseCount
+                        | TreeRead::CommitmentCount
+                        | TreeRead::PrivateDocumentCount => Some(Outcome::Count(count)),
+                        TreeRead::BulkChunkCount => Some(Outcome::Count(chunks)),
+                        TreeRead::BulkBuffer => {
+                            Some(Outcome::Values(values[(chunks * 4) as usize..].to_vec()))
+                        }
+                        TreeRead::BulkRange { start, limit }
+                        | TreeRead::CommitmentRange { start, limit }
+                        | TreeRead::PrivateDocumentRange { start, limit } => {
+                            Some(page(start, limit))
+                        }
+                        TreeRead::BulkChunk(index) => {
+                            let Outcome::Value(chunk) = &outcome else {
+                                panic!("{op:?} returned {outcome:?}");
+                            };
+                            assert_eq!(chunk.is_some(), index < chunks, "{op:?}");
+                            None
+                        }
+                        TreeRead::MmrRootHash
+                        | TreeRead::DenseRootHash
+                        | TreeRead::CommitmentAnchor => {
+                            assert!(matches!(outcome, Outcome::Hash(_)), "{op:?}");
+                            None
+                        }
+                    };
+                    if let Some(expected) = expected {
+                        assert_eq!(
+                            format!("{outcome:?}"),
+                            format!("{expected:?}"),
+                            "grove v{}: {op:?}",
+                            grove_version.protocol_version
+                        );
+                        checked += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(checked > 100, "only {checked} typed reads were checked");
+    });
+}
+
+/// What no stream holds is refused with an error, not applied some other
+/// way: a step on a transaction that is not there, a snapshot read outside
+/// a snapshot, a tree named by no path, a payload that is no ciphertext, a
+/// chunk of something that is no tree.
+#[test]
+fn apply_refuses_what_no_stream_holds() {
+    let grove_version = GroveVersion::latest();
+    let (_dir, db) = open();
+    let mut transactions = Transactions::new(&db);
+    let mut applies = |op: Op| {
+        let applied = transactions.apply(&op, grove_version).unwrap();
+        applied.map_err(|error| error.to_string())
+    };
+    let tree = vec![b"tree".to_vec()];
+    for op in [
+        Op::Write(Write::Insert {
+            path: Vec::new(),
+            key: b"tree".to_vec(),
+            element: Element::empty_tree(),
+        }),
+        Op::Write(Write::Insert {
+            path: tree.clone(),
+            key: b"item".to_vec(),
+            element: Element::new_item(vec![1]),
+        }),
+        Op::Commit,
+        Op::Transaction(TransactionOp::CloseSnapshot),
+    ] {
+        applies(op).expect("the setup applies");
+    }
+    let is_empty = Read::IsEmptyTree { path: tree.clone() };
+    let refused: Vec<Op> = vec![
+        Op::Transaction(TransactionOp::SnapshotRead(is_empty.clone())),
+        Op::Transaction(TransactionOp::RollbackToSavepoint),
+        Op::Read(Read::Tree {
+            path: Vec::new(),
+            read: TreeRead::MmrLeafCount,
+        }),
+        Op::Write(Write::Append {
+            path: Vec::new(),
+            entry: lignin_testkit::workload::AppendEntry::Mmr(vec![1]),
+        }),
+        Op::Write(Write::CommitmentInsert {
+            path: Vec::new(),
+            cmx: [0; 32],
+            rho: [0; 32],
+            cv_net: [0; 32],
+            payload: vec![0; COMMITMENT_PAYLOAD_LEN as usize],
+        }),
+        Op::Write(Write::CommitmentInsert {
+            path: tree.clone(),
+            cmx: [0; 32],
+            rho: [0; 32],
+            cv_net: [0; 32],
+            payload: vec![0; 3],
+        }),
+        Op::Read(Read::Prove(Prove::Chunk {
+            path: vec![b"tree".to_vec(), b"item".to_vec()],
+            ids: lignin_testkit::workload::ChunkIds::Merk(Vec::new()),
+        })),
+        Op::Read(Read::Prove(Prove::Chunk {
+            path: vec![b"nowhere".to_vec()],
+            ids: lignin_testkit::workload::ChunkIds::Merk(Vec::new()),
+        })),
+    ];
+    for op in refused {
+        let refusal = applies(op.clone()).expect_err("no stream holds this");
+        println!("{op:?}: {refusal}");
+    }
+
+    // The free function is given the transaction by its caller, and
+    // refuses the one it cannot use.
+    let block = db.start_transaction();
+    for (op, transaction) in [
+        (TransactionOp::SetSavepoint, None),
+        (TransactionOp::Rollback, None),
+        (TransactionOp::RollbackToSavepoint, None),
+        (TransactionOp::SnapshotRead(is_empty.clone()), Some(&block)),
+        (TransactionOp::SnapshotRead(is_empty.clone()), None),
+    ] {
+        let op = Op::Transaction(op);
+        apply(&db, &op, transaction, grove_version)
+            .unwrap()
+            .expect_err("the transaction is not the one the step needs");
+    }
+    let snapshot = db.start_snapshot_read_transaction();
+    let read = Op::Transaction(TransactionOp::SnapshotRead(is_empty));
+    let empty = apply(&db, &read, Some(&snapshot), grove_version)
+        .unwrap()
+        .expect("a snapshot read runs in a snapshot");
+    assert!(matches!(empty, Outcome::Flag(false)), "{empty:?}");
+}
+
+/// A snapshot opened while another is open takes its place, a snapshot that
+/// is not open closes without a word, and a commit that fails is returned
+/// as the error it is, with the next block open.
+#[test]
+fn transactions_keep_the_block_and_the_snapshot() {
+    let grove_version = GroveVersion::latest();
+    let (_dir, db) = open();
+    let mut transactions = Transactions::new(&db);
+    let insert = |key: &[u8], value: u8| {
+        Op::Write(Write::Insert {
+            path: Vec::new(),
+            key: key.to_vec(),
+            element: Element::new_item(vec![value]),
+        })
+    };
+    let has = |key: &[u8]| Read::HasRaw {
+        path: Vec::new(),
+        key: key.to_vec(),
+    };
+    let through_snapshot = |read: Read| Op::Transaction(TransactionOp::SnapshotRead(read));
+    let applies = |transactions: &mut Transactions, op: Op| {
+        transactions
+            .apply(&op, grove_version)
+            .unwrap()
+            .unwrap_or_else(|error| panic!("{op:?} refused: {error:?}"))
+    };
+
+    assert!(transactions.snapshot().is_none());
+    applies(
+        &mut transactions,
+        Op::Transaction(TransactionOp::OpenSnapshot),
+    );
+    applies(&mut transactions, insert(b"first", 1));
+    applies(&mut transactions, Op::Commit);
+    let seen = applies(&mut transactions, through_snapshot(has(b"first")));
+    assert!(matches!(seen, Outcome::Flag(false)), "{seen:?}");
+    applies(
+        &mut transactions,
+        Op::Transaction(TransactionOp::OpenSnapshot),
+    );
+    let seen = applies(&mut transactions, through_snapshot(has(b"first")));
+    assert!(matches!(seen, Outcome::Flag(true)), "{seen:?}");
+    assert!(transactions.snapshot().is_some());
+    applies(
+        &mut transactions,
+        Op::Transaction(TransactionOp::CloseSnapshot),
+    );
+    applies(
+        &mut transactions,
+        Op::Transaction(TransactionOp::CloseSnapshot),
+    );
+    assert!(transactions.snapshot().is_none());
+
+    // The block and a write outside it store the same key: the block's
+    // commit conflicts.
+    applies(&mut transactions, insert(b"contested", 1));
+    apply(&db, &insert(b"contested", 2), None, grove_version)
+        .unwrap()
+        .expect("a write outside the block commits by itself");
+    let conflict = transactions
+        .apply(&Op::Commit, grove_version)
+        .unwrap()
+        .expect_err("the block wrote a key that was committed under it");
+    println!("commit refused: {conflict}");
+    applies(&mut transactions, insert(b"after", 3));
+    applies(&mut transactions, Op::Commit);
+    let stored = db
+        .get(&[] as &[&[u8]], b"contested", None, grove_version)
+        .unwrap()
+        .expect("the write outside the block is stored");
+    assert_eq!(stored, Element::new_item(vec![2]));
+    let seen = applies(&mut transactions, Op::Read(has(b"after")));
+    assert!(matches!(seen, Outcome::Flag(true)), "{seen:?}");
 }

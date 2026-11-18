@@ -13,20 +13,30 @@
 //! - [`drive`]: the shapes Dash Platform's Drive stores. Documents with
 //!   index references, identity balances in sum trees, tokens in count
 //!   trees, identity keys, the platform state, an index whose keys are
-//!   rewritten, documents that expire and indexes that aggregate.
+//!   rewritten, documents that expire and indexes that aggregate, writes
+//!   that look before they write, identities read through the entry points
+//!   Drive answers with, and blocks that are rolled back, abandoned and
+//!   read under a snapshot.
 //! - [`adversarial`] and [`zoo`]: deep nesting, 255-byte keys, large values,
 //!   thousands of tiny subtrees, delete-heavy streams, reference chains,
-//!   every element and tree type, the append-only trees included, and flat
-//!   drops, moves, partial batches and pages over every kind of tree.
+//!   every element and tree type, the append-only trees included, flat
+//!   drops, moves, partial batches and pages over every kind of tree,
+//!   indexed trees written entry by entry, every typed read of the
+//!   append-only trees, and trees served in chunks.
 //!
 //! Between them they produce the GroveDB operations that reach storage in a
 //! way of their own ([`coverage::Operation`]): patch, move, partial batches,
 //! aux and meta records, query offsets, conditional subqueries and aggregate
-//! queries.
+//! queries. They also produce the remaining operations that charge a cost
+//! of their own: conditional inserts and deletes, raw existence checks,
+//! direct writes to indexed trees, typed reads of the append-only trees,
+//! chunk proofs, the remaining query entry points, and transactions that
+//! roll back, use savepoints or are read under a snapshot.
 //!
 //! [`Workload`] lists them all. [`apply`] turns an operation into GroveDB
-//! calls, and [`coverage`] reports which element types, tree types and
-//! operations a stream produced.
+//! calls, [`coverage`] reports which element types, tree types and
+//! operations a stream produced, and [`surface`] names every public
+//! operation of GroveDB as produced or as left out, with the reason.
 
 pub mod adversarial;
 pub mod apply;

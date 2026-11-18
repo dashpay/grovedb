@@ -189,8 +189,10 @@ pub enum Write {
         path: Path,
         /// The key to delete.
         key: Vec<u8>,
-        /// The length of the path the climb stops at: a tree at a path of
-        /// that length is never deleted.
+        /// The length of the path the climb stops at: nothing stored
+        /// directly in a subtree at a path of that length is deleted.
+        /// Without one the climb ends at the root tree, whose keys GroveDB
+        /// refuses to delete this way.
         stop_path_height: Option<u16>,
         /// How the deletes are applied. Directly is
         /// `GroveDb::delete_up_tree_while_empty`. Built is what Drive does:

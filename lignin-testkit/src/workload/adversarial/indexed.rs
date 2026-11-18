@@ -225,7 +225,7 @@ impl IndexedWrites {
                 axis,
                 rng.between(1, 4) as u16,
                 rng.below(2),
-                round % 2 == 0,
+                round.is_multiple_of(2),
             )));
         }
     }

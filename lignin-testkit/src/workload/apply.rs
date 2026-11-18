@@ -23,6 +23,11 @@
 //! [`Transactions`] does all of this for a caller that has no reason to do
 //! it itself.
 
+#![expect(
+    clippy::result_large_err,
+    reason = "an operation fails with GroveDB's own error, whatever its size"
+)]
+
 use grovedb::{
     batch::{BatchApplyOptions, QualifiedGroveDbOp, SubelementsDeletionBehavior},
     operations::{
@@ -385,10 +390,6 @@ impl<'db> Transactions<'db> {
     }
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "GroveDB fixes the error type of the callback"
-)]
 fn apply_partial_batch(
     db: &GroveDb,
     batch: &PartialBatch,
