@@ -179,17 +179,12 @@ impl<'a> Iterator for LogScan<'a> {
             return None;
         }
         match self.read_item() {
-            Ok(Some(item)) => Some(item),
-            Ok(None) => {
-                self.done = true;
-                None
-            }
-            Err((offset, error)) => {
-                self.failure = Some(TailFailure { offset, error });
-                self.done = true;
-                None
-            }
+            Ok(Some(item)) => return Some(item),
+            Ok(None) => {}
+            Err((offset, error)) => self.failure = Some(TailFailure { offset, error }),
         }
+        self.done = true;
+        None
     }
 }
 

@@ -65,8 +65,8 @@ fn forged_record(rng: &mut SplitMix64) -> Vec<u8> {
 fn arbitrary_bytes_are_an_error_or_a_log_and_never_a_panic() {
     let mut rng = SplitMix64::new(0xB10);
     let valid = [
-        random_log(0xF05_41, Limits::FORMAT, 14),
-        random_log(0xF05_42, SMALL, 14),
+        random_log(0xF0541, Limits::FORMAT, 14),
+        random_log(0xF0542, SMALL, 14),
     ];
     let (mut refused, mut logs, mut found) = (0, 0, 0);
     for round in 0..45_000 {

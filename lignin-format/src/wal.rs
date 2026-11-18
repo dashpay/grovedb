@@ -170,8 +170,7 @@ pub const CARRIED_RECORD_LEN: usize = RecordHeader::ENCODED_LEN + value::CARRIED
 pub const PART_HEADER_LEN: usize = RecordHeader::ENCODED_LEN + group::PART_FIELDS_LEN;
 
 /// The longest run an entry of a group carries.
-pub const MAX_RUN_LEN: usize =
-    MAX_RECORD_PAYLOAD_LEN - group::PART_FIELDS_LEN - group::RUN_ENTRY_LEN;
+pub const MAX_RUN_LEN: usize = Limits::FORMAT.max_run();
 
 /// Bytes of a checkpoint mark, frame included.
 pub const CHECKPOINT_MARK_LEN: usize = RecordHeader::ENCODED_LEN + record::CHECKPOINT_PAYLOAD_LEN;
@@ -197,6 +196,10 @@ impl Limits {
 
     pub(crate) const fn max_entries(self) -> usize {
         self.max_payload - group::PART_FIELDS_LEN
+    }
+
+    pub(crate) const fn max_run(self) -> usize {
+        self.max_entries().saturating_sub(group::RUN_ENTRY_LEN)
     }
 }
 

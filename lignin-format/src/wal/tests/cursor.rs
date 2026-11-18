@@ -399,8 +399,8 @@ fn the_versions_of_the_groups_go_up_by_one_and_nothing_is_ahead_of_them() {
 #[test]
 fn a_file_is_read_record_by_record_as_it_is_read_whole() {
     for built in [
-        random_log(0xF05_31, Limits::FORMAT, 20),
-        random_log(0xF05_32, SMALL, 20),
+        random_log(0xF0531, Limits::FORMAT, 20),
+        random_log(0xF0532, SMALL, 20),
     ] {
         let (header, start) = read_file_start(&built.log).unwrap();
         assert_eq!(start, built.start);

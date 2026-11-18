@@ -21,7 +21,6 @@ const INSERT_CHILD: u8 = 6;
 const SET_PREFIX: u8 = 7;
 
 const OUT_OF_LINE: u8 = 1;
-const MAX_FIELD_LEN: usize = u16::MAX as usize;
 
 /// One change to a flat page.
 ///
@@ -78,10 +77,6 @@ pub enum FlatChange<'a> {
     },
 }
 
-fn check_len(len: usize) -> Result<u16, FormatError> {
-    u16::try_from(len).map_err(|_| WalError::FlatFieldTooLong { len }.into())
-}
-
 fn check_place(value: FlatValue<'_>) -> Result<(), FormatError> {
     let FlatValue::OutOfLine(place) = value else {
         return Ok(());
@@ -112,9 +107,24 @@ fn check_image(image: &[u8], page: PageId, version: FormatVersion) -> Result<(),
 }
 
 fn put_field(out: &mut Vec<u8>, field: &[u8]) -> Result<(), FormatError> {
-    out.extend_from_slice(&check_len(field.len())?.to_le_bytes());
+    let len =
+        u16::try_from(field.len()).map_err(|_| WalError::FlatFieldTooLong { len: field.len() })?;
+    out.extend_from_slice(&len.to_le_bytes());
     out.extend_from_slice(field);
     Ok(())
+}
+
+fn put_entry(
+    out: &mut Vec<u8>,
+    kind: u8,
+    key: &[u8],
+    value: FlatValue<'_>,
+) -> Result<(), FormatError> {
+    check_place(value)?;
+    out.push(kind);
+    put_field(out, key)?;
+    out.push(if value.is_inline() { 0 } else { OUT_OF_LINE });
+    put_field(out, value.bytes())
 }
 
 impl<'a> FlatChange<'a> {
@@ -125,16 +135,8 @@ impl<'a> FlatChange<'a> {
                 out.push(IMAGE);
                 put_field(out, image)
             }
-            Self::Insert { key, value } | Self::Replace { key, value } => {
-                check_place(value)?;
-                out.push(match self {
-                    Self::Insert { .. } => INSERT,
-                    _ => REPLACE,
-                });
-                put_field(out, key)?;
-                out.push(if value.is_inline() { 0 } else { OUT_OF_LINE });
-                put_field(out, value.bytes())
-            }
+            Self::Insert { key, value } => put_entry(out, INSERT, key, value),
+            Self::Replace { key, value } => put_entry(out, REPLACE, key, value),
             Self::Remove { key } => {
                 out.push(REMOVE);
                 put_field(out, key)
@@ -480,6 +482,15 @@ enum Entries<'a> {
     },
 }
 
+impl Entries<'_> {
+    fn remove(&mut self, key: &[u8], count: usize) -> Result<(), FormatError> {
+        match self {
+            Self::Leaf(entries) => remove(entries, key, count),
+            Self::Branch { separators, .. } => remove(separators, key, count),
+        }
+    }
+}
+
 /// What a flat page holds, taken apart so that it can be changed.
 #[derive(Debug)]
 struct Content<'a> {
@@ -532,16 +543,8 @@ impl<'a> Content<'a> {
             (FlatChange::InsertChild { key, child }, Entries::Branch { separators, .. }) => {
                 insert(separators, key, child)
             }
-            (FlatChange::Remove { key }, Entries::Leaf(entries)) => remove(entries, key, 1),
-            (FlatChange::Remove { key }, Entries::Branch { separators, .. }) => {
-                remove(separators, key, 1)
-            }
-            (FlatChange::RemoveRange { key, count }, Entries::Leaf(entries)) => {
-                remove(entries, key, count.into())
-            }
-            (FlatChange::RemoveRange { key, count }, Entries::Branch { separators, .. }) => {
-                remove(separators, key, count.into())
-            }
+            (FlatChange::Remove { key }, entries) => entries.remove(key, 1),
+            (FlatChange::RemoveRange { key, count }, entries) => entries.remove(key, count.into()),
             (FlatChange::Insert { .. } | FlatChange::Replace { .. }, Entries::Branch { .. })
             | (FlatChange::InsertChild { .. }, Entries::Leaf(_)) => {
                 Err(WalError::WrongPageKind.into())
@@ -637,4 +640,4 @@ pub(super) fn only_removes(run: &FlatRun<'_>) -> bool {
     })
 }
 
-const _: () = assert!(MAX_FIELD_LEN == FlatPage::MAX_LEN);
+const _: () = assert!(u16::MAX as usize == FlatPage::MAX_LEN);

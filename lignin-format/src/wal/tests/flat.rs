@@ -51,6 +51,53 @@ fn branch_of(prefix: &[u8], first: u32, separators: &BTreeMap<Vec<u8>, u32>) -> 
     branch.finish()
 }
 
+/// One change to a leaf, owning what it carries.
+#[derive(Debug, Clone)]
+enum Op {
+    Insert(Vec<u8>, bool, Vec<u8>),
+    Replace(Vec<u8>, bool, Vec<u8>),
+    Remove(Vec<u8>),
+    RemoveRange(Vec<u8>, u16),
+    SetPrefix(Vec<u8>),
+}
+
+impl Op {
+    const KINDS: usize = 5;
+
+    const fn kind(&self) -> usize {
+        match self {
+            Self::Insert(..) => 0,
+            Self::Replace(..) => 1,
+            Self::Remove(..) => 2,
+            Self::RemoveRange(..) => 3,
+            Self::SetPrefix(..) => 4,
+        }
+    }
+
+    fn change(&self) -> FlatChange<'_> {
+        let value = |out_of_line: &bool, bytes| {
+            if *out_of_line {
+                FlatValue::OutOfLine(bytes)
+            } else {
+                FlatValue::Inline(bytes)
+            }
+        };
+        match self {
+            Self::Insert(key, out_of_line, bytes) => FlatChange::Insert {
+                key,
+                value: value(out_of_line, bytes),
+            },
+            Self::Replace(key, out_of_line, bytes) => FlatChange::Replace {
+                key,
+                value: value(out_of_line, bytes),
+            },
+            Self::Remove(key) => FlatChange::Remove { key },
+            Self::RemoveRange(key, count) => FlatChange::RemoveRange { key, count: *count },
+            Self::SetPrefix(prefix) => FlatChange::SetPrefix { prefix },
+        }
+    }
+}
+
 fn applied(run: &[u8], base: Option<&[u8]>) -> Result<Vec<u8>, FormatError> {
     let mut out = b"kept".to_vec();
     let result = read(run).apply(base, V1, CAPACITY, &mut out);
@@ -125,11 +172,11 @@ fn a_page_and_a_run_give_the_page_a_model_gives() {
     let mut model: BTreeMap<Vec<u8>, (bool, Vec<u8>)> = BTreeMap::new();
     let mut stored = prefix.clone();
     let mut image = leaf_of(&stored, &model);
-    let mut counts = [0usize; 6];
+    let mut counts = [0usize; Op::KINDS];
     for round in 0..600 {
         // A run of drawn changes that fit the page, made to the model as
         // they are written.
-        let mut owned: Vec<(u8, Vec<u8>, bool, Vec<u8>, u16)> = Vec::new();
+        let mut ops: Vec<Op> = Vec::new();
         let mut restart = None;
         if round % 37 == 36 {
             restart = Some(leaf_of(&stored, &model));
@@ -154,17 +201,17 @@ fn a_page_and_a_run_give_the_page_a_model_gives() {
                         continue;
                     }
                     model.insert(key.clone(), (out_of_line, bytes.clone()));
-                    owned.push((2, key, out_of_line, bytes, 0));
+                    ops.push(Op::Insert(key, out_of_line, bytes));
                 }
                 4 | 5 if !present.is_empty() => {
                     let key = pick(&mut rng);
                     model.insert(key.clone(), (out_of_line, bytes.clone()));
-                    owned.push((3, key, out_of_line, bytes, 0));
+                    ops.push(Op::Replace(key, out_of_line, bytes));
                 }
                 6 | 7 if !present.is_empty() => {
                     let key = pick(&mut rng);
                     model.remove(&key);
-                    owned.push((4, key, false, Vec::new(), 0));
+                    ops.push(Op::Remove(key));
                 }
                 8 if present.len() >= 2 => {
                     let from = (rng.next_u64() % (present.len() as u64 - 1)) as usize;
@@ -172,39 +219,28 @@ fn a_page_and_a_run_give_the_page_a_model_gives() {
                     for key in &present[from..from + count] {
                         model.remove(key);
                     }
-                    owned.push((5, present[from].clone(), false, Vec::new(), count as u16));
+                    ops.push(Op::RemoveRange(present[from].clone(), count as u16));
                 }
                 9 => {
                     // Any prefix that every key starts with is one the
                     // page may store, not only the longest.
                     let len = (rng.next_u64() % (prefix.len() as u64 + 1)) as usize;
                     stored = prefix[..len].to_vec();
-                    owned.push((7, stored.clone(), false, Vec::new(), 0));
+                    ops.push(Op::SetPrefix(stored.clone()));
                 }
                 _ => {}
             }
         }
-        if owned.is_empty() && restart.is_none() {
+        if ops.is_empty() && restart.is_none() {
             continue;
         }
         let mut changes: Vec<FlatChange<'_>> = restart
             .iter()
             .map(|image| FlatChange::Image(image))
             .collect();
-        for (kind, key, out_of_line, bytes, count) in &owned {
-            counts[*kind as usize - 2] += 1;
-            let value = if *out_of_line {
-                FlatValue::OutOfLine(bytes)
-            } else {
-                FlatValue::Inline(bytes)
-            };
-            changes.push(match kind {
-                2 => FlatChange::Insert { key, value },
-                3 => FlatChange::Replace { key, value },
-                4 => FlatChange::Remove { key },
-                5 => FlatChange::RemoveRange { key, count: *count },
-                _ => FlatChange::SetPrefix { prefix: key },
-            });
+        for op in &ops {
+            counts[op.kind()] += 1;
+            changes.push(op.change());
         }
         let run = run_of(5, &changes);
         assert_eq!(read(&run).changes().collect::<Vec<_>>(), changes);
@@ -219,14 +255,8 @@ fn a_page_and_a_run_give_the_page_a_model_gives() {
         }
         image = next;
     }
-    println!("{counts:?} inserts, replaces, removes, ranges, and prefixes");
-    assert!(
-        counts
-            .iter()
-            .enumerate()
-            .all(|(kind, count)| kind == 4 || *count > 30),
-        "{counts:?}"
-    );
+    println!("{counts:?} inserts, replaces, removes, ranges and prefixes");
+    assert!(counts.iter().all(|count| *count > 30), "{counts:?}");
 }
 
 #[test]

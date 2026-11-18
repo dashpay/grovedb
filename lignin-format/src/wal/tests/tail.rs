@@ -7,12 +7,12 @@ use super::*;
 /// 200 bytes, so that their values and groups take several records each.
 fn logs() -> Vec<Built> {
     vec![
-        random_log(0xF05_01, Limits::FORMAT, 12),
-        random_log(0xF05_02, SMALL, 12),
-        random_log(0xF05_03, Limits::FORMAT, 24),
-        random_log(0xF05_04, SMALL, 16),
-        random_log(0xF05_05, SMALL, 5),
-        random_log(0xF05_06, Limits::FORMAT, 1),
+        random_log(0xF0501, Limits::FORMAT, 12),
+        random_log(0xF0502, SMALL, 12),
+        random_log(0xF0503, Limits::FORMAT, 24),
+        random_log(0xF0504, SMALL, 16),
+        random_log(0xF0505, SMALL, 5),
+        random_log(0xF0506, Limits::FORMAT, 1),
     ]
 }
 
@@ -145,8 +145,8 @@ fn damage_never_gives_an_item_that_was_not_written() {
     let mut rng = SplitMix64::new(0xDA4A6E);
     let mut shorter = 0;
     for built in [
-        random_log(0xF05_11, Limits::FORMAT, 10),
-        random_log(0xF05_12, SMALL, 10),
+        random_log(0xF0511, Limits::FORMAT, 10),
+        random_log(0xF0512, SMALL, 10),
     ] {
         let len = built.log.len();
         for _ in 0..4_000 {
@@ -178,7 +178,7 @@ fn damage_never_gives_an_item_that_was_not_written() {
 
 #[test]
 fn the_log_goes_on_in_the_next_file_where_this_one_stops_being_valid() {
-    let built = random_log(0xF05_21, Limits::FORMAT, 8);
+    let built = random_log(0xF0521, Limits::FORMAT, 8);
     let (_, tail) = items_with(&built.log, built.limits);
     assert_eq!(tail.valid_len(), built.log.len() as u64);
 

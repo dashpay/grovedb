@@ -151,7 +151,7 @@ impl LogCursor {
         self.offset = offset;
         self.state = state;
         let ends_item = state == State::Idle;
-        if let (true, Record::Part(part)) = (ends_item, &record) {
+        if ends_item && let Record::Part(part) = &record {
             self.latest = part.version();
         }
         Ok(Step {

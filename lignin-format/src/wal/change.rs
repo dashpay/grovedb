@@ -198,8 +198,11 @@ impl ValueMove {
     /// is the page the step names, and the cell still holds
     /// [`Self::from`].
     pub fn is_due_in_tree(&self, page: &TreePage<'_>) -> bool {
-        let cell = self.slot.and_then(|slot| page.cell(slot));
-        page.id() == self.page && cell.is_some_and(|cell| cell.value_place() == Some(self.from))
+        page.id() == self.page
+            && self
+                .slot
+                .and_then(|slot| page.cell(slot))
+                .is_some_and(|cell| cell.value_place() == Some(self.from))
     }
 
     /// Whether the change is still to be made to the flat leaf whose image
@@ -372,11 +375,7 @@ impl<'a> Reclaim<'a> {
             fields.expect_len(CHANGE, 0)?;
             None
         };
-        match removed {
-            Some(removed) => removed.check(page)?,
-            None if freed.is_none() => return Err(WalError::InvalidChange.into()),
-            None => {}
-        }
+        check_step(page, removed.as_ref(), freed)?;
         Ok(Self {
             page,
             freed,
@@ -409,6 +408,18 @@ impl Iterator for Released<'_> {
 impl ExactSizeIterator for Released<'_> {}
 
 impl FusedIterator for Released<'_> {}
+
+fn check_step(
+    page: PageId,
+    removed: Option<&Removed<'_>>,
+    freed: Option<CommitVersion>,
+) -> Result<(), FormatError> {
+    match removed {
+        Some(removed) => removed.check(page),
+        None if freed.is_none() => Err(WalError::InvalidChange.into()),
+        None => Ok(()),
+    }
+}
 
 fn check_released(
     pointers: impl Iterator<Item = Result<ValuePointer, FormatError>>,
@@ -443,11 +454,7 @@ pub fn write_reclaim(
     released: impl ExactSizeIterator<Item = ValuePointer> + Clone,
     out: &mut Vec<u8>,
 ) -> Result<(), FormatError> {
-    match removed {
-        Some(removed) => removed.check(page)?,
-        None if freed.is_none() => return Err(WalError::InvalidChange.into()),
-        None => {}
-    }
+    check_step(page, removed.as_ref(), freed)?;
     if freed == Some(CommitVersion::EMPTY) {
         return Err(WalError::NotACommit.into());
     }

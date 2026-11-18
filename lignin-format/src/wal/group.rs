@@ -493,7 +493,7 @@ impl<'o> GroupWriter<'o> {
         if entry_len > self.limits.max_entries() {
             return Err(WalError::RunTooLong {
                 len: entry_len.saturating_sub(RUN_ENTRY_LEN),
-                max: self.limits.max_entries().saturating_sub(RUN_ENTRY_LEN),
+                max: self.limits.max_run(),
             }
             .into());
         }
@@ -517,25 +517,22 @@ impl<'o> GroupWriter<'o> {
         if self.last_key.is_some_and(|before| key <= before) {
             return Err(WalError::EntriesOutOfOrder.into());
         }
-        let before = (self.out.len(), self.part_at, self.part);
+        let (len_before, part_at_before, part_before) = (self.out.len(), self.part_at, self.part);
         let part_at = match self.part_at {
             Some(at) => at,
             None => self.open_part(),
         };
         let entry_at = self.out.len();
-        let written = write(self.out);
-        match written.and_then(|()| self.fit(part_at, entry_at)) {
-            Ok(()) => {
-                self.last_key = Some(key);
-                Ok(())
-            }
-            Err(error) => {
-                self.out.truncate(before.0);
-                self.part_at = before.1;
-                self.part = before.2;
-                Err(error)
+        let written = write(self.out).and_then(|()| self.fit(part_at, entry_at));
+        match written {
+            Ok(()) => self.last_key = Some(key),
+            Err(_) => {
+                self.out.truncate(len_before);
+                self.part_at = part_at_before;
+                self.part = part_before;
             }
         }
+        written
     }
 
     fn run(
@@ -544,7 +541,7 @@ impl<'o> GroupWriter<'o> {
         page: PageId,
         write: impl FnOnce(&mut Vec<u8>) -> Result<usize, FormatError>,
     ) -> Result<(), FormatError> {
-        let max = self.limits.max_entries().saturating_sub(RUN_ENTRY_LEN);
+        let max = self.limits.max_run();
         self.entry(OrderKey::page(page), |out| {
             out.push(kind);
             let len_at = out.len();

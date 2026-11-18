@@ -171,11 +171,11 @@ pub(super) fn write_value(
     out: &mut Vec<u8>,
 ) -> Result<u32, FormatError> {
     let value_len = checked_value_len(value.len())?;
-    let too_long = ValueLogError::ValueTooLong {
-        len: value.len() as u64,
-    };
     if part_count(value_len, limits) > u64::from(u16::MAX) + 1 {
-        return Err(too_long.into());
+        return Err(ValueLogError::ValueTooLong {
+            len: value.len() as u64,
+        }
+        .into());
     }
     out.reserve(extent_len(value_len, limits) as usize);
     for (part, data) in value.chunks(limits.max_value_part()).enumerate() {
@@ -407,7 +407,7 @@ pub(super) fn read_with(
         };
         part.check_continues(first.owner(), first.value_len(), expected)?;
         last = part.is_last();
-        expected += 1;
+        expected = expected.saturating_add(1);
         len += record_len;
     }
     let value = LoggedBytes {
