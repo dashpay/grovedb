@@ -3060,7 +3060,7 @@ mod flat_store {
 
 mod charging {
     use grovedb_costs::{
-        cost_model::StorageCostModel,
+        cost_model::{Keyspace, StorageCostModel},
         error::Error as CostError,
         storage_cost::{
             key_value_cost::KeyValueStorageCost,
@@ -3084,14 +3084,6 @@ mod charging {
     const MODEL: StorageCostModel = StorageCostModel::V0;
     const SUBTREE: &[&[u8]] = &[b"charged"];
     const OTHER_SUBTREE: &[&[u8]] = &[b"charged too"];
-
-    #[derive(Clone, Copy, Debug, PartialEq)]
-    enum Keyspace {
-        Meta,
-        Aux,
-        Roots,
-        Data,
-    }
 
     /// The keyspaces in the order a batch charges them.
     const IN_BATCH_ORDER: [Keyspace; 4] = [
@@ -3248,10 +3240,7 @@ mod charging {
 
     #[test]
     fn a_batch_is_charged_by_keyspace_and_then_by_stored_key() {
-        assert_eq!(
-            MODEL.batch_order().map(|keyspace| format!("{keyspace:?}")),
-            IN_BATCH_ORDER.map(|keyspace| format!("{keyspace:?}"))
-        );
+        assert_eq!(MODEL.batch_order(), IN_BATCH_ORDER);
         for (position, earlier) in IN_BATCH_ORDER.into_iter().enumerate() {
             for later in &IN_BATCH_ORDER[position + 1..] {
                 assert_charged_in_order((SUBTREE, earlier, b"z"), (SUBTREE, *later, b"a"));

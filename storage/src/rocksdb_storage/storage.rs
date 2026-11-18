@@ -436,9 +436,7 @@ impl RocksDbStorage {
         } else {
             SubtreePrefix::from(blake3::hash(&body))
         };
-        prefix.wrap_with_cost(
-            COST_MODEL.open_by_path(segment_lens.iter().map(|len| usize::from(*len))),
-        )
+        prefix.wrap_with_cost(COST_MODEL.open_by_path(segment_lens.into_iter().map(usize::from)))
     }
 
     /// Derive the per-axis secondary `SubtreePrefix` for any indexed-tree
