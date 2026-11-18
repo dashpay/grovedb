@@ -1,7 +1,7 @@
 mod crash;
 mod disk_faults;
 mod errors;
-mod faulty;
+pub(crate) mod faulty;
 mod files;
 mod manifest;
 mod model;
