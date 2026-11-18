@@ -8,7 +8,7 @@ use crate::{
     CellAddress, FileId, FormatError, FormatVersion, PageId,
 };
 
-mod model;
+pub(crate) mod model;
 mod reading;
 mod writing;
 

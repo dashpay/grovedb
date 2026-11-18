@@ -94,7 +94,7 @@ mod page;
 mod write;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use cell::{
     CellContent, CellField, CellValue, Hash, HashField, HostedRoots, Side, TreeCell, TreeLink,
