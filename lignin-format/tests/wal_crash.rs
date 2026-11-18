@@ -16,7 +16,7 @@ use lignin_format::{
     tree_page::HashField,
     value_log::{ValuePlace, ValuePointer},
     wal::{
-        self, CarriedValue, CheckpointMark, FlatChange, GroupWriter, LogStart, ValueMove,
+        self, CarriedValue, CheckpointMark, FlatChange, GroupWriter, LogItem, LogStart, ValueMove,
         FIRST_ITEM_OFFSET,
     },
     CommitVersion, FileId, PageId, SlotId,
@@ -69,6 +69,8 @@ struct Written {
     start: LogStart,
     bytes: Vec<u8>,
     ends: Vec<u64>,
+    /// The version of the last group at or before each item.
+    versions: Vec<u64>,
     latest: u64,
 }
 
@@ -81,6 +83,7 @@ impl Written {
             start,
             bytes,
             ends: Vec::new(),
+            versions: Vec::new(),
             latest: start.after().get(),
         }
     }
@@ -157,6 +160,7 @@ impl Written {
         }
         self.bytes.extend_from_slice(&out);
         self.ends.push(self.bytes.len() as u64);
+        self.versions.push(self.latest);
         out
     }
 
@@ -185,14 +189,27 @@ impl Written {
 
         let mut scan = wal::scan(recovered).expect("the start of the file was synced");
         let mut at = FIRST_ITEM_OFFSET;
-        for &item_end in &self.ends[..count] {
+        for (&item_end, &item_version) in self.ends[..count].iter().zip(&self.versions) {
             assert_eq!(scan.offset(), at);
-            assert!(scan.next().is_some(), "the item at {at} is whole");
+            let mut again = Vec::new();
+            match scan.next().expect("a whole item") {
+                LogItem::Commit(group) => {
+                    assert_eq!(group.version(), version(item_version));
+                    again.extend_from_slice(group.as_bytes());
+                }
+                LogItem::Change(change) => change.write(&mut again).expect("a change"),
+                LogItem::Mark(mark) => mark.write(&mut again).expect("a mark"),
+            }
+            assert_eq!(again, self.bytes[at as usize..item_end as usize]);
             at = item_end;
         }
         assert!(scan.next().is_none(), "nothing behind offset {at}");
         let tail = scan.tail();
         assert_eq!(tail.valid_len(), end);
+        let latest = count
+            .checked_sub(1)
+            .map_or(self.start.after(), |item| version(self.versions[item]));
+        assert_eq!(tail.latest(), latest);
         assert_eq!(tail.failure().is_none(), end == recovered.len() as u64);
         (tail, intact == self.bytes.len() as u64)
     }
@@ -372,8 +389,13 @@ fn a_crash_that_loses_the_end_of_one_log_file_ends_the_log_there() {
                 second_missing += 1;
                 continue;
             };
-            let Ok(scan) = wal::scan(&recovered) else {
-                // Its start record did not survive: it holds nothing.
+            // It is read exactly when its header and its start record are
+            // there as they were written. Else it holds nothing.
+            let start_len = FIRST_ITEM_OFFSET as usize;
+            let has_start = recovered.get(..start_len) == Some(&second.bytes[..start_len]);
+            let scan = wal::scan(&recovered);
+            assert_eq!(scan.is_ok(), has_start);
+            let Ok(scan) = scan else {
                 second_missing += 1;
                 continue;
             };
