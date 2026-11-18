@@ -250,7 +250,12 @@ pub enum AppendEntry {
 }
 
 /// A read.
-#[derive(Clone, Debug, PartialEq)]
+///
+/// Two reads are equal exactly when they encode the same. GroveDB's query
+/// types do not derive `Eq`, and they compare the conditional branches of a
+/// query without their order, which a query's meaning and its encoding both
+/// depend on.
+#[derive(Clone, Debug)]
 pub enum Read {
     /// `GroveDb::get`: one element, references followed.
     Get {
@@ -310,8 +315,15 @@ pub enum Read {
     },
 }
 
-// GroveDB's query types compare field by field over bytes and integers, so
-// the comparison is total although they do not derive `Eq`.
+impl PartialEq for Read {
+    fn eq(&self, other: &Self) -> bool {
+        let (mut this, mut that) = (Vec::new(), Vec::new());
+        self.encode(&mut this);
+        other.encode(&mut that);
+        this == that
+    }
+}
+
 impl Eq for Read {}
 
 /// A path query, kept as plain data.

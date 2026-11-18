@@ -892,24 +892,24 @@ const PINNED_STREAMS: &[(&str, u64, u64, &str)] = &[
     ("delete-heavy", 0x4c49474e494e, 6246, "2e9de83aa09c295c2cba188785c401fb2ba19136860685595a46c594ec411531"),
     ("reference-chains", 0x1, 460, "76d941fb245d7cb0be8005bbbc8aaf78bf04cf82fab6c233d0071865b95421b5"),
     ("reference-chains", 0x4c49474e494e, 460, "776d86bf9f6a7d87b8f7a5da2d14d27047dc6a9ab3439b7eec97092b75308e6b"),
-    ("identity-keys", 0x1, 262, "c6fd27e8dc3216590d9efdb0a1fa300efab5a775211bf9d1754f859f6869c59f"),
-    ("identity-keys", 0x4c49474e494e, 262, "1afb0b1e6c527b5533b62000a7b9f47f581fa2dac3d6596e90d9a70ef321f35d"),
-    ("platform-state", 0x1, 227, "6bc725ba56b77c54da7e7117b0daa861baed8405a302aaa8c12c4d6e54939e40"),
-    ("platform-state", 0x4c49474e494e, 230, "06ca367cbf60635b0b50e46eb15a958b78d63f75fe8b86f3a26638d1c2998d32"),
+    ("identity-keys", 0x1, 262, "4fd326146efeb547d2b9154c021c3d9e8f047bfb46f19ad145db54fba5d8c187"),
+    ("identity-keys", 0x4c49474e494e, 262, "e715468ac182b86764efb2e69bde64c98ea31df041baf565c8292d1bafb9075e"),
+    ("platform-state", 0x1, 227, "ad7a07360f8a524353908d5adea159ceaa5d3f0ed00c6fb2a190cf649a7c5db5"),
+    ("platform-state", 0x4c49474e494e, 230, "e57620e2935db7f8e6454e61c97a85c60a9adf3b317833f6b91bbe3b74acf1e3"),
     ("index-rekey", 0x1, 320, "0d21d26fae26ed367c2eb28af967f53ea055edf5098bb6548db028fcd713c1f6"),
     ("index-rekey", 0x4c49474e494e, 320, "59feab58060ff927842bcf09a9f1e294ed7f914a86d518c536c887f081734f1c"),
     ("expiration", 0x1, 559, "a1e894ffe395c4d42af1510481d97d983dffe314e1c57fa15c27ab485b1cba0a"),
     ("expiration", 0x4c49474e494e, 563, "e35fd0fbaa598145529309a6daeff4d73e3427f177480b245316e0c823665f31"),
-    ("index-aggregates", 0x1, 298, "6a61091f940c6221c70febe4aac33f52b37b4480419eee1fc45678ef37ca1957"),
-    ("index-aggregates", 0x4c49474e494e, 298, "33c0ce6a14dec75a1bdce6266aaa7fe98e7cb04c66b2bf77a69e3214d9a171fe"),
+    ("index-aggregates", 0x1, 298, "7fd837a30cb26b65cf54c87651fa9ba48e3ebad25ed20ea8236071326249b582"),
+    ("index-aggregates", 0x4c49474e494e, 298, "dfd6d6ba411d2378e74654c4c90bb85615239de9e9821f7d1d456192f2f45886"),
     ("flat-drops", 0x1, 179, "b080d17288c227df6bd39f7db4eaaf76036ff8b4a3eafff029c66812c8a56d0b"),
     ("flat-drops", 0x4c49474e494e, 179, "4f5039b35499b9f764c9326fd63bd5a1304371bbc1ee961473cfdb4641f09336"),
-    ("moves", 0x1, 149, "2a9a6d9237fc34b0dd1f6305794c79e7fb119a13195c1feaf568dfa049022e7d"),
-    ("moves", 0x4c49474e494e, 149, "3aae20b1f5f267fe966cff2535c1c95a68629580c46cfa7eecc911bc46f665f8"),
-    ("partial-batches", 0x1, 229, "28cdc7f483e259fd89742411a334febfb267a55b6e4dbb90ce19f8bc58137664"),
-    ("partial-batches", 0x4c49474e494e, 229, "3130e3f1ae85b4d1dea8f80e2ab282051649916ac747e64ae96c48eacc6ae6e1"),
-    ("pagination", 0x1, 450, "a5bbffc4df1584027994c26532e41894d01c32e8d558246a734e2ddc38c185a1"),
-    ("pagination", 0x4c49474e494e, 450, "d2006b61fde9aaaae706dea5f37829315a1c7ba852194204f01d4cc1371619ea"),
+    ("moves", 0x1, 251, "5b3657e5db9ab8462294685a88559e3e7555ddcd8223e264a0d82edbe1d5eaf8"),
+    ("moves", 0x4c49474e494e, 251, "4692bf1dead57fe5cec67d5fa8ff7073552b4491ea3a7f57309a15202324eae5"),
+    ("partial-batches", 0x1, 229, "d74626348e1c61fa41fffb10d61a6a6be5859373cf6ae2e6d312d8b7a911461e"),
+    ("partial-batches", 0x4c49474e494e, 229, "05a4bec0f5d876e8307ab29962158cded8eb28ed95004be37ecb5dc6d6a23ba5"),
+    ("pagination", 0x1, 450, "c6f32bc26af5c7c640bd4a27c7f57a50b78e34b5384658ee0a3d97e6973722b4"),
+    ("pagination", 0x4c49474e494e, 450, "8312d028f4fcd6c0ffe2cd4bc6282a8316c09acf0b69802a7d6501036371b075"),
 ];
 
 #[test]
@@ -942,11 +942,11 @@ fn streams_are_pinned() {
 /// features, seed [`SEED`]: protocol version, operations, digest.
 #[rustfmt::skip]
 const PINNED_SUITES: &[(u32, u64, &str)] = &[
-    (1, 18621, "6717e3ac3e99e69ec5d1a8b3dc35832ef1ddb2999d1e1a2a8647e5aab6df5d5e"),
-    (2, 18621, "6717e3ac3e99e69ec5d1a8b3dc35832ef1ddb2999d1e1a2a8647e5aab6df5d5e"),
-    (3, 18621, "b8393784803c2c37e147448d52a7d91204cdac8d2e159ad4094e6fc7cbc7b3a7"),
-    (4, 18993, "a2082e7a2d5ddd3a44aaa509202ebedf5afcbc7b21c82ec40195c3982c70acea"),
-    (5, 19239, "c7f28bec8217f26d797f87f4d9d7a14cbf934b07f1ed709c20ada77ecfb867d5"),
+    (1, 18681, "deeab02a96b2a034f1de20fa700e93727f4fd2d880adf2e00d40476a9ba0b05c"),
+    (2, 18681, "deeab02a96b2a034f1de20fa700e93727f4fd2d880adf2e00d40476a9ba0b05c"),
+    (3, 18681, "72bf872ce410a666a20d952eaada1e1cd43f1f549d12cf42668b6c77e38de32e"),
+    (4, 19095, "031cb7f016b1e831a304628d58b1fb4389bdbf801bd94f68beda26c48385709d"),
+    (5, 19341, "057a1b4eacf62bc2fa1ce7d697d1d3eb02e657c26ccc60589479a6223967383a"),
 ];
 
 #[test]
@@ -1179,7 +1179,7 @@ fn one_of_each_new_kind() -> Vec<Op> {
     ops
 }
 
-const PINNED_NEW_KINDS: &str = "5368330087c18a31ec1b92a3e88630c0cc0f5d3850232eb1f451b12f3c695469";
+const PINNED_NEW_KINDS: &str = "d6e6ba3e426867d00e177ed926a8f9ee5e004cb4a6bde9c5c709738170f1866e";
 
 /// The canonical encoding of the kinds the second unit added: each one
 /// differs from every other, and the bytes are pinned, so a change to the
@@ -1200,21 +1200,27 @@ fn the_new_kinds_have_a_pinned_encoding() {
 
     let coverage = Coverage::of(&ops);
     assert_eq!(coverage.missing_operations(), Vec::<Operation>::new());
-    let offset_with_subquery = ops
-        .iter()
-        .filter(|op| match op {
-            Op::Read(Read::PathQuery { query, .. }) => {
-                query.query.offset.is_some() && query.query.query.has_subquery()
-            }
-            _ => false,
-        })
-        .map(|op| Coverage::of([op]));
-    for coverage in offset_with_subquery {
-        assert!(
-            coverage.operations().contains(&Operation::QueryOffset)
-                && !coverage.operations().contains(&Operation::CountOffsetPage),
-            "only a single range is paged by count"
-        );
+    for op in &ops {
+        let (query, through_rows) = match op {
+            Op::Read(Read::PathQuery { query, .. }) => (query, false),
+            Op::Read(Read::Rows { query, .. }) => (query, true),
+            _ => continue,
+        };
+        if query.query.offset.is_none() || !query.query.query.has_subquery() {
+            continue;
+        }
+        let operations = Coverage::of([op]).operations().clone();
+        if through_rows {
+            assert!(
+                operations.contains(&Operation::QueryOffset),
+                "the row readers take an offset next to a subquery"
+            );
+        } else {
+            assert!(
+                operations.is_empty(),
+                "`run_path_query` refuses an offset next to a subquery"
+            );
+        }
     }
     let stored: Vec<Element> = ops
         .iter()
@@ -1227,6 +1233,91 @@ fn the_new_kinds_have_a_pinned_encoding() {
     assert!(ops
         .iter()
         .all(|op| op.follows_a_commit() == matches!(op, Op::Read(_) | Op::FlushPendingDrops)));
+}
+
+/// Reads are compared as they are encoded: the order of a query's
+/// conditional branches counts, and so does having none against having an
+/// empty set of them.
+#[test]
+fn reads_are_equal_when_they_encode_the_same() {
+    use grovedb::{PathQuery, Query, QueryItem, SizedQuery};
+
+    let read = |query: Query| {
+        Op::Read(Read::PathQuery {
+            query: Box::new(PathQuery::new(
+                vec![b"tree".to_vec()],
+                SizedQuery::new(query, None, None),
+            )),
+            proven: true,
+        })
+    };
+    let branches = |first: u8, second: u8| {
+        let mut query = Query::new_range_full();
+        for key in [first, second] {
+            query.add_conditional_subquery(
+                QueryItem::Key(vec![key]),
+                None,
+                Some(Query::new_single_key(vec![key])),
+            );
+        }
+        query
+    };
+    assert_eq!(read(branches(1, 2)), read(branches(1, 2)));
+    assert_ne!(read(branches(1, 2)), read(branches(2, 1)));
+    assert_eq!(branches(1, 2), branches(2, 1), "GroveDB ignores the order");
+
+    let mut no_branches = Query::new_range_full();
+    no_branches.conditional_subquery_branches = Some(Default::default());
+    assert_ne!(read(no_branches), read(Query::new_range_full()));
+}
+
+/// The moves workload moves keys alone, swaps two keys and chains two
+/// moves through one key, and goes on doing so for more rounds than its
+/// default.
+#[test]
+fn the_moves_workload_swaps_and_chains() {
+    let moves_of = |op: &Op| -> Vec<(Vec<u8>, Vec<u8>)> {
+        let Op::Batch(ops) = op else {
+            return Vec::new();
+        };
+        ops.iter()
+            .filter_map(|op| match op {
+                BatchOp::Move { key, new_key, .. } => Some((key.clone(), new_key.clone())),
+                _ => None,
+            })
+            .collect()
+    };
+    let (mut alone, mut swaps, mut chains, mut longer, mut shorter) = (0, 0, 0, 0, 0);
+    for op in Workload::Moves(Moves::default()).stream(SEED) {
+        let moves = moves_of(&op);
+        let taken = |key: &Vec<u8>| moves.iter().any(|(from, _)| from == key);
+        let freed = |key: &Vec<u8>| moves.iter().any(|(_, to)| to == key);
+        match moves.as_slice() {
+            [] => {}
+            [_] => alone += 1,
+            [(a, b), (c, d)] if a == d && b == c => swaps += 1,
+            _ if moves.iter().any(|(from, to)| taken(to) && !freed(from)) => chains += 1,
+            _ => {}
+        }
+        for (from, to) in &moves {
+            longer += u32::from(to.len() > from.len());
+            shorter += u32::from(to.len() < from.len());
+        }
+    }
+    println!("alone {alone}, swaps {swaps}, chains {chains}, longer {longer}, shorter {shorter}");
+    assert!(alone > 0 && swaps > 0 && chains > 0 && longer > 0 && shorter > 0);
+
+    on_every_grove_version(|grove_version| {
+        let features = Features::for_grove_version(grove_version);
+        for seed in [SEED, 2, 3] {
+            let (_dir, db) = open();
+            let workload = Moves {
+                rounds: 7,
+                features,
+            };
+            run("moves", &db, workload.stream(seed), grove_version);
+        }
+    });
 }
 
 /// A query GroveDB's grammar refuses counts as none of the operations.

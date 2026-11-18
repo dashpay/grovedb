@@ -24,7 +24,8 @@ const VALIDATOR_SETS_PREFIX: &[u8] = b"saved_state/validator_sets/";
 /// shared key prefix. They are written in the block's transaction. A block
 /// rewrites the small record, and now and then the large one, a few
 /// masternode records and a rotated validator set. The reads are the ones
-/// of a restart: each record by key and each collection by prefix.
+/// of a restart: each record by key and each collection by prefix, and a
+/// masternode by id, which is sometimes stored and sometimes not.
 ///
 /// Auxiliary records are not under a root tree: the keys are Drive's, and no
 /// other workload writes them.
@@ -139,7 +140,12 @@ impl PlatformState {
                 1 => build::get_aux(RECENT_STATE_KEY),
                 2 => build::aux_by_prefix(MASTERNODES_PREFIX),
                 3 => build::aux_by_prefix(VALIDATOR_SETS_PREFIX),
-                4 => build::get_aux(&entry_key(MASTERNODES_PREFIX, &read_rng.id())),
+                4 => {
+                    let drawn = read_rng.id();
+                    let stored = masternodes.range(drawn..).next().copied();
+                    let id = stored.filter(|_| block % 12 == 4).unwrap_or(drawn);
+                    build::get_aux(&entry_key(MASTERNODES_PREFIX, &id))
+                }
                 _ => build::get_aux(PROTOCOL_VERSION_KEY),
             });
         }

@@ -27,6 +27,65 @@ pub(super) struct Stocked {
     pub(super) rows: Vec<Vec<u8>>,
 }
 
+/// An append-only tree type.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AppendOnly {
+    Mmr,
+    Bulk,
+    Dense,
+    Commitment,
+    PrivateDocuments,
+}
+
+impl AppendOnly {
+    const ALL: [AppendOnly; 5] = [
+        AppendOnly::Mmr,
+        AppendOnly::Bulk,
+        AppendOnly::Dense,
+        AppendOnly::Commitment,
+        AppendOnly::PrivateDocuments,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            AppendOnly::Mmr => "mmr",
+            AppendOnly::Bulk => "bulk",
+            AppendOnly::Dense => "dense",
+            AppendOnly::Commitment => "commitment",
+            AppendOnly::PrivateDocuments => "private-documents",
+        }
+    }
+
+    fn element(self) -> Element {
+        match self {
+            AppendOnly::Mmr => Element::empty_mmr_tree(),
+            AppendOnly::Bulk => Element::empty_bulk_append_tree(BULK_CHUNK_POWER)
+                .expect("the chunk power is in range"),
+            AppendOnly::Dense => Element::empty_dense_tree(DENSE_HEIGHT),
+            AppendOnly::Commitment => Element::empty_commitment_tree(BULK_CHUNK_POWER)
+                .expect("the chunk power is in range"),
+            AppendOnly::PrivateDocuments => {
+                Element::empty_private_document_store(PRIVATE_DOCUMENT_ENTRY_SIZE, 1)
+                    .expect("the store configuration is in range")
+            }
+        }
+    }
+
+    /// One append to the tree at `tree`.
+    fn append(self, tree: &[Vec<u8>], rng: &mut Rng) -> Op {
+        match self {
+            AppendOnly::Mmr => build::append(tree, AppendEntry::Mmr(value(rng, 1, 60))),
+            AppendOnly::Bulk => build::append(tree, AppendEntry::Bulk(value(rng, 1, 60))),
+            AppendOnly::Dense => build::append(tree, AppendEntry::Dense(value(rng, 1, 40))),
+            AppendOnly::Commitment => Op::Batch(vec![batch::append(tree, commitment_entry(rng))]),
+            AppendOnly::PrivateDocuments => build::append(
+                tree,
+                AppendEntry::PrivateDocument(rng.bytes(PRIVATE_DOCUMENT_ENTRY_SIZE)),
+            ),
+        }
+    }
+}
+
 /// The elements a Merk tree of `kind` is filled with.
 fn filler(kind: TreeKind, rng: &mut Rng) -> Element {
     if kind == TreeKind::CountSumIndexed {
@@ -70,40 +129,16 @@ pub(super) fn stock(
             rows,
         });
     }
-    let mut append_only = vec![
-        ("mmr", Element::empty_mmr_tree()),
-        (
-            "bulk",
-            Element::empty_bulk_append_tree(BULK_CHUNK_POWER).expect("the chunk power is in range"),
-        ),
-        ("dense", Element::empty_dense_tree(DENSE_HEIGHT)),
-        (
-            "commitment",
-            Element::empty_commitment_tree(BULK_CHUNK_POWER).expect("the chunk power is in range"),
-        ),
-    ];
-    if features.private_document_store {
-        append_only.push((
-            "private-documents",
-            Element::empty_private_document_store(PRIVATE_DOCUMENT_ENTRY_SIZE, 1)
-                .expect("the store configuration is in range"),
-        ));
-    }
-    for (name, element) in append_only {
-        let key = format!("{prefix}{name}").into_bytes();
+    for kind in AppendOnly::ALL {
+        if kind == AppendOnly::PrivateDocuments && !features.private_document_store {
+            continue;
+        }
+        let key = format!("{prefix}{}", kind.name()).into_bytes();
         let tree = child(parent, &key);
         for _ in 0..3 {
-            fills.push(match name {
-                "mmr" => build::append(&tree, AppendEntry::Mmr(value(rng, 1, 60))),
-                "bulk" => build::append(&tree, AppendEntry::Bulk(value(rng, 1, 60))),
-                "dense" => build::append(&tree, AppendEntry::Dense(value(rng, 1, 40))),
-                "commitment" => Op::Batch(vec![batch::append(&tree, commitment_entry(rng))]),
-                _ => build::append(
-                    &tree,
-                    AppendEntry::PrivateDocument(rng.bytes(PRIVATE_DOCUMENT_ENTRY_SIZE)),
-                ),
-            });
+            fills.push(kind.append(&tree, rng));
         }
+        let element = kind.element();
         stocked.push(Stocked {
             key: key.clone(),
             tree_type: element.tree_type().expect("an append-only tree is a tree"),

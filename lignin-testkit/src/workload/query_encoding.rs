@@ -57,16 +57,17 @@ fn put_query(out: &mut Vec<u8>, query: &Query) {
     } = query;
     put_items(out, items);
     put_branch(out, default_subquery_branch);
-    match conditional_subquery_branches {
-        Some(branches) => {
+    put_option(
+        out,
+        conditional_subquery_branches.as_ref(),
+        |out, branches| {
             put_len(out, branches.len());
             for (item, branch) in branches {
                 put_item(out, item);
                 put_branch(out, branch);
             }
-        }
-        None => put_len(out, 0),
-    }
+        },
+    );
     out.push(u8::from(*left_to_right));
     out.push(u8::from(*add_parent_tree_on_subquery));
     put_option(out, read_mode.as_deref(), put_read_mode);

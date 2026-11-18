@@ -5,7 +5,7 @@ use grovedb::{element::reference_path::ReferencePathType, Element, Query, QueryI
 use super::{epoch_of_block, identity_id, DOMAIN_IDENTITY_KEYS};
 use crate::workload::{
     build::{self, batch, child, path, storage_flags},
-    op::{BatchOp, Op, Path},
+    op::{self, BatchOp, Op, Path},
     rng::Rng,
     Features, Prepared, Stream,
 };
@@ -343,8 +343,8 @@ impl Generator {
                 build::query(build::select(
                     &identity.keys_path(),
                     vec![
-                        crate::workload::QueryItem::Key(key_id(first.min(second))),
-                        crate::workload::QueryItem::Key(key_id(first.max(second) + 1)),
+                        op::QueryItem::Key(key_id(first.min(second))),
+                        op::QueryItem::Key(key_id(first.max(second) + 1)),
                     ],
                     Some(2),
                 ))

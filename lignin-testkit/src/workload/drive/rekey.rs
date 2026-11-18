@@ -82,6 +82,7 @@ impl IndexRekey {
     /// The stream for `seed`.
     pub fn stream(&self, seed: u64) -> Stream {
         assert!(self.values > 0, "nothing to index by");
+        assert!(self.values <= 100_000, "values are drawn below a million");
         assert!(self.twins <= self.values, "more twins than values");
         assert!(self.moves_per_batch > 0, "a batch needs a move");
         let mut rng = Rng::derive(seed, DOMAIN_INDEX_REKEY, 0);

@@ -22,8 +22,8 @@ const ROOT: &[u8] = b"moves";
 /// flags, to keys of the same and of another length, in normal, sum and
 /// count trees; references that still resolve from the new key; one
 /// populated tree of every type; and a tree with trees nested inside. Moves
-/// go alone, in batches of several, as swaps of two keys and as chains
-/// where a key is freed and taken in one batch.
+/// go in batches of up to three, as swaps of two keys and as chains where a
+/// key is freed and taken in one batch.
 ///
 /// A stream for a grove version without `Move` builds and reads the same
 /// trees and moves nothing.
@@ -51,6 +51,9 @@ struct Movable {
     /// Whether what is stored at the key is a tree whose rows the target
     /// can prove a query over. Anything else is read by key.
     listed: bool,
+    /// Whether the element is stored without flags. GroveDB moves only such
+    /// an element to a key of another length.
+    resizable: bool,
 }
 
 struct Generator {
@@ -89,6 +92,7 @@ impl Moves {
                 parent: trees_path.clone(),
                 key: tree.key.clone(),
                 listed: !tree.rows.is_empty() && self.features.proves_queries_in(tree.tree_type),
+                resizable: true,
             })
             .collect();
         trees.push(generator.nest(&trees_path));
@@ -178,6 +182,7 @@ impl Generator {
                 parent: parent.clone(),
                 key: key.to_vec(),
                 listed: false,
+                resizable: key != b"flagged",
             });
         }
         movables
@@ -221,20 +226,21 @@ impl Generator {
             parent: parent.to_vec(),
             key,
             listed: true,
+            resizable: true,
         }
     }
 
-    /// The key an element moves to: another first byte, and for a value
+    /// The key an element moves to: another first byte, and for an element
     /// stored without flags sometimes another length.
     fn new_key(&mut self, movable: &Movable, round: u32) -> Vec<u8> {
+        const SUFFIX: &[u8] = b"-longer";
         let mut key = movable.key.clone();
         key[0] = if key[0] == b'z' { b'b' } else { key[0] + 1 };
-        let resizable = !movable.listed
-            && movable.key != b"flagged"
-            && !movable.key.starts_with(b"a:")
-            && !movable.key.starts_with(b"b:");
-        if resizable && round.is_multiple_of(2) && self.rng.chance(1, 2) {
-            key.extend_from_slice(b"-longer");
+        if movable.resizable && round.is_multiple_of(2) && self.rng.chance(1, 2) {
+            match key.strip_suffix(SUFFIX).map(<[u8]>::len) {
+                Some(shorter) => key.truncate(shorter),
+                None => key.extend_from_slice(SUFFIX),
+            }
         }
         key
     }
@@ -278,11 +284,14 @@ impl Generator {
         }
     }
 
-    /// Swaps the keys of neighbours that share a tree and a key length.
+    /// Swaps the keys of neighbours that share a tree. Two elements with
+    /// flags swap only keys of one length.
     fn swap_pairs(&mut self, movables: &mut [Movable]) {
         for pair in movables.chunks_mut(2) {
             let [first, second] = pair else { continue };
-            if first.parent != second.parent || first.key.len() != second.key.len() {
+            let lengths_fit =
+                first.key.len() == second.key.len() || (first.resizable && second.resizable);
+            if first.parent != second.parent || !lengths_fit {
                 continue;
             }
             self.apply(vec![
@@ -302,7 +311,7 @@ impl Generator {
         let [first, second, ..] = movables else {
             return;
         };
-        if first.key.len() != second.key.len() || !self.features.move_element {
+        if !(first.resizable && second.resizable) || !self.features.move_element {
             return;
         }
         let mut free = first.key.clone();

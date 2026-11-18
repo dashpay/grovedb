@@ -24,9 +24,13 @@ const OWNERS: u64 = 6;
 /// Every transition here stores a document under its owner's tree in the
 /// first segment. The second segment then pays: it lowers the owner's
 /// balance and raises a fee pool, in sum trees the first segment did not
-/// write to. The transitions vary what else happens: the pause height,
+/// write to. The transitions vary what else happens: the pause height
+/// (the root tree, which is the default, and the two levels below it),
 /// second segments that are empty, that write next to the first segment's
 /// writes or that append to a log, and first segments that delete or patch.
+/// A patch declares the change in size it makes: a value is shorter than
+/// the 251 bytes from which its length takes more than one byte, and the
+/// flags keep their size.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PartialBatches {
     /// How many partial batches to apply.
@@ -49,8 +53,8 @@ struct Generator {
     root: Path,
     balances: Vec<i64>,
     fees: i64,
-    /// The documents each owner holds, as their keys.
-    documents: Vec<Vec<Vec<u8>>>,
+    /// The documents each owner holds: the key and the size of the value.
+    documents: Vec<Vec<(Vec<u8>, u32)>>,
     stored: u64,
     ops: Vec<Op>,
 }
@@ -135,14 +139,12 @@ impl Generator {
     fn new_document(&mut self, owner: u64) -> BatchOp {
         let key = self.stored.to_be_bytes().to_vec();
         self.stored += 1;
-        self.documents[owner as usize].push(key.clone());
+        let body = value(&mut self.rng, 20, 200);
+        self.documents[owner as usize].push((key.clone(), body.len() as u32));
         batch::insert_only(
             &child(&child(&self.root, b"documents"), &owner_key(owner)),
             &key,
-            Element::new_item_with_flags(
-                value(&mut self.rng, 20, 200),
-                storage_flags((self.stored % 512) as u16, None),
-            ),
+            Element::new_item_with_flags(body, storage_flags((self.stored % 512) as u16, None)),
         )
     }
 
@@ -162,7 +164,7 @@ impl Generator {
             0 => add_on = self.payment(owner, fee),
             1 => {}
             2 => {
-                pause_height = Some(1);
+                pause_height = Some(3);
                 add_on = self.payment(owner, fee);
                 add_on.push(batch::insert_or_replace(
                     &child(&self.root, b"balances"),
@@ -175,22 +177,22 @@ impl Generator {
                 add_on = self.payment(owner, fee);
             }
             4 => {
-                if let Some(key) = &earlier {
+                if let Some((key, _)) = &earlier {
                     self.documents[owner as usize].remove(0);
                     ops.push(batch::delete(&owner_path, key));
                 }
                 add_on = self.payment(owner, fee);
             }
             5 => {
-                if let Some(key) = &earlier {
+                if let Some((key, size)) = &earlier {
+                    let body = value(&mut self.rng, 20, 200);
+                    let change_in_bytes = body.len() as i32 - *size as i32;
+                    self.documents[owner as usize][0].1 = body.len() as u32;
                     ops.push(batch::patch(
                         &owner_path,
                         key,
-                        Element::new_item_with_flags(
-                            value(&mut self.rng, 20, 200),
-                            storage_flags(7, None),
-                        ),
-                        0,
+                        Element::new_item_with_flags(body, storage_flags(7, None)),
+                        change_in_bytes,
                     ));
                 }
                 add_on = self.payment(owner, fee);

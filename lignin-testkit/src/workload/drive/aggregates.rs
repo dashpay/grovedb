@@ -1,6 +1,6 @@
 //! Indexes that count, sum and rank, read by aggregate queries.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use grovedb::{Element, PathQuery, Query, TreeType};
 use grovedb_merk::proofs::query::{AggregateFold, IndexAxis};
@@ -92,7 +92,7 @@ struct Document {
 
 /// Documents under indexes that aggregate.
 ///
-/// A document type keeps five indexes whose trees commit a count, a sum or
+/// A document type keeps four indexes whose trees commit a count, a sum or
 /// both into their hashes, so GroveDB can answer for a range of values
 /// without reading the documents: how many, their total, both, and a count
 /// for each of several owners. A fifth index is an indexed tree, which also
@@ -144,6 +144,9 @@ struct Generator {
     documents: Vec<Document>,
     /// How many documents each value tree of each index holds.
     held: BTreeMap<(Index, Vec<Vec<u8>>), u64>,
+    /// The owners whose trees exist. They stay when an owner's last
+    /// document is deleted.
+    owners: BTreeSet<u64>,
     block: u64,
     reads: u64,
     ops: Vec<Op>,
@@ -168,6 +171,7 @@ impl IndexAggregates {
             type_path: path(&[ROOT, &contract, CONTRACT_DOCUMENTS_KEY, DOCUMENT_TYPE]),
             documents: Vec::new(),
             held: BTreeMap::new(),
+            owners: BTreeSet::new(),
             block: 0,
             reads: 0,
             ops: Vec::new(),
@@ -263,14 +267,7 @@ impl Generator {
             let keys = self.value_keys(index, &document);
             let mut parent = self.index_path(index);
             if index == Index::OwnerCategory {
-                let owner_held = self
-                    .held
-                    .range((index, vec![keys[0].clone()])..)
-                    .next()
-                    .is_some_and(|((held_index, held), _)| {
-                        *held_index == index && held[0] == keys[0]
-                    });
-                if !owner_held {
+                if self.owners.insert(document.owner) {
                     ops.push(batch::insert_only(
                         &parent,
                         &keys[0],

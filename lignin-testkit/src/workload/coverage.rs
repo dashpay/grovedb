@@ -327,7 +327,7 @@ impl Coverage {
                 self.operations.extend(query_operations(query, *proven));
             }
             Op::Read(Read::Rows { query, .. }) => {
-                self.operations.extend(query_operations(query, false));
+                self.operations.extend(selection_operations(query));
             }
             Op::Write(Write::Insert { .. } | Write::Delete { .. })
             | Op::Write(Write::ClearSubtree { .. } | Write::Append { .. })
@@ -389,11 +389,9 @@ fn missing(all: &[&'static str], seen: &BTreeSet<&'static str>) -> Vec<&'static 
         .collect()
 }
 
-/// The operations one path query stands for.
-///
-/// A query GroveDB's grammar refuses stands for none: no workload produces
-/// one.
-fn query_operations(path_query: &PathQuery, proven: bool) -> Vec<Operation> {
+/// The operations a query stands for when it selects rows: what a
+/// [`Read::Rows`] is, whose readers take an offset with any query.
+fn selection_operations(path_query: &PathQuery) -> Vec<Operation> {
     let mut operations = Vec::new();
     let query = &path_query.query.query;
     if has_conditional_subquery(query) {
@@ -405,15 +403,27 @@ fn query_operations(path_query: &PathQuery, proven: bool) -> Vec<Operation> {
     if query.has_instance_offset_anywhere() {
         operations.push(Operation::InstanceOffset);
     }
-    let shape = path_query.classify();
     if path_query.query.offset.is_some_and(|offset| offset > 0) {
-        let paged_by_count =
-            proven && matches!(shape, Ok(PathQueryShape::CountOffsetPaginated { .. }));
-        operations.push(if paged_by_count {
-            Operation::CountOffsetPage
-        } else {
-            Operation::QueryOffset
-        });
+        operations.push(Operation::QueryOffset);
+    }
+    operations
+}
+
+/// The operations a [`Read::PathQuery`] stands for.
+///
+/// A query GroveDB's grammar refuses stands for none: no workload produces
+/// one.
+fn query_operations(path_query: &PathQuery, proven: bool) -> Vec<Operation> {
+    let Ok(shape) = path_query.classify() else {
+        return Vec::new();
+    };
+    let mut operations = selection_operations(path_query);
+    if proven && matches!(shape, PathQueryShape::CountOffsetPaginated { .. }) {
+        for operation in &mut operations {
+            if *operation == Operation::QueryOffset {
+                *operation = Operation::CountOffsetPage;
+            }
+        }
     }
     let axis_operation = |traversal: &AxisTraversal| match traversal {
         AxisTraversal::RankedPage { .. } => Operation::AxisRankedPage,
@@ -422,24 +432,23 @@ fn query_operations(path_query: &PathQuery, proven: bool) -> Vec<Operation> {
         AxisTraversal::AggregateOverValueRange { .. } => Operation::AxisAggregate,
     };
     match shape {
-        Ok(PathQueryShape::AggregateLeaf { kind, .. }) => operations.push(match kind {
+        PathQueryShape::AggregateLeaf { kind, .. } => operations.push(match kind {
             AggregateKind::Count => Operation::AggregateCount,
             AggregateKind::Sum => Operation::AggregateSum,
             AggregateKind::CountAndSum => Operation::AggregateCountAndSum,
         }),
-        Ok(PathQueryShape::AggregateCarrier { .. }) => {
+        PathQueryShape::AggregateCarrier { .. } => {
             operations.push(Operation::AggregatePerKey);
         }
-        Ok(PathQueryShape::AxisRead { axis }) => {
+        PathQueryShape::AxisRead { axis } => {
             operations.push(axis_operation(&axis.traversal));
         }
-        Ok(PathQueryShape::BranchedAxisRead { axis, .. }) => {
+        PathQueryShape::BranchedAxisRead { axis, .. } => {
             operations.push(Operation::BranchedAxisRead);
             operations.push(axis_operation(&axis.traversal));
         }
-        Ok(PathQueryShape::SumBudget { .. }) => operations.push(Operation::SumBudgetWindow),
-        Ok(PathQueryShape::KeySelection | PathQueryShape::CountOffsetPaginated { .. }) | Err(_) => {
-        }
+        PathQueryShape::SumBudget { .. } => operations.push(Operation::SumBudgetWindow),
+        PathQueryShape::KeySelection | PathQueryShape::CountOffsetPaginated { .. } => {}
     }
     operations
 }
