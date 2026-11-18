@@ -21,18 +21,27 @@
 //! | `bytes_handed_per_transition` | write phases | B | [`Counters::node_record_bytes`] and [`Counters::other_record_bytes`] |
 //! | `bytes_logged_per_transition` | write phases | B | [`Counters::log_bytes`] |
 //! | `physical_bytes_per_transition` | write phases | B | [`Counters::physical_bytes`] |
-//! | `keyed_lookups_per_transition` | write phases | seeks | `OperationCost::seek_count` |
+//! | `keyed_lookups_per_transition` | write phases | lookups | `OperationCost::seek_count` less one per record logged |
+//! | `seeks_per_transition` | write phases | seeks | `OperationCost::seek_count` |
 //! | `hashes_per_transition` | write phases | calls | `OperationCost::hash_node_calls` |
-//! | `size_on_disk` | `at-size` | B | file lengths in the database directory |
+//! | `size_on_disk` | `at-size`, `flushed` | B | file lengths in the database directory |
 //! | `point_proof_bytes`, `references_proof_bytes` | `warm` | B | proof lengths |
 //! | `wall_per_transition` | write phases | µs | apply time over transitions |
 //! | `block_commit` | write phases | ms | transaction commit |
 //! | `bulk_load` | `load` | s | apply and commit time of the load |
 //! | `point_get`, `point_query_proof`, `references_proof` | `warm`, `cold` | µs | one read |
-//! | `checkpoint`, `reopen` | `at-size` | ms | one checkpoint, one open |
+//! | `checkpoint` | `at-size`, `flushed` | ms | one checkpoint |
+//! | `reopen` | `flushed`, `cold` | ms | one open |
 //!
 //! The write phases are `load` (the million documents), then `create`,
-//! `update` and `delete` at size. [`run`] says what each phase does.
+//! `update` and `delete` at size. `at-size` is the state right after the
+//! load, `flushed` the same after a flush. [`run`] says what each phase
+//! does.
+//!
+//! GroveDB's storage layer charges one seek for every record it writes, so
+//! `keyed_lookups_per_transition` takes the records the engine logged off
+//! `seek_count`, leaving the lookups. A delete without cost information
+//! is charged two seeks, one of them a real read, and stays counted once.
 //!
 //! # Warm and cold
 //!
@@ -167,7 +176,9 @@ pub const STACK_BYTES: usize = 64 << 20;
 ///    creates. Bulk load, and every count row averaged over the load.
 /// 2. At size: `size_on_disk`, warm reads after warm-up reads, the proof
 ///    sizes (the first proof of each kind is verified against the root
-///    hash), checkpoints, a flush, reopens, and cold reads.
+///    hash), checkpoints, a flush, the size and checkpoints again, reopens,
+///    and cold reads. Then every file is read once and the warm-up reads
+///    are repeated, so the writes start warm.
 /// 3. `create`, `update`, `delete`: the writes at size, sampled per block.
 pub fn run(options: &RunOptions) -> Result<Report, BenchError> {
     std::fs::create_dir_all(&options.settings.scratch)
@@ -189,9 +200,10 @@ fn run_here(options: &RunOptions) -> Result<Report, BenchError> {
         ..options.settings.clone()
     };
     let cold_method = ColdMethod::detect(&settings.scratch);
-    let commit = options.commit.clone().or_else(|| {
-        machine::source_commit(&PathBuf::from(env!("CARGO_MANIFEST_DIR")))
-    });
+    let commit = options
+        .commit
+        .clone()
+        .or_else(|| machine::source_commit(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))));
     let mut report = Report {
         schema: report::SCHEMA.to_string(),
         started_at_unix: run::unix_now(),

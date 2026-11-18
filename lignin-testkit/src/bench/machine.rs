@@ -162,7 +162,12 @@ pub fn drop_file_cache(file: &Path) -> bool {
         return false;
     };
     Command::new("dd")
-        .args([&format!("if={file}"), "iflag=nocache", "count=0", "status=none"])
+        .args([
+            &format!("if={file}"),
+            "iflag=nocache",
+            "count=0",
+            "status=none",
+        ])
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
@@ -349,7 +354,8 @@ mod tests {
 
     #[test]
     fn perf_csv_gives_the_instruction_count() {
-        let text = "# started on Wed Nov 18 10:00:00 2026\n\n123456789,,instructions:u,1000,100.00,,\n";
+        let text =
+            "# started on Wed Nov 18 10:00:00 2026\n\n123456789,,instructions:u,1000,100.00,,\n";
         assert_eq!(parse_perf_csv(text), Some(123_456_789));
         assert_eq!(
             parse_perf_csv("<not counted>,,instructions:u,0,0.00,,\n"),
@@ -412,6 +418,9 @@ mod tests {
         }
         assert!(perf.disable());
         let count = perf.finish().expect("perf counted");
-        assert!(count > 1_000_000, "{count} instructions for a million steps");
+        assert!(
+            count > 1_000_000,
+            "{count} instructions for a million steps"
+        );
     }
 }

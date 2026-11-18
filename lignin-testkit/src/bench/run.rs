@@ -28,14 +28,12 @@ use super::{
     engine::{timed, Block, Engine},
     machine::{self, ColdMethod, Perf},
     report::{
-        recorded, ratio, DiskUsage, EngineReport, Method, PhaseTotals, Row, RowKind, Summary,
+        ratio, recorded, DiskUsage, EngineReport, Method, PhaseTotals, Row, RowKind, Summary,
         WorkloadSpec,
     },
     BenchError,
 };
-use crate::workload::{
-    drive::Documents, op::BatchOp, Op, Read, Rng, Stream, Workload, Write,
-};
+use crate::workload::{drive::Documents, op::BatchOp, Op, Read, Rng, Stream, Workload, Write};
 
 const DOMAIN_BENCH_READS: u64 = 0xBE7C;
 const REFERENCES_PER_PROOF: u16 = 100;
@@ -165,9 +163,7 @@ impl Settings {
             ));
         }
         if self.deletes > self.documents + self.measured_creates {
-            return Err(BenchError::Check(
-                "more deletes than documents".to_string(),
-            ));
+            return Err(BenchError::Check("more deletes than documents".to_string()));
         }
         Ok(())
     }
@@ -222,10 +218,7 @@ impl Meter {
     /// Instructions and CPU nanoseconds over every measured section.
     fn finish(self) -> (Option<u64>, Option<u64>) {
         let instructions = self.perf.and_then(Perf::finish);
-        (
-            instructions.filter(|_| !self.perf_failed),
-            self.cpu_ns,
-        )
+        (instructions.filter(|_| !self.perf_failed), self.cpu_ns)
     }
 }
 
@@ -272,7 +265,9 @@ fn row(id: &str, phase: &str, unit: &str, kind: RowKind, value: f64, samples: Ve
         instructions_per_sample: None,
         cpu_per_sample: None,
         storage_read_bytes_per_sample: None,
-        ratio_to_recorded: recorded.as_ref().and_then(|recorded| ratio(value, recorded.value)),
+        ratio_to_recorded: recorded
+            .as_ref()
+            .and_then(|recorded| ratio(value, recorded.value)),
         recorded,
         ratio_to_rocksdb: None,
         source: String::new(),
@@ -428,7 +423,10 @@ fn write_phase<E: Engine>(
         committed?;
         engine.settle()?;
 
-        totals.logical_bytes += ops.iter().map(|op| logical_bytes(op, grove_version)).sum::<u64>();
+        totals.logical_bytes += ops
+            .iter()
+            .map(|op| logical_bytes(op, grove_version))
+            .sum::<u64>();
         totals.transitions += writes;
         totals.blocks += 1;
         totals.apply_seconds += apply_time.as_secs_f64();
@@ -532,10 +530,23 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
         count_row(
             "keyed_lookups_per_transition",
             phase,
+            "lookups",
+            totals
+                .seek_count
+                .saturating_sub(counters.node_records + counters.other_records) as f64,
+            n,
+            &format!(
+                "{COST_SOURCE}: seek_count, less the one seek the storage layer charges for \
+                 each record it writes (the {engine} log's records)"
+            ),
+        ),
+        count_row(
+            "seeks_per_transition",
+            phase,
             "seeks",
             totals.seek_count as f64,
             n,
-            &format!("{COST_SOURCE}: seek_count"),
+            &format!("{COST_SOURCE}: seek_count, writes included"),
         ),
         count_row(
             "hashes_per_transition",
@@ -685,9 +696,7 @@ impl Reads {
 
     fn point_query(&mut self, loaded: u64) -> PathQuery {
         let index = self.document(loaded);
-        self.documents
-            .point_query(self.seed, index)
-            .to_path_query()
+        self.documents.point_query(self.seed, index).to_path_query()
     }
 
     fn references_query(&mut self) -> PathQuery {
@@ -769,6 +778,89 @@ impl ReadKind {
     }
 }
 
+/// Times `settings.checkpoints` checkpoints of `engine`, each into a new
+/// directory removed afterwards.
+fn checkpoints<E: Engine>(engine: &E, settings: &Settings, phase: &str) -> Result<Row, BenchError> {
+    let mut meter = Meter::new(settings, &format!("checkpoint-{phase}"));
+    let mut samples = Vec::new();
+    let target = settings.scratch.join(format!("{}-checkpoint", E::NAME));
+    let remove = |target: &Path| {
+        std::fs::remove_dir_all(target)
+            .map_err(|error| BenchError::io("removing a checkpoint", error))
+    };
+    for _ in 0..settings.checkpoints {
+        if target.exists() {
+            remove(&target)?;
+        }
+        let mark = meter.start();
+        let (result, elapsed) = timed(|| engine.checkpoint(&target));
+        meter.stop(mark);
+        result?;
+        samples.push(Unit::Millis.of(elapsed));
+        remove(&target)?;
+    }
+    Ok(time_row(
+        "checkpoint",
+        phase,
+        Unit::Millis,
+        samples,
+        meter.finish(),
+        u64::from(settings.checkpoints),
+        "Instant around a checkpoint into a new directory on the same file system",
+    ))
+}
+
+/// Brings the database's files back into the page cache after cold reads,
+/// so the writes measured next start warm: every file is read once, then
+/// the warm-up reads are made again.
+fn rewarm<E: Engine>(
+    engine: &E,
+    reads: &mut Reads,
+    settings: &Settings,
+    grove_version: &GroveVersion,
+) -> Result<(), BenchError> {
+    let entries = std::fs::read_dir(engine.dir())
+        .map_err(|error| BenchError::io("warming the database", error))?;
+    for entry in entries.flatten() {
+        if entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            let mut file = std::fs::File::open(entry.path())
+                .map_err(|error| BenchError::io("warming the database", error))?;
+            std::io::copy(&mut file, &mut std::io::sink())
+                .map_err(|error| BenchError::io("warming the database", error))?;
+        }
+    }
+    warm_up(engine, reads, settings, grove_version)
+}
+
+/// The untimed reads before timed warm ones.
+fn warm_up<E: Engine>(
+    engine: &E,
+    reads: &mut Reads,
+    settings: &Settings,
+    grove_version: &GroveVersion,
+) -> Result<(), BenchError> {
+    let mut idle = Meter {
+        perf: None,
+        perf_failed: false,
+        cpu_ns: None,
+    };
+    let kinds = [
+        ReadKind::Get,
+        ReadKind::PointProof,
+        ReadKind::ReferencesProof,
+    ];
+    for n in 0..settings.warmup_reads {
+        kinds[n as usize % kinds.len()].read(
+            engine,
+            reads,
+            settings.documents,
+            grove_version,
+            &mut idle,
+        )?;
+    }
+    Ok(())
+}
+
 /// Runs the whole measurement over a fresh `E` database in
 /// `settings.scratch/<engine>`.
 pub fn run_engine<E: Engine>(
@@ -821,12 +913,17 @@ fn measure<E: Engine>(
     )?;
     rows.extend(count_rows(&load, E::NAME));
     let load_seconds = load.totals.apply_seconds + load.totals.commit_seconds;
+    let both = |a: Option<u64>, b: Option<u64>| a.zip(b).map(|(a, b)| a + b);
+    let load_meter = (
+        both(load.apply_meter.0, load.commit_meter.0),
+        both(load.apply_meter.1, load.commit_meter.1),
+    );
     rows.push(time_row(
         "bulk_load",
         "load",
         Unit::Seconds,
         vec![load_seconds],
-        load.apply_meter,
+        load_meter,
         1,
         "Instant around every apply and commit of the load, summed; one sample per run",
     ));
@@ -862,20 +959,13 @@ fn measure<E: Engine>(
     ));
 
     let loaded = settings.documents;
-    let mut idle = Meter {
-        perf: None,
-        perf_failed: false,
-        cpu_ns: None,
-    };
-    for n in 0..settings.warmup_reads {
-        let kind = [ReadKind::Get, ReadKind::PointProof, ReadKind::ReferencesProof][n as usize % 3];
-        kind.read(&engine, &mut reads, loaded, grove_version, &mut idle)?;
-    }
+    warm_up(&engine, &mut reads, settings, grove_version)?;
 
     let mut get_meter = Meter::new(settings, "warm-get");
     let mut get_us = Vec::new();
     for _ in 0..settings.point_reads {
-        let (elapsed, _) = ReadKind::Get.read(&engine, &mut reads, loaded, grove_version, &mut get_meter)?;
+        let (elapsed, _) =
+            ReadKind::Get.read(&engine, &mut reads, loaded, grove_version, &mut get_meter)?;
         get_us.push(Unit::Micros.of(elapsed));
     }
     rows.push(time_row(
@@ -913,7 +1003,8 @@ fn measure<E: Engine>(
         let mut times = Vec::new();
         let mut sizes = Vec::new();
         for _ in 0..count {
-            let (elapsed, size) = kind.read(&engine, &mut reads, loaded, grove_version, &mut meter)?;
+            let (elapsed, size) =
+                kind.read(&engine, &mut reads, loaded, grove_version, &mut meter)?;
             times.push(Unit::Micros.of(elapsed));
             sizes.push(size.unwrap_or(0) as f64);
         }
@@ -943,42 +1034,18 @@ fn measure<E: Engine>(
         ));
     }
 
-    let mut checkpoint_meter = Meter::new(settings, "checkpoint");
-    let mut checkpoint_ms = Vec::new();
-    let target = settings.scratch.join(format!("{}-checkpoint", E::NAME));
-    for _ in 0..settings.checkpoints {
-        if target.exists() {
-            std::fs::remove_dir_all(&target)
-                .map_err(|error| BenchError::io("removing a checkpoint", error))?;
-        }
-        let mark = checkpoint_meter.start();
-        let (result, elapsed) = timed(|| engine.checkpoint(&target));
-        checkpoint_meter.stop(mark);
-        result?;
-        checkpoint_ms.push(Unit::Millis.of(elapsed));
-        std::fs::remove_dir_all(&target)
-            .map_err(|error| BenchError::io("removing a checkpoint", error))?;
-    }
-    rows.push(time_row(
-        "checkpoint",
-        "at-size",
-        Unit::Millis,
-        checkpoint_ms,
-        checkpoint_meter.finish(),
-        u64::from(settings.checkpoints),
-        "Instant around GroveDb::create_checkpoint into a new directory on the same file system",
-    ));
-
+    rows.push(checkpoints(&engine, settings, "at-size")?);
     engine.flush()?;
     let disk_after_flush = disk_usage(dir)?;
     rows.push(count_row(
-        "size_on_disk_after_flush",
-        "at-size",
+        "size_on_disk",
+        "flushed",
         "B",
         disk_after_flush.bytes as f64,
         1,
         "lengths of the files in the database directory after a flush",
     ));
+    rows.push(checkpoints(&engine, settings, "flushed")?);
 
     let mut reopen_meter = Meter::new(settings, "reopen");
     let mut reopen_ms = Vec::new();
@@ -992,7 +1059,7 @@ fn measure<E: Engine>(
     }
     rows.push(time_row(
         "reopen",
-        "at-size",
+        "flushed",
         Unit::Millis,
         reopen_ms,
         reopen_meter.finish(),
@@ -1002,7 +1069,11 @@ fn measure<E: Engine>(
 
     let mut cold_open_ms = Vec::new();
     let mut cold_open_meter = Meter::new(settings, "cold-open");
-    for kind in [ReadKind::Get, ReadKind::PointProof, ReadKind::ReferencesProof] {
+    for kind in [
+        ReadKind::Get,
+        ReadKind::PointProof,
+        ReadKind::ReferencesProof,
+    ] {
         let mut meter = Meter::new(settings, &format!("cold-{}", kind.id()));
         let mut times = Vec::new();
         let mut read_bytes = Some(0u64);
@@ -1048,6 +1119,8 @@ fn measure<E: Engine>(
         u64::from(settings.cold_reads) * 3,
         "Instant around opening the database with its files dropped from the page cache",
     ));
+
+    rewarm(&engine, &mut reads, settings, grove_version)?;
 
     for (phase, transitions) in [
         ("create", settings.measured_creates),

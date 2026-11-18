@@ -68,7 +68,11 @@ fn a_run_measures_every_row_and_count_rows_repeat() {
         ("bulk_load", "load"),
         ("size_on_disk", "at-size"),
         ("checkpoint", "at-size"),
-        ("reopen", "at-size"),
+        ("checkpoint", "flushed"),
+        ("size_on_disk", "flushed"),
+        ("reopen", "flushed"),
+        ("reopen", "cold"),
+        ("seeks_per_transition", "load"),
         ("point_get", "warm"),
         ("point_query_proof", "warm"),
         ("references_proof", "warm"),
@@ -108,21 +112,39 @@ fn a_run_measures_every_row_and_count_rows_repeat() {
         assert!(cold.storage_read_bytes_per_sample.is_some());
     }
 
-    let records = engine.row("node_records_per_transition", "load").unwrap().value;
+    let records = engine
+        .row("node_records_per_transition", "load")
+        .unwrap()
+        .value;
     assert!(
         (15.0..80.0).contains(&records),
         "{records} node records per transition"
     );
-    let handed = engine.row("bytes_handed_per_transition", "load").unwrap().value;
-    let logged = engine.row("bytes_logged_per_transition", "load").unwrap().value;
-    assert!(logged > handed && logged < handed * 1.1, "{logged} vs {handed}");
-    let logical = engine.row("logical_bytes_per_transition", "load").unwrap().value;
+    let handed = engine
+        .row("bytes_handed_per_transition", "load")
+        .unwrap()
+        .value;
+    let logged = engine
+        .row("bytes_logged_per_transition", "load")
+        .unwrap()
+        .value;
+    assert!(
+        logged > handed && logged < handed * 1.1,
+        "{logged} vs {handed}"
+    );
+    let logical = engine
+        .row("logical_bytes_per_transition", "load")
+        .unwrap()
+        .value;
     assert!((500.0..600.0).contains(&logical), "{logical} logical bytes");
     let reference_proof = engine.row("references_proof_bytes", "warm").unwrap();
     assert!(reference_proof.value > 100.0 * 400.0);
 
     let load = &engine.phases[0];
-    assert_eq!((load.phase.as_str(), load.transitions, load.blocks), ("load", 2_000, 100));
+    assert_eq!(
+        (load.phase.as_str(), load.transitions, load.blocks),
+        ("load", 2_000, 100)
+    );
     assert_eq!(load.counters.log_groups, 100, "one write batch per block");
 
     let agreements = compare(&first, &second);
@@ -181,7 +203,9 @@ fn the_command_writes_a_report() {
     let report = Report::from_json(&std::fs::read_to_string(&out).unwrap()).unwrap();
     assert_eq!(report.commit.as_deref(), Some("0123"));
     assert_eq!(report.machine.label.as_deref(), Some("test"));
-    assert!(report.engines[0].row("wall_per_transition", "update").is_none());
+    assert!(report.engines[0]
+        .row("wall_per_transition", "update")
+        .is_none());
 
     let to_stdout: Vec<String> = args
         .iter()
@@ -220,5 +244,8 @@ fn a_run_without_enough_documents_per_owner_is_refused() {
         "no owner has 100 documents to read through references"
     );
     options.settings.deletes = 1_000;
-    assert_eq!(run(&options).unwrap_err().to_string(), "more deletes than documents");
+    assert_eq!(
+        run(&options).unwrap_err().to_string(),
+        "more deletes than documents"
+    );
 }

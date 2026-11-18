@@ -493,7 +493,10 @@ mod tests {
         for (error, text) in [
             (WalError::RecordType(9), "unknown log record type 9"),
             (WalError::Fragment(7), "log fragment out of order at 7"),
-            (WalError::EntryTag(0x40), "unknown write batch entry tag 0x40"),
+            (
+                WalError::EntryTag(0x40),
+                "unknown write batch entry tag 0x40",
+            ),
             (WalError::Truncated, "write batch truncated"),
             (
                 WalError::Count {

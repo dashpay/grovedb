@@ -223,7 +223,8 @@ impl Block for RocksDbBlock<'_> {
         op: &Op,
         grove_version: &GroveVersion,
     ) -> Result<OperationCost, BenchError> {
-        let CostContext { value, cost } = apply(self.db, op, Some(&self.transaction), grove_version);
+        let CostContext { value, cost } =
+            apply(self.db, op, Some(&self.transaction), grove_version);
         value?;
         Ok(cost)
     }
@@ -257,11 +258,18 @@ mod tests {
 
         let mut block = engine.begin_block();
         block
-            .apply(&insert(vec![], b"tree", Element::empty_tree()), grove_version)
+            .apply(
+                &insert(vec![], b"tree", Element::empty_tree()),
+                grove_version,
+            )
             .unwrap();
         let cost = block
             .apply(
-                &insert(vec![b"tree".to_vec()], b"key", Element::new_item(vec![7; 100])),
+                &insert(
+                    vec![b"tree".to_vec()],
+                    b"key",
+                    Element::new_item(vec![7; 100]),
+                ),
                 grove_version,
             )
             .unwrap();
@@ -275,11 +283,19 @@ mod tests {
         assert!(after_block.log_bytes > after_block.node_record_bytes);
         assert_eq!(after_block.page_reads, None);
 
-        engine.db.put_aux(b"aux-key", b"aux-value", None, None).unwrap().unwrap();
+        engine
+            .db
+            .put_aux(b"aux-key", b"aux-value", None, None)
+            .unwrap()
+            .unwrap();
         engine.settle().unwrap();
         let aux = engine.wal_totals().families.get(&1).copied().unwrap();
         // The key carries the 32-byte prefix of the root path.
-        assert_eq!((aux.puts, aux.put_bytes), (1, 32 + 7 + 9), "aux is family 1");
+        assert_eq!(
+            (aux.puts, aux.put_bytes),
+            (1, 32 + 7 + 9),
+            "aux is family 1"
+        );
 
         engine.flush().unwrap();
         let flushed = engine.counters().unwrap().since(&after_block);

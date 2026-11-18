@@ -180,7 +180,8 @@ pub struct Row {
     /// The measure, such as `bytes_logged_per_transition`.
     pub id: String,
     /// Where in the run it was measured: `load`, `create`, `update`,
-    /// `delete`, `at-size`, `warm` or `cold`.
+    /// `delete`, `at-size` (right after the load), `flushed` (after a flush
+    /// at size), `warm` or `cold`.
     pub phase: String,
     /// The unit of `value` and `samples`.
     pub unit: String,
@@ -380,8 +381,8 @@ pub const RECORDED: &[(&str, &str, f64, Option<[f64; 2]>, &str)] = &[
         None,
         "100 references to documents, with proof: 1,262 µs",
     ),
-    ("checkpoint", "at-size", 10.0, None, "Checkpoint: 10 ms"),
-    ("reopen", "at-size", 31.0, None, "Reopen: 31 ms"),
+    ("checkpoint", "flushed", 10.0, None, "Checkpoint: 10 ms"),
+    ("reopen", "flushed", 31.0, None, "Reopen: 31 ms"),
 ];
 
 /// The plan's value for row `id` of `phase`.
@@ -598,14 +599,20 @@ mod tests {
                 1
             );
         }
-        assert_eq!(recorded("bulk_load", "load").unwrap().range, Some([138.0, 151.0]));
+        assert_eq!(
+            recorded("bulk_load", "load").unwrap().range,
+            Some([138.0, 151.0])
+        );
         assert_eq!(recorded("bulk_load", "create"), None);
     }
 
     #[test]
     fn ratios_are_to_rocksdb_in_the_same_run() {
         let mut run = report(vec![
-            engine("rocksdb", vec![row("point_get", "warm", 10.0), row("zero", "warm", 0.0)]),
+            engine(
+                "rocksdb",
+                vec![row("point_get", "warm", 10.0), row("zero", "warm", 0.0)],
+            ),
             engine(
                 "lignindb",
                 vec![
@@ -617,15 +624,27 @@ mod tests {
         ]);
         run.fill_ratios();
         let lignin = &run.engines[1];
-        assert_eq!(lignin.row("point_get", "warm").unwrap().ratio_to_rocksdb, Some(0.25));
-        assert_eq!(lignin.row("zero", "warm").unwrap().ratio_to_rocksdb, None);
-        assert_eq!(lignin.row("only_here", "warm").unwrap().ratio_to_rocksdb, None);
         assert_eq!(
-            run.engines[0].row("point_get", "warm").unwrap().ratio_to_rocksdb,
+            lignin.row("point_get", "warm").unwrap().ratio_to_rocksdb,
+            Some(0.25)
+        );
+        assert_eq!(lignin.row("zero", "warm").unwrap().ratio_to_rocksdb, None);
+        assert_eq!(
+            lignin.row("only_here", "warm").unwrap().ratio_to_rocksdb,
+            None
+        );
+        assert_eq!(
+            run.engines[0]
+                .row("point_get", "warm")
+                .unwrap()
+                .ratio_to_rocksdb,
             Some(1.0)
         );
 
-        let mut without = report(vec![engine("lignindb", vec![row("point_get", "warm", 1.0)])]);
+        let mut without = report(vec![engine(
+            "lignindb",
+            vec![row("point_get", "warm", 1.0)],
+        )]);
         without.fill_ratios();
         assert_eq!(without.engines[0].rows[0].ratio_to_rocksdb, None);
     }
@@ -645,7 +664,10 @@ mod tests {
         ]);
         let second = report(vec![engine(
             "rocksdb",
-            vec![row("point_get", "warm", 10.9), row("reopen", "at-size", 0.0)],
+            vec![
+                row("point_get", "warm", 10.9),
+                row("reopen", "at-size", 0.0),
+            ],
         )]);
         let agreements = compare(&first, &second);
         assert_eq!(agreements.len(), 2);
@@ -658,7 +680,10 @@ mod tests {
 
     #[test]
     fn reports_round_trip_through_json() {
-        let run = report(vec![engine("rocksdb", vec![row("point_get", "warm", 10.0)])]);
+        let run = report(vec![engine(
+            "rocksdb",
+            vec![row("point_get", "warm", 10.0)],
+        )]);
         assert_eq!(Report::from_json(&run.to_json()).unwrap(), run);
 
         let mut other = run.clone();

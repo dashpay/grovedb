@@ -22,7 +22,8 @@ use super::{
     compare, report::ratio, run, BenchError, EngineChoice, Report, RowKind, RunOptions, Settings,
 };
 
-const USAGE: &str = "usage: lignin-bench run [options] | table REPORT | compare FIRST SECOND [--tolerance F]";
+const USAGE: &str =
+    "usage: lignin-bench run [options] | table REPORT | compare FIRST SECOND [--tolerance F]";
 
 /// Runs the command with `args` (the program name excluded) and returns
 /// what it prints.
@@ -36,8 +37,9 @@ pub fn main_with(args: &[String]) -> Result<String, BenchError> {
             let json = report.to_json();
             match out {
                 Some(path) => {
-                    std::fs::write(&path, &json)
-                        .map_err(|error| BenchError::io(format!("writing {}", path.display()), error))?;
+                    std::fs::write(&path, &json).map_err(|error| {
+                        BenchError::io(format!("writing {}", path.display()), error)
+                    })?;
                     Ok(table(&report))
                 }
                 None => Ok(json),
@@ -142,7 +144,10 @@ fn number(value: f64) -> String {
 }
 
 fn percent(fraction: Option<f64>) -> String {
-    fraction.map_or_else(|| "-".to_string(), |fraction| format!("{:+.1}%", fraction * 100.0))
+    fraction.map_or_else(
+        || "-".to_string(),
+        |fraction| format!("{:+.1}%", fraction * 100.0),
+    )
 }
 
 /// The rows of `report`, one line each, beside the plan's recorded values.
@@ -153,7 +158,11 @@ pub fn table(report: &Report) -> String {
         "{} {} on {} ({}), commit {}, load {:?} -> {:?}",
         report.workload.name,
         report.workload.documents,
-        report.machine.label.as_deref().unwrap_or(&report.machine.os),
+        report
+            .machine
+            .label
+            .as_deref()
+            .unwrap_or(&report.machine.os),
         report.machine.cpu.as_deref().unwrap_or("unknown cpu"),
         report.commit.as_deref().unwrap_or("unknown"),
         report.load_average_before,
@@ -163,7 +172,15 @@ pub fn table(report: &Report) -> String {
         let _ = writeln!(
             out,
             "{:<9} {:<8} {:<36} {:>14} {:<7} {:>12} {:>9} {:>14} {:>9}",
-            "engine", "phase", "row", "value", "unit", "recorded", "vs plan", "instr/sample", "vs rocks"
+            "engine",
+            "phase",
+            "row",
+            "value",
+            "unit",
+            "recorded",
+            "vs plan",
+            "instr/sample",
+            "vs rocks"
         );
         for row in &engine.rows {
             let _ = writeln!(
