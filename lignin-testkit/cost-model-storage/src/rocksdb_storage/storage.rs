@@ -30,9 +30,15 @@ use crate::{
 /// The 32 bytes that name a subtree.
 pub type SubtreePrefix = [u8; 32];
 
-/// The name of the file the rule counts are written to when a storage is
-/// dropped, if this variable is set.
-const HITS_FILE_VARIABLE: &str = "LIGNIN_COST_MODEL_HITS";
+/// The directory the rule counts are written to when a storage is dropped,
+/// if this variable is set. Every process writes a file of its own there,
+/// named by its process id, so that the counts of a test run of several
+/// processes can be added up.
+const HITS_DIRECTORY_VARIABLE: &str = "LIGNIN_COST_MODEL_HITS";
+
+/// Held while the counts are written, so that the last storage a process
+/// drops leaves its final counts.
+static HITS_WRITER: Mutex<()> = Mutex::new(());
 
 /// The file that marks a directory as holding a database of the model, and
 /// names which.
@@ -216,16 +222,13 @@ pub struct RocksDbStorage {
 
 impl Drop for RocksDbStorage {
     fn drop(&mut self) {
-        if let Some(file) = std::env::var_os(HITS_FILE_VARIABLE) {
-            let file = PathBuf::from(file);
-            let mut written = file.clone().into_os_string();
-            written.push(format!(
-                ".{}-{}",
-                std::process::id(),
-                NEXT_MARK.fetch_add(1, Ordering::Relaxed)
-            ));
+        if let Some(directory) = std::env::var_os(HITS_DIRECTORY_VARIABLE) {
+            let directory = PathBuf::from(directory);
+            let process = std::process::id();
+            let _writing = HITS_WRITER.lock().unwrap_or_else(PoisonError::into_inner);
+            let written = directory.join(format!("{process}.tmp"));
             if std::fs::write(&written, rules::hits_report()).is_ok() {
-                let _ = std::fs::rename(&written, file);
+                let _ = std::fs::rename(&written, directory.join(format!("{process}.tsv")));
             }
         }
     }

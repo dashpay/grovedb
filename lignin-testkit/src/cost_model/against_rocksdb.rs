@@ -536,6 +536,7 @@ fn batches_reads_and_cursors_cost_what_the_rules_say() {
         delete(Keyspace::Data, SHALLOW, b"flat", None),
         delete(Keyspace::Data, SHALLOW, b"summed", Some(removal(39, 120))),
         delete(Keyspace::Meta, SHALLOW, b"m", None),
+        delete(Keyspace::Meta, DEEP, b"m", Some(removal(34, 9))),
         delete(Keyspace::Roots, SHALLOW, b"r", None),
         delete(Keyspace::Roots, ROOT, b"r", Some(removal(0, 0))),
     ]));

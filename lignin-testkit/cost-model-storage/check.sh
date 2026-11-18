@@ -15,8 +15,9 @@
 # A replay fails if RocksDB is among the crates that build, if a step
 # differs from the corpus, if the model met a node whose link sizes are not
 # the ones Merk gave with it, or if it left no rule counts. The rule counts
-# of the run are printed last and kept in
-# $LIGNIN_COST_MODEL_WORK/rule-hits.tsv.
+# of a replay are printed last. Those of a replay or a test run are kept in
+# $LIGNIN_COST_MODEL_WORK/rule-hits.tsv, added up over the processes of the
+# run.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -41,12 +42,27 @@ ln -sfn "$here/src" "$storage/src"
 
 export CARGO_TARGET_DIR=$work/target
 hits=$work/rule-hits.tsv
-rm -f "$hits"
+counts=$work/rule-hits
+rm -rf "$hits" "$counts"
+mkdir -p "$counts"
 cd "$workspace"
+
+add_up_counts() {
+    set -- "$counts"/*.tsv
+    [ -e "$1" ] || return 0
+    awk -F '\t' '
+        !($3 in times) { cases[++rows] = $3; rule[$3] = $1 }
+        { times[$3] += $2 }
+        END { for (row = 1; row <= rows; row++) print rule[cases[row]] "\t" times[cases[row]] "\t" cases[row] }
+    ' "$@" > "$hits"
+}
 
 if [ "${1:-}" = test ]; then
     shift
-    LIGNIN_COST_MODEL_HITS=$hits exec cargo test "$@"
+    status=0
+    LIGNIN_COST_MODEL_HITS=$counts cargo test "$@" || status=$?
+    add_up_counts
+    exit "$status"
 fi
 
 if [ "${1:-}" = profile ]; then
@@ -83,8 +99,9 @@ esac
 
 [ $# -gt 0 ] || set -- replay
 status=0
-LIGNIN_COST_MODEL_HITS=$hits cargo run --release -p lignin-testkit --bin lignin-golden -- \
+LIGNIN_COST_MODEL_HITS=$counts cargo run --release -p lignin-testkit --bin lignin-golden -- \
     "$@" --corpus "$repo/lignin-testkit/corpus" || status=$?
+add_up_counts
 
 if [ -e "$hits" ]; then
     echo

@@ -491,11 +491,7 @@ pub fn charge_batch(
                 cost_info,
             } => {
                 let record = Record::new(keyspace, &value);
-                match link_sizes_agree(&record, &children_sizes) {
-                    Some(true) => hit(Rule::LinkSizesAgree),
-                    Some(false) => hit(Rule::LinkSizesDiffer),
-                    None => {}
-                }
+                count_link_sizes(&record, &children_sizes);
                 match rules::put(
                     keyspace,
                     key.key.len(),
@@ -532,6 +528,16 @@ pub fn charge_batch(
         }
     }
     (Ok(on_success), at_once)
+}
+
+/// N2: counts whether the sizes that came with a put are the node's own
+/// ([`link_sizes_agree`]). Every put whose charge uses them passes here.
+pub fn count_link_sizes(record: &Record, children_sizes: &ChildrenSizesWithIsSumTree) {
+    match link_sizes_agree(record, children_sizes) {
+        Some(true) => hit(Rule::LinkSizesAgree),
+        Some(false) => hit(Rule::LinkSizesDiffer),
+        None => {}
+    }
 }
 
 /// Whether the sizes a Merk gave with a node are the ones the node's fields
@@ -1098,5 +1104,23 @@ mod tests {
             link_sizes_agree(&Record::Bytes(Vec::new()), &sizes(1, 40)),
             None
         );
+
+        let differing = || {
+            rules::hits()
+                .into_iter()
+                .find(|(rule, _)| *rule == Rule::LinkSizesDiffer)
+                .map_or(0, |(_, count)| count)
+        };
+        let before = differing();
+        let ops = [BatchOp::Put {
+            keyspace: Keyspace::Data,
+            key: StoredKey::new(A, b"node"),
+            value: node.bytes(),
+            children_sizes: sizes(2, 40),
+            cost_info: None,
+        }];
+        let (charged, _) = charge_batch(&Database::new(), ops, &mut Vec::new());
+        assert!(charged.is_ok());
+        assert!(differing() > before);
     }
 }

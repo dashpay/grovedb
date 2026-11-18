@@ -18,7 +18,9 @@ check.sh profile [VERSION]    the cost of a few common operations and the
                               rules applied (section 11.1 of the document)
 ```
 
-A replay is BASE-02's: it compares the cost, result, root hash and proof of every step with the committed corpus and names the first step that differs. After it, the script prints how often each rule was applied (`target/cost-model/rule-hits.tsv`) and fails if the model met a node whose link sizes are not the ones Merk passed with it.
+A replay is BASE-02's: it compares the cost, result, root hash and proof of every step with the committed corpus and names the first step that differs. After it, the script prints how often each rule was applied (`target/cost-model/rule-hits.tsv`) and fails if the model met a node whose link sizes are not the ones Merk passed with it. A test run leaves its counts in the same file, added up over its test processes.
+
+`check.sh test -p grovedb-storage ...` also runs the model's own unit tests, which the stand-in crate includes; `-- --skip cost_model::` leaves them out. GroveDB's suite passes on the model but for `test_checkpoint_wal_under_threshold_is_preserved`, which looks for RocksDB's WAL files.
 
 When the corpus grows, run `check.sh` again: it replays whatever `lignin-testkit/corpus` holds.
 

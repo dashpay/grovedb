@@ -16,7 +16,7 @@ use super::storage::{SubtreePrefix, Tx};
 use crate::{
     cost_model::{
         rules::{self, CursorMove, Keyspace},
-        state::{Cursor, Record, StoredKey, Write},
+        state::{count_link_sizes, Cursor, Record, StoredKey, Write},
     },
     error::Error,
     Batch, FlatStore, RawIterator, StorageBatch, StorageContext,
@@ -489,6 +489,7 @@ impl PrefixedRocksDbBatch<'_> {
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), grovedb_costs::error::Error> {
         let record = Record::new(keyspace, value);
+        count_link_sizes(&record, children_sizes);
         match rules::immediate_batch_put(
             keyspace,
             key.len(),
