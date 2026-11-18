@@ -1955,7 +1955,7 @@ document or of the engine.
 | --- | --- | --- | --- | --- |
 | D1 | A read with no transaction | reads the latest state at each storage read | pins one version for the operation (RD2) | The result is one RocksDB can also give. Visible only when a commit lands during the operation. |
 | D2 | Wipe | four range deletes, one column family after another, each its own write (`storage.rs:871-881`) | one commit (CV3) | P-23 and VER-04 ask for a wipe that a crash leaves whole or undone. On RocksDB a reader, a checkpoint or a crash between two steps sees some columns wiped. |
-| D3 | Flat subtree drop | the drop's commit deletes the element and writes a pending-drop record. The subtree's records stay until `flush_pending_prefix_drops` deletes them: one range delete per prefix and column family, then one delete of the record, each its own write (`storage.rs:928-966,994-1005`) | the subtree's records are removed in the drop's commit (CV9). The flush checks liveness as today, reclaims the cells and pages the drop left, which takes no version (CL6), and deletes each pending-drop record with a write with no transaction: one commit per record | TREE-09 unlinks at the drop. The records in question are unreachable from any element. They can be seen only by reading a dropped prefix directly, or by re-creating the dropped path before the flush, which callers are told not to do. |
+| D3 | Flat subtree drop | the drop's commit deletes the element and writes a pending-drop record. The subtree's records stay until `flush_pending_prefix_drops` deletes them: one range delete per prefix and column family, then one delete of the record, each its own write (`storage.rs:928-966,994-1005`) | the subtree's records are removed in the drop's commit (CV9). The flush checks liveness as today, reclaims the cells and pages the drop left, which takes no version (CL6), and deletes each pending-drop record with a write with no transaction: one commit per record | TREE-09 unlinks at the drop. The records in question are unreachable from any element. Between the drop and the flush the RocksDB engine still returns them in two cases: to a read of a dropped prefix made directly, and to a caller that re-creates the dropped path before the flush, which callers are told not to do. LigninDB returns them in neither (CV9). |
 | D4 | Commit when the memtable history is too short | `TryAgain` | CF2 decided exactly (CF9) | node-local |
 | D5 | A range delete outside *T* over a key *T* wrote | `Busy` or success, depending on the memtables | `Conflict` (CF9) | node-local; not reached by Platform's call sites |
 | D6 | Records loaded outside *T* under a key *T* wrote | success | `Conflict` (CF9) | devnet seeding only; not reached there |
@@ -2167,13 +2167,13 @@ TREE-09, VER-05)**
   STORE-04. A commit that writes values too long for their cells appends to
   the log only: no value-log file is written or synced and no manifest is
   replaced (CM7). Every handle that sees the commit reads the value, with
-  the same bytes and the same cost before and after write-back. A crash
-  before write-back recovers the value from the log. Write-back racing a
-  write transaction that copies the page and then commits or rolls back
-  places every value exactly once and counts it once. A committer under
-  backpressure is never left waiting for write-back that its own copies
-  hold back (FL5). A snapshot of a page version that was superseded with a
-  pending value keeps reading it.
+  the same bytes and the same cost before and after write-back. After a
+  crash before write-back, a recovery that keeps the commit (DU2) has the
+  value, from the log. Write-back racing a write transaction that copies
+  the page and then commits or rolls back places every value exactly once
+  and counts it once. A committer under backpressure is never left waiting
+  for write-back that its own copies hold back (FL5). A snapshot of a page
+  version that was superseded with a pending value keeps reading it.
 - T-VL6: the counts after a crash (DU5), owed by STORE-07 with STORE-03.
   Samples are taken while commits, write-back and value moves run, and a
   crash comes at any point. The counts recovered from the sample in force
@@ -2204,8 +2204,10 @@ TREE-09, VER-05)**
   commits, write-back, trimming and table checkpoints running, a crash at
   any point never recovers a link born after the version it lands on, and
   never loses a page that is in use there. That includes the case
-  `page-alloc.md` reproduced: a freed page whose chain was trimmed, a
-  checkpoint written after that, and a crash that loses the freeing commit.
+  `page-alloc.md` reproduced: a page is freed, its chain is trimmed, and a
+  checkpoint is written after that. The checkpoint is not installed while
+  the log is durable only to a version before the freeing commit, so a
+  crash that loses that commit never finds it in force.
 - T-CK4: a checkpoint sampled while page steps append their records (CK2),
   owed by TXN-06. Its log ends at the end of a record, it opens, its state
   is *S(vc)*, and its counts of live values agree with its pages.
@@ -2471,6 +2473,9 @@ these further choices were made. They are listed for the same reason.
     would spare write-back the wait for a long transaction, and would put
     the correction into step 7 of a commit. With the choice made here, **no
     committer waits for write-back that its own copies hold back** (FL5).
+    This choice decides when write-back can run, which the ruling did not.
+    STORE-06 should have the owner's word on it before it builds on it
+    (section 18, open point 2).
 25. **A page version that is superseded with a pending value and still
     pinned is STORE-06's to keep readable**, in one of two ways (FL7).
     Nothing is counted for it either way.
@@ -2507,9 +2512,10 @@ LT7's levels are now a table, with one level added between 4 and 5.
 | The directory entry of a Merk belongs to that Merk's unit. The scope that holds the Merk writes it. A directory page is shared like any other. | SC2, ST3 |
 | The tree layer can ask whether a host's element is marked pending. While it is, the root is taken from the directory entry. | SC9 |
 | The second application of a scope's writes goes through the tree layer, by key. The alternative of separate pages is gone. The tree layer can ask for other scopes' claims, for placement. | LT4, section 17 item 14 |
-| The cells and directory entries a drop leaves behind stay until reclaimed, and from the drop's commit on no open returns them. A clear can be a drop that keeps the host. | CV9, ST3, CV3 |
+| The cells and directory entries a drop leaves behind stay until reclaimed, and from the drop's commit on no open returns them. A clear can be a drop that keeps the host. | CV9, ST3, CV3, row D3 of 14.5 |
 | Reclaiming is a walk over cells, not a list of pages. | CL6, PV4, PV7, WT11 |
 | A location in a private frame also ends when the cell is carried or deleted. The key found at a location proves nothing. | PN8 |
+| A write can stop below the host of its Merk. A Merk that was empty when a transaction first wrote it then shares no key with a foreign commit to it, so GM3 is narrowed to a Merk that had a root. | GM3, 14.4 |
 
 ### 18.2 From SEAM-02, `node-store.md` and `storage/src/storage.rs`
 
@@ -2542,9 +2548,13 @@ LT7's levels are now a table, with one level added between 4 and 5.
 | A value move is abandoned for a private copy only if the copy is held when the pointer is installed. | CL5 |
 | The value log's counts lock has a place in the lock order, and a change point writes its log record while it holds it. | LT7 (level 4a), CM3, CM8, CL7 |
 | The counts recover from a sample in the table checkpoint and the changes replayed after the sample's place. | DU5 (new), FL4, FL6 |
-| Records of background changes are in the log, between the groups. | CM9, CK2 |
+| Records of background changes are in the log, between the groups. Recovery reads them under the same test as the groups. | CM9, CK2, DU2 |
 
-### 18.6 Tables
+### 18.6 Terms, tables and choices
+
+Section 1 has four new terms: committed read, change point, page step and
+pending value. Section 17 has the new items 24 to 31, and its items 14 and
+23 were reworded.
 
 The pairs of section 13 (rows 4, 9, 10, 13, 14, 16 and 17) and its table of
 events, the table of tasks in 15.1, and the tests of 15.2 follow these
@@ -2559,9 +2569,11 @@ Found while the amendments were written, and not settled by them:
    share no key in iteration two** until finalize (GM3, 14.4). GROVE-11
    needs a rule for it, for example a record of the Merk's unit that every
    change of its root writes.
-2. **Write-back and a transaction that is open for long.** By choice 24 of
-   section 17 a pending value on a page that such a transaction has copied
-   waits for it, and its log file with it.
+2. **Whether a pending value may be placed under a private copy.** The
+   ruling behind FL7 does not say. Choice 24 of section 17 says no, as PV7
+   does for a value move. A pending value on a page that a transaction has
+   copied then waits for that transaction, and its log file with it. It is
+   a choice for the owner, because it decides when write-back can run.
 3. **A superseded page version with a pending value that a pin still
    needs** (choice 25): keeping it in memory needs FL3's rule on folding
    read for a version that is kept there, and placing it for that version
