@@ -576,36 +576,41 @@ mod tests {
         report.end.cells = 1_000;
         report.end.pages = 10;
         report.end.fill = 0.75;
-        report.end.stats = stats(100, &[7; 100]);
+        // Ninety transitions of six pages, then ten of eight.
+        let dirty: Vec<u64> = (0..100)
+            .map(|index| if index < 90 { 6 } else { 8 })
+            .collect();
+        report.end.stats = stats(100, &dirty);
         report.end.stats.records = 4_600;
         report.end.stats.hash_only_records = 4_000;
         report.end.stats.out_of_line_bytes = 45_900;
         report.end.stats.moves[Cause::Split as usize].value_bytes = 30_000;
         report.samples.push(Sample {
             fill: 0.6,
-            stats: stats(90, &[6; 90]),
+            stats: stats(90, &dirty[..90]),
             ..report.end.clone()
         });
         report.samples.push(Sample {
-            stats: stats(95, &[6; 95]),
+            stats: stats(95, &dirty[..95]),
             ..report.end.clone()
         });
         report.samples.push(report.end.clone());
         assert_eq!(report.lowest_fill(), 0.0, "the first sample was empty");
         let last = report.last_tenth();
         assert_eq!(
-            (last.transitions, last.dirty_pages),
-            (10, 160),
+            (last.transitions, last.dirty_pages, last.max_dirty),
+            (10, 80, 8),
             "since the sample at nine tenths, not the one after it",
         );
         assert_eq!(report.nodes_per_page(), 100.0);
-        assert_eq!(report.dirty_per_transition(), 7.0);
+        assert_eq!(report.dirty_per_transition(), 6.2);
         let text = report.to_string();
         for expected in [
             "documents: page 32768 B, inline up to 256 B",
             "1000 nodes in 10 pages: 100.0 nodes per page, fill 75.0%",
-            "pages dirtied  7.00 per transition",
-            "p50 7 p99 7 max 7",
+            "pages dirtied  6.20 per transition",
+            "last tenth 8.00",
+            "p50 6 p99 8 max 8",
             "Merk records   46.0 per transition",
             "87.0% hash only",
             "65.4% on top of the 459 B",
