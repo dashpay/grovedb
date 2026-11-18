@@ -5,7 +5,7 @@ use grovedb_merk::{
     element::tree_type::ElementTreeTypeExtensions,
     proofs::{
         execute,
-        query::{PathKey, QueryProofVerify, VerifyOptions, PROOF_VERSION_LATEST},
+        query::{PathKey, ProofLimitMode, QueryProofVerify, VerifyOptions, PROOF_VERSION_LATEST},
         Decoder, Node, Op, Query,
     },
     tree::{axes_digest, combine_hash, combine_hash_three, value_hash, NULL_HASH},
@@ -28,7 +28,7 @@ use crate::{
         AxisDescentProof, GroveDBProof, GroveDBProofV0, GroveDBProofV1, LayerProof,
         MerkOnlyLayerProof, ProofBytes, ProveOptions,
     },
-    query::{GroveTrunkQueryResult, PathTrunkChunkQuery},
+    query::{GroveTrunkQueryResult, HasSubquery, PathTrunkChunkQuery},
     query_result_type::PathKeyOptionalElementTrio,
     Element, Error, GroveDb, PathQuery,
 };
@@ -1943,19 +1943,33 @@ impl GroveDb {
         // child may still owe rows). Prover and verifier must derive
         // the identical value here or honest proofs fail the
         // more-data-than-limit check.
-        let layer_limit = if matches!(
-            internal_query.has_subquery,
-            crate::query::HasSubquery::NoSubquery
-        ) {
-            limit_state.effective_layer_limit(frame_instance)
-        } else {
+        let has_subquery_branches = !matches!(internal_query.has_subquery, HasSubquery::NoSubquery);
+        let layer_limit = if has_subquery_branches {
             limit_state.global
+        } else {
+            limit_state.effective_layer_limit(frame_instance)
+        };
+        // A layer with subquery branches under an instance cap: how many
+        // of its keys the budget needs is known only once the descents
+        // have run, so from GROVE_V5 the prover may stop the layer before
+        // `layer_limit` and the layer is read as a gap-free prefix of its
+        // query. Whether the stop was allowed is decided after the rows
+        // below, from this verifier's own budget
+        // (`check_instance_capped_layer_stop`). Read before the walk: the
+        // budget's value changes as rows are charged, whether the frame
+        // has one does not.
+        let capped_subquery_layer = has_subquery_branches && frame_instance.is_some();
+        let layer_limit_mode = if capped_subquery_layer {
+            Self::instance_capped_layer_limit_mode(grove_version)?
+        } else {
+            ProofLimitMode::Exact
         };
 
         let (root_hash, merk_result) = level_query
-            .execute_proof(
+            .execute_proof_with_limit_mode(
                 merk_proof_bytes,
                 layer_limit,
+                layer_limit_mode,
                 left_to_right,
                 PROOF_VERSION_LATEST, // V1 proof: strict mode rejects items in value hash nodes
             )
@@ -1966,6 +1980,10 @@ impl GroveDb {
                     format!("Invalid V1 proof verification parameters: {}", e),
                 )
             })?;
+        // The layer stopped revealing its query with limit to spare. An
+        // exact read refuses that outright, so this is only ever true for
+        // a prefix read.
+        let layer_stopped_before_its_limit = !merk_result.exhausted && merk_result.limit != Some(0);
 
         let mut verified_keys = BTreeSet::new();
 
@@ -2877,6 +2895,19 @@ impl GroveDb {
                     }
                 }
             }
+        }
+
+        // Every row the layer reveals has been verified, descents
+        // included, so the budget below is what those rows really spent.
+        // A layer that hid the rest of its query is accepted only if
+        // they spent it all.
+        if capped_subquery_layer {
+            Self::check_instance_capped_layer_stop(
+                query,
+                layer_stopped_before_its_limit,
+                limit_state.is_exhausted(frame_instance),
+                grove_version,
+            )?;
         }
 
         // Succinctness check: reject proof if it contains lower layers

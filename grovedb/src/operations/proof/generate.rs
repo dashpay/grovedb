@@ -33,7 +33,10 @@ use crate::{
         util::hex_to_ascii, GroveDBProof, GroveDBProofV0, GroveDBProofV1, LayerProof,
         MerkOnlyLayerProof, ProofBytes, ProveOptions,
     },
-    query::{validated::ValidatedPathQuery, AggregateKind, PathQueryShape, PathTrunkChunkQuery},
+    query::{
+        validated::ValidatedPathQuery, AggregateKind, HasSubquery, PathQueryShape,
+        PathTrunkChunkQuery,
+    },
     reference_path::path_from_reference_path_type,
     Element, Error, GroveDb, PathQuery, Transaction, TransactionArg,
 };
@@ -1380,7 +1383,7 @@ impl GroveDb {
 
     /// Generates query proof given a subtree and appends the result to a proof
     /// list
-    fn generate_merk_proof<'a, S>(
+    pub(super) fn generate_merk_proof<'a, S>(
         &self,
         subtree: &'a Merk<S>,
         query_items: &[QueryItem],
@@ -2086,7 +2089,7 @@ impl GroveDb {
 
         let limit = if path.len() < path_query.path.len() {
             None
-        } else if matches!(query.has_subquery, crate::query::HasSubquery::NoSubquery) {
+        } else if matches!(query.has_subquery, HasSubquery::NoSubquery) {
             // Pure terminal layer: its merk rows ARE the result rows,
             // so the tighter of the global and instance budgets bounds
             // what the merk walk needs to emit.
@@ -2100,8 +2103,16 @@ impl GroveDb {
             // empty-layer charge keeps it aligned with truncation)
             // bounds this walk; instance caps bound each descent's own
             // layers and stop further descents via `done_with_results`.
+            // Which keys the instance budget needed is known once the
+            // descents have run: `truncate_instance_capped_layer` then
+            // hides the rest (from GROVE_V5).
             limit_state.global
         };
+        // Read before the walk: the budget's value changes as rows are
+        // charged, whether the frame has one does not. The verifier
+        // derives the same flag.
+        let capped_subquery_layer =
+            frame_instance.is_some() && !matches!(query.has_subquery, HasSubquery::NoSubquery);
 
         if let Some(offset) = query.instance_offset {
             return self
@@ -2286,9 +2297,15 @@ impl GroveDb {
         let mut lower_layers = BTreeMap::new();
         let mut has_a_result_at_level = false;
         let mut done_with_results = false;
+        // The first op the walk reaches with a spent budget: every row
+        // before it was processed, every row from it on is filler.
+        let mut first_op_past_the_budget = None;
 
-        for op in merk_proof.proof.iter_mut() {
+        for (op_index, op) in merk_proof.proof.iter_mut().enumerate() {
             done_with_results |= limit_state.is_exhausted(frame_instance);
+            if done_with_results && first_op_past_the_budget.is_none() {
+                first_op_past_the_budget = Some(op_index);
+            }
             // Mirror generate.rs's first ref-rewriting loop — preserve
             // ProvableSumTree special nodes too, plus the dual-axis
             // KVCountSum used by ProvableCountProvableSumTree (PCPS)
@@ -2454,6 +2471,7 @@ impl GroveDb {
                             }
                             other => other,
                         };
+                        let is_empty_plain_tree = matches!(elem, Ok(Element::Tree(None, _)));
                         match elem {
                             // `ReferenceWithSumItem` shares this proof path
                             // with `Reference` — both produce a
@@ -3569,6 +3587,9 @@ impl GroveDb {
                                     // The empty tree itself is the queried
                                     // result row.
                                     limit_state.charge_row_with_instance(&mut frame_instance);
+                                    if is_empty_plain_tree {
+                                        limit_state.empty_plain_tree_rows += 1;
+                                    }
                                 }
                                 has_a_result_at_level |= true;
                             }
@@ -3631,6 +3652,21 @@ impl GroveDb {
             // bound traversal work across many empty subtrees, while
             // per-instance budgets bound result rows.
             limit_state.charge_empty_layer();
+        }
+
+        if capped_subquery_layer {
+            cost_return_on_error!(
+                &mut cost,
+                self.truncate_instance_capped_layer(
+                    &subtree,
+                    &query.items,
+                    query.left_to_right,
+                    &mut merk_proof,
+                    first_op_past_the_budget,
+                    limit_state.empty_plain_tree_rows > 0,
+                    grove_version,
+                )
+            );
         }
 
         let mut serialized_merk_proof = Vec::with_capacity(1024);

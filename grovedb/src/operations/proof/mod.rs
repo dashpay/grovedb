@@ -18,6 +18,11 @@ mod bind_terminal_non_merk_tree;
 mod chunk_proof_row_binding;
 #[cfg(feature = "minimal")]
 mod generate;
+/// Versioned dispatch for a V1 proof layer that has subquery branches under
+/// a per-instance cap: proven in full, or truncated where its budget is
+/// spent (issue #962). See the module docs for the soundness argument.
+#[cfg(any(feature = "minimal", feature = "verify"))]
+mod instance_cap_layer_truncation;
 // The prover lives in `indexed_axis::generate` and is `minimal`-gated there;
 // the envelope types and verification entry points must be reachable from a
 // verifier-only build (Dash Platform's `drive` crate compiles its
@@ -198,6 +203,12 @@ pub(crate) struct V1LimitState {
     pub consumed_rows: u64,
     /// Rows plus empty-layer charges across the whole walk.
     pub consumed_total: u64,
+    /// Prover only: result rows charged for an empty plain `Tree`. A
+    /// verifier that leaves empty trees out of its result (the default)
+    /// charges nothing for such a row, so once this is non-zero its
+    /// budgets run ahead of the prover's.
+    #[cfg(feature = "minimal")]
+    pub empty_plain_tree_rows: u64,
 }
 
 impl V1LimitState {
@@ -206,6 +217,8 @@ impl V1LimitState {
             global,
             consumed_rows: 0,
             consumed_total: 0,
+            #[cfg(feature = "minimal")]
+            empty_plain_tree_rows: 0,
         }
     }
 
