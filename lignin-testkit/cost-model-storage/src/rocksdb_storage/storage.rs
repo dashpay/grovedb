@@ -66,13 +66,17 @@ fn mark_in(directory: &Path) -> Option<String> {
 }
 
 /// The database whose mark `directory` holds, if this process has it.
+/// Every call also lets go of the databases whose directory has gone, so a
+/// run that opens one directory after another keeps only the live ones.
 fn database_at(directory: &Path) -> Option<Arc<Database>> {
-    let mark = mark_in(directory)?;
+    let mark = mark_in(directory);
     let mut databases = DATABASES.lock().unwrap_or_else(PoisonError::into_inner);
-    let found = databases.get_mut(&mark).map(|opened| {
-        opened.at = directory.to_path_buf();
-        Arc::clone(&opened.db)
-    });
+    let found = mark
+        .and_then(|mark| databases.get_mut(&mark))
+        .map(|opened| {
+            opened.at = directory.to_path_buf();
+            Arc::clone(&opened.db)
+        });
     databases.retain(|mark, opened| mark_in(&opened.at).as_deref() == Some(mark));
     found
 }

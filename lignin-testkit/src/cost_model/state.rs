@@ -531,7 +531,9 @@ pub fn charge_batch(
 }
 
 /// N2: counts whether the sizes that came with a put are the node's own
-/// ([`link_sizes_agree`]). Every put whose charge uses them passes here.
+/// ([`link_sizes_agree`]). Every put whose charge uses them passes here. A
+/// record that came with sizes and is kept as bytes counts as differing, so
+/// a run cannot charge a Merk's node from stored bytes unnoticed.
 pub fn count_link_sizes(record: &Record, children_sizes: &ChildrenSizesWithIsSumTree) {
     match link_sizes_agree(record, children_sizes) {
         Some(true) => hit(Rule::LinkSizesAgree),
@@ -543,13 +545,16 @@ pub fn count_link_sizes(record: &Record, children_sizes: &ChildrenSizesWithIsSum
 /// Whether the sizes a Merk gave with a node are the ones the node's fields
 /// have: the link of each child as its key and 36 bytes next to the length
 /// of its aggregate, and the feature as its cost class and length. `None`
-/// when the record is not a node or came with no sizes.
+/// when the record came with no sizes. Sizes come only with a node, so a
+/// record that came with them and is not kept as a node's fields does not
+/// agree.
 pub fn link_sizes_agree(
     record: &Record,
     children_sizes: &ChildrenSizesWithIsSumTree,
 ) -> Option<bool> {
-    let (Record::Node(node), Some((feature, left, right))) = (record, children_sizes) else {
-        return None;
+    let (feature, left, right) = children_sizes.as_ref()?;
+    let Record::Node(node) = record else {
+        return Some(false);
     };
     let sizes = node.sizes();
     let link = |child: Option<(usize, u32)>| {
@@ -1102,8 +1107,9 @@ mod tests {
         assert_eq!(link_sizes_agree(&node, &None), None);
         assert_eq!(
             link_sizes_agree(&Record::Bytes(Vec::new()), &sizes(1, 40)),
-            None
+            Some(false)
         );
+        assert_eq!(link_sizes_agree(&Record::Bytes(Vec::new()), &None), None);
 
         let differing = || {
             rules::hits()

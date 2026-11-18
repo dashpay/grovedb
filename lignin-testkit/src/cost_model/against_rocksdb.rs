@@ -181,6 +181,8 @@ struct Sides<'s> {
     real: <RocksDbStorage as Storage<'s>>::Transaction,
     db: &'s Database,
     model: Transaction,
+    /// What the last batch cost, the same on both sides.
+    last: OperationCost,
 }
 
 impl<'s> Sides<'s> {
@@ -190,6 +192,7 @@ impl<'s> Sides<'s> {
             real: storage.start_transaction(),
             db,
             model: Transaction::new(),
+            last: OperationCost::default(),
         }
     }
 
@@ -288,6 +291,7 @@ impl<'s> Sides<'s> {
         };
         assert_eq!(applied.cost, model_cost);
         assert_eq!(applied.value.is_ok(), taken);
+        self.last = model_cost;
         taken
     }
 
@@ -563,6 +567,62 @@ fn batches_reads_and_cursors_cost_what_the_rules_say() {
     assert_eq!(sides.read(Keyspace::Data, DEEP, b"counted"), None);
     assert!(sides.read(Keyspace::Data, DEEP, b"unpriced").is_some());
     sides.commit();
+}
+
+/// The writes of a batch are charged in the order meta, aux, roots, data
+/// and by key, and that order shows in a batch that is applied: with the
+/// arithmetic of grove versions 1 to 3, a sectioned removal added to a plain
+/// one loses the default owner's section, and a plain one added to a
+/// sectioned one keeps it.
+#[test]
+fn the_order_of_a_batch_shows_in_the_removed_bytes() {
+    use grovedb_costs::storage_cost::removal::{StorageRemovalPerEpochByIdentifier, UNKNOWN_EPOCH};
+
+    let by_owner = |sections: &[(u16, u32)]| {
+        let mut by_owner = StorageRemovalPerEpochByIdentifier::default();
+        let owner = by_owner.entry([0; 32]).or_default();
+        for (epoch, bytes) in sections {
+            owner.insert(*epoch, *bytes);
+        }
+        StorageRemovedBytes::SectionedStorageRemoval(by_owner)
+    };
+    let sectioned = || KeyValueStorageCost {
+        key_storage_cost: StorageCost {
+            removed_bytes: by_owner(&[(3, 50)]),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let storage = TempStorage::new();
+    let db = Database::new();
+    let mut sides = Sides::new(&storage, &db);
+
+    assert!(sides.apply(vec![
+        delete(Keyspace::Data, SHALLOW, b"a", None),
+        delete(Keyspace::Data, SHALLOW, b"b", Some(sectioned())),
+    ]));
+    assert_eq!(
+        sides.last.storage_cost.removed_bytes,
+        StorageRemovedBytes::SectionedStorageRemoval(Default::default())
+    );
+
+    assert!(sides.apply(vec![
+        delete(Keyspace::Data, SHALLOW, b"a", Some(sectioned())),
+        delete(Keyspace::Data, SHALLOW, b"b", None),
+    ]));
+    assert_eq!(
+        sides.last.storage_cost.removed_bytes,
+        by_owner(&[(3, 50), (UNKNOWN_EPOCH, 35)])
+    );
+
+    assert!(sides.apply(vec![
+        delete(Keyspace::Data, SHALLOW, b"b", Some(sectioned())),
+        delete(Keyspace::Aux, SHALLOW, b"z", None),
+    ]));
+    assert_eq!(
+        sides.last.storage_cost.removed_bytes,
+        StorageRemovedBytes::SectionedStorageRemoval(Default::default())
+    );
 }
 
 #[test]
