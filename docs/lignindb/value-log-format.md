@@ -405,7 +405,7 @@ records is cut short, `Truncated` counts from the first byte of the value.
 | TREE-03 Fragment maintenance, TREE-07 Flat keyspace | The move rule O5 for every cell with a value pointer that goes to another page in a split, a merge or a fragment move. | Which cells move. |
 | TREE-09 Subtree drop | A dropped cell that holds a value pointer counts as one fewer live value in its file (O6). | How it learns of those cells without reading every page, or whether it reads them. |
 | FMT-02 Tree page codec | The pointer's three fields and their valid ranges (section 4). An accessor that finds the cell holding a given pointer (O1). No slot id has to stay stable for the value log. | How the cell stores the pointer. Slot ids: this task adds none. |
-| FMT-04 Flat page codec | The out-of-line value of a flat leaf entry is the 16-byte pointer (P6). | Nothing changes in its bytes. |
+| FMT-04 Flat page codec | The out-of-line value of a flat leaf entry is the 16-byte pointer (P6). `FlatPage::decode` rejects one that is not a valid pointer (P2; P5 of `flat-page.md`). | Nothing changes in its bytes. |
 | FMT-08 Decoder fuzzing | The decoders to fuzz: `ValueRecord::decode`, `read_value`, `scan`, `record_len`, `ValuePointer::decode`, `ValuePointer::read`. Golden bytes are in the tests. | The fuzz targets and the committed golden files. |
 | VER-07 Physical invariant checker | O2 and O5 as invariants: every value pointer leads to a value whose owner is the page of the cell that holds it, and no two cells hold the same pointer. | The checker. |
 
