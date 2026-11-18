@@ -300,7 +300,9 @@ keeps the log ahead of the checkpoint:
   that the commits after *C* did, but for K3 (STORE-10).
 
 The table cannot check this. Whoever takes the checkpoint passes *C*, and
-vouches that write-back has reached it.
+vouches that write-back has reached it: no change of a commit up to *C* is
+still to be written back when the checkpoint is begun. A commit that failed
+(CM9) made no page version, and has no link.
 
 **K2. A checkpoint is a copy of every chain, not a cut at *C*.** It holds
 the chains as the table had them, which can include links of versions above
@@ -318,7 +320,9 @@ reaches. Whoever installs the checkpoint says which version the log is
 durable through, and a checkpoint that needs more is refused
 (`PageTableError::LogBehind`). So a recovery never lands on a version below
 a link of the checkpoint it loads, and never below the version the
-checkpoint covers.
+checkpoint covers. The version stated is one that recovery would reach: the
+groups up to it are synced, in the part of the log that recovery reads
+(CM9).
 
 K1 depends on this. A checkpoint that reaches past *C* may hold, for a
 page, only a base image newer than *C*: the links that gave the page at *C*
