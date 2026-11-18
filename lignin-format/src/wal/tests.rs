@@ -2,6 +2,7 @@ use super::{scan::scan_with, *};
 use crate::{
     delta::{Delta, DeltaRun, DeltaRunWriter},
     flat_page::{FlatBranchBuilder, FlatLeafBuilder, FlatValue},
+    header::write_record,
     ids::{CellAddress, SlotId},
     test_util::SplitMix64,
     tree_page::{CellContent, CellValue, HashField, Side, TreeCell},
@@ -81,15 +82,76 @@ fn cell_bytes(key: &[u8], value: CellValue<'_>) -> Vec<u8> {
     .expect("a cell")
 }
 
+/// The record with the payload `payload`.
+fn framed(payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    write_record(payload, &mut out).expect("a record");
+    out
+}
+
+/// A value record, written field by field.
+fn value_record(owner: u32, part: u16, value_len: u32, data: &[u8]) -> Vec<u8> {
+    let mut payload = vec![2];
+    payload.extend_from_slice(&owner.to_le_bytes());
+    payload.extend_from_slice(&part.to_le_bytes());
+    payload.extend_from_slice(&value_len.to_le_bytes());
+    payload.extend_from_slice(data);
+    framed(&payload)
+}
+
+/// A part of a group, written field by field around `entries`.
+fn part_record(flags: u8, raw_version: u64, number: u32, entries: &[u8]) -> Vec<u8> {
+    let mut payload = vec![4, flags];
+    payload.extend_from_slice(&raw_version.to_le_bytes());
+    payload.extend_from_slice(&number.to_le_bytes());
+    payload.extend_from_slice(entries);
+    framed(&payload)
+}
+
+fn freed_entry(raw_page: u32) -> Vec<u8> {
+    let mut entry = vec![3];
+    entry.extend_from_slice(&raw_page.to_le_bytes());
+    entry
+}
+
+fn pointer_entry(kind: u8, pointer: &ValuePointer) -> Vec<u8> {
+    let mut entry = vec![kind];
+    entry.extend_from_slice(&pointer.encode());
+    entry
+}
+
+fn run_entry(kind: u8, run: &[u8]) -> Vec<u8> {
+    let mut entry = vec![kind];
+    entry.extend_from_slice(&(run.len() as u32).to_le_bytes());
+    entry.extend_from_slice(run);
+    entry
+}
+
+fn decode(bytes: &[u8]) -> Result<(Record<'_>, usize), FormatError> {
+    Record::decode(bytes, V1)
+}
+
+/// What a scan of a new log file followed by `records` ends with.
+fn tail_of(records: &[u8]) -> LogTail {
+    tail_after(&LogStart::FIRST, Limits::FORMAT, records)
+}
+
+fn tail_after(start: &LogStart, limits: Limits, records: &[u8]) -> LogTail {
+    let mut log = new_log(1, start);
+    log.extend_from_slice(records);
+    items_with(&log, limits).1
+}
+
+/// The error a scan of a new log file followed by `records` stops with.
+fn refusal(records: &[u8]) -> FormatError {
+    tail_of(records).failure().expect("a failure").error
+}
+
 /// The bytes of a log file that holds its header and its start record.
 fn new_log(file: u32, start: &LogStart) -> Vec<u8> {
     let mut log = Vec::new();
     write_file_start(file_id(file), start, &mut log).expect("a start");
     log
-}
-
-fn first_log() -> Vec<u8> {
-    new_log(1, &LogStart::FIRST)
 }
 
 /// Appends the group of `raw_version` to `log`, a file with the start
