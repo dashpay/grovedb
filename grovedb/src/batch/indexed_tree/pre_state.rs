@@ -49,6 +49,21 @@ fn enforce_indexed_item_key_ceiling(
     Ok(())
 }
 
+/// The type rules for an entry that reaches an indexed primary as the
+/// computed root of a tree the same batch created and filled: what the tree
+/// type accepts, and what the indexed variant accepts. Its aggregate is
+/// derived from its contents, so the rootless-claim rule does not apply.
+fn validate_propagated_entry(
+    entry: &Element,
+    primary_tree_type: grovedb_merk::TreeType,
+    grove_version: &GroveVersion,
+) -> Result<(), Error> {
+    entry
+        .validate_insertable_into(primary_tree_type)
+        .map_err(Error::MerkError)?;
+    validate_indexed_child_for_variant(entry, primary_tree_type, grove_version)
+}
+
 /// Validate every caller-supplied element this level's ops would place under
 /// an indexed primary, with the same rules the dedicated insert paths
 /// enforce (`reject_non_empty_dedicated_indexed_child_claim` and friends):
@@ -67,21 +82,6 @@ fn enforce_indexed_item_key_ceiling(
 /// child as an aggregate mismatch (recorded 9 against an empty inner Merk).
 /// The legitimate way to reach count 9 is to insert the child empty and
 /// populate it in the same batch, letting propagation derive it.
-/// The type rules for an entry that reaches an indexed primary as the
-/// computed root of a tree the same batch created and filled: what the tree
-/// type accepts, and what the indexed variant accepts. Its aggregate is
-/// derived from its contents, so the rootless-claim rule does not apply.
-fn validate_propagated_entry(
-    entry: &Element,
-    primary_tree_type: grovedb_merk::TreeType,
-    grove_version: &GroveVersion,
-) -> Result<(), Error> {
-    entry
-        .validate_insertable_into(primary_tree_type)
-        .map_err(Error::MerkError)?;
-    validate_indexed_child_for_variant(entry, primary_tree_type, grove_version)
-}
-
 fn validate_indexed_child_ops(
     ops_at_path_by_key: &BTreeMap<KeyInfo, GroveOp>,
     primary_tree_type: grovedb_merk::TreeType,
@@ -108,8 +108,6 @@ fn validate_indexed_child_ops(
             | GroveOp::PatchDontCheckForBackwardsReferences { element, .. }
             | GroveOp::InsertIfNotExists { element, .. }
             | GroveOp::InsertWithKnownToNotAlreadyExist { element } => element,
-            // Ops that carry no caller-supplied element, or whose element is
-            // internally derived rather than caller-claimed.
             // A tree inserted and filled by the same batch arrives as its
             // computed root state, with the caller's element gone: the type
             // it had is the one the aggregate names. From V5 it is held to
@@ -146,6 +144,8 @@ fn validate_indexed_child_ops(
                 }
                 continue;
             }
+            // Ops that carry no caller-supplied element, or whose element is
+            // internally derived rather than caller-claimed.
             GroveOp::Delete
             | GroveOp::DeleteDontCheckForBackwardsReferences
             | GroveOp::DeleteTree(..)

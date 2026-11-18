@@ -2946,10 +2946,8 @@ where
             | Element::BulkAppendTree(..)
             | Element::DenseAppendOnlyFixedSizeTree(..)
             | Element::ProvableSumIndexedTree(..)
-            | Element::ProvableBigSumIndexedTree(..)
             | Element::ProvableCountIndexedTree(..)
             | Element::ProvableCountProvableSumIndexedTree(..)
-            | Element::ProvableCountProvableBigSumIndexedTree(..)
             | Element::PrivateDocumentStore(..) => Err(Error::InvalidBatchOperation(
                 "references can not point to trees being updated",
             ))
@@ -3236,10 +3234,8 @@ where
                         | Element::BulkAppendTree(..)
                         | Element::DenseAppendOnlyFixedSizeTree(..)
                         | Element::ProvableSumIndexedTree(..)
-                        | Element::ProvableBigSumIndexedTree(..)
                         | Element::ProvableCountIndexedTree(..)
                         | Element::ProvableCountProvableSumIndexedTree(..)
-                        | Element::ProvableCountProvableBigSumIndexedTree(..)
                         | Element::PrivateDocumentStore(..) => Err(Error::InvalidBatchOperation(
                             "references can not point to trees being updated",
                         ))
@@ -3357,10 +3353,8 @@ where
                     | Element::BulkAppendTree(..)
                     | Element::DenseAppendOnlyFixedSizeTree(..)
                     | Element::ProvableSumIndexedTree(..)
-                    | Element::ProvableBigSumIndexedTree(..)
                     | Element::ProvableCountIndexedTree(..)
                     | Element::ProvableCountProvableSumIndexedTree(..)
-                    | Element::ProvableCountProvableBigSumIndexedTree(..)
                     | Element::PrivateDocumentStore(..) => Err(Error::InvalidBatchOperation(
                         "references can not point to trees being updated",
                     ))
@@ -4103,51 +4097,6 @@ where
                                 )
                             );
                         }
-                        Element::ProvableBigSumIndexedTree(..) => {
-                            if is_insert_if_not_exists
-                                || batch_apply_options.validate_insertion_does_not_override
-                            {
-                                let merk = self.merks.get_mut(path).expect("the Merk is cached");
-                                let existing = cost_return_on_error_into!(
-                                    &mut cost,
-                                    element.element_at_key_already_exists(
-                                        merk,
-                                        key_info.get_key_clone().as_slice(),
-                                        grove_version,
-                                    )
-                                );
-                                if existing {
-                                    if error_if_exists
-                                        || batch_apply_options.validate_insertion_does_not_override
-                                    {
-                                        return Err(Error::InvalidBatchOperation(
-                                            "attempting to insert ProvableBigSumIndexedTree element \
-                                             that already exists",
-                                        ))
-                                        .wrap_with_cost(cost);
-                                    }
-                                    continue;
-                                }
-                            }
-                            let merk_feature_type = cost_return_on_error_into!(
-                                &mut cost,
-                                element
-                                    .get_feature_type(in_tree_type)
-                                    .wrap_with_cost(OperationCost::default())
-                            );
-                            cost_return_on_error_into!(
-                                &mut cost,
-                                element.insert_count_indexed_subtree_into_batch_operations(
-                                    key_info.get_key_clone(),
-                                    NULL_HASH,
-                                    NULL_HASH,
-                                    false,
-                                    &mut batch_operations,
-                                    merk_feature_type,
-                                    grove_version,
-                                )
-                            );
-                        }
                         // ProvableCountProvableSumIndexedTree empty-creation:
                         // primary_root_key = None, count = 0, sum = 0,
                         // and every axis slot's secondary_root_key =
@@ -4174,60 +4123,6 @@ where
                                         return Err(Error::InvalidBatchOperation(
                                             "attempting to insert \
                                              ProvableCountProvableSumIndexedTree element that \
-                                             already exists",
-                                        ))
-                                        .wrap_with_cost(cost);
-                                    }
-                                    continue;
-                                }
-                            }
-                            let merk_feature_type = cost_return_on_error_into!(
-                                &mut cost,
-                                element
-                                    .get_feature_type(in_tree_type)
-                                    .wrap_with_cost(OperationCost::default())
-                            );
-                            // For an empty PCPSIT each configured axis
-                            // contributes NULL_HASH to the digest. The
-                            // merk-side helper takes a single second
-                            // hash (axes_digest in this case).
-                            let zero_axes: Vec<(u8, grovedb_merk::CryptoHash)> =
-                                axes.iter().map(|(t, _)| (*t, NULL_HASH)).collect();
-                            let empty_axes_digest = grovedb_merk::tree::axes_digest(&zero_axes)
-                                .unwrap_add_cost(&mut cost);
-                            cost_return_on_error_into!(
-                                &mut cost,
-                                element.insert_count_indexed_subtree_into_batch_operations(
-                                    key_info.get_key_clone(),
-                                    NULL_HASH,
-                                    empty_axes_digest,
-                                    false,
-                                    &mut batch_operations,
-                                    merk_feature_type,
-                                    grove_version,
-                                )
-                            );
-                        }
-                        Element::ProvableCountProvableBigSumIndexedTree(.., axes, _) => {
-                            if is_insert_if_not_exists
-                                || batch_apply_options.validate_insertion_does_not_override
-                            {
-                                let merk = self.merks.get_mut(path).expect("the Merk is cached");
-                                let existing = cost_return_on_error_into!(
-                                    &mut cost,
-                                    element.element_at_key_already_exists(
-                                        merk,
-                                        key_info.get_key_clone().as_slice(),
-                                        grove_version,
-                                    )
-                                );
-                                if existing {
-                                    if error_if_exists
-                                        || batch_apply_options.validate_insertion_does_not_override
-                                    {
-                                        return Err(Error::InvalidBatchOperation(
-                                            "attempting to insert \
-                                             ProvableCountProvableBigSumIndexedTree element that \
                                              already exists",
                                         ))
                                         .wrap_with_cost(cost);
@@ -5716,10 +5611,8 @@ pub(in crate::batch) fn insert_op_with_propagated_root(
         // comes from the mirror this level just ran (the fresh secondaries
         // were opened from the in-batch element).
         Element::ProvableSumIndexedTree(..)
-        | Element::ProvableBigSumIndexedTree(..)
         | Element::ProvableCountIndexedTree(..)
-        | Element::ProvableCountProvableSumIndexedTree(..)
-        | Element::ProvableCountProvableBigSumIndexedTree(..) => {
+        | Element::ProvableCountProvableSumIndexedTree(..) => {
             if non_counted || not_summed || not_counted_or_summed {
                 return Err(Error::InvalidBatchOperation(
                     "indexed-tree elements cannot be wrapped in NonCounted / NotSummed / \

@@ -79,19 +79,12 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableSumIndexedTree(primary_root_key, ..) => {
                 Some((primary_root_key, TreeType::ProvableSumIndexedTree))
             }
-            Element::ProvableBigSumIndexedTree(primary_root_key, ..) => {
-                Some((primary_root_key, TreeType::ProvableBigSumIndexedTree))
-            }
             Element::ProvableCountIndexedTree(primary_root_key, ..) => {
                 Some((primary_root_key, TreeType::ProvableCountIndexedTree))
             }
             Element::ProvableCountProvableSumIndexedTree(primary_root_key, ..) => Some((
                 primary_root_key,
                 TreeType::ProvableCountProvableSumIndexedTree,
-            )),
-            Element::ProvableCountProvableBigSumIndexedTree(primary_root_key, ..) => Some((
-                primary_root_key,
-                TreeType::ProvableCountProvableBigSumIndexedTree,
             )),
             Element::PrivateDocumentStore(_, _, chunk_power, _) => {
                 Some((None, TreeType::PrivateDocumentStore(chunk_power)))
@@ -145,19 +138,12 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableSumIndexedTree(primary_root_key, ..) => {
                 Some((primary_root_key, TreeType::ProvableSumIndexedTree))
             }
-            Element::ProvableBigSumIndexedTree(primary_root_key, ..) => {
-                Some((primary_root_key, TreeType::ProvableBigSumIndexedTree))
-            }
             Element::ProvableCountIndexedTree(primary_root_key, ..) => {
                 Some((primary_root_key, TreeType::ProvableCountIndexedTree))
             }
             Element::ProvableCountProvableSumIndexedTree(primary_root_key, ..) => Some((
                 primary_root_key,
                 TreeType::ProvableCountProvableSumIndexedTree,
-            )),
-            Element::ProvableCountProvableBigSumIndexedTree(primary_root_key, ..) => Some((
-                primary_root_key,
-                TreeType::ProvableCountProvableBigSumIndexedTree,
             )),
             Element::PrivateDocumentStore(_, _, chunk_power, _) => {
                 Some((&NONE_ROOT_KEY, TreeType::PrivateDocumentStore(*chunk_power)))
@@ -204,18 +190,12 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableSumIndexedTree(.., flags) => {
                 Some((flags, TreeType::ProvableSumIndexedTree))
             }
-            Element::ProvableBigSumIndexedTree(.., flags) => {
-                Some((flags, TreeType::ProvableBigSumIndexedTree))
-            }
             Element::ProvableCountIndexedTree(.., flags) => {
                 Some((flags, TreeType::ProvableCountIndexedTree))
             }
             // PCPSIT's flags are the trailing field after `axes`.
             Element::ProvableCountProvableSumIndexedTree(_, _, _, _, flags) => {
                 Some((flags, TreeType::ProvableCountProvableSumIndexedTree))
-            }
-            Element::ProvableCountProvableBigSumIndexedTree(_, _, _, _, flags) => {
-                Some((flags, TreeType::ProvableCountProvableBigSumIndexedTree))
             }
             Element::PrivateDocumentStore(_, _, chunk_power, flags) => {
                 Some((flags, TreeType::PrivateDocumentStore(*chunk_power)))
@@ -258,13 +238,9 @@ impl ElementTreeTypeExtensions for Element {
                 Some(TreeType::DenseAppendOnlyFixedSizeTree(*height))
             }
             Element::ProvableSumIndexedTree(..) => Some(TreeType::ProvableSumIndexedTree),
-            Element::ProvableBigSumIndexedTree(..) => Some(TreeType::ProvableBigSumIndexedTree),
             Element::ProvableCountIndexedTree(..) => Some(TreeType::ProvableCountIndexedTree),
             Element::ProvableCountProvableSumIndexedTree(..) => {
                 Some(TreeType::ProvableCountProvableSumIndexedTree)
-            }
-            Element::ProvableCountProvableBigSumIndexedTree(..) => {
-                Some(TreeType::ProvableCountProvableBigSumIndexedTree)
             }
             Element::PrivateDocumentStore(_, _, chunk_power, _) => {
                 Some(TreeType::PrivateDocumentStore(*chunk_power))
@@ -314,9 +290,6 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableSumIndexedTree(.., sum_value, _) => {
                 Some(TreeFeatureType::ProvableSummedMerkNode(*sum_value))
             }
-            Element::ProvableBigSumIndexedTree(.., sum_value, _) => {
-                Some(TreeFeatureType::ProvableBigSummedMerkNode(*sum_value))
-            }
             // ProvableCountIndexedTree's primary uses ProvableCountedMerkNode.
             Element::ProvableCountIndexedTree(.., count_value, _) => {
                 Some(TreeFeatureType::ProvableCountedMerkNode(*count_value))
@@ -327,14 +300,6 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountProvableSumIndexedTree(_, count_value, sum_value, _, _) => Some(
                 TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(*count_value, *sum_value),
             ),
-            Element::ProvableCountProvableBigSumIndexedTree(_, count_value, sum_value, _, _) => {
-                Some(
-                    TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(
-                        *count_value,
-                        *sum_value,
-                    ),
-                )
-            }
             Element::PrivateDocumentStore(..) => Some(BasicMerkNode),
             Element::NonCounted(inner)
             | Element::NotSummed(inner)
@@ -376,17 +341,11 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableSumIndexedTree(..) => {
                 MaybeTree::Tree(TreeType::ProvableSumIndexedTree)
             }
-            Element::ProvableBigSumIndexedTree(..) => {
-                MaybeTree::Tree(TreeType::ProvableBigSumIndexedTree)
-            }
             Element::ProvableCountIndexedTree(..) => {
                 MaybeTree::Tree(TreeType::ProvableCountIndexedTree)
             }
             Element::ProvableCountProvableSumIndexedTree(..) => {
                 MaybeTree::Tree(TreeType::ProvableCountProvableSumIndexedTree)
-            }
-            Element::ProvableCountProvableBigSumIndexedTree(..) => {
-                MaybeTree::Tree(TreeType::ProvableCountProvableBigSumIndexedTree)
             }
             Element::PrivateDocumentStore(_, _, chunk_power, _) => {
                 MaybeTree::Tree(TreeType::PrivateDocumentStore(*chunk_power))
@@ -476,9 +435,6 @@ impl ElementTreeTypeExtensions for Element {
             TreeType::ProvableSumIndexedTree => Ok(TreeFeatureType::ProvableSummedMerkNode(
                 self.sum_value_or_default(),
             )),
-            TreeType::ProvableBigSumIndexedTree => Ok(TreeFeatureType::ProvableBigSummedMerkNode(
-                self.big_sum_value_or_default(),
-            )),
             // ProvableCountIndexedTree's primary aggregates like ProvableCountTree.
             TreeType::ProvableCountIndexedTree => Ok(TreeFeatureType::ProvableCountedMerkNode(
                 self.count_value_or_default(),
@@ -490,10 +446,6 @@ impl ElementTreeTypeExtensions for Element {
                 Ok(TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(
                     v.0, v.1,
                 ))
-            }
-            TreeType::ProvableCountProvableBigSumIndexedTree => {
-                let v = self.count_big_sum_value_or_default();
-                Ok(TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(v.0, v.1))
             }
         }
     }
@@ -1074,20 +1026,6 @@ mod tests {
             (
                 Element::ProvableBigSumTree(root.clone(), 42, flags.clone()),
                 TreeType::ProvableBigSumTree,
-            ),
-            (
-                Element::ProvableBigSumIndexedTree(root.clone(), None, 42, flags.clone()),
-                TreeType::ProvableBigSumIndexedTree,
-            ),
-            (
-                Element::ProvableCountProvableBigSumIndexedTree(
-                    root.clone(),
-                    3,
-                    42,
-                    vec![(0, None)],
-                    flags.clone(),
-                ),
-                TreeType::ProvableCountProvableBigSumIndexedTree,
             ),
         ] {
             assert_eq!(element.root_key_and_tree_type(), Some((&root, tree_type)));

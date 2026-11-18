@@ -779,6 +779,30 @@ fn legitimate_trees() -> Vec<(&'static str, Element, Element, Element)> {
             sum_item(),
         ),
         (
+            "a provable big sum tree",
+            Element::empty_provable_big_sum_tree(),
+            Element::empty_provable_big_sum_tree(),
+            sum_item(),
+        ),
+        (
+            "a provable count provable big sum tree",
+            Element::empty_provable_count_provable_big_sum_tree(),
+            Element::empty_provable_count_provable_big_sum_tree(),
+            sum_item(),
+        ),
+        (
+            "a non-counted count big sum tree under a count tree",
+            Element::empty_count_tree(),
+            non_counted(Element::empty_count_big_sum_tree()),
+            sum_item(),
+        ),
+        (
+            "a big sum tree entry of a count indexed tree",
+            Element::empty_provable_count_indexed_tree(),
+            Element::empty_big_sum_tree(),
+            sum_item(),
+        ),
+        (
             "a non-counted tree under a count tree",
             Element::empty_count_tree(),
             non_counted(Element::empty_count_tree()),
@@ -818,12 +842,6 @@ fn legitimate_trees() -> Vec<(&'static str, Element, Element, Element)> {
             "a sum indexed tree",
             Element::empty_tree(),
             sum_indexed(),
-            sum_item(),
-        ),
-        (
-            "a big sum indexed tree",
-            Element::empty_tree(),
-            Element::empty_provable_big_sum_indexed_tree(),
             sum_item(),
         ),
         (
@@ -872,12 +890,6 @@ fn legitimate_trees() -> Vec<(&'static str, Element, Element, Element)> {
             "a count and sum indexed entry of a count and sum indexed tree",
             canonical(),
             canonical(),
-            sum_item(),
-        ),
-        (
-            "a big sum tree entry of a big sum indexed tree",
-            Element::empty_provable_big_sum_indexed_tree(),
-            Element::empty_big_sum_tree(),
             sum_item(),
         ),
     ]
@@ -1203,15 +1215,6 @@ fn a_tree_under_a_private_document_store_is_refused_on_both_versions() {
 /// same slot, as a parent, as an entry and as the tree created: none of the
 /// checks names a tree type of its own.
 fn wide_sum_cases() -> Vec<(&'static str, Element, Element, Element)> {
-    let count_big_sum_indexed = |count: u64, sum: i128| {
-        Element::ProvableCountProvableBigSumIndexedTree(
-            None,
-            count,
-            sum,
-            vec![(count_axis(), None)],
-            None,
-        )
-    };
     vec![
         // An entry of a 64-bit indexed tree that carries a 128-bit sum.
         (
@@ -1220,48 +1223,37 @@ fn wide_sum_cases() -> Vec<(&'static str, Element, Element, Element)> {
             Element::empty_count_big_sum_tree(),
             sum_item(),
         ),
+        // A wrapped tree with a 128-bit sum under a parent that commits
+        // its count.
+        (
+            "a non-counted count big sum tree under a provable count tree",
+            Element::empty_provable_count_tree(),
+            non_counted(Element::empty_count_big_sum_tree()),
+            sum_item(),
+        ),
+        (
+            "a non-counted provable big sum tree under a provable count tree",
+            Element::empty_provable_count_tree(),
+            non_counted(Element::empty_provable_big_sum_tree()),
+            sum_item(),
+        ),
+        (
+            "a non-counted provable count provable big sum tree under a provable count tree",
+            Element::empty_provable_count_tree(),
+            non_counted(Element::empty_provable_count_provable_big_sum_tree()),
+            sum_item(),
+        ),
+        (
+            "a not-summed provable big sum tree under a count tree",
+            Element::empty_count_tree(),
+            not_summed(Element::empty_provable_big_sum_tree()),
+            sum_item(),
+        ),
         // A wrapped 64-bit tree under a parent with a 128-bit sum.
         (
             "a not-counted-or-summed tree under a provable big sum tree",
             Element::empty_provable_big_sum_tree(),
             not_counted_or_summed(Element::empty_sum_tree()),
-            sum_item(),
-        ),
-        // An indexed tree with a 128-bit sum that is not created empty.
-        (
-            "a big sum indexed tree claiming a sum",
-            Element::empty_tree(),
-            Element::ProvableBigSumIndexedTree(None, None, 7, None),
-            sum_item(),
-        ),
-        (
-            "a big sum indexed tree claiming a secondary root key",
-            Element::empty_tree(),
-            Element::ProvableBigSumIndexedTree(None, claimed_root_key(), 0, None),
-            sum_item(),
-        ),
-        (
-            "a count and big sum indexed tree claiming a count",
-            Element::empty_tree(),
-            count_big_sum_indexed(3, 0),
-            sum_item(),
-        ),
-        (
-            "a count and big sum indexed tree claiming a sum",
-            Element::empty_tree(),
-            count_big_sum_indexed(0, 7),
-            sum_item(),
-        ),
-        (
-            "a count and big sum indexed tree claiming an axis root key",
-            Element::empty_tree(),
-            Element::ProvableCountProvableBigSumIndexedTree(
-                None,
-                0,
-                0,
-                vec![(count_axis(), claimed_root_key())],
-                None,
-            ),
             sum_item(),
         ),
     ]

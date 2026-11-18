@@ -171,12 +171,6 @@ impl ElementReconstructExtensions for Element {
                 aggregate_data.as_sum_i64(),
                 f.clone(),
             )),
-            Element::ProvableBigSumIndexedTree(.., f) => Some(Element::ProvableBigSumIndexedTree(
-                primary_root_key,
-                secondary_root_key,
-                aggregate_data.as_summed_i128(),
-                f.clone(),
-            )),
             Element::ProvableCountIndexedTree(.., f) => Some(Element::ProvableCountIndexedTree(
                 primary_root_key,
                 secondary_root_key,
@@ -193,7 +187,6 @@ impl ElementReconstructExtensions for Element {
             // PCPSIT carries an axes TLV rather than a single secondary
             // root key; callers must use `reconstruct_with_axes`.
             Element::ProvableCountProvableSumIndexedTree(..) => None,
-            Element::ProvableCountProvableBigSumIndexedTree(..) => None,
             _ => None,
         }
     }
@@ -210,15 +203,6 @@ impl ElementReconstructExtensions for Element {
                     primary_root_key,
                     aggregate_data.as_count_u64(),
                     aggregate_data.as_sum_i64(),
-                    axes,
-                    f.clone(),
-                ))
-            }
-            Element::ProvableCountProvableBigSumIndexedTree(.., f) => {
-                Some(Element::ProvableCountProvableBigSumIndexedTree(
-                    primary_root_key,
-                    aggregate_data.as_count_u64(),
-                    aggregate_data.as_summed_i128(),
                     axes,
                     f.clone(),
                 ))

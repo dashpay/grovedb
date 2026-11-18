@@ -15,9 +15,8 @@ use crate::{
 };
 
 /// Refuse creating a tree element that a grove version predates, bare or
-/// wrapped: a `ProvableCountProvableBigSumTree`, a `CountBigSumTree`, a
-/// `ProvableBigSumTree`, a `ProvableBigSumIndexedTree` or a
-/// `ProvableCountProvableBigSumIndexedTree`. Every other element passes.
+/// wrapped: a `ProvableCountProvableBigSumTree`, a `CountBigSumTree` or a
+/// `ProvableBigSumTree`. Every other element passes.
 ///
 /// `verb` names the caller in the error ("insert", "batch insert").
 ///
@@ -41,14 +40,6 @@ pub(crate) fn check_wide_sum_tree_creation(
         ),
         Element::ProvableBigSumTree(..) => (
             "ProvableBigSumTree",
-            insert_versions.big_sum_tree_twins_creation,
-        ),
-        Element::ProvableBigSumIndexedTree(..) => (
-            "ProvableBigSumIndexedTree",
-            insert_versions.big_sum_tree_twins_creation,
-        ),
-        Element::ProvableCountProvableBigSumIndexedTree(..) => (
-            "ProvableCountProvableBigSumIndexedTree",
             insert_versions.big_sum_tree_twins_creation,
         ),
         _ => return Ok(()),

@@ -263,8 +263,6 @@ pub enum AxisEntries {
     Sum(Vec<IndexedAxisEntry<i64>>),
     /// Avg-axis entries, ordered by fixed-point average.
     Avg(Vec<IndexedAxisEntry<i128>>),
-    /// Big-sum-axis entries, ordered by 128-bit sum.
-    BigSum(Vec<IndexedAxisEntry<i128>>),
 }
 
 impl AxisEntries {
@@ -274,7 +272,6 @@ impl AxisEntries {
             AxisEntries::Count(v) => v.len(),
             AxisEntries::Sum(v) => v.len(),
             AxisEntries::Avg(v) => v.len(),
-            AxisEntries::BigSum(v) => v.len(),
         }
     }
 
@@ -284,7 +281,6 @@ impl AxisEntries {
             grovedb_element::indexed::IndexAxis::Count => AxisEntries::Count(Vec::new()),
             grovedb_element::indexed::IndexAxis::Sum => AxisEntries::Sum(Vec::new()),
             grovedb_element::indexed::IndexAxis::Avg => AxisEntries::Avg(Vec::new()),
-            grovedb_element::indexed::IndexAxis::BigSum => AxisEntries::BigSum(Vec::new()),
         }
     }
 
@@ -295,7 +291,6 @@ impl AxisEntries {
             AxisEntries::Count(entries) => entries.first().map(|e| e.primary_key.as_slice()),
             AxisEntries::Sum(entries) => entries.first().map(|e| e.primary_key.as_slice()),
             AxisEntries::Avg(entries) => entries.first().map(|e| e.primary_key.as_slice()),
-            AxisEntries::BigSum(entries) => entries.first().map(|e| e.primary_key.as_slice()),
         }
     }
 
@@ -312,7 +307,6 @@ impl AxisEntries {
             AxisEntries::Count(v) => AxisKeys::Count(v.key_pairs()),
             AxisEntries::Sum(v) => AxisKeys::Sum(v.key_pairs()),
             AxisEntries::Avg(v) => AxisKeys::Avg(v.key_pairs()),
-            AxisEntries::BigSum(v) => AxisKeys::BigSum(v.key_pairs()),
         }
     }
 }

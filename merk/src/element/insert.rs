@@ -320,11 +320,6 @@ impl ElementInsertToStorageExtensions for Element {
                     | TreeType::ProvableBigSumTree
                     | TreeType::ProvableCountProvableSumTree
                     | TreeType::ProvableCountProvableBigSumTree
-                    // The indexed trees with a 128-bit sum start out with the
-                    // rule. Their 64-bit counterparts keep the rule they
-                    // shipped with.
-                    | TreeType::ProvableBigSumIndexedTree
-                    | TreeType::ProvableCountProvableBigSumIndexedTree
             )
         {
             return Err(Error::InvalidInputError(
@@ -1082,10 +1077,8 @@ impl ElementInsertToStorageExtensions for Element {
         if !matches!(
             self.underlying(),
             Element::ProvableSumIndexedTree(..)
-                | Element::ProvableBigSumIndexedTree(..)
                 | Element::ProvableCountIndexedTree(..)
                 | Element::ProvableCountProvableSumIndexedTree(..)
-                | Element::ProvableCountProvableBigSumIndexedTree(..)
         ) {
             return Err(Error::InvalidInputError(
                 "insert_count_indexed_subtree only accepts indexed-tree elements \
@@ -1178,10 +1171,8 @@ impl ElementInsertToStorageExtensions for Element {
         if !matches!(
             self.underlying(),
             Element::ProvableSumIndexedTree(..)
-                | Element::ProvableBigSumIndexedTree(..)
                 | Element::ProvableCountIndexedTree(..)
                 | Element::ProvableCountProvableSumIndexedTree(..)
-                | Element::ProvableCountProvableBigSumIndexedTree(..)
         ) {
             return Err(Error::InvalidInputError(
                 "insert_count_indexed_subtree_into_batch_operations only accepts \

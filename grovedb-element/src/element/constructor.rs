@@ -919,10 +919,7 @@ impl Element {
 
     /// Validate a `ProvableCountProvableSumIndexedTree` axes TLV: sorted by
     /// tag ascending, no duplicate tags, 1..=3 entries, every tag in
-    /// `0..=2` (the count, sum and avg axes of
-    /// [`crate::indexed::IndexAxis`]). The big sum axis is the sum axis of
-    /// the 128-bit tree and is refused here as an unknown tag, as it was
-    /// before that axis existed.
+    /// `0..=2` (matching [`crate::indexed::IndexAxis`]).
     ///
     /// Public so write paths that accept a caller-supplied
     /// `Element::ProvableCountProvableSumIndexedTree` (e.g. direct/batch
@@ -932,58 +929,27 @@ impl Element {
     /// is `pub`, so callers can build a PCPSIT with invalid / duplicate /
     /// unsorted axes that the constructors would have rejected.
     pub fn validate_pcpsit_axes(axes: &[(u8, Option<Vec<u8>>)]) -> Result<(), ElementError> {
-        Self::validate_indexed_axes(
-            axes,
-            crate::indexed::IndexAxis::BigSum,
-            "ProvableCountProvableSumIndexedTree axes must have at least one entry",
-            "ProvableCountProvableSumIndexedTree axes must have at most three entries",
-            "ProvableCountProvableSumIndexedTree axes must be sorted ascending by tag with no \
-             duplicates",
-        )
-    }
-
-    /// Validate a `ProvableCountProvableBigSumIndexedTree` axes TLV: sorted
-    /// by tag ascending, no duplicate tags, 1..=3 entries, every tag one of
-    /// the count (`0`), avg (`2`) and big sum (`3`) axes. The sum axis
-    /// (`1`) is the 64-bit tree's and is refused as an unknown tag.
-    ///
-    /// Public for the same reason as [`Self::validate_pcpsit_axes`].
-    pub fn validate_pcpbsit_axes(axes: &[(u8, Option<Vec<u8>>)]) -> Result<(), ElementError> {
-        Self::validate_indexed_axes(
-            axes,
-            crate::indexed::IndexAxis::Sum,
-            "ProvableCountProvableBigSumIndexedTree axes must have at least one entry",
-            "ProvableCountProvableBigSumIndexedTree axes must have at most three entries",
-            "ProvableCountProvableBigSumIndexedTree axes must be sorted ascending by tag with \
-             no duplicates",
-        )
-    }
-
-    /// The shared rule of the two axes validators: `refused_axis` is the
-    /// sum axis of the other width.
-    fn validate_indexed_axes(
-        axes: &[(u8, Option<Vec<u8>>)],
-        refused_axis: crate::indexed::IndexAxis,
-        empty_message: &'static str,
-        too_many_message: &'static str,
-        unsorted_message: &'static str,
-    ) -> Result<(), ElementError> {
         if axes.is_empty() {
-            return Err(ElementError::InvalidInput(empty_message));
+            return Err(ElementError::InvalidInput(
+                "ProvableCountProvableSumIndexedTree axes must have at least one entry",
+            ));
         }
         if axes.len() > 3 {
-            return Err(ElementError::InvalidInput(too_many_message));
+            return Err(ElementError::InvalidInput(
+                "ProvableCountProvableSumIndexedTree axes must have at most three entries",
+            ));
         }
         let mut prev: Option<u8> = None;
         for (tag, _) in axes {
-            // Every tag must be an axis this variant has. Re-using the
+            // Every tag must be a known axis (0..=2). Re-using the
             // canonical mapping in IndexAxis::try_from_tag.
-            if crate::indexed::IndexAxis::try_from_tag(*tag)? == refused_axis {
-                return Err(crate::indexed::UnknownAxisTag(*tag).into());
-            }
+            crate::indexed::IndexAxis::try_from_tag(*tag)?;
             match prev {
                 Some(p) if *tag <= p => {
-                    return Err(ElementError::InvalidInput(unsorted_message));
+                    return Err(ElementError::InvalidInput(
+                        "ProvableCountProvableSumIndexedTree axes must be sorted ascending by \
+                         tag with no duplicates",
+                    ));
                 }
                 _ => prev = Some(*tag),
             }
@@ -1032,78 +998,6 @@ impl Element {
             primary_root_key,
             count_value,
             sum_value,
-            axes,
-            flags,
-        ))
-    }
-
-    /// Set element to an empty provable big-sum-indexed tree without flags.
-    pub fn empty_provable_big_sum_indexed_tree() -> Self {
-        Element::ProvableBigSumIndexedTree(None, None, 0, None)
-    }
-
-    /// Set element to an empty provable big-sum-indexed tree with flags.
-    pub fn empty_provable_big_sum_indexed_tree_with_flags(flags: Option<ElementFlags>) -> Self {
-        Element::ProvableBigSumIndexedTree(None, None, 0, flags)
-    }
-
-    /// Construct a provable big-sum-indexed tree with given primary/secondary
-    /// root keys and aggregate 128-bit sum.
-    pub fn new_provable_big_sum_indexed_tree_with_root_keys_and_sum_value(
-        primary_root_key: Option<Vec<u8>>,
-        secondary_root_key: Option<Vec<u8>>,
-        big_sum_value: BigSumValue,
-        flags: Option<ElementFlags>,
-    ) -> Self {
-        Element::ProvableBigSumIndexedTree(
-            primary_root_key,
-            secondary_root_key,
-            big_sum_value,
-            flags,
-        )
-    }
-
-    /// Set element to an empty provable count + provable big sum indexed tree
-    /// without flags. `axes` must be canonical (sorted by tag, no
-    /// duplicates, 1..=3 entries).
-    pub fn empty_provable_count_provable_big_sum_indexed_tree(
-        axes: Vec<(u8, Option<Vec<u8>>)>,
-    ) -> Result<Self, ElementError> {
-        Self::validate_pcpbsit_axes(&axes)?;
-        Ok(Element::ProvableCountProvableBigSumIndexedTree(
-            None, 0, 0, axes, None,
-        ))
-    }
-
-    /// Set element to an empty provable count + provable big sum indexed tree
-    /// with flags. See [`empty_provable_count_provable_big_sum_indexed_tree`].
-    pub fn empty_provable_count_provable_big_sum_indexed_tree_with_flags(
-        axes: Vec<(u8, Option<Vec<u8>>)>,
-        flags: Option<ElementFlags>,
-    ) -> Result<Self, ElementError> {
-        Self::validate_pcpbsit_axes(&axes)?;
-        Ok(Element::ProvableCountProvableBigSumIndexedTree(
-            None, 0, 0, axes, flags,
-        ))
-    }
-
-    /// Construct a provable count + provable big sum indexed tree with given
-    /// primary root key, aggregate count, aggregate 128-bit sum, and canonical
-    /// axes TLV. Returns `InvalidInput` if `axes` is empty, has more than
-    /// three entries, contains an unknown tag, or is not strictly sorted
-    /// ascending by tag.
-    pub fn new_provable_count_provable_big_sum_indexed_tree(
-        primary_root_key: Option<Vec<u8>>,
-        count_value: CountValue,
-        big_sum_value: BigSumValue,
-        axes: Vec<(u8, Option<Vec<u8>>)>,
-        flags: Option<ElementFlags>,
-    ) -> Result<Self, ElementError> {
-        Self::validate_pcpbsit_axes(&axes)?;
-        Ok(Element::ProvableCountProvableBigSumIndexedTree(
-            primary_root_key,
-            count_value,
-            big_sum_value,
             axes,
             flags,
         ))

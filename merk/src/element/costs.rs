@@ -10,12 +10,11 @@ use crate::{
         KV,
     },
     tree_type::{
-        BIG_SUM_INDEXED_TREE_COST_SIZE, BIG_SUM_TREE_COST_SIZE, BULK_APPEND_TREE_COST_SIZE,
-        COMMITMENT_TREE_COST_SIZE, COUNT_BIG_SUM_TREE_COST_SIZE, COUNT_INDEXED_TREE_COST_SIZE,
-        COUNT_SUM_TREE_COST_SIZE, COUNT_TREE_COST_SIZE, DENSE_TREE_COST_SIZE, MMR_TREE_COST_SIZE,
-        PRIVATE_DOCUMENT_STORE_COST_SIZE, PROVABLE_COUNT_PROVABLE_BIG_SUM_INDEXED_TREE_COST_SIZE,
-        PROVABLE_COUNT_PROVABLE_SUM_INDEXED_TREE_COST_SIZE, SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE,
-        TREE_COST_SIZE,
+        BIG_SUM_TREE_COST_SIZE, BULK_APPEND_TREE_COST_SIZE, COMMITMENT_TREE_COST_SIZE,
+        COUNT_BIG_SUM_TREE_COST_SIZE, COUNT_INDEXED_TREE_COST_SIZE, COUNT_SUM_TREE_COST_SIZE,
+        COUNT_TREE_COST_SIZE, DENSE_TREE_COST_SIZE, MMR_TREE_COST_SIZE,
+        PRIVATE_DOCUMENT_STORE_COST_SIZE, PROVABLE_COUNT_PROVABLE_SUM_INDEXED_TREE_COST_SIZE,
+        SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE,
     },
     Error,
 };
@@ -92,7 +91,6 @@ impl ElementCostPrivateExtensions for Element {
             // layout (primary + secondary root keys + scalar aggregate +
             // flags), so the cost is the same as the legacy cidx slot.
             Element::ProvableSumIndexedTree(..) => Ok(COUNT_INDEXED_TREE_COST_SIZE),
-            Element::ProvableBigSumIndexedTree(..) => Ok(BIG_SUM_INDEXED_TREE_COST_SIZE),
             Element::ProvableCountIndexedTree(..) => Ok(COUNT_INDEXED_TREE_COST_SIZE),
             // ProvableCountProvableSumIndexedTree carries BOTH aggregates plus
             // a variable-length axes TLV, so the single-axis indexed constant
@@ -105,9 +103,6 @@ impl ElementCostPrivateExtensions for Element {
             // implemented, so this constant is live.
             Element::ProvableCountProvableSumIndexedTree(..) => {
                 Ok(PROVABLE_COUNT_PROVABLE_SUM_INDEXED_TREE_COST_SIZE)
-            }
-            Element::ProvableCountProvableBigSumIndexedTree(..) => {
-                Ok(PROVABLE_COUNT_PROVABLE_BIG_SUM_INDEXED_TREE_COST_SIZE)
             }
             Element::PrivateDocumentStore(..) => Ok(PRIVATE_DOCUMENT_STORE_COST_SIZE),
             Element::NonCounted(inner)
@@ -340,17 +335,6 @@ impl ElementCostExtensions for Element {
                     key_len, value_len, node_type,
                 )
             }
-            Element::ProvableBigSumIndexedTree(.., flags) => {
-                let flags_len = flags.map_or(0, |flags| {
-                    let flags_len = flags.len() as u32;
-                    flags_len + flags_len.required_space() as u32
-                });
-                let value_len = BIG_SUM_INDEXED_TREE_COST_SIZE + flags_len + wrapper_overhead;
-                let key_len = key.len() as u32;
-                KV::layered_value_byte_cost_size_for_key_and_value_lengths(
-                    key_len, value_len, node_type,
-                )
-            }
             Element::ProvableCountProvableSumIndexedTree(_, _, _, _, flags) => {
                 let flags_len = flags.map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
@@ -361,23 +345,6 @@ impl ElementCostExtensions for Element {
                 // minimum payload rather than a conservative bound. Use the
                 // same worst-case constant as the other two PCPSIT cost sites.
                 let value_len = PROVABLE_COUNT_PROVABLE_SUM_INDEXED_TREE_COST_SIZE
-                    + flags_len
-                    + wrapper_overhead;
-                let key_len = key.len() as u32;
-                KV::layered_value_byte_cost_size_for_key_and_value_lengths(
-                    key_len, value_len, node_type,
-                )
-            }
-            Element::ProvableCountProvableBigSumIndexedTree(_, _, _, _, flags) => {
-                let flags_len = flags.map_or(0, |flags| {
-                    let flags_len = flags.len() as u32;
-                    flags_len + flags_len.required_space() as u32
-                });
-                // PCPSIT carries both aggregates plus a variable-length axes
-                // TLV, so the single-axis indexed constant is below its own
-                // minimum payload rather than a conservative bound. Use the
-                // same worst-case constant as the other two PCPSIT cost sites.
-                let value_len = PROVABLE_COUNT_PROVABLE_BIG_SUM_INDEXED_TREE_COST_SIZE
                     + flags_len
                     + wrapper_overhead;
                 let key_len = key.len() as u32;
@@ -476,10 +443,8 @@ impl ElementCostExtensions for Element {
             | Element::BulkAppendTree(..)
             | Element::DenseAppendOnlyFixedSizeTree(..)
             | Element::ProvableSumIndexedTree(..)
-            | Element::ProvableBigSumIndexedTree(..)
             | Element::ProvableCountIndexedTree(..)
             | Element::ProvableCountProvableSumIndexedTree(..)
-            | Element::ProvableCountProvableBigSumIndexedTree(..)
             | Element::PrivateDocumentStore(..) => Some(cost),
             _ => None,
         }
@@ -514,12 +479,8 @@ impl ElementCostExtensions for Element {
             Element::ProvableCountProvableBigSumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::CountBigSumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::ProvableSumIndexedTree(..) => Some(LayeredValueDefinedCost(cost)),
-            Element::ProvableBigSumIndexedTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::ProvableCountIndexedTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::ProvableCountProvableSumIndexedTree(..) => Some(LayeredValueDefinedCost(cost)),
-            Element::ProvableCountProvableBigSumIndexedTree(..) => {
-                Some(LayeredValueDefinedCost(cost))
-            }
             Element::SumItem(..) => Some(SpecializedValueDefinedCost(cost)),
             Element::ItemWithSumItem(item, ..) => {
                 let item_len = item.len() as u32;
@@ -608,7 +569,6 @@ mod tests {
             .expect("cost for key value")
         };
         let flags = Some(vec![1u8, 2, 3]);
-        let axes = vec![(0u8, None)];
         for (bare, flagged) in [
             (
                 Element::CountBigSumTree(None, 0, 0, None),
@@ -617,20 +577,6 @@ mod tests {
             (
                 Element::ProvableBigSumTree(None, 0, None),
                 Element::ProvableBigSumTree(None, 0, flags.clone()),
-            ),
-            (
-                Element::ProvableBigSumIndexedTree(None, None, 0, None),
-                Element::ProvableBigSumIndexedTree(None, None, 0, flags.clone()),
-            ),
-            (
-                Element::ProvableCountProvableBigSumIndexedTree(None, 0, 0, axes.clone(), None),
-                Element::ProvableCountProvableBigSumIndexedTree(
-                    None,
-                    0,
-                    0,
-                    axes.clone(),
-                    flags.clone(),
-                ),
             ),
         ] {
             // Three flag bytes and one byte for their length.

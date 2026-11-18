@@ -110,11 +110,9 @@ mod build {
 
         let commitment = match underlying {
             Element::ProvableCountIndexedTree(_, secondary_root_key, ..)
-            | Element::ProvableSumIndexedTree(_, secondary_root_key, ..)
-            | Element::ProvableBigSumIndexedTree(_, secondary_root_key, ..) => {
+            | Element::ProvableSumIndexedTree(_, secondary_root_key, ..) => {
                 let axis = match underlying {
                     Element::ProvableCountIndexedTree(..) => IndexAxis::Count,
-                    Element::ProvableBigSumIndexedTree(..) => IndexAxis::BigSum,
                     _ => IndexAxis::Sum,
                 };
                 let primary_root_hash = cost_return_on_error_no_add!(cost, inner_root(&mut cost));
@@ -140,8 +138,7 @@ mod build {
                     secondary_root_hash,
                 }
             }
-            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _)
-            | Element::ProvableCountProvableBigSumIndexedTree(_, _, _, axes, _) => {
+            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => {
                 let primary_root_hash = cost_return_on_error_no_add!(cost, inner_root(&mut cost));
                 let mut axis_hashes: Vec<(u8, CryptoHash)> = Vec::with_capacity(axes.len());
                 for (tag, secondary_root_key) in axes {
@@ -433,18 +430,12 @@ fn decode_node(node: &IndexedTargetNode, grove_version: &GroveVersion) -> Result
             "IndexedSingle",
             matches!(
                 underlying,
-                Element::ProvableCountIndexedTree(..)
-                    | Element::ProvableSumIndexedTree(..)
-                    | Element::ProvableBigSumIndexedTree(..)
+                Element::ProvableCountIndexedTree(..) | Element::ProvableSumIndexedTree(..)
             ),
         ),
         IndexedTargetCommitment::IndexedMulti { .. } => (
             "IndexedMulti",
-            matches!(
-                underlying,
-                Element::ProvableCountProvableSumIndexedTree(..)
-                    | Element::ProvableCountProvableBigSumIndexedTree(..)
-            ),
+            matches!(underlying, Element::ProvableCountProvableSumIndexedTree(..)),
         ),
         IndexedTargetCommitment::Reference => ("Reference", underlying.is_reference()),
     };

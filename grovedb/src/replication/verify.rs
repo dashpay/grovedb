@@ -16,10 +16,7 @@ use grovedb_version::version::GroveVersion;
 use crate::{
     operations::{
         get::MAX_REFERENCE_HOPS,
-        indexed_tree::{
-            axis_secondary_tree_type, axis_storage_tag, decode_axis_row_reference,
-            indexed_element_axes,
-        },
+        indexed_tree::{axis_secondary_tree_type, decode_axis_row_reference, indexed_element_axes},
     },
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
     Element, Error, GroveDb, Transaction,
@@ -233,8 +230,7 @@ impl GroveDb {
             let primary_prefix = RocksDbStorage::build_prefix(path.as_slice().into()).unwrap();
             for (axis, root_key) in indexed_element_axes(&element)? {
                 let prefix =
-                    RocksDbStorage::secondary_prefix_for(&primary_prefix, axis_storage_tag(axis))
-                        .unwrap();
+                    RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag()).unwrap();
                 let storage = self
                     .db
                     .get_immediate_storage_context_by_subtree_prefix(prefix, transaction)

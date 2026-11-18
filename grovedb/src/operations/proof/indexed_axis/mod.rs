@@ -113,7 +113,5 @@ fn aggregate_range_out_of_domain(axis: IndexAxis, lo: i128, hi: i128) -> bool {
         IndexAxis::Sum => hi < (i64::MIN as i128) || lo > (i64::MAX as i128),
         // Avg has no aggregate form; rejected at the public entry point.
         IndexAxis::Avg => true,
-        // A 128-bit sum takes every i128.
-        IndexAxis::BigSum => false,
     }
 }

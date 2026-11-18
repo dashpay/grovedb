@@ -1358,4 +1358,194 @@ mod tests {
             assert_eq!(average_replace.cost, worst_replace.cost, "{tree_type}");
         }
     }
+
+    // ---------------------------------------------------------------------
+    // Batches
+    // ---------------------------------------------------------------------
+
+    fn insert_op(path: &[&[u8]], key: &[u8], element: Element) -> QualifiedGroveDbOp {
+        QualifiedGroveDbOp::insert_or_replace_op(
+            path.iter().map(|segment| segment.to_vec()).collect(),
+            key.to_vec(),
+            element,
+        )
+    }
+
+    /// A batch that creates a tree and writes into it replaces the insert
+    /// with the tree's computed root before the insert is applied. The
+    /// creation gate holds on that path too: a version that refuses the tree
+    /// alone refuses it with contents, and writes nothing.
+    #[test]
+    fn released_grove_versions_refuse_a_tree_the_batch_also_fills() {
+        use grovedb_version::version::v4::GROVE_V4;
+
+        let v4 = &GROVE_V4;
+        for tree in [
+            Element::empty_count_big_sum_tree(),
+            Element::empty_provable_big_sum_tree(),
+            Element::empty_provable_count_provable_big_sum_tree(),
+        ] {
+            let db = make_test_grovedb(v4);
+            insert(&db, &[], b"outer", Element::empty_tree(), v4);
+            let before = root_hash(&db, v4);
+            for ops in [
+                vec![insert_op(&[b"outer"], TREE, tree.clone())],
+                vec![
+                    insert_op(&[b"outer"], TREE, tree.clone()),
+                    insert_op(&[b"outer", TREE], b"k", Element::new_sum_item(5)),
+                ],
+                // Deeper still: the tree is an ancestor of what is written.
+                vec![
+                    insert_op(&[b"outer"], b"mid", Element::empty_tree()),
+                    insert_op(&[b"outer", b"mid"], TREE, tree.clone()),
+                    insert_op(&[b"outer", b"mid", TREE], b"k", Element::new_sum_item(5)),
+                ],
+            ] {
+                match db.apply_batch(ops, None, None, v4).unwrap() {
+                    Err(Error::VersionError(_)) => {}
+                    other => panic!("expected a version error for {tree:?}, got {other:?}"),
+                }
+            }
+            assert_eq!(root_hash(&db, v4), before);
+
+            // The version that introduces the trees takes the same batch.
+            let latest = GroveVersion::latest();
+            let db = make_test_grovedb(latest);
+            insert(&db, &[], b"outer", Element::empty_tree(), latest);
+            db.apply_batch(
+                vec![
+                    insert_op(&[b"outer"], TREE, tree.clone()),
+                    insert_op(&[b"outer", TREE], b"k", Element::new_sum_item(5)),
+                ],
+                None,
+                None,
+                latest,
+            )
+            .unwrap()
+            .expect("create and fill at the latest version");
+            let issues = db
+                .verify_grovedb(None, true, true, latest)
+                .expect("verify_grovedb");
+            assert!(issues.is_empty(), "issues: {issues:?}");
+        }
+    }
+
+    /// A count and big sum tree takes an indexed tree that is left out of
+    /// its count, by a batch as by a direct insert.
+    #[test]
+    fn count_big_sum_tree_takes_a_non_counted_indexed_tree_in_a_batch() {
+        let grove_version = GroveVersion::latest();
+        let child = || Element::NonCounted(Box::new(Element::empty_provable_sum_indexed_tree()));
+
+        let direct = make_test_grovedb(grove_version);
+        insert(
+            &direct,
+            &[],
+            TREE,
+            Element::empty_count_big_sum_tree(),
+            grove_version,
+        );
+        insert(&direct, &[TREE], b"w", child(), grove_version);
+
+        let batched = make_test_grovedb(grove_version);
+        insert(
+            &batched,
+            &[],
+            TREE,
+            Element::empty_count_big_sum_tree(),
+            grove_version,
+        );
+        batched
+            .apply_batch(
+                vec![insert_op(&[TREE], b"w", child())],
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("batch insert");
+
+        assert_eq!(
+            root_hash(&batched, grove_version),
+            root_hash(&direct, grove_version)
+        );
+        assert_eq!(
+            count_big_sum(&batched, &[], TREE, grove_version),
+            (0, 0),
+            "the indexed tree is left out of the count"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Reads that return a value or an aggregate
+    // ---------------------------------------------------------------------
+
+    /// A read that returns each element's value or aggregate returns the
+    /// count and the 128-bit sum of the trees that keep them, whether the
+    /// tree is selected or a reference to it is.
+    #[test]
+    fn a_value_or_sum_read_returns_the_128_bit_aggregates() {
+        use grovedb_version::version::v3::GROVE_V3;
+
+        use crate::operations::get::QueryItemOrSumReturnType;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert(&db, &[], b"trees", Element::empty_tree(), grove_version);
+        insert(&db, &[], b"refs", Element::empty_tree(), grove_version);
+        for (key, tree) in [
+            (b"a", Element::empty_count_big_sum_tree()),
+            (b"b", Element::empty_provable_big_sum_tree()),
+        ] {
+            insert(&db, &[b"trees"], key, tree, grove_version);
+            for item in 0u8..3 {
+                insert(
+                    &db,
+                    &[b"trees", key],
+                    &[item],
+                    Element::new_sum_item(i64::MAX),
+                    grove_version,
+                );
+            }
+        }
+        let expected = vec![
+            QueryItemOrSumReturnType::CountBigSumValue(3, THREE_MAX),
+            QueryItemOrSumReturnType::BigSumValue(THREE_MAX),
+        ];
+        let all_under = |tree: &[u8]| {
+            let mut query = Query::new();
+            query.insert_all();
+            PathQuery::new_unsized(vec![tree.to_vec()], query)
+        };
+
+        let (results, _) = db
+            .query_item_value_or_sum(&all_under(b"trees"), true, true, true, None, grove_version)
+            .unwrap()
+            .expect("read the trees");
+        assert_eq!(results, expected);
+
+        // A reference to a tree can only be legacy data: it is written under
+        // GROVE_V3, which still accepts one, and read under the latest
+        // version.
+        for key in [b"a", b"b"] {
+            db.insert(
+                [b"refs".as_slice()].as_ref(),
+                key,
+                Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                    b"trees".to_vec(),
+                    key.to_vec(),
+                ])),
+                None,
+                None,
+                &GROVE_V3,
+            )
+            .unwrap()
+            .expect("insert a reference");
+        }
+        let (results, _) = db
+            .query_item_value_or_sum(&all_under(b"refs"), true, true, true, None, grove_version)
+            .unwrap()
+            .expect("read through the references");
+        assert_eq!(results, expected);
+    }
 }

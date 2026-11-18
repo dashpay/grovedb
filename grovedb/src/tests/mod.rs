@@ -72,8 +72,6 @@ mod wrapped_terminal_reference_tests;
 mod axis_descent_proof_tests;
 mod axis_read_projection_tests;
 mod batch_filled_tree_insert_checks_tests;
-mod big_sum_indexed_guard_tests;
-mod big_sum_indexed_tree_tests;
 mod big_sum_tree_twins_tests;
 mod count_offset_backward_ref_forgery_tests;
 mod count_offset_paginated_tests;

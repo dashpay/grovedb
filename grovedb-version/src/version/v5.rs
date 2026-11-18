@@ -108,19 +108,10 @@
 //!
 //! - `operations.insert.big_sum_tree_twins_creation: 1`: an
 //!   `Element::CountBigSumTree` (a count and a 128-bit sum kept in the
-//!   element), an `Element::ProvableBigSumTree` (a 128-bit sum in every
-//!   node hash) and the two indexed trees with a 128-bit sum
-//!   (`Element::ProvableBigSumIndexedTree`,
-//!   `Element::ProvableCountProvableBigSumIndexedTree`) can be created, by a
-//!   direct or a batch insert. V1..V4 refuse the creation, as 6.1.1 does not
-//!   know the elements. Gated because it flips an accepted/rejected outcome.
-//!
-//! - `operations.indexed_axis.big_sum_axis: 1`: a `PathQuery` axis read can
-//!   name the big sum axis (`IndexAxis::BigSum`), the axis those two indexed
-//!   trees rank their 128-bit sums on. V1..V4 refuse such a query at every
-//!   read, prove and verify entry point: no tree has the axis there, and
-//!   6.1.1 cannot decode the query. Gated because it flips an
-//!   accepted/rejected outcome.
+//!   element) and an `Element::ProvableBigSumTree` (a 128-bit sum in every
+//!   node hash) can be created, by a direct or a batch insert. V1..V4 refuse
+//!   the creation, as 6.1.1 does not know the elements. Gated because it
+//!   flips an accepted/rejected outcome.
 //!
 //! It exists so that changes made after GroveDB 6.1.1 have somewhere to
 //! land. GROVE_V4 as 6.1.1 shipped it is what Dash Platform 5.0 (protocol
@@ -139,10 +130,10 @@
 use super::{
     grovedb_versions::{
         GroveDBApplyBatchVersions, GroveDBElementMethodVersions,
-        GroveDBOperationsAverageCaseVersions, GroveDBOperationsIndexedAxisVersions,
-        GroveDBOperationsInsertVersions, GroveDBOperationsPrivateDocumentStoreVersions,
-        GroveDBOperationsProofVersions, GroveDBOperationsVersions,
-        GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBVersions,
+        GroveDBOperationsAverageCaseVersions, GroveDBOperationsInsertVersions,
+        GroveDBOperationsPrivateDocumentStoreVersions, GroveDBOperationsProofVersions,
+        GroveDBOperationsVersions, GroveDBOperationsWorstCaseVersions,
+        GroveDBPathQueryMethodVersions, GroveDBVersions,
     },
     merk_versions::{MerkTreeVersions, MerkVersions},
     v4::GROVE_V4,
@@ -185,10 +176,6 @@ pub const GROVE_V5: GroveVersion = GroveVersion {
                 // changed: so can the other trees with a 128-bit sum
                 big_sum_tree_twins_creation: 1,
                 ..GROVE_V4.grovedb_versions.operations.insert
-            },
-            indexed_axis: GroveDBOperationsIndexedAxisVersions {
-                big_sum_axis: 1, // changed: the big sum axis is served
-                ..GROVE_V4.grovedb_versions.operations.indexed_axis
             },
             private_document_store: GroveDBOperationsPrivateDocumentStoreVersions {
                 get_range: 1,   // changed: a store's position-range read
