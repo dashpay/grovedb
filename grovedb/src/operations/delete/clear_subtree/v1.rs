@@ -15,6 +15,7 @@
 //! Selected by `GROVE_V4`+.
 
 use crate::operations::indexed_tree::reject_generic_write_into_indexed_primary;
+use grovedb_storage::FlatStore;
 use std::collections::HashMap;
 
 use grovedb_costs::{
@@ -23,31 +24,29 @@ use grovedb_costs::{
 use grovedb_merk::{
     element::{decode::ElementDecodeExtensions, insert::ElementInsertToStorageExtensions},
     proofs::Query,
+    store::NodeStore,
     tree::hash::NULL_HASH,
     KVIterator, Merk,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::{
-    rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch, StorageContext,
-};
 use grovedb_version::version::GroveVersion;
 
 use super::super::{ClearOptions, DeleteOptions};
-use crate::{util::TxRef, Element, Error, GroveDb, TransactionArg};
+use crate::{util::TxRef, Element, Engine, Error, GroveDb, TransactionArg};
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Clear a subtree — version 1 (see the module documentation).
-    pub(crate) fn clear_subtree_with_costs_v1<'b, B: AsRef<[u8]>>(
-        &self,
+    pub(crate) fn clear_subtree_with_costs_v1<'db, 'b, B: AsRef<[u8]>>(
+        &'db self,
         subtree_path: SubtreePath<'b, B>,
         options: Option<ClearOptions>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
         let tx = TxRef::new(&self.db, transaction);
 
         let mut cost = OperationCost::default();
-        let batch = StorageBatch::new();
+        let batch = E::Batch::default();
 
         let options = options.unwrap_or_default();
 
@@ -141,9 +140,9 @@ impl GroveDb {
             };
 
             // Clear the payload from the data namespace.
-            let mut storage = self
+            let storage = self
                 .db
-                .get_transactional_storage_context(subtree_path.clone(), Some(&batch), tx.as_ref())
+                .subtree(subtree_path.clone(), Some(&batch), tx.as_ref())
                 .unwrap_add_cost(&mut cost);
             cost_return_on_error!(
                 &mut cost,
@@ -172,7 +171,7 @@ impl GroveDb {
 
             let old_indexed_state = cost_return_on_error!(
                 &mut cost,
-                GroveDb::capture_indexed_entry_state(
+                crate::capture_indexed_entry_state(
                     &parent_merk,
                     parent_key,
                     &stored_element,
@@ -193,8 +192,7 @@ impl GroveDb {
                     .map_err(|e| e.into())
             );
 
-            let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbTransactionContext>> =
-                HashMap::default();
+            let mut merk_cache: HashMap<SubtreePath<B>, Merk<E::Subtree<'_>>> = HashMap::default();
             merk_cache.insert(parent_path.clone(), parent_merk);
             cost_return_on_error!(
                 &mut cost,
@@ -209,11 +207,10 @@ impl GroveDb {
                 )
             );
 
+            drop(storage);
             cost_return_on_error!(
                 &mut cost,
-                self.db
-                    .commit_multi_context_batch(batch, Some(tx.as_ref()))
-                    .map_err(Into::into)
+                self.db.apply_batch(batch, tx.as_ref()).map_err(Into::into)
             );
 
             return tx.commit_local().map(|_| true).wrap_with_cost(cost);
@@ -242,7 +239,7 @@ impl GroveDb {
             all_query.insert_all();
 
             let mut element_iterator =
-                KVIterator::new(merk_to_clear.storage.raw_iter(), &all_query).unwrap();
+                KVIterator::new(NodeStore::cursor(&merk_to_clear.storage), &all_query).unwrap();
 
             // delete all nested subtrees
             while let Some((key, element_value)) =
@@ -290,8 +287,7 @@ impl GroveDb {
         cost_return_on_error!(&mut cost, merk_to_clear.clear().map_err(Error::MerkError));
 
         // propagate changes
-        let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbTransactionContext>> =
-            HashMap::default();
+        let mut merk_cache: HashMap<SubtreePath<B>, Merk<E::Subtree<'_>>> = HashMap::default();
         merk_cache.insert(subtree_path.clone(), merk_to_clear);
         cost_return_on_error!(
             &mut cost,
@@ -306,9 +302,7 @@ impl GroveDb {
 
         cost_return_on_error!(
             &mut cost,
-            self.db
-                .commit_multi_context_batch(batch, Some(tx.as_ref()))
-                .map_err(Into::into)
+            self.db.apply_batch(batch, tx.as_ref()).map_err(Into::into)
         );
 
         tx.commit_local().map(|_| true).wrap_with_cost(cost)

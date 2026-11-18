@@ -131,6 +131,7 @@ mod tests {
         }
 
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit");

@@ -7,16 +7,12 @@ use grovedb_merk::{
     Error as MerkError, Merk, TreeType,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::{
-    rocksdb_storage::{PrefixedRocksDbTransactionContext, RocksDbStorage},
-    Storage, StorageBatch,
-};
 use grovedb_version::version::GroveVersion;
 
 use super::validate_path_segment_lengths;
 #[cfg(test)]
 use crate::tests::faultable_reads::FaultableReads;
-use crate::{Element, Error, Transaction};
+use crate::{Element, Engine, Error, Transaction};
 
 pub(crate) trait OpenMerkErrorsCompat {
     /// The error for a parent element that could not be found or decoded. A
@@ -33,13 +29,13 @@ pub(crate) trait OpenMerkErrorsCompat {
     fn parent_must_be_tree() -> Error;
 }
 
-pub(crate) fn open_merk<'db, 'b, B, C: OpenMerkErrorsCompat>(
-    db: &'db RocksDbStorage,
+pub(crate) fn open_merk<'a, 'db: 'a, 'b, B, C: OpenMerkErrorsCompat, E: Engine>(
+    db: &'db E,
     path: SubtreePath<'b, B>,
-    tx: &'db Transaction,
-    batch: Option<&'db StorageBatch>,
+    tx: &'a Transaction<'db, E>,
+    batch: Option<&'a E::Batch>,
     grove_version: &GroveVersion,
-) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error>
+) -> CostResult<Merk<E::Subtree<'a>>, Error>
 where
     B: AsRef<[u8]> + 'b,
 {
@@ -47,11 +43,11 @@ where
 
     cost_return_on_error_no_add!(cost, validate_path_segment_lengths(&path));
     let storage = db
-        .get_transactional_storage_context(path.clone(), batch, tx)
+        .subtree(path.clone(), batch, tx)
         .unwrap_add_cost(&mut cost);
     if let Some((parent_path, parent_key)) = path.derive_parent() {
         let parent_storage = db
-            .get_transactional_storage_context(parent_path.clone(), batch, tx)
+            .subtree(parent_path.clone(), batch, tx)
             .unwrap_add_cost(&mut cost);
         #[cfg(test)]
         let parent_storage = FaultableReads(parent_storage);
@@ -97,13 +93,13 @@ where
 
 /// Opens a subtree with errors returned compatible to now removed
 /// `merk_optional_tx!` macro.
-pub(crate) fn merk_optional_tx<'db, 'b, B>(
-    db: &'db RocksDbStorage,
+pub(crate) fn merk_optional_tx<'a, 'db: 'a, 'b, B, E: Engine>(
+    db: &'db E,
     path: SubtreePath<'b, B>,
-    tx: &'db Transaction,
-    batch: Option<&'db StorageBatch>,
+    tx: &'a Transaction<'db, E>,
+    batch: Option<&'a E::Batch>,
     grove_version: &GroveVersion,
-) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error>
+) -> CostResult<Merk<E::Subtree<'a>>, Error>
 where
     B: AsRef<[u8]> + 'b,
 {
@@ -130,18 +126,18 @@ where
         }
     }
 
-    open_merk::<_, Compat>(db, path, tx, batch, grove_version)
+    open_merk::<_, Compat, E>(db, path, tx, batch, grove_version)
 }
 
 /// Opens a subtree with errors returned compatible to now removed
 /// `merk_optional_tx_path_not_empty!` macro.
-pub(crate) fn merk_optional_tx_path_not_empty<'db, 'b, B>(
-    db: &'db RocksDbStorage,
+pub(crate) fn merk_optional_tx_path_not_empty<'a, 'db: 'a, 'b, B, E: Engine>(
+    db: &'db E,
     path: SubtreePath<'b, B>,
-    tx: &'db Transaction,
-    batch: Option<&'db StorageBatch>,
+    tx: &'a Transaction<'db, E>,
+    batch: Option<&'a E::Batch>,
     grove_version: &GroveVersion,
-) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error>
+) -> CostResult<Merk<E::Subtree<'a>>, Error>
 where
     B: AsRef<[u8]> + 'b,
 {

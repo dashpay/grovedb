@@ -55,8 +55,7 @@ pub(crate) use delete_tree::validate_delete_tree_type;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use grovedb_merk::{element::costs::ElementCostExtensions, Merk};
-use grovedb_storage::StorageContext;
+use grovedb_merk::{element::costs::ElementCostExtensions, store::NodeStore, Merk};
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 pub(crate) use mirror::{apply_indexed_secondary_mirror_post_apply, read_post_apply_transitions};
 pub(crate) use overwrite::classify_cidx_overwrite;
@@ -86,7 +85,7 @@ type AggregateTransition = (Vec<u8>, MaybeEntryState, MaybeEntryState);
 ///
 /// Dispatches on `apply_batch.indexed_mirror_entry_read`: `0` (V1..V4) is
 /// [`read_entry_aggregates_v0`], `1` (V5+) is [`read_entry_aggregates_v1`].
-fn read_entry_aggregates<'db, S: StorageContext<'db>>(
+fn read_entry_aggregates<'db, S: NodeStore<'db>>(
     primary_merk: &Merk<S>,
     key: &[u8],
     phase: &str,
@@ -116,7 +115,7 @@ fn read_entry_aggregates<'db, S: StorageContext<'db>>(
 /// included, so a key this Merk removed is absent and a key it wrote reads
 /// as written, in a later segment of a partial batch as well. It keeps the
 /// nodes it fetches, so the apply that follows a capture reuses them.
-fn read_entry_aggregates_v1<'db, S: StorageContext<'db>>(
+fn read_entry_aggregates_v1<'db, S: NodeStore<'db>>(
     primary_merk: &Merk<S>,
     key: &[u8],
     phase: &str,
@@ -160,7 +159,7 @@ fn read_entry_aggregates_v1<'db, S: StorageContext<'db>>(
 /// only pending there, so an entry it removed can still be returned. Read
 /// after the level's apply, such a key looks unchanged and its row stays in
 /// every secondary.
-fn read_entry_aggregates_v0<'db, S: StorageContext<'db>>(
+fn read_entry_aggregates_v0<'db, S: NodeStore<'db>>(
     primary_merk: &Merk<S>,
     key: &[u8],
     phase: &str,

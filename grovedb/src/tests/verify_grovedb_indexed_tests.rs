@@ -101,6 +101,7 @@ mod tests {
         }
 
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit");
@@ -154,6 +155,7 @@ mod tests {
         }
 
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit");
@@ -1246,6 +1248,7 @@ mod tests {
             .expect("delete");
         }
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit");
@@ -1302,6 +1305,7 @@ mod tests {
                 .1
         };
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit mutated secondary");
@@ -1510,6 +1514,7 @@ mod tests {
             .expect("delete");
         }
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit");

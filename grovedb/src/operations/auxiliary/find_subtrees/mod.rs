@@ -11,9 +11,9 @@ use grovedb_costs::{cost_return_on_error_no_add, CostResult, CostsExt, Operation
 use grovedb_path::SubtreePath;
 use grovedb_version::version::GroveVersion;
 
-use crate::{util::validate_path_segment_lengths, Error, GroveDb, TransactionArg};
+use crate::{util::validate_path_segment_lengths, Engine, Error, GroveDb, TransactionArg};
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Finds subtree namespaces recursively, including the starting Merk
     /// namespace at `path`. Returned paths are absolute.
     ///
@@ -27,7 +27,7 @@ impl GroveDb {
     /// This method reads directly from the transaction (passing `None` for
     /// the storage batch parameter), so it only sees data that has been
     /// **committed** to the transaction. Any writes staged in a pending
-    /// `StorageBatch` (e.g., from `apply_body` during batch processing)
+    /// `E::Batch` (e.g., from `apply_body` during batch processing)
     /// are invisible.
     ///
     /// In practice this is safe because the batch consistency check
@@ -36,10 +36,10 @@ impl GroveDb {
     /// The stale-state window only matters if the consistency check is
     /// bypassed via
     /// [`BatchApplyOptions::disable_operation_consistency_check`](crate::batch::BatchApplyOptions::disable_operation_consistency_check).
-    pub fn find_subtrees<B: AsRef<[u8]>>(
-        &self,
+    pub fn find_subtrees<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: &SubtreePath<B>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<Vec<Vec<u8>>>, Error> {
         // Both versions open `path` before anything else, so the check in

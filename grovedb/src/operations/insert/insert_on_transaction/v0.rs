@@ -12,20 +12,19 @@ use std::collections::HashMap;
 use grovedb_costs::{cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt};
 use grovedb_merk::Merk;
 use grovedb_path::SubtreePath;
-use grovedb_storage::{rocksdb_storage::PrefixedRocksDbTransactionContext, StorageBatch};
 use grovedb_version::version::GroveVersion;
 
 use super::super::InsertOptions;
-use crate::{Element, Error, GroveDb, OperationCost, Transaction};
+use crate::{Element, Engine, Error, GroveDb, OperationCost, Transaction};
 
-pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
-    db: &GroveDb,
+pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>, E: Engine>(
+    db: &'db GroveDb<E>,
     path: SubtreePath<'b, B>,
     key: &[u8],
     element: Element,
     options: InsertOptions,
-    transaction: &'db Transaction,
-    batch: &StorageBatch,
+    transaction: &Transaction<'db, E>,
+    batch: &E::Batch,
     grove_version: &GroveVersion,
 ) -> CostResult<(), Error> {
     // Fail closed: the backward-references family activates with GROVE_V4.
@@ -57,20 +56,19 @@ pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
 /// The shipped insert flow, shared verbatim by v0 and by v1's
 /// non-backward-references route so the two produce identical root hashes
 /// and costs.
-pub(super) fn insert_on_transaction_body<'db, 'b, B: AsRef<[u8]>>(
-    db: &GroveDb,
+pub(super) fn insert_on_transaction_body<'db, 'b, B: AsRef<[u8]>, E: Engine>(
+    db: &'db GroveDb<E>,
     path: SubtreePath<'b, B>,
     key: &[u8],
     element: Element,
     options: InsertOptions,
-    transaction: &'db Transaction,
-    batch: &StorageBatch,
+    transaction: &Transaction<'db, E>,
+    batch: &E::Batch,
     grove_version: &GroveVersion,
 ) -> CostResult<(), Error> {
     let mut cost = OperationCost::default();
 
-    let mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>> =
-        HashMap::default();
+    let mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<E::Subtree<'_>>> = HashMap::default();
 
     let merk = cost_return_on_error!(
         &mut cost,
@@ -86,7 +84,7 @@ pub(super) fn insert_on_transaction_body<'db, 'b, B: AsRef<[u8]>>(
     );
     // A generic insert cannot mirror the new child's ordering value into
     // an indexed primary's secondary index. Reject before propagation, so
-    // the `StorageBatch` is discarded and nothing is committed.
+    // the `E::Batch` is discarded and nothing is committed.
     cost_return_on_error_no_add!(
         cost,
         reject_generic_write_into_indexed_primary(merk.tree_type, "insert",)

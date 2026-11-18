@@ -217,6 +217,30 @@ impl Error {
     }
 }
 
+#[cfg(feature = "minimal")]
+impl Error {
+    /// How a commit that returned this error ended, in terms that name no
+    /// engine, or `None` when the error has no such class: the transaction
+    /// is then over and the database unchanged, as for any failed commit.
+    ///
+    /// See [`grovedb_storage::Error::commit_error`] for how each engine's
+    /// own errors are classed.
+    pub fn commit_error(&self) -> Option<grovedb_storage::error::CommitError> {
+        match self {
+            Self::StorageError(error) => error.commit_error(),
+            _ => None,
+        }
+    }
+
+    /// Whether a commit returned this error because another commit wrote a
+    /// key after the transaction first wrote it. Any engine reports that
+    /// case so: on the RocksDB engine it holds for the `Busy` error of a
+    /// commit.
+    pub fn is_commit_conflict(&self) -> bool {
+        self.commit_error() == Some(grovedb_storage::error::CommitError::Conflict)
+    }
+}
+
 /// Extension trait for adding context to GroveDB error results.
 pub trait GroveDbErrorExt {
     /// Appends additional context to the error within this result.

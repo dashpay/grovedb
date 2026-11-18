@@ -125,6 +125,12 @@ where
             .wrap_with_cost(cost)
     }
 
+    fn has_node(&self, key: &[u8]) -> CostResult<bool, Error> {
+        self.get(key)
+            .map_ok(|record| record.is_some())
+            .map_err(StorageError)
+    }
+
     fn write_node(&self, node: &TreeNode, _change: NodeChange) -> CostResult<(), Error> {
         self.put(node.key(), &node.encode(), None, None)
             .map_err(StorageError)
@@ -362,6 +368,9 @@ mod tests {
         let absent = made(tape, store.get_node_for_read(b"none"), &get(b"none"));
         assert!(absent.unwrap().is_none());
 
+        assert!(made(tape, store.has_node(b"key"), &get(b"key")).unwrap());
+        assert!(!made(tape, store.has_node(b"none"), &get(b"none")).unwrap());
+
         let fetched = store.fetch_node(&link(b"key"), Some(&cost_of_value), grove_version);
         let fetched = made(tape, fetched, &get(b"key")).unwrap();
         assert_eq!(fetched.encode(), record);
@@ -520,6 +529,7 @@ mod tests {
             store.get_node(b"key", no_cost, grove_version)
         });
         failing(&tape, "get", || store.get_node_for_read(b"key"));
+        failing(&tape, "get", || store.has_node(b"key"));
         failing(&tape, "get", || {
             store.fetch_node(&link(b"key"), no_cost.as_ref(), grove_version)
         });
@@ -1122,6 +1132,9 @@ mod tests {
         let fetched = store.get_node(b"key", NO_VALUE_DEFINED_COST, grove_version);
         assert_eq!(fetched.cost.seek_count, 1);
         assert!(matches!(fetched.value, Err(Error::EdError(_))));
+        let held = store.has_node(b"key");
+        assert_eq!(held.cost, one_seek(3));
+        assert!(matches!(held.value, Ok(true)));
     }
 
     #[test]

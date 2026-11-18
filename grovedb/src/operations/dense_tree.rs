@@ -17,27 +17,25 @@ use grovedb_costs::{
 use grovedb_dense_fixed_sized_merkle_tree::{position_key, DenseFixedSizedMerkleTree};
 use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
 use grovedb_path::SubtreePath;
-use grovedb_storage::{
-    rocksdb_storage::PrefixedRocksDbTransactionContext, FlatStore, Storage, StorageBatch,
-};
+use grovedb_storage::FlatStore;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
     batch::{GroveOp, QualifiedGroveDbOp},
     util::TxRef,
-    Element, Error, GroveDb, Merk, Transaction, TransactionArg,
+    Element, Engine, Error, GroveDb, Merk, Transaction, TransactionArg,
 };
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Insert a value into a DenseAppendOnlyFixedSizeTree subtree.
     ///
     /// Returns `(root_hash, position)`.
-    pub fn dense_tree_insert<'b, B, P>(
-        &self,
+    pub fn dense_tree_insert<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
         value: Vec<u8>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<([u8; 32], u16), Error>
     where
@@ -74,10 +72,10 @@ impl GroveDb {
         // 3. Open storage, create tree with embedded storage, insert.
         // Uses transactional context — the dense tree's write-through cache
         // provides read-after-write visibility for root hash computation.
-        let data_batch = StorageBatch::new();
+        let data_batch = E::Batch::default();
         let storage_ctx = self
             .db
-            .get_transactional_storage_context(subtree_path.clone(), Some(&data_batch), tx.as_ref())
+            .subtree(subtree_path.clone(), Some(&data_batch), tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         let mut tree = cost_return_on_error_no_add!(
@@ -103,16 +101,16 @@ impl GroveDb {
         // in the transaction. This is the same pattern as other direct GroveDB
         // operations — the caller is expected to rollback the tx on error.
         // The batch path (preprocess_dense_tree_ops) avoids this by using a
-        // shared StorageBatch that commits atomically with all other ops.
+        // shared E::Batch that commits atomically with all other ops.
         cost_return_on_error!(
             &mut cost,
             self.db
-                .commit_multi_context_batch(data_batch, Some(tx.as_ref()))
+                .apply_batch(data_batch, tx.as_ref())
                 .map_err(Into::into)
         );
 
         // 4. Update element and propagate
-        let batch = StorageBatch::new();
+        let batch = E::Batch::default();
         let mut parent_merk = cost_return_on_error!(
             &mut cost,
             self.open_transactional_merk_at_path(
@@ -128,7 +126,7 @@ impl GroveDb {
         // alone. Snapshot before the rewrite; mirror after.
         let old_indexed_state = cost_return_on_error!(
             &mut cost,
-            GroveDb::capture_indexed_entry_state(&parent_merk, key, &element, grove_version)
+            crate::capture_indexed_entry_state(&parent_merk, key, &element, grove_version)
         );
 
         let updated_element = Element::new_dense_tree(new_count, height, existing_flags);
@@ -157,8 +155,7 @@ impl GroveDb {
 
         // 5. Propagate changes
 
-        let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbTransactionContext>> =
-            HashMap::new();
+        let mut merk_cache: HashMap<SubtreePath<B>, Merk<E::Subtree<'_>>> = HashMap::new();
         merk_cache.insert(path.clone(), parent_merk);
 
         cost_return_on_error!(
@@ -177,9 +174,7 @@ impl GroveDb {
         // 6. Commit
         cost_return_on_error!(
             &mut cost,
-            self.db
-                .commit_multi_context_batch(batch, Some(tx.as_ref()))
-                .map_err(Into::into)
+            self.db.apply_batch(batch, tx.as_ref()).map_err(Into::into)
         );
 
         tx.commit_local()
@@ -188,12 +183,12 @@ impl GroveDb {
     }
 
     /// Get a value from a DenseAppendOnlyFixedSizeTree by position.
-    pub fn dense_tree_get<'b, B, P>(
-        &self,
+    pub fn dense_tree_get<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
         position: u16,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Vec<u8>>, Error>
     where
@@ -202,7 +197,8 @@ impl GroveDb {
     {
         let path: SubtreePath<B> = path.into();
         let mut cost = OperationCost::default();
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
 
         let element = cost_return_on_error!(
             &mut cost,
@@ -228,7 +224,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_transactional_storage_context(subtree_path, None, tx.as_ref())
+            .subtree(subtree_path, None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         // Read directly from storage using position_key (no need to construct tree)
@@ -245,11 +241,11 @@ impl GroveDb {
     /// Get the root hash of a DenseAppendOnlyFixedSizeTree.
     ///
     /// Computes the root hash from storage (same pattern as MmrTree).
-    pub fn dense_tree_root_hash<'b, B, P>(
-        &self,
+    pub fn dense_tree_root_hash<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<[u8; 32], Error>
     where
@@ -258,7 +254,8 @@ impl GroveDb {
     {
         let path: SubtreePath<B> = path.into();
         let mut cost = OperationCost::default();
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
 
         let element = cost_return_on_error!(
             &mut cost,
@@ -284,7 +281,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_transactional_storage_context(subtree_path, None, tx.as_ref())
+            .subtree(subtree_path, None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         let tree = cost_return_on_error_no_add!(
@@ -303,11 +300,11 @@ impl GroveDb {
     }
 
     /// Get the count of a DenseAppendOnlyFixedSizeTree.
-    pub fn dense_tree_count<'b, B, P>(
-        &self,
+    pub fn dense_tree_count<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<u16, Error>
     where
@@ -347,11 +344,11 @@ impl GroveDb {
     /// 2. Inserts all values sequentially
     /// 3. Replaces the ops with a single `ReplaceTreeRootKey` carrying the new
     ///    root_hash and count
-    pub(crate) fn preprocess_dense_tree_ops(
-        &self,
+    pub(crate) fn preprocess_dense_tree_ops<'db>(
+        &'db self,
         ops: Vec<QualifiedGroveDbOp>,
-        transaction: &Transaction,
-        storage_batch: &StorageBatch,
+        transaction: &Transaction<'db, E>,
+        storage_batch: &E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
         let mut cost = OperationCost::default();
@@ -445,11 +442,7 @@ impl GroveDb {
             // don't need immediate context.
             let storage_ctx = self
                 .db
-                .get_transactional_storage_context(
-                    st_path.clone(),
-                    Some(storage_batch),
-                    transaction,
-                )
+                .subtree(st_path.clone(), Some(storage_batch), transaction)
                 .unwrap_add_cost(&mut cost);
 
             let mut tree = cost_return_on_error_no_add!(

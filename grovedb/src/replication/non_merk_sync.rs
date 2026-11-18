@@ -66,12 +66,12 @@ use grovedb_merkle_mountain_range::{
 };
 use grovedb_path::SubtreePath;
 use grovedb_private_document_store::PrivateDocumentStore;
-use grovedb_storage::{FlatStore, Storage};
+use grovedb_storage::FlatStore;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
     replication::utils::{pack_nested_bytes, unpack_nested_bytes},
-    Element, Error, GroveDb, Transaction,
+    Element, Engine, Error, GroveDb, Transaction,
 };
 
 /// Soft byte budget for a single page of entries. A page always carries at
@@ -262,7 +262,7 @@ pub(crate) fn decode_non_merk_page(data: &[u8]) -> Result<(bool, Vec<u8>, Vec<Ve
 
 // ── Source side ─────────────────────────────────────────────────────────
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Serve one page of entries for a non-Merk append-only subtree,
     /// identified by its 32-byte prefix. `chunk_id_bytes` is the
     /// target-encoded [`NonMerkChunkId`] cursor.
@@ -274,12 +274,12 @@ impl GroveDb {
     /// verification is what protects the *syncing* node. Every
     /// peer-controlled field is validated before it drives tree arithmetic
     /// (see the module docs).
-    pub(crate) fn fetch_non_merk_page(
-        &self,
+    pub(crate) fn fetch_non_merk_page<'db>(
+        &'db self,
         chunk_prefix: crate::SubtreePrefix,
         tree_type: TreeType,
         chunk_id_bytes: &[u8],
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
     ) -> Result<Vec<u8>, Error> {
         let id = NonMerkChunkId::decode(chunk_id_bytes)?;
 
@@ -299,11 +299,7 @@ impl GroveDb {
                 let aux = if matches!(tree_type, TreeType::CommitmentTree(_)) && id.start == 0 {
                     let ctx = self
                         .db
-                        .get_transactional_storage_context_by_subtree_prefix(
-                            chunk_prefix,
-                            None,
-                            transaction,
-                        )
+                        .subtree_by_prefix(chunk_prefix, None, transaction)
                         .unwrap();
                     ctx.get(COMMITMENT_TREE_DATA_KEY)
                         .unwrap()
@@ -319,11 +315,7 @@ impl GroveDb {
 
                 let ctx = self
                     .db
-                    .get_transactional_storage_context_by_subtree_prefix(
-                        chunk_prefix,
-                        None,
-                        transaction,
-                    )
+                    .subtree_by_prefix(chunk_prefix, None, transaction)
                     .unwrap();
                 let tree = BulkAppendTree::from_state(id.state, id.param, ctx).map_err(|e| {
                     Error::CorruptedData(format!(
@@ -395,11 +387,7 @@ impl GroveDb {
                 let leaf_count = validate_mmr_size(id.state)?;
                 let ctx = self
                     .db
-                    .get_transactional_storage_context_by_subtree_prefix(
-                        chunk_prefix,
-                        None,
-                        transaction,
-                    )
+                    .subtree_by_prefix(chunk_prefix, None, transaction)
                     .unwrap();
                 let store = MmrStore::new(&ctx);
 
@@ -438,11 +426,7 @@ impl GroveDb {
                 })?;
                 let ctx = self
                     .db
-                    .get_transactional_storage_context_by_subtree_prefix(
-                        chunk_prefix,
-                        None,
-                        transaction,
-                    )
+                    .subtree_by_prefix(chunk_prefix, None, transaction)
                     .unwrap();
                 let tree =
                     DenseFixedSizedMerkleTree::from_state(id.param, count, ctx).map_err(|e| {
@@ -625,10 +609,10 @@ impl NonMerkRestorer {
     /// `grove_version` only selects how the replayed writes would be
     /// *billed* (costs are discarded during sync); the bytes written are
     /// identical under every version.
-    pub(crate) fn apply_page(
+    pub(crate) fn apply_page<'db, E: Engine>(
         &mut self,
-        db: &GroveDb,
-        tx: &Transaction,
+        db: &'db GroveDb<E>,
+        tx: &Transaction<'db, E>,
         path: &[Vec<u8>],
         chunk_id: &[u8],
         data: &[u8],
@@ -669,10 +653,7 @@ impl NonMerkRestorer {
         let subtree_path: SubtreePath<&[u8]> = SubtreePath::from(path_refs.as_slice());
 
         if let Some(frontier) = frontier_to_store {
-            let ctx = db
-                .db
-                .get_immediate_storage_context(subtree_path.clone(), tx)
-                .unwrap();
+            let ctx = db.db.immediate_subtree(subtree_path.clone(), tx).unwrap();
             ctx.put(COMMITMENT_TREE_DATA_KEY, frontier, None)
                 .unwrap()
                 .map_err(|e| {
@@ -682,10 +663,7 @@ impl NonMerkRestorer {
 
         match self.element.underlying() {
             Element::CommitmentTree(..) | Element::BulkAppendTree(..) => {
-                let ctx = db
-                    .db
-                    .get_immediate_storage_context(subtree_path, tx)
-                    .unwrap();
+                let ctx = db.db.immediate_subtree(subtree_path, tx).unwrap();
                 let mut tree =
                     BulkAppendTree::from_state(self.replayed, self.param, ctx).map_err(|e| {
                         Error::CorruptedData(format!(
@@ -703,10 +681,7 @@ impl NonMerkRestorer {
                 })?;
             }
             Element::MmrTree(..) => {
-                let ctx = db
-                    .db
-                    .get_immediate_storage_context(subtree_path, tx)
-                    .unwrap();
+                let ctx = db.db.immediate_subtree(subtree_path, tx).unwrap();
                 let store = MmrStore::new(&ctx);
                 let mut mmr = MMR::new(self.mmr_size_so_far, &store);
                 for entry in entries.iter().cloned() {
@@ -722,10 +697,7 @@ impl NonMerkRestorer {
                 self.mmr_size_so_far = mmr.mmr_size;
             }
             Element::DenseAppendOnlyFixedSizeTree(..) => {
-                let ctx = db
-                    .db
-                    .get_immediate_storage_context(subtree_path, tx)
-                    .unwrap();
+                let ctx = db.db.immediate_subtree(subtree_path, tx).unwrap();
                 let mut tree =
                     DenseFixedSizedMerkleTree::from_state(self.param, self.replayed as u16, ctx)
                         .map_err(|e| {
@@ -746,10 +718,7 @@ impl NonMerkRestorer {
                 // hash-verified element is enforced on every wire entry
                 // before anything is written.
                 let entry_size = *entry_size;
-                let ctx = db
-                    .db
-                    .get_immediate_storage_context(subtree_path, tx)
-                    .unwrap();
+                let ctx = db.db.immediate_subtree(subtree_path, tx).unwrap();
                 let mut store =
                     PrivateDocumentStore::from_state(self.replayed, entry_size, self.param, ctx)
                         .unwrap()
@@ -792,10 +761,10 @@ impl NonMerkRestorer {
     /// Verify the fully replayed subtree against the parent binding:
     /// `combine_hash(value_hash(element_bytes), recomputed_state_root)` must
     /// equal the element value hash the parent Merk committed to.
-    pub(crate) fn finalize(
+    pub(crate) fn finalize<'db, E: Engine>(
         &self,
-        db: &GroveDb,
-        tx: &Transaction,
+        db: &'db GroveDb<E>,
+        tx: &Transaction<'db, E>,
         path: &[Vec<u8>],
         grove_version: &GroveVersion,
     ) -> Result<(), Error> {

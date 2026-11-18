@@ -88,6 +88,7 @@ fn namespace_non_empty(db: &TempGroveDb, prefix: [u8; 32], tx: TransactionArg) -
     let local_tx = db.start_transaction();
     let storage = db
         .db
+        .storage()
         .get_transactional_storage_context_by_subtree_prefix(prefix, None, tx.unwrap_or(&local_tx))
         .unwrap();
     let mut iter = storage.raw_iter();

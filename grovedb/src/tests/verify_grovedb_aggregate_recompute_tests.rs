@@ -100,6 +100,7 @@ mod tests {
             .unwrap()
             .expect("propagate");
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit");
@@ -161,6 +162,7 @@ mod tests {
             .expect("apply the put");
         drop(merk);
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit");
@@ -250,6 +252,7 @@ mod tests {
             .expect("apply the put");
         drop(secondary);
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit");
@@ -325,6 +328,7 @@ mod tests {
             .unwrap()
             .expect("propagate");
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit");

@@ -36,24 +36,23 @@ use grovedb_merk::{
     Merk,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::{rocksdb_storage::PrefixedRocksDbTransactionContext, StorageBatch};
 use grovedb_version::version::GroveVersion;
 
 use super::super::{check_wide_sum_tree_creation, InsertOptions};
-use crate::{Element, Error, GroveDb, Transaction};
+use crate::{Element, Engine, Error, GroveDb, Transaction};
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// `add_element_on_transaction` v1 — see the module documentation.
-    pub(crate) fn add_element_on_transaction_v1<'db, B: AsRef<[u8]>>(
+    pub(crate) fn add_element_on_transaction_v1<'a, 'db: 'a, B: AsRef<[u8]>>(
         &'db self,
         path: SubtreePath<B>,
         key: &[u8],
         element: Element,
         options: InsertOptions,
-        transaction: &'db Transaction,
-        batch: &'db StorageBatch,
+        transaction: &'a Transaction<'db, E>,
+        batch: &'a E::Batch,
         grove_version: &GroveVersion,
-    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error> {
+    ) -> CostResult<Merk<E::Subtree<'a>>, Error> {
         let mut cost = OperationCost::default();
 
         let mut subtree_to_insert_into = cost_return_on_error!(

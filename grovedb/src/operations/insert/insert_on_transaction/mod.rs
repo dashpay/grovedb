@@ -17,23 +17,22 @@ mod v1;
 
 use grovedb_costs::CostResult;
 use grovedb_path::SubtreePath;
-use grovedb_storage::StorageBatch;
 use grovedb_version::{dispatch_version, version::GroveVersion};
 
 use super::InsertOptions;
-use crate::{Element, Error, GroveDb, Transaction};
+use crate::{Element, Engine, Error, GroveDb, Transaction};
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Insert an element on a transaction — versioned dispatch, see the
     /// module documentation.
     pub(crate) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
-        &self,
+        &'db self,
         path: SubtreePath<'b, B>,
         key: &[u8],
         element: Element,
         options: InsertOptions,
-        transaction: &'db Transaction,
-        batch: &StorageBatch,
+        transaction: &Transaction<'db, E>,
+        batch: &E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         dispatch_version!(

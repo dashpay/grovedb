@@ -9,9 +9,10 @@ use grovedb_merk::{
     element::{decode::ElementDecodeExtensions, get::ElementFetchFromStorageExtensions},
     error::MerkErrorExt,
     proofs::{query::query_item::QueryItem, Query},
+    store::NodeStore,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
+use grovedb_storage::RawIterator;
 use grovedb_version::{check_grovedb_v0, check_grovedb_v0_with_cost, version::GroveVersion};
 
 use crate::{
@@ -27,63 +28,66 @@ use crate::{
             QueryPathKeyElementTrioResultType,
         },
     },
-    Error, PathQuery, SizedQuery, TransactionArg,
+    Engine, Error, PathQuery, SizedQuery, TransactionArg,
 };
 
 /// Extension trait providing query operations on `Element`.
 pub trait ElementQueryExtensions {
     /// Executes a query against a subtree and returns matching elements.
-    fn get_query(
-        storage: &RocksDbStorage,
+    fn get_query<'db, E: Engine>(
+        storage: &'db E,
         merk_path: &[&[u8]],
         query: &Query,
         query_options: QueryOptions,
         result_type: QueryResultType,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<QueryResultElements, Error>;
     /// Executes a query and returns only the element values (no keys or paths).
-    fn get_query_values(
-        storage: &RocksDbStorage,
+    fn get_query_values<'db, E: Engine>(
+        storage: &'db E,
         merk_path: &[&[u8]],
         query: &Query,
         query_options: QueryOptions,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<Element>, Error>;
     /// Executes a sized query using a custom element-processing function.
-    fn get_query_apply_function(
-        storage: &RocksDbStorage,
+    fn get_query_apply_function<'db, E: Engine>(
+        storage: &'db E,
         path: &[&[u8]],
         sized_query: &SizedQuery,
         query_options: QueryOptions,
         result_type: QueryResultType,
-        transaction: TransactionArg,
-        add_element_function: fn(PathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
+        transaction: TransactionArg<'db, '_, E>,
+        add_element_function: fn(
+            PathQueryPushArgs<'_, '_, '_, E>,
+            &GroveVersion,
+        ) -> CostResult<(), Error>,
         grove_version: &GroveVersion,
     ) -> CostResult<(QueryResultElements, u16), Error>;
     /// Executes a path query, resolving the path and running the sized query within it.
-    fn get_path_query(
-        storage: &RocksDbStorage,
+    fn get_path_query<'db, E: Engine>(
+        storage: &'db E,
         path_query: &PathQuery,
         query_options: QueryOptions,
         result_type: QueryResultType,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(QueryResultElements, u16), Error>;
     /// Returns a vector of elements, and the number of skipped elements
-    fn get_sized_query(
-        storage: &RocksDbStorage,
+    fn get_sized_query<'db, E: Engine>(
+        storage: &'db E,
         path: &[&[u8]],
         sized_query: &SizedQuery,
         query_options: QueryOptions,
         result_type: QueryResultType,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(QueryResultElements, u16), Error>;
     /// Push arguments to path query
-    fn path_query_push(
-        args: PathQueryPushArgs,
+    fn path_query_push<E: Engine>(
+        args: PathQueryPushArgs<'_, '_, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>;
 
@@ -100,33 +104,39 @@ pub trait ElementQueryExtensions {
     /// not decrease and hence we would continue on the increasingly
     /// expensive query.
     // TODO: refactor
-    fn query_item(
-        storage: &RocksDbStorage,
+    fn query_item<'db, E: Engine>(
+        storage: &'db E,
         item: &QueryItem,
         results: &mut Vec<QueryResultElement>,
         path: &[&[u8]],
         sized_query: &SizedQuery,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         limit: &mut Option<u16>,
         offset: &mut Option<u16>,
         query_options: QueryOptions,
         result_type: QueryResultType,
-        add_element_function: fn(PathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
+        add_element_function: fn(
+            PathQueryPushArgs<'_, '_, '_, E>,
+            &GroveVersion,
+        ) -> CostResult<(), Error>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>;
     /// Default push function that adds an element to the query results.
-    fn basic_push(args: PathQueryPushArgs, grove_version: &GroveVersion) -> Result<(), Error>;
+    fn basic_push<E: Engine>(
+        args: PathQueryPushArgs<'_, '_, '_, E>,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error>;
 }
 
 impl ElementQueryExtensions for Element {
     /// Returns a vector of result elements based on given query
-    fn get_query(
-        storage: &RocksDbStorage,
+    fn get_query<'db, E: Engine>(
+        storage: &'db E,
         merk_path: &[&[u8]],
         query: &Query,
         query_options: QueryOptions,
         result_type: QueryResultType,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<QueryResultElements, Error> {
         check_grovedb_v0_with_cost!(
@@ -148,12 +158,12 @@ impl ElementQueryExtensions for Element {
     }
 
     /// Get values of result elements coming from given query
-    fn get_query_values(
-        storage: &RocksDbStorage,
+    fn get_query_values<'db, E: Engine>(
+        storage: &'db E,
         merk_path: &[&[u8]],
         query: &Query,
         query_options: QueryOptions,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<Element>, Error> {
         check_grovedb_v0_with_cost!(
@@ -189,14 +199,17 @@ impl ElementQueryExtensions for Element {
 
     /// Returns a vector of result elements and the number of skipped items
     /// based on given query
-    fn get_query_apply_function(
-        storage: &RocksDbStorage,
+    fn get_query_apply_function<'db, E: Engine>(
+        storage: &'db E,
         path: &[&[u8]],
         sized_query: &SizedQuery,
         query_options: QueryOptions,
         result_type: QueryResultType,
-        transaction: TransactionArg,
-        add_element_function: fn(PathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
+        transaction: TransactionArg<'db, '_, E>,
+        add_element_function: fn(
+            PathQueryPushArgs<'_, '_, '_, E>,
+            &GroveVersion,
+        ) -> CostResult<(), Error>,
         grove_version: &GroveVersion,
     ) -> CostResult<(QueryResultElements, u16), Error> {
         check_grovedb_v0_with_cost!(
@@ -206,6 +219,9 @@ impl ElementQueryExtensions for Element {
                 .element
                 .get_query_apply_function
         );
+
+        let tx = crate::util::TxRef::for_read(storage, transaction);
+        let transaction = Some(tx.as_ref());
 
         // Whole-query preflight: the per-frame checks inside the walk
         // only see nodes the walk reaches, so a per-instance limit in
@@ -248,18 +264,21 @@ impl ElementQueryExtensions for Element {
 
     /// Returns a vector of elements excluding trees, and the number of skipped
     /// elements
-    fn get_path_query(
-        storage: &RocksDbStorage,
+    fn get_path_query<'db, E: Engine>(
+        storage: &'db E,
         path_query: &PathQuery,
         query_options: QueryOptions,
         result_type: QueryResultType,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(QueryResultElements, u16), Error> {
         check_grovedb_v0_with_cost!(
             "get_path_query",
             grove_version.grovedb_versions.element.get_path_query
         );
+
+        let tx = crate::util::TxRef::for_read(storage, transaction);
+        let transaction = Some(tx.as_ref());
 
         // Whole-query preflight — see `get_query_apply_function`.
         if let Err(e) = crate::query::reject_unserved_instance_limits_in_query(
@@ -297,13 +316,13 @@ impl ElementQueryExtensions for Element {
     }
 
     /// Returns a vector of elements, and the number of skipped elements
-    fn get_sized_query(
-        storage: &RocksDbStorage,
+    fn get_sized_query<'db, E: Engine>(
+        storage: &'db E,
         path: &[&[u8]],
         sized_query: &SizedQuery,
         query_options: QueryOptions,
         result_type: QueryResultType,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(QueryResultElements, u16), Error> {
         check_grovedb_v0_with_cost!(
@@ -331,8 +350,8 @@ impl ElementQueryExtensions for Element {
     /// emptied by offset skips (issue #690), serves per-instance limits
     /// (`Query::limit`) and reconciles descents by total consumed budget
     /// instead of returned rows.
-    fn path_query_push(
-        args: PathQueryPushArgs,
+    fn path_query_push<E: Engine>(
+        args: PathQueryPushArgs<'_, '_, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         match grove_version.grovedb_versions.element.path_query_push {
@@ -390,24 +409,30 @@ impl ElementQueryExtensions for Element {
     /// trees where the sub elements have no matches, hence the limit would
     /// not decrease and hence we would continue on the increasingly
     /// expensive query.
-    fn query_item(
-        storage: &RocksDbStorage,
+    fn query_item<'db, E: Engine>(
+        storage: &'db E,
         item: &QueryItem,
         results: &mut Vec<QueryResultElement>,
         path: &[&[u8]],
         sized_query: &SizedQuery,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         limit: &mut Option<u16>,
         offset: &mut Option<u16>,
         query_options: QueryOptions,
         result_type: QueryResultType,
-        add_element_function: fn(PathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
+        add_element_function: fn(
+            PathQueryPushArgs<'_, '_, '_, E>,
+            &GroveVersion,
+        ) -> CostResult<(), Error>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         check_grovedb_v0_with_cost!(
             "query_item",
             grove_version.grovedb_versions.element.query_item
         );
+
+        let tx = crate::util::TxRef::for_read(storage, transaction);
+        let transaction = Some(tx.as_ref());
 
         // Whole-query preflight, exactly like the other public Element
         // wrappers: a per-instance limit hiding in an unmatched
@@ -486,7 +511,10 @@ impl ElementQueryExtensions for Element {
         *offset = budget.offset;
         result
     }
-    fn basic_push(args: PathQueryPushArgs, grove_version: &GroveVersion) -> Result<(), Error> {
+    fn basic_push<E: Engine>(
+        args: PathQueryPushArgs<'_, '_, '_, E>,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
         check_grovedb_v0!(
             "basic_push",
             grove_version.grovedb_versions.element.basic_push
@@ -546,21 +574,22 @@ impl ElementQueryExtensions for Element {
 /// The body of [`ElementQueryExtensions::query_item`], threading the
 /// frame's [`QueryBudget`] instead of bare limit/offset counters.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn query_item_internal(
-    storage: &RocksDbStorage,
+pub(crate) fn query_item_internal<'db, E: Engine>(
+    storage: &'db E,
     item: &QueryItem,
     results: &mut Vec<QueryResultElement>,
     path: &[&[u8]],
     sized_query: &SizedQuery,
-    transaction: TransactionArg,
+    transaction: TransactionArg<'db, '_, E>,
     budget: &mut QueryBudget,
     query_options: QueryOptions,
     result_type: QueryResultType,
-    add_element_function: fn(PathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
+    add_element_function: fn(
+        PathQueryPushArgs<'_, '_, '_, E>,
+        &GroveVersion,
+    ) -> CostResult<(), Error>,
     grove_version: &GroveVersion,
 ) -> CostResult<(), Error> {
-    use grovedb_storage::Storage;
-
     use crate::util::{compat, validate_path_segment_lengths, TxRef};
 
     // Subordinate slot check — see `get_query_apply_function_internal`.
@@ -570,7 +599,8 @@ pub(crate) fn query_item_internal(
     );
 
     let mut cost = OperationCost::default();
-    let tx = TxRef::new(storage, transaction);
+    let tx = TxRef::for_read(storage, transaction);
+    let transaction = Some(tx.as_ref());
 
     let subtree_path: SubtreePath<_> = path.into();
 
@@ -656,10 +686,10 @@ pub(crate) fn query_item_internal(
         // this is a query on a range
         cost_return_on_error_no_add!(cost, validate_path_segment_lengths(&subtree_path));
         let ctx = storage
-            .get_transactional_storage_context(subtree_path, None, tx.as_ref())
+            .subtree(subtree_path, None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
-        let mut iter = ctx.raw_iter();
+        let mut iter = NodeStore::cursor(&ctx);
 
         item.seek_for_iter(&mut iter, sized_query.query.left_to_right)
             .unwrap_add_cost(&mut cost);
@@ -751,17 +781,23 @@ pub(crate) fn query_item_internal(
 /// result rows plus empty-subtree charges — which the v1
 /// `path_query_push` engine uses to reconcile the parent frame.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn get_query_apply_function_internal(
-    storage: &RocksDbStorage,
+pub(crate) fn get_query_apply_function_internal<'db, E: Engine>(
+    storage: &'db E,
     path: &[&[u8]],
     sized_query: &SizedQuery,
     inherited_instance_limit: Option<u16>,
     query_options: QueryOptions,
     result_type: QueryResultType,
-    transaction: TransactionArg,
-    add_element_function: fn(PathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
+    transaction: TransactionArg<'db, '_, E>,
+    add_element_function: fn(
+        PathQueryPushArgs<'_, '_, '_, E>,
+        &GroveVersion,
+    ) -> CostResult<(), Error>,
     grove_version: &GroveVersion,
 ) -> CostResult<(QueryResultElements, u16, u16, u16), Error> {
+    let tx = crate::util::TxRef::for_read(storage, transaction);
+    let transaction = Some(tx.as_ref());
+
     // The subordinate method-version slot holds for the internal body
     // exactly as it did when the public wrapper was the only entry —
     // the engines recurse through here directly, and a future/replay
@@ -942,13 +978,13 @@ pub(crate) fn get_query_apply_function_internal(
 ///   any subquery);
 /// - a local offset anywhere requires Merk trees along the query's own path,
 ///   as the prover requires (a missing component reads as empty).
-fn preflight_v5_trusted_read(
-    storage: &RocksDbStorage,
+fn preflight_v5_trusted_read<'db, E: Engine>(
+    storage: &'db E,
     path: &[&[u8]],
     sized_query: &SizedQuery,
     global_offset: Option<u16>,
     query_options: QueryOptions,
-    transaction: TransactionArg,
+    transaction: TransactionArg<'db, '_, E>,
     grove_version: &GroveVersion,
 ) -> CostResult<(), Error> {
     use crate::util::TxRef;
@@ -966,7 +1002,7 @@ fn preflight_v5_trusted_read(
         .wrap_with_cost(cost);
     }
     if sized_query.query.has_instance_offset_anywhere() && !path.is_empty() {
-        let tx = TxRef::new(storage, transaction);
+        let tx = TxRef::for_read(storage, transaction);
         cost_return_on_error!(
             &mut cost,
             super::local_offset_read::refuse_non_merk_on_offset_path(
@@ -981,13 +1017,13 @@ fn preflight_v5_trusted_read(
     Ok(()).wrap_with_cost(cost)
 }
 
-pub(crate) fn get_path_query_internal(
-    storage: &RocksDbStorage,
+pub(crate) fn get_path_query_internal<'db, E: Engine>(
+    storage: &'db E,
     path_query: &PathQuery,
     inherited_instance_limit: Option<u16>,
     query_options: QueryOptions,
     result_type: QueryResultType,
-    transaction: TransactionArg,
+    transaction: TransactionArg<'db, '_, E>,
     grove_version: &GroveVersion,
 ) -> CostResult<(QueryResultElements, u16, u16, u16), Error> {
     // Subordinate slot check — see `get_query_apply_function_internal`.
@@ -1344,6 +1380,7 @@ mod tests {
             .expect("expected successful insertion");
 
         storage
+            .storage()
             .commit_multi_context_batch(batch, None)
             .unwrap()
             .expect("expected successful batch commit");
@@ -1461,6 +1498,7 @@ mod tests {
             .expect("expected successful insertion");
 
         storage
+            .storage()
             .commit_multi_context_batch(batch, None)
             .unwrap()
             .expect("expected successful batch commit");

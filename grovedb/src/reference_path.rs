@@ -14,11 +14,11 @@ use grovedb_version::check_grovedb_v0_with_cost;
 use crate::{
     merk_cache::{MerkCache, MerkHandle},
     operations::MAX_REFERENCE_HOPS,
-    Element, Error,
+    Element, Engine, Error,
 };
 
-pub(crate) struct ResolvedReference<'db, 'b, 'c, B> {
-    pub target_merk: MerkHandle<'db, 'c>,
+pub(crate) struct ResolvedReference<'db, 'b, 'c, B, E: Engine> {
+    pub target_merk: MerkHandle<'db, 'c, E>,
     pub target_path: SubtreePathBuilder<'b, B>,
     pub target_key: Vec<u8>,
     pub target_element: Element,
@@ -28,12 +28,12 @@ pub(crate) struct ResolvedReference<'db, 'b, 'c, B> {
     pub hops: usize,
 }
 
-pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
-    merk_cache: &'c MerkCache<'db, 'b, B>,
+pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>, E: Engine>(
+    merk_cache: &'c MerkCache<'db, '_, 'b, B, E>,
     path: SubtreePathBuilder<'b, B>,
     key: &[u8],
     ref_path: ReferencePathType,
-) -> CostResult<ResolvedReference<'db, 'b, 'c, B>, Error> {
+) -> CostResult<ResolvedReference<'db, 'b, 'c, B, E>, Error> {
     // TODO: this is a new version of follow reference
 
     check_grovedb_v0_with_cost!(
@@ -145,12 +145,12 @@ pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
 
 /// Follow references stopping at the immediate element without following
 /// further.
-pub(crate) fn follow_reference_once<'db, 'b, 'c, B: AsRef<[u8]>>(
-    merk_cache: &'c MerkCache<'db, 'b, B>,
+pub(crate) fn follow_reference_once<'db, 'b, 'c, B: AsRef<[u8]>, E: Engine>(
+    merk_cache: &'c MerkCache<'db, '_, 'b, B, E>,
     path: SubtreePathBuilder<'b, B>,
     key: &[u8],
     ref_path: ReferencePathType,
-) -> CostResult<ResolvedReference<'db, 'b, 'c, B>, Error> {
+) -> CostResult<ResolvedReference<'db, 'b, 'c, B, E>, Error> {
     check_grovedb_v0_with_cost!(
         "follow_reference_once",
         merk_cache

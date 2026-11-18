@@ -143,6 +143,8 @@ mod checkpoints;
 pub mod debugger;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod element;
+#[cfg(feature = "minimal")]
+pub mod engine;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod error;
 #[cfg(feature = "estimated_costs")]
@@ -184,6 +186,8 @@ pub use element::aggregate_sum_query::{AggregateSumQueryOptions, AggregateSumQue
 pub use element::Element;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use element::ElementFlags;
+#[cfg(feature = "minimal")]
+pub use engine::{Engine, RocksDbEngine};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_bulk_append_tree::RangePage;
 #[cfg(feature = "minimal")]
@@ -231,6 +235,8 @@ pub use grovedb_merk::proofs::{
     encoding::Decoder as MerkProofDecoder, Node as MerkProofNode, Op as MerkProofOp,
 };
 #[cfg(feature = "minimal")]
+use grovedb_merk::store::NodeStore;
+#[cfg(feature = "minimal")]
 use grovedb_merk::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "minimal")]
 pub use grovedb_merk::tree::AggregateData;
@@ -247,14 +253,6 @@ use grovedb_merk::{
 };
 #[cfg(feature = "minimal")]
 use grovedb_path::SubtreePath;
-#[cfg(feature = "minimal")]
-use grovedb_storage::rocksdb_storage::PrefixedRocksDbImmediateStorageContext;
-#[cfg(feature = "minimal")]
-use grovedb_storage::rocksdb_storage::RocksDbStorage;
-#[cfg(feature = "minimal")]
-use grovedb_storage::{rocksdb_storage::PrefixedRocksDbTransactionContext, StorageBatch};
-#[cfg(feature = "minimal")]
-use grovedb_storage::{Storage, StorageContext};
 #[cfg(feature = "minimal")]
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "minimal")]
@@ -323,20 +321,32 @@ type Hash = [u8; 32];
 /// In Dash Platform, the primary consumer of GroveDb, this constraint is
 /// naturally satisfied because block processing (state transitions) is
 /// sequential.
-pub struct GroveDb {
-    #[cfg(feature = "minimal")]
-    db: RocksDbStorage,
+///
+/// # Engine
+///
+/// `GroveDb` is generic over the storage [`Engine`] underneath it, and
+/// `GroveDb` with no parameter is `GroveDb<RocksDbEngine>`.
+#[cfg(feature = "minimal")]
+pub struct GroveDb<E: Engine = RocksDbEngine> {
+    db: E,
 }
+
+/// The proof verifier of GroveDB. Without the `minimal` feature there is no
+/// storage engine, and `GroveDb` only names the functions that verify
+/// proofs.
+#[cfg(not(feature = "minimal"))]
+pub struct GroveDb {}
 
 #[cfg(feature = "minimal")]
 pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
 
-/// Transaction
+/// A transaction of a `GroveDb` on engine `E`.
 #[cfg(feature = "minimal")]
-pub type Transaction<'db> = <RocksDbStorage as Storage<'db>>::Transaction;
-/// TransactionArg
+pub type Transaction<'db, E = RocksDbEngine> = <E as Engine>::Transaction<'db>;
+/// An optional transaction: `None` runs the operation in a transaction of
+/// its own.
 #[cfg(feature = "minimal")]
-pub type TransactionArg<'db, 'a> = Option<&'a Transaction<'db>>;
+pub type TransactionArg<'db, 'a, E = RocksDbEngine> = Option<&'a Transaction<'db, E>>;
 
 /// Type alias for the return type of the `verify_merk_and_submerks` and
 /// `verify_grovedb` functions. It represents a mapping of paths (as vectors of
@@ -356,12 +366,31 @@ type VerificationIssues = HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoH
 ///   full element for non-Merk append-only trees, whose entry counts and
 ///   parameters drive the raw-replay restore path.
 #[cfg(feature = "minimal")]
-type OpenedMerkForReplication<'tx> = (
-    Merk<PrefixedRocksDbImmediateStorageContext<'tx>>,
+type OpenedMerkForReplication<'tx, E> = (
+    Merk<<E as Engine>::ImmediateSubtree<'tx>>,
     Option<Vec<u8>>,
     TreeType,
     Option<Element>,
 );
+
+#[cfg(feature = "minimal")]
+impl<E: Engine> GroveDb<E> {
+    /// Opens the database at `path` on engine `E`, and creates it if there
+    /// is none. [`GroveDb::open`] does this on the default engine.
+    pub fn open_with_engine<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+        Ok(Self::from_engine(E::open(path)?))
+    }
+
+    /// A `GroveDb` on an engine that is already open.
+    pub fn from_engine(engine: E) -> Self {
+        GroveDb { db: engine }
+    }
+
+    /// The engine underneath.
+    pub fn engine(&self) -> &E {
+        &self.db
+    }
+}
 
 /// Verify that an indexed tree's secondary projection is exactly derivable
 /// from its primary entries. Root-hash binding alone only proves that both
@@ -371,8 +400,7 @@ type OpenedMerkForReplication<'tx> = (
 impl GroveDb {
     /// Opens a given path
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        let db = RocksDbStorage::default_rocksdb_with_path(path)?;
-        Ok(GroveDb { db })
+        Self::open_with_engine(path)
     }
 
     /// Open a GroveDB and run `verify_grovedb` before returning,
@@ -428,12 +456,6 @@ impl GroveDb {
         start_visualizer(weak, addr);
     }
 
-    /// Uses raw iter to delete GroveDB key values pairs from rocksdb
-    pub fn wipe(&self) -> Result<(), Error> {
-        self.db.wipe()?;
-        Ok(())
-    }
-
     /// Reborrow the underlying [`grovedb_storage::rocksdb_storage::RocksDbStorage`]
     /// for callers that need to use the public [`grovedb_storage::Storage`]
     /// trait directly — notably to open a [`grovedb_storage::StorageContext`]
@@ -451,7 +473,7 @@ impl GroveDb {
     /// leave it off so this escape hatch isn't even compiled in.
     #[cfg(feature = "unsafe-dump-load")]
     pub fn raw_storage(&self) -> &grovedb_storage::rocksdb_storage::RocksDbStorage {
-        &self.db
+        self.db.storage()
     }
 
     /// Bulk-ingest a single SST file (produced by `rocksdb::SstFileWriter`)
@@ -478,18 +500,27 @@ impl GroveDb {
         cf_name: &str,
         sst_path: &std::path::Path,
     ) -> Result<(), Error> {
-        self.db.ingest_subtree_sst(cf_name, sst_path)?;
+        self.db.storage().ingest_subtree_sst(cf_name, sst_path)?;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "minimal")]
+impl<E: Engine> GroveDb<E> {
+    /// Uses raw iter to delete GroveDB key values pairs from rocksdb
+    pub fn wipe(&self) -> Result<(), Error> {
+        self.db.wipe()?;
         Ok(())
     }
 
     /// Opens the transactional Merk at the given path. Returns CostResult.
-    fn open_transactional_merk_at_path<'db, 'b, B>(
+    fn open_transactional_merk_at_path<'a, 'db: 'a, 'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
-        tx: &'db Transaction,
-        batch: Option<&'db StorageBatch>,
+        tx: &'a Transaction<'db, E>,
+        batch: Option<&'a E::Batch>,
         grove_version: &GroveVersion,
-    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error>
+    ) -> CostResult<Merk<E::Subtree<'a>>, Error>
     where
         B: AsRef<[u8]> + 'b,
     {
@@ -518,22 +549,22 @@ impl GroveDb {
             }
         }
 
-        compat::open_merk::<_, Compat>(&self.db, path, tx, batch, grove_version)
+        compat::open_merk::<_, Compat, E>(&self.db, path, tx, batch, grove_version)
     }
 
-    fn open_transactional_merk_by_prefix<'db>(
+    fn open_transactional_merk_by_prefix<'a, 'db: 'a>(
         &'db self,
         prefix: SubtreePrefix,
         root_key: Option<Vec<u8>>,
         tree_type: TreeType,
-        tx: &'db Transaction,
-        batch: Option<&'db StorageBatch>,
+        tx: &'a Transaction<'db, E>,
+        batch: Option<&'a E::Batch>,
         grove_version: &GroveVersion,
-    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error> {
+    ) -> CostResult<Merk<E::Subtree<'a>>, Error> {
         let mut cost = OperationCost::default();
         let storage = self
             .db
-            .get_transactional_storage_context_by_subtree_prefix(prefix, batch, tx)
+            .subtree_by_prefix(prefix, batch, tx)
             .unwrap_add_cost(&mut cost);
         if root_key.is_some() {
             Merk::open_layered_with_root_key(
@@ -566,9 +597,9 @@ impl GroveDb {
     fn open_merk_for_replication<'tx, 'db: 'tx, 'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
-        tx: &'tx Transaction<'db>,
+        tx: &'tx Transaction<'db, E>,
         grove_version: &GroveVersion,
-    ) -> Result<OpenedMerkForReplication<'tx>, Error>
+    ) -> Result<OpenedMerkForReplication<'tx, E>, Error>
     where
         B: AsRef<[u8]> + 'b,
     {
@@ -576,12 +607,12 @@ impl GroveDb {
 
         let storage = self
             .db
-            .get_immediate_storage_context(path.clone(), tx)
+            .immediate_subtree(path.clone(), tx)
             .unwrap_add_cost(&mut cost);
         if let Some((parent_path, parent_key)) = path.derive_parent() {
             let parent_storage = self
                 .db
-                .get_immediate_storage_context(parent_path.clone(), tx)
+                .immediate_subtree(parent_path.clone(), tx)
                 .unwrap_add_cost(&mut cost);
             let element = Element::get_from_storage(&parent_storage, parent_key, grove_version)
                 .map_err(|e| {
@@ -636,28 +667,28 @@ impl GroveDb {
 
     /// Returns root key of GroveDb.
     /// Will be `None` if GroveDb is empty.
-    pub fn root_key(
-        &self,
-        transaction: TransactionArg,
+    pub fn root_key<'db>(
+        &'db self,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Vec<u8>>, Error> {
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
 
         self.open_root_merk(tx.as_ref(), grove_version)
             .map_ok(|merk| merk.root_key())
     }
 
     /// Returns root hash of GroveDb.
-    pub fn root_hash(
-        &self,
-        transaction: TransactionArg,
+    pub fn root_hash<'db>(
+        &'db self,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Hash, Error> {
         let mut cost = OperationCost {
             ..Default::default()
         };
 
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
 
         let root_merk =
             cost_return_on_error!(&mut cost, self.open_root_merk(tx.as_ref(), grove_version));
@@ -665,13 +696,13 @@ impl GroveDb {
         root_merk.root_hash().map(Ok).add_cost(cost)
     }
 
-    fn open_root_merk<'tx, 'db>(
+    fn open_root_merk<'tx, 'db: 'tx>(
         &'db self,
-        tx: &'tx Transaction<'db>,
+        tx: &'tx Transaction<'db, E>,
         grove_version: &GroveVersion,
-    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'tx>>, Error> {
+    ) -> CostResult<Merk<E::Subtree<'tx>>, Error> {
         self.db
-            .get_transactional_storage_context(SubtreePath::empty(), None, tx)
+            .subtree(SubtreePath::empty(), None, tx)
             .flat_map(|storage_ctx| {
                 grovedb_merk::Merk::open_base(
                     storage_ctx,
@@ -689,12 +720,12 @@ impl GroveDb {
 
     /// Method to propagate updated subtree key changes one level up inside a
     /// transaction
-    fn propagate_changes_with_batch_transaction<'b, B: AsRef<[u8]>>(
-        &self,
-        storage_batch: &StorageBatch,
-        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>>,
+    fn propagate_changes_with_batch_transaction<'a, 'db: 'a, 'b, B: AsRef<[u8]>>(
+        &'db self,
+        storage_batch: &'a E::Batch,
+        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<E::Subtree<'a>>>,
         path: &SubtreePath<'b, B>,
-        transaction: &Transaction,
+        transaction: &'a Transaction<'db, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -727,7 +758,7 @@ impl GroveDb {
             );
             cost_return_on_error!(
                 &mut cost,
-                Self::update_tree_item_preserve_flag(
+                crate::update_tree_item_preserve_flag(
                     &mut parent_tree,
                     parent_key,
                     root_key,
@@ -744,12 +775,12 @@ impl GroveDb {
 
     /// Method to propagate updated subtree key changes one level up inside a
     /// transaction
-    fn propagate_changes_with_transaction<'b, B: AsRef<[u8]>>(
-        &self,
-        merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>>,
+    fn propagate_changes_with_transaction<'a, 'db: 'a, 'b, B: AsRef<[u8]>>(
+        &'db self,
+        merk_cache: HashMap<SubtreePath<'b, B>, Merk<E::Subtree<'a>>>,
         path: SubtreePath<'b, B>,
-        transaction: &Transaction,
-        batch: &StorageBatch,
+        transaction: &'a Transaction<'db, E>,
+        batch: &'a E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         self.propagate_changes_with_transaction_with_initial_deferred(
@@ -760,47 +791,6 @@ impl GroveDb {
             batch,
             grove_version,
         )
-    }
-
-    pub(crate) fn capture_indexed_entry_state<'db>(
-        primary_merk: &Merk<PrefixedRocksDbTransactionContext<'db>>,
-        key: &[u8],
-        element: &Element,
-        grove_version: &GroveVersion,
-    ) -> CostResult<Option<crate::operations::indexed_tree::IndexedEntryState>, Error> {
-        let mut cost = OperationCost::default();
-        if !primary_merk.tree_type.is_indexed_primary() {
-            return Ok(None).wrap_with_cost(cost);
-        }
-        let value_hash = cost_return_on_error!(
-            &mut cost,
-            primary_merk
-                .get_value_hash(
-                    key,
-                    true,
-                    Some(&Element::value_defined_cost_for_serialized_value),
-                    grove_version,
-                )
-                .map_err(Error::MerkError)
-        );
-        let (count, sum) = element.count_sum_value_or_default();
-        // A present entry with no reachable node hash is corruption, not
-        // absence. Collapsing the two would hand the mirror `None` and
-        // delete a live row (or, on the old side, skip the delete of a row
-        // that moved). Fail loudly instead.
-        let value_hash = cost_return_on_error_no_add!(
-            cost,
-            value_hash.ok_or(Error::CorruptedCodeExecution(
-                "an indexed primary entry exists but its node is unreachable from the \
-                 committed root",
-            ))
-        );
-        Ok(Some(crate::operations::indexed_tree::IndexedEntryState {
-            count,
-            sum,
-            value_hash,
-        }))
-        .wrap_with_cost(cost)
     }
 
     /// Propagate after an in-place rewrite of ONE entry under an indexed
@@ -829,14 +819,19 @@ impl GroveDb {
     /// takes a caller-supplied element, so its aggregates — and therefore
     /// the row's sort key — can differ from what was there. Refreshing in
     /// place without it would leave the old row stranded at the old key.
-    pub(crate) fn propagate_changes_with_transaction_refreshing_indexed_row<'b, B: AsRef<[u8]>>(
-        &self,
-        merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>>,
+    pub(crate) fn propagate_changes_with_transaction_refreshing_indexed_row<
+        'a,
+        'db: 'a,
+        'b,
+        B: AsRef<[u8]>,
+    >(
+        &'db self,
+        merk_cache: HashMap<SubtreePath<'b, B>, Merk<E::Subtree<'a>>>,
         path: SubtreePath<'b, B>,
         changed_key: &[u8],
         old_state: Option<crate::operations::indexed_tree::IndexedEntryState>,
-        transaction: &Transaction,
-        batch: &StorageBatch,
+        transaction: &'a Transaction<'db, E>,
+        batch: &'a E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         self.propagate_changes_inner(
@@ -851,13 +846,18 @@ impl GroveDb {
         )
     }
 
-    pub(crate) fn propagate_changes_with_transaction_with_initial_deferred<'b, B: AsRef<[u8]>>(
-        &self,
-        merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>>,
+    pub(crate) fn propagate_changes_with_transaction_with_initial_deferred<
+        'a,
+        'db: 'a,
+        'b,
+        B: AsRef<[u8]>,
+    >(
+        &'db self,
+        merk_cache: HashMap<SubtreePath<'b, B>, Merk<E::Subtree<'a>>>,
         path: SubtreePath<'b, B>,
         initial_deferred_secondary: Option<(Hash, Option<Vec<u8>>)>,
-        transaction: &Transaction,
-        batch: &StorageBatch,
+        transaction: &'a Transaction<'db, E>,
+        batch: &'a E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         self.propagate_changes_inner(
@@ -877,9 +877,9 @@ impl GroveDb {
     /// primary holding it — see
     /// [`Self::propagate_changes_with_transaction_refreshing_indexed_row`].
     #[allow(clippy::too_many_arguments)]
-    fn propagate_changes_inner<'b, B: AsRef<[u8]>>(
-        &self,
-        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>>,
+    fn propagate_changes_inner<'a, 'db: 'a, 'b, B: AsRef<[u8]>>(
+        &'db self,
+        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<E::Subtree<'a>>>,
         path: SubtreePath<'b, B>,
         initial_deferred_secondary: Option<(Hash, Option<Vec<u8>>)>,
         initial_deferred_axes: Option<Vec<(u8, Hash, Option<Vec<u8>>)>>,
@@ -887,8 +887,8 @@ impl GroveDb {
             &[u8],
             Option<crate::operations::indexed_tree::IndexedEntryState>,
         )>,
-        transaction: &Transaction,
-        batch: &StorageBatch,
+        transaction: &'a Transaction<'db, E>,
+        batch: &'a E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         use grovedb_merk::element::{
@@ -1098,7 +1098,7 @@ impl GroveDb {
         }
 
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
-            let mut parent_tree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
+            let mut parent_tree: Merk<E::Subtree<'_>> = cost_return_on_error!(
                 &mut cost,
                 self.open_transactional_merk_at_path(
                     parent_path.clone(),
@@ -1328,7 +1328,7 @@ impl GroveDb {
             } else {
                 cost_return_on_error!(
                     &mut cost,
-                    Self::update_tree_item_preserve_flag(
+                    crate::update_tree_item_preserve_flag(
                         &mut parent_tree,
                         parent_key,
                         root_key,
@@ -1532,274 +1532,6 @@ impl GroveDb {
         Ok(()).wrap_with_cost(cost)
     }
 
-    /// Updates a tree item and preserves flags. Returns CostResult.
-    pub(crate) fn update_tree_item_preserve_flag<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
-        parent_tree: &mut Merk<S>,
-        key: K,
-        maybe_root_key: Option<Vec<u8>>,
-        root_tree_hash: Hash,
-        aggregate_data: AggregateData,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(), Error> {
-        let key_ref = key.as_ref();
-
-        Self::get_element_from_subtree(parent_tree, key_ref, grove_version).flat_map_ok(|element| {
-            match element.reconstruct_with_root_key(maybe_root_key, aggregate_data) {
-                Some(tree) => tree
-                    .insert_subtree(parent_tree, key_ref, root_tree_hash, None, grove_version)
-                    .map_err(|e| e.into()),
-                None => Err(Error::InvalidPath(
-                    "can only propagate on tree items".to_owned(),
-                ))
-                .wrap_with_cost(Default::default()),
-            }
-        })
-    }
-
-    /// Pushes to batch an operation which updates a tree item and preserves
-    /// flags. Returns CostResult.
-    pub(crate) fn update_tree_item_preserve_flag_into_batch_operations<
-        'db,
-        K: AsRef<[u8]>,
-        S: StorageContext<'db>,
-    >(
-        parent_tree: &Merk<S>,
-        key: K,
-        maybe_root_key: Option<Vec<u8>>,
-        root_tree_hash: Hash,
-        aggregate_data: AggregateData,
-        batch_operations: &mut Vec<BatchEntry<K>>,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(), Error> {
-        let mut cost = OperationCost::default();
-        Self::get_element_from_subtree(parent_tree, key.as_ref(), grove_version).flat_map_ok(
-            |element| match element.reconstruct_with_root_key(maybe_root_key, aggregate_data) {
-                Some(tree) => {
-                    let merk_feature_type = cost_return_on_error_into!(
-                        &mut cost,
-                        tree.get_feature_type(parent_tree.tree_type)
-                            .wrap_with_cost(OperationCost::default())
-                    );
-                    tree.insert_subtree_into_batch_operations(
-                        key,
-                        root_tree_hash,
-                        true,
-                        batch_operations,
-                        merk_feature_type,
-                        grove_version,
-                    )
-                    .map_err(|e| e.into())
-                }
-                None => Err(Error::InvalidPath(
-                    "can only propagate on tree items".to_owned(),
-                ))
-                .wrap_with_cost(Default::default()),
-            },
-        )
-    }
-
-    /// Rebuild an existing indexed-tree element in `parent_tree` with new
-    /// primary/secondary root state and emit the parent-merk write with its
-    /// H1-A value hash. The element is read from the parent merk, so this is
-    /// the REPLACE side; a freshly-created element goes through
-    /// [`Self::insert_indexed_tree_item_into_batch_operations`], which
-    /// carries the element instead of reading it.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn update_indexed_tree_item_preserve_flag_into_batch_operations<
-        'db,
-        K: AsRef<[u8]>,
-        S: StorageContext<'db>,
-    >(
-        parent_tree: &Merk<S>,
-        key: K,
-        primary_root_key: Option<Vec<u8>>,
-        axes: Vec<(u8, Hash, Option<Vec<u8>>)>,
-        primary_aggregate_data: AggregateData,
-        primary_root_hash: Hash,
-        batch_operations: &mut Vec<BatchEntry<K>>,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(), Error> {
-        let cost = OperationCost::default();
-        if axes.is_empty() {
-            return Err(Error::CorruptedCodeExecution(
-                "an indexed-tree bubble-up must carry at least one axis",
-            ))
-            .wrap_with_cost(cost);
-        }
-        let parent_tree_type = parent_tree.tree_type;
-        Self::get_element_from_subtree(parent_tree, key.as_ref(), grove_version).flat_map_ok(
-            |element| {
-                Self::indexed_tree_item_with_root_state_into_batch_operations(
-                    element,
-                    parent_tree_type,
-                    key,
-                    primary_root_key,
-                    axes,
-                    primary_aggregate_data,
-                    primary_root_hash,
-                    batch_operations,
-                    grove_version,
-                )
-            },
-        )
-    }
-
-    /// Insert-side counterpart of the above, used by
-    /// `GroveOp::InsertAggregateIndexedTreeRootKeys`: the indexed element was
-    /// CREATED in this same batch, so it cannot be read from the parent merk
-    /// — the op carries it instead. Same H1-A composition as the replace
-    /// path; only the element's source differs.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn insert_indexed_tree_item_into_batch_operations<K: AsRef<[u8]>>(
-        element: Element,
-        parent_tree_type: TreeType,
-        key: K,
-        primary_root_key: Option<Vec<u8>>,
-        axes: Vec<(u8, Hash, Option<Vec<u8>>)>,
-        primary_aggregate_data: AggregateData,
-        primary_root_hash: Hash,
-        batch_operations: &mut Vec<BatchEntry<K>>,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(), Error> {
-        if axes.is_empty() {
-            return Err(Error::CorruptedCodeExecution(
-                "an indexed-tree bubble-up must carry at least one axis",
-            ))
-            .wrap_with_cost(OperationCost::default());
-        }
-        Self::indexed_tree_item_with_root_state_into_batch_operations(
-            element,
-            parent_tree_type,
-            key,
-            primary_root_key,
-            axes,
-            primary_aggregate_data,
-            primary_root_hash,
-            batch_operations,
-            grove_version,
-        )
-    }
-
-    /// Shared core of the replace / insert indexed bubble-up: rebuild the
-    /// element with the computed root state and emit the parent-merk write
-    /// with its H1-A value hash (`combine_hash_three` over the primary root
-    /// hash and the lone axis's root hash, or `axes_digest` for PCPSIT).
-    #[allow(clippy::too_many_arguments)]
-    fn indexed_tree_item_with_root_state_into_batch_operations<K: AsRef<[u8]>>(
-        element: Element,
-        parent_tree_type: TreeType,
-        key: K,
-        primary_root_key: Option<Vec<u8>>,
-        axes: Vec<(u8, Hash, Option<Vec<u8>>)>,
-        primary_aggregate_data: AggregateData,
-        primary_root_hash: Hash,
-        batch_operations: &mut Vec<BatchEntry<K>>,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(), Error> {
-        let mut cost = OperationCost::default();
-        // Single-axis variants keep their one secondary root key inline;
-        // PCPSIT keeps a TLV of all of them.
-        let is_multi_axis = matches!(
-            element.underlying(),
-            Element::ProvableCountProvableSumIndexedTree(..)
-        );
-        let rebuilt = if is_multi_axis {
-            let axes_tlv: Vec<(u8, Option<Vec<u8>>)> = axes
-                .iter()
-                .map(|(tag, _, root_key)| (*tag, root_key.clone()))
-                .collect();
-            element.reconstruct_with_axes(
-                primary_root_key.clone(),
-                primary_aggregate_data,
-                axes_tlv,
-            )
-        } else {
-            element.reconstruct_with_two_root_keys(
-                primary_root_key.clone(),
-                axes[0].2.clone(),
-                primary_aggregate_data,
-            )
-        };
-        match rebuilt {
-            Some(tree) => {
-                // H1-A second input: the lone axis's root hash, or the
-                // digest over every axis.
-                let second_hash = if is_multi_axis {
-                    let axis_hashes: Vec<(u8, Hash)> =
-                        axes.iter().map(|(tag, hash, _)| (*tag, *hash)).collect();
-                    grovedb_merk::tree::axes_digest(&axis_hashes).unwrap_add_cost(&mut cost)
-                } else {
-                    axes[0].1
-                };
-                let merk_feature_type = cost_return_on_error_into!(
-                    &mut cost,
-                    tree.get_feature_type(parent_tree_type)
-                        .wrap_with_cost(OperationCost::default())
-                );
-                tree.insert_count_indexed_subtree_into_batch_operations(
-                    key,
-                    primary_root_hash,
-                    second_hash,
-                    true,
-                    batch_operations,
-                    merk_feature_type,
-                    grove_version,
-                )
-                .map_err(|e| e.into())
-                .add_cost(cost)
-            }
-            None => Err(Error::InvalidPath(
-                "update_indexed_tree_item_preserve_flag: existing element is not an indexed tree"
-                    .to_owned(),
-            ))
-            .wrap_with_cost(cost),
-        }
-    }
-
-    /// Get element from subtree. Return CostResult.
-    fn get_element_from_subtree<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
-        subtree: &Merk<S>,
-        key: K,
-        grove_version: &GroveVersion,
-    ) -> CostResult<Element, Error> {
-        subtree
-            .get(
-                key.as_ref(),
-                true,
-                Some(&Element::value_defined_cost_for_serialized_value),
-                grove_version,
-            )
-            .map_err(|e| {
-                Error::InvalidPath(format!(
-                    "can't find subtree in parent during propagation: {e}"
-                ))
-            })
-            .map_ok(|subtree_opt| {
-                subtree_opt.ok_or_else(|| {
-                    let key = hex::encode(key.as_ref());
-                    Error::PathKeyNotFound(format!(
-                        "can't find subtree with key {} in parent during propagation (subtree is \
-                         {})",
-                        key,
-                        if subtree.root_key().is_some() {
-                            "not empty"
-                        } else {
-                            "empty"
-                        }
-                    ))
-                })
-            })
-            .flatten()
-            .map_ok(|element_bytes| {
-                Element::deserialize(&element_bytes, grove_version).map_err(|e| {
-                    Error::CorruptedData(format!(
-                        "failed to deserialize parent during propagation: {e}"
-                    ))
-                })
-            })
-            .flatten()
-    }
-
     /// Flush memory table to disk.
     pub fn flush(&self) -> Result<(), Error> {
         Ok(self.db.flush()?)
@@ -1884,7 +1616,7 @@ impl GroveDb {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn start_transaction(&self) -> Transaction<'_> {
+    pub fn start_transaction<'db>(&'db self) -> Transaction<'db, E> {
         self.db.start_transaction()
     }
 
@@ -1919,7 +1651,7 @@ impl GroveDb {
     /// the returned transaction exposes the hold time, and debug builds
     /// log loudly when a read executes on a snapshot held longer than a
     /// second.
-    pub fn start_snapshot_read_transaction(&self) -> Transaction<'_> {
+    pub fn start_snapshot_read_transaction<'db>(&'db self) -> Transaction<'db, E> {
         self.db.start_snapshot_read_transaction()
     }
 
@@ -1932,7 +1664,10 @@ impl GroveDb {
     ///
     /// For more details on the transaction usage, please check
     /// [`GroveDb::start_transaction`].
-    pub fn commit_transaction(&self, transaction: Transaction) -> CostResult<(), Error> {
+    pub fn commit_transaction<'db>(
+        &'db self,
+        transaction: Transaction<'db, E>,
+    ) -> CostResult<(), Error> {
         self.db.commit_transaction(transaction).map_err(Into::into)
     }
 
@@ -1944,14 +1679,37 @@ impl GroveDb {
     ///
     /// For more details on the transaction usage, please check
     /// [`GroveDb::start_transaction`].
-    pub fn rollback_transaction(&self, transaction: &Transaction) -> Result<(), Error> {
+    pub fn rollback_transaction<'db>(
+        &'db self,
+        transaction: &Transaction<'db, E>,
+    ) -> Result<(), Error> {
         Ok(self.db.rollback_transaction(transaction)?)
     }
 
+    /// Sets a savepoint on a transaction. Savepoints form a stack: a
+    /// [`GroveDb::rollback_to_savepoint`] undoes every write the transaction
+    /// made since its newest savepoint.
+    pub fn set_savepoint<'db>(&'db self, transaction: &Transaction<'db, E>) -> Result<(), Error> {
+        Ok(self.db.set_savepoint(transaction)?)
+    }
+
+    /// Undoes every write a transaction made since its newest savepoint and
+    /// removes that savepoint. Whatever was read through the transaction
+    /// before must be read again.
+    pub fn rollback_to_savepoint<'db>(
+        &'db self,
+        transaction: &Transaction<'db, E>,
+    ) -> Result<(), Error> {
+        Ok(self.db.rollback_to_savepoint(transaction)?)
+    }
+}
+
+#[cfg(feature = "minimal")]
+impl<E: Engine> GroveDb<E> {
     /// Method to visualize hash mismatch after verification
-    pub fn visualize_verify_grovedb(
-        &self,
-        transaction: TransactionArg,
+    pub fn visualize_verify_grovedb<'db>(
+        &'db self,
+        transaction: TransactionArg<'db, '_, E>,
         verify_references: bool,
         allow_cache: bool,
         grove_version: &GroveVersion,
@@ -1987,14 +1745,14 @@ impl GroveDb {
     /// A stored aggregate that cannot be read, or that is not of the kind a
     /// provable tree's root hash commits to, is reported the same way,
     /// without hashing the tree it belongs to.
-    pub fn verify_grovedb(
-        &self,
-        transaction: TransactionArg,
+    pub fn verify_grovedb<'db>(
+        &'db self,
+        transaction: TransactionArg<'db, '_, E>,
         verify_references: bool,
         allow_cache: bool,
         grove_version: &GroveVersion,
     ) -> Result<VerificationIssues, Error> {
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
 
         let root_merk = self
             .open_transactional_merk_at_path(SubtreePath::empty(), tx.as_ref(), None, grove_version)
@@ -2010,353 +1768,6 @@ impl GroveDb {
         )
     }
 
-    /// Per-entry content-consistency walk between an indexed primary and
-    /// one of its axis secondaries.
-    ///
-    /// The H1-A check binds both Merks' ROOT HASHES into the parent's
-    /// value_hash, but a secondary can be internally consistent (its root
-    /// hash correctly hashes its own content) while its CONTENT is stale
-    /// relative to the primary — a mirror bug leaves exactly that shape.
-    /// Worse, the chain check stops seeing such drift entirely once any
-    /// later legitimate write re-derives the parent hash over the drifted
-    /// secondary; only this walk still catches it.
-    ///
-    /// Invariant enforced: every primary entry at `key` must have exactly
-    /// one secondary entry at `make_axis_secondary_key(axis, count, sum,
-    /// key)`, and the secondary must contain nothing else.
-    ///
-    /// Issues are recorded under `<path>/<label_prefix><kind>__/<key>` so
-    /// the existing `VerificationIssues` shape is unchanged. `label_prefix`
-    /// identifies the variant and axis (`__cidx_` keeps the PCIT sentinels
-    /// byte-identical to what they have always been).
-    /// Short axis name used to build per-axis verification sentinels.
-    fn axis_label(axis: grovedb_element::indexed::IndexAxis) -> &'static str {
-        match axis {
-            grovedb_element::indexed::IndexAxis::Count => "count",
-            grovedb_element::indexed::IndexAxis::Sum => "sum",
-            grovedb_element::indexed::IndexAxis::Avg => "avg",
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn verify_indexed_axis_content<'db, S: StorageContext<'db>>(
-        primary_merk: &Merk<S>,
-        secondary_merk: &Merk<S>,
-        axis: grovedb_element::indexed::IndexAxis,
-        label_prefix: &str,
-        new_path: &[Vec<u8>],
-        issues: &mut VerificationIssues,
-        grove_version: &GroveVersion,
-    ) -> Result<(), Error> {
-        use crate::operations::indexed_tree::{axis_sort_key_len, make_axis_secondary_key};
-
-        let mut all_query = Query::new();
-        all_query.insert_all();
-        let sentinel = |kind: &str| format!("{label_prefix}{kind}__").into_bytes();
-        // Name the ordering value the axis sorts on, so a mismatch reads as
-        // `__<prefix>count_mismatch__` / `_sum_` / `_avg_`.
-        let axis_value_name = match axis {
-            grovedb_element::indexed::IndexAxis::Count => "count",
-            grovedb_element::indexed::IndexAxis::Sum => "sum",
-            grovedb_element::indexed::IndexAxis::Avg => "avg",
-        };
-        // Decode a secondary key's sort-key prefix back to its ordering
-        // value, right-aligned in a hash slot for reporting.
-        let decode_sort_value = |sec_key: &[u8]| -> CryptoHash {
-            use grovedb_element::indexed::sort_keys::{
-                decode_avg_sort_key, decode_count_sort_key, decode_sum_sort_key,
-            };
-            let mut slot = [0u8; 32];
-            match axis {
-                grovedb_element::indexed::IndexAxis::Count => {
-                    let mut b = [0u8; 8];
-                    b.copy_from_slice(&sec_key[..8]);
-                    slot[24..32].copy_from_slice(&decode_count_sort_key(&b).to_be_bytes());
-                }
-                grovedb_element::indexed::IndexAxis::Sum => {
-                    let mut b = [0u8; 8];
-                    b.copy_from_slice(&sec_key[..8]);
-                    slot[24..32].copy_from_slice(&decode_sum_sort_key(&b).to_be_bytes());
-                }
-                grovedb_element::indexed::IndexAxis::Avg => {
-                    let mut b = [0u8; 16];
-                    b.copy_from_slice(&sec_key[..16]);
-                    slot[16..32].copy_from_slice(&decode_avg_sort_key(&b).to_be_bytes());
-                }
-            }
-            slot
-        };
-
-        // Expected secondary key, canonical row, and bound target hash for
-        // every primary entry, derived exactly as the mirror derives them.
-        //
-        // Indexed rows are validated HERE, in the dedicated indexed context —
-        // never routed through the generic `verify_references` arm. That arm
-        // follows references to their TERMINAL and combines against the
-        // terminal's hash, which is deliberately a different binding from the
-        // immediate-primary-node rule canonical rows use. Ordinary user
-        // references keep their terminal contract and diagnostics untouched;
-        // the one-hop immediate-node rule is selected explicitly here and
-        // nowhere else.
-        let mut expected: HashMap<Vec<u8>, (Vec<u8>, Element, Option<CryptoHash>)> = HashMap::new();
-        let mut content_iter =
-            KVIterator::new(primary_merk.storage.raw_iter(), &all_query).unwrap();
-        while let Some((p_key, p_value)) = content_iter.next_kv().unwrap() {
-            // An item key long enough to push the derived secondary key over
-            // Merk's < 256-byte invariant can only arrive via a path that
-            // bypassed the length check (legacy data, corruption, direct
-            // storage injection). Flag it rather than deriving a key that
-            // could never have been written.
-            let max_len = crate::operations::indexed_tree::max_item_key_len_for_axis(axis);
-            if p_key.len() > max_len {
-                let mut p = new_path.to_vec();
-                p.push(sentinel("primary_key_oversize"));
-                p.push(p_key.clone());
-                let mut len_slot = [0u8; 32];
-                len_slot[24..32].copy_from_slice(&(p_key.len() as u64).to_be_bytes());
-                issues.insert(p, ([0u8; 32], [0u8; 32], len_slot));
-                continue;
-            }
-            let p_elem = Element::raw_decode(&p_value, grove_version)?;
-            let (count, sum) = p_elem.count_sum_value_or_default();
-            // The row the mirror writes for this axis, so a row filed under
-            // the right key but carrying the wrong reference or the wrong
-            // carried sum is caught too — the key alone pins neither.
-            let row =
-                crate::operations::indexed_tree::axis_row_reference(axis, &p_key, count, sum)?;
-            // The immediate primary node's committed value hash — read from
-            // the node, not recomputed from `p_value`, because for a tree- or
-            // reference-shaped entry the stored hash is a combined hash that
-            // `value_hash(bytes)` cannot reproduce.
-            //
-            // `None` means the raw iterator found bytes the AVL cannot reach
-            // from the committed root — an unlinked node. That is corruption
-            // in its own right and gets its own sentinel: an operator seeing
-            // a stale-commitment report should not have to guess whether the
-            // node was reachable at all. The walk continues so the rest of
-            // the relational report still lands.
-            let target_value_hash = primary_merk
-                .get_value_hash(
-                    &p_key,
-                    true,
-                    Some(&Element::value_defined_cost_for_serialized_value),
-                    grove_version,
-                )
-                .unwrap()?;
-            if target_value_hash.is_none() {
-                let mut p = new_path.to_vec();
-                p.push(sentinel("primary_unreachable_node"));
-                p.push(p_key.clone());
-                issues.insert(p, ([0u8; 32], [0u8; 32], [0u8; 32]));
-            }
-            expected.insert(
-                p_key.clone(),
-                (
-                    make_axis_secondary_key(axis, count, sum, &p_key),
-                    row,
-                    target_value_hash,
-                ),
-            );
-        }
-        drop(content_iter);
-
-        // Actual secondary rows, keyed by the item key they point at. A Vec
-        // rather than a single value so duplicate rows for one item key (a
-        // real drift class: the same item in two sort buckets) are visible
-        // instead of silently collapsing.
-        let sort_len = axis_sort_key_len(axis);
-        let mut actual: HashMap<Vec<u8>, Vec<(Vec<u8>, Element, Option<CryptoHash>)>> =
-            HashMap::new();
-        let mut sec_iter = KVIterator::new(secondary_merk.storage.raw_iter(), &all_query).unwrap();
-        // What the rows of this secondary contribute to its aggregate, added
-        // up as they are decoded. `None` once a row's contribution cannot be
-        // told (a row under a malformed key that does not decode either).
-        let mut rows_contributed = Some(ElementsAggregate::default());
-        while let Some((sec_key, sec_value)) = sec_iter.next_kv().unwrap() {
-            let sec_elem = Element::raw_decode(&sec_value, grove_version);
-            // Every row counts towards the secondary's aggregate, a row under
-            // a malformed key included, so the contribution is taken before
-            // the key is looked at.
-            let row_contribution = sec_elem
-                .as_ref()
-                .ok()
-                .and_then(|row| row.get_feature_type(secondary_merk.tree_type).ok());
-            rows_contributed = match (rows_contributed, row_contribution) {
-                (Some(mut total), Some(contribution)) => {
-                    total.add(contribution);
-                    Some(total)
-                }
-                _ => None,
-            };
-            if sec_key.len() < sort_len {
-                let mut p = new_path.to_vec();
-                p.push(sentinel("secondary_malformed_key"));
-                p.push(sec_key.clone());
-                issues.insert(p, ([0u8; 32], [0u8; 32], [0u8; 32]));
-                continue;
-            }
-            let sec_elem = sec_elem?;
-            // The row's COMMITTED value hash: for a canonical combined
-            // reference this is `combine_hash(H(ref bytes), target hash)`, so
-            // it is what proves the row still binds the primary entry's
-            // current state. Recomputing it from `sec_value` alone would only
-            // re-derive the reference bytes' own hash and see nothing stale.
-            // Same as the primary side: an unlinked row is corruption with its
-            // own name, not a silent skip.
-            let stored_value_hash = secondary_merk
-                .get_value_hash(
-                    &sec_key,
-                    true,
-                    Some(&Element::value_defined_cost_for_serialized_value),
-                    grove_version,
-                )
-                .unwrap()?;
-            if stored_value_hash.is_none() {
-                let mut p = new_path.to_vec();
-                p.push(sentinel("secondary_unreachable_node"));
-                p.push(sec_key.clone());
-                issues.insert(p, ([0u8; 32], [0u8; 32], [0u8; 32]));
-            }
-            let item_key = sec_key[sort_len..].to_vec();
-            actual.entry(item_key).or_default().push((
-                sec_key.clone(),
-                sec_elem,
-                stored_value_hash,
-            ));
-        }
-        drop(sec_iter);
-
-        for (item_key, rows) in &actual {
-            if rows.len() > 1 {
-                let mut p = new_path.to_vec();
-                p.push(sentinel("secondary_duplicate"));
-                p.push(item_key.clone());
-                let mut dup = [0u8; 32];
-                let n = rows[0].0.len().min(32);
-                dup[..n].copy_from_slice(&rows[0].0[..n]);
-                issues.insert(p, ([0u8; 32], [0u8; 32], dup));
-            }
-        }
-
-        for (item_key, (want_key, want_row, want_target_hash)) in &expected {
-            match actual.get(item_key).and_then(|v| v.first()) {
-                None => {
-                    let mut p = new_path.to_vec();
-                    p.push(sentinel("primary_orphan"));
-                    p.push(item_key.clone());
-                    issues.insert(p, ([0u8; 32], [0u8; 32], [0u8; 32]));
-                }
-                Some((got_key, ..)) if got_key != want_key => {
-                    // The item is indexed, but under the wrong sort key —
-                    // i.e. the secondary's ordering value is stale. Report
-                    // the DECODED ordering value (right-aligned in the hash
-                    // slot) rather than raw key bytes, so the diagnostic
-                    // reads directly.
-                    let mut p = new_path.to_vec();
-                    p.push(sentinel(&format!("{}_mismatch", axis_value_name)));
-                    p.push(item_key.clone());
-                    issues.insert(
-                        p,
-                        (
-                            [0u8; 32],
-                            decode_sort_value(want_key),
-                            decode_sort_value(got_key),
-                        ),
-                    );
-                }
-                Some((_, got_row, _)) if got_row != want_row => {
-                    // Filed under the right key, but the stored row disagrees
-                    // with what the primary implies — the key encodes the
-                    // ordering value, not the reference or its carried sum,
-                    // so this is invisible to a key-only comparison. Split
-                    // into distinct sentinels so a corruption report says
-                    // WHICH part of the row is wrong.
-                    let describe = "verify_grovedb indexed row";
-                    let kind = match crate::operations::indexed_tree::decode_axis_row_reference(
-                        got_row, describe,
-                    ) {
-                        // Not a canonical row shape at all: a legacy
-                        // placeholder payload, a plain `Reference`, a
-                        // non-sibling reference, or a wrong hop budget.
-                        Err(_) => "secondary_non_canonical_row",
-                        // Canonical shape, but pointing at the wrong primary
-                        // key.
-                        Ok((target, _)) if target != item_key.as_slice() => {
-                            "secondary_wrong_reference_target"
-                        }
-                        // Canonical shape and target, so what differs is the
-                        // carried sum (the axis payload sum).
-                        Ok(_) => "secondary_wrong_payload_sum",
-                    };
-                    let mut p = new_path.to_vec();
-                    p.push(sentinel(kind));
-                    p.push(item_key.clone());
-                    let want_bytes = want_row.serialize(grove_version)?;
-                    let got_bytes = got_row.serialize(grove_version)?;
-                    issues.insert(
-                        p,
-                        (
-                            [0u8; 32],
-                            value_hash(&want_bytes).unwrap(),
-                            value_hash(&got_bytes).unwrap(),
-                        ),
-                    );
-                }
-                Some((_, got_row, got_stored_hash)) => {
-                    // Right key, right row bytes — but the row's COMMITMENT
-                    // can still be stale: a value-only primary update moves
-                    // the target hash while leaving key and bytes identical.
-                    // That is the exact drift the reference representation
-                    // exists to make detectable, so it gets its own sentinel.
-                    //
-                    // Only checkable when both sides are reachable from their
-                    // committed roots; an unlinked row on either side is
-                    // reported by the shape/orphan checks instead.
-                    if let (Some(want_target_hash), Some(got_stored_hash)) =
-                        (want_target_hash, got_stored_hash)
-                    {
-                        let row_bytes = got_row.serialize(grove_version)?;
-                        let want_committed =
-                            combine_hash(&value_hash(&row_bytes).unwrap(), want_target_hash)
-                                .unwrap();
-                        if &want_committed != got_stored_hash {
-                            let mut p = new_path.to_vec();
-                            p.push(sentinel("secondary_stale_target_hash"));
-                            p.push(item_key.clone());
-                            issues.insert(p, ([0u8; 32], want_committed, *got_stored_hash));
-                        }
-                    }
-                }
-            }
-        }
-
-        for item_key in actual.keys() {
-            if !expected.contains_key(item_key) {
-                let mut p = new_path.to_vec();
-                p.push(sentinel("secondary_orphan"));
-                p.push(item_key.clone());
-                issues.insert(p, ([0u8; 32], [0u8; 32], [0u8; 32]));
-            }
-        }
-
-        // The aggregate the secondary stores must be the total its rows
-        // contribute: counts, sums and averages over the index are answered
-        // from it. The checks above compare the rows with the primary, and
-        // the rows can all be canonical while a node's stored aggregate is
-        // not what its row is worth. The secondary is not walked as a tree of
-        // its own (its rows are not GroveDB elements with subtrees), so it is
-        // checked here, against its own Merk only, and reported under its own
-        // sentinel. Skipped when a row's contribution could not be told; that
-        // row is already reported above.
-        if let Some(rows_contributed) = rows_contributed {
-            let mut p = new_path.to_vec();
-            p.push(sentinel("secondary_aggregate"));
-            record_elements_aggregate_issue(secondary_merk, &rows_contributed, p, issues);
-        }
-
-        Ok(())
-    }
-
     /// Reciprocal audit for one element's referrer list: every backward
     /// entry must name a live `BidirectionalReference` whose forward path
     /// resolves back to this exact position and whose cascade policy the
@@ -2365,13 +1776,13 @@ impl GroveDb {
     /// `issues` keyed by the REFERRER's qualified path, with a zero hash
     /// in the middle slot marking a reciprocity (not value-hash) failure.
     #[allow(clippy::too_many_arguments)]
-    fn verify_reciprocal_backward_references<B: AsRef<[u8]>>(
-        &self,
+    fn verify_reciprocal_backward_references<'db, B: AsRef<[u8]>>(
+        &'db self,
         element: &Element,
         path: &SubtreePath<B>,
         key: &[u8],
         allow_cache: bool,
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
         grove_version: &GroveVersion,
         issues: &mut HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>,
     ) -> Result<(), Error> {
@@ -2468,14 +1879,14 @@ impl GroveDb {
     /// propagation or cascade to follow. A violation is recorded in
     /// `issues` under the TARGET's qualified path.
     #[allow(clippy::too_many_arguments)]
-    fn verify_bidirectional_reference_is_registered<B: AsRef<[u8]>>(
-        &self,
+    fn verify_bidirectional_reference_is_registered<'a, 'db: 'a, B: AsRef<[u8]>>(
+        &'db self,
         reference: &BidirectionalReference,
         path: &SubtreePath<B>,
         key: &[u8],
         allow_cache: bool,
-        transaction: &Transaction,
-        batch: Option<&StorageBatch>,
+        transaction: &'a Transaction<'db, E>,
+        batch: Option<&'a E::Batch>,
         grove_version: &GroveVersion,
         issues: &mut HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>,
     ) -> Result<(), Error> {
@@ -2525,13 +1936,13 @@ impl GroveDb {
     /// `None` when nothing resolves there. A read that failed in storage,
     /// opening the subtree or fetching the element, is returned as the error
     /// it is: it proves nothing about the edge.
-    fn stored_element_for_reciprocity_audit<'a>(
-        &'a self,
+    fn stored_element_for_reciprocity_audit<'a, 'db: 'a>(
+        &'db self,
         path: &[Vec<u8>],
         key: &[u8],
         allow_cache: bool,
-        transaction: &'a Transaction,
-        batch: Option<&'a StorageBatch>,
+        transaction: &'a Transaction<'db, E>,
+        batch: Option<&'a E::Batch>,
         grove_version: &GroveVersion,
     ) -> Result<Option<Element>, Error> {
         let path_slices: Vec<&[u8]> = path.iter().map(|p| p.as_slice()).collect();
@@ -2548,30 +1959,15 @@ impl GroveDb {
             Err(e @ Error::StorageError(_)) => return Err(e),
             Err(_) => return Ok(None),
         };
-        Self::element_for_reciprocity_audit(&merk, key, allow_cache, grove_version)
+        element_for_reciprocity_audit(&merk, key, allow_cache, grove_version)
     }
 
-    /// The element under `key` in an opened Merk, for
-    /// [`Self::stored_element_for_reciprocity_audit`].
-    fn element_for_reciprocity_audit<'db, S: StorageContext<'db>>(
-        merk: &Merk<S>,
-        key: &[u8],
-        allow_cache: bool,
-        grove_version: &GroveVersion,
-    ) -> Result<Option<Element>, Error> {
-        match Element::get_optional(merk, key, allow_cache, grove_version).unwrap() {
-            Ok(element) => Ok(element),
-            Err(e @ grovedb_merk::Error::StorageError(_)) => Err(MerkError(e)),
-            Err(_) => Ok(None),
-        }
-    }
-
-    fn verify_merk_and_submerks_in_transaction<'db, B: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn verify_merk_and_submerks_in_transaction<'a, 'db: 'a, B: AsRef<[u8]>, S: NodeStore<'a>>(
         &'db self,
         merk: Merk<S>,
         path: &SubtreePath<B>,
-        batch: Option<&'db StorageBatch>,
-        transaction: &Transaction,
+        batch: Option<&'a E::Batch>,
+        transaction: &'a Transaction<'db, E>,
         verify_references: bool,
         allow_cache: bool,
         grove_version: &GroveVersion,
@@ -2580,7 +1976,8 @@ impl GroveDb {
         all_query.insert_all();
 
         let mut issues = HashMap::new();
-        let mut element_iterator = KVIterator::new(merk.storage.raw_iter(), &all_query).unwrap();
+        let mut element_iterator =
+            KVIterator::new(NodeStore::cursor(&merk.storage), &all_query).unwrap();
         // What the elements of this Merk contribute to its aggregate, added
         // up as the walk decodes them. Compared with the aggregate the Merk
         // stores once the walk is done.
@@ -2679,7 +2076,7 @@ impl GroveDb {
                     // parent, so a secondary whose content is stale but
                     // internally consistent passes it — and passes forever
                     // once a later write re-heals the parent hash.
-                    Self::verify_indexed_axis_content(
+                    verify_indexed_axis_content(
                         &primary_merk,
                         &secondary_merk,
                         grovedb_element::indexed::IndexAxis::Count,
@@ -3062,7 +2459,7 @@ impl GroveDb {
                                 grove_version,
                             )
                             .unwrap()?;
-                        let item = Self::reference_terminal_as_committed(
+                        let item = GroveDb::reference_terminal_as_committed(
                             item,
                             &self_actual_value_hash,
                             &element_value_hash,
@@ -3176,7 +2573,7 @@ impl GroveDb {
 
                     // Per-entry content walk over the sum axis (see
                     // `verify_indexed_axis_content`).
-                    Self::verify_indexed_axis_content(
+                    verify_indexed_axis_content(
                         &primary_merk,
                         &secondary_merk,
                         grovedb_element::indexed::IndexAxis::Sum,
@@ -3275,11 +2672,11 @@ impl GroveDb {
                         }
                         // Per-axis content walk while this axis's secondary
                         // is open (see `verify_indexed_axis_content`).
-                        Self::verify_indexed_axis_content(
+                        verify_indexed_axis_content(
                             &primary_merk,
                             &secondary_merk,
                             axis,
-                            &format!("__pcpsit_{}_", Self::axis_label(axis)),
+                            &format!("__pcpsit_{}_", axis_label(axis)),
                             &new_path.to_vec(),
                             &mut issues,
                             grove_version,
@@ -3364,13 +2761,13 @@ impl GroveDb {
     /// empty by design and contributes nothing, so it is reported against
     /// that.
     #[allow(clippy::too_many_arguments)]
-    fn verify_tree_with_unreadable_aggregate<'db, B: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn verify_tree_with_unreadable_aggregate<'a, 'db: 'a, B: AsRef<[u8]>, S: NodeStore<'a>>(
         &'db self,
         element: &Element,
         inner_merk: Merk<S>,
         path: &SubtreePath<B>,
-        batch: Option<&'db StorageBatch>,
-        transaction: &Transaction,
+        batch: Option<&'a E::Batch>,
+        transaction: &'a Transaction<'db, E>,
         verify_references: bool,
         grove_version: &GroveVersion,
         issues: &mut VerificationIssues,
@@ -3406,11 +2803,11 @@ impl GroveDb {
     /// Kept separate from `compute_non_merk_child_hash` so a violation is
     /// reported with its actual message instead of being signalled by
     /// returning a deliberately-wrong hash.
-    fn private_document_store_entry_size_issue<'b, B: AsRef<[u8]>>(
-        &self,
+    fn private_document_store_entry_size_issue<'db, 'b, B: AsRef<[u8]>>(
+        &'db self,
         element: &Element,
         subtree_path: SubtreePath<'b, B>,
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
     ) -> Option<String> {
         let Element::PrivateDocumentStore(total_count, entry_size, chunk_power, _) =
             element.underlying()
@@ -3420,10 +2817,7 @@ impl GroveDb {
         if *total_count == 0 {
             return None;
         }
-        let storage_ctx = self
-            .db
-            .get_transactional_storage_context(subtree_path, None, transaction)
-            .unwrap();
+        let storage_ctx = self.db.subtree(subtree_path, None, transaction).unwrap();
         match grovedb_private_document_store::PrivateDocumentStore::from_state(
             *total_count,
             *entry_size,
@@ -3444,11 +2838,11 @@ impl GroveDb {
     /// buffer has no current record (filled under GROVE_V1..V3 — caught up by
     /// the next append, not an error), agreement, or a tree that cannot be
     /// opened (the hash comparison reports that).
-    fn dense_buffer_record_issue<'b, B: AsRef<[u8]>>(
-        &self,
+    fn dense_buffer_record_issue<'db, 'b, B: AsRef<[u8]>>(
+        &'db self,
         element: &Element,
         subtree_path: SubtreePath<'b, B>,
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
         grove_version: &GroveVersion,
     ) -> Option<grovedb_bulk_append_tree::BufferRecordMismatch> {
         match element.underlying() {
@@ -3456,10 +2850,7 @@ impl GroveDb {
                 if *total_count == 0 {
                     return None;
                 }
-                let storage_ctx = self
-                    .db
-                    .get_transactional_storage_context(subtree_path, None, transaction)
-                    .unwrap();
+                let storage_ctx = self.db.subtree(subtree_path, None, transaction).unwrap();
                 grovedb_commitment_tree::CommitmentTree::<_>::open(
                     *total_count,
                     *chunk_power,
@@ -3476,10 +2867,7 @@ impl GroveDb {
                 if *total_count == 0 {
                     return None;
                 }
-                let storage_ctx = self
-                    .db
-                    .get_transactional_storage_context(subtree_path, None, transaction)
-                    .unwrap();
+                let storage_ctx = self.db.subtree(subtree_path, None, transaction).unwrap();
                 grovedb_bulk_append_tree::BulkAppendTree::from_state(
                     *total_count,
                     *chunk_power,
@@ -3494,10 +2882,7 @@ impl GroveDb {
                 if *count == 0 {
                     return None;
                 }
-                let storage_ctx = self
-                    .db
-                    .get_transactional_storage_context(subtree_path, None, transaction)
-                    .unwrap();
+                let storage_ctx = self.db.subtree(subtree_path, None, transaction).unwrap();
                 let tree =
                     grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree::from_state(
                         *height,
@@ -3514,10 +2899,7 @@ impl GroveDb {
                 if *total_count == 0 {
                     return None;
                 }
-                let storage_ctx = self
-                    .db
-                    .get_transactional_storage_context(subtree_path, None, transaction)
-                    .unwrap();
+                let storage_ctx = self.db.subtree(subtree_path, None, transaction).unwrap();
                 grovedb_private_document_store::PrivateDocumentStore::from_state(
                     *total_count,
                     *entry_size,
@@ -3533,7 +2915,372 @@ impl GroveDb {
             _ => None,
         }
     }
+}
 
+/// Short axis name used to build per-axis verification sentinels.
+#[cfg(feature = "minimal")]
+pub(crate) fn axis_label(axis: grovedb_element::indexed::IndexAxis) -> &'static str {
+    match axis {
+        grovedb_element::indexed::IndexAxis::Count => "count",
+        grovedb_element::indexed::IndexAxis::Sum => "sum",
+        grovedb_element::indexed::IndexAxis::Avg => "avg",
+    }
+}
+
+/// Per-entry content-consistency walk between an indexed primary and
+/// one of its axis secondaries.
+///
+/// The H1-A check binds both Merks' ROOT HASHES into the parent's
+/// value_hash, but a secondary can be internally consistent (its root
+/// hash correctly hashes its own content) while its CONTENT is stale
+/// relative to the primary — a mirror bug leaves exactly that shape.
+/// Worse, the chain check stops seeing such drift entirely once any
+/// later legitimate write re-derives the parent hash over the drifted
+/// secondary; only this walk still catches it.
+///
+/// Invariant enforced: every primary entry at `key` must have exactly
+/// one secondary entry at `make_axis_secondary_key(axis, count, sum,
+/// key)`, and the secondary must contain nothing else.
+///
+/// Issues are recorded under `<path>/<label_prefix><kind>__/<key>` so
+/// the existing `VerificationIssues` shape is unchanged. `label_prefix`
+/// identifies the variant and axis (`__cidx_` keeps the PCIT sentinels
+/// byte-identical to what they have always been).
+#[cfg(feature = "minimal")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn verify_indexed_axis_content<'db, S: NodeStore<'db>>(
+    primary_merk: &Merk<S>,
+    secondary_merk: &Merk<S>,
+    axis: grovedb_element::indexed::IndexAxis,
+    label_prefix: &str,
+    new_path: &[Vec<u8>],
+    issues: &mut VerificationIssues,
+    grove_version: &GroveVersion,
+) -> Result<(), Error> {
+    use crate::operations::indexed_tree::{axis_sort_key_len, make_axis_secondary_key};
+
+    let mut all_query = Query::new();
+    all_query.insert_all();
+    let sentinel = |kind: &str| format!("{label_prefix}{kind}__").into_bytes();
+    // Name the ordering value the axis sorts on, so a mismatch reads as
+    // `__<prefix>count_mismatch__` / `_sum_` / `_avg_`.
+    let axis_value_name = match axis {
+        grovedb_element::indexed::IndexAxis::Count => "count",
+        grovedb_element::indexed::IndexAxis::Sum => "sum",
+        grovedb_element::indexed::IndexAxis::Avg => "avg",
+    };
+    // Decode a secondary key's sort-key prefix back to its ordering
+    // value, right-aligned in a hash slot for reporting.
+    let decode_sort_value = |sec_key: &[u8]| -> CryptoHash {
+        use grovedb_element::indexed::sort_keys::{
+            decode_avg_sort_key, decode_count_sort_key, decode_sum_sort_key,
+        };
+        let mut slot = [0u8; 32];
+        match axis {
+            grovedb_element::indexed::IndexAxis::Count => {
+                let mut b = [0u8; 8];
+                b.copy_from_slice(&sec_key[..8]);
+                slot[24..32].copy_from_slice(&decode_count_sort_key(&b).to_be_bytes());
+            }
+            grovedb_element::indexed::IndexAxis::Sum => {
+                let mut b = [0u8; 8];
+                b.copy_from_slice(&sec_key[..8]);
+                slot[24..32].copy_from_slice(&decode_sum_sort_key(&b).to_be_bytes());
+            }
+            grovedb_element::indexed::IndexAxis::Avg => {
+                let mut b = [0u8; 16];
+                b.copy_from_slice(&sec_key[..16]);
+                slot[16..32].copy_from_slice(&decode_avg_sort_key(&b).to_be_bytes());
+            }
+        }
+        slot
+    };
+
+    // Expected secondary key, canonical row, and bound target hash for
+    // every primary entry, derived exactly as the mirror derives them.
+    //
+    // Indexed rows are validated HERE, in the dedicated indexed context —
+    // never routed through the generic `verify_references` arm. That arm
+    // follows references to their TERMINAL and combines against the
+    // terminal's hash, which is deliberately a different binding from the
+    // immediate-primary-node rule canonical rows use. Ordinary user
+    // references keep their terminal contract and diagnostics untouched;
+    // the one-hop immediate-node rule is selected explicitly here and
+    // nowhere else.
+    let mut expected: HashMap<Vec<u8>, (Vec<u8>, Element, Option<CryptoHash>)> = HashMap::new();
+    let mut content_iter =
+        KVIterator::new(NodeStore::cursor(&primary_merk.storage), &all_query).unwrap();
+    while let Some((p_key, p_value)) = content_iter.next_kv().unwrap() {
+        // An item key long enough to push the derived secondary key over
+        // Merk's < 256-byte invariant can only arrive via a path that
+        // bypassed the length check (legacy data, corruption, direct
+        // storage injection). Flag it rather than deriving a key that
+        // could never have been written.
+        let max_len = crate::operations::indexed_tree::max_item_key_len_for_axis(axis);
+        if p_key.len() > max_len {
+            let mut p = new_path.to_vec();
+            p.push(sentinel("primary_key_oversize"));
+            p.push(p_key.clone());
+            let mut len_slot = [0u8; 32];
+            len_slot[24..32].copy_from_slice(&(p_key.len() as u64).to_be_bytes());
+            issues.insert(p, ([0u8; 32], [0u8; 32], len_slot));
+            continue;
+        }
+        let p_elem = Element::raw_decode(&p_value, grove_version)?;
+        let (count, sum) = p_elem.count_sum_value_or_default();
+        // The row the mirror writes for this axis, so a row filed under
+        // the right key but carrying the wrong reference or the wrong
+        // carried sum is caught too — the key alone pins neither.
+        let row = crate::operations::indexed_tree::axis_row_reference(axis, &p_key, count, sum)?;
+        // The immediate primary node's committed value hash — read from
+        // the node, not recomputed from `p_value`, because for a tree- or
+        // reference-shaped entry the stored hash is a combined hash that
+        // `value_hash(bytes)` cannot reproduce.
+        //
+        // `None` means the raw iterator found bytes the AVL cannot reach
+        // from the committed root — an unlinked node. That is corruption
+        // in its own right and gets its own sentinel: an operator seeing
+        // a stale-commitment report should not have to guess whether the
+        // node was reachable at all. The walk continues so the rest of
+        // the relational report still lands.
+        let target_value_hash = primary_merk
+            .get_value_hash(
+                &p_key,
+                true,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            )
+            .unwrap()?;
+        if target_value_hash.is_none() {
+            let mut p = new_path.to_vec();
+            p.push(sentinel("primary_unreachable_node"));
+            p.push(p_key.clone());
+            issues.insert(p, ([0u8; 32], [0u8; 32], [0u8; 32]));
+        }
+        expected.insert(
+            p_key.clone(),
+            (
+                make_axis_secondary_key(axis, count, sum, &p_key),
+                row,
+                target_value_hash,
+            ),
+        );
+    }
+    drop(content_iter);
+
+    // Actual secondary rows, keyed by the item key they point at. A Vec
+    // rather than a single value so duplicate rows for one item key (a
+    // real drift class: the same item in two sort buckets) are visible
+    // instead of silently collapsing.
+    let sort_len = axis_sort_key_len(axis);
+    let mut actual: HashMap<Vec<u8>, Vec<(Vec<u8>, Element, Option<CryptoHash>)>> = HashMap::new();
+    let mut sec_iter =
+        KVIterator::new(NodeStore::cursor(&secondary_merk.storage), &all_query).unwrap();
+    // What the rows of this secondary contribute to its aggregate, added
+    // up as they are decoded. `None` once a row's contribution cannot be
+    // told (a row under a malformed key that does not decode either).
+    let mut rows_contributed = Some(ElementsAggregate::default());
+    while let Some((sec_key, sec_value)) = sec_iter.next_kv().unwrap() {
+        let sec_elem = Element::raw_decode(&sec_value, grove_version);
+        // Every row counts towards the secondary's aggregate, a row under
+        // a malformed key included, so the contribution is taken before
+        // the key is looked at.
+        let row_contribution = sec_elem
+            .as_ref()
+            .ok()
+            .and_then(|row| row.get_feature_type(secondary_merk.tree_type).ok());
+        rows_contributed = match (rows_contributed, row_contribution) {
+            (Some(mut total), Some(contribution)) => {
+                total.add(contribution);
+                Some(total)
+            }
+            _ => None,
+        };
+        if sec_key.len() < sort_len {
+            let mut p = new_path.to_vec();
+            p.push(sentinel("secondary_malformed_key"));
+            p.push(sec_key.clone());
+            issues.insert(p, ([0u8; 32], [0u8; 32], [0u8; 32]));
+            continue;
+        }
+        let sec_elem = sec_elem?;
+        // The row's COMMITTED value hash: for a canonical combined
+        // reference this is `combine_hash(H(ref bytes), target hash)`, so
+        // it is what proves the row still binds the primary entry's
+        // current state. Recomputing it from `sec_value` alone would only
+        // re-derive the reference bytes' own hash and see nothing stale.
+        // Same as the primary side: an unlinked row is corruption with its
+        // own name, not a silent skip.
+        let stored_value_hash = secondary_merk
+            .get_value_hash(
+                &sec_key,
+                true,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            )
+            .unwrap()?;
+        if stored_value_hash.is_none() {
+            let mut p = new_path.to_vec();
+            p.push(sentinel("secondary_unreachable_node"));
+            p.push(sec_key.clone());
+            issues.insert(p, ([0u8; 32], [0u8; 32], [0u8; 32]));
+        }
+        let item_key = sec_key[sort_len..].to_vec();
+        actual
+            .entry(item_key)
+            .or_default()
+            .push((sec_key.clone(), sec_elem, stored_value_hash));
+    }
+    drop(sec_iter);
+
+    for (item_key, rows) in &actual {
+        if rows.len() > 1 {
+            let mut p = new_path.to_vec();
+            p.push(sentinel("secondary_duplicate"));
+            p.push(item_key.clone());
+            let mut dup = [0u8; 32];
+            let n = rows[0].0.len().min(32);
+            dup[..n].copy_from_slice(&rows[0].0[..n]);
+            issues.insert(p, ([0u8; 32], [0u8; 32], dup));
+        }
+    }
+
+    for (item_key, (want_key, want_row, want_target_hash)) in &expected {
+        match actual.get(item_key).and_then(|v| v.first()) {
+            None => {
+                let mut p = new_path.to_vec();
+                p.push(sentinel("primary_orphan"));
+                p.push(item_key.clone());
+                issues.insert(p, ([0u8; 32], [0u8; 32], [0u8; 32]));
+            }
+            Some((got_key, ..)) if got_key != want_key => {
+                // The item is indexed, but under the wrong sort key —
+                // i.e. the secondary's ordering value is stale. Report
+                // the DECODED ordering value (right-aligned in the hash
+                // slot) rather than raw key bytes, so the diagnostic
+                // reads directly.
+                let mut p = new_path.to_vec();
+                p.push(sentinel(&format!("{}_mismatch", axis_value_name)));
+                p.push(item_key.clone());
+                issues.insert(
+                    p,
+                    (
+                        [0u8; 32],
+                        decode_sort_value(want_key),
+                        decode_sort_value(got_key),
+                    ),
+                );
+            }
+            Some((_, got_row, _)) if got_row != want_row => {
+                // Filed under the right key, but the stored row disagrees
+                // with what the primary implies — the key encodes the
+                // ordering value, not the reference or its carried sum,
+                // so this is invisible to a key-only comparison. Split
+                // into distinct sentinels so a corruption report says
+                // WHICH part of the row is wrong.
+                let describe = "verify_grovedb indexed row";
+                let kind = match crate::operations::indexed_tree::decode_axis_row_reference(
+                    got_row, describe,
+                ) {
+                    // Not a canonical row shape at all: a legacy
+                    // placeholder payload, a plain `Reference`, a
+                    // non-sibling reference, or a wrong hop budget.
+                    Err(_) => "secondary_non_canonical_row",
+                    // Canonical shape, but pointing at the wrong primary
+                    // key.
+                    Ok((target, _)) if target != item_key.as_slice() => {
+                        "secondary_wrong_reference_target"
+                    }
+                    // Canonical shape and target, so what differs is the
+                    // carried sum (the axis payload sum).
+                    Ok(_) => "secondary_wrong_payload_sum",
+                };
+                let mut p = new_path.to_vec();
+                p.push(sentinel(kind));
+                p.push(item_key.clone());
+                let want_bytes = want_row.serialize(grove_version)?;
+                let got_bytes = got_row.serialize(grove_version)?;
+                issues.insert(
+                    p,
+                    (
+                        [0u8; 32],
+                        value_hash(&want_bytes).unwrap(),
+                        value_hash(&got_bytes).unwrap(),
+                    ),
+                );
+            }
+            Some((_, got_row, got_stored_hash)) => {
+                // Right key, right row bytes — but the row's COMMITMENT
+                // can still be stale: a value-only primary update moves
+                // the target hash while leaving key and bytes identical.
+                // That is the exact drift the reference representation
+                // exists to make detectable, so it gets its own sentinel.
+                //
+                // Only checkable when both sides are reachable from their
+                // committed roots; an unlinked row on either side is
+                // reported by the shape/orphan checks instead.
+                if let (Some(want_target_hash), Some(got_stored_hash)) =
+                    (want_target_hash, got_stored_hash)
+                {
+                    let row_bytes = got_row.serialize(grove_version)?;
+                    let want_committed =
+                        combine_hash(&value_hash(&row_bytes).unwrap(), want_target_hash).unwrap();
+                    if &want_committed != got_stored_hash {
+                        let mut p = new_path.to_vec();
+                        p.push(sentinel("secondary_stale_target_hash"));
+                        p.push(item_key.clone());
+                        issues.insert(p, ([0u8; 32], want_committed, *got_stored_hash));
+                    }
+                }
+            }
+        }
+    }
+
+    for item_key in actual.keys() {
+        if !expected.contains_key(item_key) {
+            let mut p = new_path.to_vec();
+            p.push(sentinel("secondary_orphan"));
+            p.push(item_key.clone());
+            issues.insert(p, ([0u8; 32], [0u8; 32], [0u8; 32]));
+        }
+    }
+
+    // The aggregate the secondary stores must be the total its rows
+    // contribute: counts, sums and averages over the index are answered
+    // from it. The checks above compare the rows with the primary, and
+    // the rows can all be canonical while a node's stored aggregate is
+    // not what its row is worth. The secondary is not walked as a tree of
+    // its own (its rows are not GroveDB elements with subtrees), so it is
+    // checked here, against its own Merk only, and reported under its own
+    // sentinel. Skipped when a row's contribution could not be told; that
+    // row is already reported above.
+    if let Some(rows_contributed) = rows_contributed {
+        let mut p = new_path.to_vec();
+        p.push(sentinel("secondary_aggregate"));
+        record_elements_aggregate_issue(secondary_merk, &rows_contributed, p, issues);
+    }
+
+    Ok(())
+}
+
+/// The element under `key` in an opened Merk, for
+/// [`GroveDb::stored_element_for_reciprocity_audit`].
+#[cfg(feature = "minimal")]
+pub(crate) fn element_for_reciprocity_audit<'db, S: NodeStore<'db>>(
+    merk: &Merk<S>,
+    key: &[u8],
+    allow_cache: bool,
+    grove_version: &GroveVersion,
+) -> Result<Option<Element>, Error> {
+    match Element::get_optional(merk, key, allow_cache, grove_version).unwrap() {
+        Ok(element) => Ok(element),
+        Err(e @ grovedb_merk::Error::StorageError(_)) => Err(MerkError(e)),
+        Err(_) => Ok(None),
+    }
+}
+
+#[cfg(feature = "minimal")]
+impl<E: Engine> GroveDb<E> {
     /// Compute the child hash for a non-Merk tree element by reconstructing
     /// its tree from storage and computing the state root.
     /// Falls back to `merk_root_hash` on any error or for standard Merk trees.
@@ -3543,11 +3290,11 @@ impl GroveDb {
     /// records: the record fast path would return what the records say and
     /// miss a payload altered underneath them. The records themselves are
     /// audited against the values separately (`dense_buffer_record_issue`).
-    fn compute_non_merk_child_hash<'b, B: AsRef<[u8]>>(
-        &self,
+    fn compute_non_merk_child_hash<'db, 'b, B: AsRef<[u8]>>(
+        &'db self,
         element: &Element,
         subtree_path: SubtreePath<'b, B>,
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
         merk_root_hash: [u8; 32],
         grove_version: &GroveVersion,
     ) -> [u8; 32] {
@@ -3556,10 +3303,7 @@ impl GroveDb {
                 if *total_count == 0 {
                     return grovedb_commitment_tree::EMPTY_COMMITMENT_TREE_STATE_ROOT;
                 }
-                let storage_ctx = self
-                    .db
-                    .get_transactional_storage_context(subtree_path, None, transaction)
-                    .unwrap();
+                let storage_ctx = self.db.subtree(subtree_path, None, transaction).unwrap();
                 match grovedb_commitment_tree::CommitmentTree::<_>::open(
                     *total_count,
                     *chunk_power,
@@ -3578,10 +3322,7 @@ impl GroveDb {
                 if *total_count == 0 {
                     return merk_root_hash;
                 }
-                let storage_ctx = self
-                    .db
-                    .get_transactional_storage_context(subtree_path, None, transaction)
-                    .unwrap();
+                let storage_ctx = self.db.subtree(subtree_path, None, transaction).unwrap();
                 match grovedb_bulk_append_tree::BulkAppendTree::from_state(
                     *total_count,
                     *chunk_power,
@@ -3597,10 +3338,7 @@ impl GroveDb {
                 if *mmr_size == 0 {
                     return merk_root_hash;
                 }
-                let storage_ctx = self
-                    .db
-                    .get_transactional_storage_context(subtree_path, None, transaction)
-                    .unwrap();
+                let storage_ctx = self.db.subtree(subtree_path, None, transaction).unwrap();
                 let store = grovedb_merkle_mountain_range::MmrStore::new(&storage_ctx);
                 let mmr = grovedb_merkle_mountain_range::MMR::new(*mmr_size, &store);
                 match mmr.get_root(grove_version).value {
@@ -3612,10 +3350,7 @@ impl GroveDb {
                 if *count == 0 {
                     return merk_root_hash;
                 }
-                let storage_ctx = self
-                    .db
-                    .get_transactional_storage_context(subtree_path, None, transaction)
-                    .unwrap();
+                let storage_ctx = self.db.subtree(subtree_path, None, transaction).unwrap();
                 use grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree;
                 match DenseFixedSizedMerkleTree::from_state(*height, *count, storage_ctx) {
                     Ok(t) => match t.root_hash_from_values().unwrap() {
@@ -3635,10 +3370,7 @@ impl GroveDb {
                         *chunk_power,
                     );
                 }
-                let storage_ctx = self
-                    .db
-                    .get_transactional_storage_context(subtree_path, None, transaction)
-                    .unwrap();
+                let storage_ctx = self.db.subtree(subtree_path, None, transaction).unwrap();
                 match grovedb_private_document_store::PrivateDocumentStore::from_state(
                     *total_count,
                     *entry_size,
@@ -3690,11 +3422,11 @@ impl GroveDb {
     /// Returns an error if `element` is not a non-Merk data tree, or if the
     /// payload cannot be read back as a consistent tree of the declared
     /// size.
-    pub(crate) fn compute_non_merk_state_root<'b, B: AsRef<[u8]>>(
-        &self,
+    pub(crate) fn compute_non_merk_state_root<'db, 'b, B: AsRef<[u8]>>(
+        &'db self,
         element: &Element,
         subtree_path: SubtreePath<'b, B>,
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
         grove_version: &GroveVersion,
     ) -> Result<CryptoHash, Error> {
         use grovedb_merk::tree::hash::NULL_HASH;
@@ -3703,10 +3435,7 @@ impl GroveDb {
                 if *total_count == 0 {
                     return Ok(grovedb_commitment_tree::EMPTY_COMMITMENT_TREE_STATE_ROOT);
                 }
-                let storage_ctx = self
-                    .db
-                    .get_transactional_storage_context(subtree_path, None, transaction)
-                    .unwrap();
+                let storage_ctx = self.db.subtree(subtree_path, None, transaction).unwrap();
                 let ct = grovedb_commitment_tree::CommitmentTree::<_>::open(
                     *total_count,
                     *chunk_power,
@@ -3729,10 +3458,7 @@ impl GroveDb {
                 if *total_count == 0 {
                     return Ok(NULL_HASH);
                 }
-                let storage_ctx = self
-                    .db
-                    .get_transactional_storage_context(subtree_path, None, transaction)
-                    .unwrap();
+                let storage_ctx = self.db.subtree(subtree_path, None, transaction).unwrap();
                 let tree = grovedb_bulk_append_tree::BulkAppendTree::from_state(
                     *total_count,
                     *chunk_power,
@@ -3753,10 +3479,7 @@ impl GroveDb {
                 if *mmr_size == 0 {
                     return Ok(NULL_HASH);
                 }
-                let storage_ctx = self
-                    .db
-                    .get_transactional_storage_context(subtree_path, None, transaction)
-                    .unwrap();
+                let storage_ctx = self.db.subtree(subtree_path, None, transaction).unwrap();
                 let store = grovedb_merkle_mountain_range::MmrStore::new(&storage_ctx);
                 let mmr = grovedb_merkle_mountain_range::MMR::new(*mmr_size, &store);
                 mmr.get_root(grove_version)
@@ -3772,10 +3495,7 @@ impl GroveDb {
                 if *count == 0 {
                     return Ok(NULL_HASH);
                 }
-                let storage_ctx = self
-                    .db
-                    .get_transactional_storage_context(subtree_path, None, transaction)
-                    .unwrap();
+                let storage_ctx = self.db.subtree(subtree_path, None, transaction).unwrap();
                 use grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree;
                 DenseFixedSizedMerkleTree::from_state(*height, *count, storage_ctx)
                     .map_err(|e| {
@@ -3803,10 +3523,7 @@ impl GroveDb {
                         ),
                     );
                 }
-                let storage_ctx = self
-                    .db
-                    .get_transactional_storage_context(subtree_path, None, transaction)
-                    .unwrap();
+                let storage_ctx = self.db.subtree(subtree_path, None, transaction).unwrap();
                 let store = grovedb_private_document_store::PrivateDocumentStore::from_state(
                     *total_count,
                     *entry_size,
@@ -3832,6 +3549,316 @@ impl GroveDb {
             ))),
         }
     }
+}
+
+#[cfg(feature = "minimal")]
+/// Updates a tree item and preserves flags. Returns CostResult.
+pub(crate) fn update_tree_item_preserve_flag<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
+    parent_tree: &mut Merk<S>,
+    key: K,
+    maybe_root_key: Option<Vec<u8>>,
+    root_tree_hash: Hash,
+    aggregate_data: AggregateData,
+    grove_version: &GroveVersion,
+) -> CostResult<(), Error> {
+    let key_ref = key.as_ref();
+
+    get_element_from_subtree(parent_tree, key_ref, grove_version).flat_map_ok(|element| {
+        match element.reconstruct_with_root_key(maybe_root_key, aggregate_data) {
+            Some(tree) => tree
+                .insert_subtree(parent_tree, key_ref, root_tree_hash, None, grove_version)
+                .map_err(|e| e.into()),
+            None => Err(Error::InvalidPath(
+                "can only propagate on tree items".to_owned(),
+            ))
+            .wrap_with_cost(Default::default()),
+        }
+    })
+}
+
+#[cfg(feature = "minimal")]
+/// Pushes to batch an operation which updates a tree item and preserves
+/// flags. Returns CostResult.
+pub(crate) fn update_tree_item_preserve_flag_into_batch_operations<
+    'db,
+    K: AsRef<[u8]>,
+    S: NodeStore<'db>,
+>(
+    parent_tree: &Merk<S>,
+    key: K,
+    maybe_root_key: Option<Vec<u8>>,
+    root_tree_hash: Hash,
+    aggregate_data: AggregateData,
+    batch_operations: &mut Vec<BatchEntry<K>>,
+    grove_version: &GroveVersion,
+) -> CostResult<(), Error> {
+    let mut cost = OperationCost::default();
+    get_element_from_subtree(parent_tree, key.as_ref(), grove_version).flat_map_ok(|element| {
+        match element.reconstruct_with_root_key(maybe_root_key, aggregate_data) {
+            Some(tree) => {
+                let merk_feature_type = cost_return_on_error_into!(
+                    &mut cost,
+                    tree.get_feature_type(parent_tree.tree_type)
+                        .wrap_with_cost(OperationCost::default())
+                );
+                tree.insert_subtree_into_batch_operations(
+                    key,
+                    root_tree_hash,
+                    true,
+                    batch_operations,
+                    merk_feature_type,
+                    grove_version,
+                )
+                .map_err(|e| e.into())
+            }
+            None => Err(Error::InvalidPath(
+                "can only propagate on tree items".to_owned(),
+            ))
+            .wrap_with_cost(Default::default()),
+        }
+    })
+}
+
+#[cfg(feature = "minimal")]
+/// Rebuild an existing indexed-tree element in `parent_tree` with new
+/// primary/secondary root state and emit the parent-merk write with its
+/// H1-A value hash. The element is read from the parent merk, so this is
+/// the REPLACE side; a freshly-created element goes through
+/// [`insert_indexed_tree_item_into_batch_operations`], which
+/// carries the element instead of reading it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_indexed_tree_item_preserve_flag_into_batch_operations<
+    'db,
+    K: AsRef<[u8]>,
+    S: NodeStore<'db>,
+>(
+    parent_tree: &Merk<S>,
+    key: K,
+    primary_root_key: Option<Vec<u8>>,
+    axes: Vec<(u8, Hash, Option<Vec<u8>>)>,
+    primary_aggregate_data: AggregateData,
+    primary_root_hash: Hash,
+    batch_operations: &mut Vec<BatchEntry<K>>,
+    grove_version: &GroveVersion,
+) -> CostResult<(), Error> {
+    let cost = OperationCost::default();
+    if axes.is_empty() {
+        return Err(Error::CorruptedCodeExecution(
+            "an indexed-tree bubble-up must carry at least one axis",
+        ))
+        .wrap_with_cost(cost);
+    }
+    let parent_tree_type = parent_tree.tree_type;
+    get_element_from_subtree(parent_tree, key.as_ref(), grove_version).flat_map_ok(|element| {
+        indexed_tree_item_with_root_state_into_batch_operations(
+            element,
+            parent_tree_type,
+            key,
+            primary_root_key,
+            axes,
+            primary_aggregate_data,
+            primary_root_hash,
+            batch_operations,
+            grove_version,
+        )
+    })
+}
+
+#[cfg(feature = "minimal")]
+/// Insert-side counterpart of the above, used by
+/// `GroveOp::InsertAggregateIndexedTreeRootKeys`: the indexed element was
+/// CREATED in this same batch, so it cannot be read from the parent merk
+/// — the op carries it instead. Same H1-A composition as the replace
+/// path; only the element's source differs.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn insert_indexed_tree_item_into_batch_operations<K: AsRef<[u8]>>(
+    element: Element,
+    parent_tree_type: TreeType,
+    key: K,
+    primary_root_key: Option<Vec<u8>>,
+    axes: Vec<(u8, Hash, Option<Vec<u8>>)>,
+    primary_aggregate_data: AggregateData,
+    primary_root_hash: Hash,
+    batch_operations: &mut Vec<BatchEntry<K>>,
+    grove_version: &GroveVersion,
+) -> CostResult<(), Error> {
+    if axes.is_empty() {
+        return Err(Error::CorruptedCodeExecution(
+            "an indexed-tree bubble-up must carry at least one axis",
+        ))
+        .wrap_with_cost(OperationCost::default());
+    }
+    indexed_tree_item_with_root_state_into_batch_operations(
+        element,
+        parent_tree_type,
+        key,
+        primary_root_key,
+        axes,
+        primary_aggregate_data,
+        primary_root_hash,
+        batch_operations,
+        grove_version,
+    )
+}
+
+#[cfg(feature = "minimal")]
+/// Shared core of the replace / insert indexed bubble-up: rebuild the
+/// element with the computed root state and emit the parent-merk write
+/// with its H1-A value hash (`combine_hash_three` over the primary root
+/// hash and the lone axis's root hash, or `axes_digest` for PCPSIT).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn indexed_tree_item_with_root_state_into_batch_operations<K: AsRef<[u8]>>(
+    element: Element,
+    parent_tree_type: TreeType,
+    key: K,
+    primary_root_key: Option<Vec<u8>>,
+    axes: Vec<(u8, Hash, Option<Vec<u8>>)>,
+    primary_aggregate_data: AggregateData,
+    primary_root_hash: Hash,
+    batch_operations: &mut Vec<BatchEntry<K>>,
+    grove_version: &GroveVersion,
+) -> CostResult<(), Error> {
+    let mut cost = OperationCost::default();
+    // Single-axis variants keep their one secondary root key inline;
+    // PCPSIT keeps a TLV of all of them.
+    let is_multi_axis = matches!(
+        element.underlying(),
+        Element::ProvableCountProvableSumIndexedTree(..)
+    );
+    let rebuilt = if is_multi_axis {
+        let axes_tlv: Vec<(u8, Option<Vec<u8>>)> = axes
+            .iter()
+            .map(|(tag, _, root_key)| (*tag, root_key.clone()))
+            .collect();
+        element.reconstruct_with_axes(primary_root_key.clone(), primary_aggregate_data, axes_tlv)
+    } else {
+        element.reconstruct_with_two_root_keys(
+            primary_root_key.clone(),
+            axes[0].2.clone(),
+            primary_aggregate_data,
+        )
+    };
+    match rebuilt {
+        Some(tree) => {
+            // H1-A second input: the lone axis's root hash, or the
+            // digest over every axis.
+            let second_hash = if is_multi_axis {
+                let axis_hashes: Vec<(u8, Hash)> =
+                    axes.iter().map(|(tag, hash, _)| (*tag, *hash)).collect();
+                grovedb_merk::tree::axes_digest(&axis_hashes).unwrap_add_cost(&mut cost)
+            } else {
+                axes[0].1
+            };
+            let merk_feature_type = cost_return_on_error_into!(
+                &mut cost,
+                tree.get_feature_type(parent_tree_type)
+                    .wrap_with_cost(OperationCost::default())
+            );
+            tree.insert_count_indexed_subtree_into_batch_operations(
+                key,
+                primary_root_hash,
+                second_hash,
+                true,
+                batch_operations,
+                merk_feature_type,
+                grove_version,
+            )
+            .map_err(|e| e.into())
+            .add_cost(cost)
+        }
+        None => Err(Error::InvalidPath(
+            "update_indexed_tree_item_preserve_flag: existing element is not an indexed tree"
+                .to_owned(),
+        ))
+        .wrap_with_cost(cost),
+    }
+}
+
+#[cfg(feature = "minimal")]
+/// Get element from subtree. Return CostResult.
+pub(crate) fn get_element_from_subtree<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
+    subtree: &Merk<S>,
+    key: K,
+    grove_version: &GroveVersion,
+) -> CostResult<Element, Error> {
+    subtree
+        .get(
+            key.as_ref(),
+            true,
+            Some(&Element::value_defined_cost_for_serialized_value),
+            grove_version,
+        )
+        .map_err(|e| {
+            Error::InvalidPath(format!(
+                "can't find subtree in parent during propagation: {e}"
+            ))
+        })
+        .map_ok(|subtree_opt| {
+            subtree_opt.ok_or_else(|| {
+                let key = hex::encode(key.as_ref());
+                Error::PathKeyNotFound(format!(
+                    "can't find subtree with key {} in parent during propagation (subtree is \
+                     {})",
+                    key,
+                    if subtree.root_key().is_some() {
+                        "not empty"
+                    } else {
+                        "empty"
+                    }
+                ))
+            })
+        })
+        .flatten()
+        .map_ok(|element_bytes| {
+            Element::deserialize(&element_bytes, grove_version).map_err(|e| {
+                Error::CorruptedData(format!(
+                    "failed to deserialize parent during propagation: {e}"
+                ))
+            })
+        })
+        .flatten()
+}
+
+#[cfg(feature = "minimal")]
+pub(crate) fn capture_indexed_entry_state<'db, S: NodeStore<'db>>(
+    primary_merk: &Merk<S>,
+    key: &[u8],
+    element: &Element,
+    grove_version: &GroveVersion,
+) -> CostResult<Option<crate::operations::indexed_tree::IndexedEntryState>, Error> {
+    let mut cost = OperationCost::default();
+    if !primary_merk.tree_type.is_indexed_primary() {
+        return Ok(None).wrap_with_cost(cost);
+    }
+    let value_hash = cost_return_on_error!(
+        &mut cost,
+        primary_merk
+            .get_value_hash(
+                key,
+                true,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            )
+            .map_err(Error::MerkError)
+    );
+    let (count, sum) = element.count_sum_value_or_default();
+    // A present entry with no reachable node hash is corruption, not
+    // absence. Collapsing the two would hand the mirror `None` and
+    // delete a live row (or, on the old side, skip the delete of a row
+    // that moved). Fail loudly instead.
+    let value_hash = cost_return_on_error_no_add!(
+        cost,
+        value_hash.ok_or(Error::CorruptedCodeExecution(
+            "an indexed primary entry exists but its node is unreachable from the \
+             committed root",
+        ))
+    );
+    Ok(Some(crate::operations::indexed_tree::IndexedEntryState {
+        count,
+        sum,
+        value_hash,
+    }))
+    .wrap_with_cost(cost)
 }
 
 /// Add a child Merk's verification issues to its parent's, keeping an issue
@@ -3957,7 +3984,7 @@ fn decode_element_adding_its_contribution(
 /// own check, and the comparisons that need the hash are left out.
 #[cfg(feature = "minimal")]
 #[allow(clippy::too_many_arguments)]
-fn record_indexed_tree_binding_issues<'db, S: StorageContext<'db>>(
+fn record_indexed_tree_binding_issues<'db, S: NodeStore<'db>>(
     element: &Element,
     primary_merk: &Merk<S>,
     kv_value: &[u8],
@@ -3998,7 +4025,7 @@ fn record_indexed_tree_binding_issues<'db, S: StorageContext<'db>>(
 /// An issue already recorded at that path is kept: a hash-chain mismatch
 /// found for the same tree is more diagnostic than the aggregate placeholder.
 #[cfg(feature = "minimal")]
-fn record_recorded_aggregate_issue<'db, S: StorageContext<'db>>(
+fn record_recorded_aggregate_issue<'db, S: NodeStore<'db>>(
     element: &Element,
     inner_merk: &Merk<S>,
     root_hash: CryptoHash,
@@ -4034,7 +4061,7 @@ fn record_recorded_aggregate_issue<'db, S: StorageContext<'db>>(
 /// read, since the root hash cannot be computed then (see
 /// [`root_hash_if_computable`]).
 #[cfg(feature = "minimal")]
-fn record_elements_aggregate_issue<'db, S: StorageContext<'db>>(
+fn record_elements_aggregate_issue<'db, S: NodeStore<'db>>(
     merk: &Merk<S>,
     contributed: &ElementsAggregate,
     issue_path: Vec<Vec<u8>>,
@@ -4063,7 +4090,7 @@ fn record_elements_aggregate_issue<'db, S: StorageContext<'db>>(
 /// other tree types hash without their aggregate: their root hash is always
 /// there to compute, whatever the aggregate reads as.
 #[cfg(feature = "minimal")]
-fn root_hash_if_computable<'db, S: StorageContext<'db>>(merk: &Merk<S>) -> Option<CryptoHash> {
+fn root_hash_if_computable<'db, S: NodeStore<'db>>(merk: &Merk<S>) -> Option<CryptoHash> {
     if root_hash_commits_to_aggregate(merk.tree_type) && usable_stored_aggregate(merk).is_err() {
         return None;
     }
@@ -4083,7 +4110,7 @@ fn root_hash_if_computable<'db, S: StorageContext<'db>>(merk: &Merk<S>) -> Optio
 /// The reason completes the sentence "stored aggregate ...", which is how
 /// [`elements_aggregate_labels`] reports it.
 #[cfg(feature = "minimal")]
-fn usable_stored_aggregate<'db, S: StorageContext<'db>>(
+fn usable_stored_aggregate<'db, S: NodeStore<'db>>(
     merk: &Merk<S>,
 ) -> Result<AggregateData, String> {
     let aggregate = merk
@@ -4782,15 +4809,7 @@ impl GroveDb {
         key: &[u8],
         transaction: &Transaction,
     ) -> Result<Option<Vec<u8>>, Error> {
-        let storage_ctx = self
-            .db
-            .get_transactional_storage_context(path, None, transaction)
-            .value;
-
-        let result = storage_ctx.get(key).value;
-        match result {
-            Ok(opt) => Ok(opt.map(|v| v.to_vec())),
-            Err(e) => Err(e.into()),
-        }
+        let subtree = self.db.subtree(path, None, transaction).value;
+        Ok(grovedb_storage::flat::FlatStore::get(&subtree, key).value?)
     }
 }

@@ -218,6 +218,7 @@ mod tests {
             .expect("propagate rebind");
 
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit secondary drift");
@@ -724,6 +725,7 @@ mod tests {
                     .expect("raw primary insert");
             }
             db.db
+                .storage()
                 .commit_multi_context_batch(batch, Some(&tx))
                 .unwrap()
                 .expect("commit");
@@ -1210,6 +1212,7 @@ mod tests {
             .unwrap()
             .expect("propagate rebind");
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit axis drift");
@@ -1297,6 +1300,7 @@ mod tests {
             .unwrap()
             .expect("propagate rebind");
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit rebind");

@@ -44,9 +44,10 @@ mod tests {
     /// Number of keys physically present in the data namespace under
     /// `prefix` (committed state).
     fn data_namespace_key_count(db: &TempGroveDb, prefix: [u8; 32]) -> usize {
-        let tx = db.db.start_transaction();
+        let tx = db.db.storage().start_transaction();
         let ctx = db
             .db
+            .storage()
             .get_transactional_storage_context_by_subtree_prefix(prefix, None, &tx)
             .unwrap();
         let mut iter = ctx.raw_iter();
@@ -62,9 +63,10 @@ mod tests {
     /// Whether a pending-prefix-drop redo record exists for `prefix`
     /// (committed state).
     fn record_exists(db: &TempGroveDb, prefix: [u8; 32]) -> bool {
-        let tx = db.db.start_transaction();
+        let tx = db.db.storage().start_transaction();
         let ctx = db
             .db
+            .storage()
             .get_transactional_storage_context_by_subtree_prefix(
                 *pending_prefix_drops_namespace(),
                 None,
@@ -158,6 +160,7 @@ mod tests {
         let tx = db.start_transaction();
         let storage = db
             .db
+            .storage()
             .get_immediate_storage_context(path.into(), &tx)
             .unwrap();
         storage
@@ -174,6 +177,7 @@ mod tests {
         let tx = db.start_transaction();
         let storage = db
             .db
+            .storage()
             .get_immediate_storage_context(path.into(), &tx)
             .unwrap();
         storage
@@ -433,6 +437,7 @@ mod tests {
         // Simulate a crash after the tombstones were written but before
         // the record was removed.
         db.db
+            .storage()
             .delete_prefix_ranges(&[prefix])
             .expect("manual tombstones");
         assert_eq!(data_namespace_key_count(&db, prefix), 0);

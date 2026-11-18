@@ -564,6 +564,7 @@ fn test_private_document_store_delete() {
         let tx = db.start_transaction();
         let ctx = db
             .db
+            .storage()
             .get_transactional_storage_context(
                 grovedb_path::SubtreePath::from([b"root".as_slice(), b"docs".as_slice()].as_ref()),
                 None,

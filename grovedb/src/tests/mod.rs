@@ -120,6 +120,7 @@ mod non_counted_tests;
 mod non_merk_wrapper_preservation_tests;
 mod not_counted_or_summed_tests;
 mod not_summed_tests;
+mod one_transaction_per_operation_tests;
 mod operations_coverage_tests;
 mod overlong_path_segment_tests;
 mod parent_read_fault_tests;
@@ -183,6 +184,8 @@ use grovedb_visualize::{Drawer, Visualize};
 use tempfile::TempDir;
 
 use self::common::EMPTY_PATH;
+use grovedb_storage::{Storage, StorageContext};
+
 use super::*;
 use crate::{
     query_result_type::{QueryResultType, QueryResultType::QueryKeyElementPairResultType},
@@ -3922,6 +3925,7 @@ mod general_tests {
         let storage_context = db
             .grove_db
             .db
+            .storage()
             .get_transactional_storage_context(
                 [TEST_LEAF, b"subtree1"].as_ref().into(),
                 None,
@@ -4019,6 +4023,7 @@ mod general_tests {
 
         let storage = db
             .db
+            .storage()
             .get_transactional_storage_context(EMPTY_PATH, None, &transaction)
             .unwrap();
         let root_merk = Merk::open_base(
@@ -4125,6 +4130,7 @@ mod general_tests {
             let subtree_storage = db
                 .grove_db
                 .db
+                .storage()
                 .get_transactional_storage_context(
                     [TEST_LEAF, b"key1", b"key2"].as_ref().into(),
                     None,
@@ -4179,6 +4185,7 @@ mod general_tests {
         let subtree_storage = db
             .grove_db
             .db
+            .storage()
             .get_transactional_storage_context(
                 [TEST_LEAF, b"key1", b"innertree"].as_ref().into(),
                 None,
@@ -4203,6 +4210,7 @@ mod general_tests {
         let subtree_storage = db
             .grove_db
             .db
+            .storage()
             .get_transactional_storage_context(
                 [TEST_LEAF, b"key1", b"key2"].as_ref().into(),
                 None,

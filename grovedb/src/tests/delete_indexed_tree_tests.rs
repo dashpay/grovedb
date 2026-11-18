@@ -49,6 +49,7 @@ mod tests {
         {
             let ctx = db
                 .db
+                .storage()
                 .get_transactional_storage_context_by_subtree_prefix(
                     secondary_prefix,
                     Some(&batch),
@@ -60,6 +61,7 @@ mod tests {
                 .expect("seed stale secondary row");
         }
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit stale row");
@@ -73,6 +75,7 @@ mod tests {
         let tx = db.start_transaction();
         let ctx = db
             .db
+            .storage()
             .get_transactional_storage_context_by_subtree_prefix(secondary_prefix, None, &tx)
             .unwrap();
         let mut iter = ctx.raw_iter();

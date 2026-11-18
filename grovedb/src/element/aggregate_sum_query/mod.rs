@@ -2,6 +2,10 @@
 //! Implements functions in Element for querying
 
 #[cfg(feature = "minimal")]
+use crate::Engine;
+#[cfg(feature = "minimal")]
+use grovedb_merk::store::NodeStore;
+#[cfg(feature = "minimal")]
 use std::collections::HashSet;
 use std::fmt;
 
@@ -30,7 +34,7 @@ use grovedb_merk::proofs::query::AggregateSumQuery;
 #[cfg(feature = "minimal")]
 use grovedb_path::SubtreePath;
 #[cfg(feature = "minimal")]
-use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
+use grovedb_storage::RawIterator;
 #[cfg(feature = "minimal")]
 use grovedb_version::{check_grovedb_v0, check_grovedb_v0_with_cost, version::GroveVersion};
 
@@ -106,14 +110,14 @@ impl Default for AggregateSumQueryOptions {
 #[cfg(feature = "minimal")]
 /// Aggregate Sum Path query push arguments
 #[allow(dead_code)]
-pub struct AggregateSumPathQueryPushArgs<'db, 'ctx, 'a>
+pub struct AggregateSumPathQueryPushArgs<'db, 'ctx, 'a, E: Engine>
 where
     'db: 'ctx,
 {
     /// The RocksDB storage instance.
-    pub storage: &'db RocksDbStorage,
+    pub storage: &'db E,
     /// The optional transaction context for transactional reads.
-    pub transaction: TransactionArg<'db, 'ctx>,
+    pub transaction: TransactionArg<'db, 'ctx, E>,
     /// The key of the current element being processed, if any.
     pub key: Option<&'a [u8]>,
     /// The element to process and potentially add to results.
@@ -137,7 +141,7 @@ where
 }
 
 #[cfg(feature = "minimal")]
-impl<'db, 'ctx> fmt::Display for AggregateSumPathQueryPushArgs<'db, 'ctx, '_>
+impl<'db, 'ctx, E: Engine> fmt::Display for AggregateSumPathQueryPushArgs<'db, 'ctx, '_, E>
 where
     'db: 'ctx,
 {
@@ -181,44 +185,44 @@ where
 /// Extension trait providing aggregate sum query operations on `Element`.
 pub trait ElementAggregateSumQueryExtensions {
     /// Executes an aggregate sum path query and returns matching key-sum pairs.
-    fn get_aggregate_sum_query(
-        storage: &RocksDbStorage,
+    fn get_aggregate_sum_query<'db, E: Engine>(
+        storage: &'db E,
         aggregate_sum_path_query: &AggregateSumPathQuery,
         query_options: AggregateSumQueryOptions,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<AggregateSumQueryResult, Error>;
     /// Executes an aggregate sum query using a custom element-processing function.
-    fn get_aggregate_sum_query_apply_function(
-        storage: &RocksDbStorage,
+    fn get_aggregate_sum_query_apply_function<'db, E: Engine>(
+        storage: &'db E,
         path: &[&[u8]],
         aggregate_sum_query: &AggregateSumQuery,
         query_options: AggregateSumQueryOptions,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         add_element_function: fn(
-            AggregateSumPathQueryPushArgs,
+            AggregateSumPathQueryPushArgs<'_, '_, '_, E>,
             &GroveVersion,
         ) -> CostResult<(), Error>,
         grove_version: &GroveVersion,
     ) -> CostResult<AggregateSumQueryResult, Error>;
     /// Processes a single element and pushes it to the aggregate sum query results.
-    fn aggregate_sum_path_query_push(
-        args: AggregateSumPathQueryPushArgs,
+    fn aggregate_sum_path_query_push<E: Engine>(
+        args: AggregateSumPathQueryPushArgs<'_, '_, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>;
     /// Processes a single query item (key or range) within an aggregate sum query.
-    fn aggregate_sum_query_item(
-        storage: &RocksDbStorage,
+    fn aggregate_sum_query_item<'db, E: Engine>(
+        storage: &'db E,
         item: &QueryItem,
         results: &mut Vec<KeySumValuePair>,
         path: &[&[u8]],
         left_to_right: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         limit: &mut Option<u16>,
         sum_limit_left: &mut SumValue,
         query_options: AggregateSumQueryOptions,
         add_element_function: fn(
-            AggregateSumPathQueryPushArgs,
+            AggregateSumPathQueryPushArgs<'_, '_, '_, E>,
             &GroveVersion,
         ) -> CostResult<(), Error>,
         elements_scanned: &mut u16,
@@ -226,8 +230,8 @@ pub trait ElementAggregateSumQueryExtensions {
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>;
     /// Extracts the sum value from an element and appends it to the results.
-    fn basic_aggregate_sum_push(
-        args: AggregateSumPathQueryPushArgs,
+    fn basic_aggregate_sum_push<E: Engine>(
+        args: AggregateSumPathQueryPushArgs<'_, '_, '_, E>,
         grove_version: &GroveVersion,
     ) -> Result<(), Error>;
 }
@@ -235,11 +239,11 @@ pub trait ElementAggregateSumQueryExtensions {
 #[cfg(feature = "minimal")]
 impl ElementAggregateSumQueryExtensions for Element {
     /// Returns a vector of result elements based on given query
-    fn get_aggregate_sum_query(
-        storage: &RocksDbStorage,
+    fn get_aggregate_sum_query<'db, E: Engine>(
+        storage: &'db E,
         aggregate_sum_path_query: &AggregateSumPathQuery,
         query_options: AggregateSumQueryOptions,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<AggregateSumQueryResult, Error> {
         check_grovedb_v0_with_cost!(
@@ -268,14 +272,14 @@ impl ElementAggregateSumQueryExtensions for Element {
 
     /// Returns a vector of result sum items with keys
     /// based on given aggregate sum query
-    fn get_aggregate_sum_query_apply_function(
-        storage: &RocksDbStorage,
+    fn get_aggregate_sum_query_apply_function<'db, E: Engine>(
+        storage: &'db E,
         path: &[&[u8]],
         aggregate_sum_query: &AggregateSumQuery,
         query_options: AggregateSumQueryOptions,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         add_element_function: fn(
-            AggregateSumPathQueryPushArgs,
+            AggregateSumPathQueryPushArgs<'_, '_, '_, E>,
             &GroveVersion,
         ) -> CostResult<(), Error>,
         grove_version: &GroveVersion,
@@ -287,6 +291,9 @@ impl ElementAggregateSumQueryExtensions for Element {
                 .element
                 .get_aggregate_sum_query_apply_function
         );
+
+        let tx = crate::util::TxRef::for_read(storage, transaction);
+        let transaction = Some(tx.as_ref());
 
         let mut cost = OperationCost::default();
 
@@ -388,8 +395,8 @@ impl ElementAggregateSumQueryExtensions for Element {
     }
 
     /// Push arguments to path query
-    fn aggregate_sum_path_query_push(
-        args: AggregateSumPathQueryPushArgs,
+    fn aggregate_sum_path_query_push<E: Engine>(
+        args: AggregateSumPathQueryPushArgs<'_, '_, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         use crate::reference_path::{path_from_reference_qualified_path_type, ReferencePathType};
@@ -457,7 +464,7 @@ impl ElementAggregateSumQueryExtensions for Element {
                 }
             };
 
-            let tx = TxRef::new(args.storage, args.transaction);
+            let tx = TxRef::for_read(args.storage, args.transaction);
             let mut hops_left = source_budget
                 .map(|budget| budget - 1)
                 .unwrap_or(MAX_AGGREGATE_REFERENCE_HOPS)
@@ -583,26 +590,24 @@ impl ElementAggregateSumQueryExtensions for Element {
     /// trees where the sub elements have no matches, hence the limit would
     /// not decrease and hence we would continue on the increasingly
     /// expensive query.
-    fn aggregate_sum_query_item(
-        storage: &RocksDbStorage,
+    fn aggregate_sum_query_item<'db, E: Engine>(
+        storage: &'db E,
         item: &QueryItem,
         results: &mut Vec<KeySumValuePair>,
         path: &[&[u8]],
         left_to_right: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         limit: &mut Option<u16>,
         sum_limit_left: &mut SumValue,
         query_options: AggregateSumQueryOptions,
         add_element_function: fn(
-            AggregateSumPathQueryPushArgs,
+            AggregateSumPathQueryPushArgs<'_, '_, '_, E>,
             &GroveVersion,
         ) -> CostResult<(), Error>,
         elements_scanned: &mut u16,
         max_elements_scanned: u16,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        use grovedb_storage::Storage;
-
         use crate::util::{compat, validate_path_segment_lengths, TxRef};
 
         check_grovedb_v0_with_cost!(
@@ -614,7 +619,8 @@ impl ElementAggregateSumQueryExtensions for Element {
         );
 
         let mut cost = OperationCost::default();
-        let tx = TxRef::new(storage, transaction);
+        let tx = TxRef::for_read(storage, transaction);
+        let transaction = Some(tx.as_ref());
 
         let subtree_path: SubtreePath<_> = path.into();
 
@@ -712,10 +718,10 @@ impl ElementAggregateSumQueryExtensions for Element {
             // this is a query on a range
             cost_return_on_error_no_add!(cost, validate_path_segment_lengths(&subtree_path));
             let ctx = storage
-                .get_transactional_storage_context(subtree_path, None, tx.as_ref())
+                .subtree(subtree_path, None, tx.as_ref())
                 .unwrap_add_cost(&mut cost);
 
-            let mut iter = ctx.raw_iter();
+            let mut iter = NodeStore::cursor(&ctx);
 
             item.seek_for_iter(&mut iter, left_to_right)
                 .unwrap_add_cost(&mut cost);
@@ -805,8 +811,8 @@ impl ElementAggregateSumQueryExtensions for Element {
         .wrap_with_cost(cost)
     }
 
-    fn basic_aggregate_sum_push(
-        args: AggregateSumPathQueryPushArgs,
+    fn basic_aggregate_sum_push<E: Engine>(
+        args: AggregateSumPathQueryPushArgs<'_, '_, '_, E>,
         grove_version: &GroveVersion,
     ) -> Result<(), Error> {
         check_grovedb_v0!(

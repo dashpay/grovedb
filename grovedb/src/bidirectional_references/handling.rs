@@ -42,7 +42,7 @@ use crate::{
     merk_cache::MerkHandle,
     operations::insert::InsertOptions,
     reference_path::{follow_reference, follow_reference_once, ReferencePathType},
-    Element, Error,
+    Element, Engine, Error,
 };
 
 /// The caller's sectioned-removal policy (flags → how removed key/value
@@ -76,15 +76,19 @@ pub(crate) fn basic_sectioned_removal() -> impl FnMut(
 }
 
 /// [`ChainStore`] over the transaction's `MerkCache`.
-struct MerkCacheChainStore<'c, 'db, 'b, B: AsRef<[u8]>>(&'c MerkCache<'db, 'b, B>);
+struct MerkCacheChainStore<'c, 'db, 'tx: 'db, 'b, B: AsRef<[u8]>, E: Engine>(
+    &'c MerkCache<'db, 'tx, 'b, B, E>,
+);
 
-impl<'c, 'db, 'b, B: AsRef<[u8]>> MerkCacheChainStore<'c, 'db, 'b, B> {
+impl<'c, 'db, 'tx: 'db, 'b, B: AsRef<[u8]>, E: Engine> MerkCacheChainStore<'c, 'db, 'tx, 'b, B, E> {
     fn builder(&self, path: &[Vec<u8>]) -> SubtreePathBuilder<'b, B> {
         SubtreePathBuilder::owned_from_iter(path)
     }
 }
 
-impl<'c, 'db, 'b, B: AsRef<[u8]>> ChainStore for MerkCacheChainStore<'c, 'db, 'b, B> {
+impl<'c, 'db, 'tx: 'db, 'b, B: AsRef<[u8]>, E: Engine> ChainStore
+    for MerkCacheChainStore<'c, 'db, 'tx, 'b, B, E>
+{
     fn element_at(&self, path: &[Vec<u8>], key: &[u8]) -> CostResult<Option<Element>, Error> {
         let mut cost = Default::default();
         let mut merk = cost_return_on_error!(&mut cost, self.0.get_merk(self.builder(path)));
@@ -136,8 +140,8 @@ impl<'c, 'db, 'b, B: AsRef<[u8]>> ChainStore for MerkCacheChainStore<'c, 'db, 'b
 /// Execute a single derived write through the cache. Bidirectional
 /// references are written through `insert_reference` with their resolved
 /// end hash; the item variants derive their value hash from the bytes.
-fn apply_write(
-    merk: &mut MerkHandle<'_, '_>,
+fn apply_write<E: Engine>(
+    merk: &mut MerkHandle<'_, '_, E>,
     key: &[u8],
     element: Element,
     end_hash: Option<CryptoHash>,
@@ -187,8 +191,8 @@ fn apply_write(
 /// primary write only (the user-visible element the plan was derived from);
 /// `sectioned_removal` is the caller's removal-accounting policy, applied to
 /// every deletion the plan performs.
-fn apply_plan<'b, B: AsRef<[u8]>>(
-    merk_cache: &MerkCache<'_, 'b, B>,
+fn apply_plan<'b, B: AsRef<[u8]>, E: Engine>(
+    merk_cache: &MerkCache<'_, '_, 'b, B, E>,
     plan: Plan,
     primary_options: Option<InsertOptions>,
     sectioned_removal: SectionedRemovalFn<'_>,
@@ -256,8 +260,8 @@ fn apply_plan<'b, B: AsRef<[u8]>>(
 
 /// Insert bidirectional reference at specified location performing required
 /// checks and updates.
-pub(crate) fn process_bidirectional_reference_insertion<'b, B: AsRef<[u8]>>(
-    merk_cache: &MerkCache<'_, 'b, B>,
+pub(crate) fn process_bidirectional_reference_insertion<'b, B: AsRef<[u8]>, E: Engine>(
+    merk_cache: &MerkCache<'_, '_, 'b, B, E>,
     path: SubtreePath<'b, B>,
     key: &[u8],
     reference: BidirectionalReference,
@@ -286,9 +290,15 @@ pub(crate) fn process_bidirectional_reference_insertion<'b, B: AsRef<[u8]>>(
 /// `sectioned_removal` is the caller's removal-accounting policy; it governs
 /// every referrer a cascade deletes, exactly as it governed the element the
 /// caller updated.
-pub(crate) fn process_update_element_with_backward_references<'db, 'b, 'c, B: AsRef<[u8]>>(
-    merk_cache: &'c MerkCache<'db, 'b, B>,
-    merk: MerkHandle<'db, 'c>,
+pub(crate) fn process_update_element_with_backward_references<
+    'db,
+    'b,
+    'c,
+    B: AsRef<[u8]>,
+    E: Engine,
+>(
+    merk_cache: &'c MerkCache<'db, '_, 'b, B, E>,
+    merk: MerkHandle<'db, 'c, E>,
     path: SubtreePathBuilder<'b, B>,
     key: &[u8],
     delta: Delta,

@@ -50,6 +50,8 @@ mod worst_case;
 
 #[cfg(feature = "minimal")]
 use crate::BackwardsReferences;
+#[cfg(feature = "minimal")]
+use crate::Engine;
 
 #[cfg(feature = "minimal")]
 pub use delete_up_tree::DeleteUpTreeOptions;
@@ -64,8 +66,6 @@ use grovedb_costs::{
 #[cfg(feature = "minimal")]
 use grovedb_merk::{Error as MerkError, MerkOptions};
 use grovedb_path::SubtreePath;
-#[cfg(feature = "minimal")]
-use grovedb_storage::{Storage, StorageBatch};
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 #[cfg(feature = "minimal")]
 pub use pending_operations::PendingOperations;
@@ -159,7 +159,7 @@ impl DeleteOptions {
 }
 
 #[cfg(feature = "minimal")]
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Delete an element at a specified subtree path and key.
     ///
     /// # Dangling references
@@ -176,12 +176,12 @@ impl GroveDb {
     /// With the default maintenance policy (`GROVE_V4`+), bidirectional references pointing at
     /// the deleted element are cascade-deleted instead — see the
     /// [module-level documentation](self).
-    pub fn delete<'b, B, P>(
-        &self,
+    pub fn delete<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
         options: Option<DeleteOptions>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
     where
@@ -196,7 +196,7 @@ impl GroveDb {
         let tx = TxRef::new(&self.db, transaction);
 
         let options = options.unwrap_or_default();
-        let batch = StorageBatch::new();
+        let batch = E::Batch::default();
 
         let mut cost = Default::default();
 
@@ -221,9 +221,7 @@ impl GroveDb {
 
         cost_return_on_error!(
             &mut cost,
-            self.db
-                .commit_multi_context_batch(batch, Some(tx.as_ref()))
-                .map_err(Into::into)
+            self.db.apply_batch(batch, tx.as_ref()).map_err(Into::into)
         );
 
         tx.commit_local().wrap_with_cost(cost)
@@ -242,12 +240,12 @@ impl GroveDb {
     /// [`Self::delete`]; a `DontCheck` delete of a participant is refused
     /// outright. See the
     /// [module-level documentation](self) for details.
-    pub fn delete_with_sectional_storage_function<B: AsRef<[u8]>>(
-        &self,
+    pub fn delete_with_sectional_storage_function<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
         key: &[u8],
         options: Option<DeleteOptions>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         split_removal_bytes_function: &mut impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -277,7 +275,7 @@ impl GroveDb {
         let tx = TxRef::new(&self.db, transaction);
 
         let options = options.unwrap_or_default();
-        let batch = StorageBatch::new();
+        let batch = E::Batch::default();
 
         let mut cost = Default::default();
 
@@ -312,9 +310,7 @@ impl GroveDb {
 
         cost_return_on_error!(
             &mut cost,
-            self.db
-                .commit_multi_context_batch(batch, Some(tx.as_ref()))
-                .map_err(Into::into)
+            self.db.apply_batch(batch, tx.as_ref()).map_err(Into::into)
         );
 
         tx.commit_local().wrap_with_cost(cost)
@@ -333,11 +329,11 @@ impl GroveDb {
     /// [`Self::delete`]; a `DontCheck` delete of a participant is refused
     /// outright. See the
     /// [module-level documentation](self) for details.
-    pub fn delete_if_empty_tree<'b, B, P>(
-        &self,
+    pub fn delete_if_empty_tree<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error>
     where
@@ -355,7 +351,7 @@ impl GroveDb {
 
         let mut cost = Default::default();
 
-        let batch = StorageBatch::new();
+        let batch = E::Batch::default();
         let tx = TxRef::new(&self.db, transaction);
 
         let result = cost_return_on_error!(
@@ -377,20 +373,18 @@ impl GroveDb {
 
         cost_return_on_error!(
             &mut cost,
-            self.db
-                .commit_multi_context_batch(batch, Some(tx.as_ref()))
-                .map_err(Into::into)
+            self.db.apply_batch(batch, tx.as_ref()).map_err(Into::into)
         );
 
         tx.commit_local().map(|_| result).wrap_with_cost(cost)
     }
 
     /// Delete if an empty tree with section storage function
-    fn delete_if_empty_tree_with_sectional_storage_function<B: AsRef<[u8]>>(
-        &self,
+    fn delete_if_empty_tree_with_sectional_storage_function<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
         key: &[u8],
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
         split_removal_bytes_function: &mut impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -399,7 +393,7 @@ impl GroveDb {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
-        batch: &StorageBatch,
+        batch: &E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
         check_grovedb_v0_with_cost!(

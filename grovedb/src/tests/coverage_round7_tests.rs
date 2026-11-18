@@ -1493,6 +1493,7 @@ mod tests {
             .expect("delete from secondary");
         }
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit");
@@ -1631,6 +1632,7 @@ mod tests {
             .expect("delete from secondary");
         }
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit");

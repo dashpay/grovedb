@@ -43,9 +43,9 @@ use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_merk::proofs::Node;
 use grovedb_version::version::GroveVersion;
 
-use crate::{Element, Error, GroveDb, Transaction};
+use crate::{Element, Engine, Error, GroveDb, Transaction};
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Bind a terminally-reported non-Merk tree's element bytes to the
     /// parent-committed `value_hash`, if the grove version calls for it.
     ///
@@ -55,12 +55,12 @@ impl GroveDb {
     /// of the Merk holding the element — the tree's own data lives one level
     /// below, under the node's key, which the versioned implementations append
     /// themselves.
-    pub(crate) fn bind_terminal_non_merk_tree(
-        &self,
+    pub(crate) fn bind_terminal_non_merk_tree<'db>(
+        &'db self,
         node: &mut Node,
         element: &Element,
         parent_path: &[&[u8]],
-        tx: &Transaction,
+        tx: &Transaction<'db, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         match grove_version

@@ -1,43 +1,53 @@
 pub(crate) mod compat;
 pub(crate) mod visitor;
 
-use grovedb_storage::Storage;
+use crate::{Engine, Error, Transaction, TransactionArg};
 
-use crate::{Error, RocksDbStorage, Transaction, TransactionArg};
-
-pub(crate) enum TxRef<'a, 'db: 'a> {
-    Owned(Transaction<'db>),
-    Borrowed(&'a Transaction<'db>),
+/// The transaction of one operation: the caller's, or one the operation
+/// started for itself and commits when it is done.
+pub(crate) enum TxRef<'a, 'db: 'a, E: Engine> {
+    Owned(&'db E, Transaction<'db, E>),
+    Borrowed(&'a Transaction<'db, E>),
 }
 
-impl<'a, 'db> TxRef<'a, 'db> {
-    pub(crate) fn new(db: &'db RocksDbStorage, transaction_arg: TransactionArg<'db, 'a>) -> Self {
+impl<'a, 'db, E: Engine> TxRef<'a, 'db, E> {
+    pub(crate) fn new(db: &'db E, transaction_arg: TransactionArg<'db, 'a, E>) -> Self {
         if let Some(tx) = transaction_arg {
             Self::Borrowed(tx)
         } else {
-            Self::Owned(db.start_transaction())
+            Self::Owned(db, db.start_transaction())
+        }
+    }
+
+    /// The transaction of an operation that only reads: the caller's, or one
+    /// the engine may pin for the length of the operation.
+    pub(crate) fn for_read(db: &'db E, transaction_arg: TransactionArg<'db, 'a, E>) -> Self {
+        if let Some(tx) = transaction_arg {
+            Self::Borrowed(tx)
+        } else {
+            Self::Owned(db, db.start_read_transaction())
         }
     }
 
     /// Whether this transaction was started locally (and so will really
     /// commit in `commit_local`) rather than borrowed from the caller.
     pub(crate) fn is_owned(&self) -> bool {
-        matches!(self, TxRef::Owned(_))
+        matches!(self, TxRef::Owned(..))
     }
 
     /// Commit the transaction if it wasn't received from outside
     pub(crate) fn commit_local(self) -> Result<(), Error> {
         match self {
-            TxRef::Owned(tx) => tx.commit().map_err(Into::into),
+            TxRef::Owned(db, tx) => db.commit_transaction(tx).value.map_err(Into::into),
             TxRef::Borrowed(_) => Ok(()),
         }
     }
 }
 
-impl<'db> AsRef<Transaction<'db>> for TxRef<'_, 'db> {
-    fn as_ref(&self) -> &Transaction<'db> {
+impl<'db, E: Engine> AsRef<Transaction<'db, E>> for TxRef<'_, 'db, E> {
+    fn as_ref(&self) -> &Transaction<'db, E> {
         match self {
-            TxRef::Owned(tx) => tx,
+            TxRef::Owned(_, tx) => tx,
             TxRef::Borrowed(tx) => tx,
         }
     }

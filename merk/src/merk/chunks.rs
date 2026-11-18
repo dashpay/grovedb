@@ -115,12 +115,12 @@ pub struct ChunkProducer<'db, S> {
     merk: &'db Merk<S>,
 }
 
-impl<'db, S> ChunkProducer<'db, S>
+impl<'m, 'db, S> ChunkProducer<'m, S>
 where
     S: NodeStore<'db>,
 {
     /// Creates a new `ChunkProducer` for the given `Merk` instance
-    pub fn new(merk: &'db Merk<S>) -> Result<Self, Error> {
+    pub fn new(merk: &'m Merk<S>) -> Result<Self, Error> {
         let tree_height = merk
             .height()
             .ok_or(Error::ChunkingError(ChunkError::EmptyTree(
@@ -453,7 +453,7 @@ where
 }
 
 /// Iterate over each chunk, returning `None` after last chunk
-impl<'db, S> ChunkProducer<'db, S>
+impl<'db, S> ChunkProducer<'_, S>
 where
     S: NodeStore<'db>,
 {
@@ -473,7 +473,7 @@ where
 {
     /// Creates a `ChunkProducer` which can return chunk proofs for replicating
     /// the entire Merk tree.
-    pub fn chunks(&'db self) -> Result<ChunkProducer<'db, S>, Error> {
+    pub fn chunks(&self) -> Result<ChunkProducer<'_, S>, Error> {
         ChunkProducer::new(self)
     }
 }

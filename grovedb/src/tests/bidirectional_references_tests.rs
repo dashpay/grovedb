@@ -2418,6 +2418,7 @@ fn verify_grovedb_reports_corrupt_provided_value_hashes() {
     .unwrap();
     drop(merk);
     db.db
+        .storage()
         .commit_multi_context_batch(batch, Some(&tx))
         .unwrap()
         .unwrap();
@@ -3476,6 +3477,7 @@ fn verify_grovedb_reports_forged_referrer_entries() {
     .unwrap();
     drop(merk);
     db.db
+        .storage()
         .commit_multi_context_batch(batch, Some(&tx))
         .unwrap()
         .unwrap();
@@ -3903,6 +3905,7 @@ fn verify_grovedb_reports_missing_forward_registration_and_empty_inverse() {
     .unwrap();
     drop(merk);
     db.db
+        .storage()
         .commit_multi_context_batch(batch, Some(&tx))
         .unwrap()
         .unwrap();
@@ -3954,6 +3957,7 @@ fn verify_grovedb_reports_missing_forward_registration_and_empty_inverse() {
     .unwrap();
     drop(merk);
     db.db
+        .storage()
         .commit_multi_context_batch(batch, Some(&tx))
         .unwrap()
         .unwrap();

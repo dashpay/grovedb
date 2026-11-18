@@ -13,15 +13,15 @@ use grovedb_merk::{
     element::get::ElementFetchFromStorageExtensions,
     proofs::query::{verify_count_offset_on_range_proof, QueryProofVerify},
     proofs::{encode_into, query::QueryItem as MerkQueryItemForRange, Query as MerkQuery},
+    store::NodeStore,
 };
 use grovedb_path::{SubtreePath, SubtreePathBuilder};
 use grovedb_query::AggregateFold;
 #[cfg(test)]
 use grovedb_query::QueryItem as MerkQueryItem;
-use grovedb_storage::StorageBatch;
 use grovedb_version::version::GroveVersion;
 
-use crate::{util::TxRef, Element, Error, GroveDb, Transaction, TransactionArg};
+use crate::{util::TxRef, Element, Engine, Error, GroveDb, Transaction, TransactionArg};
 
 use super::verify::{count_aggregate_inner_range, sum_aggregate_inner_range};
 // Test-oracle-only (see the module doc): the standalone envelope
@@ -42,15 +42,15 @@ use crate::operations::proof::AxisDescentProof;
 /// that changes which rows a proof yields — a limit boundary, a direction
 /// flip — then changes both together or neither.
 #[allow(clippy::too_many_arguments)]
-fn build_row_target_chains<'db>(
-    grovedb: &'db GroveDb,
+fn build_row_target_chains<'a, 'db: 'a, E: Engine>(
+    grovedb: &'db GroveDb<E>,
     axis: IndexAxis,
     secondary_proof: &[u8],
     secondary_query: MerkQuery,
     limit: Option<u16>,
     indexed_path: &[Vec<u8>],
-    transaction: &'db Transaction,
-    batch: &'db StorageBatch,
+    transaction: &'a Transaction<'db, E>,
+    batch: &'a E::Batch,
     grove_version: &GroveVersion,
 ) -> CostResult<Vec<super::IndexedTargetChain>, Error> {
     let mut cost = OperationCost::default();
@@ -85,16 +85,16 @@ fn build_row_target_chains<'db>(
 
 /// Count-offset twin of [`build_row_target_chains`].
 #[allow(clippy::too_many_arguments)]
-fn build_paginated_target_chains<'db>(
-    grovedb: &'db GroveDb,
+fn build_paginated_target_chains<'a, 'db: 'a, E: Engine>(
+    grovedb: &'db GroveDb<E>,
     axis: IndexAxis,
     secondary_proof: &[u8],
     offset: u64,
     k: u16,
     descending: bool,
     indexed_path: &[Vec<u8>],
-    transaction: &'db Transaction,
-    batch: &'db StorageBatch,
+    transaction: &'a Transaction<'db, E>,
+    batch: &'a E::Batch,
     grove_version: &GroveVersion,
 ) -> CostResult<Vec<super::IndexedTargetChain>, Error> {
     let mut cost = OperationCost::default();
@@ -134,13 +134,13 @@ fn build_paginated_target_chains<'db>(
 
 /// Turn secondary keys into per-row chains, decoding each key's primary
 /// suffix on the way.
-fn build_chains_for_keys<'db>(
-    grovedb: &'db GroveDb,
+fn build_chains_for_keys<'a, 'db: 'a, E: Engine>(
+    grovedb: &'db GroveDb<E>,
     axis: IndexAxis,
     secondary_keys: &[Vec<u8>],
     indexed_path: &[Vec<u8>],
-    transaction: &'db Transaction,
-    batch: &'db StorageBatch,
+    transaction: &'a Transaction<'db, E>,
+    batch: &'a E::Batch,
     grove_version: &GroveVersion,
 ) -> CostResult<Vec<super::IndexedTargetChain>, Error> {
     let mut cost = OperationCost::default();
@@ -175,11 +175,11 @@ fn build_chains_for_keys<'db>(
 /// intermediate layer, open the parent merk and inspect the element
 /// at the depth's key to determine the chain composition.
 #[cfg(test)]
-fn build_ancestor_attestations<'db>(
-    grovedb: &'db GroveDb,
+fn build_ancestor_attestations<'a, 'db: 'a, E: Engine>(
+    grovedb: &'db GroveDb<E>,
     path_keys: &[Vec<u8>],
-    transaction: &'db Transaction,
-    batch: &'db StorageBatch,
+    transaction: &'a Transaction<'db, E>,
+    batch: &'a E::Batch,
     grove_version: &GroveVersion,
     err_label: &'static str,
 ) -> CostResult<Vec<AncestorAttestation>, Error> {
@@ -305,11 +305,11 @@ fn build_ancestor_attestations<'db>(
 /// proves the existence of `path_keys[i]` in the Merk at
 /// `path_keys[..i]`.
 #[cfg(test)]
-fn build_layer_proofs<'db>(
-    grovedb: &'db GroveDb,
+fn build_layer_proofs<'a, 'db: 'a, E: Engine>(
+    grovedb: &'db GroveDb<E>,
     path_keys: &[Vec<u8>],
-    transaction: &'db Transaction,
-    batch: &'db StorageBatch,
+    transaction: &'a Transaction<'db, E>,
+    batch: &'a E::Batch,
     grove_version: &GroveVersion,
     err_label: &'static str,
 ) -> CostResult<Vec<Vec<u8>>, Error> {
@@ -347,12 +347,12 @@ fn build_layer_proofs<'db>(
 /// opens each non-queried axis's secondary to capture its root hash.
 ///
 /// Returns `(secondary_root_key, other_axes_root_hashes, target_is_pcpsit)`.
-fn read_queried_axis_info_with_path_keys<'db>(
-    grovedb: &'db GroveDb,
+fn read_queried_axis_info_with_path_keys<'a, 'db: 'a, E: Engine>(
+    grovedb: &'db GroveDb<E>,
     path_keys: &[Vec<u8>],
     axis: IndexAxis,
-    transaction: &'db Transaction,
-    batch: &'db StorageBatch,
+    transaction: &'a Transaction<'db, E>,
+    batch: &'a E::Batch,
     grove_version: &GroveVersion,
     err_label: &'static str,
 ) -> CostResult<(Option<Vec<u8>>, Vec<(u8, [u8; 32])>, bool), Error> {
@@ -454,7 +454,7 @@ fn read_queried_axis_info_with_path_keys<'db>(
     }
 }
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Generate a proof for the top-`k` entries of an indexed-tree on a
     /// specific [`IndexAxis`].
     ///
@@ -473,13 +473,13 @@ impl GroveDb {
     /// Any other variant — or a PCPSIT whose TLV does not carry the
     /// requested axis — is rejected with [`Error::InvalidPath`].
     #[cfg(test)]
-    pub(crate) fn prove_indexed_axis_top_k<'b, B, P>(
-        &self,
+    pub(crate) fn prove_indexed_axis_top_k<'db, 'b, B, P>(
+        &'db self,
         path: P,
         axis: IndexAxis,
         k: u16,
         descending: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<u8>, Error>
     where
@@ -505,13 +505,13 @@ impl GroveDb {
     /// secondary's keyspace, which is `(sort_key_be ‖ original_key)`
     /// per axis (8 + N bytes for count/sum, 16 + N bytes for avg).
     #[cfg(test)]
-    pub(crate) fn prove_indexed_axis_query<'b, B, P>(
-        &self,
+    pub(crate) fn prove_indexed_axis_query<'db, 'b, B, P>(
+        &'db self,
         path: P,
         axis: IndexAxis,
         secondary_query: MerkQuery,
         limit: Option<u16>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<u8>, Error>
     where
@@ -528,8 +528,8 @@ impl GroveDb {
         );
         let mut cost = OperationCost::default();
         let path: SubtreePath<B> = path.into();
-        let batch = StorageBatch::new();
-        let tx = TxRef::new(&self.db, transaction);
+        let batch = E::Batch::default();
+        let tx = TxRef::for_read(&self.db, transaction);
         let tx_ref = tx.as_ref();
 
         let envelope = cost_return_on_error!(
@@ -578,14 +578,14 @@ impl GroveDb {
     /// count commitments is a proof that the total population is
     /// exactly `skipped`.
     #[cfg(test)]
-    pub(crate) fn prove_indexed_axis_top_k_paginated<'b, B, P>(
-        &self,
+    pub(crate) fn prove_indexed_axis_top_k_paginated<'db, 'b, B, P>(
+        &'db self,
         path: P,
         axis: IndexAxis,
         k: u16,
         offset: u64,
         descending: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<u8>, Error>
     where
@@ -602,8 +602,8 @@ impl GroveDb {
         );
         let mut cost = OperationCost::default();
         let path: SubtreePath<B> = path.into();
-        let batch = StorageBatch::new();
-        let tx = TxRef::new(&self.db, transaction);
+        let batch = E::Batch::default();
+        let tx = TxRef::for_read(&self.db, transaction);
         let tx_ref = tx.as_ref();
 
         let envelope = cost_return_on_error!(
@@ -641,13 +641,13 @@ impl GroveDb {
     /// Errors with `InvalidPath` at the root or on a non-indexed
     /// target, and `PathKeyNotFound` when `item_key` is not in the
     /// indexed primary.
-    pub(crate) fn compute_indexed_axis_rank_of_key<'b, B, P>(
-        &self,
+    pub(crate) fn compute_indexed_axis_rank_of_key<'db, 'b, B, P>(
+        &'db self,
         path: P,
         axis: IndexAxis,
         item_key: &[u8],
         descending: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<u64, Error>
     where
@@ -658,8 +658,8 @@ impl GroveDb {
 
         let mut cost = OperationCost::default();
         let path: SubtreePath<B> = path.into();
-        let batch = StorageBatch::new();
-        let tx = TxRef::new(&self.db, transaction);
+        let batch = E::Batch::default();
+        let tx = TxRef::for_read(&self.db, transaction);
         let tx_ref = tx.as_ref();
 
         let path_keys: Vec<Vec<u8>> = path.to_vec();
@@ -762,13 +762,13 @@ impl GroveDb {
     /// Errors if `item_key` is not present in the indexed tree's
     /// primary, or if the axis is not indexed at this path.
     #[cfg(test)]
-    pub(crate) fn prove_indexed_axis_rank_of_key<'b, B, P>(
-        &self,
+    pub(crate) fn prove_indexed_axis_rank_of_key<'db, 'b, B, P>(
+        &'db self,
         path: P,
         axis: IndexAxis,
         item_key: &[u8],
         descending: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(Vec<u8>, u64), Error>
     where
@@ -785,6 +785,8 @@ impl GroveDb {
         );
         let mut cost = OperationCost::default();
         let path: SubtreePath<B> = path.into();
+        let tx = TxRef::for_read(&self.db, transaction);
+        let tx_ref = tx.as_ref();
 
         // Steps 1-2 (derive the item's secondary sort key, count the
         // entries strictly before it in the walk direction) are shared
@@ -797,14 +799,12 @@ impl GroveDb {
                 axis,
                 item_key,
                 descending,
-                transaction,
+                Some(tx_ref),
                 grove_version,
             )
         );
 
-        let batch = StorageBatch::new();
-        let tx = TxRef::new(&self.db, transaction);
-        let tx_ref = tx.as_ref();
+        let batch = E::Batch::default();
 
         // 3. The rank proof IS the paginated proof at (offset = rank,
         //    k = 1): its counted commitments attest the skipped prefix
@@ -844,14 +844,14 @@ impl GroveDb {
     ///
     /// `lo > hi` is a degenerate range; the proof commits `0`.
     #[cfg(test)]
-    pub(crate) fn prove_indexed_axis_aggregate_over_value_range<'b, B, P>(
-        &self,
+    pub(crate) fn prove_indexed_axis_aggregate_over_value_range<'db, 'b, B, P>(
+        &'db self,
         path: P,
         axis: IndexAxis,
         lo: i128,
         hi: i128,
         fold: AggregateFold,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<u8>, Error>
     where
@@ -877,8 +877,8 @@ impl GroveDb {
             }
         }
         let path: SubtreePath<B> = path.into();
-        let batch = StorageBatch::new();
-        let tx = TxRef::new(&self.db, transaction);
+        let batch = E::Batch::default();
+        let tx = TxRef::for_read(&self.db, transaction);
         let tx_ref = tx.as_ref();
 
         let envelope = cost_return_on_error!(
@@ -906,14 +906,14 @@ impl GroveDb {
     }
 
     #[cfg(test)]
-    fn build_indexed_axis_range_proof<'db, 'b, B: AsRef<[u8]>>(
+    fn build_indexed_axis_range_proof<'a, 'db: 'a, 'b, B: AsRef<[u8]>>(
         &'db self,
         path: SubtreePath<'b, B>,
         axis: IndexAxis,
         secondary_query: MerkQuery,
         limit: Option<u16>,
-        transaction: &'db Transaction,
-        batch: &'db StorageBatch,
+        transaction: &'a Transaction<'db, E>,
+        batch: &'a E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<IndexedAxisRangeProof, Error> {
         let mut cost = OperationCost::default();
@@ -1055,15 +1055,15 @@ impl GroveDb {
     }
 
     #[cfg(test)]
-    fn build_indexed_axis_paginated_proof<'db, 'b, B: AsRef<[u8]>>(
+    fn build_indexed_axis_paginated_proof<'a, 'db: 'a, 'b, B: AsRef<[u8]>>(
         &'db self,
         path: SubtreePath<'b, B>,
         axis: IndexAxis,
         k: u16,
         offset: u64,
         descending: bool,
-        transaction: &'db Transaction,
-        batch: &'db StorageBatch,
+        transaction: &'a Transaction<'db, E>,
+        batch: &'a E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<IndexedAxisPaginatedProof, Error> {
         let mut cost = OperationCost::default();
@@ -1218,15 +1218,15 @@ impl GroveDb {
     }
 
     #[cfg(test)]
-    fn build_indexed_axis_aggregate_proof<'db, 'b, B: AsRef<[u8]>>(
+    fn build_indexed_axis_aggregate_proof<'a, 'db: 'a, 'b, B: AsRef<[u8]>>(
         &'db self,
         path: SubtreePath<'b, B>,
         axis: IndexAxis,
         lo: i128,
         hi: i128,
         fold: AggregateFold,
-        transaction: &'db Transaction,
-        batch: &'db StorageBatch,
+        transaction: &'a Transaction<'db, E>,
+        batch: &'a E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<IndexedAxisAggregateProof, Error> {
         let mut cost = OperationCost::default();
@@ -1361,12 +1361,12 @@ impl GroveDb {
     /// exception is `RankOfKey`, whose computed rank must travel so the
     /// verifier can drive the count-offset verification walk — the
     /// count commitments then attest it.
-    pub(crate) fn build_axis_descent_payload<'db, 'b, B: AsRef<[u8]>>(
+    pub(crate) fn build_axis_descent_payload<'a, 'db: 'a, 'b, B: AsRef<[u8]>>(
         &'db self,
         path: SubtreePath<'b, B>,
         axis_query: &grovedb_query::AxisQuery,
-        transaction: &'db Transaction,
-        batch: &'db StorageBatch,
+        transaction: &'a Transaction<'db, E>,
+        batch: &'a E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<AxisDescentProof, Error> {
         use grovedb_query::AxisTraversal;
@@ -1574,12 +1574,12 @@ impl GroveDb {
 /// `RankOfKey` embedded traversals — the same shape step 4 of
 /// `build_indexed_axis_paginated_proof` emits.
 #[allow(clippy::too_many_arguments)]
-fn build_paginated_secondary_proof<'db, S>(
+fn build_paginated_secondary_proof<'a, 'db: 'a, S, E: Engine>(
     secondary_merk: &grovedb_merk::Merk<S>,
-    grovedb: &'db GroveDb,
+    grovedb: &'db GroveDb<E>,
     primary_path: &[Vec<u8>],
-    transaction: &'db Transaction,
-    batch: &'db StorageBatch,
+    transaction: &'a Transaction<'db, E>,
+    batch: &'a E::Batch,
     offset: u64,
     k: u16,
     descending: bool,
@@ -1588,7 +1588,7 @@ fn build_paginated_secondary_proof<'db, S>(
     cost: &mut OperationCost,
 ) -> Result<(Vec<u8>, Vec<super::IndexedTargetChain>), Error>
 where
-    S: grovedb_storage::StorageContext<'db>,
+    S: NodeStore<'a>,
 {
     if !secondary_merk.tree_type.is_count_bearing() {
         return Err(Error::NotSupported(format!(
@@ -1651,7 +1651,7 @@ fn build_aggregate_secondary_proof<'db, S>(
     cost: &mut OperationCost,
 ) -> Result<Vec<u8>, Error>
 where
-    S: grovedb_storage::StorageContext<'db>,
+    S: NodeStore<'db>,
 {
     let inner_range = match axis {
         IndexAxis::Count => count_aggregate_inner_range(lo, hi),

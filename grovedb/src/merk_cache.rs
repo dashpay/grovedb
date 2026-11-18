@@ -14,22 +14,20 @@ use grovedb_merk::{
     Merk,
 };
 use grovedb_path::SubtreePathBuilder;
-use grovedb_storage::{rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch};
 use grovedb_version::version::GroveVersion;
 
-use crate::{Element, Error, GroveDb, Transaction};
+use crate::{engine::EngineBatch, Element, Engine, Error, GroveDb, Transaction};
 
-type TxMerk<'db> = Merk<PrefixedRocksDbTransactionContext<'db>>;
+type TxMerk<'db, E> = Merk<<E as Engine>::Subtree<'db>>;
 
 /// Subtree that was put into the cache.
 // The whole (flag, Subtree) pair already lives behind a `Box` in the merks
 // map (required for pointer stability), so boxing the Merk again would only
 // add an indirection.
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug)]
-enum Subtree<'db> {
+enum Subtree<'db, E: Engine> {
     /// Merk lazily loaded from backing storage.
-    LoadedMerk(TxMerk<'db>),
+    LoadedMerk(TxMerk<'db, E>),
     /// Subtree marked as deleted, this will prevent loading from backing storage
     /// which can be unaware of uncommitted deletion.
     Deleted,
@@ -37,25 +35,26 @@ enum Subtree<'db> {
 
 /// We store Merk on heap to preserve its location as well as borrow flag
 /// alongside.
-type CachedMerkEntry<'db> = Box<(Cell<bool>, Subtree<'db>)>;
+type CachedMerkEntry<'db, E> = Box<(Cell<bool>, Subtree<'db, E>)>;
 
-type Merks<'db, 'b, B> = BTreeMap<SubtreePathBuilder<'b, B>, CachedMerkEntry<'db>>;
+type Merks<'db, 'b, B, E> = BTreeMap<SubtreePathBuilder<'b, B>, CachedMerkEntry<'db, E>>;
 
 /// Structure to keep subtrees open in memory for repeated access.
-pub(crate) struct MerkCache<'db, 'b, B: AsRef<[u8]>> {
-    db: &'db GroveDb,
+pub(crate) struct MerkCache<'db, 'tx: 'db, 'b, B: AsRef<[u8]>, E: Engine> {
+    db: &'tx GroveDb<E>,
     pub(crate) version: &'db GroveVersion,
-    batch: Box<StorageBatch>,
-    external_batch: Option<&'db StorageBatch>,
-    tx: &'db Transaction<'db>,
-    merks: UnsafeCell<Merks<'db, 'b, B>>,
+    // Before `batch`: the Merks borrow it and are dropped first.
+    merks: UnsafeCell<Merks<'db, 'b, B, E>>,
+    batch: Box<E::Batch>,
+    external_batch: Option<&'db E::Batch>,
+    tx: &'db Transaction<'tx, E>,
 }
 
-impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
+impl<'db, 'tx: 'db, 'b, B: AsRef<[u8]>, E: Engine> MerkCache<'db, 'tx, 'b, B, E> {
     /// Initialize a new `MerkCache` instance
     pub(crate) fn new(
-        db: &'db GroveDb,
-        tx: &'db Transaction<'db>,
+        db: &'tx GroveDb<E>,
+        tx: &'db Transaction<'tx, E>,
         version: &'db GroveVersion,
     ) -> Self {
         MerkCache {
@@ -72,12 +71,12 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
     /// by the caller and outlives the cache. All paths and operation boundaries
     /// use that same batch, preserving ordering between reference mutations.
     pub(crate) fn with_prepared_merk(
-        db: &'db GroveDb,
-        tx: &'db Transaction<'db>,
+        db: &'tx GroveDb<E>,
+        tx: &'db Transaction<'tx, E>,
         version: &'db GroveVersion,
         path: SubtreePathBuilder<'b, B>,
-        merk: TxMerk<'db>,
-        batch: &'db StorageBatch,
+        merk: TxMerk<'db, E>,
+        batch: &'db E::Batch,
     ) -> Self {
         let mut cache = Self::new(db, tx, version);
         cache.external_batch = Some(batch);
@@ -119,10 +118,10 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
     /// instead of Merk.
     fn try_open_merk_using_cached_parent<'m>(
         &self,
-        merks: &'m Merks<'db, 'b, B>,
-        batch: &'db StorageBatch,
+        merks: &'m Merks<'db, 'b, B, E>,
+        batch: &'db E::Batch,
         path: SubtreePathBuilder<'b, B>,
-    ) -> CostResult<Option<TxMerk<'db>>, Error> {
+    ) -> CostResult<Option<TxMerk<'db, E>>, Error> {
         let Some((parent_merk, parent_key)) =
             path.derive_parent_owned()
                 .and_then(|(parent_path, parent_key)| {
@@ -154,7 +153,7 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
                     let storage = self
                         .db
                         .db
-                        .get_transactional_storage_context((&path).into(), Some(batch), self.tx)
+                        .subtree((&path).into(), Some(batch), self.tx)
                         .unwrap_add_cost(&mut cost);
                     cost_return_on_error!(
                         &mut cost,
@@ -185,7 +184,7 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
     pub(crate) fn get_merk<'c>(
         &'c self,
         path: SubtreePathBuilder<'b, B>,
-    ) -> CostResult<MerkHandle<'db, 'c>, Error> {
+    ) -> CostResult<MerkHandle<'db, 'c, E>, Error> {
         let mut cost = Default::default();
 
         // SAFETY: there are no other references to `merks` memory at the same time.
@@ -205,7 +204,7 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
         // outlives those references we're safe,
         // and it will outlive because Merks are dropped first.
         let batch = self.external_batch.unwrap_or_else(|| unsafe {
-            (&*self.batch as *const StorageBatch)
+            (&*self.batch as *const E::Batch)
                 .as_ref()
                 .expect("`Box` is never null")
         });
@@ -218,7 +217,7 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
         // structure using indirection via Box and not allowing actual deletions.
         let boxed_flag_merk = if let Some(cached_subtree) = unsafe {
             merks.get_mut(&path).map(|b: &mut Box<_>| {
-                (&mut (**b) as *mut (Cell<bool>, Subtree<'db>))
+                (&mut (**b) as *mut (Cell<bool>, Subtree<'db, E>))
                     .as_mut()
                     .expect("box is never null")
             })
@@ -299,7 +298,7 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
         // As long as we're not making mutable references out of shared references we're
         // good:
         let taken_handle_ref: *const Cell<bool> = &boxed_flag_merk.0 as *const _;
-        let merk_ptr: *mut Subtree<'db> = &mut boxed_flag_merk.1 as *mut _;
+        let merk_ptr: *mut Subtree<'db, E> = &mut boxed_flag_merk.1 as *mut _;
 
         // SAFETY: `MerkHandle` contains two references to the heap allocated memory,
         // and we want to be sure that the referenced data will outlive those
@@ -339,7 +338,7 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
     /// Consumes `MerkCache` into accumulated batch of uncommitted operations
     /// with subtrees' root hash propagation done.
     #[cfg(test)]
-    pub(crate) fn into_batch(mut self) -> CostResult<Box<StorageBatch>, Error> {
+    pub(crate) fn into_batch(mut self) -> CostResult<Box<E::Batch>, Error> {
         let mut cost = Default::default();
         cost_return_on_error!(&mut cost, self.propagate_subtrees());
 
@@ -395,7 +394,7 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
                                 "live backward-reference maintenance below indexed primaries requires a full batch".to_owned(),
                             )).wrap_with_cost(Default::default());
                         }
-                        GroveDb::update_tree_item_preserve_flag(
+                        crate::update_tree_item_preserve_flag(
                             m, parent_key, root_key, root_hash, aggregate_data, self.version,
                         )
                     })
@@ -413,16 +412,15 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
 }
 
 /// Wrapper over `Merk` tree to manage unique borrow dynamically.
-#[derive(Clone, Debug)]
-pub(crate) struct MerkHandle<'db, 'c> {
-    merk: *mut Subtree<'db>,
+pub(crate) struct MerkHandle<'db, 'c, E: Engine> {
+    merk: *mut Subtree<'db, E>,
     taken_handle: &'c Cell<bool>,
     /// The cache's shared batch, so every `for_merk` call can mark itself
     /// as a new operation (see [`StorageBatch::next_operation`]).
-    batch: &'c StorageBatch,
+    batch: &'c E::Batch,
 }
 
-impl<'db> MerkHandle<'db, '_> {
+impl<'db, E: Engine> MerkHandle<'db, '_, E> {
     /// Borrow Merk exclusively to perform provided closure on it.
     /// # Panics
     /// *Rule of thumb: don't use nested `for_merk`*.
@@ -436,7 +434,7 @@ impl<'db> MerkHandle<'db, '_> {
     /// nested `for_merk` calls are still available for use.
     pub(crate) fn for_merk<T>(
         &mut self,
-        f: impl FnOnce(&mut TxMerk<'db>) -> CostResult<T, Error>,
+        f: impl FnOnce(&mut TxMerk<'db, E>) -> CostResult<T, Error>,
     ) -> CostResult<T, Error> {
         if self.taken_handle.get() {
             panic!("Attempt to have double &mut borrow on Merk");
@@ -632,7 +630,7 @@ mod tests {
         let version = GroveVersion::latest();
         let db = make_deep_tree(version);
         let tx = db.start_transaction();
-        let cache = MerkCache::<[u8; 0]>::new(&db, &tx, version);
+        let cache = MerkCache::<[u8; 0], _>::new(&db, &tx, version);
 
         let mut parent_merk = cache
             .get_merk(SubtreePathBuilder::owned_from_iter([TEST_LEAF]))
@@ -706,7 +704,7 @@ mod tests {
         let db = make_deep_tree(version);
         let tx = db.start_transaction();
 
-        let cache = MerkCache::<[u8; 0]>::new(&db, &tx, version);
+        let cache = MerkCache::<[u8; 0], _>::new(&db, &tx, version);
         let cost_with_no_cached_parent = cache
             .get_merk(SubtreePathBuilder::owned_from_iter([
                 TEST_LEAF,
@@ -716,7 +714,7 @@ mod tests {
 
         // This time with fresh cache we load parent first:
 
-        let cache = MerkCache::<[u8; 0]>::new(&db, &tx, version);
+        let cache = MerkCache::<[u8; 0], _>::new(&db, &tx, version);
 
         cache
             .get_merk(SubtreePathBuilder::owned_from_iter([TEST_LEAF]))

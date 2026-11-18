@@ -25,13 +25,12 @@ use grovedb_costs::{
 };
 use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
 use grovedb_path::SubtreePath;
-use grovedb_storage::{Storage, StorageBatch};
 use grovedb_version::version::GroveVersion;
 
 use crate::{
     batch::{GroveOp, QualifiedGroveDbOp},
     util::TxRef,
-    Element, Error, GroveDb, Transaction, TransactionArg,
+    Element, Engine, Error, GroveDb, Transaction, TransactionArg,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -43,7 +42,7 @@ fn map_ct_err(e: grovedb_commitment_tree::CommitmentTreeError) -> Error {
 
 // ── Operations ──────────────────────────────────────────────────────────
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Insert a note commitment into a CommitmentTree subtree.
     ///
     /// This is the primary typed write operation for CommitmentTree. It:
@@ -60,15 +59,15 @@ impl GroveDb {
     ///
     /// Returns `(sinsemilla_root, position)`: the new anchor hash and the
     /// 0-indexed position of the inserted note.
-    pub fn commitment_tree_insert<'b, B, P, M: MemoSize>(
-        &self,
+    pub fn commitment_tree_insert<'db, 'b, B, P, M: MemoSize>(
+        &'db self,
         path: P,
         key: &[u8],
         cmx: [u8; 32],
         rho: [u8; 32],
         cv_net: [u8; 32],
         ciphertext: TransmittedNoteCiphertext<M>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<([u8; 32], u64), Error>
     where
@@ -94,19 +93,19 @@ impl GroveDb {
     /// This is the raw write operation used by the direct (non-batch) API and
     /// by `apply_operations_without_batching`. Batch preprocessing does NOT
     /// call this function — it performs its own inline processing using a
-    /// shared `StorageBatch` (see `preprocess_commitment_tree_ops`).
+    /// shared `E::Batch` (see `preprocess_commitment_tree_ops`).
     ///
     /// The payload is validated against `DashMemo`'s expected size by
     /// `append_raw`.
-    pub(crate) fn commitment_tree_insert_raw<'b, B, P>(
-        &self,
+    pub(crate) fn commitment_tree_insert_raw<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
         cmx: [u8; 32],
         rho: [u8; 32],
         cv_net: [u8; 32],
         payload: Vec<u8>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<([u8; 32], u64), Error>
     where
@@ -143,10 +142,10 @@ impl GroveDb {
         let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
         let ct_path = SubtreePath::from(ct_path_refs.as_slice());
 
-        let data_batch = StorageBatch::new();
+        let data_batch = E::Batch::default();
         let storage_ctx = self
             .db
-            .get_transactional_storage_context(ct_path, Some(&data_batch), tx.as_ref())
+            .subtree(ct_path, Some(&data_batch), tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         // 3. Open composite CommitmentTree and append (uses default DashMemo for
@@ -199,16 +198,16 @@ impl GroveDb {
         // in the transaction. This is the same pattern as other direct GroveDB
         // operations — the caller is expected to rollback the tx on error.
         // The batch path (preprocess_commitment_tree_ops) avoids this by using
-        // a shared StorageBatch that commits atomically with all other ops.
+        // a shared E::Batch that commits atomically with all other ops.
         cost_return_on_error!(
             &mut cost,
             self.db
-                .commit_multi_context_batch(data_batch, Some(tx.as_ref()))
+                .apply_batch(data_batch, tx.as_ref())
                 .map_err(Into::into)
         );
 
         // 5. Update element in parent Merk
-        let batch = StorageBatch::new();
+        let batch = E::Batch::default();
         let mut parent_merk = cost_return_on_error!(
             &mut cost,
             self.open_transactional_merk_at_path(
@@ -224,7 +223,7 @@ impl GroveDb {
         // alone. Snapshot before the rewrite; mirror after.
         let old_indexed_state = cost_return_on_error!(
             &mut cost,
-            GroveDb::capture_indexed_entry_state(&parent_merk, key, &element, grove_version)
+            crate::capture_indexed_entry_state(&parent_merk, key, &element, grove_version)
         );
 
         let updated_element =
@@ -273,9 +272,7 @@ impl GroveDb {
         // 7. Commit batch and transaction
         cost_return_on_error!(
             &mut cost,
-            self.db
-                .commit_multi_context_batch(batch, Some(tx.as_ref()))
-                .map_err(Into::into)
+            self.db.apply_batch(batch, tx.as_ref()).map_err(Into::into)
         );
 
         tx.commit_local()
@@ -287,11 +284,11 @@ impl GroveDb {
     ///
     /// Returns the anchor directly as an `orchard::tree::Anchor`, suitable for
     /// use in `orchard::builder::Builder` for spend authorization.
-    pub fn commitment_tree_anchor<'b, B, P>(
-        &self,
+    pub fn commitment_tree_anchor<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Anchor, Error>
     where
@@ -300,7 +297,8 @@ impl GroveDb {
     {
         let path: SubtreePath<B> = path.into();
         let mut cost = OperationCost::default();
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
 
         // Read element to get total_count and chunk_power
         let element = cost_return_on_error!(
@@ -323,7 +321,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_transactional_storage_context(ct_path, None, tx.as_ref())
+            .subtree(ct_path, None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         let ct = cost_return_on_error!(
@@ -344,12 +342,12 @@ impl GroveDb {
     ///
     /// Returns the raw `cmx || rho || cv_net || payload` bytes, or None if
     /// position is out of range.
-    pub fn commitment_tree_get_value<'b, B, P>(
-        &self,
+    pub fn commitment_tree_get_value<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
         global_position: u64,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Vec<u8>>, Error>
     where
@@ -358,7 +356,8 @@ impl GroveDb {
     {
         let path: SubtreePath<B> = path.into();
         let mut cost = OperationCost::default();
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
 
         let element = cost_return_on_error!(
             &mut cost,
@@ -384,7 +383,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_transactional_storage_context(ct_path, None, tx.as_ref())
+            .subtree(ct_path, None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         let ct = cost_return_on_error!(
@@ -444,13 +443,13 @@ impl GroveDb {
     /// The returned [`RangePage`] also carries the tree's `total_count`:
     /// positions `>= total_count` do not exist, so a page shorter than
     /// `limit` means the scan caught up with the tip.
-    pub fn commitment_tree_get_range<'b, B, P>(
-        &self,
+    pub fn commitment_tree_get_range<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
         start: u64,
         limit: u16,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<RangePage, Error>
     where
@@ -459,7 +458,8 @@ impl GroveDb {
     {
         let path: SubtreePath<B> = path.into();
         let mut cost = OperationCost::default();
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
 
         let element = cost_return_on_error!(
             &mut cost,
@@ -481,7 +481,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_transactional_storage_context(ct_path, None, tx.as_ref())
+            .subtree(ct_path, None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         let ct = cost_return_on_error!(
@@ -504,11 +504,11 @@ impl GroveDb {
     }
 
     /// Get the total count of items in a CommitmentTree.
-    pub fn commitment_tree_count<'b, B, P>(
-        &self,
+    pub fn commitment_tree_count<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<u64, Error>
     where
@@ -540,11 +540,11 @@ impl GroveDb {
     ///    sinsemilla_root and total_count
     ///
     /// The returned ops list contains no `CommitmentTreeInsert` variants.
-    pub(crate) fn preprocess_commitment_tree_ops(
-        &self,
+    pub(crate) fn preprocess_commitment_tree_ops<'db>(
+        &'db self,
         ops: Vec<QualifiedGroveDbOp>,
-        transaction: &Transaction,
-        storage_batch: &StorageBatch,
+        transaction: &Transaction<'db, E>,
+        storage_batch: &E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
         let mut cost = OperationCost::default();
@@ -635,7 +635,7 @@ impl GroveDb {
 
             let storage_ctx = self
                 .db
-                .get_transactional_storage_context(ct_path, Some(storage_batch), transaction)
+                .subtree(ct_path, Some(storage_batch), transaction)
                 .unwrap_add_cost(&mut cost);
 
             // Open composite CommitmentTree

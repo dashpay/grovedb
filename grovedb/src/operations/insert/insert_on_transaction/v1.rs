@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use grovedb_costs::{cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt};
 use grovedb_merk::element::{costs::ElementCostExtensions, insert::Delta};
 use grovedb_path::SubtreePath;
-use grovedb_storage::StorageBatch;
 use grovedb_version::version::GroveVersion;
 
 use super::super::InsertOptions;
@@ -21,17 +20,17 @@ use crate::{
         process_bidirectional_reference_insertion, process_update_element_with_backward_references,
     },
     merk_cache::MerkCache,
-    Element, Error, GroveDb, Transaction,
+    Element, Engine, Error, GroveDb, Transaction,
 };
 
-pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
-    db: &GroveDb,
+pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>, E: Engine>(
+    db: &'db GroveDb<E>,
     path: SubtreePath<'b, B>,
     key: &[u8],
     mut element: Element,
     options: InsertOptions,
-    transaction: &'db Transaction,
-    batch: &StorageBatch,
+    transaction: &Transaction<'db, E>,
+    batch: &E::Batch,
     grove_version: &GroveVersion,
 ) -> CostResult<(), Error> {
     if element.is_wrapped() && element.underlying().supports_backward_references() {

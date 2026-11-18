@@ -14,7 +14,7 @@ use crate::{
     batch::QualifiedGroveDbOp,
     operations::delete::{DeleteOptions, PendingOperations},
     util::TxRef,
-    ElementFlags, Error, GroveDb, TransactionArg,
+    ElementFlags, Engine, Error, GroveDb, TransactionArg,
 };
 
 #[cfg(feature = "minimal")]
@@ -65,7 +65,7 @@ impl DeleteUpTreeOptions {
 }
 
 #[cfg(feature = "minimal")]
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Delete up tree while empty will delete nodes while they are empty up a
     /// tree.
     ///
@@ -75,12 +75,12 @@ impl GroveDb {
     /// [`Reference`](crate::Element::Reference) elements that point to
     /// deleted elements will become dangling. See the
     /// [module-level documentation](super) for details.
-    pub fn delete_up_tree_while_empty<'b, B, P>(
-        &self,
+    pub fn delete_up_tree_while_empty<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
         options: &DeleteUpTreeOptions,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<u16, Error>
     where
@@ -112,12 +112,12 @@ impl GroveDb {
 
     /// Delete up tree while empty will delete nodes while they are empty up a
     /// tree.
-    pub fn delete_up_tree_while_empty_with_sectional_storage<B: AsRef<[u8]>>(
-        &self,
+    pub fn delete_up_tree_while_empty_with_sectional_storage<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteUpTreeOptions,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         split_removal_bytes_function: impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -188,14 +188,14 @@ impl GroveDb {
     /// removed. See [`PendingOperations`] for what can be passed: a slice,
     /// `&Vec`, an iterator or adapter over the caller's own operations, or an
     /// index by path.
-    pub fn delete_operations_for_delete_up_tree_while_empty<'a, B: AsRef<[u8]>>(
-        &self,
+    pub fn delete_operations_for_delete_up_tree_while_empty<'db, 'a, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteUpTreeOptions,
         is_known_to_be_subtree: Option<MaybeTree>,
         current_batch_operations: impl PendingOperations<'a>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
         check_grovedb_v0_with_cost!(
@@ -229,14 +229,14 @@ impl GroveDb {
     /// does. Once every level is built, their deletes are appended to
     /// `current_batch_operations` as well as returned; on an error it is left
     /// as it was.
-    pub fn add_delete_operations_for_delete_up_tree_while_empty<B: AsRef<[u8]>>(
-        &self,
+    pub fn add_delete_operations_for_delete_up_tree_while_empty<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteUpTreeOptions,
         is_known_to_be_subtree: Option<MaybeTree>,
         current_batch_operations: &mut Vec<QualifiedGroveDbOp>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Vec<QualifiedGroveDbOp>>, Error> {
         let mut delete_operations = Vec::new();
@@ -269,11 +269,12 @@ impl GroveDb {
     /// tree's path.
     #[allow(clippy::too_many_arguments)]
     fn push_delete_operations_for_delete_up_tree_while_empty<
+        'db,
         'a,
         B: AsRef<[u8]>,
         P: PendingOperations<'a>,
     >(
-        &self,
+        &'db self,
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteUpTreeOptions,
@@ -281,7 +282,7 @@ impl GroveDb {
         current_batch_operations: &P,
         deleted_child_key: Option<&[u8]>,
         delete_operations: &mut Vec<QualifiedGroveDbOp>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         check_grovedb_v0_with_cost!(
@@ -301,7 +302,7 @@ impl GroveDb {
             return Ok(()).wrap_with_cost(cost);
         }
 
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
 
         if options.validate_tree_at_path_exists {
             cost_return_on_error!(

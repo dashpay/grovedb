@@ -31,8 +31,7 @@ use grovedb_costs::{
     storage_cost::{removal::StorageRemovedBytes, transition::ElementFlagsUpdate, StorageCost},
     CostResult, CostsExt, OperationCost,
 };
-use grovedb_merk::{tree::value_hash, tree_type::TreeType, CryptoHash, Merk};
-use grovedb_storage::StorageContext;
+use grovedb_merk::{store::NodeStore, tree::value_hash, tree_type::TreeType, CryptoHash, Merk};
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
 use crate::{batch::TreeCacheMerkByPath, Element, ElementFlags, Error};
@@ -44,7 +43,7 @@ where
         &[Vec<u8>],
         Option<&Element>,
     ) -> CostResult<Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>, Error>,
-    S: StorageContext<'db>,
+    S: NodeStore<'db>,
 {
     /// The hash a reference written in this batch commits to for a pending
     /// write of a backward-references ITEM at `qualified_path`: the logical
