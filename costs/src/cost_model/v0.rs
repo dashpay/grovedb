@@ -35,14 +35,6 @@ pub(super) const DELETE_SEEKS: u32 = 1;
 
 pub(super) const UNCOSTED_DELETE_SEEKS: u32 = 2;
 
-fn blake3_block_count(len: usize) -> usize {
-    if len == 0 {
-        1
-    } else {
-        1 + (len - 1) / BLAKE3_BLOCK_LEN
-    }
-}
-
 pub(super) fn stored_key_len(key_len: usize) -> usize {
     PREFIX_LEN + key_len
 }
@@ -69,7 +61,7 @@ pub(super) fn open_by_path(segment_lens: impl IntoIterator<Item = usize>) -> Ope
         OperationCost::default()
     } else {
         let message_len = bytes + size_of::<usize>() + segments;
-        OperationCost::with_hash_node_calls(blake3_block_count(message_len) as u32)
+        OperationCost::with_hash_node_calls(message_len.div_ceil(BLAKE3_BLOCK_LEN) as u32)
     }
 }
 
