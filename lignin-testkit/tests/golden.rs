@@ -13,6 +13,8 @@
 //!   the engine returns them: `only_the_hand_written_cases_record_a_failure`.
 //! - Every read GroveDB proves is recorded with its proof:
 //!   `every_proven_read_is_recorded_with_its_proof`.
+//! - The corpus holds the storage fees Drive's callbacks split by owner and
+//!   epoch: `the_storage_fee_splits_are_in_the_corpus`.
 //! - The files are text: `every_trace_file_is_text`.
 
 use std::{collections::BTreeSet, fs, path::PathBuf};
@@ -297,6 +299,63 @@ fn proof(detail: &Detail) -> Vec<u8> {
     assert_eq!(len.parse::<usize>().expect("a length"), bytes.len());
     assert_eq!(field(detail, "verification"), "verified");
     bytes
+}
+
+/// The traces of the two workloads that apply their batches with Drive's
+/// storage-flag callbacks write out, on every grove version, a cost that
+/// splits freed bytes over several epochs of one owner: by a batch, by a
+/// partial batch and by each of the two deletes that take the callback. For
+/// a batch they also write out one that frees nothing and one that names
+/// one epoch.
+#[test]
+fn the_storage_fee_splits_are_in_the_corpus() {
+    // The epochs of each owner a cost names freed bytes by.
+    let split = |detail: &Detail| -> Vec<usize> {
+        let (_, removed) = field(detail, "cost")
+            .split_once("removed=")
+            .expect("a cost names what was freed");
+        let removed = removed.split(' ').next().expect("the freed bytes");
+        let Some(sections) = removed.strip_prefix('{') else {
+            return Vec::new();
+        };
+        let mut owners: Vec<&str> = sections
+            .trim_end_matches('}')
+            .split(',')
+            .map(|section| section.split_once('/').expect("an owner and an epoch").0)
+            .collect();
+        owners.sort_unstable();
+        owners
+            .chunk_by(|one, other| one == other)
+            .map(<[&str]>::len)
+            .collect()
+    };
+    let kinds = [
+        "FlagsBatch",
+        "FlagsPartialBatch",
+        "Write(SectionalDelete ",
+        "Write(SectionalDeleteUpTree ",
+    ];
+    for grove_version in GROVE_VERSIONS {
+        let version = grove_version.protocol_version;
+        for (workload, kinds) in [("storage-fees", &kinds[..1]), ("flag-epochs", &kinds[..])] {
+            let trace = recorded(&format!("v{version}/{workload}.trace"));
+            for kind in kinds {
+                let splits: Vec<Vec<usize>> = trace
+                    .details()
+                    .filter(|detail| detail.remarks[0].starts_with(kind))
+                    .map(split)
+                    .collect();
+                let has = |wanted: fn(&Vec<usize>) -> bool| splits.iter().any(wanted);
+                let batch = *kind == "FlagsBatch";
+                assert!(
+                    has(|epochs| epochs.iter().any(|epochs| *epochs > 1))
+                        && (!batch || has(|epochs| epochs.is_empty()))
+                        && (!batch || has(|epochs| epochs == &[1])),
+                    "v{version}/{workload}: {kind} frees {splits:?}"
+                );
+            }
+        }
+    }
 }
 
 /// The sizes of the reference workload's two named proofs, by the protocol

@@ -118,6 +118,8 @@ What a step holds depends on its operation:
 | --- | --- | --- | --- |
 | a write, a batch | none | after it, inside the open transaction | |
 | a batch in two segments (`PartialBatch`) | the cost GroveDB handed its caller when the first segment paused | after it | |
+| a batch with Drive's storage-flag callbacks (`FlagsBatch`), and one in two segments (`FlagsPartialBatch`) | none, and the cost at the pause | after it | |
+| a delete with Drive's callback for freed bytes (`SectionalDelete`, `SectionalDeleteUpTree`) | none, and how many keys it deleted | after it | |
 | `Commit` | none; the cost is that of committing the transaction | of the committed state | |
 | `FlushPendingDrops` | the records reclaimed, skipped as live again, and left unresolved | after it | |
 | `Get` | the element | | |
@@ -134,6 +136,14 @@ What a step holds depends on its operation:
 | `ItemValues`, `SumValues`, `Many` | the values or sums and how many the offset skipped; the rows | | |
 | `BigSum` | the sum and the count if asked for, for the range or for each key | | always, verified with the verifier of its form |
 | `Prove` (`GroveDb::get_proved_path_query`, `prove_query_many`, `prove_bulk_position_range`, `prove_trunk_chunk`, `prove_branch_chunk`, `fetch_chunk`) | the proof or chunk bytes | | |
+
+What Drive's callbacks do shows in two places. The flags they store are
+part of the element, so the root hash of the step commits to them and the
+reads after the block return them. The bytes an operation frees are in its
+cost, named by owner and epoch: `removed={owner/epoch=bytes,…}`, where an
+operation under GroveDB's own callbacks has one number. Of each kind of
+operation, the first step that names one epoch and the first that names
+several are written out in full as well.
 
 A stream marks a path query as proven when GroveDB proves it on the grove
 version the stream was generated for. Such a proof is verified with
