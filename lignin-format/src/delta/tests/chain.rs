@@ -64,15 +64,22 @@ impl Chain {
         }
     }
 
+    /// Whether the replica has the page: it lacks a page that the run being
+    /// written is yet to create.
+    fn replica_has_page(&self) -> bool {
+        self.creates.is_none() || !self.open.is_empty()
+    }
+
     /// Ends the run that is being written, if it holds a record.
     fn close_run(&mut self) {
         if self.creates.is_none() && self.open.is_empty() {
             return;
         }
+        let has_page = self.replica_has_page();
         let bytes = run_of(self.model.id, self.creates.take(), &self.open);
         // The replica takes the records one at a time. A run that only
         // creates has no record of a change, and reaches it here.
-        if self.open.is_empty() {
+        if !has_page {
             decode(&bytes)
                 .apply(&mut self.replica, self.size, V1)
                 .expect("creates");
@@ -100,17 +107,17 @@ impl Chain {
         let before = self.writer.clone();
         let result = op.write(&mut open(&mut self.writer, self.size));
 
-        // The record of the change, alone in a run, written and read back.
-        let mut bytes = Vec::new();
-        let mut writer = match self.creates.filter(|_| self.open.is_empty()) {
-            Some(departures) => DeltaRunWriter::new_page(self.model.id, departures, &mut bytes),
-            None => DeltaRunWriter::new(self.model.id, &mut bytes),
-        };
-        if let Err(error) = op.with_delta(|delta| writer.push(&delta)) {
-            // Only a cell that no page takes has no record.
+        if let Err(error) = op.with_delta(|delta| delta.encode_into(&mut Vec::new())) {
+            // Only a cell or a value that no page takes has no record.
             assert!(matches!(
                 error,
-                FormatError::TreePage(TreePageError::CellTooLarge { .. })
+                FormatError::TreePage(
+                    TreePageError::CellTooLarge { .. }
+                        | TreePageError::FieldTooLong {
+                            field: CellField::InlineValue,
+                            ..
+                        }
+                )
             ));
             assert!(matches!(
                 result,
@@ -120,8 +127,12 @@ impl Chain {
             self.refused += 1;
             return;
         }
-        let len = writer.finish().expect("a run");
-        assert_eq!(len, bytes.len());
+        // The record of the change, alone in a run, written and read back.
+        // The first record for a page that is yet to be created comes
+        // behind the record that creates it.
+        let has_page = self.replica_has_page();
+        let created = self.creates.filter(|_| !has_page);
+        let bytes = run_of(self.model.id, created, std::slice::from_ref(&op));
         let run = decode(&bytes);
         assert_eq!(run.deltas().len(), 1);
         op.with_delta(|delta| assert_eq!(run.deltas().next(), Some(delta)));
@@ -139,7 +150,7 @@ impl Chain {
                 // A change the writer's page refuses is refused as a record
                 // too, with the same error, and changes nothing. A page
                 // that is yet to be created has no replica to refuse it.
-                if self.creates.is_none() || !self.open.is_empty() {
+                if has_page {
                     let replica = self.replica.clone();
                     assert_eq!(run.apply(&mut self.replica, self.size, V1), Err(error));
                     assert!(self.replica == replica);
@@ -157,7 +168,7 @@ impl Chain {
         }
         // The same calls on equal frames: the replica is the writer's
         // frame, byte for byte.
-        if self.creates.is_none() || !self.open.is_empty() {
+        if self.replica_has_page() {
             assert!(
                 self.writer == self.replica,
                 "the replica is not the writer's frame"
@@ -170,7 +181,7 @@ impl Chain {
     fn consolidated(&self, base: Option<&[u8]>, runs: &[Vec<u8>]) -> Vec<u8> {
         let runs: Vec<DeltaRun<'_>> = runs.iter().map(|bytes| decode(bytes)).collect();
         let mut out = vec![0x3C; 5];
-        consolidate(base, &runs, V1, self.size, &mut out).expect("consolidates");
+        consolidate(self.model.id, base, &runs, V1, self.size, &mut out).expect("consolidates");
         assert_eq!(out[..5], [0x3C; 5]);
         out.split_off(5)
     }
@@ -196,7 +207,7 @@ impl Chain {
             frame[..base.len()].copy_from_slice(base);
         }
         let runs: Vec<DeltaRun<'_>> = self.runs.iter().map(|bytes| decode(bytes)).collect();
-        apply_chain(&mut frame, self.size, V1, &runs).expect("applies");
+        apply_chain(self.model.id, &mut frame, self.size, V1, &runs).expect("applies");
         assert_eq!(image_of(&frame), expected);
 
         // Consolidated at any point on the way, and again from there.
@@ -218,12 +229,7 @@ impl Chain {
         };
         if let Some(first) = tail.first() {
             let mut folded = Vec::new();
-            let mut writer = match first.created() {
-                Some(departures) => {
-                    DeltaRunWriter::new_page(self.model.id, departures, &mut folded)
-                }
-                None => DeltaRunWriter::new(self.model.id, &mut folded),
-            };
+            let mut writer = DeltaRunWriter::new(self.model.id, first.created(), &mut folded);
             for delta in tail.iter().flat_map(DeltaRun::deltas) {
                 writer.push(&delta).expect("encodes");
             }
@@ -327,7 +333,7 @@ fn the_same_changes_give_the_same_image_however_they_are_cut() {
         let runs: Vec<DeltaRun<'_>> = runs.iter().map(|bytes| decode(bytes)).collect();
         assert_eq!(runs.len(), pieces);
         let mut image = Vec::new();
-        consolidate(Some(&base), &runs, V1, size, &mut image).expect("consolidates");
+        consolidate(model.id, Some(&base), &runs, V1, size, &mut image).expect("consolidates");
         assert_eq!(image, expected);
 
         // The same in a frame that is larger than the image and holds
@@ -335,7 +341,7 @@ fn the_same_changes_give_the_same_image_however_they_are_cut() {
         for filler in [0x00, 0xFF] {
             let mut frame = vec![filler; size.get() + 100];
             frame[..base.len()].copy_from_slice(&base);
-            apply_chain(&mut frame, size, V1, &runs).expect("applies");
+            apply_chain(model.id, &mut frame, size, V1, &runs).expect("applies");
             assert_eq!(image_of(&frame), expected);
         }
     }

@@ -87,7 +87,7 @@ record has no slot.
 | 17 | one hosted root | slot, position (1), a cell address or 0 (6) | 10 |
 | 18 | all hosted roots | slot, count (1), a cell address or 0 for each (6) | 4 + 6 for each |
 | 19 | feature | slot, `len` (1), the feature | 4 + feature |
-| 20 | value | slot, `len` (4), the value | 7 + value |
+| 20 | value | slot, `len` (2), the value | 5 + value |
 | 21 | value pointer | slot, the value pointer (16): file id (4), offset (8), value length (4) | 19 |
 
 The cell of records 2 and 3 is the cell's own bytes, as section 2.3 of
@@ -229,8 +229,9 @@ run changes the page whose id stands at the run's start. So a page id costs
 With the id in the run:
 
 - a reader that asked for the chain of page 7 and was handed a run of
-  page 9, by a damaged page table or a bug, can tell
-  (`DeltaError::WrongPage`), as it can for a base image (TP2)
+  page 9, by a damaged page table or a bug, can tell, as it can for a base
+  image (TP2). `apply_chain` and `consolidate` take the page the chain is
+  of and compare every run with it (`DeltaError::WrongPage`, A2)
 - a store can list the runs of a segment that has no footer by walking its
   blocks (S14 and item 3 of section 5 of `segment-manifest.md`)
 
@@ -284,8 +285,10 @@ segments.
 **PD10. A value is replaced by a value, or by a pointer.** Record 20 holds
 the value's bytes and puts them into the cell. Record 21 holds a value
 pointer and makes the cell hold it. Neither touches a hash or a link. A
-value has any length up to 2^32 − 1 in a record. Whether it fits its cell
-is for the page to say when the record is applied.
+value in record 20 is at most 32,682 bytes (`MAX_INLINE_VALUE_LEN`): the
+longest value the longest cell holds (PD7). A longer one could go into no
+cell, and has no record. Whether a value fits the cell and the page it is
+meant for is for the page to say when the record is applied.
 
 **PD11. A page is created by the first record of a run, and only there.**
 The create record starts an empty page under the run's page id, with the
@@ -332,9 +335,9 @@ none (R5). It checks, in this order:
 1. the 4 bytes of the page id are there: else `Truncated`
 2. the page id is not 0: else `MissingId`
 3. a record follows: else `Delta(EmptyRun)`
-4. each record in turn (see below)
-5. no create record stands behind the first record: else
-   `Delta(MisplacedCreate)`
+4. each record in turn (see below). A create record that is not the first
+   record of the run is `Delta(MisplacedCreate)`, once it has been read as
+   a record
 
 Bytes behind the last record are read as the next record, so a run with
 anything else at its end fails in step 4.
@@ -351,6 +354,8 @@ A record is checked in this order:
      `MissingId`, `ValueLog(InvalidOffset)` or `ValueLog(EmptyValue)`
    - a cell's `len` is at most 32,754: else `TreePage(CellTooLarge)`,
      before its bytes are asked for
+   - a value's `len` is at most 32,682: else `TreePage(FieldTooLong)`,
+     before its bytes are asked for
    - the `len` bytes are exactly a cell: else the error of
      `TreeCell::decode`. A cell that is longer or shorter than `len` is
      `TreePage(CellLengthMismatch)`
@@ -365,8 +370,9 @@ page.
 ## 5. Applying
 
 `DeltaRun::apply(frame, size, version)` applies a run to the page at the
-start of `frame`, a buffer of the store's page size. `apply_chain` does it
-for the runs of a chain, oldest first. `Delta::apply` makes one change to a
+start of `frame`, a buffer of the store's page size.
+`apply_chain(page, frame, size, version, chain)` does it for the runs of
+the chain of `page`, oldest first. `Delta::apply` makes one change to a
 `TreePageMut`.
 
 **A1. Applying a record is making its call** (PD1), with the cell, link or
@@ -378,7 +384,12 @@ the page; a slot keeps its number; only a remove counts a departure.
 
 **A2. A run is applied to the page it names.** A run that does not create
 its page is refused for a frame that holds another page
-(`Delta(WrongPage)`), before any change.
+(`Delta(WrongPage)`), before any change. A run that creates its page has
+no page to be compared with: whoever applies it alone chose the frame by
+the page the run names. In a chain the page is known, so `apply_chain` and
+`consolidate` are given it and refuse a run of another page, also one that
+creates its page, before that run changes anything. `consolidate` refuses
+a base image of another page in the same way.
 
 **A3. A record that is refused changes nothing, and ends the run.** The
 errors are those of the call: `SlotFree`, `SlotOccupied`, `PageFull`,
@@ -405,13 +416,15 @@ of different versions meet (U9 of `format.md`).
 
 ## 6. Consolidating
 
-`consolidate(base, chain, version, size, out)` appends to `out` the base
-image that stands for a chain: it reads `base` as an image
-(`TreePage::decode`), applies the runs in a buffer of its own, and writes
-the page with `TreePage::write_image`.
+`consolidate(page, base, chain, version, size, out)` appends to `out` the
+base image that stands for the chain of `page`: it reads `base` as an
+image (`TreePage::decode`), applies the runs in a buffer of its own, and
+writes the page with `TreePage::write_image`.
 
 - `base` is `None` for a chain whose first run creates its page. A chain
   with no base whose first run does not is `Delta(MissingBase)`.
+- A base image that is given is read and checked, and must be of `page`,
+  also when a run of the chain creates the page again.
 - On any error nothing is written to `out`.
 - The result is an image (TP16), so it reads back with `TreePage::decode`,
   and by PD15 it is the image a writer's frame would give.
@@ -433,7 +446,7 @@ A store that has the page in a frame already does not need this function:
 | a mark, a link that goes, a cell that leaves | 3 |
 | one hosted-root pointer | 10 |
 | a new or replaced cell | 5 + the cell |
-| a value in the cell | 7 + the value |
+| a value in the cell | 5 + the value |
 | a value's place in the value log | 19 |
 | creating a page | 9 |
 
@@ -560,7 +573,7 @@ group to its cell, the second to read a pending value.
 | Task | Takes from here | Still its own to define |
 | --- | --- | --- |
 | FMT-05 Log record format | A run is the unit for "the structure deltas and hash records of one page": the page id once, then the records in order. `DeltaRunWriter` writes it into a group's buffer, `DeltaRun::decode` reads it. A run has no length, checksum or version: the group gives all three. The create record says that a commit makes a page (PD11). Record 21 is the page change of a placed or moved value (8.2). | How runs are framed in a group. The value records, and how one is tied to its cell (8.2). The record of a background change. Whether a carried value is repeated or named. |
-| STORE-05 Page materialisation | The base image is copied to a frame, then `apply_chain` with the runs of the chain. Each run is checked against the page id (`WrongPage`). Any error rejects the page (A3). Decoding and applying a hash, an address, a mark or a pointer allocates nothing. | The load path, and the checksums of the blocks. |
+| STORE-05 Page materialisation | The base image is copied to a frame, then `apply_chain` with the page's id and the runs of the chain. Each run is checked against that id (`WrongPage`). Any error rejects the page (A3). Decoding a run allocates nothing, and neither does applying a hash, an address, a mark, one hosted-root pointer, or a link, feature, value or value pointer that takes the room of the one before it. | The load path, and the checksums of the blocks. |
 | STORE-06 Delta write-back | A run for the changes of one page since its last link, of one commit or of several folded together: pushing the changes of several runs into one writer is the fold. `consolidate`, or `apply_chain` and `write_image` on a frame, for a new base image. A hash-only change is 35 bytes for each hash and no value byte. Record 21 after the value is covered (8.2). | Thresholds. Where the changes of a page are kept until they are written. |
 | STORE-07 Recovery | A run applies once and in order (PD14): K3 decides whether a page already has it. A run that creates its page needs no image. | Replay. |
 | STORE-09 Value log | Moving a value is record 21 with the new pointer, 19 bytes in the page's run. | The page step. |
@@ -598,7 +611,10 @@ owner can overrule one while version 1 is still open (U10).
 7. **A page is created by a record** (PD11), and a run that creates its
    page replaces whatever its frame held.
 8. **A cell in a record has a 2-byte length**, and is at most the longest
-   cell of the largest page (PD7).
+   cell of the largest page (PD7). A value that record 20 puts into a cell
+   has a 2-byte length too, and is at most the longest value such a cell
+   holds (PD10), although a cell's own field for the length of its value
+   is 4 bytes: that field also serves a value out of line.
 9. **A link record holds the link at its own length**, 42 bytes and the
    aggregate, not one size for all trees.
 10. **One record for each changed hash.** A node whose value changed has
@@ -629,9 +645,13 @@ owner can overrule one while version 1 is still open (U10).
     for what is the run's own: `EmptyRun`, `MisplacedCreate`, `WrongPage`,
     `MissingBase`. A part that is too long, a cell that is too large and
     everything a page refuses keep the tree page's errors.
-19. **The tests share the tree page's model.** `tree_page::tests::model` is
-    now visible to the other tests of the crate. No code outside tests
-    changed in `tree_page`.
+19. **`apply_chain` and `consolidate` are told which page the chain is of**
+    (A2). A store knows it, and a run that creates its page could
+    otherwise put another page into the frame.
+20. **Two things changed in `tree_page`.** Its test model and test helpers
+    are now visible to the other tests of the crate, which the tests here
+    use. And a `TreeCell` can be compared with another: two cells are equal
+    when their bytes are. Nothing else changed there.
 
 ## 11. Code and tests
 

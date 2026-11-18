@@ -2,35 +2,20 @@ use super::*;
 use crate::{
     segment::{self, BlockContent, Compression},
     tree_page::{
-        tests::model::{ModelCell, ModelLink, ModelPage, ModelValue, Rng},
-        CellField, Hash, HashField, Side, TreeCell, TreePage, TreePageError, TreePageMut,
+        tests::{
+            address, example, frame_of,
+            model::{ModelCell, ModelLink, ModelPage, ModelValue, Rng},
+            open, page_id, pointer, slot, view, SIZES, V1,
+        },
+        CellField, Hash, HashField, Side, TreePage, TreePageError, TreePageMut,
     },
-    value_log::{ValueLogError, ValuePointer},
-    CellAddress, FileId, FormatVersion, SlotId,
+    value_log::ValueLogError,
+    CellAddress,
 };
 
 mod applying;
 mod chain;
 mod reading;
-
-const V1: FormatVersion = FormatVersion::V1;
-const SIZES: [TreePageSize; 3] = [TreePageSize::MIN, TreePageSize::DEFAULT, TreePageSize::MAX];
-
-fn page_id(raw: u32) -> PageId {
-    PageId::new(raw).expect("non-zero")
-}
-
-fn slot(raw: u16) -> SlotId {
-    SlotId::new(raw).expect("non-zero")
-}
-
-fn address(page: u32, raw_slot: u16) -> CellAddress {
-    CellAddress::new(page_id(page), slot(raw_slot))
-}
-
-fn pointer(file: u32, offset: u64, value_len: u32) -> ValuePointer {
-    ValuePointer::new(FileId::new(file).expect("non-zero"), offset, value_len).expect("valid")
-}
 
 fn delta_error(error: FormatError) -> DeltaError {
     match error {
@@ -39,24 +24,8 @@ fn delta_error(error: FormatError) -> DeltaError {
     }
 }
 
-/// A frame of `size` holding the page of `model`, built cell by cell.
-fn frame_of(model: &ModelPage, size: TreePageSize) -> Vec<u8> {
-    let mut frame = vec![0xEE; size.get()];
-    let mut page = TreePageMut::init(&mut frame, size, model.id, model.departures).expect("fits");
-    for (&raw, cell) in &model.cells {
-        page.insert(slot(raw), &cell.content()).expect("fits");
-    }
-    frame
-}
-
-fn open(frame: &mut [u8], size: TreePageSize) -> TreePageMut<'_> {
-    TreePageMut::open(frame, size, V1).expect("a page")
-}
-
 fn image_of(frame: &[u8]) -> Vec<u8> {
-    TreePage::from_validated(frame, V1)
-        .expect("a page")
-        .to_image()
+    view(frame).to_image()
 }
 
 fn decode(bytes: &[u8]) -> DeltaRun<'_> {
@@ -304,10 +273,7 @@ impl Op {
 /// `created` gives the count of departures it starts at.
 fn run_of(page: PageId, created: Option<u64>, ops: &[Op]) -> Vec<u8> {
     let mut bytes = vec![0xA5; 3];
-    let mut writer = match created {
-        Some(departures) => DeltaRunWriter::new_page(page, departures, &mut bytes),
-        None => DeltaRunWriter::new(page, &mut bytes),
-    };
+    let mut writer = DeltaRunWriter::new(page, created, &mut bytes);
     for op in ops {
         op.with_delta(|delta| writer.push(&delta)).expect("encodes");
     }
@@ -315,41 +281,6 @@ fn run_of(page: PageId, created: Option<u64>, ops: &[Op]) -> Vec<u8> {
     assert_eq!(bytes.len(), 3 + len);
     assert_eq!(bytes[..3], [0xA5; 3]);
     bytes.split_off(3)
-}
-
-/// The page of the example in the documentation of tree pages: page 7,
-/// from which two cells have left, with a cell in slots 1 and 3.
-fn example() -> ModelPage {
-    let mut page = ModelPage::new(7, 2);
-    page.cells.insert(
-        1,
-        ModelCell {
-            key: b"ab".to_vec(),
-            feature: vec![0x03, 0x2A],
-            value_hash: [0x11; 32],
-            kv_hash: [0x22; 32],
-            left: Some(ModelLink {
-                child: address(7, 3),
-                hash: [0x33; 32],
-                heights: (1, 0),
-                child_key_len: 3,
-                aggregate: vec![0x05],
-            }),
-            right: None,
-            hosted: vec![Some(address(9, 1)), None],
-            value: ModelValue::OutOfLine(pointer(12, 20, 300)),
-            fragment_root: true,
-        },
-    );
-    page.cells.insert(
-        3,
-        ModelCell {
-            value_hash: [0x44; 32],
-            kv_hash: [0x55; 32],
-            ..ModelCell::leaf(b"abc", b"v")
-        },
-    );
-    page
 }
 
 /// A run with a record of every kind that changes a cell, written out by
@@ -442,7 +373,7 @@ fn golden() -> (Vec<u8>, Vec<Op>) {
     ops.push(Op::Feature(1, vec![0x01, 0x02, 0x03]));
 
     bytes.extend([0x14, 0x03, 0x00]); // value of slot 3,
-    bytes.extend([0x02, 0x00, 0x00, 0x00]); // 2 bytes
+    bytes.extend([0x02, 0x00]); // 2 bytes
     bytes.extend(b"vw");
     ops.push(Op::Value(3, ModelValue::Inline(b"vw".to_vec())));
 
@@ -492,7 +423,7 @@ fn golden() -> (Vec<u8>, Vec<Op>) {
 #[test]
 fn golden_bytes() {
     let (bytes, ops) = golden();
-    assert_eq!(bytes.len(), 498);
+    assert_eq!(bytes.len(), 496);
     let kinds: Vec<usize> = ops.iter().map(Op::kind).collect();
     assert!((0..Op::KINDS).all(|kind| kinds.contains(&kind)));
 
@@ -533,9 +464,9 @@ fn golden_bytes() {
     assert_eq!(model.departures, 3);
     assert_eq!(model.cells.keys().copied().collect::<Vec<_>>(), [1, 2]);
     assert_eq!(image_of(&frame), model.assemble());
-    model.assert_is(TreePage::from_validated(&frame, V1).expect("a page"), size);
+    model.assert_is(view(&frame), size);
     let mut image = Vec::new();
-    consolidate(Some(&base), [&run], V1, size, &mut image).expect("consolidates");
+    consolidate(model.id, Some(&base), [&run], V1, size, &mut image).expect("consolidates");
     assert_eq!(image, model.assemble());
 }
 
@@ -610,7 +541,7 @@ fn a_run_that_creates_its_page_starts_with_the_create_record() {
     assert_eq!(run.created(), Some(u64::MAX));
     assert_eq!(run.deltas().next(), None);
     let mut image = Vec::new();
-    consolidate(None, [&run], V1, TreePageSize::MIN, &mut image).expect("consolidates");
+    consolidate(page_id(9), None, [&run], V1, TreePageSize::MIN, &mut image).expect("consolidates");
     assert_eq!(image, ModelPage::new(9, u64::MAX).assemble());
 }
 
@@ -729,6 +660,7 @@ fn sizes_are_the_documented_ones() {
     assert_eq!(HASH_RECORD_LEN, 35);
     assert_eq!(MAX_CELL_LEN, 32_754);
     assert_eq!(MAX_CELL_LEN, TreePageSize::MAX.max_cell_len());
+    assert_eq!(MAX_INLINE_VALUE_LEN, 32_682);
 
     let len = |op: &Op| {
         let len = op.with_delta(|delta| delta.encoded_len());
@@ -769,8 +701,10 @@ fn sizes_are_the_documented_ones() {
     assert_eq!(len(&Op::HostedRoots(1, vec![None; 255])), 4 + 6 * 255);
     assert_eq!(len(&Op::Feature(1, Vec::new())), 4);
     assert_eq!(len(&Op::Feature(1, vec![1; 255])), 259);
-    assert_eq!(len(&Op::Value(1, ModelValue::Inline(Vec::new()))), 7);
-    assert_eq!(len(&Op::Value(1, ModelValue::Inline(vec![1; 1000]))), 1007);
+    assert_eq!(len(&Op::Value(1, ModelValue::Inline(Vec::new()))), 5);
+    assert_eq!(len(&Op::Value(1, ModelValue::Inline(vec![1; 1000]))), 1005);
+    let longest = Op::Value(1, ModelValue::Inline(vec![1; MAX_INLINE_VALUE_LEN]));
+    assert_eq!(len(&longest), 5 + MAX_INLINE_VALUE_LEN);
     // The record that installs a value's place in the value log.
     let install = Op::Value(1, ModelValue::OutOfLine(pointer(1, 20, 1)));
     assert_eq!(len(&install), 19);
@@ -786,10 +720,10 @@ fn every_error_has_its_message() {
         ),
         (
             DeltaError::WrongPage {
-                run: page_id(7),
-                page: page_id(9),
+                found: page_id(7),
+                expected: page_id(9),
             },
-            "a run of page 7 applied to page 9",
+            "a run or a base image of page 7 applied to page 9",
         ),
         (
             DeltaError::MissingBase,

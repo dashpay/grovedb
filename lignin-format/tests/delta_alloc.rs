@@ -122,7 +122,7 @@ fn run() -> Vec<u8> {
     let feature = [9; 9];
     let roots = [None, Some(CellAddress::new(PageId::MAX, SlotId::MAX))];
     let mut bytes = Vec::new();
-    let mut writer = DeltaRunWriter::new(PAGE, &mut bytes);
+    let mut writer = DeltaRunWriter::new(PAGE, None, &mut bytes);
     for index in 1..CELLS / 2 {
         let slot = slot(index);
         let mut push = |delta: Delta<'_>| writer.push(&delta).expect("a record");
@@ -211,8 +211,9 @@ fn applying_a_change_made_where_the_cell_is_allocates_nothing() {
     result.expect("applies");
     assert_eq!(allocations, 0, "applying a run");
 
-    let (result, allocations) =
-        allocations_during(|| apply_chain(black_box(&mut frame), SIZE, VERSION, [&run, &run]));
+    let (result, allocations) = allocations_during(|| {
+        apply_chain(PAGE, black_box(&mut frame), SIZE, VERSION, [&run, &run])
+    });
     result.expect("applies");
     assert_eq!(allocations, 0, "applying a chain");
 

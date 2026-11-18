@@ -14,22 +14,23 @@ mod writing;
 
 use model::{ModelCell, ModelLink, ModelPage, ModelValue, Rng};
 
-const V1: FormatVersion = FormatVersion::V1;
-const SIZES: [TreePageSize; 3] = [TreePageSize::MIN, TreePageSize::DEFAULT, TreePageSize::MAX];
+pub(crate) const V1: FormatVersion = FormatVersion::V1;
+pub(crate) const SIZES: [TreePageSize; 3] =
+    [TreePageSize::MIN, TreePageSize::DEFAULT, TreePageSize::MAX];
 
-fn page_id(raw: u32) -> PageId {
+pub(crate) fn page_id(raw: u32) -> PageId {
     PageId::new(raw).expect("non-zero")
 }
 
-fn slot(raw: u16) -> SlotId {
+pub(crate) fn slot(raw: u16) -> SlotId {
     SlotId::new(raw).expect("non-zero")
 }
 
-fn address(page: u32, raw_slot: u16) -> CellAddress {
+pub(crate) fn address(page: u32, raw_slot: u16) -> CellAddress {
     CellAddress::new(page_id(page), slot(raw_slot))
 }
 
-fn pointer(file: u32, offset: u64, value_len: u32) -> ValuePointer {
+pub(crate) fn pointer(file: u32, offset: u64, value_len: u32) -> ValuePointer {
     ValuePointer::new(FileId::new(file).expect("non-zero"), offset, value_len).expect("valid")
 }
 
@@ -41,7 +42,7 @@ fn tree_page_error(error: FormatError) -> TreePageError {
 }
 
 /// A frame of `size` holding the page of `model`, built cell by cell.
-fn frame_of(model: &ModelPage, size: TreePageSize) -> Vec<u8> {
+pub(crate) fn frame_of(model: &ModelPage, size: TreePageSize) -> Vec<u8> {
     let mut frame = vec![0xEE; size.get()];
     let mut page = TreePageMut::init(&mut frame, size, model.id, model.departures).expect("fits");
     for (&raw, cell) in &model.cells {
@@ -50,16 +51,16 @@ fn frame_of(model: &ModelPage, size: TreePageSize) -> Vec<u8> {
     frame
 }
 
-fn open(frame: &mut [u8], size: TreePageSize) -> TreePageMut<'_> {
+pub(crate) fn open(frame: &mut [u8], size: TreePageSize) -> TreePageMut<'_> {
     TreePageMut::open(frame, size, V1).expect("a page")
 }
 
-fn view(frame: &[u8]) -> TreePage<'_> {
+pub(crate) fn view(frame: &[u8]) -> TreePage<'_> {
     TreePage::from_validated(frame, V1).expect("a page")
 }
 
 /// The page of the documentation's example: three slots, the second free.
-fn example() -> ModelPage {
+pub(crate) fn example() -> ModelPage {
     let mut page = ModelPage::new(7, 2);
     page.cells.insert(
         1,

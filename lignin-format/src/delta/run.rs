@@ -105,8 +105,9 @@ impl<'a> DeltaRun<'a> {
     /// store's page size that holds a page in format `version`.
     ///
     /// A run that creates its page starts an empty page in `frame`, in the
-    /// current format version, whatever `frame` held. Any other run must
-    /// name the page that `frame` holds.
+    /// current format version, whatever `frame` held: the caller chose the
+    /// frame for [`Self::page`]. Any other run must name the page that
+    /// `frame` holds.
     ///
     /// The page must be valid, as [`TreePageMut`] asks, and must be the
     /// page as the change before the run's first left it: a run is applied
@@ -126,13 +127,7 @@ impl<'a> DeltaRun<'a> {
             None => {
                 let page = TreePageMut::open(frame, size, version)?;
                 let found = page.page().id();
-                if found != self.page {
-                    return Err(DeltaError::WrongPage {
-                        run: self.page,
-                        page: found,
-                    }
-                    .into());
-                }
+                check_page(self.page, found)?;
                 page
             }
         };
@@ -179,36 +174,27 @@ impl FusedIterator for Deltas<'_> {}
 pub struct DeltaRunWriter<'o> {
     out: &'o mut Vec<u8>,
     start: usize,
-    records: usize,
 }
 
 impl<'o> DeltaRunWriter<'o> {
-    /// Starts a run of changes to the page `page`, at the end of `out`.
-    pub fn new(page: PageId, out: &'o mut Vec<u8>) -> Self {
+    /// Starts a run for the page `page`, at the end of `out`.
+    ///
+    /// With `created`, the run creates the page: its first record starts an
+    /// empty page whose count of departed cells starts at that number, as
+    /// [`TreePageMut::init`] takes it. With `None` the run changes a page
+    /// that exists.
+    pub fn new(page: PageId, created: Option<u64>, out: &'o mut Vec<u8>) -> Self {
         let start = out.len();
         out.extend_from_slice(&page.encode());
-        Self {
-            out,
-            start,
-            records: 0,
+        if let Some(departures) = created {
+            write_create(departures, out);
         }
-    }
-
-    /// Starts a run that creates the page `page`, at the end of `out`. The
-    /// new page's count of departed cells starts at `departures`, as
-    /// [`TreePageMut::init`] takes it.
-    pub fn new_page(page: PageId, departures: u64, out: &'o mut Vec<u8>) -> Self {
-        let mut run = Self::new(page, out);
-        write_create(departures, run.out);
-        run.records = 1;
-        run
+        Self { out, start }
     }
 
     /// Appends the record of `delta`. On an error the run is as it was.
     pub fn push(&mut self, delta: &Delta<'_>) -> Result<(), FormatError> {
-        delta.encode_into(self.out)?;
-        self.records += 1;
-        Ok(())
+        delta.encode_into(self.out)
     }
 
     /// Bytes of the run so far.
@@ -221,7 +207,7 @@ impl<'o> DeltaRunWriter<'o> {
     /// A run with no record is not a run: it is taken off the byte string
     /// again, and the call fails with [`DeltaError::EmptyRun`].
     pub fn finish(self) -> Result<usize, FormatError> {
-        if self.records == 0 {
+        if self.encoded_len() == DeltaRun::HEADER_LEN {
             self.out.truncate(self.start);
             return Err(DeltaError::EmptyRun.into());
         }
@@ -229,30 +215,44 @@ impl<'o> DeltaRunWriter<'o> {
     }
 }
 
-/// Applies a chain of runs, oldest first, to the page at the start of
-/// `frame`: a base image that was copied there, or a page that earlier runs
-/// were applied to. `version` is the format version of that page.
+fn check_page(found: PageId, expected: PageId) -> Result<(), FormatError> {
+    if found != expected {
+        return Err(DeltaError::WrongPage { found, expected }.into());
+    }
+    Ok(())
+}
+
+/// Applies the chain of the page `page`, oldest run first, to the page at
+/// the start of `frame`: a base image that was copied there, or a page that
+/// earlier runs were applied to. `version` is the format version of that
+/// page.
 ///
-/// See [`DeltaRun::apply`].
+/// Every run must name `page`, also one that creates its page, and it is
+/// checked before the run changes anything. See [`DeltaRun::apply`] for the
+/// rest.
 pub fn apply_chain<'a, 'r: 'a>(
+    page: PageId,
     frame: &mut [u8],
     size: TreePageSize,
     version: FormatVersion,
     chain: impl IntoIterator<Item = &'a DeltaRun<'r>>,
 ) -> Result<(), FormatError> {
-    chain
-        .into_iter()
-        .try_for_each(|run| run.apply(frame, size, version))
+    chain.into_iter().try_for_each(|run| {
+        check_page(run.page(), page)?;
+        run.apply(frame, size, version)
+    })
 }
 
-/// Consolidates a chain into a base image: appends to `out` the image of
-/// the page that `base` and the runs of `chain`, oldest first, give. On an
-/// error `out` is unchanged.
+/// Consolidates the chain of the page `page` into a base image: appends to
+/// `out` the image of the page that `base` and the runs of `chain`, oldest
+/// first, give. On an error `out` is unchanged.
 ///
 /// `base` is the page's base image, in format `version`, from a record whose
 /// checksum was verified. It is `None` for a chain whose first run creates
-/// the page. `size` is the store's page size.
+/// the page. The base image and every run must be of `page`. `size` is the
+/// store's page size.
 pub fn consolidate<'a, 'r: 'a>(
+    page: PageId,
     base: Option<&[u8]>,
     chain: impl IntoIterator<Item = &'a DeltaRun<'r>>,
     version: FormatVersion,
@@ -263,13 +263,14 @@ pub fn consolidate<'a, 'r: 'a>(
     let mut frame = vec![0; size.image_capacity()];
     match base {
         Some(base) => {
-            let image = TreePage::decode(base, version, size)?.as_bytes();
-            frame[..image.len()].copy_from_slice(image);
+            let image = TreePage::decode(base, version, size)?;
+            check_page(image.id(), page)?;
+            frame[..image.encoded_len()].copy_from_slice(image.as_bytes());
         }
         None if chain.peek().is_some_and(|run| run.created().is_some()) => {}
         None => return Err(DeltaError::MissingBase.into()),
     }
-    apply_chain(&mut frame, size, version, chain)?;
+    apply_chain(page, &mut frame, size, version, chain)?;
     TreePage::from_validated(&frame, version)?.write_image(out);
     Ok(())
 }

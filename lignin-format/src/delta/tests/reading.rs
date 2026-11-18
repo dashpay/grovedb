@@ -20,10 +20,7 @@ fn truncated(needed: usize, available: usize) -> FormatError {
 /// The bytes of a run that holds what `run` holds, written again.
 fn rewritten(run: &DeltaRun<'_>) -> Vec<u8> {
     let mut bytes = Vec::new();
-    let mut writer = match run.created() {
-        Some(departures) => DeltaRunWriter::new_page(run.page(), departures, &mut bytes),
-        None => DeltaRunWriter::new(run.page(), &mut bytes),
-    };
+    let mut writer = DeltaRunWriter::new(run.page(), run.created(), &mut bytes);
     for delta in run.deltas() {
         writer.push(&delta).expect("what was read is written");
     }
@@ -92,17 +89,11 @@ fn every_kind_code_is_a_record_or_an_error() {
         };
         match code {
             // The kind is checked before the slot, which is 0 here.
-            2..=21 => {
-                assert_eq!(result, Err(FormatError::MissingId));
-                assert_eq!(record::kinds::round_trip(code), Ok(code));
-            }
-            1 => {
-                assert_eq!(result, Err(FormatError::UnknownRecordKind { code: 0 }));
-                assert_eq!(record::kinds::round_trip(code), Err(unknown));
-            }
+            2..=21 => assert_eq!(result, Err(FormatError::MissingId)),
+            // The create record takes 8 bytes, and the next kind is 0.
+            1 => assert_eq!(result, Err(FormatError::UnknownRecordKind { code: 0 })),
             _ => {
                 assert_eq!(result, Err(unknown));
-                assert_eq!(record::kinds::round_trip(code), Err(unknown));
                 // Also with nothing behind it.
                 assert_eq!(refused(&with_record(&[code])), unknown);
             }
@@ -208,23 +199,35 @@ fn each_check_of_a_record_has_its_error() {
     assert_eq!(refused(&feature(5, &[1; 4])), truncated(13, 12));
     assert_eq!(refused(&feature(255, &[1; 254])), truncated(263, 262));
 
-    // A value: a length of four bytes, and that many bytes.
-    let value = |len: u32, bytes: &[u8]| {
+    // A value: a length, and that many bytes. No cell holds a value above
+    // the longest value of the longest cell, and that is checked before the
+    // bytes are asked for.
+    let value = |len: usize, bytes: &[u8]| {
         let mut record = vec![20, 1, 0];
-        record.extend(len.to_le_bytes());
+        record.extend((len as u16).to_le_bytes());
         record.extend(bytes);
         with_record(&record)
     };
     assert_eq!(decode(&value(0, &[])).deltas().len(), 1);
+    assert_eq!(refused(&with_record(&[20, 1, 0, 0])), truncated(9, 8));
+    assert_eq!(refused(&value(3, &[1; 2])), truncated(12, 11));
+    let longest = vec![1; MAX_INLINE_VALUE_LEN];
+    assert_eq!(decode(&value(longest.len(), &longest)).deltas().len(), 1);
     assert_eq!(
-        refused(&with_record(&[20, 1, 0, 0, 0, 0])),
-        truncated(11, 10)
+        refused(&value(longest.len(), &longest[1..])),
+        truncated(9 + longest.len(), 8 + longest.len())
     );
-    assert_eq!(refused(&value(3, &[1; 2])), truncated(14, 13));
-    assert_eq!(
-        refused(&value(u32::MAX, &[1; 2])),
-        truncated(11 + u32::MAX as usize, 13)
-    );
+    for len in [MAX_INLINE_VALUE_LEN + 1, usize::from(u16::MAX)] {
+        assert_eq!(
+            refused(&value(len, &[1; 2])),
+            TreePageError::FieldTooLong {
+                field: CellField::InlineValue,
+                len,
+                max: MAX_INLINE_VALUE_LEN,
+            }
+            .into()
+        );
+    }
 
     // A value pointer: file id, offset, value length.
     let install = |file: u32, offset: u64, value_len: u32| {
@@ -645,22 +648,25 @@ fn a_change_that_would_not_read_back_is_not_written() {
         FormatError::MissingId,
     );
 
-    // A value that is longer than its length field can say.
-    assert_eq!(record::kinds::check_inline_len(u32::MAX as usize), Ok(()));
-    assert_eq!(
-        record::kinds::check_inline_len(u32::MAX as usize + 1),
-        Err(TreePageError::FieldTooLong {
+    // A value that no cell holds.
+    let long = vec![1; MAX_INLINE_VALUE_LEN + 1];
+    refuse(
+        Delta::Value {
+            slot: slot(1),
+            value: crate::tree_page::CellValue::Inline(&long),
+        },
+        TreePageError::FieldTooLong {
             field: CellField::InlineValue,
-            len: u32::MAX as usize + 1,
-            max: u32::MAX as usize,
+            len: MAX_INLINE_VALUE_LEN + 1,
+            max: MAX_INLINE_VALUE_LEN,
         }
-        .into())
+        .into(),
     );
 
     // A run takes no record that was refused, and is not a run without
     // one.
     let mut bytes = vec![0xA5; 3];
-    let mut writer = DeltaRunWriter::new(page_id(7), &mut bytes);
+    let mut writer = DeltaRunWriter::new(page_id(7), None, &mut bytes);
     assert_eq!(writer.encoded_len(), 4);
     let long = [0; 256];
     assert!(writer
@@ -676,7 +682,7 @@ fn a_change_that_would_not_read_back_is_not_written() {
     );
     assert_eq!(bytes, [0xA5; 3]);
 
-    let mut writer = DeltaRunWriter::new(page_id(7), &mut bytes);
+    let mut writer = DeltaRunWriter::new(page_id(7), None, &mut bytes);
     writer
         .push(&Delta::Remove { slot: slot(1) })
         .expect("a record");

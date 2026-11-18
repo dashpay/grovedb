@@ -1,6 +1,6 @@
 //! One change to a tree page, and its bytes.
 
-use super::MAX_CELL_LEN;
+use super::{MAX_CELL_LEN, MAX_INLINE_VALUE_LEN};
 use crate::{
     error::FormatError,
     header::FormatVersion,
@@ -14,8 +14,7 @@ use crate::{
 
 const ADDRESS_LEN: usize = CellAddress::ENCODED_LEN;
 const CELL_LEN_LEN: usize = 2;
-const INLINE_LEN_LEN: usize = 4;
-const MAX_INLINE_LEN: usize = u32::MAX as usize;
+const INLINE_LEN_LEN: usize = 2;
 
 /// The kind code of the record that creates a page.
 const CREATE: u8 = 1;
@@ -108,8 +107,12 @@ const fn check_cell_len(len: usize) -> Result<(), FormatError> {
 }
 
 const fn check_inline_len(len: usize) -> Result<(), FormatError> {
-    if len > MAX_INLINE_LEN {
-        return Err(field_too_long(CellField::InlineValue, len, MAX_INLINE_LEN));
+    if len > MAX_INLINE_VALUE_LEN {
+        return Err(field_too_long(
+            CellField::InlineValue,
+            len,
+            MAX_INLINE_VALUE_LEN,
+        ));
     }
     Ok(())
 }
@@ -129,9 +132,6 @@ enum Roots<'a> {
 }
 
 impl<'a> RootList<'a> {
-    /// The pointers of an element that hosts no Merk.
-    pub const EMPTY: Self = Self(Roots::Given(&[]));
-
     /// How many pointers there are.
     pub const fn len(&self) -> usize {
         match self.0 {
@@ -169,7 +169,7 @@ impl<'a> From<&'a [Option<CellAddress>]> for RootList<'a> {
 
 impl PartialEq for RootList<'_> {
     fn eq(&self, other: &Self) -> bool {
-        self.len() == other.len() && self.iter().eq(other.iter())
+        self.iter().eq(other.iter())
     }
 }
 
@@ -180,7 +180,7 @@ impl Eq for RootList<'_> {}
 ///
 /// What a change borrows comes from the caller when it is written and from
 /// the run's bytes when it was read.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Delta<'a> {
     /// A cell is put into a free slot: a new node, or a cell that was
     /// carried from another page.
@@ -423,7 +423,7 @@ impl<'a> Delta<'a> {
             }
             Self::Value { value, .. } => match value {
                 CellValue::Inline(value) => {
-                    out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+                    out.extend_from_slice(&(value.len() as u16).to_le_bytes());
                     out.extend_from_slice(value);
                 }
                 CellValue::OutOfLine(pointer) => out.extend_from_slice(&pointer.encode()),
@@ -455,11 +455,11 @@ impl<'a> Delta<'a> {
                 Roots::Given(roots) => page.set_hosted_roots(slot, roots),
                 Roots::Read(_) => {
                     let mut buffer = [None; TreeCell::MAX_HOSTED_ROOTS];
-                    let count = buffer
-                        .iter_mut()
-                        .zip(roots.iter())
-                        .map(|(place, root)| *place = root)
-                        .count();
+                    let mut count = 0;
+                    for (place, root) in buffer.iter_mut().zip(roots.iter()) {
+                        *place = root;
+                        count += 1;
+                    }
                     page.set_hosted_roots(slot, &buffer[..count])
                 }
             },
@@ -468,95 +468,6 @@ impl<'a> Delta<'a> {
         }
     }
 }
-
-impl PartialEq for Delta<'_> {
-    fn eq(&self, other: &Self) -> bool {
-        match (*self, *other) {
-            (Self::Insert { slot: a, cell: x }, Self::Insert { slot: b, cell: y })
-            | (Self::Replace { slot: a, cell: x }, Self::Replace { slot: b, cell: y }) => {
-                a == b && x.as_bytes() == y.as_bytes()
-            }
-            (Self::Remove { slot: a }, Self::Remove { slot: b }) => a == b,
-            (
-                Self::Hash {
-                    slot: a,
-                    field: f,
-                    hash: x,
-                },
-                Self::Hash {
-                    slot: b,
-                    field: g,
-                    hash: y,
-                },
-            ) => a == b && f == g && x == y,
-            (
-                Self::Child {
-                    slot: a,
-                    side: s,
-                    child: x,
-                },
-                Self::Child {
-                    slot: b,
-                    side: t,
-                    child: y,
-                },
-            ) => a == b && s == t && x == y,
-            (
-                Self::Link {
-                    slot: a,
-                    side: s,
-                    link: x,
-                },
-                Self::Link {
-                    slot: b,
-                    side: t,
-                    link: y,
-                },
-            ) => a == b && s == t && x == y,
-            (
-                Self::FragmentRoot {
-                    slot: a,
-                    fragment_root: x,
-                },
-                Self::FragmentRoot {
-                    slot: b,
-                    fragment_root: y,
-                },
-            ) => a == b && x == y,
-            (
-                Self::HostedRoot {
-                    slot: a,
-                    index: i,
-                    root: x,
-                },
-                Self::HostedRoot {
-                    slot: b,
-                    index: j,
-                    root: y,
-                },
-            ) => a == b && i == j && x == y,
-            (Self::HostedRoots { slot: a, roots: x }, Self::HostedRoots { slot: b, roots: y }) => {
-                a == b && x == y
-            }
-            (
-                Self::Feature {
-                    slot: a,
-                    feature: x,
-                },
-                Self::Feature {
-                    slot: b,
-                    feature: y,
-                },
-            ) => a == b && x == y,
-            (Self::Value { slot: a, value: x }, Self::Value { slot: b, value: y }) => {
-                a == b && x == y
-            }
-            _ => false,
-        }
-    }
-}
-
-impl Eq for Delta<'_> {}
 
 /// Appends the record that creates a page whose count of departed cells
 /// starts at `departures`.
@@ -729,8 +640,8 @@ impl<'a> Reader<'a> {
                 }
             }
             Kind::Value => {
-                let len = u32::from_le_bytes(*self.array()?);
-                let len = usize::try_from(len).unwrap_or(usize::MAX);
+                let len = usize::from(u16::from_le_bytes(*self.array()?));
+                check_inline_len(len)?;
                 Delta::Value {
                     slot,
                     value: CellValue::Inline(self.take(len)?),
@@ -741,20 +652,5 @@ impl<'a> Reader<'a> {
                 value: CellValue::OutOfLine(ValuePointer::decode(*self.array()?)?),
             },
         }))
-    }
-}
-
-#[cfg(test)]
-pub(super) mod kinds {
-    use super::{FormatError, Kind};
-
-    /// The code of a record that changes a cell, read back from its own
-    /// code.
-    pub(in super::super) fn round_trip(code: u8) -> Result<u8, FormatError> {
-        Kind::from_code(code).map(Kind::code)
-    }
-
-    pub(in super::super) fn check_inline_len(len: usize) -> Result<(), FormatError> {
-        super::check_inline_len(len)
     }
 }
