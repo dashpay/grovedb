@@ -1074,9 +1074,11 @@ impl Element {
     /// parent sum tree's running sum when inserted. Counts (if any) still
     /// propagate.
     ///
-    /// Only the six sum-bearing tree variants are accepted: `SumTree`,
-    /// `BigSumTree`, `CountSumTree`, `ProvableCountSumTree`,
-    /// `ProvableSumTree`, `ProvableCountProvableSumTree`. Any other
+    /// Only the sum-bearing tree variants are accepted: `SumTree`,
+    /// `BigSumTree`, `CountSumTree`, `CountBigSumTree`,
+    /// `ProvableCountSumTree`, `ProvableSumTree`, `ProvableBigSumTree`,
+    /// `ProvableCountProvableSumTree`, `ProvableCountProvableBigSumTree`.
+    /// Any other
     /// element — including items, sum items, references, non-sum trees, and
     /// any wrapper (`NonCounted`, `NotSummed`, `NotCountedOrSummed`) — is
     /// rejected with `InvalidInput`.
@@ -1095,8 +1097,9 @@ impl Element {
             }
             _ => Err(ElementError::InvalidInput(
                 "NotSummed inner element must be a sum-tree variant (SumTree, BigSumTree, \
-                 CountSumTree, ProvableCountSumTree, ProvableSumTree, \
-                 ProvableCountProvableSumTree, or ProvableCountProvableBigSumTree)",
+                 CountSumTree, CountBigSumTree, ProvableCountSumTree, ProvableSumTree, \
+                 ProvableBigSumTree, ProvableCountProvableSumTree, or \
+                 ProvableCountProvableBigSumTree)",
             )),
         }
     }
@@ -1129,14 +1132,17 @@ impl Element {
     /// to BOTH its parent's running sum AND its parent's count when
     /// inserted.
     ///
-    /// Only the six sum-bearing tree variants are accepted: `SumTree`,
-    /// `BigSumTree`, `CountSumTree`, `ProvableCountSumTree`,
-    /// `ProvableSumTree`, `ProvableCountProvableSumTree`. Any other
+    /// Only the sum-bearing tree variants are accepted: `SumTree`,
+    /// `BigSumTree`, `CountSumTree`, `CountBigSumTree`,
+    /// `ProvableCountSumTree`, `ProvableSumTree`, `ProvableBigSumTree`,
+    /// `ProvableCountProvableSumTree`, `ProvableCountProvableBigSumTree`.
+    /// Any other
     /// element — including items, sum items, references, non-sum trees, and
     /// any wrapper (`NonCounted`, `NotSummed`, `NotCountedOrSummed`) — is
     /// rejected with `InvalidInput`.
     ///
-    /// Note: at insert time the parent must be `CountSumTree`. Provable
+    /// Note: at insert time the parent must be `CountSumTree` or
+    /// `CountBigSumTree`. Provable
     /// count-and-sum parents (`ProvableCountSumTree`,
     /// `ProvableCountProvableSumTree`) reject the wrapper at the
     /// merk-layer insert guard — they cryptographically commit the
@@ -1157,8 +1163,9 @@ impl Element {
             }
             _ => Err(ElementError::InvalidInput(
                 "NotCountedOrSummed inner element must be a sum-bearing tree variant (SumTree, \
-                 BigSumTree, CountSumTree, ProvableCountSumTree, ProvableSumTree, \
-                 ProvableCountProvableSumTree, or ProvableCountProvableBigSumTree)",
+                 BigSumTree, CountSumTree, CountBigSumTree, ProvableCountSumTree, \
+                 ProvableSumTree, ProvableBigSumTree, ProvableCountProvableSumTree, or \
+                 ProvableCountProvableBigSumTree)",
             )),
         }
     }

@@ -4852,7 +4852,13 @@ where
                     // A tree the batch created and filled never reached the
                     // insert arm, where the parent's rules for a wrapper are
                     // checked. From V5 it is held to them here; V1..V4 keep
-                    // the behaviour they shipped with.
+                    // the behaviour they shipped with. The one check covers
+                    // every pairing, those with a `CountBigSumTree`, a
+                    // `ProvableBigSumTree` or a
+                    // `ProvableCountProvableBigSumTree` as the tree or its
+                    // parent included: these trees can be created only from
+                    // V5, where the slot is on, so they need no condition of
+                    // their own.
                     if holds_filled_trees_to_insert_checks {
                         cost_return_on_error_no_add!(
                             cost,

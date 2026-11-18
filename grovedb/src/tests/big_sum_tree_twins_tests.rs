@@ -1548,4 +1548,240 @@ mod tests {
             .expect("read through the references");
         assert_eq!(results, expected);
     }
+
+    // ---------------------------------------------------------------------
+    // As an entry of an indexed tree
+    // ---------------------------------------------------------------------
+
+    /// A count indexed tree takes a count and big sum tree as an entry and
+    /// ranks it by the count its contents give it. Like every tree entry it
+    /// enters empty: a tree without a root key that claims a count or a sum
+    /// is refused, by the dedicated insert and by a batch.
+    #[test]
+    fn count_big_sum_tree_enters_an_indexed_tree_empty() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert(
+            &db,
+            &[],
+            b"ranked",
+            Element::empty_provable_count_indexed_tree(),
+            grove_version,
+        );
+        let claims = || Element::CountBigSumTree(None, 3, 5, None);
+
+        db.insert_into_count_indexed_tree(
+            [b"ranked".as_slice()].as_ref(),
+            b"a",
+            Element::empty_count_big_sum_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("an empty entry by the dedicated insert");
+        db.apply_batch(
+            vec![insert_op(
+                &[b"ranked"],
+                b"b",
+                Element::empty_count_big_sum_tree(),
+            )],
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("an empty entry by a batch");
+
+        let before = root_hash(&db, grove_version);
+        db.insert_into_count_indexed_tree(
+            [b"ranked".as_slice()].as_ref(),
+            b"c",
+            claims(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect_err("a claimed count and sum by the dedicated insert");
+        db.apply_batch(
+            vec![insert_op(&[b"ranked"], b"c", claims())],
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect_err("a claimed count and sum by a batch");
+        assert_eq!(root_hash(&db, grove_version), before);
+
+        // Filled, the entries give the indexed tree their counts.
+        for (entry, items) in [(b"a", 2u8), (b"b", 1)] {
+            for item in 0..items {
+                insert(
+                    &db,
+                    &[b"ranked", entry],
+                    &[item],
+                    Element::new_sum_item(i64::MAX),
+                    grove_version,
+                );
+            }
+        }
+        let Element::ProvableCountIndexedTree(_, _, count, _) =
+            get(&db, &[], b"ranked", grove_version)
+        else {
+            panic!("expected a ProvableCountIndexedTree");
+        };
+        assert_eq!(count, 3);
+        assert_eq!(
+            count_big_sum(&db, &[b"ranked"], b"a", grove_version),
+            (2, 2 * (i64::MAX as i128))
+        );
+        let issues = db
+            .verify_grovedb(None, true, true, grove_version)
+            .expect("verify_grovedb");
+        assert!(issues.is_empty(), "issues: {issues:?}");
+    }
+
+    // ---------------------------------------------------------------------
+    // Wrapped trees
+    // ---------------------------------------------------------------------
+
+    /// A wrapper is one more byte written. Both estimates count it for the
+    /// trees with a 128-bit sum.
+    #[test]
+    fn element_estimates_count_the_wrapper_byte() {
+        use grovedb_merk::tree_type::TreeType;
+
+        use crate::batch::key_info::KeyInfo::KnownKey;
+
+        let grove_version = GroveVersion::latest();
+        let key = KnownKey(b"tree".to_vec());
+        let added_bytes = |element: &Element| {
+            let average = GroveDb::average_case_merk_insert_element(
+                &key,
+                element,
+                TreeType::CountSumTree,
+                None,
+                grove_version,
+            );
+            average.value.as_ref().expect("should estimate");
+            let worst = GroveDb::worst_case_merk_insert_element(
+                &key,
+                element,
+                TreeType::CountSumTree,
+                None,
+                grove_version,
+            );
+            worst.value.as_ref().expect("should estimate");
+            (
+                average.cost.storage_cost.added_bytes,
+                worst.cost.storage_cost.added_bytes,
+            )
+        };
+        for tree in [
+            Element::empty_count_big_sum_tree(),
+            Element::empty_provable_big_sum_tree(),
+            Element::empty_provable_count_provable_big_sum_tree(),
+        ] {
+            let (average, worst) = added_bytes(&tree);
+            for wrapped in [
+                Element::NonCounted(Box::new(tree.clone())),
+                Element::NotSummed(Box::new(tree.clone())),
+                Element::NotCountedOrSummed(Box::new(tree.clone())),
+            ] {
+                assert_eq!(
+                    added_bytes(&wrapped),
+                    (average + 1, worst + 1),
+                    "{wrapped:?}"
+                );
+            }
+        }
+    }
+
+    /// A wrapped tree that a batch creates and fills is held to its parent's
+    /// rule for the wrapper when the tree or the parent has a 128-bit sum,
+    /// as it is when the batch only creates it.
+    #[test]
+    fn a_filled_tree_is_held_to_the_wrapper_rule_of_its_parent() {
+        let grove_version = GroveVersion::latest();
+        let non_counted = |tree: Element| Element::NonCounted(Box::new(tree));
+        let not_counted_or_summed = |tree: Element| Element::NotCountedOrSummed(Box::new(tree));
+        // (parent, child, what the refusal says)
+        let refused = [
+            // A provable count commits its count and takes no child left
+            // out of it.
+            (
+                Element::empty_provable_count_tree(),
+                non_counted(Element::empty_count_big_sum_tree()),
+                "non-counted elements may only be inserted",
+            ),
+            (
+                Element::empty_provable_count_tree(),
+                non_counted(Element::empty_provable_big_sum_tree()),
+                "non-counted elements may only be inserted",
+            ),
+            // A provable big sum tree has no count to leave a child out of.
+            (
+                Element::empty_provable_big_sum_tree(),
+                non_counted(Element::empty_sum_tree()),
+                "non-counted elements may only be inserted",
+            ),
+            (
+                Element::empty_provable_big_sum_tree(),
+                not_counted_or_summed(Element::empty_sum_tree()),
+                "not-counted-or-summed elements may only be inserted",
+            ),
+        ];
+        for (parent, child, message) in refused {
+            let db = make_test_grovedb(grove_version);
+            insert(&db, &[], b"p", parent, grove_version);
+            let before = root_hash(&db, grove_version);
+            for ops in [
+                vec![insert_op(&[b"p"], b"w", child.clone())],
+                vec![
+                    insert_op(&[b"p"], b"w", child.clone()),
+                    insert_op(&[b"p", b"w"], b"k", Element::new_sum_item(5)),
+                ],
+            ] {
+                let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+                let shown = format!("{result:?}");
+                assert!(
+                    result.is_err() && shown.contains(message),
+                    "{child:?}: {shown}"
+                );
+            }
+            assert_eq!(root_hash(&db, grove_version), before);
+        }
+
+        // Where the parent permits the wrapper, the filled tree is taken and
+        // left out of what the wrapper names.
+        let db = make_test_grovedb(grove_version);
+        insert(
+            &db,
+            &[],
+            b"p",
+            Element::empty_count_big_sum_tree(),
+            grove_version,
+        );
+        for (key, child) in [
+            (b"a", non_counted(Element::empty_count_big_sum_tree())),
+            (b"b", not_counted_or_summed(Element::empty_sum_tree())),
+        ] {
+            db.apply_batch(
+                vec![
+                    insert_op(&[b"p"], key, child),
+                    insert_op(&[b"p", key], b"k", Element::new_sum_item(5)),
+                ],
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("a wrapper the parent permits");
+        }
+        // The non-counted tree still adds its sum; the other adds nothing.
+        assert_eq!(count_big_sum(&db, &[], b"p", grove_version), (0, 5));
+        let issues = db
+            .verify_grovedb(None, true, true, grove_version)
+            .expect("verify_grovedb");
+        assert!(issues.is_empty(), "issues: {issues:?}");
+    }
 }

@@ -13,9 +13,10 @@ impl Element {
     /// - Any wrapper nesting in any combination — `NonCounted`, `NotSummed`,
     ///   and `NotCountedOrSummed` are mutually exclusive.
     /// - `NotSummed(x)` / `NotCountedOrSummed(x)` where `x` is not one of
-    ///   the six sum-bearing tree variants (`SumTree`, `BigSumTree`,
-    ///   `CountSumTree`, `ProvableCountSumTree`, `ProvableSumTree`,
-    ///   `ProvableCountProvableSumTree`).
+    ///   the sum-bearing tree variants (`SumTree`, `BigSumTree`,
+    ///   `CountSumTree`, `CountBigSumTree`, `ProvableCountSumTree`,
+    ///   `ProvableSumTree`, `ProvableBigSumTree`,
+    ///   `ProvableCountProvableSumTree`, `ProvableCountProvableBigSumTree`).
     ///
     /// Constructed via the `new_non_counted` / `new_not_summed` /
     /// `new_not_counted_or_summed` constructors these are impossible, but a
