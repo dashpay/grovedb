@@ -9,3 +9,13 @@ repository = "https://github.com/dashpay/grovedb"
 publish = false
 
 [dependencies]
+grovedb = { version = "6.1.1", path = "../grovedb" }
+grovedb-costs = { version = "6.1.1", path = "../costs" }
+grovedb-merk = { version = "6.1.1", path = "../merk" }
+grovedb-version = { version = "6.1.1", path = "../grovedb-version" }
+blake3 = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+grovedb-commitment-tree = { version = "6.1.1", path = "../grovedb-commitment-tree" }
+tempfile = { workspace = true }
