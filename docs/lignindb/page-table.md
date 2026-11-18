@@ -293,8 +293,9 @@ page is in a block that a link of the checkpoint points to. So:
   *C* + 1 (STORE-07);
 - no log group at or before *C* is needed again, which is what FL6 asks
   before a log file is deleted;
-- the page ids in use at *C* are the pages whose newest link at or below
-  *C* is not a free link.
+- a page is in use if it has a link and its newest link is not a free
+  link, and replay brings that forward: it allocates and frees the pages
+  that the commits after *C* did, but for K3 (STORE-10).
 
 The table cannot check this. Whoever takes the checkpoint passes *C*, and
 vouches that write-back has reached it.
@@ -337,6 +338,9 @@ checkpoint is installed, against that manifest, and when the checkpoint is
 loaded (`PageTableError::NotCovered`). A segment that a checkpoint in force
 points into is therefore not deleted, and not named shorter, until another
 checkpoint is in force.
+
+A checkpoint that was being written while a segment it points into was
+dropped is refused in the same way, and is written again.
 
 **K7. "Covers" never goes down.** A checkpoint is not installed if it
 covers an earlier version than the one in force

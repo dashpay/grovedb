@@ -127,6 +127,13 @@ fn new_chunk() -> Box<[Node]> {
     vec![Node::EMPTY; CHUNK_LEN].into_boxed_slice()
 }
 
+/// The page whose newest link is in slot `slot` of chunk `chunk` of the
+/// direct array, or `None` past the last page id.
+fn page_at(chunk: usize, slot: usize) -> Option<PageId> {
+    let id = ((chunk as u64) << CHUNK_BITS) + slot as u64 + 1;
+    u32::try_from(id).ok().and_then(PageId::new)
+}
+
 /// Where a link of a chain is kept: in its page's slot of the direct array,
 /// or in the arena.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -256,17 +263,22 @@ impl Chains {
         Ok(place)
     }
 
+    /// Empties `place` of the arena and makes it the first spare one.
+    fn free(&mut self, place: u32) {
+        *self.older_mut(place) = Node {
+            older: self.spare,
+            ..Node::EMPTY
+        };
+        self.spare = place;
+    }
+
     /// Takes the links from `place` on to the oldest out of the arena, and
     /// tells `removed` of each one that points to a block.
     fn release(&mut self, mut place: u32, removed: &mut Vec<Link>) {
         while let Some(node) = self.older(place) {
             removed.extend(node.link().filter(|link| link.location().is_some()));
             self.links -= 1;
-            *self.older_mut(place) = Node {
-                older: self.spare,
-                ..Node::EMPTY
-            };
-            self.spare = place;
+            self.free(place);
             place = node.older;
         }
     }
@@ -280,6 +292,23 @@ impl Chains {
             let place = node.older;
             self.older(place).map(|older| (Place::Arena(place), older))
         })
+    }
+
+    /// The newest link of `page` that `wanted` accepts, with its place and
+    /// the place of the link just newer than it, if there is one.
+    fn find(
+        &self,
+        page: PageId,
+        wanted: impl Fn(&Node) -> bool,
+    ) -> Option<(Place, Node, Option<Place>)> {
+        let mut newer = None;
+        for (place, node) in self.walk(page) {
+            if wanted(&node) {
+                return Some((place, node, newer));
+            }
+            newer = Some(place);
+        }
+        None
     }
 
     pub(super) fn newest(&self, page: PageId) -> Option<Link> {
@@ -358,16 +387,9 @@ impl Chains {
         base: BlockLocation,
     ) -> Result<CommitVersion, LinkError> {
         let block = pointer(base)?;
-        let mut newer = None;
-        let mut found = None;
-        for (place, node) in self.walk(page) {
-            if node.points_to(through) {
-                found = Some((place, node));
-                break;
-            }
-            newer = Some(place);
-        }
-        let (place, node) = found.ok_or(LinkError::NotInChain { location: through })?;
+        let (place, node, newer) = self
+            .find(page, |node| node.points_to(through))
+            .ok_or(LinkError::NotInChain { location: through })?;
         let link = Link {
             version: node.version(),
             kind: LinkKind::Base(base),
@@ -393,9 +415,8 @@ impl Chains {
         to: BlockLocation,
     ) -> Result<(), LinkError> {
         let block = pointer(to)?;
-        let place = self
-            .walk(page)
-            .find_map(|(place, node)| node.points_to(from).then_some(place))
+        let (place, _, _) = self
+            .find(page, |node| node.points_to(from))
             .ok_or(LinkError::NotInChain { location: from })?;
         self.node_mut(page, place).set_block(block);
         Ok(())
@@ -407,16 +428,9 @@ impl Chains {
         oldest: CommitVersion,
         removed: &mut Vec<Link>,
     ) -> Trimmed {
-        let mut newer = None;
-        let mut anchor = None;
-        for (place, node) in self.walk(page) {
-            if node.version() <= oldest && node.code() != DELTA {
-                anchor = Some((place, node));
-                break;
-            }
-            newer = Some(place);
-        }
-        let Some((place, node)) = anchor else {
+        let Some((place, node, newer)) = self.find(page, |node| {
+            node.version() <= oldest && node.code() != DELTA
+        }) else {
             return Trimmed {
                 vacant: self.head(page).is_empty(),
             };
@@ -442,25 +456,26 @@ impl Chains {
         }
     }
 
-    /// Takes the newest link off the chain in slot `index` of chunk `chunk`.
-    fn pop(&mut self, chunk: usize, index: usize) {
-        let Some(heads) = &self.heads[chunk] else {
-            return;
-        };
-        let head = heads[index];
-        let older = self.older(head.older);
-        if older.is_some() {
-            *self.older_mut(head.older) = Node {
-                older: self.spare,
-                ..Node::EMPTY
+    /// Takes the links with a version above `version` off the chain of
+    /// `page`, from the newest.
+    fn pop_after(&mut self, page: PageId, version: CommitVersion) {
+        loop {
+            let head = self.head(page);
+            if head.is_empty() || head.version() <= version {
+                return;
+            }
+            let newest = match self.older(head.older) {
+                Some(older) => {
+                    self.free(head.older);
+                    older
+                }
+                None => {
+                    self.pages -= 1;
+                    Node::EMPTY
+                }
             };
-            self.spare = head.older;
-        } else {
-            self.pages -= 1;
-        }
-        self.links -= 1;
-        if let Some(heads) = &mut self.heads[chunk] {
-            heads[index] = older.unwrap_or(Node::EMPTY);
+            *self.head_mut(page) = newest;
+            self.links -= 1;
         }
     }
 
@@ -470,23 +485,22 @@ impl Chains {
             if self.heads[chunk].is_none() {
                 continue;
             }
-            for index in 0..CHUNK_LEN {
-                while matches!(
-                    &self.heads[chunk],
-                    Some(heads) if !heads[index].is_empty() && heads[index].version() > version
-                ) {
-                    self.pop(chunk, index);
+            for slot in 0..CHUNK_LEN {
+                if let Some(page) = page_at(chunk, slot) {
+                    self.pop_after(page, version);
                 }
             }
         }
         before - self.links
     }
 
-    /// Adds to `out` every link of the next pages that have one, from slot
-    /// `from` on: those of one chunk of the array. They are in ascending
-    /// order of page id, and each chain is from its oldest link. Returns the
-    /// slot to go on from, or `None` if no page from `from` on has a link.
-    pub(super) fn collect(&self, from: usize, out: &mut Vec<(PageId, Link)>) -> Option<usize> {
+    /// Adds to `out` every link of the next pages that have one, from the
+    /// page `from` on: those of one chunk of the array. They are in
+    /// ascending order of page id, and each chain is from its oldest link.
+    /// Returns the page to go on from, or `None` if no page from `from` on
+    /// has a link.
+    pub(super) fn scan(&self, from: PageId, out: &mut Vec<(PageId, Link)>) -> Option<PageId> {
+        let from = (from.get() - 1) as usize;
         let first = from >> CHUNK_BITS;
         let (chunk, heads) = self
             .heads
@@ -495,11 +509,11 @@ impl Chains {
             .skip(first)
             .find_map(|(chunk, heads)| Some((chunk, heads.as_ref()?)))?;
         let skip = if chunk == first { from & CHUNK_MASK } else { 0 };
-        let next = (chunk + 1) << CHUNK_BITS;
         for (slot, head) in heads.iter().enumerate().skip(skip) {
-            let index = (chunk << CHUNK_BITS) + slot;
-            let page = u32::try_from(index + 1).ok().and_then(PageId::new);
-            let (false, Some(page)) = (head.is_empty(), page) else {
+            if head.is_empty() {
+                continue;
+            }
+            let Some(page) = page_at(chunk, slot) else {
                 continue;
             };
             let start = out.len();
@@ -509,6 +523,6 @@ impl Chains {
             );
             out[start..].reverse();
         }
-        Some(next)
+        page_at(chunk + 1, 0)
     }
 }

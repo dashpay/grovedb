@@ -317,21 +317,15 @@ impl Link {
     }
 
     fn decode_v1(bytes: &[u8; LINK_LEN]) -> Result<Self, FormatError> {
-        let (page, word, file) = (
-            array(&bytes[..4]),
-            array(&bytes[4..8]),
-            array(&bytes[8..12]),
-        );
-        let (offset, version) = (array(&bytes[12..20]), array(&bytes[20..]));
-        let page = PageId::decode(page).ok_or(FormatError::MissingId)?;
-        let word = u32::from_le_bytes(word);
+        let page = PageId::decode(array(&bytes[..4])).ok_or(FormatError::MissingId)?;
+        let word = u32::from_le_bytes(array(&bytes[4..8]));
         if word >> RESERVED_SHIFT != 0 {
             return Err(FormatError::NonZeroReserved);
         }
         let len = word & LEN_MASK;
-        let file = FileId::decode(file);
-        let offset = u64::from_le_bytes(offset);
-        let version = CommitVersion::decode(version).ok_or(FormatError::MissingId)?;
+        let file = FileId::decode(array(&bytes[8..12]));
+        let offset = u64::from_le_bytes(array(&bytes[12..20]));
+        let version = CommitVersion::decode(array(&bytes[20..])).ok_or(FormatError::MissingId)?;
         let kind = match (word >> KIND_SHIFT) & KIND_MASK {
             FREE if len == 0 && file.is_none() && offset == 0 => LinkKind::Free,
             FREE => return Err(FormatError::Table(TableError::InvalidLink)),
@@ -388,11 +382,10 @@ impl End {
                 found: body.len() as u64,
             }));
         };
-        let (covers, reaches, links) = (array(&body[..8]), array(&body[8..16]), array(&body[16..]));
         Ok(Self {
-            covers: CommitVersion::decode(covers).ok_or(FormatError::MissingId)?,
-            reaches: CommitVersion::decode(reaches),
-            links: u64::from_le_bytes(links),
+            covers: CommitVersion::decode(array(&body[..8])).ok_or(FormatError::MissingId)?,
+            reaches: CommitVersion::decode(array(&body[8..16])),
+            links: u64::from_le_bytes(array(&body[16..])),
         })
     }
 }

@@ -393,6 +393,47 @@ fn the_arena_takes_back_the_places_of_removed_links() {
     assert_eq!(table.memory_usage(), grown);
 }
 
+#[test]
+fn a_scan_gives_every_chain_in_runs_of_page_ids() {
+    let table = PageTable::new();
+    let pages = [1, 2, 4096, 4097, 20_000, u32::MAX - 1, u32::MAX];
+    for raw in pages {
+        let image = at(1, 20 + u64::from(raw));
+        table.push(page(raw), base(1, image)).unwrap();
+        table.push(page(raw), delta(2, image)).unwrap();
+    }
+    table.push(page(4096), free(3)).unwrap();
+    let chain = |raw: u32| {
+        let image = at(1, 20 + u64::from(raw));
+        vec![(page(raw), base(1, image)), (page(raw), delta(2, image))]
+    };
+
+    let mut out = Vec::new();
+    assert_eq!(table.scan(PageId::MIN, &mut out), Some(page(4097)));
+    let mut first = [chain(1), chain(2), chain(4096)].concat();
+    first.push((page(4096), free(3)));
+    assert_eq!(out, first);
+    assert_eq!(table.scan(page(2), &mut out), Some(page(4097)));
+    assert_eq!(out[first.len()..], first[2..]);
+
+    out.clear();
+    assert_eq!(table.scan(page(4097), &mut out), Some(page(8193)));
+    assert_eq!(out, chain(4097));
+    out.clear();
+    assert_eq!(table.scan(page(8193), &mut out), Some(page(20_481)));
+    assert_eq!(out, chain(20_000));
+    out.clear();
+    assert_eq!(table.scan(page(20_481), &mut out), None);
+    assert_eq!(out, [chain(u32::MAX - 1), chain(u32::MAX)].concat());
+    out.clear();
+    assert_eq!(table.scan(page(u32::MAX), &mut out), None);
+    assert_eq!(out, chain(u32::MAX));
+
+    assert_eq!(all_links(&table).len(), 15);
+    assert_eq!(PageTable::new().scan(PageId::MIN, &mut out), None);
+    assert_eq!(out.len(), 2);
+}
+
 /// The steps of the drawn workload use these pages: a few in one chunk of
 /// the array, and some far apart.
 const PAGES: [u32; 9] = [1, 2, 3, 4, 4096, 4097, 9000, 123_456, 50_000_000];

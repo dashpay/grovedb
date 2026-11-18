@@ -79,9 +79,9 @@ fn read_at(
 /// Every link of the table, in the order a checkpoint holds them.
 fn all_links(table: &PageTable) -> Vec<(PageId, Link)> {
     let mut links = Vec::new();
-    let mut slot = Some(0);
-    while let Some(from) = slot {
-        slot = table.collect(from, &mut links);
+    let mut next = Some(PageId::MIN);
+    while let Some(from) = next {
+        next = table.scan(from, &mut links);
     }
     links
 }

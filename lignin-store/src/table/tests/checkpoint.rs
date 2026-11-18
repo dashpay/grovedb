@@ -208,6 +208,48 @@ fn installing_makes_the_blocks_durable_and_the_manifest_vouch_for_them() {
 }
 
 #[test]
+fn installing_tells_the_segment_store_of_the_new_manifest() {
+    let mut fixture = Fixture::new();
+    let newest = fixture.fill();
+    fixture.writer.seal().unwrap();
+    let second = fixture.db.segments.create().unwrap();
+    let first = std::mem::replace(&mut fixture.writer, second).file_id();
+    assert!(matches!(
+        fixture
+            .writer
+            .append(page(1), BlockContent::Base, Compression::Raw, &[7; 40]),
+        Err(SegmentStoreError::NotNamed { .. })
+    ));
+    fixture.checkpoint(newest);
+    let moved = fixture.block(1, BlockContent::Base, 40);
+
+    let mut removed = Vec::new();
+    for raw_page in 1..=4 {
+        fixture
+            .table
+            .push(page(raw_page), base(newest + 1, moved))
+            .unwrap();
+        fixture
+            .table
+            .trim(page(raw_page), version(newest + 1), &mut removed);
+    }
+    fixture.db.segments.drop_segment(first).unwrap();
+    let seg_dir = FileNames::SEGMENT.dir(db_dir());
+    assert_eq!(names_in(&fixture.fs, &seg_dir).len(), 2);
+    let written = fixture.checkpoint(newest + 1);
+    let second = fixture.writer.file_id();
+    assert_eq!(
+        names_in(&fixture.fs, &seg_dir),
+        [FileNames::SEGMENT.file_name(second)]
+    );
+    assert_eq!(
+        written.segments().keys().copied().collect::<Vec<_>>(),
+        [second]
+    );
+    assert_eq!(fixture.db.load().unwrap().1, Some(written));
+}
+
+#[test]
 fn a_database_without_a_checkpoint_has_an_empty_table() {
     let fixture = Fixture::new();
     let (loaded, info) = fixture.db.load().unwrap();

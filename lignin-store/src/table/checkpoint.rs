@@ -97,30 +97,16 @@ impl CheckpointInfo {
 #[derive(Default)]
 struct Extents {
     segments: BTreeMap<FileId, u64>,
-    last: Option<(FileId, u64)>,
 }
 
 impl Extents {
     fn add(&mut self, location: BlockLocation) {
         let end = location.offset + u64::from(location.len);
-        match &mut self.last {
-            Some((file, extent)) if *file == location.file => *extent = (*extent).max(end),
-            _ => {
-                self.settle();
-                self.last = Some((location.file, end));
-            }
-        }
+        let extent = self.segments.entry(location.file).or_insert(end);
+        *extent = (*extent).max(end);
     }
 
-    fn settle(&mut self) {
-        if let Some((file, end)) = self.last.take() {
-            let extent = self.segments.entry(file).or_insert(end);
-            *extent = (*extent).max(end);
-        }
-    }
-
-    fn finish(mut self) -> BTreeMap<FileId, u64> {
-        self.settle();
+    fn finish(self) -> BTreeMap<FileId, u64> {
         self.segments
     }
 }
@@ -440,9 +426,9 @@ fn write_records(
     let mut extents = Extents::default();
     let mut records = Vec::new();
     let mut links = Vec::new();
-    let mut slot = Some(0);
-    while let Some(from) = slot {
-        slot = table.collect(from, &mut links);
+    let mut next = Some(PageId::MIN);
+    while let Some(from) = next {
+        next = table.scan(from, &mut links);
         for (page, link) in links.drain(..) {
             if let Some(location) = link.location() {
                 extents.add(location);
@@ -526,7 +512,7 @@ impl PageTable {
             let (record, rest) = decoder
                 .read(&buf)
                 .map_err(PageTableError::format(&path, offset))?;
-            let record_len = (window - rest.len()) as u64;
+            offset += (window - rest.len()) as u64;
             match record {
                 Record::Links(links) => {
                     for link in links {
@@ -540,12 +526,8 @@ impl PageTable {
                             .map_err(|source| PageTableError::Link { page, source })?;
                     }
                 }
-                Record::End(end) => {
-                    offset += record_len;
-                    break end;
-                }
+                Record::End(end) => break end,
             }
-            offset += record_len;
         };
         if offset != valid_len {
             let longer = table::TableError::LengthMismatch {

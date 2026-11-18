@@ -244,10 +244,16 @@ impl PageTable {
             + self.read_lock().memory_usage()
     }
 
-    /// Adds to `out` every link of the next run of pages from the slot
-    /// `from` on, in the order a checkpoint holds them. Returns the slot to
-    /// go on from, or `None` after the last page.
-    pub(super) fn collect(&self, from: usize, out: &mut Vec<(PageId, Link)>) -> Option<usize> {
-        self.read_lock().collect(from, out)
+    /// Adds to `out` every link of the next pages that have one, from the
+    /// page `from` on, and returns the page to go on from, or `None` once no
+    /// page from `from` on has a link. The links are in ascending order of
+    /// page id, and each chain is from its oldest link.
+    ///
+    /// One call is one step: it takes a run of at most 4096 page ids, so a
+    /// walk over the whole table, from [`PageId::MIN`] until `None`, lets
+    /// changes in between its calls. Each chain is given as it is at one
+    /// moment. A page id that is not given had no link.
+    pub fn scan(&self, from: PageId, out: &mut Vec<(PageId, Link)>) -> Option<PageId> {
+        self.read_lock().scan(from, out)
     }
 }
