@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `Node::key_and_value` and `Node::key` (`grovedb-query`): the key and value
+  of a proof node that reveals a row, and the key of any node that reveals
+  one (a row or a `KVDigest*` range bound). One exhaustive classification of
+  the proof nodes, used by the chunk verifiers and by the V5 layer
+  truncation below.
 - `Element::ProvableCountProvableBigSumTree` (discriminant 29, tree type
   17): a tree that commits its element count and a 128-bit sum into every
   node hash, the wide counterpart of `ProvableCountProvableSumTree`. An
@@ -143,6 +148,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for callers of Merk's just-in-time apply, whose update callback now answers
   `(ElementFlagsUpdate, Option<ValueDefinedCostType>)`.
 ### Changed
+- **BREAKING** (proofs under `GROVE_V5`): a V1 proof layer that has
+  subquery branches under a per-instance cap (`Query::limit`) stops after
+  the key whose rows spent the instance budget (issue #962). Under
+  `GROVE_V4`, the first version to serve per-instance caps, such a layer is
+  proven under the global budget only, so with no global limit,
+  the normal case for a page merged with other queries, it carries every
+  key of its range and the proof grows with the range: an ordered page of 5
+  rows over 200 index keys proves in 9,684 bytes under V4 and 927 under V5
+  (94,286 and 1,131 over 2,000 keys). Past about 25,000 keys the V4
+  layer exceeds Merk's 50,000-op cap and the proof does not verify at all;
+  the V5 proof does. The verifier
+  reads the layer as a gap-free prefix of its query
+  (`ProofLimitMode::UpperBound`) and accepts an early stop only once it has
+  itself seen the instance budget, or the global one, spent by the rows
+  below the keys the layer reveals; a layer that stops with budget left is
+  refused. The rows a query returns do not change, and an empty subtree
+  still spends no instance budget. A V5 verifier still accepts a layer
+  proven in full; a V4 verifier refuses a truncated one, so prover and
+  verifier have to run `GROVE_V5` together. Gated by the new
+  `operations.proof.instance_cap_layer_truncation` slot (0 in V1..V4, 1 in
+  V5; **BREAKING** for code building `GroveDBOperationsProofVersions` by
+  hand). Proofs of queries without a per-instance cap are not affected. A
+  layer also stays whole when the global budget, not the instance one, ends
+  the walk (the global limit already bounds that layer). The cut relies on
+  both sides counting the same rows against the instance budget, which
+  `unreported_empty_tree_row_charge` (below) completes in the same version.
+  The
+  prover still walks the whole layer once before it truncates it, as it
+  does in V4, so the saving is in proof size and verifier work.
 - **BREAKING**: The referrer list of a bidirectional-reference target is
   no longer part of any node hash. An `ItemWithBackwardsReferences`,
   `SumItemWithBackwardsReferences` or

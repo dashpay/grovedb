@@ -88,6 +88,7 @@ fn v5_matches_v4_apart_from_its_gates() {
     operations.average_case.average_case_merk_insert_element = 0;
     operations.worst_case.worst_case_merk_insert_element = 0;
     operations.proof.count_offset_reference_empty_tree_rows = 0;
+    operations.proof.instance_cap_layer_truncation = 0;
     operations.proof.unreported_empty_tree_row_charge = 0;
     operations.proof.subquery_descent_on_key = 0;
     operations
@@ -147,6 +148,33 @@ fn provable_count_provable_big_sum_tree_creation_is_gated_to_v5() {
             .operations
             .insert
             .provable_count_provable_big_sum_tree_creation,
+        1
+    );
+}
+
+#[test]
+fn instance_cap_layer_truncation_is_gated_to_v5() {
+    // GROVE_V4 as GroveDB 6.1.1 shipped it proves a layer with subquery
+    // branches under a per-instance cap in full, and its verifier refuses a
+    // truncated one: turning the truncation on there would change the proofs
+    // a live protocol version emits and accepts.
+    for v in [&GROVE_V1, &GROVE_V2, &GROVE_V3, &GROVE_V4] {
+        assert_eq!(
+            v.grovedb_versions
+                .operations
+                .proof
+                .instance_cap_layer_truncation,
+            0,
+            "v{}",
+            v.protocol_version
+        );
+    }
+    assert_eq!(
+        GROVE_V5
+            .grovedb_versions
+            .operations
+            .proof
+            .instance_cap_layer_truncation,
         1
     );
 }

@@ -34,6 +34,19 @@
 //!   refuse such a page, as 6.1.1 did. Gated because it turns a rejected
 //!   proof into an accepted one.
 //!
+//! - `operations.proof.instance_cap_layer_truncation: 1`: a V1 proof layer
+//!   that has subquery branches under a per-instance cap (`Query::limit`)
+//!   stops after the key whose rows spent the instance budget, so the proof
+//!   is proportional to the page. The verifier reads such a layer as a gap-free
+//!   prefix of its query and accepts an early stop only once it has itself
+//!   seen the instance budget (or the global one) spent by the rows below the
+//!   keys the layer reveals. V4, the first version to serve per-instance
+//!   caps, proves the layer under the global budget only, as 6.1.1 did: with
+//!   no global limit it carries every key of the range, and its verifier
+//!   refuses a truncated one (issue #962). V1..V3 refuse a per-instance cap
+//!   before any proof code runs. The rows a query returns are the same in V4
+//!   and V5. Gated because it
+//!   changes proof bytes and turns a rejected proof into an accepted one.
 //! - `operations.proof.unreported_empty_tree_row_charge: 1`: a V1 verifier
 //!   that leaves empty trees out of its results (the default of
 //!   `verify_query` and `verify_subset_query`) charges an empty plain `Tree`
@@ -194,7 +207,9 @@ pub const GROVE_V5: GroveVersion = GroveVersion {
             },
             proof: GroveDBOperationsProofVersions {
                 count_offset_reference_empty_tree_rows: 1, // changed: exempt resolved references
-                unreported_empty_tree_row_charge: 1,       // changed: the verifier charges the row
+                // changed: a capped layer with subqueries stops where its budget is spent
+                instance_cap_layer_truncation: 1,
+                unreported_empty_tree_row_charge: 1, // changed: the verifier charges the row
                 subquery_descent_on_key: 1, // changed: a branch without a subquery is a row
                 ..GROVE_V4.grovedb_versions.operations.proof
             },

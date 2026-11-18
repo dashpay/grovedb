@@ -18,6 +18,11 @@ mod bind_terminal_non_merk_tree;
 mod chunk_proof_row_binding;
 #[cfg(feature = "minimal")]
 mod generate;
+/// Versioned dispatch for a V1 proof layer that has subquery branches under
+/// a per-instance cap: proven in full, or truncated where its budget is
+/// spent (issue #962). See the module docs for the soundness argument.
+#[cfg(any(feature = "minimal", feature = "verify"))]
+mod instance_cap_layer_truncation;
 // The prover lives in `indexed_axis::generate` and is `minimal`-gated there;
 // the envelope types and verification entry points must be reachable from a
 // verifier-only build (Dash Platform's `drive` crate compiles its
