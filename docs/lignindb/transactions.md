@@ -423,11 +423,14 @@ the exact test calls needed.
 
 **PV4. Background work may change how a page version is stored, never what
 it says.** Relocating its blocks, consolidating its delta chain into a new
-base image, and rewriting a value pointer when the value log is cleaned all
-leave every visible page version with the same logical content. Such a change
+base image, and rewriting a value pointer (when the value log is cleaned, or
+when a page's values are regrouped at consolidation, TREE-08) all leave
+every visible page version with the same logical content. Such a change
 is applied either to every needed page version it affects, or only to the
 current one while the old representation, and whatever it points to, stays
-live for the older ones.
+live for the older ones. A new representation is installed beside the old
+one, which is retired under PN6. Bytes that a view borrows are never edited
+(LT2).
 
 A location that was good for a page version stays good for it (PN8).
 Background work does not renumber anything that a pointer in another page,
@@ -437,6 +440,39 @@ the subtree directory, the value log or an open handle refers to.
 Deltas and base images carry the version that produced them, in memory and
 on disk, so that PV1 can be evaluated for a pin and after a crash (DU3). The
 byte layout is FMT-03, FMT-05 and STORE-03's.
+
+**PV6. A background change takes no version, and is recovered with the
+pages.** It is not a commit (CV3): *L* does not move, no write transaction
+rebases, and no conflict can come of it. It is made durable and recovered by
+the same means as the pages themselves, so that after any crash a page and
+everything stored about it agree. A background change to a page version born
+after the recovered version is gone with that page version (DU3).
+
+The live-value counts of the value log (`value-log-format.md` O6, O7) come
+under this rule. When background work moves a value and rewrites the pointer
+in its cell, the counts of the two files change with that rewrite and are
+recovered with it. `value-log-format.md` calls that moment "the commit that
+changes the cell". In the terms of this document it is the rewrite, which is
+not a commit. For a cell that a transaction changes, it is that
+transaction's commit.
+
+**PV7. Background work rewrites no value pointer under a private copy.** Of
+the changes PV4 allows, only a value pointer rewrite alters the bytes of a
+page as a handle reads them. A write transaction that has made a private
+copy of that page (WT4) would not see the rewrite, and its commit would
+bring the old pointer back: into a file whose count no longer includes the
+value, which could then be deleted under a committed cell
+(`value-log-format.md` O7).
+
+So while an open write transaction holds a private copy of a page,
+background work rewrites no value pointer in that page. It leaves the page
+for later. Making a private copy and checking for one exclude each other
+(LT5, LT7 level 5).
+
+Two things follow. What a commit installs for a page (CM3 step 7) is the
+current representation of the page version it supersedes, with the commit's
+own changes: the same page that recovery would rebuild. And a value pointer
+that background work replaced is never committed again.
 
 ## 7. The write transaction
 
@@ -461,6 +497,15 @@ it.** At every moment *T* can be read, its private frames, laid over the
 committed pages of *B(T)*, must show exactly the state that results from
 applying *T*'s write set, in order, to *S(B(T))*. A transaction's frames are
 never a source of information that its write set does not have.
+
+The write set is self-contained. Nothing that a commit, the flusher or the
+cleaner does to committed data changes or removes what a write-set entry
+says. An entry can refer to bytes that are stored as part of the committed
+state: the value of a node whose hash or links *T* changed, but whose value
+it did not. *T* keeps those bytes readable for as long as it may read them.
+While they sit in its private frames, its base pin (PN1) and PV7 do that.
+When a rebase moves the pin, *T* takes its own copy of whatever it still
+needs (WT7b).
 
 **WT4. Private frames belong to one transaction.**
 
@@ -695,8 +740,9 @@ When step 6 of CM3 reports an error, these give one procedure:
    Recovery stops reading a log file at the first group that fails its test,
    and the next commit will carry the same version *v*. So, for (c), the
    engine ends that log file at the end of its last good group, records that
-   length durably where recovery reads it, and goes on in a new file.
-   STORE-01 and OPS-08 choose the mechanics.
+   length durably where recovery reads it (a closed entry in the manifest,
+   `segment-manifest.md` M15), and goes on in a new file. STORE-01 and
+   OPS-08 choose the mechanics.
 5. While it cannot do that, for example because the disk is still full, the
    engine accepts no commit. It resumes when it can. Every read keeps
    working throughout.
@@ -959,8 +1005,11 @@ holding a later one:
 
 **FL1. The flusher writes only published page versions.** It never reads or
 writes a private frame. Bytes of an uncommitted transaction may reach a data
-file only as dead space: nothing committed points to them, recovery ignores
-them, and after a rollback the cleaner reclaims them.
+file only as dead space: nothing committed points to them, and recovery
+ignores them. While the transaction is open they are its own: no live-value
+count includes them yet (`value-log-format.md` O7), so the file that holds
+them is not deleted, and they are not reclaimed, until the transaction has
+committed or rolled back. After a rollback the cleaner reclaims them.
 
 **FL2. What it writes keeps its born version** (PV5).
 
@@ -1007,9 +1056,14 @@ that only a pin keeps live, or waits for the pin: STORE-08 chooses.
 superseded while it is copied, the switch of locations must fail and the copy
 is dead. The cleaner never brings a superseded block back as current.
 
-**CL5. Value-log cleaning follows PV4.** Moving a value rewrites the pointer
-in its owning cell. The old entry stays live while any needed page version
-still points to it.
+**CL5. Value-log cleaning follows PV4, PV6 and PV7.** Moving a value
+rewrites the pointer in its owning cell. The old entry stays live while any
+needed page version still points to it. So a file that such moves emptied
+while *L* was *v* is deleted only when no version before *v* is pinned
+(`value-log-format.md` O8) and PN6 allows it. It is also deleted only once
+the rewrites that emptied it, and the copies they point to, are durable:
+otherwise a crash could bring back pages that point into a file that is
+gone.
 
 **CL6. A dropped subtree's pages are reclaimed when no pin can reach them.**
 The drop unlinks the subtree in the commit that drops it, at version *w*
@@ -1105,9 +1159,10 @@ version known durable before the crash and *Lc* the newest version whose
 group was in the log, in the sense of CM9, when the crash came. Never part
 of a commit, and never a mix of two.
 
-Recovery reads each log file only up to the valid length recorded for it,
-where one is recorded (CM9, DU3), and stops at the first group that fails
-its test. A group beyond either point does not count, whatever its bytes.
+Recovery reads a log file that the manifest names as closed only up to its
+valid length, and an open one up to the first group that fails its test
+(`segment-manifest.md` M15; CM9, DU3). A group beyond that point does not
+count, whatever its bytes.
 Within what recovery reads, every group that passes is a commit the engine
 had treated as happened (CM9), or one it had not yet answered for.
 
@@ -1118,10 +1173,11 @@ recovery (FL4).
 Version numbers above *Lr* are assigned again (CV6). So that this is safe,
 recovery must have durably recorded, before the first commit of the new
 session is published, where each file of the earlier session stops being
-valid. No later recovery may then replay a log group, or reach a page
-version, that the earlier session wrote for a version above *Lr*, even if its
-bytes are complete on disk. The same holds for a failed commit within a
-session (CM9).
+valid (`segment-manifest.md` M15 has recovery name those files as closed,
+with their valid lengths). No later recovery may then replay a log group, or
+reach a page version, that the earlier session wrote for a version above
+*Lr*, even if its bytes are complete on disk. The same holds for a failed
+commit within a session (CM9).
 
 **DU4. Recovery runs alone.** No handle exists and no background actor runs
 until it has finished, so it is in no interleaving.
@@ -1147,8 +1203,8 @@ whether either can be made to wait for the other.
 | 7b | Writer, writer in another transaction | nothing until one commits | RD8, WT1, WT4 | never |
 | 8a | Writer, commit of its own transaction | the write set | CM1, SC8 | commit is refused while a scope is open |
 | 8b | Writer, a foreign commit | *L*, the keys both wrote, and locations the writer kept | RD3, RD4, WT7, WT7a, WT7b, PN8, CF2, CF3 | never; the writer rebases at its next operation |
-| 9 | Writer, flusher | nothing: the flusher never touches private frames | FL1, WT4 | never |
-| 10 | Writer, cleaner | the committed pages under the writer's frames, page ids, and locations the writer kept | PN1 (base pin), PN5, PN8, PV4, ID1, ID2 | never |
+| 9 | Writer, flusher | the committed pages a writer has copied, and the bytes it wrote to data files ahead of its commit; never a private frame | FL1, WT4, PV7 | never; the flusher leaves a copied page's values where they are |
+| 10 | Writer, cleaner | the committed pages under the writer's frames, their value pointers, page ids, locations the writer kept, and the bytes it wrote ahead of its commit | PN1 (base pin), PN5, PN8, PV4, PV7, WT3, FL1, CL5, ID1, ID2 | never; the cleaner leaves a copied page for later |
 | 11 | Writer, checkpoint | nothing: uncommitted writes are not captured | CK1, CK8 | never |
 | 12 | Committer, committer | *L*, the log, versions | CM2, CV4, CV5, CF2, CF7, CF8 | the second waits for the commit lock |
 | 13 | Committer, flusher | the log, the page versions just born | CM3 steps 6 and 7, CM9, FL1, FL4, FL5, FL6 | the committer, before it takes the lock (FL5) |
@@ -1355,7 +1411,7 @@ took.
 | SEAM-01, MERK-01 | ST6: a change set names exactly the node records Merk writes today. Fetch by link must be answerable by child key (RD5). A location kept in a link is checked before it is followed (PN8). | The trait and the change-set types. |
 | SEAM-04, GROVE-01 | The four handle rows of section 4. `Conflict` maps to the engine-neutral conflict error (CF6). `ReadOnly` maps to `SnapshotReadOnlyTransaction`. A read with no transaction is a snapshot per operation (RD2), a write with no transaction a transaction per operation (RD7). The seven steps of 14.3. | How scopes map to operations in iteration one (SC1). |
 | TXN-02 | RD1, section 5, PV1 to PV3, LT6. | The pin and epoch mechanism (PN4, PN6). |
-| TXN-03 | RD3 to RD6, section 7, PN8. | Frame and write-set structures; how to rebase (WT7); how a stale location is detected (PN8); spilling (WT4). |
+| TXN-03 | RD3 to RD6, section 7, PN8, PV7. | Frame and write-set structures; how to rebase (WT7); how a stale location is detected (PN8); how the write set stays self-contained (WT3); spilling (WT4). |
 | TXN-04 | WT8, SC8. | The undo marks. |
 | TXN-05 | Section 8, including the failed commit (CM9). | The log group; how CF3 is kept. |
 | TXN-06 | Section 11, DU1. | Linking, the copy fallback, the checkpoint manifest. |
@@ -1368,6 +1424,7 @@ took.
 | STORE-04 | LT2 to LT6, PN5. | Frames, latches, eviction. |
 | STORE-01, STORE-06, STORE-07 | FL1 to FL6, PV5, DU1a, DU2, DU3, CM9. | Thresholds, the table checkpoint, replay, how a failed group is put out of reach. |
 | STORE-08 | CL1 to CL7, PN6, CK3. | Liveness accounting, throttling. |
+| STORE-09, TREE-08 | PV4, PV6, PV7 and CL5: a value pointer rewrite takes no version, is recovered with the pages and the counts, is not made under a private copy, and an emptied file goes only when CL5 allows. FL1: values written ahead of a commit are held for their transaction. | When a file is cleaned, when a value is durable, regrouping. |
 | STORE-10 | ID1 to ID3. | The allocator. |
 | GROVE-05 | The drop removes the subtree's records in its own commit (CV9). The flush reclaims pages without a version (CL6) and removes each pending-drop record with one commit (14.5 D3). | The liveness check and the report. |
 | GROVE-11, GROVE-12 | SC9 (pending marks), 14.4, SC3 and SC7. A scope's Merk cache keeps locations only under PN8. | Stop points, finalize, the GroveDB scope. |
@@ -1468,6 +1525,20 @@ VER-05)**
   the old block current (CL4).
 - T-PN5: a file is not deleted while an operation that read a location in it
   is running (PN5, PN6).
+- T-VL1: a value pointer rewrite, by cleaning and by regrouping, racing a
+  write transaction that copies the same page and then commits or rolls
+  back. No committed cell ever holds a pointer that its file's live count
+  does not include, every value reads back, and the page the commit
+  installed equals the page rebuilt from disk (PV7, PV6).
+- T-VL2: values a transaction wrote ahead of its commit survive the cleaning
+  of their file while it is open, are counted from its commit, and are
+  reclaimed after a rollback (FL1).
+- T-VL3: a crash at any point after moves emptied a value-log file never
+  recovers a page that points into a deleted file, and the counts recovered
+  agree with the pages (CL5, PV6).
+- T-VL4: a write transaction that rewrote a node without changing its value
+  still reads that value after a foreign commit overwrote it, after its
+  rebase, and after the cleaner moved or deleted the old entry (WT3).
 
 **Checkpoint and durability (TXN-06, VER-04)**
 
@@ -1492,7 +1563,8 @@ VER-05)**
 (PN4); page-version install and publication against a reader (CM3, CM4);
 claims (SC3); scope merge against scope read (SC6); rebase against the
 transaction's other operations (WT7); a kept location against a rebase and
-against page id reuse (PN8); making a page private once (LT5);
+against page id reuse (PN8); making a page private once (LT5), and against
+a value pointer rewrite in that page (PV7);
 latch order (LT3); commit lock against checkpoint sampling and manifest
 replacement (CK2, LT7); `flush()` against a commit in progress (DU1a);
 relocation against supersession (CL4); page id retirement against reuse
@@ -1718,3 +1790,10 @@ are listed so the owner can overrule one before code depends on it.
     fsync included, is in one step before anything is installed (CM3, CM7).
     This adds two commit outcomes, `NotDurable` and unsettled (CM5). And
     **`flush()` covers the commits published before it read *L*** (DU1a).
+23. **A background change takes no version** (PV6), also where
+    `value-log-format.md` speaks of "the commit that changes the cell" for a
+    value the cleaner moves. **No value pointer is rewritten under a private
+    copy** (PV7): background work waits for the transaction instead. The
+    other way, rebuilding the private copy, would put background work on the
+    writer's path. **The write set is self-contained** (WT3), and **bytes
+    written ahead of a commit are held for their transaction** (FL1).
