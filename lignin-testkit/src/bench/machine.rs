@@ -222,18 +222,37 @@ pub fn drop_files_from_cache(files: &[PathBuf]) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-/// Drops every file in `dir` from the page cache. Returns false if the
+/// Every file under `dir`, in its subdirectories too. A file or directory
+/// the engine deletes while it is being listed is left out.
+pub fn files_under(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let root = dir;
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && dir != root => {
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        for entry in entries {
+            let entry = entry?;
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => pending.push(entry.path()),
+                Ok(kind) if kind.is_file() => files.push(entry.path()),
+                _ => {}
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+/// Drops every file under `dir` from the page cache. Returns false if the
 /// directory cannot be listed or the drop could not be made.
 pub fn drop_dir_cache(dir: &Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return false;
-    };
-    let files: Vec<PathBuf> = entries
-        .flatten()
-        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
-        .map(|entry| entry.path())
-        .collect();
-    drop_files_from_cache(&files)
+    files_under(dir).is_ok_and(|files| drop_files_from_cache(&files))
 }
 
 /// User-space instructions retired by one thread, counted by `perf stat`
@@ -453,6 +472,12 @@ mod tests {
             assert_eq!(method, ColdMethod::ReopenAndDropFileCache);
         }
         assert!(!drop_dir_cache(&dir.path().join("missing")));
+        std::fs::write(dir.path().join("sub").join("b"), b"nested").unwrap();
+        assert_eq!(
+            files_under(dir.path()).unwrap(),
+            vec![dir.path().join("a"), dir.path().join("sub").join("b")]
+        );
+        assert!(files_under(&dir.path().join("missing")).is_err());
         assert!(!cache_drop_works(&dir.path().join("missing").join("probe")));
         assert_eq!(process_io("no_such_field"), None);
     }

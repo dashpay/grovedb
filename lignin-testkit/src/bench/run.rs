@@ -641,31 +641,26 @@ fn window_time_rows(run: PhaseRun) -> Vec<Row> {
     ]
 }
 
-/// Files in `dir`.
+/// Files under `dir`, in its subdirectories too.
 pub fn disk_usage(dir: &Path) -> Result<DiskUsage, BenchError> {
     let mut usage = DiskUsage {
         allocated_bytes: Some(0),
         ..Default::default()
     };
     let io = |error| BenchError::io("measuring the database", error);
-    for entry in std::fs::read_dir(dir).map_err(io)? {
-        let entry = entry.map_err(io)?;
-        let metadata = match entry.metadata() {
+    for path in machine::files_under(dir).map_err(io)? {
+        let metadata = match std::fs::metadata(&path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => return Err(io(error)),
         };
-        if !metadata.is_file() {
-            continue;
-        }
         usage.files += 1;
         usage.bytes += metadata.len();
         usage.allocated_bytes = usage
             .allocated_bytes
             .zip(allocated(&metadata))
             .map(|(sum, more)| sum + more);
-        let extension = entry
-            .path()
+        let extension = path
             .extension()
             .and_then(|extension| extension.to_str())
             .unwrap_or("")
@@ -861,13 +856,9 @@ fn rewarm<E: Engine>(
     grove_version: &GroveVersion,
 ) -> Result<(), BenchError> {
     let io = |error| BenchError::io("warming the database", error);
-    let entries = std::fs::read_dir(engine.dir()).map_err(io)?;
-    for entry in entries.flatten() {
-        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
-            continue;
-        }
+    for path in machine::files_under(engine.dir()).map_err(io)? {
         // The engine deletes files in the background, between listing and opening.
-        match std::fs::File::open(entry.path()) {
+        match std::fs::File::open(&path) {
             Ok(mut file) => {
                 std::io::copy(&mut file, &mut std::io::sink()).map_err(io)?;
             }

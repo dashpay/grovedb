@@ -154,7 +154,7 @@ pub struct PhaseTotals {
     pub process_write_bytes: Option<u64>,
 }
 
-/// Files in a database directory.
+/// Files under a database directory, in its subdirectories too.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiskUsage {
     /// Files.
@@ -509,6 +509,25 @@ pub fn comparable(first: &Report, second: &Report) -> Result<(), BenchError> {
             first.grove_protocol_version, second.grove_protocol_version
         )));
     }
+    for engine in &first.engines {
+        let Some(peer) = second
+            .engines
+            .iter()
+            .find(|peer| peer.engine == engine.engine)
+        else {
+            continue;
+        };
+        for row in &engine.rows {
+            if let Some(other) = peer.row(&row.id, &row.phase)
+                && (other.unit != row.unit || other.kind != row.kind)
+            {
+                return Err(BenchError::Check(format!(
+                    "{} {} in {} is {:?} in {} in one run and {:?} in {} in the other",
+                    engine.engine, row.id, row.phase, row.kind, row.unit, other.kind, other.unit
+                )));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -786,6 +805,16 @@ mod tests {
                 ),
             ]
         );
+
+        let mut other_unit = second.clone();
+        other_unit.engines[0].rows[0].unit = "ms".to_string();
+        assert_eq!(
+            comparable(&first, &other_unit).unwrap_err().to_string(),
+            "rocksdb point_get in warm is Time in us in one run and Time in ms in the other"
+        );
+        let mut other_kind = second.clone();
+        other_kind.engines[0].rows[0].kind = RowKind::Count;
+        assert!(comparable(&first, &other_kind).is_err());
 
         second.grove_protocol_version = 4;
         assert_eq!(
