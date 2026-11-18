@@ -3077,8 +3077,9 @@ mod charging {
 
     use super::*;
     use crate::{
-        rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Error, FlatStore,
-        RawIterator, Storage, StorageBatch, StorageContext,
+        rocksdb_storage::RocksDbStorage,
+        worst_case_costs::{get_storage_context_cost, WorstKeyLength},
+        Error, FlatStore, RawIterator, Storage, StorageBatch, StorageContext,
     };
 
     const MODEL: StorageCostModel = StorageCostModel::V0;
@@ -3572,7 +3573,7 @@ mod charging {
                 .iter()
                 .map(|segment| Longest(segment.len() as u8))
                 .collect();
-            assert_eq!(RocksDbStorage::get_storage_context_cost(&longest), expected);
+            assert_eq!(get_storage_context_cost(MODEL, &longest), expected);
         }
     }
 

@@ -25,7 +25,6 @@ use grovedb_costs::{
 };
 use grovedb_storage::{
     rocksdb_storage::{test_utils::TempStorage, RocksDbStorage},
-    worst_case_costs::WorstKeyLength,
     Batch, Error, FlatStore, RawIterator, Storage, StorageBatch, StorageContext,
 };
 
@@ -52,14 +51,6 @@ impl Reported {
         let reported = std::mem::take(&mut self.0);
         assert_eq!(reported, ledger::take(), "{of}");
         reported
-    }
-}
-
-struct Longest(u8);
-
-impl WorstKeyLength for Longest {
-    fn max_length(&self) -> u8 {
-        self.0
     }
 }
 
@@ -201,11 +192,6 @@ fn the_engine_reports_what_the_model_hands_out_and_nothing_else() {
 
     for path in [&[][..], SUBTREE, DEEP_SUBTREE] {
         reported.by(RocksDbStorage::build_prefix(path.into()));
-        let longest: Vec<Longest> = path
-            .iter()
-            .map(|segment| Longest(segment.len() as u8))
-            .collect();
-        reported.cost(RocksDbStorage::get_storage_context_cost(&longest));
     }
     let prefix = reported.by(RocksDbStorage::build_prefix(SUBTREE.into()));
     reported.by(RocksDbStorage::secondary_prefix_for(&prefix, 1));
