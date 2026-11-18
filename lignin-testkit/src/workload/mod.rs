@@ -70,8 +70,10 @@ pub struct Features {
     /// kept for replay, so a workload for those versions deletes such a tree
     /// through a batch.
     pub direct_delete_of_provable_trees: bool,
-    /// Proofs in the V1 envelope, which a query needs when it is hosted by a
-    /// `ProvableCountProvableSumTree` or by an indexed tree.
+    /// Proofs in the V1 envelope. Without it a query hosted by a
+    /// `ProvableCountProvableSumTree` or by an indexed tree is refused, and
+    /// the proof of a reference stored in a `ProvableCountSumTree` does not
+    /// verify.
     pub v1_proofs: bool,
 }
 
@@ -107,6 +109,20 @@ impl Features {
                 >= 1,
             v1_proofs: grovedb.operations.proof.prove_query_non_serialized >= 1,
         }
+    }
+
+    /// Whether a query hosted by a tree of this type proves and verifies
+    /// whatever the tree holds.
+    pub fn proves_queries_in(&self, host: TreeType) -> bool {
+        self.v1_proofs
+            || !matches!(
+                host,
+                TreeType::ProvableCountSumTree
+                    | TreeType::ProvableCountProvableSumTree
+                    | TreeType::ProvableSumIndexedTree
+                    | TreeType::ProvableCountIndexedTree
+                    | TreeType::ProvableCountProvableSumIndexedTree
+            )
     }
 
     /// Whether `GroveDb::delete` may remove a populated `child` tree from a

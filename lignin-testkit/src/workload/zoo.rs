@@ -802,9 +802,8 @@ impl Zoo {
     /// prove that query, the parent element itself where it cannot.
     fn read_parent(&mut self, parent: TreeKind, parent_path: &[Vec<u8>]) {
         let limit = 4 + self.rng.below(5) as u16;
-        let provable = self.features.v1_proofs
-            || !(parent.indexed() || parent == TreeKind::ProvableCountProvableSumTree);
-        if provable {
+        let host = parent.element().tree_type().expect("a parent is a tree");
+        if self.features.proves_queries_in(host) {
             self.ops.push(build::query(build::select_raw(
                 parent_path,
                 vec![QueryItem::RangeFull],
