@@ -99,6 +99,9 @@ pub struct Features {
     pub instance_limits: bool,
     /// `Query::offset`, a page in count units for each subquery.
     pub instance_offsets: bool,
+    /// The range read of a `PrivateDocumentStore` and the proof of its
+    /// entries.
+    pub private_document_ranges: bool,
 }
 
 impl Features {
@@ -116,6 +119,7 @@ impl Features {
         read_modes: true,
         instance_limits: true,
         instance_offsets: true,
+        private_document_ranges: true,
     };
 
     /// What `grove_version` stores.
@@ -125,10 +129,11 @@ impl Features {
         let flat_drop = &grovedb.operations.flat_drop;
         let proof = &grovedb.operations.proof;
         let path_query = &grovedb.path_query_methods;
+        let private_document_store = &grovedb.operations.private_document_store;
         Features {
             backward_references: grovedb.apply_batch.backward_references_maintenance >= 1
                 && insert.insert_on_transaction >= 1,
-            private_document_store: grovedb.operations.private_document_store.element_creation >= 1,
+            private_document_store: private_document_store.element_creation >= 1,
             provable_count_provable_big_sum_tree: insert
                 .provable_count_provable_big_sum_tree_creation
                 >= 1,
@@ -148,6 +153,8 @@ impl Features {
                 && proof.sum_budget_in_v1_envelope >= 1,
             instance_limits: path_query.per_instance_query_limits >= 1,
             instance_offsets: path_query.per_instance_query_offsets >= 1,
+            private_document_ranges: private_document_store.get_range >= 1
+                && private_document_store.range_proof >= 1,
         }
     }
 
@@ -292,6 +299,16 @@ pub enum Workload {
     Pagination(adversarial::Pagination),
     /// [`drive::ConditionalWrites`].
     ConditionalWrites(drive::ConditionalWrites),
+    /// [`adversarial::IndexedWrites`].
+    IndexedWrites(adversarial::IndexedWrites),
+    /// [`adversarial::TypedReads`].
+    TypedReads(adversarial::TypedReads),
+    /// [`drive::IdentityReads`].
+    IdentityReads(drive::IdentityReads),
+    /// [`adversarial::ChunkProofs`].
+    ChunkProofs(adversarial::ChunkProofs),
+    /// [`drive::BlockExecution`].
+    BlockExecution(drive::BlockExecution),
 }
 
 impl Workload {
@@ -353,6 +370,23 @@ impl Workload {
                 ..Default::default()
             }),
             Workload::ConditionalWrites(drive::ConditionalWrites::default()),
+            Workload::IndexedWrites(adversarial::IndexedWrites {
+                features,
+                ..Default::default()
+            }),
+            Workload::TypedReads(adversarial::TypedReads {
+                features,
+                ..Default::default()
+            }),
+            Workload::IdentityReads(drive::IdentityReads {
+                features,
+                ..Default::default()
+            }),
+            Workload::ChunkProofs(adversarial::ChunkProofs {
+                features,
+                ..Default::default()
+            }),
+            Workload::BlockExecution(drive::BlockExecution::default()),
         ]
     }
 
@@ -379,6 +413,11 @@ impl Workload {
             Workload::PartialBatches(_) => "partial-batches",
             Workload::Pagination(_) => "pagination",
             Workload::ConditionalWrites(_) => "conditional-writes",
+            Workload::IndexedWrites(_) => "indexed-writes",
+            Workload::TypedReads(_) => "typed-reads",
+            Workload::IdentityReads(_) => "identity-reads",
+            Workload::ChunkProofs(_) => "chunk-proofs",
+            Workload::BlockExecution(_) => "block-execution",
         }
     }
 
@@ -405,6 +444,11 @@ impl Workload {
             Workload::PartialBatches(workload) => workload.stream(seed),
             Workload::Pagination(workload) => workload.stream(seed),
             Workload::ConditionalWrites(workload) => workload.stream(seed),
+            Workload::IndexedWrites(workload) => workload.stream(seed),
+            Workload::TypedReads(workload) => workload.stream(seed),
+            Workload::IdentityReads(workload) => workload.stream(seed),
+            Workload::ChunkProofs(workload) => workload.stream(seed),
+            Workload::BlockExecution(workload) => workload.stream(seed),
         }
     }
 }
