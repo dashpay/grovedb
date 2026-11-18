@@ -296,6 +296,10 @@ impl BufferPool {
     /// step 7): the current version of the page is superseded at `version`,
     /// and nothing follows it.
     ///
+    /// The commit gives the page its free link in the page table first
+    /// (`page-table.md` T8) and calls this after it, so that a reader that
+    /// misses the page from here on finds the free link.
+    ///
     /// What write-back still owed of the page is never written back
     /// (`page-table.md` T18). Those page versions leave the unwritten lists
     /// and stay in the pool, where they cannot be evicted, until
@@ -435,6 +439,7 @@ impl<'p> PageStep<'p> {
         header.touch();
         let frozen = chain.link(frame).freeze(&pool.arena);
         let freed = chain.retire(old.pointer());
+        chain.stamp += 1;
         drop(chain);
         if !owed {
             lock(&pool.unwritten).add(born, page);

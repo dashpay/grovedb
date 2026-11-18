@@ -1,13 +1,14 @@
 //! Frames: the memory of the pool, and the header that says what each piece
 //! of it holds.
 //!
-//! This file and `guard.rs` hold all the unsafe code of the pool. The rules
-//! that make it sound are stated here once, as the **access rules**, and
-//! every unsafe block names the rule it relies on. The rest of the pool is
-//! safe code over three types of this file, each of which stands for one
-//! way of being allowed to reach a frame: a [`Chain`] (the bucket's lock is
-//! held), a [`Pinned`] (a pin is held) and an [`OwnedFrame`] (the frame is
-//! nobody else's).
+//! This file holds all the unsafe code of the pool. The rules that make it
+//! sound are stated here once, as the **access rules**, and every unsafe
+//! block names the rule it relies on. The rest of the pool is safe code
+//! over three types of this file, each of which stands for one way of being
+//! allowed to reach a frame: a [`Chain`] (the bucket's lock is held), a
+//! [`Pinned`] (a pin is held) and an [`OwnedFrame`] (the frame is nobody
+//! else's). A [`Frozen`] is a pin on content that can no longer change, and
+//! a [`Shared`] or an [`Exclusive`] is a pin with the frame's latch.
 //!
 //! # Access rules
 //!
@@ -34,8 +35,6 @@
 //!   a frame that is published or dead, whose content does not change again
 //!   until the frame is owned outright; or under a latch of a private
 //!   frame; or by the owner.
-
-#![allow(unsafe_code)]
 
 use std::{
     alloc::{self, Layout},
@@ -483,7 +482,10 @@ impl<'a> Pinned<'a> {
             return Err(self);
         }
         let reading = self.frame().reading();
-        Ok(Frozen { reading, pin: self })
+        Ok(Frozen {
+            _reading: reading,
+            pin: self,
+        })
     }
 
     /// Takes the frame's latch for reading, and waits for it.
@@ -516,7 +518,7 @@ impl<'a> Pinned<'a> {
 #[must_use]
 #[derive(Debug)]
 pub(super) struct Frozen<'a> {
-    reading: Reading,
+    _reading: Reading,
     pin: Pinned<'a>,
 }
 
@@ -544,16 +546,14 @@ impl<'a> Frozen<'a> {
     /// A second pin on the same frozen content.
     pub(super) fn again(&self) -> Frozen<'a> {
         Frozen {
-            reading: self.frame().reading(),
+            _reading: self.frame().reading(),
             pin: self.pin.again(),
         }
     }
 
     /// Ends the read access, and leaves the pin to be given back.
     pub(super) fn into_pin(self) -> Pinned<'a> {
-        let Frozen { reading, pin } = self;
-        drop(reading);
-        pin
+        self.pin
     }
 }
 
@@ -658,7 +658,8 @@ impl fmt::Debug for Exclusive<'_> {
 #[derive(Debug)]
 pub(super) struct Chain {
     head: Option<FramePtr>,
-    /// How many commits have installed or freed a page of this bucket.
+    /// How many times a commit has installed or freed a page of this
+    /// bucket, or a page step has replaced a frame of it.
     pub(super) stamp: u64,
 }
 
@@ -698,7 +699,7 @@ impl<'c> Entry<'c> {
         }
         let pin = self.pin(arena);
         Some(Frozen {
-            reading: self.frame.reading(),
+            _reading: self.frame.reading(),
             pin,
         })
     }

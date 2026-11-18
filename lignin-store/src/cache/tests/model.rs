@@ -226,10 +226,10 @@ impl<'p> Life<'p> {
             });
         }
         for page in freed {
+            self.disk.free(page, next);
             self.pool
                 .free(self::page(page), version(next))
                 .expect("a commit");
-            self.disk.free(page, next);
             self.current_mut(page).expect("live").superseded = Some(next);
         }
         self.latest = next;

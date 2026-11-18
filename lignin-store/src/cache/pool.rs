@@ -29,7 +29,8 @@ pub struct PoolConfig {
 ///
 /// It is what the pool knew at that moment, which
 /// [`BufferPool::install_loaded`] needs to say for which versions the page
-/// that is then loaded stands. It is good for that one load.
+/// that is then loaded stands, and whether it is still what the reader
+/// asked for. It is good for that one load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Miss {
     pub(super) page: PageId,
@@ -48,6 +49,17 @@ impl Miss {
     pub fn at(&self) -> CommitVersion {
         self.at
     }
+}
+
+/// What became of a page that was loaded ([`BufferPool::install_loaded`]).
+#[derive(Debug)]
+pub enum Loaded<'p> {
+    /// The page is in the pool, pinned.
+    Page(PageRef<'p>),
+    /// The pool changed while the page was being read, and what was read
+    /// may be out of date. Nothing was installed, and the frame comes back
+    /// to be filled again.
+    Again(Blank<'p>),
 }
 
 /// Counts of what the pool has done since it was made.
@@ -418,8 +430,8 @@ impl BufferPool {
         Blank::new(self, self.acquire())
     }
 
-    /// Puts a page that was read from its segment into the pool, and returns
-    /// it pinned.
+    /// Puts a page that was read from its segments into the pool, and
+    /// returns it pinned.
     ///
     /// `blank` holds the page as the commit `born` left it: the newest
     /// version of the page at or before the version `miss` was for, as the
@@ -427,9 +439,15 @@ impl BufferPool {
     /// the link that follows it in the page table's chain, of whatever kind,
     /// if there is one. Both are read from the page table after the miss.
     ///
-    /// From those and from what it holds itself, the pool works out for
-    /// which versions the page stands. When another thread loaded the same
-    /// page version first, that frame is returned and `blank` is given back.
+    /// From those and from what it holds itself, the pool knows for which
+    /// versions the page stands. When another thread loaded the same page
+    /// version first, that frame is returned and `blank` is given back.
+    ///
+    /// [`Loaded::Again`] says that a commit or a page step changed this part
+    /// of the pool's table since the miss, so that what was read may be out
+    /// of date. Nothing was installed. The caller asks [`Self::get`] again,
+    /// and if that misses, reads the page table again and fills the frame
+    /// again.
     ///
     /// It fails if what it is told cannot be: the page was born after the
     /// version it was asked at ([`CacheError::LoadedTooNew`]), a newer
@@ -442,7 +460,7 @@ impl BufferPool {
         miss: Miss,
         born: CommitVersion,
         next: Option<CommitVersion>,
-    ) -> Result<PageRef<'p>, CacheError> {
+    ) -> Result<Loaded<'p>, CacheError> {
         let Miss { page, at, .. } = miss;
         if born > at {
             return Err(CacheError::LoadedTooNew { page, born, at });
@@ -464,6 +482,9 @@ impl BufferPool {
         let bucket = self.bucket(page.get());
         let step = lock(&bucket.step);
         let mut chain = write(&bucket.chain);
+        if chain.stamp != miss.stamp {
+            return Ok(Loaded::Again(blank));
+        }
         let mut same = None;
         for entry in published(&chain, page) {
             let other = entry.frame().born();
@@ -476,14 +497,8 @@ impl BufferPool {
         if bound <= at.get() {
             return Err(superseded(bound));
         }
-        if bound == NO_VERSION && chain.stamp != miss.stamp {
-            bound = at.get().saturating_add(1);
-        }
         let frozen = match same {
             Some(entry) => {
-                if entry.frame().superseded() < bound {
-                    entry.frame().set_superseded(bound);
-                }
                 entry.frame().touch();
                 entry.freeze(&self.arena)
             }
@@ -501,10 +516,10 @@ impl BufferPool {
         };
         drop(chain);
         drop(step);
-        Ok(PageRef::new(
+        Ok(Loaded::Page(PageRef::new(
             self,
             frozen.expect("the frame is a page version"),
-        ))
+        )))
     }
 
     /// A frame nobody else can reach: a free one, one that held a page

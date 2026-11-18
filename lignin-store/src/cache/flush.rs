@@ -49,9 +49,12 @@ impl BufferPool {
         }
     }
 
-    /// Records that the content of `frame` is in a segment. The page version
-    /// leaves the unwritten lists, and the frame can be evicted once it has
-    /// no pin.
+    /// Records that the content of `frame` is in a segment and that the page
+    /// table has its link. The page version leaves the unwritten lists, and
+    /// the frame can be evicted once it has no pin.
+    ///
+    /// The link is pushed before this is called: a reader that misses the
+    /// page afterwards reads the page table, and has to find it there.
     ///
     /// It fails, and write-back still owes the page version, if `frame` is
     /// not how the page version is stored any more, because a page step

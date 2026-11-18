@@ -2,7 +2,7 @@ mod basic;
 mod errors;
 mod flush;
 #[cfg(loom)]
-mod loom;
+mod loom_models;
 mod model;
 mod private;
 mod step;
@@ -165,15 +165,34 @@ impl Disk {
     }
 }
 
-/// Loads the page a miss was for, if the disk has it.
-fn load<'p>(pool: &'p BufferPool, disk: &Disk, miss: Miss) -> Option<PageRef<'p>> {
-    let (content, next) = disk.lookup(miss.page().get(), miss.at().get())?;
+/// Loads the page a miss was for, if the disk has it. The disk is read
+/// again for as long as the pool says that it changed meanwhile.
+fn load_with<'p>(
+    pool: &'p BufferPool,
+    mut miss: Miss,
+    lookup: impl Fn(u32, u64) -> Option<(Content, Option<u64>)>,
+) -> Option<PageRef<'p>> {
+    let (page, at) = (miss.page(), miss.at());
     let mut blank = pool.blank();
-    content.write(&mut blank);
-    let loaded = pool
-        .install_loaded(blank, miss, version(content.born), next.map(version))
-        .expect("the disk gives what the miss asked for");
-    Some(loaded)
+    loop {
+        let (content, next) = lookup(page.get(), at.get())?;
+        content.write(&mut blank);
+        let loaded = pool
+            .install_loaded(blank, miss, version(content.born), next.map(version))
+            .expect("the disk gives what the miss asked for");
+        blank = match loaded {
+            Loaded::Page(loaded) => return Some(loaded),
+            Loaded::Again(blank) => blank,
+        };
+        miss = match pool.get(page, at) {
+            Ok(found) => return Some(found),
+            Err(miss) => miss,
+        };
+    }
+}
+
+fn load<'p>(pool: &'p BufferPool, disk: &Disk, miss: Miss) -> Option<PageRef<'p>> {
+    load_with(pool, miss, |page, at| disk.lookup(page, at))
 }
 
 /// Reads a page at a version, from the pool or else from the disk.
@@ -181,6 +200,14 @@ fn fetch<'p>(pool: &'p BufferPool, disk: &Disk, page: u32, at: u64) -> Option<Pa
     match pool.get(self::page(page), version(at)) {
         Ok(found) => Some(found),
         Err(miss) => load(pool, disk, miss),
+    }
+}
+
+/// The page of a load that nothing interfered with.
+fn loaded(loaded: Result<Loaded<'_>, CacheError>) -> PageRef<'_> {
+    match loaded.expect("a load") {
+        Loaded::Page(page) => page,
+        Loaded::Again(_) => panic!("the pool changed during the load"),
     }
 }
 
@@ -192,8 +219,7 @@ fn seed(pool: &BufferPool, content: Content, next: Option<u64>) -> PageRef<'_> {
         .expect_err("the page is not in the pool yet");
     let mut blank = pool.blank();
     content.write(&mut blank);
-    pool.install_loaded(blank, miss, version(content.born), next.map(version))
-        .expect("a page that fits the miss")
+    loaded(pool.install_loaded(blank, miss, version(content.born), next.map(version)))
 }
 
 /// One commit of one page: a private copy of the version at `at`, rewritten
@@ -391,11 +417,21 @@ fn check(pool: &BufferPool, loose: usize) {
     assert!(free
         .iter()
         .all(|frame| frame.header().kind() == kind::FREE && !frame.header().is_overflow()));
-    assert!(linked_fixed + free.len() <= pool.frames());
+    let distinct: BTreeSet<*const _> = free
+        .iter()
+        .map(|frame| std::ptr::from_ref(frame.header()))
+        .collect();
+    assert_eq!(distinct.len(), free.len(), "a frame is free twice");
+    let fixed = linked_fixed + free.len();
+    let beside = pool.overflow_frames();
     drop(free);
 
-    assert!(pool.overflow_frames() >= overflow);
-    assert!(pool.overflow_frames() <= overflow + loose);
+    assert!(fixed <= pool.frames() && beside >= overflow);
+    assert_eq!(
+        (pool.frames() - fixed) + (beside - overflow),
+        loose,
+        "a frame is neither in the table, nor free, nor held by the caller"
+    );
     assert_eq!(
         pool.memory(),
         pool.fixed_memory() + pool.overflow_frames() * pool.overflow_cost() + pool.attached_bytes()

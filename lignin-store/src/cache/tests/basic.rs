@@ -35,16 +35,20 @@ fn a_pool_is_as_many_frames_as_its_capacity_holds() {
 }
 
 #[test]
-fn a_page_size_that_is_not_a_multiple_of_4096_is_served() {
-    let config = PoolConfig {
-        page_size: TreePageSize::new(10_000).expect("in range"),
-        capacity: 100_000,
-    };
-    let pool = BufferPool::new(config).expect("holds frames");
-    assert_eq!(pool.frame_len(), 10_000);
-    assert_eq!(pool.frames(), 9);
-    let shown = seed(&pool, content(1, 1, 0), None);
-    assert_eq!(Content::read(&shown), content(1, 1, 0));
+fn every_page_size_of_a_store_is_served() {
+    for size in [8_192, 16_384, 32_768, 65_536] {
+        let config = PoolConfig {
+            page_size: TreePageSize::new(size).expect("a page size"),
+            capacity: 4 * size + 4_096,
+        };
+        let pool = BufferPool::new(config).expect("holds frames");
+        assert_eq!(pool.frame_len(), size);
+        assert_eq!(pool.frames(), 4);
+        let mut blank = pool.blank();
+        assert_eq!(blank.as_ptr() as usize % 4096, 0);
+        blank.fill(0xA5);
+        assert!(blank.iter().all(|&byte| byte == 0xA5));
+    }
 }
 
 #[test]
@@ -94,18 +98,16 @@ fn a_miss_is_loaded_and_then_hit() {
     let mut blank = pool.blank();
     assert_eq!(blank.len(), FRAME);
     content(7, 3, 0).write(&mut blank);
-    let loaded = pool
-        .install_loaded(blank, miss, version(3), None)
-        .expect("a load");
-    assert_eq!(loaded.page(), page(7));
-    assert_eq!(loaded.born(), version(3));
-    assert_eq!(Content::read(&loaded), content(7, 3, 0));
-    assert_eq!(loaded.as_ref().len(), FRAME);
+    let first = loaded(pool.install_loaded(blank, miss, version(3), None));
+    assert_eq!(first.page(), page(7));
+    assert_eq!(first.born(), version(3));
+    assert_eq!(Content::read(&first), content(7, 3, 0));
+    assert_eq!(first.as_ref().len(), FRAME);
 
     let hit = pool.get(page(7), version(4)).expect("a hit");
-    assert_eq!(hit.as_ptr(), loaded.as_ptr());
+    assert_eq!(hit.as_ptr(), first.as_ptr());
     let later = pool.get(page(7), version(900)).expect("still current");
-    assert_eq!(later.as_ptr(), loaded.as_ptr());
+    assert_eq!(later.as_ptr(), first.as_ptr());
     assert!(pool.get(page(7), version(2)).is_err(), "before it was born");
     assert!(pool.get(page(8), version(4)).is_err(), "another page");
 
@@ -121,7 +123,7 @@ fn a_miss_is_loaded_and_then_hit() {
     let census = pool.census();
     assert_eq!((census.published, census.pinned), (1, 1));
     assert_eq!(census.unevictable, 1);
-    drop((loaded, hit, later));
+    drop((first, hit, later));
     assert_eq!(pool.census().unevictable, 0);
     check(&pool, 0);
 }
@@ -166,9 +168,7 @@ fn a_newer_version_in_the_pool_bounds_a_loaded_one() {
     let miss = pool.get(page(1), version(5)).expect_err("only the new one");
     let mut blank = pool.blank();
     content(1, 3, 0).write(&mut blank);
-    let old = pool
-        .install_loaded(blank, miss, version(3), None)
-        .expect("a load");
+    let old = loaded(pool.install_loaded(blank, miss, version(3), None));
     assert_eq!(old.frame().superseded(), 7);
     assert_eq!(
         Content::read(&pool.get(page(1), version(6)).expect("old")),
@@ -242,12 +242,8 @@ fn a_second_load_of_one_page_version_gives_the_first_frame() {
     let mut second = pool.blank();
     content(1, 3, 0).write(&mut first);
     content(1, 3, 0).write(&mut second);
-    let first = pool
-        .install_loaded(first, first_miss, version(3), None)
-        .expect("a load");
-    let second = pool
-        .install_loaded(second, second_miss, version(3), None)
-        .expect("a load");
+    let first = loaded(pool.install_loaded(first, first_miss, version(3), None));
+    let second = loaded(pool.install_loaded(second, second_miss, version(3), None));
     assert_eq!(first.as_ptr(), second.as_ptr());
     assert_eq!(pool.census().published, 1);
     assert_eq!(lock(&pool.free).len(), 2);
@@ -255,63 +251,104 @@ fn a_second_load_of_one_page_version_gives_the_first_frame() {
 }
 
 #[test]
-fn a_commit_during_a_load_keeps_the_loaded_page_from_passing_for_current() {
+fn a_load_that_a_commit_overtook_is_made_again() {
     let pool = pool(4);
     let miss = pool.get(page(1), version(5)).expect_err("empty");
 
-    // Another page of the same part of the table is committed meanwhile, so
-    // the pool can no longer tell that nothing newer of page 1 exists.
+    // Another page of the same part of the table is committed meanwhile.
+    // The pool can no longer tell that what was read of page 1 is still
+    // the newest, so it takes nothing.
     drop(create(&pool, 2, 6));
-    let mut blank = pool.blank();
-    content(1, 3, 0).write(&mut blank);
-    let loaded = pool
-        .install_loaded(blank, miss, version(3), None)
-        .expect("a load");
-    assert_eq!(loaded.frame().superseded(), 6, "good for the reader only");
-    assert!(pool.get(page(1), version(5)).is_ok());
-    let miss = pool
-        .get(page(1), version(6))
-        .expect_err("not known current");
-
-    // The next load finds nothing in between, and the one frame then stands
-    // for every later version.
     let mut blank = pool.blank();
     content(1, 3, 0).write(&mut blank);
     let again = pool
         .install_loaded(blank, miss, version(3), None)
-        .expect("a load");
-    assert_eq!(again.as_ptr(), loaded.as_ptr());
-    assert_eq!(loaded.frame().superseded(), NO_VERSION);
+        .expect("nothing wrong with the load");
+    let Loaded::Again(blank) = again else {
+        panic!("a load that a commit overtook was installed");
+    };
+    assert_eq!(
+        Content::read(&blank),
+        content(1, 3, 0),
+        "the frame comes back"
+    );
+    assert_eq!(pool.census().published, 1);
+
+    // Asked again, it misses again, and the second load goes in.
+    let miss = pool.get(page(1), version(5)).expect_err("still not there");
+    let current = loaded(pool.install_loaded(blank, miss, version(3), None));
+    assert_eq!(current.frame().superseded(), NO_VERSION);
     assert!(pool.get(page(1), version(1_000)).is_ok());
-    assert_eq!(pool.census().published, 2);
     check(&pool, 0);
 }
 
 #[test]
-fn a_bound_that_was_proved_is_never_lowered() {
+fn a_load_that_a_freeing_commit_overtook_is_made_again() {
     let pool = pool(4);
-    let slow = pool.get(page(1), version(5)).expect_err("empty");
-    drop(create(&pool, 2, 6));
+    let mut disk = Disk::default();
+    disk.write(content(1, 3, 0));
+    let miss = pool.get(page(1), version(5)).expect_err("empty");
+    let (old, next) = disk.lookup(1, 5).expect("on disk");
+    assert_eq!(next, None);
 
-    // A second reader misses after that commit, loads the page and proves
-    // it current.
-    let fast = pool.get(page(1), version(5)).expect_err("still empty");
-    let mut blank = pool.blank();
-    content(1, 3, 0).write(&mut blank);
-    let current = pool
-        .install_loaded(blank, fast, version(3), None)
-        .expect("a load");
-    assert_eq!(current.frame().superseded(), NO_VERSION);
+    // Commit 6 frees the page: the page table first, then the pool.
+    disk.free(1, 6);
+    pool.free(page(1), version(6)).expect("a later commit");
 
-    // The first reader's load can prove less. It gets the same frame, which
-    // keeps what was proved.
     let mut blank = pool.blank();
-    content(1, 3, 0).write(&mut blank);
+    old.write(&mut blank);
     let again = pool
-        .install_loaded(blank, slow, version(3), None)
-        .expect("a load");
-    assert_eq!(again.as_ptr(), current.as_ptr());
-    assert_eq!(current.frame().superseded(), NO_VERSION);
+        .install_loaded(blank, miss, version(3), None)
+        .expect("nothing wrong with the load");
+    assert!(matches!(again, Loaded::Again(_)));
+    drop(again);
+
+    // The reader of version 5 still gets the page, now bounded by the free
+    // link, and a reader of version 6 gets none.
+    let seen = fetch(&pool, &disk, 1, 5).expect("on disk");
+    assert_eq!(seen.frame().superseded(), 6);
+    assert!(fetch(&pool, &disk, 1, 6).is_none());
+    check(&pool, 0);
+}
+
+#[test]
+fn a_load_that_a_page_step_overtook_is_made_again() {
+    let pool = pool(1);
+    let mut disk = Disk::default();
+    disk.write(content(1, 3, 0));
+    disk.write(content(2, 3, 0));
+
+    // A reader misses page 1 and reads it from disk as it is there.
+    let miss = pool.get(page(1), version(5)).expect_err("empty");
+    let (stale, next) = disk.lookup(1, 5).expect("on disk");
+
+    // Background work changes the page in a page step, write-back puts the
+    // change into a segment, and the frame is evicted.
+    let looked = fetch(&pool, &disk, 1, 5).expect("on disk");
+    let mut blank = pool.blank();
+    blank.copy_from(&looked);
+    content(1, 3, 1).write(&mut blank);
+    let step = pool.page_step(page(1));
+    let changed = step.replace(&looked, blank).expect("nothing in the way");
+    drop((step, looked));
+    disk.write(Content::read(&changed));
+    pool.mark_written(&changed).expect("owed");
+    drop(changed);
+    drop(fetch(&pool, &disk, 2, 5));
+    assert!(pool.get(page(1), version(5)).is_err(), "evicted");
+
+    // What the reader read is the page before the step. It is not taken.
+    let mut blank = pool.blank();
+    stale.write(&mut blank);
+    let again = pool
+        .install_loaded(blank, miss, version(stale.born), next.map(version))
+        .expect("nothing wrong with the load");
+    assert!(matches!(again, Loaded::Again(_)));
+    drop(again);
+    assert_eq!(
+        Content::read(&fetch(&pool, &disk, 1, 5).expect("on disk")),
+        content(1, 3, 1)
+    );
     check(&pool, 0);
 }
 
@@ -447,6 +484,7 @@ fn everything_can_be_shown() {
         format!("{:?}", shown.pointer()),
         format!("{:?}", pool.arena),
         format!("{:?}", pool.get(page(5), version(1))),
+        format!("{:?}", Loaded::Again(pool.blank())),
         format!("{:?} {:?}", pool.stats(), pool.census()),
         format!(
             "{:?}",
@@ -468,6 +506,7 @@ fn everything_can_be_shown() {
         "FramePtr",
         "Arena",
         "Miss",
+        "Again",
         "PoolStats",
         "PoolConfig",
     ]) {
