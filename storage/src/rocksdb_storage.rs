@@ -35,10 +35,9 @@ mod tests;
 
 pub use rocksdb::{Error, WriteBatchWithTransaction};
 pub use storage_context::{
-    PrefixedRocksDbBatch, PrefixedRocksDbImmediateStorageContext, PrefixedRocksDbRawIterator,
-    PrefixedRocksDbTransactionContext,
+    AuxKeyspace, MetaKeyspace, PrefixedRocksDbBatch, PrefixedRocksDbImmediateStorageContext,
+    PrefixedRocksDbRawIterator, PrefixedRocksDbTransactionContext,
 };
 
-pub use self::storage::{
-    pending_prefix_drops_namespace, PendingPrefixDropRecord, RocksDbStorage, Tx,
-};
+pub use self::storage::{RocksDbStorage, Tx};
+pub use crate::flat::{pending_prefix_drops_namespace, PendingPrefixDropRecord};

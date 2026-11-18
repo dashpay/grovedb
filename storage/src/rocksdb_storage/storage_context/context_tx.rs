@@ -30,8 +30,8 @@
 
 use error::Error;
 use grovedb_costs::{
-    cost_return_on_error, storage_cost::key_value_cost::KeyValueStorageCost,
-    ChildrenSizesWithIsSumTree, CostResult, CostsExt, OperationCost,
+    storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, CostResult,
+    CostsExt, OperationCost,
 };
 use integer_encoding::VarInt;
 use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode};
@@ -43,7 +43,7 @@ use crate::{
     rocksdb_storage::storage::{
         Db, RawTx, SubtreePrefix, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME,
     },
-    RawIterator, StorageBatch, StorageContext,
+    FlatStore, StorageBatch, StorageContext,
 };
 
 /// Storage context with a prefix applied to be used in a subtree to be used in
@@ -81,18 +81,16 @@ impl<'db> PrefixedRocksDbTransactionContext<'db> {
     /// [`RocksDbStorage::continue_write_batch`](super::super::storage::RocksDbStorage::continue_write_batch)
     /// for the full rationale.
     pub fn clear(&mut self) -> CostResult<(), Error> {
-        let mut cost = OperationCost::default();
+        FlatStore::clear(self)
+    }
 
-        let mut iter = self.raw_iter();
-        iter.seek_to_first().unwrap_add_cost(&mut cost);
-
-        while iter.valid().unwrap_add_cost(&mut cost) {
-            if let Some(key) = iter.key().unwrap_add_cost(&mut cost) {
-                cost_return_on_error!(&mut cost, self.delete(key, None));
-            }
-            iter.next().unwrap_add_cost(&mut cost);
+    /// Get raw iterator over metadata storage, scoped to this context's
+    /// prefix like [`StorageContext::raw_iter`].
+    pub fn raw_iter_meta(&self) -> <Self as StorageContext<'db>>::RawIterator {
+        PrefixedRocksDbRawIterator {
+            prefix: self.prefix,
+            raw_iterator: self.transaction.raw_iterator_cf(self.cf_meta()),
         }
-        Ok(()).wrap_with_cost(cost)
     }
 }
 

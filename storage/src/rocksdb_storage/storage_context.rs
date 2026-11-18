@@ -31,11 +31,13 @@
 mod batch;
 pub mod context_immediate;
 mod context_tx;
+mod flat;
 mod raw_iterator;
 
 pub use batch::PrefixedRocksDbBatch;
 pub use context_immediate::PrefixedRocksDbImmediateStorageContext;
 pub use context_tx::PrefixedRocksDbTransactionContext;
+pub use flat::{AuxKeyspace, MetaKeyspace};
 pub use raw_iterator::PrefixedRocksDbRawIterator;
 
 use super::storage::SubtreePrefix;

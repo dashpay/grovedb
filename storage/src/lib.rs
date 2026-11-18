@@ -31,6 +31,7 @@
 #![deny(missing_docs)]
 
 pub mod error;
+pub mod flat;
 #[cfg(feature = "rocksdb_storage")]
 pub mod rocksdb_storage;
 mod storage;
@@ -38,5 +39,6 @@ pub mod worst_case_costs;
 
 pub use crate::{
     error::Error,
+    flat::FlatStore,
     storage::{Batch, ChildrenSizes, RawIterator, Storage, StorageBatch, StorageContext},
 };
