@@ -304,6 +304,10 @@ impl OperationGuard<'_> {
     }
 }
 
+/// A reader of nodes borrows the guard, so that no page or node it read
+/// outlives it.
+impl lignin_tree::node::OperationGuard for OperationGuard<'_> {}
+
 impl fmt::Debug for OperationGuard<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("OperationGuard").field(&self.epoch).finish()

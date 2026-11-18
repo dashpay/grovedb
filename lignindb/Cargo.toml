@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 lignin-format = { version = "6.1.1", path = "../lignin-format" }
 lignin-store = { version = "6.1.1", path = "../lignin-store" }
+lignin-tree = { version = "6.1.1", path = "../lignin-tree" }
 
 [target.'cfg(loom)'.dependencies]
 loom = "0.7.2"

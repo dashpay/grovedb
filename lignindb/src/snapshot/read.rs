@@ -1,12 +1,13 @@
 //! The handles a reader holds: a snapshot, and one operation of a reader.
 
-use std::fmt;
+use std::{fmt, sync::OnceLock};
 
 use lignin_format::{CommitVersion, PageId};
 use lignin_store::{
     cache::PageRef,
     load::{LoadBuffers, LoadError, PageLoader},
 };
+use lignin_tree::node::{Lease, NodeReader};
 
 use super::{
     error::SnapshotError,
@@ -21,16 +22,26 @@ impl Versions {
         Snapshot {
             pin: self.pin(),
             pages,
+            lease: OnceLock::new(),
         }
     }
 
     /// One operation that holds no version pin, as a write transaction
     /// with an empty write set makes them (PN1, RD4): it takes its guard,
     /// and then reads the latest version, at which it reads its pages.
-    pub fn operation<'s>(&'s self, pages: PageLoader<'s>) -> Operation<'s> {
+    ///
+    /// `lease` is the caller's, for the node handles it keeps from one
+    /// operation to the next. With no pin it takes a new one whenever the
+    /// latest version has moved (PN8, `lignin_tree::node`).
+    pub fn operation<'s>(&'s self, pages: PageLoader<'s>, lease: Lease) -> Operation<'s> {
         let guard = self.guard();
         let at = guard.latest();
-        Operation { guard, at, pages }
+        Operation {
+            guard,
+            at,
+            pages,
+            lease: Leased::By(lease),
+        }
     }
 }
 
@@ -40,9 +51,14 @@ impl Versions {
 /// Every read through it, at any later time and from any thread, is of that
 /// version. No commit that is published later is seen, and neither is
 /// anything uncommitted. It takes no latch and waits for no writer (LT6).
+///
+/// It has one [`Lease`] for its life, under which the node handles read
+/// through it are good (PN8): its version stays pinned for as long as the
+/// lease is used, so a page id names one page for all of them.
 pub struct Snapshot<'s> {
     pin: VersionPin<'s>,
     pages: PageLoader<'s>,
+    lease: OnceLock<Lease>,
 }
 
 impl<'s> Snapshot<'s> {
@@ -56,13 +72,20 @@ impl<'s> Snapshot<'s> {
         &self.pin
     }
 
+    /// The snapshot's lease. It is taken when it is first asked for, so a
+    /// snapshot that keeps no node handle takes none.
+    pub fn lease(&self) -> Lease {
+        *self.lease.get_or_init(Lease::take)
+    }
+
     /// Begins one operation of the snapshot: it holds a guard of its own
-    /// (PN5) and reads at the snapshot's version.
+    /// (PN5) and reads at the snapshot's version, under its lease.
     pub fn operation(&self) -> Operation<'_> {
         Operation {
             guard: self.pin.versions().guard(),
             at: self.version(),
             pages: self.pages,
+            lease: Leased::BySnapshot(&self.lease),
         }
     }
 
@@ -82,16 +105,24 @@ impl fmt::Debug for Snapshot<'_> {
     }
 }
 
+/// Where an operation has its lease from.
+#[derive(Clone, Copy)]
+enum Leased<'o> {
+    By(Lease),
+    BySnapshot(&'o OnceLock<Lease>),
+}
+
 /// One operation of a reader (`transactions.md` section 1): its guard, the
 /// one version it reads at, and the pages of the store.
 ///
 /// The guard was taken before the version was read or chosen. What the
-/// operation reads borrows the operation, so no page, page id or location
-/// it read is used after the guard is gone (PN5).
+/// operation reads borrows the operation, so no page, node, page id or
+/// location it read is used after the guard is gone (PN5).
 pub struct Operation<'o> {
     guard: OperationGuard<'o>,
     at: CommitVersion,
     pages: PageLoader<'o>,
+    lease: Leased<'o>,
 }
 
 impl<'o> Operation<'o> {
@@ -106,10 +137,13 @@ impl<'o> Operation<'o> {
         &self.guard
     }
 
-    /// The read path of the store, for a reader of pages that is given the
-    /// guard and the version beside it.
-    pub fn loader(&self) -> PageLoader<'o> {
-        self.pages
+    /// The lease the operation's node handles are issued and followed
+    /// under: its snapshot's, or the one it was begun with.
+    pub fn lease(&self) -> Lease {
+        match self.lease {
+            Leased::By(lease) => lease,
+            Leased::BySnapshot(lease) => *lease.get_or_init(Lease::take),
+        }
     }
 
     /// The version of `page` that the operation's version sees, pinned in
@@ -119,6 +153,12 @@ impl<'o> Operation<'o> {
     /// read to the next.
     pub fn page(&self, page: PageId, buffers: &mut LoadBuffers) -> Result<PageRef<'_>, LoadError> {
         self.pages.get(page, self.at, buffers)
+    }
+
+    /// The nodes of the store as the operation's version has them, read
+    /// under its guard and its lease.
+    pub fn nodes(&self) -> NodeReader<'_, OperationGuard<'o>> {
+        NodeReader::new(self.pages, &self.guard, self.lease(), self.at)
     }
 }
 
