@@ -294,10 +294,12 @@ fn a_handle_is_followed_while_its_page_keeps_its_cells() {
     assert_eq!((pool.stats().hits, pool.stats().misses), (hits, misses));
 }
 
-/// A page id is given to another page once the first is freed and no reader
+/// A page id is given to another page once the first is freed and no pin
 /// can reach it. The new page counts its departures from 0, so the count of
 /// a handle into the old page can be the new page's count. The lease is
-/// what tells them apart.
+/// what tells them apart: whoever kept the handle gave its lease up when it
+/// let go of the version it read at, and without that the id was not given
+/// away.
 #[test]
 fn a_handle_does_not_reach_the_page_that_took_its_id() {
     let mut disk = Disk::new();
@@ -305,44 +307,91 @@ fn a_handle_does_not_reach_the_page_that_took_its_id() {
     disk.base(1, &family(id));
     let pool = pool();
     let guard = Guard;
-    let loader = disk.loader(&pool);
     let mut buffers = LoadBuffers::new();
 
-    // A snapshot of version 1 keeps a handle into the page.
+    // A snapshot pins version 1 and keeps a handle into the page.
     let snapshot = Lease::take();
-    let old = NodeReader::new(loader, &guard, snapshot, version(1))
+    let loader = disk.loader(&pool);
+    let handle = NodeReader::new(loader, &guard, snapshot, version(1))
         .node(address(7, 1), &mut buffers)
-        .expect("the page loads");
-    let handle = old.handle();
-    assert_eq!((old.node().key(), handle.departures()), (&b"root"[..], 0));
-    drop(old);
+        .expect("the page loads")
+        .handle();
+    assert_eq!(handle.departures(), 0);
 
-    // Commit 2 frees the page, and commit 3 gives its id to a new page,
-    // whose slot 1 holds another node.
+    // Commit 2 frees the page. Its id waits: the snapshot can reach the
+    // page, and reads it, and its handle is good.
     disk.table.push(id, Link::free(version(2))).expect("a link");
     pool.free(id, version(2)).expect("a later version");
-    let mut frame = frame();
-    let mut nodes = NodePageMut::create(&mut frame, SIZE, id, Lease::take(), ()).expect("a page");
-    nodes.insert(&leaf(b"usurper", &[7], b"")).expect("fits");
-    disk.base(3, &frame);
     let loader = disk.loader(&pool);
-
-    // The snapshot still reads its own page, and its handle is good there.
-    let reader = NodeReader::new(loader, &guard, snapshot, version(1));
-    let found = reader
+    let found = NodeReader::new(loader, &guard, snapshot, version(1))
         .resolve(handle, &mut buffers)
         .expect("version 1 of the page is kept")
         .expect("the handle's own page");
     assert_eq!(found.node().key(), b"root");
     drop(found);
 
-    // At version 2 there is no such page.
-    let reader = NodeReader::new(loader, &guard, snapshot, version(2));
+    // The snapshot ends, and with it its pin and its lease. Only now does
+    // commit 3 give the id to a new page, whose slot 1 holds another node.
+    let mut frame = frame();
+    let mut nodes = NodePageMut::create(&mut frame, SIZE, id, Lease::take(), ()).expect("a page");
+    nodes.insert(&leaf(b"usurper", &[7], b"")).expect("fits");
+    disk.base(3, &frame);
+    let loader = disk.loader(&pool);
+
+    // Whoever reads at version 3 has another lease. The handle is refused,
+    // and nothing is read for it.
+    let reader = NodeReader::new(loader, &guard, Lease::take(), version(3));
+    let usurper = reader
+        .node(handle.address(), &mut buffers)
+        .expect("the new page loads");
+    assert_eq!(usurper.node().key(), b"usurper");
+    let (hits, misses) = (pool.stats().hits, pool.stats().misses);
     assert!(reader
+        .resolve(handle, &mut buffers)
+        .expect("nothing is read")
+        .is_none());
+    assert_eq!((pool.stats().hits, pool.stats().misses), (hits, misses));
+    assert!(usurper.page().view().resolve(handle).is_none());
+
+    // The count could not have told: the new page has the handle's count
+    // and a cell in the handle's slot. Under the lease that was given up,
+    // the handle would lead to the wrong node.
+    let new = usurper.handle();
+    assert_eq!(
+        (new.address(), new.departures()),
+        (handle.address(), handle.departures())
+    );
+    let under_the_old_lease =
+        NodePage::open(usurper.page().frame(), snapshot).expect("a tree page");
+    let wrong = under_the_old_lease.resolve(handle).expect("the count fits");
+    assert_eq!(wrong.key(), b"usurper");
+}
+
+/// A handle whose page is no page any more, or a flat page, finds nothing,
+/// from a load and from the pool. That is what a holder meets that reads
+/// on at the latest version with no pin, before it has taken its new lease.
+#[test]
+fn a_handle_finds_nothing_where_its_page_is_gone_or_flat() {
+    let mut disk = Disk::new();
+    let id = page(7);
+    disk.base(1, &family(id));
+    disk.table.push(id, Link::free(version(2))).expect("a link");
+    disk.image(id, 3, &flat(id));
+    let pool = pool();
+    let (guard, lease) = (Guard, Lease::take());
+    let loader = disk.loader(&pool);
+    let reader = |at| NodeReader::new(loader, &guard, lease, version(at));
+    let mut buffers = LoadBuffers::new();
+    let handle = reader(1)
+        .node(address(7, 1), &mut buffers)
+        .expect("the page loads")
+        .handle();
+
+    assert!(reader(2)
         .resolve(handle, &mut buffers)
         .expect("a page that was freed is no error")
         .is_none());
-    let error = reader
+    let error = reader(2)
         .pin(id, &mut buffers)
         .expect_err("the page was freed");
     assert!(matches!(
@@ -350,34 +399,87 @@ fn a_handle_does_not_reach_the_page_that_took_its_id() {
         NodeError::Load(LoadError::NoPage { freed: Some(at), .. }) if at == version(2)
     ));
 
-    // A reader of version 3 has another lease: whoever read at version 1
-    // and now reads at 3 has let go of version 1, or the id could not have
-    // been given away. The handle is refused, though the new page has its
-    // count and a cell in its slot.
-    let reader = NodeReader::new(loader, &guard, Lease::take(), version(3));
-    let usurper = reader
-        .node(handle.address(), &mut buffers)
-        .expect("the new page loads");
-    assert_eq!(usurper.node().key(), b"usurper");
-    assert_eq!(usurper.handle().departures(), handle.departures());
-    assert_ne!(usurper.handle(), handle);
-    assert!(usurper.page().view().resolve(handle).is_none());
-    assert!(reader
-        .resolve(handle, &mut buffers)
-        .expect("nothing is read")
-        .is_none());
-    drop(usurper);
-
-    // The id can also go to a flat page, which has no nodes at all.
-    disk.table.push(id, Link::free(version(4))).expect("a link");
-    pool.free(id, version(4)).expect("a later version");
-    disk.image(id, 5, &flat(id));
-    let loader = disk.loader(&pool);
-    let reader = NodeReader::new(loader, &guard, snapshot, version(5));
-    assert!(reader
+    let misses = pool.stats().misses;
+    assert!(reader(3)
         .resolve(handle, &mut buffers)
         .expect("a flat page is no error")
         .is_none());
+    assert_eq!(pool.stats().misses, misses + 1);
+    let hits = pool.stats().hits;
+    assert!(reader(3)
+        .resolve(handle, &mut buffers)
+        .expect("a flat page is no error")
+        .is_none());
+    assert_eq!(
+        (pool.stats().hits, pool.stats().misses),
+        (hits + 1, misses + 1)
+    );
+    let error = reader(3).pin(id, &mut buffers).expect_err("a flat page");
+    assert!(matches!(
+        error,
+        NodeError::Page(FormatError::UnknownRecordKind { .. })
+    ));
+}
+
+/// A frame of the pool that holds no page of a kind there is, or a tree
+/// page of another id, is damage. It is an error for a handle as for an
+/// address, never a handle that went stale.
+#[test]
+fn a_frame_that_holds_the_wrong_thing_is_an_error() {
+    let disk = Disk::new();
+    let pool = pool();
+    let (guard, lease) = (Guard, Lease::take());
+    let owner = OwnerId::new(1);
+    let mut buffers = LoadBuffers::new();
+
+    let unknown = pool.new_private(owner, page(20)).expect("a new page");
+    unknown.write().expect("the copy is private")[0] = 0x7F;
+    pool.install(&unknown, version(1)).expect("the commit");
+    let other = pool.new_private(owner, page(21)).expect("a new page");
+    {
+        let mut latch = other.write().expect("the copy is private");
+        let mut nodes = NodePageMut::create(&mut latch, SIZE, page(22), lease, ()).expect("a page");
+        nodes.insert(&leaf(b"elsewhere", &[], b"")).expect("fits");
+    }
+    pool.install(&other, version(1)).expect("the commit");
+
+    let reader = NodeReader::new(disk.loader(&pool), &guard, lease, version(1));
+    let handle = NodeHandle::new(address(20, 1), 0, lease);
+    let error = reader
+        .resolve(handle, &mut buffers)
+        .expect_err("no kind of page");
+    assert!(matches!(
+        error,
+        NodeError::Page(FormatError::UnknownRecordKind { code: 0x7F })
+    ));
+    let error = reader
+        .pin(page(20), &mut buffers)
+        .expect_err("no kind of page");
+    assert!(matches!(
+        error,
+        NodeError::Page(FormatError::UnknownRecordKind { code: 0x7F })
+    ));
+
+    let handle = NodeHandle::new(address(21, 1), 0, lease);
+    let wrong_page = |error| {
+        matches!(
+            error,
+            NodeError::WrongPage { found, expected } if (found, expected) == (page(22), page(21))
+        )
+    };
+    let error = reader
+        .resolve(handle, &mut buffers)
+        .expect_err("another page's bytes");
+    assert_eq!(
+        error.to_string(),
+        format!("the frame of {} holds {}", page(21), page(22))
+    );
+    assert!(std::error::Error::source(&error).is_none());
+    assert!(wrong_page(error));
+    let error = reader
+        .node(handle.address(), &mut buffers)
+        .expect_err("another page's bytes");
+    assert!(wrong_page(error));
 }
 
 #[test]
@@ -460,11 +562,10 @@ fn a_write_transaction_changes_its_private_copy_under_the_copys_latch() {
         .is_none());
 }
 
-/// Background work changes how a page version is stored and never what it
-/// says: it takes no cell out of a page, so the handles into the page stay
-/// good.
+/// The value log's cleaner moves a value and rewrites its pointer in a page
+/// step. No cell leaves the page, so the handles into the page stay good.
 #[test]
-fn a_page_step_keeps_the_handles_into_its_page() {
+fn a_value_pointer_rewrite_keeps_the_handles_into_its_page() {
     let mut disk = Disk::new();
     let id = page(7);
     let mut frame = frame();
@@ -533,4 +634,65 @@ fn a_page_that_cannot_be_read_is_an_error_and_not_a_stale_handle() {
         .node(handle.address(), &mut buffers)
         .expect_err("the block holds another page");
     assert!(matches!(error, NodeError::Load(LoadError::Payload { .. })));
+}
+
+/// A page step also takes out what a dropped subtree left in a page that it
+/// shares with live cells. That is a departure: the handles into the page
+/// end, those of the cells that stay among them, and a pin that was taken
+/// before the step keeps the page as it was.
+#[test]
+fn a_page_step_that_takes_a_cell_out_ends_the_handles_into_its_page() {
+    let mut disk = Disk::new();
+    let id = page(7);
+    let mut frame = frame();
+    let mut nodes = NodePageMut::create(&mut frame, SIZE, id, Lease::take(), ()).expect("a page");
+    nodes
+        .insert(&leaf(b"dropped", &[1], b"left behind"))
+        .expect("fits");
+    nodes.insert(&leaf(b"live", &[2], b"stays")).expect("fits");
+    disk.base(1, &frame);
+    let pool = pool();
+    let (guard, lease) = (Guard, Lease::take());
+    let reader = NodeReader::new(disk.loader(&pool), &guard, lease, version(1));
+    let mut buffers = LoadBuffers::new();
+    let before = reader
+        .node(address(7, 2), &mut buffers)
+        .expect("the page loads");
+    let handle = before.handle();
+
+    let step = pool.page_step(id);
+    let current = step.current().expect("the page is in the pool");
+    let mut blank = pool.blank();
+    blank.copy_from(&current);
+    NodePageMut::open(&mut blank, SIZE, Lease::take(), ())
+        .expect("a tree page")
+        .node_mut(slot(1))
+        .expect("a node")
+        .remove()
+        .expect("it leaves");
+    step.replace(&current, blank)
+        .expect("the step goes through");
+    drop((step, current));
+
+    assert!(reader
+        .resolve(handle, &mut buffers)
+        .expect("the page is in the pool")
+        .is_none());
+    let after = reader
+        .node(handle.address(), &mut buffers)
+        .expect("the live node is where it was");
+    assert_eq!(after.node().key(), b"live");
+    assert_eq!(after.page().view().len(), 1);
+    let renewed = after.handle();
+    assert_eq!(
+        (renewed.address(), renewed.departures()),
+        (handle.address(), 1)
+    );
+    assert!(reader
+        .resolve(renewed, &mut buffers)
+        .expect("the page is in the pool")
+        .is_some());
+
+    assert_eq!(before.page().view().len(), 2);
+    assert_eq!(before.page().view().resolve(handle), Some(before.node()));
 }

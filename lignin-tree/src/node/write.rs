@@ -54,7 +54,8 @@ impl<S: ChangeSink + ?Sized> ChangeSink for &mut S {
 /// hash, a child's address, a mark, and a link, feature or value that takes
 /// the room of the one before it are written where they are and allocate
 /// nothing. A change that gives a cell another length lays the cell out
-/// again, which allocates in the codec.
+/// again, and a cell that arrives where the end of the page has no room
+/// makes the page gather its unused bytes: both allocate in the codec.
 ///
 /// A slot keeps its node through every change but [`NodeMut::remove`], which
 /// is the one change that ends the handles into the page.

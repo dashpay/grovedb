@@ -8,30 +8,38 @@ use lignin_store::load::FRAME_FORMAT;
 
 use super::*;
 
-/// Writes what it is told into the run of one page.
+/// Writes what it is told into the run of one page, and nothing that it
+/// was not told: the record that creates the page is there only if the page
+/// said that it was created.
 struct Run<'o> {
     page: PageId,
-    created: Option<u64>,
-    writer: DeltaRunWriter<'o>,
+    out: Option<&'o mut Vec<u8>>,
+    writer: Option<DeltaRunWriter<'o>>,
+    created: usize,
     count: usize,
 }
 
 impl<'o> Run<'o> {
-    /// A run of `page`, which it creates with a count of `created`.
-    fn of(page: PageId, created: Option<u64>, out: &'o mut Vec<u8>) -> Self {
+    fn of(page: PageId, out: &'o mut Vec<u8>) -> Self {
         Self {
             page,
-            created,
-            writer: DeltaRunWriter::new(page, created, out),
+            out: Some(out),
+            writer: None,
+            created: 0,
             count: 0,
         }
+    }
+
+    fn start(&mut self, created: Option<u64>) {
+        let out = self.out.take().expect("a run is started once");
+        self.writer = Some(DeltaRunWriter::new(self.page, created, out));
     }
 
     /// Ends the run, if anything was told, and returns how many changes
     /// were.
     fn finish(self) -> usize {
-        if self.count > 0 {
-            self.writer.finish().expect("a run");
+        if let Some(writer) = self.writer {
+            writer.finish().expect("a run");
         }
         self.count
     }
@@ -39,15 +47,18 @@ impl<'o> Run<'o> {
 
 impl ChangeSink for Run<'_> {
     fn created(&mut self, page: PageId, departures: u64) {
-        assert_eq!(
-            (page, Some(departures), self.count),
-            (self.page, self.created, 0)
-        );
+        assert_eq!((page, self.count), (self.page, 0));
+        self.start(Some(departures));
+        self.created += 1;
     }
 
     fn changed(&mut self, page: PageId, change: &Delta<'_>) {
         assert_eq!(page, self.page);
-        self.writer
+        if self.writer.is_none() {
+            self.start(None);
+        }
+        let writer = self.writer.as_mut().expect("the run was started");
+        writer
             .push(change)
             .expect("a record that a page took is one a run takes");
         self.count += 1;
@@ -101,7 +112,7 @@ fn every_change_is_made_and_told() {
     let id = page(6);
     let mut frame = frame();
     let mut run = Vec::new();
-    let mut sink = Run::of(id, Some(0), &mut run);
+    let mut sink = Run::of(id, &mut run);
     let mut nodes = NodePageMut::create(&mut frame, SIZE, id, lease, &mut sink).expect("a page");
 
     let parent = nodes
@@ -189,12 +200,12 @@ fn every_change_is_made_and_told() {
         .expect("fits");
     assert_eq!((carried.slot(), carried.departures()), (child.slot(), 1));
 
-    assert_eq!(sink.finish(), 23);
+    assert_eq!((sink.created, sink.finish()), (1, 23));
     assert_eq!(replayed(id, None, &run), image(&frame));
 
     let base = image(&frame);
     let mut run = Vec::new();
-    let mut sink = Run::of(id, None, &mut run);
+    let mut sink = Run::of(id, &mut run);
     let mut nodes = NodePageMut::open(&mut frame, SIZE, lease, &mut sink).expect("a tree page");
     nodes
         .node_mut(slot(1))
@@ -202,8 +213,36 @@ fn every_change_is_made_and_told() {
         .set_value(CellValue::Inline(b""))
         .expect("an empty value");
     nodes.insert(&leaf(b"new", &[], b"")).expect("fits");
-    assert_eq!(sink.finish(), 2);
+    assert_eq!((sink.created, sink.finish()), (0, 2));
     assert_eq!(replayed(id, Some(&base), &run), image(&frame));
+}
+
+/// A page that was started and not changed is told too: its run is the
+/// record that creates it.
+#[test]
+fn a_page_that_is_started_is_told() {
+    let id = page(6);
+    let mut frame = frame();
+    frame.fill(0xEE);
+    let mut run = Vec::new();
+    let mut sink = Run::of(id, &mut run);
+    let nodes =
+        NodePageMut::create(&mut frame, SIZE, id, Lease::take(), &mut sink).expect("a page");
+    assert!(nodes.view().is_empty());
+    assert_eq!((sink.created, sink.finish()), (1, 0));
+
+    let told = DeltaRun::decode(&run, FRAME_FORMAT).expect("a run");
+    assert_eq!(
+        (told.page(), told.created(), told.deltas().len()),
+        (id, Some(0), 0)
+    );
+    assert_eq!(replayed(id, None, &run), image(&frame));
+
+    let mut run = Vec::new();
+    let mut sink = Run::of(id, &mut run);
+    NodePageMut::open(&mut frame, SIZE, Lease::take(), &mut sink).expect("a tree page");
+    assert_eq!((sink.created, sink.finish()), (0, 0));
+    assert!(run.is_empty());
 }
 
 /// Whatever is done to a page, the changes that were told bring the page it
@@ -221,7 +260,7 @@ fn the_changes_that_are_told_rebuild_the_page() {
         let base = image(&frame);
         let before = frame.clone();
         let mut run = Vec::new();
-        let mut sink = Run::of(id, None, &mut run);
+        let mut sink = Run::of(id, &mut run);
         let mut nodes = NodePageMut::open(&mut frame, SIZE, lease, &mut sink).expect("a tree page");
         for _ in 0..rng.below(12) {
             let occupied: Vec<_> = nodes.view().nodes().map(|node| node.handle()).collect();
@@ -301,7 +340,7 @@ fn a_change_that_is_refused_changes_nothing_and_is_not_told() {
     let before = frame.clone();
 
     let mut run = Vec::new();
-    let mut sink = Run::of(id, None, &mut run);
+    let mut sink = Run::of(id, &mut run);
     let mut nodes = NodePageMut::open(&mut frame, SIZE, lease, &mut sink).expect("a tree page");
     let refused = |result: Result<(), NodeError>| match result {
         Err(NodeError::Page(FormatError::TreePage(error))) => error,
@@ -400,8 +439,12 @@ fn a_node_is_opened_for_changes_by_its_slot_or_by_its_handle() {
     assert!(nodes.resolve_mut(renewed).is_some());
 }
 
-/// A cell is carried by putting its bytes into the page it goes to, taking
-/// it out of the page it leaves, and rewriting the one address of it.
+/// The steps of a carry that are made in pages: the cell's bytes go into
+/// the page it goes to, the cell leaves the page it was in, and the address
+/// in its parent is rewritten. The cell arrives as it was, so its value
+/// pointer is still the one whose record names the page it left: appending
+/// the value again for the new page is the rest of a carry, and not made
+/// here (`tree-layout.md` X1).
 #[test]
 fn a_cell_is_carried_to_another_page_as_its_bytes() {
     let lease = Lease::take();

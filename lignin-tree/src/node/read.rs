@@ -3,10 +3,10 @@
 
 use std::fmt;
 
-use lignin_format::{CellAddress, CommitVersion, FormatError, PageId, SlotId};
+use lignin_format::{flat_page::FlatPageKind, CellAddress, CommitVersion, PageId, SlotId};
 use lignin_store::{
     cache::PageRef,
-    load::{LoadBuffers, LoadError, PageLoader},
+    load::{LoadBuffers, LoadError, PageLoader, FRAME_FORMAT},
 };
 
 use super::{
@@ -30,6 +30,18 @@ pub trait OperationGuard {}
 /// It borrows the operation's guard, and what it hands out borrows it too:
 /// a page or a node that was read here does not outlive the guard it was
 /// read under.
+///
+/// A read takes a pin on a frame of the buffer pool and allocates nothing
+/// itself. What the store allocates for it:
+///
+/// - nothing, when the page is in the pool
+/// - nothing for a load, once `buffers` have grown to what the page's
+///   blocks need, unless a record of the page's chain makes the page codec
+///   lay a cell out again or gather the page's unused bytes
+/// - a frame beside the pool's fixed ones, when the page is not in the pool
+///   and no frame can be evicted because every one is pinned, private or
+///   not yet written back. A reader that keeps pages pinned, as a cursor
+///   keeps its parent stack, takes that into the size of its pool
 pub struct NodeReader<'r, G: ?Sized> {
     loader: PageLoader<'r>,
     guard: &'r G,
@@ -76,9 +88,11 @@ impl<'r, G: OperationGuard + ?Sized> NodeReader<'r, G> {
     /// The tree page `page` as the reader's version has it, pinned: from the
     /// pool if it is there, and otherwise loaded.
     ///
-    /// `buffers` is what a load reads into. The caller keeps it from one
-    /// read to the next, and then a read allocates nothing unless a record
-    /// of the page's chain changes the length of a cell.
+    /// `buffers` is what a load reads into, kept by the caller from one
+    /// read to the next.
+    ///
+    /// A frame that holds a tree page of another id than the one it is the
+    /// frame of is refused ([`NodeError::WrongPage`]).
     pub fn pin(
         &self,
         page: PageId,
@@ -103,10 +117,13 @@ impl<'r, G: OperationGuard + ?Sized> NodeReader<'r, G> {
     }
 
     /// The node `handle` names, or `None` if the handle is no longer good:
-    /// it is of another lease, its page is not a tree page at the reader's
-    /// version, or a cell has left the page since the handle was issued.
+    /// it is of another lease, its page is no page or a flat page at the
+    /// reader's version, or a cell has left the page since the handle was
+    /// issued.
     ///
-    /// The caller then finds the node by its key.
+    /// The caller then finds the node by its key. A page that cannot be
+    /// read, or a frame that holds neither a tree page nor a flat page, is
+    /// an error and not a handle that went stale.
     pub fn resolve(
         &self,
         handle: NodeHandle,
@@ -115,14 +132,18 @@ impl<'r, G: OperationGuard + ?Sized> NodeReader<'r, G> {
         if handle.lease() != self.lease {
             return Ok(None);
         }
-        let page = match self.pin(handle.page(), buffers) {
-            Ok(page) => page,
-            Err(
-                NodeError::Load(LoadError::NoPage { .. })
-                | NodeError::Page(FormatError::UnknownRecordKind { .. }),
-            ) => return Ok(None),
-            Err(error) => return Err(error),
+        let frame = match self.loader.get(handle.page(), self.at, buffers) {
+            Ok(frame) => frame,
+            Err(LoadError::NoPage { .. }) => return Ok(None),
+            Err(error) => return Err(error.into()),
         };
+        let is_flat = frame
+            .first()
+            .is_some_and(|&kind| FlatPageKind::from_code(kind, FRAME_FORMAT).is_ok());
+        if is_flat {
+            return Ok(None);
+        }
+        let page = PinnedPage::new(frame, self.lease)?;
         let followed = page.view().resolve(handle).is_some();
         Ok(followed.then_some(PinnedNode {
             page,
@@ -160,7 +181,11 @@ pub struct PinnedPage<'r> {
 
 impl<'r> PinnedPage<'r> {
     fn new(frame: PageRef<'r>, lease: Lease) -> Result<Self, NodeError> {
-        NodePage::open(&frame, lease)?;
+        let found = NodePage::open(&frame, lease)?.id();
+        let expected = frame.page();
+        if found != expected {
+            return Err(NodeError::WrongPage { found, expected });
+        }
         Ok(Self { frame, lease })
     }
 

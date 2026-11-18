@@ -64,7 +64,7 @@
 //!
 //! # Reading
 //!
-//! A node is read in three steps, and none of them allocates:
+//! A node is read in three steps:
 //!
 //! 1. The frame. [`NodeReader::pin`] takes the page version from the buffer
 //!    pool, or loads it (`lignin_store::load`). A write transaction reads
@@ -75,9 +75,21 @@
 //!    the frame, and the value's bytes are not touched unless they are
 //!    asked for.
 //!
-//! A load reads into the caller's [`LoadBuffers`]. Once they have grown, a
-//! load allocates nothing either, unless a record of the page's chain
-//! changes the length of a cell, which allocates in the page codec.
+//! **Reading a node allocates nothing.** Steps 2 and 3 never allocate,
+//! whatever the page holds, and neither does following a handle. Step 1
+//! allocates nothing in this module. What the store allocates to get the
+//! frame is the store's to say, and comes to this:
+//!
+//! - nothing when the page is in the pool
+//! - nothing for a load once the caller's [`LoadBuffers`] have grown to
+//!   what the page's blocks need, unless a record of the page's chain makes
+//!   the page codec lay a cell out again or gather the page's unused bytes:
+//!   a cell that changes its length, or one that arrives where the end of
+//!   the page has no room for it
+//! - one frame beside the pool's fixed ones for a page that is not in the
+//!   pool when no frame can be evicted, because every one is pinned,
+//!   private or not yet written back. A reader that keeps pages pinned, as
+//!   a cursor keeps its parent stack, has to count them into its pool
 //!
 //! **Bytes behind a view do not change** (`transactions.md` LT2). A view
 //! borrows from what keeps its frame still: a [`PinnedPage`], whose page
@@ -85,10 +97,15 @@
 //! borrow is the proof, so a view cannot be held across a change to its
 //! frame.
 //!
-//! **A view lives inside its operation's guard** (PN5). [`NodeReader`]
-//! borrows the guard, and a [`PinnedPage`] or [`PinnedNode`] borrows it
-//! through the reader. The guard is [`OperationGuard`], which whoever keeps
-//! the guards implements (TXN-02).
+//! **A view lives inside its operation's guard** (PN5). For committed
+//! pages the types see to it: [`NodeReader`] borrows the guard, and a
+//! [`PinnedPage`] or [`PinnedNode`] borrows it through the reader. The
+//! guard is [`OperationGuard`], which whoever keeps the guards implements
+//! (TXN-02). A view that is opened on bytes directly ([`NodePage::open`],
+//! [`NodePageMut::open`]), as on the latch of a private copy, is bound to
+//! nothing but those bytes: its caller holds the operation's guard for as
+//! long as it uses the view or an address it read through it, and gives the
+//! latch back within the physical step (LT3).
 //!
 //! # Addresses and handles
 //!
@@ -113,22 +130,32 @@
 //! | the page got a new version by a commit that took no cell out of it | is good |
 //! | a value pointer in the page was rewritten, or a pending value placed | is good |
 //! | its cell was deleted, or carried to another page | ends: the count moved |
-//! | another cell left the page | ends: the count moved. The node is still in its slot, and a view of it gives a new handle |
+//! | another cell left the page, by a write or by the removal of what a dropped subtree left | ends: the count moved. The node is still in its slot, and a view of it gives a new handle |
 //! | the page was freed | ends: there is no page, or another one (see below) |
 //! | the lease ended | ends |
 //!
-//! **Page id reuse.** The count is the page's own. A page that is created
-//! under a reused id starts again at 0, so a handle that outlived its page
-//! could meet its own count in a page it was never read from. And a frame
-//! that a rollback puts back to an earlier state counts on from that state:
-//! the count a handle was issued at can come again with another cell in the
-//! slot. Neither is left to the count. A handle is good only under its
-//! [`Lease`], and a lease ends before either can be seen: its holder keeps
-//! pinned the oldest version it reads at, which holds back the reuse of
-//! every page id it can see (`transactions.md` ID2), and takes a new lease
-//! when a frame goes back. So no handle outlives the write that could free
-//! its page, and a handle that is kept past its lease is refused, not
-//! followed.
+//! **What the count cannot tell, and the lease does.** The count is the
+//! page's own, and it tells the states of a page apart along one line of
+//! descent only. Three histories leave that line:
+//!
+//! - *Page id reuse.* A page that is created under a reused id starts again
+//!   at 0, so a handle that outlived its page could meet its own count in a
+//!   page it was never read from.
+//! - *A frame that goes back.* A frame that a rollback puts back to an
+//!   earlier state counts on from that state: the count a handle was issued
+//!   at can come again with another cell in the slot.
+//! - *Two copies side by side.* A cell that arrives does not move the
+//!   count. Two private copies of one page, or a private copy and a later
+//!   committed version, can each put a cell into the same free slot at the
+//!   same count.
+//!
+//! None of them is left to the count. A handle is good only under its
+//! [`Lease`], and a lease is given up before any of the three can be seen:
+//! its holder keeps pinned the oldest version it reads at, which holds back
+//! the reuse of every page id it can see (`transactions.md` ID2), takes a
+//! new lease when a frame goes back, and gives each of two copies a lease
+//! of its own. So no handle outlives the write that could free its page,
+//! and a handle that is kept past its lease is refused, not followed.
 //!
 //! # Changing
 //!
@@ -146,10 +173,14 @@
 //! | the whole cell, for the same node | [`NodeMut::replace`] | no |
 //! | the node leaves | [`NodeMut::remove`] | yes |
 //!
-//! A cell is carried by [`NodePageMut::insert_cell`] in the page it goes to
-//! and [`NodeMut::remove`] in the page it leaves, and then the one stored
-//! address of it is rewritten ([`NodeMut::set_child`],
-//! [`NodeMut::set_hosted_root`]). Which cells are carried, and when, is
+//! The steps of carrying a cell that are made in pages are
+//! [`NodePageMut::insert_cell`] in the page it goes to,
+//! [`NodeMut::remove`] in the page it leaves, and the rewriting of the
+//! address in the cell that points at it ([`NodeMut::set_child`],
+//! [`NodeMut::set_hosted_root`]). A carry is more than those: the root of
+//! a Merk also has its directory entry rewritten (`tree-layout.md` S3,
+//! TREE-05), and a value out of line is appended again with the new page
+//! as its owner (X1, TREE-08). Which cells are carried, and when, is
 //! TREE-03's.
 //!
 //! Every change that a page took is told to the page's [`ChangeSink`], as
@@ -161,13 +192,17 @@
 //! - **Every change to a tree page goes through [`NodePageMut`]**, or
 //!   through the page codec with the same care: a slot is given to another
 //!   node only after a removal (`tree-page.md` W1).
-//! - **A holder of handles keeps its lease's two rules** ([`Lease`]): it
-//!   reads from a version it keeps pinned, and it takes a new lease when it
-//!   gives up that pin, or when a frame it reads is put back or replaced: a
-//!   rebase, a rollback, a rollback to a savepoint, a scope rollback, the
-//!   reconciliation of a scope merge (`transactions.md` PN8). A write
-//!   transaction that has written nothing pins nothing, so it takes a new
-//!   lease with every commit it sees.
+//! - **A holder of handles keeps its lease to one line of descent**
+//!   ([`Lease`]). It keeps pinned the oldest version it reads at, or reads
+//!   at the latest version only and takes a new lease when that has moved,
+//!   as a write transaction that has written nothing does. It takes a new
+//!   lease when a frame it reads is put back: a rollback, a rollback to a
+//!   savepoint, a scope rollback. It gives each write scope a lease of its
+//!   own, and takes a new one when it rebases or reconciles a merged scope
+//!   (`transactions.md` PN8).
+//! - **Background work takes a cell out of the current version of a page
+//!   only**, as the pool's page step does (PV7). A version that is no
+//!   longer current keeps its cells and its count.
 //! - **A reader holds an operation guard** for as long as it uses what it
 //!   read, taken before it reads the latest version (PN5).
 //! - **A writer holds the exclusive latch** of the copy it changes for one

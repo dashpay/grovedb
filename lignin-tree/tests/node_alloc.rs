@@ -5,6 +5,12 @@
 //! page that is in the buffer pool, from a page that has to be loaded from
 //! its segments first, by a stored address, by a kept handle, and from the
 //! private copy of a write transaction.
+//!
+//! What the store allocates to get a frame is counted with it. A load
+//! allocates nothing here: the buffers have grown, and the runs hold
+//! changes the page codec makes where they are. The one case in which the
+//! store allocates is measured on its own: a page that is not in the pool
+//! while every frame is pinned gets a frame beside the fixed ones.
 
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -307,6 +313,38 @@ fn reading_a_node_allocates_nothing() {
         first.0 + second.0
     );
     assert_eq!(allocations, 0);
+
+    // A page that is not in the pool, while every frame of the pool is
+    // pinned: the pool takes a frame beside its fixed ones, which is the
+    // one allocation a read can cost. Reading the nodes of the page costs
+    // none.
+    let held = [1, 2].map(|raw| reader.pin(page(raw), &mut buffers).expect("the page loads"));
+    let overflows = small.stats().overflows;
+    let before = ALLOCATIONS.get();
+    let beside = reader.pin(page(3), &mut buffers).expect("the page loads");
+    let for_the_frame = ALLOCATIONS.get() - before;
+    assert_eq!(small.stats().overflows, overflows + 1);
+    assert!(for_the_frame > 0);
+    let before = ALLOCATIONS.get();
+    let (mut read_nodes, mut total) = (0, 0);
+    for node in beside.view().nodes() {
+        total += read(&node);
+        total += read(
+            &beside
+                .view()
+                .resolve(node.handle())
+                .expect("no cell has left"),
+        );
+        read_nodes += 2;
+    }
+    let allocations = ALLOCATIONS.get() - before;
+    println!(
+        "a page beside a pool whose frames are all pinned: {for_the_frame} allocations for \
+         the frame, {read_nodes} nodes read, {allocations} allocations"
+    );
+    assert!(total > 0);
+    assert_eq!(allocations, 0);
+    drop((held, beside));
 
     // A write transaction reads its private copy under the copy's latch,
     // and changes it where a change takes the room of what was there.

@@ -179,6 +179,16 @@ fn an_error_says_what_was_refused() {
     assert_eq!(missing.to_string(), format!("no node at {}", address(7, 3)));
     assert!(missing.source().is_none());
 
+    let wrong = NodeError::WrongPage {
+        found: page(2),
+        expected: page(1),
+    };
+    assert_eq!(
+        wrong.to_string(),
+        format!("the frame of {} holds {}", page(1), page(2))
+    );
+    assert!(wrong.source().is_none());
+
     let page: NodeError = FormatError::MissingId.into();
     assert_eq!(
         page.to_string(),

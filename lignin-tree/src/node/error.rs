@@ -2,7 +2,7 @@
 
 use std::{error::Error, fmt};
 
-use lignin_format::{CellAddress, FormatError};
+use lignin_format::{CellAddress, FormatError, PageId};
 use lignin_store::load::LoadError;
 
 /// Why a node was not read or not changed.
@@ -19,6 +19,14 @@ pub enum NodeError {
         /// The address.
         address: CellAddress,
     },
+    /// The frame that the buffer pool has for a page holds a tree page of
+    /// another id.
+    WrongPage {
+        /// The id in the page's header.
+        found: PageId,
+        /// The page that was asked for.
+        expected: PageId,
+    },
 }
 
 impl fmt::Display for NodeError {
@@ -27,6 +35,9 @@ impl fmt::Display for NodeError {
             Self::Page(error) => write!(f, "tree page: {error}"),
             Self::Load(error) => write!(f, "page load: {error}"),
             Self::NoNode { address } => write!(f, "no node at {address}"),
+            Self::WrongPage { found, expected } => {
+                write!(f, "the frame of {expected} holds {found}")
+            }
         }
     }
 }
@@ -36,7 +47,7 @@ impl Error for NodeError {
         match self {
             Self::Page(error) => Some(error),
             Self::Load(error) => Some(error),
-            Self::NoNode { .. } => None,
+            Self::NoNode { .. } | Self::WrongPage { .. } => None,
         }
     }
 }
