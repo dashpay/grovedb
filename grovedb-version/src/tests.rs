@@ -89,6 +89,7 @@ fn v5_matches_v4_apart_from_its_gates() {
     operations.worst_case.worst_case_merk_insert_element = 0;
     operations.proof.count_offset_reference_empty_tree_rows = 0;
     operations.proof.unreported_empty_tree_row_charge = 0;
+    operations.proof.subquery_descent_on_key = 0;
     operations
         .insert
         .provable_count_provable_big_sum_tree_creation = 0;

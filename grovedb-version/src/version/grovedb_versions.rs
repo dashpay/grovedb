@@ -673,6 +673,24 @@ pub struct GroveDBOperationsProofVersions {
     /// a proof accepted before. The prover does not read this slot: proof
     /// bytes are the same at both values.
     pub unreported_empty_tree_row_charge: FeatureVersion,
+    /// How the V1 prover and verifier decide that a query goes below a key,
+    /// that is, whether a tree there is descended into or is itself a result
+    /// row. Both read this slot.
+    ///
+    /// 0 (V1..V4, as 6.1.1 shipped): a key descends whenever the layer's
+    /// query has a default subquery or any conditional branch matches it,
+    /// even a branch with neither a subquery nor a subquery path
+    /// (`add_conditional_subquery(item, None, None)`), which the trusted read
+    /// treats as "return this element". An empty tree at such a key is then
+    /// an empty child: never reported, and charged against the global limit
+    /// only, so a page under a per-instance cap runs past the trusted
+    /// read's. A populated tree there cannot be proved. 1: a key descends
+    /// only when the query has something below it
+    /// (`PathQuery::query_items_at_path`), so a tree at such a key is a
+    /// result row, charged and reported like any other. Gated because it
+    /// changes the proof emitted for such a query, turns a refused proof
+    /// request into a served one, and changes the rows a verifier returns.
+    pub subquery_descent_on_key: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

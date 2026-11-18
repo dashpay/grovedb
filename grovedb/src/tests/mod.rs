@@ -37,6 +37,7 @@ mod chunk_proof_row_binding_tests;
 mod clear_append_tree_tests;
 mod commitment_tree_cost_bound_tests;
 mod commitment_tree_tests;
+mod conditional_branch_without_subquery_tests;
 mod coverage_round7_tests;
 mod non_merk_completeness_budget_tests;
 mod non_merk_subtree_discovery_tests;

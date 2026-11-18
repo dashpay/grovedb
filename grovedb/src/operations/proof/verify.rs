@@ -2099,6 +2099,19 @@ impl GroveDb {
                         continue;
                     }
 
+                    // Whether the query goes below this key, which decides
+                    // if a tree without a lower layer is an empty child or
+                    // a result row. The prover classifies it through the
+                    // same function (`proof.subquery_descent_on_key`).
+                    let descends = element.is_any_tree()
+                        && Self::query_descends_on_key(
+                            query,
+                            &internal_query,
+                            current_path,
+                            key,
+                            grove_version,
+                        )?;
+
                     if let Some(lower_layer) = lower_layers.get(key) {
                         // MmrTree/BulkAppendTree have root_key=None (no child Merk data),
                         // so they match on (..) rather than (Some(_), ..)
@@ -2726,7 +2739,7 @@ impl GroveDb {
                             }
                         }
                     } else if element.is_any_item()
-                        || !internal_query.has_subquery_or_matching_in_path_on_key(key)
+                        || !descends
                             && (options.include_empty_trees_in_result
                                 || !matches!(element, Element::Tree(None, _)))
                     {
@@ -2796,10 +2809,7 @@ impl GroveDb {
                         if limit_state.is_exhausted(frame_instance) {
                             break;
                         }
-                    } else if element.is_any_tree()
-                        && !element.is_non_empty_tree()
-                        && internal_query.has_subquery_or_matching_in_path_on_key(key)
-                    {
+                    } else if element.is_any_tree() && !element.is_non_empty_tree() && descends {
                         // An EMPTY tree a subquery matches: an empty
                         // child, not a result row. "Empty" is so far
                         // only what the element bytes CLAIM, and a
@@ -2838,9 +2848,7 @@ impl GroveDb {
                         if limit_state.is_exhausted(frame_instance) {
                             break;
                         }
-                    } else if element.is_non_empty_tree()
-                        && internal_query.has_subquery_or_matching_in_path_on_key(key)
-                    {
+                    } else if element.is_non_empty_tree() && descends {
                         return Err(Error::InvalidProof(
                             query.clone(),
                             format!(
