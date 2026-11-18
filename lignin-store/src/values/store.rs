@@ -770,9 +770,7 @@ impl ValueStore {
     /// pointer and applies the change with [`CountStep::apply`].
     pub fn step(&self) -> Result<CountStep<'_>, ValueStoreError> {
         self.check_writable()?;
-        Ok(CountStep {
-            counts: self.counts_mut(),
-        })
+        Ok(self.count_step())
     }
 
     pub(super) fn count_step(&self) -> CountStep<'_> {
@@ -788,7 +786,7 @@ impl ValueStore {
     pub fn applied(&self) -> ChangeMark {
         ChangeMark {
             session: self.session,
-            change: self.counts_mut().applied,
+            change: self.applied_so_far(),
         }
     }
 
@@ -938,7 +936,7 @@ impl ValueStore {
     pub fn retire(&self, oldest_pin: CommitVersion) -> Retired {
         Retired {
             session: self.session,
-            change: self.counts_mut().applied,
+            change: self.applied_so_far(),
             oldest_pin,
         }
     }

@@ -165,18 +165,11 @@ impl Pages {
     /// The page as a checkpoint copies it, if it ever had a version.
     fn copy(&self, id: PageId) -> Option<PageCopy> {
         let last = self.0.get(&id)?.last()?;
-        Some(match last.superseded {
-            None => PageCopy {
-                id,
-                born: last.born,
-                cells: last.page.cells(),
-            },
-            Some(freed) => PageCopy {
-                id,
-                born: freed,
-                cells: Vec::new(),
-            },
-        })
+        let (born, cells) = match last.superseded {
+            None => (last.born, last.page.cells()),
+            Some(freed) => (freed, Vec::new()),
+        };
+        Some(PageCopy { id, born, cells })
     }
 
     fn all_current(&self) -> Vec<(PageId, Vec<Cell>)> {
@@ -960,9 +953,35 @@ impl Db {
         }
     }
 
-    /// Commits `txn`, whose values [`Self::prepare`] has had covered.
+    /// Writes the commit of `txn` to the journal, installs its pages and
+    /// counts its values. The values it appended must already be covered by
+    /// the manifest ([`Self::prepare`]).
     pub(super) fn commit_prepared(&self, txn: Txn) -> Result<u64, ValueStoreError> {
-        commit_prepared(&self.pages, &self.values, txn)
+        let change = txn.change();
+        let step = self.values.step()?;
+        let mut inner = self.pages.inner.borrow_mut();
+        let version = inner.latest + 1;
+        let changed: Vec<_> = txn.pages.clone().into_iter().collect();
+        let logged = inner.log(&Record::Commit {
+            version,
+            pages: changed.clone(),
+            change: change.clone(),
+        });
+        for (id, _) in &changed {
+            let copies = inner.private.get_mut(id).expect("the page was copied");
+            *copies -= 1;
+            if *copies == 0 {
+                inner.private.remove(id);
+            }
+        }
+        logged?;
+        for (id, cells) in changed {
+            inner.pages.install(id, cells, version);
+        }
+        inner.latest = version;
+        let counted = step.apply(&change, super::version(version));
+        drop(txn);
+        counted.map(|()| version)
     }
 
     pub(super) fn rollback(&self, txn: Txn) {
@@ -1039,15 +1058,15 @@ impl Db {
         self.clean_with(file, |pages| pages)
     }
 
-    /// The cleaner's own writer, in a file that is not full.
-    fn cleaner(&mut self) -> Result<&mut ValueWriter, ValueStoreError> {
-        if self.cleaner.as_ref().is_some_and(ValueWriter::is_full) {
-            self.cleaner.take().expect("checked").finish()?;
+    /// Has the cleaner's own writer be one in a file that is not full.
+    fn ready_cleaner(&mut self) -> Result<(), ValueStoreError> {
+        if let Some(full) = self.cleaner.take_if(|writer| writer.is_full()) {
+            full.finish()?;
         }
         if self.cleaner.is_none() {
             self.cleaner = Some(self.open_writer()?);
         }
-        Ok(self.cleaner.as_mut().expect("just created"))
+        Ok(())
     }
 
     /// As [`Self::clean`], with the cleaner given `owners(pages)` in place
@@ -1057,7 +1076,7 @@ impl Db {
         file: FileId,
         owners: impl FnOnce(&'a PageStore) -> O,
     ) -> Result<Cleaned, ValueStoreError> {
-        self.cleaner()?;
+        self.ready_cleaner()?;
         let to = self.cleaner.as_mut().expect("just created");
         let owners = owners(&self.pages);
         self.values.clean(file, to, &mut self.manifest, &owners)
@@ -1067,7 +1086,7 @@ impl Db {
     /// and covered by the manifest. Other change points can come before
     /// [`Self::install`].
     pub(super) fn copy_live(&mut self, file: FileId) -> Result<CopiedValues<u64>, ValueStoreError> {
-        self.cleaner()?;
+        self.ready_cleaner()?;
         let to = self.cleaner.as_mut().expect("just created");
         let copies = self.values.copy_live(file, to, &self.pages)?;
         to.sync()?;
@@ -1176,39 +1195,4 @@ impl Db {
             .filter_map(|entry| FileNames::VALUE_LOG.parse(&entry.name))
             .collect()
     }
-}
-
-/// Writes the commit of `txn` to the journal, installs its pages and counts
-/// its values. The values it appended must already be covered by the
-/// manifest ([`Db::prepare`]).
-fn commit_prepared(
-    pages: &PageStore,
-    values: &ValueStore,
-    txn: Txn,
-) -> Result<u64, ValueStoreError> {
-    let change = txn.change();
-    let step = values.step()?;
-    let mut inner = pages.inner.borrow_mut();
-    let version = inner.latest + 1;
-    let changed: Vec<_> = txn.pages.clone().into_iter().collect();
-    let logged = inner.log(&Record::Commit {
-        version,
-        pages: changed.clone(),
-        change: change.clone(),
-    });
-    for (id, _) in &changed {
-        let copies = inner.private.get_mut(id).expect("the page was copied");
-        *copies -= 1;
-        if *copies == 0 {
-            inner.private.remove(id);
-        }
-    }
-    logged?;
-    for (id, cells) in changed {
-        inner.pages.install(id, cells, version);
-    }
-    inner.latest = version;
-    let counted = step.apply(&change, super::version(version));
-    drop(txn);
-    counted.map(|()| version)
 }
