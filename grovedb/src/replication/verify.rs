@@ -180,7 +180,11 @@ impl GroveDb {
                             transaction,
                             grove_version,
                         )?;
-                        let target_hash = value_hash(&target.serialize(grove_version)?).unwrap();
+                        // A reference commits to what its target commits
+                        // to: the plain hash of its bytes, or for a
+                        // backward-references item the hash of its bytes
+                        // with the referrer list emptied.
+                        let target_hash = target.logical_value_hash(grove_version).unwrap()?;
                         let combined = combine_hash(&actual_value_hash, &target_hash).unwrap();
                         if combined != *node.value_hash()
                             && matches!(

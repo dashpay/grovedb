@@ -3274,6 +3274,39 @@ mod tests {
         }
     }
 
+    /// An ordinary reference commits to the hash its target commits to. For
+    /// a backward-references item with registered referrers that is the
+    /// hash of the item with its list emptied, not of its stored bytes, and
+    /// the restore check on the reference has to use the same hash.
+    #[test]
+    fn state_sync_restores_a_plain_reference_to_an_item_with_referrers() {
+        use crate::reference_path::ReferencePathType;
+
+        let grove_version = GroveVersion::latest();
+        let source = source_with_registered_referrers(grove_version);
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"plain",
+                Element::new_reference(ReferencePathType::SiblingReference(b"value".to_vec())),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+
+        let dest = sync_source_to_destination(&source, grove_version);
+        assert_eq!(
+            dest.root_hash(None, grove_version).unwrap().unwrap(),
+            source.root_hash(None, grove_version).unwrap().unwrap()
+        );
+        assert!(dest
+            .verify_grovedb(None, true, true, grove_version)
+            .unwrap()
+            .is_empty());
+    }
+
     /// The payload of a backward-references item is hashed: a chunk that
     /// alters it no longer matches the carried value hash and is refused
     /// while it is written.
