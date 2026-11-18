@@ -1273,6 +1273,12 @@ mod tests {
                 key: b"key".to_vec(),
                 element: item.clone(),
             },
+            Write::IndexedInsert {
+                path: vec![b"indexed".to_vec()],
+                key: b"key".to_vec(),
+                element: item.clone(),
+                tree: crate::workload::IndexedTree::Count,
+            },
         ] {
             assert_eq!(logical_bytes(&Op::Write(write), grove_version), entry);
         }
