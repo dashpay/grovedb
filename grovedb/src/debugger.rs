@@ -2003,9 +2003,11 @@ mod tests {
                 let proof_element = layer
                     .merk_proof
                     .iter()
+                    // A backward-references item is proved in a plain `KV`
+                    // node, with its referrer list emptied.
                     .find_map(|op| match op {
-                        MerkProofOp::Push(MerkProofNode::KVValueHash(key, element, _))
-                        | MerkProofOp::PushInverted(MerkProofNode::KVValueHash(key, element, _))
+                        MerkProofOp::Push(MerkProofNode::KV(key, element))
+                        | MerkProofOp::PushInverted(MerkProofNode::KV(key, element))
                             if key == b"target" =>
                         {
                             Some(element)
