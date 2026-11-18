@@ -1,0 +1,253 @@
+lignin-golden-trace 1
+name platform-state
+seed 0x1
+grove-version 4
+engine 22f163c2b82d9bc5c985a77034529a32ef9a7c04
+workload platform-state
+ca8d7r2ada
+  step 0
+  # Write(PutAux { key: [112, 114, 111, 116, 111, 99, 111, 108, 95, 118, 101, 114, 115, 105, 111, 110], value: [12] })
+  cost seeks=1 loaded=0 added=51 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 0000000000000000000000000000000000000000000000000000000000000000
+ca1aar2ada
+c921ar2ada
+cc352r2ada
+c5b5cr2ada
+cf80cr2ada
+ccf1cr2ada
+c43bfr2ada
+cf736r2ada
+c5268r2ada
+c5268r2ada
+c414br2ada
+c43bfr2ada
+c805er2ada
+caf6er2ada
+cf80cr2ada
+c1e17r2ada
+c5b5cr2ada
+ca5b7r2ada
+cbd99r2ada
+cf0b4r2ada
+c9b45r2ada
+c805er2ada
+ca6c9r2ada
+ca2bcr2ada
+c5059r2ada
+cd66fr2ada
+c51f1r2ada
+c2973r2ada
+ce614r2ada
+cb7ddr2ada
+  step 30
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 0000000000000000000000000000000000000000000000000000000000000000
+c589fv57c9
+  step 31
+  # Read(GetAux { key: [112, 114, 111, 116, 111, 99, 111, 108, 95, 118, 101, 114, 115, 105, 111, 110] })
+  cost seeks=1 loaded=1 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  result aux
+  value 0x0c
+c5071r2ada
+c3ab5r2ada
+cb7ddr2ada
+c0359v9402
+c6fa0r2ada
+c8cc6r2ada
+cb7ddr2ada
+ca220v88db
+c830br2ada
+c5268r2ada
+cb7ddr2ada
+cdb01v7cf5
+c6e87r2ada
+cb7ddr2ada
+c9ebdvf1c8
+c1f97r2ada
+c43b8r2ada
+  step 48
+  # Write(DeleteAux { key: [115, 97, 118, 101, 100, 95, 115, 116, 97, 116, 101, 47, 109, 97, 115, 116, 101, 114, 110, 111, 100, 101, 115, 47, 95, 68, 113, 149, 38, 141, 195, 140, 208, 176, 140, 105, 166, 229, 204, 129, 52, 26, 145, 187, 130, 208, 104, 104, 216, 152, 134, 202, 243, 117, 173, 181] })
+  cost seeks=2 loaded=182 added=0 replaced=0 removed=273 hashes=0 sinsemilla=0
+  root 0000000000000000000000000000000000000000000000000000000000000000
+cb7ddr2ada
+c589fv57c9
+c98d4r2ada
+cd5d1r2ada
+c93c8r2ada
+c30ddr2ada
+cb7ddr2ada
+c175avb900
+cf2ebr2ada
+cb7ddr2ada
+ce534vb117
+c96b2r2ada
+cb7ddr2ada
+ca6f2v090c
+caaf0r2ada
+cb7ddr2ada
+c8790v223e
+c01d6r2ada
+cb7ddr2ada
+caf5fv30f3
+cfe11r2ada
+cb7ddr2ada
+c589fv57c9
+cc45fr2ada
+ce7aer2ada
+c1d5dr2ada
+c8302r2ada
+ca8d7r2ada
+cb7ddr2ada
+c7370ved57
+ce03ar2ada
+cb7ddr2ada
+c35adv05ab
+cfffar2ada
+cb7ddr2ada
+ca6f2v090c
+c228cr2ada
+c0535r2ada
+cb7ddr2ada
+c449ev1e64
+cb5cfr2ada
+c61dfr2ada
+cb7ddr2ada
+c9ebdv65a2
+cd934r2ada
+c61dfr2ada
+cb7ddr2ada
+c589fv2ed9
+c23c4r2ada
+c40e8r2ada
+c5804r2ada
+c23ebr2ada
+cb7ddr2ada
+cc625vf520
+caaf0r2ada
+c2abar2ada
+cb7ddr2ada
+c7824v4142
+cdeaar2ada
+cb7ddr2ada
+c1c4cv1e20
+ccad3r2ada
+ccf1cr2ada
+cb7ddr2ada
+cb6c6v6213
+cedadr2ada
+cb0ffr2ada
+cb7ddr2ada
+caf5fv30f3
+c7cc6r2ada
+c9fa6r2ada
+cb7ddr2ada
+c589fv2ed9
+c228cr2ada
+c000dr2ada
+c70b3r2ada
+c8557r2ada
+cedbfr2ada
+cb7ddr2ada
+c483bvf6cd
+c7777r2ada
+cb7ddr2ada
+c1c48vc1ec
+caaf0r2ada
+c593ar2ada
+cb7ddr2ada
+c77d3v473c
+c57f1r2ada
+cb7ddr2ada
+cdf85v12f3
+cfe11r2ada
+c1f72r2ada
+cb7ddr2ada
+cd46bv2ce8
+c6e87r2ada
+c5abfr2ada
+cb7ddr2ada
+c589fv2ed9
+c96b2r2ada
+c1717r2ada
+cf5b1r2ada
+c6d8dr2ada
+c6b6dr2ada
+cb7ddr2ada
+cc503ve84b
+cb81er2ada
+cb7ddr2ada
+ce43ev67bd
+c96b2r2ada
+c4a5fr2ada
+cb7ddr2ada
+c04ebv7747
+c68b5r2ada
+cedbfr2ada
+cb7ddr2ada
+c2f4bv9b38
+cd934r2ada
+c31fbr2ada
+cb7ddr2ada
+caf5fv30f3
+c5697r2ada
+cb7ddr2ada
+c589fv2ed9
+cb8dar2ada
+c2f63r2ada
+cdf1fr2ada
+cb067r2ada
+ca5b7r2ada
+cb7ddr2ada
+cb2b8v6b19
+cc31cr2ada
+cb7ddr2ada
+c03a9v11bc
+c57f1r2ada
+cb7ddr2ada
+ce28dvf6c7
+c0c7br2ada
+c085fr2ada
+cb7ddr2ada
+c9454v5c60
+c7777r2ada
+cb7ddr2ada
+cf5e8ve90b
+c283br2ada
+ca2bcr2ada
+cb7ddr2ada
+c589fv2ed9
+c7cc6r2ada
+c3ad0r2ada
+ce9f3r2ada
+c8b01r2ada
+cb7ddr2ada
+cfa4evf6bd
+cb8dar2ada
+c00a5r2ada
+cb7ddr2ada
+c3b11v8a3b
+cf2ffr2ada
+c5faer2ada
+cb7ddr2ada
+ca1a8ve08e
+cc45fr2ada
+cf2e6r2ada
+cb7ddr2ada
+c3f63v8bf1
+c7cc6r2ada
+cb7ddr2ada
+caf5fv30f3
+c23c4r2ada
+cb7ddr2ada
+c589fv2ed9
+c7777r2ada
+c0fa1r2ada
+c256cr2ada
+cb6a3r2ada
+c7badr2ada
+cb7ddr2ada
+c6b34veea2
+stream 227 ad7a07360f8a524353908d5adea159ceaa5d3f0ed00c6fb2a190cf649a7c5db5
+tally failed=0 unproved=0 unverified=0
+end 227 d4e44889b58102d1339d5c31f756a85c145e73784a64edea2ba6b17f9549014b

@@ -1,0 +1,93 @@
+lignin-golden-trace 1
+name legacy-sum-budget-window
+seed 0x0
+grove-version 4
+engine 22f163c2b82d9bc5c985a77034529a32ef9a7c04
+workload legacy-sum-budget-window
+cff5creb64
+  step 0
+  # Write(Insert { path: [], key: [116, 111, 112], element: tree: None })
+  cost seeks=3 loaded=0 added=113 replaced=0 removed=- hashes=3 sinsemilla=0
+  root bc7e7e6ba01aa5da8673cb316923855d015ac4198ef19223380b58a72def3171
+c884cr0191
+  step 1
+  # Write(Insert { path: [[116, 111, 112]], key: [104, 111, 115, 116], element: sum_tree: None 0 })
+  cost seeks=5 loaded=150 added=124 replaced=77 removed=- hashes=9 sinsemilla=0
+  root 24d737c498d4b696c1c5cf5e2470c3fca99628ebb0a76b638ab5501191d5fd52
+c931crae79
+  step 2
+  # Write(Insert { path: [[116, 111, 112], [104, 111, 115, 116]], key: [114, 48], element: sum_item: 50 })
+  cost seeks=8 loaded=313 added=166 replaced=164 removed=- hashes=15 sinsemilla=0
+  root d3948c9cb833d251d09947911a9461c508f463107f4e0d7db2a550897e779a12
+c95e6rcb28
+  step 3
+  # Write(Insert { path: [[116, 111, 112], [104, 111, 115, 116]], key: [114, 49], element: sum_item: 150 })
+  cost seeks=10 loaded=387 added=166 replaced=295 removed=- hashes=17 sinsemilla=0
+  root a87b295fbd91bfd2595ff1e2f5df39d2f6bf3087bae81a6dd6a64995669c0fbf
+c1809r426e
+  step 4
+  # Write(Insert { path: [[116, 111, 112], [104, 111, 115, 116]], key: [114, 50], element: item: [hex: 6e6f2073756d, str: no sum] })
+  cost seeks=12 loaded=503 added=164 replaced=426 removed=- hashes=19 sinsemilla=0
+  root 4f27369f8ef32985b95be73f68ecfb9173db6d435e9abff7568d25e5bd5ae6b7
+c87a2rf280
+  step 5
+  # Write(Insert { path: [[116, 111, 112], [104, 111, 115, 116]], key: [114, 51], element: sum_item: 350 })
+  cost seeks=12 loaded=547 added=166 replaced=424 removed=- hashes=19 sinsemilla=0
+  root 2119a78a55c39b5a5d9dfcf1b3f35750ace2e65d938b45aaab3084aa3109fc38
+c971er9f01
+  step 6
+  # Write(Insert { path: [[116, 111, 112], [104, 111, 115, 116]], key: [114, 52], element: sum_item: 450 })
+  cost seeks=14 loaded=662 added=166 replaced=555 removed=- hashes=21 sinsemilla=0
+  root b129b45730cd74bf6dd3c488bed9b5b877be53ca783e1dab084e6e709cb80513
+cf7a5r449b
+  step 7
+  # Write(Insert { path: [[116, 111, 112], [104, 111, 115, 116]], key: [114, 53], element: sum_item: 550 })
+  cost seeks=16 loaded=775 added=166 replaced=686 removed=- hashes=23 sinsemilla=0
+  root 363db2e1671ad9d631dd8cecbb489acbbd954793020aace50766557fe3928472
+cb7ddr449b
+  step 8
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 363db2e1671ad9d631dd8cecbb489acbbd954793020aace50766557fe3928472
+c48a9v0c25
+  step 9
+  # Read(SumBudget { query: AggregateSumPathQuery { path: [[116, 111, 112], [104, 111, 115, 116]], aggregate_sum_query: AggregateSumQuery { items: [RangeFull(..)], left_to_right: true, sum_limit: 500, limit_of_items_to_check: None } }, skip_non_sum_items: true, ignore_references: false })
+  cost seeks=9 loaded=964 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result sums
+  sums 3
+  item 0x7230 50
+  item 0x7231 150
+  item 0x7233 350
+  hard-limit-reached false
+  scanned 4
+c48a9v02faqae41pb392
+  step 10
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [104, 111, 115, 116]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: Some(SumBudget(SumBudgetRead { sum_limit: 500, match_limit: None })), li… (473 characters)
+  cost seeks=9 loaded=964 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result sum-budget
+  sums 3
+  item 0x7230 50
+  item 0x7231 150
+  item 0x7233 350
+  hard-limit-reached false
+  scanned 4
+  prove-cost seeks=18 loaded=1736 added=0 replaced=0 removed=- hashes=4 sinsemilla=0
+  proof 201 01002f0403746f700008020104686f7374009505cd27392d4ee1a70a4dca35d8603a1f9475c5416668bfd2e406d6e846f4630103746f7000310404686f737400090401027233fb0c1c00277e6971076939255223a384565643e74c324f63d990745cb96a0fa92664cba50104686f7374085600045303027230000303640003027231000503fb012c001003027232000900066e6f2073756d001103027233000503fb02bc00100128129a533e3026eb9a1a9257c4d6015577c6be5ddd7cbef9807bfc739342ff321100
+  verification verified
+c02cbv72d9q6071p8cf3
+  step 11
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [104, 111, 115, 116]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: false, add_parent_tree_on_subquery: false, read_mode: Some(SumBudget(SumBudgetRead { sum_limit: 10000, match_limit: Some(3) }… (479 characters)
+  cost seeks=7 loaded=750 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result sum-budget
+  sums 3
+  item 0x7235 550
+  item 0x7234 450
+  item 0x7233 350
+  hard-limit-reached false
+  scanned 3
+  prove-cost seeks=15 loaded=1410 added=0 replaced=0 removed=- hashes=4 sinsemilla=0
+  proof 187 01002f0403746f700008020104686f7374009505cd27392d4ee1a70a4dca35d8603a1f9475c5416668bfd2e406d6e846f4630103746f7000310404686f737400090401027233fb0c1c00277e6971076939255223a384565643e74c324f63d990745cb96a0fa92664cba50104686f737408480003450a027235000503fb044c000a027234000503fb038400120a027233000503fb02bc001208cf0b22faff1bc5b01d3f5efc56cb58d85bd4c5cd44211ad40c1917350320074b1300
+  verification verified
+stream 12 75658c2658f95800f1bbe7afd08cf99dca5561957a9b0ef0546bce25b26bed4a
+tally failed=0 unproved=0 unverified=0
+end 12 e8d2ea85ae431853c5efd6320d3ad7f3f1ac58bd61fca880752b166a848c0b8f

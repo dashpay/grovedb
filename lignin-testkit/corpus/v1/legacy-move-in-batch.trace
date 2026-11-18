@@ -1,0 +1,83 @@
+lignin-golden-trace 1
+name legacy-move-in-batch
+seed 0x0
+grove-version 1
+engine 22f163c2b82d9bc5c985a77034529a32ef9a7c04
+workload legacy-move-in-batch
+cff5creb64
+  step 0
+  # Write(Insert { path: [], key: [116, 111, 112], element: tree: None })
+  cost seeks=3 loaded=0 added=113 replaced=0 removed=- hashes=3 sinsemilla=0
+  root bc7e7e6ba01aa5da8673cb316923855d015ac4198ef19223380b58a72def3171
+c335dr7ec2
+  step 1
+  # Write(Insert { path: [[116, 111, 112]], key: [104, 111, 115, 116], element: tree: None })
+  cost seeks=5 loaded=150 added=115 replaced=77 removed=- hashes=9 sinsemilla=0
+  root c40fa070e930122a93dd69d6a17928a600f705c4abeafe15bb9d6d04fe410aee
+cdd08r4f52
+  step 2
+  # Write(Insert { path: [[116, 111, 112], [104, 111, 115, 116]], key: [97], element: item: [hex: 616e2069..6f766573, str: an item that moves] })
+  cost seeks=8 loaded=303 added=158 replaced=155 removed=- hashes=15 sinsemilla=0
+  root 8cefb9b0c2e63bd6fa10207fa09f0bfa6c8f950aeb322aa08aba07cfd5e7beb9
+c7450r23a8
+  step 3
+  # Write(Insert { path: [[116, 111, 112], [104, 111, 115, 116]], key: [116, 114, 101, 101], element: tree: None })
+  cost seeks=10 loaded=393 added=115 replaced=279 removed=- hashes=18 sinsemilla=0
+  root 4f85d1f9ed5e7a79111e9a07e174336a2defd4a9af9edb6f7502be4ddaac0e51
+ce10br023c
+  step 4
+  # Write(Insert { path: [[116, 111, 112], [104, 111, 115, 116], [116, 114, 101, 101]], key: [108, 101, 97, 102], element: item: [hex: 6d6f7665..74726565, str: moves with its tree] })
+  cost seeks=14 loaded=651 added=165 replaced=357 removed=- hashes=24 sinsemilla=0
+  root 2ff14f31fa1a4496aea3bd3042b704fcf3fc75803d1ebb47d60725557dc83187
+cb7ddr023c
+  step 5
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 2ff14f31fa1a4496aea3bd3042b704fcf3fc75803d1ebb47d60725557dc83187
+cb7dde02b4r023c
+  step 6
+  # Batch([Move { path: [[116, 111, 112], [104, 111, 115, 116]], key: [97], new_key: [98] }])
+  # failed: grove unknown version on apply_batch: move, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root 2ff14f31fa1a4496aea3bd3042b704fcf3fc75803d1ebb47d60725557dc83187
+cb7ddr023c
+  step 7
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 2ff14f31fa1a4496aea3bd3042b704fcf3fc75803d1ebb47d60725557dc83187
+cbe7dv847fq0e05pc502
+  step 8
+  # Read(Query(Query { path: [[116, 111, 112], [104, 111, 115, 116]], items: [RangeFull], subquery_path: None, subquery_all: true, limit: None, left_to_right: true, raw: true }))
+  cost seeks=8 loaded=1288 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  rows 2
+  row 746f70/686f7374 61 0012616e206974656d2074686174206d6f76657300
+  row 746f70/686f7374/74726565 6c656166 00136d6f766573207769746820697473207472656500
+  prove-cost seeks=9 loaded=675 added=0 replaced=0 removed=- hashes=5 sinsemilla=0
+  proof 221 002f0403746f700008020104686f7374005c8af6f2d65297b72364f732fa16001c7b53aec4ede1ccb9e788be27002a25a40103746f702d0404686f737400050201016100123b3189d6e3ece6f8a9bc3270a5c73b7958eb29a89771eac5cd42b3f0966ca60104686f73744b03016100150012616e206974656d2074686174206d6f7665730004047472656500080201046c656166000b9ecc595c927514986d159837842c725c99758cf846b2c9fc149369e673361f110104747265651e03046c656166001600136d6f7665732077697468206974732074726565000001
+  verification verified
+cb7dde02b4r023c
+  step 9
+  # Batch([Move { path: [[116, 111, 112], [104, 111, 115, 116]], key: [116, 114, 101, 101], new_key: [119, 111, 111, 100] }])
+  # failed: grove unknown version on apply_batch: move, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root 2ff14f31fa1a4496aea3bd3042b704fcf3fc75803d1ebb47d60725557dc83187
+cb7ddr023c
+  step 10
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 2ff14f31fa1a4496aea3bd3042b704fcf3fc75803d1ebb47d60725557dc83187
+cbe7dv847fq0e05pc502
+  step 11
+  # Read(Query(Query { path: [[116, 111, 112], [104, 111, 115, 116]], items: [RangeFull], subquery_path: None, subquery_all: true, limit: None, left_to_right: true, raw: true }))
+  cost seeks=8 loaded=1288 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  rows 2
+  row 746f70/686f7374 61 0012616e206974656d2074686174206d6f76657300
+  row 746f70/686f7374/74726565 6c656166 00136d6f766573207769746820697473207472656500
+  prove-cost seeks=9 loaded=675 added=0 replaced=0 removed=- hashes=5 sinsemilla=0
+  proof 221 002f0403746f700008020104686f7374005c8af6f2d65297b72364f732fa16001c7b53aec4ede1ccb9e788be27002a25a40103746f702d0404686f737400050201016100123b3189d6e3ece6f8a9bc3270a5c73b7958eb29a89771eac5cd42b3f0966ca60104686f73744b03016100150012616e206974656d2074686174206d6f7665730004047472656500080201046c656166000b9ecc595c927514986d159837842c725c99758cf846b2c9fc149369e673361f110104747265651e03046c656166001600136d6f7665732077697468206974732074726565000001
+  verification verified
+stream 12 1f0f343b2172bf2db00b5e05e1b0dfd3f30f31af665f84b4e5ea8ec06e36f832
+tally failed=2 unproved=0 unverified=0
+end 12 dafbf336257d7c02ffa29a326e64258e6d90dada06defe121761031ec5d755b9
