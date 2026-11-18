@@ -195,10 +195,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     its links. A read by key finds a record in the tree's storage whether
     or not a link leads to it.
   - `KVIterator::status`: whether a scan ended on a storage error rather
-    than at the end of its records, which `next_kv` reports alike.
-    `reconcile_indexed_tree_secondaries` and the conversion check it after
-    the scans they rebuild from, and return the storage error where they
-    took a scan cut short for a complete one.
+    than at the end of its records, which `next_kv` reports alike. A scan
+    that meets an error within one query item now ends there: it used to
+    seek to the next item, which clears the error, and go on as a complete
+    scan that lacked rows. `reconcile_indexed_tree_secondaries` and the
+    conversion check the status after the scans they rebuild from, and
+    return the storage error where they took a scan cut short for a
+    complete one.
 - `reconcile_indexed_tree_secondaries` from `GROVE_V5`
   (`operations.indexed_axis.reconcile_secondaries: 1`, 0 in V1..V4;
   **BREAKING** for code building `GroveDBOperationsIndexedAxisVersions` by
@@ -218,9 +221,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     which a repair that changes a secondary changes, and the enclosing
     index kept the previous hash.
 
-  V1..V4 keep the released behaviour. The repaired secondary has the shape
-  the released repair gives it; the cost a repair reports changes with the
-  removals that now reach storage.
+  V1..V4 keep the released behaviour, pinned by a GROVE_V4 fixture to the
+  root, the stored rows and the cost measured before this change. The
+  repaired secondary has the shape the released repair gives it; the cost a
+  repair reports changes with the removals that now reach storage. A value
+  of the slot the repair does not know is refused before anything is read.
 - `GROVE_V5` (`protocol_version` 5). `GROVE_V4` as 6.1.1 shipped it is what
   Dash Platform 5.0 (protocol version 14) runs, so behaviour changes from
   here on are gated in `GROVE_V5` and leave V1..V4 as they are. V5 is V4

@@ -222,6 +222,12 @@ impl<I: RawIterator> KVIterator<'_, I> {
 
             if kv_pair.is_some() {
                 kv_pair.wrap_with_cost(cost)
+            } else if self.raw_iter.status().is_err() {
+                // The item ended on a storage error, not at its last
+                // record. Seeking to the next item would clear the error,
+                // so the scan ends here and `status` goes on reporting it.
+                self.current_query_item = None;
+                None.wrap_with_cost(cost)
             } else {
                 self.seek().unwrap_add_cost(&mut cost);
                 self.next_kv().add_cost(cost)
@@ -231,10 +237,12 @@ impl<I: RawIterator> KVIterator<'_, I> {
         }
     }
 
-    /// Whether the underlying iterator stopped on a storage error rather
-    /// than at the end of its records. [`Self::next_kv`] returns `None` for
-    /// both, so a caller that acts on a scan having been complete checks
-    /// this once the scan ends.
+    /// Whether the scan stopped on a storage error rather than at the end of
+    /// its records. [`Self::next_kv`] returns `None` for both, so a caller
+    /// that acts on a scan having been complete checks this once the scan
+    /// ends. A scan that meets an error within one query item ends there
+    /// and does not go on to the next item, so the error is still the
+    /// iterator's status when the scan is over.
     pub fn status(&self) -> Result<(), grovedb_storage::Error> {
         self.raw_iter.status()
     }
@@ -1163,6 +1171,9 @@ fn fetch_node<'db>(
 }
 
 // // TODO: get rid of Fetch/source and use GroveDB storage_cost abstraction
+
+#[cfg(test)]
+mod tests;
 
 #[cfg(test)]
 mod test {

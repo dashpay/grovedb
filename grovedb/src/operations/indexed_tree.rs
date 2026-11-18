@@ -979,6 +979,29 @@ impl GroveDb {
         P: Into<SubtreePath<'b, B>>,
     {
         let mut cost = OperationCost::default();
+
+        // How the repair is written is a matter of version, settled before
+        // anything is opened: see
+        // `operations.indexed_axis.reconcile_secondaries`.
+        let (row_writes, refreshes_enclosing_row) = match grove_version
+            .grovedb_versions
+            .operations
+            .indexed_axis
+            .reconcile_secondaries
+        {
+            0 => (SecondaryRowWrites::OneByOneAsReleased, false),
+            1 => (SecondaryRowWrites::OneByOne, true),
+            received => {
+                return Err(GroveVersionError::UnknownVersionMismatch {
+                    method: "reconcile_indexed_tree_secondaries".to_string(),
+                    known_versions: vec![0, 1],
+                    received,
+                }
+                .into())
+                .wrap_with_cost(cost);
+            }
+        };
+
         let path: SubtreePath<B> = path.into();
         let batch = StorageBatch::new();
         let tx = TxRef::new(&self.db, transaction);
@@ -988,6 +1011,8 @@ impl GroveDb {
             &mut cost,
             self.reconcile_indexed_tree_secondaries_on_transaction(
                 path,
+                row_writes,
+                refreshes_enclosing_row,
                 tx_ref,
                 &batch,
                 grove_version,
@@ -1007,6 +1032,8 @@ impl GroveDb {
     fn reconcile_indexed_tree_secondaries_on_transaction<'db, 'b, B: AsRef<[u8]>>(
         &'db self,
         path: SubtreePath<'b, B>,
+        row_writes: SecondaryRowWrites,
+        refreshes_enclosing_row: bool,
         transaction: &'db Transaction,
         batch: &'db StorageBatch,
         grove_version: &GroveVersion,
@@ -1043,27 +1070,6 @@ impl GroveDb {
             ))
             .wrap_with_cost(cost);
         }
-
-        // How the repair is written is a matter of version: see
-        // `operations.indexed_axis.reconcile_secondaries`.
-        let (row_writes, refreshes_enclosing_row) = match grove_version
-            .grovedb_versions
-            .operations
-            .indexed_axis
-            .reconcile_secondaries
-        {
-            0 => (SecondaryRowWrites::OneByOneAsReleased, false),
-            1 => (SecondaryRowWrites::OneByOne, true),
-            received => {
-                return Err(GroveVersionError::UnknownVersionMismatch {
-                    method: "reconcile_indexed_tree_secondaries".to_string(),
-                    known_versions: vec![0, 1],
-                    received,
-                }
-                .into())
-                .wrap_with_cost(cost);
-            }
-        };
 
         // 2. Read the parent element FIRST: its variant determines which
         //    axes exist, and each axis's stored root key is needed to open
