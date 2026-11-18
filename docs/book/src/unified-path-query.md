@@ -102,7 +102,8 @@ Population counts *entries*, not distinct values (two entries sharing
 a value are two secondary nodes). Every axis secondary is a
 dual-aggregate `ProvableCountProvableSumTree` — the count axis mirrors
 each entry's `count_value` into its sum half — which is what makes all
-four (axis, fold) cells one committed `O(log n)` scalar, and is also a
+four (axis, fold) cells of the Count and Sum axes, and the population
+on the BigSum axis, one committed `O(log n)` scalar, and is also a
 **security requirement**: the single-aggregate node hashes share a
 preimage layout, so dual-aggregate commitments are what keep a
 population proof and a total proof from being confused for one
