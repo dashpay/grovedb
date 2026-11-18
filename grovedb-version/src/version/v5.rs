@@ -110,6 +110,23 @@
 //!   cost, and flips that refusal. A conditional insert (`InsertIfNotExists`)
 //!   keeps the V4 outcome.
 //!
+//! - `apply_batch.filled_tree_insert_checks: 1`: a tree a batch both creates
+//!   and writes into is held to the checks the same insert meets without
+//!   operations under it. An indexed tree must be empty and have canonical
+//!   axes, a `PrivateDocumentStore` must be empty with a valid config, a
+//!   wrapped tree must sit under a parent that takes its wrapper, and an
+//!   entry of an indexed tree must satisfy that tree's child rule. V1..V4
+//!   make these checks only where an insert is applied, and propagation
+//!   replaces the insert of a filled tree with its computed root state
+//!   before that, so they accept such a batch, as 6.1.1 did. Gated because
+//!   it flips an accepted/rejected outcome. The checks on what the key
+//!   already holds (`validate_insertion_does_not_override`,
+//!   `validate_insertion_does_not_override_tree`, `InsertIfNotExists`) are
+//!   not part of it: a filled tree is written without reading the key on
+//!   every version. Nor is the rule that an entry of an indexed tree
+//!   without a root key claims no aggregate: a filled entry stores the
+//!   aggregate its contents give.
+//!
 //! - `merk_versions.tree.just_in_time_value_update: 2`: Merk accepts that
 //!   answer and records the removal plus the insertion. Versions 0 and 1
 //!   refuse it, so grove v1..v4 cannot account an update as a replacement at
@@ -177,6 +194,7 @@ pub const GROVE_V5: GroveVersion = GroveVersion {
             keyless_append_repeats: 1, // changed: a batch may repeat a keyless append
             same_key_tree_type_conflict: 1, // changed: two tree types at one key are refused
             tree_insert_above_emptied_level: 1, // changed: the inserted tree keeps its type
+            filled_tree_insert_checks: 1, // changed: a tree the batch fills is checked too
             indexed_mirror_entry_read: 1, // changed: entries are read by walking the tree
             ..GROVE_V4.grovedb_versions.apply_batch
         },
