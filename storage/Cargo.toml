@@ -23,6 +23,10 @@ strum = { version = "0.28.0", features = ["derive"] }
 tempfile = { workspace = true, optional = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+grovedb-costs = { version = "6.1.1", path = "../costs", features = ["cost-model-ledger"] }
+syn = { version = "2", features = ["full", "visit"] }
+
 [features]
 rocksdb_storage = ["rocksdb", "num_cpus", "lazy_static", "tempfile", "blake3", "integer-encoding"]
 # See `grovedb`'s `unsafe-dump-load` feature for context. On this crate it

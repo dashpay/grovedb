@@ -90,7 +90,7 @@ After a crash the database is at some committed transaction (DEC-04). No flat ke
 
 ## Costs
 
-Every method returns its `OperationCost` with its result. The trait does not say what a call costs. The cost model of the GroveVersion in force does (BASE-06 specifies it, SEAM-05 moves it out of the RocksDB contexts into functions both engines call). The seam only fixes where a cost is reported, because callers drop some costs and keep others (inventory finding 10):
+Every method returns its `OperationCost` with its result. The trait does not say what a call costs. The cost model of the GroveVersion in force does (BASE-06 specifies it; since SEAM-05 it is the functions of `grovedb_costs::cost_model`, which both engines call). The seam only fixes where a cost is reported, because callers drop some costs and keep others (inventory finding 10):
 
 | Call | Deferred handle | Immediate handle |
 | --- | --- | --- |
@@ -183,7 +183,7 @@ Inventory finding 7 lists three paths that write to the database directly. The d
 
 - **SEAM-04.** The RocksDB contexts expose the aux and meta handles as inherent methods. A handle type that is generic over the engine needs a trait for "the flat keyspaces of a subtree handle"; that belongs with the `Engine` trait, which decides what a subtree handle is. `PendingPrefixDrops` is meant to become a supertrait or a part of `Engine`, next to `wipe`.
 - **SEAM-04, GROVE-12.** `FlatStore` does not require `Send`. The RocksDB deferred handle holds a reference to a `StorageBatch`, which is not `Sync`. Parallel writers need a decision on that for flat handles as for Merk handles.
-- **SEAM-05.** The formulas in "Costs" move into the versioned cost model. The table of where each cost is reported stays.
+- **SEAM-05.** Done: the formulas in "Costs" are functions of the versioned cost model (`grovedb_costs::cost_model`; [cost-model.md](cost-model.md), section 14). The table of where each cost is reported stays.
 - **TREE-07, GROVE-01, GROVE-04.** `FlatStore` reports costs, and `lignin-tree` must not know cost rules. So LigninDB's implementation of `FlatStore` is an adapter above the engine: it wraps the engine's flat keyspace handle and cursor, and gets every cost from the model. The engine's own flat keyspace (TREE-07) needs the same operations and the same ordering, without costs.
 - **MERK-05.** Merk's aux and meta records can use `aux()` and `meta()` once Merk holds a handle that offers them.
 - **A cursor error inside `clear`.** `clear` stops when the cursor becomes invalid and does not look at `status()`, as before this task. A cursor that fails part-way therefore ends the walk without an error. Changing that changes behaviour and was left alone.

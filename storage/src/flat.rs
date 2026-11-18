@@ -106,7 +106,8 @@ pub trait FlatStore {
     ///
     /// The cost is that of walking the keyspace with the cursor and deleting
     /// each record with no `cost_info`. An engine may do less work than
-    /// that, but it must report this cost.
+    /// that, but it must report this cost: the walk is
+    /// `StorageCostModel::clear_walk` of `grovedb_costs::cost_model`.
     fn clear(&self) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 

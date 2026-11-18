@@ -31,9 +31,8 @@
 use error::Error;
 use grovedb_costs::{
     storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, CostResult,
-    CostsExt, OperationCost,
+    CostsExt,
 };
-use integer_encoding::VarInt;
 use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode};
 
 use super::{batch::PrefixedMultiContextBatchPart, make_prefixed_key, PrefixedRocksDbRawIterator};
@@ -41,7 +40,7 @@ use crate::{
     error,
     error::Error::RocksDBError,
     rocksdb_storage::storage::{
-        Db, RawTx, SubtreePrefix, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME,
+        Db, RawTx, SubtreePrefix, Tx, AUX_CF_NAME, COST_MODEL, META_CF_NAME, ROOTS_CF_NAME,
     },
     FlatStore, StorageBatch, StorageContext,
 };
@@ -115,6 +114,27 @@ impl<'db> PrefixedRocksDbTransactionContext<'db> {
             .cf_handle(META_CF_NAME)
             .expect("meta column family must exist")
     }
+
+    fn stage(&self, operation: &str, write: impl FnOnce(&StorageBatch)) -> CostResult<(), Error> {
+        match self.batch {
+            Some(batch) => {
+                write(batch);
+                Ok(()).wrap_with_cost(COST_MODEL.staged_write())
+            }
+            None => Err(Error::StorageError(format!(
+                "attempted {operation} operation on transactional context without a batch"
+            )))
+            .wrap_with_cost(COST_MODEL.refused_write()),
+        }
+    }
+}
+
+fn charged_read(
+    read: Result<Option<Vec<u8>>, rocksdb::Error>,
+) -> CostResult<Option<Vec<u8>>, Error> {
+    let found = read.as_ref().ok().and_then(Option::as_ref).map(Vec::len);
+    read.map_err(RocksDBError)
+        .wrap_with_cost(COST_MODEL.read(found))
 }
 
 impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
@@ -128,33 +148,11 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         children_sizes: ChildrenSizesWithIsSumTree,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        let batch = match self.batch {
-            Some(b) => b,
-            None => {
-                return Err(Error::StorageError(
-                    "attempted put operation on transactional context without a batch".to_string(),
-                ))
-                .wrap_with_cost(OperationCost::default())
-            }
-        };
-        let prefixed_key = make_prefixed_key(&self.prefix, key);
-
-        // Same contract as the `Batch` implementations: a caller describing a
-        // NEW node supplies the key cost without the path prefix — it does
-        // not know the prefix — and this layer, which does, completes it.
-        // Left incomplete, the commit's `verify_key_storage_cost` would
-        // reject the put. An update (`new_node: false`) is not verified on
-        // the key and is passed through unchanged.
-        let cost_info = cost_info.map(|mut key_value_storage_cost| {
-            if key_value_storage_cost.new_node {
-                key_value_storage_cost.key_storage_cost.added_bytes +=
-                    (prefixed_key.len() + prefixed_key.len().required_space()) as u32;
-            }
-            key_value_storage_cost
-        });
-
-        batch.put(prefixed_key, value.to_vec(), children_sizes, cost_info);
-        Ok(()).wrap_with_cost(OperationCost::default())
+        self.stage("put", |batch| {
+            let prefixed_key = make_prefixed_key(&self.prefix, key);
+            let cost_info = COST_MODEL.complete_new_key_cost(cost_info, prefixed_key.len());
+            batch.put(prefixed_key, value.to_vec(), children_sizes, cost_info)
+        })
     }
 
     fn put_aux<K: AsRef<[u8]>>(
@@ -163,22 +161,13 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        let batch = match self.batch {
-            Some(b) => b,
-            None => {
-                return Err(Error::StorageError(
-                    "attempted put_aux operation on transactional context without a batch"
-                        .to_string(),
-                ))
-                .wrap_with_cost(OperationCost::default())
-            }
-        };
-        batch.put_aux(
-            make_prefixed_key(&self.prefix, key),
-            value.to_vec(),
-            cost_info,
-        );
-        Ok(()).wrap_with_cost(OperationCost::default())
+        self.stage("put_aux", |batch| {
+            batch.put_aux(
+                make_prefixed_key(&self.prefix, key),
+                value.to_vec(),
+                cost_info,
+            )
+        })
     }
 
     fn put_root<K: AsRef<[u8]>>(
@@ -187,22 +176,13 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        let batch = match self.batch {
-            Some(b) => b,
-            None => {
-                return Err(Error::StorageError(
-                    "attempted put_root operation on transactional context without a batch"
-                        .to_string(),
-                ))
-                .wrap_with_cost(OperationCost::default())
-            }
-        };
-        batch.put_root(
-            make_prefixed_key(&self.prefix, key),
-            value.to_vec(),
-            cost_info,
-        );
-        Ok(()).wrap_with_cost(OperationCost::default())
+        self.stage("put_root", |batch| {
+            batch.put_root(
+                make_prefixed_key(&self.prefix, key),
+                value.to_vec(),
+                cost_info,
+            )
+        })
     }
 
     fn put_meta<K: AsRef<[u8]>>(
@@ -211,22 +191,13 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        let batch = match self.batch {
-            Some(b) => b,
-            None => {
-                return Err(Error::StorageError(
-                    "attempted put_meta operation on transactional context without a batch"
-                        .to_string(),
-                ))
-                .wrap_with_cost(OperationCost::default())
-            }
-        };
-        batch.put_meta(
-            make_prefixed_key(&self.prefix, key),
-            value.to_vec(),
-            cost_info,
-        );
-        Ok(()).wrap_with_cost(OperationCost::default())
+        self.stage("put_meta", |batch| {
+            batch.put_meta(
+                make_prefixed_key(&self.prefix, key),
+                value.to_vec(),
+                cost_info,
+            )
+        })
     }
 
     fn delete<K: AsRef<[u8]>>(
@@ -234,18 +205,9 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         key: K,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        let batch = match self.batch {
-            Some(b) => b,
-            None => {
-                return Err(Error::StorageError(
-                    "attempted delete operation on transactional context without a batch"
-                        .to_string(),
-                ))
-                .wrap_with_cost(OperationCost::default())
-            }
-        };
-        batch.delete(make_prefixed_key(&self.prefix, key), cost_info);
-        Ok(()).wrap_with_cost(OperationCost::default())
+        self.stage("delete", |batch| {
+            batch.delete(make_prefixed_key(&self.prefix, key), cost_info)
+        })
     }
 
     fn delete_aux<K: AsRef<[u8]>>(
@@ -253,18 +215,9 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         key: K,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        let batch = match self.batch {
-            Some(b) => b,
-            None => {
-                return Err(Error::StorageError(
-                    "attempted delete_aux operation on transactional context without a batch"
-                        .to_string(),
-                ))
-                .wrap_with_cost(OperationCost::default())
-            }
-        };
-        batch.delete_aux(make_prefixed_key(&self.prefix, key), cost_info);
-        Ok(()).wrap_with_cost(OperationCost::default())
+        self.stage("delete_aux", |batch| {
+            batch.delete_aux(make_prefixed_key(&self.prefix, key), cost_info)
+        })
     }
 
     fn delete_root<K: AsRef<[u8]>>(
@@ -272,18 +225,9 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         key: K,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        let batch = match self.batch {
-            Some(b) => b,
-            None => {
-                return Err(Error::StorageError(
-                    "attempted delete_root operation on transactional context without a batch"
-                        .to_string(),
-                ))
-                .wrap_with_cost(OperationCost::default())
-            }
-        };
-        batch.delete_root(make_prefixed_key(&self.prefix, key), cost_info);
-        Ok(()).wrap_with_cost(OperationCost::default())
+        self.stage("delete_root", |batch| {
+            batch.delete_root(make_prefixed_key(&self.prefix, key), cost_info)
+        })
     }
 
     fn delete_meta<K: AsRef<[u8]>>(
@@ -291,85 +235,37 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         key: K,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        let batch = match self.batch {
-            Some(b) => b,
-            None => {
-                return Err(Error::StorageError(
-                    "attempted delete_meta operation on transactional context without a batch"
-                        .to_string(),
-                ))
-                .wrap_with_cost(OperationCost::default())
-            }
-        };
-        batch.delete_meta(make_prefixed_key(&self.prefix, key), cost_info);
-        Ok(()).wrap_with_cost(OperationCost::default())
+        self.stage("delete_meta", |batch| {
+            batch.delete_meta(make_prefixed_key(&self.prefix, key), cost_info)
+        })
     }
 
     fn get<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
         // Reads go through the transaction wrapper, which injects the
         // transaction's snapshot (when one was requested at creation)
         // into every read's options — same for every read below.
-        self.transaction
-            .get(make_prefixed_key(&self.prefix, key))
-            .map_err(RocksDBError)
-            .wrap_fn_cost(|value| OperationCost {
-                seek_count: 1,
-                storage_loaded_bytes: value
-                    .as_ref()
-                    .ok()
-                    .and_then(Option::as_ref)
-                    .map(|x| x.len() as u64)
-                    .unwrap_or(0),
-                ..Default::default()
-            })
+        charged_read(self.transaction.get(make_prefixed_key(&self.prefix, key)))
     }
 
     fn get_aux<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
-        self.transaction
-            .get_cf(self.cf_aux(), make_prefixed_key(&self.prefix, key))
-            .map_err(RocksDBError)
-            .wrap_fn_cost(|value| OperationCost {
-                seek_count: 1,
-                storage_loaded_bytes: value
-                    .as_ref()
-                    .ok()
-                    .and_then(Option::as_ref)
-                    .map(|x| x.len() as u64)
-                    .unwrap_or(0),
-                ..Default::default()
-            })
+        charged_read(
+            self.transaction
+                .get_cf(self.cf_aux(), make_prefixed_key(&self.prefix, key)),
+        )
     }
 
     fn get_root<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
-        self.transaction
-            .get_cf(self.cf_roots(), make_prefixed_key(&self.prefix, key))
-            .map_err(RocksDBError)
-            .wrap_fn_cost(|value| OperationCost {
-                seek_count: 1,
-                storage_loaded_bytes: value
-                    .as_ref()
-                    .ok()
-                    .and_then(Option::as_ref)
-                    .map(|x| x.len() as u64)
-                    .unwrap_or(0),
-                ..Default::default()
-            })
+        charged_read(
+            self.transaction
+                .get_cf(self.cf_roots(), make_prefixed_key(&self.prefix, key)),
+        )
     }
 
     fn get_meta<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
-        self.transaction
-            .get_cf(self.cf_meta(), make_prefixed_key(&self.prefix, key))
-            .map_err(RocksDBError)
-            .wrap_fn_cost(|value| OperationCost {
-                seek_count: 1,
-                storage_loaded_bytes: value
-                    .as_ref()
-                    .ok()
-                    .and_then(Option::as_ref)
-                    .map(|x| x.len() as u64)
-                    .unwrap_or(0),
-                ..Default::default()
-            })
+        charged_read(
+            self.transaction
+                .get_cf(self.cf_meta(), make_prefixed_key(&self.prefix, key)),
+        )
     }
 
     fn new_batch(&self) -> Self::Batch {
@@ -380,18 +276,9 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
     }
 
     fn commit_batch(&self, batch: Self::Batch) -> CostResult<(), Error> {
-        let existing_batch = match self.batch {
-            Some(b) => b,
-            None => {
-                return Err(Error::StorageError(
-                    "attempted commit_batch operation on transactional context without a batch"
-                        .to_string(),
-                ))
-                .wrap_with_cost(OperationCost::default())
-            }
-        };
-        existing_batch.merge(batch.batch);
-        Ok(()).wrap_with_cost(OperationCost::default())
+        self.stage("commit_batch", |existing_batch| {
+            existing_batch.merge(batch.batch)
+        })
     }
 
     fn raw_iter(&self) -> Self::RawIterator {

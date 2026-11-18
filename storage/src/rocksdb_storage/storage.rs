@@ -36,12 +36,11 @@ use std::{
 
 use error::Error;
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add,
-    storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval, CostContext, CostResult,
-    CostsExt, OperationCost,
+    cost_model::{BatchCharge, Keyspace, StorageCostModel},
+    storage_cost::key_value_cost::KeyValueStorageCost,
+    CostContext, CostResult, CostsExt, OperationCost,
 };
 use grovedb_path::SubtreePath;
-use integer_encoding::VarInt;
 use lazy_static::lazy_static;
 #[cfg(feature = "unsafe-dump-load")]
 use rocksdb::IngestExternalFileOptions;
@@ -61,16 +60,11 @@ use crate::{
     Storage, StorageBatch,
 };
 
-const BLAKE_BLOCK_LEN: usize = 64;
 pub type SubtreePrefix = [u8; 32];
 
-fn blake_block_count(len: usize) -> usize {
-    if len == 0 {
-        1
-    } else {
-        1 + (len - 1) / BLAKE_BLOCK_LEN
-    }
-}
+/// The cost rules the RocksDB engine charges by. Every charge of this
+/// module and of the storage contexts is one of its functions.
+pub(crate) const COST_MODEL: StorageCostModel = StorageCostModel::V0;
 
 /// Name of column family used to store auxiliary data
 pub(crate) const AUX_CF_NAME: &str = "aux";
@@ -404,17 +398,15 @@ impl RocksDbStorage {
         Ok(RocksDbStorage { db })
     }
 
-    fn build_prefix_body<B>(path: SubtreePath<B>) -> (Vec<u8>, usize)
+    fn build_prefix_body<B>(path: SubtreePath<B>) -> (Vec<u8>, Vec<u8>)
     where
         B: AsRef<[u8]>,
     {
         let segments_iter = path.into_reverse_iter();
-        let mut segments_count: usize = 0;
         let mut res = Vec::new();
         let mut lengths = Vec::new();
 
         for s in segments_iter {
-            segments_count += 1;
             res.extend_from_slice(s);
             lengths.push(u8::try_from(s.len()).expect(
                 "path segment length must not exceed 255 bytes; \
@@ -427,9 +419,9 @@ impl RocksDbStorage {
         // subtree prefixes stored in RocksDB — existing databases would become
         // unreadable. In practice GroveDB only targets little-endian platforms
         // (x86_64, aarch64), so this is not a portability concern.
-        res.extend(segments_count.to_ne_bytes());
-        res.extend(lengths);
-        (res, segments_count)
+        res.extend(lengths.len().to_ne_bytes());
+        res.extend_from_slice(&lengths);
+        (res, lengths)
     }
 
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
@@ -438,14 +430,13 @@ impl RocksDbStorage {
     where
         B: AsRef<[u8]>,
     {
-        let (body, segments_count) = Self::build_prefix_body(path);
-        if segments_count == 0 {
-            SubtreePrefix::default().wrap_with_cost(OperationCost::default())
+        let (body, segment_lens) = Self::build_prefix_body(path);
+        let prefix = if segment_lens.is_empty() {
+            SubtreePrefix::default()
         } else {
-            let blocks_count = blake_block_count(body.len());
             SubtreePrefix::from(blake3::hash(&body))
-                .wrap_with_cost(OperationCost::with_hash_node_calls(blocks_count as u32))
-        }
+        };
+        prefix.wrap_with_cost(COST_MODEL.open_by_path(segment_lens.into_iter().map(usize::from)))
     }
 
     /// Derive the per-axis secondary `SubtreePrefix` for any indexed-tree
@@ -480,16 +471,7 @@ impl RocksDbStorage {
         let mut hasher = blake3::Hasher::new();
         hasher.update(primary_prefix);
         hasher.update(&[axis_tag]);
-        SubtreePrefix::from(hasher.finalize())
-            .wrap_with_cost(OperationCost::with_hash_node_calls(1))
-    }
-
-    fn worst_case_body_size<L: WorstKeyLength>(path: &[L]) -> usize {
-        // body = segment_bytes + segments_count.to_ne_bytes() + lengths
-        // segments_count.to_ne_bytes() contributes size_of::<usize>() bytes
-        path.iter().map(|a| a.max_length() as usize).sum::<usize>()
-            + std::mem::size_of::<usize>()
-            + path.len()
+        SubtreePrefix::from(hasher.finalize()).wrap_with_cost(COST_MODEL.secondary_prefix())
     }
 
     /// Returns the write batch, with costs and pending costs
@@ -544,11 +526,22 @@ impl RocksDbStorage {
         db_batch: &mut WriteBatchWithTransaction<true>,
         storage_batch: StorageBatch,
     ) -> CostResult<OperationCost, Error> {
-        let mut cost = OperationCost::default();
-        // Until batch is committed these costs are pending (should not be added in case
-        // of early termination).
-        let mut pending_costs = OperationCost::default();
+        let mut charge = COST_MODEL.batch();
+        match self.fill_write_batch(db_batch, storage_batch, &mut charge) {
+            Ok(()) => {
+                let (at_once, on_success) = charge.into_parts();
+                Ok(on_success).wrap_with_cost(at_once)
+            }
+            Err(error) => Err(error).wrap_with_cost(charge.finish(false)),
+        }
+    }
 
+    fn fill_write_batch(
+        &self,
+        db_batch: &mut WriteBatchWithTransaction<true>,
+        storage_batch: StorageBatch,
+        charge: &mut BatchCharge,
+    ) -> Result<(), Error> {
         for op in storage_batch.into_iter() {
             match op {
                 AbstractBatchOperation::Put {
@@ -558,24 +551,15 @@ impl RocksDbStorage {
                     cost_info,
                 } => {
                     db_batch.put(&key, &value);
-                    // A fully prepaid put (`KeyValueStorageCost::prepaid`)
-                    // was billed by its owner in advance, the write
-                    // included: no seek here. Only the append-only family's
-                    // GROVE_V4 accounting issues such puts.
-                    if !cost_info.as_ref().is_some_and(|c| c.is_prepaid()) {
-                        cost.seek_count += 1;
-                    }
-                    cost_return_on_error_no_add!(
-                        cost,
-                        pending_costs
-                            .add_key_value_storage_costs(
-                                key.len() as u32,
-                                value.len() as u32,
-                                children_sizes,
-                                cost_info
-                            )
-                            .map_err(CostError)
-                    );
+                    charge
+                        .put(
+                            Keyspace::Data,
+                            key.len(),
+                            value.len(),
+                            children_sizes,
+                            cost_info,
+                        )
+                        .map_err(CostError)?;
                 }
                 AbstractBatchOperation::PutAux {
                     key,
@@ -583,20 +567,9 @@ impl RocksDbStorage {
                     cost_info,
                 } => {
                     db_batch.put_cf(cf_aux(&self.db), &key, &value);
-                    if !cost_info.as_ref().is_some_and(|c| c.is_prepaid()) {
-                        cost.seek_count += 1;
-                    }
-                    cost_return_on_error_no_add!(
-                        cost,
-                        pending_costs
-                            .add_key_value_storage_costs(
-                                key.len() as u32,
-                                value.len() as u32,
-                                None,
-                                cost_info
-                            )
-                            .map_err(CostError)
-                    );
+                    charge
+                        .put(Keyspace::Aux, key.len(), value.len(), None, cost_info)
+                        .map_err(CostError)?;
                 }
                 AbstractBatchOperation::PutRoot {
                     key,
@@ -604,23 +577,9 @@ impl RocksDbStorage {
                     cost_info,
                 } => {
                     db_batch.put_cf(cf_roots(&self.db), &key, &value);
-                    if !cost_info.as_ref().is_some_and(|c| c.is_prepaid()) {
-                        cost.seek_count += 1;
-                    }
-                    // We only add costs for put root if they are set, otherwise it is free
-                    if cost_info.is_some() {
-                        cost_return_on_error_no_add!(
-                            cost,
-                            pending_costs
-                                .add_key_value_storage_costs(
-                                    key.len() as u32,
-                                    value.len() as u32,
-                                    None,
-                                    cost_info
-                                )
-                                .map_err(CostError)
-                        );
-                    }
+                    charge
+                        .put(Keyspace::Roots, key.len(), value.len(), None, cost_info)
+                        .map_err(CostError)?;
                 }
                 AbstractBatchOperation::PutMeta {
                     key,
@@ -628,141 +587,35 @@ impl RocksDbStorage {
                     cost_info,
                 } => {
                     db_batch.put_cf(cf_meta(&self.db), &key, &value);
-                    if !cost_info.as_ref().is_some_and(|c| c.is_prepaid()) {
-                        cost.seek_count += 1;
-                    }
-                    cost_return_on_error_no_add!(
-                        cost,
-                        pending_costs
-                            .add_key_value_storage_costs(
-                                key.len() as u32,
-                                value.len() as u32,
-                                None,
-                                cost_info
-                            )
-                            .map_err(CostError)
-                    );
+                    charge
+                        .put(Keyspace::Meta, key.len(), value.len(), None, cost_info)
+                        .map_err(CostError)?;
                 }
                 AbstractBatchOperation::Delete { key, cost_info } => {
                     db_batch.delete(&key);
-
-                    // Non-atomic freed-size fallback: reads committed state.
-                    // See method-level doc comment for rationale.
-
-                    if let Some(key_value_removed_bytes) = cost_info {
-                        cost.seek_count += 1;
-                        pending_costs.storage_cost.removed_bytes +=
-                            key_value_removed_bytes.combined_removed_bytes();
-                    } else {
-                        cost.seek_count += 2;
-                        // lets get the values
-                        let value_len = cost_return_on_error_no_add!(
-                            cost,
-                            self.db.get(&key).map_err(RocksDBError)
-                        )
-                        .map(|x| x.len() as u32)
-                        .unwrap_or(0);
-                        cost.storage_loaded_bytes += value_len as u64;
-                        let key_len = key.len() as u32;
-                        pending_costs.storage_cost.removed_bytes += BasicStorageRemoval(
-                            key_len
-                                + value_len
-                                + key_len.required_space() as u32
-                                + value_len.required_space() as u32,
-                        );
-                    }
+                    charge_delete(charge, &key, cost_info, || self.db.get(&key))?;
                 }
                 AbstractBatchOperation::DeleteAux { key, cost_info } => {
                     db_batch.delete_cf(cf_aux(&self.db), &key);
-
-                    // Non-atomic freed-size fallback: reads committed state.
-                    // See method-level doc comment for rationale.
-                    if let Some(key_value_removed_bytes) = cost_info {
-                        cost.seek_count += 1;
-                        pending_costs.storage_cost.removed_bytes +=
-                            key_value_removed_bytes.combined_removed_bytes();
-                    } else {
-                        cost.seek_count += 2;
-                        let value_len = cost_return_on_error_no_add!(
-                            cost,
-                            self.db.get_cf(cf_aux(&self.db), &key).map_err(RocksDBError)
-                        )
-                        .map(|x| x.len() as u32)
-                        .unwrap_or(0);
-                        cost.storage_loaded_bytes += value_len as u64;
-
-                        let key_len = key.len() as u32;
-                        pending_costs.storage_cost.removed_bytes += BasicStorageRemoval(
-                            key_len
-                                + value_len
-                                + key_len.required_space() as u32
-                                + value_len.required_space() as u32,
-                        );
-                    }
+                    charge_delete(charge, &key, cost_info, || {
+                        self.db.get_cf(cf_aux(&self.db), &key)
+                    })?;
                 }
                 AbstractBatchOperation::DeleteRoot { key, cost_info } => {
                     db_batch.delete_cf(cf_roots(&self.db), &key);
-
-                    // Non-atomic freed-size fallback: reads committed state.
-                    // See method-level doc comment for rationale.
-                    if let Some(key_value_removed_bytes) = cost_info {
-                        cost.seek_count += 1;
-                        pending_costs.storage_cost.removed_bytes +=
-                            key_value_removed_bytes.combined_removed_bytes();
-                    } else {
-                        cost.seek_count += 2;
-                        let value_len = cost_return_on_error_no_add!(
-                            cost,
-                            self.db
-                                .get_cf(cf_roots(&self.db), &key)
-                                .map_err(RocksDBError)
-                        )
-                        .map(|x| x.len() as u32)
-                        .unwrap_or(0);
-                        cost.storage_loaded_bytes += value_len as u64;
-
-                        let key_len = key.len() as u32;
-                        pending_costs.storage_cost.removed_bytes += BasicStorageRemoval(
-                            key_len
-                                + value_len
-                                + key_len.required_space() as u32
-                                + value_len.required_space() as u32,
-                        );
-                    }
+                    charge_delete(charge, &key, cost_info, || {
+                        self.db.get_cf(cf_roots(&self.db), &key)
+                    })?;
                 }
                 AbstractBatchOperation::DeleteMeta { key, cost_info } => {
                     db_batch.delete_cf(cf_meta(&self.db), &key);
-
-                    // Non-atomic freed-size fallback: reads committed state.
-                    // See method-level doc comment for rationale.
-                    if let Some(key_value_removed_bytes) = cost_info {
-                        cost.seek_count += 1;
-                        pending_costs.storage_cost.removed_bytes +=
-                            key_value_removed_bytes.combined_removed_bytes();
-                    } else {
-                        cost.seek_count += 2;
-                        let value_len = cost_return_on_error_no_add!(
-                            cost,
-                            self.db
-                                .get_cf(cf_meta(&self.db), &key)
-                                .map_err(RocksDBError)
-                        )
-                        .map(|x| x.len() as u32)
-                        .unwrap_or(0);
-                        cost.storage_loaded_bytes += value_len as u64;
-
-                        let key_len = key.len() as u32;
-                        pending_costs.storage_cost.removed_bytes += BasicStorageRemoval(
-                            key_len
-                                + value_len
-                                + key_len.required_space() as u32
-                                + value_len.required_space() as u32,
-                        );
-                    }
+                    charge_delete(charge, &key, cost_info, || {
+                        self.db.get_cf(cf_meta(&self.db), &key)
+                    })?;
                 }
             }
         }
-        Ok(pending_costs).wrap_with_cost(cost)
+        Ok(())
     }
 
     /// Commits a write batch
@@ -772,16 +625,20 @@ impl RocksDbStorage {
         pending_costs: OperationCost,
         transaction: Option<&<RocksDbStorage as Storage>::Transaction>,
     ) -> CostResult<(), Error> {
-        let result = match transaction {
+        let result = self.write_db_batch(db_batch, transaction);
+        let written = result.is_ok();
+        result.wrap_with_cost(COST_MODEL.batch_written(pending_costs, written))
+    }
+
+    fn write_db_batch(
+        &self,
+        db_batch: WriteBatchWithTransaction<true>,
+        transaction: Option<&<RocksDbStorage as Storage>::Transaction>,
+    ) -> Result<(), Error> {
+        match transaction {
             None => self.db.write(db_batch).map_err(RocksDBError),
             // Refused with a typed error on a snapshot read transaction.
             Some(transaction) => transaction.rebuild_from_writebatch(&db_batch),
-        };
-
-        if result.is_ok() {
-            result.wrap_with_cost(pending_costs)
-        } else {
-            result.wrap_with_cost(OperationCost::default())
         }
     }
 
@@ -1038,7 +895,9 @@ impl<'db> Storage<'db> for RocksDbStorage {
         // validation and may return a Busy or TryAgain error if another
         // transaction modified the same keys concurrently. A snapshot
         // read transaction is refused with a typed error.
-        transaction.commit().wrap_with_cost(Default::default())
+        transaction
+            .commit()
+            .wrap_with_cost(COST_MODEL.transaction_commit())
     }
 
     fn rollback_transaction(&self, transaction: &Self::Transaction) -> Result<(), Error> {
@@ -1082,7 +941,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::BatchTransactionalStorageContext> {
         PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix, batch)
-            .wrap_with_cost(OperationCost::default())
+            .wrap_with_cost(COST_MODEL.open_by_prefix())
     }
 
     fn get_immediate_storage_context<'b, B>(
@@ -1104,7 +963,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::ImmediateStorageContext> {
         PrefixedRocksDbImmediateStorageContext::new(&self.db, transaction, prefix)
-            .wrap_with_cost(OperationCost::default())
+            .wrap_with_cost(COST_MODEL.open_by_prefix())
     }
 
     fn commit_multi_context_batch(
@@ -1112,23 +971,17 @@ impl<'db> Storage<'db> for RocksDbStorage {
         batch: StorageBatch,
         transaction: Option<&'db Self::Transaction>,
     ) -> CostResult<(), Error> {
-        let mut cost = OperationCost::default();
-        let (db_batch, pending_costs) =
-            cost_return_on_error!(&mut cost, self.build_write_batch(batch));
-
-        self.commit_db_write_batch(db_batch, pending_costs, transaction)
-            .add_cost(cost)
+        let mut db_batch = WriteBatchWithTransaction::<true>::default();
+        let mut charge = COST_MODEL.batch();
+        let result = self
+            .fill_write_batch(&mut db_batch, batch, &mut charge)
+            .and_then(|()| self.write_db_batch(db_batch, transaction));
+        let written = result.is_ok();
+        result.wrap_with_cost(charge.finish(written))
     }
 
     fn get_storage_context_cost<L: WorstKeyLength>(path: &[L]) -> OperationCost {
-        if path.is_empty() {
-            OperationCost::default()
-        } else {
-            let body_size = Self::worst_case_body_size(path);
-            // the block size of blake3 is 64
-            let blocks_num = blake_block_count(body_size) as u32;
-            OperationCost::with_hash_node_calls(blocks_num)
-        }
+        COST_MODEL.open_by_path(path.iter().map(|segment| usize::from(segment.max_length())))
     }
 
     fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
@@ -1137,6 +990,26 @@ impl<'db> Storage<'db> for RocksDbStorage {
                 x.create_checkpoint_with_log_size(path, DEFAULT_LOG_SIZE_FOR_CHECKPOINT_FLUSH)
             })
             .map_err(RocksDBError)
+    }
+}
+
+fn charge_delete(
+    charge: &mut BatchCharge,
+    stored_key: &[u8],
+    cost_info: Option<KeyValueStorageCost>,
+    committed_value: impl FnOnce() -> Result<Option<Vec<u8>>, rocksdb::Error>,
+) -> Result<(), Error> {
+    match cost_info {
+        Some(cost_info) => {
+            charge.delete(cost_info);
+            Ok(())
+        }
+        None => charge.delete_uncosted(
+            stored_key.len(),
+            committed_value()
+                .map(|value| value.map(|value| value.len()))
+                .map_err(RocksDBError),
+        ),
     }
 }
 

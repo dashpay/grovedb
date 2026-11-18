@@ -3057,3 +3057,702 @@ mod flat_store {
         assert!(listed(&*storage).is_empty());
     }
 }
+
+mod charging {
+    use grovedb_costs::{
+        cost_model::{Keyspace, StorageCostModel},
+        error::Error as CostError,
+        storage_cost::{
+            key_value_cost::KeyValueStorageCost,
+            removal::{
+                with_basic_sectioned_removal_addition_version, StorageRemovalPerEpochByIdentifier,
+                StorageRemovedBytes,
+                StorageRemovedBytes::{BasicStorageRemoval, SectionedStorageRemoval},
+                UNKNOWN_EPOCH,
+            },
+            StorageCost,
+        },
+        CostResult, OperationCost,
+    };
+
+    use super::*;
+    use crate::{
+        rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Error, FlatStore,
+        RawIterator, Storage, StorageBatch, StorageContext,
+    };
+
+    const MODEL: StorageCostModel = StorageCostModel::V0;
+    const SUBTREE: &[&[u8]] = &[b"charged"];
+    const OTHER_SUBTREE: &[&[u8]] = &[b"charged too"];
+
+    /// The keyspaces in the order a batch charges them.
+    const IN_BATCH_ORDER: [Keyspace; 4] = [
+        Keyspace::Meta,
+        Keyspace::Aux,
+        Keyspace::Roots,
+        Keyspace::Data,
+    ];
+
+    fn sections(sections: &[(u16, u32)]) -> StorageRemovedBytes {
+        let mut by_owner = StorageRemovalPerEpochByIdentifier::default();
+        let default_owner = by_owner.entry([0; 32]).or_default();
+        for (epoch, bytes) in sections {
+            default_owner.insert(*epoch, *bytes);
+        }
+        SectionedStorageRemoval(by_owner)
+    }
+
+    /// A removal by owner and epoch, as a client's callback splits it.
+    fn sectioned() -> StorageRemovedBytes {
+        sections(&[(3, 50)])
+    }
+
+    /// What a sectioned removal and a plain one of `plain` bytes add up to
+    /// when the sectioned one is charged first.
+    fn sectioned_then_plain(plain: u32) -> StorageRemovedBytes {
+        sections(&[(3, 50), (UNKNOWN_EPOCH, plain)])
+    }
+
+    /// What they add up to on grove versions 1 to 3 when the plain one is
+    /// charged first: the default owner's section is lost.
+    fn plain_then_sectioned() -> StorageRemovedBytes {
+        SectionedStorageRemoval(Default::default())
+    }
+
+    fn removing(removed_bytes: StorageRemovedBytes) -> KeyValueStorageCost {
+        KeyValueStorageCost {
+            key_storage_cost: StorageCost {
+                removed_bytes,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn put<'db, C: StorageContext<'db>>(
+        context: &C,
+        keyspace: Keyspace,
+        key: &[u8],
+        value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
+    ) {
+        match keyspace {
+            Keyspace::Meta => context.put_meta(key, value, cost_info),
+            Keyspace::Aux => context.put_aux(key, value, cost_info),
+            Keyspace::Roots => context.put_root(key, value, cost_info),
+            Keyspace::Data => context.put(key, value, None, cost_info),
+        }
+        .unwrap()
+        .expect("a staged put");
+    }
+
+    fn delete<'db, C: StorageContext<'db>>(
+        context: &C,
+        keyspace: Keyspace,
+        key: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
+    ) {
+        match keyspace {
+            Keyspace::Meta => context.delete_meta(key, cost_info),
+            Keyspace::Aux => context.delete_aux(key, cost_info),
+            Keyspace::Roots => context.delete_root(key, cost_info),
+            Keyspace::Data => context.delete(key, cost_info),
+        }
+        .unwrap()
+        .expect("a staged delete");
+    }
+
+    fn get<'db, C: StorageContext<'db>>(
+        context: &C,
+        keyspace: Keyspace,
+        key: &[u8],
+    ) -> Option<Vec<u8>> {
+        match keyspace {
+            Keyspace::Meta => context.get_meta(key),
+            Keyspace::Aux => context.get_aux(key),
+            Keyspace::Roots => context.get_root(key),
+            Keyspace::Data => context.get(key),
+        }
+        .unwrap()
+        .expect("a read")
+    }
+
+    /// One removal of a batch: where it is staged, and whether it is the
+    /// sectioned or the plain one.
+    type Removal<'a> = (&'a [&'a [u8]], Keyspace, &'a [u8], bool);
+
+    /// Applies a batch that removes two records, staged in the order given,
+    /// and returns the removed bytes it is charged.
+    fn removed_by(staged: [Removal; 2]) -> StorageRemovedBytes {
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let batch = StorageBatch::new();
+        for (subtree, keyspace, key, is_sectioned) in staged {
+            let context = storage
+                .get_transactional_storage_context(subtree.into(), Some(&batch), &tx)
+                .unwrap();
+            let removed = if is_sectioned {
+                sectioned()
+            } else {
+                BasicStorageRemoval(7)
+            };
+            delete(&context, keyspace, key, Some(removing(removed)));
+        }
+        let applied = storage.commit_multi_context_batch(batch, Some(&tx));
+        applied.value.expect("the batch applies");
+        assert_eq!(applied.cost.seek_count, 2);
+        applied.cost.storage_cost.removed_bytes
+    }
+
+    /// Asserts that a batch charges `first` before `second`, however the
+    /// two were staged.
+    fn assert_charged_in_order(
+        first: (&[&[u8]], Keyspace, &[u8]),
+        second: (&[&[u8]], Keyspace, &[u8]),
+    ) {
+        let plain_first = (first.0, first.1, first.2, false);
+        let sectioned_second = (second.0, second.1, second.2, true);
+        let sectioned_first = (first.0, first.1, first.2, true);
+        let plain_second = (second.0, second.1, second.2, false);
+        let case = format!("{first:?} before {second:?}");
+
+        assert_eq!(
+            removed_by([plain_first, sectioned_second]),
+            plain_then_sectioned(),
+            "{case}"
+        );
+        assert_eq!(
+            removed_by([sectioned_second, plain_first]),
+            plain_then_sectioned(),
+            "{case}"
+        );
+        assert_eq!(
+            removed_by([sectioned_first, plain_second]),
+            sectioned_then_plain(7),
+            "{case}"
+        );
+        assert_eq!(
+            removed_by([plain_second, sectioned_first]),
+            sectioned_then_plain(7),
+            "{case}"
+        );
+    }
+
+    #[test]
+    fn a_batch_is_charged_by_keyspace_and_then_by_stored_key() {
+        assert_eq!(MODEL.batch_order(), IN_BATCH_ORDER);
+        for (position, earlier) in IN_BATCH_ORDER.into_iter().enumerate() {
+            for later in &IN_BATCH_ORDER[position + 1..] {
+                assert_charged_in_order((SUBTREE, earlier, b"z"), (SUBTREE, *later, b"a"));
+            }
+            assert_charged_in_order((SUBTREE, earlier, b"a"), (SUBTREE, earlier, b"b"));
+            assert_charged_in_order((SUBTREE, earlier, b"a"), (SUBTREE, earlier, b"aa"));
+        }
+
+        let prefix = |subtree: &[&[u8]]| RocksDbStorage::build_prefix(subtree.into()).unwrap();
+        let (low, high) = if prefix(SUBTREE) < prefix(OTHER_SUBTREE) {
+            (SUBTREE, OTHER_SUBTREE)
+        } else {
+            (OTHER_SUBTREE, SUBTREE)
+        };
+        for keyspace in IN_BATCH_ORDER {
+            assert_charged_in_order((low, keyspace, b"z"), (high, keyspace, b"a"));
+        }
+    }
+
+    #[test]
+    fn the_order_of_a_batch_does_not_show_from_grove_version_4() {
+        with_basic_sectioned_removal_addition_version(1, || {
+            for is_sectioned_first in [true, false] {
+                assert_eq!(
+                    removed_by([
+                        (SUBTREE, Keyspace::Data, b"a", is_sectioned_first),
+                        (SUBTREE, Keyspace::Data, b"b", !is_sectioned_first),
+                    ]),
+                    sectioned_then_plain(7)
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn a_delete_with_no_cost_meets_the_other_removals_in_batch_order() {
+        let removed_by = |sectioned_key: &[u8], uncosted_key: &[u8]| {
+            let storage = TempStorage::new();
+            let tx = storage.start_transaction();
+            let batch = StorageBatch::new();
+            let context = storage
+                .get_transactional_storage_context(SUBTREE.into(), Some(&batch), &tx)
+                .unwrap();
+            delete(
+                &context,
+                Keyspace::Data,
+                sectioned_key,
+                Some(removing(sectioned())),
+            );
+            delete(&context, Keyspace::Data, uncosted_key, None);
+            let applied = storage.commit_multi_context_batch(batch, Some(&tx));
+            applied.value.expect("the batch applies");
+            applied.cost.storage_cost.removed_bytes
+        };
+        assert_eq!(removed_by(b"b", b"a"), plain_then_sectioned());
+        assert_eq!(removed_by(b"a", b"b"), sectioned_then_plain(32 + 1 + 1 + 1));
+    }
+
+    #[test]
+    fn the_key_of_a_put_is_charged_before_its_value() {
+        for keyspace in IN_BATCH_ORDER {
+            let removed_by = |key: StorageRemovedBytes, value: StorageRemovedBytes| {
+                let storage = TempStorage::new();
+                let tx = storage.start_transaction();
+                let batch = StorageBatch::new();
+                let context = storage
+                    .get_transactional_storage_context(SUBTREE.into(), Some(&batch), &tx)
+                    .unwrap();
+                let cost_info = KeyValueStorageCost {
+                    key_storage_cost: StorageCost {
+                        removed_bytes: key,
+                        ..Default::default()
+                    },
+                    value_storage_cost: StorageCost {
+                        removed_bytes: value,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                put(&context, keyspace, b"key", b"value", Some(cost_info));
+                let applied = storage.commit_multi_context_batch(batch, Some(&tx));
+                applied.value.expect("the batch applies");
+                applied.cost.storage_cost.removed_bytes
+            };
+            assert_eq!(
+                removed_by(BasicStorageRemoval(5), sectioned()),
+                plain_then_sectioned(),
+                "{keyspace:?}"
+            );
+            assert_eq!(
+                removed_by(sectioned(), BasicStorageRemoval(5)),
+                sectioned_then_plain(5),
+                "{keyspace:?}"
+            );
+        }
+    }
+
+    fn refused(applied: CostResult<(), Error>) -> OperationCost {
+        match applied.value {
+            Err(Error::CostError(CostError::StorageCostMismatch { .. })) => applied.cost,
+            other => panic!("expected a refused put, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_refused_put_keeps_what_was_charged_before_it_and_none_of_the_storage_costs() {
+        let wrong = || KeyValueStorageCost {
+            value_storage_cost: StorageCost {
+                added_bytes: 1,
+                ..Default::default()
+            },
+            needs_value_verification: true,
+            ..Default::default()
+        };
+        for (position, refusing) in IN_BATCH_ORDER.into_iter().enumerate() {
+            let storage = TempStorage::new();
+            let tx = storage.start_transaction();
+            let batch = StorageBatch::new();
+            let context = storage
+                .get_transactional_storage_context(SUBTREE.into(), Some(&batch), &tx)
+                .unwrap();
+            for keyspace in IN_BATCH_ORDER {
+                put(&context, keyspace, b"committed", b"a record", None);
+            }
+            storage
+                .commit_multi_context_batch(batch, Some(&tx))
+                .unwrap()
+                .expect("the batch applies");
+            storage
+                .commit_transaction(tx)
+                .unwrap()
+                .expect("the transaction commits");
+
+            let fill = |batch: &StorageBatch, tx| {
+                let context = storage
+                    .get_transactional_storage_context(SUBTREE.into(), Some(batch), tx)
+                    .unwrap();
+                for keyspace in IN_BATCH_ORDER.into_iter().rev() {
+                    put(&context, keyspace, b"put", b"value", None);
+                    delete(&context, keyspace, b"committed", None);
+                }
+                put(&context, refusing, b"e", b"refused", Some(wrong()));
+            };
+            let before = position as u32;
+            let expected = OperationCost {
+                seek_count: before * (2 + 1) + 2 + 1,
+                storage_loaded_bytes: (u64::from(before) + 1) * 8,
+                ..Default::default()
+            };
+
+            let tx = storage.start_transaction();
+            let batch = StorageBatch::new();
+            fill(&batch, &tx);
+            assert_eq!(
+                refused(storage.commit_multi_context_batch(batch, Some(&tx))),
+                expected,
+                "{refusing:?}"
+            );
+            let context = storage
+                .get_transactional_storage_context(SUBTREE.into(), None, &tx)
+                .unwrap();
+            for keyspace in IN_BATCH_ORDER {
+                assert_eq!(get(&context, keyspace, b"put"), None);
+                assert_eq!(
+                    get(&context, keyspace, b"committed"),
+                    Some(b"a record".to_vec())
+                );
+            }
+
+            let batch = StorageBatch::new();
+            fill(&batch, &tx);
+            let built = storage.build_write_batch(batch);
+            assert_eq!(built.cost, expected, "{refusing:?}");
+            assert!(matches!(
+                built.value,
+                Err(Error::CostError(CostError::StorageCostMismatch { .. }))
+            ));
+        }
+    }
+
+    #[test]
+    fn the_storage_cost_of_a_batch_is_owed_only_when_its_writes_are_taken() {
+        let storage = TempStorage::new();
+        let fill = |batch: &StorageBatch, tx| {
+            let context = storage
+                .get_transactional_storage_context(SUBTREE.into(), Some(batch), tx)
+                .unwrap();
+            put(&context, Keyspace::Aux, b"key", b"value", None);
+            delete(&context, Keyspace::Data, b"absent", None);
+        };
+        let at_once = || OperationCost::with_seek_count(3);
+        let storage_cost = OperationCost {
+            storage_cost: StorageCost {
+                added_bytes: 35 + 1 + 5 + 1,
+                replaced_bytes: 0,
+                removed_bytes: BasicStorageRemoval(38 + 1 + 1),
+            },
+            ..Default::default()
+        };
+
+        let read_only = storage.start_snapshot_read_transaction();
+        let batch = StorageBatch::new();
+        fill(&batch, &read_only);
+        let refused = storage.commit_multi_context_batch(batch, Some(&read_only));
+        assert!(matches!(
+            refused.value,
+            Err(Error::SnapshotReadOnlyTransaction(_))
+        ));
+        assert_eq!(refused.cost, at_once());
+
+        let batch = StorageBatch::new();
+        fill(&batch, &read_only);
+        let built = storage.build_write_batch(batch);
+        assert_eq!(built.cost, at_once());
+        let (db_batch, pending) = built.value.expect("the batch is built");
+        assert_eq!(pending, storage_cost);
+        let refused = storage.commit_db_write_batch(db_batch, pending, Some(&read_only));
+        assert!(refused.value.is_err());
+        assert_eq!(refused.cost, OperationCost::default());
+
+        let tx = storage.start_transaction();
+        let batch = StorageBatch::new();
+        fill(&batch, &tx);
+        let (db_batch, pending) = storage
+            .build_write_batch(batch)
+            .unwrap()
+            .expect("the batch is built");
+        let written = storage.commit_db_write_batch(db_batch, pending, Some(&tx));
+        written.value.expect("the batch is written");
+        assert_eq!(written.cost, storage_cost);
+
+        let batch = StorageBatch::new();
+        fill(&batch, &tx);
+        let applied = storage.commit_multi_context_batch(batch, Some(&tx));
+        applied.value.expect("the batch applies");
+        assert_eq!(
+            applied.cost,
+            OperationCost {
+                seek_count: 3,
+                storage_cost: storage_cost.storage_cost,
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn clearing_a_keyspace_is_charged_as_the_walk_the_model_defines() {
+        let records: [&[u8]; 4] = [b"", b"a", b"bb", &[7; 200]];
+        let stored_key_lens = || records.iter().map(|key| MODEL.stored_key_len(key.len()));
+
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let immediate = storage
+            .get_immediate_storage_context(SUBTREE.into(), &tx)
+            .unwrap();
+        for key in records {
+            StorageContext::put(&immediate, key, b"value", None, None)
+                .unwrap()
+                .expect("a put");
+            immediate
+                .put_aux(key, b"aux", None)
+                .unwrap()
+                .expect("a put");
+        }
+
+        let batch = StorageBatch::new();
+        let deferred = storage
+            .get_transactional_storage_context(SUBTREE.into(), Some(&batch), &tx)
+            .unwrap();
+        let cleared = FlatStore::clear(&deferred);
+        cleared.value.expect("a keyspace cleared");
+        assert_eq!(cleared.cost, MODEL.clear_walk(stored_key_lens()));
+        let cleared = FlatStore::clear(&deferred.aux());
+        cleared.value.expect("a keyspace cleared");
+        assert_eq!(cleared.cost, MODEL.clear_walk(stored_key_lens()));
+
+        let empty = storage
+            .get_transactional_storage_context(OTHER_SUBTREE.into(), Some(&batch), &tx)
+            .unwrap();
+        let cleared = FlatStore::clear(&empty);
+        cleared.value.expect("an empty keyspace cleared");
+        assert_eq!(cleared.cost, MODEL.clear_walk([]));
+
+        let cleared = FlatStore::clear(&immediate);
+        cleared.value.expect("a keyspace cleared");
+        assert_eq!(cleared.cost, MODEL.clear_walk(stored_key_lens()));
+        assert_eq!(
+            StorageContext::get(&immediate, b"a")
+                .unwrap()
+                .expect("a read"),
+            None
+        );
+    }
+
+    struct Longest(u8);
+
+    impl WorstKeyLength for Longest {
+        fn max_length(&self) -> u8 {
+            self.0
+        }
+    }
+
+    #[test]
+    fn a_handle_and_its_estimate_are_charged_by_the_lengths_of_the_path() {
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let paths: [&[&[u8]]; 6] = [
+            &[],
+            &[b""],
+            &[b"a"],
+            &[&[2; 55]],
+            &[&[2; 56]],
+            &[&[1; 255], b"", &[3; 255]],
+        ];
+        for path in paths {
+            let expected = MODEL.open_by_path(path.iter().map(|segment| segment.len()));
+            assert_eq!(RocksDbStorage::build_prefix(path.into()).cost, expected);
+            assert_eq!(
+                storage
+                    .get_transactional_storage_context(path.into(), None, &tx)
+                    .cost,
+                expected
+            );
+            assert_eq!(
+                storage.get_immediate_storage_context(path.into(), &tx).cost,
+                expected
+            );
+            let longest: Vec<Longest> = path
+                .iter()
+                .map(|segment| Longest(segment.len() as u8))
+                .collect();
+            assert_eq!(RocksDbStorage::get_storage_context_cost(&longest), expected);
+        }
+    }
+
+    #[test]
+    fn a_cursor_is_charged_by_where_it_stands() {
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let prefix = |subtree: &[&[u8]]| RocksDbStorage::build_prefix(subtree.into()).unwrap();
+        let (low, high) = if prefix(SUBTREE) < prefix(OTHER_SUBTREE) {
+            (SUBTREE, OTHER_SUBTREE)
+        } else {
+            (OTHER_SUBTREE, SUBTREE)
+        };
+        for subtree in [low, high] {
+            let context = storage
+                .get_immediate_storage_context(subtree.into(), &tx)
+                .unwrap();
+            StorageContext::put(&context, b"key", b"a value", None, None)
+                .unwrap()
+                .expect("a put");
+        }
+        let stored_key_len = MODEL.stored_key_len(3);
+        let off_record = OperationCost::with_storage_loaded_bytes(288);
+
+        for (subtree, is_followed_by_another_subtree) in [(low, true), (high, false)] {
+            let context = storage
+                .get_transactional_storage_context(subtree.into(), None, &tx)
+                .unwrap();
+            let mut cursor = context.raw_iter();
+            let case = format!("followed by another subtree: {is_followed_by_another_subtree}");
+
+            assert_eq!(cursor.valid().cost, MODEL.cursor_key(None), "{case}");
+            assert_eq!(cursor.key().cost, off_record, "{case}");
+            assert_eq!(cursor.value().cost, MODEL.cursor_value(None), "{case}");
+
+            for step in 0..6 {
+                let moved = match step {
+                    0 => cursor.seek_to_first(),
+                    1 => cursor.seek_to_last(),
+                    2 => cursor.seek(b"k"),
+                    3 => cursor.seek_for_prev(b"l"),
+                    4 => cursor.seek(b"key"),
+                    _ => cursor.seek_for_prev(b"key"),
+                };
+                assert_eq!(moved.cost, MODEL.cursor_move(), "{case}");
+                assert_eq!(moved.cost, OperationCost::with_seek_count(1), "{case}");
+
+                let valid = cursor.valid();
+                assert!(valid.value, "{case}");
+                assert_eq!(valid.cost, MODEL.cursor_key(Some(stored_key_len)), "{case}");
+                let key = cursor.key();
+                assert_eq!(key.value, Some(b"key".as_slice()), "{case}");
+                assert_eq!(
+                    key.cost,
+                    OperationCost::with_storage_loaded_bytes(35),
+                    "{case}"
+                );
+                let value = cursor.value();
+                assert_eq!(value.value, Some(b"a value".as_slice()), "{case}");
+                assert_eq!(
+                    value.cost,
+                    MODEL.cursor_value(Some((stored_key_len, 7))),
+                    "{case}"
+                );
+                assert_eq!(
+                    value.cost,
+                    OperationCost::with_storage_loaded_bytes(35 + 7),
+                    "{case}"
+                );
+            }
+
+            for forward in [true, false] {
+                cursor.seek(b"key").unwrap();
+                let moved = if forward {
+                    cursor.next()
+                } else {
+                    cursor.prev()
+                };
+                assert_eq!(moved.cost, MODEL.cursor_move(), "{case}");
+                let valid = cursor.valid();
+                assert!(!valid.value, "{case}");
+                assert_eq!(valid.cost, off_record, "{case}");
+                let key = cursor.key();
+                assert_eq!(key.value, None, "{case}");
+                assert_eq!(key.cost, off_record, "{case}");
+                let value = cursor.value();
+                assert_eq!(value.value, None, "{case}");
+                assert_eq!(value.cost, off_record, "{case}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_batch_of_an_immediate_handle_is_owed_whether_or_not_it_is_written() {
+        fn fill(batch: &mut impl Batch) {
+            let wrong = KeyValueStorageCost {
+                value_storage_cost: StorageCost {
+                    added_bytes: 1,
+                    ..Default::default()
+                },
+                needs_value_verification: true,
+                ..Default::default()
+            };
+            batch.put(b"key", b"value", None, None).expect("a put");
+            batch.put_aux(b"key", b"value", None).expect("a put");
+            batch.put_root(b"r", b"key", None).expect("a free root key");
+            batch
+                .put_aux(b"refused", b"value", Some(wrong.clone()))
+                .expect_err("a cost that does not match");
+            batch
+                .put_root(b"refused", b"key", Some(wrong))
+                .expect_err("a cost that does not match");
+            batch.delete(b"gone", None);
+            batch.delete_aux(b"gone", Some(removing(BasicStorageRemoval(9))));
+            batch.delete_root(b"gone", None);
+        }
+        let expected = OperationCost {
+            seek_count: 8,
+            storage_cost: StorageCost {
+                added_bytes: 2 * (35 + 1 + 5 + 1),
+                replaced_bytes: 0,
+                removed_bytes: BasicStorageRemoval(9),
+            },
+            ..Default::default()
+        };
+        let storage = TempStorage::new();
+
+        let read_only = storage.start_snapshot_read_transaction();
+        let context = storage
+            .get_immediate_storage_context(SUBTREE.into(), &read_only)
+            .unwrap();
+        let mut batch = context.new_batch();
+        fill(&mut batch);
+        let refused = context.commit_batch(batch);
+        assert!(matches!(
+            refused.value,
+            Err(Error::SnapshotReadOnlyTransaction(_))
+        ));
+        assert_eq!(refused.cost, expected);
+
+        let tx = storage.start_transaction();
+        let context = storage
+            .get_immediate_storage_context(SUBTREE.into(), &tx)
+            .unwrap();
+        let mut batch = context.new_batch();
+        fill(&mut batch);
+        let written = context.commit_batch(batch);
+        written.value.expect("the batch is written");
+        assert_eq!(written.cost, expected);
+        assert_eq!(
+            StorageContext::get(&context, b"key")
+                .unwrap()
+                .expect("a read"),
+            Some(b"value".to_vec())
+        );
+        assert_eq!(context.get_aux(b"refused").unwrap().expect("a read"), None);
+    }
+
+    #[test]
+    fn a_write_with_no_batch_to_stage_it_in_is_refused_and_charged_nothing() {
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let context = storage
+            .get_transactional_storage_context(SUBTREE.into(), None, &tx)
+            .unwrap();
+        let refusals = [
+            StorageContext::put(&context, b"key", b"value", None, None),
+            context.put_aux(b"key", b"value", None),
+            context.put_root(b"key", b"value", None),
+            context.put_meta(b"key", b"value", None),
+            StorageContext::delete(&context, b"key", None),
+            context.delete_aux(b"key", None),
+            context.delete_root(b"key", None),
+            context.delete_meta(b"key", None),
+            context.commit_batch(context.new_batch()),
+        ];
+        for refused in refusals {
+            assert!(matches!(refused.value, Err(Error::StorageError(_))));
+            assert_eq!(refused.cost, MODEL.refused_write());
+            assert_eq!(refused.cost, OperationCost::default());
+        }
+    }
+}

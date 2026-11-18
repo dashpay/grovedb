@@ -1,13 +1,17 @@
 //! Prefixed storage batch implementation for RocksDB backend.
 
 use grovedb_costs::{
-    storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, OperationCost,
+    cost_model::{ImmediateBatchCharge, Keyspace},
+    storage_cost::key_value_cost::KeyValueStorageCost,
+    ChildrenSizesWithIsSumTree,
 };
-use integer_encoding::VarInt;
 use rocksdb::{ColumnFamily, WriteBatchWithTransaction};
 
 use super::make_prefixed_key;
-use crate::{rocksdb_storage::storage::SubtreePrefix, Batch, StorageBatch};
+use crate::{
+    rocksdb_storage::storage::{SubtreePrefix, COST_MODEL},
+    Batch, StorageBatch,
+};
 
 /// Wrapper to RocksDB batch.
 /// All calls go to RocksDB batch, but wrapper handles prefixes and column
@@ -21,7 +25,7 @@ pub struct PrefixedRocksDbBatch<'db> {
     /// As a batch to be committed is a RocksDB batch and there is no way to get
     /// what it will do, we collect costs at the moment we append something to
     /// the batch.
-    pub(crate) cost_acc: OperationCost,
+    pub(crate) cost_acc: ImmediateBatchCharge,
 }
 
 /// Batch with no backing storage_cost (it's not a RocksDB batch, but our own
@@ -42,27 +46,14 @@ impl Batch for PrefixedRocksDbBatch<'_> {
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), grovedb_costs::error::Error> {
         let prefixed_key = make_prefixed_key(&self.prefix, key);
+        let cost_info = COST_MODEL.complete_new_key_cost(cost_info, prefixed_key.len());
 
-        // Update the key_storage_cost based on the prefixed key
-        let updated_cost_info = cost_info.map(|mut key_value_storage_cost| {
-            if key_value_storage_cost.new_node {
-                // key is new, storage_cost needs to be created for it
-                key_value_storage_cost.key_storage_cost.added_bytes +=
-                    (prefixed_key.len() + prefixed_key.len().required_space()) as u32;
-            }
-            key_value_storage_cost
-        });
-
-        // A fully prepaid put (`KeyValueStorageCost::prepaid`) was billed by
-        // its owner in advance, the write included: no seek.
-        if !updated_cost_info.as_ref().is_some_and(|c| c.is_prepaid()) {
-            self.cost_acc.seek_count += 1;
-        }
-        self.cost_acc.add_key_value_storage_costs(
-            prefixed_key.len() as u32,
-            value.len() as u32,
+        self.cost_acc.put(
+            Keyspace::Data,
+            prefixed_key.len(),
+            value.len(),
             children_sizes,
-            updated_cost_info,
+            cost_info,
         )?;
 
         self.batch.put(prefixed_key, value);
@@ -77,12 +68,10 @@ impl Batch for PrefixedRocksDbBatch<'_> {
     ) -> Result<(), grovedb_costs::error::Error> {
         let prefixed_key = make_prefixed_key(&self.prefix, key);
 
-        if !cost_info.as_ref().is_some_and(|c| c.is_prepaid()) {
-            self.cost_acc.seek_count += 1;
-        }
-        self.cost_acc.add_key_value_storage_costs(
-            prefixed_key.len() as u32,
-            value.len() as u32,
+        self.cost_acc.put(
+            Keyspace::Aux,
+            prefixed_key.len(),
+            value.len(),
             None,
             cost_info,
         )?;
@@ -99,18 +88,13 @@ impl Batch for PrefixedRocksDbBatch<'_> {
     ) -> Result<(), grovedb_costs::error::Error> {
         let prefixed_key = make_prefixed_key(&self.prefix, key);
 
-        if !cost_info.as_ref().is_some_and(|c| c.is_prepaid()) {
-            self.cost_acc.seek_count += 1;
-        }
-        // put root only pays if cost info is set
-        if cost_info.is_some() {
-            self.cost_acc.add_key_value_storage_costs(
-                prefixed_key.len() as u32,
-                value.len() as u32,
-                None,
-                cost_info,
-            )?;
-        }
+        self.cost_acc.put(
+            Keyspace::Roots,
+            prefixed_key.len(),
+            value.len(),
+            None,
+            cost_info,
+        )?;
 
         self.batch.put_cf(self.cf_roots, prefixed_key, value);
         Ok(())
@@ -119,11 +103,7 @@ impl Batch for PrefixedRocksDbBatch<'_> {
     fn delete<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
         let prefixed_key = make_prefixed_key(&self.prefix, key);
 
-        self.cost_acc.seek_count += 1;
-
-        if let Some(removed_bytes) = cost_info {
-            self.cost_acc.storage_cost.removed_bytes += removed_bytes.combined_removed_bytes();
-        }
+        self.cost_acc.delete(cost_info);
 
         self.batch.delete(prefixed_key);
     }
@@ -131,11 +111,7 @@ impl Batch for PrefixedRocksDbBatch<'_> {
     fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
         let prefixed_key = make_prefixed_key(&self.prefix, key);
 
-        self.cost_acc.seek_count += 1;
-
-        if let Some(removed_bytes) = cost_info {
-            self.cost_acc.storage_cost.removed_bytes += removed_bytes.combined_removed_bytes();
-        }
+        self.cost_acc.delete(cost_info);
 
         self.batch.delete_cf(self.cf_aux, prefixed_key);
     }
@@ -143,11 +119,7 @@ impl Batch for PrefixedRocksDbBatch<'_> {
     fn delete_root<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
         let prefixed_key = make_prefixed_key(&self.prefix, key);
 
-        self.cost_acc.seek_count += 1;
-
-        if let Some(removed_bytes) = cost_info {
-            self.cost_acc.storage_cost.removed_bytes += removed_bytes.combined_removed_bytes();
-        }
+        self.cost_acc.delete(cost_info);
 
         self.batch.delete_cf(self.cf_roots, prefixed_key);
     }
@@ -164,23 +136,10 @@ impl Batch for PrefixedMultiContextBatchPart {
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), grovedb_costs::error::Error> {
         let prefixed_key = make_prefixed_key(&self.prefix, key);
+        let cost_info = COST_MODEL.complete_new_key_cost(cost_info, prefixed_key.len());
 
-        // Update the key_storage_cost based on the prefixed key
-        let updated_cost_info = cost_info.map(|mut key_value_storage_cost| {
-            if key_value_storage_cost.new_node {
-                // key is new, storage_cost needs to be created for it
-                key_value_storage_cost.key_storage_cost.added_bytes +=
-                    (prefixed_key.len() + prefixed_key.len().required_space()) as u32;
-            }
-            key_value_storage_cost
-        });
-
-        self.batch.put(
-            prefixed_key,
-            value.to_vec(),
-            children_sizes,
-            updated_cost_info,
-        );
+        self.batch
+            .put(prefixed_key, value.to_vec(), children_sizes, cost_info);
         Ok(())
     }
 
