@@ -6,11 +6,11 @@ This document specifies what GroveDB charges today, as an `OperationCost`, for e
 
 It builds on the [storage surface inventory](storage-surface.md) (BASE-04), the [FlatStore seam](flat-store.md) (SEAM-03), the [NodeStore seam](node-store.md) (SEAM-01) and rule GM0 of the [transaction rules](transactions.md) (TXN-01). The cost codes of the inventory (`P-path`, `R-tx`, `B-commit` and so on) are named next to each rule.
 
-**Pinned commit:** the engine sources of `feat/LigninDB` at `54e36fb4` ("Merge BASE-01: the remaining cost-bearing operations"), which are those of `develop` `22f163c2`. Functions are cited by name, with the line at the pinned commit. Since then `develop` has been merged up to `f1016919` and the golden corpus recorded again from that commit (`lignin-testkit/corpus/README.md`). The rules below predict every cost of the new corpus as they did of the old, and the citations have not been moved.
+**Pinned commit:** the engine sources of `feat/LigninDB` at `54e36fb4` ("Merge BASE-01: the remaining cost-bearing operations"), which are those of `develop` `22f163c2`. Functions are cited by name, with the line at the pinned commit. Since then `develop` has been merged twice, up to `f1016919` and up to `2a79d035`, and the golden corpus recorded again from each (`lignin-testkit/corpus/README.md`). The rules below predict every cost of the corpus recorded from `2a79d035` as they did of the first, and the citations have not been moved.
 
 **Since SEAM-05** the storage rules of section 5 are the functions of `grovedb_costs::cost_model`, and the RocksDB engine charges only through them. Section 14 says which function is which rule. The citations of section 5 are of the code at the pinned commit, where the rules were written out in the storage contexts.
 
-**Result:** the storage rules of section 5, applied to a logical state that holds no node record, reproduce every `OperationCost` of the golden corpus: 290 traces and 216,069 steps on grove versions 1 to 5 at the standard scale, and the five reference traces of 1,050,008 operations each. Section 12 says how that is run, what it shows and what it does not. One thing it does not show: the corpus cannot tell whether a delete with no writer's cost is charged from the committed state or from the transaction's view (rule D2), because the two differ only for a record the same transaction wrote, and the corpus deletes such records only in an operation whose cost GroveDB drops. The storage crate's tests pin that instead.
+**Result:** the storage rules of section 5, applied to a logical state that holds no node record, reproduce every `OperationCost` of the golden corpus: 310 traces and 224,531 steps on grove versions 1 to 5 at the standard scale, and the five reference traces of 1,050,008 operations each. Section 12 says how that is run, what it shows and what it does not. One thing it does not show: the corpus cannot tell whether a delete with no writer's cost is charged from the committed state or from the transaction's view (rule D2), because the two differ only for a record the same transaction wrote, and the corpus deletes such records only in an operation whose cost GroveDB drops. The storage crate's tests pin that instead.
 
 ## 1. How to read this document
 
@@ -562,7 +562,7 @@ The rules of sections 6 and 7 are therefore executed by the code that owns them,
 
 ```text
 $ lignin-testkit/cost-model-storage/check.sh
-golden corpus: 290 traces replayed, 290 as recorded (216069 steps), 0 not
+golden corpus: 310 traces replayed, 310 as recorded (224531 steps), 0 not
 ```
 
 The replay is BASE-02's: it compares the cost, the result, the root hash and the proof of every step with the committed corpus, and names the first step and part that differ. A green replay on the model therefore also says that the model gave the same answers as RocksDB wherever the corpus looks: every result read, every root hash and every proof. It does not say that the two states are equal record by record; an aux or meta record that nothing reads would not be noticed.
@@ -573,7 +573,7 @@ Everything that was run on the model, at the pinned commit:
 
 | What | Command | Result |
 | --- | --- | --- |
-| The corpus at the standard scale: 58 workloads on grove versions 1 to 5 | `check.sh` | 290 traces as recorded, 216,069 steps |
+| The corpus at the standard scale: 62 traces on each of grove versions 1 to 5. Run again on the corpus recorded from `develop` `2a79d035` | `check.sh` | 310 traces as recorded, 224,531 steps |
 | The corpus at the reference scale: 1,050,008 operations on each grove version | `check.sh replay --reference` | 5 traces as recorded, 5,250,055 steps |
 | The storage crate's tests | `check.sh test -p grovedb-storage --features rocksdb_storage -- --skip cost_model::` | 51 pass. The crate's other 14 are unit tests inside `rocksdb_storage/storage.rs`, the file the model replaces. |
 | Merk's tests | `check.sh test -p grovedb-merk` | 872 and 9 doc tests pass |
@@ -584,7 +584,7 @@ The three test suites are the engine's own, unchanged. They assert costs in many
 
 The last row runs inside the real workspace: `cost_model/against_rocksdb.rs` performs the same batches, reads and cursor walks on a RocksDB storage and on the model and compares every cost and every result, and `cost_model/against_merk.rs` compares the record layout of section 4 with Merk's encoder for every feature and link.
 
-**Sensitivity.** A check that cannot fail shows nothing, so each rule was changed in the model, one change at a time, and the corpus replayed:
+**Sensitivity.** A check that cannot fail shows nothing, so each rule was changed in the model, one change at a time, and the corpus replayed. The table and the three paragraphs after it are of the corpus as it was then, 290 traces. They were not made again when the corpus grew to 310:
 
 | Rule | Change made to the model | Traces that then differ, of 290 | First difference the replay names |
 | --- | --- | ---: | --- |
@@ -629,65 +629,65 @@ Merk's and GroveDB's test suites do not tell them apart either: with this change
 
 ### 12.4 Which rules the corpus applies
 
-The model counts every application of a rule, by case. `check.sh` prints the counts of a replay and keeps those of any run in `target/cost-model/rule-hits.tsv`. The first column is the corpus at the standard scale; the others are the three test suites of section 12.3, added up over their test processes.
+The model counts every application of a rule, by case. `check.sh` prints the counts of a replay and keeps those of any run in `target/cost-model/rule-hits.tsv`. The first column is the corpus at the standard scale, the 310 traces recorded from `develop` `2a79d035`; the others are the three test suites of section 12.3 as they were run at the pinned commit, added up over their test processes.
 
 | Rule | Case | Corpus | Storage tests | Merk tests | GroveDB tests |
 | --- | --- | ---: | ---: | ---: | ---: |
-| P1 | a subtree handle opened by the empty path | 592,219 | 0 | 3,541 | 227,613 |
-| P1 | a subtree handle opened by a path of one segment or more | 1,715,620 | 132 | 3 | 801,434 |
-| P2 | a subtree handle opened by a prefix | 33,729 | 13 | 0 | 33,547 |
-| P3 | the prefix of an indexed tree's secondary derived | 31,092 | 0 | 0 | 18,362 |
-| R1 | a data record read through a deferred handle | 4,633,672 | 24 | 217,766 | 1,607,100 |
-| R1 | a data key with no record read through a deferred handle | 32,966 | 13 | 1 | 9,623 |
+| P1 | a subtree handle opened by the empty path | 612,639 | 0 | 3,541 | 227,613 |
+| P1 | a subtree handle opened by a path of one segment or more | 1,780,302 | 132 | 3 | 801,434 |
+| P2 | a subtree handle opened by a prefix | 34,953 | 13 | 0 | 33,547 |
+| P3 | the prefix of an indexed tree's secondary derived | 32,316 | 0 | 0 | 18,362 |
+| R1 | a data record read through a deferred handle | 4,777,268 | 24 | 217,766 | 1,607,100 |
+| R1 | a data key with no record read through a deferred handle | 33,566 | 13 | 1 | 9,623 |
 | R1 | an aux record read through a deferred handle | 290 | 12 | 1 | 19 |
 | R1 | an aux key with no record read through a deferred handle | 40 | 10 | 0 | 178 |
-| R1 | a root key record read through a deferred handle | 385,742 | 11 | 3,008 | 117,923 |
-| R1 | an absent root key record read through a deferred handle | 3,445 | 4 | 421 | 12,733 |
+| R1 | a root key record read through a deferred handle | 399,052 | 11 | 3,008 | 117,923 |
+| R1 | an absent root key record read through a deferred handle | 3,485 | 4 | 421 | 12,733 |
 | R1 | a meta record read through a deferred handle | 0 | 10 | 0 | 8 |
 | R1 | a meta key with no record read through a deferred handle | 0 | 4 | 2 | 22 |
 | R2 | a read through an immediate handle | 0 | 461 | 29,226 | 16,366 |
-| W1 | the stored key added to the key cost of a new data record | 233,115 | 1 | 108,684 | 250,138 |
-| W2 | a data put with the sizes of a node's links and feature | 2,844,678 | 0 | 162,830 | 915,178 |
+| W1 | the stored key added to the key cost of a new data record | 239,799 | 1 | 108,684 | 250,138 |
+| W2 | a data put with the sizes of a node's links and feature | 2,912,946 | 0 | 162,830 | 915,178 |
 | W2 | a data put with no link sizes | 14,873 | 78 | 23,135 | 39,798 |
 | W2 | an aux put | 1,155 | 34 | 2 | 21 |
 | W2 | a meta put | 522 | 33 | 2 | 35 |
 | W3 | a root key put with a cost | 0 | 2 | 0 | 0 |
-| W3 | a root key put with no cost | 132,841 | 23 | 3,100 | 28,687 |
+| W3 | a root key put with no cost | 137,367 | 23 | 3,100 | 28,687 |
 | W4 | a prepaid put | 1,213 | 14 | 0 | 745 |
-| K2 | a value cost worked out from the record length | 896,828 | 132 | 181,551 | 505,444 |
-| K2 | a value cost taken from the writer as given | 1,964,400 | 15 | 4,418 | 449,588 |
-| K3 | a writer's value cost checked against the record length | 887,252 | 2 | 158,412 | 488,502 |
-| K3 | a writer's key cost checked against the stored key | 233,115 | 1 | 108,382 | 250,061 |
+| K2 | a value cost worked out from the record length | 918,186 | 132 | 181,551 | 505,444 |
+| K2 | a value cost taken from the writer as given | 2,011,310 | 15 | 4,418 | 449,588 |
+| K3 | a writer's value cost checked against the record length | 908,610 | 2 | 158,412 | 488,502 |
+| K3 | a writer's key cost checked against the stored key | 239,799 | 1 | 108,382 | 250,061 |
 | K3 | a write refused because the writer's cost does not match | 0 | 0 | 0 | 3 |
-| D1 | a data delete with the writer's cost | 69,504 | 0 | 1,852 | 10,543 |
+| D1 | a data delete with the writer's cost | 70,684 | 0 | 1,852 | 10,543 |
 | D1 | an aux delete with the writer's cost | 0 | 0 | 0 | 0 |
 | D1 | a root key delete with the writer's cost | 0 | 0 | 1 | 65 |
 | D1 | a meta delete with the writer's cost | 0 | 0 | 0 | 0 |
-| D2 | a delete with no cost of a record in the committed state | 24,045 | 24 | 0 | 1,011 |
-| D2 | a delete with no cost of a key the committed state lacks | 2,000 | 11 | 0 | 23 |
+| D2 | a delete with no cost of a record in the committed state | 26,080 | 24 | 0 | 1,011 |
+| D2 | a delete with no cost of a key the committed state lacks | 3,010 | 11 | 0 | 23 |
 | M1 | a write through an immediate handle | 0 | 481 | 5,192 | 2,407 |
 | M2 | a put in the batch of an immediate handle | 0 | 7 | 24,501 | 12,024 |
 | M2 | a delete in the batch of an immediate handle | 0 | 1 | 3 | 0 |
-| C1 | a cursor moved to the first record | 67,088 | 86 | 1,630 | 26,191 |
+| C1 | a cursor moved to the first record | 71,970 | 86 | 1,630 | 26,191 |
 | C1 | a cursor moved to the last record | 675 | 10 | 12 | 434 |
-| C1 | a cursor moved to the first key at or after a key | 2,479 | 3 | 307 | 5,050 |
+| C1 | a cursor moved to the first key at or after a key | 2,599 | 3 | 307 | 5,050 |
 | C1 | a cursor moved to the last key at or before a key | 91 | 2 | 0 | 233 |
-| C1 | a cursor stepped forward | 170,796 | 106 | 43,047 | 49,207 |
+| C1 | a cursor stepped forward | 192,745 | 106 | 43,047 | 49,207 |
 | C1 | a cursor stepped back | 7,714 | 28 | 3,348 | 4,839 |
-| C2 | a cursor asked for its key or validity on a record | 630,654 | 388 | 148,950 | 214,692 |
-| C2 | a cursor asked for its key or validity off its subtree | 58,487 | 92 | 208 | 18,794 |
-| C3 | a cursor asked for the value of a record | 151,493 | 110 | 46,699 | 56,654 |
-| B1 | a batch applied to a transaction | 182,398 | 43 | 3,413 | 88,148 |
+| C2 | a cursor asked for its key or validity on a record | 708,491 | 388 | 148,950 | 214,692 |
+| C2 | a cursor asked for its key or validity off its subtree | 62,241 | 92 | 208 | 18,794 |
+| C3 | a cursor asked for the value of a record | 170,257 | 110 | 46,699 | 56,654 |
+| B1 | a batch applied to a transaction | 187,394 | 43 | 3,413 | 88,148 |
 | B1 | a batch whose writes were refused | 0 | 1 | 0 | 2 |
-| N1 | a data record kept as the fields of a node | 2,848,940 | 0 | 191,097 | 942,062 |
+| N1 | a data record kept as the fields of a node | 2,917,208 | 0 | 191,097 | 942,062 |
 | N1 | a data record that is not a node, kept as bytes | 10,611 | 207 | 2 | 14,839 |
-| N2 | the link and feature sizes Merk gave with a node are the node's | 2,844,678 | 0 | 162,830 | 915,178 |
+| N2 | the link and feature sizes Merk gave with a node are the node's | 2,912,946 | 0 | 162,830 | 915,178 |
 | N2 | the link and feature sizes Merk gave with a node are not the node's | 0 | 0 | 0 | 0 |
 
 ### 12.5 What the check does not show
 
 - **Rules the corpus does not reach** (zero in the first column above) are specified from the code: reads of the meta keyspace, R2, a root key put with a cost (W3), a refused write (K3, B1), D1 outside the data keyspace, M1 and M2. The engine's suites reach all of them but D1 in the aux and meta keyspaces. `cost_model/against_rocksdb.rs` compares every one of them with RocksDB.
-- **N2** has to stay at zero in its second row, and does: on 3,922,686 node writes of the four runs, and on 235,356,610 of the reference scale, the sizes Merk passed were the node's own. This row is also what keeps the model from charging a Merk's node from stored bytes: a record that comes with sizes and that the model cannot keep as a node's fields counts here. With the model's node parser made to give up on records over 100 bytes, every step of the corpus still matches, because the bytes it falls back to have the engine's length, and the check fails on this row with 2,260,997 such puts.
+- **N2** has to stay at zero in its second row, and does: on 3,990,954 node writes of the four runs, and on 235,356,610 of the reference scale, the sizes Merk passed were the node's own. This row is also what keeps the model from charging a Merk's node from stored bytes: a record that comes with sizes and that the model cannot keep as a node's fields counts here. With the model's node parser made to give up on records over 100 bytes, every step of the corpus still matches, because the bytes it falls back to have the engine's length, and the check fails on this row with 2,260,997 such puts.
 - **D2 on a record the same transaction wrote** is applied by the corpus only inside operations whose cost is dropped (section 12.3, Sensitivity).
 - **Commit conflicts** are not modelled: the model commits every transaction. No workload has two open write transactions.
 - **Persistence** is in memory: a database lives as long as the process and is found again through a mark left in its directory, and a checkpoint is a database of its own that starts as the committed state of the moment it was taken.
@@ -815,5 +815,5 @@ How it was checked:
 | The estimate against a real handle | `storage/src/rocksdb_storage/tests.rs`, module `charging` | A handle opened by path, deferred or immediate, costs what the estimate gives for the same lengths |
 | That the crate still works out no charge | `storage/tests/charging.rs` | The source check reads `worst_case_costs.rs` and finds no charge stated: the function passes on what `open_by_path` gives |
 | GroveDB's estimates on RocksDB | `cargo test -p grovedb` | Every estimate test passes as before |
-| GroveDB's estimates with no engine | GroveDB's library tests in the workspace `lignin-testkit/cost-model-storage/check.sh` lays out, where the storage crate is the model | Every estimate test passes with no RocksDB crate among the crates that are built (`cargo tree -e normal,build,dev`). The stand-in for the storage crate has no estimate of its own any more, and a handle is charged by the second implementation of the rules, so the tests that compare an estimate with an operation compare the two implementations of P1. Two things in GroveDB's tests name the `rocksdb` crate and were left out for the run: the dev-dependency one test uses under `unsafe-dump-load`, and the test of the `Engine` seam that looks at the error RocksDB itself returns for a lost commit. The stand-in was also given the error types SEAM-04 added to the storage crate, which it does not have yet |
+| GroveDB's estimates with no engine | GroveDB's library tests in the workspace `lignin-testkit/cost-model-storage/check.sh` lays out, where the storage crate is the model | Every estimate test passes with no RocksDB crate among the crates that are built (`cargo tree -e normal,build,dev`). The stand-in for the storage crate has no estimate of its own any more, and a handle is charged by the second implementation of the rules, so the tests that compare an estimate with an operation compare the two implementations of P1. Two things in GroveDB's tests name the `rocksdb` crate. The dev-dependency one test uses under `unsafe-dump-load` was left out for the run. The test of the `Engine` seam that looks at the error RocksDB itself returns for a lost commit is not built in that workspace: `check.sh` sets the cfg `lignin_cost_model`, and the test is compiled only without it. For the run the stand-in was given the error types SEAM-04 added to the storage crate; it has had them itself since the sync with `develop` `2a79d035` |
 | That no number moved | a sweep run before and after the change | The fifteen helpers and the batch estimator, for 119 paths of every block boundary, seven tree types and the five grove versions: 86,460 results, the same bytes before and after. With one byte added to each segment in the new function, 7,075 of them differ |
