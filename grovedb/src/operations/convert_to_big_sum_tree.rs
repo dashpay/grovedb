@@ -57,9 +57,11 @@ impl GroveDb {
     ///   `ProvableCountSumTree` has no counterpart with a 128-bit sum.
     /// - The tree adds its sum to a parent that keeps a 64-bit sum. A tree
     ///   with a 128-bit sum adds nothing to such a parent, so the parent
-    ///   would stop following it: convert the parent first. A tree wrapped in
-    ///   `NotSummed` or `NotCountedOrSummed` adds nothing either way and is
-    ///   converted.
+    ///   would stop following it. Where the parent is one of the six trees,
+    ///   convert it first. Where it is a `ProvableCountSumTree`, neither can
+    ///   be converted, and the layout cannot be moved to a 128-bit sum in
+    ///   place. A tree wrapped in `NotSummed` or `NotCountedOrSummed` adds
+    ///   nothing either way and is converted, under any parent.
     /// - The tree holds a child that would add a different count or sum to
     ///   it once it is converted. That is a tree with a 128-bit sum inside
     ///   the tree: it adds nothing to a 64-bit sum and its whole sum to a
@@ -216,7 +218,8 @@ impl GroveDb {
         if parent_sums_in_64_bits && !left_out_of_the_parent_sum {
             return Err(Error::InvalidInput(
                 "the tree adds its sum to a parent that keeps a 64-bit sum, and would add \
-                 nothing to it with a 128-bit sum: convert the parent first",
+                 nothing to it with a 128-bit sum: convert the parent first, if it is a tree \
+                 that can be converted",
             ))
             .wrap_with_cost(cost);
         }

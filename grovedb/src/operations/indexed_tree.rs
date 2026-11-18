@@ -41,7 +41,12 @@
 //! and it survives only as a test oracle.
 
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add,
+    storage_cost::{
+        key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes::BasicStorageRemoval,
+        StorageCost,
+    },
+    CostResult, CostsExt, OperationCost,
 };
 use grovedb_element::indexed::{
     decode_avg_sort_key, decode_big_sum_sort_key, decode_sum_sort_key, encode_avg_sort_key,
@@ -65,10 +70,11 @@ use grovedb_storage::{
     Batch, RawIterator, Storage, StorageBatch, StorageContext,
 };
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
+use integer_encoding::VarInt;
 
 use crate::{
-    query_result_type::IndexedAxisEntry, util::TxRef, Element, Error, GroveDb, Transaction,
-    TransactionArg,
+    query_result_type::IndexedAxisEntry, util::TxRef, Element, Error, GroveDb, SubtreePrefix,
+    Transaction, TransactionArg,
 };
 
 /// The canonical row definition lives in
@@ -946,10 +952,11 @@ impl GroveDb {
     /// storage, not the Merk.
     ///
     /// - From `GROVE_V5` each row write is its own operation of the storage
-    ///   batch, so every removal reaches storage; a stray row that is in
-    ///   storage and in no Merk is removed too; and when the repaired tree
-    ///   is an entry of another indexed tree, that tree's row for it is
-    ///   refreshed, since it binds the element's value hash.
+    ///   batch, so every removal reaches storage; a row that is in storage
+    ///   and in no Merk is removed if it should not exist and written again
+    ///   if it should; and when the repaired tree is an entry of another
+    ///   indexed tree, that tree's row for it is refreshed, since it binds
+    ///   the element's value hash.
     /// - On `GROVE_V1`..`GROVE_V4`, as released: a repair that removes a row
     ///   and then a row whose node that removal rewrote leaves the second in
     ///   storage, gone from the Merk and still read by the ranking reads; a
@@ -1335,31 +1342,38 @@ impl GroveDb {
                 .unwrap_add_cost(&mut cost);
             let mut existing_keys: std::collections::BTreeSet<Vec<u8>> =
                 std::collections::BTreeSet::new();
-            while let Some((key, _node_bytes)) = sec_iter.next_kv().unwrap_add_cost(&mut cost) {
+            let mut stored_row_lengths: std::collections::BTreeMap<Vec<u8>, u32> =
+                std::collections::BTreeMap::new();
+            while let Some((key, node_bytes)) = sec_iter.next_kv().unwrap_add_cost(&mut cost) {
+                stored_row_lengths.insert(key.clone(), node_bytes.len() as u32);
                 existing_keys.insert(key);
             }
             cost_return_on_error_no_add!(cost, sec_iter.status().map_err(Error::StorageError));
 
-            if row_writes != SecondaryRowWrites::OneByOneAsReleased {
-                // A stored row the secondary's Merk does not link cannot be
-                // removed through the Merk, which has no node for it, and a
-                // read by key finds it in storage all the same, so the two
-                // cannot be told apart here. Every row that should not
-                // exist is named to storage first, as an operation of its
-                // own: the Merk's removal of a row it links comes later and
-                // takes its place, with the cost the Merk gives it, and the
-                // removal of a row it does not link stands.
+            // The stored rows the secondary's Merk does not link. Such a row
+            // is in storage and in no tree: the Merk has no node to remove
+            // or to compare, and a read by key finds the row all the same.
+            // The released repair does not look for them.
+            let unlinked_rows = if row_writes == SecondaryRowWrites::OneByOneAsReleased {
+                std::collections::BTreeSet::new()
+            } else {
                 cost_return_on_error!(
                     &mut cost,
-                    remove_secondary_rows_from_storage(
-                        &secondary_merk,
-                        existing_keys
-                            .iter()
-                            .filter(|key| !desired.contains_key(*key)),
-                    )
-                );
-                batch.next_operation();
-            }
+                    unlinked_secondary_rows(&secondary_merk, &existing_keys, grove_version)
+                )
+            };
+            // One that should not exist is removed from storage directly,
+            // billed by the length the scan read it at.
+            cost_return_on_error!(
+                &mut cost,
+                remove_secondary_rows_from_storage(
+                    &secondary_merk,
+                    unlinked_rows
+                        .iter()
+                        .filter(|key| !desired.contains_key(*key))
+                        .map(|key| (key, stored_row_lengths.get(key).copied().unwrap_or(0))),
+                )
+            );
 
             match row_writes {
                 SecondaryRowWrites::Together => {
@@ -1368,6 +1382,7 @@ impl GroveDb {
                         write_secondary_rows_together(
                             &mut secondary_merk,
                             &existing_keys,
+                            &unlinked_rows,
                             &desired,
                             grove_version,
                         )
@@ -1378,7 +1393,7 @@ impl GroveDb {
 
                     // Delete rows that should not exist.
                     for key in &existing_keys {
-                        if !desired.contains_key(key) {
+                        if !desired.contains_key(key) && !unlinked_rows.contains(key) {
                             if !as_released {
                                 batch.next_operation();
                             }
@@ -1404,6 +1419,7 @@ impl GroveDb {
                             secondary_row_needs_write(
                                 &secondary_merk,
                                 &existing_keys,
+                                &unlinked_rows,
                                 desired_key,
                                 desired_row_bytes,
                                 desired_target_hash,
@@ -3535,29 +3551,88 @@ pub(crate) enum SecondaryRowWrites {
     OneByOneAsReleased,
     /// The same commits in the same order, each its own operation of the
     /// storage batch ([`StorageBatch::next_operation`]), so every removal
-    /// reaches storage, after the rows that should not exist are named to
-    /// storage directly, which removes the ones the Merk does not link. The
-    /// secondary takes the shape the released repair gives it.
+    /// reaches storage. A stored row the Merk does not link is removed from
+    /// storage directly if it should not exist, and written again if it
+    /// should. The secondary takes the shape the released repair gives it.
     OneByOne,
     /// One Merk commit for everything an axis needs: its removals and its
     /// writes together. Only the aggregates of the finished secondary are
     /// computed, so a rebuild that changes every row cannot fail on a sum
     /// the rows pass through halfway, and each key is written once and
     /// billed against what it held before. Rows the Merk does not link are
-    /// removed from storage first, as in [`Self::OneByOne`].
+    /// treated as in [`Self::OneByOne`].
     Together,
 }
 
-/// Names rows to a secondary's storage for removal, directly: the only way
-/// to remove a row its Merk does not link. Storage bills each by what it
-/// holds.
+/// The stored rows of a secondary that its Merk does not link.
+///
+/// Every row counts one in the secondary's aggregate, and every linked row
+/// is stored, so a secondary whose count equals the number of stored rows
+/// links them all, which is every secondary the supported writes leave.
+/// Only otherwise is the tree walked for the keys it links.
+fn unlinked_secondary_rows<'db, S: StorageContext<'db>>(
+    secondary_merk: &Merk<S>,
+    stored_keys: &std::collections::BTreeSet<Vec<u8>>,
+    grove_version: &GroveVersion,
+) -> CostResult<std::collections::BTreeSet<Vec<u8>>, Error> {
+    let mut cost = OperationCost::default();
+    let linked_count = cost_return_on_error_no_add!(
+        cost,
+        secondary_merk.aggregate_data().map_err(Error::MerkError)
+    )
+    .as_count_u64();
+    if linked_count == stored_keys.len() as u64 {
+        return Ok(std::collections::BTreeSet::new()).wrap_with_cost(cost);
+    }
+    let linked_keys = cost_return_on_error!(
+        &mut cost,
+        secondary_merk
+            .linked_keys(
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            )
+            .map_err(Error::MerkError)
+    );
+    Ok(stored_keys.difference(&linked_keys).cloned().collect()).wrap_with_cost(cost)
+}
+
+/// Removes rows from a secondary's storage directly: the only way to remove
+/// a row its Merk does not link. Each comes with the length of its stored
+/// value, and is billed as storage bills a removal it has no cost for, from
+/// that length instead of the committed state, which does not hold a row
+/// written earlier in the same transaction.
 fn remove_secondary_rows_from_storage<'a, 'db, S: StorageContext<'db>>(
     secondary_merk: &Merk<S>,
-    keys: impl Iterator<Item = &'a Vec<u8>>,
+    rows: impl Iterator<Item = (&'a Vec<u8>, u32)>,
 ) -> CostResult<(), Error> {
     let mut removals = secondary_merk.storage.new_batch();
-    for key in keys {
-        removals.delete(key, None);
+    let mut any = false;
+    for (key, value_len) in rows {
+        let stored_key_len = (std::mem::size_of::<SubtreePrefix>() + key.len()) as u32;
+        removals.delete(
+            key,
+            Some(KeyValueStorageCost {
+                key_storage_cost: StorageCost {
+                    removed_bytes: BasicStorageRemoval(
+                        stored_key_len + stored_key_len.required_space() as u32,
+                    ),
+                    ..Default::default()
+                },
+                value_storage_cost: StorageCost {
+                    removed_bytes: BasicStorageRemoval(
+                        value_len + value_len.required_space() as u32,
+                    ),
+                    ..Default::default()
+                },
+                new_node: false,
+                needs_value_verification: false,
+                prepaid: false,
+            }),
+        );
+        any = true;
+    }
+    if !any {
+        return Ok(()).wrap_with_cost(OperationCost::default());
     }
     secondary_merk
         .storage
@@ -3566,7 +3641,8 @@ fn remove_secondary_rows_from_storage<'a, 'db, S: StorageContext<'db>>(
 }
 
 /// Whether the row a secondary should hold at `desired_key` has to be
-/// written: it is missing, or it differs from the stored one.
+/// written: it is missing, its Merk does not link it, or it differs from
+/// the stored one.
 ///
 /// Key-presence alone does not imply row-correctness on any axis: the row
 /// carries a reference path and a payload sum the key does not encode, and
@@ -3575,13 +3651,16 @@ fn remove_secondary_rows_from_storage<'a, 'db, S: StorageContext<'db>>(
 fn secondary_row_needs_write<'db, S: StorageContext<'db>>(
     secondary_merk: &Merk<S>,
     existing_keys: &std::collections::BTreeSet<Vec<u8>>,
+    unlinked_rows: &std::collections::BTreeSet<Vec<u8>>,
     desired_key: &[u8],
     desired_row_bytes: &[u8],
     desired_target_hash: &CryptoHash,
     grove_version: &GroveVersion,
 ) -> CostResult<bool, Error> {
     let mut cost = OperationCost::default();
-    if !existing_keys.contains(desired_key) {
+    // A stored row the Merk does not link is missing from the tree, however
+    // well its bytes match.
+    if !existing_keys.contains(desired_key) || unlinked_rows.contains(desired_key) {
         return Ok(true).wrap_with_cost(cost);
     }
     let stored = cost_return_on_error!(
@@ -3618,12 +3697,13 @@ fn secondary_row_needs_write<'db, S: StorageContext<'db>>(
 }
 
 /// Brings one secondary in line with `desired` in a single Merk commit
-/// ([`SecondaryRowWrites::Together`]): every stored row `desired` does not
-/// name is removed, and every row of it that is missing or differs is
-/// written.
+/// ([`SecondaryRowWrites::Together`]): every row the Merk links and
+/// `desired` does not name is removed, and every row of `desired` that is
+/// missing, unlinked or different is written.
 fn write_secondary_rows_together<'db, S: StorageContext<'db>>(
     secondary_merk: &mut Merk<S>,
     existing_keys: &std::collections::BTreeSet<Vec<u8>>,
+    unlinked_rows: &std::collections::BTreeSet<Vec<u8>>,
     desired: &std::collections::BTreeMap<Vec<u8>, (Vec<u8>, CryptoHash)>,
     grove_version: &GroveVersion,
 ) -> CostResult<(), Error> {
@@ -3632,7 +3712,9 @@ fn write_secondary_rows_together<'db, S: StorageContext<'db>>(
 
     let mut operations: Vec<(Vec<u8>, Op)> = Vec::new();
     for key in existing_keys {
-        if !desired.contains_key(key) {
+        // The Merk has no node for a row it does not link: the caller
+        // removes those from storage.
+        if !desired.contains_key(key) && !unlinked_rows.contains(key) {
             cost_return_on_error!(
                 &mut cost,
                 Element::delete_into_batch_operations(
@@ -3652,6 +3734,7 @@ fn write_secondary_rows_together<'db, S: StorageContext<'db>>(
             secondary_row_needs_write(
                 secondary_merk,
                 existing_keys,
+                unlinked_rows,
                 desired_key,
                 desired_row_bytes,
                 desired_target_hash,

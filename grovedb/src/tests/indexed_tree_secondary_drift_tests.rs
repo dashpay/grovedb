@@ -1522,14 +1522,14 @@ mod tests {
         version
     }
 
-    /// The keys an axis's secondary holds in storage, whether or not its
+    /// The records an axis's secondary holds in storage, whether or not its
     /// Merk links them: what the ranking reads iterate.
-    fn stored_row_keys(
+    fn stored_rows(
         db: &TempGroveDb,
         indexed_path: &[&[u8]],
         axis: IndexAxis,
         gv: &GroveVersion,
-    ) -> Vec<Vec<u8>> {
+    ) -> Vec<(Vec<u8>, Vec<u8>)> {
         use grovedb_merk::{merk::KVIterator, proofs::Query};
         use grovedb_storage::StorageContext;
 
@@ -1542,11 +1542,55 @@ mod tests {
         let mut all = Query::new();
         all.insert_all();
         let mut rows = KVIterator::new(secondary.storage.raw_iter(), &all).unwrap();
-        let mut keys = Vec::new();
-        while let Some((key, _)) = rows.next_kv().unwrap() {
-            keys.push(key);
+        let mut stored = Vec::new();
+        while let Some(row) = rows.next_kv().unwrap() {
+            stored.push(row);
         }
-        keys
+        stored
+    }
+
+    fn stored_row_keys(
+        db: &TempGroveDb,
+        indexed_path: &[&[u8]],
+        axis: IndexAxis,
+        gv: &GroveVersion,
+    ) -> Vec<Vec<u8>> {
+        stored_rows(db, indexed_path, axis, gv)
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect()
+    }
+
+    /// Writes a record straight into an axis's secondary storage, inside
+    /// `tx`, where no Merk links it.
+    fn store_unlinked_row(
+        db: &TempGroveDb,
+        indexed_path: &[&[u8]],
+        axis: IndexAxis,
+        key: &[u8],
+        node_bytes: &[u8],
+        tx: &crate::Transaction,
+        gv: &GroveVersion,
+    ) {
+        use grovedb_storage::StorageContext;
+
+        let batch = StorageBatch::new();
+        {
+            let path: SubtreePath<&[u8]> = indexed_path.into();
+            let secondary = db
+                .open_indexed_secondary_at_path(path, axis, None, tx, Some(&batch), gv)
+                .unwrap()
+                .expect("open the secondary's storage");
+            secondary
+                .storage
+                .put(key, node_bytes, None, None)
+                .unwrap()
+                .expect("store the record");
+        }
+        db.db
+            .commit_multi_context_batch(batch, Some(tx))
+            .unwrap()
+            .expect("commit the record");
     }
 
     const REAL_ROWS: &[(&[u8], i64)] = &[(b"a", 7), (b"b", -3)];
@@ -1748,5 +1792,138 @@ mod tests {
             .unwrap()
             .expect("repair the outer tree again");
         assert_eq!(db.root_hash(None, gv).unwrap().unwrap(), pristine_root);
+    }
+
+    /// A row can be in storage, exactly as the primary calls for it, and in
+    /// no tree: a read by key finds it and its bytes match. The repair must
+    /// treat it as the missing row it is to the tree, or the ranking reads
+    /// return a row the root hash and the proofs do not have.
+    #[test]
+    fn reconcile_links_a_row_that_is_only_in_storage() {
+        let gv = GroveVersion::latest();
+        let psit: &[&[u8]] = &[TEST_LEAF, b"psit"];
+        // Enough rows that the secondary's root has children: a read by key
+        // goes to storage where it meets a link it has not loaded, and
+        // finds a record there whether or not the link leads to it.
+        let rows: &[(&[u8], i64)] = &[
+            (b"a", 7),
+            (b"b", -3),
+            (b"c", 12),
+            (b"d", 40),
+            (b"e", -25),
+            (b"f", 3),
+            (b"g", 90),
+        ];
+        let row_key = make_axis_secondary_key(IndexAxis::Sum, 0, 7, b"a");
+
+        // The row is taken out of the secondary and, for `record_kept`, its
+        // record is put back in storage alone.
+        let damaged = |record_kept: bool| {
+            let db = make_test_grovedb(gv);
+            make_psit_with(&db, b"psit", rows, gv);
+            let record = stored_rows(&db, psit, IndexAxis::Sum, gv)
+                .into_iter()
+                .find(|(key, _)| *key == row_key)
+                .expect("the row is stored")
+                .1;
+            drift_axis_secondary(
+                &db,
+                psit,
+                IndexAxis::Sum,
+                &[],
+                std::slice::from_ref(&row_key),
+                gv,
+            );
+            if record_kept {
+                let tx = db.start_transaction();
+                store_unlinked_row(&db, psit, IndexAxis::Sum, &row_key, &record, &tx, gv);
+                db.commit_transaction(tx).unwrap().expect("commit");
+                assert_eq!(
+                    stored_row_keys(&db, psit, IndexAxis::Sum, gv).len(),
+                    rows.len(),
+                    "pre-condition: every row is in storage"
+                );
+            }
+            db
+        };
+
+        // What the repair makes of a secondary the row is simply missing
+        // from.
+        let missing = damaged(false);
+        let damaged_root = missing.root_hash(None, gv).unwrap().unwrap();
+        missing
+            .reconcile_indexed_tree_secondaries(psit, None, gv)
+            .unwrap()
+            .expect("reconcile");
+        let repaired_root = missing.root_hash(None, gv).unwrap().unwrap();
+        assert_ne!(repaired_root, damaged_root);
+        assert_clean(&missing, gv);
+
+        // The record in storage changes nothing: the row is written again.
+        let db = damaged(true);
+        assert_eq!(db.root_hash(None, gv).unwrap().unwrap(), damaged_root);
+        db.reconcile_indexed_tree_secondaries(psit, None, gv)
+            .unwrap()
+            .expect("reconcile");
+        assert_eq!(db.root_hash(None, gv).unwrap().unwrap(), repaired_root);
+        assert_clean(&db, gv);
+
+        // As released, the row is taken for present and left out of the
+        // tree.
+        let db = damaged(true);
+        db.reconcile_indexed_tree_secondaries(psit, None, &as_released())
+            .unwrap()
+            .expect("reconcile as released");
+        assert_eq!(db.root_hash(None, gv).unwrap().unwrap(), damaged_root);
+    }
+
+    /// A stray row no Merk links is removed from storage directly, and
+    /// billed by the record the repair read, which a transaction that wrote
+    /// the record itself holds and the committed state does not.
+    #[test]
+    fn a_stray_row_is_billed_by_what_the_transaction_holds() {
+        use integer_encoding::VarInt;
+
+        let gv = GroveVersion::latest();
+        let psit: &[&[u8]] = &[TEST_LEAF, b"psit"];
+        let stray_key = make_axis_secondary_key(IndexAxis::Sum, 0, 99, b"ghost");
+
+        let removed_by_the_repair = |committed_first: bool| {
+            let db = make_test_grovedb(gv);
+            make_psit_with(&db, b"psit", REAL_ROWS, gv);
+            let record = stored_rows(&db, psit, IndexAxis::Sum, gv).remove(0).1;
+            let tx = db.start_transaction();
+            store_unlinked_row(&db, psit, IndexAxis::Sum, &stray_key, &record, &tx, gv);
+            let repair = if committed_first {
+                db.commit_transaction(tx).unwrap().expect("commit");
+                let repair = db.reconcile_indexed_tree_secondaries(psit, None, gv);
+                assert_eq!(
+                    stored_row_keys(&db, psit, IndexAxis::Sum, gv),
+                    real_row_keys()
+                );
+                repair
+            } else {
+                db.reconcile_indexed_tree_secondaries(psit, Some(&tx), gv)
+            };
+            repair.value.expect("reconcile");
+            (
+                repair.cost.storage_cost.removed_bytes.total_removed_bytes(),
+                record.len() as u32,
+            )
+        };
+
+        let (committed, record_len) = removed_by_the_repair(true);
+        let (staged, _) = removed_by_the_repair(false);
+        assert_eq!(staged, committed);
+        // The stored key is the 32-byte prefix of the secondary and the
+        // row's key, and each length is billed with its own.
+        let stored_key_len = 32 + stray_key.len() as u32;
+        assert_eq!(
+            committed,
+            stored_key_len
+                + stored_key_len.required_space() as u32
+                + record_len
+                + record_len.required_space() as u32
+        );
     }
 }

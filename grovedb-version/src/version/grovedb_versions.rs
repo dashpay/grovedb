@@ -133,9 +133,9 @@ pub struct GroveDBOperationsIndexedAxisVersions {
     ///   row for it keeps binding the element's previous hash. Preserved as
     ///   released.
     /// - `1` (GROVE_V5+): each row write is its own operation of the storage
-    ///   batch, a stray row its secondary does not link is removed from
-    ///   storage directly, and the propagation refreshes the enclosing
-    ///   tree's row.
+    ///   batch; a stored row its secondary does not link is removed from
+    ///   storage directly if it should not exist and written again if it
+    ///   should; and the propagation refreshes the enclosing tree's row.
     pub reconcile_secondaries: FeatureVersion,
 }
 

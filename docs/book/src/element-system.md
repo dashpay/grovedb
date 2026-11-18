@@ -220,9 +220,12 @@ These are refused, and a refused call leaves the tree as it was:
   no counterpart with a 128-bit sum.
 - A tree that adds its sum to a parent keeping a 64-bit sum. A tree with a
   128-bit sum adds nothing to such a parent, so the parent's total would
-  stop following it. Convert the parent first, then its children. A child
-  wrapped in `NotSummed` or `NotCountedOrSummed` adds nothing either way
-  and is converted where it is.
+  stop following it. Where the parent is one of the six trees, convert it
+  first, then its children. Where it is a `ProvableCountSumTree`, which has
+  no counterpart, neither can be converted: that layout cannot be moved to
+  a 128-bit sum in place. A child wrapped in `NotSummed` or
+  `NotCountedOrSummed` adds nothing either way and is converted where it
+  is, under any parent.
 - A tree holding a child that would add a different count or sum to it
   once converted. That is a tree with a 128-bit sum inside it: it adds
   nothing to a 64-bit sum and its whole sum to a 128-bit one, so the

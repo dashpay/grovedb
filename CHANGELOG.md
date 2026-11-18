@@ -164,7 +164,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   storage cost. Refused, leaving the tree as it was:
   - for any other element (a `ProvableCountSumTree` has no counterpart);
   - for a tree that adds its sum to a parent keeping a 64-bit sum (convert
-    the parent first);
+    the parent first; under a `ProvableCountSumTree`, which cannot be
+    converted, neither can the child);
   - for a tree holding a child that would add a different count or sum to
     it once converted, which is a tree with a 128-bit sum inside it (it
     adds nothing to a 64-bit sum and its whole sum to a 128-bit one);
@@ -190,6 +191,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     returns it once the write is made, so a refused or failed conversion
     leaves no handle to go on with, and storage as it was.
   - `TreeType::big_sum_counterpart` and `Element::big_sum_counterpart`.
+  - `Merk::linked_keys`: the keys of every node a tree links, by walking
+    its links. A read by key finds a record in the tree's storage whether
+    or not a link leads to it.
   - `KVIterator::status`: whether a scan ended on a storage error rather
     than at the end of its records, which `next_kv` reports alike.
     `reconcile_indexed_tree_secondaries` and the conversion check it after
@@ -205,8 +209,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     removing a row whose node an earlier removal had rewritten left the row
     in storage: gone from the secondary's Merk, with the right root hash,
     and still returned by the ranking reads;
-  - a stray row that is in storage and in no Merk, which only such a
-    repair leaves, is removed from storage;
+  - a row that is in storage and in no Merk, which only such a repair
+    leaves, is removed from storage if it should not exist, billed by the
+    record the repair read, and written again if it should exist (a read
+    by key finds its record, so it used to pass for present);
   - when the repaired tree is an entry of another indexed tree, that
     tree's row for it is refreshed. The row binds the element's value hash,
     which a repair that changes a secondary changes, and the enclosing

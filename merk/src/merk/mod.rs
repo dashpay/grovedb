@@ -320,6 +320,34 @@ pub struct Merk<S> {
     pub tree_type: TreeType,
 }
 
+/// Adds the key of `walker`'s node and of every node under it to `keys`.
+fn collect_linked_keys<S, V>(
+    walker: &mut RefWalker<'_, S>,
+    keys: &mut BTreeSet<Vec<u8>>,
+    value_defined_cost_fn: Option<&V>,
+    grove_version: &GroveVersion,
+) -> CostResult<(), Error>
+where
+    S: Fetch + Sized + Clone,
+    V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+{
+    let mut cost = OperationCost::default();
+    keys.insert(walker.tree().key().to_vec());
+    for left in [true, false] {
+        let maybe_child = cost_return_on_error!(
+            &mut cost,
+            walker.walk(left, value_defined_cost_fn, grove_version)
+        );
+        if let Some(mut child) = maybe_child {
+            cost_return_on_error!(
+                &mut cost,
+                collect_linked_keys(&mut child, keys, value_defined_cost_fn, grove_version)
+            );
+        }
+    }
+    Ok(()).wrap_with_cost(cost)
+}
+
 impl<S> fmt::Debug for Merk<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Merk").finish()
@@ -564,6 +592,31 @@ where
         let res = f(maybe_walker);
         self.tree.set(tree);
         res
+    }
+
+    /// The keys of every node the tree links, from its root down.
+    ///
+    /// A node is stored under its key, so a read by key
+    /// ([`Merk::get`]) finds a record in the tree's storage whether or not
+    /// any link leads to it. This walks the links instead, and so tells
+    /// what the root hash commits to from what merely sits in storage. It
+    /// loads the whole tree.
+    pub fn linked_keys<V>(
+        &self,
+        value_defined_cost_fn: Option<&V>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<BTreeSet<Vec<u8>>, Error>
+    where
+        V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+    {
+        let mut keys = BTreeSet::new();
+        self.walk(|maybe_walker| match maybe_walker {
+            Some(mut walker) => {
+                collect_linked_keys(&mut walker, &mut keys, value_defined_cost_fn, grove_version)
+            }
+            None => Ok(()).wrap_with_cost(OperationCost::default()),
+        })
+        .map_ok(|()| keys)
     }
 
     /// Checks if it's an empty tree
@@ -1138,6 +1191,53 @@ mod test {
             let tree = maybe_tree.expect("expected tree");
             assert_tree_invariants(tree);
         })
+    }
+
+    /// A read by key finds a record in the tree's storage whether or not
+    /// the tree links it; the walk names only what the tree links.
+    #[test]
+    fn linked_keys_names_what_the_tree_links_not_what_storage_holds() {
+        use grovedb_storage::StorageContext;
+
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new(grove_version);
+        let batch = make_batch_seq(0..20);
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+            .unwrap()
+            .expect("apply");
+        let (linked_key, _) = &batch[7];
+        let node = merk.storage.get(linked_key).unwrap().expect("read a node");
+        assert!(node.is_none(), "the batch is not in storage yet");
+        merk.commit(grove_version);
+        let node = merk
+            .storage
+            .get(linked_key)
+            .unwrap()
+            .expect("read a node")
+            .expect("the node is stored");
+
+        // A copy of a node under a key of its own, linked by nothing.
+        merk.storage
+            .put(b"unlinked", &node, None, None)
+            .unwrap()
+            .expect("store a record");
+        merk.commit(grove_version);
+
+        let no_cost = None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>;
+        assert!(
+            merk.get(b"unlinked", true, no_cost, grove_version)
+                .unwrap()
+                .expect("get")
+                .is_some(),
+            "a read by key finds the record"
+        );
+        let linked = merk
+            .linked_keys(no_cost, grove_version)
+            .unwrap()
+            .expect("linked keys");
+        assert_eq!(linked.len(), 20);
+        assert!(!linked.contains(b"unlinked".as_slice()));
+        assert!(batch.iter().all(|(key, _)| linked.contains(key)));
     }
 
     #[test]
