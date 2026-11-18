@@ -465,16 +465,12 @@ mod tests {
         block.commit().unwrap();
         engine.settle().unwrap();
         let root_hash = engine.root_hash(grove_version).unwrap();
-        let sequence_before_reopen = engine.wal_totals().next_sequence;
-        assert!(sequence_before_reopen.is_some());
+        assert!(engine.wal_totals().next_sequence.is_some());
         drop(engine);
 
         let mut reopened = RocksDbEngine::open(dir.path()).unwrap();
         assert_eq!(reopened.counters().unwrap().log_bytes, 0);
         assert_eq!(reopened.root_hash(grove_version).unwrap(), root_hash);
-        if let Some(carried) = reopened.wal_totals().next_sequence {
-            assert_eq!(Some(carried), sequence_before_reopen);
-        }
         let get = Op::Read(crate::workload::Read::Get {
             path: vec![b"tree".to_vec()],
             key: b"key".to_vec(),
@@ -517,6 +513,34 @@ mod tests {
                 grove_version
             )
             .is_err());
+    }
+
+    #[test]
+    fn positioning_skips_the_logs_and_keeps_their_sequence() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = RocksDbEngine::open(dir.path()).unwrap();
+        let (number, _) = engine.log_files().unwrap().into_iter().next_back().unwrap();
+        // One write batch of one put, at sequence 41, in one full record.
+        let mut batch = 41u64.to_le_bytes().to_vec();
+        batch.extend_from_slice(&1u32.to_le_bytes());
+        batch.extend_from_slice(&[0x1, 1, b'k', 1, b'v']);
+        let mut record = vec![0, 0, 0, 0];
+        record.extend_from_slice(&(batch.len() as u16).to_le_bytes());
+        record.push(1);
+        record.extend_from_slice(&batch);
+        let planted = dir.path().join(format!("{:06}.log", number + 1000));
+        std::fs::write(&planted, &record).unwrap();
+
+        engine.settle().unwrap();
+        assert_eq!(engine.wal_totals().next_sequence, Some(42));
+        assert_eq!(engine.wal_totals().batches, 0, "nothing before is counted");
+        assert_eq!(
+            engine.logs.get(&(number + 1000)).unwrap().offset(),
+            record.len() as u64
+        );
+        std::fs::remove_file(&planted).unwrap();
+        engine.settle().unwrap();
+        assert!(!engine.logs.contains_key(&(number + 1000)));
     }
 
     #[test]
