@@ -174,8 +174,8 @@ where
 #[cfg(test)]
 mod tests {
     use grovedb_costs::{
-        storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree,
-        OperationCost,
+        storage_cost::{key_value_cost::KeyValueStorageCost, StorageCost},
+        CostResult, OperationCost, TreeCostType,
     };
     use grovedb_path::SubtreePath;
     use grovedb_storage::{
@@ -183,15 +183,20 @@ mod tests {
             test_utils::TempStorage, PrefixedRocksDbImmediateStorageContext,
             PrefixedRocksDbTransactionContext,
         },
-        Batch, Storage, StorageBatch, StorageContext,
+        Storage, StorageBatch, StorageContext,
     };
     use grovedb_version::version::GroveVersion;
 
-    use super::KvChangeSet;
     use crate::{
-        store::{NodeChange, NodeChangeSet, NodeStore, NodeWriteCost},
-        tree::{kv::ValueDefinedCostType, TreeNode},
-        Error, Merk, TreeFeatureType,
+        merk::{chunks::ChunkProducer, restore::Restorer},
+        store::{
+            recording::{call, failed_call, one_call, Call, Tape},
+            stored_record, NodeChange, NodeChangeSet, NodeCursor, NodeStore, NodeWriteCost,
+        },
+        tree::{kv::ValueDefinedCostType, AggregateData, TreeNode},
+        Error, Link, Merk, Op, TreeFeatureType,
+        TreeFeatureType::BasicMerkNode,
+        TreeType, ROOT_KEY_KEY,
     };
 
     const NO_VALUE_DEFINED_COST: Option<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>> =
@@ -230,79 +235,36 @@ mod tests {
         assert_send::<<Immediate as NodeStore<'static>>::Cursor>();
     }
 
-    #[derive(Default)]
-    struct RecordingBatch {
-        calls: Vec<String>,
-    }
-
-    impl RecordingBatch {
-        fn record(&mut self, call: &str, key: &[u8], value: &[u8], charged: bool) {
-            self.calls
-                .push(format!("{call} {key:?} {value:?} charged={charged}"));
-        }
-    }
-
-    impl Batch for RecordingBatch {
-        fn put<K: AsRef<[u8]>>(
-            &mut self,
-            key: K,
-            value: &[u8],
-            children_sizes: ChildrenSizesWithIsSumTree,
-            cost_info: Option<KeyValueStorageCost>,
-        ) -> Result<(), grovedb_costs::error::Error> {
-            assert_eq!(children_sizes.is_some(), cost_info.is_some());
-            if let Some((feature, left, right)) = children_sizes {
-                assert!(feature.is_none());
-                assert_eq!((left, right), (Some((1, 2)), None));
-            }
-            self.record("put", key.as_ref(), value, cost_info.is_some());
-            Ok(())
-        }
-
-        fn put_aux<K: AsRef<[u8]>>(
-            &mut self,
-            key: K,
-            value: &[u8],
-            cost_info: Option<KeyValueStorageCost>,
-        ) -> Result<(), grovedb_costs::error::Error> {
-            self.record("put_aux", key.as_ref(), value, cost_info.is_some());
-            Ok(())
-        }
-
-        fn put_root<K: AsRef<[u8]>>(
-            &mut self,
-            key: K,
-            value: &[u8],
-            cost_info: Option<KeyValueStorageCost>,
-        ) -> Result<(), grovedb_costs::error::Error> {
-            self.record("put_root", key.as_ref(), value, cost_info.is_some());
-            Ok(())
-        }
-
-        fn delete<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
-            self.record("delete", key.as_ref(), &[], cost_info.is_some());
-        }
-
-        fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
-            self.record("delete_aux", key.as_ref(), &[], cost_info.is_some());
-        }
-
-        fn delete_root<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
-            self.record("delete_root", key.as_ref(), &[], cost_info.is_some());
+    fn charge(added_bytes: u32) -> KeyValueStorageCost {
+        KeyValueStorageCost {
+            value_storage_cost: StorageCost {
+                added_bytes,
+                ..Default::default()
+            },
+            ..Default::default()
         }
     }
 
     #[test]
     fn every_change_is_one_batch_call_under_its_key_whatever_its_kind() {
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let batch = StorageBatch::new();
+        let tape = Tape::default();
+        let store = tape.recording(
+            storage
+                .get_transactional_storage_context(SubtreePath::empty(), Some(&batch), &tx)
+                .unwrap(),
+        );
         let written = node(b"n", b"v");
         let record = written.encode();
         let cost = || NodeWriteCost {
-            feature: None,
+            feature: Some((TreeCostType::TreeFeatureUsesVarIntCostAs8Bytes, 3)),
             left_child: Some((1, 2)),
             right_child: None,
-            storage_cost: KeyValueStorageCost::default(),
+            storage_cost: charge(40),
         };
-        let mut change_set = KvChangeSet(RecordingBatch::default());
+        let mut change_set = store.change_set();
 
         change_set.put_root_key(b"n", None).unwrap();
         for (key, kind) in [
@@ -315,30 +277,662 @@ mod tests {
         }
         let prepared = change_set.prepare_node(&written, NodeChange::HashOnly);
         change_set.put_node(b"d", prepared, None).unwrap();
-        change_set.delete_node(b"e", Some(KeyValueStorageCost::default()));
+        change_set.delete_node(b"e", Some(charge(1)));
         change_set.delete_node(b"f", None);
         change_set
-            .put_aux_record(b"x", b"1", Some(KeyValueStorageCost::default()))
+            .put_aux_record(b"x", b"1", Some(charge(2)))
             .unwrap();
         change_set.delete_aux_record(b"y", None);
-        change_set.delete_root_key(Some(KeyValueStorageCost::default()));
+        change_set.delete_root_key(Some(charge(3)));
 
-        let root_key = crate::ROOT_KEY_KEY;
+        let charged_put = |key: &[u8]| Call {
+            sizes: Some((Some(("varint as 8", 3)), Some((1, 2)), None)),
+            cost: Some(charge(40)),
+            ..call("batch.put", key, &record)
+        };
+        let charged = |cost: u32, call: Call| Call {
+            cost: Some(charge(cost)),
+            ..call
+        };
         assert_eq!(
-            change_set.0.calls,
+            tape.take(),
             [
-                format!("put_root {root_key:?} {:?} charged=false", b"n"),
-                format!("put {:?} {record:?} charged=true", b"a"),
-                format!("put {:?} {record:?} charged=true", b"b"),
-                format!("put {:?} {record:?} charged=true", b"c"),
-                format!("put {:?} {record:?} charged=false", b"d"),
-                format!("delete {:?} [] charged=true", b"e"),
-                format!("delete {:?} [] charged=false", b"f"),
-                format!("put_aux {:?} {:?} charged=true", b"x", b"1"),
-                format!("delete_aux {:?} [] charged=false", b"y"),
-                format!("delete_root {root_key:?} [] charged=true"),
+                call("new_batch", b"", b""),
+                call("batch.put_root", ROOT_KEY_KEY, b"n"),
+                charged_put(b"a"),
+                charged_put(b"b"),
+                charged_put(b"c"),
+                call("batch.put", b"d", &record),
+                charged(1, call("batch.delete", b"e", b"")),
+                call("batch.delete", b"f", b""),
+                charged(2, call("batch.put_aux", b"x", b"1")),
+                call("batch.delete_aux", b"y", b""),
+                charged(3, call("batch.delete_root", ROOT_KEY_KEY, b"")),
             ]
         );
+    }
+
+    fn link(key: &[u8]) -> Link {
+        Link::Reference {
+            hash: [0; 32],
+            child_heights: (0, 0),
+            key: key.to_vec(),
+            aggregate_data: AggregateData::NoAggregateData,
+        }
+    }
+
+    /// The result of an operation that made exactly `calls` and cost `cost`.
+    fn made<T>(
+        tape: &Tape,
+        operation: CostResult<T, Error>,
+        calls: &[Call],
+        cost: OperationCost,
+    ) -> Result<T, Error> {
+        assert_eq!(tape.take(), calls);
+        assert_eq!(operation.cost, cost);
+        operation.value
+    }
+
+    #[test]
+    fn every_operation_is_one_storage_call_and_costs_what_that_call_costs() {
+        let grove_version = GroveVersion::latest();
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let written = node(b"key", b"value");
+        let record = written.encode();
+        let other = node(b"other", b"value");
+        let stored = storage
+            .get_immediate_storage_context(SubtreePath::empty(), &tx)
+            .unwrap();
+        stored
+            .write_node(&written, NodeChange::ValueWritten)
+            .unwrap()
+            .unwrap();
+        stored.set_root_key(Some(b"key")).unwrap().unwrap();
+        stored.put_meta_record(b"meta", b"mm").unwrap().unwrap();
+        let mut change_set = stored.change_set();
+        change_set.put_aux_record(b"aux", b"aaa", None).unwrap();
+        stored.commit(change_set).unwrap().unwrap();
+
+        let batch = StorageBatch::new();
+        let tape = Tape::default();
+        let store = tape.recording(
+            storage
+                .get_transactional_storage_context(SubtreePath::empty(), Some(&batch), &tx)
+                .unwrap(),
+        );
+        let read_of = |bytes: usize| OperationCost {
+            seek_count: 1,
+            storage_loaded_bytes: bytes as u64,
+            ..one_call()
+        };
+        let get = |key: &[u8]| [call("get", key, b"")];
+
+        let found = store.get_node(b"key", NO_VALUE_DEFINED_COST, grove_version);
+        let found = made(&tape, found, &get(b"key"), read_of(record.len()));
+        assert_eq!(found.unwrap().expect("the node is stored").encode(), record);
+        let absent = store.get_node(b"none", NO_VALUE_DEFINED_COST, grove_version);
+        let absent = made(&tape, absent, &get(b"none"), read_of(0));
+        assert!(absent.unwrap().is_none());
+
+        let read = store.get_node_for_read(b"key");
+        let read = made(&tape, read, &get(b"key"), read_of(record.len()));
+        assert_eq!(read.unwrap().unwrap().value_as_slice(), b"value");
+        let absent = store.get_node_for_read(b"none");
+        let absent = made(&tape, absent, &get(b"none"), read_of(0));
+        assert!(absent.unwrap().is_none());
+
+        let fetched =
+            store.fetch_node(&link(b"key"), NO_VALUE_DEFINED_COST.as_ref(), grove_version);
+        let fetched = made(&tape, fetched, &get(b"key"), read_of(record.len()));
+        assert_eq!(fetched.unwrap().encode(), record);
+        let missing = store.fetch_node(
+            &link(b"none"),
+            NO_VALUE_DEFINED_COST.as_ref(),
+            grove_version,
+        );
+        let missing = made(&tape, missing, &get(b"none"), read_of(0));
+        assert!(matches!(
+            missing,
+            Err(Error::KeyNotFoundError("Key not found for fetch"))
+        ));
+
+        let write = store.write_node(&other, NodeChange::StructureChanged);
+        let put = [call("put", b"other", &other.encode())];
+        made(&tape, write, &put, one_call()).unwrap();
+
+        let root = made(
+            &tape,
+            store.root_key(),
+            &[call("get_root", ROOT_KEY_KEY, b"")],
+            read_of(3),
+        );
+        assert_eq!(root.unwrap(), Some(b"key".to_vec()));
+        made(
+            &tape,
+            store.set_root_key(Some(b"other")),
+            &[call("put_root", ROOT_KEY_KEY, b"other")],
+            one_call(),
+        )
+        .unwrap();
+        made(
+            &tape,
+            store.set_root_key(None),
+            &[call("delete_root", ROOT_KEY_KEY, b"")],
+            one_call(),
+        )
+        .unwrap();
+
+        let aux = made(
+            &tape,
+            store.get_aux_record(b"aux"),
+            &[call("get_aux", b"aux", b"")],
+            read_of(3),
+        );
+        assert_eq!(aux.unwrap(), Some(b"aaa".to_vec()));
+        let meta = made(
+            &tape,
+            store.get_meta_record(b"meta"),
+            &[call("get_meta", b"meta", b"")],
+            read_of(2),
+        );
+        assert_eq!(meta.unwrap(), Some(b"mm".to_vec()));
+        made(
+            &tape,
+            store.put_meta_record(b"meta", b"m"),
+            &[call("put_meta", b"meta", b"m")],
+            one_call(),
+        )
+        .unwrap();
+        made(
+            &tape,
+            store.delete_meta_record(b"meta"),
+            &[call("delete_meta", b"meta", b"")],
+            one_call(),
+        )
+        .unwrap();
+
+        let cursor = store.cursor();
+        assert_eq!(tape.take(), [call("raw_iter", b"", b"")]);
+        drop(cursor);
+        let change_set = store.change_set();
+        assert_eq!(tape.take(), [call("new_batch", b"", b"")]);
+        made(
+            &tape,
+            store.commit(change_set),
+            &[call("commit_batch", b"", b"")],
+            one_call(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_storage_call_that_fails_is_a_storage_error_with_the_cost_of_that_call() {
+        fn failing<T>(
+            tape: &Tape,
+            name: &'static str,
+            operation: impl FnOnce() -> CostResult<T, Error>,
+        ) {
+            tape.take();
+            tape.fail(Some(name));
+            let failed = operation();
+            tape.fail(None);
+            assert_eq!(failed.cost, failed_call(), "{name}");
+            assert!(
+                matches!(
+                    failed.value,
+                    Err(Error::StorageError(grovedb_storage::Error::StorageError(text)))
+                        if text == format!("{name} failed")
+                ),
+                "{name}"
+            );
+            let calls = tape.take();
+            assert_eq!(
+                calls.len(),
+                1,
+                "{name}: no call follows the one that failed"
+            );
+            assert_eq!(calls[0].name, name);
+        }
+
+        let grove_version = GroveVersion::latest();
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let batch = StorageBatch::new();
+        let tape = Tape::default();
+        let store = tape.recording(
+            storage
+                .get_transactional_storage_context(SubtreePath::empty(), Some(&batch), &tx)
+                .unwrap(),
+        );
+        let written = node(b"key", b"value");
+        let no_cost = NO_VALUE_DEFINED_COST;
+
+        failing(&tape, "get", || {
+            store.get_node(b"key", no_cost, grove_version)
+        });
+        failing(&tape, "get", || store.get_node_for_read(b"key"));
+        failing(&tape, "get", || {
+            store.fetch_node(&link(b"key"), no_cost.as_ref(), grove_version)
+        });
+        failing(&tape, "put", || {
+            store.write_node(&written, NodeChange::ValueWritten)
+        });
+        failing(&tape, "get_root", || store.root_key());
+        failing(&tape, "put_root", || store.set_root_key(Some(b"key")));
+        failing(&tape, "delete_root", || store.set_root_key(None));
+        failing(&tape, "get_aux", || store.get_aux_record(b"aux"));
+        failing(&tape, "get_meta", || store.get_meta_record(b"meta"));
+        failing(&tape, "put_meta", || store.put_meta_record(b"meta", b"m"));
+        failing(&tape, "delete_meta", || store.delete_meta_record(b"meta"));
+
+        let mut change_set = store.change_set();
+        let prepared = change_set.prepare_node(&written, NodeChange::ValueWritten);
+        change_set.put_node(b"key", prepared, None).unwrap();
+        failing(&tape, "commit_batch", || store.commit(change_set));
+        assert!(batch.is_empty(), "a commit that fails stages nothing");
+    }
+
+    #[test]
+    fn a_put_the_batch_refuses_is_a_costs_error() {
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let store = storage
+            .get_immediate_storage_context(SubtreePath::empty(), &tx)
+            .unwrap();
+        let written = node(b"key", b"value");
+        let unverifiable = || KeyValueStorageCost {
+            needs_value_verification: true,
+            ..Default::default()
+        };
+        fn refused(put: Result<(), Error>) {
+            assert!(matches!(
+                put,
+                Err(Error::CostsError(
+                    grovedb_costs::error::Error::StorageCostMismatch { .. }
+                ))
+            ));
+        }
+
+        let mut change_set = store.change_set();
+        let prepared = change_set.prepare_node(&written, NodeChange::ValueWritten);
+        refused(change_set.put_node(
+            b"key",
+            prepared,
+            Some(NodeWriteCost {
+                feature: None,
+                left_child: None,
+                right_child: None,
+                storage_cost: unverifiable(),
+            }),
+        ));
+        refused(change_set.put_root_key(b"key", Some(unverifiable())));
+        refused(change_set.put_aux_record(b"aux", b"a", Some(unverifiable())));
+
+        store.commit(change_set).unwrap().unwrap();
+        assert!(stored_record(&store, b"key").is_none());
+        assert_eq!(store.root_key().unwrap().unwrap(), None);
+        assert_eq!(store.get_aux_record(b"aux").unwrap().unwrap(), None);
+    }
+
+    #[test]
+    fn a_merk_makes_its_storage_calls_in_the_order_it_always_made_them() {
+        let grove_version = GroveVersion::latest();
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let tape = Tape::default();
+        let open = || {
+            Merk::open_base(
+                tape.recording(
+                    storage
+                        .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                        .unwrap(),
+                ),
+                TreeType::NormalTree,
+                NO_VALUE_DEFINED_COST,
+                grove_version,
+            )
+            .unwrap()
+            .expect("the store opens")
+        };
+        let put = |key: &[u8], value: &[u8]| (key.to_vec(), Op::Put(value.to_vec(), BasicMerkNode));
+        let aux_put = (b"x".to_vec(), Op::Put(b"1".to_vec(), BasicMerkNode), None);
+
+        let mut merk = open();
+        assert_eq!(tape.take_brief(), ["get_root r"]);
+        merk.apply::<_, Vec<u8>>(
+            &[b"a", b"b", b"c", b"d"].map(|key| put(key, b"1")),
+            &[aux_put],
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            tape.take_brief(),
+            [
+                "new_batch",
+                "batch.put_root r c",
+                "batch.put a charged",
+                "batch.put b charged",
+                "batch.put c charged",
+                "batch.put d charged",
+                "batch.put_aux x 1",
+                "commit_batch",
+            ]
+        );
+
+        let mut merk = open();
+        assert_eq!(tape.take_brief(), ["get_root r", "get c"]);
+        merk.get(b"b", false, NO_VALUE_DEFINED_COST, grove_version)
+            .unwrap()
+            .unwrap();
+        merk.get(b"a", true, NO_VALUE_DEFINED_COST, grove_version)
+            .unwrap()
+            .unwrap();
+        assert_eq!(tape.take_brief(), ["get b", "get a"]);
+        merk.apply::<_, Vec<u8>>(
+            &[put(b"a", b"2"), (b"d".to_vec(), Op::Delete)],
+            &[(b"x".to_vec(), Op::Delete, None)],
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            tape.take_brief(),
+            [
+                "get b",
+                "get a",
+                "get d",
+                "new_batch",
+                "batch.put_root r b",
+                "batch.put a charged",
+                "batch.put b charged",
+                "batch.put c charged",
+                "batch.delete d charged",
+                "batch.delete_aux x",
+                "commit_batch",
+            ]
+        );
+        merk.apply::<Vec<u8>, Vec<u8>>(&[], &[], None, grove_version)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            tape.take_brief(),
+            ["new_batch", "batch.put b charged", "commit_batch"]
+        );
+
+        merk.put_meta(b"m".to_vec(), b"1".to_vec())
+            .unwrap()
+            .unwrap();
+        merk.get_meta(b"m".to_vec()).unwrap().unwrap();
+        merk.get_meta(b"n".to_vec()).unwrap().unwrap();
+        merk.delete_meta(b"m").unwrap().unwrap();
+        merk.get_aux(b"x").unwrap().unwrap();
+        assert_eq!(
+            tape.take_brief(),
+            ["put_meta m 1", "get_meta n", "delete_meta m", "get_aux x"]
+        );
+        merk.set_base_root_key(None).unwrap().unwrap();
+        merk.set_base_root_key(Some(b"b".to_vec()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(tape.take_brief(), ["delete_root r", "put_root r b"]);
+
+        assert!(!merk.is_empty_tree().unwrap());
+        assert_eq!(
+            tape.take_brief(),
+            ["raw_iter", "cursor.seek_to_first", "cursor.valid"]
+        );
+        merk.clear().unwrap().unwrap();
+        let mut cleared = vec!["raw_iter", "cursor.seek_to_first", "new_batch"];
+        for delete in ["batch.delete a", "batch.delete b", "batch.delete c"] {
+            cleared.extend(["cursor.valid", "cursor.key", delete, "cursor.next"]);
+        }
+        cleared.extend(["cursor.valid", "commit_batch"]);
+        assert_eq!(tape.take_brief(), cleared);
+
+        let mut merk = open();
+        assert_eq!(tape.take_brief(), ["get_root r", "get b"]);
+        merk.apply::<Vec<u8>, Vec<u8>>(&[], &[], None, grove_version)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            tape.take_brief(),
+            ["new_batch", "batch.delete_root r charged", "commit_batch"]
+        );
+    }
+
+    #[test]
+    fn a_chunk_restore_writes_uncharged_and_corrects_a_parent_with_a_direct_put() {
+        let grove_version = GroveVersion::latest();
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let open = |path: &[u8]| {
+            storage
+                .get_immediate_storage_context([path].as_ref().into(), &tx)
+                .unwrap()
+        };
+        let keys: Vec<Vec<u8>> = (0..40u8)
+            .map(|n| vec![b'a' + n / 26, b'a' + n % 26])
+            .collect();
+        let mut source = Merk::open_base(
+            open(b"source"),
+            TreeType::NormalTree,
+            NO_VALUE_DEFINED_COST,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        let batch: Vec<_> = keys
+            .iter()
+            .map(|key| (key.clone(), Op::Put(vec![123, key[1]], BasicMerkNode)))
+            .collect();
+        source
+            .apply::<_, Vec<u8>>(&batch, &[], None, grove_version)
+            .unwrap()
+            .unwrap();
+
+        let tape = Tape::default();
+        let target = Merk::open_base(
+            tape.recording(open(b"target")),
+            TreeType::NormalTree,
+            NO_VALUE_DEFINED_COST,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(tape.take_brief(), ["get_root r"]);
+
+        let mut producer = ChunkProducer::new(&source).expect("the source produces chunks");
+        let mut restorer = Restorer::new(target, source.root_hash().unwrap(), None);
+        let mut restore = |chunk_id: &[u8]| {
+            let (chunk, _) = producer.chunk(chunk_id, grove_version).unwrap();
+            restorer
+                .process_chunk(chunk_id, chunk, grove_version)
+                .expect("the chunk restores")
+        };
+
+        let below = restore(&[]);
+        assert_eq!(
+            tape.take_brief(),
+            [
+                "new_batch",
+                "batch.put af",
+                "batch.put ak",
+                "batch.put ap",
+                "batch.put au",
+                "batch.put az",
+                "batch.put be",
+                "batch.put bj",
+                "commit_batch",
+                "put_root r au",
+            ]
+        );
+        restore(&[1, 1, 1]);
+        assert_eq!(
+            tape.take_brief(),
+            [
+                "new_batch",
+                "batch.put aa",
+                "batch.put ab",
+                "batch.put ac",
+                "batch.put ad",
+                "batch.put ae",
+                "commit_batch",
+                "get af",
+                "put af",
+            ]
+        );
+        for chunk_id in below.iter().filter(|chunk_id| *chunk_id != &[1, 1, 1]) {
+            restore(chunk_id);
+        }
+        tape.take();
+
+        let restored = restorer.finalize(grove_version).expect("restore finalizes");
+        assert_eq!(restored.root_hash().unwrap(), source.root_hash().unwrap());
+        let finalize = tape.take();
+        let written = |name: &str| -> Vec<Vec<u8>> {
+            finalize
+                .iter()
+                .filter(|call| call.name == name)
+                .map(|call| call.key.clone())
+                .collect()
+        };
+        let mut rewritten = written("batch.put");
+        rewritten.sort();
+        assert_eq!(
+            rewritten, keys,
+            "the heights of every node are written again"
+        );
+        assert_eq!(written("new_batch").len(), 1);
+        assert_eq!(written("commit_batch").len(), 1);
+        assert!(written("put").is_empty());
+        assert!(finalize.iter().all(|call| call.cost.is_none()));
+    }
+
+    #[test]
+    fn what_a_storage_batch_holds_is_read_once_the_batch_is_applied() {
+        let grove_version = GroveVersion::latest();
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let batch = StorageBatch::new();
+        let in_a_change_set = node(b"key", b"value");
+        let direct = node(b"direct", b"value");
+        let holds = |store: &PrefixedRocksDbTransactionContext| {
+            let node = |key: &[u8]| {
+                store
+                    .get_node(key, NO_VALUE_DEFINED_COST, grove_version)
+                    .unwrap()
+                    .unwrap()
+                    .is_some()
+            };
+            let mut cursor = store.cursor();
+            cursor.seek_to_first().unwrap();
+            (
+                node(b"key"),
+                node(b"direct"),
+                cursor.valid().unwrap(),
+                store.root_key().unwrap().unwrap(),
+                store.get_aux_record(b"aux").unwrap().unwrap(),
+                store.get_meta_record(b"meta").unwrap().unwrap(),
+            )
+        };
+
+        let store = storage
+            .get_transactional_storage_context(SubtreePath::empty(), Some(&batch), &tx)
+            .unwrap();
+        let mut change_set = store.change_set();
+        let prepared = change_set.prepare_node(&in_a_change_set, NodeChange::ValueWritten);
+        change_set.put_node(b"key", prepared, None).unwrap();
+        change_set.put_aux_record(b"aux", b"a", None).unwrap();
+        store.commit(change_set).unwrap().unwrap();
+        store
+            .write_node(&direct, NodeChange::ValueWritten)
+            .unwrap()
+            .unwrap();
+        store.set_root_key(Some(b"key")).unwrap().unwrap();
+        store.put_meta_record(b"meta", b"m").unwrap().unwrap();
+        assert_eq!(holds(&store), (false, false, false, None, None, None));
+        assert_eq!(batch.len(), 5);
+
+        storage
+            .commit_multi_context_batch(batch, Some(&tx))
+            .unwrap()
+            .unwrap();
+        let store = storage
+            .get_transactional_storage_context(SubtreePath::empty(), None, &tx)
+            .unwrap();
+        assert_eq!(
+            holds(&store),
+            (
+                true,
+                true,
+                true,
+                Some(b"key".to_vec()),
+                Some(b"a".to_vec()),
+                Some(b"m".to_vec())
+            )
+        );
+    }
+
+    #[test]
+    fn a_read_is_answered_by_the_transaction_when_it_is_made() {
+        let grove_version = GroveVersion::latest();
+        let storage = TempStorage::new();
+        let ours = storage.start_transaction();
+        let store = storage
+            .get_immediate_storage_context(SubtreePath::empty(), &ours)
+            .unwrap();
+        let value_of = |key: &[u8]| {
+            store
+                .fetch_node(&link(key), NO_VALUE_DEFINED_COST.as_ref(), grove_version)
+                .unwrap()
+                .ok()
+                .map(|node| node.value_as_slice().to_vec())
+        };
+        fn keys_under(mut cursor: impl NodeCursor) -> Vec<Vec<u8>> {
+            let mut keys = vec![];
+            cursor.seek_to_first().unwrap();
+            while let Some(key) = cursor.key().unwrap() {
+                keys.push(key.to_vec());
+                cursor.next().unwrap();
+            }
+            keys
+        }
+
+        store
+            .write_node(&node(b"ours", b"1"), NodeChange::ValueWritten)
+            .unwrap()
+            .unwrap();
+        let opened_before = store.cursor();
+
+        let theirs = storage.start_transaction();
+        storage
+            .get_immediate_storage_context(SubtreePath::empty(), &theirs)
+            .unwrap()
+            .write_node(&node(b"theirs", b"2"), NodeChange::ValueWritten)
+            .unwrap()
+            .unwrap();
+        assert_eq!(value_of(b"theirs"), None);
+        storage.commit_transaction(theirs).unwrap().unwrap();
+
+        assert_eq!(value_of(b"theirs"), Some(b"2".to_vec()));
+        assert_eq!(value_of(b"ours"), Some(b"1".to_vec()));
+        assert_eq!(keys_under(opened_before), [b"ours".to_vec()]);
+        assert_eq!(
+            keys_under(store.cursor()),
+            [b"ours".to_vec(), b"theirs".to_vec()]
+        );
+    }
+
+    #[allow(dead_code)]
+    fn the_cursor_and_the_batch_are_the_storage_contexts_own<'db, S: StorageContext<'db>>(
+        cursor: <S as NodeStore<'db>>::Cursor,
+        change_set: <S as NodeStore<'db>>::ChangeSet,
+    ) -> (S::RawIterator, S::Batch) {
+        (cursor, change_set.0)
     }
 
     fn node(key: &[u8], value: &[u8]) -> TreeNode {
