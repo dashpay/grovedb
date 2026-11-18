@@ -29,6 +29,7 @@ A handle belongs to one subtree. Opening a handle by path or by prefix, transact
 | --- | --- | --- | --- |
 | `get_node(key, ..)` | The node under `key`, ready to be modified: with its key, its value-defined cost and its mutation baseline. | `get`, then `TreeNode::decode_raw` | `R-tx / R-imm` |
 | `get_node_for_read(key)` | The fields of the node under `key`, for a caller that only reads: no key, no value-defined cost, no baseline. | `get`, then `TreeNodeInner::decode` | `R-tx / R-imm` |
+| `has_node(key)` | Whether the subtree holds a record under `key`. The record is not decoded, so one that does not decode counts as held. SEAM-04 added it for `has_raw`. | `get`, then `is_some` | `R-tx / R-imm` |
 | `fetch_node(link, ..)` | The node a parent's link points to. Default: `get_node(link.key())`, an error if it is absent. | the default | `R-tx / R-imm` |
 | `write_node(node, change)` | Writes one node at once, outside a change set, uncharged. Default: a change set of that one node. | `put` with no cost info | `W-tx / W-imm` |
 | `root_key()` | The recorded key of the root node. | `get_root(ROOT_KEY_KEY)` | `R-tx / R-imm` |
@@ -53,7 +54,7 @@ A change set (`NodeChangeSet`) takes:
 
 ### Reads
 
-- `get_node` and `get_node_for_read` return `None` for a key the subtree does not hold. They look a key up; they do not need a tree in memory.
+- `get_node` and `get_node_for_read` return `None` for a key the subtree does not hold, and `has_node` returns `false`. They look a key up; they do not need a tree in memory.
 - `fetch_node` is the read of a tree walk: Merk has a parent's `Link` and wants the child. Merk's `Fetch` implementation for a Merk, `MerkSource`, calls only this. Its answer is defined by the link's key: it is the node `get_node(link.key())` returns at that moment. A link whose key has no node is an error (`KeyNotFoundError("Key not found for fetch")`), not `None`, and the read is charged as a lookup that found nothing.
 - The link is the whole argument of `fetch_node` so that a store can keep a location in it and follow that instead of searching (MERK-01, PERF-03). The location is a shortcut to the same answer, never another answer. See [Following a location](#following-a-location) for what that still needs.
 - A node from `get_node` or `fetch_node` may be modified and committed. A node from `get_node_for_read` has no mutation baseline and must never reach a commit: a commit would take it for a new node.
@@ -288,7 +289,7 @@ These are in GroveDB and `grovedb-query`. SEAM-04 and SEAM-07 change them. For e
 
 | Site | What it does today | Served by |
 | --- | --- | --- |
-| `has_raw` (`grovedb/src/operations/get/mod.rs`) | Opens a context by path and calls `get(key)`, to test whether a node record exists. Charges one seek and the record length. | `NodeStore::get_node_for_read(key)`, then `is_some`. Same seek and same loaded bytes. One case differs: a record that does not decode is an error there, and `true` in `has_raw` today. If SEAM-04 has to keep that case, it adds a `has_node(key)` operation to the trait, whose adapter is `get(key)` and `is_some`. Merk itself does not need one: `Merk::exists` decodes the node today. |
+| `has_raw` (`grovedb/src/operations/get/mod.rs`) | Opens a context by path and calls `get(key)`, to test whether a node record exists. Charges one seek and the record length. | `NodeStore::has_node(key)`, which SEAM-04 added: the adapter is `get(key)` and `is_some`. Same seek and same loaded bytes, and a record that does not decode is still `true`. `get_node_for_read(key)` would have made that record an error. Merk itself does not need the operation: `Merk::exists` decodes the node today. |
 | The deletion visitor's raw delete (`delete_internal_on_transaction/v2.rs`) | `storage.delete(key, None)` on a subtree that is being deleted whole, without opening a Merk. | `NodeChangeSet::delete_node(key, None)` in a change set of the subtree, committed with `NodeStore::commit`. On a transactional context a direct delete and a committed batch part both stage the same delete in the shared batch. |
 | `move_subtree_storage`, `move_namespace` (`grovedb/src/batch/move_element.rs`) | Copies every raw record of a subtree from one prefix to another through an iterator, and deletes the source. | **Engine.** It moves a whole namespace between two subtrees, and for LigninDB it is a change in the subtree directory, not a copy. A `NodeStore` handle is one subtree. It is an `Engine` operation ("move the subtree at prefix A to prefix B"), with the copy as RocksDB's implementation of it. The costs it charges per record today are part of BASE-06. |
 | `snapshot_fetch_node` (`grovedb/src/operations/indexed_tree.rs`) | Seeks a pinned iterator to a key and decodes the record there. | The cursor: `NodeCursor::seek`, `key`, `value`, then `TreeNode::decode`, as now. It is the same read as Merk's own `PinnedViewSource`. What it needs from the engine is the pinned view itself, see the next row. |
