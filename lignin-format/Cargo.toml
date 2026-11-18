@@ -9,3 +9,4 @@ repository = "https://github.com/dashpay/grovedb"
 publish = false
 
 [dependencies]
+crc32c = "0.6.9"
