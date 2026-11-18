@@ -41,6 +41,7 @@ macro_rules! conformance_tests {
             concurrent_appends_land_whole,
             reads_run_alongside_appends,
             handles_refuse_operations_outside_their_mode,
+            an_append_handle_is_the_only_writer,
             set_len_shrinks_and_grows,
             append_follows_set_len,
             sync_succeeds_in_every_mode,
@@ -257,7 +258,9 @@ pub(crate) fn read_at_stops_at_the_end_of_the_file(vfs: &dyn Vfs, root: &Path) {
     assert_eq!(buf[..100], content[900..]);
     assert_eq!(file.read_at(&mut buf, 1_000).unwrap(), 0);
     assert_eq!(file.read_at(&mut buf, 1_000_000).unwrap(), 0);
-    assert_eq!(file.read_at(&mut buf, u64::MAX).unwrap(), 0);
+    for beyond_any_file in [i64::MAX as u64 - 1, i64::MAX as u64, u64::MAX] {
+        assert_eq!(file.read_at(&mut buf, beyond_any_file).unwrap(), 0);
+    }
     assert_eq!(file.read_at(&mut [], 0).unwrap(), 0);
 }
 
@@ -432,6 +435,42 @@ pub(crate) fn handles_refuse_operations_outside_their_mode(vfs: &dyn Vfs, root: 
     assert_eq!(read_all(&*read), b"content");
 }
 
+pub(crate) fn an_append_handle_is_the_only_writer(vfs: &dyn Vfs, root: &Path) {
+    let path = root.join("file");
+    let appender = open(vfs, &path, OpenMode::Append(Create::New));
+    for mode in [
+        OpenMode::Append(Create::Never),
+        OpenMode::Append(Create::IfMissing),
+        OpenMode::Write(Create::Never),
+        OpenMode::Write(Create::IfMissing),
+    ] {
+        assert_fails(vfs.open(&path, mode), ErrorKind::ResourceBusy);
+    }
+    assert_eq!(appender.append(b"appended").unwrap(), 0);
+    assert_eq!(read_path(vfs, &path), b"appended");
+    drop(appender);
+
+    let (first, second) = (
+        open(vfs, &path, OpenMode::Write(Create::Never)),
+        open(vfs, &path, OpenMode::Write(Create::Never)),
+    );
+    assert_fails(
+        vfs.open(&path, OpenMode::Append(Create::Never)),
+        ErrorKind::ResourceBusy,
+    );
+    drop(first);
+    assert_fails(
+        vfs.open(&path, OpenMode::Append(Create::Never)),
+        ErrorKind::ResourceBusy,
+    );
+    second.write_at(b"A", 0).unwrap();
+    drop(second);
+
+    let appender = open(vfs, &path, OpenMode::Append(Create::Never));
+    assert_eq!(appender.append(b"!").unwrap(), 8);
+    assert_eq!(read_all(&*appender), b"Appended!");
+}
+
 pub(crate) fn set_len_shrinks_and_grows(vfs: &dyn Vfs, root: &Path) {
     let file = open(vfs, &root.join("file"), OpenMode::Write(Create::New));
     let content = bytes(1_000, 7);
@@ -559,6 +598,10 @@ pub(crate) fn hard_link_is_another_name_for_the_same_file(vfs: &dyn Vfs, root: &
 
     vfs.hard_link(&original, &link).unwrap();
     assert_eq!(read_path(vfs, &link), b"before ");
+    assert_fails(
+        vfs.open(&link, OpenMode::Write(Create::Never)),
+        ErrorKind::ResourceBusy,
+    );
     appender.append(b"after").unwrap();
     assert_eq!(read_path(vfs, &link), b"before after");
     drop(appender);
@@ -709,12 +752,13 @@ pub(crate) fn lock_creates_its_file_and_leaves_it(vfs: &dyn Vfs, root: &Path) {
         [entry("LOCK", EntryKind::File)]
     );
 
-    let file = open(vfs, &path, OpenMode::Write(Create::Never));
-    file.write_at(b"kept", 0).unwrap();
+    open(vfs, &path, OpenMode::Write(Create::Never))
+        .write_at(b"kept", 0)
+        .unwrap();
     let guard = vfs.lock(&path).unwrap();
-    assert_eq!(read_all(&*file), b"kept");
+    assert_eq!(read_path(vfs, &path), b"kept");
     drop(guard);
-    assert_eq!(read_all(&*file), b"kept");
+    assert_eq!(read_path(vfs, &path), b"kept");
 
     assert_fails(
         vfs.lock(&root.join("missing").join("LOCK")),

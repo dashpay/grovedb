@@ -23,7 +23,14 @@
 //!
 //! The lock is a `flock`, which belongs to the open file and not to the
 //! process: a second attempt in the same process is refused like one from
-//! another process.
+//! another process. Writers are kept apart the same way: an append handle
+//! holds an exclusive `flock` on its file and a write handle a shared one.
+//! A `flock` holds back this backend in every process. It does not hold back
+//! a program that opens the file some other way.
+//!
+//! The atomic rename and the undamaged bytes that the contract promises after
+//! a crash are what a journaling filesystem on sector-atomic storage gives:
+//! ext4, XFS, btrfs and APFS.
 //!
 //! An append is a single `write` unless the system writes only part of the
 //! buffer, and it never overwrites: the descriptor is `O_APPEND`, so the
@@ -153,6 +160,19 @@ impl StdFile {
             .create(create == Create::IfMissing)
             .create_new(create == Create::New);
         let file = options.open(path)?;
+        let sharing = match mode {
+            OpenMode::Read => Ok(()),
+            OpenMode::Write(_) => file.try_lock_shared(),
+            OpenMode::Append(_) => file.try_lock(),
+        };
+        if let Err(error) = sharing {
+            return Err(match error {
+                TryLockError::WouldBlock => {
+                    path_error(ErrorKind::ResourceBusy, path, "has another writer")
+                }
+                TryLockError::Error(error) => error,
+            });
+        }
         let metadata = file.metadata()?;
         if metadata.is_dir() {
             return Err(path_error(ErrorKind::IsADirectory, path, "is a directory"));
@@ -241,9 +261,11 @@ impl StdFile {
 
 impl VfsFile for StdFile {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
-        if offset >= MAX_FILE_LEN {
-            return Ok(0);
-        }
+        let within_any_file = MAX_FILE_LEN.saturating_sub(offset);
+        let buf = match usize::try_from(within_any_file) {
+            Ok(len) if len < buf.len() => &mut buf[..len],
+            _ => buf,
+        };
         let mut filled = 0;
         while filled < buf.len() {
             match self
@@ -300,6 +322,14 @@ impl VfsFile for StdFile {
     }
 }
 
+impl Drop for StdFile {
+    fn drop(&mut self) {
+        if !matches!(self.access, Access::Read) {
+            unlock_now(&self.file);
+        }
+    }
+}
+
 #[derive(Debug)]
 struct StdLock {
     file: File,
@@ -346,11 +376,15 @@ impl VfsLock for StdLock {}
 
 impl Drop for StdLock {
     fn drop(&mut self) {
-        // Closing the file releases the lock only once no copy of the
-        // descriptor is left, and a child process forked on another thread
-        // holds one until it calls exec. Unlocking releases it now.
-        let _ = self.file.unlock();
+        unlock_now(&self.file);
     }
+}
+
+/// Closing a file releases its `flock` only once no copy of the descriptor is
+/// left, and a child process forked on another thread holds one until it
+/// calls exec. Unlocking releases it at once.
+fn unlock_now(file: &File) {
+    let _ = file.unlock();
 }
 
 fn guard<T>(state: &Mutex<T>) -> io::Result<MutexGuard<'_, T>> {

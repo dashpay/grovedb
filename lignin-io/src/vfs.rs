@@ -14,6 +14,17 @@
 //! Paths are passed to the backend as they are. Build them by joining file
 //! names onto a root directory.
 //!
+//! # Writers
+//!
+//! A file is open for writing either through one [`OpenMode::Append`] handle
+//! or through any number of [`OpenMode::Write`] handles, never both at once.
+//! An append handle is the only writer of its file, which is what makes the
+//! offsets it returns right. An open that would break the rule fails with
+//! [`ResourceBusy`]. [`OpenMode::Read`] handles are never refused.
+//!
+//! The rule covers every handle of the file, under any of its names, and for
+//! the files of an operating system it covers every process.
+//!
 //! # Threads
 //!
 //! Every method takes `&self` and may be called from any thread. Reads may run
@@ -34,9 +45,12 @@
 //! - **Unsynced content.** After a crash a file is its last synced state with
 //!   some of the later changes applied: any subset of them, in any order, and
 //!   a write possibly only in part, torn at any byte. Each lands where it was
-//!   made, an append at the offset it returned. So a crash damages no byte
-//!   that the unsynced changes did not touch, and where a length survives
+//!   made, an append at the offset it returned. Where a length survives
 //!   without the bytes written below it, those bytes read as zeros.
+//! - **Nothing else is damaged.** A byte that no unsynced change touched keeps
+//!   its value. This assumes storage that writes a sector whole or not at
+//!   all, which is what lets a log be appended to behind bytes that are
+//!   already durable.
 //! - **Names.** A name that was created, renamed, linked or removed, and a
 //!   directory that was created or removed, is durable once [`Vfs::sync_dir`]
 //!   returns `Ok` for the directory that holds the name. Of the changes of
@@ -44,15 +58,19 @@
 //!   name that was removed or renamed away, such as a temporary file. Syncing
 //!   a file does not make its name durable, and syncing a directory does not
 //!   make a file's content durable.
-//! - **Rename is atomic.** After a crash the destination name refers to what
-//!   it referred to before the rename or to the renamed file: never to a mix
-//!   of the two, and never to nothing if it named a file before. Sync the file
-//!   before renaming it, or the name may survive without the content.
+//! - **Rename is atomic, synced or not.** A crash keeps a rename whole or not
+//!   at all. The destination name then refers to what it referred to before
+//!   the rename or to the renamed file: never to a mix of the two, and never
+//!   to nothing if it named a file before. Which of the two is settled only
+//!   by [`Vfs::sync_dir`]. This assumes a filesystem that journals its
+//!   directories. Sync the file before renaming it, or the name may survive
+//!   without the content.
 //! - **A failed sync cannot be made good.** When a sync of a file fails, the
-//!   system may already have dropped the changes it was asked to write. A
-//!   later sync that returns `Ok`, on that handle or on any other, does not
-//!   cover them. Whatever was not synced before the failure has to be written
-//!   again, through another handle or to a new file, and synced there.
+//!   changes that were not yet synced are left unknown: the system may have
+//!   written them or dropped them, and it will not say which. A later sync
+//!   that returns `Ok`, on that handle or on any other, covers only what was
+//!   written after the failure. To rely on the earlier changes, write them
+//!   again, through another handle or to a new file, and sync that.
 //!
 //! # Errors
 //!
@@ -62,6 +80,7 @@
 //! | --- | --- |
 //! | [`NotFound`] | The path, or a directory leading to it, does not exist. |
 //! | [`AlreadyExists`] | [`Create::New`], [`Vfs::hard_link`] or [`Vfs::create_dir`] found the name taken. |
+//! | [`ResourceBusy`] | [`Vfs::open`]: the file is open for appending, or is open for writing and this open asks to append. |
 //! | [`IsADirectory`] | [`Vfs::open`]: the path is a directory. |
 //! | [`NotADirectory`] | [`Vfs::read_dir`] or [`Vfs::sync_dir`]: the path is not a directory. |
 //! | [`DirectoryNotEmpty`] | [`Vfs::remove_dir`]: the directory has entries. |
@@ -89,6 +108,7 @@
 //!
 //! [`NotFound`]: std::io::ErrorKind::NotFound
 //! [`AlreadyExists`]: std::io::ErrorKind::AlreadyExists
+//! [`ResourceBusy`]: std::io::ErrorKind::ResourceBusy
 //! [`IsADirectory`]: std::io::ErrorKind::IsADirectory
 //! [`NotADirectory`]: std::io::ErrorKind::NotADirectory
 //! [`DirectoryNotEmpty`]: std::io::ErrorKind::DirectoryNotEmpty
@@ -110,10 +130,8 @@ pub enum OpenMode {
     /// Write at any offset with [`VfsFile::write_at`].
     Write(Create),
     /// Write only at the end of the file with [`VfsFile::append`], which
-    /// never overwrites a byte already in the file.
-    ///
-    /// While the handle is open nothing else may write to the file or change
-    /// its length, or the offsets [`VfsFile::append`] returns are wrong.
+    /// never overwrites a byte already in the file. While the handle is open
+    /// it is the file's only writer: see [Writers](self#writers).
     Append(Create),
 }
 
@@ -154,6 +172,10 @@ pub struct DirEntry {
 pub trait Vfs: fmt::Debug + Send + Sync {
     /// Opens the file at `path`, which must not be a directory.
     ///
+    /// Fails with [`ResourceBusy`](io::ErrorKind::ResourceBusy) if the file
+    /// already has a writer that `mode` cannot share it with: see
+    /// [Writers](self#writers).
+    ///
     /// A file this creates has a name that is not durable until
     /// [`sync_dir`](Self::sync_dir) on its directory.
     fn open(&self, path: &Path, mode: OpenMode) -> io::Result<Box<dyn VfsFile>>;
@@ -164,8 +186,9 @@ pub trait Vfs: fmt::Debug + Send + Sync {
     /// A file already named `to` is replaced atomically: at every moment, and
     /// after a crash, `to` names one of the two files. If `from` and `to`
     /// already name the same file, nothing changes and both names stay.
-    /// Durable after [`sync_dir`](Self::sync_dir) on the directory of `to`,
-    /// and on the directory of `from` if it is a different one.
+    /// Until [`sync_dir`](Self::sync_dir) on the directory of `to`, and on the
+    /// directory of `from` if it is a different one, a crash may undo the
+    /// rename.
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
 
     /// Adds `link` as another name for the file named `original`. No bytes are
@@ -197,11 +220,15 @@ pub trait Vfs: fmt::Debug + Send + Sync {
     /// one process at a time into a database directory.
     ///
     /// Fails with [`WouldBlock`](io::ErrorKind::WouldBlock) while another
-    /// guard for the same file is alive, in this process or in any other. The
-    /// lock is released when the guard is dropped or its process ends.
+    /// guard for the same file is alive. For the files of an operating system
+    /// that means in this process or in any other. The lock is released when
+    /// the guard is dropped or its process ends.
     ///
-    /// The lock file stays in place afterwards. Removing or renaming it while
-    /// anything may still lock it breaks the exclusion.
+    /// The lock file stays in place afterwards, with any content it had.
+    /// Removing or renaming it while anything may still lock it breaks the
+    /// exclusion. Keep it for locking: whether it can be locked while it is
+    /// open for writing, or opened for writing while it is locked, is not
+    /// specified.
     fn lock(&self, path: &Path) -> io::Result<Box<dyn VfsLock>>;
 }
 

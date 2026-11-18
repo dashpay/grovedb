@@ -114,14 +114,21 @@ fn an_append_that_cannot_be_undone_breaks_the_handle() {
 }
 
 #[test]
-fn append_never_overwrites_what_another_handle_appended() {
+fn append_never_overwrites_what_was_appended_behind_its_back() {
     let (_, root, _dir) = setup();
     let path = root.join("file");
     let file = append_file(&path);
     file.append(b"first ").unwrap();
 
-    let other = StdVfs.open(&path, OpenMode::Append(Create::Never)).unwrap();
-    other.append(b"behind its back ").unwrap();
+    assert_eq!(
+        StdVfs
+            .open(&path, OpenMode::Append(Create::Never))
+            .unwrap_err()
+            .kind(),
+        ErrorKind::ResourceBusy
+    );
+    let mut outsider = OpenOptions::new().append(true).open(&path).unwrap();
+    outsider.write_all(b"behind its back ").unwrap();
     file.append(b"last").unwrap();
 
     assert_eq!(fs::read(&path).unwrap(), b"first behind its back last");
@@ -237,9 +244,12 @@ fn read_dir_does_not_follow_symbolic_links() {
 #[test]
 #[cfg_attr(miri, ignore = "needs /dev/full")]
 fn append_to_a_full_device_is_storage_full() {
-    let file = StdVfs
-        .open(Path::new("/dev/full"), OpenMode::Append(Create::Never))
-        .unwrap();
+    let file = loop {
+        match StdVfs.open(Path::new("/dev/full"), OpenMode::Append(Create::Never)) {
+            Err(error) if error.kind() == ErrorKind::ResourceBusy => std::thread::yield_now(),
+            opened => break opened.unwrap(),
+        }
+    };
     for _ in 0..2 {
         assert_eq!(
             file.append(b"x").unwrap_err().kind(),
