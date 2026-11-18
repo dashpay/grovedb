@@ -2489,6 +2489,23 @@ impl GroveDb {
                             }
                             other => other,
                         };
+                        // Whether the query goes below this key. Every tree arm that
+                        // descends is guarded on it, so a tree it does not descend
+                        // into falls through to the arms that prove it as a result
+                        // row (`proof.subquery_descent_on_key`).
+                        let descends = match &elem {
+                            Ok(element) if element.is_any_tree() => cost_return_on_error_no_add!(
+                                cost,
+                                Self::query_descends_on_key(
+                                    path_query,
+                                    &query,
+                                    &path,
+                                    key,
+                                    grove_version
+                                )
+                            ),
+                            _ => false,
+                        };
                         match elem {
                             // `ReferenceWithSumItem` shares this proof path
                             // with `Reference` — both produce a
@@ -2625,7 +2642,7 @@ impl GroveDb {
                             // root_key is always None for MmrTree (no child Merk data)
                             Ok(Element::MmrTree(mmr_size, _))
                                 if !done_with_results
-                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                                    && descends =>
                             {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
@@ -2649,7 +2666,7 @@ impl GroveDb {
                             // root_key is always None for BulkAppendTree (no child Merk data)
                             Ok(Element::BulkAppendTree(total_count, chunk_power, _))
                                 if !done_with_results
-                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                                    && descends =>
                             {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
@@ -2676,7 +2693,7 @@ impl GroveDb {
                                 dense_height,
                                 _,
                             )) if !done_with_results
-                                && query.has_subquery_or_matching_in_path_on_key(key) =>
+                                && descends =>
                             {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
@@ -2700,7 +2717,7 @@ impl GroveDb {
                             // that includes sinsemilla_root for anchor binding
                             Ok(Element::CommitmentTree(total_count, chunk_power, _))
                                 if !done_with_results
-                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                                    && descends =>
                             {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
@@ -2729,7 +2746,7 @@ impl GroveDb {
                             // a version without it still refuses.
                             Ok(Element::PrivateDocumentStore(total_count, _, chunk_power, _))
                                 if !done_with_results
-                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                                    && descends =>
                             {
                                 if grove_version
                                     .grovedb_versions
@@ -2864,7 +2881,7 @@ impl GroveDb {
                             // the matching empty-cidx terminal arm.
                             Ok(ref cidx_elem @ Element::ProvableCountIndexedTree(Some(_), ..))
                                 if !done_with_results
-                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                                    && descends =>
                             {
                                 // Aggregate carrier queries (AggregateCountOnRange /
                                 // AggregateSumOnRange) are verified by
@@ -2983,7 +3000,7 @@ impl GroveDb {
                             // the verifier).
                             Ok(ref sidx_elem @ Element::ProvableSumIndexedTree(Some(_), ..))
                                 if !done_with_results
-                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                                    && descends =>
                             {
                                 // Aggregate carrier queries (AggregateCountOnRange /
                                 // AggregateSumOnRange) are verified by
@@ -3101,7 +3118,7 @@ impl GroveDb {
                                     ..,
                                 ),
                             ) if !done_with_results
-                                && query.has_subquery_or_matching_in_path_on_key(key) =>
+                                && descends =>
                             {
                                 // See the PCIT arm: the aggregate-carrier
                                 // verifier cannot consume an indexed envelope.
@@ -3225,7 +3242,7 @@ impl GroveDb {
                             | Ok(Element::ProvableCountProvableSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountProvableBigSumTree(Some(_), ..))
                                 if !done_with_results
-                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                                    && descends =>
                             {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
@@ -3443,7 +3460,7 @@ impl GroveDb {
                                 if !done_with_results
                                     && is_aggregate_count_query
                                     && descends_into_empty_aggregate_tree
-                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                                    && descends =>
                             {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
@@ -3490,7 +3507,7 @@ impl GroveDb {
                                 if !done_with_results
                                     && is_aggregate_sum_query
                                     && descends_into_empty_aggregate_tree
-                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                                    && descends =>
                             {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
@@ -3531,7 +3548,7 @@ impl GroveDb {
                                 if !done_with_results
                                     && is_aggregate_count_and_sum_query
                                     && descends_into_empty_aggregate_tree
-                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                                    && descends =>
                             {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
@@ -3586,7 +3603,7 @@ impl GroveDb {
                             | Ok(Element::CommitmentTree(..))
                                 if !done_with_results =>
                             {
-                                if query.has_subquery_or_matching_in_path_on_key(key) {
+                                if descends {
                                     // A subquery matches but the tree is
                                     // empty: an empty CHILD, not a result
                                     // row. The charge bounds walks across

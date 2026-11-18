@@ -106,8 +106,7 @@ where
 {
     /// The value bytes a value-carrying proof node (`KV`, `KVCount`,
     /// `KVSum`, `KVCountSum`, `KVCountBigSum`, `KVBigSum`) holds for the root
-    /// node: the
-    /// bytes whose hash is the node's value hash.
+    /// node: the bytes whose hash is the node's value hash.
     ///
     /// That is the stored value for everything except a backward-references
     /// item, whose value hash is taken over its serialization with the

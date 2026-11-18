@@ -34,6 +34,32 @@
 //!   refuse such a page, as 6.1.1 did. Gated because it turns a rejected
 //!   proof into an accepted one.
 //!
+//! - `operations.proof.unreported_empty_tree_row_charge: 1`: a V1 verifier
+//!   that leaves empty trees out of its results (the default of
+//!   `verify_query` and `verify_subset_query`) charges an empty plain `Tree`
+//!   that is itself a result row against the global limit and the
+//!   per-instance cap, as the prover and the trusted read do, and stops where
+//!   the budget is spent. V1..V4 bind the row and charge nothing, as 6.1.1
+//!   did, so the verifier's budget runs ahead of the prover's: it refuses the
+//!   honest proof of a page whose budget such a row spent ("missing lower
+//!   layer for non-empty tree"), or reports an item past the page. Gated
+//!   because it turns a rejected proof into an accepted one and changes the
+//!   rows returned for a proof accepted before. Proof bytes are the same.
+//!
+//! - `operations.proof.subquery_descent_on_key: 1`: the V1 prover and
+//!   verifier treat a key as descended into only when the query has
+//!   something below it, as the trusted read does. V1..V4 descend at every
+//!   key a conditional branch matches, as 6.1.1 did, even a branch with
+//!   neither a subquery nor a subquery path
+//!   (`add_conditional_subquery(item, None, None)`, which exempts keys from
+//!   the default subquery). There an empty tree is proved as an empty child:
+//!   never reported, and charged against the global limit only, so a page
+//!   under a per-instance cap runs past the trusted read's; and a populated
+//!   tree cannot be proved at all. From V5 the tree at such a key is a result
+//!   row. Gated because it changes the proof emitted for such a query, turns
+//!   a refused proof request into a served one, and changes the rows a
+//!   verifier returns.
+//!
 //! - `apply_batch.keyless_append_repeats: 1`: the batch consistency check
 //!   counts keyed operations only for repeats, so a batch may carry the same
 //!   keyless append (`CommitmentTreeInsert`, `MmrTreeAppend`, `BulkAppend`,
@@ -184,6 +210,8 @@ pub const GROVE_V5: GroveVersion = GroveVersion {
             },
             proof: GroveDBOperationsProofVersions {
                 count_offset_reference_empty_tree_rows: 1, // changed: exempt resolved references
+                unreported_empty_tree_row_charge: 1,       // changed: the verifier charges the row
+                subquery_descent_on_key: 1, // changed: a branch without a subquery is a row
                 ..GROVE_V4.grovedb_versions.operations.proof
             },
             ..GROVE_V4.grovedb_versions.operations
