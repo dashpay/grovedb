@@ -472,9 +472,19 @@ pub struct Agreement {
     pub second: f64,
     /// `(second - first) / first`.
     pub change: Option<f64>,
+    /// For a time row, the same change in user-space instructions per
+    /// sample, where both runs counted them.
+    pub instructions_change: Option<f64>,
 }
 
 impl Agreement {
+    /// Whether the two runs' instruction counts agree within `tolerance`;
+    /// `None` where they were not counted.
+    pub fn instructions_within(&self, tolerance: f64) -> Option<bool> {
+        self.instructions_change
+            .map(|change| change.abs() <= tolerance)
+    }
+
     /// Whether the two runs agree within `tolerance`, a fraction.
     pub fn within(&self, tolerance: f64) -> bool {
         match self.change {
@@ -506,6 +516,10 @@ pub fn compare(first: &Report, second: &Report) -> Vec<Agreement> {
                     first: row.value,
                     second: other_row.value,
                     change: ratio(other_row.value - row.value, row.value),
+                    instructions_change: row
+                        .instructions_per_sample
+                        .zip(other_row.instructions_per_sample)
+                        .and_then(|(first, second)| ratio(second - first, first)),
                 });
             }
         }
@@ -688,6 +702,17 @@ mod tests {
         assert!(!agreements[0].within(0.05));
         assert_eq!(agreements[1].change, None);
         assert!(agreements[1].within(0.0));
+        assert_eq!(agreements[0].instructions_change, None);
+        assert_eq!(agreements[0].instructions_within(0.1), None);
+
+        let mut counted = first.clone();
+        counted.engines[0].rows[0].instructions_per_sample = Some(1000.0);
+        let mut recounted = second.clone();
+        recounted.engines[0].rows[0].instructions_per_sample = Some(1150.0);
+        let agreement = &compare(&counted, &recounted)[0];
+        assert!((agreement.instructions_change.unwrap() - 0.15).abs() < 1e-9);
+        assert_eq!(agreement.instructions_within(0.10), Some(false));
+        assert_eq!(agreement.instructions_within(0.20), Some(true));
     }
 
     #[test]

@@ -210,16 +210,22 @@ pub fn table(report: &Report) -> String {
 pub fn comparison(first: &Report, second: &Report, tolerance: f64) -> String {
     let mut out = String::new();
     let agreements = compare(first, second);
-    let mut within = [0usize; 2];
-    let mut total = [0usize; 2];
+    let mut within = [0usize; 3];
+    let mut total = [0usize; 3];
+    let verdict = |agrees: bool| if agrees { "ok" } else { "APART" };
     for agreement in &agreements {
         let slot = usize::from(agreement.kind == RowKind::Time);
         total[slot] += 1;
         let agrees = agreement.within(tolerance);
         within[slot] += usize::from(agrees);
+        let instructions = agreement.instructions_within(tolerance);
+        if let Some(agrees) = instructions {
+            total[2] += 1;
+            within[2] += usize::from(agrees);
+        }
         let _ = writeln!(
             out,
-            "{:<9} {:<8} {:<36} {:>14} {:>14} {:<7} {:>8} {}",
+            "{:<9} {:<8} {:<36} {:>14} {:>14} {:<7} {:>8} {:<5} {:>8} {}",
             agreement.engine,
             agreement.phase,
             agreement.id,
@@ -227,17 +233,21 @@ pub fn comparison(first: &Report, second: &Report, tolerance: f64) -> String {
             number(agreement.second),
             agreement.unit,
             percent(agreement.change),
-            if agrees { "ok" } else { "APART" },
+            verdict(agrees),
+            percent(agreement.instructions_change),
+            instructions.map_or("", verdict),
         );
     }
     let _ = writeln!(
         out,
-        "within {}: {} of {} count rows, {} of {} time rows",
+        "within {}: {} of {} count rows, {} of {} time rows, {} of {} time rows by instructions",
         percent(ratio(tolerance, 1.0)),
         within[0],
         total[0],
         within[1],
-        total[1]
+        total[1],
+        within[2],
+        total[2]
     );
     out
 }

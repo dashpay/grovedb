@@ -203,6 +203,7 @@ fn a_run_measures_every_row_and_count_rows_repeat() {
     ])
     .unwrap();
     assert!(comparison.contains("within +100000.0%"));
+    assert!(comparison.contains("time rows by instructions"));
     assert!(!comparison.contains("APART"));
 }
 
