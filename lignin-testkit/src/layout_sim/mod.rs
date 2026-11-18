@@ -19,7 +19,7 @@ pub mod observe;
 pub mod report;
 pub mod tree;
 
-use grovedb::GroveDb;
+use grovedb::{GroveDb, Transaction};
 use grovedb_version::version::GroveVersion;
 
 pub use self::{
@@ -40,8 +40,10 @@ pub struct Run {
     /// turns the check off.
     pub check_every: u64,
     /// Whether the mirror is compared with a scan of storage at the end of
-    /// every block, with a panic if they differ. It is compared once at the
-    /// end of the run in any case.
+    /// every block, with a panic if they differ. It is compared at every
+    /// sample, after every flush of pending drops and at the end of the run
+    /// in any case. A comparison reads every record, so comparing at every
+    /// block is for small workloads.
     pub verify_mirror: bool,
 }
 
@@ -56,7 +58,8 @@ pub struct Run {
 /// transitions so far.
 ///
 /// At the end of the run the mirror is compared with a scan of storage and
-/// every layout is recounted from the mirror.
+/// every layout is recounted from the mirror. A run that does not end with
+/// a commit is committed, and its last block ends like any other.
 ///
 /// Panics if GroveDB refuses an operation, if the mirror or a layout is
 /// found wrong, or if reclaiming dropped storage changes a Merk node.
@@ -73,14 +76,18 @@ pub fn simulate(
     let mut models: Vec<Model> = configs.iter().copied().map(Model::new).collect();
     let mut transaction = db.start_transaction();
     let mut transitions = 0u64;
+    let mut open_block = false;
+    let verify = |observer: &Observer, transaction: &Transaction, transitions: u64| {
+        if let Err(problem) = observer.verify(db, transaction) {
+            panic!("{name} after {transitions} transitions: {problem}");
+        }
+    };
     for op in ops {
         match op {
             Op::Read(_) => {}
             Op::Commit => {
-                if run.verify_mirror
-                    && let Err(problem) = observer.verify(db, &transaction)
-                {
-                    panic!("{name} after {transitions} transitions: {problem}");
+                if run.verify_mirror {
+                    verify(&observer, &transaction, transitions);
                 }
                 db.commit_transaction(transaction)
                     .unwrap()
@@ -89,6 +96,7 @@ pub fn simulate(
                 for model in &mut models {
                     model.end_block();
                 }
+                open_block = false;
             }
             Op::FlushPendingDrops => {
                 apply(db, &op, Some(&transaction), grove_version)
@@ -96,8 +104,9 @@ pub fn simulate(
                     .unwrap_or_else(|error| panic!("{name}: {op:?} refused: {error:?}"));
                 assert!(
                     observer.observe(db, &transaction).is_empty(),
-                    "{name} after {transitions} transitions: a flush changed a Merk node"
+                    "{name} after {transitions} transitions: a flush changed the root of the grove"
                 );
+                verify(&observer, &transaction, transitions);
             }
             Op::Write(_) | Op::Batch(_) | Op::PartialBatch(_) => {
                 apply(db, &op, Some(&transaction), grove_version)
@@ -108,6 +117,7 @@ pub fn simulate(
                     continue;
                 }
                 transitions += 1;
+                open_block = true;
                 for model in &mut models {
                     model.apply(observer.grove(), &changes);
                 }
@@ -119,6 +129,7 @@ pub fn simulate(
                     }
                 }
                 if run.sample_every > 0 && transitions.is_multiple_of(run.sample_every) {
+                    verify(&observer, &transaction, transitions);
                     for model in &mut models {
                         model.sample();
                     }
@@ -127,17 +138,18 @@ pub fn simulate(
             }
         }
     }
-    if let Err(problem) = observer.verify(db, &transaction) {
-        panic!("{name} at the end: {problem}");
-    }
-    for model in &models {
+    verify(&observer, &transaction, transitions);
+    db.commit_transaction(transaction)
+        .unwrap()
+        .expect("the last block commits");
+    for model in &mut models {
+        if open_block {
+            model.end_block();
+        }
         if let Err(problem) = model.check(observer.grove()) {
             panic!("{name} at the end: {problem}");
         }
     }
-    db.commit_transaction(transaction)
-        .unwrap()
-        .expect("the last block commits");
     models
         .iter()
         .map(|model| Report::new(name, model))

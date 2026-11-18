@@ -286,6 +286,42 @@ fn every_workload_is_laid_out_consistently() {
     }
 }
 
+#[test]
+fn a_run_that_ends_without_a_commit_still_ends_its_block() {
+    let (_dir, db) = open();
+    let item = || Element::new_item(vec![7; 8]);
+    let ops = vec![
+        Op::Write(insert(&[], b"tree", Element::empty_tree())),
+        Op::Write(insert(&[b"tree"], b"a", item())),
+        Op::Write(insert(&[b"tree"], b"b", item())),
+        Op::Write(Write::Delete {
+            path: Vec::new(),
+            key: b"tree".to_vec(),
+        }),
+    ];
+    let reports = simulate(
+        "no commit",
+        &db,
+        ops.into_iter(),
+        GroveVersion::latest(),
+        &[Config::proposed()],
+        Run {
+            sample_every: 0,
+            check_every: 1,
+            verify_mirror: false,
+        },
+        |_, _, _| {},
+    );
+    let end = &reports[0].end;
+    assert_eq!((end.stats.transitions, end.stats.blocks), (4, 1));
+    assert_eq!(
+        (end.stats.dropped, end.stats.reclaimed),
+        (2, 2),
+        "the reclaimer came after the last block too"
+    );
+    assert_eq!((end.cells, end.pages), (0, 0));
+}
+
 /// The "done when" of TREE-01: on the reference workload the proposed
 /// layout has at least 15 nodes per page, is at least 70% full and dirties
 /// at most 8 pages per transition.

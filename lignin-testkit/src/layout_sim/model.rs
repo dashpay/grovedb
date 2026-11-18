@@ -30,6 +30,9 @@ pub struct CellCosts {
     pub value_pointer: u32,
     /// The header of a value-log record.
     pub value_record_header: u32,
+    /// The most bytes of a value one value-log record carries. A longer
+    /// value is cut into several records (`value-log-format.md`, V6).
+    pub value_part_max: u32,
 }
 
 impl Default for CellCosts {
@@ -41,6 +44,7 @@ impl Default for CellCosts {
             pointer: 6,
             value_pointer: 16,
             value_record_header: 18,
+            value_part_max: 134_217_714,
         }
     }
 }
@@ -119,6 +123,13 @@ impl Config {
     /// has one byte it cannot use (`flat-page.md`, P10).
     pub fn capacity(&self) -> u32 {
         self.page_size.min(Self::LARGEST_IMAGE) - self.costs.page_header
+    }
+
+    /// The bytes a value of `value_len` bytes takes in the value log: the
+    /// value and one record header for each part it is cut into.
+    pub fn value_log_bytes(&self, value_len: u32) -> u64 {
+        let parts = value_len.div_ceil(self.costs.value_part_max);
+        u64::from(value_len) + u64::from(parts) * u64::from(self.costs.value_record_header)
     }
 
     /// The size below which a fragment belongs in its parent's page.
@@ -204,6 +215,9 @@ pub struct Model {
     cell_of: Vec<u32>,
     pages: Vec<Page>,
     free: Vec<u32>,
+    /// The pages emptied in the current block. A page id is not handed out
+    /// again before the block that freed it has committed.
+    released: Vec<u32>,
     /// The cells of dropped Merks that still take room in their pages: the
     /// page and the bytes of each.
     dead: Vec<(u32, u32)>,
@@ -265,6 +279,7 @@ impl Model {
             cell_of: Vec::new(),
             pages: vec![Page::default()],
             free: Vec::new(),
+            released: Vec::new(),
             dead: Vec::new(),
             live_pages: 0,
             used_bytes: 0,
@@ -487,8 +502,7 @@ impl Model {
             stats.value_records += 1;
             let value_len = grove.node(event.node).value_len;
             if self.config.is_out_of_line(value_len) {
-                stats.out_of_line_bytes +=
-                    u64::from(value_len + self.config.costs.value_record_header);
+                stats.out_of_line_bytes += self.config.value_log_bytes(value_len);
             }
         }
         stats.removed += changes.removed.len() as u64;
@@ -529,6 +543,7 @@ impl Model {
         }
         dead.clear();
         self.dead = dead;
+        self.free.append(&mut self.released);
     }
 
     /// Records where the layout stands.
@@ -622,6 +637,7 @@ impl Model {
             ));
         }
         let mut free = self.free.clone();
+        free.extend(&self.released);
         free.sort_unstable();
         let empty: Vec<u32> = (1..self.pages.len() as u32)
             .filter(|id| cells[*id as usize] == 0)
@@ -696,7 +712,8 @@ impl Model {
     fn insert_cell(&mut self, node: NodeId, page: u32, bytes: u32) {
         assert!(
             bytes * 2 < self.capacity,
-            "a cell of {bytes} bytes is not below half a page"
+            "a cell of {bytes} bytes is not below half a page: the page is too small for the \
+             keys and inline values of this workload"
         );
         self.page_of[node.index()] = page;
         self.cell_of[node.index()] = bytes;
@@ -713,7 +730,8 @@ impl Model {
     fn resize_cell(&mut self, node: NodeId, bytes: u32) {
         assert!(
             bytes * 2 < self.capacity,
-            "a cell of {bytes} bytes is not below half a page"
+            "a cell of {bytes} bytes is not below half a page: the page is too small for the \
+             keys and inline values of this workload"
         );
         let page = self.page_of[node.index()];
         let old = std::mem::replace(&mut self.cell_of[node.index()], bytes);
@@ -764,10 +782,11 @@ impl Model {
         }
     }
 
-    /// Gives back a page that holds no cell.
+    /// Gives back a page that holds no cell. Its id can be used again once
+    /// the block has ended.
     fn release(&mut self, page: u32) {
         self.pages[page as usize].held = None;
-        self.free.push(page);
+        self.released.push(page);
         self.live_pages -= 1;
         self.stats.pages_freed += 1;
     }
@@ -829,7 +848,7 @@ impl Model {
             let value_len = grove.node(node).value_len;
             if self.config.is_out_of_line(value_len) && rewritten.binary_search(&node).is_err() {
                 moves.values += 1;
-                moves.value_bytes += u64::from(value_len + self.config.costs.value_record_header);
+                moves.value_bytes += self.config.value_log_bytes(value_len);
             }
         }
         self.carried.clear();
@@ -1761,9 +1780,12 @@ mod tests {
         let mut model = Model::new(config());
         let root = hand.add(MerkId::ROOT, b"r", 1000);
         hand.set_root(MerkId::ROOT, Some(root));
+        let child = hand.add(MerkId::ROOT, b"c", 1);
+        hand.link(root, Side::Left, Some(child));
         step(&mut hand, &mut model);
         assert_eq!(model.stats().out_of_line_bytes, 1018);
         assert_eq!(model.stats().moved().cells, 0, "a new cell is placed");
+        let home = model.page_of(root).expect("placed");
         let nothing = ChangeSet::default();
         let moved = |model: &Model, cause: Cause| {
             let moves = model.stats().moves[cause as usize];
@@ -1775,25 +1797,20 @@ mod tests {
             )
         };
 
+        // Carried away and back by one write: no move.
+        let away = model.allocate();
+        model.carry(&hand.grove, root, away, Cause::Split);
+        model.carry(&hand.grove, root, home, Cause::Merge);
+        model.count_moves(&hand.grove, &nothing);
+        assert_eq!(model.stats().moved().cells, 0);
+
         // Carried twice by one write: one move, under the last rule.
         let (first, second) = (model.allocate(), model.allocate());
         model.carry(&hand.grove, root, first, Cause::Merge);
         model.carry(&hand.grove, root, second, Cause::Split);
         model.count_moves(&hand.grove, &nothing);
-        assert_eq!(moved(&model, Cause::Split), (1, 88, 1, 1018));
+        assert_eq!(moved(&model, Cause::Split), (1, 129, 1, 1018));
         assert_eq!(moved(&model, Cause::Merge), (0, 0, 0, 0));
-
-        // Carried away and back by one write: no move.
-        let away = model.allocate();
-        model.carry(&hand.grove, root, away, Cause::Split);
-        assert_eq!(
-            model.allocate(),
-            second,
-            "the page it left is handed out next"
-        );
-        model.carry(&hand.grove, root, second, Cause::Merge);
-        model.count_moves(&hand.grove, &nothing);
-        assert_eq!(model.stats().moved().cells, 1);
 
         // Carried by the write that gives it a new value: the value is
         // written once, into the page the cell ends in.
@@ -1812,9 +1829,42 @@ mod tests {
         let last = model.allocate();
         model.carry(&hand.grove, root, last, Cause::Delete);
         model.count_moves(&hand.grove, &rewritten);
-        assert_eq!(moved(&model, Cause::Delete), (1, 88, 0, 0));
+        assert_eq!(moved(&model, Cause::Delete), (1, 129, 0, 0));
         model.check(&hand.grove).expect("consistent");
+        assert_eq!(model.pages(), 2);
+    }
+
+    #[test]
+    fn a_freed_page_is_not_handed_out_before_the_block_ends() {
+        let mut hand = Hand::new();
+        let mut model = Model::new(config());
+        let root = hand.add(MerkId::ROOT, b"r", 1);
+        hand.set_root(MerkId::ROOT, Some(root));
+        step(&mut hand, &mut model);
+        let home = model.page_of(root).expect("placed");
+        let away = model.allocate();
+        carry_by_hand(&mut model, &hand.grove, &[root], away);
         assert_eq!(model.pages(), 1);
+        let fresh = model.allocate();
+        assert!(fresh != home && fresh != away);
+        carry_by_hand(&mut model, &hand.grove, &[root], fresh);
+        model.check(&hand.grove).expect("consistent");
+
+        model.end_block();
+        model.check(&hand.grove).expect("consistent");
+        assert_eq!(model.allocate(), away, "the page freed last goes out first");
+    }
+
+    #[test]
+    fn a_long_value_pays_a_record_header_for_each_part() {
+        let config = Config::proposed();
+        assert_eq!(config.value_log_bytes(1000), 1018);
+        assert_eq!(config.value_log_bytes(134_217_714), 134_217_714 + 18);
+        assert_eq!(config.value_log_bytes(134_217_715), 134_217_715 + 2 * 18);
+        assert_eq!(
+            config.value_log_bytes(u32::MAX),
+            u64::from(u32::MAX) + 33 * 18
+        );
     }
 
     #[test]
@@ -1885,6 +1935,7 @@ mod tests {
                 model.live_pages,
                 model.used_bytes,
                 model.free.clone(),
+                model.released.clone(),
             );
             change(&mut model);
             let problem = model.check(&hand.grove).expect_err(expected);
@@ -1897,6 +1948,7 @@ mod tests {
                 model.live_pages,
                 model.used_bytes,
                 model.free,
+                model.released,
             ) = saved;
         };
         damaged(&|model| model.page_of[index] = 0, "is in no page");
@@ -1907,6 +1959,7 @@ mod tests {
         damaged(&|model| model.live_pages += 1, "pages in use but");
         damaged(&|model| model.used_bytes += 1, "bytes of cells but");
         damaged(&|model| model.free.push(1), "are free but");
+        damaged(&|model| model.released.push(1), "are free but");
         damaged(
             &|model| {
                 model.capacity = 10;

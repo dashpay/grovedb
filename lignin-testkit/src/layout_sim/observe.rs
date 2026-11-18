@@ -126,6 +126,19 @@ impl Observer {
             *mirrored.entry(node.merk).or_default() += 1;
         }
         for (id, merk) in self.grove.merks().filter(|(_, merk)| merk.live) {
+            let hosted = match merk.host {
+                Some(host) => {
+                    let host = self.grove.node(host);
+                    host.live && host.hosted.contains(&id)
+                }
+                None => id == MerkId::ROOT,
+            };
+            if !hosted {
+                return Err(format!(
+                    "the mirror keeps the Merk at {:?} without an element that hosts it",
+                    merk.path
+                ));
+            }
             let context = db
                 .raw_storage()
                 .get_transactional_storage_context_by_subtree_prefix(merk.prefix, None, transaction)
