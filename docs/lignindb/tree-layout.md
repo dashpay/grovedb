@@ -76,7 +76,7 @@ exactly one page. A cell holds:
 
 | Part | Bytes | |
 | --- | --- | --- |
-| key | 1 to 255 | |
+| key | 0 to 255 | Merk accepts an empty key |
 | feature type and aggregate data | as Merk encodes them | |
 | value hash | 32 | |
 | key-value hash | 32 | |
@@ -1125,7 +1125,7 @@ records and the moves.
 | TREE-03 Fragment maintenance | Sections 5 to 8 as the rules to implement, on a change set as a whole. F4: move only what the write holds. X1: append the value again for every carried cell with a value pointer. The order in section 6. The parameters of section 12 as configuration, not constants. | In-page allocation. How the used bytes of a page beside a fragment are known without loading it (section 17, item 14). |
 | TREE-05 Subtree directory | The entry of a Merk holds the address of its root cell and is rewritten when the root is carried or another node becomes the root (S3). Under parallel scopes it is the address to use while the host's element is marked pending (T3). A drop removes one entry and leaves the nested ones to the reclaimer (D1, D2). A move that keeps the cells re-keys every entry under the moved key (D5). | The entry. |
 | TREE-06 Ordered cursor | No sibling links (C5): a cursor moves through its parent stack. Consecutive keys are in one page or in pages beside each other (V4). | The cursor. |
-| TREE-08 Out-of-line values | A value pointer is 16 bytes in the cell. The threshold is a parameter; 256 bytes was simulated, and 512 puts the reference documents into their cells and costs 1.7 more dirtied pages (section 14.4). | The threshold policy. |
+| TREE-08 Out-of-line values | A value pointer is 16 bytes (value-log-format.md, section 4). A tree cell stores 12 of them, the file id and the offset, and has the value's length in its header ([`tree-page.md`](tree-page.md), TP13). The threshold is a parameter, bounded by what fits in a cell (TP14); 256 bytes was simulated, and 512 puts the reference documents into their cells and costs 1.7 more dirtied pages (section 14.4). | The threshold policy. |
 | TREE-09 Subtree drop | D1 to D4: the drop writes one page and one directory entry; reclaiming walks the dropped Merk because its cells can share pages with others, removes the directory entries nested in it and reports the value pointers. | Keeping the root's address, and the walk. |
 | GROVE-03 Batch pipeline | D5: a moved subtree needs no cell to change its page. | Whether a move re-hosts or copies. |
 | GROVE-05 Deletes and drops | D1 for a deleted tree, D4 for a cleared one. GroveDB's pending-drop records are the same idea at the level of storage prefixes. | The mapping. |
@@ -1255,7 +1255,7 @@ owner can overrule one before FMT-02 and TREE-03 build on it.
     keys at once is counted the same way, because the records do not tell
     the two apart (section 13).
 21. **A cell must be smaller than half a page** (C7). At the proposed sizes
-    the largest cell is about 700 bytes of 32,736. The simulator refuses a
+    the largest cell is about 700 bytes of 32,746. The simulator refuses a
     run in which it does not hold.
 22. **A node is placed when its write is applied** (P5), which answers the
     point node-store.md left open (its choice 10). The unit is the
