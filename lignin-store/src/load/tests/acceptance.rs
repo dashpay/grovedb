@@ -3,6 +3,8 @@
 
 use std::collections::BTreeMap;
 
+use lignin_format::segment::SegmentError;
+
 use super::*;
 
 /// One page version in segments: the blocks of its chain, and the page a
@@ -10,13 +12,14 @@ use super::*;
 struct Stored {
     of: PageId,
     at: u64,
+    flat: bool,
     blocks: Vec<BlockLocation>,
     expected: Vec<u8>,
 }
 
-/// A tree page with a base image, a raw run of two changed hashes and a
-/// compressed run that adds cells, and a flat page with a raw image and
-/// one stored with compression. With `full`, the pages are as long as the
+/// A tree page with a compressed base image, a raw run of two changed
+/// hashes and a compressed run that adds cells; a tree page with a raw
+/// image; and a flat page with a raw image and one stored with compression. With `full`, the pages are as long as the
 /// store's pages get and their values do not compress.
 fn stored_pages(db: &mut Db, full: bool) -> Vec<Stored> {
     let size = db.size;
@@ -62,6 +65,9 @@ fn stored_pages(db: &mut Db, full: bool) -> Vec<Stored> {
     ]);
     let second = db.delta(tree, 3, Compression::Lz4, &cells_added);
 
+    let plain = Written::filled(size, page(10), cells.min(6), 12).image();
+    let plain_base = db.base(page(10), 1, Compression::Raw, &plain);
+
     let (raw, packed) = (page(8), page(9));
     let leaf = if full {
         full_flat_image(size, 5)
@@ -84,25 +90,18 @@ fn stored_pages(db: &mut Db, full: bool) -> Vec<Stored> {
         assert!((base.len as usize) < written.image().len());
         assert!(packed_base.len < raw_base.len);
     }
+    let stored = |of, at, flat, blocks: &[BlockLocation], expected| Stored {
+        of,
+        at,
+        flat,
+        blocks: blocks.to_vec(),
+        expected,
+    };
     vec![
-        Stored {
-            of: tree,
-            at: 3,
-            blocks: vec![base, first, second],
-            expected: written.image(),
-        },
-        Stored {
-            of: raw,
-            at: 1,
-            blocks: vec![raw_base],
-            expected: leaf.clone(),
-        },
-        Stored {
-            of: packed,
-            at: 1,
-            blocks: vec![packed_base],
-            expected: leaf,
-        },
+        stored(tree, 3, false, &[base, first, second], written.image()),
+        stored(page(10), 1, false, &[plain_base], plain),
+        stored(raw, 1, true, &[raw_base], leaf.clone()),
+        stored(packed, 1, true, &[packed_base], leaf),
     ]
 }
 
@@ -111,10 +110,10 @@ fn loaded(db: &Db, pool: &BufferPool, stored: &Stored) -> Result<Vec<u8>, LoadEr
     let frame = db
         .loader(pool)
         .get(stored.of, version(stored.at), &mut LoadBuffers::new())?;
-    Ok(if stored.blocks.len() > 1 {
-        tree_image(&frame)
-    } else {
+    Ok(if stored.flat {
         frame[..stored.expected.len()].to_vec()
+    } else {
+        tree_image(&frame)
     })
 }
 
@@ -133,7 +132,6 @@ fn corrupt_bytes(
     let mut buffers = LoadBuffers::new();
     let file = db.segment_file();
     let mut refused = BTreeMap::new();
-    let mut tried = 0;
     for page in stored {
         for &location in &page.blocks {
             let original = db.stored(location);
@@ -143,7 +141,6 @@ fn corrupt_bytes(
                     assert_ne!(value, byte);
                     file.write_all_at(&[value], offset)
                         .expect("the byte is changed");
-                    tried += 1;
                     let error = loader
                         .get(page.of, version(page.at), &mut buffers)
                         .expect_err("a page with a changed byte");
@@ -157,6 +154,9 @@ fn corrupt_bytes(
                         FormatError::ChecksumMismatch { .. } => "checksum",
                         FormatError::Truncated { .. } if at < 4 => "longer than its location",
                         FormatError::RecordTooLong { .. } if at < 4 => "longer than a page",
+                        FormatError::Segment(SegmentError::LengthMismatch { .. }) if at < 4 => {
+                            "shorter than its location"
+                        }
                         other => panic!("byte {at} of {location:?} as {value:#04x}: {other:?}"),
                     };
                     *refused.entry(kind).or_default() += 1;
@@ -172,16 +172,17 @@ fn corrupt_bytes(
             page.expected
         );
     }
-    assert_eq!(refused.values().sum::<u64>(), tried);
     refused
 }
 
-fn block_bytes(stored: &[Stored]) -> u64 {
-    stored
-        .iter()
-        .flat_map(|page| &page.blocks)
-        .map(|location| u64::from(location.len))
-        .sum()
+/// How many blocks the chains of `stored` have, and how many bytes they
+/// take in the segment.
+fn blocks_of(stored: &[Stored]) -> (u64, u64) {
+    let blocks = stored.iter().flat_map(|page| &page.blocks);
+    (
+        blocks.clone().count() as u64,
+        blocks.map(|location| u64::from(location.len)).sum(),
+    )
 }
 
 #[test]
@@ -195,14 +196,15 @@ fn a_page_with_any_single_corrupted_byte_is_rejected_with_a_typed_error() {
             page.expected
         );
     }
-    let bytes = block_bytes(&stored);
+    let (blocks, bytes) = blocks_of(&stored);
+    assert_eq!(blocks, 6);
 
     let refused = corrupt_bytes(&db, &stored, |_, byte| {
         (0..=u8::MAX).filter(|&value| value != byte).collect()
     });
-    println!("{bytes} bytes in 5 blocks, each changed to its 255 other values: {refused:?}");
+    println!("{bytes} bytes in {blocks} blocks, each changed to its 255 other values: {refused:?}");
     assert_eq!(refused.values().sum::<u64>(), bytes * 255);
-    assert!(refused["checksum"] >= (bytes - 5 * 4) * 255);
+    assert!(refused["checksum"] >= (bytes - blocks * 4) * 255);
 }
 
 /// Pages as long as a page gets, of every page size. In the smallest size
@@ -218,7 +220,7 @@ fn a_changed_byte_is_found_in_full_pages_of_every_size() {
     ] {
         let mut db = Db::new(size);
         let stored = stored_pages(&mut db, true);
-        let bytes = block_bytes(&stored);
+        let (blocks, bytes) = blocks_of(&stored);
         assert!(bytes > 5 * size.image_capacity() as u64 / 2);
         let mut rng = rng(size.get() as u64);
         let refused = corrupt_bytes(&db, &stored, |place, byte| {
@@ -235,7 +237,8 @@ fn a_changed_byte_is_found_in_full_pages_of_every_size() {
         });
         let tried = refused.values().sum::<u64>();
         println!(
-            "{} byte pages: {bytes} bytes in 5 blocks, {tried} changed bytes tried: {refused:?}",
+            "{} byte pages: {bytes} bytes in {blocks} blocks, {tried} changed bytes tried: \
+             {refused:?}",
             size.get()
         );
         assert!(tried >= bytes / stride as u64);

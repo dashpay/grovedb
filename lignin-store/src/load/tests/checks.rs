@@ -2,7 +2,10 @@
 //! and are not what the page table says they are.
 
 use lignin_format::{
-    delta::DeltaError, flat_page::FlatPageError, segment::SegmentError, tree_page::TreePageError,
+    delta::DeltaError,
+    flat_page::{FlatBranchBuilder, FlatPageError},
+    segment::SegmentError,
+    tree_page::TreePageError,
 };
 
 use super::*;
@@ -277,7 +280,6 @@ fn a_run_that_does_not_apply_is_refused_and_leaves_nothing_behind() {
 
     db.base(page(7), 3, RAW, &written.image());
     db.delta(page(7), 4, RAW, &good);
-    let pool = db.pool(1);
     let loader = db.loader(&pool);
     loader.get(page(7), version(2), &mut buffers).unwrap_err();
     let loaded = loader.get(page(7), version(4), &mut buffers).unwrap();
@@ -312,19 +314,10 @@ fn a_run_in_a_segment_does_not_create_its_page() {
 #[test]
 fn a_flat_page_takes_no_run() {
     let mut db = Db::new(TreePageSize::MIN);
-    for (raw, kind) in [(7, 0), (8, 1)] {
-        let image = if kind == 0 {
-            flat_image(db.size, 6, 1)
-        } else {
-            lignin_format::flat_page::FlatBranchBuilder::new(
-                b"",
-                db.size.image_capacity(),
-                1,
-                page(40),
-            )
-            .expect("a branch")
-            .finish()
-        };
+    let branch = FlatBranchBuilder::new(b"", db.size.image_capacity(), 1, page(40))
+        .expect("a branch")
+        .finish();
+    for (raw, image) in [(7, flat_image(db.size, 6, 1)), (8, branch)] {
         db.base(page(raw), 1, RAW, &image);
         let run =
             Written::filled(db.size, page(raw), 1, 4).change(&[Delta::Remove { slot: slot(1) }]);

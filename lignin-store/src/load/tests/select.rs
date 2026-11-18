@@ -11,12 +11,6 @@ fn at(offset: u64) -> BlockLocation {
     }
 }
 
-fn links_of(table: &PageTable, of: PageId) -> Vec<Link> {
-    let mut links = Vec::new();
-    table.chain(of, &mut links);
-    links
-}
-
 #[test]
 fn a_reader_is_given_what_the_page_table_gives_it() {
     let mut rng = rng(1);
@@ -33,7 +27,10 @@ fn a_reader_is_given_what_the_page_table_gives_it() {
             let done = match rng.below(8) {
                 0 | 1 => table.push(of, Link::base(born, at(offset))).is_ok(),
                 2..=4 => table.push(of, Link::delta(born, at(offset))).is_ok(),
-                5 => table.push(of, Link::free(born)).is_ok() && false,
+                5 => {
+                    let _ = table.push(of, Link::free(born));
+                    false
+                }
                 6 if !pushed.is_empty() => {
                     let through = pushed[rng.below(pushed.len() as u64) as usize];
                     table.consolidate(of, through, at(offset)).is_ok()
@@ -48,7 +45,8 @@ fn a_reader_is_given_what_the_page_table_gives_it() {
             }
         }
 
-        let links = links_of(&table, of);
+        let mut links = Vec::new();
+        table.chain(of, &mut links);
         for asked in 1..=newest + 2 {
             let asked = version(asked);
             let mut blocks = vec![at(8)];
@@ -105,9 +103,8 @@ fn among_links_of_one_version_the_later_one_is_the_newer() {
         Link::base(version(6), at(340)),
     ];
     let given = |asked| Selected::of(page(3), asked, &links).expect("a page version");
-    let selected = |asked| given(version(asked));
     assert_eq!(
-        selected(1),
+        given(version(1)),
         Selected {
             base: at(20),
             runs: 1..1,
@@ -117,7 +114,7 @@ fn among_links_of_one_version_the_later_one_is_the_newer() {
     );
     for asked in [2, 3] {
         assert_eq!(
-            selected(asked),
+            given(version(asked)),
             Selected {
                 base: at(148),
                 runs: 3..4,
@@ -127,7 +124,7 @@ fn among_links_of_one_version_the_later_one_is_the_newer() {
         );
     }
     assert_eq!(
-        selected(5),
+        given(version(5)),
         Selected {
             base: at(148),
             runs: 3..5,

@@ -40,8 +40,7 @@ impl Change {
         let slots: Vec<SlotId> = page.cells().map(|(slot, _)| slot).collect();
         let free = page.free_bytes(written.size);
         let any = |rng: &mut SimRng| slots[rng.below(slots.len() as u64) as usize];
-        let mut hash = [0; 32];
-        hash.fill_with(|| rng.next_u64() as u8);
+        let hash = junk_hash(rng);
         match rng.below(10) {
             0..=2 if free > 400 => {
                 *serial += 1;
@@ -66,12 +65,29 @@ impl Change {
     }
 }
 
+/// Makes one to four changes to `written` and returns the run that
+/// records them.
+fn random_run(written: &mut Written, serial: &mut u32, rng: &mut SimRng) -> Vec<u8> {
+    let mut run = Vec::new();
+    let mut records = DeltaRunWriter::new(written.id, None, &mut run);
+    for _ in 0..1 + rng.below(4) {
+        let change = Change::random(written, serial, rng);
+        let delta = change.delta();
+        written.apply(&delta);
+        records.push(&delta).unwrap();
+    }
+    records.finish().unwrap();
+    run
+}
+
 /// One page of the model: what each commit that changed it left of it.
 struct Page {
     id: PageId,
     flat: bool,
     written: Option<Written>,
-    newest: Option<BlockLocation>,
+    /// The blocks the page's chain got since the page was last created,
+    /// each with the image the chain up to it gives.
+    links: Vec<(BlockLocation, Vec<u8>)>,
     /// The version of each commit that changed the page, with the image it
     /// left, or `None` for the commit that freed it.
     history: Vec<(u64, Option<Vec<u8>>)>,
@@ -80,6 +96,21 @@ struct Page {
 impl Page {
     fn at(&self, at: u64) -> Option<&(u64, Option<Vec<u8>>)> {
         self.history.iter().rfind(|(born, _)| *born <= at)
+    }
+
+    fn free(&mut self, db: &Db, born: u64) {
+        db.table.push(self.id, Link::free(version(born))).unwrap();
+        self.written = None;
+        self.links.clear();
+        self.history.push((born, None));
+    }
+
+    fn linked(&mut self, location: BlockLocation, born: u64, image: Vec<u8>) {
+        self.links.push((location, image.clone()));
+        match self.history.last_mut() {
+            Some((newest, left)) if *newest == born => *left = Some(image),
+            _ => self.history.push((born, Some(image))),
+        }
     }
 }
 
@@ -92,19 +123,20 @@ fn compression(rng: &mut SimRng) -> Compression {
 }
 
 /// Has the commit `born` change `page` and stores what write-back makes of
-/// it.
+/// it: a run or a new image. Before that, sometimes, a link the chain
+/// already has is consolidated into an image (`page-table.md` T9). After
+/// it, sometimes, a page step changes the page under the same version
+/// (`transactions.md` PV6).
 fn commit(db: &mut Db, page: &mut Page, born: u64, serial: &mut u32, rng: &mut SimRng) {
     let size = db.size;
     if page.flat {
-        if page.newest.is_some() && rng.below(5) == 0 {
-            db.table.push(page.id, Link::free(version(born))).unwrap();
-            page.newest = None;
-            page.history.push((born, None));
+        if !page.links.is_empty() && rng.below(5) == 0 {
+            page.free(db, born);
             return;
         }
         let image = flat_image(size, 1 + rng.below(40) as usize, rng.next_u64() as u8);
-        page.newest = Some(db.base(page.id, born, compression(rng), &image));
-        page.history.push((born, Some(image)));
+        let location = db.base(page.id, born, compression(rng), &image);
+        page.linked(location, born, image);
         return;
     }
     let Some(written) = &mut page.written else {
@@ -115,38 +147,33 @@ fn commit(db: &mut Db, page: &mut Page, born: u64, serial: &mut u32, rng: &mut S
             rng.below(90) as usize,
         );
         let image = written.image();
-        page.newest = Some(db.base(page.id, born, compression(rng), &image));
+        let location = db.base(page.id, born, compression(rng), &image);
         page.written = Some(written);
-        page.history.push((born, Some(image)));
+        page.linked(location, born, image);
         return;
     };
     if rng.below(8) == 0 {
-        db.table.push(page.id, Link::free(version(born))).unwrap();
-        page.written = None;
-        page.history.push((born, None));
+        page.free(db, born);
         return;
     }
-    if rng.below(5) == 0 {
-        let through = page.newest.expect("a page in a segment");
-        let image = written.image();
-        let base = db.append(page.id, BlockContent::Base, compression(rng), &image);
-        db.table.consolidate(page.id, through, base).unwrap();
+    if rng.below(4) == 0 {
+        let (through, image) = &page.links[rng.below(page.links.len() as u64) as usize];
+        let base = db.append(page.id, BlockContent::Base, compression(rng), image);
+        db.table.consolidate(page.id, *through, base).unwrap();
     }
-    let mut run = Vec::new();
-    let mut records = DeltaRunWriter::new(page.id, None, &mut run);
-    for _ in 0..1 + rng.below(4) {
-        let change = Change::random(written, serial, rng);
-        written.apply(&change.delta());
-        records.push(&change.delta()).unwrap();
-    }
-    records.finish().unwrap();
+    let run = random_run(written, serial, rng);
     let image = written.image();
-    page.newest = Some(if rng.below(6) == 0 {
+    let location = if rng.below(6) == 0 {
         db.base(page.id, born, compression(rng), &image)
     } else {
         db.delta(page.id, born, compression(rng), &run)
-    });
-    page.history.push((born, Some(image)));
+    };
+    let step = (rng.below(5) == 0).then(|| (random_run(written, serial, rng), written.image()));
+    page.linked(location, born, image);
+    if let Some((run, image)) = step {
+        let location = db.delta(page.id, born, compression(rng), &run);
+        page.linked(location, born, image);
+    }
 }
 
 /// Loads `page` at `at` and checks it against the model.
@@ -198,7 +225,7 @@ fn a_page_is_its_base_image_and_the_runs_after_it_in_order() {
                 id: page(raw),
                 flat: raw > 4,
                 written: None,
-                newest: None,
+                links: Vec::new(),
                 history: Vec::new(),
             })
             .collect();
@@ -239,12 +266,7 @@ fn a_page_is_its_base_image_and_the_runs_after_it_in_order() {
 fn every_hash_in_a_frame_is_the_hash_a_block_held() {
     let mut db = Db::new(TreePageSize::DEFAULT);
     let mut rng = rng(7);
-    let mut junk = || {
-        let mut hash = [0; 32];
-        hash.fill_with(|| rng.next_u64() as u8);
-        hash
-    };
-    let hashes: Vec<[u8; 32]> = (0..40).map(|_| junk()).collect();
+    let hashes: Vec<[u8; 32]> = (0..40).map(|_| junk_hash(&mut rng)).collect();
     let mut written = Written::new(db.size, page(7));
     for n in 0..10usize {
         let key = format!("node-{n}");
@@ -267,7 +289,7 @@ fn every_hash_in_a_frame_is_the_hash_a_block_held() {
         });
     }
     db.base(page(7), 1, Compression::Lz4, &written.image());
-    let changed: Vec<[u8; 32]> = (0..4).map(|_| junk()).collect();
+    let changed: Vec<[u8; 32]> = (0..4).map(|_| junk_hash(&mut rng)).collect();
     let fields = [
         HashField::Value,
         HashField::KeyValue,
@@ -299,8 +321,12 @@ fn every_hash_in_a_frame_is_the_hash_a_block_held() {
                     &hashes[4 * n + field]
                 }
             };
-            for (at, &field) in fields.iter().enumerate() {
-                assert_eq!(cell.hash(field), Some(stored(at)), "{field:?} of cell {n}");
+            for (index, &field) in fields.iter().enumerate() {
+                assert_eq!(
+                    cell.hash(field),
+                    Some(stored(index)),
+                    "{field:?} of cell {n}"
+                );
             }
             assert_eq!(
                 cell.value(),

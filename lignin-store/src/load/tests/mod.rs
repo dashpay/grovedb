@@ -188,6 +188,13 @@ fn noise(len: usize, rng: &mut SimRng) -> Vec<u8> {
     (0..len).map(|_| rng.next_u64() as u8).collect()
 }
 
+/// 32 bytes that are the hash of nothing.
+fn junk_hash(rng: &mut SimRng) -> [u8; 32] {
+    let mut hash = [0; 32];
+    hash.fill_with(|| rng.next_u64() as u8);
+    hash
+}
+
 /// A database directory with one segment that takes blocks, and the page
 /// table of its pages.
 struct Db {

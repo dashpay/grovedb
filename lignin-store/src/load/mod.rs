@@ -117,7 +117,9 @@
 //!    to the frame (`apply_chain`), oldest first.
 //! 5. [`BufferPool::install_loaded`], with the two versions of step 2. If it
 //!    answers [`Loaded::Again`], the load starts again at step 1 with the
-//!    same frame.
+//!    same frame, and reads the blocks again: a load is repeated for as
+//!    long as commits and page steps keep overtaking it in its part of the
+//!    pool's table.
 //!
 //! On any error the frame goes back to the pool and nothing is installed. A
 //! run that was applied in part is never seen (`page-delta.md` A3).
@@ -131,7 +133,7 @@
 //! | The payload decompresses to the length it states. | `Block::copy_payload_to` | [`LoadError::Payload`] |
 //! | The image is a well-formed page of the store's page size. | `TreePage::decode`, `FlatPage::decode` | [`LoadError::Payload`] |
 //! | The block holds the image and nothing behind it (`segment-manifest.md` S7). | the image's own length | [`LoadError::TrailingBytes`] |
-//! | The image is of the page asked for (`tree-page.md` TP2). | the page id in its header | [`LoadError::Payload`] with `DeltaError::WrongPage` |
+//! | The image is of the page asked for (`tree-page.md` TP2). A flat page image holds no page id, so for a flat page only the page table vouches for this (T13). | the page id in a tree page's header | [`LoadError::Payload`] with `DeltaError::WrongPage` |
 //! | A run is well formed and of the page asked for (`page-delta.md` PD3, A2). | `DeltaRun::decode`, `apply_chain` | [`LoadError::Payload`] |
 //! | Every record of a run applies to the page beneath it (A3). | `apply_chain` | [`LoadError::Payload`] |
 //! | A run in a segment does not create its page (PD11), and a flat page has no run (PD13). | the run, the image's kind | [`LoadError::CreatedInSegment`], [`LoadError::FlatPageDelta`] |
@@ -267,7 +269,8 @@ impl Selected {
         let below_runs = links[..=newest]
             .iter()
             .rposition(|link| !matches!(link.kind, LinkKind::Delta(_)));
-        let Some((base_at, LinkKind::Base(base))) = below_runs.map(|at| (at, links[at].kind))
+        let Some((base_at, LinkKind::Base(base))) =
+            below_runs.map(|place| (place, links[place].kind))
         else {
             return Err(LoadError::NoBase { page, born });
         };
@@ -329,10 +332,9 @@ impl<'s> PageLoader<'s> {
         at: CommitVersion,
         buffers: &mut LoadBuffers,
     ) -> Result<PageRef<'s>, LoadError> {
-        match self.pool.get(page, at) {
-            Ok(found) => Ok(found),
-            Err(miss) => self.load(miss, buffers),
-        }
+        self.pool
+            .get(page, at)
+            .or_else(|miss| self.load(miss, buffers))
     }
 
     /// Loads the page version that `miss` was for, and returns it pinned:
@@ -452,14 +454,18 @@ impl<'s> PageLoader<'s> {
             });
         }
         if found != page {
-            let wrong = DeltaError::WrongPage {
-                found,
-                expected: page,
-            };
-            return Err(payload(base)(wrong.into()));
+            return Err(LoadError::Payload {
+                page,
+                location: base,
+                source: DeltaError::WrongPage {
+                    found,
+                    expected: page,
+                }
+                .into(),
+            });
         }
 
-        let version = in_frame(version);
+        let frame_version = in_frame(version);
         for location in links[selected.runs.clone()]
             .iter()
             .filter_map(Link::location)
@@ -476,7 +482,8 @@ impl<'s> PageLoader<'s> {
             if changes.created().is_some() {
                 return Err(LoadError::CreatedInSegment { page, location });
             }
-            apply_chain(page, frame, self.size, version, [&changes]).map_err(payload(location))?;
+            apply_chain(page, frame, self.size, frame_version, [&changes])
+                .map_err(payload(location))?;
         }
         Ok(selected)
     }
