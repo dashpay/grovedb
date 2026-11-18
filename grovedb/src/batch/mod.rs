@@ -5020,6 +5020,29 @@ where
                         Ok(element)
                     };
                     let element = cost_return_on_error_no_add!(cost, element);
+                    // A tree the batch created and filled never reached the
+                    // insert arm, where the parent's rules for a wrapper are
+                    // checked. They are checked here when the tree or its
+                    // parent is one of the trees with a 128-bit sum; every
+                    // other pairing keeps the behaviour it shipped with.
+                    let has_wide_sum = |tree_type: Option<TreeType>| {
+                        matches!(
+                            tree_type,
+                            Some(
+                                TreeType::CountBigSumTree
+                                    | TreeType::ProvableBigSumTree
+                                    | TreeType::ProvableCountProvableBigSumTree
+                            )
+                        )
+                    };
+                    if has_wide_sum(Some(in_tree_type)) || has_wide_sum(element.tree_type()) {
+                        cost_return_on_error_no_add!(
+                            cost,
+                            element
+                                .validate_insertable_into(in_tree_type)
+                                .map_err(Error::MerkError)
+                        );
+                    }
                     let merk_feature_type = cost_return_on_error_into_no_add!(
                         cost,
                         element.get_feature_type(in_tree_type)
