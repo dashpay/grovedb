@@ -103,8 +103,9 @@
 //!
 //! So a [`ValuePointer`] is stored where a later session will find it (a log
 //! group, a segment block, a page-table checkpoint) only under a manifest
-//! that covers the value. Values past a file's valid length can be read
-//! until the session ends, and not after it.
+//! that covers the value. [`ValueStore::covers`] says whether the durable
+//! manifest does. Values past a file's valid length can be read until the
+//! session ends, and not after it.
 //!
 //! # The count of live values
 //!
@@ -159,8 +160,11 @@
 //!
 //! # Cleaning
 //!
-//! [`ValueStore::clean`] makes one pass over a closed file. It is given
-//! another file's writer and the [`ValueOwners`] of the layers above.
+//! A cleaning pass over a closed file is given another file's writer and
+//! the [`ValueOwners`] of the layers above. It has two halves, with the
+//! manifest between them, and [`ValueStore::clean`] is the three in one.
+//!
+//! [`ValueStore::copy_live`]:
 //!
 //! 1. It walks the file. Each value comes with its back pointer, a page id,
 //!    and with the pointer its owner must hold.
@@ -169,23 +173,41 @@
 //!    nothing: the pass does nothing with the value and goes on (O4).
 //! 3. It appends each value that was hit to the other file, with the same
 //!    back pointer. The value's bytes, length and owner do not change.
-//! 4. It syncs that file and replaces the manifest, so that every copy is
-//!    covered before a page points at one.
+//!
+//! Then the other file is synced and the manifest is replaced, so that every
+//! copy is covered before a page points at one.
+//!
+//! [`ValueStore::install`]:
+//!
+//! 4. It checks that the durable manifest covers every copy, and installs
+//!    nothing if it does not.
 //! 5. It asks [`ValueOwners::rewrite`] to install each new pointer in one
 //!    page step (PV7). The implementation checks that it changes the current
 //!    page version, that a cell of it still holds the old pointer, and that
 //!    no open write transaction holds a private copy of the page. If so it
-//!    installs the pointer and calls [`PointerRewrite::install`], which
-//!    takes one value off the old file's count and adds one to the new
-//!    file's, inside that step. If not, nothing is installed and nothing is
-//!    counted: the copy is dead space and the value is tried again in a
-//!    later pass.
+//!    stores the rewrite with the pages, installs the pointer and calls
+//!    [`PointerRewrite::install`], which takes one value off the old file's
+//!    count and adds one to the new file's, inside that step. If not,
+//!    nothing is installed and nothing is counted: the copy is dead space
+//!    and the value is tried again in a later pass.
 //!
 //! A move takes no commit version (PV6). The pass never removes a value and
 //! never decides that a file is empty: only the count does. A file whose
 //! values were all moved has a count of zero. A file with a value whose
 //! owner the pass could not find keeps a count above zero and stays, with
 //! all its bytes ([`Cleaned::owners_not_found`]).
+//!
+//! What makes the page step one step is the lock the implementation of
+//! [`ValueOwners::rewrite`] holds on the page while it checks and installs
+//! (level 5 of the lock order LT7). The store's own lock on the counts is
+//! taken inside it, for the length of [`PointerRewrite::install`], and the
+//! store calls nothing while it holds that lock. A commit applies its
+//! change the same way, where it installs its pages.
+//!
+//! Other background work that rewrites a value pointer, such as regrouping
+//! a page's values when the page is consolidated (TREE-08), appends the
+//! value again under a [`ValueHold`], has the manifest cover it, and applies
+//! [`ValueChange::moved`] inside its own page step.
 //!
 //! [`ValueStore::cleanable`] lists the files worth a pass: closed, with live
 //! values, and with at least a given share of dead bytes. How often passes
@@ -233,7 +255,7 @@
 //! | [`ValueStore::create`] | No file. Its id is not used again in this session. |
 //! | [`ValueWriter::append`] | The file's values, ending where they did. |
 //! | A sync of a file | The file as it was last synced, which is all a manifest names of it. It takes no more values ([`ValueStoreError::FileFailed`]). |
-//! | [`ValueStore::clean`], at any step | The rewrites installed so far, each counted. Every other copy is dead space. The file being cleaned is untouched. |
+//! | A cleaning pass, at any step | The rewrites installed so far, each counted. Every other copy is dead space. The file being cleaned is untouched. |
 //! | [`ValueStore::commit`] | As [`SegmentStore::commit`](crate::segment::SegmentStore::commit) leaves the manifest. |
 //! | The deletion of a dropped file | The new manifest, in force, and the file, which the next call or the next session deletes ([`ValueStoreError::NotDeleted`]). |
 //!
@@ -243,6 +265,9 @@
 //!   as for the [segment store](crate::segment).
 //! - After every [`ManifestStore::update`] that returns `Ok`, it calls
 //!   [`ValueStore::manifest_replaced`]. [`ValueStore::commit`] does both.
+//!   [`ValueStore::commit`] and [`ValueStore::clean`] change only how the
+//!   manifest names value-log files, so no other store has to be told of
+//!   the manifests they write.
 //! - It stores a [`ValuePointer`] where a later session will find it only
 //!   under a manifest that covers the value. When a manifest gives a file
 //!   that holds pointers a new valid length, the value-log files are synced
@@ -274,7 +299,7 @@ mod writer;
 #[cfg(test)]
 mod tests;
 
-pub use clean::{Cleaned, Installed, PointerRewrite, Refusal, Rewrite, ValueOwners};
+pub use clean::{Cleaned, CopiedValues, Installed, PointerRewrite, Refusal, Rewrite, ValueOwners};
 pub use counts::{ChangeMark, FileCount, ValueChange};
 pub use error::{Miscount, OwnersError, ValueStoreError};
 pub use store::{Cleanable, ValueRecovery, ValueStore, DEFAULT_TARGET_FILE_LEN};

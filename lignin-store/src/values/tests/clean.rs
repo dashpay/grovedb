@@ -95,7 +95,8 @@ fn a_pass_moves_the_live_values_and_leaves_the_rest() {
             unowned: 2,
             gone: 0,
             busy: 0,
-            live: 0
+            live: 0,
+            copied_bytes: 50 + 700 + 33 + 3 * 18,
         }
     );
     assert!(cleaned.is_empty());
@@ -287,7 +288,8 @@ fn a_value_whose_owner_cannot_be_found_is_kept() {
                 unowned: 2,
                 gone: 0,
                 busy: 0,
-                live: 1
+                live: 1,
+                copied_bytes: 17 + 11 + 2 * 18,
             }
         );
         assert_eq!(cleaned.owners_not_found(), 1);
@@ -361,7 +363,8 @@ fn a_rewrite_is_refused_while_a_write_transaction_holds_a_private_copy_of_the_pa
                 unowned: 0,
                 gone: 0,
                 busy: 2,
-                live: 2
+                live: 2,
+                copied_bytes: 40 + 50 + 60 + 3 * 18,
             }
         );
         assert_eq!(cleaned.owners_not_found(), 0);
@@ -454,7 +457,8 @@ fn a_commit_that_supersedes_the_page_after_the_cleaner_looked_wins() {
             unowned: 0,
             gone: 2,
             busy: 0,
-            live: 0
+            live: 0,
+            copied_bytes: 40 + 50 + 60 + 20 + 4 * 18,
         }
     );
     assert_eq!(run.db().pages.latest(), 2);
@@ -659,4 +663,150 @@ fn a_pass_that_finds_an_owner_the_count_does_not_include_keeps_the_file() {
     store.all_durable();
     assert!(store.drop_empty(9).is_empty());
     assert!(store.exists(1));
+}
+
+/// Owners that say every value is live and take every rewrite.
+struct Everything;
+
+impl ValueOwners for Everything {
+    fn holds(&self, _: PageId, _: ValuePointer) -> Result<bool, OwnersError> {
+        Ok(true)
+    }
+
+    fn rewrite(&self, step: PointerRewrite<'_>) -> Result<Rewrite, OwnersError> {
+        let latest = CommitVersion::new(1).expect("a version");
+        Ok(Rewrite::Installed(step.install(latest)))
+    }
+}
+
+/// A store with a closed file 1 of three counted values, and the open file
+/// 2 of a cleaner.
+fn three_live_values() -> (Store, ValueWriter, Vec<ValuePointer>) {
+    let mut store = Store::new();
+    let mut writer = store.writer();
+    let cleaner = store.writer();
+    let mut hold = ValueHold::new();
+    let pointers: Vec<ValuePointer> = (0..3)
+        .map(|at| writer.append(&mut hold, page(1), &bytes(30, at)).unwrap())
+        .collect();
+    writer.finish().unwrap();
+    store.commit();
+    store.apply(&acquired(&pointers), 1);
+    (store, cleaner, pointers)
+}
+
+fn values_in(store: &Store, raw_id: u32) -> u64 {
+    let count = store.values.count(file_id(raw_id)).expect("the file");
+    count.values
+}
+
+#[test]
+fn no_pointer_is_installed_to_a_copy_the_manifest_does_not_cover() {
+    let (mut store, mut cleaner, pointers) = three_live_values();
+    assert!(pointers.iter().all(|&pointer| store.values.covers(pointer)));
+
+    let copies = store
+        .values
+        .copy_live(file_id(1), &mut cleaner, &Everything)
+        .unwrap();
+    assert_eq!((copies.file(), copies.len()), (file_id(1), 3));
+    assert!(!copies.is_empty());
+    let copy = ValuePointer::new(file_id(2), 20, 30).expect("the first copy");
+    assert_eq!(store.read(copy, 1).unwrap(), bytes(30, 0));
+    assert!(!store.values.covers(copy));
+
+    let uncovered = |store: &Store, copies| match store.values.install(copies, &Everything) {
+        Err(ValueStoreError::NotCovered { pointer }) => pointer,
+        other => panic!("expected the install to be refused, got {other:?}"),
+    };
+    assert_eq!(uncovered(&store, copies), copy);
+    assert_eq!((values_in(&store, 1), values_in(&store, 2)), (3, 0));
+
+    let copies = store
+        .values
+        .copy_live(file_id(1), &mut cleaner, &Everything)
+        .unwrap();
+    cleaner.sync().unwrap();
+    assert_eq!(
+        uncovered(&store, copies).file(),
+        file_id(2),
+        "synced is not covered"
+    );
+
+    let copies = store
+        .values
+        .copy_live(file_id(1), &mut cleaner, &Everything)
+        .unwrap();
+    cleaner.sync().unwrap();
+    store.commit();
+    let cleaned = store.values.install(copies, &Everything).unwrap();
+    assert_eq!(
+        cleaned,
+        Cleaned {
+            moved: 3,
+            copied_bytes: 3 * 48,
+            ..Cleaned::default()
+        }
+    );
+    assert_eq!((values_in(&store, 1), values_in(&store, 2)), (0, 3));
+    assert!(
+        store.values.covers(copy),
+        "the earlier copies are covered too"
+    );
+    assert!(!store
+        .values
+        .covers(ValuePointer::new(file_id(2), cleaner.end(), 1).expect("past the end")));
+    assert!(!store
+        .values
+        .covers(ValuePointer::new(file_id(9), 20, 1).expect("in no file")));
+}
+
+#[test]
+fn copies_that_are_given_up_hold_their_file_no_longer() {
+    let (mut store, mut cleaner, pointers) = three_live_values();
+    let copies = store
+        .values
+        .copy_live(file_id(1), &mut cleaner, &Everything)
+        .unwrap();
+    cleaner.finish().unwrap();
+    store.all_durable();
+    assert!(store.drop_empty(1).is_empty(), "the copies hold file 2");
+    drop(copies);
+    assert_eq!(store.drop_empty(1), [2]);
+    assert_eq!(values_in(&store, 1), 3);
+    for (at, &pointer) in pointers.iter().enumerate() {
+        assert_eq!(store.read(pointer, 1).unwrap(), bytes(30, at as u8));
+    }
+}
+
+#[test]
+fn a_file_with_no_live_value_is_copied_to_nothing() {
+    let (mut store, mut cleaner, pointers) = three_live_values();
+    store.apply(&super::store::released(&pointers), 2);
+    struct Nothing;
+    impl ValueOwners for Nothing {
+        fn holds(&self, _: PageId, _: ValuePointer) -> Result<bool, OwnersError> {
+            Ok(false)
+        }
+        fn rewrite(&self, _: PointerRewrite<'_>) -> Result<Rewrite, OwnersError> {
+            unreachable!("nothing was copied")
+        }
+    }
+    let end = cleaner.end();
+    let copies = store
+        .values
+        .copy_live(file_id(1), &mut cleaner, &Nothing)
+        .unwrap();
+    assert!(copies.is_empty());
+    assert_eq!(cleaner.end(), end);
+    let cleaned = store.values.install(copies, &Nothing).unwrap();
+    assert_eq!(
+        cleaned,
+        Cleaned {
+            unowned: 3,
+            ..Cleaned::default()
+        }
+    );
+    store.all_durable();
+    assert_eq!(store.drop_empty(2), [1]);
 }

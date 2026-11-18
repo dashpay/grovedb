@@ -42,6 +42,7 @@ pub(super) struct ValueFile {
     end: AtomicU64,
     appendable: AtomicBool,
     holds: AtomicUsize,
+    covered: AtomicU64,
     life: Mutex<Life>,
 }
 
@@ -89,15 +90,9 @@ impl ValueFile {
                 manifest: database,
             });
         }
-        Ok(Self::new(
-            id,
-            path,
-            version,
-            file,
-            Phase::Closed,
-            valid_len,
-            false,
-        ))
+        let adopted = Self::new(id, path, version, file, Phase::Closed, valid_len, false);
+        adopted.cover(valid_len);
+        Ok(adopted)
     }
 
     pub(super) fn created(id: FileId, path: PathBuf, file: Box<dyn VfsFile>) -> Self {
@@ -129,6 +124,7 @@ impl ValueFile {
             end: AtomicU64::new(len),
             appendable: AtomicBool::new(false),
             holds: AtomicUsize::new(0),
+            covered: AtomicU64::new(0),
             life: Mutex::new(Life {
                 phase,
                 durable_len: len,
@@ -171,11 +167,23 @@ impl ValueFile {
             .map_err(ValueStoreError::io("read", &self.path))
     }
 
-    pub(super) fn contains(&self, pointer: ValuePointer) -> bool {
+    fn holds_below(&self, pointer: ValuePointer, len: u64) -> bool {
         pointer
             .offset()
             .checked_add(pointer.extent_len(self.version))
-            .is_some_and(|value_end| value_end <= self.end())
+            .is_some_and(|value_end| value_end <= len)
+    }
+
+    pub(super) fn contains(&self, pointer: ValuePointer) -> bool {
+        self.holds_below(pointer, self.end())
+    }
+
+    pub(super) fn cover(&self, valid_len: u64) {
+        self.covered.fetch_max(valid_len, Ordering::AcqRel);
+    }
+
+    pub(super) fn covers(&self, pointer: ValuePointer) -> bool {
+        self.holds_below(pointer, self.covered.load(Ordering::Acquire))
     }
 
     pub(super) fn read<'a>(

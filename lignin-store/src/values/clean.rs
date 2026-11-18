@@ -125,7 +125,8 @@ pub enum Refusal {
     Busy,
 }
 
-/// What one cleaning pass over a file did, from [`ValueStore::clean`].
+/// What one cleaning pass over a file did, from [`ValueStore::install`] or
+/// [`ValueStore::clean`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Cleaned {
     /// Values that were moved: their owners hold the new pointers.
@@ -140,6 +141,9 @@ pub struct Cleaned {
     pub busy: u64,
     /// The file's count of live values after the pass.
     pub live: u64,
+    /// The bytes the pass appended to the other file: the records of every
+    /// value it copied, whether its rewrite was installed or not.
+    pub copied_bytes: u64,
 }
 
 impl Cleaned {
@@ -157,44 +161,66 @@ impl Cleaned {
     }
 }
 
+#[derive(Debug)]
 struct Move {
     page: PageId,
     from: ValuePointer,
     to: ValuePointer,
 }
 
+/// The live values of one file, copied to another file and not yet owned
+/// there: the first half of a cleaning pass, from [`ValueStore::copy_live`].
+///
+/// It holds the file the copies are in. Dropping it gives the copies up:
+/// they are dead space.
+#[derive(Debug)]
+pub struct CopiedValues {
+    file: FileId,
+    moves: Vec<Move>,
+    unowned: u64,
+    copied_bytes: u64,
+    _hold: ValueHold,
+}
+
+impl CopiedValues {
+    /// The file that is being cleaned.
+    pub fn file(&self) -> FileId {
+        self.file
+    }
+
+    /// How many values were copied.
+    pub fn len(&self) -> usize {
+        self.moves.len()
+    }
+
+    /// Whether no value was copied, so that nothing has to be made durable
+    /// before [`ValueStore::install`].
+    pub fn is_empty(&self) -> bool {
+        self.moves.is_empty()
+    }
+}
+
 impl ValueStore {
-    /// Cleans the closed file `file`: moves each of its live values to the
-    /// file of the writer `to`, and has its owner take the new pointer.
+    /// The first half of a cleaning pass over the closed file `file`: copies
+    /// each of its live values to the file of the writer `to`.
     ///
-    /// 1. It walks the file. For each value it asks `owners` whether the page
-    ///    the value's back pointer names holds the pointer to it
-    ///    ([`ValueOwners::holds`]). If not, it goes on to the next value. If
-    ///    so, it appends the value to `to` with the same back pointer.
-    /// 2. It makes the copies durable and replaces the manifest, so that the
-    ///    manifest covers every copy before a page points at one.
-    /// 3. For each copy it asks `owners` to install the new pointer in one
-    ///    page step ([`ValueOwners::rewrite`]). If the step is refused, the
-    ///    copy is dead space and the value stays where it was.
+    /// It walks the file. For each value it asks `owners` whether the page
+    /// the value's back pointer names holds the pointer to it
+    /// ([`ValueOwners::holds`]). If not, it goes on to the next value. If
+    /// so, it appends the value to `to` with the same back pointer.
     ///
-    /// No value's bytes, length or owner change, and no value is removed. The
-    /// file is deleted by [`Self::drop_empty`], and only once its count of
-    /// live values is zero. A pass that finds no owner for a value the count
-    /// includes leaves the file as it is ([`Cleaned::owners_not_found`]).
+    /// Nothing points at the copies yet. Before [`Self::install`], make them
+    /// durable and have the manifest cover them: sync `to` and replace the
+    /// manifest ([`Self::commit`]). [`Self::clean`] does all three.
     ///
-    /// If the pass fails part way, the rewrites installed so far stand, and
-    /// the other copies are dead space. A rewrite that could not be counted
-    /// as reported does not stop the pass: the pass is carried out in full
-    /// and then fails with that [`ValueStoreError::Miscounted`].
-    pub fn clean<O: ValueOwners + ?Sized>(
+    /// If this fails part way, the copies made so far are dead space.
+    pub fn copy_live<O: ValueOwners + ?Sized>(
         &self,
         file: FileId,
         to: &mut ValueWriter,
-        manifest: &mut ManifestStore,
         owners: &O,
-    ) -> Result<Cleaned, ValueStoreError> {
+    ) -> Result<CopiedValues, ValueStoreError> {
         self.check_writable()?;
-        self.check_same_dir(manifest)?;
         let source = self.file(file)?;
         if !source.is_closed() {
             return Err(ValueStoreError::NotClosed { file });
@@ -206,44 +232,109 @@ impl ValueStore {
             FormatVersion::V1 => {}
         }
 
-        let mut cleaned = Cleaned::default();
-        let mut hold = ValueHold::new();
-        let mut moves = Vec::new();
+        let mut copies = CopiedValues {
+            file,
+            moves: Vec::new(),
+            unowned: 0,
+            copied_bytes: 0,
+            _hold: ValueHold::new(),
+        };
         let mut walk = self.walk(file)?;
         while let Some(walked) = walk.next_walked()? {
             let (page, from) = (walked.value.owner(), walked.pointer);
             if !owners.holds(page, from).map_err(ValueStoreError::Owners)? {
-                cleaned.unowned += 1;
+                copies.unowned += 1;
                 continue;
             }
-            let to = to.append_records(&mut hold, from.value_len(), walked.records)?;
-            moves.push(Move { page, from, to });
+            let to = to.append_records(&mut copies._hold, from.value_len(), walked.records)?;
+            copies.copied_bytes += walked.records.len() as u64;
+            copies.moves.push(Move { page, from, to });
         }
+        Ok(copies)
+    }
 
+    /// The second half of a cleaning pass: has the owner of each copied
+    /// value take the pointer to the copy.
+    ///
+    /// For each copy it asks `owners` to install the new pointer in one page
+    /// step ([`ValueOwners::rewrite`]). If the step is refused, the copy is
+    /// dead space and the value stays where it was.
+    ///
+    /// Fails with [`ValueStoreError::NotCovered`], and installs nothing, if
+    /// the durable manifest does not cover every copy: a page must not point
+    /// at a value that a crash could take away.
+    ///
+    /// If it fails part way, the rewrites installed so far stand, and the
+    /// other copies are dead space. A rewrite that could not be counted as
+    /// reported does not stop the pass: the pass is carried out in full and
+    /// then fails with that [`ValueStoreError::Miscounted`].
+    pub fn install<O: ValueOwners + ?Sized>(
+        &self,
+        copies: CopiedValues,
+        owners: &O,
+    ) -> Result<Cleaned, ValueStoreError> {
+        self.check_writable()?;
+        if let Some(uncovered) = copies.moves.iter().find(|copy| !self.covers(copy.to)) {
+            return Err(ValueStoreError::NotCovered {
+                pointer: uncovered.to,
+            });
+        }
+        let mut cleaned = Cleaned {
+            unowned: copies.unowned,
+            copied_bytes: copies.copied_bytes,
+            ..Cleaned::default()
+        };
         let mut miscount = None;
-        if !moves.is_empty() {
+        for &Move { page, from, to } in &copies.moves {
+            let step = PointerRewrite {
+                store: self,
+                page,
+                from,
+                to,
+            };
+            match owners.rewrite(step).map_err(ValueStoreError::Owners)? {
+                Rewrite::Installed(installed) => {
+                    cleaned.moved += 1;
+                    miscount = miscount.or(installed.miscount);
+                }
+                Rewrite::Refused(Refusal::OwnerGone) => cleaned.gone += 1,
+                Rewrite::Refused(Refusal::Busy) => cleaned.busy += 1,
+            }
+        }
+        cleaned.live = self.cleaned(copies.file, cleaned.busy == 0);
+        drop(copies);
+        miscount.map_or(Ok(cleaned), Err)
+    }
+
+    /// Cleans the closed file `file`: moves each of its live values to the
+    /// file of the writer `to`, and has its owner take the new pointer.
+    ///
+    /// 1. [`Self::copy_live`] copies the values whose owners it finds.
+    /// 2. The copies are made durable and the manifest is replaced, so that
+    ///    it covers every copy before a page points at one.
+    /// 3. [`Self::install`] has each owner take the new pointer.
+    ///
+    /// No value's bytes, length or owner change, and no value is removed. The
+    /// file is deleted by [`Self::drop_empty`], and only once its count of
+    /// live values is zero. A pass that finds no owner for a value the count
+    /// includes leaves the file as it is ([`Cleaned::owners_not_found`]).
+    ///
+    /// The manifest is needed for step 2 alone. A caller that must not keep
+    /// it from others for the length of a pass makes the three steps itself.
+    pub fn clean<O: ValueOwners + ?Sized>(
+        &self,
+        file: FileId,
+        to: &mut ValueWriter,
+        manifest: &mut ManifestStore,
+        owners: &O,
+    ) -> Result<Cleaned, ValueStoreError> {
+        self.check_same_dir(manifest)?;
+        let copies = self.copy_live(file, to, owners)?;
+        if !copies.is_empty() {
             to.sync()?;
             manifest.update(|current| self.describe(current))?;
             self.name_files(manifest.manifest()?);
-            for Move { page, from, to } in moves {
-                let step = PointerRewrite {
-                    store: self,
-                    page,
-                    from,
-                    to,
-                };
-                match owners.rewrite(step).map_err(ValueStoreError::Owners)? {
-                    Rewrite::Installed(installed) => {
-                        cleaned.moved += 1;
-                        miscount = miscount.or(installed.miscount);
-                    }
-                    Rewrite::Refused(Refusal::OwnerGone) => cleaned.gone += 1,
-                    Rewrite::Refused(Refusal::Busy) => cleaned.busy += 1,
-                }
-            }
         }
-        cleaned.live = self.cleaned(file, cleaned.busy == 0);
-        drop(hold);
-        miscount.map_or(Ok(cleaned), Err)
+        self.install(copies, owners)
     }
 }

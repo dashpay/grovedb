@@ -88,15 +88,6 @@ fn remove(vfs: &dyn Vfs, path: &Path) -> std::io::Result<()> {
     }
 }
 
-fn named_files(manifest: &Manifest) -> BTreeSet<FileId> {
-    manifest
-        .files()
-        .iter()
-        .filter(|file| file.kind() == FileKind::ValueLog)
-        .map(LiveFile::id)
-        .collect()
-}
-
 /// The value log of a database that is being recovered: the files a manifest
 /// names, and the counts of live values as recovery brings them up to the
 /// version it lands on.
@@ -500,6 +491,19 @@ impl ValueStore {
         self.file(pointer.file())?.read(pointer, owner, buf)
     }
 
+    /// Whether the durable manifest covers the value `pointer` names: it
+    /// gives the value's file a valid length at or past the value's end, so
+    /// a later session reads the value.
+    ///
+    /// It speaks for the manifest the store was last told of
+    /// ([`Self::manifest_replaced`]). A pointer is stored where a later
+    /// session will find it only once this holds.
+    pub fn covers(&self, pointer: ValuePointer) -> bool {
+        let state = self.state();
+        let file = state.live.get(&pointer.file());
+        file.is_some_and(|entry| entry.file.covers(pointer))
+    }
+
     /// Starts a walk over the values of the file `file`, from its first
     /// value to the end of its values as it is now. Values appended later
     /// are not part of it.
@@ -736,10 +740,16 @@ impl ValueStore {
     }
 
     pub(super) fn name_files(&self, manifest: &Manifest) -> BTreeSet<FileId> {
-        let named = named_files(manifest);
-        for file in self.live() {
-            if named.contains(&file.id()) {
-                file.name();
+        let live = self.state();
+        let mut named = BTreeSet::new();
+        for entry in manifest.files() {
+            if entry.kind() != FileKind::ValueLog {
+                continue;
+            }
+            named.insert(entry.id());
+            if let Some(live) = live.live.get(&entry.id()) {
+                live.file.name();
+                live.file.cover(entry.valid_len());
             }
         }
         named

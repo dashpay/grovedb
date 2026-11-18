@@ -133,6 +133,12 @@ pub enum ValueStoreError {
         /// Where the file's readable bytes end.
         end: u64,
     },
+    /// A pointer was to be installed in a page, but no durable manifest gives
+    /// its file a valid length that reaches the end of the value.
+    NotCovered {
+        /// The pointer.
+        pointer: ValuePointer,
+    },
     /// A value is longer than this machine can hold in memory.
     ValueTooLong {
         /// The bytes the value's records take.
@@ -291,6 +297,12 @@ impl fmt::Display for ValueStoreError {
                 "a value of {} bytes at offset {} of value-log file {} is not inside its values, \
                  which end at {end}",
                 pointer.value_len(),
+                pointer.offset(),
+                pointer.file()
+            ),
+            Self::NotCovered { pointer } => write!(
+                f,
+                "no durable manifest covers the value at offset {} of value-log file {}",
                 pointer.offset(),
                 pointer.file()
             ),
