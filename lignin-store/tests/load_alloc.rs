@@ -20,8 +20,8 @@ use lignin_format::{
     flat_page::{FlatLeafBuilder, FlatValue},
     manifest::Manifest,
     segment::{BlockContent, Compression},
-    tree_page::{CellContent, CellValue, HashField, TreeCell, TreePage, TreePageMut, TreePageSize},
-    CommitVersion, FormatVersion, PageId, SlotId,
+    tree_page::{CellContent, CellValue, HashField, TreeCell, TreePage, TreePageMut},
+    CommitVersion, FormatVersion, PageId, PageSize, SlotId,
 };
 use lignin_io::{StdVfs, Vfs};
 use lignin_store::{
@@ -67,7 +67,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
-const SIZE: TreePageSize = TreePageSize::DEFAULT;
+const SIZE: PageSize = PageSize::DEFAULT;
 const PAGES: u32 = 6;
 
 fn page(raw: u32) -> PageId {
@@ -154,8 +154,8 @@ fn tree_page(id: PageId) -> (Vec<u8>, [Vec<u8>; 3], Vec<u8>) {
     (image, runs, written.page().to_image())
 }
 
-fn flat_page() -> Vec<u8> {
-    let mut leaf = FlatLeafBuilder::new(b"flat/", SIZE.image_capacity()).expect("a leaf");
+fn flat_page(id: PageId) -> Vec<u8> {
+    let mut leaf = FlatLeafBuilder::new(id, b"flat/", SIZE.image_capacity()).expect("a leaf");
     for n in 0..60 {
         let key = format!("flat/{n:04}");
         leaf.push(key.as_bytes(), FlatValue::Inline(&[n as u8; 90]))
@@ -181,7 +181,7 @@ fn a_load_with_grown_buffers_allocates_nothing() {
     for raw in 1..=PAGES {
         let id = page(raw);
         if raw == PAGES {
-            let image = flat_page();
+            let image = flat_page(id);
             let block = writer
                 .append(id, BlockContent::Base, Compression::Lz4, &image)
                 .expect("a block");

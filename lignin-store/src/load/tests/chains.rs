@@ -134,7 +134,12 @@ fn commit(db: &mut Db, page: &mut Page, born: u64, serial: &mut u32, rng: &mut S
             page.free(db, born);
             return;
         }
-        let image = flat_image(size, 1 + rng.below(40) as usize, rng.next_u64() as u8);
+        let image = flat_image(
+            size,
+            page.id,
+            1 + rng.below(40) as usize,
+            rng.next_u64() as u8,
+        );
         let location = db.base(page.id, born, compression(rng), &image);
         page.linked(location, born, image);
         return;
@@ -214,9 +219,9 @@ fn check(db: &Db, pool: &BufferPool, buffers: &mut LoadBuffers, page: &Page, at:
 fn a_page_is_its_base_image_and_the_runs_after_it_in_order() {
     const VERSIONS: u64 = 160;
     for (size, seed) in [
-        (TreePageSize::MIN, 1),
-        (TreePageSize::DEFAULT, 2),
-        (TreePageSize::MAX, 3),
+        (PageSize::MIN, 1),
+        (PageSize::DEFAULT, 2),
+        (PageSize::MAX, 3),
     ] {
         let mut db = Db::new(size);
         let mut rng = rng(seed);
@@ -264,7 +269,7 @@ fn a_page_is_its_base_image_and_the_runs_after_it_in_order() {
 
 #[test]
 fn every_hash_in_a_frame_is_the_hash_a_block_held() {
-    let mut db = Db::new(TreePageSize::DEFAULT);
+    let mut db = Db::new(PageSize::DEFAULT);
     let mut rng = rng(7);
     let hashes: Vec<[u8; 32]> = (0..40).map(|_| junk_hash(&mut rng)).collect();
     let mut written = Written::new(db.size, page(7));
@@ -338,11 +343,11 @@ fn every_hash_in_a_frame_is_the_hash_a_block_held() {
 
 #[test]
 fn a_loaded_frame_is_the_image_and_zeros_behind_it() {
-    let mut db = Db::new(TreePageSize::MIN);
+    let mut db = Db::new(PageSize::MIN);
     let full = Written::filled(db.size, page(1), 19, 280).image();
     assert!(full.len() > 7_000);
     let small = Written::filled(db.size, page(2), 1, 3).image();
-    let flat = flat_image(db.size, 2, 9);
+    let flat = flat_image(db.size, page(3), 2, 9);
     db.base(page(1), 1, Compression::Raw, &full);
     db.base(page(2), 1, Compression::Lz4, &small);
     db.base(page(3), 1, Compression::Raw, &flat);
@@ -362,7 +367,7 @@ fn a_loaded_frame_is_the_image_and_zeros_behind_it() {
 
 #[test]
 fn a_loaded_page_stands_for_the_versions_up_to_the_next_link() {
-    let mut db = Db::new(TreePageSize::MIN);
+    let mut db = Db::new(PageSize::MIN);
     let mut written = Written::filled(db.size, page(7), 3, 10);
     let first = written.image();
     db.base(page(7), 1, Compression::Raw, &first);

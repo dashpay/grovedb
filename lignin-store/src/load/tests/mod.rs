@@ -2,7 +2,6 @@ mod acceptance;
 mod chains;
 mod checks;
 mod races;
-mod select;
 
 use std::{os::unix::fs::FileExt, sync::Arc};
 
@@ -12,16 +11,24 @@ use lignin_format::{
     manifest::Manifest,
     segment::Compression,
     tree_page::{CellContent, CellValue, HashField, Side, TreeCell, TreeLink, TreePageMut},
+    value_log::{PendingValue, ValuePlace, ValuePointer},
     CellAddress, Checksum, FileId, FormatError, SlotId,
 };
-use lignin_io::{sim::SimRng, StdVfs, Vfs};
+use lignin_io::{sim::SimRng, StdVfs};
 use tempfile::TempDir;
 
 use super::*;
 use crate::{
     cache::{CacheError, OwnerId, PoolConfig},
-    segment::{FileNames, ManifestStore, SegmentStoreError, SegmentWriter},
+    segment::{
+        tests::faulty::{FaultyVfs, Op},
+        FileNames, ManifestStore, SegmentStoreError, SegmentWriter,
+    },
+    table::Link,
 };
+
+/// The name of the one segment file of a [`Db`].
+const SEGMENT: &str = "00000001.seg";
 
 const V1: FormatVersion = FormatVersion::V1;
 
@@ -81,12 +88,12 @@ fn link<'a>(to: u32, hash: &'a [u8; 32]) -> TreeLink<'a> {
 /// buffer, changed through `TreePageMut`.
 struct Written {
     frame: Vec<u8>,
-    size: TreePageSize,
+    size: PageSize,
     id: PageId,
 }
 
 impl Written {
-    fn new(size: TreePageSize, id: PageId) -> Self {
+    fn new(size: PageSize, id: PageId) -> Self {
         let mut frame = vec![0; size.get()];
         TreePageMut::init(&mut frame, size, id, 0).expect("a page");
         Self { frame, size, id }
@@ -94,20 +101,20 @@ impl Written {
 
     /// A page with `cells` cells of about `value_len` bytes of value each,
     /// every third of them with a link. The values compress well.
-    fn filled(size: TreePageSize, id: PageId, cells: u16, value_len: usize) -> Self {
+    fn filled(size: PageSize, id: PageId, cells: u16, value_len: usize) -> Self {
         Self::with_values(size, id, cells, |n| {
             vec![n as u8; value_len + usize::from(n % 7)]
         })
     }
 
     /// The same page with values that do not compress.
-    fn incompressible(size: TreePageSize, id: PageId, cells: u16, value_len: usize) -> Self {
+    fn incompressible(size: PageSize, id: PageId, cells: u16, value_len: usize) -> Self {
         let mut rng = rng(u64::from(id.get()));
         Self::with_values(size, id, cells, |_| noise(value_len, &mut rng))
     }
 
     fn with_values(
-        size: TreePageSize,
+        size: PageSize,
         id: PageId,
         cells: u16,
         mut value: impl FnMut(u16) -> Vec<u8>,
@@ -153,10 +160,10 @@ impl Written {
     }
 }
 
-/// The image of a flat leaf with `entries` entries, which differ by `seed`.
-/// The values compress well.
-fn flat_image(size: TreePageSize, entries: usize, seed: u8) -> Vec<u8> {
-    let mut leaf = FlatLeafBuilder::new(b"flat/", size.image_capacity()).expect("a leaf");
+/// The image of the flat leaf `id` with `entries` entries, which differ by
+/// `seed`. The values compress well.
+fn flat_image(size: PageSize, id: PageId, entries: usize, seed: u8) -> Vec<u8> {
+    let mut leaf = FlatLeafBuilder::new(id, b"flat/", size.image_capacity()).expect("a leaf");
     for n in 0..entries {
         let key = format!("flat/{n:04}");
         let value = vec![seed.wrapping_add(n as u8); 20 + n % 5];
@@ -166,11 +173,11 @@ fn flat_image(size: TreePageSize, entries: usize, seed: u8) -> Vec<u8> {
     leaf.finish()
 }
 
-/// The image of a flat leaf that is as full as a page gets, with values
+/// The image of the flat leaf `id`, as full as a page gets, with values
 /// that do not compress.
-fn full_flat_image(size: TreePageSize, seed: u64) -> Vec<u8> {
-    let mut rng = rng(seed);
-    let mut leaf = FlatLeafBuilder::new(b"flat/", size.image_capacity()).expect("a leaf");
+fn full_flat_image(size: PageSize, id: PageId) -> Vec<u8> {
+    let mut rng = rng(u64::from(id.get()));
+    let mut leaf = FlatLeafBuilder::new(id, b"flat/", size.image_capacity()).expect("a leaf");
     for n in 0.. {
         let key = format!("flat/{n:06}");
         let value = noise(180, &mut rng);
@@ -198,21 +205,24 @@ fn junk_hash(rng: &mut SimRng) -> [u8; 32] {
 /// A database directory with one segment that takes blocks, and the page
 /// table of its pages.
 struct Db {
-    size: TreePageSize,
+    size: PageSize,
     table: PageTable,
     segments: SegmentStore,
     writer: SegmentWriter,
+    /// The file layer the segments are read through, which a test can stop
+    /// or fail at one call.
+    vfs: FaultyVfs,
     _manifest: ManifestStore,
     dir: TempDir,
 }
 
 impl Db {
-    fn new(size: TreePageSize) -> Self {
+    fn new(size: PageSize) -> Self {
         let dir = tempfile::tempdir().expect("a directory");
-        let vfs: Arc<dyn Vfs> = Arc::new(StdVfs);
+        let vfs = FaultyVfs::without_syncs(Arc::new(StdVfs));
         let empty = Manifest::new(size, Default::default(), None, Vec::new()).expect("a manifest");
-        let mut manifest =
-            ManifestStore::create(vfs, dir.path(), empty).expect("the manifest is created");
+        let mut manifest = ManifestStore::create(Arc::new(vfs.clone()), dir.path(), empty)
+            .expect("the manifest is created");
         let segments = SegmentStore::open(&manifest).expect("the segments open");
         let writer = segments.create().expect("a segment");
         segments
@@ -223,6 +233,7 @@ impl Db {
             table: PageTable::new(),
             segments,
             writer,
+            vfs,
             _manifest: manifest,
             dir,
         }

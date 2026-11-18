@@ -36,14 +36,6 @@ pub enum LoadError {
         /// The version of the commit that freed the page, if one did.
         freed: Option<CommitVersion>,
     },
-    /// The page's chain has delta runs with no base image beneath them.
-    NoBase {
-        /// The page.
-        page: PageId,
-        /// The version of the newest link a reader at the version asked for
-        /// is given.
-        born: CommitVersion,
-    },
     /// A block of the page's chain could not be read: the file layer failed,
     /// the location is not a block of a segment the store has, or the bytes
     /// there are not a block whose checksum matches.
@@ -105,6 +97,16 @@ pub enum LoadError {
         /// The block of the run.
         location: BlockLocation,
     },
+    /// A page version in a segment holds a value that is not in the value
+    /// log yet: its base image does, or the page as the last record of a
+    /// run leaves it. Write-back places every value before it writes the
+    /// page.
+    PendingValue {
+        /// The page.
+        page: PageId,
+        /// The block of the image or of the run.
+        location: BlockLocation,
+    },
     /// The pool refused the page: what the page table says of it cannot be
     /// true of the page versions the pool holds.
     Cache(CacheError),
@@ -139,10 +141,6 @@ impl fmt::Display for LoadError {
                 at,
                 freed: None,
             } => write!(f, "no segment holds a version of page {page} at {at}"),
-            Self::NoBase { page, born } => write!(
-                f,
-                "the chain of page {page} up to version {born} has no base image"
-            ),
             Self::Block {
                 page,
                 location,
@@ -187,6 +185,11 @@ impl fmt::Display for LoadError {
             Self::CreatedInSegment { page, location } => write!(
                 f,
                 "{} is a run that creates page {page}, in a segment",
+                block(location)
+            ),
+            Self::PendingValue { page, location } => write!(
+                f,
+                "{} leaves page {page} with a value that is not in the value log",
                 block(location)
             ),
             Self::Cache(source) => write!(f, "the buffer pool refused the page: {source}"),

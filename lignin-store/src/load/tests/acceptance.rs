@@ -34,7 +34,8 @@ fn stored_pages(db: &mut Db, full: bool) -> Vec<Stored> {
     } else {
         Written::filled(size, tree, cells, 16)
     };
-    let base = db.base(tree, 1, Compression::Lz4, &written.image());
+    let first_image = written.image();
+    let base = db.base(tree, 1, Compression::Lz4, &first_image);
     let hashes = written.change(&[
         Delta::Hash {
             slot: slot(1),
@@ -69,13 +70,16 @@ fn stored_pages(db: &mut Db, full: bool) -> Vec<Stored> {
     let plain_base = db.base(page(10), 1, Compression::Raw, &plain);
 
     let (raw, packed) = (page(8), page(9));
-    let leaf = if full {
-        full_flat_image(size, 5)
-    } else {
-        flat_image(size, 4, 0x40)
+    let leaf = |id| {
+        if full {
+            full_flat_image(size, id)
+        } else {
+            flat_image(size, id, 4, 0x40)
+        }
     };
-    let raw_base = db.base(raw, 1, Compression::Raw, &leaf);
-    let packed_base = db.base(packed, 1, Compression::Lz4, &leaf);
+    let (raw_leaf, packed_leaf) = (leaf(raw), leaf(packed));
+    let raw_base = db.base(raw, 1, Compression::Raw, &raw_leaf);
+    let packed_base = db.base(packed, 1, Compression::Lz4, &packed_leaf);
 
     assert!(
         (second.len as usize) < cells_added.len(),
@@ -84,12 +88,14 @@ fn stored_pages(db: &mut Db, full: bool) -> Vec<Stored> {
     assert_eq!(first.len as usize, hashes.len() + 8, "the run is raw");
     if full {
         let capacity = size.image_capacity();
-        assert!(written.image().len() > capacity * 85 / 100 && leaf.len() > capacity - 250);
+        assert!(first_image.len() > capacity * 85 / 100 && raw_leaf.len() > capacity - 250);
         assert!(base.len as usize > capacity / 2);
-    } else {
-        assert!((base.len as usize) < written.image().len());
-        assert!(packed_base.len < raw_base.len);
     }
+    assert!(
+        (base.len as usize) < first_image.len(),
+        "the tree image is compressed"
+    );
+    assert!(packed_base.len < raw_base.len || full);
     let stored = |of, at, flat, blocks: &[BlockLocation], expected| Stored {
         of,
         at,
@@ -100,8 +106,8 @@ fn stored_pages(db: &mut Db, full: bool) -> Vec<Stored> {
     vec![
         stored(tree, 3, false, &[base, first, second], written.image()),
         stored(page(10), 1, false, &[plain_base], plain),
-        stored(raw, 1, true, &[raw_base], leaf.clone()),
-        stored(packed, 1, true, &[packed_base], leaf),
+        stored(raw, 1, true, &[raw_base], raw_leaf),
+        stored(packed, 1, true, &[packed_base], packed_leaf),
     ]
 }
 
@@ -187,7 +193,7 @@ fn blocks_of(stored: &[Stored]) -> (u64, u64) {
 
 #[test]
 fn a_page_with_any_single_corrupted_byte_is_rejected_with_a_typed_error() {
-    let mut db = Db::new(TreePageSize::MIN);
+    let mut db = Db::new(PageSize::MIN);
     let stored = stored_pages(&mut db, false);
     for page in &stored {
         let pool = db.pool(2);
@@ -207,17 +213,14 @@ fn a_page_with_any_single_corrupted_byte_is_rejected_with_a_typed_error() {
     assert!(refused["checksum"] >= (bytes - blocks * 4) * 255);
 }
 
-/// Pages as long as a page gets, of every page size. In the smallest size
-/// every byte of every block is changed, to a value with one bit flipped
-/// and to one other value. In the larger sizes the 8 bytes of each block's
-/// frame and every 23rd byte behind them are.
+/// Pages as long as a page gets, of each of the four page sizes. In the
+/// smallest size every byte of every block is changed, to a value with one
+/// bit flipped and to one other value. In the larger sizes the 8 bytes of
+/// each block's frame and every 23rd byte behind them are.
 #[test]
 fn a_changed_byte_is_found_in_full_pages_of_every_size() {
-    for (size, stride) in [
-        (TreePageSize::MIN, 1),
-        (TreePageSize::DEFAULT, 23),
-        (TreePageSize::MAX, 23),
-    ] {
+    for (bytes, stride) in [(8_192, 1), (16_384, 23), (32_768, 23), (65_536, 23)] {
+        let size = PageSize::new(bytes).expect("a page size");
         let mut db = Db::new(size);
         let stored = stored_pages(&mut db, true);
         let (blocks, bytes) = blocks_of(&stored);

@@ -10,8 +10,8 @@
 //! A load takes the page's chain from the page table (`page-table.md` T5):
 //! the base image and the delta runs after it. It reads each block, which
 //! verifies the block's checksum, copies the image into a frame, applies the
-//! runs to it in order, and hands the frame to the pool. Nothing in a page
-//! is computed: every hash in the frame is the hash a block held.
+//! runs to it in order, and hands the frame to the pool. No hash is
+//! computed: every hash in the frame is the hash a block held.
 //!
 //! ```
 //! use std::sync::Arc;
@@ -20,8 +20,8 @@
 //!     delta::{Delta, DeltaRunWriter},
 //!     manifest::Manifest,
 //!     segment::{BlockContent, Compression},
-//!     tree_page::{CellContent, CellValue, HashField, TreePage, TreePageMut, TreePageSize},
-//!     CommitVersion, PageId, SlotId,
+//!     tree_page::{CellContent, CellValue, HashField, TreePage, TreePageMut},
+//!     CommitVersion, PageId, PageSize, SlotId,
 //! };
 //! use lignin_io::{StdVfs, Vfs};
 //! use lignin_store::{
@@ -34,7 +34,7 @@
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let dir = tempfile::tempdir()?;
 //! let vfs: Arc<dyn Vfs> = Arc::new(StdVfs);
-//! let size = TreePageSize::DEFAULT;
+//! let size = PageSize::DEFAULT;
 //! let empty = Manifest::new(size, Default::default(), None, Vec::new())?;
 //! let mut manifest = ManifestStore::create(vfs, dir.path(), empty)?;
 //! let segments = SegmentStore::open(&manifest)?;
@@ -103,11 +103,12 @@
 //! # What a load does
 //!
 //! 1. [`BufferPool::get`]. A hit is the answer, and nothing else happens.
-//! 2. After the miss, the page's chain is read from the page table in one
-//!    step ([`PageTable::chain`]). The newest link at or before the version
-//!    asked for, and the links back to the nearest base image, are the page
-//!    version (T5); its born version is that newest link's, and the version
-//!    of the link after it, if there is one, is where it ends.
+//! 2. After the miss, the page version is looked up in the page table, in
+//!    one step ([`PageTable::read_version`], T5): the blocks of its base
+//!    image and of the runs after it, the version it was born at, and the
+//!    version of the link that follows it, if there is one. A page that has
+//!    no version there is [`LoadError::NoPage`], and no frame is taken for
+//!    it.
 //! 3. The base image's block is read ([`SegmentStore::read`], which verifies
 //!    its checksum) and its payload is written to the start of a frame. The
 //!    rest of the frame is set to zero. The image is checked in full
@@ -116,10 +117,10 @@
 //! 4. Each run's block is read and checked (`DeltaRun::decode`) and applied
 //!    to the frame (`apply_chain`), oldest first.
 //! 5. [`BufferPool::install_loaded`], with the two versions of step 2. If it
-//!    answers [`Loaded::Again`], the load starts again at step 1 with the
-//!    same frame, and reads the blocks again: a load is repeated for as
-//!    long as commits and page steps keep overtaking it in its part of the
-//!    pool's table.
+//!    answers [`Loaded::Again`], the pool is asked again, and if the page is
+//!    still not there the load is made again from step 2, into the same
+//!    frame. So a load is repeated for as long as commits and page steps
+//!    keep overtaking it in its part of the pool's table.
 //!
 //! On any error the frame goes back to the pool and nothing is installed. A
 //! run that was applied in part is never seen (`page-delta.md` A3).
@@ -130,13 +131,14 @@
 //! | --- | --- | --- |
 //! | The bytes of a block are the bytes that were written: its checksum, which covers its tag and its body. | [`SegmentStore::read`] | [`LoadError::Block`] |
 //! | The block is of the kind the chain says: a base image first, runs after it. | the block's tag | [`LoadError::Content`] |
-//! | The payload decompresses to the length it states. | `Block::copy_payload_to` | [`LoadError::Payload`] |
+//! | The payload decompresses to the length it states. A run that states more than its stored bytes can expand to is refused before memory is taken for it. | `Block::copy_payload_to` | [`LoadError::Payload`] |
 //! | The image is a well-formed page of the store's page size. | `TreePage::decode`, `FlatPage::decode` | [`LoadError::Payload`] |
 //! | The block holds the image and nothing behind it (`segment-manifest.md` S7). | the image's own length | [`LoadError::TrailingBytes`] |
-//! | The image is of the page asked for (`tree-page.md` TP2). A flat page image holds no page id, so for a flat page only the page table vouches for this (T13). | the page id in a tree page's header | [`LoadError::Payload`] with `DeltaError::WrongPage` |
+//! | The image is of the page asked for (`tree-page.md` TP2, `flat-page.md` P14). | the page id in its header | [`LoadError::Payload`] with `DeltaError::WrongPage` |
 //! | A run is well formed and of the page asked for (`page-delta.md` PD3, A2). | `DeltaRun::decode`, `apply_chain` | [`LoadError::Payload`] |
 //! | Every record of a run applies to the page beneath it (A3). | `apply_chain` | [`LoadError::Payload`] |
 //! | A run in a segment does not create its page (PD11), and a flat page has no run (PD13). | the run, the image's kind | [`LoadError::CreatedInSegment`], [`LoadError::FlatPageDelta`] |
+//! | No value is pending in a base image, or in the page as the last record of a run leaves it (PD16, P15). A value may be pending between two records of one run. | `has_pending_value` | [`LoadError::PendingValue`] |
 //!
 //! **A block with any single changed byte is refused.** The checksum is
 //! CRC-32C over the block's tag and body, which detects every change that
@@ -154,7 +156,9 @@
 //! copy of the frame is opened with `TreePageMut::open`. After runs were
 //! applied it may have unused bytes among its cells, so it is a page and
 //! need not be an image. A flat page is its image, for
-//! `FlatPage::from_validated`.
+//! `FlatPage::from_validated`. Neither holds a pending value: a page with
+//! one is in the pool because a commit installed it, never because it was
+//! loaded.
 //!
 //! A block is read under the format version of its segment's file
 //! ([`SegmentStore::format_version`]). With one format version a page needs
@@ -163,10 +167,13 @@
 //!
 //! # What the callers do
 //!
-//! - **A reader** asks at a version it has pinned, or at the latest version
-//!   under an operation guard (`transactions.md` PN5), as it asks the pool.
-//!   That is also what keeps the blocks of the chain it is given readable
-//!   while it reads them (PN6).
+//! - **A reader** asks at a version it has pinned, or at the latest
+//!   version, as it asks the pool, and **holds an operation guard** from
+//!   before it asks until the load has returned (`transactions.md` PN5). A
+//!   pin keeps the page version; the guard is what keeps the blocks that
+//!   the page table named readable while they are read, when a cleaner
+//!   moves them meanwhile (PN6). Without it a load can fail with
+//!   [`LoadError::Block`] for a segment that is gone.
 //! - **It holds what it loaded** until it has used it. A page that was
 //!   loaded into a frame beside the pool's fixed ones is gone when its last
 //!   [`PageRef`] is dropped.
@@ -185,7 +192,7 @@
 //! [`BufferPool::install_loaded`]: crate::cache::BufferPool::install_loaded
 //! [`Loaded::Again`]: crate::cache::Loaded::Again
 //! [`PageRef`]: crate::cache::PageRef
-//! [`PageTable::chain`]: crate::table::PageTable::chain
+//! [`PageTable::read_version`]: crate::table::PageTable::read_version
 //! [`SegmentStore::read`]: crate::segment::SegmentStore::read
 //! [`SegmentStore::format_version`]: crate::segment::SegmentStore::format_version
 
@@ -194,21 +201,19 @@ mod error;
 #[cfg(test)]
 mod tests;
 
-use std::ops::Range;
-
 use lignin_format::{
     delta::{apply_chain, DeltaError, DeltaRun},
     flat_page::{FlatPage, FlatPageKind},
-    segment::{Block, BlockContent, MAX_BODY_LEN},
-    tree_page::{TreePage, TreePageSize},
-    CommitVersion, FormatVersion, PageId,
+    segment::{Block, BlockContent, SegmentError, MAX_BODY_LEN},
+    tree_page::TreePage,
+    CommitVersion, FormatVersion, PageId, PageSize,
 };
 
 pub use self::error::LoadError;
 use crate::{
     cache::{BufferPool, Loaded, Miss, PageRef},
     segment::{BlockLocation, SegmentStore},
-    table::{Link, LinkKind, PageTable},
+    table::PageTable,
 };
 
 /// The format version of a page in a frame.
@@ -222,7 +227,10 @@ const fn in_frame(file: FormatVersion) -> FormatVersion {
     }
 }
 
-/// The memory a load reads into: the links of a chain, one block, and the
+/// The most bytes one stored byte of an LZ4 block decompresses to.
+const LZ4_MAX_EXPANSION: usize = 255;
+
+/// The memory a load reads into: the blocks of a chain, one block, and the
 /// payload of a run.
 ///
 /// It grows to what the largest load needed and is reused by the next, so a
@@ -231,7 +239,7 @@ const fn in_frame(file: FormatVersion) -> FormatVersion {
 /// is the page codec's to say (`page-delta.md` A1): nothing for a hash.
 #[derive(Debug, Default)]
 pub struct LoadBuffers {
-    links: Vec<Link>,
+    chain: Vec<BlockLocation>,
     block: Vec<u8>,
     run: Vec<u8>,
 }
@@ -243,44 +251,13 @@ impl LoadBuffers {
     }
 }
 
-/// The part of a chain that is one page version (`page-table.md` T5).
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Selected {
-    base: BlockLocation,
-    /// The places in the chain of the runs to apply to the base image.
-    runs: Range<usize>,
-    born: CommitVersion,
-    next: Option<CommitVersion>,
-}
-
-impl Selected {
-    /// What a reader of `page` at `at` is given of `links`, the page's
-    /// chain from its oldest link.
-    fn of(page: PageId, at: CommitVersion, links: &[Link]) -> Result<Self, LoadError> {
-        let no_page = |freed| LoadError::NoPage { page, at, freed };
-        let newest = links
-            .iter()
-            .rposition(|link| link.version <= at)
-            .ok_or(no_page(None))?;
-        let born = links[newest].version;
-        if links[newest].kind == LinkKind::Free {
-            return Err(no_page(Some(born)));
-        }
-        let below_runs = links[..=newest]
-            .iter()
-            .rposition(|link| !matches!(link.kind, LinkKind::Delta(_)));
-        let Some((base_at, LinkKind::Base(base))) =
-            below_runs.map(|place| (place, links[place].kind))
-        else {
-            return Err(LoadError::NoBase { page, born });
-        };
-        Ok(Self {
-            base,
-            runs: base_at + 1..newest + 1,
-            born,
-            next: links.get(newest + 1).map(|link| link.version),
-        })
-    }
+/// What a frame holds once a base image is in it.
+#[derive(Debug, Clone, Copy)]
+enum Filled {
+    /// A flat page, which takes no run.
+    Flat,
+    /// A tree page in this format version.
+    Tree(FormatVersion),
 }
 
 /// The read path of a store: its buffer pool, and behind it the page table
@@ -292,7 +269,7 @@ pub struct PageLoader<'s> {
     pool: &'s BufferPool,
     table: &'s PageTable,
     segments: &'s SegmentStore,
-    size: TreePageSize,
+    size: PageSize,
 }
 
 impl<'s> PageLoader<'s> {
@@ -304,7 +281,7 @@ impl<'s> PageLoader<'s> {
         pool: &'s BufferPool,
         table: &'s PageTable,
         segments: &'s SegmentStore,
-        page_size: TreePageSize,
+        page_size: PageSize,
     ) -> Result<Self, LoadError> {
         if pool.frame_len() != page_size.get() {
             return Err(LoadError::FrameSize {
@@ -352,17 +329,23 @@ impl<'s> PageLoader<'s> {
         mut miss: Miss,
         buffers: &mut LoadBuffers,
     ) -> Result<PageRef<'s>, LoadError> {
-        let mut blank = self.pool.blank();
+        let (page, at) = (miss.page(), miss.at());
+        let mut taken = None;
         loop {
-            let filled = self.fill(&mut blank, miss.page(), miss.at(), buffers)?;
-            blank = match self
+            let visible = self
+                .table
+                .read_version(page, at, &mut buffers.chain)
+                .map_err(|freed| LoadError::NoPage { page, at, freed })?;
+            let mut blank = taken.take().unwrap_or_else(|| self.pool.blank());
+            self.fill(&mut blank, page, buffers)?;
+            match self
                 .pool
-                .install_loaded(blank, miss, filled.born, filled.next)?
+                .install_loaded(blank, miss, visible.born, visible.next)?
             {
                 Loaded::Page(loaded) => return Ok(loaded),
-                Loaded::Again(blank) => blank,
-            };
-            miss = match self.pool.get(miss.page(), miss.at()) {
+                Loaded::Again(blank) => taken = Some(blank),
+            }
+            miss = match self.pool.get(page, at) {
                 Ok(found) => return Ok(found),
                 Err(miss) => miss,
             };
@@ -403,88 +386,124 @@ impl<'s> PageLoader<'s> {
         Ok((block, version))
     }
 
-    /// Builds in `frame` the version of `page` that a reader at `at` sees,
-    /// from the page table as it is now.
+    /// Builds `page` in `frame` from the blocks of `buffers.chain`: its
+    /// base image first, and the runs to apply to it after it.
     fn fill(
         &self,
         frame: &mut [u8],
         page: PageId,
-        at: CommitVersion,
         buffers: &mut LoadBuffers,
-    ) -> Result<Selected, LoadError> {
-        let LoadBuffers { links, block, run } = buffers;
-        links.clear();
-        self.table.chain(page, links);
-        let selected = Selected::of(page, at, links)?;
-        let base = selected.base;
+    ) -> Result<(), LoadError> {
+        let LoadBuffers { chain, block, run } = buffers;
+        let mut filled = None;
+        for &location in chain.iter() {
+            filled = Some(match filled {
+                None => self.image(frame, page, location, block)?,
+                Some(Filled::Flat) => return Err(LoadError::FlatPageDelta { page, location }),
+                Some(Filled::Tree(version)) => {
+                    self.run(frame, page, location, version, block, run)?;
+                    Filled::Tree(version)
+                }
+            });
+        }
+        Ok(())
+    }
 
-        let payload = |location| {
-            move |source| LoadError::Payload {
-                page,
-                location,
-                source,
-            }
-        };
-        let (image, version) = self.block(
+    /// Puts the base image in the block at `location` into `frame`, with
+    /// zeros behind it.
+    fn image(
+        &self,
+        frame: &mut [u8],
+        page: PageId,
+        location: BlockLocation,
+        block: &mut Vec<u8>,
+    ) -> Result<Filled, LoadError> {
+        let refused = |source| LoadError::Payload {
             page,
-            base,
+            location,
+            source,
+        };
+        let (stored, version) = self.block(
+            page,
+            location,
             BlockContent::Base,
             self.size.image_capacity(),
             block,
         )?;
-        let (start, rest) = frame.split_at_mut(image.payload_len());
-        image.copy_payload_to(start).map_err(payload(base))?;
+        let (image, rest) = frame.split_at_mut(stored.payload_len());
+        stored.copy_payload_to(image).map_err(refused)?;
         rest.fill(0);
-        let is_flat = start
+        let is_flat = image
             .first()
             .is_some_and(|&code| FlatPageKind::from_code(code, version).is_ok());
-        let (image_len, found) = if is_flat {
-            let flat = FlatPage::decode(start, version).map_err(payload(base))?;
-            (flat.as_bytes().len(), page)
+        let (image_len, found, pending) = if is_flat {
+            let flat = FlatPage::decode(image, version).map_err(refused)?;
+            (flat.as_bytes().len(), flat.id(), flat.has_pending_value())
         } else {
-            let tree = TreePage::decode(start, version, self.size).map_err(payload(base))?;
-            (tree.encoded_len(), tree.id())
+            let tree = TreePage::decode(image, version, self.size).map_err(refused)?;
+            (tree.encoded_len(), tree.id(), tree.has_pending_value())
         };
-        if image_len != start.len() {
+        if image_len != image.len() {
             return Err(LoadError::TrailingBytes {
                 page,
-                location: base,
+                location,
                 image_len,
-                payload_len: start.len(),
+                payload_len: image.len(),
             });
         }
         if found != page {
-            return Err(LoadError::Payload {
-                page,
-                location: base,
-                source: DeltaError::WrongPage {
+            return Err(refused(
+                DeltaError::WrongPage {
                     found,
                     expected: page,
                 }
                 .into(),
-            });
+            ));
         }
+        if pending {
+            return Err(LoadError::PendingValue { page, location });
+        }
+        Ok(if is_flat {
+            Filled::Flat
+        } else {
+            Filled::Tree(in_frame(version))
+        })
+    }
 
-        let frame_version = in_frame(version);
-        for location in links[selected.runs.clone()]
-            .iter()
-            .filter_map(Link::location)
-        {
-            if is_flat {
-                return Err(LoadError::FlatPageDelta { page, location });
-            }
-            let (stored, run_version) =
-                self.block(page, location, BlockContent::Delta, MAX_BODY_LEN, block)?;
-            run.clear();
-            run.resize(stored.payload_len(), 0);
-            stored.copy_payload_to(run).map_err(payload(location))?;
-            let changes = DeltaRun::decode(run, run_version).map_err(payload(location))?;
-            if changes.created().is_some() {
-                return Err(LoadError::CreatedInSegment { page, location });
-            }
-            apply_chain(page, frame, self.size, frame_version, [&changes])
-                .map_err(payload(location))?;
+    /// Applies the run in the block at `location` to the tree page in
+    /// `frame`, which is in the format `version`.
+    fn run(
+        &self,
+        frame: &mut [u8],
+        page: PageId,
+        location: BlockLocation,
+        version: FormatVersion,
+        block: &mut Vec<u8>,
+        run: &mut Vec<u8>,
+    ) -> Result<(), LoadError> {
+        let refused = |source| LoadError::Payload {
+            page,
+            location,
+            source,
+        };
+        let (stored, run_version) =
+            self.block(page, location, BlockContent::Delta, MAX_BODY_LEN, block)?;
+        let stored_len = location.len as usize;
+        if stored.payload_len() > stored_len.saturating_mul(LZ4_MAX_EXPANSION) {
+            return Err(refused(SegmentError::Decompression.into()));
         }
-        Ok(selected)
+        run.clear();
+        run.resize(stored.payload_len(), 0);
+        stored.copy_payload_to(run).map_err(refused)?;
+        let changes = DeltaRun::decode(run, run_version).map_err(refused)?;
+        if changes.page() == page && changes.created().is_some() {
+            return Err(LoadError::CreatedInSegment { page, location });
+        }
+        apply_chain(page, frame, self.size, version, [&changes]).map_err(refused)?;
+        let after = TreePage::from_validated(frame, version).map_err(refused)?;
+        if after.has_pending_value() {
+            return Err(LoadError::PendingValue { page, location });
+        }
+        Ok(())
     }
 }
