@@ -32,7 +32,7 @@ use grovedb::{
         proof::{SumBudgetStop, VerifiedPathQuery},
         QueryItemOrSumReturnType,
     },
-    query_result_type::PathKeyElementTrio,
+    query_result_type::{PathKeyElementTrio, QueryResultType},
     AxisAggregateValue, Element, GroveDb, LeafInfo, PathBranchChunkQuery, PathQuery, PathQueryRun,
     PathTrunkChunkQuery, Transaction,
 };
@@ -45,23 +45,30 @@ use grovedb_epoch_based_storage_flags::StorageFlags;
 use grovedb_merk::{
     element::costs::ElementCostExtensions, merk::NodeType, proofs::query::ReadMode, tree::kv::KV,
 };
+use grovedb_storage::{rocksdb_storage::RocksDbStorage, Storage, StorageContext};
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
-use lignin_testkit::workload::{
-    adversarial::{
-        ChunkProofs, DeepNesting, DeleteHeavy, FlagEpochs, FlatDrops, IndexedWrites, LargeValues,
-        LongKeys, Moves, Pagination, PartialBatches, ReferenceChains, TinySubtrees, TreeDeletes,
-        TypedReads, MAX_LADDER_RUNGS, MAX_NESTING_DEPTH, MIN_CHUNKED_ROWS, MIN_TREE_DELETE_ITEMS,
+use lignin_testkit::{
+    cost_model::rules,
+    workload::{
+        adversarial::{
+            ChunkProofs, DeepNesting, DeleteHeavy, FlagEpochs, FlatDrops, IndexedWrites,
+            LargeValues, LongKeys, Moves, Pagination, PartialBatches, ReferenceChains,
+            TinySubtrees, TreeDeletes, TypedReads, MAX_LADDER_RUNGS, MAX_NESTING_DEPTH,
+            MIN_CHUNKED_ROWS, MIN_TREE_DELETE_ITEMS,
+        },
+        apply,
+        coverage::{
+            Operation, ELEMENT_VARIANTS, OPERATION_GROUPS, REFERENCE_PATH_TYPES, TREE_TYPES,
+        },
+        drive::{
+            Balances, BlockExecution, ConditionalWrites, Documents, Expiration, IdentityKeys,
+            IdentityReads, IndexAggregates, IndexRekey, PlatformState, StorageFees, Tokens,
+        },
+        flags::{Histories, Seen},
+        zoo::{ElementZoo, COMMITMENT_PAYLOAD_LEN},
+        BatchOp, Coverage, Features, Fetch, HandoverBatch, Op, Outcome, PartialBatch, Prove, Query,
+        Read, StreamDigest, TransactionOp, Transactions, TreeRead, Workload, Write,
     },
-    apply,
-    coverage::{Operation, ELEMENT_VARIANTS, OPERATION_GROUPS, REFERENCE_PATH_TYPES, TREE_TYPES},
-    drive::{
-        Balances, BlockExecution, ConditionalWrites, Documents, Expiration, IdentityKeys,
-        IdentityReads, IndexAggregates, IndexRekey, PlatformState, StorageFees, Tokens,
-    },
-    flags::{Histories, Seen},
-    zoo::{ElementZoo, COMMITMENT_PAYLOAD_LEN},
-    BatchOp, Coverage, Features, Fetch, HandoverBatch, Op, Outcome, PartialBatch, Prove, Query,
-    Read, StreamDigest, TransactionOp, Transactions, TreeRead, Workload, Write,
 };
 
 /// The group of the operations every workload is made of, which is all the
@@ -607,7 +614,9 @@ impl FlagsModel {
         Some(FlagsModel {
             partial: matches!(op, Op::FlagsPartialBatch(_)),
             handover: match op {
-                Op::FlagsHandoverBatch(batch) => Some(batch.full_handover_owners.clone()),
+                Op::FlagsHandoverBatch(batch) => {
+                    Some(batch.full_handover_owners.iter().copied().collect())
+                }
                 _ => None,
             },
             writes,
@@ -645,6 +654,7 @@ impl FlagsModel {
         };
         let mut whole = self.whole;
         let mut freed = Freed::default();
+        let mut added_whole = 0;
         let mut above = 0;
         for written in &self.writes {
             let KeyWritten {
@@ -699,8 +709,10 @@ impl FlagsModel {
             let written_flags = Epochs::of(written);
             if self.is_full_handover(held_flags.as_ref(), written_flags.as_ref()) {
                 // The stored element is freed whole, as a delete frees it,
-                // and the element written is stored as it is.
+                // and the element written is stored as it is and charged
+                // whole, key included.
                 assert_eq!(now, *written, "{place}\nwas not replaced");
+                added_whole += KV::node_key_byte_cost_size(key.len() as u32) + is;
                 freed.free(
                     held_flags.as_ref(),
                     KV::node_key_byte_cost_size(key.len() as u32),
@@ -763,6 +775,11 @@ impl FlagsModel {
             );
         }
         applied.ops += 1;
+        assert!(
+            cost.storage_cost.added_bytes >= added_whole,
+            "{context}\nadded {} bytes, and replaced elements of {added_whole}",
+            cost.storage_cost.added_bytes
+        );
         let named = Freed::of(&cost.storage_cost.removed_bytes);
         if whole {
             assert_eq!(
@@ -3464,7 +3481,7 @@ fn one_of_each_flags_kind() -> Vec<Op> {
     let hand_over = |op: BatchOp, full_handover_owners: Vec<[u8; 32]>| {
         Op::FlagsHandoverBatch(HandoverBatch {
             ops: vec![op],
-            full_handover_owners,
+            full_handover_owners: full_handover_owners.into_iter().collect(),
         })
     };
     let (a, b, c) = (1, 2, 3);
@@ -3535,6 +3552,13 @@ fn one_of_each_flags_kind() -> Vec<Op> {
         in_segments(vec![put(b"partial", flagged(90, 8, b))], Vec::new(), None),
         in_segments(vec![put(b"partial", flagged(190, 9, b))], Vec::new(), None),
         in_segments(vec![delete(b"partial")], Vec::new(), None),
+        // Without flags, what a delete frees is not divided.
+        in_segments(
+            vec![new(&tree, b"plain", Element::new_item(vec![7; 20]))],
+            Vec::new(),
+            None,
+        ),
+        in_segments(vec![delete(b"plain")], Vec::new(), None),
         // An update of a document, which hands the element to the owner
         // written: with its history, and whole when that owner pays for
         // all of it.
@@ -3544,7 +3568,7 @@ fn one_of_each_flags_kind() -> Vec<Op> {
     ]
 }
 
-const PINNED_FLAGS_KINDS: &str = "675ae4d586a70ed7aae5b2fea813727e79ca512e908d963b35465573aa4d0723";
+const PINNED_FLAGS_KINDS: &str = "037a46b43814d8bd4f177aa817caf046e248f76b36fa592f418a6ea78e1709a5";
 
 /// The canonical encoding of the kinds the fourth unit added: each one
 /// differs from every other, and the bytes are pinned. Together they are
@@ -3558,7 +3582,6 @@ fn the_flags_kinds_have_a_pinned_encoding() {
         let mut bytes = Vec::new();
         op.encode(&mut bytes);
         assert!(encodings.insert(bytes), "two operations encode as {op:?}");
-        assert_eq!(*op, op.clone());
         assert!(!op.keeps_transaction() && !op.follows_a_commit(), "{op:?}");
     }
     let digest = StreamDigest::of(&ops);
@@ -3579,7 +3602,7 @@ fn the_flags_kinds_have_a_pinned_encoding() {
     let handover = |full_handover_owners: Vec<[u8; 32]>| {
         Op::FlagsHandoverBatch(HandoverBatch {
             ops: Vec::new(),
-            full_handover_owners,
+            full_handover_owners: full_handover_owners.into_iter().collect(),
         })
     };
     for (flags, plain) in [
@@ -3810,6 +3833,12 @@ fn the_callbacks_refuse_what_no_stream_holds() {
         pause_height: None,
     });
     let stored_unreadable = || vec![Op::Batch(vec![put(unreadable.clone())])];
+    let hand_over = |element: Element| {
+        Op::FlagsHandoverBatch(HandoverBatch {
+            ops: vec![put(element)],
+            full_handover_owners: [[b; 32]].into(),
+        })
+    };
     let latest = GroveVersion::latest();
     let refused = [
         // Another owner, where a partial batch changes the length.
@@ -3873,6 +3902,17 @@ fn the_callbacks_refuse_what_no_stream_holds() {
             }),
             "serialization: drive did not understand flags of item being updated",
         ),
+        // The same where an owner pays for all of an element.
+        (
+            vec![whole(flagged(40, 0, a))],
+            hand_over(unreadable.clone()),
+            "unknown storage flags serialization",
+        ),
+        (
+            stored_unreadable(),
+            hand_over(flagged(90, 1, a)),
+            "unknown storage flags serialization",
+        ),
         // Flags taken off an element that has them, in a partial batch.
         (
             vec![whole(flagged(40, 0, a))],
@@ -3888,10 +3928,7 @@ fn the_callbacks_refuse_what_no_stream_holds() {
 
     // A handover to an owner who pays for the whole element replaces it,
     // which only the latest grove version takes from a callback.
-    let hand_over = Op::FlagsHandoverBatch(HandoverBatch {
-        ops: vec![put(flagged(40, 1, b))],
-        full_handover_owners: vec![[b; 32]],
-    });
+    let hand_over = hand_over(flagged(40, 1, b));
     for grove_version in GROVE_VERSIONS {
         let accepts = Features::for_grove_version(grove_version).full_handovers;
         let applied = applies(
@@ -3954,9 +3991,74 @@ fn tree_deleted(op: &Op) -> Option<(String, String, u32)> {
     ))
 }
 
+/// What deleting the tree at `key` with what it holds frees, by the rule
+/// the cost model states (D2): the tree's own element as its writer costs
+/// it, and for each node under it the stored key and the record the
+/// **committed** state holds under that key, each with its length. A key
+/// the committed state has no record of counts as an empty record. The
+/// nodes are the ones the transaction sees.
+fn committed_charge(
+    db: &GroveDb,
+    path: &[Vec<u8>],
+    key: &[u8],
+    transaction: &Transaction,
+    grove_version: &GroveVersion,
+) -> u32 {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let checkpoint = dir.path().join("committed");
+    db.create_checkpoint(&checkpoint).expect("a checkpoint");
+    let committed = RocksDbStorage::checkpoint_rocksdb_with_path(&checkpoint).expect("it opens");
+    let reader = committed.start_transaction();
+
+    let tree = stored(db, path, key, Some(transaction), grove_version).expect("the tree");
+    let value = tree.serialize(grove_version).expect("an element");
+    let mut charge = KV::node_key_byte_cost_size(key.len() as u32)
+        + Element::specialized_costs_for_key_value(
+            key,
+            &value,
+            NodeType::NormalNode,
+            grove_version,
+        )
+        .expect("the size of a value");
+    let child = |path: &[Vec<u8>], key: &[u8]| [path, &[key.to_vec()]].concat();
+    let mut trees = vec![child(path, key)];
+    while let Some(tree) = trees.pop() {
+        let records = committed
+            .get_transactional_storage_context(tree.as_slice().into(), None, &reader)
+            .unwrap();
+        let nodes = PathQuery::new_unsized(tree.clone(), grovedb::Query::new_range_full());
+        let (nodes, _) = db
+            .query_raw(
+                &nodes,
+                true,
+                true,
+                true,
+                QueryResultType::QueryKeyElementPairResultType,
+                Some(transaction),
+                grove_version,
+            )
+            .unwrap()
+            .expect("the nodes of the tree");
+        for (node, element) in nodes.to_key_elements() {
+            let record = records.get(&node).unwrap().expect("a raw read");
+            let record = record.map_or(0, |record| record.len() as u32);
+            let stored_key = rules::stored_key_len(node.len());
+            charge += stored_key
+                + rules::varint_len(u64::from(stored_key))
+                + record
+                + rules::varint_len(u64::from(record));
+            if element.is_any_tree() {
+                trees.push(child(&tree, &node));
+            }
+        }
+    }
+    charge
+}
+
 /// A tree deleted with what it holds is charged for the records the
 /// committed state holds under its keys, whatever the transaction that
-/// deletes it wrote there first:
+/// deletes it wrote there first. Every delete of the workload frees exactly
+/// what that rule gives, read from the committed records themselves:
 ///
 /// - a tree the transaction filled is charged for no record: nothing is
 ///   loaded for what it held, and each of its keys frees the same few
@@ -3984,13 +4086,25 @@ fn a_deleted_tree_is_charged_for_what_was_committed() {
         let mut transactions = Transactions::new(&db);
         let mut costs: BTreeMap<(String, u32), BTreeMap<String, (u32, u64)>> = BTreeMap::new();
         for op in workload.stream(SEED) {
+            let deleted = tree_deleted(&op).map(|(state, way, round)| {
+                let key = format!("{state}-{way}-{round}").into_bytes();
+                let path = [b"tree-deletes".to_vec()];
+                let charge =
+                    committed_charge(&db, &path, &key, transactions.block(), grove_version);
+                (state, way, round, charge)
+            });
             let result = transactions.apply(&op, grove_version);
             result
                 .value
                 .unwrap_or_else(|error| panic!("{op:?} refused: {error:?}"));
-            if let Some((state, way, round)) = tree_deleted(&op) {
+            if let Some((state, way, round, charge)) = deleted {
                 let freed = Freed::of(&result.cost.storage_cost.removed_bytes);
                 let removed = freed.unsplit + freed.by_epoch.values().sum::<u32>();
+                assert_eq!(
+                    removed, charge,
+                    "grove v{version}, {state}, {way}, round {round}: freed and the charge by \
+                     the committed records"
+                );
                 let cost = (removed, result.cost.storage_loaded_bytes);
                 costs.entry((way, round)).or_default().insert(state, cost);
             }
@@ -4005,7 +4119,13 @@ fn a_deleted_tree_is_charged_for_what_was_committed() {
                  rewritten {rewritten:?}, untouched {untouched:?}"
             );
             let context = format!("grove v{version}, {way}, round {round}");
-            assert!(fresh.0 < untouched.0 && fresh.1 < untouched.1, "{context}");
+            // The two trees hold records of the same lengths. Charged by
+            // what the transaction sees, they would cost the same but for
+            // the four bytes their own keys differ by.
+            assert!(
+                fresh.0 * 2 < untouched.0 && fresh.1 < untouched.1,
+                "{context}"
+            );
             if round % 2 == 0 {
                 assert_eq!(rewritten.0, untouched.0, "{context}");
             } else {

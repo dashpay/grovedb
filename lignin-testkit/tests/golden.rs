@@ -39,7 +39,7 @@ use lignin_testkit::{
         run::provable,
         trace::{Detail, Entry, Tally, Trace},
     },
-    workload::{adversarial::TreeDeletes, drive::Documents, BatchOp, Op, Write},
+    workload::{adversarial::TreeDeletes, drive::Documents, BatchOp, Features, Op, Write},
 };
 
 fn recorded(file: &str) -> Trace {
@@ -313,7 +313,9 @@ fn proof(detail: &Detail) -> Vec<u8> {
 /// splits freed bytes over several epochs of one owner: by a batch, by a
 /// partial batch and by each of the two deletes that take the callback. For
 /// a batch they also write out one that frees nothing and one that names
-/// one epoch.
+/// one epoch. A batch that updates a document is written out in both, and
+/// where a grove version takes a full handover, so is one that frees the
+/// element it replaces across its epochs.
 #[test]
 fn the_storage_fee_splits_are_in_the_corpus() {
     // The epochs of each owner a cost names freed bytes by.
@@ -361,6 +363,20 @@ fn the_storage_fee_splits_are_in_the_corpus() {
                     "v{version}/{workload}: {kind} frees {splits:?}"
                 );
             }
+            let handovers: Vec<Vec<usize>> = trace
+                .details()
+                .filter(|detail| detail.remarks[0].starts_with("FlagsHandoverBatch"))
+                .map(split)
+                .collect();
+            let frees_across_epochs = handovers
+                .iter()
+                .any(|epochs| epochs.iter().any(|epochs| *epochs > 1));
+            let full_handovers = Features::for_grove_version(grove_version).full_handovers;
+            assert!(
+                !handovers.is_empty()
+                    && (workload != "flag-epochs" || frees_across_epochs == full_handovers),
+                "v{version}/{workload}: a handover frees {handovers:?}"
+            );
         }
     }
 }
@@ -419,7 +435,17 @@ fn the_charge_for_a_deleted_tree_is_in_the_corpus() {
         assert_eq!(costs.len(), 4 * workload.rounds as usize);
         for ((way, round), [fresh, rewritten, untouched]) in costs {
             let context = format!("v{version}/tree-deletes: {way}, round {round}");
-            assert!(fresh.0 < untouched.0 && fresh.1 < untouched.1, "{context}");
+            assert!(
+                fresh.0 > 0 && rewritten.0 > 0 && untouched.0 > 0,
+                "{context}: a tree in each state"
+            );
+            // The two trees hold records of the same lengths, so a charge
+            // by what the transaction sees would be the same for both, but
+            // for the four bytes their own keys differ by.
+            assert!(
+                fresh.0 * 2 < untouched.0 && fresh.1 < untouched.1,
+                "{context}"
+            );
             assert!(rewritten.1 != untouched.1, "{context}");
             if round == "0" || round == "2" {
                 assert_eq!(rewritten.0, untouched.0, "{context}");
