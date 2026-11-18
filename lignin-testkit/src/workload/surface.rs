@@ -109,9 +109,6 @@ const DUMP_LOAD: Status = Status::LeftOut(
      GroveDB's operations; GROVE-09 replaces the hatch",
 );
 
-const CLOSURES: &str = "flag updates and splits of removed bytes other than GroveDB's own: a \
-                        stream is plain data and cannot carry the closures Drive passes";
-
 const AGGREGATE_READER: Status = inside("run_path_query");
 
 /// Every public method of `GroveDb`, the methods of the traits implemented
@@ -173,7 +170,15 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
     ),
     (
         "apply_batch_with_element_flags_update",
-        inside_but("apply_batch", CLOSURES),
+        produced(&[
+            Operation::FlagsBatch,
+            Operation::FlagsGrowth,
+            Operation::FlagsShrinkAcrossEpochs,
+            Operation::FlagsSameSize,
+            Operation::FlagsOwnerChange,
+            Operation::FlagsRemoved,
+            Operation::FlagsDelete,
+        ]),
     ),
     (
         "apply_operations_without_batching",
@@ -186,7 +191,15 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
     ("apply_partial_batch", produced(&[Operation::PartialBatch])),
     (
         "apply_partial_batch_with_element_flags_update",
-        inside_but("apply_partial_batch", CLOSURES),
+        produced(&[
+            Operation::FlagsPartialBatch,
+            Operation::PartialFlagsGrowth,
+            Operation::PartialFlagsShrinkAcrossEpochs,
+            Operation::PartialFlagsSameSize,
+            Operation::PartialFlagsOwnerChange,
+            Operation::PartialFlagsHistoryDropped,
+            Operation::PartialFlagsDelete,
+        ]),
     ),
     ("average_case_delete_operation_for_delete", ESTIMATE),
     (
@@ -276,15 +289,11 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
     ),
     (
         "delete_up_tree_while_empty_with_sectional_storage",
-        inside_but("delete_up_tree_while_empty", CLOSURES),
+        produced(&[Operation::SectionalDeleteUpTree]),
     ),
     (
         "delete_with_sectional_storage_function",
-        Status::LeftOut(
-            "`delete` with a closure of the caller's that splits the removed bytes by storage \
-             flags, and a stream is plain data that cannot carry Drive's closure; `delete`, \
-             which is produced, runs the same private delete with GroveDB's own split",
-        ),
+        produced(&[Operation::SectionalDelete]),
     ),
     ("dense_tree_count", produced(&[Operation::DenseCount])),
     ("dense_tree_get", produced(&[Operation::DenseValue])),

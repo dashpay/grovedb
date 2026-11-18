@@ -23,6 +23,37 @@
 //! that transaction or a read inside the block is refused the snapshot.
 //! [`Transactions`] does all of this for a caller that has no reason to do
 //! it itself.
+//!
+//! # Storage-flag callbacks
+//!
+//! GroveDB takes two callbacks with a batch, and Drive passes them with
+//! every batch it applies. One is asked what flags an element that is
+//! replaced is stored with, given the flags it had, the flags written and
+//! what the update costs. The other is asked how the bytes an update or a
+//! delete frees divide over the epochs they were paid in. A stream is plain
+//! data and cannot carry a callback, so the ones Drive passes are fixed
+//! here, for [`Op::FlagsBatch`], [`Op::FlagsPartialBatch`],
+//! [`Write::SectionalDelete`] and [`Write::SectionalDeleteUpTree`]. Every
+//! other operation runs with GroveDB's own: flags are stored as written and
+//! freed bytes are not divided.
+//!
+//! Drive passes one pair with a batch and another with a partial batch:
+//!
+//! - **A batch**: [`StorageFlags::update_element_flags`]. An update that
+//!   grows an element in a later epoch than its first records the added
+//!   bytes under that epoch, one that shrinks it takes the freed bytes off
+//!   the epochs recorded, and one that keeps its size keeps the stored
+//!   flags. Where the flags written name another owner than the stored
+//!   ones, the written owner is stored, except that the stored flags are
+//!   kept whole by an update that keeps the size and by one that shrinks an
+//!   element holding bytes of one epoch only.
+//! - **A partial batch**: the same merge, except that an update that
+//!   changes the size is refused when the two owners differ, and that one
+//!   that keeps the size stores the flags as written.
+//!
+//! Both divide freed bytes with [`StorageFlags::split_removal_bytes`]: the
+//! latest epochs first, each down to the three bytes its own entry in the
+//! flags takes, and what is left to the epoch the element was created in.
 
 #![expect(
     clippy::result_large_err,
@@ -30,7 +61,7 @@
 )]
 
 use grovedb::{
-    batch::{BatchApplyOptions, QualifiedGroveDbOp, SubelementsDeletionBehavior},
+    batch::{BatchApplyOptions, OpsByLevelPath, QualifiedGroveDbOp, SubelementsDeletionBehavior},
     operations::{
         delete::{ClearOptions, DeleteOptions, DeleteUpTreeOptions},
         insert::InsertOptions,
@@ -39,14 +70,19 @@ use grovedb::{
     },
     query_result_type::{PathKeyOptionalElementTrio, QueryResultElements, QueryResultType},
     replication::CURRENT_STATE_SYNC_VERSION,
-    AggregateSumQueryOptions, AggregateSumQueryResult, BackwardsReferences, Element, Error,
-    GroveDb, PathBranchChunkQuery, PathQuery, PathQueryRun, PathTrunkChunkQuery,
+    AggregateSumQueryOptions, AggregateSumQueryResult, BackwardsReferences, Element, ElementFlags,
+    Error, GroveDb, PathBranchChunkQuery, PathQuery, PathQueryRun, PathTrunkChunkQuery,
     PendingPrefixDropsReport, RangePage, SizedQuery, Transaction, TransactionArg, TreeType,
 };
 use grovedb_commitment_tree::{deserialize_ciphertext, DashMemo};
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add,
+    storage_cost::{
+        removal::StorageRemovedBytes, transition::OperationStorageTransitionType, StorageCost,
+    },
+    CostResult, CostsExt, OperationCost,
 };
+use grovedb_epoch_based_storage_flags::{MergingOwnersStrategy, StorageFlags};
 use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::GroveVersion;
@@ -68,7 +104,7 @@ pub enum Outcome {
     Rows(QueryResultElements),
     /// The op was [`Op::Commit`]: the caller commits its transaction.
     EndOfBlock,
-    /// An [`Op::PartialBatch`] was applied.
+    /// An [`Op::PartialBatch`] or an [`Op::FlagsPartialBatch`] was applied.
     WrittenInSegments {
         /// The cost GroveDB reported to its caller when the first segment
         /// paused: what the call had cost so far, the first segment's
@@ -101,7 +137,8 @@ pub enum Outcome {
         /// The element it replaced, if it was stored over one.
         previous: Option<Element>,
     },
-    /// How many keys a [`Write::DeleteUpTree`] deleted.
+    /// How many keys a [`Write::DeleteUpTree`] or a
+    /// [`Write::SectionalDeleteUpTree`] deleted.
     Deleted(u16),
     /// What an append through a typed method returned: a
     /// [`Write::Append`] other than of a commitment, which goes through a
@@ -184,8 +221,8 @@ pub const INSERT_OPTIONS: InsertOptions = InsertOptions {
     backwards_references: BackwardsReferences::Check,
 };
 
-/// How [`Write::Delete`] is applied: a tree is deleted with everything under
-/// it.
+/// How [`Write::Delete`] and [`Write::SectionalDelete`] are applied: a tree
+/// is deleted with everything under it.
 pub const DELETE_OPTIONS: DeleteOptions = DeleteOptions {
     allow_deleting_non_empty_trees: true,
     deleting_non_empty_trees_returns_error: true,
@@ -203,7 +240,9 @@ pub const CLEAR_OPTIONS: ClearOptions = ClearOptions {
     backwards_references: BackwardsReferences::Check,
 };
 
-/// How [`Op::Batch`] is applied.
+/// How [`Op::Batch`] and [`Op::FlagsBatch`] are applied. They are the
+/// options Drive applies a batch with when it does not ask for inserts to
+/// be checked against what is stored.
 pub const BATCH_OPTIONS: BatchApplyOptions = BatchApplyOptions {
     validate_insertion_does_not_override: false,
     validate_insertion_does_not_override_tree: false,
@@ -212,7 +251,8 @@ pub const BATCH_OPTIONS: BatchApplyOptions = BatchApplyOptions {
     batch_pause_height: None,
 };
 
-/// How a [`Write::DeleteUpTree`] is applied, with its stop height: the key
+/// How a [`Write::DeleteUpTree`] and a [`Write::SectionalDeleteUpTree`] are
+/// applied, each with its stop height: the key
 /// may hold a tree only if the tree is empty, and as in Drive nothing it
 /// deletes takes part in a backward reference.
 pub const DELETE_UP_TREE_OPTIONS: DeleteUpTreeOptions = DeleteUpTreeOptions {
@@ -271,7 +311,22 @@ pub fn apply(
             .map_ok(|()| Outcome::Written),
         Op::Read(read) => apply_read(db, read, transaction, grove_version),
         Op::Commit => Ok(Outcome::EndOfBlock).wrap_with_cost(OperationCost::default()),
-        Op::PartialBatch(batch) => apply_partial_batch(db, batch, transaction, grove_version),
+        Op::PartialBatch(batch) => {
+            apply_partial_batch(db, batch, Callbacks::GroveDb, transaction, grove_version)
+        }
+        Op::FlagsBatch(ops) => db
+            .apply_batch_with_element_flags_update(
+                ops.iter().map(BatchOp::to_grove_op).collect(),
+                Some(BATCH_OPTIONS),
+                merge_flags,
+                split_removed_bytes,
+                transaction,
+                grove_version,
+            )
+            .map_ok(|()| Outcome::Written),
+        Op::FlagsPartialBatch(batch) => {
+            apply_partial_batch(db, batch, Callbacks::Drive, transaction, grove_version)
+        }
         Op::FlushPendingDrops => db
             .flush_pending_prefix_drops(grove_version)
             .map(Outcome::Reclaimed)
@@ -406,26 +461,137 @@ impl<'db> Transactions<'db> {
     }
 }
 
+/// The flags update Drive applies a batch with.
+fn merge_flags(
+    cost: &StorageCost,
+    stored: Option<ElementFlags>,
+    written: &mut ElementFlags,
+) -> Result<bool, Error> {
+    StorageFlags::update_element_flags(cost, stored, written)
+        .map_err(|error| Error::JustInTimeElementFlagsClientError(error.to_string()))
+}
+
+/// The flags update Drive applies a partial batch with.
+fn merge_flags_of_one_owner(
+    cost: &StorageCost,
+    stored: Option<ElementFlags>,
+    written: &mut ElementFlags,
+) -> Result<bool, Error> {
+    let refused = |what: &str, error: &dyn std::fmt::Display| {
+        Error::JustInTimeElementFlagsClientError(format!("{what} {error}"))
+    };
+    // An element stored without flags takes the flags written.
+    let Some(stored) = stored else {
+        return Ok(false);
+    };
+    let stored = StorageFlags::from_element_flags_ref(&stored).map_err(|error| {
+        refused(
+            "drive did not understand flags of old item being updated",
+            &error,
+        )
+    })?;
+    let new = StorageFlags::from_element_flags_ref(written)
+        .map_err(|error| {
+            refused(
+                "drive did not understand updated item flag information",
+                &error,
+            )
+        })?
+        .ok_or_else(|| {
+            Error::JustInTimeElementFlagsClientError(
+                "removing flags from an item with flags is not allowed".to_string(),
+            )
+        })?;
+    let merged = match cost.transition_type() {
+        OperationStorageTransitionType::OperationUpdateBiggerSize => {
+            StorageFlags::optional_combine_added_bytes(
+                stored,
+                new,
+                cost.added_bytes,
+                MergingOwnersStrategy::RaiseIssue,
+            )
+            .map_err(|error| {
+                refused(
+                    "drive could not combine storage flags (new flags were bigger):",
+                    &error,
+                )
+            })?
+        }
+        OperationStorageTransitionType::OperationUpdateSmallerSize => {
+            StorageFlags::optional_combine_removed_bytes(
+                stored,
+                new,
+                &cost.removed_bytes,
+                MergingOwnersStrategy::RaiseIssue,
+            )
+            .map_err(|error| {
+                refused(
+                    "drive could not combine storage flags (new flags were smaller):",
+                    &error,
+                )
+            })?
+        }
+        _ => return Ok(false),
+    };
+    let merged = merged.to_element_flags();
+    if merged == *written {
+        return Ok(false);
+    }
+    *written = merged;
+    Ok(true)
+}
+
+/// The split of freed bytes Drive applies every batch with, whole or
+/// partial.
+fn split_removed_bytes(
+    flags: &mut ElementFlags,
+    removed_key_bytes: u32,
+    removed_value_bytes: u32,
+) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error> {
+    StorageFlags::split_removal_bytes(flags, removed_key_bytes, removed_value_bytes)
+        .map_err(|error| Error::SplitRemovalBytesClientError(error.to_string()))
+}
+
+/// The callbacks a partial batch is applied with.
+#[derive(Clone, Copy)]
+enum Callbacks {
+    /// GroveDB's own: [`Op::PartialBatch`].
+    GroveDb,
+    /// The ones Drive passes: [`Op::FlagsPartialBatch`].
+    Drive,
+}
+
 fn apply_partial_batch(
     db: &GroveDb,
     batch: &PartialBatch,
+    callbacks: Callbacks,
     transaction: TransactionArg,
     grove_version: &GroveVersion,
 ) -> CostResult<Outcome, Error> {
     let mut first_segment = OperationCost::default();
-    db.apply_partial_batch(
-        batch.ops.iter().map(BatchOp::to_grove_op).collect(),
-        Some(BatchApplyOptions {
-            batch_pause_height: batch.pause_height,
-            ..BATCH_OPTIONS
-        }),
-        |cost, _left_over| {
-            first_segment = cost.clone();
-            Ok(batch.add_on.iter().map(BatchOp::to_grove_op).collect())
-        },
-        transaction,
-        grove_version,
-    )
+    let ops = batch.ops.iter().map(BatchOp::to_grove_op).collect();
+    let options = Some(BatchApplyOptions {
+        batch_pause_height: batch.pause_height,
+        ..BATCH_OPTIONS
+    });
+    let add_on = |cost: &OperationCost, _left_over: &Option<OpsByLevelPath>| {
+        first_segment = cost.clone();
+        Ok(batch.add_on.iter().map(BatchOp::to_grove_op).collect())
+    };
+    match callbacks {
+        Callbacks::GroveDb => {
+            db.apply_partial_batch(ops, options, add_on, transaction, grove_version)
+        }
+        Callbacks::Drive => db.apply_partial_batch_with_element_flags_update(
+            ops,
+            options,
+            merge_flags_of_one_owner,
+            split_removed_bytes,
+            add_on,
+            transaction,
+            grove_version,
+        ),
+    }
     .map_ok(|()| Outcome::WrittenInSegments { first_segment })
 }
 
@@ -1151,6 +1317,33 @@ fn apply_write(
             )
             .map_ok(|(root, position)| Outcome::Appended { root, position })
         }
+        Write::SectionalDelete { path, key } => db
+            .delete_with_sectional_storage_function(
+                path.as_slice().into(),
+                key,
+                Some(DELETE_OPTIONS),
+                transaction,
+                &mut split_removed_bytes,
+                grove_version,
+            )
+            .map_ok(written),
+        Write::SectionalDeleteUpTree {
+            path,
+            key,
+            stop_path_height,
+        } => db
+            .delete_up_tree_while_empty_with_sectional_storage(
+                path.as_slice().into(),
+                key,
+                &DeleteUpTreeOptions {
+                    stop_path_height: *stop_path_height,
+                    ..DELETE_UP_TREE_OPTIONS
+                },
+                transaction,
+                split_removed_bytes,
+                grove_version,
+            )
+            .map_ok(Outcome::Deleted),
     }
 }
 

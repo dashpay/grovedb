@@ -12,6 +12,7 @@
 
 mod chunks;
 mod drops;
+mod epochs;
 mod indexed;
 mod moves;
 mod pages;
@@ -24,6 +25,7 @@ use std::collections::BTreeSet;
 pub use self::{
     chunks::{ChunkProofs, MIN_CHUNKED_ROWS},
     drops::FlatDrops,
+    epochs::{FlagEpochs, MAX_LADDER_RUNGS},
     indexed::{IndexedWrites, MAX_INDEXED_ROUNDS},
     moves::Moves,
     pages::Pagination,
@@ -65,6 +67,7 @@ const DOMAIN_PAGES: u64 = 0xAD0A;
 const DOMAIN_INDEXED: u64 = 0xAD0B;
 const DOMAIN_TYPED: u64 = 0xAD0C;
 const DOMAIN_CHUNKS: u64 = 0xAD0D;
+const DOMAIN_EPOCHS: u64 = 0xAD0E;
 
 /// Chains of trees nested `depth` levels deep.
 ///

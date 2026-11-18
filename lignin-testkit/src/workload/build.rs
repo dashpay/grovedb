@@ -49,6 +49,18 @@ pub(crate) fn storage_flags(epoch: u16, owner: Option<&[u8; 32]>) -> Option<Elem
     Some(flags)
 }
 
+/// An item that takes `len` bytes without its flags, or up to two more:
+/// one byte for the variant, one for the absent flags and one or three for
+/// the length of the value, which takes three from 251 bytes on.
+pub(crate) fn item_of_len(rng: &mut Rng, len: usize, flags: Option<ElementFlags>) -> Element {
+    let value = if len < 256 {
+        len.saturating_sub(3).min(250)
+    } else {
+        len - 5
+    };
+    Element::new_item_with_flags(rng.bytes(value as u32), flags)
+}
+
 pub(crate) fn insert(path: &[Vec<u8>], key: &[u8], element: Element) -> Op {
     Op::Write(Write::Insert {
         path: path.to_vec(),

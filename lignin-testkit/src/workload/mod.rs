@@ -15,14 +15,16 @@
 //!   trees, identity keys, the platform state, an index whose keys are
 //!   rewritten, documents that expire and indexes that aggregate, writes
 //!   that look before they write, identities read through the entry points
-//!   Drive answers with, and blocks that are rolled back, abandoned and
-//!   read under a snapshot.
+//!   Drive answers with, blocks that are rolled back, abandoned and read
+//!   under a snapshot, and documents replaced, handed over and deleted
+//!   across epochs, with the storage fees that go back to their owners.
 //! - [`adversarial`] and [`zoo`]: deep nesting, 255-byte keys, large values,
 //!   thousands of tiny subtrees, delete-heavy streams, reference chains,
 //!   every element and tree type, the append-only trees included, flat
 //!   drops, moves, partial batches and pages over every kind of tree,
 //!   indexed trees written entry by entry, every typed read of the
-//!   append-only trees, and trees served in chunks.
+//!   append-only trees, trees served in chunks, and storage flags in every
+//!   state Drive's callbacks leave them in.
 //!
 //! Between them they produce the GroveDB operations that reach storage in a
 //! way of their own ([`coverage::Operation`]): patch, move, partial batches,
@@ -31,17 +33,22 @@
 //! of their own: conditional inserts and deletes, raw existence checks,
 //! direct writes to indexed trees, typed reads of the append-only trees,
 //! chunk proofs, the remaining query entry points, and transactions that
-//! roll back, use savepoints or are read under a snapshot.
+//! roll back, use savepoints or are read under a snapshot. And they apply
+//! batches the way Drive applies every one of its own: with the two
+//! callbacks that keep an element's storage flags and split the bytes it
+//! frees by owner and epoch.
 //!
 //! [`Workload`] lists them all. [`apply()`] turns an operation into GroveDB
 //! calls, [`coverage`] reports which element types, tree types and
-//! operations a stream produced, and [`surface`] names every public
+//! operations a stream produced, [`flags`] follows what Drive's callbacks
+//! keep in the flags of an element, and [`surface`] names every public
 //! operation of GroveDB as produced or as left out, with the reason.
 
 pub mod adversarial;
 pub mod apply;
 pub mod coverage;
 pub mod drive;
+pub mod flags;
 pub mod op;
 pub mod rng;
 pub mod surface;
@@ -112,6 +119,13 @@ pub struct Features {
     /// The range read of a `PrivateDocumentStore` and the proof of its
     /// entries.
     pub private_document_ranges: bool,
+    /// An update that stores flags of another length than the stored ones
+    /// without the flags callback changing them: an element written
+    /// without flags over one with flags, and an update in a partial batch
+    /// that keeps the size of an element whose flags hold several epochs.
+    /// Grove versions 1 to 3 charge such an update for the length of the
+    /// stored flags, and the commit fails with a storage cost mismatch.
+    pub flag_length_changes: bool,
 }
 
 impl Features {
@@ -130,6 +144,7 @@ impl Features {
         instance_limits: true,
         instance_offsets: true,
         private_document_ranges: true,
+        flag_length_changes: true,
     };
 
     /// What `grove_version` stores.
@@ -165,6 +180,7 @@ impl Features {
             instance_offsets: path_query.per_instance_query_offsets >= 1,
             private_document_ranges: private_document_store.get_range >= 1
                 && private_document_store.range_proof >= 1,
+            flag_length_changes: grove_version.merk_versions.tree.just_in_time_value_update >= 1,
         }
     }
 
@@ -319,6 +335,10 @@ pub enum Workload {
     ChunkProofs(adversarial::ChunkProofs),
     /// [`drive::BlockExecution`].
     BlockExecution(drive::BlockExecution),
+    /// [`drive::StorageFees`].
+    StorageFees(drive::StorageFees),
+    /// [`adversarial::FlagEpochs`].
+    FlagEpochs(adversarial::FlagEpochs),
 }
 
 impl Workload {
@@ -397,6 +417,11 @@ impl Workload {
                 ..Default::default()
             }),
             Workload::BlockExecution(drive::BlockExecution::default()),
+            Workload::StorageFees(drive::StorageFees::default()),
+            Workload::FlagEpochs(adversarial::FlagEpochs {
+                features,
+                ..Default::default()
+            }),
         ]
     }
 
@@ -428,6 +453,8 @@ impl Workload {
             Workload::IdentityReads(_) => "identity-reads",
             Workload::ChunkProofs(_) => "chunk-proofs",
             Workload::BlockExecution(_) => "block-execution",
+            Workload::StorageFees(_) => "storage-fees",
+            Workload::FlagEpochs(_) => "flag-epochs",
         }
     }
 
@@ -459,6 +486,8 @@ impl Workload {
             Workload::IdentityReads(workload) => workload.stream(seed),
             Workload::ChunkProofs(workload) => workload.stream(seed),
             Workload::BlockExecution(workload) => workload.stream(seed),
+            Workload::StorageFees(workload) => workload.stream(seed),
+            Workload::FlagEpochs(workload) => workload.stream(seed),
         }
     }
 }

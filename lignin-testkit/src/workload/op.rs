@@ -42,6 +42,21 @@ pub enum Op {
     /// A step on the open transaction itself, or on a snapshot read
     /// transaction held beside it.
     Transaction(TransactionOp),
+    /// One `apply_batch_with_element_flags_update` call with the two
+    /// callbacks Drive applies every batch with: how a state transition is
+    /// applied on Platform. Where the batch replaces an element, the first
+    /// callback merges the storage flags stored with the ones written, so
+    /// the flags keep the epoch the element was created in and the bytes
+    /// each later epoch added. Where it frees bytes, the second splits them
+    /// by the epochs in the flags, and the cost names them by owner and
+    /// epoch for the refund.
+    FlagsBatch(Vec<BatchOp>),
+    /// One `apply_partial_batch_with_element_flags_update` call with the
+    /// two callbacks Drive passes there. They differ from those of an
+    /// [`Op::FlagsBatch`] in two ways: an update that changes the size of
+    /// an element is refused when it names another owner, and one that
+    /// keeps the size stores the flags as written.
+    FlagsPartialBatch(PartialBatch),
 }
 
 /// A step that is neither a write nor a read of the block's state: the open
@@ -253,6 +268,27 @@ pub enum Write {
         cv_net: [u8; 32],
         /// The serialized note ciphertext.
         payload: Vec<u8>,
+    },
+    /// `GroveDb::delete_with_sectional_storage_function`: [`Write::Delete`]
+    /// with the callback of an [`Op::FlagsBatch`] that splits the bytes the
+    /// delete frees by the epochs in the flags of what it deletes.
+    SectionalDelete {
+        /// The subtree to delete from.
+        path: Path,
+        /// The key to delete.
+        key: Vec<u8>,
+    },
+    /// `GroveDb::delete_up_tree_while_empty_with_sectional_storage`: a
+    /// direct [`Write::DeleteUpTree`] with the same callback, which splits
+    /// the bytes of the key and of every tree deleted above it.
+    SectionalDeleteUpTree {
+        /// The subtree to delete from.
+        path: Path,
+        /// The key to delete.
+        key: Vec<u8>,
+        /// The length of the path the climb stops at, as in
+        /// [`Write::DeleteUpTree`].
+        stop_path_height: Option<u16>,
     },
 }
 
@@ -795,18 +831,23 @@ impl Op {
             Op::Commit => out.push(3),
             Op::PartialBatch(batch) => {
                 out.push(4);
-                for ops in [&batch.ops, &batch.add_on] {
-                    put_len(out, ops.len());
-                    for op in ops {
-                        op.encode(out);
-                    }
-                }
-                put_option(out, batch.pause_height, |out, height| out.push(height));
+                batch.encode(out);
             }
             Op::FlushPendingDrops => out.push(5),
             Op::Transaction(step) => {
                 out.push(6);
                 step.encode(out);
+            }
+            Op::FlagsBatch(ops) => {
+                out.push(7);
+                put_len(out, ops.len());
+                for op in ops {
+                    op.encode(out);
+                }
+            }
+            Op::FlagsPartialBatch(batch) => {
+                out.push(8);
+                batch.encode(out);
             }
         }
     }
@@ -820,19 +861,30 @@ impl Op {
                 | Write::InsertIfChanged { element, .. }
                 | Write::IndexedInsert { element, .. },
             ) => vec![element],
-            Op::Batch(ops) => ops.iter().filter_map(BatchOp::element).collect(),
-            Op::PartialBatch(batch) => batch
-                .ops
-                .iter()
-                .chain(&batch.add_on)
-                .filter_map(BatchOp::element)
-                .collect(),
+            Op::Batch(_) | Op::PartialBatch(_) | Op::FlagsBatch(_) | Op::FlagsPartialBatch(_) => {
+                self.batch_ops().filter_map(BatchOp::element).collect()
+            }
             Op::Write(_)
             | Op::Read(_)
             | Op::Commit
             | Op::FlushPendingDrops
             | Op::Transaction(_) => Vec::new(),
         }
+    }
+
+    /// The operations of the batch the op applies, those the caller adds to
+    /// a partial batch last. None for an op that is no batch.
+    pub fn batch_ops(&self) -> impl Iterator<Item = &BatchOp> {
+        let (ops, add_on): (&[BatchOp], &[BatchOp]) = match self {
+            Op::Batch(ops) | Op::FlagsBatch(ops) => (ops, &[]),
+            Op::PartialBatch(batch) | Op::FlagsPartialBatch(batch) => (&batch.ops, &batch.add_on),
+            Op::Write(_)
+            | Op::Read(_)
+            | Op::Commit
+            | Op::FlushPendingDrops
+            | Op::Transaction(_) => (&[], &[]),
+        };
+        ops.iter().chain(add_on)
     }
 
     /// Whether the op reads or reclaims committed state and leaves the open
@@ -867,6 +919,18 @@ impl Op {
                         | TransactionOp::BlockRead(_)
                 )
         )
+    }
+}
+
+impl PartialBatch {
+    fn encode(&self, out: &mut Vec<u8>) {
+        for ops in [&self.ops, &self.add_on] {
+            put_len(out, ops.len());
+            for op in ops {
+                op.encode(out);
+            }
+        }
+        put_option(out, self.pause_height, |out, height| out.push(height));
     }
 }
 
@@ -957,9 +1021,7 @@ impl Write {
                 out.push(10);
                 put_path(out, path);
                 put_bytes(out, key);
-                put_option(out, *stop_path_height, |out, height| {
-                    out.extend_from_slice(&height.to_le_bytes())
-                });
+                put_stop_height(out, *stop_path_height);
                 out.push(u8::from(*built));
             }
             Write::DeleteBuilt { path, key } => {
@@ -1000,8 +1062,29 @@ impl Write {
                 out.extend_from_slice(cv_net);
                 put_bytes(out, payload);
             }
+            Write::SectionalDelete { path, key } => {
+                out.push(16);
+                put_path(out, path);
+                put_bytes(out, key);
+            }
+            Write::SectionalDeleteUpTree {
+                path,
+                key,
+                stop_path_height,
+            } => {
+                out.push(17);
+                put_path(out, path);
+                put_bytes(out, key);
+                put_stop_height(out, *stop_path_height);
+            }
         }
     }
+}
+
+fn put_stop_height(out: &mut Vec<u8>, stop_path_height: Option<u16>) {
+    put_option(out, stop_path_height, |out, height| {
+        out.extend_from_slice(&height.to_le_bytes())
+    });
 }
 
 impl BatchOp {

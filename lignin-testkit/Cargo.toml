@@ -12,6 +12,7 @@ publish = false
 grovedb = { version = "6.1.1", path = "../grovedb", features = ["unsafe-dump-load"] }
 grovedb-commitment-tree = { version = "6.1.1", path = "../grovedb-commitment-tree" }
 grovedb-costs = { version = "6.1.1", path = "../costs" }
+grovedb-epoch-based-storage-flags = { version = "6.1.1", path = "../grovedb-epoch-based-storage-flags" }
 grovedb-merk = { version = "6.1.1", path = "../merk" }
 grovedb-path = { version = "6.1.1", path = "../path" }
 grovedb-storage = { version = "6.1.1", path = "../storage", features = ["rocksdb_storage"] }

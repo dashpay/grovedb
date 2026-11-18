@@ -25,6 +25,7 @@ use grovedb::{
 use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
 
 use super::{
+    flags::{Histories, Update},
     op::{
         AppendEntry, BatchOp, ChunkIds, Fetch, IndexedTree, Op, Prove, Read, TransactionOp,
         TreeRead, Write,
@@ -296,6 +297,32 @@ operations! {
         SavepointKept = "A savepoint still on the stack when its transaction commits.",
         SnapshotRead = "A read through `GroveDb::start_snapshot_read_transaction`.",
         SnapshotReadAfterCommit = "A read through a snapshot older than the last commit.";
+    "storage-flag callbacks":
+        FlagsBatch = "`GroveDb::apply_batch_with_element_flags_update`, with Drive's callbacks.",
+        FlagsPartialBatch =
+            "`GroveDb::apply_partial_batch_with_element_flags_update`, with Drive's callbacks.",
+        SectionalDelete = "`GroveDb::delete_with_sectional_storage_function`.",
+        SectionalDeleteUpTree =
+            "`GroveDb::delete_up_tree_while_empty_with_sectional_storage`.",
+        FlagsGrowth = "An update that makes an element longer in a later epoch than its first.",
+        FlagsShrinkAcrossEpochs =
+            "An update that frees every byte one epoch added and bytes of an earlier one.",
+        FlagsSameSize = "An update in a later epoch that keeps the length, and the stored flags.",
+        FlagsOwnerChange = "An update whose flags name another owner than the stored ones.",
+        FlagsRemoved = "An element without flags stored over one with flags.",
+        FlagsDelete = "A delete of an element whose flags hold several epochs.",
+        PartialFlagsGrowth = "The same growth in a partial batch.",
+        PartialFlagsShrinkAcrossEpochs = "The same shrinking in a partial batch.",
+        PartialFlagsSameSize =
+            "An update in a partial batch that keeps the length, and stores the flags written.",
+        PartialFlagsOwnerChange =
+            "The same update with flags that name another owner, the one case a partial batch \
+             accepts one in.",
+        PartialFlagsHistoryDropped =
+            "The same update over flags of several epochs, whose history the flags written \
+             replace.",
+        PartialFlagsDelete = "A delete in a partial batch of an element whose flags hold several \
+                              epochs.";
 }
 
 impl Features {
@@ -413,7 +440,24 @@ impl Features {
             | Operation::NestedSavepoint
             | Operation::SavepointKept
             | Operation::SnapshotRead
-            | Operation::SnapshotReadAfterCommit => true,
+            | Operation::SnapshotReadAfterCommit
+            | Operation::FlagsBatch
+            | Operation::FlagsPartialBatch
+            | Operation::SectionalDelete
+            | Operation::SectionalDeleteUpTree
+            | Operation::FlagsGrowth
+            | Operation::FlagsShrinkAcrossEpochs
+            | Operation::FlagsSameSize
+            | Operation::FlagsOwnerChange
+            | Operation::FlagsDelete
+            | Operation::PartialFlagsGrowth
+            | Operation::PartialFlagsShrinkAcrossEpochs
+            | Operation::PartialFlagsSameSize
+            | Operation::PartialFlagsOwnerChange
+            | Operation::PartialFlagsDelete => true,
+            Operation::FlagsRemoved | Operation::PartialFlagsHistoryDropped => {
+                self.flag_length_changes
+            }
         }
     }
 }
@@ -429,6 +473,8 @@ pub struct Coverage {
     savepoints: u32,
     /// How many blocks were committed since the open snapshot was opened.
     commits_under_snapshot: Option<u32>,
+    /// What the flags of the elements written under Drive's callbacks hold.
+    histories: Histories,
 }
 
 impl Coverage {
@@ -451,8 +497,10 @@ impl Coverage {
     /// An element counts under its outermost variant. A tree counts under
     /// the type of the subtree it creates, looked up through a wrapper. The
     /// operations that depend on what came before, such as a savepoint set
-    /// inside another, are counted as the stream is recorded in order.
+    /// inside another or an update of an element stored in an earlier
+    /// epoch, are counted as the stream is recorded in order.
     pub fn record(&mut self, op: &Op) {
+        self.record_flags(op);
         for element in op.elements() {
             self.elements.insert(element_variant(element));
             if let Some(tree_type) = element.tree_type() {
@@ -469,16 +517,7 @@ impl Coverage {
                 _ => {}
             }
         }
-        let batch_ops: Vec<&BatchOp> = match op {
-            Op::Batch(ops) => ops.iter().collect(),
-            Op::PartialBatch(batch) => batch.ops.iter().chain(&batch.add_on).collect(),
-            Op::Write(_)
-            | Op::Read(_)
-            | Op::Commit
-            | Op::FlushPendingDrops
-            | Op::Transaction(_) => Vec::new(),
-        };
-        for batch_op in batch_ops {
+        for batch_op in op.batch_ops() {
             match batch_op {
                 BatchOp::RefreshReference { reference, .. } => {
                     self.reference_paths
@@ -504,6 +543,8 @@ impl Coverage {
         }
         match op {
             Op::PartialBatch(_) => self.produced(Operation::PartialBatch),
+            Op::FlagsBatch(_) => self.produced(Operation::FlagsBatch),
+            Op::FlagsPartialBatch(_) => self.produced(Operation::FlagsPartialBatch),
             Op::FlushPendingDrops => self.produced(Operation::PendingDropsFlush),
             Op::Batch(_) => self.produced(Operation::Batch),
             Op::Write(write) => self.produced(write_operation(write)),
@@ -524,6 +565,57 @@ impl Coverage {
 
     fn produced(&mut self, operation: Operation) {
         self.operations.insert(operation);
+    }
+
+    /// Counts what an operation that runs Drive's callbacks does to the
+    /// flags of the elements it replaces and deletes.
+    fn record_flags(&mut self, op: &Op) {
+        let seen = self.histories.record(op);
+        let partial = matches!(op, Op::FlagsPartialBatch(_));
+        let either = |whole, in_segments| if partial { in_segments } else { whole };
+        let Update {
+            grew_in_later_epoch,
+            shrank_across_epochs,
+            kept_size,
+            named_another_owner,
+            dropped_history,
+            removed_flags,
+        } = seen.update;
+        let cases = [
+            (
+                grew_in_later_epoch,
+                either(Operation::FlagsGrowth, Operation::PartialFlagsGrowth),
+            ),
+            (
+                shrank_across_epochs,
+                either(
+                    Operation::FlagsShrinkAcrossEpochs,
+                    Operation::PartialFlagsShrinkAcrossEpochs,
+                ),
+            ),
+            (
+                kept_size,
+                either(Operation::FlagsSameSize, Operation::PartialFlagsSameSize),
+            ),
+            (
+                named_another_owner,
+                either(
+                    Operation::FlagsOwnerChange,
+                    Operation::PartialFlagsOwnerChange,
+                ),
+            ),
+            (dropped_history, Operation::PartialFlagsHistoryDropped),
+            (removed_flags, Operation::FlagsRemoved),
+            (
+                seen.deleted_several_epochs,
+                either(Operation::FlagsDelete, Operation::PartialFlagsDelete),
+            ),
+        ];
+        for (seen, operation) in cases {
+            if seen {
+                self.produced(operation);
+            }
+        }
     }
 
     fn record_transaction_op(&mut self, step: &TransactionOp) {
@@ -665,6 +757,8 @@ fn write_operation(write: &Write) -> Operation {
         },
         Write::ReconcileIndexed { .. } => Operation::IndexedReconcile,
         Write::CommitmentInsert { .. } => Operation::CommitmentInsert,
+        Write::SectionalDelete { .. } => Operation::SectionalDelete,
+        Write::SectionalDeleteUpTree { .. } => Operation::SectionalDeleteUpTree,
     }
 }
 

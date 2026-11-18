@@ -12,6 +12,7 @@ use std::{
 };
 
 use grovedb::GroveDb;
+use grovedb_costs::{storage_cost::removal::StorageRemovedBytes, OperationCost};
 use grovedb_version::version::GroveVersion;
 
 use super::{
@@ -256,6 +257,11 @@ fn quoted(op: &Op) -> String {
 /// record, so a trace shows each shape of answer a path query has. An
 /// operation of a kind this module has never heard of is still a kind of
 /// its own.
+///
+/// An operation whose cost names the bytes it freed by owner and epoch is
+/// a kind of its own too, and another when it names more than one epoch:
+/// a trace shows a refund, and one split across epochs, for each operation
+/// that makes one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Kind {
     op: Discriminant<Op>,
@@ -263,6 +269,32 @@ struct Kind {
     read: Option<Discriminant<Read>>,
     step: Option<Discriminant<TransactionOp>>,
     record: Option<&'static str>,
+    refund: Refund,
+}
+
+/// How a cost names the bytes an operation freed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Refund {
+    /// Not at all, or not by owner and epoch.
+    Unsplit,
+    /// To one epoch of one owner.
+    OneEpoch,
+    /// To several.
+    SeveralEpochs,
+}
+
+impl Refund {
+    fn of(cost: &OperationCost) -> Self {
+        let StorageRemovedBytes::SectionedStorageRemoval(owners) = &cost.storage_cost.removed_bytes
+        else {
+            return Refund::Unsplit;
+        };
+        match owners.values().map(|epochs| epochs.len()).sum() {
+            0 => Refund::Unsplit,
+            1 => Refund::OneEpoch,
+            _ => Refund::SeveralEpochs,
+        }
+    }
 }
 
 impl Kind {
@@ -288,6 +320,7 @@ impl Kind {
                 Op::Transaction(step) => Some(discriminant(step)),
                 _ => None,
             },
+            refund: Refund::of(&step.cost),
         }
     }
 }
@@ -628,6 +661,67 @@ mod tests {
                 (2, detailed[1].1),
                 (3, "result elements"),
                 (4, "result aggregate-count"),
+            ],
+            "{}",
+            trace.render()
+        );
+    }
+
+    /// An update under Drive's callbacks frees bytes of no epoch, of one
+    /// or of several, under one kind of operation, so the first step of
+    /// each is sampled.
+    #[test]
+    fn the_first_refund_of_each_split_is_sampled() {
+        use grovedb_epoch_based_storage_flags::StorageFlags;
+
+        let item = |len: usize, epoch: u16| {
+            let flags = StorageFlags::SingleEpochOwned(epoch, [1; 32]).to_element_flags();
+            Op::FlagsBatch(vec![BatchOp::InsertOrReplace {
+                path: Vec::new(),
+                key: b"item".to_vec(),
+                element: Element::new_item_with_flags(vec![7; len], Some(flags)),
+            }])
+        };
+        let ops = vec![
+            item(40, 0),
+            item(140, 1),
+            item(240, 2),
+            // Within the latest epoch, twice, then across it, twice.
+            item(220, 3),
+            item(200, 3),
+            item(90, 3),
+            item(20, 3),
+            Op::Commit,
+        ];
+        let spec = TraceSpec {
+            name: "refunds".to_string(),
+            seed: 0,
+            grove_version: GroveVersion::latest(),
+            segments: vec![SegmentSpec {
+                workload: "by-hand".to_string(),
+                source: Source::Ops(ops),
+                checkpoint_every: None,
+                sample: Sample::FirstOfEachKind { max_payload: 1000 },
+            }],
+        };
+        let trace = run(&spec, Detailing::Sampled);
+        assert!(trace.tally.is_clean(), "{}", trace.render());
+        let owner = "01".repeat(32);
+        let detailed: Vec<(u64, &str)> = trace
+            .details()
+            .map(|detail| {
+                let cost = detail.lines[0].as_str();
+                let removed = cost.split_once("removed=").expect("a cost line").1;
+                (detail.step, removed.split(' ').next().expect("the bytes"))
+            })
+            .collect();
+        assert_eq!(
+            detailed,
+            [
+                (0, "-"),
+                (3, format!("{{{owner}/2=20}}").as_str()),
+                (5, format!("{{{owner}/1=53,{owner}/2=60}}").as_str()),
+                (7, "-"),
             ],
             "{}",
             trace.render()
