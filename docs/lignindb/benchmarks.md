@@ -290,3 +290,53 @@ write path's CPU goes:
 
 The plan says 61% inside RocksDB and 2.6% Blake3. RocksDB plus the kernel
 time it causes comes to 61.6%.
+
+### Time rows on the project's machines
+
+The values below are medians, on the reference workload.
+
+- **Apple M4 Max:** three runs at `d7a932fb`, made only while the machine's
+  one-minute load was under 10.
+- **Linux x86_64 box (strixbox):** two runs, at `33eb751f` and `d7a932fb`.
+  These commits measure RocksDB identically on Linux. The box's CPU weight is
+  deliberately low, and its storage is shared with other jobs (I/O pressure
+  "full" 30 to 50%). Its wall times are therefore dominated by waiting, and
+  its stable measure is the user-space instructions per sample.
+
+| Row | M4 Max | strixbox wall | strixbox instructions | Plan (M5 Ultra) |
+| --- | --- | --- | --- | --- |
+| Bulk load of 1M | 236 to 240 s | 5,031 and 13,552 s | 2.83 × 10¹² | 138 to 151 s |
+| Wall time per transition (create at size) | 210 to 215 µs | 266 and 510 µs | 2.59 and 2.64 M | 298 µs |
+| Update per transition | 200 to 205 µs | 379 and 1,801 µs | 2.45 and 2.43 M | |
+| Delete per transition | 208 to 216 µs | 3,252 and 3,244 µs | 2.72 and 2.58 M | |
+| Commit of a 20-transition block | 0.78 to 0.81 ms | 1.3 and 1.1 ms | 9.6 and 9.7 M | about 1.0 ms |
+| Point get, warm | 8.0 to 8.8 µs | 556 and 14.8 µs | 87 and 89 k | 8.9 µs |
+| Point query with proof, warm | 59.5 to 62.8 µs | 3,102 and 84.7 µs | 814 and 800 k | 73.6 µs |
+| 100 references with proof, warm | 1,192 to 1,297 µs | 24,731 and 5,815 µs | 13.8 and 13.8 M | 1,262 µs |
+| Point get, cold | 53 to 68 µs | 1,767 and 1,361 µs | 116 and 118 k | |
+| Point query with proof, cold | 158 to 168 µs | 3,720 and 2,875 µs | 1.06 and 1.06 M | |
+| 100 references with proof, cold | 1,867 to 2,001 µs | 82,519 and 440,265 µs | 16.6 and 16.6 M | |
+| Checkpoint, after a flush | 5.6 to 6.3 ms | 65.7 and 50.3 ms | 508 and 494 k | 10 ms |
+| Checkpoint, right after the load | 9.7 to 11.6 ms | 66.9 and 68.2 ms | 632 and 887 k | |
+| Reopen | 7.4 to 8.4 ms | 94.6 and 90.0 ms | 95.3 and 94.1 M | 31 ms |
+
+On strixbox, `perf` was dropped from the second run's bulk-load row after
+one of its 50,000 enable/disable round trips timed out under the box's load.
+The row then reports no instructions rather than a partial count.
+
+How well the runs agree, within 10%:
+
+- **M4 Max.** The three pairs agree on 18, 17 and 15 of the 19 time rows.
+  - Bulk load, every write row, every commit and every warm read agree within
+    1 to 8% in every pair.
+  - The rows that miss are the I/O-bound millisecond rows: the checkpoints,
+    the reopen after a flush, and the cold point get. They differ by 11 to 27%.
+  - One run started while the five-minute load was 16, and it is the high one
+    in every pair it misses.
+- **strixbox.** Wall time agrees on 5 of 19 rows. Instructions per sample
+  agree on 15 of 16 rows, most within 2%. The miss is the checkpoint right
+  after the load (+40%), which copies the live log, whose length at that
+  moment varies.
+
+With one engine, every ratio to RocksDB in the same run is 1. The ratio is
+computed for any engine added to a run.
