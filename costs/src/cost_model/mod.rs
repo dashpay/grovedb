@@ -27,16 +27,33 @@
 //! number of bytes of the record: for a Merk node the length of its
 //! encoding ([`StorageCostModel::node_record_len`]), for any other record
 //! the length of the caller's value.
+//!
+//! # Holding an engine to the model
+//!
+//! With the feature `cost-model-ledger`, which is for tests, every cost a
+//! function here hands out to be reported is also added to a total kept
+//! per thread (`ledger`). A test that adds up what an engine reported and
+//! finds that total has shown that the engine charged through these
+//! functions and in no other way, however its code is written.
 
+#[cfg(feature = "cost-model-ledger")]
+pub mod ledger;
 mod v0;
 
 use crate::{
-    error::Error, storage_cost::key_value_cost::KeyValueStorageCost, ChildKeyLength,
-    ChildSumLength, ChildrenSizesWithIsSumTree, FeatureSumLength, OperationCost,
+    error::Error, storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree,
+    OperationCost,
 };
 
 /// The length of a subtree prefix.
 pub const PREFIX_LEN: usize = 32;
+
+#[inline]
+fn issue(cost: OperationCost) -> OperationCost {
+    #[cfg(feature = "cost-model-ledger")]
+    ledger::record(&cost);
+    cost
+}
 
 /// One of the four keyspaces of a subtree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -68,21 +85,26 @@ impl StorageCostModel {
         }
     }
 
-    /// N1: the record length of a Merk node, from the sizes of its fields.
+    /// N1: the record length of a Merk node, from the lengths of its
+    /// parts as they are encoded.
     ///
-    /// `feature_len` is the length of the node's feature without its tag
-    /// byte. `left` and `right` are the sizes of its links as Merk passes
-    /// them with a node write: for each child, the length of its key plus
-    /// 36, and the length of its aggregate without the tag byte.
+    /// `feature_len` is the length of the node's feature: its tag byte and
+    /// what follows. `left_link_len` and `right_link_len` are the lengths
+    /// of its links: for a child, its key and 36 bytes, and its aggregate
+    /// after the tag byte. The two sizes Merk passes for a link with a
+    /// node write add up to that length.
+    ///
+    /// The function knows no kind of feature or aggregate. Whoever holds
+    /// the node measures them, by the encoding of each.
     pub fn node_record_len(
         self,
         value_len: usize,
-        feature_len: FeatureSumLength,
-        left: Option<(ChildKeyLength, ChildSumLength)>,
-        right: Option<(ChildKeyLength, ChildSumLength)>,
+        feature_len: usize,
+        left_link_len: Option<usize>,
+        right_link_len: Option<usize>,
     ) -> usize {
         match self {
-            Self::V0 => v0::node_record_len(value_len, feature_len, left, right),
+            Self::V0 => v0::node_record_len(value_len, feature_len, left_link_len, right_link_len),
         }
     }
 
@@ -90,40 +112,40 @@ impl StorageCostModel {
     /// any other derivation of a prefix from a path. `segment_lens` are the
     /// lengths of the path's segments.
     pub fn open_by_path(self, segment_lens: impl IntoIterator<Item = usize>) -> OperationCost {
-        match self {
+        issue(match self {
             Self::V0 => v0::open_by_path(segment_lens),
-        }
+        })
     }
 
     /// P2: a subtree handle opened by a prefix the caller holds.
     pub fn open_by_prefix(self) -> OperationCost {
-        match self {
+        issue(match self {
             Self::V0 => v0::open_by_prefix(),
-        }
+        })
     }
 
     /// P3: the prefix of a secondary of an indexed tree, derived from its
     /// primary's.
     pub fn secondary_prefix(self) -> OperationCost {
-        match self {
+        issue(match self {
             Self::V0 => v0::secondary_prefix(),
-        }
+        })
     }
 
     /// R1: a point read through a deferred handle, in any keyspace. `found`
     /// is the length of the record. A read that fails is charged as one
     /// that found nothing.
     pub fn read(self, found: Option<usize>) -> OperationCost {
-        match self {
+        issue(match self {
             Self::V0 => v0::read(found),
-        }
+        })
     }
 
     /// R2: a point read through an immediate handle.
     pub fn read_immediate(self) -> OperationCost {
-        match self {
+        issue(match self {
             Self::V0 => v0::read_immediate(),
-        }
+        })
     }
 
     /// W1: the stored key of a new data record. A writer that describes a
@@ -144,17 +166,17 @@ impl StorageCostModel {
     /// into the batch of one. It is charged when the batch is applied
     /// ([`Self::batch`]).
     pub fn staged_write(self) -> OperationCost {
-        match self {
+        issue(match self {
             Self::V0 => v0::staged_write(),
-        }
+        })
     }
 
     /// A write a handle refuses: a deferred handle that was opened with no
     /// batch.
     pub fn refused_write(self) -> OperationCost {
-        match self {
+        issue(match self {
             Self::V0 => v0::refused_write(),
-        }
+        })
     }
 
     /// B1: the charge of a batch that is being applied, to which each of
@@ -184,17 +206,17 @@ impl StorageCostModel {
     /// handed to the engine. `on_success` is owed only when the engine took
     /// them.
     pub fn batch_written(self, on_success: OperationCost, written: bool) -> OperationCost {
-        match self {
+        issue(match self {
             Self::V0 => v0::batch_written(on_success, written),
-        }
+        })
     }
 
     /// M1: a put or a delete made directly through an immediate handle. The
     /// writer's cost is ignored.
     pub fn write_immediate(self) -> OperationCost {
-        match self {
+        issue(match self {
             Self::V0 => v0::write_immediate(),
-        }
+        })
     }
 
     /// M2: the charge of the batch of an immediate handle, to which each
@@ -208,27 +230,27 @@ impl StorageCostModel {
 
     /// C1: any move of a cursor.
     pub fn cursor_move(self) -> OperationCost {
-        match self {
+        issue(match self {
             Self::V0 => v0::cursor_move(),
-        }
+        })
     }
 
     /// C2: a cursor asked for its key, or whether it is on a record.
     /// `on_record` is the length of the stored key the cursor stands on,
     /// when that is a record of the cursor's subtree.
     pub fn cursor_key(self, on_record: Option<usize>) -> OperationCost {
-        match self {
+        issue(match self {
             Self::V0 => v0::cursor_key(on_record),
-        }
+        })
     }
 
     /// C3: a cursor asked for its value. `on_record` is the length of the
     /// stored key and of the record the cursor stands on, when that is a
     /// record of the cursor's subtree.
     pub fn cursor_value(self, on_record: Option<(usize, usize)>) -> OperationCost {
-        match self {
+        issue(match self {
             Self::V0 => v0::cursor_value(on_record),
-        }
+        })
     }
 
     /// C4: the walk of a keyspace that is cleared. `stored_key_lens` are
@@ -237,16 +259,16 @@ impl StorageCostModel {
     /// [`BatchCharge::delete_uncosted`] when the batch of a deferred handle
     /// is applied, and by [`Self::write_immediate`] on an immediate handle.
     pub fn clear_walk(self, stored_key_lens: impl IntoIterator<Item = usize>) -> OperationCost {
-        match self {
+        issue(match self {
             Self::V0 => v0::clear_walk(stored_key_lens),
-        }
+        })
     }
 
     /// Committing a transaction.
     pub fn transaction_commit(self) -> OperationCost {
-        match self {
+        issue(match self {
             Self::V0 => v0::transaction_commit(),
-        }
+        })
     }
 }
 
@@ -335,18 +357,20 @@ impl BatchCharge {
 
     /// The two parts of the charge: what is owed at once, and what
     /// [`StorageCostModel::batch_written`] turns into the storage cost of
-    /// the batch.
+    /// the batch. Only the first is a cost to report as it is.
     pub fn into_parts(self) -> (OperationCost, OperationCost) {
-        (self.at_once, self.on_success)
+        (issue(self.at_once), self.on_success)
     }
 
     /// The whole charge of the batch. `written` says whether every
     /// operation was accepted and the engine took the writes. The storage
     /// cost joins what was charged at once only then, as one sum.
     pub fn finish(self, written: bool) -> OperationCost {
-        let mut cost = self.model.batch_written(self.on_success, written);
+        let mut cost = match self.model {
+            StorageCostModel::V0 => v0::batch_written(self.on_success, written),
+        };
         cost += self.at_once;
-        cost
+        issue(cost)
     }
 }
 
@@ -403,7 +427,7 @@ impl ImmediateBatchCharge {
 
     /// The charge of the batch.
     pub fn finish(self) -> OperationCost {
-        self.cost
+        issue(self.cost)
     }
 }
 

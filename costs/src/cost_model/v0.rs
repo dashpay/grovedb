@@ -11,7 +11,7 @@ use crate::{
     storage_cost::{
         key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes::BasicStorageRemoval,
     },
-    ChildKeyLength, ChildSumLength, ChildrenSizesWithIsSumTree, FeatureSumLength, OperationCost,
+    ChildrenSizesWithIsSumTree, OperationCost,
 };
 
 const BLAKE3_BLOCK_LEN: usize = 64;
@@ -41,16 +41,12 @@ pub(super) fn stored_key_len(key_len: usize) -> usize {
 
 pub(super) fn node_record_len(
     value_len: usize,
-    feature_len: FeatureSumLength,
-    left: Option<(ChildKeyLength, ChildSumLength)>,
-    right: Option<(ChildKeyLength, ChildSumLength)>,
+    feature_len: usize,
+    left_link_len: Option<usize>,
+    right_link_len: Option<usize>,
 ) -> usize {
-    let side = |link: Option<(ChildKeyLength, ChildSumLength)>| {
-        1 + link.map_or(0, |(key_and_fixed_len, aggregate_len)| {
-            key_and_fixed_len as usize + aggregate_len as usize
-        })
-    };
-    side(left) + side(right) + 1 + feature_len as usize + NODE_HASHES_LEN + value_len
+    let side = |link_len: Option<usize>| 1 + link_len.unwrap_or(0);
+    side(left_link_len) + side(right_link_len) + feature_len + NODE_HASHES_LEN + value_len
 }
 
 pub(super) fn open_by_path(segment_lens: impl IntoIterator<Item = usize>) -> OperationCost {

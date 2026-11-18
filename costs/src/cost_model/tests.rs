@@ -83,15 +83,19 @@ fn a_stored_key_is_the_prefix_and_the_key() {
 }
 
 #[test]
-fn the_record_length_of_a_node_is_a_sum_of_its_sizes() {
-    assert_eq!(MODEL.node_record_len(1, 0, None, None), 68);
+fn the_record_length_of_a_node_is_a_sum_of_the_lengths_of_its_parts() {
+    assert_eq!(MODEL.node_record_len(1, 1, None, None), 68);
     assert_eq!(
-        MODEL.node_record_len(10, 3, Some((4 + 36, 0)), Some((32 + 36, 17))),
+        MODEL.node_record_len(10, 1 + 3, Some(4 + 36), Some(32 + 36 + 17)),
         (1 + 40) + (1 + 68 + 17) + (1 + 3) + 64 + 10
     );
     assert_eq!(
-        MODEL.node_record_len(0, 0, None, Some((36, 0))),
+        MODEL.node_record_len(0, 1, None, Some(36)),
         1 + (1 + 36) + 1 + 64
+    );
+    assert_eq!(
+        MODEL.node_record_len(0, 1 + 16, Some(36 + 255 + 26), None),
+        (1 + 317) + 1 + 17 + 64
     );
 }
 
@@ -121,7 +125,17 @@ fn the_links_of_a_node_cancel_out_of_what_its_value_is_charged() {
                     for (cost_type, class) in cost_types_with_their_class() {
                         let feature = cost_type.map(|cost_type| (cost_type, payload_len));
                         let feature_len = feature.as_ref().map_or(0, |(_, len)| *len);
-                        let record_len = MODEL.node_record_len(value_len, feature_len, left, right);
+                        let link_len = |link: Option<(u32, u32)>| {
+                            link.map(|(key_and_fixed, aggregate)| {
+                                (key_and_fixed + aggregate) as usize
+                            })
+                        };
+                        let record_len = MODEL.node_record_len(
+                            value_len,
+                            1 + feature_len as usize,
+                            link_len(left),
+                            link_len(right),
+                        );
                         let mut charge = MODEL.batch();
                         charge
                             .put(
@@ -706,4 +720,113 @@ fn the_model_and_its_charges_can_be_shown_and_compared() {
     let immediate = MODEL.immediate_batch();
     assert_eq!(immediate, immediate.clone());
     assert!(format!("{immediate:?}").starts_with("ImmediateBatchCharge"));
+}
+
+#[cfg(feature = "cost-model-ledger")]
+mod ledger {
+    use super::*;
+    use crate::cost_model::ledger::{issued, take};
+
+    #[test]
+    fn the_ledger_holds_every_cost_handed_out_to_be_reported() {
+        take();
+        assert_eq!(issued(), OperationCost::default());
+
+        let mut reported = OperationCost::default();
+        for cost in [
+            MODEL.open_by_path([3, 4]),
+            MODEL.open_by_prefix(),
+            MODEL.secondary_prefix(),
+            MODEL.read(Some(70)),
+            MODEL.read_immediate(),
+            MODEL.staged_write(),
+            MODEL.refused_write(),
+            MODEL.write_immediate(),
+            MODEL.cursor_move(),
+            MODEL.cursor_key(Some(37)),
+            MODEL.cursor_value(Some((37, 100))),
+            MODEL.clear_walk([33, 40]),
+            MODEL.transaction_commit(),
+            MODEL.batch_written(OperationCost::with_storage_written_bytes(9), true),
+            MODEL.batch_written(OperationCost::with_storage_written_bytes(9), false),
+        ] {
+            reported += cost;
+        }
+        assert_eq!(issued(), reported);
+        assert_eq!(
+            reported,
+            OperationCost {
+                seek_count: 1 + 1 + 3,
+                storage_loaded_bytes: 70 + 37 + 137 + 2 * 73 + 288,
+                hash_node_calls: 2,
+                storage_cost: storage(9, 0, 0),
+                ..Default::default()
+            }
+        );
+        assert_eq!(take(), reported);
+        assert_eq!(issued(), OperationCost::default());
+    }
+
+    #[test]
+    fn a_batch_is_in_the_ledger_once_and_only_when_it_is_reported() {
+        let fill = || {
+            let mut charge = MODEL.batch();
+            charge
+                .put(Keyspace::Aux, 35, 10, None, None)
+                .expect("charged");
+            charge
+                .delete_uncosted(36, Ok::<_, ()>(Some(5)))
+                .expect("read");
+            charge.delete(removal(BasicStorageRemoval(4)));
+            charge
+        };
+        take();
+        MODEL.complete_new_key_cost(Some(KeyValueStorageCost::default()), 36);
+        let filled = fill();
+        assert_eq!(issued(), OperationCost::default());
+
+        let whole = filled.finish(true);
+        assert_eq!(take(), whole);
+        let refused = fill().finish(false);
+        assert_eq!(take(), refused);
+
+        let (at_once, on_success) = fill().into_parts();
+        assert_eq!(issued(), at_once);
+        let storage_cost = MODEL.batch_written(on_success, true);
+        let mut both = at_once;
+        both += storage_cost;
+        assert_eq!(take(), both);
+
+        let mut immediate = MODEL.immediate_batch();
+        immediate
+            .put(Keyspace::Aux, 35, 10, None, None)
+            .expect("charged");
+        immediate.delete(None);
+        assert_eq!(issued(), OperationCost::default());
+        let cost = immediate.finish();
+        assert_eq!(take(), cost);
+    }
+
+    #[test]
+    fn each_thread_has_a_ledger_of_its_own() {
+        take();
+        let here = MODEL.cursor_move();
+        let elsewhere = std::thread::spawn(|| {
+            let before = issued();
+            MODEL.read(Some(5));
+            (before, issued())
+        })
+        .join()
+        .expect("the thread ran");
+        assert_eq!(elsewhere.0, OperationCost::default());
+        assert_eq!(
+            elsewhere.1,
+            OperationCost {
+                seek_count: 1,
+                storage_loaded_bytes: 5,
+                ..Default::default()
+            }
+        );
+        assert_eq!(take(), here);
+    }
 }
