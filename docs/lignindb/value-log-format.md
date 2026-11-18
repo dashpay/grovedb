@@ -319,20 +319,25 @@ With O6, breaking O5 costs space and raises an error. Without O6, O5 would
 be the only thing between a moved cell and a lost value.
 
 **O7. The count belongs to a commit version.** It is the count of the
-latest committed version, and it changes in the same commit as the cell
-change that causes it, never earlier. A count that ran ahead of the pages
-could reach zero while a committed cell still points into the file. After
-a crash the count is that of the version recovery lands on: it is
-recovered with the pages, from the same log, or counted again from them.
+latest committed version, and it changes together with the cell change
+that causes it, never earlier. A cell change that a transaction makes
+changes the count in that transaction's commit. A value that the cleaner
+moves takes no commit version: its pointer rewrite and the counts of both
+files are installed in one checked step and are recovered with the pages
+(rules PV6 and PV7 of [`transactions.md`](transactions.md)). A count that
+ran ahead of the pages could reach zero while a committed cell still points
+into the file. After a crash the count is that of the version recovery
+lands on: it is recovered with the pages, from the same log, or counted
+again from them.
 
 **O8. A file outlives every version that can reach it.** The count speaks
 for the latest version only. A snapshot pins an older one, in which a cell
 may hold a pointer that the latest version no longer has: the cell was
 deleted, given another value or moved since, or the cleaner moved its
-value. So a file that becomes empty at commit version *v* is deleted only
-when no snapshot pinned at a version before *v* is left. A checkpoint
-holds its own hard link to the file (TXN-06) and keeps the file for
-itself.
+value. So a file that becomes empty while the latest commit version is *v*
+is deleted only when no snapshot pinned at a version before *v* is left. A
+checkpoint holds its own hard link to the file (TXN-06) and keeps the file
+for itself.
 
 **O9. Cleaning a file** is then:
 
@@ -343,10 +348,16 @@ itself.
    to the next value.
 3. Otherwise append the value to another file with the same back pointer,
    and put the new pointer in the cell: through a page delta for a tree
-   page, through a new image for a flat leaf (STORE-09). The old value
-   counts as one fewer in its file from the commit that changes the cell.
+   page, through a new image for a flat leaf (STORE-09). This takes no
+   commit version. The rewrite is installed in one checked step (PV7 of
+   `transactions.md`): the page must still be the current one, the cell
+   must still hold the old pointer, and no open write transaction may hold
+   a private copy of the page. If the step is refused, the appended copy is
+   dead and the value is tried again later. If it succeeds, the old value
+   counts as one fewer in its file and the new one as one more in the
+   other, from that step (O7).
 4. The file is empty when its count is zero (O6, O7), and is deleted when
-   O8 allows.
+   O8 and rule CL5 of `transactions.md` allow.
 
 **O10. The reader checks the owner too** (P4). A reader always knows which
 page it is reading for. So a cell that was carried without its value is
@@ -381,7 +392,7 @@ records is cut short, `Truncated` counts from the first byte of the value.
 
 | Task | Takes from here | Still its own to define |
 | --- | --- | --- |
-| STORE-09 Value log | `encode_value` or `write_value` to append, `ValuePointer` and its extent for the one positional read, `scan` and O4 to O9 for cleaning, `record_len` to read a file piece by piece. A value's records go into one file with nothing between (V7). The count of live values for each file, committed and recovered with the pages (O6, O7), and the rule for deleting an empty file (O8). | File rotation, when a value is durable, what a failed tail means, how the count is stored, when a file is cleaned. |
+| STORE-09 Value log | `encode_value` or `write_value` to append, `ValuePointer` and its extent for the one positional read, `scan` and O4 to O9 for cleaning, `record_len` to read a file piece by piece. A value's records go into one file with nothing between (V7). The count of live values for each file, changed and recovered with the pages (O6, O7), and the rule for deleting an empty file (O8). | File rotation, when a value is durable, what a failed tail means, how the count is stored, when a file is cleaned. |
 | TREE-08 Out-of-line values | `ValuePointer::read` with the cell's page for the read path. `MAX_VALUE_LEN`. An empty value is never out of line (V2). Regrouping a page's values at consolidation appends them again with the same owner, which needs nothing more. | The inline threshold. Telling the store when a cell stops holding a pointer (O6). |
 | TREE-03 Fragment maintenance, TREE-07 Flat keyspace | The move rule O5 for every cell with a value pointer that goes to another page in a split, a merge or a fragment move. | Which cells move. |
 | TREE-09 Subtree drop | A dropped cell that holds a value pointer counts as one fewer live value in its file (O6). | How it learns of those cells without reading every page, or whether it reads them. |
@@ -430,7 +441,7 @@ owner can overrule one while version 1 is still open (U10).
      moving a cell touches the other side. It adds a table lookup to every
      read and a table to keep on disk.
 7. **The cleaner's rules O6 to O8.** They ask STORE-09 for a count of live
-   values for each file that commits and recovers with the pages, ask the
+   values for each file that changes and recovers with the pages, ask the
    tree layers to report every pointer a cell stops holding, including
    under a subtree drop (TREE-09), and keep an empty file until no snapshot
    from before it became empty is left. They are here because without them
