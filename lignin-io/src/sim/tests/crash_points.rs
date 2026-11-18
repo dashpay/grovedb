@@ -793,3 +793,85 @@ fn no_file_is_longer_than_a_small_machine_can_hold() {
         ..SimConfig::new(19)
     });
 }
+
+/// Every plan for the file changes of `image`, found the long way round:
+/// every choice of survivors, in every order, each write whole or with any
+/// of its sectors and any length a tear may have.
+fn every_change_plan_by_hand(image: &CrashImage) -> BTreeSet<String> {
+    fn extend(
+        ways: &[Vec<Option<Tear>>],
+        current: &mut Vec<Survivor>,
+        plans: &mut BTreeSet<String>,
+    ) {
+        plans.insert(format!("{current:?}"));
+        for (change, tears) in ways.iter().enumerate() {
+            if current.iter().any(|survivor| survivor.change == change) {
+                continue;
+            }
+            for tear in tears {
+                current.push(Survivor {
+                    change,
+                    tear: tear.clone(),
+                });
+                extend(ways, current, plans);
+                current.pop();
+            }
+        }
+    }
+
+    let sector = image.sector_size();
+    let mut ways = Vec::new();
+    for change in image.changes() {
+        let mut tears = vec![None];
+        if let FileChangeKind::Write { offset, len } = change.kind {
+            let end = offset + len;
+            let lens: Vec<u64> = (offset + 1..=end)
+                .filter(|at| at.is_multiple_of(sector) || *at == end)
+                .chain([0])
+                .collect();
+            for mask in 0..1u32 << change.sectors {
+                let mut sectors: Vec<Range<u64>> = Vec::new();
+                for index in (0..change.sectors).filter(|index| mask >> index & 1 == 1) {
+                    match sectors.last_mut() {
+                        Some(last) if last.end == index => last.end += 1,
+                        _ => sectors.push(index..index + 1),
+                    }
+                }
+                tears.extend(lens.iter().map(|len| Some(tear(&sectors, *len))));
+            }
+        }
+        ways.push(tears);
+    }
+    let mut plans = BTreeSet::new();
+    extend(&ways, &mut Vec::new(), &mut plans);
+    plans
+}
+
+#[test]
+fn every_plan_lists_what_an_enumeration_by_hand_lists() {
+    for seed in 0..if cfg!(miri) { 2 } else { 40 } {
+        let mut rng = SimRng::new(seed);
+        let fs = sim_with_sectors(seed, 1 + rng.below(4));
+        let file = create_durable(&fs, "/file", b"durable");
+        for change in 0..1 + rng.below(2) {
+            if rng.below(4) == 0 {
+                file.set_len(change + rng.below(9)).unwrap();
+            } else {
+                let data = vec![b'A' + change as u8; 1 + rng.below(3) as usize];
+                file.write_at(&data, rng.below(9)).unwrap();
+            }
+        }
+
+        let image = fs.crash_image();
+        let by_hand = every_change_plan_by_hand(&image);
+        let listed = image.every_plan(by_hand.len()).unwrap();
+        assert_eq!(listed.len(), by_hand.len(), "seed {seed}");
+        assert!(listed.iter().all(|plan| plan.names.is_empty()));
+        let listed: BTreeSet<String> = listed
+            .iter()
+            .map(|plan| format!("{:?}", plan.changes))
+            .collect();
+        assert_eq!(listed, by_hand, "seed {seed}");
+        assert!(by_hand.len() == 1 || image.every_plan(by_hand.len() - 1).is_none());
+    }
+}

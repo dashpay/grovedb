@@ -233,8 +233,10 @@ use crate::vfs::{DirEntry, OpenMode, Vfs, VfsFile, VfsLock};
 pub struct SimConfig {
     /// The seed every fault and every sampled crash state is drawn from.
     pub seed: u64,
-    /// The sector size in bytes: a write tears only where the offset in the
-    /// file is a multiple of it.
+    /// The sector size in bytes. A sector starts where the offset in the file
+    /// is a multiple of it, and a write tears only between the sectors it
+    /// touches: of each, the part the write covers survives whole or not at
+    /// all.
     pub sector_size: u64,
     /// The longest a file may get, at most 2 GiB less one byte, which is the
     /// most a 32-bit machine holds. An operation that would grow a file past
