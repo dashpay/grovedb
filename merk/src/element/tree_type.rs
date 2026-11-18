@@ -1060,4 +1060,44 @@ mod tests {
             ),
         }
     }
+
+    /// Every per-variant arm, for the trees with a 128-bit sum.
+    #[test]
+    fn big_sum_tree_extension_arms_direct() {
+        let root = Some(b"root".to_vec());
+        let flags = Some(vec![9u8, 8]);
+        for (element, tree_type) in [
+            (
+                Element::CountBigSumTree(root.clone(), 3, 42, flags.clone()),
+                TreeType::CountBigSumTree,
+            ),
+            (
+                Element::ProvableBigSumTree(root.clone(), 42, flags.clone()),
+                TreeType::ProvableBigSumTree,
+            ),
+            (
+                Element::ProvableBigSumIndexedTree(root.clone(), None, 42, flags.clone()),
+                TreeType::ProvableBigSumIndexedTree,
+            ),
+            (
+                Element::ProvableCountProvableBigSumIndexedTree(
+                    root.clone(),
+                    3,
+                    42,
+                    vec![(0, None)],
+                    flags.clone(),
+                ),
+                TreeType::ProvableCountProvableBigSumIndexedTree,
+            ),
+        ] {
+            assert_eq!(element.root_key_and_tree_type(), Some((&root, tree_type)));
+            assert_eq!(element.tree_flags_and_type(), Some((&flags, tree_type)));
+            assert_eq!(element.tree_type(), Some(tree_type));
+            assert_eq!(element.maybe_tree_type(), MaybeTree::Tree(tree_type));
+            assert_eq!(
+                element.root_key_and_tree_type_owned(),
+                Some((root.clone(), tree_type))
+            );
+        }
+    }
 }

@@ -235,7 +235,10 @@ pub(crate) struct IndexedEntryState {
 /// - The 128-bit counterparts of PSIT and PCPSIT index an `i128` sum, so they
 ///   accept what their 64-bit counterparts accept and the big sum trees
 ///   besides (`Element::is_big_sum_bearing_child`,
-///   `Element::is_count_and_big_sum_bearing_child`).
+///   `Element::is_count_and_big_sum_bearing_child`). A child that carries
+///   backward references is the exception: Merk's rule refuses it in these
+///   two trees, as in the plain provable trees, since no proof node carries
+///   both its combined value hash and the aggregate.
 ///
 /// Applied on both the dedicated and the batch path. Keeping it in one place
 /// is the point: while each door had its own rules, batches accepted children

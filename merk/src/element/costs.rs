@@ -591,4 +591,50 @@ mod tests {
             Some(LayeredValueDefinedCost(layered))
         );
     }
+
+    /// A tree with a 128-bit sum is priced from its serialized bytes, and
+    /// its flags add their length and the length's own prefix.
+    #[test]
+    fn big_sum_tree_costs_grow_with_their_flags() {
+        let grove_version = GroveVersion::latest();
+        let cost = |element: &Element| {
+            let serialized = element.serialize(grove_version).expect("serialize");
+            Element::specialized_costs_for_key_value(
+                b"key",
+                &serialized,
+                NodeType::NormalNode,
+                grove_version,
+            )
+            .expect("cost for key value")
+        };
+        let flags = Some(vec![1u8, 2, 3]);
+        let axes = vec![(0u8, None)];
+        for (bare, flagged) in [
+            (
+                Element::CountBigSumTree(None, 0, 0, None),
+                Element::CountBigSumTree(None, 0, 0, flags.clone()),
+            ),
+            (
+                Element::ProvableBigSumTree(None, 0, None),
+                Element::ProvableBigSumTree(None, 0, flags.clone()),
+            ),
+            (
+                Element::ProvableBigSumIndexedTree(None, None, 0, None),
+                Element::ProvableBigSumIndexedTree(None, None, 0, flags.clone()),
+            ),
+            (
+                Element::ProvableCountProvableBigSumIndexedTree(None, 0, 0, axes.clone(), None),
+                Element::ProvableCountProvableBigSumIndexedTree(
+                    None,
+                    0,
+                    0,
+                    axes.clone(),
+                    flags.clone(),
+                ),
+            ),
+        ] {
+            // Three flag bytes and one byte for their length.
+            assert_eq!(cost(&flagged), cost(&bare) + 4, "{flagged:?}");
+        }
+    }
 }

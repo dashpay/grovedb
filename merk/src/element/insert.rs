@@ -320,6 +320,11 @@ impl ElementInsertToStorageExtensions for Element {
                     | TreeType::ProvableBigSumTree
                     | TreeType::ProvableCountProvableSumTree
                     | TreeType::ProvableCountProvableBigSumTree
+                    // The indexed trees with a 128-bit sum start out with the
+                    // rule. Their 64-bit counterparts keep the rule they
+                    // shipped with.
+                    | TreeType::ProvableBigSumIndexedTree
+                    | TreeType::ProvableCountProvableBigSumIndexedTree
             )
         {
             return Err(Error::InvalidInputError(

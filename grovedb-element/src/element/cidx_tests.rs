@@ -525,3 +525,169 @@ fn big_sum_bearing_children() {
     assert!(!Element::empty_count_big_sum_tree().is_count_and_sum_bearing_child());
     assert!(!Element::empty_provable_big_sum_tree().is_sum_bearing_child());
 }
+
+/// Each constructor of a tree with a 128-bit sum builds the element its name
+/// says, and the accessors read back what the element holds, through a
+/// wrapper too.
+#[test]
+fn big_sum_tree_constructors_and_accessors() {
+    use crate::indexed::IndexAxis;
+
+    const WIDE: i128 = 3 * (i64::MAX as i128);
+    let flags = Some(vec![7u8]);
+    let root = Some(b"root".to_vec());
+    let axes = vec![(IndexAxis::Count.tag(), None)];
+
+    assert_eq!(
+        Element::empty_count_big_sum_tree_with_flags(flags.clone()),
+        Element::CountBigSumTree(None, 0, 0, flags.clone())
+    );
+    assert_eq!(
+        Element::new_count_big_sum_tree_with_flags(root.clone(), flags.clone()),
+        Element::CountBigSumTree(root.clone(), 0, 0, flags.clone())
+    );
+    let counted = Element::new_count_big_sum_tree_with_flags_and_sum_and_count_value(
+        root.clone(),
+        3,
+        WIDE,
+        flags.clone(),
+    );
+    assert!(counted.is_count_big_sum_tree());
+    assert_eq!(counted.as_count_big_sum_tree_value().unwrap(), (3, WIDE));
+    assert_eq!(
+        Element::NonCounted(Box::new(counted))
+            .into_count_big_sum_tree_value()
+            .unwrap(),
+        (3, WIDE)
+    );
+
+    assert_eq!(
+        Element::empty_provable_big_sum_tree_with_flags(flags.clone()),
+        Element::ProvableBigSumTree(None, 0, flags.clone())
+    );
+    assert_eq!(
+        Element::new_provable_big_sum_tree_with_flags(root.clone(), flags.clone()),
+        Element::ProvableBigSumTree(root.clone(), 0, flags.clone())
+    );
+    let summed = Element::new_provable_big_sum_tree_with_flags_and_sum_value(
+        root.clone(),
+        WIDE,
+        flags.clone(),
+    );
+    assert!(summed.is_provable_big_sum_tree());
+    assert_eq!(summed.as_provable_big_sum_tree_value().unwrap(), WIDE);
+    assert_eq!(
+        Element::NotSummed(Box::new(summed))
+            .into_provable_big_sum_tree_value()
+            .unwrap(),
+        WIDE
+    );
+
+    // An element of another kind has neither value.
+    let other = Element::empty_tree();
+    assert!(!other.is_count_big_sum_tree() && !other.is_provable_big_sum_tree());
+    assert!(other.as_count_big_sum_tree_value().is_err());
+    assert!(other.clone().into_count_big_sum_tree_value().is_err());
+    assert!(other.as_provable_big_sum_tree_value().is_err());
+    assert!(other.into_provable_big_sum_tree_value().is_err());
+
+    assert_eq!(
+        Element::empty_provable_big_sum_indexed_tree_with_flags(flags.clone()),
+        Element::ProvableBigSumIndexedTree(None, None, 0, flags.clone())
+    );
+    assert_eq!(
+        Element::new_provable_big_sum_indexed_tree_with_root_keys_and_sum_value(
+            root.clone(),
+            root.clone(),
+            WIDE,
+            flags.clone(),
+        ),
+        Element::ProvableBigSumIndexedTree(root.clone(), root.clone(), WIDE, flags.clone())
+    );
+    assert_eq!(
+        Element::empty_provable_count_provable_big_sum_indexed_tree_with_flags(
+            axes.clone(),
+            flags.clone(),
+        )
+        .expect("canonical axes"),
+        Element::ProvableCountProvableBigSumIndexedTree(None, 0, 0, axes.clone(), flags.clone())
+    );
+    let indexed = Element::new_provable_count_provable_big_sum_indexed_tree(
+        root.clone(),
+        3,
+        WIDE,
+        axes.clone(),
+        flags.clone(),
+    )
+    .expect("canonical axes");
+    assert_eq!(
+        indexed,
+        Element::ProvableCountProvableBigSumIndexedTree(root, 3, WIDE, axes, flags.clone())
+    );
+    // The display names the axes.
+    assert!(format!("{indexed}").contains("(0, None)"), "{indexed}");
+
+    // The 64-bit sum axis is refused by every constructor that takes axes.
+    let narrow_axes = vec![(IndexAxis::Sum.tag(), None)];
+    assert!(
+        Element::empty_provable_count_provable_big_sum_indexed_tree_with_flags(
+            narrow_axes.clone(),
+            flags.clone(),
+        )
+        .is_err()
+    );
+    assert!(Element::new_provable_count_provable_big_sum_indexed_tree(
+        None,
+        0,
+        0,
+        narrow_axes,
+        flags,
+    )
+    .is_err());
+}
+
+/// A wrapped tree with a 128-bit sum reports the wrapper's element type, and
+/// each such type has its own name.
+#[test]
+fn wrapped_big_sum_trees_report_their_element_types() {
+    let wrap = |wrapper: fn(Box<Element>) -> Element, inner: &Element| {
+        wrapper(Box::new(inner.clone())).element_type()
+    };
+    let count_big_sum = Element::CountBigSumTree(None, 0, 0, None);
+    let provable_big_sum = Element::ProvableBigSumTree(None, 0, None);
+    let indexed = Element::ProvableBigSumIndexedTree(None, None, 0, None);
+    let count_indexed =
+        Element::ProvableCountProvableBigSumIndexedTree(None, 0, 0, vec![(0, None)], None);
+
+    let types = [
+        wrap(Element::NonCounted, &count_big_sum),
+        wrap(Element::NonCounted, &provable_big_sum),
+        wrap(Element::NonCounted, &indexed),
+        wrap(Element::NonCounted, &count_indexed),
+        wrap(Element::NotSummed, &count_big_sum),
+        wrap(Element::NotSummed, &provable_big_sum),
+        wrap(Element::NotCountedOrSummed, &count_big_sum),
+        wrap(Element::NotCountedOrSummed, &provable_big_sum),
+    ];
+    assert_eq!(
+        types,
+        [
+            ElementType::NonCountedCountBigSumTree,
+            ElementType::NonCountedProvableBigSumTree,
+            ElementType::NonCountedProvableBigSumIndexedTree,
+            ElementType::NonCountedProvableCountProvableBigSumIndexedTree,
+            ElementType::NotSummedCountBigSumTree,
+            ElementType::NotSummedProvableBigSumTree,
+            ElementType::NotCountedOrSummedCountBigSumTree,
+            ElementType::NotCountedOrSummedProvableBigSumTree,
+        ]
+    );
+    let mut names: Vec<&str> = types
+        .iter()
+        .map(|element_type| element_type.as_str())
+        .collect();
+    assert!(names.iter().all(|name| name.contains("big sum")));
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(names.len(), types.len());
+}

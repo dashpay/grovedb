@@ -104,12 +104,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   constructors and accessors on `Element` for each tree; and
   `Element::is_big_sum_bearing_child` and
   `is_count_and_big_sum_bearing_child`, the child rules of the two indexed
-  trees.
+  trees. Neither indexed tree accepts a child that carries backward
+  references, as the plain provable trees do not: no proof node carries
+  both that child's combined value hash and the aggregate.
 
   Creating any of the four is gated by the new
   `operations.insert.big_sum_tree_twins_creation` slot (0 in V1..V4, which
   refuse them; 1 in V5; **BREAKING** for code building
-  `GroveDBOperationsInsertVersions` by hand). A V0 proof refuses a
+  `GroveDBOperationsInsertVersions` by hand). Serving the big sum axis is
+  gated by the new `operations.indexed_axis.big_sum_axis` slot (0 in
+  V1..V4, where a `PathQuery` axis read that names the axis is refused
+  with `NotSupported` when read, proved or verified; 1 in V5; **BREAKING**
+  for code building `GroveDBOperationsIndexedAxisVersions` by hand). A V0
+  proof refuses a
   `ProvableBigSumTree` host and a descent into either indexed tree, as it
   does for their 64-bit counterparts.
   **BREAKING** for exhaustive matches: the new variants of `Element`,
@@ -121,7 +128,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (**BREAKING** for code building or destructuring it), weighed by the
   mixed-layer size estimate of `GROVE_V3` and later; a weight of 0 leaves
   the estimate as it was. `IndexAxis::try_from_tag(3)` now succeeds, and an
-  encoded `AxisQuery` may carry tag 3.
+  encoded `AxisQuery` may carry tag 3 (decoding is not gated; serving is,
+  as above).
 - `GROVE_V5` (`protocol_version` 5). `GROVE_V4` as 6.1.1 shipped it is what
   Dash Platform 5.0 (protocol version 14) runs, so behaviour changes from
   here on are gated in `GROVE_V5` and leave V1..V4 as they are. V5 is V4

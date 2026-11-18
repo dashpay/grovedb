@@ -756,8 +756,8 @@ impl GroveDb {
                     } else {
                         if primary.is_none() || secondary.is_none() {
                             return Err(Error::InvalidInput(
-                                "ProvableBigSumIndexedTree direct insertion: non-empty PSIT must \
-                                 have BOTH primary_root_key and secondary_root_key set to \
+                                "ProvableBigSumIndexedTree direct insertion: a non-empty tree \
+                                 must have BOTH primary_root_key and secondary_root_key set to \
                                  Some(_); partial state is not permitted",
                             ))
                             .wrap_with_cost(cost);
@@ -1157,7 +1157,7 @@ impl GroveDb {
                     Element::validate_pcpbsit_axes(axes).map_err(|_| Error::InvalidInput(
                         "ProvableCountProvableBigSumIndexedTree direct insertion: axes must be \
                          canonical (1..=3 entries, sorted ascending by tag, no duplicates, \
-                         tags in 0..=2)"
+                         each of the count, avg and big sum axes)"
                     ))
                 );
                 let axes_all_empty = axes.iter().all(|(_, sk)| sk.is_none());
@@ -1175,9 +1175,9 @@ impl GroveDb {
                 } else {
                     if primary.is_none() {
                         return Err(Error::InvalidInput(
-                            "ProvableCountProvableBigSumIndexedTree direct insertion: non-empty \
-                             PCPSIT must have primary_root_key = Some(_); partial state is not \
-                             permitted",
+                            "ProvableCountProvableBigSumIndexedTree direct insertion: a \
+                             non-empty tree must have primary_root_key = Some(_); partial state \
+                             is not permitted",
                         ))
                         .wrap_with_cost(cost);
                     }
@@ -1213,8 +1213,8 @@ impl GroveDb {
                     if p_aggregate.parent_tree_type() != TreeType::ProvableCountProvableBigSumTree {
                         return Err(Error::InvalidInput(
                             "ProvableCountProvableBigSumIndexedTree direct insertion: the existing \
-                             primary Merk is not a provable-count-provable-sum tree; the element \
-                             variant does not match the stored subtree",
+                             primary Merk is not a provable-count-provable-big-sum tree; the \
+                             element variant does not match the stored subtree",
                         ))
                         .wrap_with_cost(cost);
                     }

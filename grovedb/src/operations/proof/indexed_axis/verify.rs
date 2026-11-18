@@ -546,6 +546,7 @@ impl GroveDb {
             AxisEntries::Count(v) if v.len() == 1 => &v[0].primary_key,
             AxisEntries::Sum(v) if v.len() == 1 => &v[0].primary_key,
             AxisEntries::Avg(v) if v.len() == 1 => &v[0].primary_key,
+            AxisEntries::BigSum(v) if v.len() == 1 => &v[0].primary_key,
             other => {
                 return Err(Error::CorruptedData(format!(
                     "indexed-axis rank proof: expected exactly one yielded entry at the rank \
@@ -598,7 +599,9 @@ impl GroveDb {
                 envelope.axis_tag
             )));
         }
-        if !matches!(expected_axis, IndexAxis::Count | IndexAxis::Sum) {
+        // The big sum axis has a population and no total; the fold check
+        // inside refuses the total.
+        if expected_axis == IndexAxis::Avg {
             return Err(Error::NotSupported(
                 "indexed-axis aggregate proofs are not defined for the Avg axis".to_string(),
             ));

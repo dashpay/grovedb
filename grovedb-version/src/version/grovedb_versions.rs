@@ -106,6 +106,19 @@ pub struct GroveDBOperationsIndexedAxisVersions {
     pub prove_single_path: FeatureVersion,
     /// The matching standalone verifiers.
     pub verify_single_path: FeatureVersion,
+    /// Whether the big sum axis (`IndexAxis::BigSum`) is served.
+    ///
+    /// - `0` (GROVE_V1..=V4): a `PathQuery` whose axis read names the big
+    ///   sum axis is refused with `NotSupported` at every read, prove and
+    ///   verify entry point. The axis tag still encodes and decodes; the
+    ///   gate is about serving, as with
+    ///   `GroveDBPathQueryMethodVersions::unified_read_mode`. No tree has
+    ///   the axis at these versions, and a query naming it had no encoding
+    ///   before it was added, so an absent path must not answer it with an
+    ///   empty result.
+    /// - `1` (GROVE_V5+): the axis is served on the indexed trees with a
+    ///   128-bit sum.
+    pub big_sum_axis: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

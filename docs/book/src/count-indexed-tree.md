@@ -784,8 +784,12 @@ Entries are written with `insert_into_provable_big_sum_indexed_tree` and
 removed with the matching `delete_from_…`, and accepted by the same rule as
 under the 64-bit trees with the big sum trees added: a sum-bearing child of
 either width for the first, a child that carries a count and a sum of
-either width, or a `SumItem`, for the second. Both trees can be created
-from `GROVE_V5`.
+either width, or a `SumItem`, for the second. Neither accepts a child that
+carries backward references, as the plain provable trees do not: no proof
+node carries both that child's combined value hash and the aggregate. Both
+trees can be created from `GROVE_V5`, and the big sum axis is served from
+it: an earlier version refuses an axis read that names the axis, read,
+proved or verified.
 
 ## When to use which element type
 
