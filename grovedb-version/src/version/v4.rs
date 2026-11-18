@@ -556,6 +556,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 // bare SumItem (see the module docs).
                 validate_indexed_child_for_variant: 1,
                 provable_count_provable_big_sum_tree_creation: 0,
+                big_sum_tree_twins_creation: 0,
             },
             delete: GroveDBOperationsDeleteVersions {
                 delete: 0,

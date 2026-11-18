@@ -25,6 +25,7 @@ use intmap::IntMap;
 #[cfg(feature = "minimal")]
 use crate::{
     batch::{key_info::KeyInfo, GroveOp, KeyInfoPath, QualifiedGroveDbOp, TreeCache},
+    operations::insert::check_wide_sum_tree_creation,
     ElementFlags, Error,
 };
 
@@ -255,6 +256,27 @@ where
                     (path, key, true)
                 }
             };
+
+            // A grove version that predates a tree with a 128-bit provable or
+            // counted sum refuses to create one. Checked here, where every
+            // caller-supplied op passes, as well as where an insert is
+            // applied: a tree whose contents the same batch writes never
+            // reaches that arm as an insert, since propagation replaces the
+            // op with the tree's computed root state.
+            if let GroveOp::InsertWithKnownToNotAlreadyExist { element }
+            | GroveOp::InsertIfNotExists { element, .. }
+            | GroveOp::InsertOrReplace { element }
+            | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
+            | GroveOp::Replace { element }
+            | GroveOp::ReplaceDontCheckForBackwardsReferences { element }
+            | GroveOp::Patch { element, .. }
+            | GroveOp::PatchDontCheckForBackwardsReferences { element, .. } = &grove_op
+            {
+                cost_return_on_error_no_add!(
+                    cost,
+                    check_wide_sum_tree_creation(element, "batch insert", grove_version)
+                );
+            }
 
             // Validate key length: Merk link encoding stores key length as a
             // single u8, so keys longer than 255 bytes would corrupt the

@@ -2354,9 +2354,11 @@ impl GroveDb {
                             | Element::BigSumTree(Some(_), ..)
                             | Element::CountTree(Some(_), ..)
                             | Element::CountSumTree(Some(_), ..)
+                            | Element::CountBigSumTree(Some(_), ..)
                             | Element::ProvableCountTree(Some(_), ..)
                             | Element::ProvableCountSumTree(Some(_), ..)
                             | Element::ProvableSumTree(Some(_), ..)
+                            | Element::ProvableBigSumTree(Some(_), ..)
                             | Element::ProvableCountProvableSumTree(Some(_), ..)
                             | Element::ProvableCountProvableBigSumTree(Some(_), ..)
                             | Element::CommitmentTree(..)
@@ -2719,9 +2721,11 @@ impl GroveDb {
                             | Element::BigSumTree(None, ..)
                             | Element::CountTree(None, ..)
                             | Element::CountSumTree(None, ..)
+                            | Element::CountBigSumTree(None, ..)
                             | Element::ProvableCountTree(None, ..)
                             | Element::ProvableCountSumTree(None, ..)
                             | Element::ProvableSumTree(None, ..)
+                            | Element::ProvableBigSumTree(None, ..)
                             | Element::ProvableCountProvableSumTree(None, ..)
                             | Element::ProvableCountProvableBigSumTree(None, ..)
                             | Element::SumItem(..)
@@ -3013,6 +3017,7 @@ impl GroveDb {
             if matches!(
                 element,
                 Element::CountSumTree(None, ..)
+                    | Element::CountBigSumTree(None, ..)
                     | Element::ProvableCountTree(None, ..)
                     | Element::ProvableCountSumTree(None, ..)
             ) && hash == &element_hash
@@ -3749,9 +3754,11 @@ impl GroveDb {
                             | Element::BigSumTree(Some(_), ..)
                             | Element::CountTree(Some(_), ..)
                             | Element::CountSumTree(Some(_), ..)
+                            | Element::CountBigSumTree(Some(_), ..)
                             | Element::ProvableCountTree(Some(_), ..)
                             | Element::ProvableCountSumTree(Some(_), ..)
                             | Element::ProvableSumTree(Some(_), ..)
+                            | Element::ProvableBigSumTree(Some(_), ..)
                             | Element::ProvableCountProvableSumTree(Some(_), ..)
                             | Element::ProvableCountProvableBigSumTree(Some(_), ..) => {
                                 path.push(key);
@@ -3874,9 +3881,11 @@ impl GroveDb {
                             | Element::BigSumTree(None, ..)
                             | Element::CountTree(None, ..)
                             | Element::CountSumTree(None, ..)
+                            | Element::CountBigSumTree(None, ..)
                             | Element::ProvableCountTree(None, ..)
                             | Element::ProvableCountSumTree(None, ..)
                             | Element::ProvableSumTree(None, ..)
+                            | Element::ProvableBigSumTree(None, ..)
                             | Element::ProvableCountProvableSumTree(None, ..)
                             | Element::ProvableCountProvableBigSumTree(None, ..)
                             | Element::CommitmentTree(..)
@@ -5053,6 +5062,7 @@ impl GroveDb {
         match element.underlying() {
             Element::CountTree(_, count, _)
             | Element::CountSumTree(_, count, ..)
+            | Element::CountBigSumTree(_, count, ..)
             | Element::ProvableCountTree(_, count, _)
             | Element::ProvableCountSumTree(_, count, ..)
             | Element::ProvableCountProvableSumTree(_, count, ..)

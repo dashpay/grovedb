@@ -610,6 +610,54 @@ pub fn node_hash_with_count_and_sum(
     })
 }
 
+/// Domain tag closing the preimage of [`node_hash_with_big_sum`].
+///
+/// A 16-byte sum alone would give a 112-byte preimage, the length of
+/// [`node_hash_with_count_and_sum`]'s (`count_be8 || sum_be8`), so a node of
+/// a provable big sum tree could be relabeled as a count and sum node that
+/// reconstructs the same hash. The tag makes the preimage 113 bytes, a
+/// length no other node hash has.
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub const NODE_HASH_WITH_BIG_SUM_DOMAIN_TAG: u8 = 0x01;
+
+#[cfg(any(feature = "minimal", feature = "verify"))]
+/// Hashes a node for a `ProvableBigSumTree`, including the aggregate 128-bit
+/// sum.
+///
+/// The wide counterpart of [`node_hash_with_sum`]: the i128 sum is appended
+/// in big-endian (16 fixed bytes), followed by
+/// [`NODE_HASH_WITH_BIG_SUM_DOMAIN_TAG`]. Negative sums hash via their
+/// two's-complement big-endian form.
+///
+/// Hash layout: `Blake3(kv || left || right || sum_be16 || tag)`.
+///
+/// The 113-byte input has a length no other node hash input has, so a node
+/// of this tree cannot share a hash input with a node of another tree type.
+pub fn node_hash_with_big_sum(
+    kv: &CryptoHash,
+    left: &CryptoHash,
+    right: &CryptoHash,
+    sum: i128,
+) -> CostContext<CryptoHash> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(kv);
+    hasher.update(left);
+    hasher.update(right);
+    hasher.update(&sum.to_be_bytes());
+    hasher.update(&[NODE_HASH_WITH_BIG_SUM_DOMAIN_TAG]);
+
+    // 113 bytes span two 64-byte blocks.
+    let hashes = 2;
+
+    let res = hasher.finalize();
+    let mut hash: CryptoHash = Default::default();
+    hash.copy_from_slice(res.as_bytes());
+    hash.wrap_with_cost(OperationCost {
+        hash_node_calls: hashes,
+        ..Default::default()
+    })
+}
+
 #[cfg(any(feature = "minimal", feature = "verify"))]
 /// Hashes a node for a `ProvableCountProvableBigSumTree`, including BOTH the
 /// aggregate count AND the aggregate 128-bit sum.
@@ -806,6 +854,72 @@ mod node_hash_with_sum_tests {
         let neg_one_a = node_hash_with_count_and_sum(&kv, &l, &r, 42, -1).unwrap();
         let neg_one_b = node_hash_with_count_and_sum(&kv, &l, &r, 42, -1).unwrap();
         assert_eq!(neg_one_a, neg_one_b);
+    }
+
+    /// The big sum node hash binds each of its inputs, costs two hash
+    /// calls, and shares its result with no other node hash of the same
+    /// values: its preimage ends with a domain tag, which makes it 113 bytes
+    /// where a count and sum preimage (`count_be8 || sum_be8`) is 112.
+    #[test]
+    fn node_hash_with_big_sum_binds_every_input_and_is_domain_separated() {
+        use super::{
+            node_hash_with_big_sum, node_hash_with_count_and_big_sum,
+            NODE_HASH_WITH_BIG_SUM_DOMAIN_TAG,
+        };
+
+        let kv = h(1);
+        let l = h(2);
+        let r = h(3);
+        let sum = i128::from(i64::MAX) * 3;
+        let baseline = node_hash_with_big_sum(&kv, &l, &r, sum).unwrap();
+        assert_eq!(baseline, node_hash_with_big_sum(&kv, &l, &r, sum).unwrap());
+        for other in [
+            node_hash_with_big_sum(&h(40), &l, &r, sum).unwrap(),
+            node_hash_with_big_sum(&kv, &h(50), &r, sum).unwrap(),
+            node_hash_with_big_sum(&kv, &l, &h(60), sum).unwrap(),
+            node_hash_with_big_sum(&kv, &l, &r, sum + 1).unwrap(),
+            node_hash_with_big_sum(&kv, &l, &r, -sum).unwrap(),
+            node_hash_with_big_sum(&kv, &l, &r, sum + (1i128 << 64)).unwrap(),
+        ] {
+            assert_ne!(other, baseline);
+        }
+        assert_eq!(
+            node_hash_with_big_sum(&kv, &l, &r, sum)
+                .cost
+                .hash_node_calls,
+            2
+        );
+
+        // The 16 sum bytes read as a count and an i64 sum give the count and
+        // sum preimage without the tag: the tag is what tells the two apart.
+        let bytes = sum.to_be_bytes();
+        let as_count = u64::from_be_bytes(bytes[..8].try_into().unwrap());
+        let as_sum = i64::from_be_bytes(bytes[8..].try_into().unwrap());
+        assert_ne!(
+            baseline,
+            node_hash_with_count_and_sum(&kv, &l, &r, as_count, as_sum).unwrap()
+        );
+        let mut untagged = blake3::Hasher::new();
+        untagged.update(&kv);
+        untagged.update(&l);
+        untagged.update(&r);
+        untagged.update(&bytes);
+        assert_eq!(
+            untagged.finalize().as_bytes(),
+            &node_hash_with_count_and_sum(&kv, &l, &r, as_count, as_sum).unwrap(),
+            "without the tag the two preimages are the same bytes"
+        );
+        let mut tagged = untagged.clone();
+        tagged.update(&[NODE_HASH_WITH_BIG_SUM_DOMAIN_TAG]);
+        assert_eq!(tagged.finalize().as_bytes(), &baseline);
+
+        for other in [
+            node_hash(&kv, &l, &r).unwrap(),
+            node_hash_with_sum(&kv, &l, &r, 20).unwrap(),
+            node_hash_with_count_and_big_sum(&kv, &l, &r, 0, 20).unwrap(),
+        ] {
+            assert_ne!(node_hash_with_big_sum(&kv, &l, &r, 20).unwrap(), other);
+        }
     }
 
     #[test]

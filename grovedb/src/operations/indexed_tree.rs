@@ -330,7 +330,13 @@ fn reject_non_empty_dedicated_indexed_child_claim(
         Element::SumTree(root, sum, _) | Element::ProvableSumTree(root, sum, _) => {
             root.is_some() || *sum != 0
         }
-        Element::BigSumTree(root, big_sum, _) => root.is_some() || *big_sum != 0,
+        Element::BigSumTree(root, big_sum, _) | Element::ProvableBigSumTree(root, big_sum, _) => {
+            root.is_some() || *big_sum != 0
+        }
+        Element::CountBigSumTree(root, count, big_sum, _)
+        | Element::ProvableCountProvableBigSumTree(root, count, big_sum, _) => {
+            root.is_some() || *count != 0 || *big_sum != 0
+        }
         Element::CountTree(root, count, _) | Element::ProvableCountTree(root, count, _) => {
             root.is_some() || *count != 0
         }

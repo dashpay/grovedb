@@ -350,6 +350,7 @@ mod tests {
                 ElementType::ProvableCountProvableBigSumTree,
                 ProofNodeType::KvCountBigSum,
             ),
+            (ElementType::ProvableBigSumTree, ProofNodeType::KvBigSum),
         ] {
             for member in [
                 ElementType::ItemWithBackwardsReferences,

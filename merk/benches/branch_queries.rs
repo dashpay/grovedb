@@ -242,6 +242,9 @@ fn get_key_from_node(node: &Node) -> Option<Vec<u8>> {
         Node::KVCountBigSum(key, ..) => Some(key.clone()),
         Node::KVRefValueHashCountBigSum(key, ..) => Some(key.clone()),
         Node::KVDigestCountBigSum(key, ..) => Some(key.clone()),
+        Node::KVBigSum(key, ..) => Some(key.clone()),
+        Node::KVRefValueHashBigSum(key, ..) => Some(key.clone()),
+        Node::KVDigestBigSum(key, ..) => Some(key.clone()),
         // Hash-only nodes carry no key.
         Node::Hash(_)
         | Node::KVHash(_)
@@ -252,7 +255,9 @@ fn get_key_from_node(node: &Node) -> Option<Vec<u8>> {
         | Node::KVHashCountSum(..)
         | Node::HashWithCountAndSum(..)
         | Node::KVHashCountBigSum(..)
-        | Node::HashWithCountAndBigSum(..) => None,
+        | Node::HashWithCountAndBigSum(..)
+        | Node::KVHashBigSum(..)
+        | Node::HashWithBigSum(..) => None,
     }
 }
 

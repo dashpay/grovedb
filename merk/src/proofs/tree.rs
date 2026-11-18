@@ -13,9 +13,9 @@ use grovedb_costs::{
 use super::{Node, Op};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::tree::{
-    combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, node_hash_with_count,
-    node_hash_with_count_and_big_sum, node_hash_with_count_and_sum, node_hash_with_sum, value_hash,
-    NULL_HASH,
+    combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, node_hash_with_big_sum,
+    node_hash_with_count, node_hash_with_count_and_big_sum, node_hash_with_count_and_sum,
+    node_hash_with_sum, value_hash, NULL_HASH,
 };
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::{
@@ -71,6 +71,7 @@ impl Child {
                 key.as_slice(),
                 AggregateData::ProvableCountAndProvableBigSum(*count, *sum),
             ),
+            Node::KVBigSum(key, _, sum) => (key.as_slice(), AggregateData::ProvableBigSum(*sum)),
             // for the connection between the trunk and leaf chunks, we don't
             // have the child key so we must first write in an empty one. once
             // the leaf gets verified, we can write in this key to its parent
@@ -214,6 +215,12 @@ impl Tree {
                             *count,
                             *sum,
                         ),
+                        TreeFeatureType::ProvableBigSummedMerkNode(sum) => node_hash_with_big_sum(
+                            &kv_hash,
+                            &self.child_hash(true),
+                            &self.child_hash(false),
+                            *sum,
+                        ),
                         _ => compute_hash(self, kv_hash),
                     }
                 })
@@ -320,6 +327,58 @@ impl Tree {
                         *sum,
                     )
                 })
+            }
+            // ProvableBigSumTree proof-node hash dispatch: all five variants
+            // pipe through `node_hash_with_big_sum`, the hash
+            // `Tree::hash_for_link` and the commit path use for
+            // `TreeType::ProvableBigSumTree`.
+            Node::HashWithBigSum(kv_hash, left_child_hash, right_child_hash, sum) => {
+                node_hash_with_big_sum(kv_hash, left_child_hash, right_child_hash, *sum)
+            }
+            Node::KVBigSum(key, value, sum) => {
+                kv_hash(key.as_slice(), value.as_slice()).flat_map(|kv_hash| {
+                    node_hash_with_big_sum(
+                        &kv_hash,
+                        &self.child_hash(true),
+                        &self.child_hash(false),
+                        *sum,
+                    )
+                })
+            }
+            Node::KVHashBigSum(kv_hash, sum) => node_hash_with_big_sum(
+                kv_hash,
+                &self.child_hash(true),
+                &self.child_hash(false),
+                *sum,
+            ),
+            Node::KVDigestBigSum(key, value_hash, sum) => kv_digest_to_kv_hash(key, value_hash)
+                .flat_map(|kv_hash| {
+                    node_hash_with_big_sum(
+                        &kv_hash,
+                        &self.child_hash(true),
+                        &self.child_hash(false),
+                        *sum,
+                    )
+                }),
+            Node::KVRefValueHashBigSum(key, referenced_value, node_value_hash, sum) => {
+                let mut cost = OperationCost::default();
+                let referenced_value_hash =
+                    value_hash(referenced_value.as_slice()).unwrap_add_cost(&mut cost);
+                let combined_value_hash = combine_hash(node_value_hash, &referenced_value_hash)
+                    .unwrap_add_cost(&mut cost);
+
+                // The cost includes hashing the referenced value and
+                // combining it with the node's value hash.
+                kv_digest_to_kv_hash(key.as_slice(), &combined_value_hash)
+                    .flat_map(|kv_hash| {
+                        node_hash_with_big_sum(
+                            &kv_hash,
+                            &self.child_hash(true),
+                            &self.child_hash(false),
+                            *sum,
+                        )
+                    })
+                    .add_cost(cost)
             }
             // ProvableCountProvableSumTree proof-node hash dispatch — all
             // five variants pipe through `node_hash_with_count_and_sum`,
@@ -563,6 +622,7 @@ impl Tree {
             Node::Hash(_)
                 | Node::HashWithCount(..)
                 | Node::HashWithSum(..)
+                | Node::HashWithBigSum(..)
                 | Node::HashWithCountAndSum(..)
                 | Node::HashWithCountAndBigSum(..)
         )
@@ -656,8 +716,11 @@ impl Tree {
             | Node::KVCount(key, ..)
             | Node::KVRefValueHashCount(key, ..)
             | Node::KVSum(key, ..)
+            | Node::KVBigSum(key, ..)
             | Node::KVDigestSum(key, ..)
+            | Node::KVDigestBigSum(key, ..)
             | Node::KVRefValueHashSum(key, ..)
+            | Node::KVRefValueHashBigSum(key, ..)
             | Node::KVCountBigSum(key, ..)
             | Node::KVCountSum(key, ..)
             | Node::KVDigestCountBigSum(key, ..)
@@ -670,7 +733,9 @@ impl Tree {
             | Node::KVHashCount(..)
             | Node::HashWithCount(..)
             | Node::KVHashSum(..)
+            | Node::KVHashBigSum(..)
             | Node::HashWithSum(..)
+            | Node::HashWithBigSum(..)
             | Node::KVHashCountBigSum(..)
             | Node::KVHashCountSum(..)
             | Node::HashWithCountAndBigSum(..)
@@ -706,6 +771,9 @@ impl Tree {
             Node::HashWithCountAndBigSum(.., count, sum) => {
                 Ok(AggregateData::ProvableCountAndProvableBigSum(*count, *sum))
             }
+            // ProvableBigSumTree proof nodes map to ProvableBigSum.
+            Node::KVBigSum(_, _, sum) => Ok(AggregateData::ProvableBigSum(*sum)),
+            Node::HashWithBigSum(.., sum) => Ok(AggregateData::ProvableBigSum(*sum)),
             Node::KV(..) | Node::KVValueHash(..) => Ok(AggregateData::NoAggregateData),
             _ => Err(Error::InvalidProofError(
                 "Cannot extract aggregate data from this node type".to_string(),
@@ -942,8 +1010,11 @@ where
                 | Node::KVDigest(key, _)
                 | Node::KVDigestCount(key, ..)
                 | Node::KVSum(key, ..)
+                | Node::KVBigSum(key, ..)
                 | Node::KVDigestSum(key, ..)
+                | Node::KVDigestBigSum(key, ..)
                 | Node::KVRefValueHashSum(key, ..)
+                | Node::KVRefValueHashBigSum(key, ..)
                 | Node::KVCountBigSum(key, ..)
                 | Node::KVCountSum(key, ..)
                 | Node::KVDigestCountBigSum(key, ..)
@@ -989,8 +1060,11 @@ where
                 | Node::KVDigest(key, _)
                 | Node::KVDigestCount(key, ..)
                 | Node::KVSum(key, ..)
+                | Node::KVBigSum(key, ..)
                 | Node::KVDigestSum(key, ..)
+                | Node::KVDigestBigSum(key, ..)
                 | Node::KVRefValueHashSum(key, ..)
+                | Node::KVRefValueHashBigSum(key, ..)
                 | Node::KVCountBigSum(key, ..)
                 | Node::KVCountSum(key, ..)
                 | Node::KVDigestCountBigSum(key, ..)

@@ -638,10 +638,13 @@ where
         grove_version: &GroveVersion,
     ) -> CostResult<i128, Error> {
         let tree_type = self.tree_type;
-        if !matches!(tree_type, crate::TreeType::ProvableCountProvableBigSumTree) {
+        if !matches!(
+            tree_type,
+            crate::TreeType::ProvableCountProvableBigSumTree | crate::TreeType::ProvableBigSumTree
+        ) {
             return Err(Error::InvalidProofError(format!(
                 "a big sum AggregateSumOnRange is only valid against \
-                 ProvableCountProvableBigSumTree, got {:?}",
+                 ProvableCountProvableBigSumTree or ProvableBigSumTree, got {:?}",
                 tree_type
             )))
             .wrap_with_cost(Default::default());

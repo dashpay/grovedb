@@ -320,6 +320,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                     | Node::KVValueHash(..)
                     | Node::KVCount(..)
                     | Node::KVSum(..)
+                    | Node::KVBigSum(..)
                     | Node::KVCountBigSum(..)
                     | Node::KVCountSum(..)
             ) {
@@ -593,6 +594,25 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                             TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(
                                 *count, *sum,
                             ),
+                        )
+                        .unwrap();
+
+                        *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
+                        *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
+
+                        family_check(&tree)?;
+                        let bytes = tree.encode();
+                        batch.put(key, &bytes, None, None).map_err(CostsError)
+                    }
+                    Node::KVBigSum(key, value, sum) => {
+                        // Items in ProvableBigSumTree: the wide counterpart
+                        // of the KVSum arm above.
+                        let vh = value_hash(value.as_slice()).unwrap();
+                        let mut tree = TreeNode::new_with_value_hash(
+                            key.clone(),
+                            value.clone(),
+                            vh,
+                            TreeFeatureType::ProvableBigSummedMerkNode(*sum),
                         )
                         .unwrap();
 
@@ -1214,7 +1234,8 @@ fn provable_sum_of(data: AggregateData) -> i64 {
 /// zero for an aggregate that carries none.
 fn provable_big_sum_of(data: AggregateData) -> i128 {
     match data {
-        AggregateData::ProvableCountAndProvableBigSum(_, sum) => sum,
+        AggregateData::ProvableCountAndProvableBigSum(_, sum)
+        | AggregateData::ProvableBigSum(sum) => sum,
         _ => 0,
     }
 }
@@ -1294,6 +1315,9 @@ fn own_contribution_from_subtree_total(
                 own_count(count)?,
                 own_big_sum(sum)?,
             )
+        }
+        TreeFeatureType::ProvableBigSummedMerkNode(sum) => {
+            TreeFeatureType::ProvableBigSummedMerkNode(own_big_sum(sum)?)
         }
         own => own,
     })
