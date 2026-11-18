@@ -287,7 +287,7 @@ impl BufferPool {
         frame.set_born(version.get());
         frame.set_superseded(NO_VERSION);
         frame.set_flags(flag::UNWRITTEN | (frame.flags() & flag::ATTACHED));
-        latch.publish();
+        let sealed = latch.publish();
         frame.touch();
         chain.stamp += 1;
         // The reader's pin is taken under the table's lock, before a page
@@ -296,7 +296,7 @@ impl BufferPool {
         drop(chain);
         lock(&self.unwritten).add(version.get(), page);
         drop(step);
-        drop(latch);
+        drop(sealed);
         Ok(PageRef::new(
             self,
             frozen.expect("the frame was made a page version under this lock"),

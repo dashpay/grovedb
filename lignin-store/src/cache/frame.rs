@@ -645,11 +645,14 @@ impl<'l> Exclusive<'l> {
         self.frame
     }
 
-    /// Makes the private copy a page version. From here on no exclusive
-    /// latch is given out for the frame, so once this one is dropped its
-    /// content does not change again while it has a pin.
-    pub(super) fn publish(&self) {
+    /// Makes the private copy a page version and ends the write access.
+    /// From here on no exclusive latch is given out for the frame, so its
+    /// content does not change again while it has a pin. The latch itself
+    /// stays taken until the returned guard is dropped, so that whoever
+    /// publishes can finish its step first.
+    pub(super) fn publish(self) -> Sealed<'l> {
         self.frame.set_kind(kind::PUBLISHED);
+        Sealed { _latch: self.latch }
     }
 
     pub(super) fn bytes(&self) -> &[u8] {
@@ -672,6 +675,12 @@ impl<'l> Exclusive<'l> {
         // SAFETY: as in `bytes_mut`.
         unsafe { self.frame.attached_mut() }
     }
+}
+
+/// The latch of a frame that was just published, with no access to its
+/// content: it only keeps other holders of the latch out.
+pub(super) struct Sealed<'l> {
+    _latch: RwLockWriteGuard<'l, ()>,
 }
 
 impl fmt::Debug for Exclusive<'_> {
