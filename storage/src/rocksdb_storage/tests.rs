@@ -3078,7 +3078,7 @@ mod charging {
     use super::*;
     use crate::{
         rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Error, FlatStore,
-        Storage, StorageBatch, StorageContext,
+        RawIterator, Storage, StorageBatch, StorageContext,
     };
 
     const MODEL: StorageCostModel = StorageCostModel::V0;
@@ -3573,6 +3573,186 @@ mod charging {
                 .map(|segment| Longest(segment.len() as u8))
                 .collect();
             assert_eq!(RocksDbStorage::get_storage_context_cost(&longest), expected);
+        }
+    }
+
+    #[test]
+    fn a_cursor_is_charged_by_where_it_stands() {
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let prefix = |subtree: &[&[u8]]| RocksDbStorage::build_prefix(subtree.into()).unwrap();
+        let (low, high) = if prefix(SUBTREE) < prefix(OTHER_SUBTREE) {
+            (SUBTREE, OTHER_SUBTREE)
+        } else {
+            (OTHER_SUBTREE, SUBTREE)
+        };
+        for subtree in [low, high] {
+            let context = storage
+                .get_immediate_storage_context(subtree.into(), &tx)
+                .unwrap();
+            StorageContext::put(&context, b"key", b"a value", None, None)
+                .unwrap()
+                .expect("a put");
+        }
+        let stored_key_len = MODEL.stored_key_len(3);
+        let off_record = OperationCost::with_storage_loaded_bytes(288);
+
+        for (subtree, is_followed_by_another_subtree) in [(low, true), (high, false)] {
+            let context = storage
+                .get_transactional_storage_context(subtree.into(), None, &tx)
+                .unwrap();
+            let mut cursor = context.raw_iter();
+            let case = format!("followed by another subtree: {is_followed_by_another_subtree}");
+
+            assert_eq!(cursor.valid().cost, MODEL.cursor_key(None), "{case}");
+            assert_eq!(cursor.key().cost, off_record, "{case}");
+            assert_eq!(cursor.value().cost, MODEL.cursor_value(None), "{case}");
+
+            for step in 0..6 {
+                let moved = match step {
+                    0 => cursor.seek_to_first(),
+                    1 => cursor.seek_to_last(),
+                    2 => cursor.seek(b"k"),
+                    3 => cursor.seek_for_prev(b"l"),
+                    4 => cursor.seek(b"key"),
+                    _ => cursor.seek_for_prev(b"key"),
+                };
+                assert_eq!(moved.cost, MODEL.cursor_move(), "{case}");
+                assert_eq!(moved.cost, OperationCost::with_seek_count(1), "{case}");
+
+                let valid = cursor.valid();
+                assert!(valid.value, "{case}");
+                assert_eq!(valid.cost, MODEL.cursor_key(Some(stored_key_len)), "{case}");
+                let key = cursor.key();
+                assert_eq!(key.value, Some(b"key".as_slice()), "{case}");
+                assert_eq!(
+                    key.cost,
+                    OperationCost::with_storage_loaded_bytes(35),
+                    "{case}"
+                );
+                let value = cursor.value();
+                assert_eq!(value.value, Some(b"a value".as_slice()), "{case}");
+                assert_eq!(
+                    value.cost,
+                    MODEL.cursor_value(Some((stored_key_len, 7))),
+                    "{case}"
+                );
+                assert_eq!(
+                    value.cost,
+                    OperationCost::with_storage_loaded_bytes(35 + 7),
+                    "{case}"
+                );
+            }
+
+            for forward in [true, false] {
+                cursor.seek(b"key").unwrap();
+                let moved = if forward {
+                    cursor.next()
+                } else {
+                    cursor.prev()
+                };
+                assert_eq!(moved.cost, MODEL.cursor_move(), "{case}");
+                let valid = cursor.valid();
+                assert!(!valid.value, "{case}");
+                assert_eq!(valid.cost, off_record, "{case}");
+                let key = cursor.key();
+                assert_eq!(key.value, None, "{case}");
+                assert_eq!(key.cost, off_record, "{case}");
+                let value = cursor.value();
+                assert_eq!(value.value, None, "{case}");
+                assert_eq!(value.cost, off_record, "{case}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_batch_of_an_immediate_handle_is_owed_whether_or_not_it_is_written() {
+        fn fill(batch: &mut impl Batch) {
+            let wrong = KeyValueStorageCost {
+                value_storage_cost: StorageCost {
+                    added_bytes: 1,
+                    ..Default::default()
+                },
+                needs_value_verification: true,
+                ..Default::default()
+            };
+            batch.put(b"key", b"value", None, None).expect("a put");
+            batch.put_aux(b"key", b"value", None).expect("a put");
+            batch.put_root(b"r", b"key", None).expect("a free root key");
+            batch
+                .put_aux(b"refused", b"value", Some(wrong.clone()))
+                .expect_err("a cost that does not match");
+            batch
+                .put_root(b"refused", b"key", Some(wrong))
+                .expect_err("a cost that does not match");
+            batch.delete(b"gone", None);
+            batch.delete_aux(b"gone", Some(removing(BasicStorageRemoval(9))));
+            batch.delete_root(b"gone", None);
+        }
+        let expected = OperationCost {
+            seek_count: 8,
+            storage_cost: StorageCost {
+                added_bytes: 2 * (35 + 1 + 5 + 1),
+                replaced_bytes: 0,
+                removed_bytes: BasicStorageRemoval(9),
+            },
+            ..Default::default()
+        };
+        let storage = TempStorage::new();
+
+        let read_only = storage.start_snapshot_read_transaction();
+        let context = storage
+            .get_immediate_storage_context(SUBTREE.into(), &read_only)
+            .unwrap();
+        let mut batch = context.new_batch();
+        fill(&mut batch);
+        let refused = context.commit_batch(batch);
+        assert!(matches!(
+            refused.value,
+            Err(Error::SnapshotReadOnlyTransaction(_))
+        ));
+        assert_eq!(refused.cost, expected);
+
+        let tx = storage.start_transaction();
+        let context = storage
+            .get_immediate_storage_context(SUBTREE.into(), &tx)
+            .unwrap();
+        let mut batch = context.new_batch();
+        fill(&mut batch);
+        let written = context.commit_batch(batch);
+        written.value.expect("the batch is written");
+        assert_eq!(written.cost, expected);
+        assert_eq!(
+            StorageContext::get(&context, b"key")
+                .unwrap()
+                .expect("a read"),
+            Some(b"value".to_vec())
+        );
+        assert_eq!(context.get_aux(b"refused").unwrap().expect("a read"), None);
+    }
+
+    #[test]
+    fn a_write_with_no_batch_to_stage_it_in_is_refused_and_charged_nothing() {
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let context = storage
+            .get_transactional_storage_context(SUBTREE.into(), None, &tx)
+            .unwrap();
+        let refusals = [
+            StorageContext::put(&context, b"key", b"value", None, None),
+            context.put_aux(b"key", b"value", None),
+            context.put_root(b"key", b"value", None),
+            context.put_meta(b"key", b"value", None),
+            StorageContext::delete(&context, b"key", None),
+            context.delete_aux(b"key", None),
+            context.delete_root(b"key", None),
+            context.delete_meta(b"key", None),
+            context.commit_batch(context.new_batch()),
+        ];
+        for refused in refusals {
+            assert!(matches!(refused.value, Err(Error::StorageError(_))));
+            assert_eq!(refused.cost, MODEL.refused_write());
+            assert_eq!(refused.cost, OperationCost::default());
         }
     }
 }
