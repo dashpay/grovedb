@@ -366,7 +366,7 @@ marked pages for each transaction, pins, operations and reclaims.
 | `--ignored`, release build | the first with 2 pins and dropped pages | 693,117 | 5,969,272 |
 | `--ignored`, release build | the first with 1 transaction, 2 reclaims at once and dropped pages | 1,029,092 | 7,044,615 |
 
-The runs of every `cargo test` take about 5 seconds in a debug build. The
+The runs of every `cargo test` take under ten seconds in a debug build. The
 six others take two and a half minutes in a release build and half a
 gigabyte, for 9.8 million states and 79.7 million steps.
 
