@@ -154,6 +154,54 @@ fn errors_say_what_is_wrong() {
              of live values is already zero",
         ),
         (
+            ValueStoreError::Miscounted {
+                pointer: pointer(),
+                why: Miscount::BytesDisagree,
+            },
+            "the value at offset 120 of value-log file 4 cannot be counted: the bytes its file \
+             counts as live do not include it",
+        ),
+        (
+            ValueStoreError::Miscounted {
+                pointer: pointer(),
+                why: Miscount::NotCovered,
+            },
+            "the value at offset 120 of value-log file 4 cannot be counted: no durable manifest \
+             covers it",
+        ),
+        (
+            ValueStoreError::Miscounted {
+                pointer: pointer(),
+                why: Miscount::NotInstalled,
+            },
+            "the value at offset 120 of value-log file 4 cannot be counted: its rewrite was \
+             counted and not reported as installed",
+        ),
+        (
+            ValueStoreError::NotCovered { pointer: pointer() },
+            "no durable manifest covers the value at offset 120 of value-log file 4",
+        ),
+        (
+            ValueStoreError::MiscountedFileNotNamed { file: file_id(4) },
+            "the count of value-log file 4 was too low, and the manifest does not name the file",
+        ),
+        (
+            ValueStoreError::WrongStore,
+            "a writer, copies, a mark or a retirement of another value log, or of an earlier \
+             session",
+        ),
+        (
+            ValueStoreError::OwnersNotFound {
+                file: file_id(4),
+                cleaned: Cleaned {
+                    live: 3,
+                    ..Cleaned::default()
+                },
+            },
+            "value-log file 4 has 3 live values whose owners were not found in the pages their \
+             records name",
+        ),
+        (
             ValueStoreError::Owners("the page is gone".into()),
             "the owner of a value could not be asked: the page is gone",
         ),

@@ -3,6 +3,8 @@
 
 use lignin_format::{value_log::ValuePointer, CommitVersion, FileId};
 
+use super::error::Miscount;
+
 /// What one change point does to the value log: the pointers that cells
 /// start to hold and the pointers that cells stop holding.
 ///
@@ -178,14 +180,24 @@ impl Account {
         self.acquired = change;
     }
 
-    /// Takes one value off the count. Returns `false`, and marks the count
-    /// wrong, if the count was already zero.
-    pub(super) fn release(&mut self, extent: u64, latest: CommitVersion, change: u64) -> bool {
+    /// Takes one value of `extent` bytes off the count.
+    ///
+    /// Fails, and marks the count wrong, if the account did not include the
+    /// value: the count was already zero, the bytes counted are fewer than
+    /// the value's, or bytes are left when the last value goes. Some cell
+    /// then holds, or held, a pointer the account never counted.
+    pub(super) fn release(
+        &mut self,
+        extent: u64,
+        latest: CommitVersion,
+        change: u64,
+    ) -> Result<(), Miscount> {
         self.changed = change;
         if self.values == 0 {
             self.miscounted = true;
-            return false;
+            return Err(Miscount::CountIsZero);
         }
+        let known = extent <= self.bytes && (self.values != 1 || extent == self.bytes);
         self.values -= 1;
         self.bytes = self.bytes.saturating_sub(extent);
         if self.values == 0 {
@@ -195,6 +207,11 @@ impl Account {
                 change,
             };
         }
-        true
+        if known {
+            Ok(())
+        } else {
+            self.miscounted = true;
+            Err(Miscount::BytesDisagree)
+        }
     }
 }

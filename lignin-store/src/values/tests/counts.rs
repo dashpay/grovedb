@@ -1,7 +1,7 @@
 //! The count of live values of each file, the rules for dropping a file,
 //! and recovering the counts.
 
-use lignin_format::value_log::ValuePointer;
+use lignin_format::value_log::{extent_len, ValuePointer};
 use lignin_io::{Create, OpenMode};
 
 use super::{
@@ -9,6 +9,16 @@ use super::{
     store::{acquired, acquired_counts, bytes, released, Store},
     *,
 };
+
+/// A count that says `values` values of `bytes` bytes are live in file 1.
+fn stated(values: u64, bytes: u64) -> FileCount {
+    FileCount {
+        file: file_id(1),
+        values,
+        bytes,
+        miscounted: false,
+    }
+}
 
 fn count(file: u32, pointers: &[ValuePointer]) -> FileCount {
     FileCount {
@@ -310,7 +320,7 @@ fn a_dropped_file_is_deleted_once_no_durable_manifest_names_it() {
     assert_eq!(
         store
             .values
-            .drop_empty(version(0), store.values.applied())
+            .drop_empty(store.values.retire(version(0)))
             .unwrap(),
         [file_id(1)]
     );
@@ -338,7 +348,7 @@ fn a_session_that_ends_before_the_manifest_is_replaced_leaves_the_file_to_the_ne
     store.all_durable();
     store
         .values
-        .drop_empty(version(0), store.values.applied())
+        .drop_empty(store.values.retire(version(0)))
         .unwrap();
     let mut store = store.reopen(&[]);
     assert!(store.exists(1));
@@ -573,7 +583,7 @@ fn recovery_reports_a_release_from_a_count_of_zero() {
     assert_eq!(recovered.counts(), [wrong]);
     recovered.mark_durable(recovered.applied()).unwrap();
     assert!(recovered
-        .drop_empty(version(9), recovered.applied())
+        .drop_empty(recovered.retire(version(9)))
         .unwrap()
         .is_empty());
 }
@@ -641,11 +651,11 @@ fn the_files_worth_cleaning_are_the_closed_ones_with_the_largest_dead_share() {
 fn a_file_that_became_empty_after_the_caller_stopped_waiting_is_not_dropped() {
     let (mut store, pointers) = one_closed_file(&[40]);
     store.apply(&acquired(&pointers), 1);
-    let waited_for = store.values.applied();
+    let waited_for = store.values.retire(version(2));
     store.apply(&released(&pointers), 2);
     store.all_durable();
 
-    let dropped = store.values.drop_empty(version(2), waited_for).unwrap();
+    let dropped = store.values.drop_empty(waited_for).unwrap();
     assert!(
         dropped.is_empty(),
         "an operation that began after the mark may hold a pointer into the file"
@@ -665,7 +675,7 @@ fn a_checkpoint_holds_the_files_it_sampled_until_it_has_linked_them() {
 
     store
         .values
-        .drop_empty(version(0), store.values.applied())
+        .drop_empty(store.values.retire(version(0)))
         .unwrap();
     let sampled = store.values.hold_files();
     assert_eq!(
@@ -730,7 +740,7 @@ fn recovery_does_not_remove_a_file_whose_count_was_found_too_low() {
     store.all_durable();
     store
         .values
-        .drop_empty(version(0), store.values.applied())
+        .drop_empty(store.values.retire(version(0)))
         .unwrap();
     let mut store = store;
     let manifest = store.manifest.manifest().unwrap().clone();
@@ -763,4 +773,149 @@ fn recovery_does_not_remove_a_file_whose_count_was_found_too_low() {
     let mut recovery = ValueStore::recover(&store.manifest, &[]).unwrap();
     recovery.apply(&released(&pointers[..1])).unwrap_err();
     assert!(recovery.finish().unwrap().counts().is_empty());
+}
+
+#[test]
+fn a_file_is_kept_for_the_pins_there_were_when_the_caller_began_to_wait() {
+    let (store, pointers) = one_closed_file(&[40]);
+    store.apply(&acquired(&pointers), 1);
+    store.apply(&released(&pointers), 2);
+    store.all_durable();
+
+    let pinned_at_1 = store.values.retire(version(1));
+    assert_eq!(pinned_at_1, store.values.retire(version(1)));
+    assert_ne!(pinned_at_1, store.values.retire(version(2)));
+    let dropped = store.values.drop_empty(pinned_at_1).unwrap();
+    assert!(
+        dropped.is_empty(),
+        "the snapshot of version 1 has ended since, but an operation that began during the \
+         wait may have read the pointer through it"
+    );
+    assert_eq!(store.read(pointers[0], 1).unwrap(), bytes(40, 0));
+    assert!(store.exists(1));
+
+    let after_the_pin = store.values.retire(version(2));
+    assert_eq!(
+        store.values.drop_empty(after_the_pin).unwrap(),
+        [file_id(1)]
+    );
+}
+
+#[test]
+fn a_release_that_the_counted_bytes_do_not_include_marks_the_file() {
+    let [short, long, last] = [10, 500, 10];
+    let extent = |len: usize| extent_len(len as u32, V1);
+
+    let (store, pointers) = one_closed_file(&[short, long, last]);
+    let mut store = store.reopen(&[stated(1, extent(short))]);
+    assert_eq!(
+        miscount(store.values.apply(&released(&pointers[1..2]), version(2))),
+        (pointers[1], Miscount::BytesDisagree),
+        "the one value counted is shorter than the one released"
+    );
+    assert_eq!(
+        store.values.count(file_id(1)),
+        Some(FileCount {
+            miscounted: true,
+            ..stated(0, 0)
+        })
+    );
+    store.all_durable();
+    assert!(
+        store.drop_empty(9).is_empty(),
+        "the short value is still live"
+    );
+    assert_eq!(store.read(pointers[0], 1).unwrap(), bytes(short, 0));
+
+    let (store, pointers) = one_closed_file(&[short, long, last]);
+    let store = store.reopen(&[stated(1, extent(short) + 7)]);
+    assert_eq!(
+        miscount(store.values.apply(&released(&pointers[..1]), version(2))),
+        (pointers[0], Miscount::BytesDisagree),
+        "the last value goes and leaves bytes counted"
+    );
+    assert_eq!(live(&store.values, 1), Some(0));
+    assert!(store.values.count(file_id(1)).unwrap().miscounted);
+
+    let (store, pointers) = one_closed_file(&[short, long, last]);
+    let store = store.reopen(&[stated(2, extent(short) + extent(last))]);
+    assert_eq!(
+        miscount(store.values.apply(&released(&pointers[1..2]), version(2))),
+        (pointers[1], Miscount::BytesDisagree)
+    );
+    assert_eq!(
+        store.values.count(file_id(1)),
+        Some(FileCount {
+            miscounted: true,
+            ..stated(1, 0)
+        })
+    );
+
+    let (store, pointers) = one_closed_file(&[short, long, last]);
+    let store = store.reopen(&[stated(2, extent(short) + extent(long))]);
+    store.apply(&released(&pointers[..1]), 2);
+    store.apply(&released(&pointers[1..2]), 3);
+    assert_eq!(
+        store.values.count(file_id(1)),
+        Some(stated(0, 0)),
+        "a count whose bytes are those of its values goes to zero without complaint"
+    );
+}
+
+#[test]
+fn recovery_marks_a_file_whose_counted_bytes_a_replayed_release_does_not_fit() {
+    let (store, pointers) = one_closed_file(&[10, 500]);
+    let short = extent_len(10, V1);
+    let mut recovery = ValueStore::recover(&store.manifest, &[stated(1, short)]).unwrap();
+    assert_eq!(
+        miscount(recovery.apply(&released(&pointers[1..]))),
+        (pointers[1], Miscount::BytesDisagree)
+    );
+    let recovered = recovery.finish().unwrap();
+    assert_eq!(
+        recovered.counts(),
+        [FileCount {
+            miscounted: true,
+            ..stated(0, 0)
+        }]
+    );
+    recovered.mark_durable(recovered.applied()).unwrap();
+    let dropped = recovered.drop_empty(recovered.retire(version(9))).unwrap();
+    assert!(dropped.is_empty());
+}
+
+#[test]
+fn a_step_holds_the_counts_still_for_a_sample_or_for_a_change() {
+    let (store, pointers) = one_closed_file(&[40, 50]);
+    store.apply(&acquired(&pointers[..1]), 1);
+
+    let before = store.values.applied();
+    let step = store.values.step().unwrap();
+    assert_eq!(step.counts(), [count(1, &pointers[..1])]);
+    drop(step);
+    assert_eq!(
+        store.values.applied(),
+        before,
+        "a step that applies nothing is no change"
+    );
+
+    let step = store.values.step().unwrap();
+    step.apply(&acquired(&pointers[1..]), version(2)).unwrap();
+    assert_eq!(store.values.counts(), [count(1, &pointers)]);
+    assert!(store.values.applied() > before);
+
+    let values = &store.values;
+    let step = values.step().unwrap();
+    std::thread::scope(|scope| {
+        let (read, was_read) = std::sync::mpsc::channel();
+        scope.spawn(move || read.send(values.counts()));
+        let waited = std::time::Duration::from_millis(50);
+        assert!(
+            was_read.recv_timeout(waited).is_err(),
+            "the counts are not read while a step is taken"
+        );
+        let moved = ValueChange::moved(pointers[0], pointers[0]);
+        step.apply(&moved, version(3)).unwrap();
+        assert_eq!(was_read.recv().unwrap(), [count(1, &pointers)]);
+    });
 }

@@ -7,6 +7,7 @@ use std::{
 
 use lignin_format::{value_log::ValuePointer, FileId, FormatError, FormatVersion};
 
+use super::clean::Cleaned;
 use crate::segment::SegmentStoreError;
 
 /// What the layers above answer with when they cannot look at a page or take
@@ -24,6 +25,9 @@ pub enum Miscount {
     /// A cell was reported to stop holding the pointer, but the file's count
     /// of live values was already zero.
     CountIsZero,
+    /// A cell was reported to stop holding the pointer, but the bytes its
+    /// file counts as live do not include the value's.
+    BytesDisagree,
     /// No durable manifest gives the pointer's file a valid length that
     /// reaches the end of the value, so a crash could take the value away.
     NotCovered,
@@ -39,6 +43,7 @@ impl fmt::Display for Miscount {
             Self::UnknownFile => write!(f, "there is no such value-log file"),
             Self::OutOfBounds => write!(f, "it ends past the end of its file"),
             Self::CountIsZero => write!(f, "its file's count of live values is already zero"),
+            Self::BytesDisagree => write!(f, "the bytes its file counts as live do not include it"),
             Self::NotCovered => write!(f, "no durable manifest covers it"),
             Self::NotInstalled => {
                 write!(f, "its rewrite was counted and not reported as installed")
@@ -187,8 +192,9 @@ pub enum ValueStoreError {
     FileIdsExhausted,
     /// The value log was opened read-only.
     ReadOnly,
-    /// A writer, a set of copied values or a mark was passed to a store it
-    /// does not come from, or to the store of a later session.
+    /// A writer, a set of copied values, a mark or what was retired was
+    /// passed to a store it does not come from, or to the store of a later
+    /// session.
     WrongStore,
     /// A pointer was reported that the counts cannot take. The rest of the
     /// change was applied. If a file's count is now known to be wrong, the
@@ -198,6 +204,16 @@ pub enum ValueStoreError {
         pointer: ValuePointer,
         /// Why it could not be counted.
         why: Miscount,
+    },
+    /// A cleaning pass found no owner for values that the file's count says
+    /// are live, although it was refused no rewrite and no value of the file
+    /// was counted while it ran. A cell was carried to another page without
+    /// its value, against the move rule. The file and all its bytes stay.
+    OwnersNotFound {
+        /// The file.
+        file: FileId,
+        /// What the pass did.
+        cleaned: Cleaned,
     },
     /// The layers above could not look at a page or take a pointer rewrite.
     Owners(OwnersError),
@@ -344,13 +360,20 @@ impl fmt::Display for ValueStoreError {
             Self::ReadOnly => write!(f, "the value log is read-only"),
             Self::WrongStore => write!(
                 f,
-                "a writer, copies or a mark of another value log, or of an earlier session"
+                "a writer, copies, a mark or a retirement of another value log, or of an earlier \
+                 session"
             ),
             Self::Miscounted { pointer, why } => write!(
                 f,
                 "the value at offset {} of value-log file {} cannot be counted: {why}",
                 pointer.offset(),
                 pointer.file()
+            ),
+            Self::OwnersNotFound { file, cleaned } => write!(
+                f,
+                "value-log file {file} has {} live values whose owners were not found in the \
+                 pages their records name",
+                cleaned.live
             ),
             Self::Owners(error) => write!(f, "the owner of a value could not be asked: {error}"),
         }

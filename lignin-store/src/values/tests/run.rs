@@ -280,14 +280,50 @@ impl Run {
         Ok(())
     }
 
+    /// One step of a checkpoint that is taken while the workload goes on:
+    /// it begins one, or copies a few more pages, or writes it.
+    fn checkpoint_step(&mut self) -> Result<(), ValueStoreError> {
+        if !self.db().is_checkpointing() {
+            return self.db().begin_checkpoint();
+        }
+        let pages = 1 + self.rng.below(2) as usize;
+        if self.db().copy_pages(pages) != 0 {
+            return Ok(());
+        }
+        self.db().finish_checkpoint()?;
+        self.tally.checkpoints += 1;
+        Ok(())
+    }
+
+    /// One cleaning pass. A pass that ends with
+    /// [`ValueStoreError::OwnersNotFound`] is tallied as well.
     pub(super) fn clean(&mut self, file: FileId) -> Result<Cleaned, ValueStoreError> {
         let cleaned = self.db().clean(file);
         self.note_pointers();
-        let cleaned = cleaned?;
+        let done = match &cleaned {
+            Ok(done) | Err(ValueStoreError::OwnersNotFound { cleaned: done, .. }) => *done,
+            Err(_) => return cleaned,
+        };
         self.tally.passes += 1;
-        self.tally.moved += cleaned.moved;
-        self.tally.unowned += cleaned.unowned;
-        Ok(cleaned)
+        self.tally.moved += done.moved;
+        self.tally.unowned += done.unowned;
+        cleaned
+    }
+
+    /// A pass over `file` that finds no owner for some of its live values:
+    /// what it did.
+    #[track_caller]
+    pub(super) fn clean_unfound(&mut self, file: FileId) -> Cleaned {
+        match self.clean(file) {
+            Err(ValueStoreError::OwnersNotFound {
+                file: left,
+                cleaned,
+            }) => {
+                assert_eq!(left, file);
+                cleaned
+            }
+            other => panic!("expected owners not to be found, got {other:?}"),
+        }
     }
 
     pub(super) fn drop_empty(&mut self) -> Result<Vec<FileId>, ValueStoreError> {
@@ -375,7 +411,7 @@ impl Run {
                 }
             }
             80..=87 => self.drop_empty().map(drop),
-            88..=91 => self.checkpoint(),
+            88..=91 => self.checkpoint_step(),
             92..=96 => {
                 if self.pins.len() < 3 {
                     self.pin();

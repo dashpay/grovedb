@@ -18,7 +18,8 @@ use super::{
 /// A database's first two sessions, through every step of a value-log
 /// file's life: values of commits and of a rollback, overwritten, deleted
 /// and moved cells, a snapshot that pins what a later commit replaces,
-/// cleaning passes, files dropped and deleted, a checkpoint of the pages,
+/// cleaning passes, files dropped and deleted, a checkpoint of the pages
+/// taken at one moment and one taken across a commit and a pass,
 /// and a second session that cleans a file of the first.
 ///
 /// In the first session the transactions write to file 1 and then, from the
@@ -48,13 +49,17 @@ pub(super) fn life(run: &mut Run) -> Result<(), ValueStoreError> {
     run.flush()?;
     run.drop_empty()?;
     run.checkpoint()?;
+    run.db().begin_checkpoint()?;
+    run.db().copy_pages(2);
     run.commit(&[Op::Delete { key: 11 }, put(5, 50, 20)])?;
     run.unpin(pinned);
     run.drop_empty()?;
     run.flush()?;
 
     run.db().rotate()?;
+    run.db().copy_pages(1);
     run.clean(file_id(2))?;
+    run.db().finish_checkpoint()?;
     run.flush()?;
     run.drop_empty()?;
     run.commit(&[put(6, 60, 10), Op::Move { key: 30, to: 6 }])?;

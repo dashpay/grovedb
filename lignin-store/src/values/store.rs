@@ -131,9 +131,11 @@ fn net(change: &ValueChange) -> (Vec<ValuePointer>, Vec<ValuePointer>) {
 /// names, and the counts of live values as recovery brings them up to the
 /// version it lands on.
 ///
-/// [`ValueStore::recover`] starts it from the counts a checkpoint of the
-/// pages holds. [`Self::apply`] takes each change that recovery replays
-/// after that checkpoint, in order. [`Self::finish`] gives the store.
+/// [`ValueStore::recover`] starts it from a sample of the counts.
+/// [`Self::apply`] takes the change of every record that recovery keeps
+/// after the sample's place in the log, in the order of the log and each
+/// once, whether or not the pages recovery starts from already hold the
+/// cell change. [`Self::finish`] gives the store.
 ///
 /// Until [`Self::finish`], nothing in the directory is changed.
 #[derive(Debug)]
@@ -155,9 +157,9 @@ impl ValueRecovery {
     ///
     /// The whole change is applied whatever this returns. The error is the
     /// first pointer that could not be counted as reported
-    /// ([`ValueStoreError::Miscounted`]): a release from a count that was
-    /// zero, or a pointer that ends past the valid length of its file, which
-    /// no manifest covered.
+    /// ([`ValueStoreError::Miscounted`]): a release that the count or the
+    /// bytes of its file did not include, or a pointer that ends past the
+    /// valid length of its file, which no manifest covered.
     ///
     /// No commit version is asked for: no pin is left from before a crash,
     /// so a file that recovery leaves empty is empty for every version.
@@ -166,14 +168,12 @@ impl ValueRecovery {
         let mut first = Ok(());
         for pointer in released {
             let extent = pointer.extent_len(version_of(self.files.get(&pointer.file())));
-            let counted = self
+            let released = self
                 .accounts
                 .entry(pointer.file())
                 .or_insert(Account::EMPTY)
                 .release(extent, CommitVersion::EMPTY, RECOVERED);
-            if !counted {
-                first = first.and(miscounted(pointer, Miscount::CountIsZero));
-            }
+            first = first.and(released.map_err(|why| miscount(pointer, why)));
         }
         for pointer in acquired {
             let file = self.files.get(&pointer.file());
@@ -270,14 +270,18 @@ fn version_of(file: Option<&Arc<ValueFile>>) -> FormatVersion {
     file.map_or(FormatVersion::CURRENT, |file| file.version())
 }
 
-fn miscounted(pointer: ValuePointer, why: Miscount) -> Result<(), ValueStoreError> {
-    Err(ValueStoreError::Miscounted { pointer, why })
+fn miscount(pointer: ValuePointer, why: Miscount) -> ValueStoreError {
+    ValueStoreError::Miscounted { pointer, why }
 }
 
-/// The files the store reads. A reader takes this and nothing else.
+fn miscounted(pointer: ValuePointer, why: Miscount) -> Result<(), ValueStoreError> {
+    Err(miscount(pointer, why))
+}
+
+/// The files that are in the store no longer, or not yet for a manifest.
+/// Whoever changes which files the store has holds this.
 #[derive(Debug)]
-struct Files {
-    live: BTreeMap<FileId, Arc<ValueFile>>,
+struct FileSet {
     /// Files taken out of the store, until they are deleted.
     dropped: BTreeMap<FileId, Arc<ValueFile>>,
     /// The highest id of a file the store has had: what a manifest records.
@@ -290,12 +294,106 @@ struct Counted {
     account: Account,
 }
 
-/// The counts. Nothing else is locked, and nothing is called, while this is.
+/// The counts. Nothing else is locked, and nothing is called, while this is,
+/// but the one page step it was taken for.
 #[derive(Debug)]
 struct Counts {
     accounts: BTreeMap<FileId, Counted>,
     applied: u64,
     durable: u64,
+}
+
+impl Counts {
+    fn snapshot(&self) -> Vec<FileCount> {
+        self.accounts
+            .iter()
+            .filter(|(_, counted)| counted.account.is_counted())
+            .map(|(&file, counted)| counted.account.count(file))
+            .collect()
+    }
+
+    fn apply(
+        &mut self,
+        change: &ValueChange,
+        latest: CommitVersion,
+    ) -> Result<(), ValueStoreError> {
+        let (released, acquired) = net(change);
+        self.applied += 1;
+        let applied = self.applied;
+        let mut first = Ok(());
+        for pointer in released {
+            let Some(counted) = self.accounts.get_mut(&pointer.file()) else {
+                first = first.and(miscounted(pointer, Miscount::UnknownFile));
+                continue;
+            };
+            let extent = pointer.extent_len(counted.file.version());
+            let released = counted.account.release(extent, latest, applied);
+            first = first.and(released.map_err(|why| miscount(pointer, why)));
+        }
+        for pointer in acquired {
+            let Some(counted) = self.accounts.get_mut(&pointer.file()) else {
+                first = first.and(miscounted(pointer, Miscount::UnknownFile));
+                continue;
+            };
+            let extent = pointer.extent_len(counted.file.version());
+            counted.account.acquire(extent, applied);
+            if !counted.file.contains(pointer) {
+                first = first.and(miscounted(pointer, Miscount::OutOfBounds));
+            } else if !counted.file.covers(pointer) {
+                first = first.and(miscounted(pointer, Miscount::NotCovered));
+            }
+        }
+        first
+    }
+}
+
+/// The store's lock on the counts, from [`ValueStore::step`]. While it is
+/// held no change is counted, so the counts stand still.
+///
+/// It is taken for one of two things:
+///
+/// - **A change point.** Whoever makes the change takes the step, writes
+///   the change to the log, makes the cell change, and applies the change
+///   with [`Self::apply`]. A page step takes it before its own lock on the
+///   page, so that nothing is acquired under the page's lock. Because the
+///   record is written while the step is held, the changes are in the log
+///   in the order the counts took them.
+/// - **A sample of the counts for a checkpoint.** [`Self::counts`] gives the
+///   counts, and the end of the log, read while the step is held, is their
+///   place: the counts include every change that is in the log before it
+///   and none after it.
+///
+/// While it is held, call no method of the store that reads or changes the
+/// counts: it would wait for this step.
+#[derive(Debug)]
+pub struct CountStep<'a> {
+    counts: MutexGuard<'a, Counts>,
+}
+
+impl CountStep<'_> {
+    /// The live values of each file, as [`ValueStore::counts`] gives them.
+    pub fn counts(&self) -> Vec<FileCount> {
+        self.counts.snapshot()
+    }
+
+    /// Applies the change point's change to the counts, as
+    /// [`ValueStore::apply`] does, and gives the lock back.
+    pub fn apply(
+        mut self,
+        change: &ValueChange,
+        latest: CommitVersion,
+    ) -> Result<(), ValueStoreError> {
+        self.counts.apply(change, latest)
+    }
+}
+
+/// What [`ValueStore::drop_empty`] may take, once every operation that was
+/// running when this was made has ended: from [`ValueStore::retire`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Retired {
+    session: u64,
+    change: u64,
+    oldest_pin: CommitVersion,
 }
 
 /// A file that could be cleaned, from [`ValueStore::cleanable`].
@@ -337,7 +435,10 @@ pub struct ValueStore {
     /// The highest id a creation has taken. It is held for the length of a
     /// creation, so that files enter the store in the order of their ids.
     creating: Mutex<Option<FileId>>,
-    files: RwLock<Files>,
+    /// The files the store reads. A reader takes this, for one lookup, and
+    /// nothing else, and whoever changes it holds it for one entry.
+    live: RwLock<BTreeMap<FileId, Arc<ValueFile>>>,
+    set: Mutex<FileSet>,
     counts: Mutex<Counts>,
 }
 
@@ -373,8 +474,9 @@ impl ValueStore {
     }
 
     /// Starts the recovery of the value log: opens the files named by
-    /// `manifest`, as [`Self::open`] does, and takes `counts` as the live
-    /// values at the checkpoint of the pages that recovery starts from.
+    /// `manifest`, as [`Self::open`] does, and takes `counts` as a sample of
+    /// the live values: every change before the sample's place in the log
+    /// is in it, and recovery applies every change after it.
     ///
     /// `counts` may name a file the manifest does not: see
     /// [`ValueRecovery::apply`].
@@ -436,8 +538,8 @@ impl ValueStore {
             target_file_len: DEFAULT_TARGET_FILE_LEN,
             session: SESSIONS.fetch_add(1, Ordering::Relaxed),
             creating: Mutex::new(last_id),
-            files: RwLock::new(Files {
-                live,
+            live: RwLock::new(live),
+            set: Mutex::new(FileSet {
                 dropped: BTreeMap::new(),
                 last_id,
             }),
@@ -456,12 +558,16 @@ impl ValueStore {
         self
     }
 
-    fn files(&self) -> RwLockReadGuard<'_, Files> {
-        self.files.read().unwrap_or_else(PoisonError::into_inner)
+    fn live(&self) -> RwLockReadGuard<'_, BTreeMap<FileId, Arc<ValueFile>>> {
+        self.live.read().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn files_mut(&self) -> RwLockWriteGuard<'_, Files> {
-        self.files.write().unwrap_or_else(PoisonError::into_inner)
+    fn live_mut(&self) -> RwLockWriteGuard<'_, BTreeMap<FileId, Arc<ValueFile>>> {
+        self.live.write().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn set_mut(&self) -> MutexGuard<'_, FileSet> {
+        self.set.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn counts_mut(&self) -> MutexGuard<'_, Counts> {
@@ -469,15 +575,14 @@ impl ValueStore {
     }
 
     pub(super) fn file(&self, file: FileId) -> Result<Arc<ValueFile>, ValueStoreError> {
-        self.files()
-            .live
+        self.live()
             .get(&file)
             .cloned()
             .ok_or(ValueStoreError::UnknownFile { file })
     }
 
-    fn live(&self) -> Vec<Arc<ValueFile>> {
-        self.files().live.values().cloned().collect()
+    fn files(&self) -> Vec<Arc<ValueFile>> {
+        self.live().values().cloned().collect()
     }
 
     pub(super) fn check_writable(&self) -> Result<(), ValueStoreError> {
@@ -547,10 +652,10 @@ impl ValueStore {
             account: Account::EMPTY,
         };
         self.counts_mut().accounts.insert(id, counted);
-        let mut files = self.files_mut();
-        files.live.insert(id, file.clone());
-        files.last_id = Some(id);
-        drop(files);
+        let mut set = self.set_mut();
+        self.live_mut().insert(id, file.clone());
+        set.last_id = Some(id);
+        drop(set);
         Ok(ValueWriter::new(
             file,
             appender,
@@ -575,7 +680,7 @@ impl ValueStore {
     /// are not.
     pub fn sync(&self) -> Result<(), ValueStoreError> {
         let mut result = Ok(());
-        for file in self.live() {
+        for file in self.files() {
             result = result.and(file.sync().map(drop));
         }
         result
@@ -613,9 +718,9 @@ impl ValueStore {
     /// session will find it only once this holds: check it for every pointer
     /// a change acquires before the change is written to the log.
     pub fn covers(&self, pointer: ValuePointer) -> bool {
-        let files = self.files();
-        let file = files.live.get(&pointer.file());
-        file.is_some_and(|file| file.covers(pointer))
+        let live = self.live();
+        live.get(&pointer.file())
+            .is_some_and(|file| file.covers(pointer))
     }
 
     /// Starts a walk over the values of the file `file`, from its first
@@ -638,57 +743,48 @@ impl ValueStore {
     ///
     /// Call it at the change point, as one unit with the cell change, and
     /// after the change is in whatever makes the pages durable. It touches no
-    /// file, and holds the store's lock on the counts and nothing else.
+    /// file. It takes the store's lock on the counts, so call it while no
+    /// lock on a page is held: a commit applies its change where it installs
+    /// its pages, outside any one page's step. A page step uses
+    /// [`Self::step`].
     ///
     /// The whole change is applied whatever this returns, so a commit that is
     /// already in the log goes on. The error is the first pointer that could
     /// not be counted as reported ([`ValueStoreError::Miscounted`]): its file
-    /// is not in the store, its file's count was already zero, it ends past
-    /// the end of its file, or no durable manifest covers it
-    /// ([`Self::covers`]). A release from a count of zero shows the count was
-    /// too low, and the file is kept from then on whatever its count says.
+    /// is not in the store, its file's count or bytes did not include it, it
+    /// ends past the end of its file, or no durable manifest covers it
+    /// ([`Self::covers`]). A release the counts did not include shows the
+    /// count was too low, and the file is kept from then on whatever its
+    /// count says.
     pub fn apply(
         &self,
         change: &ValueChange,
         latest: CommitVersion,
     ) -> Result<(), ValueStoreError> {
+        self.step()?.apply(change, latest)
+    }
+
+    /// Takes the store's lock on the counts for one page step of the
+    /// caller's that changes them: other background work that rewrites a
+    /// value pointer takes it, then its lock on the page, installs the
+    /// pointer and applies the change with [`CountStep::apply`].
+    pub fn step(&self) -> Result<CountStep<'_>, ValueStoreError> {
         self.check_writable()?;
-        let (released, acquired) = net(change);
-        let mut counts = self.counts_mut();
-        counts.applied += 1;
-        let applied = counts.applied;
-        let mut first = Ok(());
-        for pointer in released {
-            let Some(counted) = counts.accounts.get_mut(&pointer.file()) else {
-                first = first.and(miscounted(pointer, Miscount::UnknownFile));
-                continue;
-            };
-            let extent = pointer.extent_len(counted.file.version());
-            if !counted.account.release(extent, latest, applied) {
-                first = first.and(miscounted(pointer, Miscount::CountIsZero));
-            }
+        Ok(CountStep {
+            counts: self.counts_mut(),
+        })
+    }
+
+    pub(super) fn count_step(&self) -> CountStep<'_> {
+        CountStep {
+            counts: self.counts_mut(),
         }
-        for pointer in acquired {
-            let Some(counted) = counts.accounts.get_mut(&pointer.file()) else {
-                first = first.and(miscounted(pointer, Miscount::UnknownFile));
-                continue;
-            };
-            let extent = pointer.extent_len(counted.file.version());
-            counted.account.acquire(extent, applied);
-            if !counted.file.contains(pointer) {
-                first = first.and(miscounted(pointer, Miscount::OutOfBounds));
-            } else if !counted.file.covers(pointer) {
-                first = first.and(miscounted(pointer, Miscount::NotCovered));
-            }
-        }
-        first
     }
 
     /// The place of the last change applied to the counts.
     ///
-    /// It is taken for two things: to say later that everything up to here
-    /// is durable ([`Self::mark_durable`]), and to say later that every
-    /// operation that was running here has ended ([`Self::drop_empty`]).
+    /// It is taken to say later that everything up to here is durable
+    /// ([`Self::mark_durable`]).
     pub fn applied(&self) -> ChangeMark {
         ChangeMark {
             session: self.session,
@@ -716,16 +812,11 @@ impl ValueStore {
     /// The live values of each file, as of the last change applied. A file
     /// that is not listed holds no live value.
     ///
-    /// A checkpoint of the pages stores this next to the pages it was taken
-    /// with, and [`Self::open`] or [`Self::recover`] takes it back.
+    /// [`Self::open`] or [`Self::recover`] takes it back. A sample that is
+    /// stored for recovery needs its place in the log, and is taken with
+    /// [`CountStep::counts`].
     pub fn counts(&self) -> Vec<FileCount> {
-        let counts = self.counts_mut();
-        counts
-            .accounts
-            .iter()
-            .filter(|(_, counted)| counted.account.is_counted())
-            .map(|(&file, counted)| counted.account.count(file))
-            .collect()
+        self.counts_mut().snapshot()
     }
 
     /// The live values of the file `file`, or `None` if the store does not
@@ -790,20 +881,21 @@ impl ValueStore {
     }
 
     /// Ends a pass over `file` that began when the changes had reached
-    /// `began`, and returns the file's count. A pass that was refused no
-    /// rewrite, and during which no value of the file was newly counted, has
-    /// found every owner there is to find.
-    pub(super) fn end_pass(&self, file: FileId, began: u64, refused: bool) -> u64 {
+    /// `began`. Returns the file's count, and whether the pass has found
+    /// every owner there is to find: it was refused no rewrite, and no value
+    /// of the file was newly counted while it ran.
+    pub(super) fn end_pass(&self, file: FileId, began: u64, refused: bool) -> (u64, bool) {
         let mut counts = self.counts_mut();
         let applied = counts.applied;
         let Some(counted) = counts.accounts.get_mut(&file) else {
-            return 0;
+            return (0, true);
         };
         let account = &mut counted.account;
-        if !refused && account.acquired <= began && account.values != 0 {
+        let conclusive = !refused && account.acquired <= began;
+        if conclusive && account.values != 0 {
             account.cleaned = Some(applied);
         }
-        account.values
+        (account.values, conclusive)
     }
 
     /// Keeps `file` whatever its count says from now on.
@@ -814,19 +906,41 @@ impl ValueStore {
     }
 
     /// A hold on every file the store has now, the ones it has dropped and
-    /// not yet deleted included. None of them is deleted while the hold
-    /// lives.
+    /// not yet deleted included. None of them is dropped or deleted while
+    /// the hold lives.
     ///
     /// A checkpoint takes it in its sampling step, with the manifest it
     /// samples, and drops it once it has linked the files (CK3 of
     /// `docs/lignindb/transactions.md`).
     pub fn hold_files(&self) -> ValueHold {
         let mut hold = ValueHold::new();
-        let files = self.files();
-        for file in files.live.values().chain(files.dropped.values()) {
+        let set = self.set_mut();
+        for file in self.live().values().chain(set.dropped.values()) {
             hold.add(file);
         }
         hold
+    }
+
+    /// Says what [`Self::drop_empty`] may take later: the files that are
+    /// empty now, for every version from `oldest_pin` on.
+    ///
+    /// `oldest_pin` is the oldest commit version that a snapshot, a cursor, a
+    /// write transaction or a checkpoint being created pins now, or the
+    /// latest commit version if nothing is pinned.
+    ///
+    /// The caller then waits until every operation that is running now has
+    /// ended, and passes the result to [`Self::drop_empty`]. An operation
+    /// that begins after this call reads no pointer into those files: no
+    /// cell of the latest version holds one, and no version before
+    /// `oldest_pin` can be pinned any more. A file that becomes empty later,
+    /// or that only a later, higher `oldest_pin` lets go, waits for the next
+    /// call.
+    pub fn retire(&self, oldest_pin: CommitVersion) -> Retired {
+        Retired {
+            session: self.session,
+            change: self.counts_mut().applied,
+            oldest_pin,
+        }
     }
 
     /// Takes out of the store every file that nothing can reach any more,
@@ -835,35 +949,27 @@ impl ValueStore {
     /// [`Self::manifest_replaced`], once the durable manifest does not name
     /// it.
     ///
-    /// `oldest_pin` is the oldest commit version that a snapshot, a cursor, a
-    /// write transaction or a checkpoint being created pins, or the latest
-    /// commit version if nothing is pinned.
-    ///
-    /// `retired` is a mark the caller took with [`Self::applied`] and then
-    /// waited on: every operation that was running when it took the mark has
-    /// ended. An operation that began later cannot have read a pointer into
-    /// a file that was already empty at the mark.
+    /// `retired` is what [`Self::retire`] gave, and every operation that was
+    /// running then has ended.
     ///
     /// A file is taken out only if all of this holds:
     ///
     /// - it is closed: no writer appends to it
     /// - its count of live values is zero, and is not known to be wrong
-    /// - no [`ValueHold`] is left on it
+    /// - no [`ValueHold`] is on it
     /// - the change that brought its count to zero is durable
     ///   ([`Self::mark_durable`])
-    /// - that change is no later than `retired`
-    /// - it became empty at a version no later than `oldest_pin`, so no pin
-    ///   is on a version in which a cell still pointed into it
+    /// - that change had been applied when `retired` was made
+    /// - it became empty at a version no later than the oldest version that
+    ///   was pinned when `retired` was made, so no pin was on a version in
+    ///   which a cell still pointed into it
     ///
-    /// Fails with [`ValueStoreError::WrongStore`] for a mark of another
-    /// store or of an earlier session.
-    pub fn drop_empty(
-        &self,
-        oldest_pin: CommitVersion,
-        retired: ChangeMark,
-    ) -> Result<Vec<FileId>, ValueStoreError> {
+    /// Fails with [`ValueStoreError::WrongStore`] for what another store, or
+    /// an earlier session, retired.
+    pub fn drop_empty(&self, retired: Retired) -> Result<Vec<FileId>, ValueStoreError> {
         self.check_writable()?;
         self.check_own(retired.session)?;
+        let mut set = self.set_mut();
         let unreachable: Vec<Arc<ValueFile>> = {
             let mut counts = self.counts_mut();
             let through = counts.durable.min(retired.change);
@@ -874,7 +980,7 @@ impl ValueStore {
                     let account = &counted.account;
                     !account.is_counted()
                         && account.emptied.change <= through
-                        && account.emptied.version <= oldest_pin
+                        && account.emptied.version <= retired.oldest_pin
                         && counted.file.is_closed_and_free()
                 })
                 .map(|(&id, _)| id)
@@ -884,10 +990,9 @@ impl ValueStore {
                 .map(|counted| counted.file)
                 .collect()
         };
-        let mut files = self.files_mut();
         for file in &unreachable {
-            files.live.remove(&file.id());
-            files.dropped.insert(file.id(), file.clone());
+            self.live_mut().remove(&file.id());
+            set.dropped.insert(file.id(), file.clone());
         }
         Ok(unreachable.iter().map(|file| file.id()).collect())
     }
@@ -895,7 +1000,7 @@ impl ValueStore {
     /// The files in the store, as a manifest written now would name them:
     /// each with its state and the length of it that is durable.
     pub fn files_named(&self) -> Result<Vec<LiveFile>, ValueStoreError> {
-        self.live().iter().map(|file| file.live_file()).collect()
+        self.files().iter().map(|file| file.live_file()).collect()
     }
 
     /// The manifest `base` with its value-log files replaced by the ones in
@@ -912,9 +1017,8 @@ impl ValueStore {
             .copied()
             .collect();
         let (live, last_id) = {
-            let files = self.files();
-            let live: Vec<_> = files.live.values().cloned().collect();
-            (live, files.last_id)
+            let set = self.set_mut();
+            (self.files(), set.last_id)
         };
         for file in live {
             files.push(file.live_file()?);
@@ -933,7 +1037,7 @@ impl ValueStore {
             .filter(|file| file.kind() == FileKind::ValueLog)
             .map(|file| (file.id(), file.valid_len()))
             .collect();
-        for file in self.live() {
+        for file in self.files() {
             if let Some(&valid_len) = named.get(&file.id()) {
                 file.name();
                 file.cover(valid_len);
@@ -959,22 +1063,20 @@ impl ValueStore {
         let named = self.name_files(manifest.manifest()?);
 
         let unnamed: Vec<Arc<ValueFile>> = {
-            let mut files = self.files_mut();
-            let ids: Vec<FileId> = files
+            let mut set = self.set_mut();
+            let ids: Vec<FileId> = set
                 .dropped
                 .iter()
                 .filter(|(id, file)| !named.contains(id) && !file.is_held())
                 .map(|(&id, _)| id)
                 .collect();
-            ids.iter()
-                .filter_map(|id| files.dropped.remove(id))
-                .collect()
+            ids.iter().filter_map(|id| set.dropped.remove(id)).collect()
         };
         let mut result = Ok(());
         for file in unnamed {
             if let Err(source) = remove(&*self.vfs, file.path()) {
                 let path = file.path().to_path_buf();
-                self.files_mut().dropped.insert(file.id(), file);
+                self.set_mut().dropped.insert(file.id(), file);
                 result = result.and(Err(ValueStoreError::NotDeleted { path, source }));
             }
         }

@@ -403,7 +403,7 @@ fn a_dropped_file_that_cannot_be_deleted_is_deleted_by_the_next_call() {
     store.all_durable();
     let dropped = store
         .values
-        .drop_empty(version(0), store.values.applied())
+        .drop_empty(store.values.retire(version(0)))
         .unwrap();
     assert_eq!(dropped, [file_id(1), file_id(2)]);
 

@@ -8,7 +8,7 @@ use lignin_format::{value_log::ValuePointer, CommitVersion, FileId, FormatVersio
 use super::{
     counts::ValueChange,
     error::{Miscount, OwnersError, ValueStoreError},
-    store::ValueStore,
+    store::{CountStep, ValueStore},
     walk::ValueWalk,
     writer::{ValueHold, ValueWriter},
 };
@@ -22,7 +22,9 @@ use crate::segment::ManifestStore;
 pub trait ValueOwners {
     /// What a look at a page found: whatever the implementation needs to
     /// tell, in the page step, whether the page is still as it was looked
-    /// at. The version of the page that was current is enough.
+    /// at. The version of the page that was current is enough. An
+    /// implementation that also refuses a page which a write transaction
+    /// copied and gave up in between keeps a count of those copies in it.
     type Found;
 
     /// Looks in the page `page` for a cell that holds `pointer`.
@@ -54,6 +56,11 @@ pub trait ValueOwners {
     /// to the counts, installs the new pointer, calls
     /// [`step.install`](PointerRewrite::install) inside the same step, and
     /// returns what that gave.
+    ///
+    /// The store's lock on the counts was taken before this is called and is
+    /// held until `step` is installed or dropped, so that the page's lock is
+    /// the last one taken. The implementation calls no method of the store
+    /// that reads or changes the counts while it has `step`.
     fn rewrite(&self, step: PointerRewrite<'_>, found: Self::Found)
         -> Result<Rewrite, OwnersError>;
 }
@@ -81,7 +88,7 @@ impl<O: ValueOwners + ?Sized> ValueOwners for &O {
 /// One pointer rewrite, handed to [`ValueOwners::rewrite`].
 #[derive(Debug)]
 pub struct PointerRewrite<'a> {
-    store: &'a ValueStore,
+    counts: CountStep<'a>,
     counted: &'a AtomicBool,
     page: PageId,
     from: ValuePointer,
@@ -116,13 +123,18 @@ impl PointerRewrite<'_> {
     ///
     /// `latest` is the latest commit version at that moment.
     ///
+    /// This takes no lock: the rewrite came with the store's lock on the
+    /// counts, which was taken before the page step began and is given back
+    /// here, or when the rewrite is dropped.
+    ///
     /// The value this returns is the only way to report the rewrite
     /// installed. If it was called and [`ValueOwners::rewrite`] then returns
     /// anything else, the store no longer knows which of the two pointers
     /// the cell holds, and keeps the file of the old one for good.
     pub fn install(self, latest: CommitVersion) -> Installed {
         self.counted.store(true, Ordering::Release);
-        let miscount = self.store.apply(&self.change(), latest).err();
+        let change = self.change();
+        let miscount = self.counts.apply(&change, latest).err();
         Installed { miscount }
     }
 }
@@ -180,16 +192,6 @@ impl Cleaned {
     /// Whether the file holds no live value any more.
     pub fn is_empty(&self) -> bool {
         self.live == 0
-    }
-
-    /// How many values the count calls live although the pass found no owner
-    /// for them and was not refused one. A cell was carried to another page
-    /// without its value, which breaks the move rule, or a transaction that
-    /// had appended the value ahead committed it while the pass ran. The two
-    /// look the same from here, so this is a number and not an error. The
-    /// file stays either way.
-    pub fn owners_not_found(&self) -> u64 {
-        self.live.saturating_sub(self.busy)
     }
 }
 
@@ -319,6 +321,12 @@ impl ValueStore {
     /// reported does not stop the pass: the pass is carried out as far as it
     /// goes and then fails with that [`ValueStoreError::Miscounted`], before
     /// any other error.
+    ///
+    /// A pass that ran to its end fails with
+    /// [`ValueStoreError::OwnersNotFound`] if the file is left with live
+    /// values although no rewrite was refused and no value of the file was
+    /// counted while the pass ran: the owners of those values are not in the
+    /// pages their records name. The rewrites the pass installed stand.
     pub fn install<O: ValueOwners + ?Sized>(
         &self,
         copies: CopiedValues<O::Found>,
@@ -354,7 +362,7 @@ impl ValueStore {
         {
             let counted = AtomicBool::new(false);
             let step = PointerRewrite {
-                store: self,
+                counts: self.count_step(),
                 counted: &counted,
                 page,
                 from,
@@ -382,9 +390,12 @@ impl ValueStore {
             }
         }
         let refused = cleaned.busy != 0 || failed.is_some();
-        cleaned.live = self.end_pass(file, began, refused);
+        let (live, conclusive) = self.end_pass(file, began, refused);
+        cleaned.live = live;
         drop(hold);
-        miscount.or(failed).map_or(Ok(cleaned), Err)
+        let not_found =
+            (conclusive && live != 0).then_some(ValueStoreError::OwnersNotFound { file, cleaned });
+        miscount.or(failed).or(not_found).map_or(Ok(cleaned), Err)
     }
 
     /// Cleans the closed file `file`: moves each of its live values to the
@@ -398,7 +409,8 @@ impl ValueStore {
     /// No value's bytes, length or owner change, and no value is removed. The
     /// file is deleted by [`Self::drop_empty`], and only once its count of
     /// live values is zero. A pass that finds no owner for a value the count
-    /// includes leaves the file as it is ([`Cleaned::owners_not_found`]).
+    /// includes leaves the file as it is
+    /// ([`ValueStoreError::OwnersNotFound`]).
     ///
     /// The manifest is needed for step 2 alone. A caller that must not keep
     /// it from others for the length of a pass makes the three steps itself.

@@ -117,7 +117,7 @@ impl Store {
     pub(super) fn drop_empty(&mut self, oldest_pin: u64) -> Vec<u32> {
         let dropped = self
             .values
-            .drop_empty(version(oldest_pin), self.values.applied())
+            .drop_empty(self.values.retire(version(oldest_pin)))
             .expect("writable");
         self.commit();
         dropped.into_iter().map(FileId::get).collect()
@@ -290,9 +290,10 @@ fn a_value_above_what_one_record_holds_is_still_one_read_and_moves_whole() {
         }
     }
     let owners = OnePage(std::cell::Cell::new(None));
-    let cleaned = values
-        .clean(pointer.file(), &mut cleaner, &mut manifest, &owners)
-        .unwrap();
+    let cleaned = match values.clean(pointer.file(), &mut cleaner, &mut manifest, &owners) {
+        Err(ValueStoreError::OwnersNotFound { cleaned, .. }) => cleaned,
+        other => panic!("the owners of two values are in no page, got {other:?}"),
+    };
     assert_eq!((cleaned.moved, cleaned.unowned, cleaned.live), (1, 2, 2));
     let moved = owners.0.get().expect("the rewrite was installed");
     assert_eq!(
@@ -732,9 +733,10 @@ fn a_read_only_store_reads_and_changes_nothing() {
         Err(ValueStoreError::ReadOnly)
     ));
     assert!(matches!(
-        reader.drop_empty(first, reader.applied()),
+        reader.drop_empty(reader.retire(first)),
         Err(ValueStoreError::ReadOnly)
     ));
+    assert!(matches!(reader.step(), Err(ValueStoreError::ReadOnly)));
     assert!(matches!(
         reader.manifest_replaced(&store.manifest),
         Err(ValueStoreError::ReadOnly)
@@ -1046,7 +1048,7 @@ fn values_are_read_while_they_are_appended_counted_and_synced() {
                 let _ = values.counts();
                 let _ = values.cleanable(0);
                 let dropped = values
-                    .drop_empty(CommitVersion::MAX, values.applied())
+                    .drop_empty(values.retire(CommitVersion::MAX))
                     .unwrap();
                 assert!(dropped.is_empty(), "every file is held or being written");
             }
@@ -1188,17 +1190,16 @@ fn a_manifest_written_while_a_file_is_created_does_not_use_up_its_id() {
     std::thread::scope(|scope| {
         let creating = scope.spawn(|| values.create());
         was_reached.recv().expect("the creation began");
-        values.commit(&mut manifest).unwrap();
+        let committed = values.commit(&mut manifest);
+        let recorded = manifest.manifest().unwrap().last_file_ids().value_log;
+        resume.send(()).unwrap();
+        let created = creating.join().expect("the creation ran");
+        committed.unwrap();
         assert_eq!(
-            manifest.manifest().unwrap().last_file_ids().value_log,
-            None,
+            recorded, None,
             "the id of a file that is not in the store yet is not recorded"
         );
-        resume.send(()).unwrap();
-        let mut writer = creating
-            .join()
-            .expect("the creation ran")
-            .expect("the file is created");
+        let mut writer = created.expect("the file is created");
         assert_eq!(writer.file_id(), file_id(1));
 
         values

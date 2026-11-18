@@ -162,6 +162,23 @@ impl Pages {
         true
     }
 
+    /// The page as a checkpoint copies it, if it ever had a version.
+    fn copy(&self, id: PageId) -> Option<PageCopy> {
+        let last = self.0.get(&id)?.last()?;
+        Some(match last.superseded {
+            None => PageCopy {
+                id,
+                born: last.born,
+                cells: last.page.cells(),
+            },
+            Some(freed) => PageCopy {
+                id,
+                born: freed,
+                cells: Vec::new(),
+            },
+        })
+    }
+
     fn all_current(&self) -> Vec<(PageId, Vec<Cell>)> {
         self.0
             .keys()
@@ -175,10 +192,17 @@ impl Pages {
 /// store of a change point, as far as the value log is concerned.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Record {
+    /// A checkpoint: a sample of the counts with its place in the journal,
+    /// and a copy of every page, each made at a moment of its own at or
+    /// after the sample.
     Checkpoint {
+        /// The latest version when the counts were sampled.
         version: u64,
-        pages: Vec<(PageId, Vec<Cell>)>,
+        /// How many records the journal held when the counts were sampled:
+        /// the counts include those and no later one.
+        place: u64,
         counts: Vec<FileCount>,
+        pages: Vec<PageCopy>,
     },
     Commit {
         version: u64,
@@ -192,6 +216,36 @@ enum Record {
     },
 }
 
+/// A page as a checkpoint copied it: the version that last changed it, and
+/// its cells, which are none if that version freed it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PageCopy {
+    id: PageId,
+    born: u64,
+    cells: Vec<Cell>,
+}
+
+impl Record {
+    /// A checkpoint of `pages` as they all are at `version`, with the counts
+    /// of that moment, at the start of a journal.
+    fn start(version: u64, pages: Vec<(PageId, Vec<Cell>)>, counts: Vec<FileCount>) -> Self {
+        let pages = pages
+            .into_iter()
+            .map(|(id, cells)| PageCopy {
+                id,
+                born: version,
+                cells,
+            })
+            .collect();
+        Self::Checkpoint {
+            version,
+            place: 0,
+            counts,
+            pages,
+        }
+    }
+}
+
 fn put_pointers(out: &mut Vec<u8>, pointers: &[ValuePointer]) {
     out.extend_from_slice(&(pointers.len() as u32).to_le_bytes());
     for pointer in pointers {
@@ -199,15 +253,19 @@ fn put_pointers(out: &mut Vec<u8>, pointers: &[ValuePointer]) {
     }
 }
 
+fn put_cells(out: &mut Vec<u8>, cells: &[Cell]) {
+    out.extend_from_slice(&(cells.len() as u32).to_le_bytes());
+    for cell in cells {
+        out.extend_from_slice(&cell.key.to_le_bytes());
+        out.extend_from_slice(&cell.pointer.encode());
+    }
+}
+
 fn put_pages(out: &mut Vec<u8>, pages: &[(PageId, Vec<Cell>)]) {
     out.extend_from_slice(&(pages.len() as u32).to_le_bytes());
     for (id, cells) in pages {
         out.extend_from_slice(&id.encode());
-        out.extend_from_slice(&(cells.len() as u32).to_le_bytes());
-        for cell in cells {
-            out.extend_from_slice(&cell.key.to_le_bytes());
-            out.extend_from_slice(&cell.pointer.encode());
-        }
+        put_cells(out, cells);
     }
 }
 
@@ -240,19 +298,31 @@ impl Reader<'_> {
         (0..self.u32()?).map(|_| self.pointer()).collect()
     }
 
-    fn pages(&mut self) -> Option<Vec<(PageId, Vec<Cell>)>> {
+    fn cells(&mut self) -> Option<Vec<Cell>> {
         (0..self.u32()?)
             .map(|_| {
-                let id = self.page()?;
-                let cells = (0..self.u32()?)
-                    .map(|_| {
-                        Some(Cell {
-                            key: self.u32()?,
-                            pointer: self.pointer()?,
-                        })
-                    })
-                    .collect::<Option<_>>()?;
-                Some((id, cells))
+                Some(Cell {
+                    key: self.u32()?,
+                    pointer: self.pointer()?,
+                })
+            })
+            .collect()
+    }
+
+    fn pages(&mut self) -> Option<Vec<(PageId, Vec<Cell>)>> {
+        (0..self.u32()?)
+            .map(|_| Some((self.page()?, self.cells()?)))
+            .collect()
+    }
+
+    fn copies(&mut self) -> Option<Vec<PageCopy>> {
+        (0..self.u32()?)
+            .map(|_| {
+                Some(PageCopy {
+                    id: self.page()?,
+                    born: self.u64()?,
+                    cells: self.cells()?,
+                })
             })
             .collect()
     }
@@ -264,18 +334,25 @@ impl Record {
         match self {
             Self::Checkpoint {
                 version,
-                pages,
+                place,
                 counts,
+                pages,
             } => {
                 payload.push(1);
                 payload.extend_from_slice(&version.to_le_bytes());
-                put_pages(&mut payload, pages);
+                payload.extend_from_slice(&place.to_le_bytes());
                 payload.extend_from_slice(&(counts.len() as u32).to_le_bytes());
                 for count in counts {
                     payload.extend_from_slice(&count.file.encode());
                     payload.extend_from_slice(&count.values.to_le_bytes());
                     payload.extend_from_slice(&count.bytes.to_le_bytes());
                     payload.push(u8::from(count.miscounted));
+                }
+                payload.extend_from_slice(&(pages.len() as u32).to_le_bytes());
+                for copy in pages {
+                    payload.extend_from_slice(&copy.id.encode());
+                    payload.extend_from_slice(&copy.born.to_le_bytes());
+                    put_cells(&mut payload, &copy.cells);
                 }
             }
             Self::Commit {
@@ -307,7 +384,7 @@ impl Record {
         let record = match tag {
             1 => Self::Checkpoint {
                 version: reader.u64()?,
-                pages: reader.pages()?,
+                place: reader.u64()?,
                 counts: (0..reader.u32()?)
                     .map(|_| {
                         Some(FileCount {
@@ -318,6 +395,7 @@ impl Record {
                         })
                     })
                     .collect::<Option<_>>()?,
+                pages: reader.copies()?,
             },
             2 => {
                 let (version, pages) = (reader.u64()?, reader.pages()?);
@@ -402,11 +480,7 @@ fn read_journal(fs: &SimVfs) -> Result<Vec<Record>, ValueStoreError> {
     let file = match fs.open(&journal_path(JOURNAL), OpenMode::Read) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(vec![Record::Checkpoint {
-                version: 0,
-                pages: Vec::new(),
-                counts: Vec::new(),
-            }]);
+            return Ok(vec![Record::start(0, Vec::new(), Vec::new())]);
         }
         Err(error) => return Err(journal_error("open", JOURNAL)(error)),
     };
@@ -423,19 +497,35 @@ struct Inner {
     pins: Vec<u64>,
     private: BTreeMap<PageId, usize>,
     journal: Box<dyn VfsFile>,
+    /// How many records the journal holds.
+    logged: u64,
     /// Set once an append to the journal or a sync of it has failed: what the
     /// journal holds is then not known, and the session has to end.
     journal_failed: bool,
+    /// The checkpoint that is being taken, if one is.
+    checkpointing: Option<Checkpointing>,
 }
 
 impl Inner {
     fn log(&mut self, record: &Record) -> Result<(), ValueStoreError> {
         let appended = self.journal.append(&record.encode());
         self.journal_failed |= appended.is_err();
+        self.logged += u64::from(appended.is_ok());
         appended
             .map(drop)
             .map_err(journal_error("append to", JOURNAL))
     }
+}
+
+/// A checkpoint that is being taken: the sample of the counts, and the
+/// pages copied so far.
+struct Checkpointing {
+    version: u64,
+    place: u64,
+    counts: Vec<FileCount>,
+    /// The pages still to copy, the next one last.
+    left: Vec<PageId>,
+    copied: Vec<PageCopy>,
 }
 
 /// The pages, as the value log's cleaner is given them.
@@ -452,7 +542,9 @@ impl PageStore {
                 pins: Vec::new(),
                 private: BTreeMap::new(),
                 journal,
+                logged: 1,
                 journal_failed: false,
+                checkpointing: None,
             }),
         }
     }
@@ -624,14 +716,7 @@ impl Db {
     fn create(fs: &SimVfs) -> Result<Self, ValueStoreError> {
         let manifest = ManifestStore::create(shared(fs), db_dir(), empty_manifest())?;
         let values = ValueStore::open(&manifest, &[])?.with_target_file_len(TARGET_FILE_LEN);
-        let journal = start_journal(
-            fs,
-            &Record::Checkpoint {
-                version: 0,
-                pages: Vec::new(),
-                counts: Vec::new(),
-            },
-        )?;
+        let journal = start_journal(fs, &Record::start(0, Vec::new(), Vec::new()))?;
         Ok(Self {
             fs: fs.clone(),
             manifest,
@@ -644,19 +729,27 @@ impl Db {
 
     /// Opens the database as a new session does, after a crash or after the
     /// last session ended: the manifest, then the pages and the counts from
-    /// the journal's last checkpoint and the records after it.
+    /// the journal's last checkpoint and the records after its place.
+    ///
+    /// The checkpoint copied each page at a moment of its own, so a copy may
+    /// already hold a change whose record comes after the place. A commit
+    /// is skipped for a page whose copy is at least as new, and a pointer
+    /// rewrite for a page whose cell no longer holds the old pointer. The
+    /// counts take every change after the place, skipped for its page or
+    /// not.
     fn recover(fs: &SimVfs) -> Result<Self, ValueStoreError> {
         let mut manifest = ManifestStore::open(shared(fs), db_dir())?;
         let records = read_journal(fs)?;
-        let start = records
+        let last = records
             .iter()
             .rposition(|record| matches!(record, Record::Checkpoint { .. }))
             .expect("the journal starts with a checkpoint");
         let Record::Checkpoint {
             version,
-            pages: stored,
+            place,
             counts,
-        } = &records[start]
+            pages: copies,
+        } = &records[last]
         else {
             unreachable!("found as a checkpoint");
         };
@@ -664,12 +757,14 @@ impl Db {
         let mut recovery = ValueStore::recover(&manifest, counts)?;
         let mut pages = Pages::default();
         let mut latest = *version;
-        for (id, cells) in stored {
-            pages.install(*id, cells.clone(), latest);
+        let mut copied = BTreeMap::new();
+        for copy in copies {
+            pages.install(copy.id, copy.cells.clone(), copy.born);
+            copied.insert(copy.id, copy.born);
         }
-        for record in &records[start + 1..] {
+        for record in &records[*place as usize..] {
             let change = match record {
-                Record::Checkpoint { .. } => unreachable!("the last checkpoint came before"),
+                Record::Checkpoint { .. } => continue,
                 Record::Commit {
                     version,
                     pages: changed,
@@ -677,12 +772,14 @@ impl Db {
                 } => {
                     latest = *version;
                     for (id, cells) in changed {
-                        pages.install(*id, cells.clone(), latest);
+                        if copied.get(id).is_none_or(|&born| born < latest) {
+                            pages.install(*id, cells.clone(), latest);
+                        }
                     }
                     change.clone()
                 }
                 Record::Step { page, from, to } => {
-                    assert!(pages.rewrite_current(*page, *from, *to));
+                    pages.rewrite_current(*page, *from, *to);
                     ValueChange::moved(*from, *to)
                 }
             };
@@ -706,11 +803,7 @@ impl Db {
         );
         let journal = start_journal(
             fs,
-            &Record::Checkpoint {
-                version: latest,
-                pages: current.all_current(),
-                counts: values.counts(),
-            },
+            &Record::start(latest, current.all_current(), values.counts()),
         )?;
         values.mark_durable(values.applied())?;
         values.commit(&mut manifest)?;
@@ -859,12 +952,17 @@ impl Db {
             })
         });
         match prepared {
-            Ok(()) => commit_prepared(&self.pages, &self.values, txn),
+            Ok(()) => self.commit_prepared(txn),
             Err(error) => {
                 self.rollback(txn);
                 Err(error)
             }
         }
+    }
+
+    /// Commits `txn`, whose values [`Self::prepare`] has had covered.
+    pub(super) fn commit_prepared(&self, txn: Txn) -> Result<u64, ValueStoreError> {
+        commit_prepared(&self.pages, &self.values, txn)
     }
 
     pub(super) fn rollback(&self, txn: Txn) {
@@ -881,38 +979,105 @@ impl Db {
         self.values.mark_durable(mark)
     }
 
-    /// Writes a checkpoint of the pages, with the counts, to the journal.
-    pub(super) fn checkpoint(&self) -> Result<(), ValueStoreError> {
+    /// Begins a checkpoint: samples the counts and their place in the
+    /// journal, in one step of the counts. A checkpoint that was being taken
+    /// is given up.
+    pub(super) fn begin_checkpoint(&self) -> Result<(), ValueStoreError> {
+        let step = self.values.step()?;
         let mut inner = self.pages.inner.borrow_mut();
-        let record = Record::Checkpoint {
+        inner.checkpointing = Some(Checkpointing {
             version: inner.latest,
-            pages: inner.pages.all_current(),
-            counts: self.values.counts(),
-        };
-        inner.log(&record)
+            place: inner.logged,
+            counts: step.counts(),
+            left: inner.pages.0.keys().rev().copied().collect(),
+            copied: Vec::new(),
+        });
+        Ok(())
+    }
+
+    /// Copies up to `pages` more pages into the checkpoint that is being
+    /// taken, each as it is now, and returns how many are left to copy.
+    pub(super) fn copy_pages(&self, pages: usize) -> usize {
+        let mut inner = self.pages.inner.borrow_mut();
+        let inner = &mut *inner;
+        let taking = inner.checkpointing.as_mut().expect("a checkpoint is begun");
+        for _ in 0..pages {
+            let Some(id) = taking.left.pop() else { break };
+            taking.copied.extend(inner.pages.copy(id));
+        }
+        taking.left.len()
+    }
+
+    /// Copies the pages that are left and writes the checkpoint to the
+    /// journal.
+    pub(super) fn finish_checkpoint(&self) -> Result<(), ValueStoreError> {
+        self.copy_pages(usize::MAX);
+        let mut inner = self.pages.inner.borrow_mut();
+        let taken = inner.checkpointing.take().expect("a checkpoint is begun");
+        inner.log(&Record::Checkpoint {
+            version: taken.version,
+            place: taken.place,
+            counts: taken.counts,
+            pages: taken.copied,
+        })
+    }
+
+    /// Whether a checkpoint is being taken.
+    pub(super) fn is_checkpointing(&self) -> bool {
+        self.pages.inner.borrow().checkpointing.is_some()
+    }
+
+    /// Takes a checkpoint in one go: the counts and every page at the same
+    /// moment.
+    pub(super) fn checkpoint(&self) -> Result<(), ValueStoreError> {
+        self.begin_checkpoint()?;
+        self.finish_checkpoint()
     }
 
     /// One cleaning pass over `file`, into the cleaner's own file.
     pub(super) fn clean(&mut self, file: FileId) -> Result<Cleaned, ValueStoreError> {
-        self.clean_with(file, |pages, _| pages)
+        self.clean_with(file, |pages| pages)
     }
 
-    /// As [`Self::clean`], with the cleaner given `owners(pages, values)` in
-    /// place of the pages.
-    pub(super) fn clean_with<'a, O: ValueOwners + 'a>(
-        &'a mut self,
-        file: FileId,
-        owners: impl FnOnce(&'a PageStore, &'a ValueStore) -> O,
-    ) -> Result<Cleaned, ValueStoreError> {
+    /// The cleaner's own writer, in a file that is not full.
+    fn cleaner(&mut self) -> Result<&mut ValueWriter, ValueStoreError> {
         if self.cleaner.as_ref().is_some_and(ValueWriter::is_full) {
             self.cleaner.take().expect("checked").finish()?;
         }
         if self.cleaner.is_none() {
             self.cleaner = Some(self.open_writer()?);
         }
+        Ok(self.cleaner.as_mut().expect("just created"))
+    }
+
+    /// As [`Self::clean`], with the cleaner given `owners(pages)` in place
+    /// of the pages.
+    pub(super) fn clean_with<'a, O: ValueOwners + 'a>(
+        &'a mut self,
+        file: FileId,
+        owners: impl FnOnce(&'a PageStore) -> O,
+    ) -> Result<Cleaned, ValueStoreError> {
+        self.cleaner()?;
         let to = self.cleaner.as_mut().expect("just created");
-        let owners = owners(&self.pages, &self.values);
+        let owners = owners(&self.pages);
         self.values.clean(file, to, &mut self.manifest, &owners)
+    }
+
+    /// The first half of a pass over `file`, with the copies made durable
+    /// and covered by the manifest. Other change points can come before
+    /// [`Self::install`].
+    pub(super) fn copy_live(&mut self, file: FileId) -> Result<CopiedValues<u64>, ValueStoreError> {
+        self.cleaner()?;
+        let to = self.cleaner.as_mut().expect("just created");
+        let copies = self.values.copy_live(file, to, &self.pages)?;
+        to.sync()?;
+        self.values.commit(&mut self.manifest)?;
+        Ok(copies)
+    }
+
+    /// The second half of a pass.
+    pub(super) fn install(&self, copies: CopiedValues<u64>) -> Result<Cleaned, ValueStoreError> {
+        self.values.install(copies, &self.pages)
     }
 
     /// Drops the files nothing can reach and replaces the manifest, which
@@ -920,7 +1085,7 @@ impl Db {
     pub(super) fn drop_empty(&mut self) -> Result<Vec<FileId>, ValueStoreError> {
         let dropped = self
             .values
-            .drop_empty(self.pages.oldest_pin(), self.values.applied())?;
+            .drop_empty(self.values.retire(self.pages.oldest_pin()))?;
         self.values.commit(&mut self.manifest)?;
         Ok(dropped)
     }
@@ -1016,12 +1181,13 @@ impl Db {
 /// Writes the commit of `txn` to the journal, installs its pages and counts
 /// its values. The values it appended must already be covered by the
 /// manifest ([`Db::prepare`]).
-pub(super) fn commit_prepared(
+fn commit_prepared(
     pages: &PageStore,
     values: &ValueStore,
     txn: Txn,
 ) -> Result<u64, ValueStoreError> {
     let change = txn.change();
+    let step = values.step()?;
     let mut inner = pages.inner.borrow_mut();
     let version = inner.latest + 1;
     let changed: Vec<_> = txn.pages.clone().into_iter().collect();
@@ -1042,7 +1208,7 @@ pub(super) fn commit_prepared(
         inner.pages.install(id, cells, version);
     }
     inner.latest = version;
-    let counted = values.apply(&change, super::version(version));
+    let counted = step.apply(&change, super::version(version));
     drop(txn);
     counted.map(|()| version)
 }

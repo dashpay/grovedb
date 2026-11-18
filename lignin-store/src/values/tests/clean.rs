@@ -10,7 +10,7 @@ use lignin_format::{
 use lignin_io::{sim::SimConfig, OpenMode};
 
 use super::{
-    pages::{commit_prepared, Db, PageStore},
+    pages::{Db, PageStore},
     run::{check_recovered, put, Op, Run, Tally},
     sim::*,
     store::{acquired, bytes, released, three_values, Store},
@@ -88,7 +88,6 @@ fn a_pass_moves_the_live_values_and_leaves_the_rest() {
         }
     );
     assert!(cleaned.is_empty());
-    assert_eq!(cleaned.owners_not_found(), 0);
     run.check_session();
 
     let after: Vec<ValuePointer> = [(1, 10), (1, 11), (2, 21)]
@@ -267,7 +266,7 @@ fn a_value_whose_owner_cannot_be_found_is_kept() {
             })
         );
 
-        let cleaned = run.clean(file_id(1)).unwrap();
+        let cleaned = run.clean_unfound(file_id(1));
         assert_eq!(
             cleaned,
             Cleaned {
@@ -279,7 +278,6 @@ fn a_value_whose_owner_cannot_be_found_is_kept() {
                 copied_bytes: 17 + 11 + 2 * 18,
             }
         );
-        assert_eq!(cleaned.owners_not_found(), 1);
         assert!(!cleaned.is_empty());
         run.flush().unwrap();
         assert!(run.drop_empty().unwrap().is_empty());
@@ -317,7 +315,7 @@ fn a_file_with_an_unfound_owner_is_worth_a_pass_again_once_its_count_changes() {
     run.carry(10, 3).unwrap();
     run.commit(&[Op::Delete { key: 30 }]).unwrap();
     assert_eq!(run.db().values.cleanable(50).len(), 1);
-    assert_eq!(run.clean(file_id(1)).unwrap().owners_not_found(), 1);
+    assert_eq!(run.clean_unfound(file_id(1)).live, 1);
     assert!(run.db().values.cleanable(0).is_empty());
 
     run.commit(&[put(5, 50, 8)]).unwrap();
@@ -354,7 +352,6 @@ fn a_rewrite_is_refused_while_a_write_transaction_holds_a_private_copy_of_the_pa
                 copied_bytes: 40 + 50 + 60 + 3 * 18,
             }
         );
-        assert_eq!(cleaned.owners_not_found(), 0);
         assert_eq!(
             [pointer_of(run.db(), 1, 10), pointer_of(run.db(), 1, 11)],
             before,
@@ -392,26 +389,6 @@ fn a_rewrite_is_refused_while_a_write_transaction_holds_a_private_copy_of_the_pa
 
 /// The pages, with something that happens between the cleaner's look at
 /// them and its first rewrite.
-struct Racing<'a, F: FnOnce()> {
-    pages: &'a PageStore,
-    race: RefCell<Option<F>>,
-}
-
-impl<F: FnOnce()> ValueOwners for Racing<'_, F> {
-    type Found = u64;
-
-    fn find(&self, page: PageId, pointer: ValuePointer) -> Result<Option<u64>, OwnersError> {
-        self.pages.find(page, pointer)
-    }
-
-    fn rewrite(&self, step: PointerRewrite<'_>, found: u64) -> Result<Rewrite, OwnersError> {
-        if let Some(race) = self.race.borrow_mut().take() {
-            race();
-        }
-        self.pages.rewrite(step, found)
-    }
-}
-
 #[test]
 fn a_move_is_abandoned_when_a_commit_superseded_the_page_after_the_cleaner_looked() {
     let mut run = started(7);
@@ -431,15 +408,12 @@ fn a_move_is_abandoned_when_a_commit_superseded_the_page_after_the_cleaner_looke
     run.history.push(next);
     let before = [30, 31].map(|key| pointer_of(run.db(), 3, key));
 
-    let cleaned = run
-        .db()
-        .clean_with(file_id(1), |pages, values| Racing {
-            pages,
-            race: RefCell::new(Some(move || {
-                commit_prepared(pages, values, txn).expect("the commit is installed");
-            })),
-        })
-        .unwrap();
+    let copies = run.db().copy_live(file_id(1)).unwrap();
+    assert_eq!(copies.len(), 5);
+    run.db()
+        .commit_prepared(txn)
+        .expect("the commit is installed");
+    let cleaned = run.db().install(copies).unwrap();
     assert_eq!(
         cleaned,
         Cleaned {
@@ -599,7 +573,7 @@ fn a_pass_that_fails_part_way_leaves_every_value_with_one_owner() {
         run.db().rotate().unwrap();
         let error = run
             .db()
-            .clean_with(file_id(1), |pages, _| Failing {
+            .clean_with(file_id(1), |pages| Failing {
                 pages,
                 fail_holds,
                 rewrites_before_failure: RefCell::new(rewrites),
@@ -838,20 +812,18 @@ fn a_file_is_worth_another_pass_when_a_value_was_counted_while_the_last_one_ran(
     next.insert(30, ahead[&30].clone());
     run.history.push(next);
 
+    let copies = run.db().copy_live(file_id(1)).unwrap();
+    run.db()
+        .commit_prepared(txn)
+        .expect("the commit is installed");
     let cleaned = run
         .db()
-        .clean_with(file_id(1), |pages, values| Racing {
-            pages,
-            race: RefCell::new(Some(move || {
-                commit_prepared(pages, values, txn).expect("the commit is installed");
-            })),
-        })
-        .unwrap();
+        .install(copies)
+        .expect("a value counted while the pass ran may be the one that is left");
     assert_eq!(
         (cleaned.moved, cleaned.unowned, cleaned.busy, cleaned.live),
         (1, 1, 0, 1)
     );
-    assert_eq!(cleaned.owners_not_found(), 1);
     run.check_session();
     assert_eq!(
         run.db().values.cleanable(0).len(),
@@ -904,7 +876,7 @@ fn a_pass_takes_only_what_its_own_store_made() {
         Err(ValueStoreError::WrongStore)
     ));
     assert!(matches!(
-        store.values.drop_empty(version(9), other.values.applied()),
+        store.values.drop_empty(other.values.retire(version(9))),
         Err(ValueStoreError::WrongStore)
     ));
     let earlier = store.values.applied();
@@ -913,4 +885,106 @@ fn a_pass_takes_only_what_its_own_store_made() {
         reopened.values.mark_durable(earlier),
         Err(ValueStoreError::WrongStore)
     ));
+}
+
+#[test]
+fn a_checkpoint_that_copies_pages_before_and_after_their_moves_recovers_pages_and_counts() {
+    let cells = [(1, 10), (2, 20), (3, 30), (3, 31)];
+    for copied_before in 0..=3 {
+        let mut run = started(21);
+        run.commit(&[
+            put(1, 10, 40),
+            put(2, 20, 90),
+            put(3, 30, 60),
+            put(3, 31, 20),
+        ])
+        .unwrap();
+        run.db().rotate().unwrap();
+        run.flush().unwrap();
+
+        run.db().begin_checkpoint().unwrap();
+        assert_eq!(run.db().copy_pages(copied_before), 3 - copied_before);
+        let cleaned = run.clean(file_id(1)).unwrap();
+        assert_eq!((cleaned.moved, cleaned.live), (4, 0));
+        assert_eq!(
+            run.db().pages.latest(),
+            1,
+            "the moves are all of one version"
+        );
+        run.db().finish_checkpoint().unwrap();
+        run.flush().unwrap();
+        run.check_session();
+        let moved = cells.map(|(page, key)| pointer_of(run.db(), page, key));
+        run.end_session();
+
+        let recovered = check_recovered(&run.fs, &run);
+        assert_eq!(
+            cells.map(|(page, key)| pointer_of(&recovered, page, key)),
+            moved,
+            "{copied_before} pages were copied before their values moved"
+        );
+        assert_eq!(live(&recovered.values, 1), Some(0));
+        assert_eq!(live(&recovered.values, 2), Some(4));
+        drop(recovered);
+
+        run.open().unwrap();
+        run.flush().unwrap();
+        assert_eq!(run.drop_empty().unwrap(), [file_id(1)]);
+        run.check_session();
+    }
+}
+
+#[test]
+fn a_checkpoint_taken_across_commits_and_moves_recovers_what_the_journal_ends_with() {
+    for copied_first in 0..=3 {
+        for copied_then in 0..=3 {
+            let mut run = started(22);
+            run.commit(&[
+                put(1, 10, 40),
+                put(1, 11, 50),
+                put(2, 20, 90),
+                put(3, 30, 60),
+            ])
+            .unwrap();
+            run.db().rotate().unwrap();
+
+            run.db().begin_checkpoint().unwrap();
+            run.db().copy_pages(copied_first);
+            run.commit(&[put(1, 10, 45), Op::Delete { key: 20 }, put(4, 40, 30)])
+                .unwrap();
+            run.db().copy_pages(copied_then);
+            run.db().rotate().unwrap();
+            let cleaned = run.clean(file_id(1)).unwrap();
+            assert_eq!((cleaned.moved, cleaned.live), (2, 0));
+            run.commit(&[Op::Delete { key: 11 }, put(2, 21, 8)])
+                .unwrap();
+            run.db().finish_checkpoint().unwrap();
+            run.commit(&[put(3, 31, 12)]).unwrap();
+            run.flush().unwrap();
+            run.check_session();
+            run.end_session();
+
+            let recovered = check_recovered(&run.fs, &run);
+            assert_eq!(recovered.pages.latest(), 4);
+            assert_eq!(live(&recovered.values, 1), Some(0));
+        }
+    }
+}
+
+#[test]
+fn a_checkpoint_that_was_not_written_leaves_recovery_to_the_one_before() {
+    let mut run = started(23);
+    run.commit(&[put(1, 10, 40), put(3, 30, 60)]).unwrap();
+    run.db().rotate().unwrap();
+    run.db().begin_checkpoint().unwrap();
+    run.db().copy_pages(1);
+    assert_eq!(run.clean(file_id(1)).unwrap().moved, 2);
+    run.commit(&[put(3, 31, 12)]).unwrap();
+    run.flush().unwrap();
+    assert!(run.db().is_checkpointing());
+    run.end_session();
+
+    let recovered = check_recovered(&run.fs, &run);
+    assert_eq!(recovered.pages.latest(), 2);
+    assert_eq!(live(&recovered.values, 1), Some(0));
 }
