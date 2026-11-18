@@ -48,7 +48,7 @@
 //! // Its commit, version 4, installs the copy. A reader of an older version
 //! // keeps the page it had, and the pool keeps the new one until
 //! // write-back has put it into a segment.
-//! let new = pool.install(copy, version(4))?;
+//! let new = pool.install(&copy, version(4))?;
 //! assert_eq!(pool.get(page, version(3)).expect("still there")[0], 2);
 //! assert_eq!(pool.get(page, version(4)).expect("installed")[0], 4);
 //! assert_eq!(old[0], 2);
@@ -142,10 +142,14 @@
 //! **Latches are the caller's to order.** An operation that holds several
 //! takes them in ascending order of page id and holds none when it returns
 //! (LT3). [`PrivateRef::try_write`] and [`PrivateRef::try_read`] are for the
-//! operation that finds it needs a lower id than one it holds. The pool
-//! itself takes a latch in two places, [`BufferPool::install`] and
-//! [`BufferPool::discard`], for the copy that goes, and before any other
-//! lock.
+//! operation that finds it needs a lower id than one it holds.
+//!
+//! **The pool never waits for a latch.** It takes one in two places,
+//! [`BufferPool::install`] and [`BufferPool::discard`], for the copy that
+//! goes, before any other lock, and only if it is free: a copy whose latch
+//! an operation still holds is refused ([`CacheError::Latched`]). A commit
+//! runs when every scope of its transaction is closed (CM1), so it meets no
+//! held latch, and it waits for none while it holds the counts lock (LT7).
 //!
 //! # Page steps
 //!
@@ -170,9 +174,11 @@
 //! same page version. That is what the value log's cleaner keeps as its
 //! `Found`.
 //!
-//! Making a private copy and installing one are page steps too, so a copy
-//! is always of the frame that was current when it was made, and a step
-//! that went through is never undone by a commit (PV7).
+//! Making a private copy and installing one are page steps too. So a copy
+//! is of the frame that stored its page version when the copy was made, no
+//! step goes through while the copy exists, and a commit installs a copy
+//! only over the page version it was made from. A step that went through is
+//! therefore never undone by a commit (PV7).
 //!
 //! # Write-back
 //!
@@ -226,9 +232,12 @@
 //! it could be evicted: when its last pin goes, if nothing else keeps it.
 //! So **what the pool has allocated never exceeds the configured size plus
 //! the frames that cannot be evicted**, with their attached values
-//! ([`BufferPool::memory`], [`Census`]). How many frames are unwritten is
-//! write-back's to bound (FL5), and how many are private is the
-//! transaction's (WT4).
+//! ([`BufferPool::memory`], [`Census`]). The plan says "plus pinned
+//! frames": a pin is one thing that keeps a frame, and a private copy and a
+//! page version that no segment holds are the others. How many frames are
+//! unwritten is write-back's to bound (FL5), and how many are private is
+//! the transaction's (WT4). Of an attached value its bytes are counted, not
+//! the list a frame keeps them in.
 //!
 //! A page in a frame beside the fixed ones is gone when it is unpinned. A
 //! caller that loads a page in order to ask for it again, as before
@@ -242,12 +251,17 @@
 //! | --- | --- | --- |
 //! | 4 | the latch of a private copy | one physical step of its owner |
 //! | 5 | the page step lock of a page | one page step: a [`PageStep`], or inside the calls that install, free, copy, load, mark or drop a frame |
-//! | below 5 | the pool's own: one part of its table, the free list, the clock, the unwritten lists | a few instructions each; nothing is called under them |
+//! | below 5 | the pool's own: one part of its table, the free list, the clock, the unwritten lists | a few instructions each. The clock takes the lock of one part of the table while it holds its own. Nothing else is taken under them, and no other module is called |
 //!
-//! No call into the pool waits for more than that, and readers take only
-//! the shared lock of one part of the table. The page step lock is shared
-//! by the pages of one part of the table, so a step on one page can make a
-//! step on another wait, never a reader.
+//! No call into the pool waits for more than that. A reader takes the
+//! shared lock of one part of the table to find its page, and none to give
+//! it back, unless the page is in a frame beside the fixed ones: the last
+//! pin of such a frame goes under the exclusive lock of its part of the
+//! table, so that the frame leaves in the same step.
+//!
+//! The page step lock is shared by the pages of one part of the table. So a
+//! step on one page can make a step on another wait, never a reader, and a
+//! thread holds one [`PageStep`] at a time.
 //!
 //! A thread that holds a [`PageStep`] calls nothing of the pool but that
 //! guard's methods, [`BufferPool::get`], [`BufferPool::get_version`] and
@@ -272,15 +286,19 @@
 //!   page only at a version it has pinned, or at the latest version under
 //!   an operation guard (PN5).
 //! - **Everyone** drops a [`PageRef`] when the view it serves ends. A pin
-//!   costs memory, never correctness.
+//!   costs memory, never correctness. A handle is given only to the pool it
+//!   came from: another pool refuses it ([`CacheError::WrongPool`]).
 //!
 //! # Unsafe code
 //!
 //! The pool's unsafe code is in `cache/frame.rs` and nowhere else: the
 //! allocation of the frames, and the access to a frame's bytes through a
 //! pin, a latch or an owner. The rules that make it sound are at the top of
-//! that file. The rest of the pool is safe code over three types that stand
-//! for the three ways a frame may be reached.
+//! that file, and what they rest on is kept inside it: what a frame is
+//! (a private copy that can be written, or a page version that cannot)
+//! changes only there, and a frame of another pool is never linked into
+//! this one. The rest of the pool is safe code over the types that stand
+//! for the ways a frame may be reached.
 
 mod error;
 mod flush;

@@ -228,7 +228,7 @@ fn commit<'p>(pool: &'p BufferPool, page: u32, at: u64) -> PageRef<'p> {
         .make_private(owner(at + 1), self::page(page), version(at))
         .expect("the page is in the pool");
     content(page, at + 1, 0).write(&mut copy.write().expect("a private copy"));
-    pool.install(copy, version(at + 1)).expect("a commit")
+    pool.install(&copy, version(at + 1)).expect("a commit")
 }
 
 /// The first commit of a page: a new private copy, installed at `born`.
@@ -237,7 +237,7 @@ fn create<'p>(pool: &'p BufferPool, page: u32, born: u64) -> PageRef<'p> {
         .new_private(owner(born), self::page(page))
         .expect("a new page");
     content(page, born, 0).write(&mut copy.write().expect("a private copy"));
-    pool.install(copy, version(born)).expect("a commit")
+    pool.install(&copy, version(born)).expect("a commit")
 }
 
 /// Pins and guards as a test sets them.

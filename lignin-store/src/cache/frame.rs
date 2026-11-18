@@ -35,6 +35,19 @@
 //!   a frame that is published or dead, whose content does not change again
 //!   until the frame is owned outright; or under a latch of a private
 //!   frame; or by the owner.
+//!
+//! Two things outside the unsafe blocks carry these rules, and both are
+//! kept in this file:
+//!
+//! - **What a frame is** (`kind`) says whether it can be written under a
+//!   latch. It changes for a frame that is owned ([`OwnedFrame::set_kind`]),
+//!   from private to published under the exclusive latch
+//!   ([`Exclusive::publish`]), and to dead when a chain retires a frame. A
+//!   published frame never becomes private again while it has a pin.
+//! - **Which arena a frame belongs to** (`home`). A chain links only frames
+//!   of its own arena ([`Chain::link`]), and an arena frees only its own
+//!   ([`Arena::free_overflow`]), so a frame never outlives the arena whose
+//!   borrow its pins carry.
 
 use std::{
     alloc::{self, Layout},
@@ -105,6 +118,8 @@ pub(super) struct Frame {
     superseded: AtomicU64,
     base: AtomicU64,
     owner: AtomicU64,
+    /// The arena the frame belongs to.
+    home: u64,
     next: AtomicPtr<Frame>,
     latch: RwLock<()>,
     access: Tracked,
@@ -135,7 +150,7 @@ impl fmt::Debug for Frame {
 }
 
 impl Frame {
-    fn new(bytes: NonNull<u8>, len: usize, overflow: bool) -> Self {
+    fn new(bytes: NonNull<u8>, len: usize, overflow: bool, home: u64) -> Self {
         Self {
             state: AtomicU64::new(0),
             kind: AtomicU8::new(kind::FREE),
@@ -147,6 +162,7 @@ impl Frame {
             superseded: AtomicU64::new(NO_VERSION),
             base: AtomicU64::new(NO_VERSION),
             owner: AtomicU64::new(0),
+            home,
             next: AtomicPtr::new(ptr::null_mut()),
             latch: RwLock::new(()),
             access: Tracked::new(),
@@ -160,7 +176,11 @@ impl Frame {
         self.kind.load(Ordering::Acquire)
     }
 
-    pub(super) fn set_kind(&self, kind: u8) {
+    /// What a frame is decides who may read and write its content (A4,
+    /// A5), so only this file changes it: for a frame that is owned, under
+    /// the exclusive latch of a private copy, or when a chain retires a
+    /// frame.
+    fn set_kind(&self, kind: u8) {
         self.kind.store(kind, Ordering::Release);
     }
 
@@ -272,7 +292,7 @@ impl Frame {
         self.state.load(Ordering::Acquire) == 0
     }
 
-    pub(super) fn latch(&self) -> &RwLock<()> {
+    fn latch(&self) -> &RwLock<()> {
         &self.latch
     }
 
@@ -381,6 +401,12 @@ impl OwnedFrame {
         unsafe { self.0.frame() }
     }
 
+    /// Says what the frame is to be once it is linked. Nobody else can
+    /// reach it yet, so nobody reads or writes its content by the old kind.
+    pub(super) fn set_kind(&self, kind: u8) {
+        self.header().set_kind(kind);
+    }
+
     pub(super) fn bytes(&self) -> &[u8] {
         // SAFETY: the owner may read the content (A5), and the slice
         // borrows the ownership, so nothing writes while it is in use.
@@ -472,9 +498,7 @@ impl<'a> Pinned<'a> {
         // unlinked it, and its last pin is gone.
         self.frame().unpin().then_some(OwnedFrame(self.frame))
     }
-}
 
-impl<'a> Pinned<'a> {
     /// The pin as one on frozen content, if the frame is a page version
     /// now. Otherwise the pin, unchanged.
     pub(super) fn into_frozen(self) -> Result<Frozen<'a>, Pinned<'a>> {
@@ -621,6 +645,13 @@ impl<'l> Exclusive<'l> {
         self.frame
     }
 
+    /// Makes the private copy a page version. From here on no exclusive
+    /// latch is given out for the frame, so once this one is dropped its
+    /// content does not change again while it has a pin.
+    pub(super) fn publish(&self) {
+        self.frame.set_kind(kind::PUBLISHED);
+    }
+
     pub(super) fn bytes(&self) -> &[u8] {
         // SAFETY: A5. The exclusive latch keeps every other access out.
         unsafe { self.frame.bytes() }
@@ -682,16 +713,15 @@ impl<'c> Entry<'c> {
     /// Pins the frame. This is the one place a pin count leaves zero: the
     /// chain is borrowed, so the bucket's lock is held and the frame is
     /// linked (A1).
-    pub(super) fn pin<'a>(&self, _arena: &'a Arena) -> Pinned<'a> {
+    pub(super) fn pin<'a>(&self, arena: &'a Arena) -> Pinned<'a> {
+        assert_eq!(self.frame.home, arena.id, "a frame of another pool");
         self.frame.pin();
         Pinned {
             frame: self.pointer,
             arena: PhantomData,
         }
     }
-}
 
-impl<'c> Entry<'c> {
     /// Pins the frame as frozen content, if it is a page version.
     pub(super) fn freeze<'a>(&self, arena: &'a Arena) -> Option<Frozen<'a>> {
         if self.frame.kind() != kind::PUBLISHED {
@@ -741,7 +771,8 @@ impl Chain {
 
     /// Links a frame its caller owned. From here on other threads can reach
     /// it.
-    pub(super) fn link(&mut self, frame: OwnedFrame) -> Entry<'_> {
+    pub(super) fn link(&mut self, arena: &Arena, frame: OwnedFrame) -> Entry<'_> {
+        assert!(arena.owns(&frame), "a frame of another pool");
         let pointer = frame.0;
         frame.header().set_next(self.head);
         self.head = Some(pointer);
@@ -874,6 +905,8 @@ fn allocate(layout: Layout) -> NonNull<u8> {
 /// that every pointer to a header comes from that one pointer and stays good
 /// for as long as the arena lives.
 pub(super) struct Arena {
+    /// A number no other arena of the process has: its frames carry it.
+    id: u64,
     frames: NonNull<Frame>,
     count: usize,
     memory: NonNull<u8>,
@@ -906,6 +939,8 @@ impl Arena {
         frame_len: usize,
     ) -> Result<(Self, Vec<OwnedFrame>), CacheError> {
         assert!(count > 0 && frame_len > 0);
+        static ARENAS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = ARENAS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let layout = layout(frame_len, count)?;
         let memory = allocate(layout);
         let headers: Box<[Frame]> = (0..count)
@@ -913,12 +948,13 @@ impl Arena {
                 // SAFETY: `index * frame_len` is below the size of the block
                 // that `memory` points to, so the result is inside it.
                 let bytes = unsafe { memory.add(index * frame_len) };
-                Frame::new(bytes, frame_len, false)
+                Frame::new(bytes, frame_len, false, id)
             })
             .collect();
         let frames =
             NonNull::new(Box::into_raw(headers).cast::<Frame>()).expect("a box is not null");
         let arena = Self {
+            id,
             frames,
             count,
             memory,
@@ -935,6 +971,13 @@ impl Arena {
 
     pub(super) fn len(&self) -> usize {
         self.count
+    }
+
+    /// Whether the frame is one of this arena's: a fixed one, or one that
+    /// was allocated beside them. A frame of another arena is never linked
+    /// into this pool's table, put on its free list or freed by it.
+    pub(super) fn owns(&self, frame: &OwnedFrame) -> bool {
+        frame.header().home == self.id
     }
 
     pub(super) fn frame_len(&self) -> usize {
@@ -959,7 +1002,7 @@ impl Arena {
     pub(super) fn allocate_overflow(&self) -> OwnedFrame {
         let layout = layout(self.frame_len, 1).expect("the arena has this layout many times");
         let bytes = allocate(layout);
-        let frame = Box::new(Frame::new(bytes, self.frame_len, true));
+        let frame = Box::new(Frame::new(bytes, self.frame_len, true, self.id));
         let frame = NonNull::new(Box::into_raw(frame)).expect("a box is not null");
         // By A3: nothing has seen this frame yet.
         OwnedFrame(FramePtr(frame))
@@ -967,6 +1010,7 @@ impl Arena {
 
     /// Gives the memory of an overflow frame back.
     pub(super) fn free_overflow(&self, frame: OwnedFrame) {
+        assert!(self.owns(&frame), "a frame of another pool");
         assert!(frame.header().is_overflow(), "an arena frame is not freed");
         let layout = layout(self.frame_len, 1).expect("the arena has this layout many times");
         // SAFETY: an overflow frame came out of a box in

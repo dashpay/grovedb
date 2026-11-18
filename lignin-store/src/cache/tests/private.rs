@@ -90,7 +90,7 @@ fn a_copy_can_be_made_of_a_version_that_is_not_the_newest() {
         .expect("in the pool");
     assert_eq!(copy.base(), Some(version(3)));
     assert_eq!(
-        pool.install(copy, version(8)).err(),
+        pool.install(&copy, version(8)).err(),
         Some(CacheError::BaseNotCurrent {
             page: page(1),
             base: Some(version(3)),
@@ -151,7 +151,7 @@ fn a_commit_installs_a_private_copy_as_the_next_version() {
     content(1, 6, 0).write(&mut copy.write().expect("private"));
     let stale = copy.clone();
 
-    let new = pool.install(copy, version(6)).expect("a commit");
+    let new = pool.install(&copy, version(6)).expect("a commit");
     assert_eq!(new.born(), version(6));
     assert_eq!(new.page(), page(1));
     assert_eq!(Content::read(&new), content(1, 6, 0));
@@ -182,11 +182,11 @@ fn a_commit_installs_a_private_copy_as_the_next_version() {
     );
     assert_eq!(Content::read(&stale.read()), content(1, 6, 0));
     assert_eq!(
-        pool.install(stale.clone(), version(7)).err(),
+        pool.install(&stale, version(7)).err(),
         Some(CacheError::NotPrivate { page: page(1) })
     );
     assert_eq!(
-        pool.discard(stale).err(),
+        pool.discard(&stale).err(),
         Some(CacheError::NotPrivate { page: page(1) })
     );
     let census = pool.census();
@@ -206,7 +206,7 @@ fn a_commit_that_cannot_follow_the_page_is_refused() {
         .expect("in the pool");
     for bad in [0, 2, 3] {
         assert_eq!(
-            pool.install(copy.clone(), version(bad)).err(),
+            pool.install(&copy, version(bad)).err(),
             Some(CacheError::VersionNotAfter {
                 page: page(1),
                 version: version(bad),
@@ -216,7 +216,7 @@ fn a_commit_that_cannot_follow_the_page_is_refused() {
     }
     let fresh = pool.new_private(owner(2), page(2)).expect("a new page");
     assert_eq!(
-        pool.install(fresh.clone(), version(0)).err(),
+        pool.install(&fresh, version(0)).err(),
         Some(CacheError::VersionNotAfter {
             page: page(2),
             version: version(0),
@@ -224,8 +224,8 @@ fn a_commit_that_cannot_follow_the_page_is_refused() {
         })
     );
     assert_eq!(pool.census().private, 2, "both are still private");
-    assert!(pool.install(copy, version(4)).is_ok());
-    assert!(pool.install(fresh, version(4)).is_ok());
+    assert!(pool.install(&copy, version(4)).is_ok());
+    assert!(pool.install(&fresh, version(4)).is_ok());
     check(&pool, 0);
 }
 
@@ -239,9 +239,9 @@ fn of_two_copies_of_one_version_only_the_first_is_installed() {
     let second = pool
         .make_private(owner(2), page(1), version(3))
         .expect("in the pool");
-    drop(pool.install(first, version(4)).expect("the first commit"));
+    drop(pool.install(&first, version(4)).expect("the first commit"));
     assert_eq!(
-        pool.install(second, version(5)).err(),
+        pool.install(&second, version(5)).err(),
         Some(CacheError::BaseNotCurrent {
             page: page(1),
             base: Some(version(3)),
@@ -252,7 +252,7 @@ fn of_two_copies_of_one_version_only_the_first_is_installed() {
     // A page that a transaction created cannot go over a page that exists.
     let fresh = pool.new_private(owner(3), page(1)).expect("a copy");
     assert_eq!(
-        pool.install(fresh, version(5)).err(),
+        pool.install(&fresh, version(5)).err(),
         Some(CacheError::BaseNotCurrent {
             page: page(1),
             base: None,
@@ -283,7 +283,7 @@ fn a_copy_is_installed_when_the_version_it_was_made_from_was_evicted() {
         "the base was evicted"
     );
 
-    drop(pool.install(copy, version(4)).expect("a commit"));
+    drop(pool.install(&copy, version(4)).expect("a commit"));
     // The base comes back from disk for an old reader, bounded by the new
     // version, which is in the pool.
     let old = fetch(&pool, &disk, 1, 3).expect("on disk");
@@ -305,7 +305,8 @@ fn a_discarded_copy_goes_with_its_last_handle() {
     let stale = copy.clone();
     assert_eq!(lock(&pool.free).len(), 0);
 
-    pool.discard(copy).expect("a private copy");
+    pool.discard(&copy).expect("a private copy");
+    drop(copy);
     assert_eq!(pool.page_step(page(1)).private_copies(), 0);
     assert!(pool.private(owner(1), page(1)).is_none());
     assert_eq!(lock(&pool.free).len(), 0, "a handle still pins the frame");
@@ -318,7 +319,7 @@ fn a_discarded_copy_goes_with_its_last_handle() {
         Some(CacheError::NotPrivate { page: page(1) })
     );
     assert_eq!(
-        pool.discard(stale.clone()).err(),
+        pool.discard(&stale).err(),
         Some(CacheError::NotPrivate { page: page(1) })
     );
     assert_eq!(
@@ -342,10 +343,9 @@ fn a_copy_beside_the_fixed_frames_is_freed_when_it_is_discarded() {
         .make_private(owner(1), page(1), version(3))
         .expect("in the pool");
     assert_eq!(pool.overflow_frames(), 1);
-    let stale = copy.clone();
-    pool.discard(copy).expect("a private copy");
-    assert_eq!(pool.overflow_frames(), 1);
-    drop(stale);
+    pool.discard(&copy).expect("a private copy");
+    assert_eq!(pool.overflow_frames(), 1, "the handle still pins the frame");
+    drop(copy);
     assert_eq!(pool.overflow_frames(), 0);
     drop(base);
     check(&pool, 0);
@@ -378,7 +378,8 @@ fn a_scope_hands_its_copy_to_its_transaction() {
         })
     );
     assert_eq!(second.owner(), owner(2));
-    pool.discard(second).expect("a private copy");
+    pool.discard(&second).expect("a private copy");
+    drop(second);
     check(&pool, 0);
 }
 
@@ -404,7 +405,7 @@ fn attached_values_travel_with_the_copy_and_the_commit() {
     assert_eq!(copy.read().attached(5), Some(&b"fives"[..]));
     assert_eq!(copy.read().attachments().count(), 2);
 
-    let committed = pool.install(copy, version(1)).expect("a commit");
+    let committed = pool.install(&copy, version(1)).expect("a commit");
     assert_eq!(committed.attached(4), Some(&b"FOUR!!"[..]));
     assert_eq!(committed.attached(5), Some(&b"fives"[..]));
     assert_eq!(committed.attached(6), None);
@@ -424,7 +425,7 @@ fn attached_values_travel_with_the_copy_and_the_commit() {
         assert_eq!(latch.attachments().count(), 0);
     }
     assert_eq!(pool.attached_bytes(), 11);
-    let second = pool.install(next, version(2)).expect("a commit");
+    let second = pool.install(&next, version(2)).expect("a commit");
     assert_eq!(second.attachments().count(), 0);
     assert_eq!(
         committed.attached(5),
@@ -439,7 +440,124 @@ fn attached_values_travel_with_the_copy_and_the_commit() {
         .expect("in the pool");
     third.write().expect("private").attach(1, value(&[0; 40]));
     assert_eq!(pool.attached_bytes(), 51);
-    pool.discard(third).expect("a private copy");
+    pool.discard(&third).expect("a private copy");
+    assert_eq!(pool.attached_bytes(), 51, "until the last handle goes");
+    drop(third);
     assert_eq!(pool.attached_bytes(), 11);
     check(&pool, 0);
+}
+
+#[test]
+fn a_copy_whose_latch_is_held_is_neither_installed_nor_discarded() {
+    let pool = pool(4);
+    let copy = pool.new_private(owner(1), page(1)).expect("a new page");
+    content(1, 1, 0).write(&mut copy.write().expect("private"));
+    let latched = Some(CacheError::Latched { page: page(1) });
+
+    let reading = copy.read();
+    assert_eq!(pool.install(&copy, version(1)).err(), latched);
+    assert_eq!(pool.discard(&copy).err(), latched);
+    drop(reading);
+    let writing = copy.write().expect("private");
+    assert_eq!(pool.install(&copy, version(1)).err(), latched);
+    assert_eq!(pool.discard(&copy).err(), latched);
+    drop(writing);
+
+    assert_eq!(pool.census().private, 1, "the copy is still there");
+    let installed = pool.install(&copy, version(1)).expect("the latch is free");
+    assert_eq!(Content::read(&installed), content(1, 1, 0));
+    check(&pool, 0);
+}
+
+#[test]
+fn a_copy_of_a_version_the_pool_knows_to_be_superseded_is_not_installed() {
+    let pool = pool(8);
+    // The page was freed after the copy was made, and its last version is
+    // still in the pool.
+    drop(seed(&pool, content(1, 3, 0), None));
+    let copy = pool
+        .make_private(owner(1), page(1), version(3))
+        .expect("in the pool");
+    pool.free(page(1), version(5)).expect("a later commit");
+    assert_eq!(
+        pool.install(&copy, version(6)).err(),
+        Some(CacheError::BaseNotCurrent {
+            page: page(1),
+            base: Some(version(3)),
+            current: None
+        })
+    );
+
+    // A newer version of the page is in the pool, and is not current
+    // either: the page was changed and then freed.
+    drop(seed(&pool, content(2, 3, 0), Some(7)));
+    let copy = pool
+        .make_private(owner(1), page(2), version(3))
+        .expect("in the pool");
+    drop(seed(&pool, content(2, 7, 0), Some(9)));
+    assert_eq!(
+        pool.install(&copy, version(10)).err(),
+        Some(CacheError::BaseNotCurrent {
+            page: page(2),
+            base: Some(version(3)),
+            current: Some(version(7))
+        })
+    );
+    assert_eq!(pool.census().private, 2);
+    check(&pool, 0);
+}
+
+#[test]
+fn a_handle_of_another_pool_is_refused() {
+    let pool = pool(4);
+    let other = wide_pool(4);
+    let wrong = Some(CacheError::WrongPool);
+
+    // A frame of the other pool is not taken for a load.
+    let miss = pool.get(page(1), version(3)).expect_err("empty");
+    let mut blank = other.blank();
+    content(1, 3, 0).write(&mut blank);
+    assert_eq!(
+        pool.install_loaded(blank, miss, version(3), None).err(),
+        wrong
+    );
+
+    // Nor is a page or a private copy of the other pool taken by any call
+    // that changes something.
+    let theirs = create(&other, 1, 3);
+    let their_copy = other
+        .make_private(owner(1), page(1), version(3))
+        .expect("in the pool");
+    assert_eq!(pool.mark_written(&theirs).err(), wrong);
+    assert_eq!(pool.hold_for_readers(&theirs).err(), wrong);
+    assert_eq!(pool.install(&their_copy, version(4)).err(), wrong);
+    assert_eq!(pool.discard(&their_copy).err(), wrong);
+    assert_eq!(pool.transfer(&their_copy, owner(2)).err(), wrong);
+
+    // A page step takes neither a frame of the other pool as the new frame
+    // nor a page of the other pool as the current one.
+    let ours = seed(&pool, content(1, 3, 0), None);
+    let step = pool.page_step(page(1));
+    assert!(!step.is_current(&theirs));
+    assert_eq!(
+        step.replace(&ours, other.blank()).err(),
+        Some(StepRefusal::WrongPool)
+    );
+    let mut blank = pool.blank();
+    blank.copy_from(&theirs);
+    assert_eq!(
+        step.replace(&theirs, blank).err(),
+        Some(StepRefusal::NotCurrent)
+    );
+    drop(step);
+
+    // Neither pool was changed.
+    assert_eq!(pool.census().published, 1);
+    assert_eq!(lock(&pool.free).len(), 3);
+    assert_eq!(other.census().private, 1);
+    assert_eq!(other.oldest_unwritten(), Some(version(3)));
+    assert_eq!(lock(&other.free).len(), 2);
+    drop((ours, theirs, their_copy));
+    check(&pool, 0);
+    check(&other, 0);
 }

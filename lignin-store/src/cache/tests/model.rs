@@ -190,7 +190,7 @@ impl<'p> Life<'p> {
 
     fn rollback(&mut self) {
         for copy in self.copies.drain(..) {
-            self.pool.discard(copy.handle).expect("a private copy");
+            self.pool.discard(&copy.handle).expect("a private copy");
         }
     }
 
@@ -212,7 +212,7 @@ impl<'p> Life<'p> {
             content(copy.page, next, 0).write(&mut copy.handle.write().expect("private"));
             let installed = self
                 .pool
-                .install(copy.handle, version(next))
+                .install(&copy.handle, version(next))
                 .expect("a commit");
             assert_eq!(installed.born(), version(next));
             if let Some(before) = self.current_mut(copy.page) {
@@ -365,11 +365,12 @@ impl<'p> Life<'p> {
         check(self.pool, 0);
         let census = self.pool.census();
         assert_eq!(census.private, self.copies.len());
-        assert!(
-            self.pool.memory()
-                <= self.pool.fixed_memory()
-                    + census.unevictable * self.pool.overflow_cost()
-                    + self.pool.attached_bytes()
+        assert_eq!(census.overflow, census.overflow_unevictable);
+        assert_eq!(
+            self.pool.memory(),
+            self.pool.fixed_memory()
+                + census.overflow_unevictable * self.pool.overflow_cost()
+                + self.pool.attached_bytes()
         );
     }
 

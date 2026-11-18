@@ -112,7 +112,8 @@ fn a_page_step_is_refused_under_a_private_copy() {
     assert_eq!(lock(&pool.free).len(), 2, "the refused frame came back");
 
     // Once the copy is given up, the step goes through.
-    pool.discard(copy).expect("a private copy");
+    pool.discard(&copy).expect("a private copy");
+    drop(copy);
     let step = pool.page_step(page(1));
     assert_eq!(step.private_copies(), 0);
     assert!(step.replace(&old, revised(&pool, &old)).is_ok());
@@ -184,7 +185,8 @@ fn a_pending_value_is_placed_in_a_page_step() {
         latch.attach(1, value(&[1; 30]));
         latch.attach(2, value(&[2; 50]));
     }
-    let committed = pool.install(copy, version(1)).expect("a commit");
+    let committed = pool.install(&copy, version(1)).expect("a commit");
+    drop(copy);
     assert_eq!(pool.attached_bytes(), 80);
     assert_eq!(
         pool.mark_written(&committed).err(),

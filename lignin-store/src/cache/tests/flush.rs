@@ -124,7 +124,8 @@ fn a_superseded_version_can_be_held_for_its_readers_instead() {
         content(1, 1, 0).write(&mut latch);
         latch.attach(7, value(b"pending"));
     }
-    let first = pool.install(copy, version(1)).expect("a commit");
+    let first = pool.install(&copy, version(1)).expect("a commit");
+    drop(copy);
     assert_eq!(
         pool.hold_for_readers(&first).err(),
         Some(CacheError::StillCurrent {

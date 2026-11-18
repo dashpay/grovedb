@@ -10,7 +10,8 @@ use super::OwnerId;
 ///
 /// Except for the two about the pool's size, each of these says that the
 /// caller broke a rule of the module documentation: the pool was told
-/// something that cannot be true of the pages it holds.
+/// something that cannot be true of the pages it holds, or was handed
+/// something it cannot take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheError {
     /// The configured size does not hold one frame.
@@ -44,6 +45,15 @@ pub enum CacheError {
         superseded: CommitVersion,
         /// The version the reader asked at.
         at: CommitVersion,
+    },
+    /// The handle is of another pool: it was given to the pool it does not
+    /// belong to.
+    WrongPool,
+    /// An operation still holds the latch of the private copy, so the copy
+    /// can be neither installed nor discarded now.
+    Latched {
+        /// The page.
+        page: PageId,
     },
     /// The owner already holds a private copy of the page.
     AlreadyPrivate {
@@ -139,6 +149,11 @@ impl fmt::Display for CacheError {
                 "page {page} was loaded as born at version {born} for a reader at version {at}, \
                  and it was superseded at version {superseded}"
             ),
+            Self::WrongPool => write!(f, "the handle belongs to another buffer pool"),
+            Self::Latched { page } => write!(
+                f,
+                "an operation still holds the latch of the private copy of page {page}"
+            ),
             Self::AlreadyPrivate { page, owner } => {
                 write!(f, "{owner} already holds a private copy of page {page}")
             }
@@ -197,6 +212,8 @@ pub enum StepRefusal {
     NotCurrent,
     /// An open write transaction holds a private copy of the page.
     PrivateCopy,
+    /// The new frame is of another pool.
+    WrongPool,
 }
 
 impl fmt::Display for StepRefusal {
@@ -207,6 +224,7 @@ impl fmt::Display for StepRefusal {
                 f,
                 "an open write transaction holds a private copy of the page"
             ),
+            Self::WrongPool => write!(f, "the new frame belongs to another buffer pool"),
         }
     }
 }

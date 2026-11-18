@@ -8,7 +8,7 @@ use lignin_format::{CommitVersion, PageId};
 
 use super::{
     error::{CacheError, StepRefusal},
-    frame::{flag, kind, Chain, NO_VERSION},
+    frame::{flag, kind, Chain, Exclusive, NO_VERSION},
     guard::{Blank, PageRef, PrivateRef},
     pool::{current, lookup, privates, published, BufferPool, Held, Miss},
     sync::{lock, read, write, MutexGuard},
@@ -108,9 +108,9 @@ impl BufferPool {
         // Before the step began, a page step may have replaced the frame
         // that was pinned, or another operation of this owner may have made
         // the copy.
-        if source.frame().kind() != kind::PUBLISHED
-            || privates(&read(&bucket.chain), page).next().is_some()
-        {
+        let made =
+            privates(&read(&bucket.chain), page).any(|entry| entry.frame().owner() == owner.get());
+        if made || source.frame().kind() != kind::PUBLISHED {
             source = match find()? {
                 Ok(source) => source,
                 Err(existing) => return Ok(existing),
@@ -123,8 +123,10 @@ impl BufferPool {
         header.set_page_raw(page.get());
         header.set_owner(owner.get());
         header.set_base(source.born().get());
-        header.set_kind(kind::PRIVATE);
-        let pin = write(&bucket.chain).link(frame).pin(&self.arena);
+        frame.set_kind(kind::PRIVATE);
+        let pin = write(&bucket.chain)
+            .link(&self.arena, frame)
+            .pin(&self.arena);
         drop(step);
         Ok(PrivateRef::new(self, pin))
     }
@@ -148,8 +150,8 @@ impl BufferPool {
         header.set_page_raw(page.get());
         header.set_owner(owner.get());
         header.set_base(NO_VERSION);
-        header.set_kind(kind::PRIVATE);
-        let pin = chain.link(frame).pin(&self.arena);
+        frame.set_kind(kind::PRIVATE);
+        let pin = chain.link(&self.arena, frame).pin(&self.arena);
         drop(chain);
         drop(step);
         Ok(PrivateRef::new(self, pin))
@@ -172,6 +174,9 @@ impl BufferPool {
     /// that page. The two are then reconciled by the caller (LT4), and the
     /// scope's copy is discarded.
     pub fn transfer(&self, copy: &PrivateRef<'_>, to: OwnerId) -> Result<(), CacheError> {
+        if !copy.is_of(self) {
+            return Err(CacheError::WrongPool);
+        }
         let page = copy.page();
         let bucket = self.bucket(page.get());
         let _step = lock(&bucket.step);
@@ -190,38 +195,42 @@ impl BufferPool {
         Ok(())
     }
 
-    /// Drops a private copy: its transaction rolled it back, rebuilt it, or
-    /// reconciled it into another. The frame goes when its last handle
-    /// does.
-    ///
-    /// It waits for the copy's latch, and fails with
-    /// [`CacheError::NotPrivate`] if the copy was installed or discarded
-    /// through another handle.
-    pub fn discard(&self, copy: PrivateRef<'_>) -> Result<(), CacheError> {
-        let page = copy.page();
-        let pointer = copy.pointer();
-        let pin = copy.into_pin();
-        let latch = write(pin.frame().latch());
-        let bucket = self.bucket(page.get());
-        let step = lock(&bucket.step);
-        let mut chain = write(&bucket.chain);
-        let private = pin.frame().kind() == kind::PRIVATE;
-        if private {
-            chain.retire_pinned(pointer);
+    /// The exclusive latch of a copy that is to be installed or discarded,
+    /// taken without waiting.
+    fn latch_of<'l>(&self, copy: &'l PrivateRef<'_>) -> Result<Exclusive<'l>, CacheError> {
+        if !copy.is_of(self) {
+            return Err(CacheError::WrongPool);
         }
-        drop(chain);
-        drop(step);
-        drop(latch);
-        self.unpin(pin);
-        if private {
-            Ok(())
-        } else {
-            Err(CacheError::NotPrivate { page })
+        let page = copy.page();
+        match copy.pin().try_write() {
+            Some(Some(latch)) => Ok(latch),
+            Some(None) => Err(CacheError::NotPrivate { page }),
+            None => Err(CacheError::Latched { page }),
         }
     }
 
+    /// Drops a private copy: its transaction rolled it back, rebuilt it, or
+    /// reconciled it into another. The frame goes when its last handle
+    /// does. A handle that is left, `copy` among them, still reads what the
+    /// frame held and can no longer change it.
+    ///
+    /// It takes the copy's latch and does not wait for it. It fails, and the
+    /// copy stays, with [`CacheError::Latched`] if an operation still holds
+    /// that latch, and with [`CacheError::NotPrivate`] if the copy was
+    /// installed or discarded before.
+    pub fn discard(&self, copy: &PrivateRef<'_>) -> Result<(), CacheError> {
+        let latch = self.latch_of(copy)?;
+        let bucket = self.bucket(copy.page().get());
+        let step = lock(&bucket.step);
+        write(&bucket.chain).retire_pinned(copy.pointer());
+        drop(step);
+        drop(latch);
+        Ok(())
+    }
+
     /// Turns a private copy into the page version that the commit `version`
-    /// bears (`transactions.md` CM3 step 7), and returns it pinned.
+    /// bears (`transactions.md` CM3 step 7), and returns it pinned. `copy`
+    /// is left as a handle that reads the page and can no longer change it.
     ///
     /// The page version it replaces is superseded at `version`. The new one
     /// is unwritten: it stays in the pool until write-back has put it into a
@@ -229,48 +238,48 @@ impl BufferPool {
     /// before the commit is published, because no reader asks at `version`
     /// before then.
     ///
-    /// Installing is a page step. It waits for the copy's latch first.
+    /// Installing is a page step. It takes the copy's latch and does not
+    /// wait for it: a commit runs when every scope of its transaction is
+    /// closed (CM1), so no operation holds a latch of its copies, and a
+    /// commit waits for no latch while it holds the counts lock (LT7).
     ///
     /// The commit holds the commit lock and has rebased its transaction, so
     /// the copy was made from the current version of its page. If the pool
-    /// can see otherwise, it refuses and leaves the copy private:
-    /// [`CacheError::BaseNotCurrent`], [`CacheError::VersionNotAfter`], or
-    /// [`CacheError::NotPrivate`] for a copy that was installed or
-    /// discarded before.
+    /// can see otherwise, it refuses, and the copy stays private:
+    /// [`CacheError::BaseNotCurrent`], [`CacheError::VersionNotAfter`],
+    /// [`CacheError::Latched`], or [`CacheError::NotPrivate`] for a copy
+    /// that was installed or discarded before.
     pub fn install<'p>(
         &'p self,
-        copy: PrivateRef<'p>,
+        copy: &PrivateRef<'p>,
         version: CommitVersion,
     ) -> Result<PageRef<'p>, CacheError> {
+        let latch = self.latch_of(copy)?;
         let page = copy.page();
-        let pin = copy.into_pin();
-        let latch = write(pin.frame().latch());
         let bucket = self.bucket(page.get());
         let step = lock(&bucket.step);
         let mut chain = write(&bucket.chain);
 
-        let frame = pin.frame();
+        let frame = latch.frame();
         let base = frame.base();
         let currently = current(&chain, page);
-        let current_born = currently.map_or(NO_VERSION, |entry| entry.frame().born());
-        let refusal = if frame.kind() != kind::PRIVATE {
-            Some(CacheError::NotPrivate { page })
-        } else if currently.is_some() && current_born != base {
-            Some(CacheError::BaseNotCurrent {
+        let newest = published(&chain, page)
+            .map(|entry| entry.frame().born())
+            .max();
+        let known_current = match currently {
+            Some(entry) => Some(entry.frame().born()),
+            None => newest.filter(|&newest| base != NO_VERSION && newest > base),
+        };
+        let base_superseded = published(&chain, page)
+            .any(|entry| entry.frame().born() == base && entry.frame().superseded() != NO_VERSION);
+        if known_current.is_some_and(|current| current != base) || base_superseded {
+            return Err(CacheError::BaseNotCurrent {
                 page,
                 base: self::version(base),
-                current: self::version(current_born),
-            })
-        } else {
-            follows(&chain, page, version).err()
-        };
-        if let Some(refusal) = refusal {
-            drop(chain);
-            drop(step);
-            drop(latch);
-            self.unpin(pin);
-            return Err(refusal);
+                current: known_current.and_then(self::version),
+            });
         }
+        follows(&chain, page, version)?;
 
         if let Some(entry) = currently {
             entry.frame().set_superseded(version.get());
@@ -278,17 +287,16 @@ impl BufferPool {
         frame.set_born(version.get());
         frame.set_superseded(NO_VERSION);
         frame.set_flags(flag::UNWRITTEN | (frame.flags() & flag::ATTACHED));
-        frame.set_kind(kind::PUBLISHED);
+        latch.publish();
         frame.touch();
         chain.stamp += 1;
         // The reader's pin is taken under the table's lock, before a page
         // step can replace the frame.
-        let frozen = pin.again().into_frozen();
+        let frozen = copy.pin().again().into_frozen();
         drop(chain);
         lock(&self.unwritten).add(version.get(), page);
         drop(step);
         drop(latch);
-        self.unpin(pin);
         Ok(PageRef::new(
             self,
             frozen.expect("the frame was made a page version under this lock"),
@@ -352,7 +360,9 @@ impl BufferPool {
     /// This is the lock of level 5 in the lock order LT7. A thread that
     /// holds it calls nothing of the pool but the guard's own methods,
     /// [`Self::get`], [`Self::get_version`] and [`Self::blank`], and takes
-    /// no latch.
+    /// no latch. The lock is shared by the pages of one part of the pool's
+    /// table, so a thread holds one page step at a time: a second one, on
+    /// whatever page, can wait for the first for ever.
     pub fn page_step(&self, page: PageId) -> PageStep<'_> {
         PageStep {
             pool: self,
@@ -411,7 +421,8 @@ impl<'p> PageStep<'p> {
     /// It is refused, and nothing changes, unless `old` is still how the
     /// current version of the page is stored ([`StepRefusal::NotCurrent`])
     /// and no open write transaction holds a private copy of the page
-    /// ([`StepRefusal::PrivateCopy`]). A caller that has to write a record
+    /// ([`StepRefusal::PrivateCopy`]). A frame of another pool is refused
+    /// as well ([`StepRefusal::WrongPool`]). A caller that has to write a record
     /// before the change makes both checks first, with [`Self::is_current`]
     /// and [`Self::private_copies`]: under the same guard they cannot turn
     /// false.
@@ -421,6 +432,9 @@ impl<'p> PageStep<'p> {
     pub fn replace(&self, old: &PageRef<'_>, new: Blank<'p>) -> Result<PageRef<'p>, StepRefusal> {
         let pool = self.pool;
         let page = self.page;
+        if !new.is_of(pool) {
+            return Err(StepRefusal::WrongPool);
+        }
         let mut chain = write(&pool.bucket(page.get()).chain);
         let Some(entry) = current(&chain, page).filter(|entry| entry.pointer() == old.pointer())
         else {
@@ -438,9 +452,9 @@ impl<'p> PageStep<'p> {
         header.set_born(born);
         header.set_superseded(NO_VERSION);
         header.set_flags(flag::UNWRITTEN | (header.flags() & flag::ATTACHED));
-        header.set_kind(kind::PUBLISHED);
         header.touch();
-        let frozen = chain.link(frame).freeze(&pool.arena);
+        frame.set_kind(kind::PUBLISHED);
+        let frozen = chain.link(&pool.arena, frame).freeze(&pool.arena);
         chain.retire_pinned(old.pointer());
         chain.stamp += 1;
         drop(chain);

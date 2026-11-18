@@ -101,6 +101,11 @@ impl<'p> PageRef<'p> {
         self.frozen().pointer()
     }
 
+    /// Whether the handle is of `pool`.
+    pub(super) fn is_of(&self, pool: &BufferPool) -> bool {
+        std::ptr::eq(self.pool, pool)
+    }
+
     pub(super) fn attached_values(&self) -> &[Attached] {
         self.frozen().attached()
     }
@@ -209,6 +214,11 @@ impl<'p> Blank<'p> {
         !self.owned().attached().is_empty()
     }
 
+    /// Whether the frame is of `pool`.
+    pub(super) fn is_of(&self, pool: &BufferPool) -> bool {
+        std::ptr::eq(self.pool, pool)
+    }
+
     /// Makes this frame a copy of `page`: its bytes and its attached values.
     /// The values are shared with `page`, not copied.
     pub fn copy_from(&mut self, page: &PageRef<'_>) {
@@ -287,8 +297,9 @@ impl fmt::Debug for Blank<'_> {
 /// The handle pins the frame. The copy itself belongs to its owner and stays
 /// in the pool, whatever handles exist, until a commit installs it
 /// ([`BufferPool::install`]) or it is discarded ([`BufferPool::discard`]).
-/// Its bytes are reached through its latch: [`Self::read`] and
-/// [`Self::write`].
+/// A handle that is left after either still reads what the frame holds, and
+/// can no longer change it. The bytes are reached through the copy's latch:
+/// [`Self::read`] and [`Self::write`].
 pub struct PrivateRef<'p> {
     pool: &'p BufferPool,
     pin: Option<Pinned<'p>>,
@@ -302,16 +313,17 @@ impl<'p> PrivateRef<'p> {
         }
     }
 
-    fn pin(&self) -> &Pinned<'p> {
+    pub(super) fn pin(&self) -> &Pinned<'p> {
         self.pin.as_ref().expect("held until the drop")
-    }
-
-    pub(super) fn into_pin(mut self) -> Pinned<'p> {
-        self.pin.take().expect("held until the drop")
     }
 
     pub(super) fn pointer(&self) -> FramePtr {
         self.pin().pointer()
+    }
+
+    /// Whether the handle is of `pool`.
+    pub(super) fn is_of(&self, pool: &BufferPool) -> bool {
+        std::ptr::eq(self.pool, pool)
     }
 
     /// The page.

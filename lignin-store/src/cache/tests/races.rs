@@ -67,6 +67,16 @@ fn fetch_one<'p>(pool: &'p BufferPool, page: u32, at: u64) -> PageRef<'p> {
     found.expect("on disk")
 }
 
+/// Makes a call again for as long as it says that the copy's latch is held.
+fn unlatched<T>(mut call: impl FnMut() -> Result<T, CacheError>) -> Result<T, CacheError> {
+    loop {
+        match call() {
+            Err(CacheError::Latched { .. }) => thread::yield_now(),
+            other => return other,
+        }
+    }
+}
+
 fn join(threads: Vec<thread::JoinHandle<()>>) {
     for thread in threads {
         thread.join().expect("the thread did not panic");
@@ -240,11 +250,11 @@ fn a_reader_gets_the_version_it_asked_at() {
     });
 }
 
-/// A commit against another operation of its transaction that still holds
-/// the copy's latch: the commit waits for the latch, and from the install
-/// on nothing writes the frame, so a reader never sees it change.
+/// A commit against an operation that still holds the copy's latch: the
+/// copy is not installed while it is being written, and from the install on
+/// nothing writes the frame, so a reader never sees it change.
 #[test]
-fn a_commit_waits_for_the_latch_of_the_copy_it_installs() {
+fn a_copy_that_is_being_written_is_not_installed() {
     model(3, || {
         let pool = Arc::new(pool(2));
         let copy = pool.new_private(owner(1), page(1)).expect("a new page");
@@ -266,7 +276,7 @@ fn a_commit_waits_for_the_latch_of_the_copy_it_installs() {
             let pool = Arc::clone(&pool);
             thread::spawn(move || {
                 let copy = pool.private(owner(1), page(1)).expect("the copy");
-                let installed = pool.install(copy, version(1)).expect("a commit");
+                let installed = unlatched(|| pool.install(&copy, version(1))).expect("a commit");
                 let seen = Content::read(&installed);
                 thread::yield_now();
                 assert_eq!(Content::read(&installed), seen);
@@ -302,12 +312,13 @@ fn a_page_step_follows_a_commit_at_once() {
             let pool = Arc::clone(&pool);
             thread::spawn(move || {
                 let copy = pool.private(owner(1), page(1)).expect("the copy");
-                let installed = pool.install(copy, version(1)).expect("a commit");
+                let installed = pool.install(&copy, version(1)).expect("a commit");
                 assert_eq!(Content::read(&installed), content(1, 1, 0));
             })
         };
+        let stepped = Arc::new(SharedU64::new(0));
         let background = {
-            let pool = Arc::clone(&pool);
+            let (pool, stepped) = (Arc::clone(&pool), Arc::clone(&stepped));
             thread::spawn(move || {
                 let step = pool.page_step(page(1));
                 let Some(current) = step.current() else {
@@ -317,11 +328,13 @@ fn a_page_step_follows_a_commit_at_once() {
                 blank.copy_from(&current);
                 content(1, 1, 1).write(&mut blank);
                 drop(step.replace(&current, blank).expect("nothing in the way"));
+                stepped.store(1, Ordering::SeqCst);
             })
         };
         join(vec![committer, background]);
         let current = pool.get(page(1), version(1)).expect("installed");
-        assert!(Content::read(&current).revision <= 1);
+        let stepped = stepped.load(Ordering::SeqCst) as u32;
+        assert_eq!(Content::read(&current), content(1, 1, stepped));
         assert_eq!(pool.oldest_unwritten(), Some(version(1)));
         drop(current);
         check(&pool, 0);
@@ -345,7 +358,7 @@ fn a_load_never_passes_for_a_newer_version() {
                     .expect("held");
                 drop(held);
                 content(1, 2, 0).write(&mut copy.write().expect("private"));
-                drop(pool.install(copy, version(2)).expect("a commit"));
+                drop(pool.install(&copy, version(2)).expect("a commit"));
             })
         };
         let reader = {
@@ -361,6 +374,126 @@ fn a_load_never_passes_for_a_newer_version() {
         let old = fetch_one(&pool, 1, 1);
         assert_eq!(Content::read(&old), content(1, 1, 0));
         drop((new, old));
+        check(&pool, 0);
+    });
+}
+
+/// A load against a page step: a reader loads the page as it is on disk
+/// while background work changes it. What the reader loaded is not put
+/// beside the changed page or in its place: one frame holds the page, and it
+/// is the changed one.
+#[test]
+fn a_load_does_not_bring_back_the_page_before_a_page_step() {
+    model(3, || {
+        let pool = Arc::new(pool(3));
+        let reader = {
+            let pool = Arc::clone(&pool);
+            thread::spawn(move || {
+                let found = fetch_one(&pool, 1, 5);
+                assert!(Content::read(&found).revision <= 1);
+            })
+        };
+        let background = {
+            let pool = Arc::clone(&pool);
+            thread::spawn(move || {
+                let looked = fetch_one(&pool, 1, 5);
+                let step = pool.page_step(page(1));
+                let current = step.current().expect("held");
+                let mut blank = pool.blank();
+                blank.copy_from(&current);
+                content(1, 1, 1).write(&mut blank);
+                drop(step.replace(&current, blank).expect("nothing in the way"));
+                drop(looked);
+            })
+        };
+        join(vec![reader, background]);
+        assert_eq!(pool.census().published, 1);
+        let current = pool.get(page(1), version(5)).expect("unwritten");
+        assert_eq!(Content::read(&current), content(1, 1, 1));
+        drop(current);
+        check(&pool, 0);
+    });
+}
+
+/// A load against a commit that frees the page: the page table has the free
+/// link before the pool is told. The reader of the version before gets the
+/// page, and what it loaded never passes for a page at the freeing version.
+#[test]
+fn a_load_does_not_bring_back_a_freed_page() {
+    model(3, || {
+        let pool = Arc::new(pool(2));
+        let freed = Arc::new(SharedU64::new(0));
+        let reader = {
+            let (pool, freed) = (Arc::clone(&pool), Arc::clone(&freed));
+            thread::spawn(move || {
+                let found = match pool.get(page(1), version(1)) {
+                    Ok(found) => Some(found),
+                    Err(miss) => load_with(&pool, miss, |_, _| {
+                        let next = (freed.load(Ordering::SeqCst) == 1).then_some(2);
+                        Some((content(1, 1, 0), next))
+                    }),
+                };
+                assert_eq!(Content::read(&found.expect("on disk")), content(1, 1, 0));
+            })
+        };
+        let committer = {
+            let (pool, freed) = (Arc::clone(&pool), Arc::clone(&freed));
+            thread::spawn(move || {
+                freed.store(1, Ordering::SeqCst);
+                pool.free(page(1), version(2)).expect("a commit");
+            })
+        };
+        join(vec![reader, committer]);
+        assert!(pool.get(page(1), version(2)).is_err(), "the page is free");
+        check(&pool, 0);
+    });
+}
+
+/// A private copy against a commit of the same page: two transactions copy
+/// the page, and each commits under the commit lock. The one whose copy
+/// was made from a version that is no longer current is refused, makes its
+/// copy again, and then commits, so every version is whole and in order.
+#[test]
+fn a_copy_of_a_superseded_version_is_not_installed() {
+    #[cfg(loom)]
+    use ::loom::sync::Mutex as CommitLock;
+    #[cfg(not(loom))]
+    use std::sync::Mutex as CommitLock;
+
+    model(2, || {
+        let pool = Arc::new(pool(4));
+        drop(create(&pool, 1, 1));
+        let latest = Arc::new(CommitLock::new(1u64));
+        let threads = [1, 2]
+            .into_iter()
+            .map(|who| {
+                let (pool, latest) = (Arc::clone(&pool), Arc::clone(&latest));
+                thread::spawn(move || {
+                    let mut copy = pool
+                        .make_private(owner(who), page(1), version(1))
+                        .expect("unwritten");
+                    let mut latest = latest.lock().expect("no panic");
+                    let next = *latest + 1;
+                    if copy.base() != Some(version(*latest)) {
+                        let refused = pool.install(&copy, version(next)).err();
+                        assert!(matches!(refused, Some(CacheError::BaseNotCurrent { .. })));
+                        pool.discard(&copy).expect("private");
+                        copy = pool
+                            .make_private(owner(who), page(1), version(*latest))
+                            .expect("unwritten");
+                    }
+                    content(1, next, 0).write(&mut copy.write().expect("private"));
+                    drop(pool.install(&copy, version(next)).expect("a commit"));
+                    *latest = next;
+                })
+            })
+            .collect();
+        join(threads);
+        for at in 1..=3 {
+            let found = pool.get(page(1), version(at)).expect("unwritten");
+            assert_eq!(Content::read(&found), content(1, at, 0));
+        }
+        assert_eq!(pool.census().private, 0);
         check(&pool, 0);
     });
 }
@@ -475,11 +608,17 @@ fn a_held_frame_is_freed_once() {
         let pool = Arc::new(pool(2));
         drop(create(&pool, 1, 1));
         pool.free(page(1), version(2)).expect("a later commit");
-        let threads = (0..2)
-            .map(|_| {
+        let threads = [false, true]
+            .into_iter()
+            .map(|by_version| {
                 let pool = Arc::clone(&pool);
                 thread::spawn(move || {
-                    if let Ok(found) = pool.get(page(1), version(1)) {
+                    let found = if by_version {
+                        pool.get_version(page(1), version(1))
+                    } else {
+                        pool.get(page(1), version(1)).ok()
+                    };
+                    if let Some(found) = found {
                         assert_eq!(Content::read(&found), content(1, 1, 0));
                     }
                 })
@@ -530,7 +669,7 @@ fn a_discarded_copy_is_not_written() {
             let pool = Arc::clone(&pool);
             thread::spawn(move || {
                 let copy = pool.private(owner(1), page(1)).expect("the copy");
-                pool.discard(copy).expect("private");
+                unlatched(|| pool.discard(&copy)).expect("private");
             })
         };
         join(vec![writer, discarder]);

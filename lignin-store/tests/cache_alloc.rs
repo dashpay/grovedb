@@ -214,7 +214,7 @@ fn the_pool_allocates_its_configured_size_and_the_frames_that_are_pinned() {
     assert_eq!(pool.census().private, 2 * FRAMES);
     assert!(pool.overflow_frames() >= FRAMES);
     for copy in copies.drain(..) {
-        pool.discard(copy).expect("a private copy");
+        pool.discard(&copy).expect("a private copy");
     }
     drop(copies);
     assert_eq!(pool.overflow_frames(), 0);

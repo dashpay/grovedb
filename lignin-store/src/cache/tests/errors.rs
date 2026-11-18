@@ -37,6 +37,14 @@ fn every_error_says_what_was_wrong() {
              superseded at version 4",
         ),
         (
+            CacheError::WrongPool,
+            "the handle belongs to another buffer pool",
+        ),
+        (
+            CacheError::Latched { page: page(2) },
+            "an operation still holds the latch of the private copy of page 2",
+        ),
+        (
             CacheError::AlreadyPrivate {
                 page: page(2),
                 owner: owner(7),
@@ -124,6 +132,10 @@ fn a_refused_page_step_says_why() {
         (
             StepRefusal::PrivateCopy,
             "an open write transaction holds a private copy of the page",
+        ),
+        (
+            StepRefusal::WrongPool,
+            "the new frame belongs to another buffer pool",
         ),
     ];
     for (refusal, text) in cases {

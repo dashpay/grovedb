@@ -160,7 +160,7 @@ fn committer(pool: &BufferPool, world: &World, commits: u64, seed: u64) {
             thread::yield_now();
         }
         for (_, copy) in copies {
-            drop(pool.install(copy, version(next)).expect("a commit"));
+            drop(pool.install(&copy, version(next)).expect("a commit"));
         }
         if let Some(page) = freed {
             world.disk.lock().expect("no panic").free(page, next);

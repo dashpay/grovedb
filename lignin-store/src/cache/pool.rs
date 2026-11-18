@@ -452,8 +452,9 @@ impl BufferPool {
     /// It fails if what it is told cannot be: the page was born after the
     /// version it was asked at ([`CacheError::LoadedTooNew`]), a newer
     /// version is known at or before that version
-    /// ([`CacheError::LoadedSuperseded`]), or `blank` has attached values,
-    /// which no segment holds ([`CacheError::AttachedValues`]).
+    /// ([`CacheError::LoadedSuperseded`]), `blank` has attached values,
+    /// which no segment holds ([`CacheError::AttachedValues`]), or `blank`
+    /// is a frame of another pool ([`CacheError::WrongPool`]).
     pub fn install_loaded<'p>(
         &'p self,
         blank: Blank<'p>,
@@ -462,6 +463,9 @@ impl BufferPool {
         next: Option<CommitVersion>,
     ) -> Result<Loaded<'p>, CacheError> {
         let Miss { page, at, .. } = miss;
+        if !blank.is_of(self) {
+            return Err(CacheError::WrongPool);
+        }
         if born > at {
             return Err(CacheError::LoadedTooNew { page, born, at });
         }
@@ -509,9 +513,9 @@ impl BufferPool {
                 header.set_born(born.get());
                 header.set_superseded(bound);
                 header.set_flags(0);
-                header.set_kind(kind::PUBLISHED);
                 header.touch();
-                chain.link(frame).freeze(&self.arena)
+                frame.set_kind(kind::PUBLISHED);
+                chain.link(&self.arena, frame).freeze(&self.arena)
             }
         };
         drop(chain);
@@ -531,7 +535,7 @@ impl BufferPool {
             self.overflows.add(1);
             self.arena.allocate_overflow()
         });
-        frame.header().set_kind(kind::BLANK);
+        frame.set_kind(kind::BLANK);
         frame
     }
 
@@ -571,6 +575,7 @@ impl BufferPool {
 
     /// Takes back a frame nobody else can reach.
     pub(super) fn release(&self, mut frame: OwnedFrame) {
+        assert!(self.arena.owns(&frame), "a frame of another pool");
         self.reset(&mut frame);
         if frame.header().is_overflow() {
             self.arena.free_overflow(frame);

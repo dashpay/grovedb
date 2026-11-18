@@ -81,6 +81,9 @@ impl BufferPool {
     }
 
     fn settle(&self, frame: &PageRef<'_>, hold: bool) -> Result<(), CacheError> {
+        if !frame.is_of(self) {
+            return Err(CacheError::WrongPool);
+        }
         let page = frame.page();
         let born = frame.born();
         let header = frame.frame();
