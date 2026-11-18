@@ -89,9 +89,8 @@ use grovedb_merk::{
 };
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
-    rocksdb_storage::{
-        pending_prefix_drops_namespace, PendingPrefixDropRecord, PrefixedRocksDbTransactionContext,
-    },
+    flat::{pending_prefix_drops_namespace, stage_pending_prefix_drop, PendingPrefixDropRecord},
+    rocksdb_storage::PrefixedRocksDbTransactionContext,
     Storage, StorageBatch, StorageContext,
 };
 use grovedb_version::{
@@ -6976,7 +6975,6 @@ impl GroveDb {
                 path: qualified_path.clone(),
                 doomed_prefixes,
             };
-            let record_value = record.encode().map_err(Error::StorageError)?;
             let namespace_ctx = self
                 .db
                 .get_transactional_storage_context_by_subtree_prefix(
@@ -6985,8 +6983,7 @@ impl GroveDb {
                     tx,
                 )
                 .unwrap_add_cost(cost);
-            namespace_ctx
-                .put_meta(record.primary_prefix, &record_value, None)
+            stage_pending_prefix_drop(&namespace_ctx.meta(), &record)
                 .unwrap_add_cost(cost)
                 .map_err(Error::StorageError)?;
         }

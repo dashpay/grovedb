@@ -39,7 +39,7 @@ use grovedb_costs::{
 use grovedb_element::indexed::IndexAxis;
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
-    rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageBatch, StorageContext,
+    rocksdb_storage::RocksDbStorage, FlatStore, RawIterator, Storage, StorageBatch,
 };
 use grovedb_version::version::GroveVersion;
 
@@ -66,7 +66,8 @@ impl GroveDb {
         cost_return_on_error!(
             &mut cost,
             aux_storage
-                .put_aux(key.as_ref(), value, cost_info)
+                .aux()
+                .put(key.as_ref(), value, cost_info)
                 .map_err(Into::into)
         );
 
@@ -99,7 +100,8 @@ impl GroveDb {
         cost_return_on_error!(
             &mut cost,
             aux_storage
-                .delete_aux(key.as_ref(), cost_info)
+                .aux()
+                .delete(key.as_ref(), cost_info)
                 .map_err(|e| e.into())
         );
 
@@ -128,7 +130,8 @@ impl GroveDb {
             .unwrap_add_cost(&mut cost);
 
         aux_storage
-            .get_aux(key.as_ref())
+            .aux()
+            .get(key.as_ref())
             .map_err(|e| e.into())
             .add_cost(cost)
     }
@@ -155,7 +158,8 @@ impl GroveDb {
             .get_transactional_storage_context(SubtreePath::empty(), None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
-        let mut iter = aux_storage.raw_iter_aux();
+        let aux = aux_storage.aux();
+        let mut iter = aux.cursor();
         iter.seek(key_prefix).unwrap_add_cost(&mut cost);
 
         let mut entries = Vec::new();
@@ -249,7 +253,7 @@ impl GroveDb {
         };
         for subtree_path in subtrees_paths {
             let p: SubtreePath<_> = subtree_path.as_slice().into();
-            let mut storage = self
+            let storage = self
                 .db
                 .get_transactional_storage_context(p.clone(), Some(batch), transaction)
                 .unwrap_add_cost(&mut cost);
@@ -270,7 +274,7 @@ impl GroveDb {
                 let secondary_prefix =
                     RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag())
                         .unwrap_add_cost(&mut cost);
-                let mut secondary_storage = self
+                let secondary_storage = self
                     .db
                     .get_transactional_storage_context_by_subtree_prefix(
                         secondary_prefix,

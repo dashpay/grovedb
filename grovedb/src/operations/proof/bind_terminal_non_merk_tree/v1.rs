@@ -26,7 +26,7 @@ use grovedb_merk::{
     tree::{combine_hash, value_hash, NULL_HASH},
     CryptoHash, TreeFeatureType,
 };
-use grovedb_storage::{Storage, StorageContext};
+use grovedb_storage::{FlatStore, Storage};
 use grovedb_version::version::GroveVersion;
 
 use crate::{Element, Error, GroveDb, Transaction};
