@@ -7,6 +7,7 @@ use integer_encoding::VarInt;
 use crate::{
     element::{Element, ElementFlags},
     error::ElementError,
+    indexed::IndexAxis,
     reference_path::{path_from_reference_path_type, ReferencePathType},
 };
 
@@ -864,6 +865,91 @@ impl Element {
             )
     }
 
+    /// This tree element as the tree that holds the same children with the
+    /// sum in 128 bits instead of 64: the same root keys, count and flags,
+    /// the sum widened, inside the same wrapper. An indexed tree's sum axis
+    /// becomes the big sum axis, which takes its place in the tag order.
+    ///
+    /// A `ProvableCountSumTree` becomes a `ProvableCountProvableBigSumTree`,
+    /// the one tree with a provable count and a 128-bit sum: no tree with a
+    /// 128-bit sum has the count in its node hashes and the sum beside them.
+    ///
+    /// `None` for an element that is not a tree with a 64-bit sum.
+    pub fn big_sum_counterpart(&self) -> Option<Element> {
+        match self {
+            Element::SumTree(root_key, sum, flags) => Some(Element::BigSumTree(
+                root_key.clone(),
+                i128::from(*sum),
+                flags.clone(),
+            )),
+            Element::CountSumTree(root_key, count, sum, flags) => Some(Element::CountBigSumTree(
+                root_key.clone(),
+                *count,
+                i128::from(*sum),
+                flags.clone(),
+            )),
+            Element::ProvableSumTree(root_key, sum, flags) => Some(Element::ProvableBigSumTree(
+                root_key.clone(),
+                i128::from(*sum),
+                flags.clone(),
+            )),
+            Element::ProvableCountSumTree(root_key, count, sum, flags)
+            | Element::ProvableCountProvableSumTree(root_key, count, sum, flags) => {
+                Some(Element::ProvableCountProvableBigSumTree(
+                    root_key.clone(),
+                    *count,
+                    i128::from(*sum),
+                    flags.clone(),
+                ))
+            }
+            Element::ProvableSumIndexedTree(primary_root_key, secondary_root_key, sum, flags) => {
+                Some(Element::ProvableBigSumIndexedTree(
+                    primary_root_key.clone(),
+                    secondary_root_key.clone(),
+                    i128::from(*sum),
+                    flags.clone(),
+                ))
+            }
+            Element::ProvableCountProvableSumIndexedTree(
+                primary_root_key,
+                count,
+                sum,
+                axes,
+                flags,
+            ) => {
+                let mut axes: Vec<(u8, Option<Vec<u8>>)> = axes
+                    .iter()
+                    .map(|(tag, root_key)| {
+                        let tag = if *tag == IndexAxis::Sum.tag() {
+                            IndexAxis::BigSum.tag()
+                        } else {
+                            *tag
+                        };
+                        (tag, root_key.clone())
+                    })
+                    .collect();
+                axes.sort_by_key(|(tag, _)| *tag);
+                Some(Element::ProvableCountProvableBigSumIndexedTree(
+                    primary_root_key.clone(),
+                    *count,
+                    i128::from(*sum),
+                    axes,
+                    flags.clone(),
+                ))
+            }
+            Element::NonCounted(inner) => inner
+                .big_sum_counterpart()
+                .map(|wide| Element::NonCounted(Box::new(wide))),
+            Element::NotSummed(inner) => inner
+                .big_sum_counterpart()
+                .map(|wide| Element::NotSummed(Box::new(wide))),
+            Element::NotCountedOrSummed(inner) => inner
+                .big_sum_counterpart()
+                .map(|wide| Element::NotCountedOrSummed(Box::new(wide))),
+            _ => None,
+        }
+    }
+
     /// Grab the optional flag stored in an element. For `NonCounted`, returns
     /// the inner element's flags.
     pub fn get_flags(&self) -> &Option<ElementFlags> {
@@ -1627,6 +1713,103 @@ mod flag_accessor_tests {
     fn dense_append_only_tree_flag_accessors() {
         let e = Element::DenseAppendOnlyFixedSizeTree(0, 0, flags());
         check_accessors_round_trip(e);
+    }
+
+    /// The counterpart keeps the root keys, the count and the flags, widens
+    /// the sum, stays in its wrapper, and names the big sum axis where the
+    /// sum axis was, in tag order.
+    #[test]
+    fn big_sum_counterpart_keeps_everything_but_the_width_of_the_sum() {
+        let root = Some(b"root".to_vec());
+        let secondary = Some(b"secondary".to_vec());
+        let flags = Some(vec![1, 2, 3]);
+
+        let pairs = [
+            (
+                Element::SumTree(root.clone(), -7, flags.clone()),
+                Element::BigSumTree(root.clone(), -7, flags.clone()),
+            ),
+            (
+                Element::CountSumTree(root.clone(), 4, i64::MAX, flags.clone()),
+                Element::CountBigSumTree(root.clone(), 4, i128::from(i64::MAX), flags.clone()),
+            ),
+            (
+                Element::ProvableSumTree(root.clone(), i64::MIN, flags.clone()),
+                Element::ProvableBigSumTree(root.clone(), i128::from(i64::MIN), flags.clone()),
+            ),
+            (
+                Element::ProvableCountSumTree(root.clone(), 4, 9, flags.clone()),
+                Element::ProvableCountProvableBigSumTree(root.clone(), 4, 9, flags.clone()),
+            ),
+            (
+                Element::ProvableCountProvableSumTree(root.clone(), 4, 9, flags.clone()),
+                Element::ProvableCountProvableBigSumTree(root.clone(), 4, 9, flags.clone()),
+            ),
+            (
+                Element::ProvableSumIndexedTree(root.clone(), secondary.clone(), 9, flags.clone()),
+                Element::ProvableBigSumIndexedTree(
+                    root.clone(),
+                    secondary.clone(),
+                    9,
+                    flags.clone(),
+                ),
+            ),
+            (
+                // count, sum, avg becomes count, avg, big sum: each axis
+                // keeps its root key.
+                Element::ProvableCountProvableSumIndexedTree(
+                    root.clone(),
+                    4,
+                    9,
+                    vec![
+                        (0, Some(b"count".to_vec())),
+                        (1, Some(b"sum".to_vec())),
+                        (2, None),
+                    ],
+                    flags.clone(),
+                ),
+                Element::ProvableCountProvableBigSumIndexedTree(
+                    root.clone(),
+                    4,
+                    9,
+                    vec![
+                        (0, Some(b"count".to_vec())),
+                        (2, None),
+                        (3, Some(b"sum".to_vec())),
+                    ],
+                    flags.clone(),
+                ),
+            ),
+        ];
+        for (narrow, wide) in pairs {
+            assert_eq!(narrow.big_sum_counterpart(), Some(wide.clone()));
+            assert_eq!(wide.big_sum_counterpart(), None);
+            assert_eq!(
+                Element::NonCounted(Box::new(narrow)).big_sum_counterpart(),
+                Some(Element::NonCounted(Box::new(wide)))
+            );
+        }
+
+        let narrow = Element::SumTree(root.clone(), 5, None);
+        let wide = Element::BigSumTree(root.clone(), 5, None);
+        assert_eq!(
+            Element::NotSummed(Box::new(narrow.clone())).big_sum_counterpart(),
+            Some(Element::NotSummed(Box::new(wide.clone())))
+        );
+        assert_eq!(
+            Element::NotCountedOrSummed(Box::new(narrow)).big_sum_counterpart(),
+            Some(Element::NotCountedOrSummed(Box::new(wide)))
+        );
+
+        for without in [
+            Element::Tree(root.clone(), None),
+            Element::CountTree(root.clone(), 4, None),
+            Element::ProvableCountIndexedTree(root.clone(), secondary, 4, None),
+            Element::SumItem(9, None),
+            Element::NonCounted(Box::new(Element::Tree(root, None))),
+        ] {
+            assert_eq!(without.big_sum_counterpart(), None, "{without:?}");
+        }
     }
 
     /// Each constructor of a tree with a 128-bit sum builds the element its

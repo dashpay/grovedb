@@ -793,6 +793,31 @@ either width, or a `SumItem`, for the second. Both trees can be created
 from `GROVE_V5`, and the big sum axis is served from it: an earlier version
 refuses an axis read that names the axis, read, proved or verified.
 
+A 64-bit indexed tree becomes its 128-bit counterpart in place with
+`GroveDb::convert_to_big_sum_tree` (see
+[Converting a tree to a 128-bit sum](element-system.md#converting-a-tree-to-a-128-bit-sum)).
+The primary is rewritten node by node. The sum axis becomes the big sum
+axis: its rows sit in the same namespace under 8-byte sort keys, so each is
+removed and the row with the 16-byte key written. The avg rows are
+rewritten too, since they carry the entry's sum under a 64-bit primary and
+0 under a 128-bit one. The rows of an axis are applied as one change to its
+secondary, so only the sums of the finished secondary are computed, and
+rows of both signs cannot overflow halfway. The count rows stay as they
+are. Each ranking reads
+as it did before, on the big sum axis where it was the sum axis.
+
+The key ceiling changes only where a sum axis becomes a big sum axis. A
+`ProvableSumIndexedTree`, or a `ProvableCountProvableSumIndexedTree` with a
+sum axis and no avg axis, may hold keys of up to 247 bytes, which the big
+sum axis cannot rank: the conversion is refused while one is longer than
+239. A tree that already has an avg axis is at 239, and a tree that ranks
+by count alone gains no big sum axis and keeps its 247.
+
+A sum row that is in storage and in no Merk, as a repair on a released
+version can leave one, is removed with the others: the big sum rows take
+the sum rows' place in storage, and the ranking reads would take such a row
+for one of them.
+
 ## When to use which element type
 
 - **`CountTree`** — aggregate counts only; never need ordered access.

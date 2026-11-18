@@ -40,6 +40,8 @@ pub mod apply;
 pub mod clear;
 /// Commit logic for writing tree nodes to storage.
 pub mod committer;
+/// Rewriting a tree with a 64-bit sum as its counterpart with a 128-bit sum.
+mod convert_to_big_sum_tree;
 /// Getting values by key from a Merk tree.
 pub mod get;
 /// Metadata (non-authenticated KV) access for Merk trees, cached in memory
@@ -220,6 +222,12 @@ impl<I: RawIterator> KVIterator<'_, I> {
 
             if kv_pair.is_some() {
                 kv_pair.wrap_with_cost(cost)
+            } else if self.raw_iter.status().is_err() {
+                // The item ended on a storage error, not at its last
+                // record. Seeking to the next item would clear the error,
+                // so the scan ends here and `status` goes on reporting it.
+                self.current_query_item = None;
+                None.wrap_with_cost(cost)
             } else {
                 self.seek().unwrap_add_cost(&mut cost);
                 self.next_kv().add_cost(cost)
@@ -227,6 +235,16 @@ impl<I: RawIterator> KVIterator<'_, I> {
         } else {
             None.wrap_with_cost(cost)
         }
+    }
+
+    /// Whether the scan stopped on a storage error rather than at the end of
+    /// its records. [`Self::next_kv`] returns `None` for both, so a caller
+    /// that acts on a scan having been complete checks this once the scan
+    /// ends. A scan that meets an error within one query item ends there
+    /// and does not go on to the next item, so the error is still the
+    /// iterator's status when the scan is over.
+    pub fn status(&self) -> Result<(), grovedb_storage::Error> {
+        self.raw_iter.status()
     }
 }
 
@@ -308,6 +326,34 @@ pub struct Merk<S> {
     meta_cache: HashMap<Vec<u8>, Option<Vec<u8>>>,
     /// The kind of data this tree holds (normal, sum, count, etc.).
     pub tree_type: TreeType,
+}
+
+/// Adds the key of `walker`'s node and of every node under it to `keys`.
+fn collect_linked_keys<S, V>(
+    walker: &mut RefWalker<'_, S>,
+    keys: &mut BTreeSet<Vec<u8>>,
+    value_defined_cost_fn: Option<&V>,
+    grove_version: &GroveVersion,
+) -> CostResult<(), Error>
+where
+    S: Fetch + Sized + Clone,
+    V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+{
+    let mut cost = OperationCost::default();
+    keys.insert(walker.tree().key().to_vec());
+    for left in [true, false] {
+        let maybe_child = cost_return_on_error!(
+            &mut cost,
+            walker.walk(left, value_defined_cost_fn, grove_version)
+        );
+        if let Some(mut child) = maybe_child {
+            cost_return_on_error!(
+                &mut cost,
+                collect_linked_keys(&mut child, keys, value_defined_cost_fn, grove_version)
+            );
+        }
+    }
+    Ok(()).wrap_with_cost(cost)
 }
 
 impl<S> fmt::Debug for Merk<S> {
@@ -554,6 +600,31 @@ where
         let res = f(maybe_walker);
         self.tree.set(tree);
         res
+    }
+
+    /// The keys of every node the tree links, from its root down.
+    ///
+    /// A node is stored under its key, so a read by key
+    /// ([`Merk::get`]) finds a record in the tree's storage whether or not
+    /// any link leads to it. This walks the links instead, and so tells
+    /// what the root hash commits to from what merely sits in storage. It
+    /// loads the whole tree.
+    pub fn linked_keys<V>(
+        &self,
+        value_defined_cost_fn: Option<&V>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<BTreeSet<Vec<u8>>, Error>
+    where
+        V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+    {
+        let mut keys = BTreeSet::new();
+        self.walk(|maybe_walker| match maybe_walker {
+            Some(mut walker) => {
+                collect_linked_keys(&mut walker, &mut keys, value_defined_cost_fn, grove_version)
+            }
+            None => Ok(()).wrap_with_cost(OperationCost::default()),
+        })
+        .map_ok(|()| keys)
     }
 
     /// Checks if it's an empty tree
@@ -1102,6 +1173,9 @@ fn fetch_node<'db>(
 // // TODO: get rid of Fetch/source and use GroveDB storage_cost abstraction
 
 #[cfg(test)]
+mod tests;
+
+#[cfg(test)]
 mod test {
 
     use grovedb_path::SubtreePath;
@@ -1128,6 +1202,53 @@ mod test {
             let tree = maybe_tree.expect("expected tree");
             assert_tree_invariants(tree);
         })
+    }
+
+    /// A read by key finds a record in the tree's storage whether or not
+    /// the tree links it; the walk names only what the tree links.
+    #[test]
+    fn linked_keys_names_what_the_tree_links_not_what_storage_holds() {
+        use grovedb_storage::StorageContext;
+
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new(grove_version);
+        let batch = make_batch_seq(0..20);
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+            .unwrap()
+            .expect("apply");
+        let (linked_key, _) = &batch[7];
+        let node = merk.storage.get(linked_key).unwrap().expect("read a node");
+        assert!(node.is_none(), "the batch is not in storage yet");
+        merk.commit(grove_version);
+        let node = merk
+            .storage
+            .get(linked_key)
+            .unwrap()
+            .expect("read a node")
+            .expect("the node is stored");
+
+        // A copy of a node under a key of its own, linked by nothing.
+        merk.storage
+            .put(b"unlinked", &node, None, None)
+            .unwrap()
+            .expect("store a record");
+        merk.commit(grove_version);
+
+        let no_cost = None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>;
+        assert!(
+            merk.get(b"unlinked", true, no_cost, grove_version)
+                .unwrap()
+                .expect("get")
+                .is_some(),
+            "a read by key finds the record"
+        );
+        let linked = merk
+            .linked_keys(no_cost, grove_version)
+            .unwrap()
+            .expect("linked keys");
+        assert_eq!(linked.len(), 20);
+        assert!(!linked.contains(b"unlinked".as_slice()));
+        assert!(batch.iter().all(|(key, _)| linked.contains(key)));
     }
 
     #[test]

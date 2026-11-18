@@ -1506,4 +1506,611 @@ mod tests {
         );
         assert_clean(&db, gv);
     }
+
+    // -----------------------------------------------------------------
+    // What a repair leaves in storage, and above the repaired tree
+    // -----------------------------------------------------------------
+
+    /// The repair as the released versions run it.
+    fn as_released() -> GroveVersion {
+        let mut version = GroveVersion::latest().clone();
+        version
+            .grovedb_versions
+            .operations
+            .indexed_axis
+            .reconcile_secondaries = 0;
+        version
+    }
+
+    /// The records an axis's secondary holds in storage, whether or not its
+    /// Merk links them: what the ranking reads iterate.
+    fn stored_rows(
+        db: &TempGroveDb,
+        indexed_path: &[&[u8]],
+        axis: IndexAxis,
+        gv: &GroveVersion,
+    ) -> Vec<(Vec<u8>, Vec<u8>)> {
+        use grovedb_merk::{merk::KVIterator, proofs::Query};
+        use grovedb_storage::StorageContext;
+
+        let tx = db.start_transaction();
+        let path: SubtreePath<&[u8]> = indexed_path.into();
+        let secondary = db
+            .open_indexed_secondary_at_path(path, axis, None, &tx, None, gv)
+            .unwrap()
+            .expect("open the secondary's storage");
+        let mut all = Query::new();
+        all.insert_all();
+        let mut rows = KVIterator::new(secondary.storage.raw_iter(), &all).unwrap();
+        let mut stored = Vec::new();
+        while let Some(row) = rows.next_kv().unwrap() {
+            stored.push(row);
+        }
+        stored
+    }
+
+    fn stored_row_keys(
+        db: &TempGroveDb,
+        indexed_path: &[&[u8]],
+        axis: IndexAxis,
+        gv: &GroveVersion,
+    ) -> Vec<Vec<u8>> {
+        stored_rows(db, indexed_path, axis, gv)
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect()
+    }
+
+    /// Writes a record straight into an axis's secondary storage, inside
+    /// `tx`, where no Merk links it.
+    fn store_unlinked_row(
+        db: &TempGroveDb,
+        indexed_path: &[&[u8]],
+        axis: IndexAxis,
+        key: &[u8],
+        node_bytes: &[u8],
+        tx: &crate::Transaction,
+        gv: &GroveVersion,
+    ) {
+        use grovedb_storage::StorageContext;
+
+        let batch = StorageBatch::new();
+        {
+            let path: SubtreePath<&[u8]> = indexed_path.into();
+            let secondary = db
+                .open_indexed_secondary_at_path(path, axis, None, tx, Some(&batch), gv)
+                .unwrap()
+                .expect("open the secondary's storage");
+            secondary
+                .storage
+                .put(key, node_bytes, None, None)
+                .unwrap()
+                .expect("store the record");
+        }
+        db.db
+            .commit_multi_context_batch(batch, Some(tx))
+            .unwrap()
+            .expect("commit the record");
+    }
+
+    const REAL_ROWS: &[(&[u8], i64)] = &[(b"a", 7), (b"b", -3)];
+
+    fn real_row_keys() -> Vec<Vec<u8>> {
+        let mut keys: Vec<Vec<u8>> = REAL_ROWS
+            .iter()
+            .map(|(key, sum)| make_axis_secondary_key(IndexAxis::Sum, 0, *sum, key))
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    /// A sum indexed tree at `[TEST_LEAF, psit]` with six rows no entry
+    /// stands behind, spread between and around the two real ones.
+    fn psit_with_stray_rows(gv: &GroveVersion) -> TempGroveDb {
+        let db = make_test_grovedb(gv);
+        make_psit_with(&db, b"psit", REAL_ROWS, gv);
+        let strays: Vec<(Vec<u8>, Element)> = [-40i64, -20, 1, 2, 30, 50]
+            .iter()
+            .map(|sum| {
+                (
+                    make_axis_secondary_key(IndexAxis::Sum, 0, *sum, b"ghost"),
+                    Element::new_sum_item(*sum),
+                )
+            })
+            .collect();
+        drift_axis_secondary(&db, &[TEST_LEAF, b"psit"], IndexAxis::Sum, &strays, &[], gv);
+        assert_eq!(
+            stored_row_keys(&db, &[TEST_LEAF, b"psit"], IndexAxis::Sum, gv).len(),
+            8,
+            "pre-condition: the six stray rows are stored"
+        );
+        db
+    }
+
+    /// A repair removes its stray rows one Merk commit at a time, and
+    /// removing one rewrites the nodes around it. Every removal must reach
+    /// storage, where the ranking reads look.
+    #[test]
+    fn reconcile_removes_every_stray_row_from_storage() {
+        let gv = GroveVersion::latest();
+        let pristine = make_test_grovedb(gv);
+        make_psit_with(&pristine, b"psit", REAL_ROWS, gv);
+        let pristine_root = pristine.root_hash(None, gv).unwrap().unwrap();
+
+        let db = psit_with_stray_rows(gv);
+        db.reconcile_indexed_tree_secondaries([TEST_LEAF, b"psit"].as_ref(), None, gv)
+            .unwrap()
+            .expect("reconcile");
+        assert_eq!(db.root_hash(None, gv).unwrap().unwrap(), pristine_root);
+        assert_eq!(
+            stored_row_keys(&db, &[TEST_LEAF, b"psit"], IndexAxis::Sum, gv),
+            real_row_keys()
+        );
+        assert_clean(&db, gv);
+
+        // As released, the Merk is repaired and rows stay behind in storage.
+        let released = as_released();
+        let db = psit_with_stray_rows(gv);
+        db.reconcile_indexed_tree_secondaries([TEST_LEAF, b"psit"].as_ref(), None, &released)
+            .unwrap()
+            .expect("reconcile as released");
+        assert_eq!(db.root_hash(None, gv).unwrap().unwrap(), pristine_root);
+        let left_behind = stored_row_keys(&db, &[TEST_LEAF, b"psit"], IndexAxis::Sum, gv);
+        assert!(
+            left_behind.len() > 2,
+            "the released repair leaves removed rows in storage: {left_behind:?}"
+        );
+
+        // Those rows are in no Merk any more, and a repair on the current
+        // version removes them from storage all the same, without moving
+        // the root.
+        db.reconcile_indexed_tree_secondaries([TEST_LEAF, b"psit"].as_ref(), None, gv)
+            .unwrap()
+            .expect("reconcile again");
+        assert_eq!(db.root_hash(None, gv).unwrap().unwrap(), pristine_root);
+        assert_eq!(
+            stored_row_keys(&db, &[TEST_LEAF, b"psit"], IndexAxis::Sum, gv),
+            real_row_keys()
+        );
+        assert_clean(&db, gv);
+    }
+
+    /// A tree converted to a 128-bit sum keeps its big sum rows where its
+    /// sum rows were. A sum row left in storage by a released repair, linked
+    /// by no Merk, must go with the others: the ranking reads would take it
+    /// for a big sum row.
+    #[test]
+    fn a_conversion_removes_the_sum_rows_no_merk_links() {
+        let gv = GroveVersion::latest();
+        let db = psit_with_stray_rows(gv);
+        db.reconcile_indexed_tree_secondaries([TEST_LEAF, b"psit"].as_ref(), None, &as_released())
+            .unwrap()
+            .expect("reconcile as released");
+        assert!(
+            stored_row_keys(&db, &[TEST_LEAF, b"psit"], IndexAxis::Sum, gv).len() > 2,
+            "pre-condition: rows no Merk links are stored"
+        );
+
+        db.convert_to_big_sum_tree([TEST_LEAF].as_ref(), b"psit", None, gv)
+            .unwrap()
+            .expect("convert");
+
+        let mut big_sum_rows: Vec<Vec<u8>> = REAL_ROWS
+            .iter()
+            .map(|(key, sum)| {
+                make_axis_secondary_key(
+                    IndexAxis::BigSum,
+                    0,
+                    crate::operations::indexed_tree::EntrySum::Wide(i128::from(*sum)),
+                    key,
+                )
+            })
+            .collect();
+        big_sum_rows.sort();
+        assert_eq!(
+            stored_row_keys(&db, &[TEST_LEAF, b"psit"], IndexAxis::BigSum, gv),
+            big_sum_rows
+        );
+        let page = db
+            .indexed_big_sum_top_k_paginated([TEST_LEAF, b"psit"].as_ref(), 10, 0, true, None, gv)
+            .unwrap()
+            .expect("the ranking reads");
+        assert_eq!(page.entries.len(), 2);
+        assert_clean(&db, gv);
+    }
+
+    /// When the repaired tree is an entry of another indexed tree, that
+    /// tree's row for it binds the element's value hash, which a repair that
+    /// changes a secondary changes.
+    #[test]
+    fn reconcile_of_a_nested_tree_refreshes_the_row_above_it() {
+        let gv = GroveVersion::latest();
+        let outer: &[&[u8]] = &[TEST_LEAF, b"outer"];
+        let inner: &[&[u8]] = &[TEST_LEAF, b"outer", b"inner"];
+        let build = || {
+            let db = make_test_grovedb(gv);
+            make_psit_with(&db, b"outer", &[(b"x", 5)], gv);
+            db.insert_into_provable_sum_indexed_tree(
+                outer,
+                b"inner",
+                Element::empty_provable_sum_indexed_tree(),
+                None,
+                gv,
+            )
+            .unwrap()
+            .expect("insert the inner tree");
+            for (key, sum) in REAL_ROWS {
+                db.insert_into_provable_sum_indexed_tree(
+                    inner,
+                    key,
+                    Element::new_sum_item(*sum),
+                    None,
+                    gv,
+                )
+                .unwrap()
+                .expect("insert an inner entry");
+            }
+            db
+        };
+        let pristine_root = build().root_hash(None, gv).unwrap().unwrap();
+
+        // Damage the inner tree's secondary, then repair the outer tree so
+        // that its row binds the damaged inner element.
+        let damaged = |version: &GroveVersion| {
+            let db = build();
+            drift_axis_secondary(
+                &db,
+                inner,
+                IndexAxis::Sum,
+                &[(
+                    make_axis_secondary_key(IndexAxis::Sum, 0, 99, b"ghost"),
+                    Element::new_sum_item(99),
+                )],
+                &[],
+                gv,
+            );
+            db.reconcile_indexed_tree_secondaries(outer, None, gv)
+                .unwrap()
+                .expect("repair the outer tree");
+            assert_ne!(db.root_hash(None, gv).unwrap().unwrap(), pristine_root);
+
+            db.reconcile_indexed_tree_secondaries(inner, None, version)
+                .unwrap()
+                .expect("repair the inner tree");
+            db
+        };
+
+        // The repair of the inner tree carries through to the outer row.
+        let db = damaged(gv);
+        assert_eq!(db.root_hash(None, gv).unwrap().unwrap(), pristine_root);
+        assert_clean(&db, gv);
+
+        // As released, the outer row keeps the hash of the damaged element.
+        let db = damaged(&as_released());
+        assert_ne!(db.root_hash(None, gv).unwrap().unwrap(), pristine_root);
+        db.reconcile_indexed_tree_secondaries(outer, None, gv)
+            .unwrap()
+            .expect("repair the outer tree again");
+        assert_eq!(db.root_hash(None, gv).unwrap().unwrap(), pristine_root);
+    }
+
+    /// A row can be in storage, exactly as the primary calls for it, and in
+    /// no tree: a read by key finds it and its bytes match. The repair must
+    /// treat it as the missing row it is to the tree, or the ranking reads
+    /// return a row the root hash and the proofs do not have.
+    #[test]
+    fn reconcile_links_a_row_that_is_only_in_storage() {
+        let gv = GroveVersion::latest();
+        let psit: &[&[u8]] = &[TEST_LEAF, b"psit"];
+        // Enough rows that the secondary's root has children: a read by key
+        // goes to storage where it meets a link it has not loaded, and
+        // finds a record there whether or not the link leads to it.
+        let rows: &[(&[u8], i64)] = &[
+            (b"a", 7),
+            (b"b", -3),
+            (b"c", 12),
+            (b"d", 40),
+            (b"e", -25),
+            (b"f", 3),
+            (b"g", 90),
+        ];
+        let row_key = make_axis_secondary_key(IndexAxis::Sum, 0, 7, b"a");
+
+        // The row is taken out of the secondary and, for `record_kept`, its
+        // record is put back in storage alone.
+        let damaged = |record_kept: bool| {
+            let db = make_test_grovedb(gv);
+            make_psit_with(&db, b"psit", rows, gv);
+            let record = stored_rows(&db, psit, IndexAxis::Sum, gv)
+                .into_iter()
+                .find(|(key, _)| *key == row_key)
+                .expect("the row is stored")
+                .1;
+            drift_axis_secondary(
+                &db,
+                psit,
+                IndexAxis::Sum,
+                &[],
+                std::slice::from_ref(&row_key),
+                gv,
+            );
+            if record_kept {
+                let tx = db.start_transaction();
+                store_unlinked_row(&db, psit, IndexAxis::Sum, &row_key, &record, &tx, gv);
+                db.commit_transaction(tx).unwrap().expect("commit");
+                assert_eq!(
+                    stored_row_keys(&db, psit, IndexAxis::Sum, gv).len(),
+                    rows.len(),
+                    "pre-condition: every row is in storage"
+                );
+            }
+            db
+        };
+
+        // What the repair makes of a secondary the row is simply missing
+        // from.
+        let missing = damaged(false);
+        let damaged_root = missing.root_hash(None, gv).unwrap().unwrap();
+        missing
+            .reconcile_indexed_tree_secondaries(psit, None, gv)
+            .unwrap()
+            .expect("reconcile");
+        let repaired_root = missing.root_hash(None, gv).unwrap().unwrap();
+        assert_ne!(repaired_root, damaged_root);
+        assert_clean(&missing, gv);
+
+        // The record in storage changes nothing: the row is written again.
+        let db = damaged(true);
+        assert_eq!(db.root_hash(None, gv).unwrap().unwrap(), damaged_root);
+        db.reconcile_indexed_tree_secondaries(psit, None, gv)
+            .unwrap()
+            .expect("reconcile");
+        assert_eq!(db.root_hash(None, gv).unwrap().unwrap(), repaired_root);
+        assert_clean(&db, gv);
+        // The ranking proof follows the tree's links, and names the row.
+        let ranking = crate::PathQuery::new_axis_top_k(
+            vec![TEST_LEAF.to_vec(), b"psit".to_vec()],
+            IndexAxis::Sum,
+            20,
+            0,
+            true,
+        );
+        let proof = db.prove_query(&ranking, None, gv).unwrap().expect("prove");
+        let crate::operations::proof::VerifiedPathQuery::AxisEntries {
+            root_hash,
+            entries: crate::operations::proof::indexed_axis::AxisEntries::Sum(proved),
+            ..
+        } = crate::GroveDb::verify_path_query(&proof, &ranking, gv).expect("verify")
+        else {
+            panic!("expected proved sum axis entries");
+        };
+        assert_eq!(root_hash, repaired_root);
+        assert_eq!(proved.len(), rows.len());
+        assert!(proved.iter().any(|entry| entry.primary_key == b"a"));
+
+        // As released, the row is taken for present and left out of the
+        // tree.
+        let db = damaged(true);
+        db.reconcile_indexed_tree_secondaries(psit, None, &as_released())
+            .unwrap()
+            .expect("reconcile as released");
+        assert_eq!(db.root_hash(None, gv).unwrap().unwrap(), damaged_root);
+    }
+
+    /// A stray row no Merk links is removed from storage directly, and
+    /// billed by the record the repair read, which a transaction that wrote
+    /// the record itself holds and the committed state does not.
+    #[test]
+    fn a_stray_row_is_billed_by_what_the_transaction_holds() {
+        use integer_encoding::VarInt;
+
+        let gv = GroveVersion::latest();
+        let psit: &[&[u8]] = &[TEST_LEAF, b"psit"];
+        let stray_key = make_axis_secondary_key(IndexAxis::Sum, 0, 99, b"ghost");
+
+        let removed_by_the_repair = |committed_first: bool| {
+            let db = make_test_grovedb(gv);
+            make_psit_with(&db, b"psit", REAL_ROWS, gv);
+            let record = stored_rows(&db, psit, IndexAxis::Sum, gv).remove(0).1;
+            let tx = db.start_transaction();
+            store_unlinked_row(&db, psit, IndexAxis::Sum, &stray_key, &record, &tx, gv);
+            let repair = if committed_first {
+                db.commit_transaction(tx).unwrap().expect("commit");
+                let repair = db.reconcile_indexed_tree_secondaries(psit, None, gv);
+                assert_eq!(
+                    stored_row_keys(&db, psit, IndexAxis::Sum, gv),
+                    real_row_keys()
+                );
+                repair
+            } else {
+                db.reconcile_indexed_tree_secondaries(psit, Some(&tx), gv)
+            };
+            repair.value.expect("reconcile");
+            (
+                repair.cost.storage_cost.removed_bytes.total_removed_bytes(),
+                record.len() as u32,
+            )
+        };
+
+        let (committed, record_len) = removed_by_the_repair(true);
+        let (staged, _) = removed_by_the_repair(false);
+        assert_eq!(staged, committed);
+        // The stored key is the 32-byte prefix of the secondary and the
+        // row's key, and each length is billed with its own.
+        let stored_key_len = 32 + stray_key.len() as u32;
+        assert_eq!(
+            committed,
+            stored_key_len
+                + stored_key_len.required_space() as u32
+                + record_len
+                + record_len.required_space() as u32
+        );
+    }
+
+    /// A record in a secondary's storage that no tree links is no part of
+    /// the tree a conversion starts from, and must be no part of what it
+    /// builds: two databases with the same trees convert to the same root,
+    /// whatever else their storage holds.
+    #[test]
+    fn a_record_no_tree_links_does_not_change_the_converted_root() {
+        let gv = GroveVersion::latest();
+        let psit: &[&[u8]] = &[TEST_LEAF, b"psit"];
+        let rows: &[(&[u8], i64)] = &[(b"a", 1), (b"b", 1)];
+
+        let clean = make_test_grovedb(gv);
+        make_psit_with(&clean, b"psit", rows, gv);
+
+        let with_record = make_test_grovedb(gv);
+        make_psit_with(&with_record, b"psit", rows, gv);
+        let record = stored_rows(&with_record, psit, IndexAxis::Sum, gv)
+            .remove(0)
+            .1;
+        let tx = with_record.start_transaction();
+        store_unlinked_row(
+            &with_record,
+            psit,
+            IndexAxis::Sum,
+            // It sorts before both rows, where it would be the first of the
+            // rows the rebuild works through.
+            &make_axis_secondary_key(IndexAxis::Sum, 0, -5, b"ghost"),
+            &record,
+            &tx,
+            gv,
+        );
+        with_record.commit_transaction(tx).unwrap().expect("commit");
+        assert_eq!(
+            with_record.root_hash(None, gv).unwrap().unwrap(),
+            clean.root_hash(None, gv).unwrap().unwrap(),
+            "pre-condition: the record is in no tree"
+        );
+
+        for db in [&clean, &with_record] {
+            db.convert_to_big_sum_tree([TEST_LEAF].as_ref(), b"psit", None, gv)
+                .unwrap()
+                .expect("convert");
+            assert_clean(db, gv);
+        }
+        assert_eq!(
+            with_record.root_hash(None, gv).unwrap().unwrap(),
+            clean.root_hash(None, gv).unwrap().unwrap()
+        );
+        assert_eq!(
+            stored_row_keys(&with_record, psit, IndexAxis::BigSum, gv),
+            stored_row_keys(&clean, psit, IndexAxis::BigSum, gv)
+        );
+    }
+
+    /// A version the repair does not know is refused before anything is
+    /// opened, whatever the path.
+    #[test]
+    fn reconcile_refuses_a_version_it_does_not_know_before_reading() {
+        let mut unknown = GroveVersion::latest().clone();
+        unknown
+            .grovedb_versions
+            .operations
+            .indexed_axis
+            .reconcile_secondaries = 7;
+        let gv = GroveVersion::latest();
+        let db = make_test_grovedb(gv);
+        make_psit_with(&db, b"psit", REAL_ROWS, gv);
+
+        let indexed: &[&[u8]] = &[TEST_LEAF, b"psit"];
+        let not_indexed: &[&[u8]] = &[TEST_LEAF];
+        let root: &[&[u8]] = &[];
+        for path in [indexed, not_indexed, root] {
+            let repair = db.reconcile_indexed_tree_secondaries(path, None, &unknown);
+            assert!(
+                matches!(
+                    repair.value,
+                    Err(Error::VersionError(
+                        grovedb_version::error::GroveVersionError::UnknownVersionMismatch { .. }
+                    ))
+                ),
+                "{path:?}: {:?}",
+                repair.value
+            );
+            assert_eq!(repair.cost, Default::default(), "{path:?}");
+        }
+    }
+
+    /// The repair as GROVE_V4 runs it, on a tree written under GROVE_V4:
+    /// the root, the rows left in storage and the cost are the ones measured
+    /// on the commit this work started from (`2a79d035`), so the released
+    /// repair is the one it was. A repair on the current version then
+    /// finishes it.
+    #[test]
+    fn the_repair_on_grove_v4_is_what_it_was() {
+        use grovedb_costs::{
+            storage_cost::{removal::StorageRemovedBytes::BasicStorageRemoval, StorageCost},
+            OperationCost,
+        };
+        use grovedb_version::version::v4::GROVE_V4;
+
+        let v4 = &GROVE_V4;
+        let psit: &[&[u8]] = &[TEST_LEAF, b"psit"];
+        let db = make_test_grovedb(v4);
+        make_psit_with(&db, b"psit", REAL_ROWS, v4);
+        let strays: Vec<(Vec<u8>, Element)> = [-40i64, -20, 1, 2, 30, 50]
+            .iter()
+            .map(|sum| {
+                (
+                    make_axis_secondary_key(IndexAxis::Sum, 0, *sum, b"ghost"),
+                    Element::new_sum_item(*sum),
+                )
+            })
+            .collect();
+        drift_axis_secondary(&db, psit, IndexAxis::Sum, &strays, &[], v4);
+
+        let repair = db.reconcile_indexed_tree_secondaries(psit, None, v4);
+        repair.value.expect("reconcile on GROVE_V4");
+        assert_eq!(
+            repair.cost,
+            OperationCost {
+                seek_count: 37,
+                storage_cost: StorageCost {
+                    added_bytes: 0,
+                    replaced_bytes: 1263,
+                    removed_bytes: BasicStorageRemoval(204),
+                },
+                storage_loaded_bytes: 4875,
+                hash_node_calls: 38,
+                sinsemilla_hash_calls: 0,
+            }
+        );
+        assert_eq!(
+            hex::encode(db.root_hash(None, v4).unwrap().unwrap()),
+            "4bf77b9086ba63c400be89baf6ea657f4351ecdb8a8008b039c0ba2219971e7d"
+        );
+        // One of the six stray rows left storage. The other five are in no
+        // tree and still there, between and around the two real rows.
+        let left_in_storage: Vec<(String, usize)> = stored_rows(&db, psit, IndexAxis::Sum, v4)
+            .into_iter()
+            .map(|(key, record)| (hex::encode(key), record.len()))
+            .collect();
+        assert_eq!(
+            left_in_storage,
+            [
+                ("7fffffffffffffec67686f7374", 72),
+                ("7ffffffffffffffd62", 77),
+                ("800000000000000167686f7374", 72),
+                ("800000000000000267686f7374", 171),
+                ("800000000000000761", 124),
+                ("800000000000001e67686f7374", 123),
+                ("800000000000003267686f7374", 72),
+            ]
+            .map(|(key, len)| (key.to_string(), len))
+        );
+
+        let gv = GroveVersion::latest();
+        let root = db.root_hash(None, gv).unwrap().unwrap();
+        db.reconcile_indexed_tree_secondaries(psit, None, gv)
+            .unwrap()
+            .expect("reconcile on the current version");
+        assert_eq!(db.root_hash(None, gv).unwrap().unwrap(), root);
+        assert_eq!(
+            stored_row_keys(&db, psit, IndexAxis::Sum, gv),
+            real_row_keys()
+        );
+        assert_clean(&db, gv);
+    }
 }
