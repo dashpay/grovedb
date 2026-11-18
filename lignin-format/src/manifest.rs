@@ -509,12 +509,23 @@ impl Manifest {
 
     fn decode_v1(body: &[u8]) -> Result<Self, FormatError> {
         let version = FormatVersion::V1;
-        let mut fields = body;
         let short = FormatError::Manifest(ManifestError::LengthMismatch {
             expected: FIXED_LEN as u64,
             found: body.len() as u64,
         });
+        let (fixed, rest) = body.split_first_chunk::<FIXED_LEN>().ok_or(short)?;
+        let (entries, []) = rest.as_chunks::<ENTRY_LEN>() else {
+            return Err(FormatError::Manifest(ManifestError::LengthMismatch {
+                expected: (body.len() - rest.len() % ENTRY_LEN) as u64,
+                found: body.len() as u64,
+            }));
+        };
+
+        let mut fields = fixed.as_slice();
         let page_size = u32::from_le_bytes(take(&mut fields).ok_or(short)?);
+        let page_size = TreePageSize::new(page_size as usize).map_err(|_| {
+            FormatError::Manifest(ManifestError::InvalidPageSize { found: page_size })
+        })?;
         let last_file_ids = LastFileIds {
             wal: FileId::decode(take(&mut fields).ok_or(short)?),
             segment: FileId::decode(take(&mut fields).ok_or(short)?),
@@ -524,9 +535,6 @@ impl Manifest {
         let table_file = FileId::decode(take(&mut fields).ok_or(short)?);
         let table_valid_len = u64::from_le_bytes(take(&mut fields).ok_or(short)?);
         let table_covers = CommitVersion::decode(take(&mut fields).ok_or(short)?);
-        let page_size = TreePageSize::new(page_size as usize).map_err(|_| {
-            FormatError::Manifest(ManifestError::InvalidPageSize { found: page_size })
-        })?;
         let table_checkpoint = match (table_file, table_covers) {
             (Some(file), Some(covers)) => {
                 Some(TableCheckpoint::new(file, table_valid_len, covers)?)
@@ -536,12 +544,6 @@ impl Manifest {
             (None, _) => return Err(FormatError::Manifest(ManifestError::InvalidEntry)),
         };
 
-        let (entries, []) = fields.as_chunks::<ENTRY_LEN>() else {
-            return Err(FormatError::Manifest(ManifestError::LengthMismatch {
-                expected: (body.len() - fields.len() % ENTRY_LEN) as u64,
-                found: body.len() as u64,
-            }));
-        };
         let mut files = Vec::with_capacity(entries.len());
         for entry in entries {
             let mut entry = entry.as_slice();
@@ -1122,13 +1124,29 @@ mod tests {
             let invalid = FormatError::Manifest(ManifestError::InvalidPageSize { found });
             assert_eq!(decode(found, &ENTRIES), Err(invalid));
             assert_eq!(decode(found, &unordered), Err(invalid));
+            let whole = body_with(found, LAST, TABLE, &ENTRIES);
+            for (len, expected) in [(4, 40), (39, 40), (41, 40), (55, 40), (57, 56), (119, 104)] {
+                assert_eq!(
+                    Manifest::decode(&forge(&whole[..len])),
+                    Err(FormatError::Manifest(ManifestError::LengthMismatch {
+                        expected,
+                        found: len as u64,
+                    })),
+                    "a body of {len} bytes"
+                );
+            }
+            let mut longer = whole.clone();
+            longer.push(0);
             assert_eq!(
-                Manifest::decode(&forge(&found.to_le_bytes())),
+                Manifest::decode(&forge(&longer)),
                 Err(FormatError::Manifest(ManifestError::LengthMismatch {
-                    expected: 40,
-                    found: 4,
+                    expected: 120,
+                    found: 121,
                 }))
             );
+            assert_eq!(Manifest::decode(&forge(&whole[..40])), Err(invalid));
+            let no_ids = body_with(found, [0; 4], (0, 4116, 9000), &[(9, 9, 9, 0, 0)]);
+            assert_eq!(Manifest::decode(&forge(&no_ids)), Err(invalid));
         }
         for bytes in [8_192, 8_193, 11_111, 32_768, 65_535, 65_536] {
             let page_size = TreePageSize::new(bytes).expect("in range");

@@ -375,8 +375,14 @@ kind at once.
 4. the record's length and checksum: else `Truncated`, `RecordTooLong`,
    `ChecksumMismatch`
 5. nothing follows the record: else `ManifestError::LengthMismatch`
-6. the body, by the format version in the header: its length (M5), then
-   the page size (M17), then the checkpoint and the entries
+6. the body, by the format version in the header:
+   1. its length is 40 bytes and a whole number of entries (M5): else
+      `ManifestError::LengthMismatch`
+   2. the page size (M17): else `ManifestError::InvalidPageSize`
+   3. the checkpoint (M10, M11)
+   4. each entry, in order (3.5)
+   5. the number of entries, their order, and each id, the checkpoint's
+      included, against the last id of its kind (M6, M12, M8)
 
 Every rule of this section is checked, so a manifest has exactly one encoding
 (B8). A rule on an entry that is broken is `ManifestError::InvalidEntry`,
@@ -518,7 +524,7 @@ Run the tests with `cargo test -p lignin-format`.
 | S22 | `segment::decode_file_header` | Wrong kind, wrong id, damaged header. |
 | M1 to M6 | `manifest::Manifest` | Golden bytes; round trip of random manifests in both directions; wrong kind, sequence and version; every shorter and longer input; every body length; the largest manifest and one file more. |
 | M7 to M11 | `manifest::{LastFileIds, TableCheckpoint}` | Each id above its last id; each mix of set and unset checkpoint fields. |
-| M17 | `Manifest::page_size`, `ManifestError::InvalidPageSize` | `the_page_size_is_one_a_store_can_have`: sizes below 8,192 and above 65,536 are rejected, before any entry is looked at and after the body's length; the sizes at both ends and between them round-trip. Both golden manifests hold one (32,768 and 65,536). Random manifests round-trip with random sizes, and forged ones with sizes in and out of range. |
+| M17 | `Manifest::page_size`, `ManifestError::InvalidPageSize` | `the_page_size_is_one_a_store_can_have`: sizes below 8,192 and above 65,536 are rejected, before the checkpoint and any entry are looked at and after the body's length, whether the body is too short or ends in part of an entry; the sizes at both ends and between them round-trip. Both golden manifests hold one (32,768 and 65,536). Random manifests round-trip with random sizes, and forged ones with sizes in and out of range. |
 | M18 | `lignin-store::segment::ManifestStore` | `the_page_size_of_the_first_manifest_is_the_stores_for_good`: a replacement with another page size is refused (`ManifestChange::PageSizeChanged`) and writes nothing. `a_store_opened_with_another_page_size_is_refused`: `check_page_size` gives `SegmentStoreError::PageSizeMismatch`. |
 | M12 to M15 | `manifest::{LiveFile, FileState}` | Every kind, state and boundary length; every state code; forged entries for each rule; order and duplicates. |
 | B8, B10 | all decoders | Forged records with valid checksums decode only to what encodes back to them; arbitrary and mutated bytes give an error, never a panic. Every single-bit flip of a manifest, with the error each must give. |
