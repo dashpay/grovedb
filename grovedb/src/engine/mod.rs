@@ -239,7 +239,9 @@ pub trait Engine: PendingPrefixDrops + Sized + Send + Sync + 'static {
     /// [`WriteScopeError::Overlap`]; it never waits.
     ///
     /// A scope ends with [`Self::merge_write_scope`] or
-    /// [`Self::rollback_write_scope`]. One that is dropped is rolled back.
+    /// [`Self::rollback_write_scope`]. One that is dropped is rolled back,
+    /// unless the engine cannot roll a scope back: then its writes stay in
+    /// the transaction, as after a refused [`Self::rollback_write_scope`].
     fn open_write_scope<'a>(
         &'a self,
         transaction: &'a Self::Transaction<'_>,
@@ -256,8 +258,10 @@ pub trait Engine: PendingPrefixDrops + Sized + Send + Sync + 'static {
 
     /// Ends `scope` and removes its writes from the transaction, which is
     /// then as if the scope had never been opened. An engine that cannot do
-    /// this fails with [`WriteScopeError::RollbackUnsupported`] and leaves
-    /// the writes in the transaction.
+    /// this fails with [`WriteScopeError::RollbackUnsupported`], ends the
+    /// scope and leaves its writes in the transaction. On such an engine the
+    /// savepoint a caller set before it opened the scope is what undoes
+    /// them.
     fn rollback_write_scope(&self, scope: Self::WriteScope<'_>) -> Result<(), Error>;
 
     /// A deferred handle of the subtree at `path`.

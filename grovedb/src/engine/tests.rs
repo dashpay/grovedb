@@ -587,15 +587,34 @@ fn the_rocksdb_engine_allows_one_write_scope_at_a_time() {
 
     // With the scope closed, savepoints work again and another scope opens.
     engine.set_savepoint(&transaction).expect("savepoint");
-    let scope = engine.open_write_scope(&other).expect("next scope");
-    // This engine cannot undo a scope on its own. The scope is closed
-    // either way.
+    let write_in_a_scope_of_other = |key: &[u8]| {
+        let scope = engine.open_write_scope(&other).expect("next scope");
+        let view = RocksDbEngine::scope_transaction(&scope);
+        put(
+            &engine.immediate_subtree(A.into(), view).unwrap(),
+            key,
+            b"v",
+        );
+        scope
+    };
+    let other_reads = |key: &[u8]| get(&engine.subtree(A.into(), None, &other).unwrap(), key);
+
+    // This engine cannot undo a scope on its own. A rollback is refused, a
+    // scope that is dropped is closed, and either way what the scope wrote
+    // stays in its transaction.
     assert!(matches!(
-        engine.rollback_write_scope(scope),
+        engine.rollback_write_scope(write_in_a_scope_of_other(b"refused")),
         Err(Error::WriteScope(WriteScopeError::RollbackUnsupported))
     ));
-    // A scope that is dropped is closed as well.
-    drop(engine.open_write_scope(&transaction).expect("scope"));
+    assert_eq!(other_reads(b"refused"), Some(b"v".to_vec()));
+    // The savepoint a caller set before the scope is what undoes it.
+    engine.set_savepoint(&other).expect("savepoint");
+    drop(write_in_a_scope_of_other(b"dropped"));
+    assert_eq!(other_reads(b"dropped"), Some(b"v".to_vec()));
+    engine.rollback_to_savepoint(&other).expect("rollback");
+    assert_eq!(other_reads(b"dropped"), None);
+    assert_eq!(other_reads(b"refused"), Some(b"v".to_vec()));
+
     let scope = engine.open_write_scope(&transaction).expect("scope");
     engine.merge_write_scope(scope).expect("merge");
     engine
@@ -999,7 +1018,7 @@ fn pending_prefix_drops_are_the_storages() {
 
     assert_eq!(
         engine.pending_prefix_drop_records().expect("list"),
-        [record.clone()]
+        std::slice::from_ref(&record)
     );
     engine
         .delete_prefix_ranges(&record.doomed_prefixes)
