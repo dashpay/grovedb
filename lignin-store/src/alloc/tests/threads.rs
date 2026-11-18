@@ -5,14 +5,30 @@ use std::{
     collections::BTreeMap,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Mutex,
+        Barrier, Mutex,
     },
     thread,
+    time::{Duration, Instant},
 };
 
 use super::*;
 
 const IDS: u32 = 48;
+const THREADS: u64 = 4;
+/// What the threads go on for: ids that came back, and looks at an id
+/// through a view.
+const ENOUGH: (u64, u64) = (40_000, 400_000);
+/// How long the writers go on if that never comes.
+const AT_MOST: Duration = Duration::from_secs(120);
+
+/// Counts a writer out when it ends, also when it panics.
+struct Leaving<'a>(&'a AtomicU64);
+
+impl Drop for Leaving<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 struct Shared {
     ids: PageAllocator,
@@ -27,6 +43,8 @@ struct Shared {
     next_page: AtomicU64,
     reused: AtomicU64,
     checked: AtomicU64,
+    start: Barrier,
+    writing: AtomicU64,
 }
 
 impl Shared {
@@ -45,9 +63,24 @@ impl Shared {
             .fetch_add(released.len() as u64, Ordering::Relaxed);
     }
 
-    fn write(&self, seed: u64, rounds: u32) {
+    fn progress(&self) -> (u64, u64) {
+        (
+            self.reused.load(Ordering::Relaxed),
+            self.checked.load(Ordering::Relaxed),
+        )
+    }
+
+    fn write(&self, seed: u64) {
+        let _leaving = Leaving(&self.writing);
+        self.start.wait();
         let mut rng = Rng::new(seed);
-        for _ in 0..rounds {
+        let started = Instant::now();
+        while started.elapsed() < AT_MOST {
+            let (reused, checked) = self.progress();
+            if reused >= ENOUGH.0 && checked >= ENOUGH.1 {
+                break;
+            }
+            thread::yield_now();
             let mut private = Vec::new();
             for _ in 0..rng.below(4) {
                 let Ok(id) = self.ids.allocate() else { break };
@@ -108,9 +141,10 @@ impl Shared {
         }
     }
 
-    fn read(&self, seed: u64, rounds: u32) {
+    fn read(&self, seed: u64) {
+        self.start.wait();
         let mut rng = Rng::new(seed);
-        for _ in 0..rounds {
+        while self.writing.load(Ordering::SeqCst) > 0 {
             if rng.below(2) == 0 {
                 let (pinned, view) = {
                     let committed = self.committed();
@@ -142,12 +176,14 @@ fn no_reader_sees_an_id_change_hands_while_threads_allocate_commit_and_reclaim()
         next_page: AtomicU64::new(1),
         reused: AtomicU64::new(0),
         checked: AtomicU64::new(0),
+        start: Barrier::new(2 * THREADS as usize),
+        writing: AtomicU64::new(THREADS),
     };
     thread::scope(|scope| {
-        for seed in 1..=4 {
+        for seed in 1..=THREADS {
             let shared = &shared;
-            scope.spawn(move || shared.write(seed, 4000));
-            scope.spawn(move || shared.read(100 + seed, 4000));
+            scope.spawn(move || shared.write(seed));
+            scope.spawn(move || shared.read(100 + seed));
         }
     });
 
@@ -163,12 +199,9 @@ fn no_reader_sees_an_id_change_hands_while_threads_allocate_commit_and_reclaim()
         .map(|raw| (page(*raw), PageState::Live))
         .collect();
     assert_eq!(in_use(&shared.ids), live);
-    let (reused, checked) = (
-        shared.reused.load(Ordering::Relaxed),
-        shared.checked.load(Ordering::Relaxed),
-    );
+    let (reused, checked) = shared.progress();
     assert!(
-        reused > 1000 && checked > 10_000,
-        "{reused} ids came back, {checked} checks"
+        reused >= ENOUGH.0 && checked >= ENOUGH.1,
+        "{reused} ids came back, {checked} looks"
     );
 }

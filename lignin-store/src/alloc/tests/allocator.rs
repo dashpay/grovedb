@@ -1,6 +1,6 @@
 //! The allocator, one call at a time.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
 
@@ -284,11 +284,15 @@ impl Pins for Answers {
 
 #[test]
 fn two_reclaims_that_overtake_each_other_keep_each_id_for_its_own_guards() {
-    let ids = with_live(3);
-    for raw in 1..=3 {
-        ids.free(page(raw), version(u64::from(raw) + 1))
-            .expect("it is live");
-    }
+    let freed = || {
+        let ids = with_live(3);
+        for raw in 1..=3 {
+            ids.free(page(raw), version(u64::from(raw) + 1))
+                .expect("it is live");
+        }
+        ids
+    };
+    let ids = freed();
     let slow = Answers {
         oldest_pin: 2,
         epoch: 5,
@@ -311,11 +315,7 @@ fn two_reclaims_that_overtake_each_other_keep_each_id_for_its_own_guards() {
         ]
     );
 
-    let ids = with_live(3);
-    for raw in 1..=3 {
-        ids.free(page(raw), version(u64::from(raw) + 1))
-            .expect("it is live");
-    }
+    let ids = freed();
     assert_eq!(reclaim(&ids, &slow), []);
     assert_eq!(
         reclaim(
@@ -545,7 +545,7 @@ fn a_drawn_workload_agrees_with_a_model_of_the_rules() {
         let mut freed_at: BTreeMap<u32, u64> = BTreeMap::new();
         let mut snapshots: Vec<u64> = Vec::new();
         let mut reused = 0;
-        let mut ever_live = std::collections::BTreeSet::new();
+        let mut ever_live = BTreeSet::new();
         for step in 0..40_000 {
             match rng.below(10) {
                 0..=2 => {

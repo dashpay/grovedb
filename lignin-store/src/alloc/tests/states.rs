@@ -1,6 +1,6 @@
 //! The map from page id to state.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
 use crate::alloc::states::States;
@@ -180,9 +180,10 @@ fn a_drawn_workload_agrees_with_a_map() {
         let mut rng = Rng::new(seed);
         let mut states = States::new(page(limit));
         let mut model: BTreeMap<u32, PageState> = BTreeMap::new();
+        let mut free: BTreeSet<u32> = (1..=limit).collect();
         for step in 0..60_000 {
             if rng.below(3) == 0 {
-                let lowest = (1..=limit).find(|raw| !model.contains_key(raw));
+                let lowest = free.pop_first();
                 assert_eq!(states.lowest_free(), lowest.map(page), "step {step}");
                 if let Some(raw) = lowest {
                     states.set(page(raw), PageState::Private);
@@ -196,8 +197,10 @@ fn a_drawn_workload_agrees_with_a_map() {
             assert_eq!(states.set(page(raw), new), old, "step {step}");
             if new == PageState::Free {
                 model.remove(&raw);
+                free.insert(raw);
             } else {
                 model.insert(raw, new);
+                free.remove(&raw);
             }
             let probe = 1 + rng.below(u64::from(limit)) as u32;
             let expected = model.get(&probe).copied().unwrap_or(PageState::Free);

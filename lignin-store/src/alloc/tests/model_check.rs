@@ -149,6 +149,8 @@ struct Stats {
     /// Reclaims that left an id waiting for an operation guard.
     held_for_a_guard: u64,
     released: u64,
+    /// Frees of a dropped page with a version below the latest.
+    freed_below_the_latest: u64,
 }
 
 /// Hands the allocator the answers a reclaim got earlier, and checks that
@@ -217,10 +219,6 @@ impl Clone for World {
             reclaimers: self.reclaimers.clone(),
         }
     }
-}
-
-fn refuse<T>(why: String) -> Result<T, String> {
-    Err(why)
 }
 
 impl World {
@@ -399,8 +397,9 @@ impl World {
                 };
                 page.freed_at = Some(freed_at);
                 let id = page.id;
+                stats.freed_below_the_latest += u64::from(freed_at < latest);
                 if let Err(error) = self.ids.free(super::page(id), version(freed_at)) {
-                    return refuse(format!(
+                    return Err(format!(
                         "the free of dropped page {id} was refused: {error}"
                     ));
                 }
@@ -423,17 +422,15 @@ impl World {
                 stats.exhausted += 1;
                 return Ok(());
             }
-            Err(error) => {
-                return refuse(format!("allocate failed with id {lowest:?} free: {error}"))
-            }
+            Err(error) => return Err(format!("allocate failed with id {lowest:?} free: {error}")),
         };
         if Some(got) != lowest {
-            return refuse(format!(
+            return Err(format!(
                 "allocate gave id {got}, and the lowest free id is {lowest:?}"
             ));
         }
         if self.txns.iter().any(|txn| txn.private.contains(&got)) {
-            return refuse(format!("id {got} was handed out to two transactions"));
+            return Err(format!("id {got} was handed out to two transactions"));
         }
         let readers = self.readers();
         let named: Vec<Page> = self
@@ -444,7 +441,7 @@ impl World {
             .collect();
         for old in &named {
             if old.freed_at.is_none() {
-                return refuse(format!(
+                return Err(format!(
                     "id {got} was handed out while it names a committed page"
                 ));
             }
@@ -454,7 +451,7 @@ impl World {
                 .chain(readers.iter().copied())
                 .find(|reader| old.reachable_at(*reader));
             if let Some(reader) = reached {
-                return refuse(format!(
+                return Err(format!(
                     "id {got} was handed out while a reader of version {reader} can reach the \
                      page it named from version {} to {:?}",
                     old.born, old.gone
@@ -491,7 +488,7 @@ impl World {
         let commit = self.latest + 1;
         for id in txn.private {
             if let Err(error) = self.ids.publish(page(id)) {
-                return refuse(format!("a private id was not published: {error}"));
+                return Err(format!("a private id was not published: {error}"));
             }
             self.pages.push(Page {
                 id,
@@ -510,7 +507,7 @@ impl World {
             if mark == Mark::Free {
                 page.freed_at = Some(freed_at);
                 if let Err(error) = self.ids.free(super::page(key.0), version(freed_at)) {
-                    return refuse(format!("the free of page {} was refused: {error}", key.0));
+                    return Err(format!("the free of page {} was refused: {error}", key.0));
                 }
             }
         }
@@ -537,10 +534,10 @@ impl World {
             let before = self.ids.census().retired;
             self.ids.reclaim(&asked, &mut released);
             if asked.asked.get() != 3 {
-                return refuse("a reclaim did not ask all three questions".into());
+                return Err("a reclaim did not ask all three questions".into());
             }
             if before - self.ids.census().retired != released.len() as u64 {
-                return refuse(format!(
+                return Err(format!(
                     "a reclaim reported {released:?} and freed other ids"
                 ));
             }
@@ -571,7 +568,7 @@ impl World {
             let named: Vec<&Page> = self.pages.iter().filter(|page| page.id == id).collect();
             let committed = named.iter().filter(|page| page.freed_at.is_none()).count();
             if holders + committed > 1 {
-                return refuse(format!(
+                return Err(format!(
                     "id {id} names {committed} pages and has {holders} holders"
                 ));
             }
@@ -581,7 +578,7 @@ impl World {
                 PageState::Retired | PageState::Free => holders + committed == 0,
             };
             if !fits {
-                return refuse(format!(
+                return Err(format!(
                     "id {id} is {state} with {holders} holders and {committed} committed pages"
                 ));
             }
@@ -589,7 +586,7 @@ impl World {
                 let every = [self.latest].into_iter().chain(self.installing);
                 for reader in every.chain(readers.iter().copied()) {
                     if let Some(old) = named.iter().find(|page| page.reachable_at(reader)) {
-                        return refuse(format!(
+                        return Err(format!(
                             "id {id} is free while a reader of version {reader} can reach the \
                              page it named from version {} to {:?}",
                             old.born, old.gone
@@ -600,7 +597,7 @@ impl World {
             if state == PageState::Retired {
                 let newest = named.iter().filter_map(|page| page.freed_at).max();
                 let Some(freed_at) = newest else {
-                    return refuse(format!("id {id} is retired and no page of it was freed"));
+                    return Err(format!("id {id} is retired and no page of it was freed"));
                 };
                 retired.push((page(id), version(freed_at)));
             }
@@ -615,13 +612,13 @@ impl World {
             .count();
         let counted = (census.private, census.live, census.retired);
         if counted != (private as u64, live as u64, retired.len() as u64) {
-            return refuse(format!(
+            return Err(format!(
                 "the census is {census:?} with {private} private, {live} live and {} retired ids",
                 retired.len()
             ));
         }
         if super::retired(&self.ids) != retired {
-            return refuse(format!("the retired ids are not {retired:?}"));
+            return Err(format!("the retired ids are not {retired:?}"));
         }
 
         let settled = self.ids.fork();
@@ -632,7 +629,7 @@ impl World {
         });
         settled.reclaim(&quiet, &mut Vec::new());
         if settled.census().retired != 0 {
-            return refuse("an id stays retired when every reader is gone".into());
+            return Err("an id stays retired when every reader is gone".into());
         }
         Ok(())
     }
@@ -807,7 +804,11 @@ fn explore(bounds: Bounds, fault: Fault) -> Result<Stats, Counterexample> {
 }
 
 /// The allocator did every kind of thing the test is about.
-fn assert_not_vacuous(stats: &Stats) {
+fn assert_not_vacuous(bounds: Bounds, stats: &Stats) {
+    assert!(
+        !bounds.drops || stats.freed_below_the_latest > 0,
+        "no dropped page was freed with an earlier version: {stats:?}"
+    );
     assert!(stats.reused > 0, "no id was used again: {stats:?}");
     assert!(stats.reused_beside_a_reader > 0, "{stats:?}");
     assert!(
@@ -837,20 +838,19 @@ const SMALL: Bounds = Bounds {
 fn no_id_is_reused_while_a_reader_can_reach_its_page() {
     let stats = explore(SMALL, Fault::None).unwrap_or_else(|found| panic!("{found}"));
     println!("{SMALL:?}\n{stats:?}");
-    assert_not_vacuous(&stats);
+    assert_not_vacuous(SMALL, &stats);
 }
 
 #[test]
 fn no_id_is_reused_while_a_reader_can_reach_a_dropped_page() {
     let bounds = Bounds {
-        versions: 2,
         txns: 1,
         drops: true,
         ..SMALL
     };
     let stats = explore(bounds, Fault::None).unwrap_or_else(|found| panic!("{found}"));
     println!("{bounds:?}\n{stats:?}");
-    assert!(stats.reused > 0 && stats.held_for_a_pin > 0, "{stats:?}");
+    assert_not_vacuous(bounds, &stats);
 }
 
 #[test]
@@ -863,7 +863,7 @@ fn no_id_is_reused_too_early_by_two_reclaims_at_once() {
     };
     let stats = explore(bounds, Fault::None).unwrap_or_else(|found| panic!("{found}"));
     println!("{bounds:?}\n{stats:?}");
-    assert_not_vacuous(&stats);
+    assert_not_vacuous(bounds, &stats);
 }
 
 /// The full bounds. `cargo test --release -p lignin-store -- --ignored
@@ -911,7 +911,7 @@ fn every_interleaving_within_the_full_bounds() {
     for bounds in all {
         let stats = explore(bounds, Fault::None).unwrap_or_else(|found| panic!("{found}"));
         println!("{bounds:?}\n{stats:?}");
-        assert_not_vacuous(&stats);
+        assert_not_vacuous(bounds, &stats);
     }
 }
 
@@ -990,7 +990,7 @@ fn drawn_runs_keep_every_rule() {
         }
     }
     println!("{bounds:?}\n{stats:?}");
-    assert_not_vacuous(&stats);
+    assert_not_vacuous(bounds, &stats);
     assert!(stats.reused > 1000, "{stats:?}");
 }
 
