@@ -41,53 +41,6 @@ pub enum FormatError {
         /// The kind of the file.
         kind: FileKind,
     },
-    /// The file is of another kind than the one the decoder reads.
-    WrongFileKind {
-        /// The kind the decoder reads.
-        expected: FileKind,
-        /// The kind in the file header.
-        found: FileKind,
-    },
-    /// The sequence in the file header is not the one the file must carry.
-    WrongFileSequence {
-        /// The sequence the file must carry.
-        expected: u32,
-        /// The sequence in the file header.
-        found: u32,
-    },
-    /// The record kind is defined, but not allowed where it was found.
-    UnexpectedRecordKind {
-        /// The code found in the record.
-        code: u32,
-    },
-    /// A length or an offset does not agree with the bytes or the fields it
-    /// describes.
-    InconsistentLength {
-        /// The value the other bytes and fields require.
-        expected: u64,
-        /// The value found.
-        found: u64,
-    },
-    /// A compressed block is not smaller than the same block stored raw.
-    CompressedBlockNotSmaller {
-        /// The body length of the compressed block.
-        stored: u32,
-        /// The length it says its payload has once decompressed.
-        raw: u32,
-    },
-    /// Compressed bytes do not decompress to the length the block states.
-    Decompression,
-    /// The file state code is zero or not defined in the manifest's format
-    /// version.
-    UnknownFileState {
-        /// The code found in the manifest.
-        code: u8,
-    },
-    /// A manifest entry breaks a rule for its file kind or state.
-    InvalidManifestEntry,
-    /// The files in a manifest are not in strictly ascending order of kind
-    /// and id.
-    ManifestEntriesOutOfOrder,
     /// A record's payload is longer than its format allows.
     RecordTooLong {
         /// The payload length.
@@ -97,6 +50,10 @@ pub enum FormatError {
     },
     /// The bytes are not a flat page image, or a flat page cannot be built.
     FlatPage(crate::flat_page::FlatPageError),
+    /// The bytes are not a segment record, or a segment cannot be written.
+    Segment(crate::segment::SegmentError),
+    /// The bytes are not a manifest, or a manifest cannot be built.
+    Manifest(crate::manifest::ManifestError),
     /// A field that must hold an identifier holds the "none" pattern.
     MissingId,
     /// A reserved field or bit is not zero.
@@ -127,38 +84,6 @@ impl fmt::Display for FormatError {
             Self::InvalidFileSequence { kind } => {
                 write!(f, "{kind:?} file with sequence number zero")
             }
-            Self::WrongFileKind { expected, found } => {
-                write!(f, "expected a {expected:?} file, found a {found:?} file")
-            }
-            Self::WrongFileSequence { expected, found } => {
-                write!(f, "file header sequence is {found}, expected {expected}")
-            }
-            Self::UnexpectedRecordKind { code } => {
-                write!(f, "record kind code {code} is not allowed here")
-            }
-            Self::InconsistentLength { expected, found } => {
-                write!(
-                    f,
-                    "inconsistent length or offset: found {found}, expected {expected}"
-                )
-            }
-            Self::CompressedBlockNotSmaller { stored, raw } => write!(
-                f,
-                "compressed block of {stored} bytes is not smaller than its {raw} raw bytes"
-            ),
-            Self::Decompression => {
-                write!(f, "compressed bytes do not decompress to the stated length")
-            }
-            Self::UnknownFileState { code } => write!(f, "unknown file state code {code}"),
-            Self::InvalidManifestEntry => {
-                write!(f, "manifest entry breaks a rule for its file kind or state")
-            }
-            Self::ManifestEntriesOutOfOrder => {
-                write!(
-                    f,
-                    "manifest files are not in ascending order of kind and id"
-                )
-            }
             Self::RecordTooLong { len, max } => {
                 write!(
                     f,
@@ -166,6 +91,8 @@ impl fmt::Display for FormatError {
                 )
             }
             Self::FlatPage(error) => write!(f, "flat page: {error}"),
+            Self::Segment(error) => write!(f, "segment: {error}"),
+            Self::Manifest(error) => write!(f, "manifest: {error}"),
             Self::MissingId => write!(f, "identifier field holds no identifier"),
             Self::NonZeroReserved => write!(f, "reserved field is not zero"),
             Self::UnknownRecordKind { code } => write!(f, "unknown record kind code {code}"),

@@ -1,11 +1,7 @@
 //! Segment files, `seg/<n>.seg`: blocks of page images and page deltas, and
 //! the footer index of a sealed segment.
 //!
-//! This module is the specification of the segment format in format version
-//! 1, on top of the shared rules in `docs/lignindb/format.md` (cited below as
-//! B1 to B11, C1 to C7, R1 to R7 and H1 to H5).
-//!
-//! # File layout
+//! See section 2 of `docs/lignindb/segment-manifest.md`.
 //!
 //! ```text
 //! file header     20 bytes: kind 3 (segment), sequence = the file id
@@ -14,121 +10,27 @@
 //! trailer         sealed segments only: the last 20 valid bytes
 //! ```
 //!
-//! The first block starts at offset 20 ([`DATA_START`]). A segment is written
-//! by appending blocks. Sealing it appends the index record and the trailer,
-//! which together are the footer, and nothing is appended after that.
-//!
-//! A segment does not say how long it is or whether it is sealed. The
-//! manifest does ([`crate::manifest`]): it gives the segment's valid length
-//! and its state. Bytes past the valid length are not part of the segment,
-//! whatever they hold. That is what lets a checkpoint share a file that the
-//! live database is still appending to.
-//!
-//! # Record frame
-//!
-//! Every record after the file header has the same 8-byte frame.
+//! Every record after the file header has the same frame:
 //!
 //! ```text
 //! offset  size  field
-//!      0     4  tag, a u32: bits 0 to 26 are `len`, the body length in bytes;
-//!               bits 27 to 31 are the record kind
-//!      4     4  checksum of bytes 0 to 3 followed by the body
+//!      0     4  tag: bits 0..27 body length, bits 27..32 record kind
+//!      4     4  checksum of bytes 0..4 followed by the body
 //!      8   len  body
 //! ```
 //!
-//! This is the default record frame with one change. A default frame's
-//! length is at most 2^27 - 4, so the top five bits of its length field are
-//! always zero. Here they carry the record kind. The body is at most 2^27 - 4
-//! bytes ([`MAX_BODY_LEN`]), which keeps the checksum within C5.
-//!
-//! | Kind | Record | Body |
-//! | --- | --- | --- |
-//! | 1 | base image, raw | the payload |
-//! | 2 | base image, LZ4 | `raw_len` (u32), then an LZ4 block |
-//! | 3 | delta run, raw | the payload |
-//! | 4 | delta run, LZ4 | `raw_len` (u32), then an LZ4 block |
-//! | 5 | index | 8 bytes for each block |
-//! | 6 | trailer | 12 bytes |
-//!
-//! Kind 0 is invalid (B6), so neither zero-filled bytes nor a record in the
-//! default frame is a segment record. Every other code is an error
-//! ([`FormatError::UnknownRecordKind`]).
-//!
-//! A reader checks a record in this order: 8 bytes are there; `len` is within
-//! the caller's maximum and the bytes available; the checksum; the kind; then
-//! the fields of the body. The kind is checked after the checksum so that a
-//! flipped bit in it is reported as damage.
-//!
-//! # Blocks
-//!
-//! A block holds one payload: the base image of one page, or one run of
-//! deltas of one page. The payload is opaque here. Its layout belongs to the
-//! page and delta formats, and it is stored at its actual length with no
-//! padding.
-//!
-//! - **The block is the record.** Its checksum is the only one over the
-//!   payload, and it covers the bytes as stored, so a reader verifies a block
-//!   before it decompresses it (C7).
-//! - **Raw.** The body is the payload. The block is the payload plus 8 bytes.
-//! - **LZ4.** The body is `raw_len`, the payload's length once decompressed,
-//!   followed by the payload compressed in the LZ4 block format, with no
-//!   dictionary and no frame.
-//! - **LZ4 only when it is smaller.** An LZ4 block is valid only if its body
-//!   is shorter than `raw_len`, that is, only if the whole block is smaller
-//!   than the same payload stored raw. A reader rejects any other
-//!   ([`FormatError::CompressedBlockNotSmaller`]). So no block is more than 8
-//!   bytes longer than its payload. A writer may store any payload raw.
-//! - **What a reader accepts as LZ4.** Any stream of LZ4 sequences that uses
-//!   every stored byte and decompresses to exactly `raw_len` bytes. The rules
-//!   the LZ4 specification gives a compressor for the end of a block are not
-//!   checked.
-//! - **One exception to B8.** Different LZ4 streams can decompress to the
-//!   same payload. Which one a writer produces is not part of the format, and
-//!   it may change with the compressor. Everything else in a segment has one
-//!   encoding.
-//! - **The block does not name its page or its place** (section 5 of the
-//!   shared rules: file space is never reused). The pointer that leads to a
-//!   block, a file id, an offset and a length, comes from the page table. The
-//!   page id of each block is in the footer index.
-//!
-//! A reader that follows a pointer has exactly the block's bytes and uses
-//! [`Block::decode`]. A reader that walks a segment uses [`Block::read`]:
-//! the frame gives each block's length, so a segment with no footer can be
-//! walked from offset 20 to its valid length.
-//!
-//! # Footer
-//!
-//! The index record (kind 5) has one 8-byte entry for each block, in file
-//! order:
-//!
 //! ```text
-//! offset  size  field
-//!      0     4  page id of the block's page (never 0)
-//!      4     4  the block's tag, as in its frame
+//! kind  record             body
+//!    1  base image, raw    the payload
+//!    2  base image, LZ4    raw length (u32), then an LZ4 block
+//!    3  delta run, raw     the payload
+//!    4  delta run, LZ4     raw length (u32), then an LZ4 block
+//!    5  index              page id (u32) and tag (u32) of each block
+//!    6  trailer            index offset (u64), block count (u32)
 //! ```
 //!
-//! Offsets are not stored. Block 0 starts at offset 20, and each block starts
-//! where the one before it ends, 8 bytes plus its `len` further on. The index
-//! record starts where the last block ends.
-//!
-//! The trailer (kind 6) is the last 20 bytes of a sealed segment. Its body:
-//!
-//! ```text
-//! offset  size  field
-//!      0     8  index offset: the file offset of the index record, u64
-//!      8     4  block count, u32
-//! ```
-//!
-//! A reader checks all of this, so there is one footer for a given run of
-//! blocks:
-//!
-//! - index offset + 8 + 8 x block count + 20 is the segment's valid length
-//! - the index body is 8 x block count bytes
-//! - every entry has a page id and the tag of a block
-//! - 20 plus the lengths of all blocks is the index offset
-//!
-//! One index record holds at most 2^24 - 1 entries ([`MAX_BLOCKS`]), which is
-//! the most blocks a segment may have. A writer seals a segment before that.
+//! A segment does not say how long it is or whether it is sealed. The
+//! manifest does ([`crate::manifest`]).
 //!
 //! # Example
 //!
@@ -166,7 +68,7 @@
 //! # }
 //! ```
 
-use std::borrow::Cow;
+use std::{borrow::Cow, fmt};
 
 use crate::{
     checksum::Checksum,
@@ -175,6 +77,75 @@ use crate::{
     ids::{FileId, PageId},
     wire::take,
 };
+
+/// Why a byte string is not a segment record, or why one cannot be written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SegmentError {
+    /// The file header is of another kind than segment.
+    NotASegment {
+        /// The kind in the file header.
+        found: FileKind,
+    },
+    /// The file header carries another id than the file's name.
+    WrongFileId {
+        /// The id in the file's name.
+        expected: u32,
+        /// The id in the file header.
+        found: u32,
+    },
+    /// The record kind is defined, but not allowed where it was found.
+    UnexpectedRecordKind {
+        /// The code found in the record.
+        code: u32,
+    },
+    /// A length or an offset does not agree with the bytes or the fields it
+    /// describes.
+    LengthMismatch {
+        /// The value the other bytes and fields require.
+        expected: u64,
+        /// The value found.
+        found: u64,
+    },
+    /// An LZ4 block is not smaller than the same block stored raw.
+    CompressedBlockNotSmaller {
+        /// The body length of the LZ4 block.
+        stored: u32,
+        /// The length it says its payload has once decompressed.
+        raw: u32,
+    },
+    /// The compressed bytes do not decompress to the length the block states.
+    Decompression,
+}
+
+impl fmt::Display for SegmentError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotASegment { found } => write!(f, "a {found:?} file, not a segment"),
+            Self::WrongFileId { expected, found } => {
+                write!(f, "file header carries id {found}, expected {expected}")
+            }
+            Self::UnexpectedRecordKind { code } => {
+                write!(f, "record kind code {code} is not allowed here")
+            }
+            Self::LengthMismatch { expected, found } => {
+                write!(f, "length or offset is {found}, expected {expected}")
+            }
+            Self::CompressedBlockNotSmaller { stored, raw } => write!(
+                f,
+                "LZ4 block of {stored} bytes is not smaller than its {raw} raw bytes"
+            ),
+            Self::Decompression => {
+                write!(f, "compressed bytes do not decompress to the stated length")
+            }
+        }
+    }
+}
+
+impl From<SegmentError> for FormatError {
+    fn from(error: SegmentError) -> Self {
+        Self::Segment(error)
+    }
+}
 
 /// Bytes of the frame in front of every record body.
 pub const FRAME_LEN: usize = 8;
@@ -308,9 +279,9 @@ impl BlockTag {
             Ok(RecordKind::DeltaRaw) => (BlockContent::Delta, Compression::Raw),
             Ok(RecordKind::DeltaLz4) => (BlockContent::Delta, Compression::Lz4),
             Ok(RecordKind::Index | RecordKind::Trailer) => {
-                return Err(FormatError::UnexpectedRecordKind {
+                return Err(FormatError::Segment(SegmentError::UnexpectedRecordKind {
                     code: tag >> KIND_SHIFT,
-                });
+                }));
             }
             Err(error) => return Err(error),
         };
@@ -372,10 +343,10 @@ impl<'a> Frame<'a> {
         if rest.is_empty() {
             Ok(frame)
         } else {
-            Err(FormatError::InconsistentLength {
+            Err(FormatError::Segment(SegmentError::LengthMismatch {
                 expected: (bytes.len() - rest.len()) as u64,
                 found: bytes.len() as u64,
-            })
+            }))
         }
     }
 
@@ -387,9 +358,9 @@ impl<'a> Frame<'a> {
         if self.kind(version)? == kind {
             Ok(())
         } else {
-            Err(FormatError::UnexpectedRecordKind {
+            Err(FormatError::Segment(SegmentError::UnexpectedRecordKind {
                 code: u32::from_le_bytes(self.tag) >> KIND_SHIFT,
-            })
+            }))
         }
     }
 }
@@ -535,10 +506,12 @@ impl<'a> Block<'a> {
                     });
                 }
                 if tag.body_len >= raw_len {
-                    return Err(FormatError::CompressedBlockNotSmaller {
-                        stored: tag.body_len,
-                        raw: raw_len,
-                    });
+                    return Err(FormatError::Segment(
+                        SegmentError::CompressedBlockNotSmaller {
+                            stored: tag.body_len,
+                            raw: raw_len,
+                        },
+                    ));
                 }
                 raw_len
             }
@@ -587,10 +560,10 @@ impl<'a> Block<'a> {
     /// [`Self::payload_len`] bytes long. Nothing is allocated.
     pub fn copy_payload_to(&self, out: &mut [u8]) -> Result<(), FormatError> {
         if out.len() != self.payload_len() {
-            return Err(FormatError::InconsistentLength {
+            return Err(FormatError::Segment(SegmentError::LengthMismatch {
                 expected: u64::from(self.payload_len),
                 found: out.len() as u64,
-            });
+            }));
         }
         match self.tag.compression {
             Compression::Raw => {
@@ -604,7 +577,7 @@ impl<'a> Block<'a> {
     fn decompress_to(&self, out: &mut [u8]) -> Result<(), FormatError> {
         match lz4_flex::block::decompress_into(self.stored, out) {
             Ok(written) if written == out.len() => Ok(()),
-            _ => Err(FormatError::Decompression),
+            _ => Err(FormatError::Segment(SegmentError::Decompression)),
         }
     }
 }
@@ -659,10 +632,10 @@ pub fn write_footer(
         .iter()
         .fold(DATA_START, |end, block| end + block.tag.block_len() as u64);
     if expected != index_offset {
-        return Err(FormatError::InconsistentLength {
+        return Err(FormatError::Segment(SegmentError::LengthMismatch {
             expected,
             found: index_offset,
-        });
+        }));
     }
 
     out.reserve(FRAME_LEN + index_len + SegmentTrailer::ENCODED_LEN);
@@ -705,10 +678,10 @@ impl SegmentTrailer {
         let mut body = frame.body;
         let (Some(index_offset), Some(block_count), []) = (take(&mut body), take(&mut body), body)
         else {
-            return Err(FormatError::InconsistentLength {
+            return Err(FormatError::Segment(SegmentError::LengthMismatch {
                 expected: TRAILER_BODY_LEN as u64,
                 found: frame.body.len() as u64,
-            });
+            }));
         };
         let trailer = Self {
             index_offset: u64::from_le_bytes(index_offset),
@@ -726,16 +699,16 @@ impl SegmentTrailer {
                 if trailer.index_offset == expected {
                     Ok(trailer)
                 } else {
-                    Err(FormatError::InconsistentLength {
+                    Err(FormatError::Segment(SegmentError::LengthMismatch {
                         expected,
                         found: trailer.index_offset,
-                    })
+                    }))
                 }
             }
-            _ => Err(FormatError::InconsistentLength {
+            _ => Err(FormatError::Segment(SegmentError::LengthMismatch {
                 expected: DATA_START + footer_len,
                 found: valid_len,
-            }),
+            })),
         }
     }
 
@@ -777,26 +750,26 @@ impl<'a> SegmentIndex<'a> {
         let frame = Frame::read_exact(bytes, entries_len)?;
         frame.expect(RecordKind::Index, version)?;
         let (entries, []) = frame.body.as_chunks() else {
-            return Err(FormatError::InconsistentLength {
+            return Err(FormatError::Segment(SegmentError::LengthMismatch {
                 expected: entries_len as u64,
                 found: frame.body.len() as u64,
-            });
+            }));
         };
         if entries.len() != trailer.block_count() {
-            return Err(FormatError::InconsistentLength {
+            return Err(FormatError::Segment(SegmentError::LengthMismatch {
                 expected: entries_len as u64,
                 found: frame.body.len() as u64,
-            });
+            }));
         }
         let mut end = DATA_START;
         for entry in entries {
             end += IndexEntry::decode(entry, version)?.tag.block_len() as u64;
         }
         if end != trailer.index_offset {
-            return Err(FormatError::InconsistentLength {
+            return Err(FormatError::Segment(SegmentError::LengthMismatch {
                 expected: end,
                 found: trailer.index_offset,
-            });
+            }));
         }
         Ok(Self {
             entries: frame.body,
@@ -883,16 +856,15 @@ pub struct IndexedBlock {
 pub fn decode_file_header(bytes: &[u8], id: FileId) -> Result<FormatVersion, FormatError> {
     let header = FileHeader::decode(bytes)?;
     if header.kind() != FileKind::Segment {
-        return Err(FormatError::WrongFileKind {
-            expected: FileKind::Segment,
+        return Err(FormatError::Segment(SegmentError::NotASegment {
             found: header.kind(),
-        });
+        }));
     }
     if header.sequence() != id.get() {
-        return Err(FormatError::WrongFileSequence {
+        return Err(FormatError::Segment(SegmentError::WrongFileId {
             expected: id.get(),
             found: header.sequence(),
-        });
+        }));
     }
     Ok(header.version())
 }
@@ -1308,10 +1280,12 @@ mod tests {
                 assert!(matches <= 5);
                 assert_eq!(
                     block,
-                    Err(FormatError::CompressedBlockNotSmaller {
-                        stored: body_len,
-                        raw: raw_len,
-                    })
+                    Err(FormatError::Segment(
+                        SegmentError::CompressedBlockNotSmaller {
+                            stored: body_len,
+                            raw: raw_len,
+                        }
+                    ))
                 );
             }
         }
@@ -1349,17 +1323,23 @@ mod tests {
             let bytes = forge_lz4(2, raw_len, &stream);
             let block = Block::decode(V1, &bytes, MAX).expect("the frame is valid");
             assert_eq!(block.payload_len(), raw_len as usize);
-            assert_eq!(block.payload(), Err(FormatError::Decompression));
+            assert_eq!(
+                block.payload(),
+                Err(FormatError::Segment(SegmentError::Decompression))
+            );
             let mut out = vec![0; raw_len as usize];
             assert_eq!(
                 block.copy_payload_to(&mut out),
-                Err(FormatError::Decompression)
+                Err(FormatError::Segment(SegmentError::Decompression))
             );
         }
         for stream in [&[0xF0, 0xFF, 0xFF][..], &[0x00, 0x01, 0x00, 0x00], &[0x10]] {
             let block = forge_lz4(2, 64, stream);
             let block = Block::decode(V1, &block, MAX).expect("the frame is valid");
-            assert_eq!(block.payload(), Err(FormatError::Decompression));
+            assert_eq!(
+                block.payload(),
+                Err(FormatError::Segment(SegmentError::Decompression))
+            );
         }
 
         let bytes = unhex(GOLDEN_LZ4_BASE);
@@ -1367,20 +1347,20 @@ mod tests {
         for len in [0, 31, 33] {
             assert_eq!(
                 block.copy_payload_to(&mut vec![0; len]),
-                Err(FormatError::InconsistentLength {
+                Err(FormatError::Segment(SegmentError::LengthMismatch {
                     expected: 32,
                     found: len as u64,
-                })
+                }))
             );
         }
         let raw = unhex(GOLDEN_RAW_BASE);
         let raw = Block::decode(V1, &raw, MAX).expect("valid block");
         assert_eq!(
             raw.copy_payload_to(&mut [0; 7]),
-            Err(FormatError::InconsistentLength {
+            Err(FormatError::Segment(SegmentError::LengthMismatch {
                 expected: 6,
                 found: 7,
-            })
+            }))
         );
     }
 
@@ -1428,7 +1408,10 @@ mod tests {
                 }
                 None => {
                     rejected += 1;
-                    assert_eq!(block.payload(), Err(FormatError::Decompression));
+                    assert_eq!(
+                        block.payload(),
+                        Err(FormatError::Segment(SegmentError::Decompression))
+                    );
                 }
             }
         }
@@ -1505,10 +1488,10 @@ mod tests {
         longer.push(0);
         assert_eq!(
             Block::decode(V1, &longer, MAX),
-            Err(FormatError::InconsistentLength {
+            Err(FormatError::Segment(SegmentError::LengthMismatch {
                 expected: 14,
                 found: 15,
-            })
+            }))
         );
         assert!(Block::read(V1, &longer, MAX).is_ok());
     }
@@ -1605,9 +1588,17 @@ mod tests {
                     assert_eq!(block.compression(), Compression::Lz4);
                     assert_eq!(block.content(), CONTENTS[(code / 2 - 1) as usize]);
                     assert_eq!(block.payload_len(), 100);
-                    assert_eq!(block.payload(), Err(FormatError::Decompression));
+                    assert_eq!(
+                        block.payload(),
+                        Err(FormatError::Segment(SegmentError::Decompression))
+                    );
                 }
-                5 | 6 => assert_eq!(block, Err(FormatError::UnexpectedRecordKind { code })),
+                5 | 6 => assert_eq!(
+                    block,
+                    Err(FormatError::Segment(SegmentError::UnexpectedRecordKind {
+                        code
+                    }))
+                ),
                 _ => assert_eq!(block, Err(FormatError::UnknownRecordKind { code })),
             }
         }
@@ -1733,10 +1724,10 @@ mod tests {
             let mut out = Vec::new();
             assert_eq!(
                 write_footer(&built.entries, wrong, &mut out),
-                Err(FormatError::InconsistentLength {
+                Err(FormatError::Segment(SegmentError::LengthMismatch {
                     expected: built.index_offset,
                     found: wrong,
-                })
+                }))
             );
             assert!(out.is_empty());
         }
@@ -1772,8 +1763,12 @@ mod tests {
         fn decode(footer: &[u8], valid_len: u64) -> Result<SegmentIndex<'_>, FormatError> {
             SegmentIndex::decode_tail(V1, footer, valid_len)
         }
-        let inconsistent =
-            |expected, found| Err(FormatError::InconsistentLength { expected, found });
+        let inconsistent = |expected, found| {
+            Err(FormatError::Segment(SegmentError::LengthMismatch {
+                expected,
+                found,
+            }))
+        };
 
         let footer = forge_footer(&good, 5, 6, 42, 2);
         assert_eq!(footer.len(), 44);
@@ -1845,11 +1840,11 @@ mod tests {
             ((0, base), FormatError::MissingId),
             (
                 (7, tag_word(5, 6)),
-                FormatError::UnexpectedRecordKind { code: 5 },
+                FormatError::Segment(SegmentError::UnexpectedRecordKind { code: 5 }),
             ),
             (
                 (7, tag_word(6, 6)),
-                FormatError::UnexpectedRecordKind { code: 6 },
+                FormatError::Segment(SegmentError::UnexpectedRecordKind { code: 6 }),
             ),
             (
                 (7, tag_word(0, 6)),
@@ -1894,12 +1889,28 @@ mod tests {
         .is_ok());
 
         for (index_kind, trailer_kind, error) in [
-            (6, 6, FormatError::UnexpectedRecordKind { code: 6 }),
-            (1, 6, FormatError::UnexpectedRecordKind { code: 1 }),
+            (
+                6,
+                6,
+                FormatError::Segment(SegmentError::UnexpectedRecordKind { code: 6 }),
+            ),
+            (
+                1,
+                6,
+                FormatError::Segment(SegmentError::UnexpectedRecordKind { code: 1 }),
+            ),
             (0, 6, FormatError::UnknownRecordKind { code: 0 }),
             (7, 6, FormatError::UnknownRecordKind { code: 7 }),
-            (5, 5, FormatError::UnexpectedRecordKind { code: 5 }),
-            (5, 3, FormatError::UnexpectedRecordKind { code: 3 }),
+            (
+                5,
+                5,
+                FormatError::Segment(SegmentError::UnexpectedRecordKind { code: 5 }),
+            ),
+            (
+                5,
+                3,
+                FormatError::Segment(SegmentError::UnexpectedRecordKind { code: 3 }),
+            ),
             (5, 0, FormatError::UnknownRecordKind { code: 0 }),
             (5, 31, FormatError::UnknownRecordKind { code: 31 }),
         ] {
@@ -1928,17 +1939,17 @@ mod tests {
         longer.push(0);
         assert_eq!(
             decode(&longer, 48),
-            Err(FormatError::InconsistentLength {
+            Err(FormatError::Segment(SegmentError::LengthMismatch {
                 expected: 20,
                 found: 21,
-            })
+            }))
         );
         assert_eq!(
             decode(&forge(6, &[0; 8]), 48),
-            Err(FormatError::InconsistentLength {
+            Err(FormatError::Segment(SegmentError::LengthMismatch {
                 expected: 12,
                 found: 8,
-            })
+            }))
         );
         assert_eq!(
             decode(&forge(6, &[0; 13]), 48),
@@ -2014,18 +2025,17 @@ mod tests {
         assert_eq!(decode_file_header(&file, id), Ok(V1));
         assert_eq!(
             decode_file_header(&file, other),
-            Err(FormatError::WrongFileSequence {
+            Err(FormatError::Segment(SegmentError::WrongFileId {
                 expected: 311,
                 found: 310,
-            })
+            }))
         );
         for kind in [FileKind::Wal, FileKind::ValueLog, FileKind::PageTable] {
             assert_eq!(
                 decode_file_header(&header(kind), id),
-                Err(FormatError::WrongFileKind {
-                    expected: FileKind::Segment,
+                Err(FormatError::Segment(SegmentError::NotASegment {
                     found: kind,
-                })
+                }))
             );
         }
         assert_eq!(

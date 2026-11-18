@@ -1,122 +1,34 @@
 //! The manifest, `MANIFEST`: which files are live, how much of each is valid,
 //! the page-table checkpoint and the database format version.
 //!
-//! This module is the specification of the manifest in format version 1, on
-//! top of the shared rules in `docs/lignindb/format.md` (cited below as B1 to
-//! B11, R1 to R7, H1 to H5, V1 to V5 and U1 to U10).
-//!
-//! # File layout
+//! See section 3 of `docs/lignindb/segment-manifest.md`.
 //!
 //! ```text
-//! file header   20 bytes: kind 1 (manifest), sequence 0
-//! one record    in the default frame; its payload is the manifest body
+//! file header   20 bytes: kind 1 (manifest), sequence 0; its format version
+//!               is the database format version
+//! one record    in the default frame; its payload is the body
 //! ```
 //!
-//! Nothing follows the record. The manifest is never appended to: the store
-//! replaces the whole file (B11).
-//!
-//! - **The format version in the file header is the database format
-//!   version** (V3). The body has no version field of its own.
-//! - **The sequence field of the file header is 0.** The manifest is not
-//!   numbered and nothing counts its replacements. A reader rejects any other
-//!   value ([`FormatError::WrongFileSequence`]).
-//!
-//! # Body
-//!
 //! ```text
-//! offset  size  field
+//! offset  size  field of the body
 //!      0     4  last file id used for a log file, or 0
 //!      4     4  last file id used for a segment, or 0
 //!      8     4  last file id used for a value-log file, or 0
 //!     12     4  last file id used for a page-table checkpoint, or 0
 //!     16     4  page-table checkpoint: file id, or 0 for none
-//!     20     8  page-table checkpoint: valid length, u64
-//!     28     8  page-table checkpoint: commit version it covers, u64
-//!     36    16  one entry for each live file
+//!     20     8  page-table checkpoint: valid length
+//!     28     8  page-table checkpoint: commit version it covers
+//!     36    16  one entry for each live file, in order of kind and id
 //! ```
-//!
-//! The number of entries is not stored: it is the rest of the body divided by
-//! 16. A manifest names at most 2^20 files ([`MAX_LIVE_FILES`]).
-//!
-//! ## Last file ids
-//!
-//! For each numbered kind, the highest id this database directory has ever
-//! given to a file of that kind, or 0 if it never created one. A file id is
-//! never reused, even after its file is deleted, and this is what remembers
-//! the ids of deleted files. Every id in the manifest is at most the last id
-//! of its kind. A store gives a new file a higher id than the last one.
-//!
-//! ## Page-table checkpoint
-//!
-//! The manifest names one page-table checkpoint, `table/<n>.pt`, by its file
-//! id, the length of the file that is valid, and the commit version it
-//! covers. What "covers" means for replay, and the layout of the file, are
-//! the page table's to define.
-//!
-//! A database that has no checkpoint yet stores file id 0, valid length 0 and
-//! the "no version" pattern, all ones.
-//!
-//! ## Live files
 //!
 //! ```text
-//! offset  size  field
-//!      0     2  file kind, as in the file header: 2 log, 3 segment, 4 value log
+//! offset  size  field of an entry
+//!      0     2  file kind: 2 log, 3 segment, 4 value log
 //!      2     1  state: 1 open, 2 closed, 3 sealed
 //!      3     1  reserved, 0
-//!      4     4  file id (never 0)
-//!      8     8  valid length, u64
+//!      4     4  file id
+//!      8     8  valid length
 //! ```
-//!
-//! Entries are in strictly ascending order of kind code, then file id. So a
-//! file is named once, and a set of files has one encoding.
-//!
-//! **Valid length.** Every byte of the file below its valid length belongs to
-//! a whole record (R1). It is at least 20: a manifest names a file only once
-//! its header is written (H5).
-//!
-//! The valid length is a statement about another file, and this format knows
-//! no files. A manifest reader checks what the manifest alone can show: the
-//! length is at least 20; a segment's is 20 or at least 28, since its smallest
-//! record is 8 bytes; a sealed segment's is at least 48. Whether the file
-//! really holds whole records up to that length is checked by whoever reads
-//! the file. For a segment that is a walk of its blocks, or its footer read
-//! against the valid length; both fail on a length that splits a record.
-//!
-//! **State** says what the bytes past the valid length are.
-//!
-//! - **Open (1).** The session that wrote the manifest was still appending to
-//!   the file, so whole records may follow the valid length. Whether a later
-//!   reader uses them is the rule of the file's own format and of the store:
-//!   a log is replayed up to its last complete group.
-//! - **Closed (2).** The file ends at its valid length for this database.
-//!   Bytes past it are not part of the database, whatever they hold. A
-//!   checkpoint names the files it shares with the live database this way,
-//!   and recovery names the files of an earlier session this way.
-//! - **Sealed (3).** A segment only. As closed, and the valid bytes end with
-//!   the segment's footer index ([`crate::segment`]). The valid length is at
-//!   least 48: a file header, an empty index record and a trailer.
-//!
-//! A segment says nowhere in itself whether it has a footer, because a
-//! segment that a checkpoint shares may gain one later, past the checkpoint's
-//! valid length. Only the manifest can say.
-//!
-//! **The state is about reading, never about writing.** Open means the
-//! session that wrote the manifest had not finished the file. It does not
-//! make the file a place to append to. A later session appends to no file a
-//! manifest names, whatever its state, and creates its own files under ids
-//! above the last ids (B11). So the format puts no limit on how many files of
-//! a kind are open, or on which ids they have: a store may write several
-//! files of a kind at once.
-//!
-//! The page-table checkpoint is not in this list and has no state. It is
-//! written whole before the manifest names it.
-//!
-//! # What a reader checks
-//!
-//! In this order: the file header (H4); the kind is manifest; the sequence is
-//! 0; the record's length and checksum; that nothing follows the record; then
-//! the body, by the format version in the header. Every rule above is
-//! checked, so a manifest has exactly one encoding (B8).
 //!
 //! # Example
 //!
@@ -151,6 +63,8 @@
 //! # }
 //! ```
 
+use std::fmt;
+
 use crate::{
     error::FormatError,
     header::{read_record, write_record, FileHeader, FileKind, FormatVersion},
@@ -158,6 +72,67 @@ use crate::{
     segment::{SegmentTrailer, FRAME_LEN},
     wire::take,
 };
+
+/// Why a byte string is not a manifest, or why a manifest cannot be built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManifestError {
+    /// The file header is of another kind than manifest.
+    NotAManifest {
+        /// The kind in the file header.
+        found: FileKind,
+    },
+    /// The sequence in the file header is not 0.
+    NonZeroSequence {
+        /// The sequence in the file header.
+        found: u32,
+    },
+    /// The file is longer than its one record, or the body is not the fixed
+    /// fields followed by whole entries.
+    LengthMismatch {
+        /// The length the other bytes and fields require.
+        expected: u64,
+        /// The length found.
+        found: u64,
+    },
+    /// The file state code is zero or not defined in the manifest's format
+    /// version.
+    UnknownFileState {
+        /// The code found in the entry.
+        code: u8,
+    },
+    /// An entry breaks a rule for its file kind or state: a kind that is not
+    /// listed, a state the kind cannot have, a valid length too short, an id
+    /// above the last id of its kind, or a page-table checkpoint with only
+    /// some of its fields set.
+    InvalidEntry,
+    /// The live files are not in strictly ascending order of kind and id.
+    EntriesOutOfOrder,
+}
+
+impl fmt::Display for ManifestError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotAManifest { found } => write!(f, "a {found:?} file, not a manifest"),
+            Self::NonZeroSequence { found } => {
+                write!(f, "file header sequence is {found}, expected 0")
+            }
+            Self::LengthMismatch { expected, found } => {
+                write!(f, "length is {found}, expected {expected}")
+            }
+            Self::UnknownFileState { code } => write!(f, "unknown file state code {code}"),
+            Self::InvalidEntry => write!(f, "entry breaks a rule for its file kind or state"),
+            Self::EntriesOutOfOrder => {
+                write!(f, "live files are not in ascending order of kind and id")
+            }
+        }
+    }
+}
+
+impl From<ManifestError> for FormatError {
+    fn from(error: ManifestError) -> Self {
+        Self::Manifest(error)
+    }
+}
 
 /// The most live files one manifest may name.
 pub const MAX_LIVE_FILES: usize = 1 << 20;
@@ -197,7 +172,9 @@ impl FileState {
                 1 => Ok(Self::Open),
                 2 => Ok(Self::Closed),
                 3 => Ok(Self::Sealed),
-                code => Err(FormatError::UnknownFileState { code }),
+                code => Err(FormatError::Manifest(ManifestError::UnknownFileState {
+                    code,
+                })),
             },
         }
     }
@@ -223,7 +200,7 @@ impl LiveFile {
     /// The kind is a log, a segment or a value log. Only a segment can be
     /// sealed. The valid length is at least 20. A segment's is 20 or at
     /// least 28, and at least 48 if it is sealed. Anything else is
-    /// [`FormatError::InvalidManifestEntry`].
+    /// [`ManifestError::InvalidEntry`].
     pub const fn new(
         kind: FileKind,
         id: FileId,
@@ -241,7 +218,7 @@ impl LiveFile {
             _ => false,
         };
         if !possible {
-            return Err(FormatError::InvalidManifestEntry);
+            return Err(FormatError::Manifest(ManifestError::InvalidEntry));
         }
         Ok(Self {
             kind,
@@ -289,14 +266,14 @@ impl TableCheckpoint {
     /// valid, covering commit version `covers`.
     ///
     /// The valid length is at least 20, or the error is
-    /// [`FormatError::InvalidManifestEntry`].
+    /// [`ManifestError::InvalidEntry`].
     pub const fn new(
         file: FileId,
         valid_len: u64,
         covers: CommitVersion,
     ) -> Result<Self, FormatError> {
         if valid_len < MIN_VALID_LEN {
-            return Err(FormatError::InvalidManifestEntry);
+            return Err(FormatError::Manifest(ManifestError::InvalidEntry));
         }
         Ok(Self {
             file,
@@ -362,10 +339,10 @@ impl Manifest {
     /// A manifest at the format version this build writes.
     ///
     /// `files` may be in any order. Rejects a file named twice
-    /// ([`FormatError::ManifestEntriesOutOfOrder`]), more than
+    /// ([`ManifestError::EntriesOutOfOrder`]), more than
     /// [`MAX_LIVE_FILES`] files ([`FormatError::RecordTooLong`]), and a file or
     /// a checkpoint whose id is above the last id of its kind
-    /// ([`FormatError::InvalidManifestEntry`]).
+    /// ([`ManifestError::InvalidEntry`]).
     pub fn new(
         last_file_ids: LastFileIds,
         table_checkpoint: Option<TableCheckpoint>,
@@ -393,7 +370,7 @@ impl Manifest {
             });
         }
         if !files.is_sorted_by(|a, b| a.order() < b.order()) {
-            return Err(FormatError::ManifestEntriesOutOfOrder);
+            return Err(FormatError::Manifest(ManifestError::EntriesOutOfOrder));
         }
         let named = files
             .iter()
@@ -401,7 +378,7 @@ impl Manifest {
             .chain(table_checkpoint.map(|table| (FileKind::PageTable, table.file)));
         for (kind, id) in named {
             if last_file_ids.of(kind) < Some(id) {
-                return Err(FormatError::InvalidManifestEntry);
+                return Err(FormatError::Manifest(ManifestError::InvalidEntry));
             }
         }
         Ok(Self {
@@ -468,16 +445,14 @@ impl Manifest {
     pub fn decode(bytes: &[u8]) -> Result<Self, FormatError> {
         let header = FileHeader::decode(bytes)?;
         if header.kind() != FileKind::Manifest {
-            return Err(FormatError::WrongFileKind {
-                expected: FileKind::Manifest,
+            return Err(FormatError::Manifest(ManifestError::NotAManifest {
                 found: header.kind(),
-            });
+            }));
         }
         if header.sequence() != HEADER.sequence() {
-            return Err(FormatError::WrongFileSequence {
-                expected: HEADER.sequence(),
+            return Err(FormatError::Manifest(ManifestError::NonZeroSequence {
                 found: header.sequence(),
-            });
+            }));
         }
         let record = bytes.get(FileHeader::ENCODED_LEN..).unwrap_or_default();
         let (body, rest) = read_record(record, MAX_BODY_LEN).map_err(|error| match error {
@@ -488,10 +463,10 @@ impl Manifest {
             error => error,
         })?;
         if !rest.is_empty() {
-            return Err(FormatError::InconsistentLength {
+            return Err(FormatError::Manifest(ManifestError::LengthMismatch {
                 expected: (bytes.len() - rest.len()) as u64,
                 found: bytes.len() as u64,
-            });
+            }));
         }
         match header.version() {
             FormatVersion::V1 => Self::decode_v1(body),
@@ -501,10 +476,10 @@ impl Manifest {
     fn decode_v1(body: &[u8]) -> Result<Self, FormatError> {
         let version = FormatVersion::V1;
         let mut fields = body;
-        let short = FormatError::InconsistentLength {
+        let short = FormatError::Manifest(ManifestError::LengthMismatch {
             expected: FIXED_LEN as u64,
             found: body.len() as u64,
-        };
+        });
         let last_file_ids = LastFileIds {
             wal: FileId::decode(take(&mut fields).ok_or(short)?),
             segment: FileId::decode(take(&mut fields).ok_or(short)?),
@@ -520,14 +495,14 @@ impl Manifest {
             }
             (Some(_), None) => return Err(FormatError::MissingId),
             (None, None) if table_valid_len == 0 => None,
-            (None, _) => return Err(FormatError::InvalidManifestEntry),
+            (None, _) => return Err(FormatError::Manifest(ManifestError::InvalidEntry)),
         };
 
         let (entries, []) = fields.as_chunks::<ENTRY_LEN>() else {
-            return Err(FormatError::InconsistentLength {
+            return Err(FormatError::Manifest(ManifestError::LengthMismatch {
                 expected: (body.len() - fields.len() % ENTRY_LEN) as u64,
                 found: body.len() as u64,
-            });
+            }));
         };
         let mut files = Vec::with_capacity(entries.len());
         for entry in entries {
@@ -724,7 +699,10 @@ mod tests {
                 }
                 Err(error) => {
                     assert!(!(1..=3).contains(&code));
-                    assert_eq!(error, FormatError::UnknownFileState { code });
+                    assert_eq!(
+                        error,
+                        FormatError::Manifest(ManifestError::UnknownFileState { code })
+                    );
                 }
             }
         }
@@ -758,7 +736,7 @@ mod tests {
                         }
                         Err(error) => {
                             assert!(!valid, "{kind:?} {state:?} {valid_len}");
-                            assert_eq!(error, FormatError::InvalidManifestEntry);
+                            assert_eq!(error, FormatError::Manifest(ManifestError::InvalidEntry));
                         }
                     }
                 }
@@ -767,7 +745,7 @@ mod tests {
         for valid_len in [0, 19] {
             assert_eq!(
                 TableCheckpoint::new(id(1), valid_len, CommitVersion::EMPTY),
-                Err(FormatError::InvalidManifestEntry)
+                Err(FormatError::Manifest(ManifestError::InvalidEntry))
             );
         }
         let table = TableCheckpoint::new(id(1), 20, CommitVersion::EMPTY).expect("valid");
@@ -783,7 +761,7 @@ mod tests {
         let files = vec![closed(FileKind::Wal, 3), closed(FileKind::Wal, 3)];
         assert_eq!(
             Manifest::new(last, None, files),
-            Err(FormatError::ManifestEntriesOutOfOrder)
+            Err(FormatError::Manifest(ManifestError::EntriesOutOfOrder))
         );
         let files = vec![
             closed(FileKind::Segment, 3),
@@ -791,7 +769,7 @@ mod tests {
         ];
         assert_eq!(
             Manifest::new(last, None, files),
-            Err(FormatError::ManifestEntriesOutOfOrder)
+            Err(FormatError::Manifest(ManifestError::EntriesOutOfOrder))
         );
         let same_id =
             [FileKind::Wal, FileKind::Segment, FileKind::ValueLog].map(|kind| closed(kind, 3));
@@ -801,22 +779,22 @@ mod tests {
             assert!(Manifest::new(last, None, vec![closed(kind, 5)]).is_ok());
             assert_eq!(
                 Manifest::new(last, None, vec![closed(kind, 6)]),
-                Err(FormatError::InvalidManifestEntry)
+                Err(FormatError::Manifest(ManifestError::InvalidEntry))
             );
             assert_eq!(
                 Manifest::new(LastFileIds::default(), None, vec![closed(kind, 1)]),
-                Err(FormatError::InvalidManifestEntry)
+                Err(FormatError::Manifest(ManifestError::InvalidEntry))
             );
         }
         let table = |raw_id| TableCheckpoint::new(id(raw_id), 20, version(1)).ok();
         assert!(Manifest::new(last, table(5), Vec::new()).is_ok());
         assert_eq!(
             Manifest::new(last, table(6), Vec::new()),
-            Err(FormatError::InvalidManifestEntry)
+            Err(FormatError::Manifest(ManifestError::InvalidEntry))
         );
         assert_eq!(
             Manifest::new(LastFileIds::default(), table(1), Vec::new()),
-            Err(FormatError::InvalidManifestEntry)
+            Err(FormatError::Manifest(ManifestError::InvalidEntry))
         );
     }
 
@@ -884,10 +862,9 @@ mod tests {
             let header = FileHeader::new(kind, FormatVersion::V1, 1).expect("valid");
             assert_eq!(
                 Manifest::decode(&forge_file(header, &body)),
-                Err(FormatError::WrongFileKind {
-                    expected: FileKind::Manifest,
+                Err(FormatError::Manifest(ManifestError::NotAManifest {
                     found: kind,
-                })
+                }))
             );
         }
         for sequence in [1, 310, u32::MAX] {
@@ -895,10 +872,9 @@ mod tests {
                 FileHeader::new(FileKind::Manifest, FormatVersion::V1, sequence).expect("valid");
             assert_eq!(
                 Manifest::decode(&forge_file(header, &body)),
-                Err(FormatError::WrongFileSequence {
-                    expected: 0,
+                Err(FormatError::Manifest(ManifestError::NonZeroSequence {
                     found: sequence,
-                })
+                }))
             );
         }
 
@@ -940,10 +916,10 @@ mod tests {
             longer.extend_from_slice(&bytes[..extra]);
             assert_eq!(
                 Manifest::decode(&longer),
-                Err(FormatError::InconsistentLength {
+                Err(FormatError::Manifest(ManifestError::LengthMismatch {
                     expected: 144,
                     found: 144 + extra as u64,
-                })
+                }))
             );
         }
     }
@@ -965,10 +941,10 @@ mod tests {
             } else {
                 assert_eq!(
                     decoded,
-                    Err(FormatError::InconsistentLength {
+                    Err(FormatError::Manifest(ManifestError::LengthMismatch {
                         expected,
                         found: len as u64,
-                    })
+                    }))
                 );
             }
         }
@@ -977,7 +953,7 @@ mod tests {
     #[test]
     fn a_forged_entry_is_rejected() {
         assert_eq!(decode_entries(&ENTRIES), Ok(full()));
-        let invalid = Err(FormatError::InvalidManifestEntry);
+        let invalid = Err(FormatError::Manifest(ManifestError::InvalidEntry));
 
         for code in [0, 6, 300, u16::MAX] {
             assert_eq!(
@@ -993,7 +969,9 @@ mod tests {
         for code in [0, 4, u8::MAX] {
             assert_eq!(
                 decode_with(|entry| entry.1 = code),
-                Err(FormatError::UnknownFileState { code })
+                Err(FormatError::Manifest(ManifestError::UnknownFileState {
+                    code
+                }))
             );
         }
         for at in [0, 4] {
@@ -1036,28 +1014,28 @@ mod tests {
         assert_eq!(decode_entries(&above_last), invalid);
         assert_eq!(
             decode_with(|entry| entry.3 = 310),
-            Err(FormatError::ManifestEntriesOutOfOrder)
+            Err(FormatError::Manifest(ManifestError::EntriesOutOfOrder))
         );
         for (a, b) in [(0, 1), (1, 2), (2, 3), (3, 4), (0, 4)] {
             let mut entries = ENTRIES;
             entries.swap(a, b);
             assert_eq!(
                 decode_entries(&entries),
-                Err(FormatError::ManifestEntriesOutOfOrder)
+                Err(FormatError::Manifest(ManifestError::EntriesOutOfOrder))
             );
         }
         let mut entries = ENTRIES.to_vec();
         entries.push(ENTRIES[4]);
         assert_eq!(
             decode_entries(&entries),
-            Err(FormatError::ManifestEntriesOutOfOrder)
+            Err(FormatError::Manifest(ManifestError::EntriesOutOfOrder))
         );
     }
 
     #[test]
     fn forged_fixed_fields_are_rejected() {
         let decode = |last, table| Manifest::decode(&forge(&body(last, table, &ENTRIES)));
-        let invalid = Err(FormatError::InvalidManifestEntry);
+        let invalid = Err(FormatError::Manifest(ManifestError::InvalidEntry));
         assert_eq!(decode(LAST, TABLE), Ok(full()));
 
         for (at, last) in [(0, 44), (1, 309), (2, 11), (3, 121), (0, 0), (3, 0)] {
