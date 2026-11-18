@@ -40,6 +40,8 @@ pub mod apply;
 pub mod clear;
 /// Commit logic for writing tree nodes to storage.
 pub mod committer;
+/// Rewriting a tree with a 64-bit sum as its counterpart with a 128-bit sum.
+mod convert_to_big_sum_tree;
 /// Getting values by key from a Merk tree.
 pub mod get;
 /// Metadata (non-authenticated KV) access for Merk trees, cached in memory

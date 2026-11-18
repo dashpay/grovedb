@@ -95,6 +95,7 @@ fn v5_matches_v4_apart_from_its_gates() {
         .insert
         .provable_count_provable_big_sum_tree_creation = 0;
     operations.insert.big_sum_tree_twins_creation = 0;
+    operations.insert.convert_to_big_sum_tree = 0;
     operations.indexed_axis.big_sum_axis = 0;
     v5_as_v4.grovedb_versions.element.path_query_push =
         GROVE_V4.grovedb_versions.element.path_query_push;
@@ -987,6 +988,27 @@ fn big_sum_axis_is_gated_to_v5() {
             .operations
             .indexed_axis
             .big_sum_axis,
+        1
+    );
+}
+
+#[test]
+fn convert_to_big_sum_tree_is_gated_to_v5() {
+    // GROVE_V1..GROVE_V4 as released have no such operation, and know only
+    // one of the trees it produces.
+    for v in [&GROVE_V1, &GROVE_V2, &GROVE_V3, &GROVE_V4] {
+        assert_eq!(
+            v.grovedb_versions.operations.insert.convert_to_big_sum_tree, 0,
+            "v{}",
+            v.protocol_version
+        );
+    }
+    assert_eq!(
+        GROVE_V5
+            .grovedb_versions
+            .operations
+            .insert
+            .convert_to_big_sum_tree,
         1
     );
 }

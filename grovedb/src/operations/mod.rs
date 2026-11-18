@@ -42,4 +42,7 @@ pub mod replace_subtree_root;
 pub mod indexed_tree;
 
 #[cfg(feature = "minimal")]
+mod convert_to_big_sum_tree;
+
+#[cfg(feature = "minimal")]
 pub use get::{QueryItemOrSumReturnType, MAX_REFERENCE_HOPS};

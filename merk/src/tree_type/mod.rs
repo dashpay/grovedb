@@ -280,6 +280,41 @@ impl TreeType {
         )
     }
 
+    /// The tree type that holds the same children with the sum in 128 bits
+    /// instead of 64, or `None` where there is none: the tree keeps no
+    /// 64-bit sum, or it is a `ProvableCountSumTree`, which has no
+    /// counterpart with a 128-bit sum.
+    pub const fn big_sum_counterpart(&self) -> Option<TreeType> {
+        match self {
+            TreeType::SumTree => Some(TreeType::BigSumTree),
+            TreeType::CountSumTree => Some(TreeType::CountBigSumTree),
+            TreeType::ProvableSumTree => Some(TreeType::ProvableBigSumTree),
+            TreeType::ProvableCountProvableSumTree => {
+                Some(TreeType::ProvableCountProvableBigSumTree)
+            }
+            TreeType::ProvableSumIndexedTree => Some(TreeType::ProvableBigSumIndexedTree),
+            TreeType::ProvableCountProvableSumIndexedTree => {
+                Some(TreeType::ProvableCountProvableBigSumIndexedTree)
+            }
+            TreeType::NormalTree
+            | TreeType::BigSumTree
+            | TreeType::CountTree
+            | TreeType::ProvableCountTree
+            | TreeType::ProvableCountSumTree
+            | TreeType::CommitmentTree(_)
+            | TreeType::MmrTree
+            | TreeType::BulkAppendTree(_)
+            | TreeType::DenseAppendOnlyFixedSizeTree(_)
+            | TreeType::ProvableCountIndexedTree
+            | TreeType::PrivateDocumentStore(_)
+            | TreeType::ProvableCountProvableBigSumTree
+            | TreeType::CountBigSumTree
+            | TreeType::ProvableBigSumTree
+            | TreeType::ProvableBigSumIndexedTree
+            | TreeType::ProvableCountProvableBigSumIndexedTree => None,
+        }
+    }
+
     /// Returns whether this tree type is a count-indexed tree's primary
     /// Merk (single-axis count). Kept for callers that specifically need
     /// the count-only case; new code should prefer `is_indexed_primary`.
@@ -680,6 +715,57 @@ mod tests {
         assert!(!TreeType::ProvableSumTree.is_count_bearing());
         // ProvableCountProvableSumTree carries BOTH a count AND a sum.
         assert!(TreeType::ProvableCountProvableSumTree.is_count_bearing());
+    }
+
+    #[test]
+    fn big_sum_counterpart_pairs_each_64_bit_sum_tree_with_its_128_bit_one() {
+        let pairs = [
+            (TreeType::SumTree, TreeType::BigSumTree),
+            (TreeType::CountSumTree, TreeType::CountBigSumTree),
+            (TreeType::ProvableSumTree, TreeType::ProvableBigSumTree),
+            (
+                TreeType::ProvableCountProvableSumTree,
+                TreeType::ProvableCountProvableBigSumTree,
+            ),
+            (
+                TreeType::ProvableSumIndexedTree,
+                TreeType::ProvableBigSumIndexedTree,
+            ),
+            (
+                TreeType::ProvableCountProvableSumIndexedTree,
+                TreeType::ProvableCountProvableBigSumIndexedTree,
+            ),
+        ];
+        for (narrow, wide) in pairs {
+            assert_eq!(narrow.big_sum_counterpart(), Some(wide), "{narrow}");
+            assert_eq!(wide.big_sum_counterpart(), None, "{wide}");
+            // The counterpart differs by the width of the sum and nothing
+            // else: a node is 8 bytes longer, and an indexed tree stays one.
+            assert_eq!(
+                wide.inner_node_type().feature_len(),
+                narrow.inner_node_type().feature_len() + 8,
+                "{narrow}"
+            );
+            assert_eq!(
+                wide.is_indexed_primary(),
+                narrow.is_indexed_primary(),
+                "{narrow}"
+            );
+        }
+        for without in [
+            TreeType::NormalTree,
+            TreeType::CountTree,
+            TreeType::ProvableCountTree,
+            TreeType::ProvableCountSumTree,
+            TreeType::ProvableCountIndexedTree,
+            TreeType::CommitmentTree(0),
+            TreeType::MmrTree,
+            TreeType::BulkAppendTree(0),
+            TreeType::DenseAppendOnlyFixedSizeTree(0),
+            TreeType::PrivateDocumentStore(0),
+        ] {
+            assert_eq!(without.big_sum_counterpart(), None, "{without}");
+        }
     }
 
     #[test]

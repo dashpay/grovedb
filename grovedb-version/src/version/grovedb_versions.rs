@@ -941,6 +941,14 @@ pub struct GroveDBOperationsInsertVersions {
     ///   error. The released versions do not know the elements.
     /// - `1` (`GROVE_V5`+): the elements can be created.
     pub big_sum_tree_twins_creation: FeatureVersion,
+    /// Converting a tree that keeps a 64-bit sum into its counterpart with a
+    /// 128-bit sum, in place (`GroveDb::convert_to_big_sum_tree`). A
+    /// capability gate like the slots above:
+    ///
+    /// - `0` (`GROVE_V1`..`GROVE_V4`): refused with a version-mismatch
+    ///   error. The released versions have no such operation.
+    /// - `1` (`GROVE_V5`+): the tree can be converted.
+    pub convert_to_big_sum_tree: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

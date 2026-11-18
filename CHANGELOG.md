@@ -143,6 +143,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AxisKeys` (`BigSum`). `IndexAxis::try_from_tag(3)` now succeeds, and an
   encoded `AxisQuery` may carry tag 3 (decoding is not gated; serving is,
   as above).
+- `GroveDb::convert_to_big_sum_tree(path, key, transaction, grove_version)`:
+  converts a tree that keeps a 64-bit sum into its counterpart with a
+  128-bit sum, in place. `SumTree` becomes `BigSumTree`, `CountSumTree`
+  becomes `CountBigSumTree`, `ProvableSumTree` becomes `ProvableBigSumTree`,
+  `ProvableCountProvableSumTree` becomes `ProvableCountProvableBigSumTree`,
+  `ProvableSumIndexedTree` becomes `ProvableBigSumIndexedTree` and
+  `ProvableCountProvableSumIndexedTree` becomes
+  `ProvableCountProvableBigSumIndexedTree`. The tree keeps its path, its
+  children, its flags, its count, its sum and its wrapper, and the result
+  is the tree built with a 128-bit sum from the start: the same element
+  and, for the four trees without a ranking, the same root hash. Every node
+  of the tree is rewritten (a node and the link to it record sums at the
+  tree's width), and an indexed tree's sum rows are replaced by big sum
+  rows and its avg rows rewritten, so the call is `O(n)` in the tree's
+  children and holds the tree in memory until the write. Refused for any
+  other element (a `ProvableCountSumTree` has no counterpart), for a tree
+  that adds its sum to a parent keeping a 64-bit sum (convert the parent
+  first), and for an indexed tree holding a key longer than the 239 bytes
+  the big sum axis ranks. Only the named tree is converted: a tree inside
+  it keeps its type. Gated by the new
+  `operations.insert.convert_to_big_sum_tree` slot (0 in V1..V4, which
+  refuse the call; 1 in V5; **BREAKING** for code building
+  `GroveDBOperationsInsertVersions` by hand). With it:
+  `Merk::convert_to_big_sum_tree` (the rewrite of one Merk),
+  `TreeType::big_sum_counterpart` and `Element::big_sum_counterpart`.
 - `GROVE_V5` (`protocol_version` 5). `GROVE_V4` as 6.1.1 shipped it is what
   Dash Platform 5.0 (protocol version 14) runs, so behaviour changes from
   here on are gated in `GROVE_V5` and leave V1..V4 as they are. V5 is V4

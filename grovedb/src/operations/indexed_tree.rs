@@ -1036,9 +1036,113 @@ impl GroveDb {
             &mut cost,
             Element::get(&parent_merk, indexed_key, true, grove_version).map_err(Error::MerkError)
         );
+
+        // 3..5. Rebuild each axis's secondary from the primary.
+        let (reconstructed, primary_root_hash, second_hash) = cost_return_on_error!(
+            &mut cost,
+            self.rebuild_indexed_tree_secondaries(
+                path,
+                &primary_merk,
+                &indexed_element,
+                // The indexed write paths enforce the ceiling, but reconcile
+                // operates over EXISTING storage which may contain
+                // externally-injected oversize keys.
+                |key_len, max_item_key_len| {
+                    Error::CorruptedData(format!(
+                        "reconcile_indexed_tree_secondaries found a primary key of length {} \
+                         bytes which exceeds this tree's per-axis ceiling of {} bytes; \
+                         refusing to synthesize an oversize secondary key. The primary at \
+                         this path was written by a code path that bypassed the indexed \
+                         key-length check and is corrupt — investigate the source before \
+                         re-running reconcile",
+                        key_len, max_item_key_len
+                    ))
+                },
+                false,
+                transaction,
+                batch,
+                grove_version,
+            )
+        );
+        cost_return_on_error!(
+            &mut cost,
+            reconstructed
+                .insert_count_indexed_subtree(
+                    &mut parent_merk,
+                    indexed_key,
+                    primary_root_hash,
+                    second_hash,
+                    None,
+                    grove_version,
+                )
+                .map_err(Error::MerkError)
+        );
+
+        // 6. Hand off to shared propagation.
+        let mut merk_cache: std::collections::HashMap<
+            SubtreePath<B>,
+            Merk<PrefixedRocksDbTransactionContext>,
+        > = std::collections::HashMap::default();
+        merk_cache.insert(parent_path.clone(), parent_merk);
+        cost_return_on_error!(
+            &mut cost,
+            self.propagate_changes_with_transaction(
+                merk_cache,
+                parent_path,
+                transaction,
+                batch,
+                grove_version,
+            )
+        );
+
+        Ok(()).wrap_with_cost(cost)
+    }
+
+    /// Brings every secondary of the indexed tree at `path` in line with
+    /// `primary_merk`, and returns what its parent must then hold:
+    /// `indexed_element` with the resulting root state, the primary's root
+    /// hash, and the second hash the element is committed with (the lone
+    /// secondary's root hash, or the axes digest). Writing the element into
+    /// the parent and propagating is the caller's.
+    ///
+    /// `indexed_element` decides which axes exist and where each secondary
+    /// is opened, and `primary_merk`'s tree type decides the width its
+    /// entries' sums are read at. The two are the stored ones for a repair
+    /// ([`Self::reconcile_indexed_tree_secondaries`]). A caller that changes
+    /// the tree's variant passes the new element and the primary as it will
+    /// be written, and the rows of the previous variant that the new one
+    /// does not have are removed as rows that should not exist.
+    ///
+    /// `oversize_key_error` builds the error for a primary key too long to
+    /// be ranked on one of the element's axes, from the key's length and the
+    /// ceiling.
+    ///
+    /// Each row is removed or written by a Merk commit of its own, all into
+    /// `batch`. A storage batch keeps a put over a later delete of the same
+    /// key unless the two are marked as separate operations
+    /// ([`StorageBatch::next_operation`]), and removing one row rewrites the
+    /// nodes around it, which can be rows removed next. With
+    /// `separate_row_writes` each commit is marked, so every removal reaches
+    /// storage. A caller that removes a whole secondary's rows sets it. The
+    /// repair does not, and keeps the writes and the cost it reports in the
+    /// released versions.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn rebuild_indexed_tree_secondaries<'db, 'b, B: AsRef<[u8]>>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        primary_merk: &Merk<PrefixedRocksDbTransactionContext<'db>>,
+        indexed_element: &Element,
+        oversize_key_error: impl Fn(usize, usize) -> Error,
+        separate_row_writes: bool,
+        transaction: &'db Transaction,
+        batch: &'db StorageBatch,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(Element, grovedb_merk::CryptoHash, grovedb_merk::CryptoHash), Error> {
+        let mut cost = OperationCost::default();
+
         let axes: Vec<(IndexAxis, Option<Vec<u8>>)> = cost_return_on_error_no_add!(
             cost,
-            indexed_element_axes(&indexed_element).map_err(|e| Error::CorruptedData(format!(
+            indexed_element_axes(indexed_element).map_err(|e| Error::CorruptedData(format!(
                 "reconcile_indexed_tree_secondaries: {e}"
             )))
         );
@@ -1061,21 +1165,10 @@ impl GroveDb {
         while let Some((key, value_bytes)) = iter.next_kv().unwrap_add_cost(&mut cost) {
             // Reject oversized primary keys before they can drive
             // make_axis_secondary_key to synthesize a secondary key that
-            // violates Merk's < 256-byte invariant. The indexed write paths
-            // enforce this, but reconcile operates over EXISTING storage
-            // which may contain externally-injected oversize keys; fail
-            // closed rather than corrupting a secondary.
+            // violates Merk's < 256-byte invariant; fail closed rather than
+            // corrupting a secondary.
             if key.len() > max_item_key_len {
-                return Err(Error::CorruptedData(format!(
-                    "reconcile_indexed_tree_secondaries found a primary key of length {} \
-                     bytes which exceeds this tree's per-axis ceiling of {} bytes; refusing \
-                     to synthesize an oversize secondary key. The primary at this path was \
-                     written by a code path that bypassed the indexed key-length check and \
-                     is corrupt — investigate the source before re-running reconcile",
-                    key.len(),
-                    max_item_key_len
-                )))
-                .wrap_with_cost(cost);
+                return Err(oversize_key_error(key.len(), max_item_key_len)).wrap_with_cost(cost);
             }
             let element = cost_return_on_error_no_add!(
                 cost,
@@ -1181,6 +1274,9 @@ impl GroveDb {
             // Delete rows that should not exist.
             for key in &existing_keys {
                 if !desired.contains_key(key) {
+                    if separate_row_writes {
+                        batch.next_operation();
+                    }
                     cost_return_on_error!(
                         &mut cost,
                         Element::delete(
@@ -1241,6 +1337,9 @@ impl GroveDb {
                     true
                 };
                 if needs_write {
+                    if separate_row_writes {
+                        batch.next_operation();
+                    }
                     let entry = cost_return_on_error_no_add!(
                         cost,
                         Element::deserialize(desired_row_bytes.as_slice(), grove_version).map_err(
@@ -1323,38 +1422,7 @@ impl GroveDb {
                 "reconstructing the indexed element with repaired root state returned None"
             ))
         );
-        cost_return_on_error!(
-            &mut cost,
-            reconstructed
-                .insert_count_indexed_subtree(
-                    &mut parent_merk,
-                    indexed_key,
-                    primary_root_hash,
-                    second_hash,
-                    None,
-                    grove_version,
-                )
-                .map_err(Error::MerkError)
-        );
-
-        // 6. Hand off to shared propagation.
-        let mut merk_cache: std::collections::HashMap<
-            SubtreePath<B>,
-            Merk<PrefixedRocksDbTransactionContext>,
-        > = std::collections::HashMap::default();
-        merk_cache.insert(parent_path.clone(), parent_merk);
-        cost_return_on_error!(
-            &mut cost,
-            self.propagate_changes_with_transaction(
-                merk_cache,
-                parent_path,
-                transaction,
-                batch,
-                grove_version,
-            )
-        );
-
-        Ok(()).wrap_with_cost(cost)
+        Ok((reconstructed, primary_root_hash, second_hash)).wrap_with_cost(cost)
     }
 
     // -----------------------------------------------------------------

@@ -183,6 +183,50 @@ running sum. The `NotSummed` ElementType twin lives at slot 177 in the
 ProvableSumTree's base discriminant `17` and `0xb0 | 17 = 0xB1` would mask
 back to `Reference` under the legacy `& 0x0F` inverse).
 
+### Converting a tree to a 128-bit sum
+
+A tree's sum is as wide as its type: an `i64` total refuses the write that
+would take it past its range. `GroveDb::convert_to_big_sum_tree(path, key, ..)`
+turns a tree that keeps a 64-bit sum into its counterpart with a 128-bit
+sum, where it stands:
+
+| Tree | Becomes |
+|---|---|
+| `SumTree` | `BigSumTree` |
+| `CountSumTree` | `CountBigSumTree` |
+| `ProvableSumTree` | `ProvableBigSumTree` |
+| `ProvableCountProvableSumTree` | `ProvableCountProvableBigSumTree` |
+| `ProvableSumIndexedTree` | `ProvableBigSumIndexedTree` |
+| `ProvableCountProvableSumIndexedTree` | `ProvableCountProvableBigSumIndexedTree` |
+
+The tree keeps its path, its children, its flags, its count, its sum and
+the wrapper it is in. The result is the tree built wide from the start: the
+same element and, for the first four, the same root hash.
+
+It is not a relabeling of the element. Each node stores its own
+contribution, and each link the aggregate of the child under it, at the
+width of the tree's sum, so every node of the tree is read and written
+again, and the trees with the sum in their node hashes are rehashed from
+the leaves up. The cost is `O(n)` in the tree's children, the whole tree is
+in memory until the write, and the storage cost reports 16 added bytes per
+child (8 in the node, 8 in the link to it).
+
+Three things are refused:
+
+- An element that is not one of the six trees. `ProvableCountSumTree` has
+  no counterpart with a 128-bit sum.
+- A tree that adds its sum to a parent keeping a 64-bit sum. A tree with a
+  128-bit sum adds nothing to such a parent, so the parent's total would
+  stop following it. Convert the parent first, then its children. A child
+  wrapped in `NotSummed` or `NotCountedOrSummed` adds nothing either way
+  and is converted where it is.
+- An indexed tree with a key the big sum axis cannot rank (see
+  [Indexed trees with a 128-bit sum](count-indexed-tree.md#indexed-trees-with-a-128-bit-sum)).
+
+Only the tree named is converted. A sum tree inside it keeps its type and
+goes on adding its `i64` sum to the converted tree's `i128`. The call is
+available from `GROVE_V5`.
+
 ## Element Serialization
 
 Elements are serialized using **bincode** with big-endian byte order:
