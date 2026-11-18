@@ -11,10 +11,10 @@ use super::{
 };
 use crate::workload::{
     build::{self, batch, child, ends_block, path, storage_flags},
-    flags::{Histories, History, BYTES_AN_EPOCH_KEEPS, CLEAR_OF_AN_EPOCH},
-    op::{BatchOp, Op, Path},
+    flags::{Histories, History, CLEAR_OF_AN_EPOCH},
+    op::{BatchOp, HandoverBatch, Op, Path},
     rng::Rng,
-    Prepared, Stream,
+    Features, Prepared, Stream,
 };
 
 /// A root tree of this workload's own, beside Drive's `DataContractDocuments`.
@@ -35,7 +35,8 @@ const GROWTH: (u64, u64) = (48, 160);
 /// created in, its owner and the bytes each later epoch added. Drive
 /// applies every batch with two callbacks that keep those flags
 /// ([`Op::FlagsBatch`]), and this workload applies every state transition
-/// that way:
+/// that way, an update of a document as from protocol version 15 once the
+/// stream is halfway through:
 ///
 /// - **Create.** A document in the primary key tree and a reference to it
 ///   in an index by kind, both with the flags of the epoch and the owner.
@@ -52,6 +53,14 @@ const GROWTH: (u64, u64) = (48, 160);
 ///   Drive's callback stores the new owner where the update changes the
 ///   length of a document that later epochs have added to, or makes it
 ///   longer, and keeps the old one otherwise.
+/// - **Handover.** In the second half of the stream every update is
+///   applied as Drive applies one from protocol version 15
+///   ([`Op::FlagsHandoverBatch`]): the owner written is stored whatever
+///   the update does to the length. One transfer in three goes to a
+///   sponsor, an identity that pays for documents of others, and what the
+///   sponsor holds goes to an owner. On the grove versions that account an
+///   update as a replacement, either is a full handover: the document is
+///   freed whole to the one and charged whole to the other.
 /// - **Delete.** The document and its reference are deleted, and the index
 ///   trees of a kind with no document left with them. The cost names every
 ///   freed byte by owner and epoch.
@@ -71,16 +80,19 @@ pub struct StorageFees {
     pub transitions_per_block: u32,
     /// How many blocks make an epoch.
     pub blocks_per_epoch: u32,
+    /// What the target grove version can store.
+    pub features: Features,
 }
 
 impl Default for StorageFees {
     fn default() -> Self {
         Self {
-            transitions: 180,
+            transitions: 240,
             owners: 5,
             kinds: 12,
             transitions_per_block: 5,
             blocks_per_epoch: 2,
+            features: Features::ALL,
         }
     }
 }
@@ -141,6 +153,11 @@ struct State {
     /// What the flags of every document hold.
     histories: Histories,
     epoch: u16,
+    /// Whether a batch that updates a document hands it over: the
+    /// protocol of the second half of the stream.
+    hands_over: bool,
+    /// The owners a handover to or from which is a full one.
+    sponsors: Vec<[u8; 32]>,
 }
 
 impl StorageFees {
@@ -166,11 +183,24 @@ impl StorageFees {
             indexed: BTreeMap::new(),
             histories: Histories::new(),
             epoch: 0,
+            hands_over: false,
+            sponsors: Vec::new(),
         };
+        if self.features.full_handovers {
+            state.sponsors.push(identity_id(seed, state.sponsor()));
+        }
         let mut block = 0u64;
-        for done in 1..=self.transitions {
-            let transition = ROUND[((done - 1) % ROUND.len() as u64) as usize];
-            let op = Op::FlagsBatch(state.transition(transition));
+        for (done, transition) in (1..=self.transitions).zip(ROUND.iter().cycle()) {
+            state.hands_over = done > self.transitions / 2;
+            let (batch, updates) = state.transition(*transition);
+            let op = if updates && state.hands_over {
+                Op::FlagsHandoverBatch(HandoverBatch {
+                    ops: batch,
+                    full_handover_owners: state.sponsors.clone(),
+                })
+            } else {
+                Op::FlagsBatch(batch)
+            };
             state.histories.record(&op);
             ops.push(op);
             if ends_block(
@@ -182,7 +212,7 @@ impl StorageFees {
                 state.reads(&mut ops);
                 block += 1;
                 let epoch = block / u64::from(self.blocks_per_epoch);
-                state.epoch = epoch.min(u64::from(u16::MAX)) as u16;
+                state.epoch = u16::try_from(epoch).unwrap_or(u16::MAX);
             }
         }
         Prepared::stream(ops)
@@ -211,51 +241,55 @@ impl State {
         (!ids.is_empty()).then(|| ids[self.rng.index(ids.len())])
     }
 
-    /// An owner other than `owner`.
-    fn another_owner(&mut self, owner: u64) -> u64 {
-        (owner + self.rng.between(1, self.owners - 1)) % self.owners
+    /// The identity that pays for documents of others once documents are
+    /// handed over: the one after the owners.
+    fn sponsor(&self) -> u64 {
+        self.owners
     }
 
-    fn transition(&mut self, transition: Transition) -> Vec<BatchOp> {
+    /// An owner other than `owner`. Once documents are handed over, one in
+    /// three goes to the sponsor, and the sponsor's go to an owner.
+    fn another_owner(&mut self, owner: u64) -> u64 {
+        if owner == self.sponsor() {
+            return self.rng.below(self.owners);
+        }
+        if self.hands_over && self.rng.chance(1, 3) {
+            return self.sponsor();
+        }
+        let step = self.rng.between(1, self.owners - 1);
+        ((u128::from(owner) + u128::from(step)) % u128::from(self.owners)) as u64
+    }
+
+    /// The operations of a state transition, and whether it updates a
+    /// document.
+    fn transition(&mut self, transition: Transition) -> (Vec<BatchOp>, bool) {
         let epoch = self.epoch;
         // A document the current epoch is later than the first of, and no
         // earlier than the latest in its flags.
         let later = move |history: &History| {
             epoch > history.base_epoch && history.later.keys().all(|later| *later <= epoch)
         };
-        let keeps = BYTES_AN_EPOCH_KEEPS as usize;
-        // The bytes an update may free to give back all the latest epoch
-        // can and bytes of the one before it, or of the first.
-        let across = |history: &History| {
-            let low = history.bytes_of_latest(1) + CLEAR_OF_AN_EPOCH;
-            let high = if history.later.len() > 1 {
-                history.bytes_of_latest(2).saturating_sub(CLEAR_OF_AN_EPOCH)
-            } else {
-                history.len.saturating_sub(SHORTEST)
-            };
-            (!history.later.is_empty() && low <= high).then_some((low, high))
-        };
+        // The bytes an update may take off to free all the latest epoch
+        // can give back and bytes of the one before it, or of the first.
+        let across = |history: &History| history.freeable_across(1, SHORTEST);
         let chosen = match transition {
             Transition::Create => None,
-            Transition::Grow { transfer } => self
-                .pick(later)
-                .map(|id| (id, transfer, self.history(&id).len + self.growth())),
+            Transition::Grow { transfer } => self.pick(later).map(|id| {
+                let growth = self.rng.between(GROWTH.0, GROWTH.1) as usize;
+                (id, transfer, self.history(&id).len + growth)
+            }),
             Transition::SameLength { transfer } => self
                 .pick(later)
                 .map(|id| (id, transfer, self.history(&id).len)),
             // Shorter by less than the latest epoch added: that epoch
             // alone gets bytes back.
             Transition::ShrinkWithinEpoch => self
-                .pick(|history| {
-                    later(history) && history.bytes_of_latest(1) >= 2 * CLEAR_OF_AN_EPOCH + keeps
-                })
+                .pick(|history| later(history) && history.freeable_within_latest().is_some())
                 .map(|id| {
                     let history = self.history(&id);
-                    let (len, high) = (
-                        history.len,
-                        history.bytes_of_latest(1) - keeps - CLEAR_OF_AN_EPOCH,
-                    );
-                    let freed = self.rng.between(CLEAR_OF_AN_EPOCH as u64, high as u64);
+                    let len = history.len;
+                    let (low, high) = history.freeable_within_latest().expect("picked for it");
+                    let freed = self.rng.between(low as u64, high as u64);
                     (id, false, len - freed as usize)
                 }),
             // Shorter by more than the latest epoch added: that epoch gives
@@ -289,20 +323,17 @@ impl State {
                 let id = self
                     .pick(|history| !history.later.is_empty())
                     .or_else(|| self.pick(|_| true));
-                return match id {
+                let ops = match id {
                     Some(id) => self.delete(&id),
                     None => self.create(),
                 };
+                return (ops, false);
             }
         };
         match chosen {
-            Some((id, transfer, len)) => self.replace(&id, transfer, len),
-            None => self.create(),
+            Some((id, transfer, len)) => (self.replace(&id, transfer, len), true),
+            None => (self.create(), false),
         }
-    }
-
-    fn growth(&mut self) -> usize {
-        self.rng.between(GROWTH.0, GROWTH.1) as usize
     }
 
     /// A document whose element is `len` bytes long without its flags.
@@ -313,6 +344,11 @@ impl State {
 
     fn value_path(&self, kind: &[u8]) -> Path {
         child(&self.index_path, kind)
+    }
+
+    /// The tree of references to the documents of `kind`.
+    fn references_path(&self, kind: &[u8]) -> Path {
+        child(&self.value_path(kind), PRIMARY_KEY)
     }
 
     fn create(&mut self) -> Vec<BatchOp> {
@@ -353,9 +389,9 @@ impl State {
             stored
         };
         let element = self.document(len, owner);
+        let references = self.references_path(&self.documents[id].kind);
         let document = self.documents.get_mut(id).expect("a stored document");
         document.owner = owner;
-        let references = child(&child(&self.index_path, &document.kind), PRIMARY_KEY);
         vec![
             batch::replace(&self.primary_path, id, element),
             BatchOp::RefreshReference {
@@ -375,7 +411,7 @@ impl State {
         let value_path = self.value_path(&document.kind);
         let mut ops = vec![
             batch::delete(&self.primary_path, id),
-            batch::delete(&child(&value_path, PRIMARY_KEY), id),
+            batch::delete(&self.references_path(&document.kind), id),
         ];
         let indexed = self
             .indexed
@@ -409,9 +445,8 @@ impl State {
         // The documents of one kind, through the index.
         let kind = self.indexed.iter().find(|(_, indexed)| **indexed > 0);
         if let Some((kind, _)) = kind {
-            let references = child(&self.value_path(kind), PRIMARY_KEY);
             ops.push(build::proven(PathQuery::new_unsized(
-                references,
+                self.references_path(kind),
                 Query::new_range_full(),
             )));
         }

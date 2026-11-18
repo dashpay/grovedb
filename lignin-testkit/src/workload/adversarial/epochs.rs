@@ -7,8 +7,8 @@ use grovedb::{
 use super::DOMAIN_EPOCHS;
 use crate::workload::{
     build::{self, batch, child, path, storage_flags},
-    flags::{Histories, History, BYTES_AN_EPOCH_KEEPS, CLEAR_OF_AN_EPOCH},
-    op::{BatchOp, Op, PartialBatch, Path, Write},
+    flags::{Histories, History, CLEAR_OF_AN_EPOCH},
+    op::{BatchOp, HandoverBatch, Op, PartialBatch, Path, Write},
     rng::Rng,
     Features, Prepared, Stream,
 };
@@ -25,9 +25,10 @@ pub const MAX_LADDER_RUNGS: u32 = 2_000;
 /// Elements written across many epochs, through every case the callbacks
 /// Drive passes with a batch tell apart.
 ///
-/// [`Op::FlagsBatch`], [`Op::FlagsPartialBatch`] and the two deletes that
-/// take the callback for freed bytes are applied to elements whose flags
-/// are in every state the callbacks can leave them in:
+/// [`Op::FlagsBatch`], [`Op::FlagsHandoverBatch`], [`Op::FlagsPartialBatch`]
+/// and the two deletes that take the callback for freed bytes are applied
+/// to elements whose flags are in every state the callbacks can leave them
+/// in:
 ///
 /// - **Ladders.** One element is made longer in each of many epochs, twice
 ///   in some, by amounts on both sides of the 128 bytes from which the
@@ -40,6 +41,11 @@ pub const MAX_LADDER_RUNGS: u32 = 2_000;
 ///   the element longer or makes one of several epochs shorter, and keeps
 ///   the stored flags when it keeps the length or shortens an element of
 ///   one epoch.
+/// - **Handovers.** The same updates in a batch that hands elements over,
+///   which stores the owner written in every case, and, on the grove
+///   versions that account an update as a replacement, between a sponsor
+///   and an owner: the element a sponsor paid for over three epochs is
+///   freed whole to the sponsor and charged whole to its owner.
 /// - **No owner.** The same history on flags that name none: the freed
 ///   bytes are named by the identity of 32 zero bytes.
 /// - **A reference**, which grows by one byte, and whose flags record it.
@@ -50,7 +56,9 @@ pub const MAX_LADDER_RUNGS: u32 = 2_000;
 ///   shrinking across epochs, a delete, and the update that keeps the
 ///   length, which a partial batch stores with the flags written: under the
 ///   same owner, under another, and, on the same grove versions, over flags
-///   of several epochs, whose history goes.
+///   of several epochs, whose history goes. Also the one update that
+///   changes the length under another owner and is accepted, which
+///   shortens an element of one epoch, and flags written over none.
 /// - **Direct deletes** of an element of several epochs, of a tree with
 ///   what it holds, and up the tree through trees of two owners.
 ///
@@ -110,6 +118,7 @@ impl FlagEpochs {
         };
         script.ladders(self.rungs);
         script.owners();
+        script.handovers(self.features.full_handovers);
         script.no_owner();
         script.reference();
         script.flags_come_and_go(self.features.flag_length_changes);
@@ -194,32 +203,16 @@ impl Script {
         let history = self.history(key);
         let (len, held) = (history.len, history.later.len());
         let (low, high) = (epochs..=held)
-            .map(|epochs| {
-                let high = if epochs < held {
-                    history.bytes_of_latest(epochs + 1) - CLEAR_OF_AN_EPOCH
-                } else {
-                    len - FIRST_LEN / 2
-                };
-                (history.bytes_of_latest(epochs) + CLEAR_OF_AN_EPOCH, high)
-            })
-            .find(|(low, high)| low <= high)
-            .expect("the first epoch holds more than the clearance");
+            .find_map(|epochs| history.freeable_across(epochs, FIRST_LEN / 2))
+            .expect("the first epoch holds the bytes the element was stored with");
         len - self.rng.between(low as u64, high as u64) as usize
     }
 
-    /// Whether the latest epoch in the flags holds enough bytes to give
-    /// some back and keep some.
-    fn has_room_within(&self, key: &[u8]) -> bool {
-        self.history(key).bytes_of_latest(1)
-            >= 2 * CLEAR_OF_AN_EPOCH + BYTES_AN_EPOCH_KEEPS as usize
-    }
-
-    /// A length that frees bytes of the latest epoch in the flags only.
-    fn within(&mut self, key: &[u8]) -> usize {
-        let high = self.history(key).bytes_of_latest(1)
-            - BYTES_AN_EPOCH_KEEPS as usize
-            - CLEAR_OF_AN_EPOCH;
-        self.len(key) - self.rng.between(CLEAR_OF_AN_EPOCH as u64, high as u64) as usize
+    /// A length that frees bytes of the latest epoch in the flags only,
+    /// where that epoch holds enough to give some back and keep some.
+    fn within(&mut self, key: &[u8]) -> Option<usize> {
+        let (low, high) = self.history(key).freeable_within_latest()?;
+        Some(self.len(key) - self.rng.between(low as u64, high as u64) as usize)
     }
 
     /// Makes the element at `key` longer in each of `epochs` epochs.
@@ -256,10 +249,10 @@ impl Script {
         let mut step = 0;
         while !self.history(ladder).later.is_empty() {
             let held = self.history(ladder).later.len();
-            let len = if step % 2 == 0 && self.has_room_within(ladder) {
-                self.within(ladder)
-            } else {
-                self.across(ladder, (1 + step / 2 % 3).min(held))
+            let within = (step % 2 == 0).then(|| self.within(ladder)).flatten();
+            let len = match within {
+                Some(len) => len,
+                None => self.across(ladder, (1 + step / 2 % 3).min(held)),
             };
             self.rewrite(ladder, len, Owner::First);
             self.epoch += 1;
@@ -293,7 +286,7 @@ impl Script {
         self.rewrite(deed, len, Owner::Second);
         self.epoch += 1;
         // Shorter, of several epochs: the owner written is stored again.
-        let len = self.within(deed);
+        let len = self.within(deed).expect("an epoch added a hundred bytes");
         self.rewrite(deed, len, Owner::First);
         self.epoch += 1;
         // The same length: the stored flags stay.
@@ -316,6 +309,53 @@ impl Script {
         let len = self.longer(young);
         self.rewrite(young, len, Owner::Second);
         self.epoch += 1;
+        self.commit();
+    }
+
+    /// The element at `key` written again by a batch that hands elements
+    /// over, fully where one of the two owners is among `sponsors`.
+    fn hand_over(&mut self, key: &[u8], len: usize, owner: Owner, sponsors: &[[u8; 32]]) {
+        let element = self.item(len, owner);
+        self.push(Op::FlagsHandoverBatch(HandoverBatch {
+            ops: vec![batch::replace(&self.root, key, element)],
+            full_handover_owners: sponsors.to_vec(),
+        }));
+        self.epoch += 1;
+    }
+
+    fn handovers(&mut self, full_handovers: bool) {
+        let [moved, paid]: [&[u8]; 2] = [b"h-moved", b"h-paid"];
+        // The owner written is stored where a batch keeps the stored one:
+        // with the same length, and shorter with flags of one epoch.
+        self.store(moved, Owner::First);
+        let len = self.len(moved);
+        self.hand_over(moved, len, Owner::Second, &[]);
+        self.hand_over(moved, len - CLEAR_OF_AN_EPOCH, Owner::First, &[]);
+        // And where a batch stores it as well: longer, under another owner
+        // and under the same, and shorter with flags of several epochs.
+        let len = self.longer(moved);
+        self.hand_over(moved, len, Owner::Second, &[]);
+        let len = self.longer(moved);
+        self.hand_over(moved, len, Owner::Second, &[]);
+        let len = self.within(moved).expect("an epoch added a hundred bytes");
+        self.hand_over(moved, len, Owner::First, &[]);
+        self.commit();
+
+        if !full_handovers {
+            return;
+        }
+        // What a sponsor paid for, over three epochs, goes to its owner:
+        // the sponsor gets every byte back, epoch by epoch, and the owner
+        // is charged for the element as written. Then longer under the
+        // same owner, which is no handover, and back to the sponsor.
+        let sponsors = [self.owners[1]];
+        self.store(paid, Owner::Second);
+        self.climb(paid, 2, Owner::Second, false);
+        let len = self.longer(paid);
+        self.hand_over(paid, len, Owner::First, &sponsors);
+        let len = self.longer(paid);
+        self.hand_over(paid, len, Owner::First, &sponsors);
+        self.hand_over(paid, len, Owner::Second, &sponsors);
         self.commit();
     }
 
@@ -386,7 +426,8 @@ impl Script {
     }
 
     fn partial_batches(&mut self, flag_length_changes: bool) {
-        let [grown, kept, past]: [&[u8]; 3] = [b"p-grown", b"p-kept", b"p-past"];
+        let [grown, kept, past, unflagged]: [&[u8]; 4] =
+            [b"p-grown", b"p-kept", b"p-past", b"p-bare"];
         let element = self.item(FIRST_LEN, Owner::First);
         self.partial(
             vec![batch::insert_only(&self.root, grown, element)],
@@ -416,6 +457,20 @@ impl Script {
         self.rewrite_in_segments(kept, len, Owner::Second);
         self.epoch += 1;
         self.rewrite_in_segments(kept, len, Owner::First);
+        // Longer in the epoch the flags now name: they stay as written.
+        let len = self.longer(kept);
+        self.rewrite_in_segments(kept, len, Owner::First);
+        self.epoch += 1;
+        // Shorter under another owner, of one epoch: the stored flags stay.
+        self.rewrite_in_segments(kept, len - CLEAR_OF_AN_EPOCH, Owner::Second);
+        self.epoch += 1;
+        // Flags over none: they are stored as written.
+        let element = build::item_of_len(&mut self.rng, FIRST_LEN, None);
+        self.partial(
+            vec![batch::insert_only(&self.root, unflagged, element)],
+            Vec::new(),
+        );
+        self.rewrite_in_segments(unflagged, 2 * FIRST_LEN, Owner::First);
         self.epoch += 1;
         if flag_length_changes {
             // Over flags of several epochs, whose history goes.

@@ -331,7 +331,8 @@ fn is_transition(op: &Op) -> bool {
         | Op::Batch(_)
         | Op::PartialBatch(_)
         | Op::FlagsBatch(_)
-        | Op::FlagsPartialBatch(_) => true,
+        | Op::FlagsPartialBatch(_)
+        | Op::FlagsHandoverBatch(_) => true,
         Op::Read(_) | Op::Commit | Op::FlushPendingDrops | Op::Transaction(_) => false,
     }
 }
@@ -347,9 +348,11 @@ fn logical_bytes(op: &Op, grove_version: &GroveVersion) -> u64 {
             | Write::InsertIfChanged { key, element, .. }
             | Write::IndexedInsert { key, element, .. },
         ) => entry_bytes(key, element, grove_version),
-        Op::Batch(_) | Op::PartialBatch(_) | Op::FlagsBatch(_) | Op::FlagsPartialBatch(_) => {
-            batch_bytes(op.batch_ops(), grove_version)
-        }
+        Op::Batch(_)
+        | Op::PartialBatch(_)
+        | Op::FlagsBatch(_)
+        | Op::FlagsPartialBatch(_)
+        | Op::FlagsHandoverBatch(_) => batch_bytes(op.batch_ops(), grove_version),
         Op::Write(_) | Op::Read(_) | Op::Commit | Op::FlushPendingDrops | Op::Transaction(_) => 0,
     }
 }
@@ -1340,8 +1343,13 @@ mod tests {
             add_on: vec![put, delete],
             pause_height: None,
         };
+        let handover = crate::workload::HandoverBatch {
+            ops: ops.clone(),
+            full_handover_owners: vec![[7; 32]],
+        };
         let pairs = [
-            (Op::FlagsBatch(ops.clone()), Op::Batch(ops), entry),
+            (Op::FlagsBatch(ops.clone()), Op::Batch(ops.clone()), entry),
+            (Op::FlagsHandoverBatch(handover), Op::Batch(ops), entry),
             (
                 Op::FlagsPartialBatch(partial.clone()),
                 Op::PartialBatch(partial),

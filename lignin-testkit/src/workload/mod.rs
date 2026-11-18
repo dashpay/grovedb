@@ -23,8 +23,9 @@
 //!   every element and tree type, the append-only trees included, flat
 //!   drops, moves, partial batches and pages over every kind of tree,
 //!   indexed trees written entry by entry, every typed read of the
-//!   append-only trees, trees served in chunks, and storage flags in every
-//!   state Drive's callbacks leave them in.
+//!   append-only trees, trees served in chunks, storage flags in every
+//!   state Drive's callbacks leave them in, and trees deleted with what
+//!   they hold by the transaction that filled or rewrote them.
 //!
 //! Between them they produce the GroveDB operations that reach storage in a
 //! way of their own ([`coverage::Operation`]): patch, move, partial batches,
@@ -66,8 +67,8 @@ pub use self::{
     apply::{apply, Outcome, Transactions},
     coverage::{Coverage, Operation},
     op::{
-        AppendEntry, BatchOp, ChunkIds, Fetch, IndexedTree, Op, PartialBatch, Path, Prove, Query,
-        QueryItem, Read, StreamDigest, TransactionOp, TreeRead, Write,
+        AppendEntry, BatchOp, ChunkIds, Fetch, HandoverBatch, IndexedTree, Op, PartialBatch, Path,
+        Prove, Query, QueryItem, Read, StreamDigest, TransactionOp, TreeRead, Write,
     },
     rng::Rng,
 };
@@ -126,6 +127,9 @@ pub struct Features {
     /// Grove versions 1 to 3 charge such an update for the length of the
     /// stored flags, and the commit fails with a storage cost mismatch.
     pub flag_length_changes: bool,
+    /// An update accounted as a replacement: what the callback of an
+    /// [`Op::FlagsHandoverBatch`] answers to a full handover.
+    pub full_handovers: bool,
 }
 
 impl Features {
@@ -145,6 +149,7 @@ impl Features {
         instance_offsets: true,
         private_document_ranges: true,
         flag_length_changes: true,
+        full_handovers: true,
     };
 
     /// What `grove_version` stores.
@@ -181,6 +186,7 @@ impl Features {
             private_document_ranges: private_document_store.get_range >= 1
                 && private_document_store.range_proof >= 1,
             flag_length_changes: grove_version.merk_versions.tree.just_in_time_value_update >= 1,
+            full_handovers: grove_version.merk_versions.tree.just_in_time_value_update >= 2,
         }
     }
 
@@ -339,6 +345,8 @@ pub enum Workload {
     StorageFees(drive::StorageFees),
     /// [`adversarial::FlagEpochs`].
     FlagEpochs(adversarial::FlagEpochs),
+    /// [`adversarial::TreeDeletes`].
+    TreeDeletes(adversarial::TreeDeletes),
 }
 
 impl Workload {
@@ -417,11 +425,15 @@ impl Workload {
                 ..Default::default()
             }),
             Workload::BlockExecution(drive::BlockExecution::default()),
-            Workload::StorageFees(drive::StorageFees::default()),
+            Workload::StorageFees(drive::StorageFees {
+                features,
+                ..Default::default()
+            }),
             Workload::FlagEpochs(adversarial::FlagEpochs {
                 features,
                 ..Default::default()
             }),
+            Workload::TreeDeletes(adversarial::TreeDeletes::default()),
         ]
     }
 
@@ -455,6 +467,7 @@ impl Workload {
             Workload::BlockExecution(_) => "block-execution",
             Workload::StorageFees(_) => "storage-fees",
             Workload::FlagEpochs(_) => "flag-epochs",
+            Workload::TreeDeletes(_) => "tree-deletes",
         }
     }
 
@@ -488,6 +501,7 @@ impl Workload {
             Workload::BlockExecution(workload) => workload.stream(seed),
             Workload::StorageFees(workload) => workload.stream(seed),
             Workload::FlagEpochs(workload) => workload.stream(seed),
+            Workload::TreeDeletes(workload) => workload.stream(seed),
         }
     }
 }

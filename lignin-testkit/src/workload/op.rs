@@ -43,7 +43,7 @@ pub enum Op {
     /// transaction held beside it.
     Transaction(TransactionOp),
     /// One `apply_batch_with_element_flags_update` call with the two
-    /// callbacks Drive applies every batch with: how a state transition is
+    /// callbacks Drive applies a batch with: how a state transition is
     /// applied on Platform. Where the batch replaces an element, the first
     /// callback merges the storage flags stored with the ones written, so
     /// the flags keep the epoch the element was created in and the bytes
@@ -53,10 +53,35 @@ pub enum Op {
     FlagsBatch(Vec<BatchOp>),
     /// One `apply_partial_batch_with_element_flags_update` call with the
     /// two callbacks Drive passes there. They differ from those of an
-    /// [`Op::FlagsBatch`] in two ways: an update that changes the size of
-    /// an element is refused when it names another owner, and one that
-    /// keeps the size stores the flags as written.
+    /// [`Op::FlagsBatch`] in two ways. An update that changes the size of
+    /// an element is refused when it names another owner, unless it
+    /// shortens an element whose flags hold one epoch, which keeps its
+    /// flags. And an update that keeps the size stores the flags as
+    /// written.
     FlagsPartialBatch(PartialBatch),
+    /// An [`Op::FlagsBatch`] with the first callback Drive passes, from
+    /// protocol version 15, with a batch that updates a document: one that
+    /// may hand the document to another owner.
+    FlagsHandoverBatch(HandoverBatch),
+}
+
+/// A batch that may hand elements over to other owners.
+///
+/// Drive merges the flags as in an [`Op::FlagsBatch`] and then stores the
+/// owner the flags written name, whatever the update does to the size: a
+/// transfer or a purchase moves the stored bytes to the new owner. Where the
+/// stored owner or the written one is among `full_handover_owners`, and the
+/// two differ, the update is accounted as a replacement instead: the stored
+/// element is freed whole, to its owner and by its epochs, and the element
+/// written is stored with its flags as written and charged whole. That is
+/// how a gas sponsor and the owner of a document it paid for are kept
+/// apart. GroveDB accepts that answer from grove version 5.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HandoverBatch {
+    /// The operations of the batch.
+    pub ops: Vec<BatchOp>,
+    /// The owners a handover to or from which is a full one.
+    pub full_handover_owners: Vec<[u8; 32]>,
 }
 
 /// A step that is neither a write nor a read of the block's state: the open
@@ -849,6 +874,17 @@ impl Op {
                 out.push(8);
                 batch.encode(out);
             }
+            Op::FlagsHandoverBatch(batch) => {
+                out.push(9);
+                put_len(out, batch.ops.len());
+                for op in &batch.ops {
+                    op.encode(out);
+                }
+                put_len(out, batch.full_handover_owners.len());
+                for owner in &batch.full_handover_owners {
+                    out.extend_from_slice(owner);
+                }
+            }
         }
     }
 
@@ -861,9 +897,11 @@ impl Op {
                 | Write::InsertIfChanged { element, .. }
                 | Write::IndexedInsert { element, .. },
             ) => vec![element],
-            Op::Batch(_) | Op::PartialBatch(_) | Op::FlagsBatch(_) | Op::FlagsPartialBatch(_) => {
-                self.batch_ops().filter_map(BatchOp::element).collect()
-            }
+            Op::Batch(_)
+            | Op::PartialBatch(_)
+            | Op::FlagsBatch(_)
+            | Op::FlagsPartialBatch(_)
+            | Op::FlagsHandoverBatch(_) => self.batch_ops().filter_map(BatchOp::element).collect(),
             Op::Write(_)
             | Op::Read(_)
             | Op::Commit
@@ -877,6 +915,7 @@ impl Op {
     pub fn batch_ops(&self) -> impl Iterator<Item = &BatchOp> {
         let (ops, add_on): (&[BatchOp], &[BatchOp]) = match self {
             Op::Batch(ops) | Op::FlagsBatch(ops) => (ops, &[]),
+            Op::FlagsHandoverBatch(batch) => (&batch.ops, &[]),
             Op::PartialBatch(batch) | Op::FlagsPartialBatch(batch) => (&batch.ops, &batch.add_on),
             Op::Write(_)
             | Op::Read(_)
@@ -1088,6 +1127,24 @@ fn put_stop_height(out: &mut Vec<u8>, stop_path_height: Option<u16>) {
 }
 
 impl BatchOp {
+    /// The subtree and the key the op writes or deletes. None for an
+    /// append, which names the tree it appends to.
+    pub fn place(&self) -> Option<(&Path, &[u8])> {
+        match self {
+            BatchOp::InsertOrReplace { path, key, .. }
+            | BatchOp::InsertOnly { path, key, .. }
+            | BatchOp::InsertIfNotExists { path, key, .. }
+            | BatchOp::Replace { path, key, .. }
+            | BatchOp::RefreshReference { path, key, .. }
+            | BatchOp::Delete { path, key }
+            | BatchOp::DeleteTree { path, key, .. }
+            | BatchOp::Patch { path, key, .. }
+            | BatchOp::Move { path, key, .. }
+            | BatchOp::DropFlat { path, key, .. } => Some((path, key)),
+            BatchOp::Append { .. } => None,
+        }
+    }
+
     /// The element the op stores, if it stores one.
     pub fn element(&self) -> Option<&Element> {
         match self {

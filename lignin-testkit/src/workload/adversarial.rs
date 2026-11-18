@@ -18,6 +18,7 @@ mod moves;
 mod pages;
 mod partial;
 mod stock;
+mod tree_deletes;
 mod typed;
 
 use std::collections::BTreeSet;
@@ -30,6 +31,7 @@ pub use self::{
     moves::Moves,
     pages::Pagination,
     partial::PartialBatches,
+    tree_deletes::{TreeDeletes, MIN_TREE_DELETE_ITEMS},
     typed::TypedReads,
 };
 
@@ -68,6 +70,7 @@ const DOMAIN_INDEXED: u64 = 0xAD0B;
 const DOMAIN_TYPED: u64 = 0xAD0C;
 const DOMAIN_CHUNKS: u64 = 0xAD0D;
 const DOMAIN_EPOCHS: u64 = 0xAD0E;
+const DOMAIN_TREE_DELETES: u64 = 0xAD0F;
 
 /// Chains of trees nested `depth` levels deep.
 ///

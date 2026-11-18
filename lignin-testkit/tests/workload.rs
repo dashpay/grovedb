@@ -49,8 +49,8 @@ use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 use lignin_testkit::workload::{
     adversarial::{
         ChunkProofs, DeepNesting, DeleteHeavy, FlagEpochs, FlatDrops, IndexedWrites, LargeValues,
-        LongKeys, Moves, Pagination, PartialBatches, ReferenceChains, TinySubtrees, TypedReads,
-        MAX_LADDER_RUNGS, MAX_NESTING_DEPTH, MIN_CHUNKED_ROWS,
+        LongKeys, Moves, Pagination, PartialBatches, ReferenceChains, TinySubtrees, TreeDeletes,
+        TypedReads, MAX_LADDER_RUNGS, MAX_NESTING_DEPTH, MIN_CHUNKED_ROWS, MIN_TREE_DELETE_ITEMS,
     },
     apply,
     coverage::{Operation, ELEMENT_VARIANTS, OPERATION_GROUPS, REFERENCE_PATH_TYPES, TREE_TYPES},
@@ -60,8 +60,8 @@ use lignin_testkit::workload::{
     },
     flags::{Histories, Seen},
     zoo::{ElementZoo, COMMITMENT_PAYLOAD_LEN},
-    BatchOp, Coverage, Features, Fetch, Op, Outcome, PartialBatch, Prove, Query, Read,
-    StreamDigest, TransactionOp, Transactions, TreeRead, Workload, Write,
+    BatchOp, Coverage, Features, Fetch, HandoverBatch, Op, Outcome, PartialBatch, Prove, Query,
+    Read, StreamDigest, TransactionOp, Transactions, TreeRead, Workload, Write,
 };
 
 /// The group of the operations every workload is made of, which is all the
@@ -82,6 +82,11 @@ const SECOND_UNIT_GROUPS: [&str; 8] = [
 
 /// The group of the operations the fourth unit added.
 const FLAG_CALLBACKS_GROUP: &str = "storage-flag callbacks";
+
+/// The group of what a transaction did to a tree before it deleted it
+/// whole. These are states of trees the other groups' operations delete,
+/// so any workload that deletes a filled tree produces one.
+const TREE_DELETES_GROUP: &str = "deletes of filled trees";
 
 const SEED: u64 = 1;
 const OTHER_SEED: u64 = 0x4C49_474E_494E;
@@ -125,6 +130,8 @@ struct FlagsApplied {
     freed_across_epochs: u64,
     /// How many stored flags that hold more epochs than they held.
     recorded_an_epoch: u64,
+    /// How many updates accounted as a replacement: full handovers.
+    replaced: u64,
 }
 
 /// Applies a stream to `db`, one transaction per block, and returns how many
@@ -485,6 +492,10 @@ struct KeyWritten {
 ///   three bytes of its own entry, unless the flags record no later epoch,
 ///   in which case they stay as they are. One that keeps the length keeps
 ///   them, in a batch, and stores the flags written, in a partial batch.
+///   A batch that hands elements over then stores the owner written in
+///   every case. Where that owner or the stored one is an owner it hands
+///   over fully to or from, and the two differ, the element is stored as
+///   written instead, and the stored one is freed whole.
 /// - **The bytes freed.** Whatever an update or a delete frees goes back to
 ///   the owner in the stored flags: to the latest epochs first, and what is
 ///   left to the epoch the element was created in, with the bytes of a
@@ -495,11 +506,14 @@ struct KeyWritten {
 /// bytes: the model takes them from `Element::specialized_costs_for_key_value`.
 struct FlagsModel {
     partial: bool,
+    /// For a batch that hands elements over, the owners a handover to or
+    /// from which is a full one.
+    handover: Option<Vec<[u8; 32]>>,
     /// Every key the operation writes.
     writes: Vec<KeyWritten>,
-    /// Whether the operation is a direct delete of a tree that holds
-    /// something. What it holds goes with it, and no callback is asked
-    /// about those bytes. A batch deletes what a tree holds key by key.
+    /// Whether the operation deletes a tree that holds something it does
+    /// not delete key by key. What the tree holds goes with it, and no
+    /// callback is asked about those bytes.
     deletes_a_populated_tree: bool,
     /// Whether the model covers all the operation does.
     whole: bool,
@@ -517,7 +531,7 @@ impl FlagsModel {
         let mut whole = true;
         let mut keys: Vec<(Vec<Vec<u8>>, Vec<u8>, FlagsWrite)> = Vec::new();
         match op {
-            Op::FlagsBatch(_) | Op::FlagsPartialBatch(_) => {
+            Op::FlagsBatch(_) | Op::FlagsPartialBatch(_) | Op::FlagsHandoverBatch(_) => {
                 for batch_op in op.batch_ops() {
                     let (path, key, write) = match batch_op {
                         BatchOp::InsertOrReplace { path, key, element }
@@ -550,11 +564,10 @@ impl FlagsModel {
             }
             Op::Write(Write::SectionalDeleteUpTree { path, key, .. }) => {
                 keys.push((path.clone(), key.clone(), FlagsWrite::Delete));
-                for level in (1..=path.len()).rev() {
-                    let (parent, tree) = path.split_at(level - 1);
+                for level in (0..path.len()).rev() {
                     keys.push((
-                        parent.to_vec(),
-                        tree[0].clone(),
+                        path[..level].to_vec(),
+                        path[level].clone(),
                         FlagsWrite::DeleteIfLeftEmpty,
                     ));
                 }
@@ -563,19 +576,25 @@ impl FlagsModel {
         }
         let places: BTreeSet<_> = keys.iter().map(|(path, key, _)| (path, key)).collect();
         whole &= places.len() == keys.len();
+        // The subtrees the operation writes into: a tree it deletes after
+        // it has deleted what the tree holds key by key is empty by then.
+        let written_into: BTreeSet<Vec<Vec<u8>>> =
+            keys.iter().map(|(path, ..)| path.clone()).collect();
         let mut deletes_a_populated_tree = false;
         let writes = keys
             .into_iter()
             .map(|(path, key, write)| {
                 let held = stored(db, &path, &key, Some(transaction), grove_version);
-                let directly = matches!(op, Op::Write(Write::SectionalDelete { .. }));
-                if directly && held.as_ref().is_some_and(Element::is_any_tree) {
+                let deletes = matches!(write, FlagsWrite::Delete);
+                if deletes && held.as_ref().is_some_and(Element::is_any_tree) {
                     let mut tree = path.clone();
                     tree.push(key.clone());
-                    deletes_a_populated_tree |= !db
-                        .is_empty_tree(tree.as_slice(), Some(transaction), grove_version)
-                        .unwrap()
-                        .expect("a tree");
+                    let emptied = written_into.contains(&tree);
+                    deletes_a_populated_tree |= !emptied
+                        && !db
+                            .is_empty_tree(tree.as_slice(), Some(transaction), grove_version)
+                            .unwrap()
+                            .expect("a tree");
                 }
                 KeyWritten {
                     path,
@@ -587,6 +606,10 @@ impl FlagsModel {
             .collect();
         Some(FlagsModel {
             partial: matches!(op, Op::FlagsPartialBatch(_)),
+            handover: match op {
+                Op::FlagsHandoverBatch(batch) => Some(batch.full_handover_owners.clone()),
+                _ => None,
+            },
             writes,
             deletes_a_populated_tree,
             whole,
@@ -673,12 +696,25 @@ impl FlagsModel {
                 continue;
             }
             let (was, is) = (size(key, held), size(key, &now));
+            let written_flags = Epochs::of(written);
+            if self.is_full_handover(held_flags.as_ref(), written_flags.as_ref()) {
+                // The stored element is freed whole, as a delete frees it,
+                // and the element written is stored as it is.
+                assert_eq!(now, *written, "{place}\nwas not replaced");
+                freed.free(
+                    held_flags.as_ref(),
+                    KV::node_key_byte_cost_size(key.len() as u32),
+                    was,
+                );
+                applied.replaced += 1;
+                continue;
+            }
             let given_back = if is < was {
                 freed.free(held_flags.as_ref(), 0, was - is)
             } else {
                 BTreeMap::new()
             };
-            let expected = match (&held_flags, Epochs::of(written)) {
+            let expected = match (&held_flags, written_flags) {
                 (Some(held_flags), Some(written_flags)) => {
                     // Longer or shorter is told with the flags the element
                     // had, as GroveDB measures it first.
@@ -766,8 +802,8 @@ impl FlagsModel {
         };
         match change {
             Equal if self.partial => return written.clone(),
-            Equal => return held.clone(),
-            Less if written.first > held.first && held.later.is_empty() => return held.clone(),
+            Equal => merged = held.clone(),
+            Less if written.first > held.first && held.later.is_empty() => merged = held.clone(),
             Greater if written.first > held.first => {
                 *merged.later.entry(written.first).or_default() += added;
             }
@@ -782,7 +818,25 @@ impl FlagsModel {
             }
             Greater | Less => {}
         }
+        // A batch that hands elements over stores the owner written,
+        // whatever the merge kept.
+        if self.handover.is_some() && written.owner.is_some() {
+            merged.owner = written.owner;
+        }
         merged
+    }
+
+    /// Whether an update of `held` by `written` is a full handover: the
+    /// two name different owners, and one of them is an owner the batch
+    /// hands over fully to or from.
+    fn is_full_handover(&self, held: Option<&Epochs>, written: Option<&Epochs>) -> bool {
+        let (Some(full), Some(held), Some(written)) = (&self.handover, held, written) else {
+            return false;
+        };
+        let (Some(held), Some(written)) = (held.owner, written.owner) else {
+            return false;
+        };
+        held != written && (full.contains(&held) || full.contains(&written))
     }
 }
 
@@ -1976,8 +2030,17 @@ fn the_smallest_workloads_apply() {
             kinds: 1,
             transitions_per_block: 1,
             blocks_per_epoch: 1,
+            features,
         }),
         Workload::FlagEpochs(FlagEpochs { rungs: 4, features }),
+        Workload::TreeDeletes(TreeDeletes {
+            rounds: 0,
+            ..TreeDeletes::default()
+        }),
+        Workload::TreeDeletes(TreeDeletes {
+            rounds: 1,
+            items: MIN_TREE_DELETE_ITEMS,
+        }),
     ];
     let grove_version = GroveVersion::latest();
     for workload in workloads {
@@ -2132,7 +2195,7 @@ fn the_operation_workloads_apply_for_many_seeds() {
     on_every_grove_version(|grove_version| {
         let features = Features::for_grove_version(grove_version);
         let workloads = operation_workloads(features);
-        assert_eq!(workloads.len(), 17);
+        assert_eq!(workloads.len(), 18);
         for workload in workloads {
             for seed in 2..2 + seeds {
                 let (_dir, db) = open();
@@ -2203,7 +2266,9 @@ fn the_suite_produces_every_operation() {
             .operations()
             .iter()
             .copied()
-            .filter(|operation| operation.group() != FIRST_UNIT_GROUP)
+            .filter(|operation| {
+                operation.group() != FIRST_UNIT_GROUP && operation.group() != TREE_DELETES_GROUP
+            })
             .collect();
         assert!(
             beyond.is_empty(),
@@ -2222,7 +2287,7 @@ fn coverage_reports_what_a_stream_lacks() {
         .map(|operation| operation.group())
         .collect();
     assert_eq!(groups, OPERATION_GROUPS.iter().copied().collect());
-    assert_eq!(OPERATION_GROUPS.len(), 17);
+    assert_eq!(OPERATION_GROUPS.len(), 18);
     let names: BTreeSet<&str> = Operation::ALL
         .iter()
         .map(|operation| operation.name())
@@ -2304,10 +2369,12 @@ const PINNED_STREAMS: &[(&str, u64, u64, &str)] = &[
     ("chunk-proofs", 0x4c49474e494e, 267, "4bdd019fd5874626982eb8e99692ad40fcdb14062bd1631bd3b3a0d9700442a9"),
     ("block-execution", 0x1, 684, "d7b09d7424f2cfab718032e4933e9bd1af731e2c0d142df2c367217faf1f2235"),
     ("block-execution", 0x4c49474e494e, 687, "cbe8343d2304f8abbcfb2b3ff9377ba9d707d1caced7776c0cd1b0f69668818c"),
-    ("storage-fees", 0x1, 331, "eadee9acd3d95d617962f0108b8aef1d5aa8b2f0567be1c56ab9a15fd1b9664c"),
-    ("storage-fees", 0x4c49474e494e, 331, "3fd32c6dc100a6212ee9c60f5a734c983a8121058e3ee533198005a6e2f6e441"),
-    ("flag-epochs", 0x1, 123, "4caa63e8968d736ad7383776a4ab4aaea67c02643a96b702336d1275f9ddff3d"),
-    ("flag-epochs", 0x4c49474e494e, 126, "b3ef3f358039f6b8559c3097bedd0b184e69c95352c9e9f4dbe027d3965d04f3"),
+    ("storage-fees", 0x1, 439, "b18147d05baa8b710ebf2545dc381dfa8bf20c2e20381f5c52761b5b2250f266"),
+    ("storage-fees", 0x4c49474e494e, 439, "169adad5c28b77dd42444150eb3af64fbc0f3f1be8b743d072b7a3f2da2c7220"),
+    ("flag-epochs", 0x1, 149, "43baa2387a1cb98d8d65af296cbace04954f3b58c38aad5f7d74597481813dbc"),
+    ("flag-epochs", 0x4c49474e494e, 149, "8b20523f2db8cd5765367eed3452262f595c6ee763baa1ab3d43f2f9f61c1a18"),
+    ("tree-deletes", 0x1, 96, "b85e2cebee162a67848b7f9e51001329a58a24612782efd7ecd94ef926ea2a07"),
+    ("tree-deletes", 0x4c49474e494e, 96, "1473dddd7a7f218f5a36e7ef7c0b54fa32333e6ebf739d85a1a3be882c1dfc76"),
 ];
 
 #[test]
@@ -2340,11 +2407,11 @@ fn streams_are_pinned() {
 /// features, seed [`SEED`]: protocol version, operations, digest.
 #[rustfmt::skip]
 const PINNED_SUITES: &[(u32, u64, &str)] = &[
-    (1, 21495, "1c09379da995751d0f8dbf70ec59762a6799b0dd7e2e6101e8a9a24cc5a11096"),
-    (2, 21495, "1c09379da995751d0f8dbf70ec59762a6799b0dd7e2e6101e8a9a24cc5a11096"),
-    (3, 21519, "22e55c9585e17412aecb36f56e4441244c4013d22e5aaa1a1ab1ebb7610a0e3a"),
-    (4, 22007, "6f0d463428976ba1b0045bbf7b9c38594709736a2842323f8e45773c321543c8"),
-    (5, 22313, "fd21169d80a3fc7a41f1b754e903e2153b5bddac9588bbad994bc652e35edeeb"),
+    (1, 21716, "a137b573fa8e0e4189f3fbf8b68db6c9587358c316cba2fda9f101e0ff6049ae"),
+    (2, 21716, "a137b573fa8e0e4189f3fbf8b68db6c9587358c316cba2fda9f101e0ff6049ae"),
+    (3, 21740, "ba8f61b8ff5baa4e25652386a670b68af99e7a7c6a47bea7c0d628cbfcd420a9"),
+    (4, 22228, "67acf0071537977173e5607cced138331aeeaac4d720665f1e51e5cd36356616"),
+    (5, 22543, "a8212502aa2d25bf9e823907673ff7bba4a08f2fdfa0d9de04239212750b3975"),
 ];
 
 #[test]
@@ -2999,6 +3066,7 @@ fn the_direct_kinds_have_a_pinned_encoding() {
             operation.group() != FIRST_UNIT_GROUP
                 && !SECOND_UNIT_GROUPS.contains(&operation.group())
                 && operation.group() != FLAG_CALLBACKS_GROUP
+                && operation.group() != TREE_DELETES_GROUP
         })
         .collect();
     assert_eq!(missing, Vec::<Operation>::new());
@@ -3394,7 +3462,13 @@ fn one_of_each_flags_kind() -> Vec<Op> {
             pause_height,
         })
     };
-    let (a, b) = (1, 2);
+    let hand_over = |op: BatchOp, full_handover_owners: Vec<[u8; 32]>| {
+        Op::FlagsHandoverBatch(HandoverBatch {
+            ops: vec![op],
+            full_handover_owners,
+        })
+    };
+    let (a, b, c) = (1, 2, 3);
     vec![
         Op::FlagsBatch(vec![
             new(&[], b"tree", Element::empty_tree()),
@@ -3462,11 +3536,16 @@ fn one_of_each_flags_kind() -> Vec<Op> {
         in_segments(vec![put(b"partial", flagged(90, 8, b))], Vec::new(), None),
         in_segments(vec![put(b"partial", flagged(190, 9, b))], Vec::new(), None),
         in_segments(vec![delete(b"partial")], Vec::new(), None),
+        // An update of a document, which hands the element to the owner
+        // written: with its history, and whole when that owner pays for
+        // all of it.
+        hand_over(put(b"stays", flagged(60, 10, a)), Vec::new()),
+        hand_over(put(b"stays", flagged(60, 11, c)), vec![[c; 32]]),
         Op::Commit,
     ]
 }
 
-const PINNED_FLAGS_KINDS: &str = "544e9c9c31fbe966cc4574afb20f4a28d4a5819d24fef29f4348b42dd6d69158";
+const PINNED_FLAGS_KINDS: &str = "675ae4d586a70ed7aae5b2fea813727e79ca512e908d963b35465573aa4d0723";
 
 /// The canonical encoding of the kinds the fourth unit added: each one
 /// differs from every other, and the bytes are pinned. Together they are
@@ -3487,39 +3566,38 @@ fn the_flags_kinds_have_a_pinned_encoding() {
     assert_eq!(digest.ops(), ops.len() as u64);
     assert_eq!(digest.hex(), PINNED_FLAGS_KINDS);
 
-    let produced: Vec<Operation> = Coverage::of(&ops)
-        .operations()
-        .iter()
-        .copied()
-        .filter(|operation| operation.group() == FLAG_CALLBACKS_GROUP)
-        .collect();
-    let group: Vec<Operation> = Operation::ALL
-        .iter()
-        .copied()
-        .filter(|operation| operation.group() == FLAG_CALLBACKS_GROUP)
-        .collect();
+    let produced = of_group(Coverage::of(&ops).operations(), FLAG_CALLBACKS_GROUP);
+    let group = of_group(Operation::ALL, FLAG_CALLBACKS_GROUP);
     assert_eq!(produced, group);
-    assert_eq!(group.len(), 16);
+    assert_eq!(group.len(), 19);
 
     // The same batch under GroveDB's own callbacks is another operation.
-    let (flags, plain) = (Op::FlagsBatch(Vec::new()), Op::Batch(Vec::new()));
-    assert_ne!(
-        StreamDigest::of([&flags]).hex(),
-        StreamDigest::of([&plain]).hex()
-    );
     let empty = PartialBatch {
         ops: Vec::new(),
         add_on: Vec::new(),
         pause_height: None,
     };
-    let (flags, plain) = (
-        Op::FlagsPartialBatch(empty.clone()),
-        Op::PartialBatch(empty),
-    );
-    assert_ne!(
-        StreamDigest::of([&flags]).hex(),
-        StreamDigest::of([&plain]).hex()
-    );
+    let handover = |full_handover_owners: Vec<[u8; 32]>| {
+        Op::FlagsHandoverBatch(HandoverBatch {
+            ops: Vec::new(),
+            full_handover_owners,
+        })
+    };
+    for (flags, plain) in [
+        (Op::FlagsBatch(Vec::new()), Op::Batch(Vec::new())),
+        (
+            Op::FlagsPartialBatch(empty.clone()),
+            Op::PartialBatch(empty),
+        ),
+        (handover(Vec::new()), Op::FlagsBatch(Vec::new())),
+        (handover(vec![[1; 32]]), handover(Vec::new())),
+        (handover(vec![[1; 32]]), handover(vec![[2; 32]])),
+    ] {
+        assert_ne!(
+            StreamDigest::of([&flags]).hex(),
+            StreamDigest::of([&plain]).hex()
+        );
+    }
 
     let expected = flags_ops(&ops);
     assert_eq!(expected, ops.len() as u64 - 1, "all but the commit");
@@ -3530,6 +3608,18 @@ fn the_flags_kinds_have_a_pinned_encoding() {
         (flags.ops, flags.freed_bytes_predicted),
         (expected, expected)
     );
+    assert_eq!(flags.replaced, 1, "the full handover");
+}
+
+/// Those of `operations` that belong to `group`.
+fn of_group<'a>(
+    operations: impl IntoIterator<Item = &'a Operation>,
+    group: &str,
+) -> Vec<Operation> {
+    let operations = operations.into_iter().copied();
+    operations
+        .filter(|operation| operation.group() == group)
+        .collect()
 }
 
 /// How many operations of a stream run Drive's callbacks.
@@ -3539,6 +3629,7 @@ fn flags_ops(ops: &[Op]) -> u64 {
             op,
             Op::FlagsBatch(_)
                 | Op::FlagsPartialBatch(_)
+                | Op::FlagsHandoverBatch(_)
                 | Op::Write(Write::SectionalDelete { .. } | Write::SectionalDeleteUpTree { .. })
         )
     };
@@ -3552,22 +3643,21 @@ fn flags_ops(ops: &[Op]) -> u64 {
 fn the_callbacks_keep_the_flags_and_split_what_is_freed() {
     let whole_batches = [
         Operation::FlagsBatch,
+        Operation::FlagsHandoverBatch,
+        Operation::FlagsHandover,
+        Operation::FlagsFullHandover,
         Operation::FlagsGrowth,
         Operation::FlagsShrinkAcrossEpochs,
         Operation::FlagsSameSize,
         Operation::FlagsOwnerChange,
         Operation::FlagsDelete,
     ];
+    let flag_operations =
+        |ops: &[Op]| of_group(Coverage::of(ops).operations(), FLAG_CALLBACKS_GROUP);
     for seed in [SEED, OTHER_SEED, 2, 3] {
         let ops: Vec<Op> = StorageFees::default().stream(seed).collect();
-        let produced = Coverage::of(&ops);
         assert_eq!(
-            produced
-                .operations()
-                .iter()
-                .copied()
-                .filter(|operation| { operation.group() == FLAG_CALLBACKS_GROUP })
-                .collect::<Vec<_>>(),
+            flag_operations(&ops),
             whole_batches,
             "storage-fees, seed {seed}"
         );
@@ -3575,27 +3665,32 @@ fn the_callbacks_keep_the_flags_and_split_what_is_freed() {
     on_every_grove_version(|grove_version| {
         let version = grove_version.protocol_version;
         let features = Features::for_grove_version(grove_version);
+        let supported = |operations: &[Operation]| -> Vec<Operation> {
+            let operations = operations.iter().copied();
+            operations
+                .filter(|operation| features.supports(*operation))
+                .collect()
+        };
+        let fees = StorageFees {
+            features,
+            ..StorageFees::default()
+        };
         let epochs = FlagEpochs {
             features,
             ..FlagEpochs::default()
         };
-        let missing: Vec<Operation> = Coverage::of(&epochs.stream(SEED).collect::<Vec<_>>())
-            .missing_operations()
-            .into_iter()
-            .filter(|operation| operation.group() == FLAG_CALLBACKS_GROUP)
-            .collect();
-        let unsupported: Vec<Operation> = Operation::ALL
-            .iter()
-            .copied()
-            .filter(|operation| !features.supports(*operation))
-            .filter(|operation| operation.group() == FLAG_CALLBACKS_GROUP)
-            .collect();
-        assert_eq!(missing, unsupported, "flag-epochs on grove v{version}");
+        assert_eq!(
+            flag_operations(&fees.stream(SEED).collect::<Vec<_>>()),
+            supported(&whole_batches),
+            "storage-fees on grove v{version}"
+        );
+        assert_eq!(
+            flag_operations(&epochs.stream(SEED).collect::<Vec<_>>()),
+            supported(&of_group(Operation::ALL, FLAG_CALLBACKS_GROUP)),
+            "flag-epochs on grove v{version}"
+        );
 
-        let workloads = [
-            Workload::StorageFees(StorageFees::default()),
-            Workload::FlagEpochs(epochs),
-        ];
+        let workloads = [Workload::StorageFees(fees), Workload::FlagEpochs(epochs)];
         for workload in workloads {
             for seed in [SEED, 2] {
                 let ops: Vec<Op> = workload.stream(seed).collect();
@@ -3611,8 +3706,59 @@ fn the_callbacks_keep_the_flags_and_split_what_is_freed() {
                 );
                 assert!(flags.freed_across_epochs >= 8, "{name}: {flags:?}");
                 assert!(flags.recorded_an_epoch >= 20, "{name}: {flags:?}");
+                assert_eq!(
+                    flags.replaced > 0,
+                    features.full_handovers,
+                    "{name}: {flags:?}"
+                );
             }
         }
+    });
+}
+
+/// A ladder of any length is a stream, whatever the seed, and a long one
+/// applies on every grove version: its flags pass the length an element
+/// spends one byte on, and the element the length a node spends two on.
+#[test]
+fn a_ladder_of_any_length_applies() {
+    for rungs in 4..=40 {
+        for seed in [SEED, OTHER_SEED, 2, 3] {
+            for features in [
+                Features::ALL,
+                Features::for_grove_version(&GROVE_VERSIONS[0]),
+            ] {
+                let ladder = FlagEpochs { rungs, features };
+                assert!(ladder.stream(seed).count() > rungs as usize);
+            }
+        }
+    }
+
+    on_every_grove_version(|grove_version| {
+        let ladder = FlagEpochs {
+            rungs: 140,
+            features: Features::for_grove_version(grove_version),
+        };
+        let ops: Vec<Op> = ladder.stream(SEED).collect();
+        let (mut epochs, mut len) = (0, 0);
+        let mut histories = Histories::new();
+        for op in &ops {
+            histories.record(op);
+            if let Some(history) = histories.get(&[b"epochs".to_vec()], b"ladder") {
+                epochs = epochs.max(history.later.len());
+                len = len.max(history.len);
+            }
+        }
+        // The flags of that many epochs are over 250 bytes long, and the
+        // element is more than a node counts in two bytes.
+        assert!(epochs >= 140 && len > 1 << 14, "{epochs} epochs, {len}");
+
+        let expected = flags_ops(&ops);
+        let (_dir, db) = open();
+        let flags = run("a long ladder", &db, ops.into_iter(), grove_version).flags;
+        assert_eq!(
+            (flags.ops, flags.freed_bytes_predicted),
+            (expected, expected)
+        );
     });
 }
 
@@ -3652,47 +3798,112 @@ fn the_callbacks_refuse_what_no_stream_holds() {
     };
     let (a, b) = (1, 2);
     let unreadable = Element::new_item_with_flags(vec![7; 40], Some(vec![255, 1, 2]));
+    let no_flags = Element::new_item_with_flags(vec![7; 90], Some(Vec::new()));
+    let delete = BatchOp::Delete {
+        path: tree.clone(),
+        key: b"item".to_vec(),
+    };
+    let delete_in_segments = Op::FlagsPartialBatch(PartialBatch {
+        ops: vec![delete.clone()],
+        add_on: Vec::new(),
+        pause_height: None,
+    });
+    let stored_unreadable = || vec![Op::Batch(vec![put(unreadable.clone())])];
     let latest = GroveVersion::latest();
     let refused = [
         // Another owner, where a partial batch changes the length.
         (
             vec![whole(flagged(40, 0, a))],
             in_segments(flagged(90, 1, b)),
+            "drive could not combine storage flags (new flags were bigger):",
         ),
         (
             vec![whole(flagged(40, 0, a)), whole(flagged(90, 1, a))],
             in_segments(flagged(60, 2, b)),
+            "drive could not combine storage flags (new flags were smaller):",
         ),
         // An epoch before the element's first.
-        (vec![whole(flagged(40, 5, a))], whole(flagged(90, 2, a))),
+        (
+            vec![whole(flagged(40, 5, a))],
+            whole(flagged(90, 2, a)),
+            "older base epoch: drive could not combine storage flags (new flags were bigger)",
+        ),
         (
             vec![whole(flagged(40, 5, a))],
             in_segments(flagged(90, 2, a)),
+            "drive could not combine storage flags (new flags were bigger):",
         ),
         // Flags Drive cannot read: written, and stored.
-        (vec![whole(flagged(40, 0, a))], whole(unreadable.clone())),
         (
-            vec![Op::Batch(vec![put(unreadable.clone())])],
+            vec![whole(flagged(40, 0, a))],
+            whole(unreadable.clone()),
+            "serialization: drive did not understand updated item flag information",
+        ),
+        (
+            vec![whole(flagged(40, 0, a))],
+            in_segments(unreadable.clone()),
+            "drive did not understand updated item flag information",
+        ),
+        (
+            stored_unreadable(),
             whole(flagged(90, 1, a)),
+            "serialization: drive did not understand flags of old item being updated",
         ),
         (
-            vec![Op::Batch(vec![put(unreadable.clone())])],
-            Op::FlagsBatch(vec![BatchOp::Delete {
-                path: tree.clone(),
-                key: b"item".to_vec(),
-            }]),
+            stored_unreadable(),
+            in_segments(flagged(90, 1, a)),
+            "drive did not understand flags of old item being updated",
         ),
         (
-            vec![Op::Batch(vec![put(unreadable)])],
+            stored_unreadable(),
+            Op::FlagsBatch(vec![delete.clone()]),
+            "serialization: drive did not understand flags of item being updated",
+        ),
+        (
+            stored_unreadable(),
+            delete_in_segments,
+            "drive did not understand flags of item being updated:",
+        ),
+        (
+            stored_unreadable(),
             Op::Write(Write::SectionalDelete {
                 path: tree.clone(),
                 key: b"item".to_vec(),
             }),
+            "serialization: drive did not understand flags of item being updated",
+        ),
+        // Flags taken off an element that has them, in a partial batch.
+        (
+            vec![whole(flagged(40, 0, a))],
+            in_segments(no_flags),
+            "removing flags from an item with flags is not allowed",
         ),
     ];
-    for (first, last) in refused {
+    for (first, last, text) in refused {
         let refusal = applies(first, last.clone(), latest).expect_err("no stream holds this");
         println!("{last:?}: {refusal}");
+        assert!(refusal.contains(text), "{last:?}: {refusal}");
+    }
+
+    // A handover to an owner who pays for the whole element replaces it,
+    // which only the latest grove version takes from a callback.
+    let hand_over = Op::FlagsHandoverBatch(HandoverBatch {
+        ops: vec![put(flagged(40, 1, b))],
+        full_handover_owners: vec![[b; 32]],
+    });
+    for grove_version in GROVE_VERSIONS {
+        let accepts = Features::for_grove_version(grove_version).full_handovers;
+        let applied = applies(
+            vec![whole(flagged(40, 0, a))],
+            hand_over.clone(),
+            grove_version,
+        );
+        assert_eq!(
+            applied.is_ok(),
+            accepts,
+            "grove v{}: {applied:?}",
+            grove_version.protocol_version
+        );
     }
 
     // An update that stores flags of another length without the callback
@@ -3719,4 +3930,88 @@ fn the_callbacks_refuse_what_no_stream_holds() {
             );
         }
     }
+}
+
+/// The tree a tree-deletes operation deletes whole: the state the tree is
+/// in, the way it is deleted and the round, as its key names them.
+fn tree_deleted(op: &Op) -> Option<(String, String, u32)> {
+    let key = match op {
+        Op::Write(Write::Delete { key, .. } | Write::SectionalDelete { key, .. }) => key,
+        Op::Batch(ops) | Op::FlagsBatch(ops) => match ops.as_slice() {
+            [BatchOp::DeleteTree { key, .. }] => key,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let name = String::from_utf8(key.clone()).expect("a tree is named in text");
+    let (state, rest) = name.split_once('-').expect("a state");
+    let (way, round) = rest.rsplit_once('-').expect("a way and a round");
+    Some((
+        state.to_string(),
+        way.to_string(),
+        round.parse().expect("a round"),
+    ))
+}
+
+/// A tree deleted with what it holds is charged for the records the
+/// committed state holds under its keys, whatever the transaction that
+/// deletes it wrote there first:
+///
+/// - a tree the transaction filled is charged for no record: nothing is
+///   loaded for what it held, and each of its keys frees the same few
+///   bytes;
+/// - a tree the transaction rewrote is charged what the tree it was
+///   committed as costs: the same as its twin that was left untouched,
+///   where the transaction replaced values and nothing else, although one
+///   value is a hundred bytes longer by then and another twenty shorter.
+#[test]
+fn a_deleted_tree_is_charged_for_what_was_committed() {
+    let workload = TreeDeletes::default();
+    let ops: Vec<Op> = workload.stream(SEED).collect();
+    let states = of_group(Coverage::of(&ops).operations(), TREE_DELETES_GROUP);
+    assert_eq!(
+        states,
+        [
+            Operation::TreeDeleteFilledInTransaction,
+            Operation::TreeDeleteRewrittenInTransaction,
+            Operation::TreeDeleteCommitted
+        ]
+    );
+    on_every_grove_version(|grove_version| {
+        let version = grove_version.protocol_version;
+        let (_dir, db) = open();
+        let mut transactions = Transactions::new(&db);
+        let mut costs: BTreeMap<(String, u32), BTreeMap<String, (u32, u64)>> = BTreeMap::new();
+        for op in workload.stream(SEED) {
+            let result = transactions.apply(&op, grove_version);
+            result
+                .value
+                .unwrap_or_else(|error| panic!("{op:?} refused: {error:?}"));
+            if let Some((state, way, round)) = tree_deleted(&op) {
+                let freed = Freed::of(&result.cost.storage_cost.removed_bytes);
+                let removed = freed.unsplit + freed.by_epoch.values().sum::<u32>();
+                let cost = (removed, result.cost.storage_loaded_bytes);
+                costs.entry((way, round)).or_default().insert(state, cost);
+            }
+        }
+        assert_eq!(costs.len(), 4 * workload.rounds as usize);
+        for ((way, round), states) in costs {
+            let cost = |state: &str| states[state];
+            let (fresh, rewritten, untouched) =
+                (cost("fresh"), cost("rewritten"), cost("untouched"));
+            println!(
+                "grove v{version}, {way}, round {round}: removed and loaded: fresh {fresh:?}, \
+                 rewritten {rewritten:?}, untouched {untouched:?}"
+            );
+            let context = format!("grove v{version}, {way}, round {round}");
+            assert!(fresh.0 < untouched.0 && fresh.1 < untouched.1, "{context}");
+            if round % 2 == 0 {
+                assert_eq!(rewritten.0, untouched.0, "{context}");
+            } else {
+                // A key the transaction deleted is not walked, and one it
+                // inserted is charged for no record.
+                assert!(rewritten.0 < untouched.0, "{context}");
+            }
+        }
+    });
 }

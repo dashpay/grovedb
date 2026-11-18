@@ -126,6 +126,7 @@ pub fn simulate(
             | Op::PartialBatch(_)
             | Op::FlagsBatch(_)
             | Op::FlagsPartialBatch(_)
+            | Op::FlagsHandoverBatch(_)
             | Op::Transaction(_) => {
                 if matches!(op, Op::Transaction(TransactionOp::Abandon)) {
                     transaction = db.start_transaction();

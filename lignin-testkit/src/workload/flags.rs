@@ -3,8 +3,9 @@
 //! Drive stores with every element the epoch it was created in, its owner
 //! and, for each later epoch that made it longer, the bytes that epoch
 //! added. The callbacks [`super::apply()`] passes with an
-//! [`Op::FlagsBatch`] and an [`Op::FlagsPartialBatch`] keep that history as
-//! the element is replaced. [`Histories`] follows it along a stream, from
+//! [`Op::FlagsBatch`], an [`Op::FlagsHandoverBatch`] and an
+//! [`Op::FlagsPartialBatch`] keep that history as the element is replaced.
+//! [`Histories`] follows it along a stream, from
 //! the operations alone, so a generator can aim at a case, [`Coverage`] can
 //! tell which cases a stream holds, and a test can compare the flags
 //! GroveDB stored with the ones expected.
@@ -17,8 +18,11 @@
 //! longer change the size, and [`History`] does the same.
 //!
 //! Only what a stream writes through these operations is followed, and only
-//! items and references: a tree element is rewritten by GroveDB itself with
-//! the flags it has, and the other elements are charged a fixed size.
+//! items and references in trees that aggregate nothing: a tree element is
+//! rewritten by GroveDB itself with the flags it has, and the other
+//! elements are charged a fixed size. An element another operation writes
+//! or deletes is followed no further, and neither is anything once a
+//! transaction is rolled back, in whole or to a savepoint, or dropped.
 //!
 //! [`Coverage`]: super::Coverage
 
@@ -28,7 +32,7 @@ use grovedb::Element;
 use grovedb_epoch_based_storage_flags::StorageFlags;
 use grovedb_version::version::v1::GROVE_V1;
 
-use super::op::{BatchOp, Op, Path, Write};
+use super::op::{BatchOp, Op, Path, TransactionOp, Write};
 
 /// The 32-byte id of an owner.
 pub type Owner = [u8; 32];
@@ -38,27 +42,29 @@ pub type Owner = [u8; 32];
 pub const BYTES_AN_EPOCH_KEEPS: u32 = 3;
 
 /// How far, in bytes, a generator keeps what an update frees from the
-/// bytes the epochs in the flags hold. An epoch that gives back all it can
-/// leaves the flags, and the bytes of its entry are freed with it, so a few
-/// bytes more are freed than the update takes off the element. This many
-/// cover three epochs leaving at once.
-pub const CLEAR_OF_AN_EPOCH: usize = 32;
+/// point where one more epoch would leave the flags, or one fewer. The
+/// lengths GroveDB writes before a value and before its flags can move
+/// that point by a few bytes.
+pub const CLEAR_OF_AN_EPOCH: usize = 16;
 
 /// The bytes GroveDB stores with every value in a tree that aggregates
 /// nothing, before the length it writes: two hashes and the feature byte.
 const NODE_OVERHEAD: usize = 65;
 
 /// How often GroveDB asks the flags callback about one update before it
-/// gives up.
-const MOST_ROUNDS: usize = 8;
+/// gives up, at most.
+const MOST_ROUNDS: usize = 10;
 
-/// Which pair of callbacks an update runs under.
+/// Which callbacks an update runs under.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Callbacks {
+enum Callbacks<'a> {
     /// Those of an [`Op::FlagsBatch`].
     Batch,
     /// Those of an [`Op::FlagsPartialBatch`].
     PartialBatch,
+    /// Those of an [`Op::FlagsHandoverBatch`], with the owners a handover
+    /// to or from which is a full one.
+    Handover(&'a [Owner]),
 }
 
 /// What the flags of one stored element hold.
@@ -90,6 +96,9 @@ pub struct Update {
     pub dropped_history: bool,
     /// It stored an element without flags over one with flags.
     pub removed_flags: bool,
+    /// It was accounted as a replacement: a full handover between two
+    /// owners.
+    pub replaced: bool,
 }
 
 /// What a flags operation did with the elements [`Histories`] follows.
@@ -169,6 +178,49 @@ impl History {
         latest.map(|bytes| *bytes as usize).sum()
     }
 
+    /// The least and the most bytes an update may take off the element to
+    /// free bytes of the latest epoch in the flags alone,
+    /// [`CLEAR_OF_AN_EPOCH`] away from freeing none and from freeing all
+    /// the epoch can give back. `None` when the epoch holds too few.
+    pub fn freeable_within_latest(&self) -> Option<(usize, usize)> {
+        let high = self
+            .bytes_of_latest(1)
+            .checked_sub(BYTES_AN_EPOCH_KEEPS as usize + CLEAR_OF_AN_EPOCH)?;
+        (high >= CLEAR_OF_AN_EPOCH).then_some((CLEAR_OF_AN_EPOCH, high))
+    }
+
+    /// The least and the most bytes an update may take off the element so
+    /// that exactly the `epochs` latest epochs leave the flags, each
+    /// [`CLEAR_OF_AN_EPOCH`] away from another count. The update frees
+    /// what it takes off and the entries of the epochs that leave. Each of
+    /// them gives back all but the bytes it keeps, and what is left comes
+    /// off the epoch before them, or off the first epoch when none stays,
+    /// in which case the element is left at least `shortest` bytes long.
+    /// `None` when no such number of bytes exists.
+    pub fn freeable_across(&self, epochs: usize, shortest: usize) -> Option<(usize, usize)> {
+        if epochs == 0 || epochs > self.later.len() {
+            return None;
+        }
+        let keeps = BYTES_AN_EPOCH_KEEPS as usize;
+        let entries: usize = self
+            .later
+            .values()
+            .rev()
+            .take(epochs)
+            .map(|bytes| 2 + varint_len(*bytes as usize))
+            .sum();
+        // What the leaving epochs give back, less what their entries free.
+        let given_back = self.bytes_of_latest(epochs) - keeps * epochs;
+        let low = given_back.checked_sub(entries)? + CLEAR_OF_AN_EPOCH;
+        let high = if epochs < self.later.len() {
+            let before = self.bytes_of_latest(epochs + 1) - self.bytes_of_latest(epochs);
+            (given_back + before).checked_sub(entries + keeps + CLEAR_OF_AN_EPOCH)?
+        } else {
+            self.len.checked_sub(shortest)?
+        };
+        (low <= high).then_some((low, high))
+    }
+
     /// What `freed` bytes of the element give back to each epoch: the
     /// latest first, each down to the bytes it keeps, and the rest to the
     /// first epoch.
@@ -199,6 +251,22 @@ impl History {
     /// `written` adds `added` bytes or frees `freed`. `None` is no change
     /// to the flags written.
     fn merged(
+        &self,
+        written: &History,
+        added: u32,
+        freed: u32,
+        callbacks: Callbacks,
+    ) -> Option<History> {
+        let mut merged = self.merged_as_a_batch_does(written, added, freed, callbacks)?;
+        // A handover stores the owner written, whatever the merge kept.
+        if let (Callbacks::Handover(_), Some(owner)) = (callbacks, written.owner) {
+            merged.owner = Some(owner);
+        }
+        Some(merged)
+    }
+
+    /// [`Self::merged`] before a handover has its say on the owner.
+    fn merged_as_a_batch_does(
         &self,
         written: &History,
         added: u32,
@@ -249,18 +317,32 @@ impl History {
             (Some(stored), Some(written)) => stored != written,
             _ => false,
         };
+        if let Callbacks::Handover(full) = callbacks {
+            let named = |owner: Option<Owner>| owner.is_some_and(|owner| full.contains(&owner));
+            if another_owner && (named(self.owner) || named(written.owner)) {
+                // A full handover: the element written replaces the one
+                // stored, flags and all.
+                *self = written.clone();
+                return Some(Update {
+                    named_another_owner: true,
+                    replaced: true,
+                    ..Update::default()
+                });
+            }
+        }
         let was = self.charged(self.len);
         // GroveDB measures the update first with the flags the element
         // had, and that says whether it is longer, shorter or neither.
         let first = self.charged(written.len);
-        if first != was {
-            let at_base = epoch == self.base_epoch;
-            if (callbacks == Callbacks::PartialBatch && another_owner)
-                || (first < was && at_base && !self.later.is_empty())
-            {
-                // Refused, or flags that keep epochs whose bytes went.
-                return None;
-            }
+        // A partial batch refuses another owner where the length changes,
+        // but not where flags of one epoch are kept as they are.
+        let keeps_stored_flags = first < was && epoch > self.base_epoch && self.later.is_empty();
+        if callbacks == Callbacks::PartialBatch
+            && another_owner
+            && first != was
+            && !keeps_stored_flags
+        {
+            return None;
         }
         let mut update = Update {
             named_another_owner: another_owner,
@@ -284,14 +366,13 @@ impl History {
                 break;
             };
             let measured = merged.charged(written.len);
-            let settled = measured == now;
-            now = measured;
-            if settled {
+            if measured == now {
                 stored = Some(merged);
                 break;
             }
+            now = measured;
         }
-        // An update whose size does not settle is refused.
+        // An update whose size has not settled by then is not followed.
         let stored = stored?;
         let freed = was.saturating_sub(now) as u32;
         update.shrank_across_epochs = self.given_back(freed).len() > 1;
@@ -318,13 +399,15 @@ impl Histories {
         self.elements.get(&(path.to_vec(), key.to_vec()))
     }
 
-    /// Follows one operation. An operation that is not one of the four
-    /// that run Drive's callbacks is not followed.
+    /// Follows one operation: what an operation that runs Drive's
+    /// callbacks does to the flags of the elements it writes. Any other
+    /// operation ends the history of what it writes or deletes.
     pub fn record(&mut self, op: &Op) -> Seen {
         let mut seen = Seen::default();
         let callbacks = match op {
             Op::FlagsBatch(_) => Callbacks::Batch,
             Op::FlagsPartialBatch(_) => Callbacks::PartialBatch,
+            Op::FlagsHandoverBatch(batch) => Callbacks::Handover(&batch.full_handover_owners),
             Op::Write(
                 Write::SectionalDelete { path, key }
                 | Write::SectionalDeleteUpTree { path, key, .. },
@@ -332,7 +415,27 @@ impl Histories {
                 self.delete(path, key, &mut seen);
                 return seen;
             }
-            _ => return seen,
+            Op::Write(write) => {
+                self.forget_written(write);
+                return seen;
+            }
+            Op::Batch(_) | Op::PartialBatch(_) => {
+                for batch_op in op.batch_ops() {
+                    if let Some((path, key)) = batch_op.place() {
+                        self.delete(path, key, &mut Seen::default());
+                    }
+                }
+                return seen;
+            }
+            Op::Transaction(
+                TransactionOp::Rollback
+                | TransactionOp::RollbackToSavepoint
+                | TransactionOp::Abandon,
+            ) => {
+                self.elements.clear();
+                return seen;
+            }
+            Op::Read(_) | Op::Commit | Op::FlushPendingDrops | Op::Transaction(_) => return seen,
         };
         for batch_op in op.batch_ops() {
             match batch_op {
@@ -341,11 +444,9 @@ impl Histories {
                 | BatchOp::Replace { path, key, element } => {
                     self.write(path, key, element, callbacks, &mut seen);
                 }
-                BatchOp::InsertIfNotExists { path, key, element } => {
-                    if self.get(path, key).is_none() {
-                        self.write(path, key, element, callbacks, &mut seen);
-                    }
-                }
+                // Whether the key is taken is not known unless its element
+                // is followed, in which case it stays as it is.
+                BatchOp::InsertIfNotExists { .. } => {}
                 BatchOp::Delete { path, key }
                 | BatchOp::DeleteTree { path, key, .. }
                 | BatchOp::DropFlat { path, key, .. } => self.delete(path, key, &mut seen),
@@ -356,6 +457,34 @@ impl Histories {
             }
         }
         seen
+    }
+
+    /// Ends the history of what a direct write under GroveDB's own
+    /// callbacks stores or deletes.
+    fn forget_written(&mut self, write: &Write) {
+        let place = match write {
+            Write::Insert { path, key, .. }
+            | Write::Delete { path, key }
+            | Write::DropFlat { path, key }
+            | Write::InsertIfNotExists { path, key, .. }
+            | Write::InsertIfChanged { path, key, .. }
+            | Write::DeleteIfEmptyTree { path, key }
+            | Write::DeleteUpTree { path, key, .. }
+            | Write::DeleteBuilt { path, key }
+            | Write::IndexedInsert { path, key, .. }
+            | Write::IndexedDelete { path, key, .. } => Some((path.as_slice(), key)),
+            Write::ClearSubtree { path } => path.split_last().map(|(key, path)| (path, key)),
+            Write::Append { .. }
+            | Write::PutAux { .. }
+            | Write::DeleteAux { .. }
+            | Write::ReconcileIndexed { .. }
+            | Write::CommitmentInsert { .. }
+            | Write::SectionalDelete { .. }
+            | Write::SectionalDeleteUpTree { .. } => None,
+        };
+        if let Some((path, key)) = place {
+            self.delete(&path.to_vec(), key, &mut Seen::default());
+        }
     }
 
     fn write(
@@ -389,6 +518,7 @@ impl Histories {
                 seen.kept_size |= update.kept_size;
                 seen.named_another_owner |= update.named_another_owner;
                 seen.dropped_history |= update.dropped_history;
+                seen.replaced |= update.replaced;
             }
             None => {
                 self.elements.remove(&place);
@@ -572,9 +702,21 @@ mod tests {
         assert!(history.later.is_empty());
         let update = seen.update;
         assert!(update.kept_size && update.dropped_history && update.named_another_owner);
-        // Under another owner it refuses any other length.
-        ops.push(in_segments(item(303, 5, Some(1))));
+        // Under another owner it keeps flags of one epoch where the
+        // element gets shorter, and refuses any other change of length.
+        ops.push(in_segments(item(153, 5, Some(1))));
+        let (history, seen) = after(&ops);
+        let history = history.expect("followed");
+        assert_eq!((history.owner, history.base_epoch), (Some([2; 32]), 4));
+        assert!(seen.update.named_another_owner);
+        ops.push(in_segments(item(303, 6, Some(1))));
         assert_eq!(after(&ops).0, None);
+        let grown = [
+            whole(item(103, 0, Some(1))),
+            in_segments(item(203, 2, Some(1))),
+            in_segments(item(153, 3, Some(2))),
+        ];
+        assert_eq!(after(&grown).0, None);
     }
 
     #[test]
@@ -589,7 +731,7 @@ mod tests {
                 grown[1].clone(),
                 whole(item(303, 4, Some(1))),
             ],
-            // Shorter in the first epoch, with a later one in the flags.
+            // In the first epoch, with a later one in the flags.
             vec![
                 grown[0].clone(),
                 grown[1].clone(),
@@ -687,32 +829,174 @@ mod tests {
             assert_eq!(after(&[stored.clone(), Op::FlagsBatch(vec![tree])]).0, None);
         }
 
-        // An insert that finds the key taken, a refreshed reference, an
-        // append and an operation under GroveDB's own callbacks change
-        // nothing.
+        // An insert that finds the key taken, an append, a read and a
+        // commit change nothing. An insert at a key that is not followed
+        // may find it taken, so it starts no history.
         let taken = BatchOp::InsertIfNotExists {
             path: tree(),
             key: KEY.to_vec(),
             element: item(203, 1, Some(2)),
         };
         let kept = after(std::slice::from_ref(&stored)).0;
-        assert_eq!(
-            after(&[stored.clone(), Op::FlagsBatch(vec![taken.clone()])]).0,
-            kept
-        );
-        let free = after(&[Op::FlagsBatch(vec![taken])]).0.expect("stored");
-        assert_eq!((free.owner, free.base_epoch), (Some([2; 32]), 1));
+        assert_eq!(after(&[Op::FlagsBatch(vec![taken.clone()])]).0, None);
         let others = [
+            Op::FlagsBatch(vec![taken]),
             Op::FlagsBatch(vec![BatchOp::Append {
                 path: tree(),
                 entry: crate::workload::op::AppendEntry::Mmr(vec![1]),
             }]),
-            Op::Batch(vec![put(item(203, 1, Some(2)))]),
+            Op::Read(crate::workload::Read::IsEmptyTree { path: tree() }),
+            Op::Transaction(TransactionOp::SetSavepoint),
             Op::Commit,
         ];
         for other in others {
             assert_eq!(after(&[stored.clone(), other]).0, kept);
         }
+
+        // What an operation under GroveDB's own callbacks writes or
+        // deletes is followed no further, and neither is anything once
+        // the transaction is taken back.
+        let key = || KEY.to_vec();
+        let enders = [
+            Op::Batch(vec![put(item(203, 1, Some(2)))]),
+            Op::PartialBatch(PartialBatch {
+                ops: vec![put(item(203, 1, Some(2)))],
+                add_on: Vec::new(),
+                pause_height: None,
+            }),
+            Op::Write(Write::Insert {
+                path: tree(),
+                key: key(),
+                element: item(203, 1, Some(2)),
+            }),
+            Op::Write(Write::Delete {
+                path: tree(),
+                key: key(),
+            }),
+            Op::Write(Write::Delete {
+                path: Vec::new(),
+                key: TREE.to_vec(),
+            }),
+            Op::Write(Write::ClearSubtree { path: tree() }),
+            Op::Transaction(TransactionOp::Rollback),
+            Op::Transaction(TransactionOp::RollbackToSavepoint),
+            Op::Transaction(TransactionOp::Abandon),
+        ];
+        for ender in enders {
+            assert_eq!(after(&[stored.clone(), ender.clone()]).0, None, "{ender:?}");
+        }
+        let elsewhere = [
+            Op::Write(Write::PutAux {
+                key: key(),
+                value: vec![1],
+            }),
+            Op::Write(Write::ClearSubtree { path: Vec::new() }),
+            Op::Batch(vec![BatchOp::Append {
+                path: tree(),
+                entry: crate::workload::op::AppendEntry::Mmr(vec![1]),
+            }]),
+        ];
+        for other in elsewhere {
+            assert_eq!(after(&[stored.clone(), other]).0, kept);
+        }
+    }
+
+    #[test]
+    fn a_handover_stores_the_owner_written() {
+        let hand_over = |element: Element, sponsors: &[Owner]| {
+            Op::FlagsHandoverBatch(crate::workload::op::HandoverBatch {
+                ops: vec![put(element)],
+                full_handover_owners: sponsors.to_vec(),
+            })
+        };
+        let owner = |ops: &[Op]| after(ops).0.and_then(|history| history.owner);
+        let (a, b) = (Some([1; 32]), Some([2; 32]));
+        let stored = whole(item(103, 0, Some(1)));
+        // Where a batch keeps the stored owner: the same length, and
+        // shorter with flags of one epoch.
+        for len in [103, 53] {
+            let ops = [stored.clone(), hand_over(item(len, 1, Some(2)), &[])];
+            assert_eq!(owner(&ops), b, "{len}");
+            let (history, seen) = after(&ops);
+            assert_eq!(history.map(|history| history.base_epoch), Some(0));
+            assert!(seen.update.named_another_owner && !seen.update.replaced);
+        }
+        // Flags that name no owner leave the stored one.
+        assert_eq!(
+            owner(&[stored.clone(), hand_over(item(103, 1, None), &[])]),
+            a
+        );
+        // The history is kept as a batch keeps it.
+        let grown = [stored.clone(), hand_over(item(203, 2, Some(2)), &[[9; 32]])];
+        assert_eq!(later(&after(&grown).0), [(2, 103)]);
+        assert_eq!(owner(&grown), b);
+
+        // A full handover stores the element as written: to a sponsor,
+        // from one, and not between two owners that are none.
+        for sponsor in [[1; 32], [2; 32]] {
+            let mut ops = grown.to_vec();
+            ops.push(hand_over(item(243, 4, Some(1)), &[sponsor]));
+            let (history, seen) = after(&ops);
+            let history = history.expect("followed");
+            assert_eq!((history.owner, history.base_epoch), (a, 4));
+            assert!(history.later.is_empty());
+            assert!(seen.update.replaced && seen.update.named_another_owner);
+        }
+        let mut ops = grown.to_vec();
+        ops.push(hand_over(item(243, 4, Some(1)), &[[9; 32]]));
+        assert_eq!(later(&after(&ops).0), [(2, 103), (4, 43)]);
+        assert!(!after(&ops).1.update.replaced);
+        // The same owner on both sides is no handover.
+        let mut ops = grown.to_vec();
+        ops.push(hand_over(item(243, 4, Some(2)), &[[2; 32]]));
+        assert!(!after(&ops).1.update.replaced);
+    }
+
+    /// The bounds [`History::freeable_across`] gives are the ones the
+    /// update itself keeps: at either end exactly that many epochs leave
+    /// the flags, and the element stays followed.
+    #[test]
+    fn the_bounds_of_freeing_across_epochs_hold() {
+        let mut rng = crate::workload::Rng::derive(7, 0xF1A6, 0);
+        let mut checked = 0;
+        for _ in 0..300 {
+            let mut len = 3 + rng.between(40, 200) as usize;
+            let mut ops = vec![whole(item(len, 0, Some(1)))];
+            let epochs = rng.between(1, 6) as u16;
+            for epoch in 1..=epochs {
+                len += rng.between(1, 300) as usize;
+                // An item of 254 or 255 bytes does not exist.
+                len += usize::from(len == 254 || len == 255) * 2;
+                ops.push(whole(item(len, epoch, Some(1))));
+            }
+            let history = after(&ops).0.expect("followed");
+            assert_eq!(history.later.len(), usize::from(epochs));
+            for leaving in 1..=history.later.len() {
+                let Some((low, high)) = history.freeable_across(leaving, 43) else {
+                    continue;
+                };
+                for freed in [low, high] {
+                    let shorter = history.len - freed;
+                    if shorter == 254 || shorter == 255 {
+                        continue;
+                    }
+                    let mut ops = ops.clone();
+                    ops.push(whole(item(shorter, epochs + 1, Some(1))));
+                    let (after, seen) = after(&ops);
+                    let after = after.expect("followed");
+                    assert_eq!(
+                        after.later.len(),
+                        history.later.len() - leaving,
+                        "{history:?} less {freed}"
+                    );
+                    assert!(seen.update.shrank_across_epochs);
+                    checked += 1;
+                }
+            }
+            assert_eq!(history.freeable_across(0, 43), None);
+            assert_eq!(history.freeable_across(history.later.len() + 1, 43), None);
+        }
+        assert!(checked > 500, "{checked}");
     }
 
     #[test]

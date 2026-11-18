@@ -172,6 +172,9 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
         "apply_batch_with_element_flags_update",
         produced(&[
             Operation::FlagsBatch,
+            Operation::FlagsHandoverBatch,
+            Operation::FlagsHandover,
+            Operation::FlagsFullHandover,
             Operation::FlagsGrowth,
             Operation::FlagsShrinkAcrossEpochs,
             Operation::FlagsSameSize,
@@ -256,7 +259,15 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
         produced(&[Operation::CommitmentInsert]),
     ),
     ("create_checkpoint", CHECKPOINT),
-    ("delete", produced(&[Operation::Delete])),
+    (
+        "delete",
+        produced(&[
+            Operation::Delete,
+            Operation::TreeDeleteFilledInTransaction,
+            Operation::TreeDeleteRewrittenInTransaction,
+            Operation::TreeDeleteCommitted,
+        ]),
+    ),
     ("delete_aux", produced(&[Operation::AuxDelete])),
     ("delete_checkpoint", CHECKPOINT),
     (

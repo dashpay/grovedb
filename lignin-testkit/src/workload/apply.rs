@@ -32,28 +32,38 @@
 //! what the update costs. The other is asked how the bytes an update or a
 //! delete frees divide over the epochs they were paid in. A stream is plain
 //! data and cannot carry a callback, so the ones Drive passes are fixed
-//! here, for [`Op::FlagsBatch`], [`Op::FlagsPartialBatch`],
-//! [`Write::SectionalDelete`] and [`Write::SectionalDeleteUpTree`]. Every
-//! other operation runs with GroveDB's own: flags are stored as written and
-//! freed bytes are not divided.
+//! here, for [`Op::FlagsBatch`], [`Op::FlagsHandoverBatch`] and
+//! [`Op::FlagsPartialBatch`]. Every other operation runs with GroveDB's
+//! own: flags are stored as written and freed bytes are not divided.
 //!
-//! Drive passes one pair with a batch and another with a partial batch:
+//! Drive passes one of three first callbacks:
 //!
-//! - **A batch**: [`StorageFlags::update_element_flags`]. An update that
-//!   grows an element in a later epoch than its first records the added
-//!   bytes under that epoch, one that shrinks it takes the freed bytes off
-//!   the epochs recorded, and one that keeps its size keeps the stored
-//!   flags. Where the flags written name another owner than the stored
-//!   ones, the written owner is stored, except that the stored flags are
-//!   kept whole by an update that keeps the size and by one that shrinks an
-//!   element holding bytes of one epoch only.
-//! - **A partial batch**: the same merge, except that an update that
-//!   changes the size is refused when the two owners differ, and that one
-//!   that keeps the size stores the flags as written.
+//! - **With a batch**: [`StorageFlags::update_element_flags`]. An update
+//!   that grows an element in a later epoch than its first records the
+//!   added bytes under that epoch, one that shrinks it takes the freed
+//!   bytes off the epochs recorded, and one that keeps its size keeps the
+//!   stored flags. Where the flags written name another owner than the
+//!   stored ones, the written owner is stored, except that the stored flags
+//!   are kept whole by an update that keeps the size and by one that
+//!   shrinks an element holding bytes of one epoch only.
+//! - **With a batch that updates a document**, from protocol version 15:
+//!   the same merge, after which the owner written is stored in every
+//!   case ([`StorageFlags::update_element_flags_with_written_owner`]). An
+//!   update between two owners of which one is a gas sponsor is accounted
+//!   as a replacement instead: the stored element is freed whole and the
+//!   written one charged whole
+//!   ([`StorageFlags::update_element_flags_replacing_on_owner_change`]).
+//! - **With a partial batch**: the first merge, except that an update that
+//!   changes the size is refused when the two owners differ, unless it
+//!   shrinks an element holding bytes of one epoch only, and that one that
+//!   keeps the size stores the flags as written.
 //!
-//! Both divide freed bytes with [`StorageFlags::split_removal_bytes`]: the
+//! All divide freed bytes with [`StorageFlags::split_removal_bytes`]: the
 //! latest epochs first, each down to the three bytes its own entry in the
 //! flags takes, and what is left to the epoch the element was created in.
+//! [`Write::SectionalDelete`] and [`Write::SectionalDeleteUpTree`] pass the
+//! same callback to the two delete methods that take one, which Drive
+//! itself does not call: it deletes through batches.
 
 #![expect(
     clippy::result_large_err,
@@ -78,11 +88,15 @@ use grovedb_commitment_tree::{deserialize_ciphertext, DashMemo};
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::{
-        removal::StorageRemovedBytes, transition::OperationStorageTransitionType, StorageCost,
+        removal::StorageRemovedBytes,
+        transition::{ElementFlagsUpdate, OperationStorageTransitionType},
+        StorageCost,
     },
     CostResult, CostsExt, OperationCost,
 };
-use grovedb_epoch_based_storage_flags::{MergingOwnersStrategy, StorageFlags};
+use grovedb_epoch_based_storage_flags::{
+    error::StorageFlagsError, MergingOwnersStrategy, StorageFlags,
+};
 use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::GroveVersion;
@@ -240,9 +254,12 @@ pub const CLEAR_OPTIONS: ClearOptions = ClearOptions {
     backwards_references: BackwardsReferences::Check,
 };
 
-/// How [`Op::Batch`] and [`Op::FlagsBatch`] are applied. They are the
-/// options Drive applies a batch with when it does not ask for inserts to
-/// be checked against what is stored.
+/// How [`Op::Batch`], [`Op::FlagsBatch`] and [`Op::FlagsHandoverBatch`]
+/// are applied. They are the options Drive applies a batch with when it
+/// does not ask for inserts to be checked against what is stored, except
+/// that the operations are checked for consistency, which Drive's default
+/// configuration leaves out of a whole batch. The check refuses a batch or
+/// lets it pass, and changes no cost.
 pub const BATCH_OPTIONS: BatchApplyOptions = BatchApplyOptions {
     validate_insertion_does_not_override: false,
     validate_insertion_does_not_override_tree: false,
@@ -327,6 +344,21 @@ pub fn apply(
         Op::FlagsPartialBatch(batch) => {
             apply_partial_batch(db, batch, Callbacks::Drive, transaction, grove_version)
         }
+        Op::FlagsHandoverBatch(batch) => db
+            .apply_batch_with_element_flags_update(
+                batch.ops.iter().map(BatchOp::to_grove_op).collect(),
+                Some(BATCH_OPTIONS),
+                |cost, stored, written| {
+                    merge_flags_for_owner_change(cost, stored, written, &batch.full_handover_owners)
+                        .map_err(|error| {
+                            Error::JustInTimeElementFlagsClientError(error.to_string())
+                        })
+                },
+                split_removed_bytes,
+                transaction,
+                grove_version,
+            )
+            .map_ok(|()| Outcome::Written),
         Op::FlushPendingDrops => db
             .flush_pending_prefix_drops(grove_version)
             .map(Outcome::Reclaimed)
@@ -502,38 +534,30 @@ fn merge_flags_of_one_owner(
                 "removing flags from an item with flags is not allowed".to_string(),
             )
         })?;
-    let merged = match cost.transition_type() {
-        OperationStorageTransitionType::OperationUpdateBiggerSize => {
+    let (merged, what) = match cost.transition_type() {
+        OperationStorageTransitionType::OperationUpdateBiggerSize => (
             StorageFlags::optional_combine_added_bytes(
                 stored,
                 new,
                 cost.added_bytes,
                 MergingOwnersStrategy::RaiseIssue,
-            )
-            .map_err(|error| {
-                refused(
-                    "drive could not combine storage flags (new flags were bigger):",
-                    &error,
-                )
-            })?
-        }
-        OperationStorageTransitionType::OperationUpdateSmallerSize => {
+            ),
+            "drive could not combine storage flags (new flags were bigger):",
+        ),
+        OperationStorageTransitionType::OperationUpdateSmallerSize => (
             StorageFlags::optional_combine_removed_bytes(
                 stored,
                 new,
                 &cost.removed_bytes,
                 MergingOwnersStrategy::RaiseIssue,
-            )
-            .map_err(|error| {
-                refused(
-                    "drive could not combine storage flags (new flags were smaller):",
-                    &error,
-                )
-            })?
-        }
+            ),
+            "drive could not combine storage flags (new flags were smaller):",
+        ),
         _ => return Ok(false),
     };
-    let merged = merged.to_element_flags();
+    let merged = merged
+        .map_err(|error| refused(what, &error))?
+        .to_element_flags();
     if merged == *written {
         return Ok(false);
     }
@@ -541,8 +565,39 @@ fn merge_flags_of_one_owner(
     Ok(true)
 }
 
-/// The split of freed bytes Drive applies every batch with, whole or
-/// partial.
+/// The flags update Drive applies a batch that updates a document with,
+/// given the owners a handover to or from which is a full one.
+fn merge_flags_for_owner_change(
+    cost: &StorageCost,
+    stored: Option<ElementFlags>,
+    written: &mut ElementFlags,
+    full_handover_owners: &[[u8; 32]],
+) -> Result<ElementFlagsUpdate, StorageFlagsError> {
+    let names_full_handover_owner = |flags: &ElementFlags| -> Result<bool, StorageFlagsError> {
+        Ok(
+            StorageFlags::from_element_flags_ref(flags)?.is_some_and(|flags| {
+                flags
+                    .owner_id()
+                    .is_some_and(|owner| full_handover_owners.contains(owner))
+            }),
+        )
+    };
+    let is_full_handover = !full_handover_owners.is_empty()
+        && (names_full_handover_owner(written)?
+            || stored
+                .as_ref()
+                .map(names_full_handover_owner)
+                .transpose()?
+                .unwrap_or(false));
+    if is_full_handover {
+        StorageFlags::update_element_flags_replacing_on_owner_change(cost, stored, written)
+    } else {
+        StorageFlags::update_element_flags_with_written_owner(cost, stored, written)
+            .map(ElementFlagsUpdate::from)
+    }
+}
+
+/// The split of freed bytes Drive applies a batch with.
 fn split_removed_bytes(
     flags: &mut ElementFlags,
     removed_key_bytes: u32,
@@ -550,6 +605,27 @@ fn split_removed_bytes(
 ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error> {
     StorageFlags::split_removal_bytes(flags, removed_key_bytes, removed_value_bytes)
         .map_err(|error| Error::SplitRemovalBytesClientError(error.to_string()))
+}
+
+/// The split of freed bytes Drive applies a partial batch with: the same
+/// split, and another text where it cannot read the flags.
+fn split_removed_bytes_of_a_partial_batch(
+    flags: &mut ElementFlags,
+    removed_key_bytes: u32,
+    removed_value_bytes: u32,
+) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error> {
+    let flags = StorageFlags::from_element_flags_ref(flags).map_err(|error| {
+        Error::SplitRemovalBytesClientError(format!(
+            "drive did not understand flags of item being updated: {error}"
+        ))
+    })?;
+    Ok(match flags {
+        None => (
+            StorageRemovedBytes::BasicStorageRemoval(removed_key_bytes),
+            StorageRemovedBytes::BasicStorageRemoval(removed_value_bytes),
+        ),
+        Some(flags) => flags.split_storage_removed_bytes(removed_key_bytes, removed_value_bytes),
+    })
 }
 
 /// The callbacks a partial batch is applied with.
@@ -586,7 +662,7 @@ fn apply_partial_batch(
             ops,
             options,
             merge_flags_of_one_owner,
-            split_removed_bytes,
+            split_removed_bytes_of_a_partial_batch,
             add_on,
             transaction,
             grove_version,
