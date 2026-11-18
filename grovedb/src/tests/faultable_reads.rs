@@ -1,5 +1,9 @@
-//! A seam for failing the read of a subtree's parent element, the way a
-//! storage fault would, without touching the database underneath.
+//! A seam for failing a storage read, the way a storage fault would,
+//! without touching the database underneath.
+//!
+//! In test builds `open_merk` reads a subtree's parent element through
+//! [`FaultableReads`], and a test can open a Merk over one to fail the read
+//! of one of its nodes.
 
 use std::cell::RefCell;
 
@@ -12,32 +16,96 @@ use grovedb_storage::{Error, StorageContext};
 /// The message of the injected failure.
 pub(crate) const INJECTED_READ_FAILURE: &str = "injected read failure";
 
-thread_local! {
-    /// The parent key whose element read fails while set.
-    static FAILED_PARENT_READ: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+/// Which reads of a key fail.
+struct ArmedFault {
+    key: Vec<u8>,
+    /// Reads of `key` let through before the first failure.
+    passes_left: usize,
+    /// Failures still to inject; `None` fails every read from then on.
+    failures_left: Option<usize>,
+    /// Whether a read has failed.
+    fired: bool,
 }
 
-/// Runs `body` with every `open_merk` read of a parent element stored under
-/// `parent_key` failing with a storage error.
-pub(crate) fn with_failed_parent_read<T>(parent_key: &[u8], body: impl FnOnce() -> T) -> T {
-    /// Puts back the key that was armed before, even when `body` panics, so
-    /// a scope nested in another leaves the outer one armed.
-    struct Disarm(Option<Vec<u8>>);
+impl ArmedFault {
+    fn fails(&mut self, key: &[u8]) -> bool {
+        if key != self.key {
+            return false;
+        }
+        if self.passes_left > 0 {
+            self.passes_left -= 1;
+            return false;
+        }
+        match &mut self.failures_left {
+            Some(0) => return false,
+            Some(left) => *left -= 1,
+            None => {}
+        }
+        self.fired = true;
+        true
+    }
+}
+
+thread_local! {
+    static ARMED: RefCell<Option<ArmedFault>> = const { RefCell::new(None) };
+}
+
+/// Runs `body` with `fault` armed and returns whether a read failed. The
+/// fault armed before is put back afterwards, even when `body` panics, so a
+/// scope nested in another leaves the outer one armed.
+fn with_fault<T>(fault: ArmedFault, body: impl FnOnce() -> T) -> (T, bool) {
+    struct Disarm(Option<ArmedFault>);
 
     impl Drop for Disarm {
         fn drop(&mut self) {
-            FAILED_PARENT_READ.with(|failed| failed.replace(self.0.take()));
+            ARMED.with(|armed| armed.replace(self.0.take()));
         }
     }
 
-    let _disarm =
-        Disarm(FAILED_PARENT_READ.with(|failed| failed.replace(Some(parent_key.to_vec()))));
-    body()
+    let outer = Disarm(ARMED.with(|armed| armed.replace(Some(fault))));
+    let result = body();
+    let fired = ARMED.with(|armed| armed.borrow().as_ref().is_some_and(|fault| fault.fired));
+    drop(outer);
+    (result, fired)
 }
 
-/// The parent storage context `open_merk` reads through in tests: the real
-/// context, except that a data read of the key armed by
-/// [`with_failed_parent_read`] fails.
+/// Runs `body` with every read of `key` through a [`FaultableReads`] context
+/// failing with a storage error. For `open_merk` that is the read of a
+/// parent element stored under `key`.
+pub(crate) fn with_failed_parent_read<T>(key: &[u8], body: impl FnOnce() -> T) -> T {
+    with_fault(
+        ArmedFault {
+            key: key.to_vec(),
+            passes_left: 0,
+            failures_left: None,
+            fired: false,
+        },
+        body,
+    )
+    .0
+}
+
+/// Runs `body` with one read of `key` failing: the one after `passes` reads
+/// of it went through. Reads after the failed one succeed again. Also
+/// returns whether `body` got as far as the failing read.
+pub(crate) fn with_one_failed_parent_read<T>(
+    key: &[u8],
+    passes: usize,
+    body: impl FnOnce() -> T,
+) -> (T, bool) {
+    with_fault(
+        ArmedFault {
+            key: key.to_vec(),
+            passes_left: passes,
+            failures_left: Some(1),
+            fired: false,
+        },
+        body,
+    )
+}
+
+/// A storage context that is the one it wraps, except that a data read of
+/// an armed key fails.
 pub(crate) struct FaultableReads<S>(pub(crate) S);
 
 impl<'db, S: StorageContext<'db>> StorageContext<'db> for FaultableReads<S> {
@@ -114,11 +182,11 @@ impl<'db, S: StorageContext<'db>> StorageContext<'db> for FaultableReads<S> {
     }
 
     fn get<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
-        let fails = FAILED_PARENT_READ.with(|failed| {
-            failed
-                .borrow()
-                .as_deref()
-                .is_some_and(|k| k == key.as_ref())
+        let fails = ARMED.with(|armed| {
+            armed
+                .borrow_mut()
+                .as_mut()
+                .is_some_and(|fault| fault.fails(key.as_ref()))
         });
         if fails {
             // The seek is paid for, as on the real context; nothing is loaded.

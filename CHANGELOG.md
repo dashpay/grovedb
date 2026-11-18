@@ -177,9 +177,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   open's error on, fail with the storage error where the parent could not be
   read. A batch opening an existing subtree and state sync read the parent
   element themselves; they already failed on such a read and keep the errors
-  they returned. `verify_grovedb`'s reciprocity audit of bidirectional
-  references returns the storage error as well, where it reported the
-  reference as broken (`?missing-registration`,
+  they returned. The getters that read an element through an open Merk
+  (`Element::get`, `get_optional`, `get_value_hash`,
+  `get_with_value_hash`) keep a failed node read typed in the same way, so
+  a GroveDB caller sees `Error::MerkError(StorageError(..))` where it saw
+  `Error::MerkError(CorruptedData(..))`. `verify_grovedb`'s reciprocity
+  audit of bidirectional references returns either storage error, where it
+  reported the reference as broken (`?missing-registration`,
   `?no-reciprocal-forward-edge`). A parent key
   that is not there and stored bytes that do not decode are reported as
   before: the second is what a path below a non-Merk tree legitimately reads,

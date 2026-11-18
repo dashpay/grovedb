@@ -95,6 +95,16 @@ pub trait ElementFetchFromStorageExtensions {
     ) -> CostResult<(Element, CryptoHash), Error>;
 }
 
+/// A failed read through a Merk as the element getters report it: a read
+/// that failed in storage keeps its type, so that a caller can tell it from
+/// what the Merk holds; anything else is corrupted data.
+fn merk_read_error(error: Error) -> Error {
+    match error {
+        Error::StorageError(_) => error,
+        error => Error::CorruptedData(error.to_string()),
+    }
+}
+
 trait ElementFetchFromStoragePrivateExtensions {
     /// Get an element directly from storage under a key
     /// Merk does not need to be loaded
@@ -166,7 +176,7 @@ impl ElementFetchFromStorageExtensions for Element {
                 Some(&Element::value_defined_cost_for_serialized_value),
                 grove_version
             )
-            .map_err(|e| Error::CorruptedData(e.to_string()))
+            .map_err(merk_read_error)
         );
         let element = cost_return_on_error_no_add!(
             cost,
@@ -323,7 +333,7 @@ impl ElementFetchFromStorageExtensions for Element {
                 Some(&Element::value_defined_cost_for_serialized_value),
                 grove_version
             )
-            .map_err(|e| Error::CorruptedData(e.to_string()))
+            .map_err(merk_read_error)
         );
 
         Ok(value_hash).wrap_with_cost(cost)
@@ -350,7 +360,7 @@ impl ElementFetchFromStorageExtensions for Element {
                 Some(&Element::value_defined_cost_for_serialized_value),
                 grove_version
             )
-            .map_err(|e| Error::CorruptedData(e.to_string()))
+            .map_err(merk_read_error)
         ) else {
             return Err(Error::PathKeyNotFound(format!(
                 "get: key \"{}\" not found in Merk that has a root key [{}] and is of type {}",

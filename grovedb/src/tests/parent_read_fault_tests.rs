@@ -7,6 +7,10 @@
 //! instead. A parent key that is not there, and a path below a tree that
 //! keeps its own data where a child Merk would be, are still absence.
 
+use grovedb_merk::{
+    element::{costs::ElementCostExtensions, get::ElementFetchFromStorageExtensions},
+    Error as MerkError, Merk, TreeType,
+};
 use grovedb_storage::{RawIterator, Storage, StorageContext};
 use grovedb_version::version::{v4::GROVE_V4, GroveVersion, GROVE_VERSIONS};
 
@@ -17,10 +21,13 @@ use crate::{
     reference_path::ReferencePathType,
     tests::{
         common::EMPTY_PATH,
-        faultable_reads::{with_failed_parent_read, INJECTED_READ_FAILURE},
+        faultable_reads::{
+            with_failed_parent_read, with_one_failed_parent_read, FaultableReads,
+            INJECTED_READ_FAILURE,
+        },
         make_empty_grovedb, make_test_grovedb, TempGroveDb, TEST_LEAF,
     },
-    BackwardsReferences, Element, Error, PathQuery, PendingPrefixDropsReport, Query,
+    BackwardsReferences, Element, Error, GroveDb, PathQuery, PendingPrefixDropsReport, Query,
 };
 
 const PARENT: &[u8] = b"parent";
@@ -457,34 +464,23 @@ fn should_return_the_storage_error_from_the_reference_reciprocity_audit() {
     let db = db_with_bidirectional_reference(grove_version);
     let tx = db.start_transaction();
     let leaf = [TEST_LEAF.to_vec()];
+    let read = |path: &[Vec<u8>]| {
+        db.stored_element_for_reciprocity_audit(path, b"target", true, &tx, None, grove_version)
+    };
 
-    // Forward direction: the referrer's target is read with its referrer
-    // list.
-    let target = db
-        .stored_reference_target(&leaf, b"target", true, &tx, None, grove_version)
-        .expect("healthy read")
-        .expect("the target");
+    // The read both directions make: the element with its referrer list.
+    let target = read(&leaf).expect("healthy read").expect("the target");
     assert!(target
         .backward_references()
         .is_some_and(|referrers| !referrers.is_empty()));
-    // A target that does not resolve is still "no element".
-    let unresolved = db
-        .stored_reference_target(
-            &[b"missing".to_vec()],
-            b"target",
-            true,
-            &tx,
-            None,
-            grove_version,
-        )
-        .expect("absence, not an error");
-    assert!(unresolved.is_none());
-    with_failed_parent_read(TEST_LEAF, || {
-        assert_injected_failure(
-            db.stored_reference_target(&leaf, b"target", true, &tx, None, grove_version),
-            "forward audit",
-        );
-    });
+    // A path that does not resolve is still "no element".
+    assert!(read(&[b"missing".to_vec()])
+        .expect("absence, not an error")
+        .is_none());
+    assert_injected_failure(
+        with_failed_parent_read(TEST_LEAF, || read(&leaf)),
+        "audit read",
+    );
 
     // Backward direction: each referrer listed on the target is read back.
     let audit = || {
@@ -502,16 +498,117 @@ fn should_return_the_storage_error_from_the_reference_reciprocity_audit() {
     };
     assert!(audit().expect("healthy audit").is_empty());
     assert_injected_failure(with_failed_parent_read(TEST_LEAF, audit), "backward audit");
+}
 
-    // The whole verification reports the failed read, not broken references.
-    assert!(db
-        .verify_grovedb(Some(&tx), true, true, grove_version)
-        .expect("healthy verification")
-        .is_empty());
-    assert_injected_failure(
-        with_failed_parent_read(TEST_LEAF, || {
-            db.verify_grovedb(Some(&tx), true, true, grove_version)
-        }),
-        "verify_grovedb",
+#[test]
+fn should_never_report_a_broken_reference_for_one_failed_parent_read() {
+    let grove_version = GroveVersion::latest();
+    let db = db_with_bidirectional_reference(grove_version);
+    let tx = db.start_transaction();
+    let verify = || db.verify_grovedb(Some(&tx), true, true, grove_version);
+
+    // Fail one read of the `TEST_LEAF` element at a time: the first the
+    // verification makes, then the second, and so on until it finishes
+    // without reaching the failing one. Later reads succeed, so an error
+    // that was swallowed where it happened would come out as a report.
+    let mut failed_reads = 0;
+    loop {
+        let (result, reached) = with_one_failed_parent_read(TEST_LEAF, failed_reads, verify);
+        if !reached {
+            assert!(result.expect("healthy verification").is_empty());
+            break;
+        }
+        assert_injected_failure(result, &format!("parent read {failed_reads}"));
+        failed_reads += 1;
+    }
+    // The descent into the subtree, the reference's commitment check, and
+    // the two directions of the reciprocity audit each open it.
+    assert!(failed_reads >= 4, "only {failed_reads} parent reads");
+}
+
+#[test]
+fn should_return_the_storage_error_when_a_merk_node_read_fails() {
+    let grove_version = GroveVersion::latest();
+    let db = db_with_bidirectional_reference(grove_version);
+    let tx = db.start_transaction();
+
+    // The `TEST_LEAF` Merk over a context whose reads can fail. Opening it
+    // loads its root node only.
+    let Element::Tree(Some(root_key), _) = db
+        .get_raw(EMPTY_PATH, TEST_LEAF, None, grove_version)
+        .unwrap()
+        .expect("the tree element")
+    else {
+        panic!("a tree with elements");
+    };
+    let storage = db
+        .db
+        .get_transactional_storage_context([TEST_LEAF].as_ref().into(), None, &tx)
+        .unwrap();
+    let merk = Merk::open_layered_with_root_key(
+        FaultableReads(storage),
+        Some(root_key.clone()),
+        TreeType::NormalTree,
+        Some(&Element::value_defined_cost_for_serialized_value),
+        grove_version,
+    )
+    .unwrap()
+    .expect("open the Merk");
+    // The element that is not the root is fetched from storage when read.
+    let below_root: &[u8] = if root_key == b"target" {
+        b"referrer"
+    } else {
+        b"target"
+    };
+
+    fn assert_storage_error<T: std::fmt::Debug>(result: Result<T, MerkError>, getter: &str) {
+        assert!(
+            matches!(
+                &result,
+                Err(MerkError::StorageError(grovedb_storage::Error::StorageError(message)))
+                    if message == INJECTED_READ_FAILURE
+            ),
+            "{getter}: expected the storage error, got {result:?}"
+        );
+    }
+
+    with_failed_parent_read(below_root, || {
+        assert_storage_error(
+            Element::get_optional(&merk, below_root, true, grove_version).unwrap(),
+            "get_optional",
+        );
+        assert_storage_error(
+            Element::get(&merk, below_root, true, grove_version).unwrap(),
+            "get",
+        );
+        assert_storage_error(
+            Element::get_value_hash(&merk, below_root, true, grove_version).unwrap(),
+            "get_value_hash",
+        );
+        assert_storage_error(
+            Element::get_with_value_hash(&merk, below_root, true, grove_version).unwrap(),
+            "get_with_value_hash",
+        );
+
+        // The reciprocity audit's element read passes it on.
+        let audited =
+            GroveDb::element_for_reciprocity_audit(&merk, below_root, true, grove_version);
+        assert!(
+            matches!(&audited, Err(Error::MerkError(MerkError::StorageError(_)))),
+            "got {audited:?}"
+        );
+    });
+
+    // A key the Merk does not hold is still "no element", and a healthy
+    // read returns the element.
+    assert!(
+        GroveDb::element_for_reciprocity_audit(&merk, b"missing", true, grove_version)
+            .expect("absence, not an error")
+            .is_none()
+    );
+    assert!(
+        GroveDb::element_for_reciprocity_audit(&merk, below_root, true, grove_version)
+            .expect("healthy read")
+            .is_some()
     );
 }
