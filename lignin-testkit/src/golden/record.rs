@@ -259,9 +259,9 @@ fn quoted(op: &Op) -> String {
 /// its own.
 ///
 /// An operation whose cost names the bytes it freed by owner and epoch is
-/// a kind of its own too, and another when it names more than one epoch:
-/// a trace shows a refund, and one split across epochs, for each operation
-/// that makes one.
+/// a kind of its own too, and another when it names more than one epoch of
+/// one owner: a trace shows a refund, and one split across epochs, for each
+/// operation that makes one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Kind {
     op: Discriminant<Op>,
@@ -277,9 +277,9 @@ struct Kind {
 enum Refund {
     /// Not at all, or not by owner and epoch.
     Unsplit,
-    /// To one epoch of one owner.
+    /// To one epoch of each owner it names.
     OneEpoch,
-    /// To several.
+    /// To several epochs of one owner.
     SeveralEpochs,
 }
 
@@ -289,10 +289,10 @@ impl Refund {
         else {
             return Refund::Unsplit;
         };
-        match owners.values().map(|epochs| epochs.len()).sum() {
-            0 => Refund::Unsplit,
-            1 => Refund::OneEpoch,
-            _ => Refund::SeveralEpochs,
+        match owners.values().map(|epochs| epochs.len()).max() {
+            None | Some(0) => Refund::Unsplit,
+            Some(1) => Refund::OneEpoch,
+            Some(_) => Refund::SeveralEpochs,
         }
     }
 }

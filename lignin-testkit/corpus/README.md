@@ -103,7 +103,7 @@ For each grove version (`v1` to `v5`):
 
 | Trace | Database | Seed | Steps written out in full |
 | --- | --- | --- | --- |
-| one per workload of `Workload::suite` (`documents`, `balances`, …) | its own | `0x1` | the first of each kind of operation |
+| one per workload of `Workload::suite` (`documents`, `balances`, …) | its own | `0x1` | the first of each kind of operation; every step of `tree-deletes` |
 | `suite`: every workload of the suite, one after another | one for all | `0x4c49474e494e` | the first of each kind of operation |
 | `legacy-…`: one per hand-written case, see below | its own | `0x0` (no generator is used) | all |
 
@@ -118,7 +118,7 @@ What a step holds depends on its operation:
 | --- | --- | --- | --- |
 | a write, a batch | none | after it, inside the open transaction | |
 | a batch in two segments (`PartialBatch`) | the cost GroveDB handed its caller when the first segment paused | after it | |
-| a batch with Drive's storage-flag callbacks (`FlagsBatch`), and one in two segments (`FlagsPartialBatch`) | none, and the cost at the pause | after it | |
+| a batch with Drive's storage-flag callbacks (`FlagsBatch`), one that updates a document (`FlagsHandoverBatch`), and one in two segments (`FlagsPartialBatch`) | none, and the cost at the pause | after it | |
 | a delete with Drive's callback for freed bytes (`SectionalDelete`, `SectionalDeleteUpTree`) | none, and how many keys it deleted | after it | |
 | `Commit` | none; the cost is that of committing the transaction | of the committed state | |
 | `FlushPendingDrops` | the records reclaimed, skipped as live again, and left unresolved | after it | |
@@ -143,7 +143,32 @@ reads after the block return them. The bytes an operation frees are in its
 cost, named by owner and epoch: `removed={owner/epoch=bytes,…}`, where an
 operation under GroveDB's own callbacks has one number. Of each kind of
 operation, the first step that names one epoch and the first that names
-several are written out in full as well.
+several epochs of one owner are written out in full as well.
+
+A `FlagsHandoverBatch` runs the callback Drive applies a batch that updates
+a document with, from protocol version 15 on: an element written under
+another owner goes to that owner with its history, and whole where one of
+the two owners is in the batch's list of owners who pay for all of an
+element (a gas sponsor). GroveDB takes that second answer from a callback
+on grove version 5 only, so the streams of the earlier versions hold no
+such handover. There the old element is freed like a deleted one, key
+included, and the new one is added whole.
+
+`tree-deletes` is written out in full because its steps are read next to
+each other. Each round deletes, in one block and in each of four ways,
+three trees that hold the same number of items: `fresh-…`, created and
+filled in that block, `rewritten-…`, committed in the block before and
+written into in this one, and `untouched-…`, committed in the block before.
+GroveDB charges what a deleted tree held by the records the committed state
+holds under its keys, not by what the transaction sees. So in rounds 0 and
+2, where the block replaced two values of the rewritten tree and nothing
+else, its delete frees exactly the bytes the delete of its untouched twin
+frees, although one value is a hundred bytes longer by then and another
+twenty shorter, which shows in the bytes it loads. The delete of the fresh
+tree frees 38 bytes for each of the keys the tree held, the stored key and
+the length of a record that is not there, and loads less.
+`the_charge_for_a_deleted_tree_is_in_the_corpus` checks the files for
+this.
 
 A stream marks a path query as proven when GroveDB proves it on the grove
 version the stream was generated for. Such a proof is verified with
