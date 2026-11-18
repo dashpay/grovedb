@@ -144,7 +144,7 @@ them so that the simulation can be run again when they change:
 | cell header: flags, key length, value length | 4 |
 | cell address in a link or a hosted-root pointer | 6 |
 | value pointer, in place of an out-of-line value | 16 (value-log-format.md, section 4) |
-| header of a value-log record | 18 (value-log-format.md, section 2) |
+| header of a value-log record | 18, once for each part of a value (value-log-format.md, section 2 and V6) |
 
 The key, the feature type, the aggregate data and the value are counted at
 the length Merk's own record has for them. So a cell is
@@ -191,7 +191,9 @@ Merk. Both are in cells the write holds (F4).
 address can still name it: S3 rewrote them in the commit that freed it, and a
 snapshot of an earlier version reads the earlier version of both pages
 (TXN-01). The lowest free number is taken first, so equal histories give
-equal pages.
+equal pages. The id of a page that a write empties (M3) is not used again
+before that write has committed; how much later is for STORE-10 and
+`transactions.md` to say. So within one write a page id names one page.
 
 **S5. Child pointers need stable slots. The value log does not.** If slots
 were positions, as in a flat page (P13 of `flat-page.md`), every insert into
@@ -813,9 +815,15 @@ The page model sees nothing else.
   the Merks each element hosts, and the root each names, with the mirror,
   and the root of the root Merk with the one GroveDB states. So the mirror
   misses no Merk: every Merk is reached through an element of a Merk that
-  was checked. The tests run it after every block on every workload of
-  BASE-01's suite, and every run ends with it, the run of one million
-  documents included.
+  was checked.
+- When it runs. The tests run it after every block on every workload of
+  BASE-01's suite. The large runs run it at every sample, after every flush
+  of pending drops and at the end: on the reference workload that is every
+  100,000 transitions. A comparison reads every record, so one for each of
+  fifty thousand blocks of two million nodes is out of reach. Between two
+  comparisons a miss could be put right by a later write to the same node
+  before it is seen. What guards against that is the runs that compare at
+  every block, on the same generators and the same code.
 - On the reference workload it counts 46.5 node records and 20.5 KB per
   transition as RocksDB receives them, averaged over the load, and 49.3
   records in its last tenth. The plan states 58.8 records and 23.9 KB for
@@ -866,13 +874,16 @@ How each is counted:
   transition. An entry of the subtree directory that has to be written
   (a Merk created or cleared, its root changed, its root cell carried, and
   one for a dropped subtree whatever is nested in it, D1) is counted as one
-  more page. The 7.04 is 6.90 tree pages and 0.14 directory entries.
-- Half of the transitions dirty 7 pages or fewer, 99% dirty 10 or fewer. The
-  most is 107. Such peaks are directory entries: a fragment that leaves a
-  page of the owner index takes the co-located subtrees of its owners with
-  it, and each of those roots has its directory entry rewritten (S3). The
-  peak grows with the page size (39 at 4 KiB, 203 at 64 KiB in runs of a
-  tenth of the size) while the tree pages one split writes do not.
+  more page. An entry is counted when a rule carries the root cell, also
+  when a later rule of the same write brings the cell back. The 7.04 is
+  6.90 tree pages and 0.14 directory entries.
+- **The target is met as an average.** No rule bounds what one transition
+  dirties. Half of the transitions dirty 7 pages or fewer, 99% dirty 10 or
+  fewer, and the most is 107. Such peaks are directory entries: a fragment
+  that leaves a page of the owner index takes the co-located subtrees of
+  its owners with it, and each of those roots has its directory entry
+  rewritten (S3). The peak grows with the page size (27 at 4 KiB, 55 at
+  16 KiB, 213 at 64 KiB) while the tree pages one split writes do not.
 
 Over the load:
 
@@ -907,7 +918,7 @@ Every other parameter as proposed, the whole reference load:
 | 8,192 | 30.2 | 70.5% | 10.86 | 7.18 | 1.55 |
 | 16,384 | 63.1 | 73.5% | 9.14 | 5.60 | 1.59 |
 | **32,768** | **129.0** | **75.0%** | **7.04** | **4.44** | **1.63** |
-| 65,536 | 255.3 | 74.2% | 6.59 | 4.19 | 1.60 |
+| 65,536 | 255.4 | 74.2% | 6.59 | 4.19 | 1.60 |
 
 The pages dirtied follow the page size and nothing else does. A page of 4 KiB
 holds 14 nodes, which is four levels of a tree; the paths of one transition
@@ -1024,15 +1035,15 @@ defaults, on the proposed layout. A transition is one direct write or one
 batch. "At its largest" is the sample with the most nodes; every one of these
 workloads ends by deleting much of what it built.
 
-| Workload | Size | Merk records per transition | Pages dirtied per transition | of them directory entries | At its largest: nodes per page, fill | Fill at the end | Reclaimed after the blocks: cells, page writes |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `deep-nesting` | 8 chains of 127 nested trees, 64 leaves each | 88.5 | 3.05 | 1.58 | 148.5, 55.1% (6 pages) | 55.1% | 1,266, 8 |
-| `tiny-subtrees` | 20,000 subtrees of 1 to 3 elements | 19.3 | 4.77 | 1.53 | 185.9, 66.5% | 55.6% | 13,370, 1,687 |
-| `delete-heavy` | four trees of 20,000 keys, filled and emptied four times | 16.3 | 2.46 | 0.00 | 181.4, 79.3% | all but 9 nodes deleted | 2,448, 8 |
-| `long-keys` | 20,000 keys of 255 bytes | 20.4 | 3.65 | 0.00 | 61.2, 73.7% | 50.6% | none |
-| `large-values` | 4,000 values of up to 16 KB, stored twice | 10.7 | 1.76 | 0.00 | 154.5, 67.4% | 45.0% | none |
-| `moves` | values, references and one tree of every type, moved back and forth 50 times | 15.2 | 3.84 | 2.84 | 96.0, 37.4% (1 page) | 37.4% | 4,550, 500 |
-| `index-rekey` | 20,000 documents indexed by 440 values, every value tree moved, then 2,000 more documents | 35.3 | 5.49 | 0.25 | 101.8, 70.9% | 70.9% | 16,808, 11 |
+| Workload | Size | Merk records per transition | Pages dirtied per transition: average | of them directory entries | 99% of transitions at most; the most | At its largest: nodes per page, fill | Fill at the end | Reclaimed after the blocks: cells, page writes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `deep-nesting` | 8 chains of 127 nested trees, 64 leaves each | 88.5 | 3.05 | 1.58 | 5; 195 | 148.5, 55.1% (6 pages) | 55.1% | 1,266, 8 |
+| `tiny-subtrees` | 20,000 subtrees of 1 to 3 elements | 19.3 | 4.77 | 1.53 | 28; 80 | 185.9, 66.5% | 55.6% | 13,370, 1,687 |
+| `delete-heavy` | four trees of 20,000 keys, filled and emptied four times | 16.3 | 2.46 | 0.00 | 10; 14 | 181.4, 79.3% | all but 9 nodes deleted | 2,448, 8 |
+| `long-keys` | 20,000 keys of 255 bytes | 20.4 | 3.65 | 0.00 | 16; 20 | 61.2, 73.7% | 50.6% | none |
+| `large-values` | 4,000 values of up to 16 KB, stored twice | 10.7 | 1.76 | 0.00 | 4; 4 | 154.5, 67.4% | 45.0% | none |
+| `moves` | values, references and one tree of every type, moved back and forth 50 times | 15.2 | 3.84 | 2.84 | 12; 20 | 96.0, 37.4% (1 page) | 37.4% | 4,550, 500 |
+| `index-rekey` | 20,000 documents indexed by 440 values, every value tree moved, then 2,000 more documents | 35.3 | 5.49 | 0.25 | 9; 99 | 101.8, 70.9% | 70.9% | 16,808, 11 |
 
 - **Deep nesting.** A write at the bottom of a chain changes 127 Merks, and
   RocksDB is handed 89 node records per transition on average. They lie in
@@ -1055,7 +1066,11 @@ workloads ends by deleting much of what it built.
   not land where the dropped cells were. An engine that re-hosts would
   write the two cells of each move and the same directory entries, and no
   cell of the moved trees.
-- **Pages dirtied stay below 8 on all seven**, and nodes per page above 15.
+- **The average of pages dirtied stays below 8 on all seven**, and nodes per
+  page above 15. Single transitions go far above 8 on six of them. The
+  largest are transitions that create or drop many Merks at once, each a
+  directory entry: 195 for a chain of 127 nested trees, 80 in
+  `tiny-subtrees`.
 - **Fill is below 70% wherever much was deleted.** M2 moves a fragment only
   out of a page below the merge threshold of 35%. A workload that deletes a
   third of everything leaves its pages near half full, above that
@@ -1249,10 +1264,10 @@ The simulator is `lignin-testkit::layout_sim`.
 | Largest size, overflow (section 6) | `Model::cap_fragments`, `settle_overflow`, `split`, `move_out`, `beside`, `choose` | The first split of a page sends about half of it away and keeps the top; a fragment root goes up to its parent's page; a fragment above the largest size is split where it is; a fragment that leaves goes to a page beside it when the seed limit allows, which raises fill; the choice of parts, its tie-breaks, and more than twelve parts; a cell of half a page is refused (C7). |
 | Merge (section 7) | `Model::absorb_small`, `merge_underfull` | A small fragment rejoins its parent's page; a page below the threshold gives its fragment to a page beside it, and does not without the threshold. |
 | Rotation, delete (section 8) | `Model::apply` | A rotation moves nothing; with `carry_on_rotation` the node that rose is carried; a replacement takes the deleted node's page, and does not without `carry_on_delete`. |
-| Values (section 9) | `Model::carry`, `Model::count_moves`, `Stats::moves` | A cell that ends a transition in another page is counted once, with its out-of-line value and the record header; not when it is back where it was, not when the transition created it, and without the value when the transition wrote the value anyway. |
+| Values (section 9) | `Model::carry`, `Model::count_moves`, `Stats::moves`, `Config::value_log_bytes` | A cell that ends a transition in another page is counted once, with its out-of-line value and the record header; not when it is back where it was, not when the transition created it, and without the value when the transition wrote the value anyway. A value longer than one record pays a header for each part. |
 | Drop (section 11) | `Model::apply`, `Model::reclaim`, `Grove::drop_merk` | The nodes of a dropped Merk leave the layout without dirtying their pages; the host's page and one directory entry are written, whatever is nested in the Merk; the cells keep their room until the block ends; the reclaimer frees a page that held nothing else and writes one that did. |
 | Counting (14.1) | `report::{Stats, Report}` | Pages per transition and per block; percentiles; the last tenth of a run; the printed report. |
-| Bookkeeping | `Model::check` | Damage to each of the model's tables is reported: a node in no page, or in one after it is gone; a cell size; the cell count; a page's totals; the page count; the byte total; the free pages; a page above its capacity. The integration tests recount every layout from the mirror, after every transition on the small documents workload and every sixteenth on the others. The large runs recount at every sample, and every run at its end. |
+| Bookkeeping | `Model::check` | Damage to each of the model's tables is reported: a node in no page, or in one after it is gone; a cell size; the cell count; a page's totals, dead cells included; the page count; the byte total; the free pages; a page above its capacity. A freed page is not handed out before the block ends. A run that ends without a commit ends its block. The integration tests recount every layout from the mirror, after every transition on the small documents workload and every sixteenth on the others. The large runs recount at every sample, and every run at its end. |
 
 Unit tests and the small workloads:
 
