@@ -186,12 +186,11 @@ above *Lr* are then not part of the database. Recovery must leave nothing
 that names them (DU3), and the next commit takes *Lr* + 1.
 
 That number was carried, before the crash, by a commit that no longer
-exists. No other choice satisfies both documents: leaving the lost numbers
-unused would put a gap into the count, which format.md 3.2 rules out and on
-which the log format relies (consecutive groups differ by one). format.md
-3.2 does not spell this case out. This document cannot change it; section 17
-item 1 asks the owner to add the qualification there. Until then, this rule
-is how the transaction and recovery tasks read it.
+exists. No other choice satisfies both format.md and DEC-04: leaving the
+lost numbers unused would put a gap into the count, which format.md 3.2
+rules out and on which the log format relies (consecutive groups differ by
+one). format.md 3.2 states the qualification and points to DU3, which is
+what makes the reuse safe.
 
 **CV7. `CommitVersion::NONE` means "not yet".** A structure that records the
 version at which something stopped being current (PV1) stores `NONE` while it
@@ -1653,14 +1652,14 @@ the root, at `GroveVersion::latest()`. "None" is a call with no transaction.
 Each is a decision the plan did not make and that later tasks build on. They
 are listed so the owner can overrule one before code depends on it.
 
-1. **Commit versions stay dense** (section 3), and **format.md 3.2 needs one
-   qualification that only the owner can merge.** It says a version is never
-   reused and never goes down. With DEC-04 a crash can lose the newest
-   commits, and the next commit then takes a number a lost commit had (CV6).
-   The sentence should read "along the history that survives a crash".
-   Keeping lost numbers unused instead would break "no gaps". DU3 adds the
-   recovery rule that makes the reuse safe. A second, smaller point: a
-   commit with an empty write set takes no version (CV2).
+1. **Commit versions stay dense** (section 3), with one qualification that
+   the owner ruled into format.md 3.2 with this task: a version is never
+   reused and never goes down along the history that survives a crash. With
+   DEC-04 a crash can lose the newest commits, and the next commit then
+   takes a number a lost commit had (CV6). Keeping lost numbers unused
+   instead would break "no gaps". DU3 is the recovery rule that makes the
+   reuse safe. A second, smaller point: a commit with an empty write set
+   takes no version (CV2).
 2. **The state is modelled as records keyed as RocksDB keys them** (ST1,
    ST2), and the conflict rule is over those keys, not over pages. A
    page-level rule would be simpler to build and would not be RocksDB's.
