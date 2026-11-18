@@ -1130,24 +1130,6 @@ fn put_stop_height(out: &mut Vec<u8>, stop_path_height: Option<u16>) {
 }
 
 impl BatchOp {
-    /// The subtree and the key the op writes or deletes. None for an
-    /// append, which names the tree it appends to.
-    pub fn place(&self) -> Option<(&Path, &[u8])> {
-        match self {
-            BatchOp::InsertOrReplace { path, key, .. }
-            | BatchOp::InsertOnly { path, key, .. }
-            | BatchOp::InsertIfNotExists { path, key, .. }
-            | BatchOp::Replace { path, key, .. }
-            | BatchOp::RefreshReference { path, key, .. }
-            | BatchOp::Delete { path, key }
-            | BatchOp::DeleteTree { path, key, .. }
-            | BatchOp::Patch { path, key, .. }
-            | BatchOp::Move { path, key, .. }
-            | BatchOp::DropFlat { path, key, .. } => Some((path, key)),
-            BatchOp::Append { .. } => None,
-        }
-    }
-
     /// The element the op stores, if it stores one.
     pub fn element(&self) -> Option<&Element> {
         match self {

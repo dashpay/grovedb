@@ -3552,9 +3552,14 @@ fn one_of_each_flags_kind() -> Vec<Op> {
         in_segments(vec![put(b"partial", flagged(90, 8, b))], Vec::new(), None),
         in_segments(vec![put(b"partial", flagged(190, 9, b))], Vec::new(), None),
         in_segments(vec![delete(b"partial")], Vec::new(), None),
-        // Without flags, what a delete frees is not divided.
+        // With flags that name no epoch, what a delete frees is not
+        // divided.
         in_segments(
-            vec![new(&tree, b"plain", Element::new_item(vec![7; 20]))],
+            vec![new(
+                &tree,
+                b"plain",
+                Element::new_item_with_flags(vec![7; 20], Some(Vec::new())),
+            )],
             Vec::new(),
             None,
         ),
@@ -3568,7 +3573,7 @@ fn one_of_each_flags_kind() -> Vec<Op> {
     ]
 }
 
-const PINNED_FLAGS_KINDS: &str = "037a46b43814d8bd4f177aa817caf046e248f76b36fa592f418a6ea78e1709a5";
+const PINNED_FLAGS_KINDS: &str = "15a49554f7334c6aa882d44901f4315c88ec188891b683f02eef61156606cc3e";
 
 /// The canonical encoding of the kinds the fourth unit added: each one
 /// differs from every other, and the bytes are pinned. Together they are
