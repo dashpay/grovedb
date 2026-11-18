@@ -7,7 +7,7 @@
 
 use std::{collections::BTreeMap, slice};
 
-use lignin_io::sim::{Fault, FaultRule, OpKind, OpRecord, SimConfig, SimVfs};
+use lignin_io::sim::{CrashPoint, Fault, FaultRule, OpKind, OpRecord, SimConfig, SimVfs};
 
 use super::{
     model::{check_recovered, first_manifest, with_another_log, Run, SEGMENT_LIFE},
@@ -16,6 +16,11 @@ use super::{
 };
 
 const FAULTS: [Fault; 2] = [Fault::Eio, Fault::Enospc];
+
+/// The place of the rename among the operations of a replacement: after the
+/// failed removal of a temporary file that is not there, its creation, its
+/// write and its sync.
+const RENAME_OF_A_REPLACEMENT: u64 = 5;
 
 /// How the disk fails, from one operation on.
 #[derive(Clone, Copy, Debug)]
@@ -249,6 +254,45 @@ fn a_replacement_that_fails_from_its_rename_on_is_settled_by_opening_the_manifes
             replace(&mut store, third.clone()).expect("the manifest is replaced");
             assert_eq!(manifests_a_crash_can_leave(&fs), slice::from_ref(&third));
         }
+    }
+}
+
+#[test]
+fn a_segment_directory_whose_sync_failed_is_made_durable_by_the_next_open() {
+    for fault in FAULTS {
+        let fs = sim_fs(SimConfig::new(63));
+        let mut manifest = created(&fs, empty_manifest());
+        fs.add_rule(FaultRule::new(fault).on(OpKind::SyncDir));
+        let error = SegmentStore::open(&manifest).unwrap_err();
+        assert_eq!(injected_op(&error).map(|(fault, _)| fault), Some(fault));
+
+        let segments = SegmentStore::open(&manifest).expect("the segments open");
+        let _writer = segments.create().expect("a segment is created");
+        fs.crash_at(CrashPoint::AfterOp(
+            fs.stats().ops + RENAME_OF_A_REPLACEMENT,
+        ));
+        let error = segments.commit(&mut manifest).unwrap_err();
+        assert!(is_power_loss(&error), "{error}");
+
+        let image = fs.crash_image();
+        let crash = crash_states(&image, &EVERY_STATE);
+        assert!(crash.exhaustive);
+        let mut named = 0;
+        for (plan, state) in crash.states {
+            let context = || format!("{image:?}\n{plan:?}");
+            let _context = OnFailure(&context);
+            let mut manifest =
+                ManifestStore::open(shared(&state), db_dir()).expect("the manifest opens");
+            let segments = SegmentStore::open(&manifest).expect("the segments open");
+            named += manifest.manifest().unwrap().files().len();
+            let mut writer = segments.create().expect("a segment is created");
+            segments.commit(&mut manifest).expect("it is named");
+            append_blocks(&mut writer, 2, 1);
+        }
+        assert!(
+            named > 0,
+            "no state kept the manifest that names the segment"
+        );
     }
 }
 

@@ -78,7 +78,7 @@ fn append_to(
 }
 
 #[test]
-fn a_new_database_gets_its_segment_directory_once() {
+fn a_new_database_gets_its_segment_directory_once_and_every_open_makes_it_durable() {
     let dir = tempfile::tempdir().unwrap();
     let vfs = faulty_std();
     let manifest =
@@ -87,12 +87,13 @@ fn a_new_database_gets_its_segment_directory_once() {
 
     let segments = SegmentStore::open(&manifest).unwrap();
     let seg = "seg".to_owned();
+    let synced = (Op::SyncDir, dir_name(dir.path()));
     assert_eq!(
         vfs.take_calls(),
         [
             (Op::ReadDir, seg.clone()),
             (Op::CreateDir, seg.clone()),
-            (Op::SyncDir, dir_name(dir.path())),
+            synced.clone(),
         ]
     );
     assert_eq!(names(dir.path()), ["MANIFEST", "seg"]);
@@ -101,7 +102,7 @@ fn a_new_database_gets_its_segment_directory_once() {
 
     drop(segments);
     SegmentStore::open(&manifest).unwrap();
-    assert_eq!(vfs.take_calls(), [(Op::ReadDir, seg)]);
+    assert_eq!(vfs.take_calls(), [(Op::ReadDir, seg), synced]);
 }
 
 #[test]

@@ -113,8 +113,26 @@
 //!   because a segment takes blocks only once a durable manifest records its
 //!   id. An id whose file was created and never named can be used again.
 //!
+//! # When the file layer fails
+//!
+//! An operation that the file layer fails returns that error in a
+//! [`SegmentStoreError`], and leaves this:
+//!
+//! | Failed | Left behind |
+//! | --- | --- |
+//! | [`ManifestStore::update`], before its rename | The old manifest, in force. The update can be made again. |
+//! | [`ManifestStore::update`], in its rename or the sync of the directory | The old manifest or the new one, whole. The [`ManifestStore`] answers [`SegmentStoreError::ManifestInDoubt`] until the manifest is opened again. |
+//! | [`SegmentStore::create`] | No segment. Its id is not used again in this session. |
+//! | [`SegmentWriter::append`], or the footer of [`SegmentWriter::seal`] | The segment's blocks, ending where they did. |
+//! | A sync of a segment | The segment as it was last synced, which is all a manifest names of it. It takes no more blocks ([`SegmentStoreError::SegmentFailed`]). |
+//! | The deletion of a dropped segment's file | The new manifest, in force, and the file, which the next call or the next session deletes ([`SegmentStoreError::NotDeleted`]). |
+//!
 //! # What the caller does
 //!
+//! - It creates the database directory and makes that name durable, by
+//!   syncing the directory above it, before the first manifest is written. A
+//!   crash takes a directory whose name was not synced, with everything in
+//!   it.
 //! - It holds the directory's lock ([`lignin_io::Vfs::lock`]) while a
 //!   [`ManifestStore`] or a writable [`SegmentStore`] of the directory
 //!   exists.

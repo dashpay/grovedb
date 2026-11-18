@@ -387,8 +387,12 @@ impl SegmentStore {
     /// has an id above the last id in the manifest and holds more than a file
     /// header, the open fails with
     /// [`SegmentStoreError::UnnamedSegmentHoldsBlocks`] and removes nothing.
-    /// Other entries of `seg/` are left alone. `seg/` is created if it is
-    /// missing.
+    /// Other entries of `seg/` are left alone.
+    ///
+    /// `seg/` is created if it is missing. Its name is made durable whether
+    /// or not this call created it: an earlier open may have created it and
+    /// failed before it could sync the database directory, and a manifest
+    /// must not name a segment in a directory that a crash can take away.
     pub fn open(manifest: &ManifestStore) -> Result<Self, SegmentStoreError> {
         let current = manifest.manifest()?;
         let store = Self::load(manifest.vfs().clone(), manifest.dir(), current, false)?;
@@ -434,19 +438,20 @@ impl SegmentStore {
 
     fn list_or_create_dir(&self) -> Result<Vec<DirEntry>, SegmentStoreError> {
         let seg_dir = FileNames::SEGMENT.dir(&self.dir);
-        match self.vfs.read_dir(&seg_dir) {
-            Ok(entries) => Ok(entries),
+        let entries = match self.vfs.read_dir(&seg_dir) {
+            Ok(entries) => entries,
             Err(error) if error.kind() == ErrorKind::NotFound => {
                 self.vfs
                     .create_dir(&seg_dir)
                     .map_err(SegmentStoreError::io("create the directory", &seg_dir))?;
-                self.vfs
-                    .sync_dir(&self.dir)
-                    .map_err(SegmentStoreError::io("sync the directory", &self.dir))?;
-                Ok(Vec::new())
+                Vec::new()
             }
-            Err(error) => Err(SegmentStoreError::io("list", &seg_dir)(error)),
-        }
+            Err(error) => return Err(SegmentStoreError::io("list", &seg_dir)(error)),
+        };
+        self.vfs
+            .sync_dir(&self.dir)
+            .map_err(SegmentStoreError::io("sync the directory", &self.dir))?;
+        Ok(entries)
     }
 
     fn remove_unnamed(
