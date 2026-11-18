@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use lignin_format::{CommitVersion, FileId, FormatError, FormatVersion, PageId};
+use lignin_format::{table::LogPlace, CommitVersion, FileId, FormatError, FormatVersion, PageId};
 
 use crate::segment::{BlockLocation, SegmentStoreError};
 
@@ -157,6 +157,16 @@ pub enum PageTableError {
         /// The version the log is durable through.
         durable: CommitVersion,
     },
+    /// The place in the log of the sample of the value counts that the
+    /// checkpoint offered holds is after the place the log is durable up
+    /// to. Naming it could leave a recovery with a log that ends before the
+    /// sample was taken.
+    LogBehindSample {
+        /// The place of the sample.
+        needed: LogPlace,
+        /// The place the log is durable up to, if any of it is.
+        durable: Option<LogPlace>,
+    },
     /// The manifest no longer names a checkpoint, but its file could not be
     /// deleted. Everything else the call had to do was done. The deletion is
     /// tried again whenever the checkpoints are told of a manifest, and by
@@ -269,6 +279,28 @@ impl fmt::Display for PageTableError {
                 f,
                 "the checkpoint needs the log durable through version {needed}, and it is \
                  durable through {durable}"
+            ),
+            Self::LogBehindSample {
+                needed,
+                durable: Some(durable),
+            } => write!(
+                f,
+                "the checkpoint's sample of the value counts was taken at offset {} of log file \
+                 {}, and the log is durable up to offset {} of log file {}",
+                needed.offset(),
+                needed.file(),
+                durable.offset(),
+                durable.file()
+            ),
+            Self::LogBehindSample {
+                needed,
+                durable: None,
+            } => write!(
+                f,
+                "the checkpoint's sample of the value counts was taken at offset {} of log file \
+                 {}, and none of the log is durable",
+                needed.offset(),
+                needed.file()
             ),
             Self::NotDeleted { path, source } => write!(
                 f,

@@ -247,6 +247,24 @@ impl ModelTable {
 pub(super) struct Checkpointed {
     pub(super) covers: CommitVersion,
     pub(super) links: Vec<(PageId, Link)>,
+    /// The sample of the value counts that was written with it.
+    pub(super) sample: CountSample,
+}
+
+/// Where the log ends once the commit of `version` is in it: five commits
+/// to a log file. Nowhere before the first commit.
+fn log_end(version: u64) -> Option<LogPlace> {
+    let commit = version.checked_sub(1)?;
+    let file = id(1 + (commit / 5) as u32);
+    Some(LogPlace::new(file, 20 + 64 * (1 + commit % 5)).expect("a place"))
+}
+
+/// How far the log is durable when it is durable through `version`.
+fn log_through(version: u64) -> LogDurable {
+    LogDurable {
+        version: self::version(version),
+        place: log_end(version),
+    }
 }
 
 /// What a commit did to its page.
@@ -311,10 +329,11 @@ pub(super) struct Model {
 }
 
 impl Model {
-    fn checkpointed(&self, covers: CommitVersion) -> Checkpointed {
+    fn checkpointed(&self, covers: CommitVersion, sample: &CountSample) -> Checkpointed {
         Checkpointed {
             covers,
             links: self.table.links(),
+            sample: sample.clone(),
         }
     }
 
@@ -563,6 +582,7 @@ impl Run {
         let found = info.as_ref().map(|info| Checkpointed {
             covers: info.covers(),
             links: links.clone(),
+            sample: info.sample().clone(),
         });
         if model.pending.is_some() && found == model.pending {
             model.installed();
@@ -661,6 +681,27 @@ impl Run {
             .blocks
             .insert((location.file.get(), location.offset), block);
         Ok(location)
+    }
+
+    /// A sample of the value counts, as one taken when the log ended after
+    /// the commit of `at`: the counts of up to three value-log files.
+    fn sample(&mut self, at: u64) -> CountSample {
+        let mut file = 0;
+        let counts = (0..self.rng.below(4))
+            .map(|_| {
+                file += 1 + self.rng.below(3) as u32;
+                ValueCount {
+                    file: id(file),
+                    values: self.rng.below(1000),
+                    bytes: self.rng.next() >> 20,
+                    miscounted: self.rng.below(5) == 0,
+                }
+            })
+            .collect();
+        CountSample {
+            place: log_end(at),
+            counts,
+        }
     }
 
     fn payload(&mut self) -> Vec<u8> {
@@ -776,10 +817,20 @@ impl Run {
                     covers = covers.min(self.model.log_durable);
                 }
                 let covers = version(covers);
+                let sampled_at = if behind {
+                    self.model.log_durable
+                } else {
+                    self.model.version
+                };
+                let sample = self.sample(sampled_at);
                 let session = self.session.as_mut().expect("a session");
-                let written = session.db.checkpoints.write(&session.table, covers)?;
-                let expected = self.model.checkpointed(covers);
+                let written = session
+                    .db
+                    .checkpoints
+                    .write(&session.table, covers, &sample)?;
+                let expected = self.model.checkpointed(covers, &sample);
                 assert_eq!(written.covers(), covers);
+                assert_eq!(written.sample(), &sample);
                 assert_eq!(written.links(), expected.links.len() as u64);
                 assert_eq!(
                     written.reaches(),
@@ -791,7 +842,7 @@ impl Run {
                 if !behind {
                     self.model.log_durable = self.model.version;
                 } else if needed.get() > self.model.log_durable {
-                    let durable = version(self.model.log_durable);
+                    let durable = log_through(self.model.log_durable);
                     let refused =
                         db.checkpoints
                             .install(&written, durable, &mut db.manifest, &db.segments);
@@ -799,14 +850,14 @@ impl Run {
                         matches!(
                             refused,
                             Err(PageTableError::LogBehind { needed: asked, durable: found })
-                                if asked == needed && found == durable
+                                if asked == needed && found == durable.version
                         ),
                         "{refused:?}"
                     );
                     self.model.log_durable = needed.get();
                 }
                 self.model.pending = Some(expected);
-                let durable = version(self.model.log_durable);
+                let durable = log_through(self.model.log_durable);
                 db.checkpoints
                     .install(&written, durable, &mut db.manifest, &db.segments)?;
                 session.written = None;
@@ -814,8 +865,12 @@ impl Run {
             }
             Step::Abandon => {
                 let covers = version(self.model.written_back());
+                let sample = self.sample(self.model.version);
                 let session = self.session.as_mut().expect("a session");
-                let written = session.db.checkpoints.write(&session.table, covers)?;
+                let written = session
+                    .db
+                    .checkpoints
+                    .write(&session.table, covers, &sample)?;
                 session.written = Some(written.clone());
                 session
                     .db
@@ -981,6 +1036,7 @@ pub(super) fn check_recovered(fs: &SimVfs, model: &Model) -> bool {
     let found = info.as_ref().map(|info| Checkpointed {
         covers: info.covers(),
         links: links.clone(),
+        sample: info.sample().clone(),
     });
     let new = found != model.acked;
     if new {

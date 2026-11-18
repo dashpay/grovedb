@@ -1,12 +1,15 @@
 //! Page-table checkpoints, `table/<n>.pt`: the links of every page's chain,
-//! as the page table held them when the checkpoint was written.
+//! as the page table held them when the checkpoint was written, and a sample
+//! of the count of live values of every value-log file.
 //!
 //! See section 3 of `docs/lignindb/page-table.md`.
 //!
 //! ```text
 //! file header     20 bytes: kind 5 (page table), sequence = the file id
 //! links record    zero or more, each with 4096 links except the last
-//! end record      the totals, and the commit version the checkpoint covers
+//! counts record   zero or more, each with 4096 counts except the last
+//! end record      the totals, the commit version the checkpoint covers, and
+//!                 the place in the log of the sample of the counts
 //! ```
 //!
 //! Every record is in the default frame, and its payload starts with the
@@ -15,7 +18,10 @@
 //! ```text
 //! kind  record  payload after the kind byte
 //!    1  links   28 bytes for each link
-//!    2  end     covers (u64), newest version (u64), link count (u64)
+//!    2  end     covers (u64), newest version (u64), link count (u64),
+//!               log file id (u32) and offset (u64) of the sample's place,
+//!               count of counts (u64)
+//!    3  counts  24 bytes for each value-log file
 //! ```
 //!
 //! ```text
@@ -30,11 +36,21 @@
 //! Links are in ascending order of page id, and the links of one page are in
 //! the order of its chain, oldest first.
 //!
+//! ```text
+//! offset  size  field of a count
+//!      0     4  value-log file id
+//!      4     4  bit 0: the count is known to be wrong, the rest 0
+//!      8     8  live values
+//!     16     8  bytes the live values take
+//! ```
+//!
+//! Counts are in ascending order of file id, one for a file.
+//!
 //! # Example
 //!
 //! ```
 //! use lignin_format::{
-//!     table::{self, BlockPointer, Link, LinkKind},
+//!     table::{self, BlockPointer, Link, LinkKind, LogPlace, ValueCount},
 //!     CommitVersion, FileId, PageId,
 //! };
 //!
@@ -53,12 +69,24 @@
 //!     link(9, 38, LinkKind::Free),
 //! ];
 //!
+//! // The sample of the counts: one value-log file with three live values,
+//! // taken when the log ended at offset 81940 of `wal/00000017.log`.
+//! let place = LogPlace::new(FileId::new(17).expect("not zero"), 81_940)?;
+//! let counts = [ValueCount {
+//!     file: FileId::new(5).expect("not zero"),
+//!     values: 3,
+//!     bytes: 4096,
+//!     miscounted: false,
+//! }];
+//!
 //! // The bytes of the whole checkpoint file, and back.
-//! let bytes = table::encode(id, version(41), links)?;
+//! let bytes = table::encode(id, version(41), links, Some(place), counts)?;
 //! let checkpoint = table::decode(&bytes, id)?;
 //! assert_eq!(checkpoint.links, links);
+//! assert_eq!(checkpoint.value_counts, counts);
 //! assert_eq!(checkpoint.end.covers, version(41));
 //! assert_eq!(checkpoint.end.reaches, Some(version(41)));
+//! assert_eq!(checkpoint.end.place, Some(place));
 //! # Ok(())
 //! # }
 //! ```
@@ -89,14 +117,15 @@ pub enum TableError {
         found: u32,
     },
     /// The record kind is defined, but not allowed where it was found: a
-    /// record after the end record, or a links record after one that was not
-    /// full.
+    /// record after the end record, a links or counts record after one of
+    /// its kind that was not full, or a links record after a counts record.
     UnexpectedRecordKind {
         /// The code found in the record.
         code: u32,
     },
     /// A length does not agree with the bytes or the fields it describes: a
-    /// links record that is empty or not whole links, an end record of
+    /// links or counts record that is empty or not whole items, a counts
+    /// record with more counts than a record holds, an end record of
     /// another size, or bytes after the end record.
     LengthMismatch {
         /// The length the other bytes and fields require.
@@ -130,6 +159,20 @@ pub enum TableError {
     /// The end record's newest version is not the newest version of the
     /// links before it.
     ReachMismatch,
+    /// A count's file id is not above the file id of the count before it.
+    CountsOutOfOrder,
+    /// The end record's count of counts is not the number of counts before
+    /// it.
+    ValueCountMismatch {
+        /// The number of counts in the records.
+        expected: u64,
+        /// The count in the end record.
+        found: u64,
+    },
+    /// The place in the log is one no log record starts or ends at: an
+    /// offset inside the header of its log file, or an offset with no log
+    /// file.
+    InvalidLogPlace,
 }
 
 impl fmt::Display for TableError {
@@ -163,6 +206,16 @@ impl fmt::Display for TableError {
                 f,
                 "end record's newest version is not the newest version of the links"
             ),
+            Self::CountsOutOfOrder => {
+                write!(f, "counts are not in ascending order of file id")
+            }
+            Self::ValueCountMismatch { expected, found } => {
+                write!(
+                    f,
+                    "end record counts {found} counts, the records hold {expected}"
+                )
+            }
+            Self::InvalidLogPlace => write!(f, "the place in the log is not one a record has"),
         }
     }
 }
@@ -185,6 +238,12 @@ pub const MIN_BLOCK_LEN: u32 = FRAME_LEN as u32;
 /// The longest block a link may point to.
 pub const MAX_BLOCK_LEN: u32 = (FRAME_LEN + MAX_BODY_LEN) as u32;
 
+/// Bytes one count takes in a counts record.
+pub const VALUE_COUNT_LEN: usize = 24;
+
+/// The number of counts in every counts record except the last.
+pub const VALUE_COUNTS_PER_RECORD: usize = 4096;
+
 /// The longest payload of a record: the kind byte and a full run of links.
 pub const MAX_PAYLOAD_LEN: usize = KIND_LEN + LINKS_PER_RECORD * LINK_LEN;
 
@@ -196,9 +255,13 @@ pub const MAX_RECORD_LEN: usize = RecordHeader::ENCODED_LEN + MAX_PAYLOAD_LEN;
 pub const END_RECORD_LEN: usize = RecordHeader::ENCODED_LEN + KIND_LEN + END_BODY_LEN;
 
 const KIND_LEN: usize = 1;
-const END_BODY_LEN: usize = 24;
+const END_BODY_LEN: usize = 44;
 const LINKS_RECORD: u8 = 1;
 const END_RECORD: u8 = 2;
+const VALUE_COUNTS_RECORD: u8 = 3;
+const LINKS_PAYLOAD_LEN: usize = KIND_LEN + LINKS_PER_RECORD * LINK_LEN;
+const VALUE_COUNTS_PAYLOAD_LEN: usize = KIND_LEN + VALUE_COUNTS_PER_RECORD * VALUE_COUNT_LEN;
+const MISCOUNTED: u32 = 1;
 
 const KIND_SHIFT: u32 = 28;
 const LEN_MASK: u32 = (1 << KIND_SHIFT) - 1;
@@ -210,6 +273,7 @@ const FREE: u32 = 3;
 
 const _: () = assert!(MAX_BLOCK_LEN <= LEN_MASK);
 const _: () = assert!(MAX_PAYLOAD_LEN <= RecordHeader::MAX_PAYLOAD_LEN);
+const _: () = assert!(VALUE_COUNTS_PAYLOAD_LEN <= MAX_PAYLOAD_LEN);
 
 /// Where a block is: its segment, the file offset it starts at and its
 /// length in the file, frame included.
@@ -352,6 +416,85 @@ impl Link {
     }
 }
 
+/// A place in the log: the offset `offset` of the log file `file`, where one
+/// record ends and the next begins.
+///
+/// Places are in the order of the log: by file, then by offset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LogPlace {
+    file: FileId,
+    offset: u64,
+}
+
+impl LogPlace {
+    /// The place at `offset` of the log file `file`.
+    ///
+    /// The offset is at or after the end of the file header, where the first
+    /// record of a file starts. Anything else is
+    /// [`TableError::InvalidLogPlace`].
+    pub const fn new(file: FileId, offset: u64) -> Result<Self, FormatError> {
+        if offset < FileHeader::ENCODED_LEN as u64 {
+            return Err(FormatError::Table(TableError::InvalidLogPlace));
+        }
+        Ok(Self { file, offset })
+    }
+
+    /// The log file.
+    pub const fn file(&self) -> FileId {
+        self.file
+    }
+
+    /// The offset in the log file.
+    pub const fn offset(&self) -> u64 {
+        self.offset
+    }
+}
+
+/// The live values of one value-log file, in a sample of the counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ValueCount {
+    /// The value-log file.
+    pub file: FileId,
+    /// How many live values the file holds.
+    pub values: u64,
+    /// The bytes those values take in the file.
+    pub bytes: u64,
+    /// The count is known to be wrong.
+    pub miscounted: bool,
+}
+
+impl ValueCount {
+    fn encode(&self) -> [u8; VALUE_COUNT_LEN] {
+        let flags = if self.miscounted { MISCOUNTED } else { 0 };
+        let mut bytes = [0; VALUE_COUNT_LEN];
+        bytes[..4].copy_from_slice(&self.file.encode());
+        bytes[4..8].copy_from_slice(&flags.to_le_bytes());
+        bytes[8..16].copy_from_slice(&self.values.to_le_bytes());
+        bytes[16..].copy_from_slice(&self.bytes.to_le_bytes());
+        bytes
+    }
+
+    fn decode(bytes: &[u8; VALUE_COUNT_LEN], version: FormatVersion) -> Result<Self, FormatError> {
+        match version {
+            FormatVersion::V1 => Self::decode_v1(bytes),
+        }
+    }
+
+    fn decode_v1(bytes: &[u8; VALUE_COUNT_LEN]) -> Result<Self, FormatError> {
+        let file = FileId::decode(array(&bytes[..4])).ok_or(FormatError::MissingId)?;
+        let flags = u32::from_le_bytes(array(&bytes[4..8]));
+        if flags & !MISCOUNTED != 0 {
+            return Err(FormatError::NonZeroReserved);
+        }
+        Ok(Self {
+            file,
+            values: u64::from_le_bytes(array(&bytes[8..16])),
+            bytes: u64::from_le_bytes(array(&bytes[16..])),
+            miscounted: flags & MISCOUNTED != 0,
+        })
+    }
+}
+
 /// The end record of a checkpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct End {
@@ -363,6 +506,12 @@ pub struct End {
     pub reaches: Option<CommitVersion>,
     /// The number of links in the checkpoint.
     pub links: u64,
+    /// The place in the log of the sample of the counts: the counts include
+    /// every change whose record is before it and none whose record is after
+    /// it. `None` is the place before every record of the log.
+    pub place: Option<LogPlace>,
+    /// The number of counts in the checkpoint.
+    pub value_counts: u64,
 }
 
 impl End {
@@ -371,7 +520,12 @@ impl End {
         payload[0] = END_RECORD;
         payload[1..9].copy_from_slice(&self.covers.encode());
         payload[9..17].copy_from_slice(&CommitVersion::encode_optional(self.reaches));
-        payload[17..].copy_from_slice(&self.links.to_le_bytes());
+        payload[17..25].copy_from_slice(&self.links.to_le_bytes());
+        let file = self.place.map(|place| place.file);
+        payload[25..29].copy_from_slice(&FileId::encode_optional(file));
+        let offset = self.place.map_or(0, |place| place.offset);
+        payload[29..37].copy_from_slice(&offset.to_le_bytes());
+        payload[37..].copy_from_slice(&self.value_counts.to_le_bytes());
         payload
     }
 
@@ -382,10 +536,18 @@ impl End {
                 found: body.len() as u64,
             }));
         };
+        let offset = u64::from_le_bytes(array(&body[28..36]));
+        let place = match FileId::decode(array(&body[24..28])) {
+            Some(file) => Some(LogPlace::new(file, offset)?),
+            None if offset == 0 => None,
+            None => return Err(FormatError::Table(TableError::InvalidLogPlace)),
+        };
         Ok(Self {
             covers: CommitVersion::decode(array(&body[..8])).ok_or(FormatError::MissingId)?,
             reaches: CommitVersion::decode(array(&body[8..16])),
-            links: u64::from_le_bytes(array(&body[16..])),
+            links: u64::from_le_bytes(array(&body[16..24])),
+            place,
+            value_counts: u64::from_le_bytes(array(&body[36..])),
         })
     }
 }
@@ -402,12 +564,15 @@ enum Chain {
     Freed,
 }
 
-/// The rules on the order of links, applied to one link after another.
+/// The rules on the order of links and of counts, applied to one after
+/// another.
 #[derive(Debug, Clone, Copy, Default)]
 struct Order {
     last: Option<(PageId, CommitVersion, Chain)>,
     links: u64,
     reaches: Option<CommitVersion>,
+    last_counted: Option<FileId>,
+    value_counts: u64,
 }
 
 impl Order {
@@ -437,11 +602,22 @@ impl Order {
         Ok(())
     }
 
-    fn end(&self, covers: CommitVersion) -> End {
+    fn accept_count(&mut self, count: &ValueCount) -> Result<(), FormatError> {
+        if self.last_counted >= Some(count.file) {
+            return Err(FormatError::Table(TableError::CountsOutOfOrder));
+        }
+        self.last_counted = Some(count.file);
+        self.value_counts += 1;
+        Ok(())
+    }
+
+    fn end(&self, covers: CommitVersion, place: Option<LogPlace>) -> End {
         End {
             covers,
             reaches: self.reaches,
             links: self.links,
+            place,
+            value_counts: self.value_counts,
         }
     }
 }
@@ -476,12 +652,14 @@ pub fn decode_file_header(bytes: &[u8], id: FileId) -> Result<FormatVersion, For
     Ok(header.version())
 }
 
-/// Writes the records of a checkpoint, one link after another.
+/// Writes the records of a checkpoint, one link after another and then one
+/// count after another.
 ///
 /// The file header is not part of it: write [`file_header`] first. Links are
-/// pushed in the order the file holds them, and a record is appended to the
-/// output each time [`LINKS_PER_RECORD`] links are complete, so a caller can
-/// write the output to a file as it fills.
+/// pushed in the order the file holds them, then counts, and a record is
+/// appended to the output each time [`LINKS_PER_RECORD`] links or
+/// [`VALUE_COUNTS_PER_RECORD`] counts are complete, so a caller can write
+/// the output to a file as it fills.
 #[derive(Debug, Clone)]
 pub struct Encoder {
     order: Order,
@@ -507,25 +685,64 @@ impl Encoder {
     /// record, the record is appended to `out`.
     ///
     /// Rejects a link that may not follow the one before it
-    /// ([`TableError::LinksOutOfOrder`], [`TableError::InvalidChain`]). The
-    /// encoder is then as it was.
+    /// ([`TableError::LinksOutOfOrder`], [`TableError::InvalidChain`]), and
+    /// any link once a count was pushed
+    /// ([`TableError::UnexpectedRecordKind`]). The encoder is then as it
+    /// was.
     pub fn push(&mut self, link: Link, out: &mut Vec<u8>) -> Result<(), FormatError> {
+        if self.payload[0] != LINKS_RECORD {
+            return Err(FormatError::Table(TableError::UnexpectedRecordKind {
+                code: u32::from(LINKS_RECORD),
+            }));
+        }
         self.order.accept(&link)?;
         self.payload.extend_from_slice(&link.encode());
-        if self.payload.len() == MAX_PAYLOAD_LEN {
+        if self.payload.len() == LINKS_PAYLOAD_LEN {
             self.flush(out)?;
         }
         Ok(())
     }
 
-    /// Appends the last links record, if links are left over, and the end
-    /// record, to `out`. `covers` is the commit version the checkpoint
-    /// covers.
-    pub fn finish(mut self, covers: CommitVersion, out: &mut Vec<u8>) -> Result<End, FormatError> {
+    /// Adds `count` after the counts pushed so far. The first count ends
+    /// the links: the last links record, if links are left over, is
+    /// appended to `out`. If the count completes a record, that record is
+    /// appended as well.
+    ///
+    /// Rejects a count whose file is not above the file of the count before
+    /// it ([`TableError::CountsOutOfOrder`]). The encoder is then as it was.
+    pub fn push_value_count(
+        &mut self,
+        count: ValueCount,
+        out: &mut Vec<u8>,
+    ) -> Result<(), FormatError> {
+        self.order.accept_count(&count)?;
+        if self.payload[0] == LINKS_RECORD {
+            if self.payload.len() > KIND_LEN {
+                self.flush(out)?;
+            }
+            self.payload[0] = VALUE_COUNTS_RECORD;
+        }
+        self.payload.extend_from_slice(&count.encode());
+        if self.payload.len() == VALUE_COUNTS_PAYLOAD_LEN {
+            self.flush(out)?;
+        }
+        Ok(())
+    }
+
+    /// Appends the last links or counts record, if items are left over, and
+    /// the end record, to `out`. `covers` is the commit version the
+    /// checkpoint covers, and `place` the place in the log of the sample
+    /// the counts are.
+    pub fn finish(
+        mut self,
+        covers: CommitVersion,
+        place: Option<LogPlace>,
+        out: &mut Vec<u8>,
+    ) -> Result<End, FormatError> {
         if self.payload.len() > KIND_LEN {
             self.flush(out)?;
         }
-        let end = self.order.end(covers);
+        let end = self.order.end(covers, place);
         write_record(&end.encode(), out)?;
         Ok(end)
     }
@@ -542,6 +759,8 @@ impl Encoder {
 pub enum Record<'a> {
     /// A run of links.
     Links(Links<'a>),
+    /// A run of counts.
+    ValueCounts(ValueCounts<'a>),
     /// The end record. Nothing follows it.
     End(End),
 }
@@ -570,9 +789,38 @@ impl Iterator for Links<'_> {
 
 impl ExactSizeIterator for Links<'_> {}
 
+/// The counts of one counts record, in file order.
+#[derive(Debug, Clone)]
+pub struct ValueCounts<'a> {
+    version: FormatVersion,
+    items: std::slice::Iter<'a, [u8; VALUE_COUNT_LEN]>,
+}
+
+impl Iterator for ValueCounts<'_> {
+    type Item = ValueCount;
+
+    fn next(&mut self) -> Option<ValueCount> {
+        let version = self.version;
+        self.items
+            .by_ref()
+            .find_map(|item| ValueCount::decode(item, version).ok())
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.items.size_hint()
+    }
+}
+
+impl ExactSizeIterator for ValueCounts<'_> {}
+
+/// Which records may come next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Expect {
+    /// A links record, a counts record or the end record.
     Any,
+    /// A counts record or the end record: the links have ended.
+    CountsOrEnd,
+    /// The end record: the counts have ended.
     End,
     Nothing,
 }
@@ -607,8 +855,8 @@ impl Decoder {
     ///
     /// The record is checked in this order: its length against
     /// [`MAX_PAYLOAD_LEN`] and against the bytes there are, its checksum,
-    /// its kind, its place among the records, and then every link in it. A
-    /// record that fails leaves the decoder as it was.
+    /// its kind, its place among the records, and then every link or count
+    /// in it. A record that fails leaves the decoder as it was.
     pub fn read<'a>(&mut self, bytes: &'a [u8]) -> Result<(Record<'a>, &'a [u8]), FormatError> {
         let (payload, rest) = read_record(bytes, MAX_PAYLOAD_LEN)?;
         Ok((self.record(payload)?, rest))
@@ -641,6 +889,7 @@ impl Decoder {
         };
         let allowed = match kind {
             LINKS_RECORD => self.expect == Expect::Any,
+            VALUE_COUNTS_RECORD => matches!(self.expect, Expect::Any | Expect::CountsOrEnd),
             END_RECORD => self.expect != Expect::Nothing,
             code => {
                 return Err(FormatError::UnknownRecordKind {
@@ -653,42 +902,87 @@ impl Decoder {
                 code: u32::from(kind),
             }));
         }
-        if kind == END_RECORD {
-            let end = End::decode(body)?;
-            let found = self.order.end(end.covers);
-            if end.links != found.links {
-                return Err(FormatError::Table(TableError::LinkCountMismatch {
-                    expected: found.links,
-                    found: end.links,
-                }));
-            }
-            if end.reaches != found.reaches {
-                return Err(FormatError::Table(TableError::ReachMismatch));
-            }
-            self.expect = Expect::Nothing;
-            return Ok(Record::End(end));
+        match kind {
+            END_RECORD => self.end_v1(body).map(Record::End),
+            VALUE_COUNTS_RECORD => self.value_counts_v1(body).map(Record::ValueCounts),
+            _ => self.links_v1(body).map(Record::Links),
         }
+    }
 
-        let (items, rest) = body.as_chunks::<LINK_LEN>();
-        if items.is_empty() || !rest.is_empty() {
+    fn end_v1(&mut self, body: &[u8]) -> Result<End, FormatError> {
+        let end = End::decode(body)?;
+        let found = self.order.end(end.covers, end.place);
+        if end.links != found.links {
+            return Err(FormatError::Table(TableError::LinkCountMismatch {
+                expected: found.links,
+                found: end.links,
+            }));
+        }
+        if end.reaches != found.reaches {
+            return Err(FormatError::Table(TableError::ReachMismatch));
+        }
+        if end.value_counts != found.value_counts {
+            return Err(FormatError::Table(TableError::ValueCountMismatch {
+                expected: found.value_counts,
+                found: end.value_counts,
+            }));
+        }
+        self.expect = Expect::Nothing;
+        Ok(end)
+    }
+
+    fn value_counts_v1<'a>(&mut self, body: &'a [u8]) -> Result<ValueCounts<'a>, FormatError> {
+        let items = whole_items::<VALUE_COUNT_LEN>(body)?;
+        if items.len() > VALUE_COUNTS_PER_RECORD {
             return Err(FormatError::Table(TableError::LengthMismatch {
-                expected: (items.len().max(1) * LINK_LEN) as u64,
+                expected: (VALUE_COUNTS_PER_RECORD * VALUE_COUNT_LEN) as u64,
                 found: body.len() as u64,
             }));
         }
+        let mut order = self.order;
+        for item in items {
+            order.accept_count(&ValueCount::decode(item, self.version)?)?;
+        }
+        self.order = order;
+        self.expect = if items.len() < VALUE_COUNTS_PER_RECORD {
+            Expect::End
+        } else {
+            Expect::CountsOrEnd
+        };
+        Ok(ValueCounts {
+            version: self.version,
+            items: items.iter(),
+        })
+    }
+
+    fn links_v1<'a>(&mut self, body: &'a [u8]) -> Result<Links<'a>, FormatError> {
+        let items = whole_items::<LINK_LEN>(body)?;
         let mut order = self.order;
         for item in items {
             order.accept(&Link::decode(item, self.version)?)?;
         }
         self.order = order;
         if items.len() < LINKS_PER_RECORD {
-            self.expect = Expect::End;
+            self.expect = Expect::CountsOrEnd;
         }
-        Ok(Record::Links(Links {
+        Ok(Links {
             version: self.version,
             items: items.iter(),
-        }))
+        })
     }
+}
+
+/// The items of `N` bytes that the body of a links or counts record is made
+/// of: at least one, and nothing left over.
+fn whole_items<const N: usize>(body: &[u8]) -> Result<&[[u8; N]], FormatError> {
+    let (items, rest) = body.as_chunks::<N>();
+    if items.is_empty() || !rest.is_empty() {
+        return Err(FormatError::Table(TableError::LengthMismatch {
+            expected: (items.len().max(1) * N) as u64,
+            found: body.len() as u64,
+        }));
+    }
+    Ok(items)
 }
 
 /// A whole checkpoint, read into memory.
@@ -700,21 +994,30 @@ pub struct Checkpoint {
     pub end: End,
     /// Every link, in file order.
     pub links: Vec<Link>,
+    /// Every count, in file order.
+    pub value_counts: Vec<ValueCount>,
 }
 
 /// The bytes of the whole checkpoint file `id` that covers the commit
-/// version `covers` and holds `links`, which must be in file order.
+/// version `covers` and holds `links` and then `value_counts`, each of which
+/// must be in file order. `place` is the place in the log of the sample the
+/// counts are.
 pub fn encode(
     id: FileId,
     covers: CommitVersion,
     links: impl IntoIterator<Item = Link>,
+    place: Option<LogPlace>,
+    value_counts: impl IntoIterator<Item = ValueCount>,
 ) -> Result<Vec<u8>, FormatError> {
     let mut out = file_header(id).encode().to_vec();
     let mut encoder = Encoder::new();
     for link in links {
         encoder.push(link, &mut out)?;
     }
-    encoder.finish(covers, &mut out)?;
+    for count in value_counts {
+        encoder.push_value_count(count, &mut out)?;
+    }
+    encoder.finish(covers, place, &mut out)?;
     Ok(out)
 }
 
@@ -725,6 +1028,7 @@ pub fn decode(bytes: &[u8], id: FileId) -> Result<Checkpoint, FormatError> {
     let version = decode_file_header(bytes, id)?;
     let mut decoder = Decoder::new(version);
     let mut links = Vec::new();
+    let mut value_counts = Vec::new();
     let mut rest = bytes.get(FileHeader::ENCODED_LEN..).unwrap_or_default();
     loop {
         let at = bytes.len() - rest.len();
@@ -738,11 +1042,13 @@ pub fn decode(bytes: &[u8], id: FileId) -> Result<Checkpoint, FormatError> {
         rest = after;
         match record {
             Record::Links(record) => links.extend(record),
+            Record::ValueCounts(record) => value_counts.extend(record),
             Record::End(end) if rest.is_empty() => {
                 return Ok(Checkpoint {
                     version,
                     end,
                     links,
+                    value_counts,
                 });
             }
             Record::End(_) => {

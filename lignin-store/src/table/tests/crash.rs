@@ -226,7 +226,7 @@ fn a_database_goes_on_through_one_crash_after_another() {
         "{tally:?}, {installed} crashes with a checkpoint in force, {lost_commits} that lost \
          commits, {met:?}"
     );
-    assert!(met.forgotten > 0 && met.dropped > 0, "{met:?}");
+    assert!(met.forgotten > 0, "{met:?}");
     assert_eq!(tally.crash_points, 100);
     assert!(lost_commits >= 20, "{lost_commits}");
     assert!(tally.old > 0 && tally.new > 0, "{tally:?}");

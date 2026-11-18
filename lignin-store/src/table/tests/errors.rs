@@ -132,6 +132,24 @@ fn a_page_table_error_says_what_failed_and_where() {
             false,
         ),
         (
+            PageTableError::LogBehindSample {
+                needed: LogPlace::new(id(4), 900).unwrap(),
+                durable: LogPlace::new(id(3), 20).ok(),
+            },
+            "the checkpoint's sample of the value counts was taken at offset 900 of log file 4, \
+             and the log is durable up to offset 20 of log file 3",
+            false,
+        ),
+        (
+            PageTableError::LogBehindSample {
+                needed: LogPlace::new(id(4), 900).unwrap(),
+                durable: None,
+            },
+            "the checkpoint's sample of the value counts was taken at offset 900 of log file 4, \
+             and none of the log is durable",
+            false,
+        ),
+        (
             PageTableError::NotDeleted {
                 path: path(),
                 source: io_error(),

@@ -6,6 +6,9 @@
 //! - [`TableCheckpoints`] writes a checkpoint of the table to `table/`, has
 //!   the manifest name it, and deletes the checkpoints the manifest no
 //!   longer names. [`PageTable::load`] reads the one a manifest names.
+//! - A checkpoint also carries a [`CountSample`]: a sample of the value
+//!   log's counts of live values, which this module stores and gives back
+//!   and does not read.
 //!
 //! The bytes of a checkpoint are `lignin-format`'s:
 //! `docs/lignindb/page-table.md` specifies them, and the rules of this
@@ -23,7 +26,7 @@
 //! use lignin_io::{StdVfs, Vfs};
 //! use lignin_store::{
 //!     segment::{ManifestStore, SegmentStore},
-//!     table::{Link, PageTable, TableCheckpoints},
+//!     table::{CountSample, Link, LogDurable, PageTable, TableCheckpoints},
 //! };
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -57,8 +60,14 @@
 //! // A checkpoint that covers version 2: it is written, and then the
 //! // manifest names it. The log must be durable through every version the
 //! // checkpoint holds, here 2. Installing it syncs the segments first.
-//! let written = checkpoints.write(&table, version(2))?;
-//! checkpoints.install(&written, version(2), &mut manifest, &segments)?;
+//! // It also holds a sample of the value log's counts, which is empty
+//! // here: there is no value-log file.
+//! let written = checkpoints.write(&table, version(2), &CountSample::default())?;
+//! let log = LogDurable {
+//!     version: version(2),
+//!     place: None,
+//! };
+//! checkpoints.install(&written, log, &mut manifest, &segments)?;
 //!
 //! // The next session loads it from the manifest.
 //! let (loaded, info) = PageTable::load(&*vfs, dir.path(), manifest.manifest()?)?;
@@ -156,11 +165,30 @@
 //! a chain only ever gains newer links and loses ones no reader needs, each
 //! copy still holds every change up to *C*.
 //!
+//! # The sample of the value counts
+//!
+//! The value log's count of live values is recovered with the pages: from a
+//! sample of the counts, and the changes in the log after the sample's
+//! place ([the value log](crate::values)). The sample is stored in the
+//! checkpoint, so that the checkpoint a manifest names is also the sample a
+//! recovery uses.
+//!
+//! Whoever takes a checkpoint takes the sample from the value log, with the
+//! place the log had reached ([`LogPlace`]), and passes it to
+//! [`TableCheckpoints::write`]. Whoever recovers gets it back in
+//! [`CheckpointInfo::sample`] and hands it to the value log. The sample does
+//! not have to be of the moment any chain was copied: the place alone says
+//! which changes the counts include. A database with no value-log file has
+//! an empty sample, and a manifest that names no checkpoint has none.
+//!
+//! A checkpoint is named only once the log is durable up to the place of
+//! its sample ([`PageTableError::LogBehindSample`]).
+//!
 //! # The life of a checkpoint
 //!
 //! | Step | What happens |
 //! | --- | --- |
-//! | Write | [`TableCheckpoints::write`] creates `table/<id>.pt` under an id above every id used before, appends the links and the end record, and syncs the file. |
+//! | Write | [`TableCheckpoints::write`] creates `table/<id>.pt` under an id above every id used before, appends the links, the counts of the sample and the end record, and syncs the file. |
 //! | Install | [`TableCheckpoints::install`] checks that the log is durable through all the checkpoint needs ([`CheckpointInfo::log_needed`]), syncs the segments, replaces the manifest with one that names the checkpoint and the segments as they are then, and deletes the checkpoint that was named before. |
 //!
 //! Between the two the caller makes the log durable (see below). A
@@ -181,7 +209,8 @@
 //!
 //! - `MANIFEST` names the checkpoint of the last [`TableCheckpoints::install`]
 //!   that returned, or the one an install was naming when the crash came.
-//! - That checkpoint's file is in `table/`, whole, and loads.
+//! - That checkpoint's file is in `table/`, whole, and loads, with the
+//!   sample of the value counts that was written with it.
 //! - Every block a link of it points to is in a segment the manifest names,
 //!   below the segment's valid length, with the bytes that were appended.
 //! - Any other file in `table/` with a checkpoint's name holds nothing the
@@ -204,11 +233,15 @@
 //! - It passes [`TableCheckpoints::write`] a version that the table covers.
 //! - It keeps the log ahead of the checkpoint. Between `write` and
 //!   `install` it syncs the log through [`CheckpointInfo::log_needed`], and
-//!   it tells `install` which version the log is durable through. A
+//!   it tells `install` how far the log is durable ([`LogDurable`]). A
 //!   checkpoint that needs more is refused ([`PageTableError::LogBehind`]),
 //!   because a recovery could then land below one of its links, on a page
 //!   version its chain no longer gives, or below the commit that freed a
 //!   page it has no link of.
+//! - It takes the sample of the value counts for a checkpoint after the
+//!   sample of every checkpoint before it, syncs the log up to the sample's
+//!   place before `install`, and keeps the log from the place of the
+//!   checkpoint in force on.
 //! - Once a commit has pushed the free link of a page, it writes back
 //!   nothing older of that page: the table would refuse the link. Readers
 //!   below the freeing version are served from the buffer pool, and no
@@ -231,6 +264,7 @@ mod page_table;
 #[cfg(test)]
 mod tests;
 
-pub use checkpoint::{CheckpointInfo, TableCheckpoints};
+pub use checkpoint::{CheckpointInfo, CountSample, LogDurable, TableCheckpoints};
 pub use error::{LinkError, PageTableError};
+pub use lignin_format::table::{LogPlace, ValueCount};
 pub use page_table::{Link, LinkKind, PageTable};
