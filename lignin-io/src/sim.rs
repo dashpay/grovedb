@@ -74,7 +74,8 @@
 //! on durable with it, which can be earlier than the contract promises and
 //! never later. Everything else is as loose as the contract: a file created
 //! and synced in a new directory is gone if the directory's own name was not
-//! synced, and a name can outlive the removal of another name of its file.
+//! synced, and a file is lost if a crash keeps the removal of one of its
+//! names and loses the hard link that gave it another.
 //!
 //! Two more things follow from the model that are easy to miss. A write
 //! that overwrites the end of a file and grows it can survive as its bytes
@@ -116,7 +117,8 @@
 //!   operation.
 //! - [`prefixes`](CrashImage::prefixes) lists what a file system that writes
 //!   in order leaves, with the first lost write torn at each sector boundary.
-//!   [`holes`](CrashImage::holes) loses one change at a time, and
+//!   [`holes`](CrashImage::holes) loses one change at a time, with the
+//!   changes of names that build on it, and
 //!   [`reorders`](CrashImage::reorders) applies one change late.
 //! - [`every_plan`](CrashImage::every_plan) lists them all, for the small
 //!   cases where that is possible.
