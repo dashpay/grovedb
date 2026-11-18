@@ -18,6 +18,8 @@ grovedb-storage = { version = "6.1.1", path = "../storage", features = ["rocksdb
 grovedb-version = { version = "6.1.1", path = "../grovedb-version" }
 blake3 = { workspace = true }
 hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { version = "1", features = ["float_roundtrip"] }
 tempfile = { workspace = true }
 
 [dev-dependencies]
