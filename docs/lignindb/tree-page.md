@@ -184,7 +184,8 @@ given bytes from a record that was verified.
 size, and at most 65,535 bytes, because offsets in a page are 16 bits: a
 page of 64 KiB leaves its last byte unused, as a flat page does (P10 of
 `flat-page.md`). The image does not record the page size. A reader passes
-the size of its store's pages. An image written under a smaller page size
+the size of its store's pages, which the manifest records (M17 of
+`segment-manifest.md`). An image written under a smaller page size
 reads under a larger one. The lower bound is what TP14 needs.
 
 ### 3.2 Slots
@@ -605,7 +606,7 @@ against 1.626 and 0.803 (368 bytes).
 | MERK-05 Iteration | A cursor's value is a node record in Merk's encoding, which repeats each child's key. Those keys come from the children's cells, by the addresses in the links. | Whether records are built, or callers move to node views (PERF-05). |
 | FMT-08 Decoder fuzzing | The decoders: `TreePage::decode`, `TreePage::from_validated` with every accessor, `TreePage::check`, `TreePage::check_fragments`, `TreeCell::decode`. `TreePageMut` is fuzzed from valid pages only (W5). The golden bytes of section 2.5. | The targets. |
 | VER-07 Physical invariant checker | `TreePage::check_fragments` for F3 and C5 inside a page, and for the key length a link states for a child in the same page. `TreePage::check` for a page in a buffer. | Links that cross pages: the address, and the key length. The heights and the aggregate in a link, which are Merk's to check: the page does not interpret them. |
-| FMT-04 Flat page codec | Nothing changes in its bytes. Two things it could follow, both for the owner (section 8, items 3 and 12). | |
+| FMT-04 Flat page codec | It followed two things after this task (section 8, items 3 and 12): its image has no checksum, and its decoder checks an out-of-line value. | |
 
 ## 8. Choices made here that the plan left open
 
@@ -618,11 +619,13 @@ owner can overrule one while version 1 is still open (U10).
    measured against it: opening a store with a smaller page size than it was
    written with must be refused. `format.md` and the manifest have no field
    for it. The manifest body (FMT-06) is the natural place, as one more
-   fixed field of version 1.
+   fixed field of version 1. Settled: the manifest records it, and the
+   store refuses another size (M17 and M18 of `segment-manifest.md`).
 3. **No checksum inside the image** (TP3). Flat pages have one (4 bytes, and
    a pass over the page on each load). They could drop it for the same
    reason; nothing here depends on whether they do. What a checksum inside
    the image adds is a check after decompression, of the decompressor.
+   Settled: flat pages carry none either (P12 of `flat-page.md`).
 4. **Slot numbers start at 1 and 0 is "no slot"** (TP5), as page ids and
    file ids do, so B6 holds without an exception and a zero-filled address
    is "no cell". `SlotId` and `CellAddress` are in `lignin-format::ids`.
@@ -667,6 +670,7 @@ owner can overrule one while version 1 is still open (U10).
     was written, so a flat leaf entry that is marked out of line and is not
     a valid `ValuePointer` is damage, and `FlatPage::decode` can say so with
     `ValuePointer::decode`. That is a change to `flat_page`, not made here.
+    Settled: it does (P5 of `flat-page.md`).
 13. **A cell is replaced only by a cell with the same key** (W1). The
     plan's "cell update" needs no more, and it makes "a slot names one node
     between two departures" a property of the writer instead of a rule for
