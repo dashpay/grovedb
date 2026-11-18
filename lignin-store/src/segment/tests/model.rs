@@ -55,6 +55,8 @@ struct SegmentModel {
     blocks_end: u64,
     durable_len: u64,
     has_writer: bool,
+    /// A sync of the segment failed.
+    failed: bool,
 }
 
 impl SegmentModel {
@@ -67,7 +69,17 @@ impl SegmentModel {
             blocks_end: DATA_START,
             durable_len: DATA_START,
             has_writer: true,
+            failed: false,
         }
+    }
+
+    /// The segment ends at what is durable of it.
+    fn cut(&mut self) {
+        let kept = self.blocks_below(self.durable_len).len();
+        self.blocks.truncate(kept);
+        self.index.truncate(kept);
+        self.blocks_end = self.durable_len;
+        self.phase = Phase::Closed;
     }
 
     fn named(&self, raw_id: u32) -> LiveFile {
@@ -161,16 +173,12 @@ impl Model {
                 .or_else(|| self.dropped.remove(&id))
                 .expect("a named segment is known");
             let valid_len = named.valid_len();
+            segment.durable_len = valid_len;
             if named.state() == FileState::Sealed {
                 segment.phase = Phase::Sealed;
             } else {
-                segment.phase = Phase::Closed;
-                let kept = segment.blocks_below(valid_len).len();
-                segment.blocks.truncate(kept);
-                segment.index.truncate(segment.blocks.len());
-                segment.blocks_end = valid_len;
+                segment.cut();
             }
-            segment.durable_len = valid_len;
             segment.has_writer = false;
             live.insert(id, segment);
         }
@@ -229,7 +237,8 @@ pub(super) fn with_another_log(manifest: &Manifest) -> Manifest {
 }
 
 /// One step of a workload. A number is the id of the segment the step is
-/// taken on.
+/// taken on. In a script it counts the segments the script has created, from
+/// 1, which is the segment's id as long as no creation has failed.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Step {
     Create,
@@ -297,6 +306,10 @@ pub(super) struct Run {
     dir: PathBuf,
     rng: Rng,
     session: Option<Session>,
+    /// The manifest of a session whose segments did not open.
+    half_open: Option<ManifestStore>,
+    /// The ids of the segments created, in order.
+    created: Vec<u32>,
     pub(super) steps: usize,
     /// How often each kind of step was taken.
     pub(super) taken: BTreeMap<&'static str, usize>,
@@ -310,6 +323,8 @@ impl Run {
             dir: dir.to_path_buf(),
             rng: Rng::new(seed),
             session: None,
+            half_open: None,
+            created: Vec::new(),
             steps: 0,
             taken: BTreeMap::new(),
         }
@@ -337,21 +352,141 @@ impl Run {
             if self.session.is_none() {
                 self.open()?;
             }
-            self.take(*step)?;
+            self.take(self.in_script(*step))?;
             self.steps += 1;
         }
         Ok(())
     }
 
+    /// A step of a script, on the segment it means.
+    fn in_script(&self, step: Step) -> Step {
+        let id = |nth: u32| self.created[nth as usize - 1];
+        match step {
+            Step::Append(nth) => Step::Append(id(nth)),
+            Step::Block(nth, len) => Step::Block(id(nth), len),
+            Step::SyncOne(nth) => Step::SyncOne(id(nth)),
+            Step::Seal(nth) => Step::Seal(id(nth)),
+            Step::DropWriter(nth) => Step::DropWriter(id(nth)),
+            Step::DropSegment(nth) => Step::DropSegment(id(nth)),
+            Step::ReadBack(nth) => Step::ReadBack(id(nth)),
+            Step::Create | Step::Commit | Step::AnotherLog | Step::SyncAll | Step::Restart => step,
+        }
+    }
+
     /// Ends the session, as a process that exits does.
     pub(super) fn end_session(&mut self) {
         self.session = None;
+        self.half_open = None;
+    }
+
+    /// Takes the steps of `script` and goes on after one that fails, as a
+    /// caller of the store would: it opens again what did not open, settles
+    /// a manifest in doubt, and creates a segment or replaces the manifest
+    /// again. Any other step that failed is left at that. Stops at an error
+    /// that `ends_the_run` accepts, which is how a power loss ends it.
+    /// Returns how many calls failed.
+    pub(super) fn script_through_failures(
+        &mut self,
+        script: &[Step],
+        ends_the_run: &dyn Fn(&SegmentStoreError) -> bool,
+    ) -> Result<usize, SegmentStoreError> {
+        let mut failures = 0;
+        for step in script {
+            let made_again = matches!(step, Step::Create | Step::Commit | Step::AnotherLog);
+            let mut attempts = 0;
+            loop {
+                let is_open = self.session.is_some();
+                let result = if is_open {
+                    self.take(self.in_script(*step)).map(drop)
+                } else {
+                    self.open()
+                };
+                match result {
+                    Ok(()) if is_open => break,
+                    Ok(()) => {}
+                    Err(error) if ends_the_run(&error) => return Err(error),
+                    Err(error) => {
+                        failures += 1;
+                        attempts += 1;
+                        assert!(attempts < 4, "{step:?} keeps failing: {error}");
+                        if self.session.is_some() {
+                            self.failed(*step, &error)?;
+                            if !made_again {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            self.steps += 1;
+        }
+        Ok(failures)
+    }
+
+    /// Follows a step that failed: the model takes what the module
+    /// documentation says the failure leaves, and a manifest in doubt is
+    /// opened again.
+    fn failed(&mut self, step: Step, error: &SegmentStoreError) -> Result<(), SegmentStoreError> {
+        let sync_failed = matches!(error, SegmentStoreError::Io { op: "sync", .. });
+        let already_failed = matches!(error, SegmentStoreError::SegmentFailed { .. });
+        let model = &mut self.model;
+        match step {
+            Step::Create => model.last_id += 1,
+            Step::Commit | Step::AnotherLog => return self.settle_manifest(),
+            Step::Append(_) | Step::Block(..) | Step::ReadBack(_) | Step::Restart => {}
+            Step::SyncOne(id) | Step::Seal(id) => {
+                let segment = model.live.get_mut(&id).expect("a segment");
+                assert_eq!(already_failed, segment.failed, "{error}");
+                segment.failed |= sync_failed;
+            }
+            Step::SyncAll => {
+                for (id, segment) in &mut model.live {
+                    let path = FileNames::SEGMENT.path(&self.dir, super::id(*id));
+                    let is_written = matches!(segment.phase, Phase::Created | Phase::Open);
+                    if !is_written || segment.failed {
+                        continue;
+                    }
+                    match error {
+                        SegmentStoreError::Io { path: failed, .. } if *failed == path => {
+                            assert!(sync_failed, "{error}");
+                            segment.failed = true;
+                            if !segment.has_writer {
+                                segment.cut();
+                            }
+                        }
+                        _ => segment.durable_len = segment.blocks_end,
+                    }
+                }
+            }
+            Step::DropWriter(_) | Step::DropSegment(_) => {
+                panic!("{step:?} makes no call that can fail: {error}")
+            }
+        }
+        Ok(())
+    }
+
+    /// After a replacement that failed: opens the manifest again if it is in
+    /// doubt, takes the manifest in force into the model, and tells the
+    /// segment store.
+    fn settle_manifest(&mut self) -> Result<(), SegmentStoreError> {
+        let session = self.session.as_mut().expect("a session");
+        if session.manifest.manifest().is_err() {
+            session.manifest = ManifestStore::open(self.vfs.clone(), &self.dir)?;
+        }
+        let in_force = session.manifest.manifest()?;
+        if self.model.pending.as_ref() == Some(in_force) {
+            self.model.replaced();
+        } else {
+            assert_eq!(self.model.acked.as_ref(), Some(in_force));
+            self.model.pending = None;
+        }
+        session.segments.manifest_replaced(&session.manifest)
     }
 
     /// Goes on after a crash, on the file system `vfs` that the crash left
     /// with the manifest `found`.
     pub(super) fn crashed(&mut self, vfs: Arc<dyn Vfs>, found: Option<Manifest>) {
-        self.session = None;
+        self.end_session();
         self.vfs = vfs;
         self.model.crashed(found);
     }
@@ -403,6 +538,7 @@ impl Run {
                 let writer = session.segments.create()?;
                 let id = writer.file_id().get();
                 assert_eq!(id, model.last_id + 1);
+                self.created.push(id);
                 model.last_id = id;
                 model.live.insert(id, SegmentModel::created(id));
                 session.writers.insert(id, writer);
@@ -463,7 +599,11 @@ impl Run {
             }
             Step::DropWriter(id) => {
                 session.writers.remove(&id);
-                model.live.get_mut(&id).expect("a segment").has_writer = false;
+                let segment = model.live.get_mut(&id).expect("a segment");
+                segment.has_writer = false;
+                if segment.failed && segment.phase == Phase::Open {
+                    segment.cut();
+                }
                 Ok("drop a writer")
             }
             Step::DropSegment(id) => {
@@ -478,7 +618,7 @@ impl Run {
                 Ok("read back")
             }
             Step::Restart => {
-                self.session = None;
+                self.end_session();
                 self.model.restarted();
                 self.open()?;
                 Ok("restart")
@@ -486,22 +626,44 @@ impl Run {
         }
     }
 
+    /// Opens the database, and writes its first manifest if it has none. If
+    /// the segments do not open, the manifest stays open for the next try.
     fn open(&mut self) -> Result<(), SegmentStoreError> {
-        let manifest = if self.model.acked.is_none() {
-            self.model.pending = Some(first_manifest());
-            let manifest = ManifestStore::create(self.vfs.clone(), &self.dir, first_manifest())?;
-            self.model.replaced();
-            manifest
-        } else {
-            ManifestStore::open(self.vfs.clone(), &self.dir)?
+        let manifest = match self.half_open.take() {
+            Some(manifest) => manifest,
+            None => self.open_manifest()?,
         };
-        let segments = SegmentStore::open(&manifest)?;
-        self.session = Some(Session {
-            manifest,
-            segments,
-            writers: BTreeMap::new(),
-        });
-        Ok(())
+        match SegmentStore::open(&manifest) {
+            Ok(segments) => {
+                self.session = Some(Session {
+                    manifest,
+                    segments,
+                    writers: BTreeMap::new(),
+                });
+                Ok(())
+            }
+            Err(error) => {
+                self.half_open = Some(manifest);
+                Err(error)
+            }
+        }
+    }
+
+    fn open_manifest(&mut self) -> Result<ManifestStore, SegmentStoreError> {
+        let manifest = match ManifestStore::open(self.vfs.clone(), &self.dir) {
+            Err(SegmentStoreError::NoManifest { .. }) => {
+                assert!(self.model.acked.is_none(), "the manifest is gone");
+                self.model.pending = Some(first_manifest());
+                ManifestStore::create(self.vfs.clone(), &self.dir, first_manifest())?
+            }
+            opened => opened?,
+        };
+        if self.model.acked.is_none() {
+            assert_eq!(manifest.manifest()?, &first_manifest());
+            self.model.pending = Some(first_manifest());
+            self.model.replaced();
+        }
+        Ok(manifest)
     }
 
     /// Checks the running store against the model.

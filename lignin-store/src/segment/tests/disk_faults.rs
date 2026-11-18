@@ -5,9 +5,14 @@
 //! it had, or the new one where the failure came once the new one was in
 //! place.
 
-use std::{collections::BTreeMap, slice};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    slice,
+};
 
-use lignin_io::sim::{CrashPoint, Fault, FaultRule, OpKind, OpRecord, SimConfig, SimVfs};
+use lignin_io::sim::{
+    CrashImage, CrashPlan, CrashPoint, Fault, FaultRule, OpKind, OpRecord, SimConfig, SimVfs,
+};
 
 use super::{
     model::{check_recovered, first_manifest, with_another_log, Run, SEGMENT_LIFE},
@@ -166,6 +171,92 @@ fn a_fault_at_any_operation_fails_the_step_and_leaves_a_whole_manifest() {
         }
         println!("{disk:?}: {failed:?}");
         assert_eq!(failed.keys().copied().collect::<Vec<_>>(), kinds);
+    }
+}
+
+/// How many of the changes that follow a fault a crash is taken after.
+const CHANGES_AFTER_A_FAULT: u64 = 10;
+
+/// The states checked for each of the many crashes that follow a fault: the
+/// two ends, and each unsynced change lost alone. The last is the crash that
+/// shows a later step relying on something the failed one left undone.
+fn states_after_a_fault(image: &CrashImage) -> Vec<(CrashPlan, SimVfs)> {
+    let mut seen = BTreeSet::new();
+    let mut states = Vec::new();
+    for plan in [image.lose_all(), image.keep_all()]
+        .into_iter()
+        .chain(image.holes())
+    {
+        let state = image.recover(&plan).expect("a plan of the image fits it");
+        if seen.insert(state.fingerprint()) {
+            states.push((plan, state));
+        }
+    }
+    states
+}
+
+#[test]
+fn a_session_that_goes_on_after_a_fault_survives_a_crash_at_any_of_the_next_changes() {
+    let seed = 53;
+    for disk in [
+        Disk::FailsOnce(Fault::Eio),
+        Disk::FailsOnce(Fault::Enospc),
+        Disk::TearsAnAppend(Fault::Eio),
+    ] {
+        let (mut faults, mut crashes) = (0, 0);
+        let mut from_op = 1;
+        loop {
+            let begin = |crash_at: Option<CrashPoint>| {
+                let fs = sim_fs(traced(seed, 512));
+                fs.add_rule(disk.rule(from_op));
+                if let Some(point) = crash_at {
+                    fs.crash_at(point);
+                }
+                let run = Run::new(shared(&fs), db_dir(), seed);
+                (fs, run)
+            };
+
+            let (fs, mut run) = begin(None);
+            let failures = run
+                .script_through_failures(&SEGMENT_LIFE, &is_power_loss)
+                .expect("the session goes on after the fault");
+            let Some(failed) = failed_ops(&fs).into_iter().next() else {
+                assert_eq!(failures, 0);
+                break;
+            };
+            let context = || format!("{disk:?}: {failed}");
+            let _context = OnFailure(&context);
+            assert!(failures > 0);
+            run.check_session();
+            run.end_session();
+            assert!(!check_recovered(shared(&fs), db_dir(), &run.model));
+
+            let (fs, mut run) = begin(Some(CrashPoint::AfterOp(failed.op)));
+            let _ = run.script_through_failures(&SEGMENT_LIFE, &is_power_loss);
+            let changes_at_the_fault = fs.stats().changes;
+
+            for later in 1..=CHANGES_AFTER_A_FAULT {
+                let point = CrashPoint::AfterChange(changes_at_the_fault + later);
+                let (fs, mut run) = begin(Some(point));
+                if let Err(error) = run.script_through_failures(&SEGMENT_LIFE, &is_power_loss) {
+                    assert!(is_power_loss(&error), "{error}");
+                }
+                if !fs.is_powered_off() {
+                    break;
+                }
+                let image = fs.crash_image();
+                for (plan, state) in states_after_a_fault(&image) {
+                    let context = || format!("{later} changes later\n{image:?}\n{plan:?}");
+                    let _context = OnFailure(&context);
+                    check_recovered(Arc::new(state), db_dir(), &run.model);
+                }
+                crashes += 1;
+            }
+            faults += 1;
+            from_op = failed.op + 1;
+        }
+        println!("{disk:?}: {faults} faults, {crashes} crashes after them");
+        assert!(faults >= 10 && crashes >= 8 * faults, "{disk:?}");
     }
 }
 
