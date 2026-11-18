@@ -351,6 +351,8 @@ impl Segment {
 struct Segments {
     live: BTreeMap<FileId, Arc<Segment>>,
     dropped: BTreeMap<FileId, PathBuf>,
+    /// The highest id of a segment the store has had: what a manifest
+    /// records.
     last_id: Option<FileId>,
 }
 
@@ -362,12 +364,17 @@ struct Segments {
 /// caller does with the manifest.
 ///
 /// Every method takes `&self` and may be called from any thread. Reads do
-/// not wait for appends or syncs.
+/// not wait for appends or syncs. One segment is created at a time, and
+/// nothing but another creation waits for that.
 #[derive(Debug)]
 pub struct SegmentStore {
     vfs: Arc<dyn Vfs>,
     dir: PathBuf,
     read_only: bool,
+    /// The highest id a creation has taken. It is held for the length of a
+    /// creation, so that segments enter the store in the order of their ids,
+    /// and it is taken before `segments`.
+    creating: Mutex<Option<FileId>>,
     segments: RwLock<Segments>,
 }
 
@@ -416,8 +423,9 @@ impl SegmentStore {
         manifest: &Manifest,
         read_only: bool,
     ) -> Result<Self, SegmentStoreError> {
+        let last_id = manifest.last_file_ids().segment;
         let mut segments = Segments {
-            last_id: manifest.last_file_ids().segment,
+            last_id,
             ..Segments::default()
         };
         for named in manifest.files() {
@@ -430,6 +438,7 @@ impl SegmentStore {
             vfs,
             dir: dir.to_path_buf(),
             read_only,
+            creating: Mutex::new(last_id),
             segments: RwLock::new(segments),
         })
     }
@@ -518,23 +527,35 @@ impl SegmentStore {
         &self.dir
     }
 
+    #[cfg(test)]
+    pub(super) fn is_creating(&self) -> bool {
+        matches!(
+            self.creating.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        )
+    }
+
     /// Creates the next segment and returns its writer.
     ///
     /// The file is created under an id above every id used so far, with its
     /// header, and both are durable when this returns. The segment takes no
     /// block until a manifest names it: replace the manifest
     /// ([`Self::commit`]) before the first [`SegmentWriter::append`].
+    ///
+    /// One segment is created at a time: a second call waits for the first.
+    /// The segment and its id enter the store in one step, when the file is
+    /// whole. A manifest written before that step neither names the segment
+    /// nor records its id, so the id is not used up before a manifest can
+    /// name the segment ([`ManifestChange::FileIdReused`]).
+    ///
+    /// [`ManifestChange::FileIdReused`]: super::ManifestChange::FileIdReused
     pub fn create(&self) -> Result<SegmentWriter, SegmentStoreError> {
         self.check_writable()?;
-        let id = {
-            let mut segments = self.segments_mut();
-            let next = segments
-                .last_id
-                .map_or(1, |last| last.get().wrapping_add(1));
-            let id = FileId::new(next).ok_or(SegmentStoreError::FileIdsExhausted)?;
-            segments.last_id = Some(id);
-            id
-        };
+        let mut taken = self.creating.lock().unwrap_or_else(PoisonError::into_inner);
+        let next = taken.map_or(1, |last| last.get().wrapping_add(1));
+        let id = FileId::new(next).ok_or(SegmentStoreError::FileIdsExhausted)?;
+        *taken = Some(id);
+
         let appender = create_file(&*self.vfs, &self.dir, &FileNames::SEGMENT, id)?;
         let path = FileNames::SEGMENT.path(&self.dir, id);
         let reader = match self.vfs.open(&path, OpenMode::Read) {
@@ -546,7 +567,10 @@ impl SegmentStore {
             }
         };
         let segment = Arc::new(Segment::created(id, path, reader));
-        self.segments_mut().live.insert(id, segment.clone());
+        let mut segments = self.segments_mut();
+        segments.live.insert(id, segment.clone());
+        segments.last_id = Some(id);
+        drop(segments);
         Ok(SegmentWriter::new(segment, appender))
     }
 
@@ -602,10 +626,13 @@ impl SegmentStore {
     }
 
     /// The manifest `base` with its segments replaced by the ones in the
-    /// store, and its last segment id raised to the last one used here.
+    /// store, and its last segment id raised to the highest id of a segment
+    /// the store has had.
     ///
     /// A segment being written is named open, with the length that was
-    /// durable when this was called. Everything else in `base` is kept.
+    /// durable when this was called. A segment whose file [`Self::create`]
+    /// is still making is not in the store: it is not named and its id is
+    /// not recorded. Everything else in `base` is kept.
     pub fn describe(&self, base: &Manifest) -> Result<Manifest, SegmentStoreError> {
         let mut files: Vec<_> = base
             .files()

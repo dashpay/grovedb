@@ -75,7 +75,7 @@
 //!
 //! | Step | What happens | How manifests name the segment from then on |
 //! | --- | --- | --- |
-//! | Create | [`SegmentStore::create`] creates `seg/<id>.seg` under an id above every id used before, appends the file header, syncs the file and syncs `seg/`. | Open, 20 bytes valid. |
+//! | Create | [`SegmentStore::create`] creates `seg/<id>.seg` under an id above every id used before, appends the file header, syncs the file and syncs `seg/`. Then the segment enters the store, and its id with it. | Open, 20 bytes valid. |
 //! | Name | The manifest is replaced. From here the segment takes blocks. | |
 //! | Append | [`SegmentWriter::append`] appends one block. | |
 //! | Sync | [`SegmentWriter::sync`] or [`SegmentStore::sync`] syncs the file. | Open, valid up to the last block synced. |
@@ -88,6 +88,16 @@
 //! into a manifest, and [`SegmentStore::commit`] replaces the manifest with
 //! the result. A step that changes how a segment is named takes effect on
 //! disk with the next replacement, whoever makes it.
+//!
+//! A segment and its id enter that record in one step, once the file is
+//! whole and durable, and segments enter it in the order of their ids: one
+//! is created at a time. A manifest written while the file is still being
+//! made neither names the segment nor records its id. So when a manifest
+//! comes to name the segment, its id is still above every segment id the
+//! manifest before it records. If a manifest recorded the id first, the one
+//! that came to name the segment would be refused, because a newly named
+//! file must have an id above the last one recorded for its kind
+//! ([`ManifestChange::FileIdReused`]).
 //!
 //! A segment that the manifest names was written by an earlier session if
 //! this session did not create it. Such a segment is read and never written:
@@ -111,7 +121,9 @@
 //!   refers to. [`SegmentStore::open`] removes it.
 //! - A segment id that ever held a block is never given to another file,
 //!   because a segment takes blocks only once a durable manifest records its
-//!   id. An id whose file was created and never named can be used again.
+//!   id. An id that no durable manifest records can be given out again by a
+//!   later session: its file, if a crash or a failed creation left one,
+//!   holds no block and is removed when the store is opened.
 //!
 //! # When the file layer fails
 //!
@@ -122,7 +134,7 @@
 //! | --- | --- |
 //! | [`ManifestStore::update`], before its rename | The old manifest, in force. The update can be made again. |
 //! | [`ManifestStore::update`], in its rename or the sync of the directory | The old manifest or the new one, whole. The [`ManifestStore`] answers [`SegmentStoreError::ManifestInDoubt`] until the manifest is opened again. |
-//! | [`SegmentStore::create`] | No segment. Its id is not used again in this session. |
+//! | [`SegmentStore::create`] | No segment in the store. Its id is not used again in this session, and no manifest records it. If the file it began could not be removed, the next session removes it. |
 //! | [`SegmentWriter::append`], or the footer of [`SegmentWriter::seal`] | The segment's blocks, ending where they did. |
 //! | A sync of a segment | The segment as it was last synced, which is all a manifest names of it. It takes no more blocks ([`SegmentStoreError::SegmentFailed`]). |
 //! | The deletion of a dropped segment's file | The new manifest, in force, and the file, which the next call or the next session deletes ([`SegmentStoreError::NotDeleted`]). |
@@ -136,6 +148,11 @@
 //! - It holds the directory's lock ([`lignin_io::Vfs::lock`]) while a
 //!   [`ManifestStore`] or a writable [`SegmentStore`] of the directory
 //!   exists.
+//! - It gives a [`SegmentStore`] the [`ManifestStore`] it was opened from, or
+//!   one opened again on the same directory through the same file layer. The
+//!   store checks that a manifest is of its directory by the path and by
+//!   nothing else ([`SegmentStoreError::WrongDirectory`]): two file layers
+//!   that both have the path are the caller's to keep apart.
 //! - After every [`ManifestStore::update`] that returns `Ok`, it calls
 //!   [`SegmentStore::manifest_replaced`]. [`SegmentStore::commit`] does both.
 //! - It stores a [`BlockLocation`] in another file only under a manifest that
@@ -147,6 +164,18 @@
 //! - After [`SegmentStoreError::ManifestInDoubt`] it opens the manifest
 //!   again, which settles which manifest is durable, and calls
 //!   [`SegmentStore::manifest_replaced`] with it.
+//!
+//! # Files of the other kinds
+//!
+//! [`FileNames`], [`list_or_create_dir`] and [`create_file`] name, list and
+//! create the numbered files of all four kinds, for the stores of the other
+//! three. A store that gives out ids keeps the rule that
+//! [`SegmentStore::create`] keeps. It lets a manifest record an id as the
+//! last of its kind only when the file is one the manifest names, or one the
+//! store would have a manifest written now name, and it brings its files
+//! into that record in the order of their ids. A manifest that records an
+//! id before its file can be named uses the id up: [`ManifestStore::update`]
+//! refuses the manifest that names the file afterwards.
 
 mod error;
 mod files;

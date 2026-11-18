@@ -111,7 +111,12 @@ pub(super) struct Model {
     pub(super) pending: Option<Manifest>,
     live: BTreeMap<u32, SegmentModel>,
     dropped: BTreeMap<u32, SegmentModel>,
+    /// The highest id of a segment the store has had, which a manifest
+    /// records.
     last_id: u32,
+    /// The highest id a creation has taken, whether or not it gave a
+    /// segment.
+    last_taken: u32,
 }
 
 impl Model {
@@ -122,6 +127,7 @@ impl Model {
             live: BTreeMap::new(),
             dropped: BTreeMap::new(),
             last_id: 0,
+            last_taken: 0,
         }
     }
 
@@ -185,6 +191,7 @@ impl Model {
         self.live = live;
         self.dropped.clear();
         self.last_id = acked.last_file_ids().segment.map_or(0, FileId::get);
+        self.last_taken = self.last_id;
     }
 
     /// The session ended in a crash that left `found` as the manifest.
@@ -431,7 +438,7 @@ impl Run {
         let already_failed = matches!(error, SegmentStoreError::SegmentFailed { .. });
         let model = &mut self.model;
         match step {
-            Step::Create => model.last_id += 1,
+            Step::Create => model.last_taken += 1,
             Step::Commit | Step::AnotherLog => return self.settle_manifest(),
             Step::Append(_) | Step::Block(..) | Step::ReadBack(_) | Step::Restart => {}
             Step::SyncOne(id) | Step::Seal(id) => {
@@ -537,8 +544,9 @@ impl Run {
             Step::Create => {
                 let writer = session.segments.create()?;
                 let id = writer.file_id().get();
-                assert_eq!(id, model.last_id + 1);
+                assert_eq!(id, model.last_taken + 1);
                 self.created.push(id);
+                model.last_taken = id;
                 model.last_id = id;
                 model.live.insert(id, SegmentModel::created(id));
                 session.writers.insert(id, writer);

@@ -224,6 +224,127 @@ fn segment_ids_go_up_and_several_segments_are_written_at_once() {
     db.assert_readable(&blocks);
 }
 
+/// What the store calls each step of [`steps_of_a_creation`] in an error.
+const IO_OPS: [&str; 5] = ["create", "append to", "sync", "sync the directory", "open"];
+
+/// The file operations of the creation of segment `raw_id`, in order: how
+/// many of the same operation on the same name come first, the operation,
+/// and the name.
+fn steps_of_a_creation(raw_id: u32) -> [(usize, Op, String); 5] {
+    let name = FileNames::SEGMENT.file_name(id(raw_id));
+    [
+        (0, Op::Open, name.clone()),
+        (0, Op::Append, name.clone()),
+        (0, Op::SyncData, name.clone()),
+        (0, Op::SyncDir, "seg".to_owned()),
+        (1, Op::Open, name),
+    ]
+}
+
+#[test]
+fn a_manifest_written_while_a_segment_is_created_does_not_record_its_id() {
+    for (skip, op, on) in steps_of_a_creation(2) {
+        let mut db = Db::new();
+        let mut first = db.writer();
+        let mut blocks = append_blocks(&mut first, 3, 1);
+        let synced = first.sync().unwrap();
+
+        let stopped = db.vfs.stop_after(skip, op, &on);
+        let (manifest, segments) = (&mut db.manifest, &db.segments);
+        let (created, committed) = thread::scope(|scope| {
+            let creating = scope.spawn(|| segments.create());
+            stopped.wait();
+            assert!(segments.is_creating(), "stopped at {op:?} of {on}");
+            let committed = segments.commit(manifest);
+            stopped.go_on();
+            (creating.join().expect("the creation ran"), committed)
+        });
+        committed.expect("the manifest is replaced while the segment is created");
+        assert!(!db.segments.is_creating());
+        let written = db.on_disk();
+        let mut second = created.expect("the segment is created");
+        assert_eq!(second.file_id(), id(2));
+
+        db.segments
+            .commit(&mut db.manifest)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "the creation was stopped at {op:?} of {on}; the manifest written meanwhile \
+                     records {:?} as the last segment id, and the manifest that names the new \
+                     segment is refused: {error}",
+                    written.last_file_ids().segment
+                )
+            });
+        let first_named = segment(1, OPEN, synced);
+        assert_eq!(
+            written,
+            manifest_of([0, 1, 0, 0], None, vec![first_named]),
+            "a manifest records the id of a segment only once the segment is in the store"
+        );
+        assert_eq!(
+            db.on_disk(),
+            manifest_of([0, 2, 0, 0], None, vec![first_named, segment(2, OPEN, 20)])
+        );
+
+        blocks.extend(append_blocks(&mut second, 3, 9));
+        db.assert_readable(&blocks);
+        let second_synced = second.sync().unwrap();
+        db.commit();
+        drop((first, second));
+        let db = db.reopen();
+        assert_eq!(
+            db.segments.segments_named().unwrap(),
+            [
+                segment(1, CLOSED, synced),
+                segment(2, CLOSED, second_synced)
+            ]
+        );
+        db.assert_readable(&blocks);
+    }
+}
+
+#[test]
+fn a_second_creation_waits_until_the_first_segment_is_in_the_store() {
+    let mut db = Db::new();
+    let first_stopped = db.vfs.stop_after(0, Op::SyncDir, "seg");
+    let second_stopped = db.vfs.stop_after(0, Op::Open, "00000002.seg");
+    let (manifest, segments) = (&mut db.manifest, &db.segments);
+
+    let (first, second) = thread::scope(|scope| {
+        let first = scope.spawn(|| segments.create());
+        first_stopped.wait();
+        assert!(
+            segments.is_creating(),
+            "a creation holds the others off for as long as it runs"
+        );
+        let second = scope.spawn(|| segments.create());
+        segments.commit(manifest).unwrap();
+        assert_eq!(manifest.manifest().unwrap(), &empty_manifest());
+
+        first_stopped.go_on();
+        second_stopped.wait();
+        assert_eq!(segments.segments_named().unwrap(), [segment(1, OPEN, 20)]);
+        segments.commit(manifest).unwrap();
+        assert_eq!(manifest.manifest().unwrap(), &one_segment(OPEN, 20));
+
+        second_stopped.go_on();
+        let first = first.join().expect("the first creation ran");
+        let second = second.join().expect("the second creation ran");
+        (first.unwrap(), second.unwrap())
+    });
+    assert_eq!((first.file_id(), second.file_id()), (id(1), id(2)));
+    assert!(!db.segments.is_creating());
+    db.commit();
+    assert_eq!(
+        db.on_disk(),
+        manifest_of(
+            [0, 2, 0, 0],
+            None,
+            vec![segment(1, OPEN, 20), segment(2, OPEN, 20)]
+        )
+    );
+}
+
 #[test]
 fn describing_keeps_everything_but_the_segments_of_the_base_manifest() {
     let other_files = vec![
@@ -1386,6 +1507,30 @@ fn a_segment_that_cannot_be_created_leaves_no_file_and_its_id_is_not_used_again(
         db.segments.create().err().unwrap(),
         SegmentStoreError::Io { op: "create", .. }
     ));
+}
+
+#[test]
+fn no_manifest_records_the_id_of_a_creation_that_failed_and_a_later_session_uses_it() {
+    let mut db = Db::new();
+    drop(db.writer());
+    for (raw_id, step) in (2..).zip(0..5) {
+        let (skip, op, on) = steps_of_a_creation(raw_id)[step].clone();
+        db.vfs.fail_after(skip, op, &on);
+        assert_io(&db.segments.create().err().unwrap(), IO_OPS[step], &on);
+        db.commit();
+        assert_eq!(db.on_disk(), one_segment(OPEN, 20));
+    }
+    let unnamed = db.segments.create().unwrap();
+    assert_eq!(
+        unnamed.file_id(),
+        id(7),
+        "an id that a creation took is not used again in the session"
+    );
+    drop(unnamed);
+
+    let db = db.reopen();
+    assert_eq!(names(&db.seg_dir()), ["00000001.seg"]);
+    assert_eq!(db.segments.create().unwrap().file_id(), id(2));
 }
 
 #[test]
