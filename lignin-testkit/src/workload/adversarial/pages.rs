@@ -304,12 +304,10 @@ impl Generator {
         for offset in [1, self.rng.between(2, rows / 2), rows + 10] {
             let query = self.ranged();
             let limit = self.rng.chance(3, 4).then_some(5);
-            self.ops.push(build::unproven(build::sized(
-                &plain,
-                query,
-                limit,
-                Some(offset as u16),
-            )));
+            self.ops.push(build::path_query_read(
+                build::sized(&plain, query, limit, Some(offset as u16)),
+                false,
+            ));
         }
 
         let mut all_groups = Query::new_range_full();

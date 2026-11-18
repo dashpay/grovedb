@@ -2,9 +2,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use grovedb::{element::reference_path::ReferencePathType, Element};
+use grovedb::Element;
 
-use super::{epoch_of_block, DOMAIN_INDEX_REKEY};
+use super::{
+    document_reference, document_type_trees, epoch_of_block, index_document,
+    CONTRACT_DOCUMENTS_KEY, DOMAIN_INDEX_REKEY, PRIMARY_KEY,
+};
 use crate::workload::{
     build::{self, batch, child, path, storage_flags},
     op::{BatchOp, Op, Path, Query, QueryItem},
@@ -16,9 +19,7 @@ use crate::workload::{
 /// [`super::Documents`] writes. This workload stores the same shape under a
 /// root tree of its own.
 const ROOT: &[u8] = &[66];
-const CONTRACT_DOCUMENTS_KEY: &[u8] = &[1];
 const DOCUMENT_TYPE: &[u8] = b"reading";
-const PRIMARY_KEY: &[u8] = &[0];
 const INDEX: &[u8] = b"height";
 const TOP_BIT: u64 = 1 << 63;
 
@@ -141,22 +142,13 @@ impl Generator {
     }
 
     fn setup(&mut self) {
-        let flags = storage_flags(0, None);
-        let tree = || Element::empty_tree_with_flags(flags.clone());
-        let contract_path = path(&[ROOT, &self.contract]);
-        self.ops.extend([
-            build::insert(&[], ROOT, Element::empty_tree()),
-            build::insert(&path(&[ROOT]), &self.contract, tree()),
-            build::insert(&contract_path, CONTRACT_DOCUMENTS_KEY, tree()),
-            build::insert(
-                &child(&contract_path, CONTRACT_DOCUMENTS_KEY),
-                DOCUMENT_TYPE,
-                tree(),
-            ),
-            build::insert(&self.type_path(), PRIMARY_KEY, tree()),
-            build::insert(&self.type_path(), INDEX, tree()),
-            Op::Commit,
-        ]);
+        self.ops.extend(document_type_trees(
+            ROOT,
+            &self.contract,
+            DOCUMENT_TYPE,
+            &[INDEX],
+        ));
+        self.ops.push(Op::Commit);
         self.block += 1;
     }
 
@@ -167,9 +159,6 @@ impl Generator {
             let flags = storage_flags(epoch, None);
             let id = self.rng.id();
             let value = self.values[self.rng.index(self.values.len())];
-            let value_key = self.value_key(value);
-            let index_path = self.index_path();
-            let value_path = child(&index_path, &value_key);
             let mut ops = vec![batch::insert_only(
                 &self.primary_path(),
                 &id,
@@ -177,32 +166,17 @@ impl Generator {
             )];
             let documents = self.stored.entry(value).or_insert(0);
             *documents += 1;
-            if *documents == 1 {
-                ops.push(batch::insert_only(
-                    &index_path,
-                    &value_key,
-                    Element::empty_tree_with_flags(flags.clone()),
-                ));
-                ops.push(batch::insert_only(
-                    &value_path,
-                    PRIMARY_KEY,
-                    Element::empty_tree_with_flags(flags.clone()),
-                ));
-            }
-            ops.push(batch::insert_only(
-                &child(&value_path, PRIMARY_KEY),
+            let new_value = *documents == 1;
+            index_document(
+                &mut ops,
+                &self.index_path(),
+                &self.value_key(value),
+                new_value.then(|| Element::empty_tree_with_flags(flags.clone())),
                 &id,
-                Element::Reference(
-                    ReferencePathType::UpstreamRootHeightReference(
-                        4,
-                        vec![PRIMARY_KEY.to_vec(), id.to_vec()],
-                    ),
-                    Some(1),
-                    flags,
-                ),
-            ));
+                Element::Reference(document_reference(&id), Some(1), flags),
+            );
             self.ops.push(Op::Batch(ops));
-            if (stored + 1) % 20 == 0 || stored + 1 == count {
+            if build::ends_block(stored + 1, count, 20) {
                 self.ops.push(Op::Commit);
                 self.block += 1;
             }

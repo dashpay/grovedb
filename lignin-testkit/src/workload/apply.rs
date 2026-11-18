@@ -157,6 +157,39 @@ fn apply_partial_batch(
     .map_ok(|()| Outcome::WrittenInSegments { first_segment })
 }
 
+/// Runs `path_query` with `GroveDb::query_raw` when `raw` is set, otherwise
+/// with `GroveDb::query`, and returns the rows with how many the offset
+/// skipped.
+fn query_rows(
+    db: &GroveDb,
+    path_query: &PathQuery,
+    raw: bool,
+    transaction: TransactionArg,
+    grove_version: &GroveVersion,
+) -> CostResult<(QueryResultElements, u16), Error> {
+    if raw {
+        db.query_raw(
+            path_query,
+            ALLOW_CACHE,
+            DECREASE_LIMIT_ON_EMPTY_SUBQUERY,
+            ERROR_IF_PATH_NOT_PRESENT,
+            RESULT_TYPE,
+            transaction,
+            grove_version,
+        )
+    } else {
+        db.query(
+            path_query,
+            ALLOW_CACHE,
+            DECREASE_LIMIT_ON_EMPTY_SUBQUERY,
+            ERROR_IF_PATH_NOT_PRESENT,
+            RESULT_TYPE,
+            transaction,
+            grove_version,
+        )
+    }
+}
+
 fn apply_read(
     db: &GroveDb,
     read: &Read,
@@ -167,53 +200,18 @@ fn apply_read(
         Read::Get { path, key } => db
             .get(path.as_slice(), key, transaction, grove_version)
             .map_ok(Outcome::Element),
-        Read::Query(query) => {
-            let path_query = query.to_path_query();
-            if query.raw {
-                db.query_raw(
-                    &path_query,
-                    ALLOW_CACHE,
-                    DECREASE_LIMIT_ON_EMPTY_SUBQUERY,
-                    ERROR_IF_PATH_NOT_PRESENT,
-                    RESULT_TYPE,
-                    transaction,
-                    grove_version,
-                )
-            } else {
-                db.query(
-                    &path_query,
-                    ALLOW_CACHE,
-                    DECREASE_LIMIT_ON_EMPTY_SUBQUERY,
-                    ERROR_IF_PATH_NOT_PRESENT,
-                    RESULT_TYPE,
-                    transaction,
-                    grove_version,
-                )
-            }
-            .map_ok(|(rows, _skipped)| Outcome::Rows(rows))
-        }
-        Read::Rows { query, raw } => if *raw {
-            db.query_raw(
-                query,
-                ALLOW_CACHE,
-                DECREASE_LIMIT_ON_EMPTY_SUBQUERY,
-                ERROR_IF_PATH_NOT_PRESENT,
-                RESULT_TYPE,
-                transaction,
-                grove_version,
-            )
-        } else {
-            db.query(
-                query,
-                ALLOW_CACHE,
-                DECREASE_LIMIT_ON_EMPTY_SUBQUERY,
-                ERROR_IF_PATH_NOT_PRESENT,
-                RESULT_TYPE,
-                transaction,
-                grove_version,
-            )
-        }
-        .map_ok(|(elements, skipped)| Outcome::Run(PathQueryRun::Elements { elements, skipped })),
+        Read::Query(query) => query_rows(
+            db,
+            &query.to_path_query(),
+            query.raw,
+            transaction,
+            grove_version,
+        )
+        .map_ok(|(rows, _skipped)| Outcome::Rows(rows)),
+        Read::Rows { query, raw } => query_rows(db, query, *raw, transaction, grove_version)
+            .map_ok(|(elements, skipped)| {
+                Outcome::Run(PathQueryRun::Elements { elements, skipped })
+            }),
         Read::PathQuery { query, .. } => db
             .run_path_query(
                 query,

@@ -103,6 +103,12 @@ pub(crate) fn select_raw(path: &[Vec<u8>], items: Vec<QueryItem>, limit: Option<
     }
 }
 
+/// Whether the `done`-th of `total` state transitions, counted from one,
+/// closes a block of `per_block` transitions.
+pub(crate) fn ends_block(done: u64, total: u64, per_block: u64) -> bool {
+    done.is_multiple_of(per_block) || done == total
+}
+
 pub(crate) fn query(query: Query) -> Op {
     Op::Read(Read::Query(query))
 }
@@ -112,11 +118,8 @@ pub(crate) fn proven(path_query: PathQuery) -> Op {
     path_query_read(path_query, true)
 }
 
-/// A path query in GroveDB's own form that the target only runs.
-pub(crate) fn unproven(path_query: PathQuery) -> Op {
-    path_query_read(path_query, false)
-}
-
+/// A path query in GroveDB's own form, proven by the target when `proven`
+/// is set and otherwise only run.
 pub(crate) fn path_query_read(path_query: PathQuery, proven: bool) -> Op {
     Op::Read(Read::PathQuery {
         query: Box::new(path_query),

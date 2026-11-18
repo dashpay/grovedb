@@ -72,7 +72,7 @@ impl PartialBatches {
         let per_block = u64::from(self.transitions_per_block);
         for transition in 0..self.transitions {
             generator.transition(transition);
-            if (transition + 1) % per_block == 0 || transition + 1 == self.transitions {
+            if build::ends_block(transition + 1, self.transitions, per_block) {
                 generator.ops.push(Op::Commit);
                 generator.read();
             }

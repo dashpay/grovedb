@@ -70,18 +70,24 @@ impl FlatDrops {
                 Some(8),
             )));
 
-            for tree in trees.iter().filter(|tree| !tree.rows.is_empty()).take(3) {
-                ops.push(build::insert(&root, &tree.key, Element::empty_tree()));
+            let refilled: Vec<&[u8]> = trees
+                .iter()
+                .filter(|tree| !tree.rows.is_empty())
+                .take(3)
+                .map(|tree| tree.key.as_slice())
+                .collect();
+            for key in &refilled {
+                ops.push(build::insert(&root, key, Element::empty_tree()));
                 ops.push(build::insert(
-                    &child(&root, &tree.key),
+                    &child(&root, key),
                     b"again",
                     Element::new_item(value(&mut rng, 1, 30)),
                 ));
             }
             ops.push(Op::Commit);
-            for tree in trees.iter().filter(|tree| !tree.rows.is_empty()).take(3) {
+            for key in &refilled {
                 ops.push(build::query(build::select_raw(
-                    &child(&root, &tree.key),
+                    &child(&root, key),
                     vec![QueryItem::RangeFull],
                     None,
                 )));

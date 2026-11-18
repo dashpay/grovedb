@@ -2,10 +2,13 @@
 
 use std::collections::BTreeMap;
 
-use grovedb::{element::reference_path::ReferencePathType, Element, PathQuery, Query, TreeType};
+use grovedb::{Element, PathQuery, Query, TreeType};
 use grovedb_merk::proofs::query::{AggregateFold, IndexAxis};
 
-use super::{epoch_of_block, identity_id, DOMAIN_INDEX_AGGREGATES};
+use super::{
+    document_reference, document_type_trees, epoch_of_block, identity_id, index_document,
+    CONTRACT_DOCUMENTS_KEY, DOMAIN_INDEX_AGGREGATES, PRIMARY_KEY,
+};
 use crate::workload::{
     build::{self, batch, child, path, storage_flags},
     op::{BatchOp, Op, Path},
@@ -16,9 +19,7 @@ use crate::workload::{
 /// A root tree of this workload's own, in place of Drive's
 /// `DataContractDocuments`.
 const ROOT: &[u8] = &[68];
-const CONTRACT_DOCUMENTS_KEY: &[u8] = &[1];
 const DOCUMENT_TYPE: &[u8] = b"order";
-const PRIMARY_KEY: &[u8] = &[0];
 const CATEGORY: &[u8] = b"category";
 const AMOUNT: &[u8] = b"amount";
 const SCORE: &[u8] = b"score";
@@ -175,13 +176,13 @@ impl IndexAggregates {
         let per_block = u64::from(self.transitions_per_block);
         for stored in 0..self.documents {
             generator.store();
-            if (stored + 1) % per_block == 0 || stored + 1 == self.documents {
+            if build::ends_block(stored + 1, self.documents, per_block) {
                 generator.end_block();
             }
         }
         for deleted in 0..self.deletes {
             generator.delete();
-            if (deleted + 1) % per_block == 0 || deleted + 1 == self.deletes {
+            if build::ends_block(deleted + 1, self.deletes, per_block) {
                 generator.end_block();
             }
         }
@@ -211,10 +212,7 @@ impl Generator {
 
     /// The reference an index stores for `document`.
     fn reference(&self, index: Index, document: &Document, flags: Option<Vec<u8>>) -> Element {
-        let reference = ReferencePathType::UpstreamRootHeightReference(
-            4,
-            vec![PRIMARY_KEY.to_vec(), document.id.to_vec()],
-        );
+        let reference = document_reference(&document.id);
         match index {
             Index::Category | Index::OwnerCategory | Index::Tag => {
                 Element::Reference(reference, Some(1), flags)
@@ -230,20 +228,8 @@ impl Generator {
 
     fn setup(&mut self, contract: &[u8; 32]) {
         let flags = storage_flags(0, None);
-        let tree = || Element::empty_tree_with_flags(flags.clone());
-        let contract_path = path(&[ROOT, contract]);
-        self.ops.extend([
-            build::insert(&[], ROOT, Element::empty_tree()),
-            build::insert(&path(&[ROOT]), contract, tree()),
-            build::insert(&contract_path, CONTRACT_DOCUMENTS_KEY, tree()),
-            build::insert(
-                &child(&contract_path, CONTRACT_DOCUMENTS_KEY),
-                DOCUMENT_TYPE,
-                tree(),
-            ),
-            build::insert(&self.type_path, PRIMARY_KEY, tree()),
-            build::insert(&self.type_path, OWNER, tree()),
-        ]);
+        self.ops
+            .extend(document_type_trees(ROOT, contract, DOCUMENT_TYPE, &[OWNER]));
         let mut indexes = Vec::new();
         for index in [Index::Category, Index::Amount, Index::Score, Index::Tag] {
             let key = self.index_path(index).pop().expect("an index has a key");
@@ -298,20 +284,17 @@ impl Generator {
                 }
                 parent.extend_from_slice(&keys[..2]);
             }
-            let value_key = keys.last().expect("an index has a value");
-            let value_path = child(&parent, value_key);
             let held = self.held.entry((index, keys.clone())).or_insert(0);
             *held += 1;
-            if *held == 1 {
-                let (value_tree, _) = index.value_tree(flags.clone());
-                ops.push(batch::insert_only(&parent, value_key, value_tree.clone()));
-                ops.push(batch::insert_only(&value_path, PRIMARY_KEY, value_tree));
-            }
-            ops.push(batch::insert_only(
-                &child(&value_path, PRIMARY_KEY),
+            let new_value = *held == 1;
+            index_document(
+                &mut ops,
+                &parent,
+                keys.last().expect("an index has a value"),
+                new_value.then(|| index.value_tree(flags.clone()).0),
                 &document.id,
                 self.reference(index, &document, flags.clone()),
-            ));
+            );
         }
         self.documents.push(document);
         self.ops.push(Op::Batch(ops));

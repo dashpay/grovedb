@@ -85,6 +85,70 @@ pub fn identity_id(seed: u64, index: u64) -> [u8; 32] {
     Rng::derive(seed, DOMAIN_IDENTITY, index).id()
 }
 
+/// The inserts creating, under the root tree `root`, the contract `contract`
+/// with one document type, its primary key tree and an empty tree for each
+/// of `indexes`.
+fn document_type_trees(
+    root: &[u8],
+    contract: &[u8; 32],
+    document_type: &[u8],
+    indexes: &[&[u8]],
+) -> Vec<Op> {
+    let flags = storage_flags(0, None);
+    let tree = || Element::empty_tree_with_flags(flags.clone());
+    let contract_path = path(&[root, contract]);
+    let type_path = path(&[root, contract, CONTRACT_DOCUMENTS_KEY, document_type]);
+    let mut ops = vec![
+        build::insert(&[], root, Element::empty_tree()),
+        build::insert(&path(&[root]), contract, tree()),
+        build::insert(&contract_path, CONTRACT_DOCUMENTS_KEY, tree()),
+        build::insert(
+            &child(&contract_path, CONTRACT_DOCUMENTS_KEY),
+            document_type,
+            tree(),
+        ),
+        build::insert(&type_path, PRIMARY_KEY, tree()),
+    ];
+    for index in indexes {
+        ops.push(build::insert(&type_path, index, tree()));
+    }
+    ops
+}
+
+/// The path from an index entry's tree of references to the document `id`
+/// in the primary key tree.
+fn document_reference(id: &[u8; 32]) -> ReferencePathType {
+    ReferencePathType::UpstreamRootHeightReference(4, vec![PRIMARY_KEY.to_vec(), id.to_vec()])
+}
+
+/// Adds `reference` to the document `id` under the value key `value_key` of
+/// the index tree at `index_path`. When `value_tree` is given, the value
+/// key is new: its tree and the tree of references under it are created as
+/// `value_tree` first.
+fn index_document(
+    ops: &mut Vec<BatchOp>,
+    index_path: &[Vec<u8>],
+    value_key: &[u8],
+    value_tree: Option<Element>,
+    id: &[u8; 32],
+    reference: Element,
+) {
+    let value_path = child(index_path, value_key);
+    if let Some(value_tree) = value_tree {
+        ops.push(batch::insert_only(
+            index_path,
+            value_key,
+            value_tree.clone(),
+        ));
+        ops.push(batch::insert_only(&value_path, PRIMARY_KEY, value_tree));
+    }
+    ops.push(batch::insert_only(
+        &child(&value_path, PRIMARY_KEY),
+        id,
+        reference,
+    ));
+}
+
 /// Documents with one index reference each.
 ///
 /// The stream sets up one contract with one document type, then creates

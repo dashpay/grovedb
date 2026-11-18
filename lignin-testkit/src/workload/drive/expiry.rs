@@ -2,9 +2,12 @@
 
 use std::collections::BTreeMap;
 
-use grovedb::{element::reference_path::ReferencePathType, Element, TreeType};
+use grovedb::{Element, TreeType};
 
-use super::{epoch_of_block, DOMAIN_EXPIRATION};
+use super::{
+    document_reference, document_type_trees, epoch_of_block, index_document,
+    CONTRACT_DOCUMENTS_KEY, DOMAIN_EXPIRATION, PRIMARY_KEY,
+};
 use crate::workload::{
     build::{self, batch, child, path, storage_flags},
     op::{Op, Path, Query, QueryItem},
@@ -15,9 +18,7 @@ use crate::workload::{
 /// A root tree of this workload's own, in place of Drive's
 /// `DataContractDocuments`.
 const ROOT: &[u8] = &[70];
-const CONTRACT_DOCUMENTS_KEY: &[u8] = &[1];
 const DOCUMENT_TYPE: &[u8] = b"session";
-const PRIMARY_KEY: &[u8] = &[0];
 const INDEX: &[u8] = b"$expiresAt";
 
 /// Documents with a time to live.
@@ -65,22 +66,8 @@ impl Expiration {
         let type_path = path(&[ROOT, &contract, CONTRACT_DOCUMENTS_KEY, DOCUMENT_TYPE]);
         let primary_path = child(&type_path, PRIMARY_KEY);
         let index_path = child(&type_path, INDEX);
-        let flags = storage_flags(0, None);
-        let tree = || Element::empty_tree_with_flags(flags.clone());
-        let contract_path = path(&[ROOT, &contract]);
-        let mut ops = vec![
-            build::insert(&[], ROOT, Element::empty_tree()),
-            build::insert(&path(&[ROOT]), &contract, tree()),
-            build::insert(&contract_path, CONTRACT_DOCUMENTS_KEY, tree()),
-            build::insert(
-                &child(&contract_path, CONTRACT_DOCUMENTS_KEY),
-                DOCUMENT_TYPE,
-                tree(),
-            ),
-            build::insert(&type_path, PRIMARY_KEY, tree()),
-            build::insert(&type_path, INDEX, tree()),
-            Op::Commit,
-        ];
+        let mut ops = document_type_trees(ROOT, &contract, DOCUMENT_TYPE, &[INDEX]);
+        ops.push(Op::Commit);
 
         let mut expiring: BTreeMap<u64, Vec<[u8; 32]>> = BTreeMap::new();
         for block in 1..=self.blocks {
@@ -88,39 +75,22 @@ impl Expiration {
             for _ in 0..self.documents_per_block {
                 let id = rng.id();
                 let expires_at = block + rng.between(1, u64::from(self.longest_life));
-                let time_key = expires_at.to_be_bytes();
-                let time_path = child(&index_path, &time_key);
                 let mut batch_ops = vec![batch::insert_only(
                     &primary_path,
                     &id,
                     Element::new_item_with_flags(rng.bytes(96), flags.clone()),
                 )];
                 let documents = expiring.entry(expires_at).or_default();
-                if documents.is_empty() {
-                    batch_ops.push(batch::insert_only(
-                        &index_path,
-                        &time_key,
-                        Element::empty_tree_with_flags(flags.clone()),
-                    ));
-                    batch_ops.push(batch::insert_only(
-                        &time_path,
-                        PRIMARY_KEY,
-                        Element::empty_tree_with_flags(flags.clone()),
-                    ));
-                }
+                let new_time = documents.is_empty();
                 documents.push(id);
-                batch_ops.push(batch::insert_only(
-                    &child(&time_path, PRIMARY_KEY),
+                index_document(
+                    &mut batch_ops,
+                    &index_path,
+                    &expires_at.to_be_bytes(),
+                    new_time.then(|| Element::empty_tree_with_flags(flags.clone())),
                     &id,
-                    Element::Reference(
-                        ReferencePathType::UpstreamRootHeightReference(
-                            4,
-                            vec![PRIMARY_KEY.to_vec(), id.to_vec()],
-                        ),
-                        Some(1),
-                        flags.clone(),
-                    ),
-                ));
+                    Element::Reference(document_reference(&id), Some(1), flags.clone()),
+                );
                 ops.push(Op::Batch(batch_ops));
             }
 

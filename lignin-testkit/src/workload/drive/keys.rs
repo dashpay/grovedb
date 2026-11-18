@@ -138,13 +138,13 @@ impl IdentityKeys {
         for index in 0..self.identities {
             let id = identity_id(seed, index);
             generator.create(id);
-            if (index + 1) % per_block == 0 || index + 1 == self.identities {
+            if build::ends_block(index + 1, self.identities, per_block) {
                 generator.end_block();
             }
         }
         for update in 0..self.updates {
             generator.update();
-            if (update + 1) % per_block == 0 || update + 1 == self.updates {
+            if build::ends_block(update + 1, self.updates, per_block) {
                 generator.end_block();
             }
         }
@@ -194,15 +194,13 @@ impl Generator {
 
     fn create(&mut self, id: [u8; 32]) {
         let flags = storage_flags(epoch_of_block(self.block), None);
-        let mut identity = Identity {
+        let identity = Identity {
             id,
             revision: 0,
-            keys: Vec::new(),
+            keys: (0..self.config.keys as usize)
+                .map(|index| self.new_key(index))
+                .collect(),
         };
-        for index in 0..self.config.keys as usize {
-            let key = self.new_key(index);
-            identity.keys.push(key);
-        }
         let tree = || Element::empty_tree_with_flags(flags.clone());
         let references = identity.references_path();
         let authentication = child(&references, &[PURPOSE_AUTHENTICATION]);
