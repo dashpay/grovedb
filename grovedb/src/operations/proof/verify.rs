@@ -2858,6 +2858,18 @@ impl GroveDb {
                         // must be bound exactly like a reported empty
                         // tree (issue #869).
                         Self::verify_empty_tree_binding(query, key, &element, value_bytes, hash)?;
+                        // The prover charged this row, as the trusted
+                        // read counts it. From `GROVE_V5` the verifier
+                        // charges it too and stops where the budget is
+                        // spent; earlier versions charge nothing
+                        // (`proof.unreported_empty_tree_row_charge`).
+                        if Self::charge_unreported_empty_tree_row(
+                            limit_state,
+                            &mut frame_instance,
+                            grove_version,
+                        )? {
+                            break;
+                        }
                     } else {
                         // Every classification the verifier can act on
                         // is either descended into (bound through its

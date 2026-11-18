@@ -643,6 +643,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 axis_descent_in_v1_envelope: 1, // axis-ordered descents in the V1 envelope (ReadMode::Axis)
                 sum_budget_in_v1_envelope: 1, // sum-budget windows in the V1 envelope (ReadMode::SumBudget)
                 count_offset_reference_empty_tree_rows: 0,
+                unreported_empty_tree_row_charge: 0,
             },
             average_case: GroveDBOperationsAverageCaseVersions {
                 add_average_case_get_merk_at_path: 0,

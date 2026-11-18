@@ -56,6 +56,7 @@ mod reference_to_tree_terminal_tests;
 mod repeated_keyless_appends_tests;
 mod tree_insert_above_emptied_level_tests;
 mod unbound_empty_tree_tests;
+mod unreported_empty_tree_row_budget_tests;
 mod wrapped_terminal_reference_tests;
 // NOTE: the former `count_indexed_tree_tests` (~12.3k LOC) was written
 // against the now-removed non-provable `Element::CountIndexedTree` and was

@@ -28,6 +28,10 @@ pub mod indexed_axis;
 /// verifiers' completeness/soundness checks (count-independent cost).
 #[cfg(any(feature = "minimal", feature = "verify"))]
 mod position_intervals;
+/// Whether a V1 verifier charges an empty tree row it does not report,
+/// versioned.
+#[cfg(any(feature = "minimal", feature = "verify"))]
+mod unreported_empty_tree_row_charge;
 /// Utility functions for proof display and conversion.
 pub mod util;
 mod verify;

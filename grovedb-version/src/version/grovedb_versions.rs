@@ -655,6 +655,24 @@ pub struct GroveDBOperationsProofVersions {
     /// so such a page is refused. 1: resolved references are exempt. Gated
     /// because it turns a rejected proof into an accepted one.
     pub count_offset_reference_empty_tree_rows: FeatureVersion,
+    /// Whether a V1 verifier that leaves empty trees out of its results
+    /// (`VerifyOptions::include_empty_trees_in_result` false, the default of
+    /// `verify_query` and `verify_subset_query`) charges an empty plain
+    /// `Tree` that is itself a result row against the query's budgets. The
+    /// prover charges that row and the trusted read counts it, whatever the
+    /// verifier reports.
+    ///
+    /// 0 (V1..V4, as 6.1.1 shipped): the row is bound and nothing is
+    /// charged, so the verifier's budget stands one slot above the prover's
+    /// for every such row. Past the point where the prover's budget is spent
+    /// the verifier refuses the honest proof for a lower layer the prover
+    /// left out, or reports an item of a later page. 1: the row is charged
+    /// against the global limit and the frame's per-instance cap, and the
+    /// walk stops where the budget is spent. Gated because it turns a
+    /// rejected proof into an accepted one and changes the rows returned for
+    /// a proof accepted before. The prover does not read this slot: proof
+    /// bytes are the same at both values.
+    pub unreported_empty_tree_row_charge: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

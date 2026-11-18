@@ -34,6 +34,18 @@
 //!   refuse such a page, as 6.1.1 did. Gated because it turns a rejected
 //!   proof into an accepted one.
 //!
+//! - `operations.proof.unreported_empty_tree_row_charge: 1`: a V1 verifier
+//!   that leaves empty trees out of its results (the default of
+//!   `verify_query` and `verify_subset_query`) charges an empty plain `Tree`
+//!   that is itself a result row against the global limit and the
+//!   per-instance cap, as the prover and the trusted read do, and stops where
+//!   the budget is spent. V1..V4 bind the row and charge nothing, as 6.1.1
+//!   did, so the verifier's budget runs ahead of the prover's: it refuses the
+//!   honest proof of a page whose budget such a row spent ("missing lower
+//!   layer for non-empty tree"), or reports an item past the page. Gated
+//!   because it turns a rejected proof into an accepted one and changes the
+//!   rows returned for a proof accepted before. Proof bytes are the same.
+//!
 //! - `apply_batch.keyless_append_repeats: 1`: the batch consistency check
 //!   counts keyed operations only for repeats, so a batch may carry the same
 //!   keyless append (`CommitmentTreeInsert`, `MmrTreeAppend`, `BulkAppend`,
@@ -159,6 +171,7 @@ pub const GROVE_V5: GroveVersion = GroveVersion {
             },
             proof: GroveDBOperationsProofVersions {
                 count_offset_reference_empty_tree_rows: 1, // changed: exempt resolved references
+                unreported_empty_tree_row_charge: 1,       // changed: the verifier charges the row
                 ..GROVE_V4.grovedb_versions.operations.proof
             },
             ..GROVE_V4.grovedb_versions.operations

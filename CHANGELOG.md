@@ -162,6 +162,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must move to 0.41 as well.
 
 ### Fixed
+- From `GROVE_V5`, a V1 proof verifier that leaves empty trees out of its
+  results (`verify_query`, `verify_subset_query` and their absence-proof
+  forms, or `VerifyOptions::include_empty_trees_in_result` false) counts an
+  empty plain `Tree` that is itself a result row against the query's limit
+  and per-instance caps, as the prover and the trusted read do, and stops
+  where the budget is spent. It bound the row and charged nothing, so its
+  budget ran ahead of the prover's: over `index/a/{d: item, t: empty tree}`
+  and `index/b/{d: item}`, a range query with a range subquery and limit 2
+  returns `a/d` and `a/t` from `query_raw`, and `verify_query` refused the
+  honest proof of that page with "V1 proof is missing lower layer for
+  non-empty tree at key 62". It now verifies and returns `a/d`. Where the
+  row after the spent budget was an item of the same layer, the verifier
+  reported it although the page had ended; it no longer does. A page can
+  therefore hold fewer rows than its limit while more rows follow: every
+  unreported empty tree takes one slot. The new
+  `proof.unreported_empty_tree_row_charge` slot is 0 in V1..V4, which verify
+  as 6.1.1 does, and 1 in V5 (**BREAKING** for code building
+  `GroveDBOperationsProofVersions` by hand). Proof bytes do not change.
 - Trunk and branch query results (`get_ancestor`) read the count of a
   `ProvableCountProvableSumTree` node, which they skipped before, and of
   a `ProvableCountProvableBigSumTree` node.
