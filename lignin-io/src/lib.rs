@@ -2,19 +2,24 @@
 //!
 //! Everything LigninDB does to a disk goes through [`Vfs`] and [`VfsFile`],
 //! whose contract is in the [`vfs`] module. [`StdVfs`] is the backend over
-//! the operating system's files.
+//! the operating system's files. [`SimVfs`] is the backend in memory that
+//! storage code is tested on: it crashes at a chosen operation, gives every
+//! state the contract lets the crash leave, and injects `ENOSPC` and `EIO`,
+//! all from a seed. The [`sim`] module describes it.
 //!
 //! This crate knows files as bytes and nothing above them. A module that
 //! needs `unsafe` code has to allow it for itself.
 
 #![deny(unsafe_code)]
 
-#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+#[cfg(test)]
 mod conformance;
+pub mod sim;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod std_fs;
 pub mod vfs;
 
+pub use sim::SimVfs;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use std_fs::StdVfs;
 pub use vfs::{Create, DirEntry, EntryKind, OpenMode, Vfs, VfsFile, VfsLock};
