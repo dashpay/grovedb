@@ -292,6 +292,9 @@ impl ElementAggregateSumQueryExtensions for Element {
                 .get_aggregate_sum_query_apply_function
         );
 
+        let tx = crate::util::TxRef::for_read(storage, transaction);
+        let transaction = Some(tx.as_ref());
+
         let mut cost = OperationCost::default();
 
         let mut results = Vec::new();
@@ -617,6 +620,7 @@ impl ElementAggregateSumQueryExtensions for Element {
 
         let mut cost = OperationCost::default();
         let tx = TxRef::for_read(storage, transaction);
+        let transaction = Some(tx.as_ref());
 
         let subtree_path: SubtreePath<_> = path.into();
 

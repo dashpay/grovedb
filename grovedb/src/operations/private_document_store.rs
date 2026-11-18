@@ -314,6 +314,7 @@ impl<E: Engine> GroveDb<E> {
         );
 
         let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
 
         let element = cost_return_on_error!(
             &mut cost,
@@ -402,6 +403,7 @@ impl<E: Engine> GroveDb<E> {
         );
 
         let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
 
         let element = cost_return_on_error!(
             &mut cost,

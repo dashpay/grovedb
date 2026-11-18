@@ -4359,6 +4359,8 @@ impl<E: Engine> GroveDb<E> {
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
+        let tx = crate::util::TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
         for op in ops.iter_mut() {
             let node = match op {
                 Op::Push(node) | Op::PushInverted(node) => node,

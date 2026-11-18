@@ -28,6 +28,7 @@ impl<E: Engine> GroveDb<E> {
         drawer.down();
 
         let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
 
         let storage = self.db.subtree((&path).into(), None, tx.as_ref()).unwrap(); // unwraps CostContext (infallible — discards cost)
 

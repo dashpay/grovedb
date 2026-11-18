@@ -117,6 +117,7 @@ impl<E: Engine> GroveDb<E> {
         // i64)` pairs come back tupled and are flattened to triples
         // here to match the per-key verifier's surface.
         let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
         let pairs = cost_return_on_error!(
             &mut cost,
             self.query_aggregate_carrier_per_key(
@@ -179,6 +180,7 @@ impl<E: Engine> GroveDb<E> {
         }
 
         let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
         let pairs = cost_return_on_error!(
             &mut cost,
             self.query_aggregate_carrier_per_key(

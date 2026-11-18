@@ -108,6 +108,9 @@ impl<E: Engine> GroveDb<E> {
                 .get_caching_optional
         );
 
+        let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
+
         let mut cost = OperationCost::default();
 
         // Look through `NonCounted` so a wrapped reference still resolves.
@@ -328,6 +331,8 @@ impl<E: Engine> GroveDb<E> {
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
         let mut cost = OperationCost::default();
+        let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
 
         let mut hops_left = max_hop
             .map(|m| m as usize)

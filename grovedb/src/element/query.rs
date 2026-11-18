@@ -220,6 +220,9 @@ impl ElementQueryExtensions for Element {
                 .get_query_apply_function
         );
 
+        let tx = crate::util::TxRef::for_read(storage, transaction);
+        let transaction = Some(tx.as_ref());
+
         // Whole-query preflight: the per-frame checks inside the walk
         // only see nodes the walk reaches, so a per-instance limit in
         // an unmatched conditional branch would slip past them —
@@ -273,6 +276,9 @@ impl ElementQueryExtensions for Element {
             "get_path_query",
             grove_version.grovedb_versions.element.get_path_query
         );
+
+        let tx = crate::util::TxRef::for_read(storage, transaction);
+        let transaction = Some(tx.as_ref());
 
         // Whole-query preflight — see `get_query_apply_function`.
         if let Err(e) = crate::query::reject_unserved_instance_limits_in_query(
@@ -424,6 +430,9 @@ impl ElementQueryExtensions for Element {
             "query_item",
             grove_version.grovedb_versions.element.query_item
         );
+
+        let tx = crate::util::TxRef::for_read(storage, transaction);
+        let transaction = Some(tx.as_ref());
 
         // Whole-query preflight, exactly like the other public Element
         // wrappers: a per-instance limit hiding in an unmatched
@@ -591,6 +600,7 @@ pub(crate) fn query_item_internal<'db, E: Engine>(
 
     let mut cost = OperationCost::default();
     let tx = TxRef::for_read(storage, transaction);
+    let transaction = Some(tx.as_ref());
 
     let subtree_path: SubtreePath<_> = path.into();
 
@@ -785,6 +795,9 @@ pub(crate) fn get_query_apply_function_internal<'db, E: Engine>(
     ) -> CostResult<(), Error>,
     grove_version: &GroveVersion,
 ) -> CostResult<(QueryResultElements, u16, u16, u16), Error> {
+    let tx = crate::util::TxRef::for_read(storage, transaction);
+    let transaction = Some(tx.as_ref());
+
     // The subordinate method-version slot holds for the internal body
     // exactly as it did when the public wrapper was the only entry —
     // the engines recurse through here directly, and a future/replay

@@ -298,6 +298,7 @@ impl<E: Engine> GroveDb<E> {
         let path: SubtreePath<B> = path.into();
         let mut cost = OperationCost::default();
         let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
 
         // Read element to get total_count and chunk_power
         let element = cost_return_on_error!(
@@ -356,6 +357,7 @@ impl<E: Engine> GroveDb<E> {
         let path: SubtreePath<B> = path.into();
         let mut cost = OperationCost::default();
         let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
 
         let element = cost_return_on_error!(
             &mut cost,
@@ -457,6 +459,7 @@ impl<E: Engine> GroveDb<E> {
         let path: SubtreePath<B> = path.into();
         let mut cost = OperationCost::default();
         let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
 
         let element = cost_return_on_error!(
             &mut cost,

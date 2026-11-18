@@ -108,6 +108,7 @@ impl<E: Engine> GroveDb<E> {
         // Carrier shape: delegate to the shared carrier driver, which
         // terminates each per-key walk in the sum primitive.
         let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
         let results = cost_return_on_error!(
             &mut cost,
             self.query_aggregate_carrier_per_key(
@@ -158,6 +159,7 @@ impl<E: Engine> GroveDb<E> {
         }
 
         let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
         let results = cost_return_on_error!(
             &mut cost,
             self.query_aggregate_carrier_per_key(

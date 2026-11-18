@@ -785,6 +785,8 @@ impl<E: Engine> GroveDb<E> {
         );
         let mut cost = OperationCost::default();
         let path: SubtreePath<B> = path.into();
+        let tx = TxRef::for_read(&self.db, transaction);
+        let tx_ref = tx.as_ref();
 
         // Steps 1-2 (derive the item's secondary sort key, count the
         // entries strictly before it in the walk direction) are shared
@@ -797,14 +799,12 @@ impl<E: Engine> GroveDb<E> {
                 axis,
                 item_key,
                 descending,
-                transaction,
+                Some(tx_ref),
                 grove_version,
             )
         );
 
         let batch = E::Batch::default();
-        let tx = TxRef::for_read(&self.db, transaction);
-        let tx_ref = tx.as_ref();
 
         // 3. The rank proof IS the paginated proof at (offset = rank,
         //    k = 1): its counted commitments attest the skipped prefix

@@ -199,6 +199,9 @@ impl<E: Engine> GroveDb<E> {
                 .query
                 .run_path_query
         );
+        let tx = crate::util::TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
+
         let mut cost = Default::default();
 
         let validated = match ValidatedPathQuery::for_read(path_query, grove_version) {

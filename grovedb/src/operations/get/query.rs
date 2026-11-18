@@ -77,6 +77,9 @@ impl<E: Engine> GroveDb<E> {
                 .query_encoded_many
         );
 
+        let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
+
         let mut cost = OperationCost::default();
 
         let elements = cost_return_on_error!(
@@ -386,6 +389,9 @@ where {
             "query",
             grove_version.grovedb_versions.operations.query.query
         );
+        let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
+
         let mut cost = OperationCost::default();
 
         let (elements, skipped) = cost_return_on_error!(
@@ -434,6 +440,9 @@ where {
                 .query
                 .query_item_value
         );
+        let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
+
         let mut cost = OperationCost::default();
 
         let (elements, skipped) = cost_return_on_error!(
@@ -586,6 +595,9 @@ where {
                 .query
                 .query_item_value_or_sum
         );
+        let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
+
         let mut cost = OperationCost::default();
 
         let (elements, skipped) = cost_return_on_error!(
@@ -1326,6 +1338,9 @@ where {
             "query_sums",
             grove_version.grovedb_versions.operations.query.query_sums
         );
+        let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
+
         let mut cost = OperationCost::default();
 
         let (elements, skipped) = cost_return_on_error!(
