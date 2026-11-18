@@ -437,6 +437,7 @@ impl TableCheckpoints {
             let mut last_file_ids = described.last_file_ids();
             last_file_ids.page_table = last_file_ids.page_table.max(Some(checkpoint.file()));
             Manifest::new(
+                described.page_size(),
                 last_file_ids,
                 Some(checkpoint.named()),
                 described.files().to_vec(),

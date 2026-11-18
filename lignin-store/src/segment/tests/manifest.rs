@@ -2,7 +2,9 @@ use std::io::ErrorKind;
 
 use lignin_format::manifest::{ManifestError, MAX_LIVE_FILES};
 
-use super::{super::manifest::MAX_FILE_LEN, *};
+use super::*;
+
+const MAX_FILE_LEN: usize = Manifest::MAX_ENCODED_LEN;
 
 const TEMPORARY: &str = "MANIFEST.tmp";
 const CLOSED: FileState = FileState::Closed;
@@ -72,10 +74,10 @@ fn generations() -> [Manifest; 4] {
 }
 
 #[test]
-fn the_largest_manifest_is_as_long_as_this_module_expects() {
-    assert_eq!(empty_manifest().encode().unwrap().len(), 64);
+fn the_largest_manifest_is_as_long_as_the_format_states() {
+    assert_eq!(empty_manifest().encode().unwrap().len(), 68);
     let one = manifest_of([0, 1, 0, 0], None, vec![segment(1, OPEN, 20)]);
-    assert_eq!(one.encode().unwrap().len(), 64 + 16);
+    assert_eq!(one.encode().unwrap().len(), 68 + 16);
 
     let files = (1..=MAX_LIVE_FILES as u32)
         .map(|raw| segment(raw, OPEN, 20))
@@ -644,6 +646,97 @@ fn a_replacement_that_breaks_the_life_of_a_file_is_refused_and_writes_nothing() 
     ));
 }
 
+fn with_page_size(manifest: &Manifest, bytes: usize) -> Manifest {
+    Manifest::new(
+        TreePageSize::new(bytes).unwrap(),
+        manifest.last_file_ids(),
+        manifest.table_checkpoint(),
+        manifest.files().to_vec(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn the_page_size_of_the_first_manifest_is_the_stores_for_good() {
+    for created in [8_192, 32_768, 65_536] {
+        let first = with_page_size(&generations()[0], created);
+        let (vfs, mut store, dir) = new_store(first.clone());
+        assert_eq!(store.manifest().unwrap().page_size().get(), created);
+
+        for offered in [8_192, 8_193, 16_384, 32_768, 65_535, 65_536] {
+            if offered == created {
+                continue;
+            }
+            for next in [&generations()[0], &generations()[1], &full()] {
+                let change = ManifestChange::PageSizeChanged {
+                    from: TreePageSize::new(created).unwrap(),
+                    to: TreePageSize::new(offered).unwrap(),
+                };
+                match replace(&mut store, with_page_size(next, offered)) {
+                    Err(SegmentStoreError::ManifestChange(refused)) => {
+                        assert_eq!(refused, change)
+                    }
+                    other => panic!("expected {change:?}, got {other:?}"),
+                }
+                assert_eq!(vfs.take_calls(), []);
+                assert_eq!(store.manifest().unwrap(), &first);
+            }
+        }
+        assert_eq!(read_manifest(&vfs, dir.path()).unwrap(), first);
+
+        for next in generations() {
+            let next = with_page_size(&next, created);
+            replace(&mut store, next.clone()).unwrap();
+            assert_eq!(read_manifest(&vfs, dir.path()).unwrap(), next);
+        }
+        let reopened = open_store(&vfs, dir.path()).unwrap();
+        assert_eq!(reopened.manifest().unwrap().page_size().get(), created);
+    }
+}
+
+#[test]
+fn a_store_opened_with_another_page_size_is_refused() {
+    for created in [8_192, 32_768, 65_536] {
+        let (vfs, mut store, dir) = new_store(with_page_size(&full(), created));
+        let created = TreePageSize::new(created).unwrap();
+        let reopened = open_store(&vfs, dir.path()).unwrap();
+        vfs.take_calls();
+        for store in [&store, &reopened] {
+            store.check_page_size(created).unwrap();
+            for requested in [8_192, 8_193, 16_384, 32_768, 65_535, 65_536] {
+                let requested = TreePageSize::new(requested).unwrap();
+                if requested == created {
+                    continue;
+                }
+                match store.check_page_size(requested) {
+                    Err(SegmentStoreError::PageSizeMismatch {
+                        dir: named,
+                        stored,
+                        requested: asked,
+                    }) => {
+                        assert_eq!(named, dir.path());
+                        assert_eq!((stored, asked), (created, requested));
+                    }
+                    other => panic!("expected a mismatch, got {other:?}"),
+                }
+            }
+        }
+        assert_eq!(
+            vfs.take_calls(),
+            [],
+            "the check reads the manifest it holds"
+        );
+
+        vfs.fail(Op::SyncDir, &dir_name(dir.path()));
+        let next = with_page_size(&full_with_longer_segment(), created.get());
+        assert!(replace(&mut store, next).is_err());
+        assert!(matches!(
+            store.check_page_size(created),
+            Err(SegmentStoreError::ManifestInDoubt { .. })
+        ));
+    }
+}
+
 #[test]
 fn an_update_is_made_from_the_current_manifest_and_a_failed_one_writes_nothing() {
     #[derive(Debug)]
@@ -684,7 +777,9 @@ fn an_update_is_made_from_the_current_manifest_and_a_failed_one_writes_nothing()
         files.push(live(FileKind::Wal, 46, OPEN, 20));
         let mut last = current.last_file_ids();
         last.wal = Some(id(46));
-        Ok::<_, Outer>(Manifest::new(last, current.table_checkpoint(), files).unwrap())
+        Ok::<_, Outer>(
+            Manifest::new(current.page_size(), last, current.table_checkpoint(), files).unwrap(),
+        )
     };
     store.update(with_log).unwrap();
     let on_disk = read_manifest(&vfs, dir.path()).unwrap();

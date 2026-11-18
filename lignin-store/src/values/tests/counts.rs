@@ -747,12 +747,16 @@ fn recovery_does_not_remove_a_file_whose_count_was_found_too_low() {
     store
         .manifest
         .update(|_| {
-            Manifest::new(manifest.last_file_ids(), None, Vec::new()).map_err(|source| {
-                ValueStoreError::Format {
-                    path: db_dir().to_path_buf(),
-                    offset: 0,
-                    source,
-                }
+            Manifest::new(
+                manifest.page_size(),
+                manifest.last_file_ids(),
+                None,
+                Vec::new(),
+            )
+            .map_err(|source| ValueStoreError::Format {
+                path: db_dir().to_path_buf(),
+                offset: 0,
+                source,
             })
         })
         .unwrap();

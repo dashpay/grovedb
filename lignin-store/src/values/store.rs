@@ -1034,9 +1034,16 @@ impl ValueStore {
         }
         let mut last_file_ids = base.last_file_ids();
         last_file_ids.value_log = last_file_ids.value_log.max(last_id);
-        Manifest::new(last_file_ids, base.table_checkpoint(), files).map_err(
-            ValueStoreError::format(&self.dir.join(ManifestStore::FILE_NAME), 0),
+        Manifest::new(
+            base.page_size(),
+            last_file_ids,
+            base.table_checkpoint(),
+            files,
         )
+        .map_err(ValueStoreError::format(
+            &self.dir.join(ManifestStore::FILE_NAME),
+            0,
+        ))
     }
 
     pub(super) fn name_files(&self, manifest: &Manifest) -> BTreeSet<FileId> {

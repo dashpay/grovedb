@@ -49,6 +49,14 @@ fn every_error_says_what_went_wrong() {
             "invalid manifest replacement: Segment file 7 has a lower valid length than it had",
         ),
         (
+            SegmentStoreError::PageSizeMismatch {
+                dir: dir(),
+                stored: TreePageSize::DEFAULT,
+                requested: TreePageSize::MIN,
+            },
+            "db has pages of 32768 bytes and was opened with pages of 8192",
+        ),
+        (
             SegmentStoreError::WrongDirectory {
                 expected: dir(),
                 found: PathBuf::from("checkpoint"),
@@ -138,9 +146,16 @@ fn every_error_says_what_went_wrong() {
 }
 
 #[test]
-fn every_refused_manifest_change_names_the_file() {
+fn every_refused_manifest_change_says_what_changed() {
     let (kind, id) = (FileKind::Wal, id(44));
     let cases = [
+        (
+            ManifestChange::PageSizeChanged {
+                from: TreePageSize::DEFAULT,
+                to: TreePageSize::MAX,
+            },
+            "the page size is 65536, and the store was created with 32768",
+        ),
         (
             ManifestChange::LastFileIdLowered { kind },
             "the last Wal file id is lower than it was",
