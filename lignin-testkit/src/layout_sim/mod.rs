@@ -40,29 +40,26 @@ pub struct Run {
     /// turns the check off.
     pub check_every: u64,
     /// Whether the mirror is compared with a scan of storage at the end of
-    /// every block, with a panic if they differ.
+    /// every block, with a panic if they differ. It is compared once at the
+    /// end of the run in any case.
     pub verify_mirror: bool,
-}
-
-impl Default for Run {
-    fn default() -> Self {
-        Run {
-            sample_every: 100_000,
-            check_every: 0,
-            verify_mirror: false,
-        }
-    }
 }
 
 /// Applies the writes of `ops` to `db`, which must be empty, and lays the
 /// resulting trees out once per entry of `configs`.
 ///
-/// A transition is one direct write or one batch. A block ends at each
-/// [`Op::Commit`], where the transaction is committed. Reads are skipped:
-/// they change no node. `progress` is called after every sample with the
-/// number of transitions so far.
+/// A transition is one direct write or one batch, whole or in segments,
+/// that changes a Merk node. A write that changes none, such as an aux
+/// record, is applied and not counted. A block ends at each [`Op::Commit`],
+/// where the transaction is committed. Reads are skipped: they change no
+/// node. `progress` is called after every sample with the number of
+/// transitions so far.
 ///
-/// Panics if GroveDB refuses an operation.
+/// At the end of the run the mirror is compared with a scan of storage and
+/// every layout is recounted from the mirror.
+///
+/// Panics if GroveDB refuses an operation, if the mirror or a layout is
+/// found wrong, or if reclaiming dropped storage changes a Merk node.
 pub fn simulate(
     name: &str,
     db: &GroveDb,
@@ -93,11 +90,23 @@ pub fn simulate(
                     model.end_block();
                 }
             }
-            Op::Write(_) | Op::Batch(_) => {
+            Op::FlushPendingDrops => {
+                apply(db, &op, Some(&transaction), grove_version)
+                    .unwrap()
+                    .unwrap_or_else(|error| panic!("{name}: {op:?} refused: {error:?}"));
+                assert!(
+                    observer.observe(db, &transaction).is_empty(),
+                    "{name} after {transitions} transitions: a flush changed a Merk node"
+                );
+            }
+            Op::Write(_) | Op::Batch(_) | Op::PartialBatch(_) => {
                 apply(db, &op, Some(&transaction), grove_version)
                     .unwrap()
                     .unwrap_or_else(|error| panic!("{name}: {op:?} refused: {error:?}"));
                 let changes = observer.observe(db, &transaction);
+                if changes.is_empty() {
+                    continue;
+                }
                 transitions += 1;
                 for model in &mut models {
                     model.apply(observer.grove(), &changes);
@@ -116,6 +125,14 @@ pub fn simulate(
                     progress(transitions, &observer, &models);
                 }
             }
+        }
+    }
+    if let Err(problem) = observer.verify(db, &transaction) {
+        panic!("{name} at the end: {problem}");
+    }
+    for model in &models {
+        if let Err(problem) = model.check(observer.grove()) {
+            panic!("{name} at the end: {problem}");
         }
     }
     db.commit_transaction(transaction)

@@ -112,6 +112,9 @@ pub struct Merk {
     /// The path from the GroveDB root, when the Merk is reached by path. A
     /// secondary Merk of an indexed tree has a prefix but no path.
     pub path: Option<Vec<Vec<u8>>>,
+    /// The axis tag of a secondary Merk of an indexed tree; `None` for a
+    /// Merk reached by path.
+    pub axis: Option<u8>,
     /// The root node; `None` for an empty Merk.
     pub root: Option<NodeId>,
     /// The node whose element hosts this Merk; `None` for the root Merk.
@@ -144,6 +147,7 @@ impl Grove {
             merks: vec![Merk {
                 prefix: [0; 32],
                 path: Some(Vec::new()),
+                axis: None,
                 root: None,
                 host: None,
                 keys: HashMap::new(),
@@ -247,18 +251,6 @@ impl Grove {
             .count() as u32
     }
 
-    /// The height of the subtree under `id` inside its Merk.
-    pub fn height(&self, id: NodeId) -> u32 {
-        let node = self.node(id);
-        1 + node
-            .left
-            .into_iter()
-            .chain(node.right)
-            .map(|child| self.height(child))
-            .max()
-            .unwrap_or(0)
-    }
-
     /// Whether `ancestor` is a proper ancestor of `id` inside one Merk.
     pub fn is_merk_ancestor(&self, ancestor: NodeId, id: NodeId) -> bool {
         let mut at = self.node(id).parent;
@@ -283,12 +275,14 @@ impl Grove {
         &mut self,
         prefix: [u8; 32],
         path: Option<Vec<Vec<u8>>>,
+        axis: Option<u8>,
         host: NodeId,
     ) -> MerkId {
         let id = MerkId(u32::try_from(self.merks.len()).expect("fewer than 2^32 Merks"));
         self.merks.push(Merk {
             prefix,
             path,
+            axis,
             root: None,
             host: Some(host),
             keys: HashMap::new(),
@@ -308,10 +302,13 @@ impl Grove {
         self.live_nodes -= 1;
     }
 
-    /// Empties a Merk and every Merk hosted inside it, appending the nodes
-    /// that went to `dropped`. With `whole` the Merk itself is gone too.
-    pub(crate) fn drop_merk(&mut self, id: MerkId, whole: bool, dropped: &mut Vec<NodeId>) -> u32 {
-        let mut merks_dropped = 0;
+    /// Empties a Merk and every Merk hosted inside it, and records in
+    /// `changes` the nodes and Merks that went. With `whole` the Merk itself
+    /// is gone too: its host was deleted or stopped being a tree.
+    pub(crate) fn drop_merk(&mut self, id: MerkId, whole: bool, changes: &mut ChangeSet) {
+        if whole && self.merks[id.index()].live {
+            changes.subtrees_dropped += 1;
+        }
         let mut pending = vec![(id, whole)];
         while let Some((merk, whole)) = pending.pop() {
             let keys = std::mem::take(&mut self.merks[merk.index()].keys);
@@ -321,7 +318,7 @@ impl Grove {
                 let entry = &mut self.nodes[node.index()];
                 entry.live = false;
                 pending.extend(entry.hosted.iter().map(|hosted| (*hosted, true)));
-                dropped.push(node);
+                changes.dropped.push(node);
                 self.live_nodes -= 1;
             }
             let entry = &mut self.merks[merk.index()];
@@ -329,10 +326,9 @@ impl Grove {
             if whole && entry.live {
                 entry.live = false;
                 self.live_merks -= 1;
-                merks_dropped += 1;
+                changes.merks_dropped += 1;
             }
         }
-        merks_dropped
     }
 }
 
@@ -374,8 +370,13 @@ pub struct ChangeSet {
     pub roots_changed: Vec<MerkId>,
     /// The Merks that came into being.
     pub merks_created: Vec<MerkId>,
-    /// How many Merks were dropped.
+    /// How many Merks were dropped, the ones inside a dropped Merk
+    /// included.
     pub merks_dropped: u32,
+    /// How many of them their own host let go of: its node was deleted or
+    /// its element stopped being a tree. The others went with a Merk above
+    /// them.
+    pub subtrees_dropped: u32,
     /// The bytes of the records behind `events`, as RocksDB is given them:
     /// prefix, key and value.
     pub record_bytes: u64,
@@ -577,7 +578,7 @@ pub(crate) mod hand {
             self.merks += 1;
             let mut prefix = [0u8; 32];
             prefix[..4].copy_from_slice(&self.merks.to_le_bytes());
-            let merk = self.grove.add_merk(prefix, None, node);
+            let merk = self.grove.add_merk(prefix, None, None, node);
             self.grove.node_mut(node).hosted.push(merk);
             self.changes.merks_created.push(merk);
             merk
@@ -590,8 +591,7 @@ pub(crate) mod hand {
             self.grove.retire_node(node);
             self.changes.removed.push(node);
             for merk in hosted {
-                self.changes.merks_dropped +=
-                    self.grove.drop_merk(merk, true, &mut self.changes.dropped);
+                self.grove.drop_merk(merk, true, &mut self.changes);
             }
         }
 
@@ -666,7 +666,6 @@ mod tests {
         assert_eq!(changes.hash_only, 4);
         let grove = &hand.grove;
         assert_eq!(grove.live_nodes(), 7);
-        assert_eq!(grove.height(x), 4);
         assert_eq!(grove.child_links(y), 2);
         assert_eq!(grove.child_links(a), 0);
         assert!(grove.is_merk_ancestor(x, b1) && !grove.is_merk_ancestor(c, b1));
@@ -759,14 +758,39 @@ mod tests {
         assert_eq!(hand.grove.merk(inner).host, Some(middle));
 
         // Clearing the outer Merk empties it and drops the one inside.
-        let mut dropped = Vec::new();
-        let merks = hand.grove.drop_merk(outer, false, &mut dropped);
-        assert_eq!((merks, dropped), (1, vec![middle, leaf]));
+        let mut cleared = ChangeSet::default();
+        hand.grove.drop_merk(outer, false, &mut cleared);
+        assert_eq!(cleared.dropped, vec![middle, leaf]);
+        assert_eq!((cleared.merks_dropped, cleared.subtrees_dropped), (1, 0));
         assert_eq!(hand.grove.live_merks(), 2);
         assert!(hand.grove.merk(outer).live && !hand.grove.merk(inner).live);
         assert_eq!(hand.grove.merk(outer).root, None);
         assert_eq!(hand.grove.hosted_roots(top), 0);
         assert_eq!(hand.grove.live_nodes(), 1);
         assert_eq!(Grove::default().live_merks(), 1);
+    }
+
+    #[test]
+    fn a_deleted_host_lets_go_of_one_subtree_whatever_is_inside_it() {
+        let mut hand = Hand::new();
+        let top = hand.add(MerkId::ROOT, &key(1), 1);
+        hand.set_root(MerkId::ROOT, Some(top));
+        let host = hand.add(MerkId::ROOT, &key(2), 1);
+        hand.link(top, Side::Right, Some(host));
+        let outer = hand.host(host);
+        let middle = hand.add(outer, &key(3), 1);
+        hand.set_root(outer, Some(middle));
+        let inner = hand.host(middle);
+        let leaf = hand.add(inner, &key(4), 1);
+        hand.set_root(inner, Some(leaf));
+        hand.commit();
+
+        hand.link(top, Side::Right, None);
+        hand.remove(host);
+        let changes = hand.commit();
+        assert_eq!(changes.removed, vec![host]);
+        assert_eq!(changes.dropped, vec![middle, leaf]);
+        assert_eq!((changes.merks_dropped, changes.subtrees_dropped), (2, 1));
+        assert_eq!(hand.grove.live_merks(), 1);
     }
 }

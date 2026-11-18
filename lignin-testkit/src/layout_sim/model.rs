@@ -174,8 +174,9 @@ struct Page {
     cells: u32,
     dirty_in_transition: u64,
     dirty_in_block: u64,
-    /// A cell of this page that the current write holds.
+    /// A cell of this page that the write numbered `held_in` holds.
     held: Option<NodeId>,
+    held_in: u64,
     queued: bool,
 }
 
@@ -202,6 +203,12 @@ pub struct Model {
     /// The nodes the current write holds: the ones it changed and the roots
     /// of what it moved.
     held: Vec<NodeId>,
+    /// The cells the current write placed or carried: the page each was in
+    /// before the write, zero for a new cell, and the rule that carried it
+    /// last.
+    carried: Vec<(NodeId, u32, Cause)>,
+    /// For each node its place in `carried`, plus one.
+    carry_slot: Vec<u32>,
     directory: Vec<MerkId>,
     dirty_now: u32,
     dirty_block: u64,
@@ -252,6 +259,8 @@ impl Model {
             block: 1,
             queue: Vec::new(),
             held: Vec::new(),
+            carried: Vec::new(),
+            carry_slot: Vec::new(),
             directory: Vec::new(),
             dirty_now: 0,
             dirty_block: 0,
@@ -344,6 +353,7 @@ impl Model {
         self.directory.clear();
         self.page_of.resize(grove.node_slots(), 0);
         self.cell_of.resize(grove.node_slots(), 0);
+        self.carry_slot.resize(grove.node_slots(), 0);
 
         let inherited: Vec<(NodeId, u32, Cause)> = changes
             .takes_place_of
@@ -393,6 +403,7 @@ impl Model {
                     .iter()
                     .find(|(taker, _)| *taker == node)
                     .map(|(_, page)| *page)
+                    .filter(|page| self.pages[*page as usize].cells > 0)
                     .or_else(|| self.parent_page(grove, node))
                     .filter(|page| *page != 0)
                     .or_else(|| {
@@ -402,6 +413,8 @@ impl Model {
                     })
                     .unwrap_or_else(|| self.allocate());
                 self.insert_cell(node, page, bytes);
+                self.carried.push((node, 0, Cause::Split));
+                self.carry_slot[node.index()] = self.carried.len() as u32;
             } else {
                 self.resize_cell(node, bytes);
             }
@@ -433,12 +446,13 @@ impl Model {
         self.absorb_small(grove);
         self.merge_underfull(grove);
         self.settle_overflow(grove);
+        self.count_moves(grove, changes);
 
         self.directory.extend(&changes.roots_changed);
         self.directory.extend(&changes.merks_created);
         self.directory.sort_unstable();
         self.directory.dedup();
-        let directory = self.directory.len() as u64 + u64::from(changes.merks_dropped);
+        let directory = self.directory.len() as u64 + u64::from(changes.subtrees_dropped);
 
         let stats = &mut self.stats;
         stats.transitions += 1;
@@ -491,7 +505,8 @@ impl Model {
 
     /// Checks the model's bookkeeping against a recount from the grove:
     /// every live node is in exactly one page with the cell size its record
-    /// gives, every page's totals add up, and no page is over its capacity.
+    /// gives, every page's totals and the totals of the layout add up, no
+    /// page is over its capacity, and the free pages are the empty ones.
     pub fn check(&self, grove: &Grove) -> Result<(), String> {
         let mut used = vec![0u64; self.pages.len()];
         let mut cells = vec![0u32; self.pages.len()];
@@ -542,6 +557,25 @@ impl Model {
             return Err(format!(
                 "{pages} pages in use but {} counted",
                 self.live_pages
+            ));
+        }
+        let bytes: u64 = used.iter().sum();
+        if bytes != self.used_bytes {
+            return Err(format!(
+                "the pages hold {bytes} bytes of cells but {} are counted",
+                self.used_bytes
+            ));
+        }
+        let mut free = self.free.clone();
+        free.sort_unstable();
+        let empty: Vec<u32> = (1..self.pages.len() as u32)
+            .filter(|id| cells[*id as usize] == 0)
+            .collect();
+        if free != empty {
+            return Err(format!(
+                "{} pages are free but {} are empty",
+                free.len(),
+                empty.len()
             ));
         }
         Ok(())
@@ -598,7 +632,17 @@ impl Model {
         }
     }
 
+    fn hold(&mut self, page: u32, node: NodeId) {
+        let entry = &mut self.pages[page as usize];
+        entry.held = Some(node);
+        entry.held_in = self.transition;
+    }
+
     fn insert_cell(&mut self, node: NodeId, page: u32, bytes: u32) {
+        assert!(
+            bytes * 2 < self.capacity,
+            "a cell of {bytes} bytes is not below half a page"
+        );
         self.page_of[node.index()] = page;
         self.cell_of[node.index()] = bytes;
         self.used_bytes += u64::from(bytes);
@@ -606,18 +650,22 @@ impl Model {
         let entry = &mut self.pages[page as usize];
         entry.used += bytes;
         entry.cells += 1;
-        entry.held = Some(node);
+        self.hold(page, node);
         self.dirty(page);
         self.queue_if_over(page);
     }
 
     fn resize_cell(&mut self, node: NodeId, bytes: u32) {
+        assert!(
+            bytes * 2 < self.capacity,
+            "a cell of {bytes} bytes is not below half a page"
+        );
         let page = self.page_of[node.index()];
         let old = std::mem::replace(&mut self.cell_of[node.index()], bytes);
         self.used_bytes = self.used_bytes - u64::from(old) + u64::from(bytes);
         let entry = &mut self.pages[page as usize];
         entry.used = entry.used - old + bytes;
-        entry.held = Some(node);
+        self.hold(page, node);
         self.dirty(page);
         self.queue_if_over(page);
     }
@@ -655,23 +703,59 @@ impl Model {
         }
     }
 
-    /// Carries one cell to another page. The page it leaves, the page it
-    /// enters and the page of the cell that points at it are written.
+    /// Carries one cell to another page. The page it leaves and the page it
+    /// enters are written; the caller writes the page of the cell that
+    /// points at it.
     fn carry(&mut self, grove: &Grove, node: NodeId, to: u32, cause: Cause) {
         let bytes = self.cell_of[node.index()];
+        let from = self.page_of[node.index()];
         self.remove_cell(node, true);
         self.insert_cell(node, to, bytes);
-        let moves = &mut self.stats.moves[cause as usize];
-        moves.cells += 1;
-        moves.cell_bytes += u64::from(bytes);
-        let entry = grove.node(node);
-        if self.config.is_out_of_line(entry.value_len) {
-            moves.values += 1;
-            moves.value_bytes += u64::from(entry.value_len + self.config.costs.value_record_header);
+        match self.carry_slot[node.index()] {
+            0 => {
+                self.carried.push((node, from, cause));
+                self.carry_slot[node.index()] = self.carried.len() as u32;
+            }
+            slot => self.carried[slot as usize - 1].2 = cause,
         }
         if grove.is_merk_root(node) {
-            self.directory.push(entry.merk);
+            self.directory.push(grove.node(node).merk);
         }
+    }
+
+    /// Counts the cells the write leaves in another page than it found them
+    /// in. A cell carried several times counts once, under the rule that
+    /// carried it last, and not at all when it is back where it was or the
+    /// write created it. Its out-of-line value is appended again unless the
+    /// write wrote that value anyway.
+    fn count_moves(&mut self, grove: &Grove, changes: &ChangeSet) {
+        let mut rewritten: Vec<NodeId> = Vec::new();
+        for index in 0..self.carried.len() {
+            let (node, from, cause) = self.carried[index];
+            self.carry_slot[node.index()] = 0;
+            if from == 0 || from == self.page_of[node.index()] {
+                continue;
+            }
+            if rewritten.is_empty() {
+                rewritten.extend(
+                    changes
+                        .events
+                        .iter()
+                        .filter(|event| event.value_changed)
+                        .map(|event| event.node),
+                );
+                rewritten.sort_unstable();
+            }
+            let moves = &mut self.stats.moves[cause as usize];
+            moves.cells += 1;
+            moves.cell_bytes += u64::from(self.cell_of[node.index()]);
+            let value_len = grove.node(node).value_len;
+            if self.config.is_out_of_line(value_len) && rewritten.binary_search(&node).is_err() {
+                moves.values += 1;
+                moves.value_bytes += u64::from(value_len + self.config.costs.value_record_header);
+            }
+        }
+        self.carried.clear();
     }
 
     fn relink(&mut self, grove: &Grove, node: NodeId) {
@@ -739,7 +823,7 @@ impl Model {
             self.carry(grove, node, to, cause);
         }
         self.relink(grove, root);
-        self.pages[to as usize].held = Some(root);
+        self.hold(to, root);
         self.held.push(root);
     }
 
@@ -783,13 +867,17 @@ impl Model {
                 rounds < 100_000,
                 "page {page} cannot be brought under its capacity"
             );
-            let held = self.pages[page as usize].held.or_else(|| {
-                self.held
-                    .iter()
-                    .rev()
-                    .copied()
-                    .find(|node| self.page_of[node.index()] == page)
-            });
+            let entry = &self.pages[page as usize];
+            let held = entry
+                .held
+                .filter(|_| entry.held_in == self.transition)
+                .or_else(|| {
+                    self.held
+                        .iter()
+                        .rev()
+                        .copied()
+                        .find(|node| self.page_of[node.index()] == page)
+                });
             let Some(held) = held else {
                 self.stats.overfull_left += 1;
                 continue;
@@ -866,8 +954,8 @@ impl Model {
         best.map(|(_, page)| u32::MAX - page)
     }
 
-    /// A page that a delete left nearly empty gives the fragment the delete
-    /// was in to a page beside it.
+    /// A page that a delete left nearly empty gives the fragments the write
+    /// holds in it to a page beside it.
     fn merge_underfull(&mut self, grove: &Grove) {
         for index in 0..self.shrunk.len() {
             let page = self.shrunk[index];
@@ -946,12 +1034,9 @@ impl Model {
             return;
         }
         let target = used - self.capacity / 2;
-        let chosen = choose(&parts, target);
-        let leaving: Vec<(NodeId, u32)> = parts
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| chosen & (1 << index) != 0)
-            .map(|(_, part)| *part)
+        let leaving: Vec<(NodeId, u32)> = choose(&parts, target)
+            .into_iter()
+            .map(|index| parts[index])
             .collect();
         let bytes: u32 = leaving.iter().map(|part| part.1).sum();
         let to = self.destination(grove, leaving[0].0, bytes);
@@ -1021,29 +1106,28 @@ impl Model {
     }
 }
 
-/// Which parts to move so that their bytes come closest to `target`: a bit
-/// set over `parts`, never empty. Ties go to fewer bytes, then to the parts
-/// listed first.
+/// Which parts to move so that their bytes come closest to `target`: their
+/// places in `parts`, in rising order, never none. Ties go to fewer bytes,
+/// then to the choice whose last part is listed earliest.
 ///
-/// Up to twelve parts every choice is tried. Above that, which no workload
-/// here reaches, the 32 parts listed first are taken largest first, each
-/// only if it brings the sum closer.
-fn choose(parts: &[(NodeId, u32)], target: u32) -> u32 {
+/// Up to twelve parts every choice is tried. Above that the parts are taken
+/// largest first, each only if it brings the sum closer.
+fn choose(parts: &[(NodeId, u32)], target: u32) -> Vec<usize> {
     const EXHAUSTIVE: usize = 12;
+    let target = u64::from(target);
     if parts.len() > EXHAUSTIVE {
-        let mut order: Vec<usize> = (0..parts.len().min(32)).collect();
+        let mut order: Vec<usize> = (0..parts.len()).collect();
         order.sort_by_key(|index| (std::cmp::Reverse(parts[*index].1), *index));
-        let mut chosen = 0u32;
+        let mut chosen = Vec::new();
         let mut sum = 0u64;
         for index in order {
             let bytes = u64::from(parts[index].1);
-            if chosen == 0
-                || (sum + bytes).abs_diff(u64::from(target)) < sum.abs_diff(u64::from(target))
-            {
-                chosen |= 1 << index;
+            if chosen.is_empty() || (sum + bytes).abs_diff(target) < sum.abs_diff(target) {
+                chosen.push(index);
                 sum += bytes;
             }
         }
+        chosen.sort_unstable();
         return chosen;
     }
     let mut best = (u64::MAX, u64::MAX, 0u32);
@@ -1054,18 +1138,20 @@ fn choose(parts: &[(NodeId, u32)], target: u32) -> u32 {
             .filter(|(index, _)| mask & (1 << index) != 0)
             .map(|(_, part)| u64::from(part.1))
             .sum();
-        let candidate = (sum.abs_diff(u64::from(target)), sum, mask);
+        let candidate = (sum.abs_diff(target), sum, mask);
         if candidate < best {
             best = candidate;
         }
     }
-    best.2
+    (0..parts.len())
+        .filter(|index| best.2 & (1 << index) != 0)
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout_sim::tree::{hand::Hand, Side};
+    use crate::layout_sim::tree::{hand::Hand, Event, Side};
 
     /// A small page, so a handful of nodes fills it. With a 32-byte value a
     /// leaf cell is 2 + 4 + 4 + 64 + 1 + 32 = 107 bytes and each link adds
@@ -1084,6 +1170,14 @@ mod tests {
 
     fn key(index: u32) -> [u8; 4] {
         index.to_be_bytes()
+    }
+
+    /// Carries cells to `to` outside any transition, as a rule would.
+    fn carry_by_hand(model: &mut Model, grove: &Grove, nodes: &[NodeId], to: u32) {
+        for node in nodes {
+            model.carry(grove, *node, to, Cause::Split);
+        }
+        model.count_moves(grove, &ChangeSet::default());
     }
 
     /// Applies the edits made to `hand` since the last step as one
@@ -1218,17 +1312,84 @@ mod tests {
     }
 
     #[test]
+    fn the_first_split_sends_about_half_of_the_page_away() {
+        let mut hand = Hand::new();
+        let mut model = Model::new(config());
+        // Seven nodes need 7 * 107 + 6 * 41 = 995 bytes, three more than a
+        // page holds.
+        let nodes = grow(&mut hand, &mut model, MerkId::ROOT, 7);
+        let stats = model.stats();
+        assert_eq!((stats.splits, stats.split_off, stats.promoted), (1, 1, 0));
+        assert_eq!(model.pages(), 2);
+        let top = model.page_of(nodes[3]).expect("placed");
+        let away = model.page_of(nodes[1]).expect("placed");
+        assert_ne!(top, away);
+        for kept in [5, 4, 6] {
+            assert_eq!(model.page_of(nodes[kept]), Some(top));
+        }
+        for left in [0, 2] {
+            assert_eq!(model.page_of(nodes[left]), Some(away));
+        }
+        let capacity = model.config().capacity();
+        for page in [top, away] {
+            let used = model.pages[page as usize].used;
+            assert!(
+                used * 3 >= capacity && used * 3 <= capacity * 2,
+                "{used} of {capacity}"
+            );
+        }
+        assert_eq!(model.stats().moved().cells, 3);
+    }
+
+    #[test]
     fn a_split_sends_the_fragment_root_up_to_its_parents_page() {
+        let mut hand = Hand::new();
+        let mut model = Model::new(config());
+        let nodes = grow(&mut hand, &mut model, MerkId::ROOT, 7);
+        let top = model.page_of(nodes[3]).expect("placed");
+        let below = model.page_of(nodes[1]).expect("placed");
+        assert_ne!(top, below);
+        // Four more leaves fill the page below the top one.
+        let before = model.stats().clone();
+        let places = [
+            (nodes[0], Side::Left),
+            (nodes[0], Side::Right),
+            (nodes[2], Side::Left),
+            (nodes[2], Side::Right),
+        ];
+        for (index, (parent, side)) in places.into_iter().enumerate() {
+            let node = hand.add(MerkId::ROOT, &key(100 + index as u32), 32);
+            hand.link(parent, side, Some(node));
+            hand.touch_path(node);
+            step(&mut hand, &mut model);
+            model.check(&hand.grove).expect("consistent");
+        }
+        let stats = model.stats().since(&before);
+        assert_eq!((stats.splits, stats.promoted, stats.split_off), (1, 1, 1));
+        assert_eq!(
+            model.page_of(nodes[1]),
+            Some(top),
+            "the root of the fragment is now beside its parent"
+        );
+        assert_eq!(model.page_of(nodes[2]), Some(below));
+        let third = model.page_of(nodes[0]).expect("placed");
+        assert!(third != top && third != below);
+        assert_eq!(model.pages(), 3);
+        assert_eq!(
+            stats.moved().cells,
+            4,
+            "the root that went up and the three cells of the half that left"
+        );
+    }
+
+    #[test]
+    fn a_growing_tree_leaves_no_page_overfull() {
         let mut hand = Hand::new();
         let mut model = Model::new(config());
         grow(&mut hand, &mut model, MerkId::ROOT, 200);
         let stats = model.stats();
-        assert!(
-            stats.promoted > 0,
-            "a fragment below the top page was split"
-        );
+        assert!(stats.promoted > 1 && stats.split_off > 1);
         assert_eq!(stats.overfull_left, 0);
-        model.check(&hand.grove).expect("consistent");
     }
 
     #[test]
@@ -1288,9 +1449,7 @@ mod tests {
         step(&mut hand, model);
         let top = model.page_of(x).expect("placed");
         let bottom = model.allocate();
-        for node in [y, a, b] {
-            model.carry(&hand.grove, node, bottom, Cause::Split);
-        }
+        carry_by_hand(model, &hand.grove, &[y, a, b], bottom);
         assert_ne!(top, bottom);
         model.check(&hand.grove).expect("consistent");
         (hand, [x, y, a, b, c])
@@ -1360,7 +1519,7 @@ mod tests {
         // Put `a` in the top page by hand: `y` now sits in the other page
         // between its parent and one of its children.
         let top = model.page_of(x).expect("placed");
-        model.carry(&hand.grove, a, top, Cause::Split);
+        carry_by_hand(&mut model, &hand.grove, &[a], top);
         hand.touch_path(y);
         step(&mut hand, &mut model);
         model.check(&hand.grove).expect("consistent");
@@ -1472,18 +1631,97 @@ mod tests {
     }
 
     #[test]
-    fn a_value_carried_out_of_line_is_counted_as_appended_again() {
+    fn a_cell_that_ends_in_another_page_is_counted_once_with_its_value() {
         let mut hand = Hand::new();
         let mut model = Model::new(config());
         let root = hand.add(MerkId::ROOT, b"r", 1000);
         hand.set_root(MerkId::ROOT, Some(root));
         step(&mut hand, &mut model);
         assert_eq!(model.stats().out_of_line_bytes, 1018);
-        let fresh = model.allocate();
-        model.carry(&hand.grove, root, fresh, Cause::Split);
-        let moves = model.stats().moved();
-        assert_eq!((moves.cells, moves.values, moves.value_bytes), (1, 1, 1018));
-        assert_eq!(model.stats().pages_freed, 1);
+        assert_eq!(model.stats().moved().cells, 0, "a new cell is placed");
+        let nothing = ChangeSet::default();
+        let moved = |model: &Model, cause: Cause| {
+            let moves = model.stats().moves[cause as usize];
+            (
+                moves.cells,
+                moves.cell_bytes,
+                moves.values,
+                moves.value_bytes,
+            )
+        };
+
+        // Carried twice by one write: one move, under the last rule.
+        let (first, second) = (model.allocate(), model.allocate());
+        model.carry(&hand.grove, root, first, Cause::Merge);
+        model.carry(&hand.grove, root, second, Cause::Split);
+        model.count_moves(&hand.grove, &nothing);
+        assert_eq!(moved(&model, Cause::Split), (1, 88, 1, 1018));
+        assert_eq!(moved(&model, Cause::Merge), (0, 0, 0, 0));
+
+        // Carried away and back by one write: no move.
+        let away = model.allocate();
+        model.carry(&hand.grove, root, away, Cause::Split);
+        assert_eq!(
+            model.allocate(),
+            second,
+            "the page it left is handed out next"
+        );
+        model.carry(&hand.grove, root, second, Cause::Merge);
+        model.count_moves(&hand.grove, &nothing);
+        assert_eq!(model.stats().moved().cells, 1);
+
+        // Carried by the write that gives it a new value: the value is
+        // written once, into the page the cell ends in.
+        let rewritten = ChangeSet {
+            events: vec![Event {
+                node: root,
+                created: false,
+                old_parent: None,
+                old_left: None,
+                old_right: None,
+                value_changed: true,
+                links_changed: false,
+            }],
+            ..ChangeSet::default()
+        };
+        let last = model.allocate();
+        model.carry(&hand.grove, root, last, Cause::Delete);
+        model.count_moves(&hand.grove, &rewritten);
+        assert_eq!(moved(&model, Cause::Delete), (1, 88, 0, 0));
+        model.check(&hand.grove).expect("consistent");
+        assert_eq!(model.pages(), 1);
+    }
+
+    #[test]
+    fn a_new_cell_that_a_split_carries_is_not_a_move() {
+        let mut hand = Hand::new();
+        let mut model = Model::new(config());
+        let nodes = grow(&mut hand, &mut model, MerkId::ROOT, 6);
+        assert_eq!(model.pages(), 1);
+        // The seventh node fills the page. It hangs in the left half, which
+        // is the half that leaves.
+        let node = hand.add(MerkId::ROOT, &[0, 0, 0, 0, 0], 32);
+        hand.link(nodes[0], Side::Left, Some(node));
+        hand.touch_path(node);
+        step(&mut hand, &mut model);
+        assert_eq!(model.pages(), 2);
+        assert_eq!(model.page_of(node), model.page_of(nodes[0]));
+        assert_ne!(model.page_of(node), model.page_of(nodes[3]));
+        assert_eq!(
+            model.stats().moved().cells,
+            3,
+            "the three cells of that half that were there before"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "is not below half a page")]
+    fn a_cell_of_half_a_page_is_refused() {
+        let mut hand = Hand::new();
+        let mut model = Model::new(config());
+        let root = hand.add(MerkId::ROOT, &[7; 200], 256);
+        hand.set_root(MerkId::ROOT, Some(root));
+        step(&mut hand, &mut model);
     }
 
     #[test]
@@ -1520,6 +1758,8 @@ mod tests {
                 model.pages.clone(),
                 model.cells,
                 model.live_pages,
+                model.used_bytes,
+                model.free.clone(),
             );
             change(&mut model);
             let problem = model.check(&hand.grove).expect_err(expected);
@@ -1530,6 +1770,8 @@ mod tests {
                 model.pages,
                 model.cells,
                 model.live_pages,
+                model.used_bytes,
+                model.free,
             ) = saved;
         };
         damaged(&|model| model.page_of[index] = 0, "is in no page");
@@ -1537,6 +1779,8 @@ mod tests {
         damaged(&|model| model.cells += 1, "live nodes but");
         damaged(&|model| model.pages[page].cells += 1, "claims");
         damaged(&|model| model.live_pages += 1, "pages in use but");
+        damaged(&|model| model.used_bytes += 1, "bytes of cells but");
+        damaged(&|model| model.free.push(1), "are free but");
         damaged(
             &|model| {
                 model.capacity = 10;
@@ -1563,26 +1807,29 @@ mod tests {
         };
         assert_eq!(
             choose(&parts(&[500, 400]), 450),
-            0b10,
+            vec![1],
             "a tie goes to fewer bytes"
         );
-        assert_eq!(choose(&parts(&[500, 400]), 460), 0b01);
+        assert_eq!(choose(&parts(&[500, 400]), 460), vec![0]);
         assert_eq!(
             choose(&parts(&[100, 200, 300]), 300),
-            0b011,
-            "then to the parts listed first"
+            vec![0, 1],
+            "then to the choice whose last part is listed earliest"
         );
-        assert_eq!(choose(&parts(&[100, 200, 300]), 10_000), 0b111);
-        assert_eq!(choose(&parts(&[700]), 1), 0b1, "something always moves");
+        assert_eq!(choose(&parts(&[100, 200, 300]), 10_000), vec![0, 1, 2]);
+        assert_eq!(choose(&parts(&[700]), 1), vec![0], "something always moves");
         let many: Vec<u32> = (1..=20).map(|size| size * 10).collect();
         let chosen = choose(&parts(&many), 450);
-        let sum: u32 = many
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| chosen & (1 << index) != 0)
-            .map(|(_, size)| *size)
-            .sum();
-        assert!(chosen != 0 && sum.abs_diff(450) <= 100, "{sum}");
+        let sum: u32 = chosen.iter().map(|index| many[*index]).sum();
+        assert!(!chosen.is_empty() && sum.abs_diff(450) <= 100, "{sum}");
+        assert!(chosen.is_sorted());
+        // Past twelve parts the largest goes first, wherever it is listed.
+        let mut long = vec![1; 40];
+        long[39] = 1000;
+        assert_eq!(choose(&parts(&long), 1000), vec![39]);
+        long[35] = 600;
+        assert_eq!(choose(&parts(&long), 1600), vec![35, 39]);
+        assert_eq!(choose(&parts(&long), 1602), vec![0, 1, 35, 39]);
     }
 
     #[test]
@@ -1596,7 +1843,7 @@ mod tests {
         let top = model.page_of(nodes[1]).expect("placed");
         // Give the left leaf a page of its own and grow a chain below it.
         let below = model.allocate();
-        model.carry(&hand.grove, nodes[0], below, Cause::Split);
+        carry_by_hand(&mut model, &hand.grove, &[nodes[0]], below);
         let before = model.stats().clone();
         let mut parent = nodes[0];
         let mut chain = Vec::new();
@@ -1664,7 +1911,7 @@ mod tests {
             let (mut hand, [x, y, a, b, c]) = two_pages(&mut model);
             // A third page beside the bottom one, holding the right child.
             let third = model.allocate();
-            model.carry(&hand.grove, c, third, Cause::Split);
+            carry_by_hand(&mut model, &hand.grove, &[c], third);
             assert_eq!(model.pages(), 3);
             // Delete `a`: the bottom page is left with two cells.
             hand.link(y, Side::Left, None);

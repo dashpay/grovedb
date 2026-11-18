@@ -33,15 +33,18 @@ impl Cause {
     }
 }
 
-/// Cells carried from one page to another.
+/// Cells carried from one page to another: the cells a transition left in
+/// another page than it found them in. A cell the transition created is not
+/// among them, and a cell carried twice by one transition is there once.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Moves {
     /// How many cells.
     pub cells: u64,
     /// The bytes of those cells.
     pub cell_bytes: u64,
-    /// How many of them have their value out of line. Each such value is
-    /// appended to the value log again (value-log-format.md, O5).
+    /// How many of them have their value out of line and did not get a new
+    /// value in the same transition. Each such value is appended to the
+    /// value log again (value-log-format.md, O5).
     pub values: u64,
     /// The bytes of those appends, record headers included.
     pub value_bytes: u64,
@@ -120,7 +123,8 @@ pub struct Stats {
     pub packed: u64,
     /// Small fragments that left an overfull page for their parent's page.
     pub crowded_up: u64,
-    /// Fragments that left an overfull page for a fresh page.
+    /// Fragments that left an overfull page whole, for a page beside it
+    /// (also counted in `packed`) or for a fresh page.
     pub crowded_out: u64,
     /// Small fragments that moved into their parent's page because it had
     /// room.

@@ -16,6 +16,11 @@
 //!
 //! A node is found deleted when it was the child of a changed node and the
 //! walk did not meet it again anywhere in its tree.
+//!
+//! A Merk that lost its last node is read as one delete. A Merk that lost
+//! several nodes at once and is now empty is read as cleared: its nodes are
+//! reported like those of a dropped Merk. The records cannot tell a clear
+//! from a batch that deletes every key, and the first is the usual one.
 
 use std::collections::HashMap;
 
@@ -105,48 +110,95 @@ impl Observer {
         changes
     }
 
-    /// Compares the mirror with what `transaction` sees in storage: under
+    /// Compares the mirror with what `transaction` sees in storage. Under
     /// the prefix of every Merk the mirror knows, a raw scan must find the
-    /// keys of that Merk's nodes, no more and no fewer.
+    /// records of that Merk's nodes, no more and no fewer, and each record
+    /// must be the one the mirror read: the same bytes, the same children
+    /// with the same hashes, the same value length.
     ///
-    /// This is the observer's check on itself. It reads every key, so it is
-    /// for tests and small workloads.
+    /// This is the observer's check on itself. It reads and decodes every
+    /// record, where an observation reads only the changed ones.
     pub fn verify(&self, db: &GroveDb, transaction: &Transaction) -> Result<(), String> {
-        let mut mirrored: HashMap<MerkId, Vec<&[u8]>> = HashMap::new();
+        let mut mirrored: HashMap<MerkId, u64> = HashMap::new();
         for (_, node) in self.grove.nodes().filter(|(_, node)| node.live) {
-            mirrored.entry(node.merk).or_default().push(&node.key);
+            *mirrored.entry(node.merk).or_default() += 1;
         }
         for (id, merk) in self.grove.merks().filter(|(_, merk)| merk.live) {
-            let stored = stored_keys(db, transaction, merk.prefix);
-            let mut mirrored = mirrored.remove(&id).unwrap_or_default();
-            mirrored.sort_unstable();
+            let context = db
+                .raw_storage()
+                .get_transactional_storage_context_by_subtree_prefix(merk.prefix, None, transaction)
+                .unwrap();
+            let mut iterator = context.raw_iter();
+            let mut stored = 0u64;
+            iterator.seek_to_first().unwrap();
+            while iterator.valid().unwrap() {
+                let key = iterator.key().unwrap().expect("a valid key");
+                let record = iterator.value().unwrap().expect("a valid record");
+                stored += 1;
+                self.verify_record(id, key, record).map_err(|problem| {
+                    format!("the Merk at {:?}, key {key:02x?}: {problem}", merk.path)
+                })?;
+                iterator.next().unwrap();
+            }
+            let mirrored = mirrored.get(&id).copied().unwrap_or(0);
             if stored != mirrored {
                 return Err(format!(
-                    "the mirror of the Merk at {:?} has {} keys, storage has {}",
+                    "the mirror of the Merk at {:?} has {mirrored} keys, storage has {stored}",
                     merk.path,
-                    mirrored.len(),
-                    stored.len(),
                 ));
             }
         }
         Ok(())
     }
-}
 
-/// Every key stored under a Merk's prefix, in key order.
-fn stored_keys(db: &GroveDb, transaction: &Transaction, prefix: [u8; 32]) -> Vec<Vec<u8>> {
-    let context = db
-        .raw_storage()
-        .get_transactional_storage_context_by_subtree_prefix(prefix, None, transaction)
-        .unwrap();
-    let mut iterator = context.raw_iter();
-    let mut keys = Vec::new();
-    iterator.seek_to_first().unwrap();
-    while iterator.valid().unwrap() {
-        keys.push(iterator.key().unwrap().expect("a valid key").to_vec());
-        iterator.next().unwrap();
+    /// Checks one stored record against the node the mirror has for it.
+    fn verify_record(&self, merk: MerkId, key: &[u8], record: &[u8]) -> Result<(), String> {
+        let Some(id) = self.grove.find(merk, key) else {
+            return Err("storage has it, the mirror does not".into());
+        };
+        let node = self.grove.node(id);
+        if print(&[record]) != node.record_print {
+            return Err("its record is not the one the mirror read".into());
+        }
+        let tree = TreeNode::decode_raw(
+            record,
+            key.to_vec(),
+            None::<NoValueDefinedCost>,
+            self.grove_version,
+        )
+        .map_err(|error| format!("its record does not decode: {error}"))?;
+        if tree.value_as_slice().len() as u32 != node.value_len {
+            return Err("the mirror has another value length".into());
+        }
+        for (link, child) in [(tree.link(true), node.left), (tree.link(false), node.right)] {
+            let same = match (link, child) {
+                (None, None) => true,
+                (Some(link), Some(child)) => {
+                    let child = self.grove.node(child);
+                    child.live
+                        && child.merk == merk
+                        && &*child.key == link.key()
+                        && child.parent == Some(id)
+                        && child.node_hash == *link.hash()
+                }
+                _ => false,
+            };
+            if !same {
+                return Err("the mirror has another child".into());
+            }
+        }
+        let above = match node.parent {
+            Some(parent) => {
+                let parent = self.grove.node(parent);
+                parent.live && (parent.left == Some(id) || parent.right == Some(id))
+            }
+            None => self.grove.merk(merk).root == Some(id),
+        };
+        if !above {
+            return Err("the mirror has it under a node that does not link to it".into());
+        }
+        Ok(())
     }
-    keys
 }
 
 struct Walk<'a, 'db> {
@@ -162,14 +214,28 @@ struct Walk<'a, 'db> {
 
 type Context<'db> = <RocksDbStorage as Storage<'db>>::BatchTransactionalStorageContext;
 
+/// What the mirror held for a node before its record was read again.
+struct Old {
+    parent: Option<NodeId>,
+    left: Option<NodeId>,
+    right: Option<NodeId>,
+    value_print: u64,
+    value_hash_print: u64,
+}
+
 impl<'db> Walk<'_, 'db> {
     /// Diffs one Merk against the mirror, given the root key its parent
     /// element (or the root record) now states.
     fn merk(&mut self, merk: MerkId, root_key: Option<&[u8]>) {
         let old_root = self.grove.merk(merk).root;
         let Some(root_key) = root_key else {
-            if old_root.is_some() {
-                self.grove.drop_merk(merk, false, &mut self.changes.dropped);
+            if let Some(old_root) = old_root {
+                if self.grove.merk(merk).keys.len() == 1 {
+                    self.grove.merk_mut(merk).root = None;
+                    self.sweep(vec![old_root]);
+                } else {
+                    self.grove.drop_merk(merk, false, &mut self.changes);
+                }
                 self.changes.roots_changed.push(merk);
             }
             return;
@@ -205,8 +271,7 @@ impl<'db> Walk<'_, 'db> {
             self.grove.retire_node(candidate);
             self.changes.removed.push(candidate);
             for merk in hosted {
-                self.changes.merks_dropped +=
-                    self.grove.drop_merk(merk, true, &mut self.changes.dropped);
+                self.grove.drop_merk(merk, true, &mut self.changes);
             }
         }
     }
@@ -271,7 +336,14 @@ impl<'db> Walk<'_, 'db> {
             Some(id) => (id, false),
             None => (self.grove.add_node(merk, key), true),
         };
-        let old = self.grove.node(id).clone();
+        let old = self.grove.node(id);
+        let old = Old {
+            parent: old.parent,
+            left: old.left,
+            right: old.right,
+            value_print: old.value_print,
+            value_hash_print: old.value_hash_print,
+        };
         let child_changed = |old: Option<NodeId>, link: Option<&Link>| match (old, link) {
             (None, None) => false,
             (Some(old), Some(link)) => &*self.grove.node(old).key != link.key(),
@@ -338,11 +410,14 @@ impl<'db> Walk<'_, 'db> {
             Element::deserialize(value, self.grove_version).expect("a Merk value is an element");
         let roots = hosted_roots(&element);
         let mut hosted = self.grove.node(id).hosted.clone();
-        if hosted.len() != roots.len() {
+        let same_trees = hosted.len() == roots.len()
+            && hosted
+                .iter()
+                .zip(&roots)
+                .all(|(merk, (axis, _))| self.grove.merk(*merk).axis == *axis);
+        if !same_trees {
             for dropped in hosted.drain(..) {
-                self.changes.merks_dropped +=
-                    self.grove
-                        .drop_merk(dropped, true, &mut self.changes.dropped);
+                self.grove.drop_merk(dropped, true, &mut self.changes);
             }
             self.grove.node_mut(id).hosted = Vec::new();
         }
@@ -358,10 +433,10 @@ impl<'db> Walk<'_, 'db> {
             let primary = RocksDbStorage::build_prefix(SubtreePath::from(path.as_slice())).unwrap();
             for (axis, _) in &roots {
                 let created = match axis {
-                    None => self.grove.add_merk(primary, Some(path.clone()), id),
+                    None => self.grove.add_merk(primary, Some(path.clone()), None, id),
                     Some(axis) => {
                         let prefix = RocksDbStorage::secondary_prefix_for(&primary, *axis).unwrap();
-                        self.grove.add_merk(prefix, None, id)
+                        self.grove.add_merk(prefix, None, Some(*axis), id)
                     }
                 };
                 hosted.push(created);
