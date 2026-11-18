@@ -429,8 +429,8 @@ every visible page version with the same logical content. Such a change
 is applied either to every needed page version it affects, or only to the
 current one while the old representation, and whatever it points to, stays
 live for the older ones. A new representation is installed beside the old
-one, which is retired under PN6. Bytes that a view borrows are never edited
-(LT2).
+one: bytes that a view borrows are never edited (LT2). The old one is
+retired, under PN6, only once no needed page version consists of it.
 
 A location that was good for a page version stays good for it (PN8).
 Background work does not renumber anything that a pointer in another page,
@@ -441,38 +441,70 @@ Deltas and base images carry the version that produced them, in memory and
 on disk, so that PV1 can be evaluated for a pin and after a crash (DU3). The
 byte layout is FMT-03, FMT-05 and STORE-03's.
 
-**PV6. A background change takes no version, and is recovered with the
-pages.** It is not a commit (CV3): *L* does not move, no write transaction
-rebases, and no conflict can come of it. It is made durable and recovered by
-the same means as the pages themselves, so that after any crash a page and
-everything stored about it agree. A background change to a page version born
-after the recovered version is gone with that page version (DU3).
+**PV6. A background change takes no version. It has a change point, as a
+commit has.** It is not a commit (CV3): *L* does not move, no write
+transaction rebases, and no conflict can come of it. It is made durable and
+recovered by the same means as the pages themselves, so that after any crash
+a page and everything stored about it agree. A background change to a page
+version born after the recovered version is gone with that page version
+(DU3).
 
-The live-value counts of the value log (`value-log-format.md` O6, O7) come
-under this rule. When background work moves a value and rewrites the pointer
-in its cell, the counts of the two files change with that rewrite and are
-recovered with it. `value-log-format.md` calls that moment "the commit that
-changes the cell". In the terms of this document it is the rewrite, which is
-not a commit. For a cell that a transaction changes, it is that
-transaction's commit.
+Every change to a cell has one **change point**: the instant from which
+every handle, and every recovery that keeps the change, sees it. For a
+change a transaction makes, it is that transaction's commit point (CM4). For
+a change background work makes, it is the page step that installs it (PV7).
+Whatever the store keeps about cells changes at the change point, as one
+unit with the cell change, and not before. That holds for the live-value
+counts of the value log (`value-log-format.md` O6, O7).
 
-**PV7. Background work rewrites no value pointer under a private copy.** Of
-the changes PV4 allows, only a value pointer rewrite alters the bytes of a
-page as a handle reads them. A write transaction that has made a private
-copy of that page (WT4) would not see the rewrite, and its commit would
-bring the old pointer back: into a file whose count no longer includes the
-value, which could then be deleted under a committed cell
-(`value-log-format.md` O7).
+`value-log-format.md` words this, in O7 and O9, as "the same commit as the
+cell change" and "the commit that changes the cell". For a value that
+background work moves there is no commit. "Commit" there is to be read as
+the change point. The count is still that of the latest version, as O7 has
+it: a background move changes how that version is stored and counted, and
+changes no version. That document does not yet say so (section 17 item 23).
 
-So while an open write transaction holds a private copy of a page,
-background work rewrites no value pointer in that page. It leaves the page
-for later. Making a private copy and checking for one exclude each other
-(LT5, LT7 level 5).
+**PV7. A value pointer is rewritten only in the current page version, and
+never under a private copy.** Of the changes PV4 allows, only a value
+pointer rewrite alters the bytes of a page as a handle reads them. Two
+things can go wrong with one, and each ends with a committed cell that
+points into a file whose live count no longer includes the value, so that
+the file could be deleted under it (`value-log-format.md` O7):
 
-Two things follow. What a commit installs for a page (CM3 step 7) is the
-current representation of the page version it supersedes, with the commit's
-own changes: the same page that recovery would rebuild. And a value pointer
-that background work replaced is never committed again.
+- A write transaction made a private copy of the page (WT4) before the
+  rewrite. It does not see the rewrite, and its commit brings the old
+  pointer back.
+- Background work found the owner of a value by looking at a page
+  (`value-log-format.md` O9), and a commit superseded that page version
+  before the rewrite was applied. The rewrite then lands on a page version
+  that is no longer current, while the current one keeps the old pointer.
+
+So a value pointer rewrite is installed in a **page step**: one step with
+respect to every commit that installs a version of that page, and to the
+making of any private copy of it. In that step it is checked that:
+
+1. the rewrite changes the current page version (it may change older
+   needed ones as well, PV4, but never those alone)
+2. the owning cell in it still holds the old pointer
+3. no open write transaction holds a private copy of the page
+
+If a check fails, nothing is installed and nothing is counted. The copy of
+the value that was appended for the move is dead, and the page is left for
+later. If all three hold, the new representation is installed and the
+counts change, in that same step (PV6).
+
+Installing a page version at commit (CM3 step 7) and making a private copy
+are page steps too. Each of the three sees the page as the one before left
+it. Which latch or retry an implementation uses for this is STORE-04's and
+STORE-09's; it sits at level 5 of LT7.
+
+Two things follow. What a commit installs for a page says what the page
+version it supersedes says, with the commit's own changes, and holds the
+value pointers that page version holds at that moment. It need not be, byte
+for byte, the stored representation: the flusher may have consolidated the
+page since the copy was made, which changes no pointer and for which no
+commit waits (CM8). And a value pointer that background work replaced is
+never committed again.
 
 ## 7. The write transaction
 
@@ -505,7 +537,7 @@ state: the value of a node whose hash or links *T* changed, but whose value
 it did not. *T* keeps those bytes readable for as long as it may read them.
 While they sit in its private frames, its base pin (PN1) and PV7 do that.
 When a rebase moves the pin, *T* takes its own copy of whatever it still
-needs (WT7b).
+needs (WT7).
 
 **WT4. Private frames belong to one transaction.**
 
@@ -547,7 +579,9 @@ that operation reads.**
 - Otherwise *T* is **rebased**: its private frames are rebuilt so that WT3
   holds again over the new *L*. They then show *T*'s write set applied, in
   order, to *S(L)*. As a set of records that is exactly the overlay of RD3
-  and RD5. A rebase runs while no other operation of *T* is running.
+  and RD5. Before it gives up the old base, *T* takes its own copy of every
+  committed byte its write set still refers to (WT3). A rebase runs while no
+  other operation of *T* is running.
 
 Whether those records still form a proper tree depends on whether a foreign
 commit wrote a key that *T* had already written. Let the **overlap set** of
@@ -997,7 +1031,8 @@ holding a later one:
    sampling)
 4. frame latches, in ascending page id order
 5. the internal locks of the page table and the allocator, which are held
-   for one step and under which nothing else is acquired
+   for one step and under which nothing else is acquired. The page step of
+   PV7 is taken here.
 
 ## 10. The flusher, the cleaner and page ids
 
@@ -1057,13 +1092,16 @@ superseded while it is copied, the switch of locations must fail and the copy
 is dead. The cleaner never brings a superseded block back as current.
 
 **CL5. Value-log cleaning follows PV4, PV6 and PV7.** Moving a value
-rewrites the pointer in its owning cell. The old entry stays live while any
-needed page version still points to it. So a file that such moves emptied
-while *L* was *v* is deleted only when no version before *v* is pinned
-(`value-log-format.md` O8) and PN6 allows it. It is also deleted only once
-the rewrites that emptied it, and the copies they point to, are durable:
-otherwise a crash could bring back pages that point into a file that is
-gone.
+rewrites the pointer in its owning cell, in a page step (PV7). If the
+owner's page was superseded, or copied by an open write transaction, since
+the cleaner looked, the move is abandoned and tried again later.
+
+The old entry stays live while any needed page version still points to it.
+So a file that such moves emptied while *L* was *v* is deleted only when no
+version before *v* is pinned (`value-log-format.md` O8) and PN6 allows it.
+It is also deleted only once the rewrites that emptied it, and the copies
+they point to, are durable: otherwise a crash could bring back pages that
+point into a file that is gone.
 
 **CL6. A dropped subtree's pages are reclaimed when no pin can reach them.**
 The drop unlinks the subtree in the commit that drops it, at version *w*
@@ -1207,8 +1245,8 @@ whether either can be made to wait for the other.
 | 10 | Writer, cleaner | the committed pages under the writer's frames, their value pointers, page ids, locations the writer kept, and the bytes it wrote ahead of its commit | PN1 (base pin), PN5, PN8, PV4, PV7, WT3, FL1, CL5, ID1, ID2 | never; the cleaner leaves a copied page for later |
 | 11 | Writer, checkpoint | nothing: uncommitted writes are not captured | CK1, CK8 | never |
 | 12 | Committer, committer | *L*, the log, versions | CM2, CV4, CV5, CF2, CF7, CF8 | the second waits for the commit lock |
-| 13 | Committer, flusher | the log, the page versions just born | CM3 steps 6 and 7, CM9, FL1, FL4, FL5, FL6 | the committer, before it takes the lock (FL5) |
-| 14 | Committer, cleaner | page-table entries; pages and ids the commit frees | CL4, CL6, ID2, PN6 | one step on a page-table entry |
+| 13 | Committer, flusher | the log, the page versions just born, and pages whose values the flusher regroups | CM3 steps 6 and 7, CM9, FL1, FL4, FL5, FL6, PV7 | the committer, before it takes the lock (FL5); otherwise one page step |
+| 14 | Committer, cleaner | page-table entries; pages and ids the commit frees; pages whose value pointers the cleaner rewrites | CL4, CL5, CL6, PV7, ID2, PN6 | one step on a page-table entry |
 | 15 | Committer, checkpoint | *L*, the log's length, the file set | CK2, CK5, LT7 | each waits for the other's hold on the commit lock; the checkpoint holds it only for sampling |
 | 16 | Flusher, flusher | the pages being written back | PV4, FL3, LT7 level 5 | one step on a page-table entry |
 | 17 | Flusher, cleaner | page-table locations, segment files, the manifest | PV4, FL3, CL2, CL4, LT7 level 3 | the file-set lock |
@@ -1421,10 +1459,10 @@ took.
 | TREE-01 | LT1, LT4: what must hold when two Merks share a page. | Whether they may, and placement. |
 | TREE-06 | RD6. | The cursor. |
 | TREE-09 | A drop is a range delete in its transaction's write set (CV9, CF5); its pages are reclaimed under CL6. | The unlink. |
-| STORE-04 | LT2 to LT6, PN5. | Frames, latches, eviction. |
+| STORE-04 | LT2 to LT6, PN5, and the page step of PV7. | Frames, latches, eviction. |
 | STORE-01, STORE-06, STORE-07 | FL1 to FL6, PV5, DU1a, DU2, DU3, CM9. | Thresholds, the table checkpoint, replay, how a failed group is put out of reach. |
 | STORE-08 | CL1 to CL7, PN6, CK3. | Liveness accounting, throttling. |
-| STORE-09, TREE-08 | PV4, PV6, PV7 and CL5: a value pointer rewrite takes no version, is recovered with the pages and the counts, is not made under a private copy, and an emptied file goes only when CL5 allows. FL1: values written ahead of a commit are held for their transaction. | When a file is cleaned, when a value is durable, regrouping. |
+| STORE-09, TREE-08 | PV4, PV6, PV7 and CL5: a value pointer rewrite takes no version, is installed in a page step that checks the current page version, the owner and private copies, changes the counts in that step, is recovered with the pages, and an emptied file goes only when CL5 allows. FL1: values written ahead of a commit are held for their transaction. | When a file is cleaned, when a value is durable, regrouping, and what makes the page step one step. |
 | STORE-10 | ID1 to ID3. | The allocator. |
 | GROVE-05 | The drop removes the subtree's records in its own commit (CV9). The flush reclaims pages without a version (CL6) and removes each pending-drop record with one commit (14.5 D3). | The liveness check and the report. |
 | GROVE-11, GROVE-12 | SC9 (pending marks), 14.4, SC3 and SC7. A scope's Merk cache keeps locations only under PN8. | Stop points, finalize, the GroveDB scope. |
@@ -1527,9 +1565,11 @@ VER-05)**
   is running (PN5, PN6).
 - T-VL1: a value pointer rewrite, by cleaning and by regrouping, racing a
   write transaction that copies the same page and then commits or rolls
-  back. No committed cell ever holds a pointer that its file's live count
-  does not include, every value reads back, and the page the commit
-  installed equals the page rebuilt from disk (PV7, PV6).
+  back, and racing a commit outside any open transaction that supersedes the
+  page after the cleaner looked at it. No committed cell ever holds a
+  pointer that its file's live count does not include, every value reads
+  back, an abandoned move counts nothing, and the page a commit installed
+  says what the page rebuilt from disk says (PV7, PV6).
 - T-VL2: values a transaction wrote ahead of its commit survive the cleaning
   of their file while it is open, are counted from its commit, and are
   reclaimed after a rollback (FL1).
@@ -1563,8 +1603,9 @@ VER-05)**
 (PN4); page-version install and publication against a reader (CM3, CM4);
 claims (SC3); scope merge against scope read (SC6); rebase against the
 transaction's other operations (WT7); a kept location against a rebase and
-against page id reuse (PN8); making a page private once (LT5), and against
-a value pointer rewrite in that page (PV7);
+against page id reuse (PN8); making a page private once (LT5); the page
+step: a value pointer rewrite against making the page private and against a
+commit that supersedes it (PV7);
 latch order (LT3); commit lock against checkpoint sampling and manifest
 replacement (CK2, LT7); `flush()` against a commit in progress (DU1a);
 relocation against supersession (CL4); page id retirement against reuse
@@ -1790,10 +1831,14 @@ are listed so the owner can overrule one before code depends on it.
     fsync included, is in one step before anything is installed (CM3, CM7).
     This adds two commit outcomes, `NotDurable` and unsettled (CM5). And
     **`flush()` covers the commits published before it read *L*** (DU1a).
-23. **A background change takes no version** (PV6), also where
-    `value-log-format.md` speaks of "the commit that changes the cell" for a
-    value the cleaner moves. **No value pointer is rewritten under a private
-    copy** (PV7): background work waits for the transaction instead. The
+23. **A background change takes no version** (PV6). `value-log-format.md`
+    O7 and O9 speak of "the commit that changes the cell" also for a value
+    the cleaner moves. Making such a move a commit would rebase open write
+    transactions and end kept locations during normal work, so it is not
+    one, and PV6 says how O7 and O9 read. That document needs the same
+    sentence, which only the owner can rule in. **A value pointer is
+    rewritten only in the current page version and never under a private
+    copy** (PV7): background work abandons the move and tries later. The
     other way, rebuilding the private copy, would put background work on the
     writer's path. **The write set is self-contained** (WT3), and **bytes
     written ahead of a commit are held for their transaction** (FL1).
