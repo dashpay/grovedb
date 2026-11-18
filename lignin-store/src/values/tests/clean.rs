@@ -5,38 +5,26 @@ use std::cell::RefCell;
 
 use lignin_format::{
     value_log::{ValueLogError, ValuePointer},
-    CommitVersion, FormatError, FormatVersion,
+    FormatError,
 };
 use lignin_io::{sim::SimConfig, OpenMode};
 
 use super::{
     pages::{commit_prepared, Db, PageStore},
-    run::{check_recovered, Op, Run, Tally},
+    run::{check_recovered, put, Op, Run, Tally},
     sim::*,
-    store::{acquired, bytes, Store},
+    store::{acquired, bytes, released, three_values, Store},
     *,
 };
 
-const V1: FormatVersion = FormatVersion::V1;
-
 fn started(seed: u64) -> Run {
     Run::started(&sim_fs(SimConfig::new(seed)), seed)
-}
-
-fn put(page: u32, key: u32, len: usize) -> Op {
-    Op::Put { page, key, len }
 }
 
 fn pointer_of(db: &Db, page_id: u32, key: u32) -> ValuePointer {
     let cells = db.pages.cells(page(page_id));
     let cell = cells.iter().find(|cell| cell.key == key).expect("the cell");
     cell.pointer
-}
-
-fn live_in(db: &Db, raw_id: u32) -> u64 {
-    db.values
-        .count(file_id(raw_id))
-        .map_or(0, |count| count.values)
 }
 
 #[test]
@@ -82,7 +70,7 @@ fn a_pass_moves_the_live_values_and_leaves_the_rest() {
     run.commit(&[put(1, 10, 50), Op::Delete { key: 20 }])
         .unwrap();
     run.db().rotate().unwrap();
-    assert_eq!(live_in(run.db(), 1), 3);
+    assert_eq!(live(&run.db().values, 1), Some(3));
     let before: Vec<ValuePointer> = [(1, 10), (1, 11), (2, 21)]
         .map(|(page, key)| pointer_of(run.db(), page, key))
         .to_vec();
@@ -116,7 +104,7 @@ fn a_pass_moves_the_live_values_and_leaves_the_rest() {
         assert_eq!(from.file(), file_id(1));
         assert_eq!((to.file(), to.value_len()), (cleaner, from.value_len()));
     }
-    assert_eq!(live_in(run.db(), cleaner.get()), 3);
+    assert_eq!(live(&run.db().values, cleaner.get()), Some(3));
     assert!(
         run.db().values.cleanable(0).is_empty(),
         "an empty file needs no pass"
@@ -140,7 +128,7 @@ fn a_moved_value_is_the_same_bytes_with_the_same_owner() {
         fn rewrite(&self, step: PointerRewrite<'_>) -> Result<Rewrite, OwnersError> {
             assert_eq!(step.change(), ValueChange::moved(step.from(), step.to()));
             self.0.borrow_mut().push((step.from(), step.to()));
-            let latest = CommitVersion::new(1).expect("a version");
+            let latest = version(1);
             Ok(Rewrite::Installed(step.install(latest)))
         }
     }
@@ -192,10 +180,7 @@ fn a_moved_value_is_the_same_bytes_with_the_same_owner() {
             "and stay where they were"
         );
     }
-    assert_eq!(
-        store.values.count(file_id(2)).map(|count| count.values),
-        Some(60)
-    );
+    assert_eq!(live(&store.values, 2), Some(60));
     let named = store.named();
     assert!(
         named[1].valid_len() >= moves.last().expect("a move").1.end(V1),
@@ -304,11 +289,11 @@ fn a_value_whose_owner_cannot_be_found_is_kept() {
             run.db().values.cleanable(0).is_empty(),
             "another pass would find no more"
         );
-        assert_eq!(live_in(run.db(), 1), 1);
+        assert_eq!(live(&run.db().values, 1), Some(1));
 
         run.append_again(10, from).unwrap();
         run.check_session();
-        assert_eq!(live_in(run.db(), 1), 0);
+        assert_eq!(live(&run.db().values, 1), Some(0));
         assert_eq!(
             run.clean(file_id(1)).unwrap(),
             Cleaned {
@@ -381,8 +366,8 @@ fn a_rewrite_is_refused_while_a_write_transaction_holds_a_private_copy_of_the_pa
             .expect("the cleaner's file")
             .file_id();
         assert_eq!(
-            live_in(run.db(), cleaner.get()),
-            1,
+            live(&run.db().values, cleaner.get()),
+            Some(1),
             "an abandoned move counts nothing"
         );
         run.check_session();
@@ -492,7 +477,11 @@ fn values_written_ahead_of_a_commit_are_held_and_count_from_the_commit() {
         run.commit(&[Op::Delete { key: 10 }, Op::Delete { key: 11 }])
             .unwrap();
         let next = [(30, ahead[&30].clone())].into();
-        assert_eq!(live_in(run.db(), 1), 0, "no count includes it yet");
+        assert_eq!(
+            live(&run.db().values, 1),
+            Some(0),
+            "no count includes it yet"
+        );
 
         let cleaned = run.clean(file_id(1)).unwrap();
         assert_eq!(
@@ -510,7 +499,7 @@ fn values_written_ahead_of_a_commit_are_held_and_count_from_the_commit() {
         run.flush().unwrap();
         run.check_session();
         if commit {
-            assert_eq!(live_in(run.db(), 1), 1);
+            assert_eq!(live(&run.db().values, 1), Some(1));
             assert!(run.drop_empty().unwrap().is_empty());
             assert_eq!(pointer_of(run.db(), 3, 30).file(), file_id(1));
             assert_eq!(run.clean(file_id(1)).unwrap().moved, 1);
@@ -610,7 +599,7 @@ fn a_pass_that_fails_part_way_leaves_every_value_with_one_owner() {
             format!("the owner of a value could not be asked: {message}")
         );
         assert!(matches!(error, ValueStoreError::Owners(_)));
-        assert_eq!(live_in(run.db(), 1), 4 - moved);
+        assert_eq!(live(&run.db().values, 1), Some(4 - moved));
         run.check_session();
 
         let cleaned = run.clean(file_id(1)).unwrap();
@@ -624,28 +613,7 @@ fn a_pass_that_fails_part_way_leaves_every_value_with_one_owner() {
 
 #[test]
 fn a_pass_that_finds_an_owner_the_count_does_not_include_keeps_the_file() {
-    struct Everything;
-    impl ValueOwners for Everything {
-        fn holds(&self, _: PageId, _: ValuePointer) -> Result<bool, OwnersError> {
-            Ok(true)
-        }
-        fn rewrite(&self, step: PointerRewrite<'_>) -> Result<Rewrite, OwnersError> {
-            let latest = CommitVersion::new(1).expect("a version");
-            Ok(Rewrite::Installed(step.install(latest)))
-        }
-    }
-
-    let mut store = Store::new();
-    let mut writer = store.writer();
-    let mut cleaner = store.writer();
-    let mut hold = ValueHold::new();
-    let pointers: Vec<ValuePointer> = (0..3)
-        .map(|at| writer.append(&mut hold, page(1), &bytes(30, at)).unwrap())
-        .collect();
-    writer.finish().unwrap();
-    store.commit();
-    store.apply(&acquired(&pointers[..1]), 1);
-    drop(hold);
+    let (mut store, mut cleaner, pointers) = three_values(1);
 
     let error = store
         .values
@@ -658,7 +626,7 @@ fn a_pass_that_finds_an_owner_the_count_does_not_include_keeps_the_file() {
     let source = store.values.count(file_id(1)).expect("the file");
     assert_eq!((source.values, source.miscounted), (0, true));
     assert_eq!(
-        store.values.count(file_id(2)).map(|count| count.values),
+        live(&store.values, 2),
         Some(3),
         "the pass was carried out in full"
     );
@@ -667,44 +635,9 @@ fn a_pass_that_finds_an_owner_the_count_does_not_include_keeps_the_file() {
     assert!(store.exists(1));
 }
 
-/// Owners that say every value is live and take every rewrite.
-struct Everything;
-
-impl ValueOwners for Everything {
-    fn holds(&self, _: PageId, _: ValuePointer) -> Result<bool, OwnersError> {
-        Ok(true)
-    }
-
-    fn rewrite(&self, step: PointerRewrite<'_>) -> Result<Rewrite, OwnersError> {
-        let latest = CommitVersion::new(1).expect("a version");
-        Ok(Rewrite::Installed(step.install(latest)))
-    }
-}
-
-/// A store with a closed file 1 of three counted values, and the open file
-/// 2 of a cleaner.
-fn three_live_values() -> (Store, ValueWriter, Vec<ValuePointer>) {
-    let mut store = Store::new();
-    let mut writer = store.writer();
-    let cleaner = store.writer();
-    let mut hold = ValueHold::new();
-    let pointers: Vec<ValuePointer> = (0..3)
-        .map(|at| writer.append(&mut hold, page(1), &bytes(30, at)).unwrap())
-        .collect();
-    writer.finish().unwrap();
-    store.commit();
-    store.apply(&acquired(&pointers), 1);
-    (store, cleaner, pointers)
-}
-
-fn values_in(store: &Store, raw_id: u32) -> u64 {
-    let count = store.values.count(file_id(raw_id)).expect("the file");
-    count.values
-}
-
 #[test]
 fn no_pointer_is_installed_to_a_copy_the_manifest_does_not_cover() {
-    let (mut store, mut cleaner, pointers) = three_live_values();
+    let (mut store, mut cleaner, pointers) = three_values(3);
     assert!(pointers.iter().all(|&pointer| store.values.covers(pointer)));
 
     let copies = store
@@ -722,7 +655,10 @@ fn no_pointer_is_installed_to_a_copy_the_manifest_does_not_cover() {
         other => panic!("expected the install to be refused, got {other:?}"),
     };
     assert_eq!(uncovered(&store, copies), copy);
-    assert_eq!((values_in(&store, 1), values_in(&store, 2)), (3, 0));
+    assert_eq!(
+        (live(&store.values, 1), live(&store.values, 2)),
+        (Some(3), Some(0))
+    );
 
     let copies = store
         .values
@@ -750,7 +686,10 @@ fn no_pointer_is_installed_to_a_copy_the_manifest_does_not_cover() {
             ..Cleaned::default()
         }
     );
-    assert_eq!((values_in(&store, 1), values_in(&store, 2)), (0, 3));
+    assert_eq!(
+        (live(&store.values, 1), live(&store.values, 2)),
+        (Some(0), Some(3))
+    );
     assert!(
         store.values.covers(copy),
         "the earlier copies are covered too"
@@ -765,7 +704,7 @@ fn no_pointer_is_installed_to_a_copy_the_manifest_does_not_cover() {
 
 #[test]
 fn copies_that_are_given_up_hold_their_file_no_longer() {
-    let (mut store, mut cleaner, pointers) = three_live_values();
+    let (mut store, mut cleaner, pointers) = three_values(3);
     let copies = store
         .values
         .copy_live(file_id(1), &mut cleaner, &Everything)
@@ -775,7 +714,7 @@ fn copies_that_are_given_up_hold_their_file_no_longer() {
     assert!(store.drop_empty(1).is_empty(), "the copies hold file 2");
     drop(copies);
     assert_eq!(store.drop_empty(1), [2]);
-    assert_eq!(values_in(&store, 1), 3);
+    assert_eq!(live(&store.values, 1), Some(3));
     for (at, &pointer) in pointers.iter().enumerate() {
         assert_eq!(store.read(pointer, 1).unwrap(), bytes(30, at as u8));
     }
@@ -783,8 +722,8 @@ fn copies_that_are_given_up_hold_their_file_no_longer() {
 
 #[test]
 fn a_file_with_no_live_value_is_copied_to_nothing() {
-    let (mut store, mut cleaner, pointers) = three_live_values();
-    store.apply(&super::store::released(&pointers), 2);
+    let (mut store, mut cleaner, pointers) = three_values(3);
+    store.apply(&released(&pointers), 2);
     struct Nothing;
     impl ValueOwners for Nothing {
         fn holds(&self, _: PageId, _: ValuePointer) -> Result<bool, OwnersError> {
@@ -824,7 +763,7 @@ impl ValueOwners for CountsAndFails {
     }
 
     fn rewrite(&self, step: PointerRewrite<'_>) -> Result<Rewrite, OwnersError> {
-        let _counted = step.install(CommitVersion::new(1).expect("a version"));
+        let _counted = step.install(version(1));
         if self.refuses {
             Ok(Rewrite::Refused(Refusal::Busy))
         } else {
@@ -836,7 +775,7 @@ impl ValueOwners for CountsAndFails {
 #[test]
 fn a_rewrite_that_was_counted_and_not_reported_installed_keeps_the_old_file() {
     for refuses in [true, false] {
-        let (mut store, mut cleaner, pointers) = three_live_values();
+        let (mut store, mut cleaner, pointers) = three_values(3);
         let error = store
             .values
             .clean(
@@ -857,9 +796,9 @@ fn a_rewrite_that_was_counted_and_not_reported_installed_keeps_the_old_file() {
         let moved = if refuses { 3 } else { 1 };
         let source = store.values.count(file_id(1)).expect("the file");
         assert_eq!((source.values, source.miscounted), (3 - moved, true));
-        assert_eq!(values_in(&store, 2), moved);
+        assert_eq!(live(&store.values, 2), Some(moved));
 
-        store.apply(&super::store::released(&pointers[moved as usize..]), 2);
+        store.apply(&released(&pointers[moved as usize..]), 2);
         store.all_durable();
         assert!(
             store.drop_empty(9).is_empty(),

@@ -2,7 +2,6 @@
 //! to deletion, reading a value, and the counts of live values.
 
 use std::{
-    cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
     io::ErrorKind,
     path::{Path, PathBuf},
@@ -104,7 +103,6 @@ pub struct ValueRecovery {
     files: BTreeMap<FileId, Arc<ValueFile>>,
     accounts: BTreeMap<FileId, Account>,
     last_id: Option<FileId>,
-    applied: u64,
 }
 
 impl ValueRecovery {
@@ -120,12 +118,10 @@ impl ValueRecovery {
     /// ([`ValueStoreError::Miscounted`]): one that ends past the valid length
     /// of its file, which no manifest covered, or a release from a count
     /// that was zero.
-    pub fn apply(
-        &mut self,
-        change: &ValueChange,
-        latest: CommitVersion,
-    ) -> Result<(), ValueStoreError> {
-        self.applied += 1;
+    ///
+    /// No commit version is asked for: no pin is left from before a crash,
+    /// so a file that recovery leaves empty is empty for every version.
+    pub fn apply(&mut self, change: &ValueChange) -> Result<(), ValueStoreError> {
         let mut first = Ok(());
         for &pointer in change.acquired() {
             let file = self.files.get(&pointer.file());
@@ -133,7 +129,7 @@ impl ValueRecovery {
             self.accounts
                 .entry(pointer.file())
                 .or_insert(Account::EMPTY)
-                .acquire(extent, self.applied);
+                .acquire(extent, RECOVERED);
             if file.is_some_and(|file| !file.contains(pointer)) {
                 first = first.and(miscounted(pointer, Miscount::OutOfBounds));
             }
@@ -144,7 +140,7 @@ impl ValueRecovery {
                 .accounts
                 .entry(pointer.file())
                 .or_insert(Account::EMPTY)
-                .release(extent, latest, self.applied);
+                .release(extent, CommitVersion::EMPTY, RECOVERED);
             if !counted {
                 first = first.and(miscounted(pointer, Miscount::CountIsZero));
             }
@@ -185,13 +181,18 @@ impl ValueRecovery {
             .into_iter()
             .map(|(id, file)| {
                 let recovered = accounts.remove(&id).unwrap_or(Account::EMPTY);
-                let account = recovered.recovered(RECOVERED);
+                let account = recovered.handed_over(RECOVERED);
                 (id, Entry { file, account })
             })
             .collect();
-        let store = ValueStore::new(self.vfs, self.dir, false, live, self.last_id);
-        store.state_mut().applied = RECOVERED;
-        Ok(store)
+        Ok(ValueStore::new(
+            self.vfs,
+            self.dir,
+            false,
+            live,
+            self.last_id,
+            RECOVERED,
+        ))
     }
 }
 
@@ -236,11 +237,6 @@ pub struct Cleanable {
 impl Cleanable {
     fn dead_bytes(&self) -> u64 {
         self.len.saturating_sub(self.live_bytes)
-    }
-
-    fn is_deader_than(&self, other: &Self) -> bool {
-        let share = |file: &Self, of: &Self| u128::from(file.dead_bytes()) * u128::from(of.len);
-        share(self, other) > share(other, self)
     }
 }
 
@@ -313,10 +309,9 @@ impl ValueStore {
             files,
             accounts: counts
                 .iter()
-                .map(|count| (count.file, Account::restored(count)))
+                .map(|count| (count.file, Account::from_count(count)))
                 .collect(),
             last_id: current.last_file_ids().value_log,
-            applied: 0,
         })
     }
 
@@ -337,7 +332,7 @@ impl ValueStore {
             })
             .collect();
         let last_id = manifest.last_file_ids().value_log;
-        Ok(Self::new(vfs, dir.to_path_buf(), true, live, last_id))
+        Ok(Self::new(vfs, dir.to_path_buf(), true, live, last_id, 0))
     }
 
     fn new(
@@ -346,6 +341,7 @@ impl ValueStore {
         read_only: bool,
         live: BTreeMap<FileId, Entry>,
         last_id: Option<FileId>,
+        applied: u64,
     ) -> Self {
         Self {
             vfs,
@@ -356,7 +352,7 @@ impl ValueStore {
                 live,
                 dropped: BTreeMap::new(),
                 last_id,
-                applied: 0,
+                applied,
                 durable: 0,
             }),
         }
@@ -637,10 +633,10 @@ impl ValueStore {
                     >= u128::from(file.len) * u128::from(min_dead_percent)
             })
             .collect();
-        files.sort_by(|a, b| match (a.is_deader_than(b), b.is_deader_than(a)) {
-            (true, _) => Ordering::Less,
-            (_, true) => Ordering::Greater,
-            _ => a.file.cmp(&b.file),
+        files.sort_by(|a, b| {
+            let a_share = u128::from(a.dead_bytes()) * u128::from(b.len);
+            let b_share = u128::from(b.dead_bytes()) * u128::from(a.len);
+            b_share.cmp(&a_share).then(a.file.cmp(&b.file))
         });
         files
     }
@@ -653,7 +649,7 @@ impl ValueStore {
     /// `began`, and returns the file's count. A pass that was refused no
     /// rewrite, and during which no value of the file was newly counted, has
     /// found every owner there is to find.
-    pub(super) fn cleaned(&self, file: FileId, began: u64, refused: bool) -> u64 {
+    pub(super) fn end_pass(&self, file: FileId, began: u64, refused: bool) -> u64 {
         let mut state = self.state_mut();
         let applied = state.applied;
         let Some(entry) = state.live.get_mut(&file) else {
@@ -667,7 +663,7 @@ impl ValueStore {
     }
 
     /// Keeps `file` whatever its count says from now on.
-    pub(super) fn keep(&self, file: FileId) {
+    pub(super) fn mark_miscounted(&self, file: FileId) {
         if let Some(entry) = self.state_mut().live.get_mut(&file) {
             entry.account.miscounted = true;
         }
@@ -760,19 +756,19 @@ impl ValueStore {
     }
 
     pub(super) fn name_files(&self, manifest: &Manifest) -> BTreeSet<FileId> {
-        let live = self.state();
-        let mut named = BTreeSet::new();
-        for entry in manifest.files() {
-            if entry.kind() != FileKind::ValueLog {
-                continue;
-            }
-            named.insert(entry.id());
-            if let Some(live) = live.live.get(&entry.id()) {
-                live.file.name();
-                live.file.cover(entry.valid_len());
+        let named: BTreeMap<FileId, u64> = manifest
+            .files()
+            .iter()
+            .filter(|file| file.kind() == FileKind::ValueLog)
+            .map(|file| (file.id(), file.valid_len()))
+            .collect();
+        for file in self.live() {
+            if let Some(&valid_len) = named.get(&file.id()) {
+                file.name();
+                file.cover(valid_len);
             }
         }
-        named
+        named.into_keys().collect()
     }
 
     /// Tells the store that the manifest was replaced. Call it after every

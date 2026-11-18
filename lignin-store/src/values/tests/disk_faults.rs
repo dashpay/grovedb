@@ -7,14 +7,13 @@
 
 use std::collections::BTreeMap;
 
-use lignin_format::{value_log::ValuePointer, CommitVersion};
 use lignin_io::sim::{Fault, FaultRule, OpKind, SimError, SimVfs};
 
 use super::{
     crash::life,
     run::{check_recovered, Run},
     sim::*,
-    store::{acquired, bytes, Store},
+    store::{bytes, three_values, Store},
     *,
 };
 
@@ -209,10 +208,6 @@ fn fail_torn(fs: &SimVfs, name: &str) {
     let path = FileNames::VALUE_LOG.dir(db_dir()).join(name);
     let rule = FaultRule::new(Fault::Enospc).on(OpKind::Append);
     fs.add_rule(rule.at(path).torn_append(true));
-}
-
-fn version(raw: u64) -> CommitVersion {
-    CommitVersion::new(raw).expect("a version")
 }
 
 #[test]
@@ -425,29 +420,8 @@ fn a_dropped_file_that_cannot_be_deleted_is_deleted_by_the_next_call() {
 
 #[test]
 fn a_pass_whose_copies_cannot_be_made_durable_installs_nothing() {
-    struct Everything;
-    impl ValueOwners for Everything {
-        fn holds(&self, _: PageId, _: ValuePointer) -> Result<bool, OwnersError> {
-            Ok(true)
-        }
-        fn rewrite(&self, step: PointerRewrite<'_>) -> Result<Rewrite, OwnersError> {
-            Ok(Rewrite::Installed(step.install(version(1))))
-        }
-    }
-
     for failing in [OpKind::Append, OpKind::SyncData, OpKind::Rename] {
-        let mut store = Store::new();
-        let mut writer = store.writer();
-        let mut cleaner = store.writer();
-        let mut hold = ValueHold::new();
-        let pointers: Vec<ValuePointer> = (0..3)
-            .map(|at| writer.append(&mut hold, page(1), &bytes(30, at)).unwrap())
-            .collect();
-        writer.finish().unwrap();
-        store.commit();
-        store.apply(&acquired(&pointers), 1);
-        drop(hold);
-
+        let (mut store, mut cleaner, pointers) = three_values(3);
         match failing {
             OpKind::Rename => {
                 let rule = FaultRule::new(Fault::Eio).on(OpKind::Rename);
@@ -460,15 +434,8 @@ fn a_pass_whose_copies_cannot_be_made_durable_installs_nothing() {
             .clean(file_id(1), &mut cleaner, &mut store.manifest, &Everything)
             .unwrap_err();
         assert!(io_error(&error).is_some() || matches!(error, ValueStoreError::Manifest(_)));
-        assert_eq!(
-            store.values.count(file_id(1)).map(|count| count.values),
-            Some(3),
-            "{failing:?}"
-        );
-        assert_eq!(
-            store.values.count(file_id(2)).map(|count| count.values),
-            Some(0)
-        );
+        assert_eq!(live(&store.values, 1), Some(3), "{failing:?}");
+        assert_eq!(live(&store.values, 2), Some(0));
         for (at, &pointer) in pointers.iter().enumerate() {
             assert_eq!(store.read(pointer, 1).unwrap(), bytes(30, at as u8));
         }

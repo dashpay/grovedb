@@ -11,7 +11,8 @@ use std::{path::Path, sync::Arc};
 
 use lignin_format::{
     manifest::{FileState, LiveFile, Manifest},
-    FileId, FileKind, PageId,
+    value_log::ValuePointer,
+    CommitVersion, FileHeader, FileId, FileKind, FormatVersion, PageId,
 };
 use lignin_io::Vfs;
 
@@ -22,12 +23,19 @@ use crate::segment::{
     FileNames, ManifestStore, SegmentStoreError,
 };
 
+const V1: FormatVersion = FormatVersion::V1;
+const HEADER: u64 = FileHeader::ENCODED_LEN as u64;
+
 fn file_id(raw: u32) -> FileId {
     FileId::new(raw).expect("not zero")
 }
 
 fn page(raw: u32) -> PageId {
     PageId::new(raw).expect("not zero")
+}
+
+fn version(raw: u64) -> CommitVersion {
+    CommitVersion::new(raw).expect("a version")
 }
 
 fn empty_manifest() -> Manifest {
@@ -50,4 +58,22 @@ fn io_error(error: &ValueStoreError) -> Option<&std::io::Error> {
 /// Whether `error` is the file layer's report that the power is off.
 fn lost_power(error: &ValueStoreError) -> bool {
     io_error(error).is_some_and(lignin_io::sim::SimError::is_power_loss)
+}
+
+/// Owners that say every value is live and take every rewrite.
+struct Everything;
+
+impl ValueOwners for Everything {
+    fn holds(&self, _: PageId, _: ValuePointer) -> Result<bool, OwnersError> {
+        Ok(true)
+    }
+
+    fn rewrite(&self, step: PointerRewrite<'_>) -> Result<Rewrite, OwnersError> {
+        Ok(Rewrite::Installed(step.install(version(1))))
+    }
+}
+
+/// The count of live values of the file `raw_id`, if `values` holds it.
+fn live(values: &ValueStore, raw_id: u32) -> Option<u64> {
+    values.count(file_id(raw_id)).map(|count| count.values)
 }

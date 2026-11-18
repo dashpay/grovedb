@@ -25,6 +25,11 @@ pub(super) enum Op {
     Move { key: u32, to: u32 },
 }
 
+/// A put of a value of `len` bytes.
+pub(super) fn put(page: u32, key: u32, len: usize) -> Op {
+    Op::Put { page, key, len }
+}
+
 /// What a workload did.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(super) struct Tally {

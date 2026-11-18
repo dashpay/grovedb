@@ -4,7 +4,7 @@ use std::io::ErrorKind;
 
 use lignin_format::{
     value_log::{extent_len, ValueLogError, ValuePointer, MAX_PART_LEN, RECORD_HEADER_LEN},
-    CommitVersion, FileHeader, FormatError, FormatVersion,
+    CommitVersion, FileHeader, FormatError,
 };
 use lignin_io::{
     sim::{Event, OpKind, OpRecord, SimVfs},
@@ -16,9 +16,6 @@ use super::{
     sim::*,
     *,
 };
-
-const V1: FormatVersion = FormatVersion::V1;
-const HEADER: u64 = FileHeader::ENCODED_LEN as u64;
 
 /// A database directory with a manifest and a value log, and nothing above
 /// them.
@@ -106,7 +103,7 @@ impl Store {
     /// Applies `change` at `version`, which must count without complaint.
     pub(super) fn apply(&self, change: &ValueChange, version: u64) {
         self.values
-            .apply(change, CommitVersion::new(version).expect("a version"))
+            .apply(change, super::version(version))
             .expect("the change is counted");
     }
 
@@ -116,8 +113,10 @@ impl Store {
     }
 
     pub(super) fn drop_empty(&mut self, oldest_pin: u64) -> Vec<u32> {
-        let pin = CommitVersion::new(oldest_pin).expect("a version");
-        let dropped = self.values.drop_empty(pin).expect("writable");
+        let dropped = self
+            .values
+            .drop_empty(version(oldest_pin))
+            .expect("writable");
         self.commit();
         dropped.into_iter().map(FileId::get).collect()
     }
@@ -259,9 +258,9 @@ fn a_value_above_what_one_record_holds_is_still_one_read_and_moves_whole() {
     assert_eq!(after.offset(), pointer.end(V1));
     writer.finish().unwrap();
     values.commit(&mut manifest).unwrap();
-    let version = CommitVersion::new(1).unwrap();
+    let first = version(1);
     values
-        .apply(&acquired(&[small, pointer, after]), version)
+        .apply(&acquired(&[small, pointer, after]), first)
         .unwrap();
     drop(hold);
 
@@ -284,9 +283,7 @@ fn a_value_above_what_one_record_holds_is_still_one_read_and_moves_whole() {
         }
         fn rewrite(&self, step: PointerRewrite<'_>) -> Result<Rewrite, OwnersError> {
             self.0.set(Some(step.to()));
-            Ok(Rewrite::Installed(
-                step.install(CommitVersion::new(1).unwrap()),
-            ))
+            Ok(Rewrite::Installed(step.install(version(1))))
         }
     }
     let owners = OnePage(std::cell::Cell::new(None));
@@ -725,14 +722,14 @@ fn a_read_only_store_reads_and_changes_nothing() {
     assert_eq!(reader.dir(), db_dir());
     assert_eq!(reader.files_named().unwrap(), store.named());
     assert!(reader.counts().is_empty());
-    let version = CommitVersion::new(1).unwrap();
+    let first = version(1);
     assert!(matches!(reader.create(), Err(ValueStoreError::ReadOnly)));
     assert!(matches!(
-        reader.apply(&acquired(&[pointer]), version),
+        reader.apply(&acquired(&[pointer]), first),
         Err(ValueStoreError::ReadOnly)
     ));
     assert!(matches!(
-        reader.drop_empty(version),
+        reader.drop_empty(first),
         Err(ValueStoreError::ReadOnly)
     ));
     assert!(matches!(
@@ -1055,8 +1052,8 @@ fn values_are_read_while_they_are_appended_counted_and_synced() {
         let count = |uncounted: &mut Vec<ValuePointer>, manifest: &mut ManifestStore| {
             values.sync().unwrap();
             values.commit(manifest).unwrap();
-            let version = CommitVersion::new(1).unwrap();
-            values.apply(&acquired(uncounted), version).unwrap();
+            let first = version(1);
+            values.apply(&acquired(uncounted), first).unwrap();
             uncounted.clear();
         };
         for (number, at, pointer) in receiver {
@@ -1094,4 +1091,21 @@ fn values_are_read_while_they_are_appended_counted_and_synced() {
         }
     }
     assert_eq!(walked, WRITERS * VALUES);
+}
+
+/// A store with a closed file 1 of three values, the first `counted` of
+/// them counted, the open file 2 of a cleaner, and the pointers to the
+/// values.
+pub(super) fn three_values(counted: usize) -> (Store, ValueWriter, Vec<ValuePointer>) {
+    let mut store = Store::new();
+    let mut writer = store.writer();
+    let cleaner = store.writer();
+    let mut hold = ValueHold::new();
+    let pointers: Vec<ValuePointer> = (0..3)
+        .map(|at| writer.append(&mut hold, page(1), &bytes(30, at)).unwrap())
+        .collect();
+    writer.finish().unwrap();
+    store.commit();
+    store.apply(&acquired(&pointers[..counted]), 1);
+    (store, cleaner, pointers)
 }

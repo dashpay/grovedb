@@ -5,7 +5,7 @@ use std::sync::Arc;
 use lignin_format::{
     value_log::{
         extent_len, read_value, record_len, Value, ValuePointer, ValueRecord, FIRST_RECORD_OFFSET,
-        RECORD_HEADER_LEN,
+        MAX_PART_LEN,
     },
     FormatError, RecordHeader,
 };
@@ -13,7 +13,6 @@ use lignin_format::{
 use super::{error::ValueStoreError, file::ValueFile};
 
 const WALK_WINDOW_LEN: u64 = 256 * 1024;
-const VALUE_LEN_AT: usize = RECORD_HEADER_LEN - 4;
 
 /// A walk over the values of one value-log file, in file order, from
 /// [`ValueStore::walk`](super::ValueStore::walk).
@@ -115,15 +114,13 @@ impl ValueWalk {
         }
         self.fill(first)?;
 
-        let at = self.window_offset();
-        let record = &self.window[at..at + first];
-        let stated = record
-            .get(VALUE_LEN_AT..RECORD_HEADER_LEN)
-            .and_then(|field| field.try_into().ok())
-            .map(u32::from_le_bytes);
-        if stated.is_none_or(|value_len| extent_len(value_len, version) == first as u64) {
+        // Every record of a value but its last is full, so a first record
+        // that is not is the whole value.
+        if (first as u64) < extent_len(MAX_PART_LEN as u32, version) {
             return Ok(first);
         }
+        let at = self.window_offset();
+        let record = &self.window[at..at + first];
         let (verified, _) =
             ValueRecord::decode(record, version).map_err(self.file.format_error(self.at))?;
         let extent = extent_len(verified.value_len(), version);

@@ -465,7 +465,7 @@ impl PageStore {
     pub(super) fn oldest_pin(&self) -> CommitVersion {
         let inner = self.inner.borrow();
         let oldest = inner.pins.iter().copied().min().unwrap_or(inner.latest);
-        CommitVersion::new(oldest).expect("a version")
+        version(oldest)
     }
 
     /// Pins the latest version and returns it.
@@ -545,7 +545,7 @@ impl ValueOwners for PageStore {
         }
         inner.log(&Record::Step { page, from, to })?;
         assert!(inner.pages.rewrite_current(page, from, to));
-        let latest = CommitVersion::new(inner.latest).expect("a version");
+        let latest = version(inner.latest);
         Ok(Rewrite::Installed(step.install(latest)))
     }
 }
@@ -677,7 +677,7 @@ impl Db {
                     ValueChange::moved(*from, *to)
                 }
             };
-            recovery.apply(&change, CommitVersion::new(latest).expect("a version"))?;
+            recovery.apply(&change)?;
         }
         let values = recovery.finish()?.with_target_file_len(TARGET_FILE_LEN);
 
@@ -1021,7 +1021,7 @@ pub(super) fn commit_prepared(
         inner.pages.install(id, cells, version);
     }
     inner.latest = version;
-    let counted = values.apply(&change, CommitVersion::new(version).expect("a version"));
+    let counted = values.apply(&change, super::version(version));
     drop(txn);
     counted.map(|()| version)
 }

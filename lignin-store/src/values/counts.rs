@@ -125,7 +125,7 @@ impl Account {
         cleaned: None,
     };
 
-    pub(super) fn restored(count: &FileCount) -> Self {
+    pub(super) fn from_count(count: &FileCount) -> Self {
         Self {
             values: count.values,
             bytes: count.bytes,
@@ -136,7 +136,7 @@ impl Account {
 
     /// The account as a session takes it over from recovery: with the
     /// counts recovery reached, and empty, if it is, since `change`.
-    pub(super) fn recovered(&self, change: u64) -> Self {
+    pub(super) fn handed_over(&self, change: u64) -> Self {
         Self {
             values: self.values,
             bytes: self.bytes,

@@ -33,6 +33,9 @@ struct Life {
     has_writer: bool,
 }
 
+/// The atomics are what a reader, an appender and the store's own lock
+/// holders look at, so that none of them waits for a sync, which holds
+/// `life` for its whole length.
 #[derive(Debug)]
 pub(super) struct ValueFile {
     id: FileId,
@@ -52,7 +55,7 @@ impl ValueFile {
         vfs: &dyn Vfs,
         db: &Path,
         named: &LiveFile,
-        database: FormatVersion,
+        manifest_version: FormatVersion,
     ) -> Result<Self, ValueStoreError> {
         let (id, valid_len) = (named.id(), named.valid_len());
         let path = FileNames::VALUE_LOG.path(db, id);
@@ -84,11 +87,11 @@ impl ValueFile {
             });
         }
         let version = header.version();
-        if version > database {
+        if version > manifest_version {
             return Err(ValueStoreError::FileNewerThanManifest {
                 path,
                 file: version,
-                manifest: database,
+                manifest: manifest_version,
             });
         }
         let adopted = Self::new(id, path, version, file, Phase::Closed, valid_len, false);
@@ -169,7 +172,7 @@ impl ValueFile {
             .map_err(ValueStoreError::io("read", &self.path))
     }
 
-    fn holds_below(&self, pointer: ValuePointer, len: u64) -> bool {
+    fn ends_within(&self, pointer: ValuePointer, len: u64) -> bool {
         pointer
             .offset()
             .checked_add(pointer.extent_len(self.version))
@@ -177,7 +180,7 @@ impl ValueFile {
     }
 
     pub(super) fn contains(&self, pointer: ValuePointer) -> bool {
-        self.holds_below(pointer, self.end())
+        self.ends_within(pointer, self.end())
     }
 
     pub(super) fn cover(&self, valid_len: u64) {
@@ -185,7 +188,7 @@ impl ValueFile {
     }
 
     pub(super) fn covers(&self, pointer: ValuePointer) -> bool {
-        self.holds_below(pointer, self.covered.load(Ordering::Acquire))
+        self.ends_within(pointer, self.covered.load(Ordering::Acquire))
     }
 
     pub(super) fn read<'a>(

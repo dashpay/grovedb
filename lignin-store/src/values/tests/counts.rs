@@ -1,20 +1,13 @@
 //! The count of live values of each file, the rules for dropping a file,
 //! and recovering the counts.
 
-use lignin_format::{value_log::ValuePointer, CommitVersion, FileHeader, FormatVersion};
+use lignin_format::value_log::ValuePointer;
 use lignin_io::{Create, OpenMode};
 
 use super::{
     store::{acquired, acquired_counts, bytes, released, Store},
     *,
 };
-
-const V1: FormatVersion = FormatVersion::V1;
-const HEADER: u64 = FileHeader::ENCODED_LEN as u64;
-
-fn version(raw: u64) -> CommitVersion {
-    CommitVersion::new(raw).expect("a version")
-}
 
 fn count(file: u32, pointers: &[ValuePointer]) -> FileCount {
     FileCount {
@@ -370,7 +363,7 @@ fn a_file_that_recovery_left_empty_is_kept_until_what_was_recovered_is_durable()
 
     let (store, _) = one_closed_file(&[40, 50]);
     let mut recovery = ValueStore::recover(&store.manifest, &counts).unwrap();
-    recovery.apply(&released(&pointers), version(3)).unwrap();
+    recovery.apply(&released(&pointers)).unwrap();
     let mut store = Store {
         values: recovery.finish().unwrap(),
         ..store
@@ -459,8 +452,8 @@ fn recovery_brings_the_counts_to_the_version_it_lands_on() {
 
     for replayed in 0..changes.len() {
         let mut recovery = ValueStore::recover(&store.manifest, &checkpoint).unwrap();
-        for (at, change) in changes[1..=replayed].iter().enumerate() {
-            recovery.apply(change, version(2 + at as u64)).unwrap();
+        for change in &changes[1..=replayed] {
+            recovery.apply(change).unwrap();
         }
         let recovered = recovery.finish().unwrap();
         let again = ValueStore::open(&store.manifest, &checkpoint).unwrap();
@@ -492,7 +485,7 @@ fn recovery_starts_from_a_checkpoint_older_than_the_deletion_of_a_file() {
     assert!(!store.exists(1));
 
     let mut recovery = ValueStore::recover(&store.manifest, &checkpoint).unwrap();
-    recovery.apply(&emptying, version(2)).unwrap();
+    recovery.apply(&emptying).unwrap();
     let recovered = recovery.finish().unwrap();
     assert_eq!(recovered.counts(), [count(2, &[kept])]);
     drop(recovered);
@@ -517,8 +510,8 @@ fn recovery_counts_a_value_that_was_acquired_and_released_in_a_file_since_delete
     let (store, _) = one_closed_file(&[40]);
     let gone = ValuePointer::new(file_id(7), HEADER, 9).unwrap();
     let mut recovery = ValueStore::recover(&store.manifest, &[]).unwrap();
-    recovery.apply(&acquired(&[gone]), version(1)).unwrap();
-    recovery.apply(&released(&[gone]), version(2)).unwrap();
+    recovery.apply(&acquired(&[gone])).unwrap();
+    recovery.apply(&released(&[gone])).unwrap();
     assert!(recovery.finish().unwrap().counts().is_empty());
 }
 
@@ -536,9 +529,9 @@ fn recovery_reports_a_pointer_the_manifest_does_not_cover() {
 
     let store = store.reopen(&[]);
     let mut recovery = ValueStore::recover(&store.manifest, &[]).unwrap();
-    recovery.apply(&acquired(&[covered]), version(1)).unwrap();
+    recovery.apply(&acquired(&[covered])).unwrap();
     assert_eq!(
-        miscount(recovery.apply(&acquired(&[uncovered]), version(2))),
+        miscount(recovery.apply(&acquired(&[uncovered]))),
         (uncovered, Miscount::OutOfBounds)
     );
     let recovered = recovery.finish().unwrap();
@@ -550,11 +543,9 @@ fn recovery_reports_a_release_from_a_count_of_zero() {
     let (store, pointers) = one_closed_file(&[40, 50]);
     let mut recovery =
         ValueStore::recover(&store.manifest, &acquired_counts(&pointers[..1])).unwrap();
-    recovery
-        .apply(&released(&pointers[..1]), version(1))
-        .unwrap();
+    recovery.apply(&released(&pointers[..1])).unwrap();
     assert_eq!(
-        miscount(recovery.apply(&released(&pointers[1..]), version(2))),
+        miscount(recovery.apply(&released(&pointers[1..]))),
         (pointers[1], Miscount::CountIsZero)
     );
     let recovered = recovery.finish().unwrap();

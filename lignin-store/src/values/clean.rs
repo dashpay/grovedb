@@ -9,6 +9,7 @@ use super::{
     counts::ValueChange,
     error::{Miscount, OwnersError, ValueStoreError},
     store::ValueStore,
+    walk::ValueWalk,
     writer::{ValueHold, ValueWriter},
 };
 use crate::segment::ManifestStore;
@@ -191,7 +192,7 @@ pub struct CopiedValues {
     moves: Vec<Move>,
     unowned: u64,
     copied_bytes: u64,
-    _hold: ValueHold,
+    hold: ValueHold,
 }
 
 impl CopiedValues {
@@ -250,16 +251,16 @@ impl ValueStore {
             moves: Vec::new(),
             unowned: 0,
             copied_bytes: 0,
-            _hold: ValueHold::new(),
+            hold: ValueHold::new(),
         };
-        let mut walk = self.walk(file)?;
+        let mut walk = ValueWalk::new(source);
         while let Some(walked) = walk.next_walked()? {
             let (page, from) = (walked.value.owner(), walked.pointer);
             if !owners.holds(page, from).map_err(ValueStoreError::Owners)? {
                 copies.unowned += 1;
                 continue;
             }
-            let to = to.append_records(&mut copies._hold, from.value_len(), walked.records)?;
+            let to = to.append_records(&mut copies.hold, from.value_len(), walked.records)?;
             copies.copied_bytes += walked.records.len() as u64;
             copies.moves.push(Move { page, from, to });
         }
@@ -311,11 +312,11 @@ impl ValueStore {
             };
             let outcome = owners.rewrite(step);
             if counted.into_inner() && !matches!(outcome, Ok(Rewrite::Installed(_))) {
-                self.keep(from.file());
-                miscount = miscount.or(Some(ValueStoreError::Miscounted {
+                self.mark_miscounted(from.file());
+                miscount.get_or_insert(ValueStoreError::Miscounted {
                     pointer: from,
                     why: Miscount::NotInstalled,
-                }));
+                });
             }
             match outcome {
                 Ok(Rewrite::Installed(installed)) => {
@@ -331,8 +332,7 @@ impl ValueStore {
             }
         }
         let refused = cleaned.busy != 0 || failed.is_some();
-        cleaned.live = self.cleaned(copies.file, copies.began, refused);
-        drop(copies);
+        cleaned.live = self.end_pass(copies.file, copies.began, refused);
         miscount.or(failed).map_or(Ok(cleaned), Err)
     }
 

@@ -10,14 +10,10 @@ use std::collections::BTreeSet;
 use lignin_io::sim::{CrashPoint, SimConfig, SimVfs};
 
 use super::{
-    run::{check_recovered, Op, Run},
+    run::{check_recovered, put, Op, Run},
     sim::*,
     *,
 };
-
-fn put(page: u32, key: u32, len: usize) -> Op {
-    Op::Put { page, key, len }
-}
 
 /// A database's first two sessions, through every step of a value-log
 /// file's life: values of commits and of a rollback, overwritten, deleted
@@ -76,7 +72,7 @@ pub(super) fn life(run: &mut Run) -> Result<(), ValueStoreError> {
 
 /// What the crashes of one workload came to.
 #[derive(Debug, Default)]
-struct Tally {
+struct CrashTally {
     /// Operations a crash was taken after.
     crash_points: usize,
     /// How many of them had every one of their states checked.
@@ -104,8 +100,8 @@ fn crash_everywhere(
     seed: u64,
     plans: &Plans,
     workload: impl Fn(&mut Run) -> Result<(), ValueStoreError>,
-) -> Tally {
-    let mut tally = Tally::default();
+) -> CrashTally {
+    let mut tally = CrashTally::default();
     for point in 0.. {
         let fs = sim_fs(config.clone());
         fs.crash_at(CrashPoint::AfterChange(fs.stats().changes + point));
@@ -132,7 +128,7 @@ fn check_crash(
     fs: &SimVfs,
     run: &Run,
     plans: &Plans,
-    tally: &mut Tally,
+    tally: &mut CrashTally,
     place: &dyn Fn() -> String,
 ) {
     let image = fs.crash_image();
@@ -215,7 +211,7 @@ fn a_crash_after_moves_emptied_a_file_never_recovers_a_page_that_points_into_a_d
 
 #[test]
 fn a_crash_at_any_operation_of_a_drawn_workload_leaves_what_the_record_allows() {
-    let mut all = Tally::default();
+    let mut all = CrashTally::default();
     for seed in [21, 22, 23] {
         let tally = crash_everywhere(&SimConfig::new(seed), seed, &SOME_STATES, |run| {
             run.open()?;
@@ -233,7 +229,7 @@ fn a_crash_at_any_operation_of_a_drawn_workload_leaves_what_the_record_allows() 
 
 #[test]
 fn a_database_goes_on_through_one_crash_after_another() {
-    let mut tally = Tally::default();
+    let mut tally = CrashTally::default();
     let (mut moved, mut dropped) = (0, 0);
     for seed in [31, 32, 33, 34] {
         let mut fs = sim_fs(SimConfig::new(seed));
