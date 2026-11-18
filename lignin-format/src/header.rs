@@ -184,11 +184,7 @@ impl FileHeader {
     /// Later bytes are ignored. The checks run in a fixed order: length,
     /// magic, checksum, format version, file kind, sequence.
     pub fn decode(bytes: &[u8]) -> Result<Self, FormatError> {
-        let bytes: &[u8; Self::ENCODED_LEN] =
-            bytes.first_chunk().ok_or(FormatError::Truncated {
-                needed: Self::ENCODED_LEN,
-                available: bytes.len(),
-            })?;
+        let bytes: &[u8; Self::ENCODED_LEN] = first_chunk(bytes)?;
         let (covered, checksum) = bytes.split_at(Self::CHECKSUM_AT);
         if covered[..Self::KIND_AT] != Self::MAGIC {
             return Err(FormatError::BadMagic);
@@ -263,11 +259,7 @@ impl RecordHeader {
     /// anything of that size. The payload is not checked until
     /// [`Self::verified_payload`].
     pub fn decode(bytes: &[u8], max_payload_len: usize) -> Result<Self, FormatError> {
-        let bytes: &[u8; Self::ENCODED_LEN] =
-            bytes.first_chunk().ok_or(FormatError::Truncated {
-                needed: Self::ENCODED_LEN,
-                available: bytes.len(),
-            })?;
+        let bytes: &[u8; Self::ENCODED_LEN] = first_chunk(bytes)?;
         let (payload_len, checksum) = bytes.split_at(Self::CHECKSUM_AT);
         let payload_len = checked_payload_len(
             u64::from(u32::from_le_bytes(array(payload_len))),
@@ -319,6 +311,13 @@ fn checked_payload_len(len: u64, max: usize) -> Result<u32, FormatError> {
         return Err(FormatError::RecordTooLong { len, max });
     }
     u32::try_from(len).map_err(|_| FormatError::RecordTooLong { len, max })
+}
+
+fn first_chunk<const N: usize>(bytes: &[u8]) -> Result<&[u8; N], FormatError> {
+    bytes.first_chunk().ok_or(FormatError::Truncated {
+        needed: N,
+        available: bytes.len(),
+    })
 }
 
 fn array<const N: usize>(bytes: &[u8]) -> [u8; N] {
