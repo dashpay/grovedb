@@ -12,5 +12,11 @@ publish = false
 lignin-format = { version = "6.1.1", path = "../lignin-format" }
 lignin-io = { version = "6.1.1", path = "../lignin-io" }
 
+[target.'cfg(loom)'.dependencies]
+loom = "0.7.2"
+
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
