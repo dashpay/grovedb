@@ -46,7 +46,7 @@ use super::{
     engine::{Block, Counters, Engine, NodeAnatomy},
     BenchError,
 };
-use crate::workload::{apply, Op};
+use crate::workload::{apply, Op, Outcome, TransactionOp};
 
 /// GroveDB on RocksDB, as `GroveDb::open` sets it up.
 pub struct RocksDbEngine {
@@ -257,6 +257,7 @@ impl Engine for RocksDbEngine {
         RocksDbBlock {
             db: &self.db,
             transaction: self.db.start_transaction(),
+            snapshot: None,
         }
     }
 
@@ -335,10 +336,16 @@ impl Engine for RocksDbEngine {
     }
 }
 
-/// The write transaction of one block on [`RocksDbEngine`].
+/// The write transaction of one block on [`RocksDbEngine`], and a snapshot
+/// read transaction while the block holds one open.
+///
+/// It does what [`Outcome`] asks of the caller of [`apply`], as
+/// [`crate::workload::Transactions`] does, but keeps the block's transaction
+/// itself so a commit is timed alone, without starting the next block's.
 pub struct RocksDbBlock<'a> {
     db: &'a GroveDb,
     transaction: Transaction<'a>,
+    snapshot: Option<Transaction<'a>>,
 }
 
 impl Block for RocksDbBlock<'_> {
@@ -347,9 +354,23 @@ impl Block for RocksDbBlock<'_> {
         op: &Op,
         grove_version: &GroveVersion,
     ) -> Result<OperationCost, BenchError> {
-        let CostContext { value, cost } =
-            apply(self.db, op, Some(&self.transaction), grove_version);
-        value?;
+        let transaction = match op {
+            Op::Transaction(TransactionOp::SnapshotRead(_)) => {
+                self.snapshot.as_ref().ok_or_else(|| {
+                    BenchError::Check("a snapshot read needs an open snapshot".to_string())
+                })?
+            }
+            _ => &self.transaction,
+        };
+        let CostContext { value, cost } = apply(self.db, op, Some(transaction), grove_version);
+        match value? {
+            Outcome::Abandoned => self.transaction = self.db.start_transaction(),
+            Outcome::SnapshotOpens => {
+                self.snapshot = Some(self.db.start_snapshot_read_transaction())
+            }
+            Outcome::SnapshotCloses => self.snapshot = None,
+            _ => {}
+        }
         Ok(cost)
     }
 
@@ -513,6 +534,72 @@ mod tests {
                 grove_version
             )
             .is_err());
+    }
+
+    #[test]
+    fn a_block_does_what_a_transaction_step_asks() {
+        let dir = tempfile::tempdir().unwrap();
+        let grove_version = GroveVersion::latest();
+        let engine = RocksDbEngine::open(dir.path()).unwrap();
+        let get = |key: &[u8]| crate::workload::Read::Get {
+            path: vec![],
+            key: key.to_vec(),
+        };
+        let item = |key: &[u8]| insert(vec![], key, Element::new_item(vec![3; 8]));
+        let step = |step: TransactionOp| Op::Transaction(step);
+
+        let mut block = engine.begin_block();
+        block.apply(&item(b"committed"), grove_version).unwrap();
+        block.commit().unwrap();
+
+        let mut block = engine.begin_block();
+        assert_eq!(
+            block
+                .apply(
+                    &step(TransactionOp::SnapshotRead(get(b"committed"))),
+                    grove_version
+                )
+                .unwrap_err()
+                .to_string(),
+            "a snapshot read needs an open snapshot"
+        );
+        block
+            .apply(&step(TransactionOp::OpenSnapshot), grove_version)
+            .unwrap();
+        block.apply(&item(b"later"), grove_version).unwrap();
+        block
+            .apply(
+                &step(TransactionOp::BlockRead(get(b"later"))),
+                grove_version,
+            )
+            .unwrap();
+        block
+            .apply(
+                &step(TransactionOp::SnapshotRead(get(b"committed"))),
+                grove_version,
+            )
+            .unwrap();
+        assert!(block
+            .apply(
+                &step(TransactionOp::SnapshotRead(get(b"later"))),
+                grove_version
+            )
+            .is_err());
+        block
+            .apply(&step(TransactionOp::CloseSnapshot), grove_version)
+            .unwrap();
+        block
+            .apply(&step(TransactionOp::Abandon), grove_version)
+            .unwrap();
+        block.commit().unwrap();
+        let abandoned = Op::Read(get(b"later"));
+        assert!(
+            engine.read(&abandoned, grove_version).is_err(),
+            "the abandoned write is gone"
+        );
+        assert!(engine
+            .read(&Op::Read(get(b"committed")), grove_version)
+            .is_ok());
     }
 
     #[test]

@@ -325,36 +325,46 @@ fn sampled_count_row(id: &str, phase: &str, unit: &str, samples: Vec<f64>, sourc
 
 /// Key and value bytes `op` writes: each key plus its serialized element.
 fn logical_bytes(op: &Op, grove_version: &GroveVersion) -> u64 {
-    let size = |key: &[u8], element: &Element| {
-        key.len() as u64
-            + element
-                .serialized_size(grove_version)
-                .map_or(0, |size| size as u64)
-    };
     match op {
-        Op::Write(Write::Insert { key, element, .. }) => size(key, element),
-        Op::Batch(ops) => ops
-            .iter()
-            .map(|op| match op {
-                BatchOp::InsertOrReplace { key, element, .. }
-                | BatchOp::InsertOnly { key, element, .. }
-                | BatchOp::InsertIfNotExists { key, element, .. }
-                | BatchOp::Replace { key, element, .. } => size(key, element),
-                BatchOp::RefreshReference {
-                    key,
-                    reference,
-                    max_hop,
-                    flags,
-                    ..
-                } => size(
-                    key,
-                    &Element::Reference(reference.clone(), *max_hop, flags.clone()),
-                ),
-                _ => 0,
-            })
-            .sum(),
+        Op::Write(Write::Insert { key, element, .. }) => entry_bytes(key, element, grove_version),
+        Op::Batch(ops) => batch_bytes(ops, grove_version),
+        Op::PartialBatch(batch) => {
+            batch_bytes(&batch.ops, grove_version) + batch_bytes(&batch.add_on, grove_version)
+        }
         _ => 0,
     }
+}
+
+/// A key plus its element as GroveDB serializes it.
+fn entry_bytes(key: &[u8], element: &Element, grove_version: &GroveVersion) -> u64 {
+    key.len() as u64
+        + element
+            .serialized_size(grove_version)
+            .map_or(0, |size| size as u64)
+}
+
+/// [`logical_bytes`] of the operations of a batch.
+fn batch_bytes(ops: &[BatchOp], grove_version: &GroveVersion) -> u64 {
+    ops.iter()
+        .map(|op| match op {
+            BatchOp::InsertOrReplace { key, element, .. }
+            | BatchOp::InsertOnly { key, element, .. }
+            | BatchOp::InsertIfNotExists { key, element, .. }
+            | BatchOp::Replace { key, element, .. } => entry_bytes(key, element, grove_version),
+            BatchOp::RefreshReference {
+                key,
+                reference,
+                max_hop,
+                flags,
+                ..
+            } => entry_bytes(
+                key,
+                &Element::Reference(reference.clone(), *max_hop, flags.clone()),
+                grove_version,
+            ),
+            _ => 0,
+        })
+        .sum()
 }
 
 /// What a write phase measured.
@@ -419,7 +429,7 @@ fn write_phase<E: Engine>(
             let (result, elapsed) = timed(|| transaction.apply(op, grove_version));
             cost += result?;
             apply_time += elapsed;
-            if matches!(op, Op::Batch(_) | Op::Write(_)) {
+            if matches!(op, Op::Batch(_) | Op::PartialBatch(_) | Op::Write(_)) {
                 writes += 1;
             }
         }
@@ -1198,4 +1208,47 @@ pub(crate) fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workload::PartialBatch;
+
+    #[test]
+    fn logical_bytes_count_keys_and_elements_of_every_write() {
+        let grove_version = GroveVersion::latest();
+        let element = Element::new_item(vec![1; 10]);
+        let entry = entry_bytes(b"key", &element, grove_version);
+        assert_eq!(
+            entry,
+            3 + element.serialized_size(grove_version).unwrap() as u64
+        );
+        let put = BatchOp::InsertOrReplace {
+            path: vec![],
+            key: b"key".to_vec(),
+            element: element.clone(),
+        };
+        let delete = BatchOp::Delete {
+            path: vec![],
+            key: b"key".to_vec(),
+        };
+        let insert = Op::Write(Write::Insert {
+            path: vec![],
+            key: b"key".to_vec(),
+            element,
+        });
+        assert_eq!(logical_bytes(&insert, grove_version), entry);
+        assert_eq!(
+            logical_bytes(&Op::Batch(vec![put.clone(), delete.clone()]), grove_version),
+            entry
+        );
+        let partial = Op::PartialBatch(PartialBatch {
+            ops: vec![put.clone()],
+            add_on: vec![put, delete],
+            pause_height: None,
+        });
+        assert_eq!(logical_bytes(&partial, grove_version), 2 * entry);
+        assert_eq!(logical_bytes(&Op::Commit, grove_version), 0);
+    }
 }
