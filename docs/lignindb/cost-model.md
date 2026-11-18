@@ -280,15 +280,23 @@ A value put on a node hashes the value and the key-value pair. A value that refe
 
 For every node a commit writes, Merk works out a `KeyValueStorageCost` and passes it down (`MerkCommitter::write`, `TreeNode::kv_with_parent_hook_size_and_storage_cost`, `merk/src/tree/mod.rs:285`).
 
-**The value's cost** is one of three, by the kind of element (`merk/src/tree/kv.rs`). `class` is the feature's cost class, and `link = key_len + 36 + class`:
+**The value's cost** is one of three (`merk/src/tree/kv.rs`). The kind is normally that of the element; what decides it exactly is said below the table. `class` is the feature's cost class, and `link = key_len + 36 + class`:
 
 | Kind | Cost | Checked by K3 |
 | --- | --- | --- |
-| ordinary (items, references) | `v + varint(v) + link`, with `v = value_len + 65 + class` (`node_value_byte_cost_size`, `:366`) | yes |
+| ordinary (no value-defined cost: items, references) | `v + varint(v) + link`, with `v = value_len + 65 + class` (`node_value_byte_cost_size`, `:366`) | yes |
 | specialized (sum items and the like: the element defines `c` in place of `value_len`) | the same with `value_len = c` | no |
 | layered (trees: the element defines `c`) | `c + class + 35 + link` (`layered_value_byte_cost_size_for_key_and_value_lengths`, `:427`) | no |
 
 The ordinary cost is exactly the paid length K2 derives from the record, which is why K3 can check it. A value-defined cost is taken as given (`needs_value_verification` is false): the element's own cost size (`merk/src/tree_type/costs.rs`) stands in for its length.
+
+**Which kind applies** is decided by the node as Merk holds it, by whether it carries a value-defined cost (`KV::value_defined_cost`), and not always by the element that is written:
+
+- A specialized or a layered put stamps the node with the cost the operation names.
+- A node fetched from storage is stamped from the element it holds: a sum item or a tree gives it a value-defined cost, an item or a reference none.
+- An ordinary put (`Op::Put`, `Op::PutCombinedReference`) clears the stamp from grove version 4 (`merk_versions.tree.put_value` 1). On grove versions 1 to 3 it keeps the one the node was fetched with (`merk/src/tree/put_value/v0.rs`). An item or a reference written over a sum item or a tree is then charged from the predecessor's fixed cost size, and its cost is not checked.
+
+`needs_value_verification` is set exactly when the node carries no value-defined cost. The rest of this document says "ordinary" for such a node.
 
 **New or update.** A node with no mutation baseline is new: its key cost is left at zero for W1 to complete, `new_node` is set, and the value's cost is `added_bytes`. A node that was loaded is an update: the key costs nothing, and the value's cost is split against the cost of the value it replaces (`storage_cost_for_update`, `:257`):
 
@@ -346,18 +354,18 @@ The old cost is worked out from the old value by the same three formulas (the ca
 2. **The form of the removed bytes.** A plain removal of the value's bytes goes through `split_removal_bytes` with the old element's flags and comes back plain or sectioned. On a delete both halves are split: the key's `stored_key_len + varint(stored_key_len)` and the old value's cost.
 3. **From grove version 5, how an update is accounted**: the callback may answer `AccountAsReplacement`, and the update is then charged as the removal of the old element and the insertion of the new one. On grove versions 1 to 4 Merk refuses that answer. On every version GroveDB refuses it, and the batch with it, for a write whose flags are byte for byte the stored ones (`batch_flags_update`).
 
-**The loop** (`v0.rs`, `v1.rs`; `merk_versions.tree.just_in_time_value_update`, section 8). Merk first measures the value's cost. For an ordinary value, an item or a reference, that first measurement is taken with the new value carrying the *old* flags, when the old value has any. For a value whose cost its element defines, a sum item or a tree, it is taken as the value stands. Then, in rounds bounded by `MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES` (8), a plain removal in the cost is split and the flags callback is asked with the cost.
+**The loop** (`v0.rs`, `v1.rs`; `merk_versions.tree.just_in_time_value_update`, section 8). Merk first measures the value's cost. On a node with no value-defined cost (section 6.3, "Which kind applies") that first measurement is taken with the new value carrying the *old* flags, when the old value has any. On a node with one it is that value-defined cost, which on grove versions 1 to 3 may be the predecessor's. Then, in rounds bounded by `MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES` (8), a plain removal in the cost is split and the flags callback is asked with the cost.
 
 - **If it answers that it changed the flags:** when the value with those flags has the size last measured, the loop ends and the value keeps those flags. Otherwise Merk measures again from those bytes, puts the new value back as it was given, and asks again with the new cost.
 - **If it answers that it changed nothing,** the loop ends, and the versions differ in the measurement they keep. Version 0, on grove versions 1 to 3, keeps the last one as it is; in the first round that is the one taken with the old flags. Version 1, on grove version 4, measures once more from the bytes it stores when their size is not the one last measured, and does not ask again. Version 2, on grove version 5, is version 1 with the third point above.
 
-So on grove versions 1 to 3 a new value that comes with flags of another length than the stored ones, and whose flags the callback leaves alone, is handed down with a cost that is not the cost of the bytes written. For an ordinary value the storage layer notices: K3 compares `added + replaced` with the bytes and refuses the commit (GroveDB's `grove_v3_refuses_a_replacement_keeping_flags_of_another_length`). A cost that the element defines is not checked (`needs_value_verification` is false, section 6.3), so whatever the update measured is charged.
+So on grove versions 1 to 3 a new value that comes with flags of another length than the stored ones, and whose flags the callback leaves alone, is handed down with a cost that is not the cost of the bytes written. When the node has no value-defined cost the storage layer notices: K3 compares `added + replaced` with the bytes and refuses the commit (GroveDB's `grove_v3_refuses_a_replacement_keeping_flags_of_another_length`). When it has one, the cost is not checked (`needs_value_verification` is false), so whatever the update measured is charged. On grove versions 1 to 3 that includes an item or a reference written over a sum item or a tree.
 
 The same update is run ahead of the apply, on a detached node, wherever a batch has to know the final bytes of a value before it writes them (`predict_put_final_bytes`; on grove versions 1 to 3 a hand-written copy in `batch/just_in_time_reference_update/v0.rs`). Two places do: the preprocessor of backward references, and a reference to an item that the same batch writes, which commits to the item's value hash. Both call the client's callbacks again, on values that were already read. The prediction itself charges nothing; the second place charges the value hash of the predicted bytes (section 6.2). The storage cost worked out on the way is only what the callback is shown.
 
 **What the storage layer is asked for.** Only the result: the final bytes of the value and one `KeyValueStorageCost`, with the put (W2) or the delete (D1). The storage layer then
 
-- checks `added + replaced` of the value against the paid length of K2 when the cost asks for it (K3), which it does for an ordinary value only; that is what catches version 0's stale measurement of an item or a reference;
+- checks `added + replaced` of the value against the paid length of K2 when the cost asks for it (K3: `needs_value_verification`, set when the node carries no value-defined cost); that is what catches version 0's stale measurement on such a node;
 - adds the removed bytes as they come, plain or sectioned, in the order of B1;
 - never calls a callback, never produces a sectioned removal itself, and removes only plain numbers of its own (D2).
 
@@ -412,7 +420,7 @@ Above the storage layer, these switches change what an operation is charged. The
 | `grovedb_versions.element.get_optional_from_storage` | 0 on 1; 1 from 2 | The loaded bytes of an element read (section 6.5) |
 | `operations.insert.add_element_on_transaction` | 0, 0, 1, 2, 2 | Which subtrees an insert opens and what it reads |
 | `operations.delete.delete_internal_on_transaction`, `clear_subtree` | 2 and 1 from 4 | The same for a delete and a clear |
-| `merk_versions.tree.put_value` | 1 from 4 | How a value put computes its hashes and cost |
+| `merk_versions.tree.put_value` | 1 from 4 | Whether an ordinary put keeps the value-defined cost of the node it replaces (section 6.3) |
 | `merk_versions.tree.just_in_time_value_update` | 0, 0, 0, 1, 2 | The flags update and, on 5, replacement accounting (section 6.6) |
 | `apply_batch.same_batch_reference_target_prediction` | 1 from 4 | How the final bytes of a reference's target are predicted (section 6.6) |
 | `add_basic_storage_removal_to_sectioned_storage_removal` | 1 from 4 | How a plain removal adds to a sectioned one |
