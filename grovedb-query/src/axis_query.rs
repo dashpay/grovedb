@@ -37,6 +37,7 @@ use crate::error::Error;
 /// - `0` = `Count`: secondary keyed by `(count_be ‖ original_key)`.
 /// - `1` = `Sum`:   secondary keyed by `(sum_sortable_be ‖ original_key)`.
 /// - `2` = `Avg`:   secondary keyed by `(avg_sortable_be ‖ original_key)`.
+/// - `3` = `BigSum`: secondary keyed by `(big_sum_sortable_be ‖ original_key)`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[repr(u8)]
@@ -48,6 +49,13 @@ pub enum IndexAxis {
     /// Average axis. Secondary entries are ordered by the fixed-point
     /// average `floor(sum * SCALE / count)`.
     Avg = 2,
+    /// Big sum axis: the sum axis of an indexed tree whose sum is 128 bits
+    /// wide. Secondary entries are ordered by aggregate sum (signed), which
+    /// the key holds in 16 bytes where [`Self::Sum`] holds it in 8.
+    ///
+    /// An indexed tree has one or the other, by the width of its sum: a
+    /// query names the axis the tree was created with.
+    BigSum = 3,
 }
 
 /// A tag byte that does not name any [`IndexAxis`]. Carries the
@@ -72,13 +80,14 @@ impl IndexAxis {
     }
 
     /// Inverse of [`Self::tag`]: parse a tag byte into the axis. Returns
-    /// [`UnknownAxisTag`] for any byte outside the `0..=2` range.
+    /// [`UnknownAxisTag`] for any byte outside the `0..=3` range.
     #[inline]
     pub const fn try_from_tag(b: u8) -> Result<Self, UnknownAxisTag> {
         match b {
             0 => Ok(IndexAxis::Count),
             1 => Ok(IndexAxis::Sum),
             2 => Ok(IndexAxis::Avg),
+            3 => Ok(IndexAxis::BigSum),
             other => Err(UnknownAxisTag(other)),
         }
     }
@@ -593,7 +602,7 @@ impl AxisQuery {
                     ));
                 }
             }
-            AxisTraversal::AggregateOverValueRange { lo, hi, fold: _ } => {
+            AxisTraversal::AggregateOverValueRange { lo, hi, fold } => {
                 // Both folds are rejected on the Avg axis: a total of
                 // averages is not meaningful, and a population over the
                 // avg ordering is served by the other two axes' bands
@@ -603,6 +612,18 @@ impl AxisQuery {
                     return Err(Error::InvalidOperation(
                         "axis query: the Avg axis has no value-range aggregate — an \
                          aggregate of averages is not meaningful",
+                    ));
+                }
+                // A total over the BigSum axis would be a 128-bit sum,
+                // and the secondary's rows carry a 64-bit one: a row
+                // under a wide sum carries 0, so there is no total to
+                // fold. The band's population is answered as on the Sum
+                // axis.
+                if self.axis == IndexAxis::BigSum && *fold == AggregateFold::Total {
+                    return Err(Error::InvalidOperation(
+                        "axis query: the BigSum axis has no value-range total — its rows do \
+                         not carry the 128-bit sum; ask for the population, or read the \
+                         entries",
                     ));
                 }
                 self.validate_bounds(*lo, *hi)?;
@@ -649,6 +670,8 @@ impl AxisQuery {
             // The avg axis is ordered by the fixed-point average, whose
             // domain is the whole i128 range; nothing is out of domain.
             IndexAxis::Avg => false,
+            // A 128-bit sum takes every i128.
+            IndexAxis::BigSum => false,
         }
     }
 
@@ -725,22 +748,78 @@ mod tests {
 
     #[test]
     fn axis_tag_round_trip() {
-        for a in [IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg] {
+        for a in [
+            IndexAxis::Count,
+            IndexAxis::Sum,
+            IndexAxis::Avg,
+            IndexAxis::BigSum,
+        ] {
             assert_eq!(IndexAxis::try_from_tag(a.tag()).unwrap(), a);
         }
+        // The tags are on disk and on the wire.
+        assert_eq!(
+            [
+                IndexAxis::Count.tag(),
+                IndexAxis::Sum.tag(),
+                IndexAxis::Avg.tag(),
+                IndexAxis::BigSum.tag()
+            ],
+            [0, 1, 2, 3]
+        );
     }
 
     #[test]
     fn axis_tag_rejects_unknown_byte() {
-        assert_eq!(IndexAxis::try_from_tag(3), Err(UnknownAxisTag(3)));
+        assert_eq!(IndexAxis::try_from_tag(3), Ok(IndexAxis::BigSum));
+        assert_eq!(IndexAxis::try_from_tag(4), Err(UnknownAxisTag(4)));
         assert_eq!(format!("{}", UnknownAxisTag(255)), "unknown axis tag 255");
     }
 
     #[test]
     fn axis_ordering_is_canonical() {
-        // The canonical order required by the on-disk TLV: Count < Sum < Avg.
+        // The canonical order required by the on-disk TLV: Count < Sum < Avg
+        // < BigSum.
         assert!(IndexAxis::Count < IndexAxis::Sum);
         assert!(IndexAxis::Sum < IndexAxis::Avg);
+        assert!(IndexAxis::Avg < IndexAxis::BigSum);
+    }
+
+    /// The big sum axis takes every `i128` as a bound, lists and ranks like
+    /// the sum axis, and has a population over a value range but no total.
+    #[test]
+    fn big_sum_axis_validation() {
+        for query in [
+            AxisQuery::top_k(IndexAxis::BigSum, 3, 0, true),
+            AxisQuery::bounded(IndexAxis::BigSum, i128::MIN, i128::MAX, 5, false),
+            AxisQuery::bounded(IndexAxis::BigSum, i64::MAX as i128 + 1, i128::MAX, 5, false),
+            AxisQuery::rank_of_key(IndexAxis::BigSum, vec![1], true),
+            AxisQuery::aggregate_over_value_range(
+                IndexAxis::BigSum,
+                i128::MIN,
+                i128::MAX,
+                AggregateFold::Population,
+            ),
+            AxisQuery::top_k(IndexAxis::BigSum, 3, 0, true).keys_only(),
+        ] {
+            assert!(query.validate().is_ok(), "{query:?}");
+        }
+        // The same band is out of the sum axis's domain.
+        assert!(
+            AxisQuery::bounded(IndexAxis::Sum, i64::MAX as i128 + 1, i128::MAX, 5, false)
+                .validate()
+                .is_err()
+        );
+        assert!(AxisQuery::aggregate_over_value_range(
+            IndexAxis::BigSum,
+            0,
+            10,
+            AggregateFold::Total
+        )
+        .validate()
+        .is_err());
+        assert!(AxisQuery::bounded(IndexAxis::BigSum, 10, 0, 1, true)
+            .validate()
+            .is_err());
     }
 
     fn all_traversals() -> Vec<AxisTraversal> {
@@ -769,7 +848,12 @@ mod tests {
 
     #[test]
     fn axis_query_round_trips_every_traversal_and_axis() {
-        for axis in [IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg] {
+        for axis in [
+            IndexAxis::Count,
+            IndexAxis::Sum,
+            IndexAxis::Avg,
+            IndexAxis::BigSum,
+        ] {
             for traversal in all_traversals() {
                 for descending in [false, true] {
                     let q = AxisQuery {

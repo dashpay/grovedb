@@ -105,6 +105,39 @@ pub(in crate::batch) fn check_inserted_tree_element(
                 )
             })?;
         }
+        Element::ProvableBigSumIndexedTree(primary, secondary, sum_value, _) => {
+            if primary.is_some() || secondary.is_some() || *sum_value != 0 {
+                return Err(Error::InvalidBatchOperation(
+                    "a ProvableBigSumIndexedTree must be empty at the moment of batch insertion \
+                     (both primary_root_key and secondary_root_key must be None and sum = 0); \
+                     item-level mutations require the dedicated insert_into_indexed_tree API",
+                ));
+            }
+        }
+        Element::ProvableCountProvableBigSumIndexedTree(
+            primary,
+            count_value,
+            sum_value,
+            axes,
+            _,
+        ) => {
+            let axes_all_empty = axes.iter().all(|(_, sk)| sk.is_none());
+            if primary.is_some() || *count_value != 0 || *sum_value != 0 || !axes_all_empty {
+                return Err(Error::InvalidBatchOperation(
+                    "a ProvableCountProvableBigSumIndexedTree must be empty at the moment of \
+                     batch insertion (primary_root_key = None, count = 0, sum = 0, every axis \
+                     secondary_root_key = None); item-level mutations require the dedicated \
+                     insert_into_indexed_tree API",
+                ));
+            }
+            Element::validate_pcpbsit_axes(axes).map_err(|_| {
+                Error::InvalidBatchOperation(
+                    "a ProvableCountProvableBigSumIndexedTree must have canonical axes (1..=3 \
+                     entries, sorted ascending by tag, no duplicates, each of the count, avg \
+                     and big sum axes)",
+                )
+            })?;
+        }
         Element::PrivateDocumentStore(total_count, entry_size, chunk_power, _) => {
             // Fail closed on protocol versions that predate the element type.
             check_pds_enabled(

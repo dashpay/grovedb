@@ -77,6 +77,8 @@ pub enum AxisKeys {
     Sum(Vec<(i64, Vec<u8>)>),
     /// Avg axis: `(fixed-point average, original_key)` pairs.
     Avg(Vec<(i128, Vec<u8>)>),
+    /// Big sum axis: `(128-bit sum, original_key)` pairs.
+    BigSum(Vec<(i128, Vec<u8>)>),
 }
 
 impl AxisKeys {
@@ -86,6 +88,7 @@ impl AxisKeys {
             grovedb_element::indexed::IndexAxis::Count => AxisKeys::Count(Vec::new()),
             grovedb_element::indexed::IndexAxis::Sum => AxisKeys::Sum(Vec::new()),
             grovedb_element::indexed::IndexAxis::Avg => AxisKeys::Avg(Vec::new()),
+            grovedb_element::indexed::IndexAxis::BigSum => AxisKeys::BigSum(Vec::new()),
         }
     }
 
@@ -95,6 +98,7 @@ impl AxisKeys {
             AxisKeys::Count(v) => v.len(),
             AxisKeys::Sum(v) => v.len(),
             AxisKeys::Avg(v) => v.len(),
+            AxisKeys::BigSum(v) => v.len(),
         }
     }
 

@@ -46,7 +46,7 @@ the queries it cannot execute, and on nothing else.
 
 ```rust,ignore
 pub struct AxisQuery {
-    pub axis: IndexAxis,          // Count = 0 | Sum = 1 | Avg = 2
+    pub axis: IndexAxis,          // Count = 0 | Sum = 1 | Avg = 2 | BigSum = 3
     pub traversal: AxisTraversal,
     pub descending: bool,
     pub projection: AxisProjection, // Entries = 0 (default) | Keys = 1
@@ -89,6 +89,14 @@ value; the fold picks the aggregate over exactly those entries:
 |---|---|
 | `Population` — how many entries fall in the band | **2** |
 | `Total` — the selected values summed | **8** |
+
+`BigSum` is the sum axis of an indexed tree whose sum is 128 bits wide
+(`ProvableBigSumIndexedTree`, `ProvableCountProvableBigSumIndexedTree`): a
+tree has `Sum` or `BigSum`, never both, and a query names the one the tree
+has. Its bounds range over the whole `i128`, its entries come back as
+`AxisEntries::BigSum` with an `i128` ordering value, and it answers
+`Population` but not `Total`: a secondary row carries an `i64`, so the
+rows of this axis carry 0 and the entry's sum lives in the row's key.
 
 Population counts *entries*, not distinct values (two entries sharing
 a value are two secondary nodes). Every axis secondary is a

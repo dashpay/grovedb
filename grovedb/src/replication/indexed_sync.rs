@@ -60,7 +60,7 @@ use grovedb_merk::{
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 
 use crate::{
-    operations::indexed_tree::axis_secondary_tree_type,
+    operations::indexed_tree::{axis_secondary_tree_type, axis_storage_tag},
     replication::{
         served_merk_root_hash,
         utils::{encode_vec_ops, pack_nested_bytes},
@@ -218,18 +218,21 @@ pub(crate) fn verify_indexed_binding(
     secondary_roots: &[(u8, CryptoHash)],
 ) -> Result<(), Error> {
     let secondary_slot = match element.underlying() {
-        Element::ProvableCountIndexedTree(..) | Element::ProvableSumIndexedTree(..) => {
-            match secondary_roots {
-                [(_, hash)] => *hash,
-                other => {
-                    return Err(Error::InternalError(format!(
-                        "single-axis indexed group finalized with {} secondary roots",
-                        other.len()
-                    )));
-                }
+        Element::ProvableCountIndexedTree(..)
+        | Element::ProvableSumIndexedTree(..)
+        | Element::ProvableBigSumIndexedTree(..) => match secondary_roots {
+            [(_, hash)] => *hash,
+            other => {
+                return Err(Error::InternalError(format!(
+                    "single-axis indexed group finalized with {} secondary roots",
+                    other.len()
+                )));
             }
+        },
+        Element::ProvableCountProvableSumIndexedTree(..)
+        | Element::ProvableCountProvableBigSumIndexedTree(..) => {
+            axes_digest(secondary_roots).unwrap()
         }
-        Element::ProvableCountProvableSumIndexedTree(..) => axes_digest(secondary_roots).unwrap(),
         other => {
             return Err(Error::InternalError(format!(
                 "verify_indexed_binding called on a non-indexed element: {}",
@@ -302,7 +305,8 @@ impl GroveDb {
                 Error::CorruptedData(format!("invalid axis tag in indexed header request: {e}"))
             })?;
             let secondary_prefix =
-                RocksDbStorage::secondary_prefix_for(&chunk_prefix, *tag).unwrap();
+                RocksDbStorage::secondary_prefix_for(&chunk_prefix, axis_storage_tag(axis))
+                    .unwrap();
             let secondary_merk = self
                 .open_transactional_merk_by_prefix(
                     secondary_prefix,

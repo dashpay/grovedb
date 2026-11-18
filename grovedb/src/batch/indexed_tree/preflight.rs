@@ -43,7 +43,9 @@ fn freshly_created_indexed_paths(ops: &[QualifiedGroveDbOp]) -> Vec<Vec<Vec<u8>>
             elem.underlying(),
             Element::ProvableCountIndexedTree(..)
                 | Element::ProvableSumIndexedTree(..)
+                | Element::ProvableBigSumIndexedTree(..)
                 | Element::ProvableCountProvableSumIndexedTree(..)
+                | Element::ProvableCountProvableBigSumIndexedTree(..)
         ) && let Some(key) = &op.key
         {
             let mut cidx_path = op.path.to_path();

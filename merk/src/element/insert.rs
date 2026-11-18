@@ -1041,8 +1041,10 @@ impl ElementInsertToStorageExtensions for Element {
         if !matches!(
             self.underlying(),
             Element::ProvableSumIndexedTree(..)
+                | Element::ProvableBigSumIndexedTree(..)
                 | Element::ProvableCountIndexedTree(..)
                 | Element::ProvableCountProvableSumIndexedTree(..)
+                | Element::ProvableCountProvableBigSumIndexedTree(..)
         ) {
             return Err(Error::InvalidInputError(
                 "insert_count_indexed_subtree only accepts indexed-tree elements \
@@ -1135,8 +1137,10 @@ impl ElementInsertToStorageExtensions for Element {
         if !matches!(
             self.underlying(),
             Element::ProvableSumIndexedTree(..)
+                | Element::ProvableBigSumIndexedTree(..)
                 | Element::ProvableCountIndexedTree(..)
                 | Element::ProvableCountProvableSumIndexedTree(..)
+                | Element::ProvableCountProvableBigSumIndexedTree(..)
         ) {
             return Err(Error::InvalidInputError(
                 "insert_count_indexed_subtree_into_batch_operations only accepts \

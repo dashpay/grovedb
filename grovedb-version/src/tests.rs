@@ -95,6 +95,7 @@ fn v5_matches_v4_apart_from_its_gates() {
         .insert
         .provable_count_provable_big_sum_tree_creation = 0;
     operations.insert.big_sum_tree_twins_creation = 0;
+    operations.indexed_axis.big_sum_axis = 0;
     v5_as_v4.grovedb_versions.element.path_query_push =
         GROVE_V4.grovedb_versions.element.path_query_push;
     v5_as_v4.grovedb_versions.element.delete = 0;
@@ -967,6 +968,27 @@ fn local_offsets_only_change_the_v5_query_slots() {
     );
     assert_eq!(GROVE_V5.grovedb_versions.path_query_methods.merge, 2);
     assert_eq!(GROVE_V5.grovedb_versions.element.path_query_push, 2);
+}
+
+#[test]
+fn big_sum_axis_is_gated_to_v5() {
+    // No tree has the axis before GROVE_V5, and a released build cannot
+    // decode a query that names it.
+    for v in [&GROVE_V1, &GROVE_V2, &GROVE_V3, &GROVE_V4] {
+        assert_eq!(
+            v.grovedb_versions.operations.indexed_axis.big_sum_axis, 0,
+            "v{}",
+            v.protocol_version
+        );
+    }
+    assert_eq!(
+        GROVE_V5
+            .grovedb_versions
+            .operations
+            .indexed_axis
+            .big_sum_axis,
+        1
+    );
 }
 
 #[test]

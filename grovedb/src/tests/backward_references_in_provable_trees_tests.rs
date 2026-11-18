@@ -41,10 +41,12 @@ mod tests {
         CountIndexed,
         SumIndexed,
         CountProvableSumIndexed,
+        BigSumIndexed,
+        CountProvableBigSumIndexed,
     }
 
     impl Host {
-        const ALL: [Host; 9] = [
+        const ALL: [Host; 11] = [
             Host::Count,
             Host::CountSum,
             Host::Sum,
@@ -54,6 +56,8 @@ mod tests {
             Host::CountIndexed,
             Host::SumIndexed,
             Host::CountProvableSumIndexed,
+            Host::BigSumIndexed,
+            Host::CountProvableBigSumIndexed,
         ];
 
         fn empty_element(self) -> Element {
@@ -74,22 +78,35 @@ mod tests {
                     ])
                     .expect("canonical axes")
                 }
+                Host::BigSumIndexed => Element::empty_provable_big_sum_indexed_tree(),
+                Host::CountProvableBigSumIndexed => {
+                    Element::empty_provable_count_provable_big_sum_indexed_tree(vec![
+                        (IndexAxis::Count.tag(), None),
+                        (IndexAxis::Avg.tag(), None),
+                        (IndexAxis::BigSum.tag(), None),
+                    ])
+                    .expect("canonical axes")
+                }
             }
         }
 
         fn is_indexed(self) -> bool {
             matches!(
                 self,
-                Host::CountIndexed | Host::SumIndexed | Host::CountProvableSumIndexed
+                Host::CountIndexed
+                    | Host::SumIndexed
+                    | Host::CountProvableSumIndexed
+                    | Host::BigSumIndexed
+                    | Host::CountProvableBigSumIndexed
             )
         }
 
         /// The backward-references items this host accepts. The two
         /// count-only hosts are not sum trees, so they take the plain
-        /// item; the others take the sum-carrying variants. The
-        /// count-and-sum indexed tree asks its children for a count and a
-        /// sum and names the plain `SumItem` as its only bare sum item, so
-        /// it takes the item-with-sum variant alone.
+        /// item; the others take the sum-carrying variants. The two
+        /// count-and-sum indexed trees ask their children for a count and a
+        /// sum and name the plain `SumItem` as their only bare sum item, so
+        /// they take the item-with-sum variant alone.
         fn entries(self) -> Vec<Element> {
             let item_with_sum = Element::new_item_with_sum_item_allowing_bidirectional_references(
                 b"payload".to_vec(),
@@ -101,7 +118,9 @@ mod tests {
                         b"payload".to_vec(),
                     )]
                 }
-                Host::CountProvableSumIndexed => vec![item_with_sum],
+                Host::CountProvableSumIndexed | Host::CountProvableBigSumIndexed => {
+                    vec![item_with_sum]
+                }
                 _ => vec![
                     Element::new_sum_item_allowing_bidirectional_references(7),
                     item_with_sum,
@@ -154,6 +173,14 @@ mod tests {
                 .unwrap(),
             (Write::Direct, Host::CountProvableSumIndexed) => db
                 .insert_into_provable_count_provable_sum_indexed_tree(&path, ENTRY, entry, None, gv)
+                .unwrap(),
+            (Write::Direct, Host::BigSumIndexed) => db
+                .insert_into_provable_big_sum_indexed_tree(&path, ENTRY, entry, None, gv)
+                .unwrap(),
+            (Write::Direct, Host::CountProvableBigSumIndexed) => db
+                .insert_into_provable_count_provable_big_sum_indexed_tree(
+                    &path, ENTRY, entry, None, gv,
+                )
                 .unwrap(),
             (Write::Direct, _) => db.insert(&path, ENTRY, entry, None, None, gv).unwrap(),
         };
