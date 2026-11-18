@@ -130,6 +130,8 @@ Outside `grovedb::engine` and the tests, GroveDB's code names `StorageContext` n
 
 `grovedb::engine::node_store_error` keeps the error of the first two as it was: a storage error stays `Error::StorageError`.
 
+Nothing in the seam takes an unchanged hash to mean an unchanged record. Since GroveDB #1059 the referrer list of an element that takes backward references is in no hash, so a stored record can change while every hash stays what it was. A batch stages every write it is given, a move carries every record, and no operation of the trait skips a write, or answers a read from what it read before, because a hash is the same.
+
 ### The batch across subtrees
 
 `Batch` is the batch that stages the writes of one GroveDB operation across subtrees, `StorageBatch` on RocksDB. Its trait, `EngineBatch`, has what GroveDB calls on it besides creating one: `next_operation`, `take_pending` and `merge_overwriting`. The rules a batch keeps (one outcome per key, a put wins inside one operation, the later operation wins across a boundary) are those of [flat-store.md](flat-store.md#transactions-and-visibility) and TXN-08.
@@ -229,7 +231,7 @@ Ten associated functions of `GroveDb` that name no engine are free functions of 
 - on a `Merk<S>`, generic over `S: NodeStore`: `update_tree_item_preserve_flag` and its two batch variants, `get_element_from_subtree`, `capture_indexed_entry_state`, and from the verification `verify_indexed_axis_content` and `element_for_reciprocity_audit`
 - on batch operations or plain values: `insert_indexed_tree_item_into_batch_operations`, `indexed_tree_item_with_root_state_into_batch_operations`, and `axis_label`
 
-Functions that take a `Merk<S>` are bounded by `S: NodeStore<'db>` and not by an engine, so a test can run them on a store of its own. `FaultableReads` (`grovedb/src/tests/faultable_reads.rs`) is such a store: it wraps any `NodeStore` and fails the node reads of an armed key with a storage error. `open_merk` reads a subtree's parent element through it in test builds, on every engine.
+Functions that take a `Merk<S>` are bounded by `S: NodeStore<'db>` and not by an engine, so a test can run them on a store of its own. `FaultableReads` (`grovedb/src/tests/faultable_reads.rs`) is such a store: it wraps any `NodeStore` and fails the node reads of an armed key with a storage error. `open_merk` reads a subtree's parent element through it in test builds, on every engine. The ten tests of `parent_read_fault_tests.rs` (GroveDB #1056) open their handles with `Engine::subtree` and read them as a `NodeStore` or a `FlatStore`, so they name no storage context. What ties them to RocksDB is the fixture that opens their database, which is SEAM-06's to make generic. One of them already runs on a second engine: `a_failed_parent_read_is_a_storage_error_on_a_second_engine`.
 
 ## How the RocksDB engine is checked
 
@@ -249,7 +251,7 @@ Functions that take a `Merk<S>` are bounded by `S: NodeStore<'db>` and not by an
 | `a_retargeted_cursor_keeps_the_state_it_was_opened_on` | A cursor retargeted after a commit does not show it, and the next cursor does. |
 | `a_checkpoint_opens_with_the_state_it_captured`, `wipe_empties_every_keyspace`, `pending_prefix_drops_are_the_storages` | The operations outside the transaction. |
 | `a_merk_runs_on_a_subtree_handle_of_any_engine` | A function written for any `E: Engine` opens a Merk on a handle, commits through the batch, and reads the node back. |
-| `grovedb/src/tests/one_transaction_per_operation_tests.rs` | `GroveDb` on a second engine, `PinnedReads`: the RocksDB engine, except that the transaction of a read is a read-only snapshot and the engine counts the transactions it starts. Read operations given no transaction each start exactly one read transaction and no write transaction, among them a `get` that follows a reference, a query with a subquery, a proof and the getters of an MMR tree. `insert`, `delete`, `apply_batch` and `put_aux` each start one write transaction and no read, and an MMR append starts one of each. With a transaction of the caller's, none is started. |
+| `grovedb/src/tests/one_transaction_per_operation_tests.rs` | `GroveDb` on a second engine, `PinnedReads`: the RocksDB engine, except that the transaction of a read is a read-only snapshot and the engine counts the transactions it starts. Read operations given no transaction each start exactly one read transaction and no write transaction, among them a `get` that follows a reference, a query with a subquery, a proof and the getters of an MMR tree. `insert`, `delete`, `apply_batch` and `put_aux` each start one write transaction and no read, and an MMR append starts one of each. With a transaction of the caller's, none is started. A parent read that fails in a handle of this engine comes back as the storage error, and a parent that is not there as absence. |
 | `a_grovedb_is_opened_on_an_engine_and_sets_savepoints_through_it` | `open_with_engine`, `from_engine` and `engine()`, and `GroveDb`'s savepoints: a rollback undoes what came after the savepoint, and both are refused while a scope of the transaction is open. |
 
 Above the engine, the golden corpus (BASE-02) replays unchanged on the branch, and so do the GroveDB and Merk suites.

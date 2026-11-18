@@ -168,6 +168,8 @@ Three existing behaviours that a store has to keep, from the inventory:
 
 Every operation returns Merk's `Error`. The adapter wraps a storage error as `Error::StorageError`, a record that does not decode as `Error::EdError`, and a batch's cost error as `Error::CostsError`, which is what each call site did before. `Element::get_optional_from_storage` passes a storage error on as `Error::StorageError`, so that a caller can tell a read that failed from a key that is not there (GroveDB #1056), and still reports a record that does not decode as `CorruptedData` with the same text.
 
+**A store reports a read it could not perform as `Error::StorageError`, and under no other error.** This is a rule of the contract for every store, not a habit of the adapter. Since GroveDB #1056, `open_merk` takes `Error::StorageError` from the read of a parent element as a hard error and every other error as "parent not found", which several readers answer with absence. A store that reported a failed read under another error would turn a storage fault into a subtree that is not there. GroveDB's test store for failed reads, `FaultableReads`, wraps any `NodeStore` and fails a read exactly this way.
+
 `Error::StorageError` holds a `grovedb_storage::Error`. That type is the last item of `grovedb-storage` that Merk names outside `merk::store`.
 
 ### The write set
