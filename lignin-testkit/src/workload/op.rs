@@ -5,8 +5,13 @@
 //! [`super::apply`]), record it, replay it, or read it without a database at
 //! all, as a tree-layout simulation does.
 
-use grovedb::{element::reference_path::ReferencePathType, Element, ElementFlags, TreeType};
+use grovedb::{
+    element::reference_path::ReferencePathType, AggregateSumPathQuery, Element, ElementFlags,
+    PathQuery, TreeType,
+};
 use grovedb_version::version::v1::GROVE_V1;
+
+use super::query_encoding::{put_path_query, put_sum_path_query};
 
 /// A path from the GroveDB root to a subtree.
 pub type Path = Vec<Vec<u8>>;
@@ -18,11 +23,36 @@ pub enum Op {
     Write(Write),
     /// One `apply_batch` call: the unit a state transition is.
     Batch(Vec<BatchOp>),
-    /// One read. Reads only follow a [`Op::Commit`] or another read, so the
-    /// same read can be proved against committed state.
+    /// One read. Reads only follow a [`Op::Commit`], a
+    /// [`Op::FlushPendingDrops`] or another read, so the same read can be
+    /// proved against committed state.
     Read(Read),
     /// The end of a block: the open transaction is committed.
     Commit,
+    /// One `apply_partial_batch` call: a batch applied in two segments, the
+    /// second chosen by the caller once it has seen what the first cost.
+    PartialBatch(PartialBatch),
+    /// `GroveDb::flush_pending_prefix_drops`: the storage of every subtree
+    /// dropped flat by a committed block is reclaimed. It works on the
+    /// database itself, outside any transaction, so it only follows a
+    /// [`Op::Commit`], as Platform calls it after each block.
+    FlushPendingDrops,
+}
+
+/// A batch applied in two segments.
+///
+/// GroveDB applies `ops` up to the pause height, hands the cost so far to
+/// its caller and applies what the caller returns with the rest. A workload
+/// fixes that answer in advance as `add_on`, so the stream stays plain data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PartialBatch {
+    /// The operations of the first segment.
+    pub ops: Vec<BatchOp>,
+    /// The operations the caller adds once the first segment has paused.
+    pub add_on: Vec<BatchOp>,
+    /// The height the first segment pauses at, counted from the root tree.
+    /// `None` is GroveDB's default: the root tree, height 1.
+    pub pause_height: Option<u8>,
 }
 
 /// A direct (non-batch) write.
@@ -55,6 +85,28 @@ pub enum Write {
         path: Path,
         /// What to append.
         entry: AppendEntry,
+    },
+    /// `GroveDb::put_aux`: a record in the auxiliary keyspace, which no tree
+    /// commits to.
+    PutAux {
+        /// The key of the record.
+        key: Vec<u8>,
+        /// The bytes to store.
+        value: Vec<u8>,
+    },
+    /// `GroveDb::delete_aux`.
+    DeleteAux {
+        /// The key of the record.
+        key: Vec<u8>,
+    },
+    /// `GroveDb::drop_flat_subtree`: a tree holding no child trees is
+    /// removed without being opened, and a record naming its storage is
+    /// written to the meta keyspace for [`Op::FlushPendingDrops`].
+    DropFlat {
+        /// The subtree holding the tree.
+        path: Path,
+        /// The key of the tree.
+        key: Vec<u8>,
     },
 }
 
@@ -138,6 +190,38 @@ pub enum BatchOp {
         /// What to append.
         entry: AppendEntry,
     },
+    /// Replace the element stored at a key, declaring by how many bytes it
+    /// grows or shrinks.
+    Patch {
+        /// The subtree holding the key.
+        path: Path,
+        /// The key to patch.
+        key: Vec<u8>,
+        /// The element to store.
+        element: Element,
+        /// The size of the new element less the size of the old one.
+        change_in_bytes: i32,
+    },
+    /// Move an element to another key of the same subtree. A tree keeps
+    /// everything stored under it.
+    Move {
+        /// The subtree holding the key.
+        path: Path,
+        /// The key the element is at.
+        key: Vec<u8>,
+        /// The key it moves to.
+        new_key: Vec<u8>,
+    },
+    /// Delete a tree holding no child trees without opening it: the batch
+    /// form of [`Write::DropFlat`].
+    DropFlat {
+        /// The subtree to delete from.
+        path: Path,
+        /// The key of the tree.
+        key: Vec<u8>,
+        /// The type of the tree being dropped.
+        tree_type: TreeType,
+    },
 }
 
 /// A value appended to an append-only tree.
@@ -166,7 +250,12 @@ pub enum AppendEntry {
 }
 
 /// A read.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Two reads are equal exactly when they encode the same. GroveDB's query
+/// types do not derive `Eq`, and they compare the conditional branches of a
+/// query without their order, which a query's meaning and its encoding both
+/// depend on.
+#[derive(Clone, Debug)]
 pub enum Read {
     /// `GroveDb::get`: one element, references followed.
     Get {
@@ -178,7 +267,64 @@ pub enum Read {
     /// A path query, to run with `GroveDb::query` and to prove with
     /// `GroveDb::prove_query`.
     Query(Query),
+    /// A path query in GroveDB's whole grammar: conditional subqueries,
+    /// offsets, limits per subquery, aggregates over a key range and the
+    /// read modes of indexed trees. It runs through
+    /// `GroveDb::run_path_query`, which returns elements as stored.
+    PathQuery {
+        /// The query.
+        query: Box<PathQuery>,
+        /// Whether GroveDB proves this query on the grove version the
+        /// stream was generated for: `GroveDb::prove_query`, verified by
+        /// `GroveDb::verify_path_query`. A query with an offset is proven
+        /// only as a page of a tree that commits its count.
+        proven: bool,
+    },
+    /// A path query in GroveDB's own form, run by the readers that return
+    /// rows: `GroveDb::query`, which follows references, or
+    /// `GroveDb::query_raw`. They take an offset with any query, where
+    /// `GroveDb::run_path_query` refuses one next to a subquery. Never
+    /// proven.
+    Rows {
+        /// The query.
+        query: Box<PathQuery>,
+        /// Whether elements are returned as stored (`GroveDb::query_raw`).
+        raw: bool,
+    },
+    /// A walk over sum items that stops at a running total:
+    /// `GroveDb::query_aggregate_sums_with_options`. Never proven.
+    SumBudget {
+        /// Where to walk, what to select and when to stop.
+        query: Box<AggregateSumPathQuery>,
+        /// Whether an element carrying no sum is skipped. Otherwise it is an
+        /// error.
+        skip_non_sum_items: bool,
+        /// Whether a reference is skipped. Otherwise it is followed.
+        ignore_references: bool,
+    },
+    /// `GroveDb::get_aux`: one record of the auxiliary keyspace.
+    GetAux {
+        /// The key of the record.
+        key: Vec<u8>,
+    },
+    /// `GroveDb::get_aux_by_key_prefix`: every auxiliary record whose key
+    /// starts with a prefix.
+    AuxByPrefix {
+        /// The prefix.
+        prefix: Vec<u8>,
+    },
 }
+
+impl PartialEq for Read {
+    fn eq(&self, other: &Self) -> bool {
+        let (mut this, mut that) = (Vec::new(), Vec::new());
+        self.encode(&mut this);
+        other.encode(&mut that);
+        this == that
+    }
+}
+
+impl Eq for Read {}
 
 /// A path query, kept as plain data.
 ///
@@ -227,9 +373,11 @@ impl Op {
     /// Appends the canonical encoding of the op to `out`.
     ///
     /// The encoding is what [`StreamDigest`] hashes. Integers are fixed-width
-    /// little-endian, byte strings and lists carry a `u32` length, and an
-    /// element is written as its GroveDB serialization, which is consensus
-    /// data and the same on every grove version.
+    /// little-endian, byte strings and lists carry a `u32` length, an
+    /// optional value follows a presence byte, and an element is written as
+    /// its GroveDB serialization, which is consensus data and the same on
+    /// every grove version. A GroveDB query is written field by field in
+    /// the same conventions.
     pub fn encode(&self, out: &mut Vec<u8>) {
         match self {
             Op::Write(write) => {
@@ -248,6 +396,17 @@ impl Op {
                 read.encode(out);
             }
             Op::Commit => out.push(3),
+            Op::PartialBatch(batch) => {
+                out.push(4);
+                for ops in [&batch.ops, &batch.add_on] {
+                    put_len(out, ops.len());
+                    for op in ops {
+                        op.encode(out);
+                    }
+                }
+                put_option(out, batch.pause_height, |out, height| out.push(height));
+            }
+            Op::FlushPendingDrops => out.push(5),
         }
     }
 
@@ -256,8 +415,20 @@ impl Op {
         match self {
             Op::Write(Write::Insert { element, .. }) => vec![element],
             Op::Batch(ops) => ops.iter().filter_map(BatchOp::element).collect(),
-            Op::Write(_) | Op::Read(_) | Op::Commit => Vec::new(),
+            Op::PartialBatch(batch) => batch
+                .ops
+                .iter()
+                .chain(&batch.add_on)
+                .filter_map(BatchOp::element)
+                .collect(),
+            Op::Write(_) | Op::Read(_) | Op::Commit | Op::FlushPendingDrops => Vec::new(),
         }
+    }
+
+    /// Whether the op reads or reclaims committed state and leaves the open
+    /// transaction as it is: a read or [`Op::FlushPendingDrops`].
+    pub fn follows_a_commit(&self) -> bool {
+        matches!(self, Op::Read(_) | Op::FlushPendingDrops)
     }
 }
 
@@ -279,6 +450,20 @@ impl Write {
                 put_path(out, path);
                 entry.encode(out);
             }
+            Write::PutAux { key, value } => {
+                out.push(4);
+                put_bytes(out, key);
+                put_bytes(out, value);
+            }
+            Write::DeleteAux { key } => {
+                out.push(5);
+                put_bytes(out, key);
+            }
+            Write::DropFlat { path, key } => {
+                out.push(6);
+                put_path(out, path);
+                put_bytes(out, key);
+            }
         }
     }
 }
@@ -290,11 +475,14 @@ impl BatchOp {
             BatchOp::InsertOrReplace { element, .. }
             | BatchOp::InsertOnly { element, .. }
             | BatchOp::InsertIfNotExists { element, .. }
-            | BatchOp::Replace { element, .. } => Some(element),
+            | BatchOp::Replace { element, .. }
+            | BatchOp::Patch { element, .. } => Some(element),
             BatchOp::RefreshReference { .. }
             | BatchOp::Delete { .. }
             | BatchOp::DeleteTree { .. }
-            | BatchOp::Append { .. } => None,
+            | BatchOp::Append { .. }
+            | BatchOp::Move { .. }
+            | BatchOp::DropFlat { .. } => None,
         }
     }
 
@@ -346,6 +534,31 @@ impl BatchOp {
                 out.push(7);
                 put_path(out, path);
                 entry.encode(out);
+            }
+            BatchOp::Patch {
+                path,
+                key,
+                element,
+                change_in_bytes,
+            } => {
+                put_insert(out, 8, path, key, element);
+                out.extend_from_slice(&change_in_bytes.to_le_bytes());
+            }
+            BatchOp::Move { path, key, new_key } => {
+                out.push(9);
+                put_path(out, path);
+                put_bytes(out, key);
+                put_bytes(out, new_key);
+            }
+            BatchOp::DropFlat {
+                path,
+                key,
+                tree_type,
+            } => {
+                out.push(10);
+                put_path(out, path);
+                put_bytes(out, key);
+                put_tree_type(out, *tree_type);
             }
         }
     }
@@ -419,6 +632,34 @@ impl Read {
                 out.push(u8::from(query.left_to_right));
                 out.push(u8::from(query.raw));
             }
+            Read::PathQuery { query, proven } => {
+                out.push(2);
+                put_path_query(out, query);
+                out.push(u8::from(*proven));
+            }
+            Read::SumBudget {
+                query,
+                skip_non_sum_items,
+                ignore_references,
+            } => {
+                out.push(3);
+                put_sum_path_query(out, query);
+                out.push(u8::from(*skip_non_sum_items));
+                out.push(u8::from(*ignore_references));
+            }
+            Read::GetAux { key } => {
+                out.push(4);
+                put_bytes(out, key);
+            }
+            Read::AuxByPrefix { prefix } => {
+                out.push(5);
+                put_bytes(out, prefix);
+            }
+            Read::Rows { query, raw } => {
+                out.push(6);
+                put_path_query(out, query);
+                out.push(u8::from(*raw));
+            }
         }
     }
 }
@@ -457,17 +698,32 @@ impl QueryItem {
     }
 }
 
-fn put_len(out: &mut Vec<u8>, len: usize) {
+pub(crate) fn put_len(out: &mut Vec<u8>, len: usize) {
     let len = u32::try_from(len).expect("a workload length fits in a u32");
     out.extend_from_slice(&len.to_le_bytes());
 }
 
-fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+pub(crate) fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
     put_len(out, bytes.len());
     out.extend_from_slice(bytes);
 }
 
-fn put_path(out: &mut Vec<u8>, path: &[Vec<u8>]) {
+/// A presence byte, then the value when there is one.
+pub(crate) fn put_option<T>(
+    out: &mut Vec<u8>,
+    value: Option<T>,
+    put: impl FnOnce(&mut Vec<u8>, T),
+) {
+    match value {
+        Some(value) => {
+            out.push(1);
+            put(out, value);
+        }
+        None => out.push(0),
+    }
+}
+
+pub(crate) fn put_path(out: &mut Vec<u8>, path: &[Vec<u8>]) {
     put_len(out, path.len());
     for segment in path {
         put_bytes(out, segment);

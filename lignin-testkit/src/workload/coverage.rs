@@ -1,5 +1,5 @@
-//! Which element variants, tree types and reference path types a stream
-//! produced.
+//! Which element variants, tree types, reference path types and operations
+//! a stream produced.
 //!
 //! The variant lists below are written once and expand into two things: an
 //! exhaustive `match` naming each variant, and the list of names a stream is
@@ -7,13 +7,24 @@
 //! compiling until it is named here, and once it is named, the coverage test
 //! fails until a workload produces it. Nothing has to be kept in step by
 //! hand.
+//!
+//! [`Operation`] lists the GroveDB operations that reach storage in a way of
+//! their own, the ones the plan names for these generators. They are not the
+//! variants of one GroveDB type, so that list is written here; the coverage
+//! test fails when the suite stops producing one of them.
 
 use std::collections::BTreeSet;
 
-use grovedb::{element::reference_path::ReferencePathType, Element, TreeType};
+use grovedb::{
+    element::reference_path::ReferencePathType, AggregateKind, AxisTraversal, Element, PathQuery,
+    PathQueryShape, Query, TreeType,
+};
 use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
 
-use super::op::{BatchOp, Op};
+use super::{
+    op::{BatchOp, Op, Read, Write},
+    Features,
+};
 
 macro_rules! named_variants {
     (
@@ -109,12 +120,121 @@ named_variants! {
     SiblingReference,
 }
 
+macro_rules! operations {
+    ($($group:literal: $($variant:ident = $doc:literal),+;)+) => {
+        /// A GroveDB operation that reaches storage in a way of its own.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+        pub enum Operation {
+            $($(#[doc = $doc] $variant,)+)+
+        }
+
+        impl Operation {
+            /// Every operation, in the order of the plan's list.
+            pub const ALL: &'static [Operation] = &[$($(Operation::$variant),+),+];
+
+            /// The name of the operation.
+            pub fn name(self) -> &'static str {
+                match self {
+                    $($(Operation::$variant => stringify!($variant),)+)+
+                }
+            }
+
+            /// The entry of the plan's list the operation belongs to.
+            pub fn group(self) -> &'static str {
+                match self {
+                    $($(Operation::$variant)|+ => $group,)+
+                }
+            }
+        }
+
+        /// The plan's list of operations that reach storage in their own
+        /// way.
+        pub const OPERATION_GROUPS: &[&str] = &[$($group),+];
+    };
+}
+
+operations! {
+    "patch":
+        Patch = "A batch `Patch`.";
+    "move":
+        Move = "A batch `Move`.";
+    "partial batches":
+        PartialBatch = "`GroveDb::apply_partial_batch`.";
+    "aux records":
+        AuxPut = "`GroveDb::put_aux`.",
+        AuxDelete = "`GroveDb::delete_aux`.",
+        AuxGet = "`GroveDb::get_aux`.",
+        AuxByPrefix = "`GroveDb::get_aux_by_key_prefix`.";
+    "meta records":
+        FlatDrop = "`GroveDb::drop_flat_subtree`, which writes a pending-drop record.",
+        FlatDropInBatch = "A batch `DeleteTree` that drops flat, which writes the same record.",
+        PendingDropsFlush = "`GroveDb::flush_pending_prefix_drops`, which reads and removes them.";
+    "query offsets":
+        QueryOffset = "A query that skips rows by reading past them.",
+        CountOffsetPage = "A proven page of a tree that commits its count, skipped by count.",
+        InstanceOffset = "`Query::offset`: a page by count for each subquery.";
+    "conditional subqueries":
+        ConditionalSubquery = "A query with a subquery of its own for some keys.",
+        InstanceLimit = "`Query::limit`: a limit of its own for each subquery.";
+    "aggregate queries":
+        AggregateCount = "The count of a key range.",
+        AggregateSum = "The sum of a key range.",
+        AggregateCountAndSum = "The count and the sum of a key range.",
+        AggregateCountPerKey = "The count of a key range for each selected key.",
+        AggregateSumPerKey = "The sum of a key range for each selected key.",
+        AggregateCountAndSumPerKey = "The count and the sum of a key range for each selected key.",
+        SumBudget = "`GroveDb::query_aggregate_sums`: a walk that stops at a running total.",
+        SumBudgetWindow = "The same walk as a query read mode, which is proven.",
+        AxisRankedPage = "A page of an indexed tree in the order of an aggregate.",
+        AxisBounded = "The entries of an indexed tree whose aggregate is in a range.",
+        AxisRankOfKey = "The rank of a key in an indexed tree.",
+        AxisAggregate = "An aggregate over the entries whose aggregate is in a range.",
+        BranchedAxisRead = "One axis read for each of several indexed trees.";
+}
+
+impl Features {
+    /// Whether a stream generated for these features can hold `operation`.
+    pub fn supports(&self, operation: Operation) -> bool {
+        match operation {
+            Operation::Move => self.move_element,
+            Operation::FlatDrop | Operation::FlatDropInBatch | Operation::PendingDropsFlush => {
+                self.flat_drop
+            }
+            Operation::CountOffsetPage => self.v1_proofs,
+            Operation::InstanceOffset => self.instance_offsets,
+            Operation::InstanceLimit => self.instance_limits,
+            Operation::SumBudgetWindow
+            | Operation::AxisRankedPage
+            | Operation::AxisBounded
+            | Operation::AxisRankOfKey
+            | Operation::AxisAggregate
+            | Operation::BranchedAxisRead => self.read_modes,
+            Operation::Patch
+            | Operation::PartialBatch
+            | Operation::AuxPut
+            | Operation::AuxDelete
+            | Operation::AuxGet
+            | Operation::AuxByPrefix
+            | Operation::QueryOffset
+            | Operation::ConditionalSubquery
+            | Operation::AggregateCount
+            | Operation::AggregateSum
+            | Operation::AggregateCountAndSum
+            | Operation::AggregateCountPerKey
+            | Operation::AggregateSumPerKey
+            | Operation::AggregateCountAndSumPerKey
+            | Operation::SumBudget => true,
+        }
+    }
+}
+
 /// What a stream has produced so far.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Coverage {
     elements: BTreeSet<&'static str>,
     tree_types: BTreeSet<&'static str>,
     reference_paths: BTreeSet<&'static str>,
+    operations: BTreeSet<Operation>,
 }
 
 impl Coverage {
@@ -153,13 +273,71 @@ impl Coverage {
                 _ => {}
             }
         }
-        if let Op::Batch(ops) = op {
-            for op in ops {
-                if let BatchOp::RefreshReference { reference, .. } = op {
+        let batch_ops: Vec<&BatchOp> = match op {
+            Op::Batch(ops) => ops.iter().collect(),
+            Op::PartialBatch(batch) => batch.ops.iter().chain(&batch.add_on).collect(),
+            Op::Write(_) | Op::Read(_) | Op::Commit | Op::FlushPendingDrops => Vec::new(),
+        };
+        for batch_op in batch_ops {
+            match batch_op {
+                BatchOp::RefreshReference { reference, .. } => {
                     self.reference_paths
                         .insert(reference_path_variant(reference));
                 }
+                BatchOp::Patch { .. } => {
+                    self.operations.insert(Operation::Patch);
+                }
+                BatchOp::Move { .. } => {
+                    self.operations.insert(Operation::Move);
+                }
+                BatchOp::DropFlat { .. } => {
+                    self.operations.insert(Operation::FlatDropInBatch);
+                }
+                BatchOp::InsertOrReplace { .. }
+                | BatchOp::InsertOnly { .. }
+                | BatchOp::InsertIfNotExists { .. }
+                | BatchOp::Replace { .. }
+                | BatchOp::Delete { .. }
+                | BatchOp::DeleteTree { .. }
+                | BatchOp::Append { .. } => {}
             }
+        }
+        match op {
+            Op::PartialBatch(_) => {
+                self.operations.insert(Operation::PartialBatch);
+            }
+            Op::FlushPendingDrops => {
+                self.operations.insert(Operation::PendingDropsFlush);
+            }
+            Op::Write(Write::PutAux { .. }) => {
+                self.operations.insert(Operation::AuxPut);
+            }
+            Op::Write(Write::DeleteAux { .. }) => {
+                self.operations.insert(Operation::AuxDelete);
+            }
+            Op::Write(Write::DropFlat { .. }) => {
+                self.operations.insert(Operation::FlatDrop);
+            }
+            Op::Read(Read::GetAux { .. }) => {
+                self.operations.insert(Operation::AuxGet);
+            }
+            Op::Read(Read::AuxByPrefix { .. }) => {
+                self.operations.insert(Operation::AuxByPrefix);
+            }
+            Op::Read(Read::SumBudget { .. }) => {
+                self.operations.insert(Operation::SumBudget);
+            }
+            Op::Read(Read::PathQuery { query, proven }) => {
+                self.operations.extend(query_operations(query, *proven));
+            }
+            Op::Read(Read::Rows { query, .. }) => {
+                self.operations.extend(selection_operations(query));
+            }
+            Op::Write(Write::Insert { .. } | Write::Delete { .. })
+            | Op::Write(Write::ClearSubtree { .. } | Write::Append { .. })
+            | Op::Read(Read::Get { .. } | Read::Query(_))
+            | Op::Batch(_)
+            | Op::Commit => {}
         }
     }
 
@@ -176,6 +354,20 @@ impl Coverage {
     /// The reference path types produced.
     pub fn reference_paths(&self) -> &BTreeSet<&'static str> {
         &self.reference_paths
+    }
+
+    /// The operations produced.
+    pub fn operations(&self) -> &BTreeSet<Operation> {
+        &self.operations
+    }
+
+    /// The operations not produced yet.
+    pub fn missing_operations(&self) -> Vec<Operation> {
+        Operation::ALL
+            .iter()
+            .copied()
+            .filter(|operation| !self.operations.contains(operation))
+            .collect()
     }
 
     /// The element variants not produced yet.
@@ -199,4 +391,81 @@ fn missing(all: &[&'static str], seen: &BTreeSet<&'static str>) -> Vec<&'static 
         .copied()
         .filter(|name| !seen.contains(name))
         .collect()
+}
+
+/// The operations a query stands for when it selects rows: what a
+/// [`Read::Rows`] is, whose readers take an offset with any query.
+fn selection_operations(path_query: &PathQuery) -> Vec<Operation> {
+    let mut operations = Vec::new();
+    let query = &path_query.query.query;
+    if has_conditional_subquery(query) {
+        operations.push(Operation::ConditionalSubquery);
+    }
+    if query.has_instance_limit_anywhere() {
+        operations.push(Operation::InstanceLimit);
+    }
+    if query.has_instance_offset_anywhere() {
+        operations.push(Operation::InstanceOffset);
+    }
+    if path_query.query.offset.is_some_and(|offset| offset > 0) {
+        operations.push(Operation::QueryOffset);
+    }
+    operations
+}
+
+/// The operations a [`Read::PathQuery`] stands for.
+///
+/// A query GroveDB's grammar refuses stands for none: no workload produces
+/// one.
+fn query_operations(path_query: &PathQuery, proven: bool) -> Vec<Operation> {
+    let Ok(shape) = path_query.classify() else {
+        return Vec::new();
+    };
+    let mut operations = selection_operations(path_query);
+    if proven && matches!(shape, PathQueryShape::CountOffsetPaginated { .. }) {
+        for operation in &mut operations {
+            if *operation == Operation::QueryOffset {
+                *operation = Operation::CountOffsetPage;
+            }
+        }
+    }
+    let axis_operation = |traversal: &AxisTraversal| match traversal {
+        AxisTraversal::RankedPage { .. } => Operation::AxisRankedPage,
+        AxisTraversal::Bounded { .. } => Operation::AxisBounded,
+        AxisTraversal::RankOfKey { .. } => Operation::AxisRankOfKey,
+        AxisTraversal::AggregateOverValueRange { .. } => Operation::AxisAggregate,
+    };
+    match shape {
+        PathQueryShape::AggregateLeaf { kind, .. } => operations.push(match kind {
+            AggregateKind::Count => Operation::AggregateCount,
+            AggregateKind::Sum => Operation::AggregateSum,
+            AggregateKind::CountAndSum => Operation::AggregateCountAndSum,
+        }),
+        PathQueryShape::AggregateCarrier { kind, .. } => operations.push(match kind {
+            AggregateKind::Count => Operation::AggregateCountPerKey,
+            AggregateKind::Sum => Operation::AggregateSumPerKey,
+            AggregateKind::CountAndSum => Operation::AggregateCountAndSumPerKey,
+        }),
+        PathQueryShape::AxisRead { axis } => {
+            operations.push(axis_operation(&axis.traversal));
+        }
+        PathQueryShape::BranchedAxisRead { axis, .. } => {
+            operations.push(Operation::BranchedAxisRead);
+            operations.push(axis_operation(&axis.traversal));
+        }
+        PathQueryShape::SumBudget { .. } => operations.push(Operation::SumBudgetWindow),
+        PathQueryShape::KeySelection | PathQueryShape::CountOffsetPaginated { .. } => {}
+    }
+    operations
+}
+
+fn has_conditional_subquery(query: &Query) -> bool {
+    let branches = query.conditional_subquery_branches.as_ref();
+    branches.is_some_and(|branches| !branches.is_empty())
+        || branches
+            .into_iter()
+            .flat_map(|branches| branches.values())
+            .chain([&query.default_subquery_branch])
+            .filter_map(|branch| branch.subquery.as_deref())
+            .any(has_conditional_subquery)
 }

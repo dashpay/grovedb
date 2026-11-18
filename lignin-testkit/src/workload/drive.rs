@@ -5,8 +5,33 @@
 //! reference per document in an index tree, identity balances as sum items
 //! in one sum tree, and token balances as sum items in a count-sum tree per
 //! token under a big sum tree. Each state transition is one batch.
+//!
+//! The submodules hold the shapes around the operations that reach storage
+//! in a way of their own:
+//!
+//! - [`IdentityKeys`]: keys patched in place, searched through conditional
+//!   subqueries and paged by offset.
+//! - [`PlatformState`]: the records Drive keeps in auxiliary storage.
+//! - [`IndexRekey`]: the value keys of an index moved to another encoding.
+//! - [`Expiration`]: index entries dropped flat, which writes meta records.
+//! - [`IndexAggregates`]: indexes that count, sum and rank, read by
+//!   aggregate queries.
+
+mod aggregates;
+mod expiry;
+mod keys;
+mod rekey;
+mod state;
 
 use std::collections::BTreeMap;
+
+pub use self::{
+    aggregates::IndexAggregates,
+    expiry::Expiration,
+    keys::IdentityKeys,
+    rekey::{IndexRekey, MAX_INDEX_VALUES},
+    state::PlatformState,
+};
 
 use grovedb::{element::reference_path::ReferencePathType, Element, TreeType};
 
@@ -30,6 +55,11 @@ const DOMAIN_BALANCE_READS: u64 = 0xBA1B;
 const DOMAIN_TOKENS: u64 = 0x70C0;
 const DOMAIN_TOKEN_ID: u64 = 0x70C1;
 const DOMAIN_TOKEN_READS: u64 = 0x70C2;
+const DOMAIN_IDENTITY_KEYS: u64 = 0x1D01;
+const DOMAIN_PLATFORM_STATE: u64 = 0x57A7;
+const DOMAIN_INDEX_REKEY: u64 = 0xD0C7;
+const DOMAIN_EXPIRATION: u64 = 0xD0C8;
+const DOMAIN_INDEX_AGGREGATES: u64 = 0xD0C9;
 
 /// Drive's root tree keys.
 const ROOT_DOCUMENTS: &[u8] = &[64];
@@ -56,6 +86,70 @@ fn epoch_of_block(block: u64) -> u16 {
 /// The 32-byte id of the `index`-th identity of `seed`.
 pub fn identity_id(seed: u64, index: u64) -> [u8; 32] {
     Rng::derive(seed, DOMAIN_IDENTITY, index).id()
+}
+
+/// The inserts creating, under the root tree `root`, the contract `contract`
+/// with one document type, its primary key tree and an empty tree for each
+/// of `indexes`.
+fn document_type_trees(
+    root: &[u8],
+    contract: &[u8; 32],
+    document_type: &[u8],
+    indexes: &[&[u8]],
+) -> Vec<Op> {
+    let flags = storage_flags(0, None);
+    let tree = || Element::empty_tree_with_flags(flags.clone());
+    let contract_path = path(&[root, contract]);
+    let type_path = path(&[root, contract, CONTRACT_DOCUMENTS_KEY, document_type]);
+    let mut ops = vec![
+        build::insert(&[], root, Element::empty_tree()),
+        build::insert(&path(&[root]), contract, tree()),
+        build::insert(&contract_path, CONTRACT_DOCUMENTS_KEY, tree()),
+        build::insert(
+            &child(&contract_path, CONTRACT_DOCUMENTS_KEY),
+            document_type,
+            tree(),
+        ),
+        build::insert(&type_path, PRIMARY_KEY, tree()),
+    ];
+    for index in indexes {
+        ops.push(build::insert(&type_path, index, tree()));
+    }
+    ops
+}
+
+/// The path from an index entry's tree of references to the document `id`
+/// in the primary key tree.
+fn document_reference(id: &[u8; 32]) -> ReferencePathType {
+    ReferencePathType::UpstreamRootHeightReference(4, vec![PRIMARY_KEY.to_vec(), id.to_vec()])
+}
+
+/// Adds `reference` to the document `id` under the value key `value_key` of
+/// the index tree at `index_path`. When `value_tree` is given, the value
+/// key is new: its tree and the tree of references under it are created as
+/// `value_tree` first.
+fn index_document(
+    ops: &mut Vec<BatchOp>,
+    index_path: &[Vec<u8>],
+    value_key: &[u8],
+    value_tree: Option<Element>,
+    id: &[u8; 32],
+    reference: Element,
+) {
+    let value_path = child(index_path, value_key);
+    if let Some(value_tree) = value_tree {
+        ops.push(batch::insert_only(
+            index_path,
+            value_key,
+            value_tree.clone(),
+        ));
+        ops.push(batch::insert_only(&value_path, PRIMARY_KEY, value_tree));
+    }
+    ops.push(batch::insert_only(
+        &child(&value_path, PRIMARY_KEY),
+        id,
+        reference,
+    ));
 }
 
 /// Documents with one index reference each.

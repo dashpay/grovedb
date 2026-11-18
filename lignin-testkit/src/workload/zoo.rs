@@ -110,7 +110,7 @@ impl TreeKind {
         TreeKind::ProvableCountProvableBigSumTree,
     ];
 
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             TreeKind::Tree => "tree",
             TreeKind::SumTree => "sum",

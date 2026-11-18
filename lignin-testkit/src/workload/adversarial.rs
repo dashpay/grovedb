@@ -4,8 +4,21 @@
 //! Each one pushes a single dimension to its limit: nesting depth, key
 //! length, value size, the number of subtrees, the share of deletes, and the
 //! length and kind of reference chains.
+//!
+//! The submodules do the same for the operations that reach storage in a way
+//! of their own: flat drops ([`FlatDrops`]) and moves ([`Moves`]) of every
+//! type of tree, batches applied in two segments ([`PartialBatches`]), and
+//! every way a query pages, budgets and ranks ([`Pagination`]).
+
+mod drops;
+mod moves;
+mod pages;
+mod partial;
+mod stock;
 
 use std::collections::BTreeSet;
+
+pub use self::{drops::FlatDrops, moves::Moves, pages::Pagination, partial::PartialBatches};
 
 use grovedb::{element::reference_path::ReferencePathType, Element, TreeType};
 use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
@@ -34,6 +47,10 @@ const DOMAIN_VALUES: u64 = 0xAD03;
 const DOMAIN_TINY: u64 = 0xAD04;
 const DOMAIN_DELETES: u64 = 0xAD05;
 const DOMAIN_REFERENCES: u64 = 0xAD06;
+const DOMAIN_DROPS: u64 = 0xAD07;
+const DOMAIN_MOVES: u64 = 0xAD08;
+const DOMAIN_PARTIAL: u64 = 0xAD09;
+const DOMAIN_PAGES: u64 = 0xAD0A;
 
 /// Chains of trees nested `depth` levels deep.
 ///
