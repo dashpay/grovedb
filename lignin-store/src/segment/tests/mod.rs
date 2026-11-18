@@ -1,8 +1,11 @@
+mod crash;
+mod disk_faults;
 mod errors;
 mod faulty;
 mod files;
 mod manifest;
 mod model;
+mod sim;
 mod store;
 mod writer;
 
