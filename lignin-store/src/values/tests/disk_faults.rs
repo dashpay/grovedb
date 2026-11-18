@@ -444,6 +444,7 @@ fn a_pass_whose_copies_cannot_be_made_durable_installs_nothing() {
             .map(|at| writer.append(&mut hold, page(1), &bytes(30, at)).unwrap())
             .collect();
         writer.finish().unwrap();
+        store.commit();
         store.apply(&acquired(&pointers), 1);
         drop(hold);
 

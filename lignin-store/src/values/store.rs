@@ -153,8 +153,13 @@ impl ValueRecovery {
     }
 
     /// Ends recovery and gives the store, with the counts as they are now.
-    /// The changes applied so far count as durable: the caller has them from
-    /// what a crash left.
+    ///
+    /// Nothing recovery was given counts as durable yet: a process that was
+    /// killed leaves a log that reads back whole and that a loss of power
+    /// can still cut short. So no file that these counts leave empty is
+    /// dropped until the caller has made durable what it recovered from and
+    /// has said so, with [`ValueStore::mark_durable`] of
+    /// [`ValueStore::applied`].
     ///
     /// Fails with [`ValueStoreError::LiveValuesInMissingFile`], and changes
     /// nothing, if a file the manifest does not name is left with live
@@ -180,24 +185,19 @@ impl ValueRecovery {
             .into_iter()
             .map(|(id, file)| {
                 let recovered = accounts.remove(&id).unwrap_or(Account::EMPTY);
-                let account = Account {
-                    values: recovered.values,
-                    bytes: recovered.bytes,
-                    miscounted: recovered.miscounted,
-                    ..Account::EMPTY
-                };
+                let account = recovered.recovered(RECOVERED);
                 (id, Entry { file, account })
             })
             .collect();
-        Ok(ValueStore::new(
-            self.vfs,
-            self.dir,
-            false,
-            live,
-            self.last_id,
-        ))
+        let store = ValueStore::new(self.vfs, self.dir, false, live, self.last_id);
+        store.state_mut().applied = RECOVERED;
+        Ok(store)
     }
 }
+
+/// The place, among the changes of a session, of everything recovery gave
+/// it.
+const RECOVERED: u64 = 1;
 
 fn version_of(file: Option<&Arc<ValueFile>>) -> FormatVersion {
     file.map_or(FormatVersion::CURRENT, |file| file.version())
@@ -269,9 +269,10 @@ impl ValueStore {
     ///
     /// `counts` must be the counts of the page state the database is opened
     /// at: the ones [`Self::counts`] gave when those pages were stored. A
-    /// file with no entry holds no live value, and is deleted as soon as
-    /// [`Self::drop_empty`] is called. A new database has no file and no
-    /// count. When changes have to be replayed on top of `counts`, use
+    /// file with no entry holds no live value, and [`Self::drop_empty`] takes
+    /// it once the caller has said that what it opened from is durable
+    /// ([`ValueRecovery::finish`]). A new database has no file and no count.
+    /// When changes have to be replayed on top of `counts`, use
     /// [`Self::recover`].
     ///
     /// Each named file must exist, be at least as long as its valid length,
@@ -528,9 +529,10 @@ impl ValueStore {
     /// The whole change is applied whatever this returns, so a commit that is
     /// already in the log goes on. The error is the first pointer that could
     /// not be counted as reported ([`ValueStoreError::Miscounted`]): its file
-    /// is not in the store, it ends past the end of its file, or its file's
-    /// count was already zero. In the last case the count is known to be too
-    /// low, and the file is kept from then on whatever its count says.
+    /// is not in the store, it ends past the end of its file, no durable
+    /// manifest covers it ([`Self::covers`]), or its file's count was already
+    /// zero. In the last case the count is known to be too low, and the file
+    /// is kept from then on whatever its count says.
     pub fn apply(
         &self,
         change: &ValueChange,
@@ -550,6 +552,8 @@ impl ValueStore {
             entry.account.acquire(extent, applied);
             if !entry.file.contains(pointer) {
                 first = first.and(miscounted(pointer, Miscount::OutOfBounds));
+            } else if !entry.file.covers(pointer) {
+                first = first.and(miscounted(pointer, Miscount::NotCovered));
             }
         }
         for &pointer in change.released() {
@@ -641,16 +645,32 @@ impl ValueStore {
         files
     }
 
-    pub(super) fn cleaned(&self, file: FileId, conclusive: bool) -> u64 {
+    pub(super) fn applied_so_far(&self) -> u64 {
+        self.state().applied
+    }
+
+    /// Ends a pass over `file` that began when the changes had reached
+    /// `began`, and returns the file's count. A pass that was refused no
+    /// rewrite, and during which no value of the file was newly counted, has
+    /// found every owner there is to find.
+    pub(super) fn cleaned(&self, file: FileId, began: u64, refused: bool) -> u64 {
         let mut state = self.state_mut();
         let applied = state.applied;
         let Some(entry) = state.live.get_mut(&file) else {
             return 0;
         };
-        if conclusive && entry.account.values != 0 {
-            entry.account.cleaned = Some(applied);
+        let account = &mut entry.account;
+        if !refused && account.acquired <= began && account.values != 0 {
+            account.cleaned = Some(applied);
         }
-        entry.account.values
+        account.values
+    }
+
+    /// Keeps `file` whatever its count says from now on.
+    pub(super) fn keep(&self, file: FileId) {
+        if let Some(entry) = self.state_mut().live.get_mut(&file) {
+            entry.account.miscounted = true;
+        }
     }
 
     /// Takes out of the store every file that nothing can reach any more,

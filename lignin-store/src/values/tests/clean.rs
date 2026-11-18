@@ -157,6 +157,7 @@ fn a_moved_value_is_the_same_bytes_with_the_same_owner() {
         .map(|(owner, value)| writer.append(&mut hold, page(*owner), value).unwrap())
         .collect();
     writer.finish().unwrap();
+    store.commit();
     store.apply(&acquired(&pointers), 1);
     drop(hold);
 
@@ -642,6 +643,7 @@ fn a_pass_that_finds_an_owner_the_count_does_not_include_keeps_the_file() {
         .map(|at| writer.append(&mut hold, page(1), &bytes(30, at)).unwrap())
         .collect();
     writer.finish().unwrap();
+    store.commit();
     store.apply(&acquired(&pointers[..1]), 1);
     drop(hold);
 
@@ -809,4 +811,97 @@ fn a_file_with_no_live_value_is_copied_to_nothing() {
     );
     store.all_durable();
     assert_eq!(store.drop_empty(2), [1]);
+}
+
+/// Owners that count a rewrite and then do not report it installed.
+struct CountsAndFails {
+    refuses: bool,
+}
+
+impl ValueOwners for CountsAndFails {
+    fn holds(&self, _: PageId, _: ValuePointer) -> Result<bool, OwnersError> {
+        Ok(true)
+    }
+
+    fn rewrite(&self, step: PointerRewrite<'_>) -> Result<Rewrite, OwnersError> {
+        let _counted = step.install(CommitVersion::new(1).expect("a version"));
+        if self.refuses {
+            Ok(Rewrite::Refused(Refusal::Busy))
+        } else {
+            Err("the page could not be written".into())
+        }
+    }
+}
+
+#[test]
+fn a_rewrite_that_was_counted_and_not_reported_installed_keeps_the_old_file() {
+    for refuses in [true, false] {
+        let (mut store, mut cleaner, pointers) = three_live_values();
+        let error = store
+            .values
+            .clean(
+                file_id(1),
+                &mut cleaner,
+                &mut store.manifest,
+                &CountsAndFails { refuses },
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                ValueStoreError::Miscounted { pointer, why: Miscount::NotInstalled }
+                    if pointer == pointers[0]
+            ),
+            "{error}"
+        );
+        let moved = if refuses { 3 } else { 1 };
+        let source = store.values.count(file_id(1)).expect("the file");
+        assert_eq!((source.values, source.miscounted), (3 - moved, true));
+        assert_eq!(values_in(&store, 2), moved);
+
+        store.apply(&super::store::released(&pointers[moved as usize..]), 2);
+        store.all_durable();
+        assert!(
+            store.drop_empty(9).is_empty(),
+            "the cell may still hold the old pointer"
+        );
+        assert_eq!(store.read(pointers[0], 1).unwrap(), bytes(30, 0));
+    }
+}
+
+#[test]
+fn a_file_is_worth_another_pass_when_a_value_was_counted_while_the_last_one_ran() {
+    let mut run = started(11);
+    run.commit(&[put(1, 10, 40)]).unwrap();
+    let (txn, ahead) = run.begin(&[put(3, 30, 60)]).unwrap();
+    run.db().rotate().unwrap();
+    run.db().prepare(&txn).unwrap();
+    let mut next = run.history[1].clone();
+    next.insert(30, ahead[&30].clone());
+    run.history.push(next);
+
+    let cleaned = run
+        .db()
+        .clean_with(file_id(1), |pages, values| Racing {
+            pages,
+            race: RefCell::new(Some(move || {
+                commit_prepared(pages, values, txn).expect("the commit is installed");
+            })),
+        })
+        .unwrap();
+    assert_eq!(
+        (cleaned.moved, cleaned.unowned, cleaned.busy, cleaned.live),
+        (1, 1, 0, 1)
+    );
+    assert_eq!(cleaned.owners_not_found(), 1);
+    run.check_session();
+    assert_eq!(
+        run.db().values.cleanable(0).len(),
+        1,
+        "the value has an owner now, which the next pass finds"
+    );
+
+    let cleaned = run.clean(file_id(1)).unwrap();
+    assert_eq!((cleaned.moved, cleaned.live), (1, 0));
+    run.check_session();
 }

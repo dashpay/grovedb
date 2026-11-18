@@ -41,6 +41,7 @@ pub(super) struct ValueFile {
     file: Box<dyn VfsFile>,
     end: AtomicU64,
     appendable: AtomicBool,
+    closed: AtomicBool,
     holds: AtomicUsize,
     covered: AtomicU64,
     life: Mutex<Life>,
@@ -123,6 +124,7 @@ impl ValueFile {
             file,
             end: AtomicU64::new(len),
             appendable: AtomicBool::new(false),
+            closed: AtomicBool::new(phase == Phase::Closed),
             holds: AtomicUsize::new(0),
             covered: AtomicU64::new(0),
             life: Mutex::new(Life {
@@ -227,7 +229,7 @@ impl ValueFile {
     }
 
     pub(super) fn is_closed(&self) -> bool {
-        self.life().phase == Phase::Closed
+        self.closed.load(Ordering::Acquire)
     }
 
     pub(super) fn hold(&self) {
@@ -250,9 +252,9 @@ impl ValueFile {
         let life = self.life();
         match life.phase {
             _ if life.failed => Err(ValueStoreError::FileFailed { file }),
-            Phase::Open => Ok(()),
+            Phase::Open if life.has_writer => Ok(()),
             Phase::Created => Err(ValueStoreError::NotNamed { file }),
-            Phase::Closed => Err(ValueStoreError::NotOpen { file }),
+            Phase::Open | Phase::Closed => Err(ValueStoreError::NotOpen { file }),
         }
     }
 
@@ -270,6 +272,7 @@ impl ValueFile {
         if life.durable_len == self.end() {
             life.phase = Phase::Closed;
             self.appendable.store(false, Ordering::Release);
+            self.closed.store(true, Ordering::Release);
         }
     }
 

@@ -1,11 +1,13 @@
 //! Cleaning a value-log file: moving its live values to another file and
 //! giving their owners the new pointers.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use lignin_format::{value_log::ValuePointer, CommitVersion, FileId, FormatVersion, PageId};
 
 use super::{
     counts::ValueChange,
-    error::{OwnersError, ValueStoreError},
+    error::{Miscount, OwnersError, ValueStoreError},
     store::ValueStore,
     writer::{ValueHold, ValueWriter},
 };
@@ -59,6 +61,7 @@ impl<O: ValueOwners + ?Sized> ValueOwners for &O {
 #[derive(Debug)]
 pub struct PointerRewrite<'a> {
     store: &'a ValueStore,
+    counted: &'a AtomicBool,
     page: PageId,
     from: ValuePointer,
     to: ValuePointer,
@@ -91,7 +94,13 @@ impl PointerRewrite<'_> {
     /// new pointer, and nowhere else.
     ///
     /// `latest` is the latest commit version at that moment.
+    ///
+    /// The value this returns is the only way to report the rewrite
+    /// installed. If it was called and [`ValueOwners::rewrite`] then returns
+    /// anything else, the store no longer knows which of the two pointers
+    /// the cell holds, and keeps the file of the old one for good.
     pub fn install(self, latest: CommitVersion) -> Installed {
+        self.counted.store(true, Ordering::Release);
         let miscount = self.store.apply(&self.change(), latest).err();
         Installed { miscount }
     }
@@ -154,8 +163,10 @@ impl Cleaned {
 
     /// How many values the count calls live although the pass found no owner
     /// for them and was not refused one. A cell was carried to another page
-    /// without its value, or a transaction that had appended the value ahead
-    /// committed it while the pass ran. The file stays either way.
+    /// without its value, which breaks the move rule, or a transaction that
+    /// had appended the value ahead committed it while the pass ran. The two
+    /// look the same from here, so this is a number and not an error. The
+    /// file stays either way.
     pub fn owners_not_found(&self) -> u64 {
         self.live.saturating_sub(self.busy)
     }
@@ -176,6 +187,7 @@ struct Move {
 #[derive(Debug)]
 pub struct CopiedValues {
     file: FileId,
+    began: u64,
     moves: Vec<Move>,
     unowned: u64,
     copied_bytes: u64,
@@ -234,6 +246,7 @@ impl ValueStore {
 
         let mut copies = CopiedValues {
             file,
+            began: self.applied_so_far(),
             moves: Vec::new(),
             unowned: 0,
             copied_bytes: 0,
@@ -266,8 +279,9 @@ impl ValueStore {
     ///
     /// If it fails part way, the rewrites installed so far stand, and the
     /// other copies are dead space. A rewrite that could not be counted as
-    /// reported does not stop the pass: the pass is carried out in full and
-    /// then fails with that [`ValueStoreError::Miscounted`].
+    /// reported does not stop the pass: the pass is carried out as far as it
+    /// goes and then fails with that [`ValueStoreError::Miscounted`], before
+    /// any other error.
     pub fn install<O: ValueOwners + ?Sized>(
         &self,
         copies: CopiedValues,
@@ -285,25 +299,41 @@ impl ValueStore {
             ..Cleaned::default()
         };
         let mut miscount = None;
+        let mut failed = None;
         for &Move { page, from, to } in &copies.moves {
+            let counted = AtomicBool::new(false);
             let step = PointerRewrite {
                 store: self,
+                counted: &counted,
                 page,
                 from,
                 to,
             };
-            match owners.rewrite(step).map_err(ValueStoreError::Owners)? {
-                Rewrite::Installed(installed) => {
+            let outcome = owners.rewrite(step);
+            if counted.into_inner() && !matches!(outcome, Ok(Rewrite::Installed(_))) {
+                self.keep(from.file());
+                miscount = miscount.or(Some(ValueStoreError::Miscounted {
+                    pointer: from,
+                    why: Miscount::NotInstalled,
+                }));
+            }
+            match outcome {
+                Ok(Rewrite::Installed(installed)) => {
                     cleaned.moved += 1;
                     miscount = miscount.or(installed.miscount);
                 }
-                Rewrite::Refused(Refusal::OwnerGone) => cleaned.gone += 1,
-                Rewrite::Refused(Refusal::Busy) => cleaned.busy += 1,
+                Ok(Rewrite::Refused(Refusal::OwnerGone)) => cleaned.gone += 1,
+                Ok(Rewrite::Refused(Refusal::Busy)) => cleaned.busy += 1,
+                Err(error) => {
+                    failed = Some(ValueStoreError::Owners(error));
+                    break;
+                }
             }
         }
-        cleaned.live = self.cleaned(copies.file, cleaned.busy == 0);
+        let refused = cleaned.busy != 0 || failed.is_some();
+        cleaned.live = self.cleaned(copies.file, copies.began, refused);
         drop(copies);
-        miscount.map_or(Ok(cleaned), Err)
+        miscount.or(failed).map_or(Ok(cleaned), Err)
     }
 
     /// Cleans the closed file `file`: moves each of its live values to the

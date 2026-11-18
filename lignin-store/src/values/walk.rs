@@ -4,9 +4,10 @@ use std::sync::Arc;
 
 use lignin_format::{
     value_log::{
-        extent_len, read_value, Value, ValuePointer, FIRST_RECORD_OFFSET, RECORD_HEADER_LEN,
+        extent_len, read_value, record_len, Value, ValuePointer, ValueRecord, FIRST_RECORD_OFFSET,
+        RECORD_HEADER_LEN,
     },
-    FormatError,
+    FormatError, RecordHeader,
 };
 
 use super::{error::ValueStoreError, file::ValueFile};
@@ -96,18 +97,36 @@ impl ValueWalk {
         })
     }
 
+    /// Brings the records of the next value into the window and returns
+    /// their length. Only the frame's own length is used before the record
+    /// it belongs to is verified.
     fn load_value(&mut self) -> Result<usize, ValueStoreError> {
+        let version = self.file.version();
         let left = self.end - self.at;
-        if left < RECORD_HEADER_LEN as u64 {
-            return Err(self.truncated(RECORD_HEADER_LEN as u64, left));
+        if left < RecordHeader::ENCODED_LEN as u64 {
+            return Err(self.truncated(RecordHeader::ENCODED_LEN as u64, left));
         }
-        self.fill(RECORD_HEADER_LEN)?;
-        let at = self.window_offset() + VALUE_LEN_AT;
-        let value_len = self.window[at..at + 4]
-            .try_into()
-            .map(u32::from_le_bytes)
-            .unwrap_or_default();
-        let extent = extent_len(value_len, self.file.version()).max(RECORD_HEADER_LEN as u64);
+        self.fill(RecordHeader::ENCODED_LEN)?;
+        let at = self.window_offset();
+        let first = record_len(&self.window[at..at + RecordHeader::ENCODED_LEN], version)
+            .map_err(self.file.format_error(self.at))?;
+        if first as u64 > left {
+            return Err(self.truncated(first as u64, left));
+        }
+        self.fill(first)?;
+
+        let at = self.window_offset();
+        let record = &self.window[at..at + first];
+        let stated = record
+            .get(VALUE_LEN_AT..RECORD_HEADER_LEN)
+            .and_then(|field| field.try_into().ok())
+            .map(u32::from_le_bytes);
+        if stated.is_none_or(|value_len| extent_len(value_len, version) == first as u64) {
+            return Ok(first);
+        }
+        let (verified, _) =
+            ValueRecord::decode(record, version).map_err(self.file.format_error(self.at))?;
+        let extent = extent_len(verified.value_len(), version);
         if extent > left {
             return Err(self.truncated(extent, left));
         }

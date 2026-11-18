@@ -145,7 +145,8 @@
 //! did not include. The store cannot tell how many more there are. It
 //! reports [`ValueStoreError::Miscounted`], and from then on the file is
 //! kept whatever its count says ([`FileCount::miscounted`], which is stored
-//! and recovered with the count).
+//! and recovered with the count). The same error reports an acquired pointer
+//! that no durable manifest covers, which is still counted.
 //!
 //! # Values that no count includes yet
 //!
@@ -252,7 +253,7 @@
 //!
 //! | Failed | Left behind |
 //! | --- | --- |
-//! | [`ValueStore::create`] | No file. Its id is not used again in this session. |
+//! | [`ValueStore::create`] | No file in the store. Its id is not used again in this session. If the file it began could not be removed, the next session removes it. |
 //! | [`ValueWriter::append`] | The file's values, ending where they did. |
 //! | A sync of a file | The file as it was last synced, which is all a manifest names of it. It takes no more values ([`ValueStoreError::FileFailed`]). |
 //! | A cleaning pass, at any step | The rewrites installed so far, each counted. Every other copy is dead space. The file being cleaned is untouched. |
@@ -281,7 +282,10 @@
 //!   up.
 //! - It calls [`ValueStore::mark_durable`] once the changes up to a mark
 //!   will survive a crash, and [`ValueStore::drop_empty`] with the oldest
-//!   pinned version, once the operations that were running have ended.
+//!   pinned version, once the operations that were running have ended. After
+//!   it opened or recovered the store, it does so once what it opened from
+//!   is durable: a log that a killed process left reads back whole and can
+//!   still be cut short by a loss of power.
 //!
 //! [`SegmentStore::describe`]: crate::segment::SegmentStore::describe
 //! [`ManifestStore`]: crate::segment::ManifestStore

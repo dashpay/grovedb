@@ -703,6 +703,7 @@ impl Db {
                 counts: values.counts(),
             },
         )?;
+        values.mark_durable(values.applied());
         values.commit(&mut manifest)?;
         Ok(Self {
             fs: fs.clone(),

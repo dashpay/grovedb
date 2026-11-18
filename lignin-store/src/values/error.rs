@@ -24,6 +24,13 @@ pub enum Miscount {
     /// A cell was reported to stop holding the pointer, but the file's count
     /// of live values was already zero.
     CountIsZero,
+    /// No durable manifest gives the pointer's file a valid length that
+    /// reaches the end of the value, so a crash could take the value away.
+    NotCovered,
+    /// A pointer rewrite was counted, but the page step it was counted in
+    /// did not report the pointer installed. The file of the old pointer is
+    /// kept from now on.
+    NotInstalled,
 }
 
 impl fmt::Display for Miscount {
@@ -32,6 +39,10 @@ impl fmt::Display for Miscount {
             Self::UnknownFile => write!(f, "there is no such value-log file"),
             Self::OutOfBounds => write!(f, "it ends past the end of its file"),
             Self::CountIsZero => write!(f, "its file's count of live values is already zero"),
+            Self::NotCovered => write!(f, "no durable manifest covers it"),
+            Self::NotInstalled => {
+                write!(f, "its rewrite was counted and not reported as installed")
+            }
         }
     }
 }

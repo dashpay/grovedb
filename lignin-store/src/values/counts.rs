@@ -107,6 +107,8 @@ pub(super) struct Account {
     pub(super) emptied: Emptied,
     /// The place of the last change that touched the account.
     pub(super) changed: u64,
+    /// The place of the last change that added a value to the account.
+    pub(super) acquired: u64,
     /// The place the changes had reached when a cleaning pass last left the
     /// file with live values.
     pub(super) cleaned: Option<u64>,
@@ -119,6 +121,7 @@ impl Account {
         miscounted: false,
         emptied: Emptied::NEVER_HELD,
         changed: 0,
+        acquired: 0,
         cleaned: None,
     };
 
@@ -127,6 +130,21 @@ impl Account {
             values: count.values,
             bytes: count.bytes,
             miscounted: count.miscounted,
+            ..Self::EMPTY
+        }
+    }
+
+    /// The account as a session takes it over from recovery: with the
+    /// counts recovery reached, and empty, if it is, since `change`.
+    pub(super) fn recovered(&self, change: u64) -> Self {
+        Self {
+            values: self.values,
+            bytes: self.bytes,
+            miscounted: self.miscounted,
+            emptied: Emptied {
+                version: CommitVersion::EMPTY,
+                change,
+            },
             ..Self::EMPTY
         }
     }
@@ -148,6 +166,7 @@ impl Account {
         self.values = self.values.saturating_add(1);
         self.bytes = self.bytes.saturating_add(extent);
         self.changed = change;
+        self.acquired = change;
     }
 
     /// Takes one value off the count. Returns `false`, and marks the count

@@ -68,6 +68,13 @@ impl Store {
             .expect("the manifest is replaced");
     }
 
+    /// Makes every value appended so far durable and has the manifest cover
+    /// it, as has to be done before a cell's pointer to it is stored.
+    pub(super) fn cover(&mut self) {
+        self.values.sync().expect("the files are synced");
+        self.commit();
+    }
+
     /// A new file that the manifest names, so it takes values.
     pub(super) fn writer(&mut self) -> ValueWriter {
         let writer = self.values.create().expect("a file is created");
@@ -922,7 +929,7 @@ fn a_walk_ends_with_an_error_at_the_first_value_that_is_not_whole() {
 
 #[test]
 fn a_walk_rejects_a_file_that_ends_inside_a_value() {
-    for (cut, needed) in [(1, 18), (17, 18), (18, 418), (200, 418)] {
+    for (cut, needed) in [(1, 8), (7, 8), (8, 418), (18, 418), (200, 418)] {
         let fs = sim_fs(traced(2, 512));
         let val = FileNames::VALUE_LOG.dir(db_dir());
         fs.create_dir(&val).unwrap();
@@ -1013,23 +1020,23 @@ fn values_are_read_while_they_are_appended_counted_and_synced() {
 
     let (sender, receiver) = std::sync::mpsc::channel::<(u32, u32, ValuePointer)>();
     std::thread::scope(|scope| {
+        let mut appending = Vec::new();
         for (number, mut writer) in writers.into_iter().enumerate() {
-            let (sender, values) = (sender.clone(), &values);
+            let sender = sender.clone();
             let number = number as u32;
-            scope.spawn(move || {
+            appending.push(scope.spawn(move || {
                 let mut hold = ValueHold::new();
                 for at in 0..VALUES {
                     let owner = page(1 + number);
                     let pointer = writer.append(&mut hold, owner, &value(number, at)).unwrap();
-                    let version = CommitVersion::new(u64::from(at)).unwrap();
-                    values.apply(&acquired(&[pointer]), version).unwrap();
                     sender.send((number, at, pointer)).unwrap();
                     if at % 50 == 0 {
                         writer.sync().unwrap();
                     }
                 }
                 writer.finish().unwrap();
-            });
+                hold
+            }));
         }
         drop(sender);
         let values = &values;
@@ -1037,16 +1044,37 @@ fn values_are_read_while_they_are_appended_counted_and_synced() {
             for _ in 0..200 {
                 values.sync().unwrap();
                 let _ = values.counts();
+                let _ = values.cleanable(0);
+                let dropped = values.drop_empty(CommitVersion::MAX).unwrap();
+                assert!(dropped.is_empty(), "every file is held or being written");
             }
         });
         let mut buf = Vec::new();
-        let mut seen = Vec::new();
+        let mut uncounted = Vec::new();
+        let mut seen = 0;
+        let count = |uncounted: &mut Vec<ValuePointer>, manifest: &mut ManifestStore| {
+            values.sync().unwrap();
+            values.commit(manifest).unwrap();
+            let version = CommitVersion::new(1).unwrap();
+            values.apply(&acquired(uncounted), version).unwrap();
+            uncounted.clear();
+        };
         for (number, at, pointer) in receiver {
             let read = values.read(pointer, page(1 + number), &mut buf).unwrap();
             assert_eq!(read.to_vec(), value(number, at));
-            seen.push((number, at, pointer));
+            uncounted.push(pointer);
+            seen += 1;
+            if uncounted.len() == 64 {
+                count(&mut uncounted, &mut manifest);
+            }
         }
-        assert_eq!(seen.len() as u32, WRITERS * VALUES);
+        count(&mut uncounted, &mut manifest);
+        assert_eq!(seen, WRITERS * VALUES);
+        let holds: Vec<ValueHold> = appending
+            .into_iter()
+            .map(|thread| thread.join().expect("the writer ran to its end"))
+            .collect();
+        assert_eq!(holds.len() as u32, WRITERS);
     });
 
     values.commit(&mut manifest).unwrap();

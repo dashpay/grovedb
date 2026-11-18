@@ -67,6 +67,7 @@ fn a_change_counts_the_pointers_cells_start_and_stop_holding() {
             .append(&mut hold, page(2), &bytes(len, len as u8))
             .unwrap()
     });
+    store.cover();
     assert!(store.values.counts().is_empty());
     assert_eq!(store.values.count(file_id(1)), Some(count(1, &[])));
     assert_eq!(store.values.count(file_id(3)), None);
@@ -335,6 +336,7 @@ fn a_session_that_ends_before_the_manifest_is_replaced_leaves_the_file_to_the_ne
     let mut store = store.reopen(&[]);
     assert!(store.exists(1));
     assert_eq!(store.named().len(), 1);
+    store.all_durable();
     assert_eq!(store.drop_empty(0), [1]);
     assert!(!store.exists(1));
 }
@@ -348,7 +350,85 @@ fn a_file_with_no_count_at_open_is_empty() {
 
     let mut store = store.reopen(&[]);
     assert!(store.values.counts().is_empty());
+    store.all_durable();
     assert_eq!(store.drop_empty(0), [1]);
+}
+
+#[test]
+fn a_file_that_recovery_left_empty_is_kept_until_what_was_recovered_is_durable() {
+    let (store, pointers) = one_closed_file(&[40, 50]);
+    let counts = acquired_counts(&pointers);
+
+    let mut opened = store.reopen(&[]);
+    assert!(
+        opened.drop_empty(9).is_empty(),
+        "the checkpoint the counts came from may not be durable yet"
+    );
+    assert!(opened.exists(1));
+    opened.all_durable();
+    assert_eq!(opened.drop_empty(9), [1]);
+
+    let (store, _) = one_closed_file(&[40, 50]);
+    let mut recovery = ValueStore::recover(&store.manifest, &counts).unwrap();
+    recovery.apply(&released(&pointers), version(3)).unwrap();
+    let mut store = Store {
+        values: recovery.finish().unwrap(),
+        ..store
+    };
+    assert!(
+        store.drop_empty(9).is_empty(),
+        "the log that was replayed may not be durable yet"
+    );
+    assert_eq!(store.read(pointers[0], 1).unwrap(), bytes(40, 0));
+
+    let mut hold = ValueHold::new();
+    let mut writer = store.writer();
+    let later = writer.append(&mut hold, page(1), b"later").unwrap();
+    writer.finish().unwrap();
+    store.commit();
+    store.apply(&acquired(&[later]), 4);
+    store.apply(&released(&[later]), 5);
+    drop(hold);
+    let recovered = ChangeMark(1);
+    assert!(recovered < store.values.applied());
+    store.values.mark_durable(recovered);
+    assert_eq!(
+        store.drop_empty(9),
+        [1],
+        "what was recovered is durable, what the session did since is not"
+    );
+    store.all_durable();
+    assert_eq!(store.drop_empty(9), [2]);
+}
+
+#[test]
+fn a_pointer_that_no_durable_manifest_covers_is_counted_and_reported() {
+    let mut store = Store::new();
+    let mut writer = store.writer();
+    let mut hold = ValueHold::new();
+    let covered = writer.append(&mut hold, page(1), b"covered").unwrap();
+    store.cover();
+    let synced = writer.append(&mut hold, page(1), b"synced").unwrap();
+    writer.sync().unwrap();
+    let appended = writer.append(&mut hold, page(1), b"appended").unwrap();
+
+    store.apply(&acquired(&[covered]), 1);
+    for (at, pointer) in [synced, appended].into_iter().enumerate() {
+        assert!(!store.values.covers(pointer));
+        assert_eq!(
+            miscount(store.values.apply(&acquired(&[pointer]), version(2))),
+            (pointer, Miscount::NotCovered)
+        );
+        assert_eq!(
+            store.values.count(file_id(1)).map(|count| count.values),
+            Some(2 + at as u64)
+        );
+    }
+    store.cover();
+    assert!(store.values.covers(synced) && store.values.covers(appended));
+    let mut again = released(&[synced]);
+    again.acquire(synced);
+    store.apply(&again, 3);
 }
 
 #[test]
@@ -401,6 +481,7 @@ fn recovery_starts_from_a_checkpoint_older_than_the_deletion_of_a_file() {
     let mut hold = ValueHold::new();
     let kept = writer.append(&mut hold, page(3), b"kept").unwrap();
     writer.finish().unwrap();
+    store.commit();
     store.apply(&acquired(&[pointers[0], pointers[1], kept]), 1);
     let checkpoint = store.values.counts();
     let emptying = released(&pointers);
@@ -498,6 +579,7 @@ fn the_files_worth_cleaning_are_the_closed_ones_with_the_largest_dead_share() {
             .collect();
         files.push((writer, pointers));
     }
+    store.cover();
     let len = 10 * 100;
     let live = [10, 7, 2, 0, 5];
     for ((_, pointers), live) in files.iter().zip(live) {
