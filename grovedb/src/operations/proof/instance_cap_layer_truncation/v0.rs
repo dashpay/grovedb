@@ -1,5 +1,6 @@
-//! `instance_cap_layer_truncation` **v0** (released behaviour,
-//! `GROVE_V1`..`GROVE_V4`).
+//! `instance_cap_layer_truncation` **v0** (released behaviour: `GROVE_V4`,
+//! the only earlier version that serves per-instance caps; `GROVE_V1`..
+//! `GROVE_V3` refuse such a query before any proof code runs).
 //!
 //! A layer with subquery branches under a per-instance cap is proven under
 //! the global budget only and left as the walk produced it: with no global

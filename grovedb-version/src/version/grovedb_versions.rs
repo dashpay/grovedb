@@ -662,14 +662,15 @@ pub struct GroveDBOperationsProofVersions {
     /// a key whose subtree is empty spends none of it, so the number of keys
     /// the walk needs is known only once the descents have run.
     ///
-    /// - `0` (V1..V4, as 6.1.1 shipped): the layer is proven under the global
-    ///   budget only, so with no global limit it carries every key the layer
+    /// - `0` (V4, as 6.1.1 shipped; V1..V3 carry `0` as well but refuse a
+    ///   per-instance cap before any proof code runs, so only V4 reaches
+    ///   this): the layer is proven under the global budget only, so with no global limit it carries every key the layer
     ///   query selects, and the proof grows with the range rather than with
     ///   the page (issue #962). The verifier refuses a layer that hides a
     ///   selected key before the global budget is used up.
     /// - `1` (V5): the prover runs the descents, and once the instance budget
-    ///   (or the global one) is spent it proves the layer truncated after
-    ///   the key that spent it. The verifier reads the layer as a gap-free
+    ///   is spent it proves the layer truncated after the key that spent it,
+    ///   hiding the later rows and the range bounds of later queried keys. The verifier reads the layer as a gap-free
     ///   prefix of its query (Merk's upper-bound limit mode) and accepts one
     ///   that stops early only after it has itself seen the budget spent by
     ///   the rows below the keys the layer reveals. A layer that stops with

@@ -105,16 +105,20 @@ spends none of the cap and a key whose subtree is large can spend all of
 it, so the number of keys the walk needs is known only once the descents
 have run.
 
-Through `GROVE_V4` such a layer is proven under the global budget only.
+Under `GROVE_V4`, the first version to serve per-instance limits, such
+a layer is proven under the global budget only.
 With no global limit, which is the normal case for a page merged with
 other queries, it carries every key its query selects, and only the
 descents stop once the cap is spent. The proof is correct, but its size
 follows the range, not the page.
 
 From `GROVE_V5` (`operations.proof.instance_cap_layer_truncation`) the
-prover runs the descents and, once the instance budget or the global
-one is spent, proves the layer truncated after the key that spent it.
-Everything after that key is hashes.
+prover runs the descents and, once the instance budget is spent, proves
+the layer truncated after the key that spent it. Everything after that
+key is hashes: the rows the page does not need, and the range bounds
+that would prove later queried keys absent. A layer whose walk ends
+because the global budget ran out keeps its `GROVE_V4` shape, which the
+global limit already bounds.
 
 | 5-row page over an ordered index | `GROVE_V4` | `GROVE_V5` |
 |---|---|---|

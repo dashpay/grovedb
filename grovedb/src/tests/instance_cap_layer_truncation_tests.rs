@@ -171,25 +171,35 @@ fn index_layer(proof: &mut GroveDBProof) -> &mut LayerProof {
         .expect("the proof descends into the index")
 }
 
-/// The keys the index layer's Merk proof reveals together with a value, in
-/// the order the proof pushes them.
-fn index_layer_rows(proof: &[u8]) -> Vec<Vec<u8>> {
+/// The nodes the index layer's Merk proof pushes, in order.
+fn index_layer_nodes(proof: &[u8]) -> Vec<Node> {
     let mut proof = decode(proof);
     let ProofBytes::Merk(bytes) = &index_layer(&mut proof).merk_proof else {
         panic!("the index layer is a Merk proof");
     };
     Decoder::new(bytes)
         .filter_map(|op| match op.expect("the op decodes") {
-            Op::Push(node) | Op::PushInverted(node) => match node {
-                Node::KV(key, ..)
-                | Node::KVValueHash(key, ..)
-                | Node::KVValueHashFeatureType(key, ..)
-                | Node::KVValueHashFeatureTypeWithChildHash(key, ..)
-                | Node::KVRefValueHash(key, ..) => Some(key),
-                _ => None,
-            },
+            Op::Push(node) | Op::PushInverted(node) => Some(node),
             _ => None,
         })
+        .collect()
+}
+
+/// The keys the index layer reveals together with a value, in the order the
+/// proof pushes them.
+fn index_layer_rows(proof: &[u8]) -> Vec<Vec<u8>> {
+    index_layer_nodes(proof)
+        .iter()
+        .filter_map(|node| node.key_and_value().map(|(key, _)| key.to_vec()))
+        .collect()
+}
+
+/// Every key the index layer reveals: its rows, and the range bounds that
+/// prove a queried key absent.
+fn index_layer_keys(proof: &[u8]) -> Vec<Vec<u8>> {
+    index_layer_nodes(proof)
+        .iter()
+        .filter_map(|node| node.key().map(<[u8]>::to_vec))
         .collect()
 }
 
@@ -286,6 +296,17 @@ fn v4_proves_the_layer_in_full() {
         hex::encode(blake3::hash(&v4_proof).as_bytes()),
         V4_PROOF_DIGEST
     );
+    // And to the work it took: a V4 prover that walked the layer a second
+    // time and threw the result away would emit the same bytes.
+    let cost = v4_db.prove_query(&query, None, &GROVE_V4).cost;
+    assert_eq!(
+        (
+            cost.seek_count,
+            cost.storage_loaded_bytes,
+            cost.hash_node_calls
+        ),
+        V4_PROOF_COST
+    );
 }
 
 /// The two versions side by side on the same data: the same rows, and a
@@ -309,6 +330,8 @@ fn v5_proof_is_a_fraction_of_the_v4_proof() {
 }
 
 const V4_PROOF_LEN: usize = 9684;
+/// `(seek_count, storage_loaded_bytes, hash_node_calls)` of proving it.
+const V4_PROOF_COST: (u32, u64, u32) = (217, 23878, 12);
 const V4_PROOF_DIGEST: &str = "dc5ccb80920c7fefef137472c102caa52021b7f61f233db841241c00fe48e732";
 
 /// A descending page takes the last keys of the range and stops below them.
@@ -768,4 +791,164 @@ fn an_empty_tree_row_keeps_the_layer_whole() {
             v.protocol_version
         );
     }
+}
+
+/// Past the cut the layer hides range bounds as well as rows. A query that
+/// names its keys one by one proves each absent key by its neighbours; once
+/// the page is full those witnesses are not owed either, and under V4 they
+/// stay in the proof.
+#[test]
+fn absence_witnesses_past_the_cut_are_hidden() {
+    let db = make_test_grovedb(&GROVE_V5);
+    insert(&db, &[], INDEX, Element::empty_tree(), &GROVE_V5);
+    for i in [0u16, 50, 150, 300] {
+        let key = index_key(i);
+        insert(&db, &[INDEX], &key, Element::empty_tree(), &GROVE_V5);
+        insert(
+            &db,
+            &[INDEX, key.as_slice()],
+            &doc_key(0),
+            Element::new_item(vec![0]),
+            &GROVE_V5,
+        );
+    }
+
+    // Key 0 fills the page. Keys 100..120 are absent, between 50 and 150.
+    let mut body = Query::new();
+    body.insert_key(index_key(0));
+    for absent in 100..120 {
+        body.insert_key(index_key(absent));
+    }
+    body.set_subquery(range_full(true));
+    body.limit = Some(1);
+    let query = PathQuery::new_unsized(vec![INDEX.to_vec()], body);
+
+    let (v4_proof, v4_rows) = prove_and_verify(&db, &query, &GROVE_V4);
+    assert_eq!(v4_rows, doc_rows([0]));
+    assert_eq!(index_layer_keys(&v4_proof), index_keys([0, 50, 150]));
+
+    let (v5_proof, v5_rows) = prove_and_verify(&db, &query, &GROVE_V5);
+    assert_eq!(v5_rows, doc_rows([0]));
+    assert_eq!(index_layer_keys(&v5_proof), index_keys([0]));
+}
+
+/// Only the instance budget cuts a layer. When the global budget ends the
+/// walk with cap to spare, the layer keeps the shape V4 gives it, which the
+/// global limit already bounds: the proof is the same bytes.
+#[test]
+fn the_global_budget_alone_does_not_cut_the_layer() {
+    let db = feed(50, |_| 3, &GROVE_V5);
+    // 3 rows, then 1: the global limit of 4 is spent inside the second
+    // subtree, with 3 of the cap of 7 left.
+    let mut query = page(7, true);
+    query.query.limit = Some(4);
+
+    let (proof, rows) = prove_and_verify(&db, &query, &GROVE_V5);
+    assert_eq!(rows.len(), 4);
+    assert_eq!(index_layer_rows(&proof), index_keys(0..4));
+    assert_eq!(
+        proof,
+        db.prove_query(&query, None, &GROVE_V4).unwrap().unwrap()
+    );
+}
+
+/// Prover and verifier do not charge the global budget identically for
+/// every empty descent: a subtree whose only content is an empty MMR costs
+/// the prover an empty-layer slot and the verifier none. That predates the
+/// truncation, and the truncation must not turn it into a refusal: with the
+/// instance budget unspent the layer is not cut, and the proof verifies to
+/// the same rows as under V4.
+#[test]
+fn an_uneven_global_charge_does_not_cut_the_layer() {
+    const MMR: &[u8] = b"m";
+    let db = make_test_grovedb(&GROVE_V5);
+    let v = &GROVE_V5;
+    insert(&db, &[], INDEX, Element::empty_tree(), v);
+    // Three subtrees `index/<k>/x/m`, the MMR holding 0, 2 and 1 leaves,
+    // then an empty subtree.
+    for (i, leaves) in [(0u16, 0u8), (1, 2), (2, 1)] {
+        let key = index_key(i);
+        insert(&db, &[INDEX], &key, Element::empty_tree(), v);
+        insert(&db, &[INDEX, &key], b"x", Element::empty_tree(), v);
+        insert(&db, &[INDEX, &key, b"x"], MMR, Element::empty_mmr_tree(), v);
+        for leaf in 0..leaves {
+            db.mmr_tree_append(
+                [INDEX, key.as_slice(), b"x"].as_ref(),
+                MMR,
+                vec![leaf],
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("the leaf appends");
+        }
+    }
+    insert(&db, &[INDEX], &index_key(3), Element::empty_tree(), v);
+
+    let mut positions = Query::new();
+    positions.insert_range_inclusive(0u64.to_be_bytes().to_vec()..=9u64.to_be_bytes().to_vec());
+    let mut mmr = Query::new();
+    mmr.insert_key(MMR.to_vec());
+    mmr.set_subquery(positions);
+    let mut level = range_full(true);
+    level.set_subquery(mmr);
+    let mut body = range_full(true);
+    body.set_subquery(level);
+    body.limit = Some(5);
+    let query = PathQuery::new(vec![INDEX.to_vec()], SizedQuery::new(body, Some(4), None));
+
+    let v4_proof = db.prove_query(&query, None, &GROVE_V4).unwrap().unwrap();
+    let v4_rows = verified_rows(&v4_proof, &query, &GROVE_V4).expect("V4 verifies");
+    assert_eq!(v4_rows.len(), 3);
+
+    let v5_proof = db.prove_query(&query, None, &GROVE_V5).unwrap().unwrap();
+    assert_eq!(v5_proof, v4_proof);
+    assert_eq!(
+        verified_rows(&v5_proof, &query, &GROVE_V5).expect("V5 verifies"),
+        v4_rows
+    );
+}
+
+/// A global limit that a merge lifts into a cap cannot land on a layer this
+/// change truncates. The V5 merge refuses to lift one onto a body that has
+/// subqueries, and a body without subqueries is a layer of result rows,
+/// proven under the cap itself in every version. So the original, globally
+/// limited component still verifies as a subset of the merged V5 proof.
+#[test]
+fn a_lifted_global_limit_never_lands_on_a_truncated_layer() {
+    let v = &GROVE_V5;
+    let mut other = Query::new();
+    other.insert_key(b"x".to_vec());
+    let other = PathQuery::new_unsized(vec![OTHER.to_vec()], other);
+
+    // A body with subqueries: the lift is refused.
+    let mut with_subquery = range_full(true);
+    with_subquery.set_subquery(range_full(true));
+    let sized = PathQuery::new(
+        vec![INDEX.to_vec()],
+        SizedQuery::new(with_subquery, Some(PAGE), None),
+    );
+    assert!(matches!(
+        PathQuery::merge(vec![&sized, &other], v),
+        Err(Error::NotSupported(_))
+    ));
+
+    // A body of rows: the lift is allowed, and the layer is terminal.
+    let db = make_test_grovedb(v);
+    insert(&db, &[], INDEX, Element::empty_tree(), v);
+    insert(&db, &[], OTHER, Element::empty_tree(), v);
+    insert(&db, &[OTHER], b"x", Element::new_item(vec![9]), v);
+    for i in 0..40u16 {
+        insert(&db, &[INDEX], &index_key(i), Element::new_item(vec![1]), v);
+    }
+    let component = PathQuery::new(
+        vec![INDEX.to_vec()],
+        SizedQuery::new(range_full(true), Some(PAGE), None),
+    );
+    let merged = PathQuery::merge(vec![&component, &other], v).expect("the limit lifts");
+    let (proof, rows) = prove_and_verify(&db, &merged, v);
+    assert_eq!(rows.len(), PAGE as usize + 1);
+    let (_, component_rows) = GroveDb::verify_subset_query(&proof, &component, v)
+        .expect("the globally limited component is a subset of the merged proof");
+    assert_eq!(component_rows.len(), PAGE as usize);
 }

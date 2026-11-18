@@ -1,18 +1,24 @@
 //! `instance_cap_layer_truncation` **v1** (`GROVE_V5`).
 //!
 //! A layer with subquery branches under a per-instance cap stops after the
-//! key whose rows spent the budget, and the verifier accepts the early stop
-//! only once it has seen that budget spent. See the module documentation for
-//! the rule and for why it cannot drop an owed row.
+//! key whose rows spent the instance budget, and the verifier accepts the
+//! early stop only once it has seen a budget spent. See the module
+//! documentation for the rule and for why it cannot drop an owed row.
 //!
 //! The prover walks the layer as v0 does and runs the descents, which it
 //! needs anyway, then proves the layer a second time at a Merk limit equal to
-//! the number of rows it processed before the budget ran out. A Merk proof at
-//! a limit reveals nothing after its last result (the V1 shape, see
-//! `merk_proof_version`), so everything past the cut is hashes. The second
-//! proof carries the same row nodes as the first for the keys it keeps; the
-//! rewrites the walk applied to them (resolved references, child hashes) are
-//! moved over, since they belong to the key and not to the walk.
+//! the number of rows it processed before the instance budget ran out. A Merk
+//! proof at a limit reveals nothing after its last result (the V1 shape, see
+//! `merk_proof_version`), so everything past the cut is hashes: the rows the
+//! page does not need, and the range bounds that would prove later queried
+//! keys absent. The second proof carries the same row nodes as the first for
+//! the keys it keeps; the rewrites the walk applied to them (resolved
+//! references, child hashes) are moved over, since they belong to the key and
+//! not to the walk.
+//!
+//! Only the instance budget triggers the cut. A layer whose walk ends because
+//! the global budget ran out keeps the shape v0 gives it, which the global
+//! limit already bounds.
 
 #[cfg(feature = "minimal")]
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
@@ -27,8 +33,6 @@ use grovedb_storage::StorageContext;
 #[cfg(feature = "minimal")]
 use grovedb_version::version::GroveVersion;
 
-#[cfg(feature = "minimal")]
-use super::proof_node_row_key;
 use crate::{Error, GroveDb, PathQuery};
 
 impl GroveDb {
@@ -44,7 +48,7 @@ impl GroveDb {
         query_items: &[QueryItem],
         left_to_right: bool,
         merk_proof: &mut ProofWithoutEncodingResult,
-        first_op_past_the_budget: Option<usize>,
+        first_op_past_the_instance_budget: Option<usize>,
         charged_an_empty_plain_tree_row: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
@@ -53,8 +57,9 @@ impl GroveDb {
     {
         let mut cost = OperationCost::default();
 
-        // The budget outlasted the layer: every key it reveals is owed.
-        let Some(first_op_past_the_budget) = first_op_past_the_budget else {
+        // The instance budget outlasted the layer: every key it reveals is
+        // owed, or the global budget ended the walk and already bounds it.
+        let Some(first_op_past_the_instance_budget) = first_op_past_the_instance_budget else {
             return Ok(()).wrap_with_cost(cost);
         };
         // The cut is only as good as the count behind it. The prover charges
@@ -67,26 +72,28 @@ impl GroveDb {
             return Ok(()).wrap_with_cost(cost);
         }
 
+        // What the walk left revealed past the budget: a row the page does
+        // not need, or a range bound proving a later queried key absent.
+        // Either is hidden by the cut.
         let mut rows_within_budget = 0usize;
-        let mut reveals_a_row_past_the_budget = false;
+        let mut reveals_a_key_past_the_budget = false;
         for (op_index, op) in merk_proof.proof.iter().enumerate() {
             let (Op::Push(node) | Op::PushInverted(node)) = op else {
                 continue;
             };
-            if proof_node_row_key(node).is_none() {
-                continue;
-            }
-            if op_index < first_op_past_the_budget {
-                rows_within_budget += 1;
-            } else {
-                reveals_a_row_past_the_budget = true;
+            if op_index < first_op_past_the_instance_budget {
+                if node.key_and_value().is_some() {
+                    rows_within_budget += 1;
+                }
+            } else if node.key().is_some() {
+                reveals_a_key_past_the_budget = true;
                 break;
             }
         }
 
-        // The budget ran out on the layer's last revealed row: there is
+        // The budget ran out on the last key the layer reveals: there is
         // nothing to hide.
-        if !reveals_a_row_past_the_budget {
+        if !reveals_a_key_past_the_budget {
             return Ok(()).wrap_with_cost(cost);
         }
         // A Merk limit is a non-zero `u16`. A layer that needs more rows than
@@ -115,9 +122,9 @@ impl GroveDb {
         let processed = std::mem::take(&mut merk_proof.proof);
         let mut processed_rows = processed
             .into_iter()
-            .take(first_op_past_the_budget)
+            .take(first_op_past_the_instance_budget)
             .filter_map(|op| match op {
-                Op::Push(node) | Op::PushInverted(node) if proof_node_row_key(&node).is_some() => {
+                Op::Push(node) | Op::PushInverted(node) if node.key_and_value().is_some() => {
                     Some(node)
                 }
                 _ => None,
@@ -126,13 +133,13 @@ impl GroveDb {
             let (Op::Push(node) | Op::PushInverted(node)) = op else {
                 continue;
             };
-            if proof_node_row_key(node).is_none() {
+            if node.key_and_value().is_none() {
                 continue;
             }
             let processed_row = processed_rows.next();
-            let same_key = processed_row.as_ref().is_some_and(|processed_row| {
-                proof_node_row_key(processed_row) == proof_node_row_key(node)
-            });
+            let same_key = processed_row
+                .as_ref()
+                .is_some_and(|processed_row| processed_row.key() == node.key());
             match processed_row {
                 Some(processed_row) if same_key => *node = processed_row,
                 _ => {
@@ -162,7 +169,8 @@ impl GroveDb {
 
     /// `check_instance_capped_layer_stop` v1: a layer that stopped revealing
     /// its query before its limit ran out is accepted only when the rows
-    /// below the keys it does reveal spent the budget.
+    /// below the keys it does reveal spent the frame's instance budget or
+    /// the global budget.
     pub(super) fn check_instance_capped_layer_stop_v1(
         query: &PathQuery,
         stopped_before_its_limit: bool,

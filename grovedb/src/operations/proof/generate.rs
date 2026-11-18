@@ -2297,14 +2297,16 @@ impl GroveDb {
         let mut lower_layers = BTreeMap::new();
         let mut has_a_result_at_level = false;
         let mut done_with_results = false;
-        // The first op the walk reaches with a spent budget: every row
-        // before it was processed, every row from it on is filler.
-        let mut first_op_past_the_budget = None;
+        // The first op the walk reaches with a spent INSTANCE budget: every
+        // row before it was processed (the budget is spent by a row, so the
+        // global budget had not ended the walk earlier), and nothing from it
+        // on is owed to this frame.
+        let mut first_op_past_the_instance_budget = None;
 
         for (op_index, op) in merk_proof.proof.iter_mut().enumerate() {
             done_with_results |= limit_state.is_exhausted(frame_instance);
-            if done_with_results && first_op_past_the_budget.is_none() {
-                first_op_past_the_budget = Some(op_index);
+            if frame_instance == Some(0) && first_op_past_the_instance_budget.is_none() {
+                first_op_past_the_instance_budget = Some(op_index);
             }
             // Mirror generate.rs's first ref-rewriting loop — preserve
             // ProvableSumTree special nodes too, plus the dual-axis
@@ -3662,7 +3664,7 @@ impl GroveDb {
                     &query.items,
                     query.left_to_right,
                     &mut merk_proof,
-                    first_op_past_the_budget,
+                    first_op_past_the_instance_budget,
                     limit_state.empty_plain_tree_rows > 0,
                     grove_version,
                 )

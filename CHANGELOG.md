@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `Node::key_and_value` and `Node::key` (`grovedb-query`): the key and value
+  of a proof node that reveals a row, and the key of any node that reveals
+  one (a row or a `KVDigest*` range bound). One exhaustive classification of
+  the proof nodes, used by the chunk verifiers and by the V5 layer
+  truncation below.
 - `Element::ProvableCountProvableBigSumTree` (discriminant 29, tree type
   17): a tree that commits its element count and a 128-bit sum into every
   node hash, the wide counterpart of `ProvableCountProvableSumTree`. An
@@ -109,8 +114,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **BREAKING** (proofs under `GROVE_V5`): a V1 proof layer that has
   subquery branches under a per-instance cap (`Query::limit`) stops after
-  the key whose rows spent the budget (issue #962). Through `GROVE_V4` such
-  a layer is proven under the global budget only, so with no global limit,
+  the key whose rows spent the instance budget (issue #962). Under
+  `GROVE_V4`, the first version to serve per-instance caps, such a layer is
+  proven under the global budget only, so with no global limit,
   the normal case for a page merged with other queries, it carries every
   key of its range and the proof grows with the range: an ordered page of 5
   rows over 200 index keys proves in 9,684 bytes under V4 and 927 under V5
@@ -129,7 +135,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   V5; **BREAKING** for code building `GroveDBOperationsProofVersions` by
   hand). Proofs of queries without a per-instance cap are not affected. A
   layer also stays whole once the walk has charged an empty plain `Tree` as
-  a result row, which the prover counts and a default verifier does not. The
+  a result row, which the prover counts and a default verifier does not,
+  and when the global budget, not the instance one, ends the walk (the
+  global limit already bounds that layer). The
   prover still walks the whole layer once before it truncates it, as it
   does in V4, so the saving is in proof size and verifier work.
 - **BREAKING**: `Query` adds the public `offset: Option<u16>` field for

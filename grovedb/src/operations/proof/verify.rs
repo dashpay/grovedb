@@ -5038,38 +5038,8 @@ impl GroveDb {
 
     /// Extract key and value from a node if it has both.
     fn get_key_value_from_node(node: &Node) -> Option<(Vec<u8>, Vec<u8>)> {
-        match node {
-            Node::KV(key, value)
-            | Node::KVValueHash(key, value, ..)
-            | Node::KVBackwardsReferencesValueHash(key, value, ..)
-            | Node::KVValueHashFeatureType(key, value, ..)
-            | Node::KVValueHashFeatureTypeWithChildHash(key, value, ..)
-            | Node::KVCount(key, value, ..)
-            | Node::KVRefValueHash(key, value, ..)
-            | Node::KVRefValueHashCount(key, value, ..)
-            | Node::KVSum(key, value, ..)
-            | Node::KVRefValueHashSum(key, value, ..)
-            | Node::KVCountBigSum(key, value, ..)
-            | Node::KVCountSum(key, value, ..)
-            | Node::KVRefValueHashCountBigSum(key, value, ..)
-            | Node::KVRefValueHashCountSum(key, value, ..) => Some((key.clone(), value.clone())),
-            // These nodes don't have values, only key+hash or just hash
-            Node::KVDigest(..)
-            | Node::KVDigestCount(..)
-            | Node::KVDigestSum(..)
-            | Node::KVDigestCountBigSum(..)
-            | Node::KVDigestCountSum(..)
-            | Node::Hash(_)
-            | Node::KVHash(_)
-            | Node::KVHashCount(..)
-            | Node::HashWithCount(..)
-            | Node::KVHashSum(..)
-            | Node::HashWithSum(..)
-            | Node::KVHashCountBigSum(..)
-            | Node::KVHashCountSum(..)
-            | Node::HashWithCountAndBigSum(..)
-            | Node::HashWithCountAndSum(..) => None,
-        }
+        node.key_and_value()
+            .map(|(key, value)| (key.to_vec(), value.to_vec()))
     }
 
     /// Extract the count from a CountTree, CountSumTree, ProvableCountTree,

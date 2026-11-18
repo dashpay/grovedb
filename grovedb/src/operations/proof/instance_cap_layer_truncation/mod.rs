@@ -11,13 +11,15 @@
 //! once the descents have run. That is why the layer cannot be proven under
 //! the cap the way a layer without subqueries is.
 //!
-//! * **[v0]**: released behaviour, `GROVE_V1`..`GROVE_V4`. The layer is
-//!   proven under the global budget only. With no global limit, which is the
-//!   normal case for a merged page, it carries every key its query selects
-//!   and only the descents stop, so the proof grows with the range. The
-//!   verifier reads the layer at exactly that limit.
-//! * **[v1]**: `GROVE_V5`. Once the descents have spent the budget, the
-//!   prover proves the layer again, truncated after the key that spent it.
+//! * **[v0]**: released behaviour, `GROVE_V4` (per-instance caps are not
+//!   served before it, so `GROVE_V1`..`GROVE_V3` never reach this code). The
+//!   layer is proven under the global budget only. With no global limit,
+//!   which is the normal case for a merged page, it carries every key its
+//!   query selects and only the descents stop, so the proof grows with the
+//!   range. The verifier reads the layer at exactly that limit.
+//! * **[v1]**: `GROVE_V5`. Once the descents have spent the instance budget,
+//!   the prover proves the layer again, truncated after the key that spent
+//!   it.
 //!   The verifier reads the layer as a gap-free prefix of its query, and
 //!   accepts one that stops early only after it has itself seen the budget
 //!   spent by the rows below the keys the layer reveals.
@@ -56,8 +58,11 @@
 //! that leaves empty trees out of its result (the default). Once the walk has
 //! charged such a row the prover does not truncate, and the layer verifies
 //! as it does in v0. The verifier is not relaxed for it. The prover also
-//! keeps a layer whole when the budget outlasts it, and when the rows before
-//! the cut exceed what a Merk limit (a `u16`) can express.
+//! keeps a layer whole when the instance budget outlasts it, when the global
+//! budget ends the walk first (the global limit already bounds that layer,
+//! and the two sides do not charge it identically for every empty descent),
+//! and when the rows before the cut exceed what a Merk limit (a `u16`) can
+//! express.
 //!
 //! [v0]: self::v0
 //! [v1]: self::v1
@@ -69,55 +74,12 @@ mod v1;
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_merk::proofs::query::ProofLimitMode;
 #[cfg(feature = "minimal")]
-use grovedb_merk::{
-    proofs::{query::QueryItem, Node},
-    Merk, ProofWithoutEncodingResult,
-};
+use grovedb_merk::{proofs::query::QueryItem, Merk, ProofWithoutEncodingResult};
 #[cfg(feature = "minimal")]
 use grovedb_storage::StorageContext;
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
 use crate::{Error, GroveDb, PathQuery};
-
-/// The key of a proof node that reveals a row: a key together with its
-/// value. A range bound (`KVDigest*`) reveals a key without a value and a
-/// hidden node reveals neither, so both are `None`.
-///
-/// Every variant is listed, so a new one has to be classified here.
-#[cfg(feature = "minimal")]
-pub(super) fn proof_node_row_key(node: &Node) -> Option<&[u8]> {
-    match node {
-        Node::KV(key, ..)
-        | Node::KVValueHash(key, ..)
-        | Node::KVBackwardsReferencesValueHash(key, ..)
-        | Node::KVValueHashFeatureType(key, ..)
-        | Node::KVValueHashFeatureTypeWithChildHash(key, ..)
-        | Node::KVCount(key, ..)
-        | Node::KVRefValueHash(key, ..)
-        | Node::KVRefValueHashCount(key, ..)
-        | Node::KVSum(key, ..)
-        | Node::KVRefValueHashSum(key, ..)
-        | Node::KVCountBigSum(key, ..)
-        | Node::KVCountSum(key, ..)
-        | Node::KVRefValueHashCountBigSum(key, ..)
-        | Node::KVRefValueHashCountSum(key, ..) => Some(key.as_slice()),
-        Node::KVDigest(..)
-        | Node::KVDigestCount(..)
-        | Node::KVDigestSum(..)
-        | Node::KVDigestCountBigSum(..)
-        | Node::KVDigestCountSum(..)
-        | Node::Hash(_)
-        | Node::KVHash(_)
-        | Node::KVHashCount(..)
-        | Node::HashWithCount(..)
-        | Node::KVHashSum(..)
-        | Node::HashWithSum(..)
-        | Node::KVHashCountBigSum(..)
-        | Node::KVHashCountSum(..)
-        | Node::HashWithCountAndBigSum(..)
-        | Node::HashWithCountAndSum(..) => None,
-    }
-}
 
 fn unknown_version(received: u16) -> Error {
     Error::VersionError(GroveVersionError::UnknownVersionMismatch {
@@ -132,9 +94,10 @@ impl GroveDb {
     /// under a per-instance cap has run its descents.
     ///
     /// `merk_proof` is the layer as it was walked, with the nodes of the rows
-    /// the walk processed already rewritten. `first_op_past_the_budget` is the
-    /// index of the first op the walk reached with a spent budget, `None` when
-    /// the budget outlasted the layer. `charged_an_empty_plain_tree_row` says
+    /// the walk processed already rewritten.
+    /// `first_op_past_the_instance_budget` is the index of the first op the
+    /// walk reached with a spent instance budget, `None` when that budget
+    /// outlasted the layer or the global budget ended the walk first. `charged_an_empty_plain_tree_row` says
     /// the walk so far charged an empty plain `Tree` as a result row, which a
     /// default verifier does not count. From v1 the layer is replaced by one
     /// that reveals nothing after the last row within the budget.
@@ -145,7 +108,7 @@ impl GroveDb {
         query_items: &[QueryItem],
         left_to_right: bool,
         merk_proof: &mut ProofWithoutEncodingResult,
-        first_op_past_the_budget: Option<usize>,
+        first_op_past_the_instance_budget: Option<usize>,
         charged_an_empty_plain_tree_row: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
@@ -164,7 +127,7 @@ impl GroveDb {
                 query_items,
                 left_to_right,
                 merk_proof,
-                first_op_past_the_budget,
+                first_op_past_the_instance_budget,
                 charged_an_empty_plain_tree_row,
                 grove_version,
             ),
