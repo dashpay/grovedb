@@ -54,6 +54,13 @@ pub struct RocksDbEngine {
     anatomy: NodeAnatomy,
 }
 
+/// How long [`Engine::wait_for_background`] waits at most.
+const BACKGROUND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
+/// Polls of the info log, this far apart, that must all find no flush or
+/// compaction running: a finished job can start the next one.
+const IDLE_POLLS: u32 = 5;
+const IDLE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+
 /// The length of a subtree prefix at the front of every node record's key.
 const PREFIX_LEN: usize = 32;
 const HASH_LEN: u64 = 32;
@@ -244,6 +251,26 @@ impl Engine for RocksDbEngine {
         Ok(self.db.flush()?)
     }
 
+    fn wait_for_background(&mut self) -> Result<(), BenchError> {
+        let deadline = std::time::Instant::now() + BACKGROUND_TIMEOUT;
+        let mut idle_polls = 0;
+        while idle_polls < IDLE_POLLS {
+            if std::time::Instant::now() > deadline {
+                return Err(BenchError::Check(format!(
+                    "RocksDB's background work did not go idle in {BACKGROUND_TIMEOUT:?}"
+                )));
+            }
+            std::thread::sleep(IDLE_POLL_INTERVAL);
+            self.read_info_log()?;
+            idle_polls = if self.events.idle() {
+                idle_polls + 1
+            } else {
+                0
+            };
+        }
+        Ok(())
+    }
+
     fn counters(&mut self) -> Result<Counters, BenchError> {
         self.read_logs()?;
         self.read_info_log()?;
@@ -366,6 +393,8 @@ mod tests {
         );
 
         engine.flush().unwrap();
+        engine.wait_for_background().unwrap();
+        assert!(engine.event_totals().idle());
         let flushed = engine.counters().unwrap().since(&after_block);
         assert!(flushed.flush_bytes > 0, "{:?}", engine.event_totals());
         assert_eq!(flushed.compaction_bytes, 0);

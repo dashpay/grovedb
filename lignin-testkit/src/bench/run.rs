@@ -89,7 +89,7 @@ impl Settings {
             point_reads: 5_000,
             reference_reads: 500,
             warmup_reads: 2_000,
-            cold_reads: 15,
+            cold_reads: 40,
             checkpoints: 15,
             reopens: 15,
             perf: false,
@@ -650,7 +650,11 @@ pub fn disk_usage(dir: &Path) -> Result<DiskUsage, BenchError> {
     let io = |error| BenchError::io("measuring the database", error);
     for entry in std::fs::read_dir(dir).map_err(io)? {
         let entry = entry.map_err(io)?;
-        let metadata = entry.metadata().map_err(io)?;
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(io(error)),
+        };
         if !metadata.is_file() {
             continue;
         }
@@ -859,9 +863,16 @@ fn rewarm<E: Engine>(
     let io = |error| BenchError::io("warming the database", error);
     let entries = std::fs::read_dir(engine.dir()).map_err(io)?;
     for entry in entries.flatten() {
-        if entry.file_type().is_ok_and(|kind| kind.is_file()) {
-            let mut file = std::fs::File::open(entry.path()).map_err(io)?;
-            std::io::copy(&mut file, &mut std::io::sink()).map_err(io)?;
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        // The engine deletes files in the background, between listing and opening.
+        match std::fs::File::open(entry.path()) {
+            Ok(mut file) => {
+                std::io::copy(&mut file, &mut std::io::sink()).map_err(io)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(io(error)),
         }
     }
     warm_up(engine, reads, settings, grove_version)
@@ -1067,6 +1078,7 @@ fn measure<E: Engine>(
 
     rows.push(checkpoints(&engine, settings, "at-size")?);
     engine.flush()?;
+    engine.wait_for_background()?;
     let disk_after_flush = disk_usage(dir)?;
     rows.push(count_row(
         "size_on_disk",
@@ -1074,7 +1086,8 @@ fn measure<E: Engine>(
         "B",
         disk_after_flush.bytes as f64,
         1,
-        "lengths of the files in the database directory after a flush",
+        "lengths of the files in the database directory after a flush, once the engine's \
+         background work is idle",
     ));
     rows.push(checkpoints(&engine, settings, "flushed")?);
 

@@ -20,8 +20,12 @@ pub struct EventTotals {
     pub table_files: u64,
     /// Their bytes.
     pub table_file_bytes: u64,
+    /// Flushes started.
+    pub flushes_started: u64,
     /// Flushes finished.
     pub flushes: u64,
+    /// Compactions started.
+    pub compactions_started: u64,
     /// Compactions finished.
     pub compactions: u64,
     /// Bytes the finished compactions wrote.
@@ -29,6 +33,11 @@ pub struct EventTotals {
 }
 
 impl EventTotals {
+    /// Whether every flush and compaction that started has finished.
+    pub fn idle(&self) -> bool {
+        self.flushes_started <= self.flushes && self.compactions_started <= self.compactions
+    }
+
     /// Bytes written by flushes: table files no compaction wrote.
     pub fn flush_bytes(&self) -> u64 {
         self.table_file_bytes.saturating_sub(self.compaction_bytes)
@@ -77,7 +86,9 @@ fn read_line(line: &[u8], totals: &mut EventTotals) {
             totals.table_files += 1;
             totals.table_file_bytes += number("file_size");
         }
+        Some("flush_started") => totals.flushes_started += 1,
         Some("flush_finished") => totals.flushes += 1,
+        Some("compaction_started") => totals.compactions_started += 1,
         Some("compaction_finished") => {
             totals.compactions += 1;
             totals.compaction_bytes += number("total_output_size");
@@ -92,8 +103,10 @@ mod tests {
 
     const LOG: &str = "\
 2026/11/18-10:00:00.000001 7f00 [db/flush_job.cc:900] [default] [JOB 2] Flushing memtable\n\
+2026/11/18-10:00:00.000001 7f00 EVENT_LOG_v1 {\"time_micros\": 0, \"job\": 2, \"event\": \"flush_started\", \"num_memtables\": 1}\n\
 2026/11/18-10:00:00.000002 7f00 EVENT_LOG_v1 {\"time_micros\": 1, \"cf_name\": \"default\", \"job\": 2, \"event\": \"table_file_creation\", \"file_number\": 9, \"file_size\": 1000}\n\
 2026/11/18-10:00:00.000003 7f00 EVENT_LOG_v1 {\"time_micros\": 2, \"job\": 2, \"event\": \"flush_finished\", \"output_compression\": \"Snappy\"}\n\
+2026/11/18-10:00:00.000003 7f00 EVENT_LOG_v1 {\"time_micros\": 2, \"job\": 3, \"event\": \"compaction_started\"}\n\
 2026/11/18-10:00:00.000004 7f00 EVENT_LOG_v1 {\"time_micros\": 3, \"job\": 3, \"event\": \"table_file_creation\", \"file_number\": 10, \"file_size\": 700}\n\
 2026/11/18-10:00:00.000005 7f00 EVENT_LOG_v1 {\"time_micros\": 4, \"job\": 3, \"event\": \"compaction_finished\", \"total_output_size\": 700}\n\
 2026/11/18-10:00:00.000006 7f00 EVENT_LOG_v1 {not json}\n\
@@ -110,12 +123,20 @@ mod tests {
             EventTotals {
                 table_files: 2,
                 table_file_bytes: 1700,
+                flushes_started: 1,
                 flushes: 1,
+                compactions_started: 1,
                 compactions: 1,
                 compaction_bytes: 700,
             }
         );
         assert_eq!(totals.flush_bytes(), 1000);
+        assert!(totals.idle());
+        let busy = EventTotals {
+            compactions_started: 2,
+            ..totals
+        };
+        assert!(!busy.idle());
     }
 
     #[test]

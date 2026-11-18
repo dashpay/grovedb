@@ -84,6 +84,11 @@ pub trait Engine: Sized {
     /// to its long-term files.
     fn flush(&self) -> Result<(), BenchError>;
 
+    /// Waits until the engine's background work (RocksDB: flushes and
+    /// compactions; LigninDB: the flusher and the cleaner) is idle, so a
+    /// size on disk does not depend on when a background job ran.
+    fn wait_for_background(&mut self) -> Result<(), BenchError>;
+
     /// The engine's running totals since it was opened.
     fn counters(&mut self) -> Result<Counters, BenchError>;
 

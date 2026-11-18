@@ -352,7 +352,7 @@ pub const RECORDED: &[RecordedEntry] = &[
     ),
     (
         "size_on_disk",
-        "at-size",
+        "flushed",
         1_010_000_000.0,
         None,
         "Size after 1M transitions, random documents: 1.01 GB",
