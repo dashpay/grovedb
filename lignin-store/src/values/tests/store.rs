@@ -1216,36 +1216,25 @@ fn a_manifest_written_while_a_file_is_created_does_not_use_up_its_id() {
 #[test]
 fn a_file_is_not_dropped_between_a_writers_hold_and_its_last_value() {
     let mut store = Store::new();
-    for round in 0..200u32 {
-        let mut writer = store.writer();
-        let file = writer.file_id();
-        let values = &store.values;
-        let stop = std::sync::atomic::AtomicBool::new(false);
-        let stop = &stop;
-        std::thread::scope(|scope| {
-            let dropping = scope.spawn(move || {
-                let mut dropped = Vec::new();
-                while !stop.load(std::sync::atomic::Ordering::Acquire) {
-                    let retired = values.applied();
-                    dropped.extend(values.drop_empty(CommitVersion::MAX, retired).unwrap());
-                }
-                dropped
-            });
-            let mut hold = ValueHold::new();
-            let pointer = writer.append(&mut hold, page(1), b"held").unwrap();
-            writer.finish().unwrap();
-            std::thread::yield_now();
-            let mut buf = Vec::new();
-            let read = values.read(pointer, page(1), &mut buf);
-            stop.store(true, std::sync::atomic::Ordering::Release);
-            let dropped = dropping.join().expect("the reclaimer ran");
-            assert!(
-                read.is_ok() && !dropped.contains(&file),
-                "round {round}: the file went while its value was held"
-            );
-            drop(hold);
-        });
-        store.all_durable();
-        assert_eq!(store.drop_empty(0), [file.get()]);
-    }
+    let mut writer = store.writer();
+    let held = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let appended = held.clone();
+    crate::values::file::between_checks::set(move || {
+        let mut hold = ValueHold::new();
+        let pointer = writer.append(&mut hold, page(1), b"held").unwrap();
+        writer.finish().unwrap();
+        *appended.borrow_mut() = Some((hold, pointer));
+    });
+
+    store.all_durable();
+    assert!(
+        store.drop_empty(0).is_empty(),
+        "the file was open when the store asked, and held when it was closed"
+    );
+    let (hold, pointer) = held.borrow_mut().take().expect("the writer ran");
+    assert_eq!(store.read(pointer, 1).unwrap(), b"held");
+    assert_eq!(hold.files().collect::<Vec<_>>(), [file_id(1)]);
+    assert!(store.drop_empty(0).is_empty());
+    drop(hold);
+    assert_eq!(store.drop_empty(0), [1]);
 }

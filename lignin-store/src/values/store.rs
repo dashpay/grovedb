@@ -867,10 +867,6 @@ impl ValueStore {
         let unreachable: Vec<Arc<ValueFile>> = {
             let mut counts = self.counts_mut();
             let through = counts.durable.min(retired.change);
-            // Whether the file is closed is asked before whether it is held:
-            // a writer takes a hold before it appends and closes the file
-            // after, so a file that is closed and then found without a hold
-            // has none coming.
             let ids: Vec<FileId> = counts
                 .accounts
                 .iter()
@@ -879,8 +875,7 @@ impl ValueStore {
                     !account.is_counted()
                         && account.emptied.change <= through
                         && account.emptied.version <= oldest_pin
-                        && counted.file.is_closed()
-                        && !counted.file.is_held()
+                        && counted.file.is_closed_and_free()
                 })
                 .map(|(&id, _)| id)
                 .collect();

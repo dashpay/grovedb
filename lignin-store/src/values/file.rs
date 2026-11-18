@@ -244,6 +244,18 @@ impl ValueFile {
         self.holds.fetch_sub(1, Ordering::AcqRel);
     }
 
+    /// Whether the file is closed and no hold is on it, now and from now on.
+    ///
+    /// Whether it is closed is asked first. A writer takes a hold before it
+    /// appends and closes the file after its last value, so a file that is
+    /// closed and then found without a hold has none coming.
+    pub(super) fn is_closed_and_free(&self) -> bool {
+        let closed = self.is_closed();
+        #[cfg(test)]
+        between_checks::run();
+        closed && self.holds.load(Ordering::Acquire) == 0
+    }
+
     pub(super) fn is_held(&self) -> bool {
         self.holds.load(Ordering::Acquire) != 0
     }
@@ -321,5 +333,26 @@ impl ValueFile {
         life.has_writer = false;
         self.appendable.store(false, Ordering::Release);
         self.settle(&mut life);
+    }
+}
+
+/// What a test has happen between the two questions of
+/// [`ValueFile::is_closed_and_free`], on the thread that asks them.
+#[cfg(test)]
+pub(super) mod between_checks {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static NEXT: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+    }
+
+    pub(in crate::values) fn set(then: impl FnOnce() + 'static) {
+        NEXT.with(|next| *next.borrow_mut() = Some(Box::new(then)));
+    }
+
+    pub(super) fn run() {
+        if let Some(then) = NEXT.with(|next| next.borrow_mut().take()) {
+            then();
+        }
     }
 }
