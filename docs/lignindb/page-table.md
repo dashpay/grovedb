@@ -436,12 +436,13 @@ was. Such a chain still holds every change up to *C*, but it cannot give the
 page as a commit between *C* and that image left it. With the log durable
 through "reaches", recovery never asks for that.
 
-FL4 offers a second way, in which recovery removes the page versions born
-after the version it lands on. The table has the operation (T12), and it is
-not enough by itself: it gives the table of that version only if the links
-that the removed ones replaced are still in their chains, which nothing
-here makes sure of. A recovery that finds a link above the version it lands
-on has found this rule broken.
+FL4 first offered a second way, in which recovery removes the page versions
+born after the version it lands on, and has dropped it for the reason given
+here. The table has the operation (T12), and it is not enough by itself: it
+gives the table of that version only if the links that the removed ones
+replaced are still in their chains, which nothing here makes sure of. A
+recovery that finds a link above the version it lands on has found this rule
+broken.
 
 **K5. A checkpoint is taken while the table changes.** Each chain is copied
 in one step (T16), and different chains at different moments. This is sound
@@ -520,7 +521,7 @@ the same id is.
 
 **K12. A checkpoint carries a sample of the value log's counts** (the
 owner's decision D-042). The value log keeps, for each of its files, the
-count of live values, and that count "commits and recovers with the pages"
+count of live values, and that count "is recovered with the pages"
 (`value-log-format.md` O7): recovery starts from a sample of the counts and
 applies the changes that the log holds after the sample's place. The sample
 is stored here so that recovery has one thing to name: the checkpoint the

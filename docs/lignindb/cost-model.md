@@ -193,7 +193,7 @@ removed_bytes        += (32 + key_len) + v + varint(32 + key_len) + varint(v)   
       v = the length of the record the committed state holds under the key, 0 if it holds none
 ```
 
-What the transaction itself has written does not count. A key it created and has not committed is absent: two seeks, no loaded bytes, and the stored key with its varint plus one byte removed. A record it replaced is charged at the length of the committed record it replaced, not of the one it wrote. For a node, `v` is the `record_len` of the node as committed. This is the one read of the write path that does not go through the transaction ([transactions.md](transactions.md), GM0 and RD2).
+What the transaction itself has written does not count. A key it created and has not committed is absent: two seeks, no loaded bytes, and the stored key with its varint plus one byte removed. A record it replaced is charged at the length of the committed record it replaced, not of the one it wrote. For a node, `v` is the `record_len` of the node as committed. This is the one read of the write path that does not go through the transaction. It is the committed read of the transaction rules ([transactions.md](transactions.md), RD10; GM0 says where it is made).
 
 It is what these are charged on a deferred handle: every record removed by `clear` (C4), which is how GroveDB empties the keyspace of a deleted or cleared append-only tree and of an indexed tree's secondaries; every node removed by `Merk::clear`; every node removed by the visitor that deletes a subtree without opening its Merk (`delete_internal_on_transaction/v2.rs`); `delete_aux` when the caller gives no cost; the meta deletes; and the removal of a base root key outside a commit (`set_base_root_key(None)`).
 

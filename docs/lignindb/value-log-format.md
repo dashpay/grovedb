@@ -287,10 +287,14 @@ be live for an open snapshot or a checkpoint (O8).
 ### 5.3 The move rule
 
 **O5. A cell that is carried to another page takes its value with it.**
-Whoever moves a cell that holds a value pointer to another page appends
-the value again, with the new page as its owner, and stores the new
-pointer in the moved cell, in the same commit. The old records are then
-dead.
+A cell that holds a value pointer and is moved to another page gets a
+record of its own for the value: the value is appended again, with the new
+page as its owner, and the moved cell holds the pointer to that record,
+never the old one. The commit that moves the cell makes it stop holding
+the old pointer and carries the value in its log group. Write-back appends
+the value and stores the new pointer, as for any new value (rule FL7 of
+[`transactions.md`](transactions.md)). The old records are dead from that
+commit.
 
 Under O5 no back pointer is stale at any commit version, and a miss means
 dead. O5 applies to a move between pages only. Rewriting a cell where it
@@ -320,15 +324,19 @@ be the only thing between a moved cell and a lost value.
 
 **O7. The count belongs to a commit version.** It is the count of the
 latest committed version, and it changes together with the cell change
-that causes it, never earlier. A cell change that a transaction makes
-changes the count in that transaction's commit. A value that the cleaner
-moves takes no commit version: its pointer rewrite and the counts of both
-files are installed in one checked step and are recovered with the pages
-(rules PV6 and PV7 of [`transactions.md`](transactions.md)). A count that
-ran ahead of the pages could reach zero while a committed cell still points
-into the file. After a crash the count is that of the version recovery
-lands on: it is recovered with the pages, from the same log, or counted
-again from them.
+that causes it, never earlier. A cell that a transaction makes stop holding
+a pointer counts as one fewer in that transaction's commit. A value the
+transaction writes has no pointer at its commit: write-back gives the cell
+the pointer, and the value counts as one more from the checked step that
+does so. A value that the cleaner moves is counted in such a step as well,
+one fewer in the old file and one more in the new. Neither step takes a
+commit version: the pointer and the counts are installed together and are
+recovered with the pages (rules PV6, PV7 and FL7 of `transactions.md`). A
+count that ran ahead of the pages could reach zero while a committed cell
+still points into the file. After a crash the count is that of the version
+recovery lands on: it is recovered with the pages, from a sample stored
+with the page table's checkpoint and the changes the log holds after the
+sample's place (rule DU5 of `transactions.md`).
 
 **O8. A file outlives every version that can reach it.** The count speaks
 for the latest version only. A snapshot pins an older one, in which a cell

@@ -639,16 +639,19 @@ never visible to the caller (LT1): no scope fails or waits for another
 because of it.
 
 **T6. No rule keeps the Merks of different scopes apart.** `transactions.md`
-offers that as an alternative ("TREE-01 may instead guarantee that Merks
-written by different scopes never share a page"). It is not taken: a scope
-cannot know which other Merks a later scope will claim, and keeping every
-Merk on pages of its own doubles the pages dirtied (section 14.4).
+first offered that as an alternative ("TREE-01 may instead guarantee that
+Merks written by different scopes never share a page"). It was not taken,
+and its LT4 now says so: a scope cannot know which other Merks a later scope
+will claim, and keeping every Merk on pages of its own doubles the pages
+dirtied (section 14.4).
 
-To settle with TXN-01 and TXN-09: T3 needs the directory entry of a Merk to
-belong to that Merk's unit of exclusion (SC2) and the pending marks to be
-visible to the tree layer, and LT4's second application needs the tree layer
-to be able to run a change set against a page that another scope has
-rearranged. Section 17, item 10.
+`transactions.md` states what this section needs of the transaction layer.
+The directory entry of a Merk belongs to that Merk's unit of exclusion
+(SC2). The tree layer can ask whether a host's element is marked pending
+(SC9). LT4's second application goes through the tree layer, which runs a
+change set against a page that another scope has rearranged, and which can
+ask whether another open scope has claimed a unit, as T2 needs (LT4).
+Section 17, item 10.
 
 ## 11. Dropping a subtree
 
@@ -1181,12 +1184,13 @@ owner can overrule one before FMT-02 and TREE-03 build on it.
     on, plus the small hosted fragments that travel with them, unless
     another open scope claims those", with a root whose host the scope does
     not hold staying where it is. Three things are needed from the
-    transaction layer and are not yet stated in `transactions.md`: the
-    directory entry of a Merk belongs to that Merk's unit, so the scope that
-    holds the Merk can write it (T3); the tree layer can ask whether a
-    host's element is marked pending (T3); and LT4's second application of a
-    scope's writes goes through the tree layer, because the cells it wrote
-    may have been carried by the scope that merged first.
+    transaction layer. They were not stated in `transactions.md` when this
+    task reported, and are now its SC2, SC9 and LT4: the directory entry of
+    a Merk belongs to that Merk's unit, so the scope that holds the Merk can
+    write it (T3); the tree layer can ask whether a host's element is marked
+    pending (T3); and LT4's second application of a scope's writes goes
+    through the tree layer, because the cells it wrote may have been carried
+    by the scope that merged first.
 11. **The inline threshold is taken as 256 bytes.** TREE-08 owns it. It must
     stay below the size of the documents: at 512 bytes the reference
     workload dirties 8.7 pages (14.4).
