@@ -1,0 +1,357 @@
+lignin-golden-trace 1
+name index-aggregates
+seed 0x1
+grove-version 1
+engine 22f163c2b82d9bc5c985a77034529a32ef9a7c04
+workload index-aggregates
+ccd39rf719
+  step 0
+  # Write(Insert { path: [], key: [68], element: tree: None })
+  cost seeks=3 loaded=0 added=109 replaced=0 removed=- hashes=3 sinsemilla=0
+  root 6244812fc476993e4d4d58a781dae3e1378422a143e4c97378fe163786e9b1c2
+c2d43rcef2
+cd6edr05d5
+c377crcf4d
+cc85br2764
+c2e36r1eb5
+c17a7r5c46
+  step 6
+  # Batch([InsertOnly { path: [[68], [183, 162, 210, 138, 203, 224, 248, 107, 225, 17, 139, 115, 31, 70, 171, 157, 57, 235, 227, 228, 58, 62, 194, 203, 85, 226, 170, 254, 184, 153, 141, 199], [1], [111, 114, 100, 101, 114]], key: [99, 97, 116, 101, 103, 111, 114, 121], element: provable_count_tree: None 0[hex: 000000, str: \u{0}\u{0}\u{0}] }, InsertOnly { path: [[68], [183, 162, 210, 138, 203, 224, 24… (1360 characters)
+  cost seeks=22 loaded=875 added=534 replaced=512 removed=- hashes=57 sinsemilla=0
+  root 790eec4f2c36e68f92e22366569bc0b44a060736b4896fbb2a60ee40a6123a63
+cb7ddr5c46
+  step 7
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 790eec4f2c36e68f92e22366569bc0b44a060736b4896fbb2a60ee40a6123a63
+c1f0cr2110
+c8f9drc604
+ca5afre91c
+cb30brfad3
+c814frb3f4
+c5628r69fb
+c01b3r1b03
+cf0d3r3c95
+c5575rfed7
+cda77reddb
+c5b80rcafa
+c162crd9d0
+c8f11r4773
+c76c9rb7c0
+c2086rd9ea
+c27f0rf424
+cb7ddrf424
+c8ed6v590d
+  step 25
+  # Read(PathQuery { query: PathQuery { path: [[68], [183, 162, 210, 138, 203, 224, 248, 107, 225, 17, 139, 115, 31, 70, 171, 157, 57, 235, 227, 228, 58, 62, 194, 203, 85, 226, 170, 254, 184, 153, 141, 199], [1], [111, 114, 100, 101, 114], [99, 97, 116, 101, 103, 111, 114, 121]], query: SizedQuery { query: Query { items: [AggregateCountOnRange(RangeInclusive([6]..=[10]))], default_subquery_branch: Sub… (640 characters)
+  cost seeks=8 loaded=945 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  result aggregate-count
+  count 9
+cd9b0v3c04
+  step 26
+  # Read(PathQuery { query: PathQuery { path: [[68], [183, 162, 210, 138, 203, 224, 248, 107, 225, 17, 139, 115, 31, 70, 171, 157, 57, 235, 227, 228, 58, 62, 194, 203, 85, 226, 170, 254, 184, 153, 141, 199], [1], [111, 114, 100, 101, 114], [97, 109, 111, 117, 110, 116]], query: SizedQuery { query: Query { items: [AggregateSumOnRange(Range([0, 0, 0, 0, 0, 0, 0, 200]..[0, 0, 0, 0, 0, 0, 8, 52]))], defau… (663 characters)
+  cost seeks=11 loaded=1456 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  result aggregate-sum
+  sum 11300
+c94d6v42d6
+  step 27
+  # Read(PathQuery { query: PathQuery { path: [[68], [183, 162, 210, 138, 203, 224, 248, 107, 225, 17, 139, 115, 31, 70, 171, 157, 57, 235, 227, 228, 58, 62, 194, 203, 85, 226, 170, 254, 184, 153, 141, 199], [1], [111, 114, 100, 101, 114], [115, 99, 111, 114, 101]], query: SizedQuery { query: Query { items: [AggregateCountAndSumOnRange(RangeFrom([11]..))], default_subquery_branch: SubqueryBranch { sub… (623 characters)
+  cost seeks=6 loaded=774 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  result aggregate-count-and-sum
+  count 2
+  sum 22
+c4c80v308a
+  step 28
+  # Read(PathQuery { query: PathQuery { path: [[68], [183, 162, 210, 138, 203, 224, 248, 107, 225, 17, 139, 115, 31, 70, 171, 157, 57, 235, 227, 228, 58, 62, 194, 203, 85, 226, 170, 254, 184, 153, 141, 199], [1], [111, 114, 100, 101, 114], [36, 111, 119, 110, 101, 114, 73, 100]], query: SizedQuery { query: Query { items: [Key([29, 169, 202, 144, 35, 188, 208, 89, 182, 20, 6, 164, 189, 126, 149, 242, 1… (1218 characters)
+  cost seeks=12 loaded=1444 added=0 replaced=0 removed=- hashes=12 sinsemilla=0
+  result aggregate-count-and-sum-per-key
+  keys 2
+  item 0x1da9ca9023bcd059b61406a4bd7e95f27e33c04265881e7d13c442df68d8b2f5 0 0
+  item 0xe9e027dd5bad67eb0a0321077368bfb6d34610437f1fd76857a3488fba4295fc 3 9
+c5948r52ef
+c3813r8f92
+cba93rc722
+cac0drbfe1
+cadbar4e54
+c4fbercac6
+c90d9r26fd
+cd988rf787
+ce692r83c9
+cf59fr7475
+c7eddr35bf
+c431er3699
+c16dcr79f5
+c7ca9r0067
+cc7d8rf021
+cdd67r5cda
+cb7ddr5cda
+cd0b1v3ac4
+  step 46
+  # Read(Get { path: [[68], [183, 162, 210, 138, 203, 224, 248, 107, 225, 17, 139, 115, 31, 70, 171, 157, 57, 235, 227, 228, 58, 62, 194, 203, 85, 226, 170, 254, 184, 153, 141, 199], [1], [111, 114, 100, 101, 114], [116, 97, 103]], key: [5] })
+  cost seeks=3 loaded=399 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  element 06010100040103000000
+ca9ffv45ce
+cf6d2v45ce
+c97aar2686
+cad95r14f1
+c27ecr0153
+c38fcr894b
+ca450rb04e
+cc101rcbea
+c73b6r2b58
+ca83ar3354
+c8b42rce6a
+c0886r88e7
+c264er54cd
+cc32dr9383
+cf133rdaba
+caf65rf534
+ca13dr7d50
+c19c9r9880
+cb7ddr9880
+c9d77v8fe2
+ceaa8v6d3d
+c86bav06fd
+cbf19v03cd
+c869brc270
+c6eb9r891e
+c63a9rfc91
+c669frc265
+c403fr2eb7
+cde9er6fcf
+ce889r6851
+c1dc8rd338
+c67b9ra9a6
+cd5e7rf1c5
+c0006r6121
+c3fd4r6872
+c9e3ar002b
+c3d3crc9eb
+ce16drbee9
+caa66rfc30
+cb7ddrfc30
+cd0b1v4971
+cd0b1v4971
+ca9ffvdd32
+ca9ffv3ac4
+ca9c4r81a1
+c84a7r0b1e
+cbb1dr62c6
+c561frd52c
+c851cr5bc7
+c1870r469c
+c02e7r0ab4
+c6a62rb680
+c0958r728c
+c2b26rb19b
+ce6a5r1da3
+cfb22r40cb
+c2aacr34b8
+cb8edrf7c6
+cd5fdra57f
+ca259r7397
+cb7ddr7397
+c11ccvd27e
+c7b35vd1c5
+c253fv14a6
+c2685vf931
+  step 111
+  # Read(PathQuery { query: PathQuery { path: [[68], [183, 162, 210, 138, 203, 224, 248, 107, 225, 17, 139, 115, 31, 70, 171, 157, 57, 235, 227, 228, 58, 62, 194, 203, 85, 226, 170, 254, 184, 153, 141, 199], [1], [111, 114, 100, 101, 114], [36, 111, 119, 110, 101, 114, 73, 100]], query: SizedQuery { query: Query { items: [Key([0, 137, 16, 225, 23, 45, 178, 201, 38, 208, 104, 59, 65, 119, 72, 226, 253,… (1070 characters)
+  cost seeks=10 loaded=1358 added=0 replaced=0 removed=- hashes=6 sinsemilla=0
+  result aggregate-sum-per-key
+  keys 1
+  item 0x008910e1172db2c926d0683b417748e2fdf94de8d7ca5f2e275f633ac2456d82 16400
+ce045rc26d
+cf68drf938
+c0fbbr0876
+c776er9e28
+ca2a9r8933
+c49b2r2983
+cc502r1b72
+ca0bar0dd7
+ca3eare42b
+c8baar7aff
+c4d30r70da
+c8ac0r2a39
+c063erc7ff
+c275drb7c4
+c48d7r9d5d
+cf8bdrb1ca
+cb7ddrb1ca
+ca9ffv60de
+cd0b1v3f27
+cd0b1v83de
+cf6d2v83de
+c421ar318a
+cc552r1867
+cc52cr557c
+c85car6956
+cac21rb689
+c4056rafac
+c4ebdre96e
+cd416rec8f
+cf1b8r50e4
+c4b08rf1c8
+ce892ra644
+c6248r67cd
+c692arf8b8
+cce05rbbea
+c7f04re073
+cdcd7r2d8e
+cb7ddr2d8e
+c8fb5v2157
+cd352v98aa
+c304fv46e1
+c7104v56cf
+  step 153
+  # Read(PathQuery { query: PathQuery { path: [[68], [183, 162, 210, 138, 203, 224, 248, 107, 225, 17, 139, 115, 31, 70, 171, 157, 57, 235, 227, 228, 58, 62, 194, 203, 85, 226, 170, 254, 184, 153, 141, 199], [1], [111, 114, 100, 101, 114], [36, 111, 119, 110, 101, 114, 73, 100]], query: SizedQuery { query: Query { items: [Key([44, 221, 220, 41, 57, 129, 117, 17, 190, 189, 108, 251, 3, 211, 79, 113, 9,… (1062 characters)
+  cost seeks=10 loaded=1250 added=0 replaced=0 removed=- hashes=6 sinsemilla=0
+  result aggregate-count-per-key
+  keys 1
+  item 0x2cdddc2939817511bebd6cfb03d34f7109bb0ca4cb7ed950aa89d6ff761f20c5 3
+ccf80r6809
+c2698r08f1
+c8030r6c39
+cb231rcc1b
+c73dfr7523
+ce401ra08d
+c721cr1e8c
+c7119r69c5
+c6725r01e6
+c97f8r2506
+cbdcdr2ecd
+cc718rc2ea
+cf516reb2d
+c6324rdf21
+cfb6fr0bb8
+ce072r8f11
+cb7ddr8f11
+ca9ffvdffe
+ca9ffvdffe
+ca9ffv9e73
+cf060v539f
+ce034rf467
+ca792rc9ee
+ca023r48fe
+c0873r5faa
+c1834r2ed1
+c5f2areeef
+cfb62r139c
+c2192r8604
+c8cc4r0e8e
+c14c5rd3d0
+c3d4cr2a7c
+c1683re0f8
+cf8a1r39ac
+c1697r3517
+cc2fdra038
+c75a7rf77f
+cb7ddrf77f
+c11ccv2e09
+c7b35v80ee
+cd1c4vfeef
+cc7a1vd73b
+c5145rb02e
+c7620r4b3a
+c9551r2d4f
+cf00br3e8d
+cd889r9e1b
+cbbc6r742f
+ca78dr64ce
+cc039r6315
+cf55ar207e
+ce56fr9a3c
+ce208r77b2
+c5d55rfee1
+c0ff6r45c7
+c934ar2577
+ce06br79c8
+c8b3arb889
+cb7ddrb889
+cf060v8049
+cd0b1v539f
+cf060v8049
+cf060v8049
+c4d17rac6d
+cd2b3r2b58
+cceedre5b0
+c1c55re31b
+c880erb3de
+c0425r4762
+c3356rde5e
+cb8barffae
+cbb2dr8414
+c818cra51a
+cb490rde18
+c7049r4a65
+c52aerc32e
+c51bdrfb0c
+c9c8br30a8
+c9a37r4496
+cb7ddr4496
+c6c26v658e
+c3c9bv7a49
+c5692v50ac
+c2435v6e1c
+c7208ree50
+c3829r0274
+c8b3drf992
+c3ee1r8317
+c13bdr6d9f
+c2712r5fa2
+c2478r68de
+cc938rff27
+c5f39r3009
+c2de7rebd4
+c9df0r742f
+ca912rfdc9
+c2369r0345
+ceafer172f
+c03b3r4c6e
+c7e77reb13
+cb7ddreb13
+ca9ffv4971
+ca9ffv539f
+ca9ffv4971
+ca9ffv4971
+c3f6cr0193
+c341er3398
+c072ar76c5
+c4cbbrbf5f
+ce455racd8
+c8dd2r2484
+cf92cr3d17
+ca278r8f69
+cc994rf31e
+ccdedr274e
+c851erf67a
+cd13fra4e2
+ccb8fre7e9
+c650frc7e6
+c0d40r0c27
+c8aa8r0f2e
+cb7ddr0f2e
+c6c26v6bf1
+c0d68v5682
+c736bv3c3e
+cd5efvb6d7
+c76d6racb0
+cfba7rb039
+cf3bcrcdbd
+cdcf7rfb11
+c65cara39c
+c5e6fr220a
+c1b15r7df9
+caf1cr8898
+c7592rcf2e
+c2aaar8def
+c45c5r994d
+c466brc803
+cb7ddrc803
+ca9ffv74d9
+cd0b1v83de
+ca9ffv9e73
+cf060v19e8
+stream 297 5cc1421f32ea3dce8d9e75bf3b8f38dec607395f6a5bdac3c20565892e3f3c4a
+tally failed=0 unproved=0 unverified=0
+end 297 49fabcc2ceca3d4947207202806d529a58f0546d3856fe8d0512c400101e0828

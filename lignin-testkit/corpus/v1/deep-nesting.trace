@@ -1,0 +1,417 @@
+lignin-golden-trace 1
+name deep-nesting
+seed 0x1
+grove-version 1
+engine 22f163c2b82d9bc5c985a77034529a32ef9a7c04
+workload deep-nesting
+ceda8r7606
+  step 0
+  # Write(Insert { path: [], key: [100, 101, 101, 112], element: tree: None })
+  cost seeks=3 loaded=0 added=115 replaced=0 removed=- hashes=3 sinsemilla=0
+  root ac8d6b0de99cdc296b2daa8a4aa2c0670e465228f2615e6fcd09ba91bc0ffa2f
+cb7ddr7606
+  step 1
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root ac8d6b0de99cdc296b2daa8a4aa2c0670e465228f2615e6fcd09ba91bc0ffa2f
+cc3ccr0f49
+c3b25r28c8
+cb781r9d6e
+c9924r3cf8
+ceb45r9f31
+c2b89r9696
+c6369rb810
+c3881r0150
+c1d22rec80
+c9af6r33c7
+c0530rd44f
+cfbfer1390
+c9401r0a84
+c8511r1129
+cf142racf4
+c1d4br74b8
+cf752r91cd
+c73cbr49fc
+cee4arb76c
+cb57ere40b
+c42b0r4ec1
+c8e09r47c5
+c58d7ra39c
+cb557rb253
+c8032r92b7
+c8f19rad75
+c0160r6f53
+cd7ecr090a
+c9326r0910
+c69d5r3e6e
+cc53cr1975
+c366dr6595
+ca5c4r7971
+c16e0r30b1
+c4201r7172
+c63dcr4eb1
+c2fdar30b3
+c4700ra4fb
+c9c1br19e7
+c2291r363f
+c16c2r3fe6
+c2dddr516e
+c1f7dra661
+ceb2ar468a
+c46b9r119e
+c2a8cr790e
+cad88rdbb7
+c3eber5c0f
+c440br24b1
+c4163re55c
+ce254r09ff
+c3120r1625
+c0fc6r6526
+c0dd7rae6b
+c1179rc4e7
+c1b1cr84d2
+c7e22r6d51
+c8a2fr2f48
+c21d5r68f6
+c8ba3r90dc
+cc6d6rb3b8
+cea0breb3f
+c5fb6rfeb2
+caf3br1a20
+c28acr3c0e
+c5824rab4d
+cee59r7ca5
+cf089r01fe
+c06bbrdd61
+c60abrf4a1
+cc506r3160
+c77c1r7c18
+cb3b8r2fc3
+ca001r2176
+c2d84rc17a
+c8ff7r42b4
+cf512re845
+ceb30r2beb
+ce526r3222
+cf389rdd6a
+c772ar8c84
+cdb6fr3f7c
+cbb2ar47cf
+c3520r2f5a
+c786ar84fb
+cb02dr7436
+c7155r9f0c
+ce448rdb84
+cfd39r3a33
+c1efcr8b53
+c4edcr2467
+c10a1r6fbe
+ce78dr2ad7
+c6f7ard7d6
+cf22erd1ba
+ce9ebr0011
+c25f1r0f16
+cf4bdr8d12
+c8b5drdc7e
+ca008r4185
+c3bfar6539
+ce4d7r6b99
+c05acr2a36
+c7ef4r1bb6
+c9ef7r12a3
+c8a3cra0c5
+cbc66rec1d
+c5642rdf6e
+cc2dar2997
+c93e6rc855
+c9592r2ba6
+ca99ar42e3
+cac16r23d0
+c47car9a07
+ca8e3r9275
+c74a1r1c50
+c6b2ard33d
+c82a5r9cd6
+cf96br477c
+c45b7rff73
+c262dr4638
+ca622r94d1
+cbe14rbe2c
+c5305r9fdc
+ca532rae3a
+c7e7fr9b48
+cb8c2r90f6
+cbf4dr3fdc
+c4a94ra76d
+c984brf3cd
+cce78r68ae
+cb7ddr68ae
+c9ae3vbd8b
+  step 134
+  # Read(Get { path: [[100, 101, 101, 112], [99, 104, 97, 105, 110, 45, 48], [14, 148, 235], [211, 140, 125, 224], [82, 227, 207, 189, 236, 176], [86, 155, 140], [216, 175, 5], [61, 229], [223, 215, 143, 110, 14, 71, 144, 108, 116], [114, 12, 162, 89, 69, 48, 221, 250, 61, 247, 92, 89, 100], [48, 93, 90, 237], [157, 208, 198, 140, 106, 68, 115, 11, 251, 233, 123, 149], [125, 5, 50, 158, 131, 165, 120,… (2481 characters)
+  cost seeks=3 loaded=395 added=0 replaced=0 removed=- hashes=18 sinsemilla=0
+  element 0016336cd4babaee4c3f156a52fdb4cdbdc1048e4b571b7b00
+c71d1v5168q9d0bpd154
+c0d96rde2a
+c621cr2fa7
+  step 137
+  # Batch([Replace { path: [[100, 101, 101, 112], [99, 104, 97, 105, 110, 45, 48], [14, 148, 235], [211, 140, 125, 224], [82, 227, 207, 189, 236, 176], [86, 155, 140], [216, 175, 5], [61, 229], [223, 215, 143, 110, 14, 71, 144, 108, 116], [114, 12, 162, 89, 69, 48, 221, 250, 61, 247, 92, 89, 100], [48, 93, 90, 237], [157, 208, 198, 140, 106, 68, 115, 11, 251, 233, 123, 149], [125, 5, 50, 158, 131, 165… (2514 characters)
+  cost seeks=203 loaded=13714 added=0 replaced=6190 removed=50 hashes=974 sinsemilla=0
+  root f48887fc61e0bf876d57cd5bd5c1a431c34b8fb6fd58deb9e20622cbbebd8f16
+ca6ferc90d
+cb7ddrc90d
+cdd08vf610q71f4p3685
+c54d7r39b2
+  step 141
+  # Write(Delete { path: [[100, 101, 101, 112], [99, 104, 97, 105, 110, 45, 48], [14, 148, 235], [211, 140, 125, 224], [82, 227, 207, 189, 236, 176], [86, 155, 140], [216, 175, 5], [61, 229], [223, 215, 143, 110, 14, 71, 144, 108, 116], [114, 12, 162, 89, 69, 48, 221, 250, 61, 247, 92, 89, 100], [48, 93, 90, 237], [157, 208, 198, 140, 106, 68, 115, 11, 251, 233, 123, 149], [125, 5, 50, 158, 131, 165, … (2485 characters)
+  cost seeks=205 loaded=14070 added=0 replaced=6078 removed=172 hashes=986 sinsemilla=0
+  root 2559f823575fb4c6e088c7ce4a0c52d2a4aa69d5a5cab8137ea7f6d6cafc633a
+cb454r34e0
+c5465r1083
+cf71er90f6
+cbbb6re714
+cae13rae3a
+c9b93r606e
+cc85frbe2c
+cd71brcd47
+c7ce1r4638
+c014erd6e7
+c247er477c
+c5641rd6f1
+cecefrd33d
+c93adrfd7d
+c64adr9275
+cdef0r7cf6
+c3f8er23d0
+c13ccr22b2
+cebe4r2ba6
+ca74fr5411
+cf1ddr2997
+cb1earbba7
+cdd28rec1d
+cd618r376f
+c7e9ar12a3
+c9e88r327e
+c9372r2a36
+c555arc320
+cacf1r6539
+c4e81r7aa7
+c0917rdc7e
+c86c2r329f
+cfc29r0f16
+c5db4r9286
+c54d6rd1ba
+c8ba0r13c0
+c3fb9r2ad7
+c675brfe79
+c6c00r2467
+cc6b9r4826
+c0c67r3a33
+cf9f7r27a5
+c7836r9f0c
+c1953rfdc9
+c6f20r84fb
+cf290r187e
+cba4br47cf
+c4477rdec4
+cf800r8c84
+c2a1fr7f69
+c0d72r3222
+cd740ree18
+c5c7bre845
+c69a3rd6fc
+c5702rc17a
+c77c3r6d97
+cb2acr2fc3
+c63bfr06a4
+c8c98r3160
+cec8ar761c
+cda85rdd61
+c7585r4d2b
+cb549r7ca5
+c7b00r6ab2
+cb7ddr6ab2
+c484evb01fqa8bep5d10
+c88e0r7606
+cb7ddr7606
+c95dbvb18bq96fap6d12
+  step 210
+  # Read(Query(Query { path: [[100, 101, 101, 112]], items: [RangeFull], subquery_path: None, subquery_all: false, limit: None, left_to_right: true, raw: true }))
+  cost seeks=1 loaded=288 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  rows 0
+  prove-cost seeks=2 loaded=74 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  proof 47 002b0404646565700003020000651929e1747381a16157515e5447625502f3a79843859a0a929d24c605c0b23a0001
+  verification verified
+c5d79re6c1
+cb7ddre6c1
+ca465v1e3d
+c13b7v246cqd251p94fb
+c8e57raa82
+cd603r032f
+c941cr6b88
+cb7ddr6b88
+c167cvb5e5q49f5pd8f1
+c39f8r7606
+cb7ddr7606
+c95dbvb18bq96fap6d12
+cc3ccrb5c8
+c6cf0r018c
+ceb4dre862
+c4e7frca51
+cd072r1459
+c3357r4de1
+c753cr8d8b
+c762brb95d
+cae01r66ca
+ca382r01c0
+c612cr7be7
+cc1a2rc0d0
+c7ba7reeff
+c599ar6c61
+c0578r77a0
+cb829r15d3
+cc5d0r490c
+c8181r0b17
+c7256rc520
+ccdcdrc997
+ca9b8r3ca8
+c9fb7r907f
+cb378r54ce
+cbdd7r8f45
+c443brcd84
+c81e6r1dba
+c908er4ff7
+c131fr957a
+c1b87r2d35
+cafc0r35d6
+c5816r3ec5
+c23b1r49fd
+c487braebe
+cefd2r0505
+c1273r8f5d
+c73e0r7b01
+c23c8r6e21
+c895fr15db
+cd88ar4738
+c4d45r9759
+c805arae99
+c0199r5e53
+c3c15r8b59
+c2a92rc2a1
+c4a0ereed8
+c1adcrf20c
+cf3c4r2727
+c77fered8d
+cc069r5343
+cfb4cr26ac
+c3ee5rf725
+cd1a6rd742
+c9d58rf293
+cdbe1r186f
+c48dfr667d
+cf0eer1215
+cbed7rd137
+ccd55ra967
+c2b23r970c
+cd9cfr66d3
+c4c15r426a
+cbb57r1c14
+c6fabr75e0
+cdec0r067d
+cf1b0rc954
+cdb26r1e40
+cbdf8rcb84
+cc932r3233
+cac19r59ab
+c4795r87e6
+ceeb4r8491
+c2934ra2cd
+c983ar9176
+ce2b0reb7a
+cc3f0r89ac
+c5ed7re58c
+cdc3br3898
+c03d0r8319
+cdd40ra14a
+c3430r9b27
+c5cccr329d
+cc1bfre7e2
+ce328r76f6
+cc5b3ra947
+cefc0r8b40
+c234er57db
+cf13br45d8
+c61b3rc42a
+ca6f4r94b9
+cbccdr22c8
+c8e14rffe0
+c2eb3r8610
+cd16dr3875
+c20a5r2fef
+c8dcdr369f
+ccbc6r338c
+cbe96r702d
+c648br7159
+cd051r400a
+ce9e1r09f3
+cfe5er1216
+c5da2r0c4c
+c354dre931
+cd867r580d
+cb0c7rfc7d
+cbbd9r610e
+c2ec3r11cc
+c46e7ra8ed
+c2fc0r2e2c
+cda91r2603
+c4244r6d95
+c4ca9r108d
+c001brd381
+c7eaar431f
+c2a09r44e7
+cd7f1r87cd
+c552araf2a
+c3aa7r7a1c
+c866fr1ca5
+c67fercfe7
+c55c2rc99c
+c1e08r6f9a
+c2441r3e3f
+c0146rc2a5
+cc160r55bc
+cd265r6cc1
+caf6ar940b
+ca6dcra931
+cdde2r2ed9
+c19f2r6a8c
+c61b3readf
+cb7ddreadf
+c5d77vab4b
+c4fdevcbd7q2299p0678
+c2b28r8465
+cb902r2293
+c1b27r9ef8
+cb7ddr9ef8
+cfc69vb403q5a0ap5c39
+cb7ddrc954
+  step 362
+  # Write(ClearSubtree { path: [[100, 101, 101, 112], [99, 104, 97, 105, 110, 45, 50], [177, 238, 79, 234, 247, 68], [11, 194, 211, 250, 134, 10, 77], [86, 79, 216, 123, 156, 250], [213, 209, 149, 74, 2, 157, 208, 125, 103, 113, 172], [124, 181, 41, 209], [249, 71, 49, 229, 178, 161, 0], [5, 28, 152, 218, 159, 16, 220, 50, 232, 238, 135, 253], [241, 50, 206, 50, 216, 232, 145, 194, 128, 138, 14, 129, … (1729 characters)
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root e9546cc1f1bb2b5188dbfb21000322cd37ea5e0d068eab750d98a0fe022132ab
+c5ae4r1454
+cb7ddr1454
+c84adv2581q2378pb4b5
+c05d7r2b40
+cb7ddr2b40
+c585fvc33c
+ccc20v8eb4q1d58peeab
+cc51er0674
+c13acrb7e2
+cda73r424e
+cb7ddr424e
+cc60av0577qa6c7p23f6
+cb7ddr424e
+c3efavc10aqe2a2pd1c3
+stream 377 6461d8f8cf75990e32746b1e6f2bcbb5838bf1226e33ba916c9c53372146ea8a
+tally failed=0 unproved=0 unverified=0
+end 377 2fb881230eb79afa9ccf42f1a79ceb350ea1a855a2e957c0fd3114e8b9e39b39

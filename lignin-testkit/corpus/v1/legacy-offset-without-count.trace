@@ -1,0 +1,132 @@
+lignin-golden-trace 1
+name legacy-offset-without-count
+seed 0x0
+grove-version 1
+engine 22f163c2b82d9bc5c985a77034529a32ef9a7c04
+workload legacy-offset-without-count
+cff5creb64
+  step 0
+  # Write(Insert { path: [], key: [116, 111, 112], element: tree: None })
+  cost seeks=3 loaded=0 added=113 replaced=0 removed=- hashes=3 sinsemilla=0
+  root bc7e7e6ba01aa5da8673cb316923855d015ac4198ef19223380b58a72def3171
+c3540r3400
+  step 1
+  # Write(Insert { path: [[116, 111, 112]], key: [103, 114, 111, 117, 112, 115], element: tree: None })
+  cost seeks=5 loaded=150 added=119 replaced=77 removed=- hashes=9 sinsemilla=0
+  root 0884fc72484dd1e7688715c26c1ac01ff439924ef4e8e3ce04a891c84d5773a6
+cc69br27ea
+  step 2
+  # Write(Insert { path: [[116, 111, 112], [103, 114, 111, 117, 112, 115]], key: [114, 48], element: provable_count_tree: None 0 })
+  cost seeks=8 loaded=307 added=143 replaced=157 removed=- hashes=15 sinsemilla=0
+  root 507aa22c1204203b056abaee5e66eba407e65be75b14b5e21d87582f724d69f0
+c3a1brc4b1
+  step 3
+  # Write(Insert { path: [[116, 111, 112], [103, 114, 111, 117, 112, 115], [114, 48]], key: [114, 48], element: item: [hex: 760000, str: v\u{0}\u{0}] })
+  cost seeks=11 loaded=466 added=161 replaced=242 removed=- hashes=22 sinsemilla=0
+  root 4002827e12cb91d1126801b29ceddb98a11ab07baef4bf7fd9e0873737f2e5d0
+cfeaarcc0a
+  step 4
+  # Write(Insert { path: [[116, 111, 112], [103, 114, 111, 117, 112, 115], [114, 48]], key: [114, 49], element: item: [hex: 760001, str: v\u{0}\u{1}] })
+  cost seeks=13 loaded=543 added=161 replaced=368 removed=- hashes=24 sinsemilla=0
+  root de7d2bf2c0f137586556d4181f5b3aa8730f89094162c3c67441a0e568816166
+ce1b4r57d1
+  step 5
+  # Write(Insert { path: [[116, 111, 112], [103, 114, 111, 117, 112, 115]], key: [114, 49], element: provable_count_tree: None 0 })
+  cost seeks=10 loaded=384 added=143 replaced=242 removed=- hashes=17 sinsemilla=0
+  root 97a43fd77aabe67a120037114289665158ec964ddc31cd5ed09e1a7b940afc88
+ca4bfr079e
+  step 6
+  # Write(Insert { path: [[116, 111, 112], [103, 114, 111, 117, 112, 115], [114, 49]], key: [114, 48], element: item: [hex: 760100, str: v\u{1}\u{0}] })
+  cost seeks=14 loaded=649 added=161 replaced=327 removed=- hashes=24 sinsemilla=0
+  root d7a672d6597bfa9ce5045dd91229f7636f1eec3df7f4d1e69a676c31b625b9f3
+c1546r066b
+  step 7
+  # Write(Insert { path: [[116, 111, 112], [103, 114, 111, 117, 112, 115], [114, 49]], key: [114, 49], element: item: [hex: 760101, str: v\u{1}\u{1}] })
+  cost seeks=16 loaded=729 added=161 replaced=453 removed=- hashes=26 sinsemilla=0
+  root 8749da4a12878731803f1a6bff7cfb06acf40cba13e3a6308b6400c17a535dea
+c2e8ar5db9
+  step 8
+  # Write(Insert { path: [[116, 111, 112], [103, 114, 111, 117, 112, 115], [114, 49]], key: [114, 50], element: item: [hex: 760102, str: v\u{1}\u{2}] })
+  cost seeks=19 loaded=842 added=161 replaced=579 removed=- hashes=28 sinsemilla=0
+  root ef8b35f770b656fbae521682b7712d09a264ed94600c85189747acb0e5a5213e
+c36e6r7417
+  step 9
+  # Write(Insert { path: [[116, 111, 112], [103, 114, 111, 117, 112, 115]], key: [114, 50], element: provable_count_tree: None 0 })
+  cost seeks=13 loaded=496 added=143 replaced=327 removed=- hashes=19 sinsemilla=0
+  root 57253d484b23abf8940b1efff432045d33a6cee2b7b3730e60cf514e9e944009
+c5a09r38f6
+  step 10
+  # Write(Insert { path: [[116, 111, 112], [103, 114, 111, 117, 112, 115], [114, 50]], key: [114, 48], element: item: [hex: 760200, str: v\u{2}\u{0}] })
+  cost seeks=14 loaded=687 added=161 replaced=327 removed=- hashes=24 sinsemilla=0
+  root d2779973b093aed6ff9994e9cdc2f9d73452212dc49202529239fe93c1e0bd76
+cf801rfa08
+  step 11
+  # Write(Insert { path: [[116, 111, 112], [103, 114, 111, 117, 112, 115], [114, 50]], key: [114, 49], element: item: [hex: 760201, str: v\u{2}\u{1}] })
+  cost seeks=16 loaded=767 added=161 replaced=453 removed=- hashes=26 sinsemilla=0
+  root cedff09d093670e6b1fde761c1d521b9ac2ad82d983717bd994027df49f9abb5
+cf4cbr1d17
+  step 12
+  # Write(Insert { path: [[116, 111, 112], [103, 114, 111, 117, 112, 115], [114, 50]], key: [114, 50], element: item: [hex: 760202, str: v\u{2}\u{2}] })
+  cost seeks=19 loaded=880 added=161 replaced=579 removed=- hashes=28 sinsemilla=0
+  root 655035c90ed105de443dd92bc947ff060c1032e1ad23ffd940464ce664d457e9
+c52c6rfa79
+  step 13
+  # Write(Insert { path: [[116, 111, 112], [103, 114, 111, 117, 112, 115], [114, 50]], key: [114, 51], element: item: [hex: 760203, str: v\u{2}\u{3}] })
+  cost seeks=19 loaded=919 added=161 replaced=579 removed=- hashes=28 sinsemilla=0
+  root b9494a64036962f54741fb7b4770cc95f6f946dd170529ff25e235cbedcd6f3e
+cb7ddrfa79
+  step 14
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root b9494a64036962f54741fb7b4770cc95f6f946dd170529ff25e235cbedcd6f3e
+cb625r6dfa
+  step 15
+  # Write(Insert { path: [[116, 111, 112]], key: [115, 105, 98, 108, 105, 110, 103], element: item: [hex: 6120726f..6f757073, str: a row beside the groups] })
+  cost seeks=7 loaded=230 added=175 replaced=157 removed=- hashes=10 sinsemilla=0
+  root 751d2a03e2600916cd53ccf6538c9369dee72817c73020a7fa67fbe7abf783fb
+cb7ddr6dfa
+  step 16
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 751d2a03e2600916cd53ccf6538c9369dee72817c73020a7fa67fbe7abf783fb
+c28bfv4d22qb7ddpde32
+  step 17
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit: Some(1), offset: Some(1) } }, proven: true })
+  # prove failed: invalid query: proved path queries can not have offsets
+  cost seeks=5 loaded=517 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 1
+  row 746f70 7369626c696e67 00176120726f7720626573696465207468652067726f75707300
+  skipped 1
+  prove-cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  prove-failed InvalidQuery
+cb7dde0de3qb7ddpde32
+  step 18
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [103, 114, 111, 117, 112, 115]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: Some(Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true,… (678 characters)
+  # failed: invalid query: count-offset paginated queries cannot have a default subquery branch
+  # prove failed: invalid query: proved path queries can not have offsets
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed InvalidQuery
+  prove-cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  prove-failed InvalidQuery
+c023fv0120
+  step 19
+  # Read(Rows { query: PathQuery { path: [[116, 111, 112], [103, 114, 111, 117, 112, 115]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: Some(Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_… (671 characters)
+  cost seeks=15 loaded=1741 added=0 replaced=0 removed=- hashes=3 sinsemilla=0
+  result elements
+  rows 2
+  row 746f70/67726f757073/7231 7230 000376010000
+  row 746f70/67726f757073/7231 7231 000376010100
+  skipped 2
+c023fv0120
+  step 20
+  # Read(Rows { query: PathQuery { path: [[116, 111, 112], [103, 114, 111, 117, 112, 115]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: Some(Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_… (670 characters)
+  cost seeks=15 loaded=1741 added=0 replaced=0 removed=- hashes=3 sinsemilla=0
+  result elements
+  rows 2
+  row 746f70/67726f757073/7231 7230 000376010000
+  row 746f70/67726f757073/7231 7231 000376010100
+  skipped 2
+stream 21 a394fdcdc67b65af0f94f825389125ca86f477615397196788d807ecfdb86236
+tally failed=1 unproved=2 unverified=0
+end 21 aa3d9bd24ae060dfaa5bcf1eb25dac1ed21198a94129cf3e56364c821f8ed230

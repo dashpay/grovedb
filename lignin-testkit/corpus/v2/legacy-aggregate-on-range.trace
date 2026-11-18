@@ -1,0 +1,137 @@
+lignin-golden-trace 1
+name legacy-aggregate-on-range
+seed 0x0
+grove-version 2
+engine 22f163c2b82d9bc5c985a77034529a32ef9a7c04
+workload legacy-aggregate-on-range
+cff5creb64
+  step 0
+  # Write(Insert { path: [], key: [116, 111, 112], element: tree: None })
+  cost seeks=3 loaded=0 added=113 replaced=0 removed=- hashes=3 sinsemilla=0
+  root bc7e7e6ba01aa5da8673cb316923855d015ac4198ef19223380b58a72def3171
+c0010rde32
+  step 1
+  # Write(Insert { path: [[116, 111, 112]], key: [99, 111, 117, 110, 116], element: provable_count_tree: None 0 })
+  cost seeks=5 loaded=150 added=149 replaced=77 removed=- hashes=8 sinsemilla=0
+  root b90a2e26cd6fe66dea57be8ab877ad6c1e9e42189a2c26d3869de878c126a646
+ce8a5r84d6
+  step 2
+  # Write(Insert { path: [[116, 111, 112], [99, 111, 117, 110, 116]], key: [114, 48], element: item: [hex: 7600, str: v\u{0}] })
+  cost seeks=8 loaded=315 added=160 replaced=165 removed=- hashes=15 sinsemilla=0
+  root 0885090b4dcbd3df3a2df1ffaefa3792c2fd80956cf16ec8a25578cdcfdb958d
+ceeaer8b3a
+  step 3
+  # Write(Insert { path: [[116, 111, 112], [99, 111, 117, 110, 116]], key: [114, 49], element: item: [hex: 7601, str: v\u{1}] })
+  cost seeks=10 loaded=391 added=160 replaced=290 removed=- hashes=17 sinsemilla=0
+  root 5ab97e69ed158ccaaf398feb882ea2fbca9af3bb3ce6059759fa47212c3749ef
+c04dbrd01d
+  step 4
+  # Write(Insert { path: [[116, 111, 112], [99, 111, 117, 110, 116]], key: [114, 50], element: item: [hex: 7602, str: v\u{2}] })
+  cost seeks=13 loaded=503 added=160 replaced=415 removed=- hashes=19 sinsemilla=0
+  root 832bd42a42c9e702785de111192d44729d573330462932666d2677f5248a7d90
+c11e7r7e55
+  step 5
+  # Write(Insert { path: [[116, 111, 112], [99, 111, 117, 110, 116]], key: [114, 51], element: item: [hex: 7603, str: v\u{3}] })
+  cost seeks=13 loaded=542 added=160 replaced=415 removed=- hashes=19 sinsemilla=0
+  root 729b1e82f94ae857316aaa45ab0de6018f4098642a8f82c09326713337cd7341
+cea7er3446
+  step 6
+  # Write(Insert { path: [[116, 111, 112], [99, 111, 117, 110, 116]], key: [114, 52], element: item: [hex: 7604, str: v\u{4}] })
+  cost seeks=15 loaded=654 added=160 replaced=540 removed=- hashes=21 sinsemilla=0
+  root b133a66e560d170ca7269ac2bf3d64671c7971e1948d22c49b6da777951e68e0
+c3049r136b
+  step 7
+  # Write(Insert { path: [[116, 111, 112]], key: [115, 117, 109], element: provable_sum_tree: None 0 })
+  cost seeks=7 loaded=230 added=122 replaced=165 removed=- hashes=11 sinsemilla=0
+  root 8f57b452bd32787d8729fe75dc82c7e7c08fd753f746b2b10806036c87f81684
+c00f6rf9ec
+  step 8
+  # Write(Insert { path: [[116, 111, 112], [115, 117, 109]], key: [114, 48], element: sum_item: -15 })
+  cost seeks=11 loaded=497 added=166 replaced=251 removed=- hashes=17 sinsemilla=0
+  root 66740996602dd2bae1f3a761b6251eb32f4d18d61e5530e64a9eb332ad0b6b75
+c7630r8c74
+  step 9
+  # Write(Insert { path: [[116, 111, 112], [115, 117, 109]], key: [114, 49], element: sum_item: -5 })
+  cost seeks=13 loaded=574 added=166 replaced=382 removed=- hashes=19 sinsemilla=0
+  root 85aac0f5fb61b151b85a4fa66665f1997a15f1e19f6bdd72ffbc2415d00a0b11
+cbd73re53e
+  step 10
+  # Write(Insert { path: [[116, 111, 112], [115, 117, 109]], key: [114, 50], element: sum_item: 5 })
+  cost seeks=16 loaded=684 added=166 replaced=513 removed=- hashes=21 sinsemilla=0
+  root 356329e5308f146e3df456d8411bac39be41463eb0bd67f20d15aeba84befa5d
+c9915r047e
+  step 11
+  # Write(Insert { path: [[116, 111, 112], [115, 117, 109]], key: [114, 51], element: sum_item: 15 })
+  cost seeks=16 loaded=723 added=166 replaced=513 removed=- hashes=21 sinsemilla=0
+  root 5a683ba206e2060dacfb9cbe0d8a6a5ced3ceef49a697da9b2f5f8ab0e04231c
+c945ar3557
+  step 12
+  # Write(Insert { path: [[116, 111, 112], [115, 117, 109]], key: [114, 52], element: sum_item: 25 })
+  cost seeks=18 loaded=833 added=166 replaced=644 removed=- hashes=23 sinsemilla=0
+  root 4cb9a1e68eb1cc09b9f2bfc868414d439f0d43c56d990d39f1ab353b3613eadd
+ce9b8r7501
+  step 13
+  # Write(Insert { path: [[116, 111, 112]], key: [98, 111, 116, 104], element: provable_count_provable_sum_tree: Nonecount: 0, sum 0 })
+  cost seeks=7 loaded=269 added=133 replaced=165 removed=- hashes=11 sinsemilla=0
+  root 8ec214e7239c92a4b18cf52a785ce86a4d0a55936052f34278542aba42c07275
+c3a58rd9d1
+  step 14
+  # Write(Insert { path: [[116, 111, 112], [98, 111, 116, 104]], key: [114, 48], element: sum_item: -15 })
+  cost seeks=11 loaded=549 added=182 replaced=261 removed=- hashes=17 sinsemilla=0
+  root e654b5db53d35ca0639fa2c5a0cef18968bce88c5a15f626e20d422e3b857ffd
+cc1ccrc0ec
+  step 15
+  # Write(Insert { path: [[116, 111, 112], [98, 111, 116, 104]], key: [114, 49], element: sum_item: -5 })
+  cost seeks=13 loaded=627 added=182 replaced=408 removed=- hashes=19 sinsemilla=0
+  root 5798fd98aa2963fbe19c2b70280cb368b870eb19f99981f618d4a8bfd705fb81
+c1ed4re056
+  step 16
+  # Write(Insert { path: [[116, 111, 112], [98, 111, 116, 104]], key: [114, 50], element: sum_item: 5 })
+  cost seeks=16 loaded=739 added=182 replaced=555 removed=- hashes=21 sinsemilla=0
+  root 1901f1749a4cd7345bebdab84689a0a6603f22554cf859b64647e5cc48398d8d
+c0dd9r5690
+  step 17
+  # Write(Insert { path: [[116, 111, 112], [98, 111, 116, 104]], key: [114, 51], element: sum_item: 15 })
+  cost seeks=16 loaded=779 added=182 replaced=555 removed=- hashes=21 sinsemilla=0
+  root 644adf445975c76ce3f53edfda598e9c665eb61b6d8ee8eea7d9903e9fee7f35
+c307brac41
+  step 18
+  # Write(Insert { path: [[116, 111, 112], [98, 111, 116, 104]], key: [114, 52], element: sum_item: 25 })
+  cost seeks=18 loaded=891 added=182 replaced=702 removed=- hashes=23 sinsemilla=0
+  root 574726a60d79077631294d352572a2304282820cb626011ee942124828ed1547
+cb7ddrac41
+  step 19
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 574726a60d79077631294d352572a2304282820cb626011ee942124828ed1547
+c2967v8fe2qb7ddp24bc
+  step 20
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [99, 111, 117, 110, 116]], query: SizedQuery { query: Query { items: [AggregateCountOnRange(RangeInclusive([114, 49]..=[114, 51]))], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, of… (460 characters)
+  # prove failed: not supported: AggregateCountOnRange proofs require V1 proof envelopes; upgrade the grove version producing the proof
+  cost seeks=6 loaded=609 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  result aggregate-count
+  count 3
+  prove-cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  prove-failed NotSupported
+c13bev0b3cqb7ddp24bc
+  step 21
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [115, 117, 109]], query: SizedQuery { query: Query { items: [AggregateSumOnRange(RangeFrom([114, 50]..))], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit: None,… (434 characters)
+  # prove failed: not supported: AggregateSumOnRange proofs require V1 proof envelopes; upgrade the grove version producing the proof
+  cost seeks=6 loaded=597 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  result aggregate-sum
+  sum 45
+  prove-cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  prove-failed NotSupported
+ce033v1225qb7ddp24bc
+  step 22
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [98, 111, 116, 104]], query: SizedQuery { query: Query { items: [AggregateCountAndSumOnRange(Range([114, 48]..[114, 52]))], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: Non… (451 characters)
+  # prove failed: not supported: AggregateCountAndSumOnRange proofs require V1 proof envelopes; upgrade the grove version producing the proof
+  cost seeks=6 loaded=616 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  result aggregate-count-and-sum
+  count 4
+  sum 0
+  prove-cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  prove-failed NotSupported
+stream 23 f04c0889987c7f3031a05e6bb8d55acb5038c1ede71ae792edc03fd10582d350
+tally failed=0 unproved=3 unverified=0
+end 23 56beef9cc6c1242b8187c2b3d937960654d76a52458359b263ced2b87cde7593

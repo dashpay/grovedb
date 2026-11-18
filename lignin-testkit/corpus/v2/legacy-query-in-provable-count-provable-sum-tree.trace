@@ -1,0 +1,77 @@
+lignin-golden-trace 1
+name legacy-query-in-provable-count-provable-sum-tree
+seed 0x0
+grove-version 2
+engine 22f163c2b82d9bc5c985a77034529a32ef9a7c04
+workload legacy-query-in-provable-count-provable-sum-tree
+cff5creb64
+  step 0
+  # Write(Insert { path: [], key: [116, 111, 112], element: tree: None })
+  cost seeks=3 loaded=0 added=113 replaced=0 removed=- hashes=3 sinsemilla=0
+  root bc7e7e6ba01aa5da8673cb316923855d015ac4198ef19223380b58a72def3171
+c5bc2r3ce8
+  step 1
+  # Write(Insert { path: [[116, 111, 112]], key: [104, 111, 115, 116], element: provable_count_provable_sum_tree: Nonecount: 0, sum 0 })
+  cost seeks=5 loaded=150 added=133 replaced=77 removed=- hashes=9 sinsemilla=0
+  root 716e636ba3f8b3e99f4719aedf82c61518dfc44134a0307123c131161fd7bd2e
+cdbc4r8828
+  step 2
+  # Write(Insert { path: [[116, 111, 112], [104, 111, 115, 116]], key: [97], element: sum_item: 5 })
+  cost seeks=8 loaded=323 added=180 replaced=173 removed=- hashes=15 sinsemilla=0
+  root 54f483aa5a3e868e1fd7f4d333c84bdff65cf53ec99dba0e907b15503bebe490
+c19ccr4a3e
+  step 3
+  # Write(Insert { path: [[116, 111, 112], [104, 111, 115, 116]], key: [98], element: sum_item: 5 })
+  cost seeks=10 loaded=397 added=180 replaced=319 removed=- hashes=17 sinsemilla=0
+  root 5f7ba59402675e2042c358c31696d2558628d3d15095f418034483e541fcb7ad
+cb7ddr4a3e
+  step 4
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 5f7ba59402675e2042c358c31696d2558628d3d15095f418034483e541fcb7ad
+cf986v7e5eqd231p24bc
+  step 5
+  # Read(Query(Query { path: [[116, 111, 112], [104, 111, 115, 116]], items: [RangeFull], subquery_path: None, subquery_all: false, limit: None, left_to_right: true, raw: true }))
+  # prove failed: not supported: ProvableCountProvableSumTree hosts require V1 proof envelopes; upgrade the grove version producing the proof to v3 or later
+  cost seeks=5 loaded=735 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  rows 2
+  row 746f70/686f7374 61 030a00
+  row 746f70/686f7374 62 030a00
+  prove-cost seeks=6 loaded=436 added=0 replaced=0 removed=- hashes=3 sinsemilla=0
+  prove-failed NotSupported
+cf986v7e5eqd231p24bc
+  step 6
+  # Read(Query(Query { path: [[116, 111, 112], [104, 111, 115, 116]], items: [RangeFull], subquery_path: None, subquery_all: false, limit: None, left_to_right: true, raw: false }))
+  # prove failed: not supported: ProvableCountProvableSumTree hosts require V1 proof envelopes; upgrade the grove version producing the proof to v3 or later
+  cost seeks=5 loaded=735 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  rows 2
+  row 746f70/686f7374 61 030a00
+  row 746f70/686f7374 62 030a00
+  prove-cost seeks=6 loaded=436 added=0 replaced=0 removed=- hashes=3 sinsemilla=0
+  prove-failed NotSupported
+c51e1v9f4fqd231p24bc
+  step 7
+  # Read(Query(Query { path: [[116, 111, 112], [104, 111, 115, 116]], items: [Key([97])], subquery_path: None, subquery_all: false, limit: None, left_to_right: true, raw: true }))
+  # prove failed: not supported: ProvableCountProvableSumTree hosts require V1 proof envelopes; upgrade the grove version producing the proof to v3 or later
+  cost seeks=2 loaded=207 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  rows 1
+  row 746f70/686f7374 61 030a00
+  prove-cost seeks=6 loaded=436 added=0 replaced=0 removed=- hashes=3 sinsemilla=0
+  prove-failed NotSupported
+cd8a7v631eq7fafp3744
+  step 8
+  # Read(Query(Query { path: [[116, 111, 112]], items: [Key([104, 111, 115, 116])], subquery_path: None, subquery_all: false, limit: None, left_to_right: true, raw: true }))
+  cost seeks=2 loaded=151 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  rows 1
+  row 746f70 686f7374 14010161021400
+  prove-cost seeks=4 loaded=229 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  proof 104 002f0403746f700008020104686f737400851411c67866a361cfa472ac68df1b31fa12e684c7f54d25375c6a5651c05abf0103746f702f0404686f7374000714010161021400d07540e3907783ceaec6353b444a8ffbd536f3683f5744eaa8e2034cc68e71b10001
+  verification verified
+c51e1v4577
+  step 9
+  # Read(Get { path: [[116, 111, 112], [104, 111, 115, 116]], key: [97] })
+  cost seeks=2 loaded=207 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  element 030a00
+stream 10 cd89acc067b70c05cacdf2d5f29aabf479dc99373703f227139bd7eafc8fb1a2
+tally failed=0 unproved=3 unverified=0
+end 10 77b4fa09c0ff29361d0835a911cf051eda031ccb7c1c3c7a3411986d9676aa69

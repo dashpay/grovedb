@@ -1,0 +1,72 @@
+lignin-golden-trace 1
+name legacy-drop-flat-in-batch
+seed 0x0
+grove-version 4
+engine 22f163c2b82d9bc5c985a77034529a32ef9a7c04
+workload legacy-drop-flat-in-batch
+cff5creb64
+  step 0
+  # Write(Insert { path: [], key: [116, 111, 112], element: tree: None })
+  cost seeks=3 loaded=0 added=113 replaced=0 removed=- hashes=3 sinsemilla=0
+  root bc7e7e6ba01aa5da8673cb316923855d015ac4198ef19223380b58a72def3171
+c335dr7ec2
+  step 1
+  # Write(Insert { path: [[116, 111, 112]], key: [104, 111, 115, 116], element: tree: None })
+  cost seeks=5 loaded=150 added=115 replaced=77 removed=- hashes=9 sinsemilla=0
+  root c40fa070e930122a93dd69d6a17928a600f705c4abeafe15bb9d6d04fe410aee
+c5633r9586
+  step 2
+  # Write(Insert { path: [[116, 111, 112], [104, 111, 115, 116]], key: [114, 48], element: item: [hex: 7600, str: v\u{0}] })
+  cost seeks=8 loaded=303 added=144 replaced=155 removed=- hashes=15 sinsemilla=0
+  root 0acf112a7003029c1bb9abceec2c75bf93a446f1385c1409f425a90cbde5d998
+c4467rd7e5
+  step 3
+  # Write(Insert { path: [[116, 111, 112], [104, 111, 115, 116]], key: [114, 49], element: item: [hex: 7601, str: v\u{1}] })
+  cost seeks=10 loaded=378 added=144 replaced=264 removed=- hashes=17 sinsemilla=0
+  root de9dc7c3f9e22029a71525f1490eca26c1b5a6db74e416cd8533623dfb392e99
+cb7ddrd7e5
+  step 4
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root de9dc7c3f9e22029a71525f1490eca26c1b5a6db74e416cd8533623dfb392e99
+c7e42rfeb6
+  step 5
+  # Write(Insert { path: [[116, 111, 112]], key: [115, 105, 98, 108, 105, 110, 103], element: item: [hex: 7374617973, str: stays] })
+  cost seeks=7 loaded=228 added=157 replaced=155 removed=- hashes=10 sinsemilla=0
+  root 69ca3cef9fa567115963da60882caed4bd5d7e85c430f2a053c0b4683dde31b0
+cb7ddrfeb6
+  step 6
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 69ca3cef9fa567115963da60882caed4bd5d7e85c430f2a053c0b4683dde31b0
+c47dcr97ac
+  step 7
+  # Batch([DropFlat { path: [[116, 111, 112]], key: [104, 111, 115, 116], tree_type: NormalTree }])
+  cost seeks=10 loaded=346 added=110 replaced=194 removed=115 hashes=9 sinsemilla=0
+  root f65703fa997f186c22ae38d28cdc3bb05bfe96649ae217281ed00f65dc0cb1e3
+cb7ddr97ac
+  step 8
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root f65703fa997f186c22ae38d28cdc3bb05bfe96649ae217281ed00f65dc0cb1e3
+cb7ddv2b31r97ac
+  step 9
+  # FlushPendingDrops
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  result reclaimed
+  reclaimed 1
+  skipped-live 0
+  unresolved 0
+  root f65703fa997f186c22ae38d28cdc3bb05bfe96649ae217281ed00f65dc0cb1e3
+c23a3v5dbfq708ep4ce8
+  step 10
+  # Read(Query(Query { path: [[116, 111, 112]], items: [RangeFull], subquery_path: None, subquery_all: false, limit: None, left_to_right: true, raw: true }))
+  cost seeks=3 loaded=519 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  rows 1
+  row 746f70 7369626c696e67 0005737461797300
+  prove-cost seeks=4 loaded=233 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  proof 80 0100320403746f70000b0201077369626c696e6700114faeba5f12f4da5f5bbdce1e4fa567651bf4737c0e0d5ddae647d3d2e87db80103746f70001303077369626c696e670008000573746179730000
+  verification verified
+stream 11 29f36cad67eda978e6d33c6f41d582b3c9daf0d78d1c9f76453268dd668a25e3
+tally failed=0 unproved=0 unverified=0
+end 11 82996a4ad6a215d8e3dc781f8ac5a01cb1698d90ed6963eeca80fd754042e09b

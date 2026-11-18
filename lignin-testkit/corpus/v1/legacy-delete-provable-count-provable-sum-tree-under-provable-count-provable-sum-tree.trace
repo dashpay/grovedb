@@ -1,0 +1,102 @@
+lignin-golden-trace 1
+name legacy-delete-provable-count-provable-sum-tree-under-provable-count-provable-sum-tree
+seed 0x0
+grove-version 1
+engine 22f163c2b82d9bc5c985a77034529a32ef9a7c04
+workload legacy-delete-provable-count-provable-sum-tree-under-provable-count-provable-sum-tree
+cff5creb64
+  step 0
+  # Write(Insert { path: [], key: [116, 111, 112], element: tree: None })
+  cost seeks=3 loaded=0 added=113 replaced=0 removed=- hashes=3 sinsemilla=0
+  root bc7e7e6ba01aa5da8673cb316923855d015ac4198ef19223380b58a72def3171
+c5215r06a0
+  step 1
+  # Write(Insert { path: [[116, 111, 112]], key: [112, 97, 114, 101, 110, 116], element: provable_count_provable_sum_tree: Nonecount: 0, sum 0 })
+  cost seeks=5 loaded=150 added=137 replaced=77 removed=- hashes=9 sinsemilla=0
+  root 1dfd8f36948ab695a64a5e2e63f01d1e13d97134612cb693b5c559a495bb2e24
+cd551rb600
+  step 2
+  # Write(Insert { path: [[116, 111, 112], [112, 97, 114, 101, 110, 116]], key: [115, 105, 98, 108, 105, 110, 103], element: sum_item: 5 })
+  cost seeks=8 loaded=327 added=192 replaced=175 removed=- hashes=15 sinsemilla=0
+  root 5f58ddccdc4a2dd013ed042e7b41871861af7bace6e7711accecd6510215cc6b
+cb8d3r93f1
+  step 3
+  # Write(Insert { path: [[116, 111, 112], [112, 97, 114, 101, 110, 116]], key: [99, 104, 105, 108, 100], element: provable_count_provable_sum_tree: Nonecount: 0, sum 0 })
+  cost seeks=10 loaded=407 added=167 replaced=327 removed=- hashes=18 sinsemilla=0
+  root 25d4d077b23647682a8e031e5caf446731b90a8458b2db22c73477b5f9a65f90
+c6b5ar5267
+  step 4
+  # Write(Insert { path: [[116, 111, 112], [112, 97, 114, 101, 110, 116], [99, 104, 105, 108, 100]], key: [108, 101, 97, 102], element: sum_item: 5 })
+  cost seeks=14 loaded=695 added=186 replaced=456 removed=- hashes=24 sinsemilla=0
+  root db24d47d1165bb204efb250c3c3d39f020656294d72aecf9ad5b66a57265b41f
+cb7ddr5267
+  step 5
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root db24d47d1165bb204efb250c3c3d39f020656294d72aecf9ad5b66a57265b41f
+c910cv20bfq6e06p24bc
+  step 6
+  # Read(Query(Query { path: [[116, 111, 112], [112, 97, 114, 101, 110, 116]], items: [RangeFull], subquery_path: None, subquery_all: false, limit: None, left_to_right: true, raw: true }))
+  # prove failed: not supported: ProvableCountProvableSumTree hosts require V1 proof envelopes; upgrade the grove version producing the proof to v3 or later
+  cost seeks=5 loaded=786 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  rows 2
+  row 746f70/706172656e74 6368696c64 1401046c656166010a00
+  row 746f70/706172656e74 7369626c696e67 030a00
+  prove-cost seeks=6 loaded=450 added=0 replaced=0 removed=- hashes=3 sinsemilla=0
+  prove-failed NotSupported
+cb3bbrb600
+  step 7
+  # Write(Delete { path: [[116, 111, 112], [112, 97, 114, 101, 110, 116]], key: [99, 104, 105, 108, 100] })
+  cost seeks=27 loaded=2905 added=0 replaced=327 removed=277 hashes=24 sinsemilla=0
+  root 5f58ddccdc4a2dd013ed042e7b41871861af7bace6e7711accecd6510215cc6b
+cb7ddrb600
+  step 8
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 5f58ddccdc4a2dd013ed042e7b41871861af7bace6e7711accecd6510215cc6b
+cb875v42adqfe0bp24bc
+  step 9
+  # Read(Query(Query { path: [[116, 111, 112], [112, 97, 114, 101, 110, 116]], items: [RangeFull], subquery_path: None, subquery_all: false, limit: None, left_to_right: true, raw: true }))
+  # prove failed: not supported: ProvableCountProvableSumTree hosts require V1 proof envelopes; upgrade the grove version producing the proof to v3 or later
+  cost seeks=3 loaded=516 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  rows 1
+  row 746f70/706172656e74 7369626c696e67 030a00
+  prove-cost seeks=6 loaded=407 added=0 replaced=0 removed=- hashes=3 sinsemilla=0
+  prove-failed NotSupported
+ca0b3vc8f3q2378pd881
+  step 10
+  # Read(Query(Query { path: [[116, 111, 112]], items: [Key([112, 97, 114, 101, 110, 116])], subquery_path: None, subquery_all: false, limit: None, left_to_right: true, raw: true }))
+  cost seeks=2 loaded=157 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  rows 1
+  row 746f70 706172656e74 1401077369626c696e67010a00
+  prove-cost seeks=4 loaded=237 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  proof 114 00310403746f70000a020106706172656e7400d3abca08462e9525e1be063399f475d8490bfb31e86688990ff4bf07c63211ed0103746f70370406706172656e74000d1401077369626c696e67010a0053f7c22e7f9800932e778eb0c9613a8daa0dde7f9631ea3ccca873b4969afee80001
+  verification verified
+c7fe4v4577
+  step 11
+  # Read(Get { path: [[116, 111, 112], [112, 97, 114, 101, 110, 116]], key: [115, 105, 98, 108, 105, 110, 103] })
+  cost seeks=2 loaded=170 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  element 030a00
+c61c4r3dd5
+  step 12
+  # Write(Insert { path: [[116, 111, 112], [112, 97, 114, 101, 110, 116]], key: [108, 97, 116, 101, 114], element: sum_item: 5 })
+  cost seeks=10 loaded=407 added=188 replaced=327 removed=- hashes=17 sinsemilla=0
+  root d63187f0a5e6ddb488960f4ca7bffad8e763202a1fa4ee3ca0691d3e95b24e33
+cb7ddr3dd5
+  step 13
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root d63187f0a5e6ddb488960f4ca7bffad8e763202a1fa4ee3ca0691d3e95b24e33
+c8054v9104q6e06p24bc
+  step 14
+  # Read(Query(Query { path: [[116, 111, 112], [112, 97, 114, 101, 110, 116]], items: [RangeFull], subquery_path: None, subquery_all: false, limit: None, left_to_right: true, raw: true }))
+  # prove failed: not supported: ProvableCountProvableSumTree hosts require V1 proof envelopes; upgrade the grove version producing the proof to v3 or later
+  cost seeks=5 loaded=779 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  rows 2
+  row 746f70/706172656e74 6c61746572 030a00
+  row 746f70/706172656e74 7369626c696e67 030a00
+  prove-cost seeks=6 loaded=450 added=0 replaced=0 removed=- hashes=3 sinsemilla=0
+  prove-failed NotSupported
+stream 15 3ceacdd287bc8c20b5470f2b96a92286dcd6f9a44f1d53f0ca723fa6edbbe5c5
+tally failed=0 unproved=3 unverified=0
+end 15 6e1adb3fa887510fd12d3ab87c2783e45686a8eb667feee3b85223e8d996f460

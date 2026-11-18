@@ -1,0 +1,233 @@
+lignin-golden-trace 1
+name large-values
+seed 0x1
+grove-version 2
+engine 22f163c2b82d9bc5c985a77034529a32ef9a7c04
+workload large-values
+cfb3br0a28
+  step 0
+  # Write(Insert { path: [], key: [108, 97, 114, 103, 101], element: tree: None })
+  cost seeks=3 loaded=0 added=117 replaced=0 removed=- hashes=3 sinsemilla=0
+  root 9b0d9605f03ee527cbb526551958a289df57daa14ee88536c6c9f49863ac5897
+cf494ra722
+c97a9r55b9
+c2f7crddb0
+c3038r79b3
+cb7ddr79b3
+  step 5
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 18f339eae3c044f2d8d574a6acff29fb8a6a4e83d7ee33ea250a813cfdcf7bdc
+c7234ra48b
+cc1c1r9dd5
+  step 7
+  # Batch([InsertOnly { path: [[108, 97, 114, 103, 101], [105, 116, 101, 109, 115]], key: [118, 97, 108, 117, 101, 45, 48, 48, 49], element: item: [hex: 99] }])
+  cost seeks=14 loaded=698 added=157 replaced=357 removed=- hashes=21 sinsemilla=0
+  root 53bcad804dd04ad3ec9c2eb2c5db3bb9d56a3ba01fe9d2ff151e03ae62dab462
+c053frdd41
+c0b38rdd61
+cb7ddrdd61
+c25d7v2ca5
+  step 11
+  # Read(Get { path: [[108, 97, 114, 103, 101], [105, 116, 101, 109, 115]], key: [118, 97, 108, 117, 101, 45, 48, 48, 51] })
+  cost seeks=3 loaded=342 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  element 0020d63a9f410c4eab89f1c79464886f42a19ee19f18ccfd873fcee30c27d41816f300
+c25d7v5c47q73b5pec40
+  step 12
+  # Read(Query(Query { path: [[108, 97, 114, 103, 101], [105, 116, 101, 109, 115]], items: [Key([118, 97, 108, 117, 101, 45, 48, 48, 51])], subquery_path: None, subquery_all: false, limit: None, left_to_right: true, raw: false }))
+  cost seeks=3 loaded=342 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  rows 1
+  row 6c61726765/6974656d73 76616c75652d303033 0020d63a9f410c4eab89f1c79464886f42a19ee19f18ccfd873fcee30c27d41816f300
+  prove-cost seeks=9 loaded=917 added=0 replaced=0 removed=- hashes=3 sinsemilla=0
+  proof 374 003004056c6172676500070201036d6d7200a10cca65e6e3b3af8c37ea47158145c722eea2e778c09aa234a97bc57d54517a01056c617267659c0126072e398cd2b616a56452bbf09fbfff9cf667485b640412aad6718043471aa004056974656d73000d02010976616c75652d30303100e16a825fef1bb1a88d6b4875de4c0119c85b1f01712b03c42e7ea031de6ea4361002ae88449da70dfa5739f4c303aa8c755510ea8d4d708ed301170fe75ea5da22561001a05d7dd0db7437afff929d1a2834b418c0584a7af8be873707337f0c8e4da22a1101056974656d73960136f19f3cff321af7e495cb4472094fa117126dc10f5cd8b22d4fbf8230be495402a0adc8a8a830dbbdbc5fd06cdefae24fd5263707aaf0fca9835b0d953c5e7ea9100299cc230aeaf416f5cd94a4c5f5665e6530e0b01ef5b44ebe6371f21dda27fbb1030976616c75652d30303300230020d63a9f410c4eab89f1c79464886f42a19ee19f18ccfd873fcee30c27d41816f30011110001
+  verification verified
+c2347r25ee
+c45d5r6ee9
+c5d4ar55d8
+cce7frf406
+cb7ddrf406
+c4fc6vabc0
+c4fc6vf81aq65a4pfa49
+cb1b7r4d1a
+c99f6r7d31
+cf12br3e8b
+c4c05rfeaa
+cb7ddrfeaa
+ca6d0v92ce
+ca6d0vca5dq4705peda9
+c963br608f
+c48ddr5f9e
+cae50rbe64
+c12bcr8170
+cb7ddr8170
+c9764vb8dd
+c9764v39e5q2f45p2784
+c82c9r03e2
+c30bdr124a
+c3fd8r8153
+c5af1r9c6f
+cb7ddr9c6f
+c8f7cv6cf0
+c8f7cv237aqf6dcpce20
+cbe2fr8344
+c26cfr4cf8
+c3e13re98a
+cd28draf44
+cb7ddraf44
+c628bv8e2b
+c628bvf6b2q5162p7426
+ceb15red29
+ceba5rb5c0
+c565drd73f
+c74c8rde91
+cb7ddrde91
+cb40bv2c5d
+cb40bvd92eqede5pb9b8
+c9558rb212
+c3fc7rc890
+c4a29rbf3e
+cd04br3322
+cb7ddr3322
+c3a10vc0d0
+c3a10v421cq9fa7p7742
+cb7ddr3322
+c8747vf159qf5fep4969
+c7abcr67d7
+c6e9drbfd5
+  step 65
+  # Write(Append { path: [[108, 97, 114, 103, 101], [109, 109, 114]], entry: Mmr([65]) })
+  cost seeks=10 loaded=577 added=80 replaced=164 removed=- hashes=12 sinsemilla=0
+  root 187cb8a2abe619a1f6b4512d75ca2684f3e40bfde9d421503762f8015770da74
+c1201rc1b4
+cba95rbd54
+c0cd8r4000
+cbc83r5307
+c4b9brf6a0
+cbb71rc69a
+cd473r0405
+c73e9rc482
+c94cer7d6b
+c0272r4b11
+cb58br9c69
+c6e12r17ac
+c3266r1ef8
+c02ffrc218
+cde83r9d29
+cf0c3r5e8c
+c117ar9bff
+cc3cbr09cc
+c1e2brca1b
+c67f3r5a29
+cfd62rc517
+c4415r9487
+c12b2r3308
+c0254r5766
+c83ebrf8dd
+c4916rb060
+c4db6r90f4
+c82ccr3aa5
+cab69r25dc
+c430drbf5a
+caa4ar858e
+c0c13r8b6c
+c3561r69fb
+c3171rdec5
+c3a10r6fd7
+cbbd9r80e0
+c638fr5a10
+ce349r9053
+c0f25r0099
+ce59crf60d
+c97f0r999d
+c2de1rf705
+c19afr07af
+c5f53r918c
+c7e5cr9462
+c5314r5d50
+c617dra16e
+c4ecdrc2a3
+c5959r9eb2
+c1d9er42c2
+c3ffbrd97e
+c256dr57bc
+cba3bre2d7
+c9fd2r44b8
+ca046r6620
+c7806rb6ee
+ce709re4d3
+c9d29r5e7c
+c5e20r772f
+c5c01r82b6
+ce678r17bf
+c391dre1e4
+c1e10rcad1
+cb1b9rf60b
+c2000rfbc0
+c7642r7c83
+cb7ddr7c83
+c6e51v5a99
+c1e86rf541
+c83a5r2fdf
+c20ebr416c
+c9c27r561c
+c28cer1941
+c12b0rf625
+c1506r2b31
+c273brd241
+ce5d2re239
+c110cr64dc
+c7025r2052
+ce1a6ra3c4
+c93bdr9e43
+caf30r77c1
+cd561r0ca1
+cd8ecr071b
+caa27rec6c
+cbef0r598d
+cca71r2db9
+c65bfr889f
+c551br6a0f
+ce038r6d7c
+c1269rb7b9
+c8c55rcd11
+c1d8drc42e
+ccccbrd997
+ca91cr5e42
+c0060r31e8
+c9c48r62df
+c9e9erde25
+c4069r1c25
+c6017r8300
+cb7ddr8300
+cf64fv2517
+c0fe5r84aa
+  step 168
+  # Write(Delete { path: [[108, 97, 114, 103, 101], [105, 116, 101, 109, 115]], key: [118, 97, 108, 117, 101, 45, 48, 48, 48] })
+  cost seeks=23 loaded=1240973 added=0 replaced=1079247 removed=65698 hashes=23 sinsemilla=0
+  root dceb81b8562d45b8b57ecb5006bbe7d1745d8ac82b2b4fb6c253340603c9e5dc
+c5c21re972
+c132eree37
+c2eaar3063
+c911crd2cf
+c5838r181e
+c248brea6b
+c87dcr12df
+c1b20r38c5
+cb838raa6f
+cde95r029d
+c29b7r444f
+c71efra61e
+cb92fr53f5
+c9960r464c
+cf3aar2943
+c8ac4rc362
+c03cdr3210
+cf290raceb
+c5e1frc17d
+cdadbr4384
+c5ea5r041f
+cb7ddr041f
+ce08bv25a2qe3f5p33c9
+stream 192 1a72c05021d10874a99ca486d54a78d6e7319289088065d2ccfbc7b4d33cf483
+tally failed=0 unproved=0 unverified=0
+end 192 e8e733f738e6ea6f8968ed39eaaadaf233b3e7770185a4f98bef9e3b6ac9a021
