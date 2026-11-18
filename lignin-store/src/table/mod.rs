@@ -101,7 +101,8 @@
 //! A reader at a version is given the newest link that is not above its
 //! version, and the links back to the nearest base: [`PageTable::read`]. If
 //! that newest link is a free link, or there is none, the page has no
-//! version there.
+//! version there. [`PageTable::read_version`] gives the same with the
+//! version of the link that follows, which is where that page version ends.
 //!
 //! **The table holds what was written back.** A change that is only in the
 //! log and in the buffer pool has no link. So a link's version is the
@@ -268,4 +269,4 @@ mod tests;
 pub use checkpoint::{CheckpointInfo, CountSample, LogDurable, TableCheckpoints};
 pub use error::{LinkError, PageTableError};
 pub use lignin_format::table::{LogPlace, ValueCount};
-pub use page_table::{Link, LinkKind, PageTable};
+pub use page_table::{Link, LinkKind, PageTable, Visible};

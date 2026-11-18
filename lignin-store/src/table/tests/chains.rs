@@ -65,6 +65,77 @@ fn a_reader_gets_the_base_image_and_the_deltas_up_to_its_version() {
 }
 
 #[test]
+fn a_page_version_ends_at_the_link_that_follows_it() {
+    let table = PageTable::new();
+    let links = [
+        base(1, at(1, 20)),
+        delta(2, at(1, 84)),
+        delta(2, at(1, 148)),
+        delta(4, at(1, 212)),
+        free(6),
+        base(6, at(1, 276)),
+    ];
+    for link in links {
+        table.push(page(3), link).unwrap();
+    }
+    table.consolidate(page(3), at(1, 84), at(1, 340)).unwrap();
+
+    let mut chain = Vec::new();
+    let mut read = |asked: CommitVersion| {
+        let visible = table.read_version(page(3), asked, &mut chain);
+        (visible, chain.clone())
+    };
+    let visible = |born, next: Option<u64>| {
+        Ok(Visible {
+            born: version(born),
+            next: next.map(version),
+        })
+    };
+    assert_eq!(read(version(1)), (visible(1, Some(2)), vec![at(1, 20)]));
+    for asked in [2, 3] {
+        assert_eq!(
+            read(version(asked)),
+            (visible(2, Some(4)), vec![at(1, 340), at(1, 148)])
+        );
+    }
+    assert_eq!(
+        read(version(5)),
+        (
+            visible(4, Some(6)),
+            vec![at(1, 340), at(1, 148), at(1, 212)]
+        )
+    );
+    assert_eq!(
+        read(CommitVersion::MAX),
+        (visible(6, None), vec![at(1, 276)])
+    );
+
+    table.trim(page(3), version(2), &mut Vec::new());
+    assert_eq!(read(version(1)), (Err(None), Vec::new()));
+    assert_eq!(read(version(2)).0, visible(2, Some(4)));
+
+    let freed = PageTable::new();
+    freed.push(page(3), base(1, at(1, 20))).unwrap();
+    freed.push(page(3), free(3)).unwrap();
+    let mut chain = vec![at(9, 20)];
+    assert_eq!(
+        freed.read_version(page(3), version(2), &mut chain),
+        visible(1, Some(3))
+    );
+    for asked in [3, 9] {
+        assert_eq!(
+            freed.read_version(page(3), version(asked), &mut chain),
+            Err(Some(version(3)))
+        );
+        assert!(chain.is_empty());
+    }
+    assert_eq!(
+        freed.read_version(page(4), version(9), &mut chain),
+        Err(None)
+    );
+}
+
+#[test]
 fn a_newer_base_image_serves_the_readers_from_its_version_on() {
     let table = PageTable::new();
     let (old, change, new, later) = (at(1, 20), at(1, 100), at(2, 20), at(2, 100));

@@ -79,6 +79,12 @@ links before it back to the nearest base: the base image, and the delta runs
 to apply to it in order. It was born at that newest link's version. Among
 links of one version the later one in the chain is the newer.
 
+`PageTable::read` gives the blocks and the born version.
+`PageTable::read_version` gives them with the version of the link that
+follows that newest link, of whatever kind: the version from which a reader
+is given something else. Both are read in one step (T16), which is what the
+buffer pool asks of whoever loads a page (STORE-05).
+
 **T6. The table holds what was written back.** A link is added when its
 block is in a segment. A change that only the log and the buffer pool hold
 has no link. So T5 gives the newest page version at or before *s* that is in
@@ -788,7 +794,7 @@ Run the tests with `cargo test -p lignin-format table` and
 
 | Rule | Code | Tests |
 | --- | --- | --- |
-| T1 to T8 | `table::PageTable::{push, read, newest, chain}` | What a reader is given at every version; each refused link, by its error; a freed page and its reuse. A drawn workload of 36,000 steps, with refused ones, against a model that keeps each chain as a list. |
+| T1 to T8 | `table::PageTable::{push, read, read_version, newest, chain}` | What a reader is given at every version, with the version of the link that follows; each refused link, by its error; a freed page and its reuse. A drawn workload of 36,000 steps, with refused ones, against a model that keeps each chain as a list. |
 | T9, T10 | `PageTable::{consolidate, relocate}` | An image through the newest link and through an older one; a later delta of the same version is kept; a location that is gone. |
 | T11, T12 | `PageTable::{trim, discard_after}` | Every oldest version of a chain with two base images; a freed page before and after its freeing version; the arena reuses what a trim frees. |
 | T17 | `PageTable::trimmed_free` | Free links trimmed in any order of their versions, with and without a newer link of the page; a trim that removes none; a discard. The drawn workload compares it with the model's. |
