@@ -9,7 +9,11 @@
 //!   (`*.log`), read after every commit by [`wal`]. Every commit is one
 //!   write batch. Merk nodes are the puts to the default column family
 //!   (id 0); the other families are aux (1), roots (2) and meta (3), in the
-//!   order GroveDB creates them.
+//!   order GroveDB creates them. RocksDB deletes a log only once a later
+//!   one is in use, which a commit by the harness causes, and the log is
+//!   read before every commit; consecutive write batches carry consecutive
+//!   sequence numbers, so a batch the reader missed fails the run instead of
+//!   going uncounted.
 //! - `flush_bytes` and `compaction_bytes`: the `EVENT_LOG_v1` lines of the
 //!   info log (`LOG`), read by [`info_log`].
 //! - `page_reads` and `cache_hits`: not available without RocksDB's
@@ -141,6 +145,12 @@ impl RocksDbEngine {
         self.logs.retain(|number, _| files.contains_key(number));
         for (number, path) in files {
             let tail = self.logs.entry(number).or_default();
+            if file_len(&path) < tail.offset() {
+                return Err(BenchError::Check(format!(
+                    "write-ahead log {} is shorter than what was read of it",
+                    path.display()
+                )));
+            }
             let data = read_from(&path, tail.offset())?;
             let anatomy = &mut self.anatomy;
             tail.read_visiting(&data, &mut self.wal, &mut |family, key, value| {

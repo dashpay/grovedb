@@ -126,6 +126,15 @@ pub fn thread_id() -> Option<u32> {
     link.file_name()?.to_str()?.parse().ok()
 }
 
+/// A counter of `/proc/self/io` (Linux only), such as `read_bytes`: bytes
+/// the process caused to be read from storage.
+pub fn process_io(field: &str) -> Option<u64> {
+    let text = std::fs::read_to_string("/proc/self/io").ok()?;
+    text.lines()
+        .find_map(|line| line.strip_prefix(field)?.strip_prefix(':'))
+        .and_then(|value| value.trim().parse().ok())
+}
+
 /// How a cold read is made cold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -135,18 +144,22 @@ pub enum ColdMethod {
     Reopen,
     /// As [`ColdMethod::Reopen`], and while it is closed every file of the
     /// database is dropped from the page cache with
-    /// `dd if=<file> iflag=nocache count=0`, which asks the kernel
-    /// (`posix_fadvise(POSIX_FADV_DONTNEED)`) to drop the file's clean
-    /// pages. Needs no privilege, unlike `/proc/sys/vm/drop_caches`.
+    /// `posix_fadvise(POSIX_FADV_DONTNEED)` (through Python's
+    /// `os.posix_fadvise`, the crate having no unsafe code), which drops a
+    /// file's clean pages without privilege, unlike
+    /// `/proc/sys/vm/drop_caches`. Chosen only where a probe file was seen
+    /// to be read from storage again after the drop.
     ReopenAndDropFileCache,
 }
 
+const COLD_PROBE_BYTES: usize = 4 << 20;
+
 impl ColdMethod {
     /// The strongest method this machine allows: dropping files from the
-    /// page cache where `dd` can, reopening only elsewhere.
+    /// page cache where that is shown to work, reopening only elsewhere.
     pub fn detect(scratch: &Path) -> ColdMethod {
         let probe = scratch.join("cold-probe");
-        let works = std::fs::write(&probe, [0u8; 4096]).is_ok() && drop_file_cache(&probe);
+        let works = cache_drop_works(&probe);
         let _ = std::fs::remove_file(&probe);
         if works {
             ColdMethod::ReopenAndDropFileCache
@@ -156,36 +169,71 @@ impl ColdMethod {
     }
 }
 
-/// Drops `file` from the page cache. Returns false if `dd` refused.
-pub fn drop_file_cache(file: &Path) -> bool {
-    let Some(file) = file.to_str() else {
-        return false;
+/// Whether dropping `probe` from the page cache makes reading it again
+/// read storage: a cached read reads less than half the file from
+/// storage, a read after the drop more than half.
+fn cache_drop_works(probe: &Path) -> bool {
+    let written = File::create(probe).and_then(|mut file| {
+        // Bytes a compressing file system cannot shrink.
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let bytes: Vec<u8> = (0..COLD_PROBE_BYTES)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state as u8
+            })
+            .collect();
+        file.write_all(&bytes)?;
+        file.sync_all()
+    });
+    let storage_read = || -> Option<u64> {
+        let before = process_io("read_bytes")?;
+        std::fs::read(probe).ok()?;
+        Some(process_io("read_bytes")?.saturating_sub(before))
     };
-    Command::new("dd")
-        .args([
-            &format!("if={file}"),
-            "iflag=nocache",
-            "count=0",
-            "status=none",
-        ])
+    let half = COLD_PROBE_BYTES as u64 / 2;
+    written.is_ok()
+        && storage_read().is_some()
+        && storage_read().is_some_and(|cached| cached < half)
+        && drop_files_from_cache(&[probe.to_path_buf()])
+        && storage_read().is_some_and(|cold| cold > half)
+}
+
+const FADVISE_SCRIPT: &str = "import os, sys
+for path in sys.argv[1:]:
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except FileNotFoundError:
+        continue
+    os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+    os.close(fd)
+";
+
+/// Drops `files` from the page cache. A file that no longer exists is
+/// skipped. Returns false if the drop could not be made.
+pub fn drop_files_from_cache(files: &[PathBuf]) -> bool {
+    Command::new("python3")
+        .args(["-I", "-c", FADVISE_SCRIPT])
+        .args(files)
+        .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
 }
 
-/// Drops every file in `dir` from the page cache. Returns false if any
-/// could not be dropped.
+/// Drops every file in `dir` from the page cache. Returns false if the
+/// directory cannot be listed or the drop could not be made.
 pub fn drop_dir_cache(dir: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return false;
     };
-    let mut all = true;
-    for entry in entries.flatten() {
-        if entry.file_type().is_ok_and(|kind| kind.is_file()) {
-            all &= drop_file_cache(&entry.path());
-        }
-    }
-    all
+    let files: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .map(|entry| entry.path())
+        .collect();
+    drop_files_from_cache(&files)
 }
 
 /// User-space instructions retired by one thread, counted by `perf stat`
@@ -390,17 +438,23 @@ mod tests {
     }
 
     #[test]
-    fn file_cache_drops_report_what_they_did() {
+    fn file_cache_drops_are_checked_before_they_are_used() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(!drop_file_cache(&dir.path().join("missing")));
         std::fs::write(dir.path().join("a"), b"data").unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         let method = ColdMethod::detect(dir.path());
-        assert_eq!(
-            drop_dir_cache(dir.path()),
-            method == ColdMethod::ReopenAndDropFileCache
-        );
+        assert!(!dir.path().join("cold-probe").exists());
+        if method == ColdMethod::ReopenAndDropFileCache {
+            assert!(drop_dir_cache(dir.path()));
+            assert!(drop_files_from_cache(&[dir.path().join("missing")]));
+            assert!(process_io("read_bytes").is_some());
+        }
+        if cfg!(target_os = "linux") && Path::new("/usr/bin/python3").exists() {
+            assert_eq!(method, ColdMethod::ReopenAndDropFileCache);
+        }
         assert!(!drop_dir_cache(&dir.path().join("missing")));
+        assert!(!cache_drop_works(&dir.path().join("missing").join("probe")));
+        assert_eq!(process_io("no_such_field"), None);
     }
 
     #[test]

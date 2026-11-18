@@ -31,6 +31,9 @@ pub struct WalTotals {
     pub batches: u64,
     /// Entries per column family id. Id 0 is the default family.
     pub families: BTreeMap<u32, FamilyTotals>,
+    /// The sequence number the next write batch must carry: each batch
+    /// takes one per entry, so a batch the reader missed shows as a gap.
+    pub next_sequence: Option<u64>,
 }
 
 impl WalTotals {
@@ -84,6 +87,14 @@ pub enum WalError {
     EntryTag(u8),
     /// A write batch that ends inside an entry, or shorter than its header.
     Truncated,
+    /// A write batch whose sequence number is not the one the batch read
+    /// before it leads to: a batch was missed.
+    Gap {
+        /// The sequence number expected.
+        expected: u64,
+        /// The sequence number found.
+        found: u64,
+    },
     /// A write batch whose entry count disagrees with its entries.
     Count {
         /// The count in the batch header.
@@ -100,6 +111,10 @@ impl std::fmt::Display for WalError {
             WalError::Fragment(offset) => write!(f, "log fragment out of order at {offset}"),
             WalError::EntryTag(tag) => write!(f, "unknown write batch entry tag {tag:#x}"),
             WalError::Truncated => write!(f, "write batch truncated"),
+            WalError::Gap { expected, found } => write!(
+                f,
+                "write batch with sequence {found} where {expected} was next: a batch was missed"
+            ),
             WalError::Count { header, found } => write!(
                 f,
                 "write batch header counts {header} entries, {found} found"
@@ -257,6 +272,19 @@ fn read_batch(batch: &[u8], totals: &mut WalTotals, visit: &mut Visit) -> Result
     if found != header {
         return Err(WalError::Count { header, found });
     }
+    let mut sequence = [0u8; 8];
+    sequence.copy_from_slice(&batch[..8]);
+    let sequence = u64::from_le_bytes(sequence);
+    if let Some(expected) = totals
+        .next_sequence
+        .filter(|expected| *expected != sequence)
+    {
+        return Err(WalError::Gap {
+            expected,
+            found: sequence,
+        });
+    }
+    totals.next_sequence = Some(sequence + u64::from(header));
     totals.batches += 1;
     for (id, family) in families {
         let sum = totals.families.entry(id).or_default();
@@ -336,10 +364,17 @@ mod tests {
         out
     }
 
-    /// Frames `records` the way RocksDB's log writer does.
+    /// Frames `records` the way RocksDB's log writer does, numbering the
+    /// batches as RocksDB does from sequence 1.
     fn frame(records: &[Vec<u8>]) -> Vec<u8> {
         let mut out = Vec::new();
+        let mut sequence = 1u64;
         for record in records {
+            let mut record = record.clone();
+            if record.len() >= BATCH_HEADER_SIZE {
+                record[..8].copy_from_slice(&sequence.to_le_bytes());
+                sequence += u64::from(u32::from_le_bytes(record[8..12].try_into().unwrap()));
+            }
             let mut left = record.as_slice();
             let mut first = true;
             loop {
@@ -417,6 +452,28 @@ mod tests {
         }
         assert_eq!(tail.offset(), file.len() as u64);
         assert_eq!(pieces, whole);
+    }
+
+    #[test]
+    fn a_missed_batch_is_a_gap() {
+        let file = frame(&[batch(2, 10), batch(3, 10), batch(1, 10)]);
+        let mut totals = WalTotals::default();
+        LogTail::default().read(&file, &mut totals).unwrap();
+        assert_eq!(totals.next_sequence, Some(1 + 4 + 5 + 3));
+
+        let first = frame(&[batch(2, 10)]).len();
+        let second = frame(&[batch(2, 10), batch(3, 10)]).len();
+        let mut skipped = WalTotals::default();
+        let mut tail = LogTail::default();
+        tail.read(&file[..first], &mut skipped).unwrap();
+        let mut later = LogTail::starting_at(second as u64);
+        assert_eq!(
+            later.read(&file[second..], &mut skipped),
+            Err(WalError::Gap {
+                expected: 5,
+                found: 10
+            })
+        );
     }
 
     #[test]
@@ -533,6 +590,13 @@ mod tests {
                 "unknown write batch entry tag 0x40",
             ),
             (WalError::Truncated, "write batch truncated"),
+            (
+                WalError::Gap {
+                    expected: 5,
+                    found: 9,
+                },
+                "write batch with sequence 9 where 5 was next: a batch was missed",
+            ),
             (
                 WalError::Count {
                     header: 2,

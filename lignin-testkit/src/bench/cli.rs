@@ -19,7 +19,9 @@ use std::{fmt::Write as _, path::PathBuf};
 use grovedb_version::version::GroveVersion;
 
 use super::{
-    compare, report::ratio, run, BenchError, EngineChoice, Report, RowKind, RunOptions, Settings,
+    compare,
+    report::{self, ratio},
+    run, BenchError, EngineChoice, Report, RowKind, RunOptions, Settings,
 };
 
 const USAGE: &str =
@@ -57,11 +59,7 @@ pub fn main_with(args: &[String]) -> Result<String, BenchError> {
                 }
                 _ => return Err(usage()),
             };
-            Ok(comparison(
-                &read_report(paths[0])?,
-                &read_report(paths[1])?,
-                tolerance,
-            ))
+            comparison(&read_report(paths[0])?, &read_report(paths[1])?, tolerance)
         }
         _ => Err(usage()),
     }
@@ -207,8 +205,15 @@ pub fn table(report: &Report) -> String {
 
 /// How far the rows of two runs are apart, and how many agree within
 /// `tolerance`.
-pub fn comparison(first: &Report, second: &Report, tolerance: f64) -> String {
+pub fn comparison(first: &Report, second: &Report, tolerance: f64) -> Result<String, BenchError> {
+    report::comparable(first, second)?;
     let mut out = String::new();
+    for (engine, id, phase) in report::unmatched(first, second) {
+        let _ = writeln!(
+            out,
+            "{engine:<9} {phase:<8} {id:<36} measured in one run only"
+        );
+    }
     let agreements = compare(first, second);
     let mut within = [0usize; 3];
     let mut total = [0usize; 3];
@@ -249,7 +254,7 @@ pub fn comparison(first: &Report, second: &Report, tolerance: f64) -> String {
         within[2],
         total[2]
     );
-    out
+    Ok(out)
 }
 
 #[cfg(test)]

@@ -14,6 +14,11 @@
 //! Every count row comes from the engine's [`Counters`] or GroveDB's
 //! `OperationCost`; every time row from `Instant` around the engine call
 //! alone, with the engine's bookkeeping (`settle`, `counters`) outside.
+//!
+//! A write phase ends by waiting for the engine's background work to go
+//! idle, so the flushes and compactions it set off are counted in it rather
+//! than in whatever comes next. What is still in the memtable is flushed,
+//! and counted, later.
 
 use std::{
     path::{Path, PathBuf},
@@ -376,13 +381,6 @@ fn next_block(stream: &mut Stream) -> Vec<Op> {
     block
 }
 
-fn process_bytes(field: &str) -> Option<u64> {
-    let text = std::fs::read_to_string("/proc/self/io").ok()?;
-    text.lines()
-        .find_map(|line| line.strip_prefix(field)?.strip_prefix(':'))
-        .and_then(|value| value.trim().parse().ok())
-}
-
 /// Applies blocks of `stream` until `transitions` state transitions have
 /// been applied.
 fn write_phase<E: Engine>(
@@ -403,7 +401,7 @@ fn write_phase<E: Engine>(
     let mut commit_meter = Meter::new(settings, &format!("{phase}-commit"));
     let counters_before = engine.counters()?;
     let anatomy_before = engine.node_anatomy();
-    let written_before = process_bytes("write_bytes");
+    let written_before = machine::process_io("write_bytes");
     while totals.transitions < transitions {
         let block = next_block(stream);
         let Some((Op::Commit, ops)) = block.split_last() else {
@@ -448,12 +446,14 @@ fn write_phase<E: Engine>(
         transition_us.push(Unit::Micros.of(apply_time) / writes.max(1) as f64);
         commit_ms.push(Unit::Millis.of(commit_time));
     }
+    // Flushes and compactions the phase set off are counted in it.
+    engine.wait_for_background()?;
     totals.counters = engine.counters()?.since(&counters_before);
     totals.node_anatomy = engine
         .node_anatomy()
         .zip(anatomy_before)
         .map(|(now, then)| now.since(&then));
-    totals.process_write_bytes = match (written_before, process_bytes("write_bytes")) {
+    totals.process_write_bytes = match (written_before, machine::process_io("write_bytes")) {
         (Some(before), Some(after)) => Some(after.saturating_sub(before)),
         _ => None,
     };
@@ -1133,9 +1133,9 @@ fn measure<E: Engine>(
             cold_open_meter.stop(mark);
             engine = opened?;
             cold_open_ms.push(Unit::Millis.of(elapsed));
-            let before = process_bytes("read_bytes");
+            let before = machine::process_io("read_bytes");
             let (elapsed, _) = kind.read(&engine, &mut reads, loaded, grove_version, &mut meter)?;
-            read_bytes = match (read_bytes, before, process_bytes("read_bytes")) {
+            read_bytes = match (read_bytes, before, machine::process_io("read_bytes")) {
                 (Some(sum), Some(before), Some(after)) => Some(sum + after.saturating_sub(before)),
                 _ => None,
             };

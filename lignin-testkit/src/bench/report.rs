@@ -494,6 +494,51 @@ impl Agreement {
     }
 }
 
+/// Refuses two runs that did not apply the same thing: a different
+/// workload, seed, size or GroveVersion makes their rows incomparable.
+pub fn comparable(first: &Report, second: &Report) -> Result<(), BenchError> {
+    if first.workload != second.workload {
+        return Err(BenchError::Check(format!(
+            "the runs applied different workloads: {:?} and {:?}",
+            first.workload, second.workload
+        )));
+    }
+    if first.grove_protocol_version != second.grove_protocol_version {
+        return Err(BenchError::Check(format!(
+            "the runs applied GroveVersion {} and {}",
+            first.grove_protocol_version, second.grove_protocol_version
+        )));
+    }
+    Ok(())
+}
+
+/// The rows, as engine, id and phase, that one run measured and the other
+/// did not.
+pub fn unmatched(first: &Report, second: &Report) -> Vec<(String, String, String)> {
+    let missing_from = |from: &Report, other: &Report| {
+        from.engines
+            .iter()
+            .flat_map(|engine| {
+                let peer = other
+                    .engines
+                    .iter()
+                    .find(|peer| peer.engine == engine.engine);
+                engine
+                    .rows
+                    .iter()
+                    .filter(move |row| {
+                        peer.and_then(|peer| peer.row(&row.id, &row.phase))
+                            .is_none()
+                    })
+                    .map(|row| (engine.engine.clone(), row.id.clone(), row.phase.clone()))
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut rows = missing_from(first, second);
+    rows.extend(missing_from(second, first));
+    rows
+}
+
 /// Every row two runs both measured, in the first run's order.
 pub fn compare(first: &Report, second: &Report) -> Vec<Agreement> {
     let mut agreements = Vec::new();
@@ -713,6 +758,45 @@ mod tests {
         assert!((agreement.instructions_change.unwrap() - 0.15).abs() < 1e-9);
         assert_eq!(agreement.instructions_within(0.10), Some(false));
         assert_eq!(agreement.instructions_within(0.20), Some(true));
+    }
+
+    #[test]
+    fn only_runs_of_the_same_workload_compare() {
+        let first = report(vec![engine("rocksdb", vec![row("point_get", "warm", 1.0)])]);
+        let mut second = first.clone();
+        assert!(comparable(&first, &second).is_ok());
+        assert!(unmatched(&first, &second).is_empty());
+
+        second.engines[0].rows.push(row("reopen", "flushed", 1.0));
+        second
+            .engines
+            .push(engine("lignindb", vec![row("point_get", "warm", 1.0)]));
+        assert_eq!(
+            unmatched(&first, &second),
+            vec![
+                (
+                    "rocksdb".to_string(),
+                    "reopen".to_string(),
+                    "flushed".to_string()
+                ),
+                (
+                    "lignindb".to_string(),
+                    "point_get".to_string(),
+                    "warm".to_string()
+                ),
+            ]
+        );
+
+        second.grove_protocol_version = 4;
+        assert_eq!(
+            comparable(&first, &second).unwrap_err().to_string(),
+            "the runs applied GroveVersion 0 and 4"
+        );
+        second.workload.seed = 2;
+        assert!(comparable(&first, &second)
+            .unwrap_err()
+            .to_string()
+            .starts_with("the runs applied different workloads"));
     }
 
     #[test]
