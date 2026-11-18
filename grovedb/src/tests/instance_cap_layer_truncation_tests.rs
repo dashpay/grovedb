@@ -855,58 +855,101 @@ fn the_global_budget_alone_does_not_cut_the_layer() {
 /// Prover and verifier do not charge the global budget identically for
 /// every empty descent: a subtree whose only content is an empty MMR costs
 /// the prover an empty-layer slot and the verifier none. That predates the
-/// truncation, and the truncation must not turn it into a refusal: with the
-/// instance budget unspent the layer is not cut, and the proof verifies to
-/// the same rows as under V4.
+/// truncation, in V4 as well, and the truncation must not add to it: with
+/// the instance budget unspent the layer is not cut, so the V5 proof is the
+/// V4 proof byte for byte and the two verifiers reach the same verdict.
 #[test]
 fn an_uneven_global_charge_does_not_cut_the_layer() {
     const MMR: &[u8] = b"m";
-    let db = make_test_grovedb(&GROVE_V5);
-    let v = &GROVE_V5;
-    insert(&db, &[], INDEX, Element::empty_tree(), v);
-    // Three subtrees `index/<k>/x/m`, the MMR holding 0, 2 and 1 leaves,
-    // then an empty subtree.
-    for (i, leaves) in [(0u16, 0u8), (1, 2), (2, 1)] {
-        let key = index_key(i);
-        insert(&db, &[INDEX], &key, Element::empty_tree(), v);
-        insert(&db, &[INDEX, &key], b"x", Element::empty_tree(), v);
-        insert(&db, &[INDEX, &key, b"x"], MMR, Element::empty_mmr_tree(), v);
-        for leaf in 0..leaves {
-            db.mmr_tree_append(
-                [INDEX, key.as_slice(), b"x"].as_ref(),
+    let v4 = &GROVE_V4;
+    let v5 = &GROVE_V5;
+
+    // `index/<k>/x/m`, one MMR per entry holding that many leaves; `None`
+    // is an empty subtree at `index/<k>`.
+    let fixture = |subtrees: &[Option<u8>]| {
+        let db = make_test_grovedb(v5);
+        insert(&db, &[], INDEX, Element::empty_tree(), v5);
+        for (i, leaves) in subtrees.iter().enumerate() {
+            let key = index_key(i as u16);
+            insert(&db, &[INDEX], &key, Element::empty_tree(), v5);
+            let Some(leaves) = leaves else { continue };
+            insert(&db, &[INDEX, &key], b"x", Element::empty_tree(), v5);
+            insert(
+                &db,
+                &[INDEX, &key, b"x"],
                 MMR,
-                vec![leaf],
-                None,
-                v,
-            )
-            .unwrap()
-            .expect("the leaf appends");
+                Element::empty_mmr_tree(),
+                v5,
+            );
+            for leaf in 0..*leaves {
+                db.mmr_tree_append(
+                    [INDEX, key.as_slice(), b"x"].as_ref(),
+                    MMR,
+                    vec![leaf],
+                    None,
+                    v5,
+                )
+                .unwrap()
+                .expect("the leaf appends");
+            }
         }
-    }
-    insert(&db, &[INDEX], &index_key(3), Element::empty_tree(), v);
+        db
+    };
+    let query = |global: u16| {
+        let mut positions = Query::new();
+        positions.insert_range_inclusive(0u64.to_be_bytes().to_vec()..=9u64.to_be_bytes().to_vec());
+        let mut mmr = Query::new();
+        mmr.insert_key(MMR.to_vec());
+        mmr.set_subquery(positions);
+        let mut level = range_full(true);
+        level.set_subquery(mmr);
+        let mut body = range_full(true);
+        body.set_subquery(level);
+        body.limit = Some(5);
+        PathQuery::new(
+            vec![INDEX.to_vec()],
+            SizedQuery::new(body, Some(global), None),
+        )
+    };
+    // Proves under both versions, checks the bytes are the same, and
+    // returns each verifier's verdict.
+    let verdicts = |db: &TempGroveDb, query: &PathQuery| {
+        let v4_proof = db.prove_query(query, None, v4).unwrap().unwrap();
+        let v5_proof = db.prove_query(query, None, v5).unwrap().unwrap();
+        assert_eq!(v5_proof, v4_proof);
+        (
+            verified_rows(&v4_proof, query, v4),
+            verified_rows(&v5_proof, query, v5),
+        )
+    };
 
-    let mut positions = Query::new();
-    positions.insert_range_inclusive(0u64.to_be_bytes().to_vec()..=9u64.to_be_bytes().to_vec());
-    let mut mmr = Query::new();
-    mmr.insert_key(MMR.to_vec());
-    mmr.set_subquery(positions);
-    let mut level = range_full(true);
-    level.set_subquery(mmr);
-    let mut body = range_full(true);
-    body.set_subquery(level);
-    body.limit = Some(5);
-    let query = PathQuery::new(vec![INDEX.to_vec()], SizedQuery::new(body, Some(4), None));
-
-    let v4_proof = db.prove_query(&query, None, &GROVE_V4).unwrap().unwrap();
-    let v4_rows = verified_rows(&v4_proof, &query, &GROVE_V4).expect("V4 verifies");
+    // An empty MMR, two populated ones, then an empty subtree, which takes
+    // the slot the verifier still has: both verify, to the same rows.
+    let db = fixture(&[Some(0), Some(2), Some(1), None]);
+    let (v4_rows, v5_rows) = verdicts(&db, &query(4));
+    let v4_rows = v4_rows.expect("V4 verifies");
     assert_eq!(v4_rows.len(), 3);
+    assert_eq!(v5_rows.expect("V5 verifies"), v4_rows);
 
-    let v5_proof = db.prove_query(&query, None, &GROVE_V5).unwrap().unwrap();
-    assert_eq!(v5_proof, v4_proof);
-    assert_eq!(
-        verified_rows(&v5_proof, &query, &GROVE_V5).expect("V5 verifies"),
-        v4_rows
-    );
+    // The reviewer's shape: an empty MMR followed directly by populated
+    // subtrees, the layer stopped by a global limit of two.
+    let db = fixture(&[Some(0), Some(1), Some(1)]);
+    let (v4_rows, v5_rows) = verdicts(&db, &query(2));
+    assert_eq!(v5_rows.expect("V5 verifies"), v4_rows.expect("V4 verifies"));
+
+    // The uneven charge at its worst: the verifier still has a slot when
+    // the prover has none, and the next key is populated. V4 refuses this
+    // honest proof for the missing lower layer, and V5 refuses it for the
+    // same reason, not for an early stop. Aligning the two counts is a
+    // change of its own.
+    let db = fixture(&[Some(0), Some(2), Some(1), Some(1)]);
+    let (v4_rows, v5_rows) = verdicts(&db, &query(4));
+    for refusal in [v4_rows, v5_rows] {
+        assert!(
+            matches!(&refusal, Err(Error::InvalidProof(_, message)) if message.contains("missing lower layer")),
+            "{refusal:?}"
+        );
+    }
 }
 
 /// A global limit that a merge lifts into a cap cannot land on a layer this
