@@ -145,12 +145,14 @@ pub enum PageTableError {
         /// The version the offered checkpoint covers.
         offered: CommitVersion,
     },
-    /// The checkpoint offered holds a link of a version, or covers a
-    /// version, that the log is not yet durable through. Naming it could
-    /// leave a recovery with a page version newer than the last commit it
-    /// finds.
+    /// The checkpoint offered needs the log durable through a version that
+    /// it is not yet durable through: it covers that version, holds a link
+    /// of it, or was written after a free link of it had been trimmed out of
+    /// the table. Naming it could leave a recovery with a page version newer
+    /// than the last commit it finds, or without a page that is in use
+    /// there.
     LogBehind {
-        /// The newest version the checkpoint covers or reaches.
+        /// The version the checkpoint needs the log durable through.
         needed: CommitVersion,
         /// The version the log is durable through.
         durable: CommitVersion,

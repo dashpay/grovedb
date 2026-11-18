@@ -104,7 +104,7 @@
 //! | [`PageTable::push`] | write-back, and a commit that frees a page | Adds the newest link. |
 //! | [`PageTable::consolidate`] | consolidation | Adds a base image right after the link it was made through, which is named by its location. Later links stay in front of it. |
 //! | [`PageTable::relocate`] | the cleaner | Points one link at a copy of its block. Fails if the link is gone, so a superseded block is never brought back. |
-//! | [`PageTable::trim`] | whoever knows the oldest version a reader can ask for | Removes the links no reader at that version or later needs, and reports them. |
+//! | [`PageTable::trim`] | whoever knows the oldest version a reader can ask for | Removes the links no reader at that version or later needs, and reports them. The table remembers the newest free link it removed. |
 //! | [`PageTable::discard_after`] | recovery | Removes the links above a version. There are none if the log was kept ahead of the checkpoint. |
 //!
 //! The table trusts its callers on what a block holds: that a base image
@@ -144,6 +144,13 @@
 //! the changes of versions above the page's newest link
 //! ([`PageTable::newest`]).
 //!
+//! A checkpoint can also lack a page that was in use: one that a commit
+//! freed, and whose chain was trimmed away with its free link. The table
+//! remembers the newest version of such a free link
+//! ([`PageTable::trimmed_free`]), and the checkpoint is named only once the
+//! log is durable through it, so no recovery lands where the page is still
+//! in use.
+//!
 //! A checkpoint is written while the table changes. Each chain is copied
 //! as it is at one moment, and different chains at different moments. Since
 //! a chain only ever gains newer links and loses ones no reader needs, each
@@ -154,7 +161,7 @@
 //! | Step | What happens |
 //! | --- | --- |
 //! | Write | [`TableCheckpoints::write`] creates `table/<id>.pt` under an id above every id used before, appends the links and the end record, and syncs the file. |
-//! | Install | [`TableCheckpoints::install`] checks that the log is durable through all the checkpoint holds, syncs the segments, replaces the manifest with one that names the checkpoint and the segments as they are then, and deletes the checkpoint that was named before. |
+//! | Install | [`TableCheckpoints::install`] checks that the log is durable through all the checkpoint needs ([`CheckpointInfo::log_needed`]), syncs the segments, replaces the manifest with one that names the checkpoint and the segments as they are then, and deletes the checkpoint that was named before. |
 //!
 //! Between the two the caller makes the log durable (see below). A
 //! checkpoint that is written and not installed is deleted by
@@ -196,11 +203,16 @@
 //!   directory exists, and opens it after the manifest.
 //! - It passes [`TableCheckpoints::write`] a version that the table covers.
 //! - It keeps the log ahead of the checkpoint. Between `write` and
-//!   `install` it syncs the log through [`CheckpointInfo::reaches`], and it
-//!   tells `install` which version the log is durable through. A checkpoint
-//!   that covers or reaches a later version is refused
-//!   ([`PageTableError::LogBehind`]), because a recovery could then land
-//!   below one of its links, on a page version its chain no longer gives.
+//!   `install` it syncs the log through [`CheckpointInfo::log_needed`], and
+//!   it tells `install` which version the log is durable through. A
+//!   checkpoint that needs more is refused ([`PageTableError::LogBehind`]),
+//!   because a recovery could then land below one of its links, on a page
+//!   version its chain no longer gives, or below the commit that freed a
+//!   page it has no link of.
+//! - Once a commit has pushed the free link of a page, it writes back
+//!   nothing older of that page: the table would refuse the link. Readers
+//!   below the freeing version are served from the buffer pool, and no
+//!   recovery lands there with this table.
 //! - It deletes a segment, or lets the manifest name it shorter, only when
 //!   neither the table nor the checkpoint in force points into it:
 //!   [`CheckpointInfo::segments`] lists what a checkpoint points into.

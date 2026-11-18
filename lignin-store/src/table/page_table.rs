@@ -206,7 +206,8 @@ impl PageTable {
     ///
     /// What stays is the newest base image at or before `oldest` and
     /// everything newer than it. If the page was freed at or before
-    /// `oldest`, the mark and everything older go.
+    /// `oldest`, the mark and everything older go, and the table remembers
+    /// the version of the mark ([`Self::trimmed_free`]).
     pub fn trim(&self, page: PageId, oldest: CommitVersion, removed: &mut Vec<Link>) -> bool {
         self.write_lock().trim(page, oldest, removed).vacant
     }
@@ -241,6 +242,20 @@ impl PageTable {
     /// loaded.
     pub fn high_water(&self) -> Option<PageId> {
         self.read_lock().high_water()
+    }
+
+    /// The newest version of a free link that [`Self::trim`] has removed
+    /// since the table was made or loaded, or `None` if it has removed none.
+    ///
+    /// A page that was freed at or before this version can have no link
+    /// left, so the table no longer says that the page was in use before.
+    /// A checkpoint of the table is therefore named only once the log is
+    /// durable through this version ([`CheckpointInfo::log_needed`]): a
+    /// recovery then never lands where such a page is still in use.
+    ///
+    /// [`CheckpointInfo::log_needed`]: super::CheckpointInfo::log_needed
+    pub fn trimmed_free(&self) -> Option<CommitVersion> {
+        self.read_lock().trimmed_free()
     }
 
     /// The bytes of memory the table holds.

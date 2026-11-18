@@ -30,6 +30,7 @@ use crate::segment::{
 pub struct CheckpointInfo {
     named: TableCheckpoint,
     reaches: Option<CommitVersion>,
+    trimmed_free: Option<CommitVersion>,
     links: u64,
     segments: BTreeMap<FileId, u64>,
 }
@@ -56,6 +57,26 @@ impl CheckpointInfo {
     /// has no links. It can be above [`Self::covers`].
     pub fn reaches(&self) -> Option<CommitVersion> {
         self.reaches
+    }
+
+    /// The newest version of a free link that had been trimmed out of the
+    /// table when the checkpoint was written ([`PageTable::trimmed_free`]),
+    /// or `None` if there was none. The checkpoint may hold no link of a
+    /// page that was freed at or before this version.
+    ///
+    /// The file does not hold this. It is `None` for a checkpoint that was
+    /// loaded: the log was durable through it before the checkpoint was
+    /// named.
+    pub fn trimmed_free(&self) -> Option<CommitVersion> {
+        self.trimmed_free
+    }
+
+    /// The commit version the log must be durable through before a manifest
+    /// names the checkpoint: the newest of [`Self::covers`],
+    /// [`Self::reaches`] and [`Self::trimmed_free`].
+    pub fn log_needed(&self) -> CommitVersion {
+        let held = self.reaches.max(self.trimmed_free);
+        held.map_or(self.covers(), |held| held.max(self.covers()))
     }
 
     /// The number of links in the checkpoint.
@@ -307,10 +328,13 @@ impl TableCheckpoints {
     /// [`Self::write`] returned, and deletes the checkpoint it named before.
     ///
     /// `log_durable` is the commit version the log is durable through. The
-    /// checkpoint is refused if it covers, or holds a link of, a later
-    /// version ([`PageTableError::LogBehind`]): sync the log through
-    /// [`CheckpointInfo::reaches`] first. A recovery then never lands below
-    /// a link of the checkpoint it loads.
+    /// checkpoint is refused if it needs the log durable through a later
+    /// one ([`PageTableError::LogBehind`]): if it covers a later version,
+    /// holds a link of one, or was written after a free link of one had
+    /// been trimmed out of the table. Sync the log through
+    /// [`CheckpointInfo::log_needed`] first. A recovery then never lands
+    /// below a link of the checkpoint it loads, and never where a page that
+    /// the checkpoint has no link of is still in use.
     ///
     /// Then every segment is synced, so that the blocks the checkpoint
     /// points to are durable. The new manifest names the segments as they
@@ -336,10 +360,7 @@ impl TableCheckpoints {
     ) -> Result<(), PageTableError> {
         self.check_same_dir(manifest.dir())?;
         self.check_same_dir(segments.dir())?;
-        let covers = checkpoint.covers();
-        let needed = checkpoint
-            .reaches()
-            .map_or(covers, |reaches| reaches.max(covers));
+        let needed = checkpoint.log_needed();
         if needed > log_durable {
             return Err(PageTableError::LogBehind {
                 needed,
@@ -459,6 +480,9 @@ fn write_records(
     let totals = encoder
         .finish(covers, &mut records)
         .map_err(PageTableError::format(path, end.len))?;
+    // Read after the last chain was copied: a free link that a trim removed
+    // before its chain was copied is then no newer than this.
+    let trimmed_free = table.trimmed_free();
     end.append(&mut records)?;
     file.sync_data().map_err(PageTableError::io("sync", path))?;
 
@@ -466,6 +490,7 @@ fn write_records(
         named: TableCheckpoint::new(id, end.len, covers)
             .map_err(PageTableError::format(path, 0))?,
         reaches: totals.reaches,
+        trimmed_free,
         links: totals.links,
         segments: extents.finish(),
     })
@@ -563,6 +588,7 @@ impl PageTable {
         let info = CheckpointInfo {
             named,
             reaches: end.reaches,
+            trimmed_free: None,
             links: end.links,
             segments: extents.finish(),
         };

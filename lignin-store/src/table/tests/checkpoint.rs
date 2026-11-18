@@ -3,7 +3,7 @@
 
 use std::{
     collections::BTreeMap,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     thread,
 };
 
@@ -246,7 +246,15 @@ fn installing_tells_the_segment_store_of_the_new_manifest() {
         written.segments().keys().copied().collect::<Vec<_>>(),
         [second]
     );
-    assert_eq!(fixture.db.load().unwrap().1, Some(written));
+    assert_eq!(written.trimmed_free(), Some(version(newest)));
+    assert_eq!(written.log_needed(), version(newest + 1));
+    let loaded = fixture.db.load().unwrap().1.expect("a checkpoint");
+    assert_eq!(loaded.trimmed_free(), None);
+    assert_eq!(
+        (loaded.named(), loaded.reaches(), loaded.links()),
+        (written.named(), written.reaches(), written.links())
+    );
+    assert_eq!(loaded.segments(), written.segments());
 }
 
 #[test]
@@ -500,6 +508,49 @@ fn a_checkpoint_is_not_named_before_the_log_is_durable_through_all_it_holds() {
     ));
     db.checkpoints.discard(empty, &db.manifest).unwrap();
     assert_eq!(fixture.table_files(), [checkpoint_name(2)]);
+}
+
+/// The page is in use at version 1 and freed by commit 2. Once no reader
+/// needs it the trim leaves no link of it, so a checkpoint has no trace of
+/// the page. If that checkpoint were named with the log durable only through
+/// 1, a crash could lose commit 2, and recovery would land on version 1 with
+/// a table that does not hold the page.
+#[test]
+fn a_checkpoint_that_lost_a_freed_page_is_not_named_before_the_log_is_durable_through_the_free() {
+    let mut fixture = Fixture::new();
+    let image = fixture.block(1, BlockContent::Base, 50);
+    fixture.table.push(page(1), base(1, image)).unwrap();
+    let before = fixture.checkpoint(1);
+    fixture.table.push(page(1), free(2)).unwrap();
+    let mut removed = Vec::new();
+    assert!(fixture.table.trim(page(1), version(2), &mut removed));
+    assert_eq!(removed, [base(1, image)]);
+
+    let db = &mut fixture.db;
+    let written = db.checkpoints.write(&fixture.table, version(1)).unwrap();
+    assert_eq!((written.links(), written.reaches()), (0, None));
+    let refused = db
+        .checkpoints
+        .install(&written, version(1), &mut db.manifest, &db.segments);
+    assert!(
+        matches!(
+            refused,
+            Err(PageTableError::LogBehind { needed, durable })
+                if needed == version(2) && durable == version(1)
+        ),
+        "{refused:?}"
+    );
+
+    assert_eq!(db.named(), Some(before.named()));
+    let (loaded, _) = db.load().unwrap();
+    assert_eq!(read_at(&loaded, 1, 1), Some((version(1), vec![image])));
+
+    db.checkpoints
+        .install(&written, version(2), &mut db.manifest, &db.segments)
+        .unwrap();
+    assert_eq!(db.named(), Some(written.named()));
+    let (loaded, _) = db.load().unwrap();
+    assert_eq!(read_at(&loaded, 1, 2), None);
 }
 
 #[test]
@@ -768,6 +819,176 @@ fn a_checkpoint_written_while_chains_are_consolidated_and_trimmed_holds_whole_pa
     }
     println!("{consolidated} consolidated chains, {freed} pages found freed");
     assert!(consolidated > 0);
+}
+
+/// Tells the other thread of a test to stop, also when this one fails.
+struct Stop<'a>(&'a AtomicBool);
+
+impl Drop for Stop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+/// Pages are freed and trimmed out of the table from the highest id down,
+/// commit after commit, while checkpoints are written. A checkpoint that has
+/// no link of a page lost it to a trim that came before the page's chain
+/// was copied, and must say so, also when the trim came after the write
+/// began.
+#[test]
+fn a_checkpoint_written_while_freed_pages_are_trimmed_says_which_free_links_it_lost() {
+    const PER_WRITE: u64 = 300;
+    let fs = sim_fs(SimConfig::new(6));
+    let db = Db::create(&fs);
+    let table = PageTable::new();
+    let pages = 6 * format::LINKS_PER_RECORD as u64;
+    let image = |raw_page: u64| at(1, 20 + raw_page * 64);
+    for raw_page in 1..=pages {
+        table
+            .push(page(raw_page as u32), base(0, image(raw_page)))
+            .unwrap();
+    }
+    // Commit `n` frees page `pages + 1 - n`. `allowed` is how many commits
+    // may have run, and `freed` how many have.
+    let allowed = AtomicU64::new(0);
+    let freed = AtomicU64::new(0);
+    let done = AtomicBool::new(false);
+    let (mut during, mut rounds) = (0, 0);
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            let _stop = Stop(&done);
+            let mut removed = Vec::new();
+            let mut commit = 0;
+            while !done.load(Ordering::Acquire) {
+                if commit == allowed.load(Ordering::Acquire) {
+                    thread::yield_now();
+                    continue;
+                }
+                commit += 1;
+                let raw_page = (pages + 1 - commit) as u32;
+                table.push(page(raw_page), free(commit)).unwrap();
+                assert!(table.trim(page(raw_page), version(commit), &mut removed));
+                freed.store(commit, Ordering::Release);
+            }
+        });
+        let _stop = Stop(&done);
+        while during == 0 && rounds < 60 {
+            rounds += 1;
+            let before = freed.load(Ordering::Acquire);
+            assert_eq!(
+                table.trimmed_free(),
+                CommitVersion::new(before).filter(|_| before > 0)
+            );
+            allowed.fetch_add(PER_WRITE, Ordering::AcqRel);
+            let written = db.checkpoints.write(&table, version(0)).unwrap();
+            let after = freed.load(Ordering::Acquire);
+
+            let manifest = manifest_naming(written.named(), &[(1, u64::MAX)]);
+            let (loaded, _) = PageTable::load(&fs, db_dir(), &manifest).unwrap();
+            let lowest_lost = (1..=pages)
+                .find(|raw_page| loaded.newest(page(*raw_page as u32)).is_none())
+                .expect("a page that was trimmed");
+            let lost = pages + 1 - lowest_lost;
+            assert!(
+                written.trimmed_free() >= Some(version(lost)),
+                "{:?}, and the commit {lost} is lost",
+                written.trimmed_free()
+            );
+            assert!(written.trimmed_free() <= Some(version(after)).max(table.trimmed_free()));
+            assert_eq!(written.log_needed(), written.trimmed_free().unwrap());
+            during += usize::from(lost > before);
+            while freed.load(Ordering::Acquire) < allowed.load(Ordering::Acquire) {
+                assert!(!done.load(Ordering::Acquire), "the other thread stopped");
+                thread::yield_now();
+            }
+        }
+    });
+    println!("{during} checkpoints lost a free link while they were written, of {rounds}");
+    assert!(during > 0);
+}
+
+/// A page that was freed and trimmed away, and whose id names a new page
+/// since: the link of the new page is what the checkpoint reaches, and it
+/// is newer than the free link that was lost.
+#[test]
+fn what_a_checkpoint_needs_of_the_log_is_the_newest_of_what_it_covers_holds_and_lost() {
+    let mut fixture = Fixture::new();
+    let (first, second) = (
+        fixture.block(1, BlockContent::Base, 50),
+        fixture.block(2, BlockContent::Base, 50),
+    );
+    fixture.table.push(page(1), base(1, first)).unwrap();
+    fixture.table.push(page(2), base(2, second)).unwrap();
+    let whole = fixture
+        .db
+        .checkpoints
+        .write(&fixture.table, version(1))
+        .unwrap();
+    assert_eq!(
+        (whole.reaches(), whole.trimmed_free()),
+        (Some(version(2)), None)
+    );
+    assert_eq!(whole.log_needed(), version(2));
+
+    fixture.table.push(page(2), free(5)).unwrap();
+    let mut removed = Vec::new();
+    assert!(fixture.table.trim(page(2), version(5), &mut removed));
+    let lost = fixture
+        .db
+        .checkpoints
+        .write(&fixture.table, version(3))
+        .unwrap();
+    assert_eq!(
+        (lost.reaches(), lost.trimmed_free()),
+        (Some(version(1)), Some(version(5)))
+    );
+    assert_eq!(lost.log_needed(), version(5));
+
+    let reused = fixture.block(2, BlockContent::Base, 50);
+    fixture.table.push(page(2), base(7, reused)).unwrap();
+    let again = fixture
+        .db
+        .checkpoints
+        .write(&fixture.table, version(3))
+        .unwrap();
+    assert_eq!(
+        (again.reaches(), again.trimmed_free()),
+        (Some(version(7)), Some(version(5)))
+    );
+    assert_eq!(again.log_needed(), version(7));
+    let covering = fixture
+        .db
+        .checkpoints
+        .write(&fixture.table, version(8))
+        .unwrap();
+    assert_eq!(covering.log_needed(), version(8));
+
+    let db = &mut fixture.db;
+    for (written, needed) in [(&whole, 2), (&lost, 5), (&again, 7), (&covering, 8)] {
+        let refused =
+            db.checkpoints
+                .install(written, version(needed - 1), &mut db.manifest, &db.segments);
+        assert!(
+            matches!(
+                refused,
+                Err(PageTableError::LogBehind { needed: asked, durable })
+                    if asked == version(needed) && durable == version(needed - 1)
+            ),
+            "{refused:?}"
+        );
+        db.checkpoints
+            .install(written, version(needed), &mut db.manifest, &db.segments)
+            .unwrap();
+        assert_eq!(db.named(), Some(written.named()));
+    }
+
+    // What the next session loads has lost nothing a crash can bring back:
+    // the log was durable through the free link before the checkpoint was
+    // named.
+    let (loaded, info) = db.load().unwrap();
+    assert_eq!(loaded.trimmed_free(), None);
+    let info = info.expect("a checkpoint");
+    assert_eq!((info.trimmed_free(), info.log_needed()), (None, version(8)));
 }
 
 #[test]
