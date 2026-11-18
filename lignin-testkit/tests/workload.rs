@@ -17,31 +17,55 @@
 //!   `every_workload_applies_on_every_grove_version`, and for more seeds
 //!   `the_operation_workloads_apply_for_many_seeds`.
 
-use std::{collections::BTreeSet, thread};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    thread,
+};
 
 use grovedb::{
-    operations::proof::{SumBudgetStop, VerifiedPathQuery},
+    operations::{
+        proof::{SumBudgetStop, VerifiedPathQuery},
+        QueryItemOrSumReturnType,
+    },
     query_result_type::PathKeyElementTrio,
-    AxisAggregateValue, Element, GroveDb, PathQuery, PathQueryRun,
+    AxisAggregateValue, Element, GroveDb, LeafInfo, PathBranchChunkQuery, PathQuery, PathQueryRun,
+    PathTrunkChunkQuery, Transaction,
 };
 use grovedb_commitment_tree::{ciphertext_payload_size, DashMemo};
 use grovedb_merk::proofs::query::ReadMode;
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 use lignin_testkit::workload::{
     adversarial::{
-        DeepNesting, DeleteHeavy, FlatDrops, LargeValues, LongKeys, Moves, Pagination,
-        PartialBatches, ReferenceChains, TinySubtrees, MAX_NESTING_DEPTH,
+        ChunkProofs, DeepNesting, DeleteHeavy, FlatDrops, IndexedWrites, LargeValues, LongKeys,
+        Moves, Pagination, PartialBatches, ReferenceChains, TinySubtrees, TypedReads,
+        MAX_NESTING_DEPTH, MIN_CHUNKED_ROWS,
     },
     apply,
     coverage::{Operation, ELEMENT_VARIANTS, OPERATION_GROUPS, REFERENCE_PATH_TYPES, TREE_TYPES},
     drive::{
-        Balances, Documents, Expiration, IdentityKeys, IndexAggregates, IndexRekey, PlatformState,
-        Tokens,
+        Balances, BlockExecution, ConditionalWrites, Documents, Expiration, IdentityKeys,
+        IdentityReads, IndexAggregates, IndexRekey, PlatformState, Tokens,
     },
     zoo::{ElementZoo, COMMITMENT_PAYLOAD_LEN},
-    BatchOp, Coverage, Features, Op, Outcome, Query, Read, StreamDigest, Transactions, Workload,
-    Write,
+    BatchOp, Coverage, Features, Fetch, Op, Outcome, Prove, Query, Read, StreamDigest,
+    TransactionOp, Transactions, TreeRead, Workload, Write,
 };
+
+/// The group of the operations every workload is made of, which is all the
+/// first unit's workloads produce.
+const FIRST_UNIT_GROUP: &str = "writes, batches and reads";
+
+/// The groups of the operations the second unit added.
+const SECOND_UNIT_GROUPS: [&str; 8] = [
+    "patch",
+    "move",
+    "partial batches",
+    "aux records",
+    "meta records",
+    "query offsets",
+    "conditional subqueries",
+    "aggregate queries",
+];
 
 const SEED: u64 = 1;
 const OTHER_SEED: u64 = 0x4C49_474E_494E;
@@ -58,50 +82,99 @@ fn digest(ops: impl Iterator<Item = Op>) -> (u64, String) {
     (digest.ops(), digest.hex())
 }
 
+/// What [`run`] applied and what it could check on the way.
+#[derive(Clone, Copy, Debug, Default)]
+struct Applied {
+    /// How many operations were applied.
+    ops: u64,
+    /// How many snapshot reads returned something else than the committed
+    /// state held when they ran.
+    snapshot_reads_of_older_state: u64,
+    /// How many branch chunks were verified against the hash a trunk chunk
+    /// gave for their key.
+    branches_verified: u64,
+}
+
 /// Applies a stream to `db`, one transaction per block, and returns how many
 /// operations it applied. Panics on the first refused operation, on a read
 /// or a flush that does not follow a commit, on a query whose proof does not
 /// verify to what the query returned, on a query marked as not proven that
 /// GroveDB proves, and on a flush that does not reclaim every subtree
 /// dropped since the flush before it.
+///
+/// It also panics when a conditional write does not return what the state
+/// it was applied to calls for, when a rollback does not restore the root
+/// hash, when a read through a snapshot does not return what was committed
+/// when the snapshot was opened, when two readers of the same data
+/// disagree, and when a proof returned by a read does not verify.
 fn run(
     name: &str,
     db: &GroveDb,
     ops: impl Iterator<Item = Op>,
     grove_version: &GroveVersion,
-) -> u64 {
+) -> Applied {
+    let version = grove_version.protocol_version;
+    let root_hash = |transaction: Option<&Transaction>| {
+        db.root_hash(transaction, grove_version)
+            .unwrap()
+            .expect("root hash")
+    };
     let mut transactions = Transactions::new(db);
-    let mut applied = 0u64;
+    let mut ops = ops;
+    let mut ahead: VecDeque<Op> = VecDeque::new();
+    let mut applied = Applied::default();
     let mut committed = true;
     let mut dropped = 0u64;
-    for (index, op) in ops.enumerate() {
+    let mut savepoints: Vec<[u8; 32]> = Vec::new();
+    let mut snapshot_answers: VecDeque<String> = VecDeque::new();
+    let mut trunks: BTreeMap<Vec<Vec<u8>>, BTreeMap<Vec<u8>, LeafInfo>> = BTreeMap::new();
+    let mut index = 0usize;
+    while let Some(op) = ahead.pop_front().or_else(|| ops.next()) {
+        let context = format!("{name} on grove v{version}: op {index}\n{op:?}");
         if op.follows_a_commit() {
-            assert!(
-                committed,
-                "{name}: operation {index} does not follow a commit: {op:?}"
-            );
+            assert!(committed, "{context}\ndoes not follow a commit");
         }
         dropped += flat_drops(&op);
         if std::env::var_os("WORKLOAD_TRACE").is_some() {
-            eprintln!(
-                "{name} v{} #{index}: {op:?}",
-                grove_version.protocol_version
-            );
+            eprintln!("{name} v{version} #{index}: {op:?}");
         }
+        if matches!(op, Op::Transaction(TransactionOp::OpenSnapshot)) {
+            // What the reads through this snapshot must return is what
+            // they return now, against committed state.
+            assert!(ahead.is_empty(), "{context}\nopens a second snapshot");
+            snapshot_answers.clear();
+            for next in ops.by_ref() {
+                let ends = matches!(
+                    next,
+                    Op::Transaction(TransactionOp::CloseSnapshot | TransactionOp::OpenSnapshot)
+                );
+                if let Op::Transaction(TransactionOp::SnapshotRead(read)) = &next {
+                    snapshot_answers.push_back(answer(db, read, None, grove_version));
+                }
+                ahead.push_back(next);
+                if ends {
+                    break;
+                }
+            }
+        }
+        let expected = expected_outcome(db, &op, transactions.block(), grove_version);
         let outcome = transactions
             .apply(&op, grove_version)
             .unwrap()
-            .unwrap_or_else(|error| {
-                panic!(
-                    "{name} on grove v{}: op {index} refused: {error:?}\n{op:?}",
-                    grove_version.protocol_version
-                )
-            });
+            .unwrap_or_else(|error| panic!("{context}\nrefused: {error:?}"));
+        if let Some(expected) = expected {
+            assert_eq!(format!("{outcome:?}"), expected, "{context}");
+        }
         if op.ends_transaction() {
             committed = true;
+            savepoints.clear();
         } else if !op.keeps_transaction() {
             committed = false;
         }
+        if !op.keeps_transaction() {
+            trunks.clear();
+        }
+        let block = transactions.block();
         match (&op, outcome) {
             (Op::Read(Read::Query(query)), Outcome::Rows(rows)) => {
                 prove(
@@ -127,17 +200,549 @@ fn run(
                         report.unresolved_records
                     ),
                     (dropped, 0, 0),
-                    "{name}: flush {index} did not reclaim the {dropped} dropped subtrees"
+                    "{context}\ndid not reclaim the {dropped} dropped subtrees"
                 );
                 dropped = 0;
             }
+            (Op::Read(read), outcome) => {
+                check_answer(&context, db, read, &outcome, None, grove_version);
+                applied.branches_verified +=
+                    check_proof(&context, db, read, &outcome, &mut trunks, grove_version);
+            }
+            (Op::Write(write), outcome) => {
+                check_write(&context, db, write, &outcome, block, grove_version)
+            }
+            (Op::Transaction(step), outcome) => match step {
+                TransactionOp::SetSavepoint => savepoints.push(root_hash(Some(block))),
+                TransactionOp::RollbackToSavepoint => assert_eq!(
+                    Some(root_hash(Some(block))),
+                    savepoints.pop(),
+                    "{context}\ndid not restore the root hash of its savepoint"
+                ),
+                TransactionOp::Rollback | TransactionOp::Abandon => assert_eq!(
+                    root_hash(Some(block)),
+                    root_hash(None),
+                    "{context}\ndid not restore the committed root hash"
+                ),
+                TransactionOp::BlockRead(read) => {
+                    check_answer(&context, db, read, &outcome, Some(block), grove_version)
+                }
+                TransactionOp::SnapshotRead(read) => {
+                    assert_eq!(
+                        Some(format!("{outcome:?}")),
+                        snapshot_answers.pop_front(),
+                        "{context}\ndid not return what was committed when its snapshot opened"
+                    );
+                    check_answer(
+                        &context,
+                        db,
+                        read,
+                        &outcome,
+                        transactions.snapshot(),
+                        grove_version,
+                    );
+                    if format!("{outcome:?}") != answer(db, read, None, grove_version) {
+                        applied.snapshot_reads_of_older_state += 1;
+                    }
+                }
+                TransactionOp::OpenSnapshot | TransactionOp::CloseSnapshot => {}
+            },
             _ => {}
         }
-        applied += 1;
+        applied.ops += 1;
+        index += 1;
     }
     assert!(committed, "{name}: the stream does not end on a commit");
     assert_eq!(dropped, 0, "{name}: the stream leaves dropped subtrees");
+    assert!(
+        transactions.snapshot().is_none(),
+        "{name}: the stream leaves a snapshot open"
+    );
     applied
+}
+
+/// What `read` returns in `transaction`, as text.
+fn answer(
+    db: &GroveDb,
+    read: &Read,
+    transaction: Option<&Transaction>,
+    grove_version: &GroveVersion,
+) -> String {
+    let outcome = apply(db, &Op::Read(read.clone()), transaction, grove_version)
+        .unwrap()
+        .unwrap_or_else(|error| panic!("{read:?} refused: {error:?}"));
+    format!("{outcome:?}")
+}
+
+fn stored(
+    db: &GroveDb,
+    path: &[Vec<u8>],
+    key: &[u8],
+    transaction: Option<&Transaction>,
+    grove_version: &GroveVersion,
+) -> Option<Element> {
+    db.get_raw_optional(path.into(), key, transaction, grove_version)
+        .unwrap()
+        .expect("a raw read")
+}
+
+/// What a conditional write must return, given the state it is about to be
+/// applied to. `None` for an operation whose outcome does not depend on it.
+fn expected_outcome(
+    db: &GroveDb,
+    op: &Op,
+    transaction: &Transaction,
+    grove_version: &GroveVersion,
+) -> Option<String> {
+    let Op::Write(write) = op else {
+        return None;
+    };
+    let stored =
+        |path: &[Vec<u8>], key: &[u8]| stored(db, path, key, Some(transaction), grove_version);
+    let outcome = match write {
+        Write::InsertIfNotExists {
+            path,
+            key,
+            return_existing,
+            ..
+        } => {
+            let existing = stored(path, key);
+            if *return_existing {
+                Outcome::Existing(existing)
+            } else {
+                Outcome::Flag(existing.is_none())
+            }
+        }
+        Write::InsertIfChanged { path, key, element } => {
+            let previous = stored(path, key);
+            let changed = previous.as_ref() != Some(element);
+            Outcome::Changed {
+                changed,
+                previous: previous.filter(|_| changed),
+            }
+        }
+        Write::DeleteIfEmptyTree { path, key } => {
+            let mut tree = path.clone();
+            tree.push(key.clone());
+            let empty = db
+                .is_empty_tree(tree.as_slice(), Some(transaction), grove_version)
+                .unwrap()
+                .expect("the key holds a tree");
+            Outcome::Flag(empty)
+        }
+        Write::DeleteBuilt { path, key } | Write::IndexedDelete { path, key, .. } => {
+            Outcome::Flag(stored(path, key).is_some())
+        }
+        _ => return None,
+    };
+    Some(format!("{outcome:?}"))
+}
+
+/// Checks what a write left behind.
+fn check_write(
+    context: &str,
+    db: &GroveDb,
+    write: &Write,
+    outcome: &Outcome,
+    transaction: &Transaction,
+    grove_version: &GroveVersion,
+) {
+    let stored =
+        |path: &[Vec<u8>], key: &[u8]| stored(db, path, key, Some(transaction), grove_version);
+    match (write, outcome) {
+        (
+            Write::InsertIfNotExists { path, key, .. } | Write::InsertIfChanged { path, key, .. },
+            _,
+        ) => assert!(stored(path, key).is_some(), "{context}\nstored nothing"),
+        (
+            Write::DeleteBuilt { path, key }
+            | Write::DeleteIfEmptyTree { path, key }
+            | Write::IndexedDelete { path, key, .. },
+            Outcome::Flag(true),
+        ) => assert!(stored(path, key).is_none(), "{context}\ndeleted nothing"),
+        (Write::DeleteUpTree { path, key, .. }, Outcome::Deleted(deleted)) => {
+            // The key went, then the tree it was in, and so on up: each
+            // level above the first is a segment of the path.
+            let deleted = usize::from(*deleted);
+            assert!((1..=path.len()).contains(&deleted), "{context}");
+            assert!(stored(path, key).is_none(), "{context}\ndeleted nothing");
+            for level in 1..=deleted {
+                let (parent, tree) = path.split_at(path.len() - level);
+                let gone = stored(parent, &tree[0]).is_none();
+                assert_eq!(
+                    gone,
+                    level < deleted,
+                    "{context}\ndeleted {deleted}, and level {level} is the other way"
+                );
+            }
+        }
+        (
+            Write::IndexedInsert {
+                path, key, element, ..
+            },
+            _,
+        ) => {
+            let stored = stored(path, key).expect("an indexed insert stores its element");
+            // A tree is stored with the root key and aggregates it has by
+            // then, a value as it was given.
+            if element.is_any_tree() {
+                assert!(stored.is_any_tree(), "{context}\nstored {stored:?}");
+            } else {
+                assert_eq!(stored, *element, "{context}\nstored another element");
+            }
+        }
+        (Write::CommitmentInsert { path, .. }, Outcome::Appended { position, .. }) => {
+            let (key, parent) = path.split_last().expect("the path of a tree");
+            let count = db
+                .commitment_tree_count(parent, key, Some(transaction), grove_version)
+                .unwrap()
+                .expect("a commitment tree");
+            assert_eq!(count, position + 1, "{context}\nis not the newest note");
+        }
+        _ => {}
+    }
+}
+
+/// The rows a path query selects, read by `GroveDb::query_raw`, or by
+/// `GroveDb::query` to have references followed.
+fn rows(
+    db: &GroveDb,
+    query: &PathQuery,
+    raw: bool,
+    transaction: Option<&Transaction>,
+    grove_version: &GroveVersion,
+) -> (Vec<PathKeyElementTrio>, u16) {
+    let read = Op::Read(Read::Rows {
+        query: Box::new(query.clone()),
+        raw,
+    });
+    match apply(db, &read, transaction, grove_version).unwrap() {
+        Ok(Outcome::Run(PathQueryRun::Elements { elements, skipped })) => {
+            (elements.to_path_key_elements(), skipped)
+        }
+        other => panic!("{query:?} does not select rows: {other:?}"),
+    }
+}
+
+/// Checks a read against another reader of the same data.
+fn check_answer(
+    context: &str,
+    db: &GroveDb,
+    read: &Read,
+    outcome: &Outcome,
+    transaction: Option<&Transaction>,
+    grove_version: &GroveVersion,
+) {
+    let stored = |path: &[Vec<u8>], key: &[u8]| stored(db, path, key, transaction, grove_version);
+    match (read, outcome) {
+        (Read::HasRaw { path, key }, Outcome::Flag(has)) => {
+            assert_eq!(*has, stored(path, key).is_some(), "{context}")
+        }
+        (Read::IsEmptyTree { path }, Outcome::Flag(empty)) => {
+            // An append-only tree says in its element how much it holds.
+            let entries = path.split_last().and_then(|(key, parent)| {
+                stored(parent, key)
+                    .expect("the tree is stored")
+                    .non_merk_entry_count()
+            });
+            let expected = entries.map_or_else(
+                || {
+                    let all =
+                        PathQuery::new_unsized(path.clone(), grovedb::Query::new_range_full());
+                    rows(db, &all, true, transaction, grove_version)
+                        .0
+                        .is_empty()
+                },
+                |entries| entries == 0,
+            );
+            assert_eq!(*empty, expected, "{context}");
+        }
+        (
+            Read::Fetch {
+                path, key, fetch, ..
+            },
+            outcome,
+        ) => {
+            let raw = stored(path, key);
+            let expected = match fetch {
+                Fetch::RawOptional => Outcome::Existing(raw),
+                Fetch::Raw => Outcome::Element(raw.expect("the key is stored")),
+                Fetch::Resolved => Outcome::Element(
+                    db.get(path.as_slice(), key, transaction, grove_version)
+                        .unwrap()
+                        .expect("the key is stored"),
+                ),
+            };
+            assert_eq!(format!("{outcome:?}"), format!("{expected:?}"), "{context}");
+        }
+        (Read::ItemValues { query, or_sums }, outcome) => {
+            let mut unpaged = (**query).clone();
+            unpaged.query.offset = None;
+            unpaged.query.limit = None;
+            let (rows, _) = rows(db, &unpaged, false, transaction, grove_version);
+            let skip = usize::from(query.query.offset.unwrap_or(0));
+            let limit = query.query.limit.map_or(usize::MAX, usize::from);
+            let rows = rows.into_iter().skip(skip).take(limit);
+            let expected: Vec<QueryItemOrSumReturnType> = rows
+                .map(|(_, _, element)| match element {
+                    Element::Item(value, _) => QueryItemOrSumReturnType::ItemData(value),
+                    Element::SumItem(sum, _) => QueryItemOrSumReturnType::SumValue(sum),
+                    other => panic!("{context}\nselects {other:?}"),
+                })
+                .collect();
+            match outcome {
+                Outcome::ItemValuesOrSums { values, .. } => {
+                    assert!(or_sums, "{context}");
+                    assert_eq!(*values, expected, "{context}");
+                }
+                Outcome::ItemValues { values, .. } => {
+                    let values: Vec<_> = values
+                        .iter()
+                        .cloned()
+                        .map(QueryItemOrSumReturnType::ItemData)
+                        .collect();
+                    assert_eq!(values, expected, "{context}");
+                }
+                other => panic!("{context}\nreturned {other:?}"),
+            }
+        }
+        (Read::SumValues { query }, Outcome::SumValues { sums, .. }) => {
+            let (rows, _) = rows(db, query, false, transaction, grove_version);
+            let expected: Vec<i64> = rows
+                .into_iter()
+                .map(|(_, _, element)| element.as_sum_item_value().expect("a sum item"))
+                .collect();
+            assert_eq!(*sums, expected, "{context}");
+        }
+        (Read::Many { queries }, Outcome::Rows(returned)) => {
+            let merged = PathQuery::merge(queries.iter().collect(), grove_version)
+                .expect("the queries merge");
+            let (rows, _) = rows(db, &merged, true, transaction, grove_version);
+            assert_eq!(returned.clone().to_path_key_elements(), rows, "{context}");
+        }
+        _ => {}
+    }
+}
+
+/// A row as a proof gives it: a reference stands for the value it points
+/// at.
+fn resolved(
+    db: &GroveDb,
+    (path, key, element): PathKeyElementTrio,
+    grove_version: &GroveVersion,
+) -> PathKeyElementTrio {
+    let element = if element.underlying().is_reference() {
+        db.get(path.as_slice(), &key, None, grove_version)
+            .unwrap()
+            .expect("a stored reference resolves")
+    } else {
+        element
+    };
+    (path, key, element)
+}
+
+/// Proves a read GroveDB proves, or verifies the proof a read returned,
+/// against committed state. Returns how many branch chunks it verified
+/// against the hash a trunk chunk gave.
+fn check_proof(
+    context: &str,
+    db: &GroveDb,
+    read: &Read,
+    outcome: &Outcome,
+    trunks: &mut BTreeMap<Vec<Vec<u8>>, BTreeMap<Vec<u8>, LeafInfo>>,
+    grove_version: &GroveVersion,
+) -> u64 {
+    let root = db
+        .root_hash(None, grove_version)
+        .unwrap()
+        .expect("root hash");
+    let prove = |query: &PathQuery| {
+        db.prove_query(query, None, grove_version)
+            .unwrap()
+            .unwrap_or_else(|error| panic!("{context}\nnot provable: {error:?}"))
+    };
+    let verifies = |result: Result<[u8; 32], grovedb::Error>| {
+        let proved = result.unwrap_or_else(|error| panic!("{context}\nnot verified: {error:?}"));
+        assert_eq!(proved, root, "{context}\nverifies to another root");
+    };
+    match (read, outcome) {
+        (Read::KeysOptional { query, .. }, Outcome::OptionalRows(returned)) => {
+            let (proved_root, mut proved) =
+                GroveDb::verify_query_with_absence_proof(&prove(query), query, grove_version)
+                    .unwrap_or_else(|error| panic!("{context}\nnot verified: {error:?}"));
+            verifies(Ok(proved_root));
+            let mut expected: Vec<_> = returned
+                .iter()
+                .cloned()
+                .map(|(path, key, element)| match element {
+                    Some(element) => {
+                        let (path, key, element) =
+                            resolved(db, (path, key, element), grove_version);
+                        (path, key, Some(element))
+                    }
+                    None => (path, key, None),
+                })
+                .collect();
+            let by_key = |row: &(Vec<Vec<u8>>, Vec<u8>, _)| (row.0.clone(), row.1.clone());
+            proved.sort_by_key(by_key);
+            expected.sort_by_key(by_key);
+            assert_eq!(proved, expected, "{context}");
+            assert_eq!(
+                returned.len(),
+                query.query.query.items.len(),
+                "{context}\ndoes not answer for every key"
+            );
+        }
+        (Read::BigSum { query, .. }, Outcome::BigSum { count: None, sum }) => {
+            let (proved_root, proved) =
+                GroveDb::verify_aggregate_big_sum_query(&prove(query), query, grove_version)
+                    .unwrap_or_else(|error| panic!("{context}\nnot verified: {error:?}"));
+            verifies(Ok(proved_root));
+            assert_eq!(proved, *sum, "{context}");
+        }
+        (
+            Read::BigSum { query, .. },
+            Outcome::BigSum {
+                count: Some(count),
+                sum,
+            },
+        ) => {
+            let (proved_root, proved_count, proved_sum) =
+                GroveDb::verify_aggregate_count_and_big_sum_query(
+                    &prove(query),
+                    query,
+                    grove_version,
+                )
+                .unwrap_or_else(|error| panic!("{context}\nnot verified: {error:?}"));
+            verifies(Ok(proved_root));
+            assert_eq!((proved_count, proved_sum), (*count, *sum), "{context}");
+        }
+        (
+            Read::BigSum {
+                query, with_count, ..
+            },
+            Outcome::BigSumPerKey(per_key),
+        ) => {
+            let proof = prove(query);
+            let (proved_root, proved): (_, Vec<(Vec<u8>, Option<u64>, i128)>) = if *with_count {
+                let (root, proved) = GroveDb::verify_aggregate_count_and_big_sum_query_per_key(
+                    &proof,
+                    query,
+                    grove_version,
+                )
+                .unwrap_or_else(|error| panic!("{context}\nnot verified: {error:?}"));
+                let proved = proved
+                    .into_iter()
+                    .map(|(key, count, sum)| (key, Some(count), sum));
+                (root, proved.collect())
+            } else {
+                let (root, proved) =
+                    GroveDb::verify_aggregate_big_sum_query_per_key(&proof, query, grove_version)
+                        .unwrap_or_else(|error| panic!("{context}\nnot verified: {error:?}"));
+                let proved = proved.into_iter().map(|(key, sum)| (key, None, sum));
+                (root, proved.collect())
+            };
+            verifies(Ok(proved_root));
+            assert_eq!(proved, *per_key, "{context}");
+        }
+        (Read::Prove(prove), Outcome::Proof(proof)) => match prove {
+            Prove::Many(queries) => {
+                let merged = PathQuery::merge(queries.iter().collect(), grove_version)
+                    .expect("the queries merge");
+                let (proved_root, proved) =
+                    GroveDb::verify_query_raw(proof, &merged, grove_version)
+                        .unwrap_or_else(|error| panic!("{context}\nnot verified: {error:?}"));
+                verifies(Ok(proved_root));
+                let proved: Vec<PathKeyElementTrio> = proved
+                    .into_iter()
+                    .map(|row| {
+                        let element = Element::deserialize(&row.value, grove_version)
+                            .expect("a proved value is an element");
+                        (row.path, row.key, element)
+                    })
+                    .collect();
+                let (rows, _) = rows(db, &merged, true, None, grove_version);
+                let expected: Vec<_> = rows
+                    .into_iter()
+                    .map(|row| resolved(db, row, grove_version))
+                    .collect();
+                assert_eq!(proved, expected, "{context}");
+            }
+            Prove::BulkPositionRange {
+                path,
+                key,
+                start,
+                limit,
+            } => {
+                let (proved_root, proved) = GroveDb::verify_bulk_position_range_proof(
+                    proof,
+                    path.clone(),
+                    key,
+                    *start,
+                    *limit,
+                    grove_version,
+                )
+                .unwrap_or_else(|error| panic!("{context}\nnot verified: {error:?}"));
+                verifies(Ok(proved_root));
+                let tree = stored(db, path, key, None, grove_version).expect("the tree is stored");
+                let (start, limit) = (*start, *limit);
+                let range = match tree.underlying() {
+                    Element::BulkAppendTree(..) => TreeRead::BulkRange { start, limit },
+                    Element::CommitmentTree(..) => TreeRead::CommitmentRange { start, limit },
+                    Element::PrivateDocumentStore(..) => {
+                        TreeRead::PrivateDocumentRange { start, limit }
+                    }
+                    other => panic!("{context}\nproves a range of {other:?}"),
+                };
+                let mut tree_path = path.clone();
+                tree_path.push(key.clone());
+                let read = Read::Tree {
+                    path: tree_path,
+                    read: range,
+                };
+                assert_eq!(
+                    format!("{:?}", Outcome::Page(proved)),
+                    answer(db, &read, None, grove_version),
+                    "{context}"
+                );
+            }
+            Prove::TrunkChunk {
+                path,
+                max_depth,
+                min_depth,
+            } => {
+                let query = PathTrunkChunkQuery {
+                    path: path.clone(),
+                    max_depth: *max_depth,
+                    min_depth: *min_depth,
+                };
+                let (proved_root, trunk) =
+                    GroveDb::verify_trunk_chunk_proof(proof, &query, grove_version)
+                        .unwrap_or_else(|error| panic!("{context}\nnot verified: {error:?}"));
+                verifies(Ok(proved_root));
+                assert!(!trunk.elements.is_empty(), "{context}\nholds no element");
+                trunks.insert(path.clone(), trunk.leaf_keys);
+            }
+            Prove::BranchChunk { path, key, depth } => {
+                assert!(!proof.is_empty(), "{context}");
+                if let Some(leaf) = trunks.get(path).and_then(|leaves| leaves.get(key)) {
+                    let query = PathBranchChunkQuery {
+                        path: path.clone(),
+                        key: key.clone(),
+                        depth: *depth,
+                    };
+                    let branch =
+                        GroveDb::verify_branch_chunk_proof(proof, &query, leaf.hash, grove_version)
+                            .unwrap_or_else(|error| panic!("{context}\nnot verified: {error:?}"));
+                    assert!(branch.elements.contains_key(key), "{context}");
+                    return 1;
+                }
+            }
+            Prove::Chunk { .. } => assert!(!proof.is_empty(), "{context}\nserved nothing"),
+        },
+        _ => {}
+    }
+    0
 }
 
 /// How many subtrees an operation drops flat.
@@ -525,7 +1130,10 @@ fn every_workload_applies_on_every_grove_version() {
             let (_dir, db) = open();
             let applied = run(name, &db, workload.stream(SEED), grove_version);
             report_verify_issues(name, &db, grove_version);
-            println!("grove v{version} {name}: {applied} operations applied");
+            println!(
+                "grove v{version} {name}: {} operations applied",
+                applied.ops
+            );
             run(name, &shared, workload.stream(OTHER_SEED), grove_version);
         }
         report_verify_issues("suite", &shared, grove_version);
@@ -688,6 +1296,62 @@ fn the_smallest_workloads_apply() {
             rounds: 1,
             features,
         }),
+        Workload::ConditionalWrites(ConditionalWrites {
+            transitions: 0,
+            ..ConditionalWrites::default()
+        }),
+        Workload::ConditionalWrites(ConditionalWrites {
+            transitions: 60,
+            cities: 1,
+            owners: 1,
+            transitions_per_block: 1,
+        }),
+        Workload::IndexedWrites(IndexedWrites {
+            rounds: 0,
+            features,
+        }),
+        Workload::IndexedWrites(IndexedWrites {
+            rounds: 1,
+            features,
+        }),
+        Workload::TypedReads(TypedReads {
+            rounds: 0,
+            features,
+        }),
+        Workload::TypedReads(TypedReads {
+            rounds: 1,
+            features,
+        }),
+        Workload::IdentityReads(IdentityReads {
+            identities: 1,
+            updates: 12,
+            transitions_per_block: 1,
+            features,
+        }),
+        Workload::ChunkProofs(ChunkProofs {
+            rows: MIN_CHUNKED_ROWS,
+            rounds: 0,
+            features,
+        }),
+        Workload::ChunkProofs(ChunkProofs {
+            rows: MIN_CHUNKED_ROWS,
+            rounds: 4,
+            features,
+        }),
+        Workload::BlockExecution(BlockExecution {
+            blocks: 0,
+            ..BlockExecution::default()
+        }),
+        Workload::BlockExecution(BlockExecution {
+            identities: 1,
+            blocks: 13,
+            transitions_per_block: 1,
+        }),
+        Workload::BlockExecution(BlockExecution {
+            identities: 2,
+            blocks: 8,
+            transitions_per_block: 0,
+        }),
     ];
     let grove_version = GroveVersion::latest();
     for workload in workloads {
@@ -832,7 +1496,7 @@ fn the_operation_workloads_apply_for_many_seeds() {
     on_every_grove_version(|grove_version| {
         let features = Features::for_grove_version(grove_version);
         let workloads = operation_workloads(features);
-        assert_eq!(workloads.len(), 9);
+        assert_eq!(workloads.len(), 15);
         for workload in workloads {
             for seed in 2..2 + seeds {
                 let (_dir, db) = open();
@@ -899,9 +1563,15 @@ fn the_suite_produces_every_operation() {
     assert_eq!(first_unit.len(), 10);
     for workload in first_unit {
         let ops: Vec<Op> = workload.stream(SEED).collect();
+        let beyond: Vec<Operation> = Coverage::of(&ops)
+            .operations()
+            .iter()
+            .copied()
+            .filter(|operation| operation.group() != FIRST_UNIT_GROUP)
+            .collect();
         assert!(
-            Coverage::of(&ops).operations().is_empty(),
-            "{} produces one of the operations",
+            beyond.is_empty(),
+            "{} produces {beyond:?}, which the first unit did not have",
             workload.name()
         );
     }
@@ -916,7 +1586,7 @@ fn coverage_reports_what_a_stream_lacks() {
         .map(|operation| operation.group())
         .collect();
     assert_eq!(groups, OPERATION_GROUPS.iter().copied().collect());
-    assert_eq!(OPERATION_GROUPS.len(), 8);
+    assert_eq!(OPERATION_GROUPS.len(), 16);
     let names: BTreeSet<&str> = Operation::ALL
         .iter()
         .map(|operation| operation.name())
@@ -986,6 +1656,18 @@ const PINNED_STREAMS: &[(&str, u64, u64, &str)] = &[
     ("partial-batches", 0x4c49474e494e, 229, "05a4bec0f5d876e8307ab29962158cded8eb28ed95004be37ecb5dc6d6a23ba5"),
     ("pagination", 0x1, 450, "c6f32bc26af5c7c640bd4a27c7f57a50b78e34b5384658ee0a3d97e6973722b4"),
     ("pagination", 0x4c49474e494e, 450, "8312d028f4fcd6c0ffe2cd4bc6282a8316c09acf0b69802a7d6501036371b075"),
+    ("conditional-writes", 0x1, 889, "b79858ee32ef03eab31b71fdb88919f58bc1cd7b429def8188fc07821966de15"),
+    ("conditional-writes", 0x4c49474e494e, 872, "d441efc8e5ae8b672dcc286427d29c0874c03b4e355ff2aea2f62c51dcbfd1fc"),
+    ("indexed-writes", 0x1, 206, "8d9746f65dacd4b8b3538181acb20105b3e6454ad0fdd9e438000a3f4a22e0ec"),
+    ("indexed-writes", 0x4c49474e494e, 206, "e452f11f12ac6e55d4b3cd1f9cf93a43d3190a27e15239c1d817377a5e08a24a"),
+    ("typed-reads", 0x1, 289, "f915af2ee469465ef4b826d4bfbe2dc453a13077642eca9f817f9996eada82e6"),
+    ("typed-reads", 0x4c49474e494e, 309, "ff49b183beed5f3bc5150102b56064f46e1d8af88f29f728b9402f8a137de1d8"),
+    ("identity-reads", 0x1, 180, "8d0bcba5a7ef510d27cb4a61bfe1f96a8023974cc8200497d009633941e3028b"),
+    ("identity-reads", 0x4c49474e494e, 180, "7ac1e426b8ea750863c4439fdee37b73ab6afe80c83424f6f24b23fabd5a2664"),
+    ("chunk-proofs", 0x1, 214, "56f3836d37385d388cd12435dbfe8dca1d3f440049e559d982513c78ff634e81"),
+    ("chunk-proofs", 0x4c49474e494e, 219, "4f8a5a71fba53c3011562aac68dababe4b2f35d223aa340bb4a7c081623cfd07"),
+    ("block-execution", 0x1, 713, "7ba90184be818949de2e93b9ef4e58ad977ea136e6359b28ecf8d58ab14bcc85"),
+    ("block-execution", 0x4c49474e494e, 729, "7ab9efbea976847e8fd4f5602e5f71be4774857e8bd9fbb3a4bb32fd068d1e3f"),
 ];
 
 #[test]
@@ -1018,11 +1700,11 @@ fn streams_are_pinned() {
 /// features, seed [`SEED`]: protocol version, operations, digest.
 #[rustfmt::skip]
 const PINNED_SUITES: &[(u32, u64, &str)] = &[
-    (1, 18681, "9cb765cb89b3c383e89d84c84c36f9a61222db6d4344a3469ed3a26b407e3bd2"),
-    (2, 18681, "9cb765cb89b3c383e89d84c84c36f9a61222db6d4344a3469ed3a26b407e3bd2"),
-    (3, 18681, "3b296a8f47c4fe143f09b67acb70d8a8970998de8493dd033f526dc94f31021d"),
-    (4, 19095, "c865e1840881fa86e39448c9e088c521ef9fd0ee5b31466f60f3b376e7b3e5b1"),
-    (5, 19341, "66e880ef0028738781b970b71a344f0f8a1b99dfd6810e333b185a7a184c519e"),
+    (1, 21020, "007cd745c21e1c0b67012b25fce357d558a914628f535c9aa8afa1d406946223"),
+    (2, 21020, "007cd745c21e1c0b67012b25fce357d558a914628f535c9aa8afa1d406946223"),
+    (3, 21044, "608ce305c2df2df18a352f61ed65ef918cecd3c10918644832bf4ee357de895f"),
+    (4, 21526, "2495634e0f036a8d817ddb2fb067e0edb14f4e0cb7da06e0000d77f00b1912e2"),
+    (5, 21832, "fd20bfa755f50e2a15f7db6712d9343a9ec943e78a78fc697d729a986e6f1618"),
 ];
 
 #[test]
@@ -1279,7 +1961,12 @@ fn the_new_kinds_have_a_pinned_encoding() {
     assert_eq!(digest.hex(), PINNED_NEW_KINDS);
 
     let coverage = Coverage::of(&ops);
-    assert_eq!(coverage.missing_operations(), Vec::<Operation>::new());
+    let missing: Vec<Operation> = coverage
+        .missing_operations()
+        .into_iter()
+        .filter(|operation| SECOND_UNIT_GROUPS.contains(&operation.group()))
+        .collect();
+    assert_eq!(missing, Vec::<Operation>::new());
     for op in &ops {
         let (query, through_rows) = match op {
             Op::Read(Read::PathQuery { query, .. }) => (query, false),

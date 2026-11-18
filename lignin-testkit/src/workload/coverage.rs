@@ -325,7 +325,89 @@ impl Features {
             | Operation::AggregateSumPerKey
             | Operation::AggregateCountAndSumPerKey
             | Operation::SumBudget => true,
-            _ => true,
+            Operation::PrivateDocumentInsert
+            | Operation::PrivateDocumentValue
+            | Operation::PrivateDocumentCount => self.private_document_store,
+            Operation::PrivateDocumentRange => self.private_document_ranges,
+            Operation::BigSum
+            | Operation::CountAndBigSum
+            | Operation::BigSumPerKey
+            | Operation::CountAndBigSumPerKey => self.provable_count_provable_big_sum_tree,
+            Operation::BulkPositionRangeProof => self.v1_proofs,
+            Operation::Insert
+            | Operation::Delete
+            | Operation::ClearSubtree
+            | Operation::MmrAppend
+            | Operation::BulkAppend
+            | Operation::DenseInsert
+            | Operation::Batch
+            | Operation::Get
+            | Operation::Query
+            | Operation::QueryRaw
+            | Operation::PathQueryRun
+            | Operation::Commit
+            | Operation::InsertIfNotExists
+            | Operation::InsertIfNotExistsReturnExisting
+            | Operation::InsertIfChanged
+            | Operation::DeleteIfEmptyTree
+            | Operation::DeleteUpTree
+            | Operation::DeleteUpTreeBuilt
+            | Operation::DeleteBuilt
+            | Operation::HasRaw
+            | Operation::IsEmptyTree
+            | Operation::GetRaw
+            | Operation::GetRawOptional
+            | Operation::GetUncached
+            | Operation::GetRawUncached
+            | Operation::GetRawOptionalUncached
+            | Operation::BlockRead
+            | Operation::IndexedInsertCount
+            | Operation::IndexedInsertSum
+            | Operation::IndexedInsertCountSum
+            | Operation::IndexedDeleteCount
+            | Operation::IndexedDeleteSum
+            | Operation::IndexedDeleteCountSum
+            | Operation::IndexedReconcile
+            | Operation::MmrValue
+            | Operation::MmrRootHash
+            | Operation::MmrLeafCount
+            | Operation::BulkValue
+            | Operation::BulkRange
+            | Operation::BulkChunk
+            | Operation::BulkBuffer
+            | Operation::BulkCount
+            | Operation::BulkChunkCount
+            | Operation::DenseValue
+            | Operation::DenseRootHash
+            | Operation::DenseCount
+            | Operation::CommitmentValue
+            | Operation::CommitmentRange
+            | Operation::CommitmentAnchor
+            | Operation::CommitmentCount
+            | Operation::CommitmentInsert
+            | Operation::TrunkChunk
+            | Operation::BranchChunk
+            | Operation::RootChunk
+            | Operation::RootTreeChunk
+            | Operation::MerkChunk
+            | Operation::MerkChunkBelowRoot
+            | Operation::EntriesChunk
+            | Operation::KeysOptional
+            | Operation::RawKeysOptional
+            | Operation::AbsenceProof
+            | Operation::ItemValues
+            | Operation::ItemValuesOrSums
+            | Operation::SumValues
+            | Operation::ManyRaw
+            | Operation::ProveMany
+            | Operation::Rollback
+            | Operation::Abandon
+            | Operation::Savepoint
+            | Operation::SavepointRollback
+            | Operation::NestedSavepoint
+            | Operation::SavepointKept
+            | Operation::SnapshotRead
+            | Operation::SnapshotReadAfterCommit => true,
         }
     }
 }
@@ -592,11 +674,7 @@ fn read_operations(read: &Read) -> Vec<Operation> {
     match read {
         Read::Get { .. } => vec![Operation::Get],
         Read::Query(query) => vec![rows_reader(query.raw)],
-        Read::PathQuery { query, proven } => {
-            let mut operations = query_operations(query, *proven);
-            operations.push(Operation::PathQueryRun);
-            operations
-        }
+        Read::PathQuery { query, proven } => query_operations(query, *proven),
         Read::Rows { query, raw } => {
             let mut operations = selection_operations(query);
             operations.push(rows_reader(*raw));
@@ -712,6 +790,7 @@ fn query_operations(path_query: &PathQuery, proven: bool) -> Vec<Operation> {
         return Vec::new();
     };
     let mut operations = selection_operations(path_query);
+    operations.push(Operation::PathQueryRun);
     if proven && matches!(shape, PathQueryShape::CountOffsetPaginated { .. }) {
         for operation in &mut operations {
             if *operation == Operation::QueryOffset {
