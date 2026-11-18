@@ -1624,15 +1624,16 @@ by running it.
 
 ### 16.1 Versions read
 
-- `grovedb-storage` at this branch's base (`1b7294e8`): `rocksdb = "0.25.0"`
-  (`storage/Cargo.toml`).
+- `grovedb-storage` at commit `1b7294e8`, the tree this specification was
+  written against: `rocksdb = "0.25.0"` (`storage/Cargo.toml`).
 - `rocksdb` 0.25.0 depends on `librocksdb-sys` 0.19.0+11.8.1, which bundles
   RocksDB 11.8.1 (`include/rocksdb/version.h`).
 
 ### 16.2 What the code does
 
-Paths under `storage/` are in this repository. The others are in the RocksDB
-11.8.1 source tree.
+Paths under `storage/` and `grovedb/` are in this repository, and their line
+numbers, here and in 14.5, are those of commit `1b7294e8`. Later tasks move
+some of this code. The other paths are in the RocksDB 11.8.1 source tree.
 
 **How GroveDB uses it**
 
@@ -1748,7 +1749,7 @@ the root, at `GroveVersion::latest()`. "None" is a call with no transaction.
 - The RocksDB facts of 16.2 were read in the source that `cargo` unpacks for
   `librocksdb-sys` 0.19.0+11.8.1, at the lines given.
 - The cases of 16.3 and 16.4 were run by one scratch program built against
-  `rocksdb` 0.25.0 and this branch's `grovedb`. It prints the observed
+  `rocksdb` 0.25.0 and `grovedb` at `1b7294e8`. It prints the observed
   result beside the result predicted from the source, for the 52 cases other
   than B8. 51 predictions matched. The one that did not was A10c: the
   prediction had overlooked that a flushed memtable stays in the history that
