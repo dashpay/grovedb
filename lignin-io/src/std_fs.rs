@@ -19,7 +19,11 @@
 //!
 //! On macOS `fsync` hands the bytes to the drive without asking it to write
 //! them out, and there is no `fdatasync`, so both syncs are the slower
-//! `F_FULLFSYNC`.
+//! `F_FULLFSYNC`. A volume that does not support it cannot be synced.
+//!
+//! The lock is a `flock`, which belongs to the open file and not to the
+//! process: a second attempt in the same process is refused like one from
+//! another process.
 //!
 //! An append is a single `write` unless the system writes only part of the
 //! buffer, and it never overwrites: the descriptor is `O_APPEND`, so the
@@ -31,59 +35,20 @@ use std::{
     io::{self, ErrorKind, Write},
     os::unix::fs::{FileExt, MetadataExt},
     path::Path,
-    sync::{Mutex, MutexGuard, PoisonError},
+    sync::{Mutex, MutexGuard},
 };
 
 use crate::vfs::{Create, DirEntry, EntryKind, OpenMode, Vfs, VfsFile, VfsLock};
+
+const MAX_FILE_LEN: u64 = i64::MAX as u64;
 
 /// The [`Vfs`] over the operating system's files.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StdVfs;
 
-impl StdVfs {
-    fn open_file(path: &Path, mode: OpenMode) -> io::Result<StdFile> {
-        let mut options = OpenOptions::new();
-        options.read(true);
-        let create = match mode {
-            OpenMode::Read => Create::Never,
-            OpenMode::Write(create) => {
-                options.write(true);
-                create
-            }
-            OpenMode::Append(create) => {
-                options.append(true);
-                create
-            }
-        };
-        match create {
-            Create::Never => {}
-            Create::IfMissing => {
-                options.create(true);
-            }
-            Create::New => {
-                options.create_new(true);
-            }
-        }
-        let file = options.open(path)?;
-        let access = match mode {
-            OpenMode::Read => Access::Read,
-            OpenMode::Write(_) => Access::Write,
-            OpenMode::Append(_) => Access::Append(Mutex::new(AppendEnd {
-                len: file.metadata()?.len(),
-                broken: None,
-            })),
-        };
-        Ok(StdFile {
-            file,
-            access,
-            sync_failure: Mutex::new(None),
-        })
-    }
-}
-
 impl Vfs for StdVfs {
     fn open(&self, path: &Path, mode: OpenMode) -> io::Result<Box<dyn VfsFile>> {
-        Ok(Box::new(Self::open_file(path, mode)?))
+        Ok(Box::new(StdFile::open(path, mode)?))
     }
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
@@ -135,42 +100,17 @@ impl Vfs for StdVfs {
     fn sync_dir(&self, path: &Path) -> io::Result<()> {
         let dir = File::open(path)?;
         if !dir.metadata()?.is_dir() {
-            return Err(io::Error::new(
+            return Err(path_error(
                 ErrorKind::NotADirectory,
-                format!("{} is not a directory", path.display()),
+                path,
+                "is not a directory",
             ));
         }
         dir.sync_all()
     }
 
     fn lock(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)?;
-        match file.try_lock() {
-            Ok(()) => {}
-            Err(TryLockError::WouldBlock) => {
-                return Err(io::Error::new(
-                    ErrorKind::WouldBlock,
-                    format!("{} is locked", path.display()),
-                ));
-            }
-            Err(TryLockError::Error(error)) => return Err(error),
-        }
-        let lock = StdLock { file };
-        if !lock.is_named(path)? {
-            return Err(io::Error::new(
-                ErrorKind::NotFound,
-                format!(
-                    "{} was removed or replaced while it was being locked",
-                    path.display()
-                ),
-            ));
-        }
-        Ok(Box::new(lock))
+        Ok(Box::new(StdLock::acquire(path, || {})?))
     }
 }
 
@@ -178,7 +118,7 @@ impl Vfs for StdVfs {
 struct StdFile {
     file: File,
     access: Access,
-    sync_failure: Mutex<Option<StickyError>>,
+    sync_failure: Mutex<Option<String>>,
 }
 
 #[derive(Debug)]
@@ -191,49 +131,73 @@ enum Access {
 #[derive(Debug)]
 struct AppendEnd {
     len: u64,
-    broken: Option<StickyError>,
+    broken: Option<String>,
 }
-
-#[derive(Debug)]
-struct StickyError {
-    kind: ErrorKind,
-    message: String,
-}
-
-impl StickyError {
-    fn error(&self) -> io::Error {
-        io::Error::new(self.kind, self.message.clone())
-    }
-}
-
-type WriteFn<'a> = &'a mut dyn FnMut(&File, &[u8]) -> io::Result<usize>;
 
 impl StdFile {
-    fn sync_using(&self, sync: fn(&File) -> io::Result<()>) -> io::Result<()> {
-        let mut failure = lock(&self.sync_failure);
-        if let Some(failure) = &*failure {
-            return Err(failure.error());
+    fn open(path: &Path, mode: OpenMode) -> io::Result<Self> {
+        let mut options = OpenOptions::new();
+        options.read(true);
+        let create = match mode {
+            OpenMode::Read => Create::Never,
+            OpenMode::Write(create) => {
+                options.write(true);
+                create
+            }
+            OpenMode::Append(create) => {
+                options.append(true);
+                create
+            }
+        };
+        options
+            .create(create == Create::IfMissing)
+            .create_new(create == Create::New);
+        let file = options.open(path)?;
+        let metadata = file.metadata()?;
+        if metadata.is_dir() {
+            return Err(path_error(ErrorKind::IsADirectory, path, "is a directory"));
         }
-        sync(&self.file).inspect_err(|error| {
-            *failure = Some(StickyError {
-                kind: error.kind(),
-                message: format!(
-                    "an earlier sync of this file failed ({error}), so this handle can no longer \
-                     make it durable"
-                ),
-            });
+        let access = match mode {
+            OpenMode::Read => Access::Read,
+            OpenMode::Write(_) => Access::Write,
+            OpenMode::Append(_) => Access::Append(Mutex::new(AppendEnd {
+                len: metadata.len(),
+                broken: None,
+            })),
+        };
+        Ok(Self {
+            file,
+            access,
+            sync_failure: Mutex::new(None),
         })
     }
 
-    fn append_using(&self, buf: &[u8], write: WriteFn<'_>) -> io::Result<u64> {
+    fn sync_using(&self, sync: fn(&File) -> io::Result<()>) -> io::Result<()> {
+        let mut failure = guard(&self.sync_failure)?;
+        if let Some(failure) = &*failure {
+            return Err(io::Error::other(failure.clone()));
+        }
+        sync(&self.file).inspect_err(|error| {
+            *failure = Some(format!(
+                "an earlier sync of this file failed ({error}), so this handle can no longer make \
+                 it durable"
+            ));
+        })
+    }
+
+    fn append_using(
+        &self,
+        buf: &[u8],
+        mut write: impl FnMut(&File, &[u8]) -> io::Result<usize>,
+    ) -> io::Result<u64> {
         let Access::Append(end) = &self.access else {
             return Err(wrong_mode(
                 "append needs a file opened with OpenMode::Append",
             ));
         };
-        let mut end = lock(end);
+        let mut end = guard(end)?;
         if let Some(broken) = &end.broken {
-            return Err(broken.error());
+            return Err(io::Error::other(broken.clone()));
         }
         let start = end.len;
         let mut written = 0;
@@ -248,13 +212,10 @@ impl StdFile {
                 Err(error) => error,
             };
             if let Err(undo) = self.undo_append(start, written) {
-                end.broken = Some(StickyError {
-                    kind: ErrorKind::Other,
-                    message: format!(
-                        "an earlier append to this file failed ({error}) and could not be undone \
-                         ({undo}), so this handle no longer knows where the file ends"
-                    ),
-                });
+                end.broken = Some(format!(
+                    "an earlier append to this file failed ({error}) and could not be undone \
+                     ({undo}), so this handle no longer knows where the file ends"
+                ));
             }
             return Err(error);
         }
@@ -280,6 +241,9 @@ impl StdFile {
 
 impl VfsFile for StdFile {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+        if offset >= MAX_FILE_LEN {
+            return Ok(0);
+        }
         let mut filled = 0;
         while filled < buf.len() {
             match self
@@ -296,16 +260,16 @@ impl VfsFile for StdFile {
     }
 
     fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<()> {
-        match self.access {
-            Access::Write => self.file.write_all_at(buf, offset),
-            _ => Err(wrong_mode(
+        let Access::Write = self.access else {
+            return Err(wrong_mode(
                 "write_at needs a file opened with OpenMode::Write",
-            )),
-        }
+            ));
+        };
+        self.file.write_all_at(buf, offset)
     }
 
     fn append(&self, buf: &[u8]) -> io::Result<u64> {
-        self.append_using(buf, &mut |mut file, bytes| file.write(bytes))
+        self.append_using(buf, |mut file, bytes| file.write(bytes))
     }
 
     fn sync_data(&self) -> io::Result<()> {
@@ -327,7 +291,7 @@ impl VfsFile for StdFile {
             )),
             Access::Write => self.file.set_len(len),
             Access::Append(end) => {
-                let mut end = lock(end);
+                let mut end = guard(end)?;
                 self.file.set_len(len)?;
                 end.len = len;
                 Ok(())
@@ -342,6 +306,32 @@ struct StdLock {
 }
 
 impl StdLock {
+    fn acquire(path: &Path, mut locked: impl FnMut()) -> io::Result<Self> {
+        loop {
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(path)?;
+            if let Err(error) = file.try_lock() {
+                return Err(match error {
+                    TryLockError::WouldBlock => {
+                        path_error(ErrorKind::WouldBlock, path, "is locked")
+                    }
+                    TryLockError::Error(error) => error,
+                });
+            }
+            locked();
+            let lock = Self { file };
+            // Otherwise the file was removed or replaced after it was opened,
+            // and the lock that counts is on the file the path names now.
+            if lock.is_named(path)? {
+                return Ok(lock);
+            }
+        }
+    }
+
     fn is_named(&self, path: &Path) -> io::Result<bool> {
         let held = self.file.metadata()?;
         match fs::metadata(path) {
@@ -363,12 +353,18 @@ impl Drop for StdLock {
     }
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+fn guard<T>(state: &Mutex<T>) -> io::Result<MutexGuard<'_, T>> {
+    state
+        .lock()
+        .map_err(|_| io::Error::other("an earlier operation on this file panicked"))
 }
 
 fn wrong_mode(message: &'static str) -> io::Error {
     io::Error::new(ErrorKind::InvalidInput, message)
+}
+
+fn path_error(kind: ErrorKind, path: &Path, problem: &str) -> io::Error {
+    io::Error::new(kind, format!("{} {problem}", path.display()))
 }
 
 #[cfg(test)]

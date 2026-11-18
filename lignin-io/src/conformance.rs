@@ -28,6 +28,7 @@ macro_rules! conformance_tests {
         $crate::conformance::conformance_tests! {
             @cases $setup;
             open_of_a_missing_file_is_not_found,
+            open_of_a_directory_is_refused,
             create_new_refuses_an_existing_file,
             create_if_missing_keeps_an_existing_file,
             write_at_round_trips_and_overwrites,
@@ -47,6 +48,8 @@ macro_rules! conformance_tests {
             rename_moves_a_file,
             rename_replaces_the_destination,
             rename_of_a_missing_file_is_not_found,
+            #[cfg_attr(miri, ignore = "Miri has no hard links")]
+            rename_between_names_of_one_file_changes_nothing,
             #[cfg_attr(miri, ignore = "Miri has no hard links")]
             hard_link_is_another_name_for_the_same_file,
             #[cfg_attr(miri, ignore = "Miri has no hard links")]
@@ -98,23 +101,33 @@ fn byte_at(offset: u64) -> u8 {
     (offset.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 56) as u8
 }
 
-fn kind<T: Debug>(result: io::Result<T>) -> ErrorKind {
-    result.unwrap_err().kind()
+#[track_caller]
+fn assert_fails<T: Debug>(result: io::Result<T>, expected: ErrorKind) {
+    assert_eq!(result.unwrap_err().kind(), expected);
 }
 
+#[track_caller]
+fn open(vfs: &dyn Vfs, path: &Path, mode: OpenMode) -> Box<dyn VfsFile> {
+    vfs.open(path, mode).unwrap()
+}
+
+#[track_caller]
 fn write_new(vfs: &dyn Vfs, path: &Path, content: &[u8]) {
-    let file = vfs.open(path, OpenMode::Write(Create::New)).unwrap();
-    file.write_at(content, 0).unwrap();
+    open(vfs, path, OpenMode::Write(Create::New))
+        .write_at(content, 0)
+        .unwrap();
 }
 
+#[track_caller]
 fn read_all(file: &dyn VfsFile) -> Vec<u8> {
     let mut content = vec![0; file.len().unwrap() as usize];
     file.read_exact_at(&mut content, 0).unwrap();
     content
 }
 
+#[track_caller]
 fn read_path(vfs: &dyn Vfs, path: &Path) -> Vec<u8> {
-    read_all(&*vfs.open(path, OpenMode::Read).unwrap())
+    read_all(&*open(vfs, path, OpenMode::Read))
 }
 
 fn entry(name: &str, kind: EntryKind) -> DirEntry {
@@ -139,35 +152,48 @@ pub(crate) fn open_of_a_missing_file_is_not_found(vfs: &dyn Vfs, root: &Path) {
         OpenMode::Write(Create::Never),
         OpenMode::Append(Create::Never),
     ] {
-        assert_eq!(kind(vfs.open(&missing, mode)), ErrorKind::NotFound);
+        assert_fails(vfs.open(&missing, mode), ErrorKind::NotFound);
     }
 
     let in_missing_dir = root.join("missing").join("file");
     for create in [Create::Never, Create::IfMissing, Create::New] {
         for mode in [OpenMode::Write(create), OpenMode::Append(create)] {
-            assert_eq!(kind(vfs.open(&in_missing_dir, mode)), ErrorKind::NotFound);
+            assert_fails(vfs.open(&in_missing_dir, mode), ErrorKind::NotFound);
         }
     }
     assert!(vfs.read_dir(root).unwrap().is_empty());
 }
 
+pub(crate) fn open_of_a_directory_is_refused(vfs: &dyn Vfs, root: &Path) {
+    let dir = root.join("dir");
+    vfs.create_dir(&dir).unwrap();
+    for mode in [
+        OpenMode::Read,
+        OpenMode::Write(Create::Never),
+        OpenMode::Write(Create::IfMissing),
+        OpenMode::Append(Create::Never),
+        OpenMode::Append(Create::IfMissing),
+    ] {
+        assert_fails(vfs.open(&dir, mode), ErrorKind::IsADirectory);
+    }
+    assert_eq!(vfs.read_dir(root).unwrap(), [entry("dir", EntryKind::Dir)]);
+}
+
 pub(crate) fn create_new_refuses_an_existing_file(vfs: &dyn Vfs, root: &Path) {
     let path = root.join("file");
-    let file = vfs.open(&path, OpenMode::Write(Create::New)).unwrap();
+    let file = open(vfs, &path, OpenMode::Write(Create::New));
     assert_eq!(file.len().unwrap(), 0);
     file.write_at(b"kept", 0).unwrap();
 
     for mode in [OpenMode::Write(Create::New), OpenMode::Append(Create::New)] {
-        assert_eq!(kind(vfs.open(&path, mode)), ErrorKind::AlreadyExists);
+        assert_fails(vfs.open(&path, mode), ErrorKind::AlreadyExists);
     }
     assert_eq!(read_path(vfs, &path), b"kept");
 }
 
 pub(crate) fn create_if_missing_keeps_an_existing_file(vfs: &dyn Vfs, root: &Path) {
     let written = root.join("written");
-    let file = vfs
-        .open(&written, OpenMode::Write(Create::IfMissing))
-        .unwrap();
+    let file = open(vfs, &written, OpenMode::Write(Create::IfMissing));
     assert_eq!(file.len().unwrap(), 0);
     file.write_at(b"kept", 0).unwrap();
     drop(file);
@@ -175,21 +201,17 @@ pub(crate) fn create_if_missing_keeps_an_existing_file(vfs: &dyn Vfs, root: &Pat
         OpenMode::Write(Create::IfMissing),
         OpenMode::Append(Create::IfMissing),
     ] {
-        assert_eq!(read_all(&*vfs.open(&written, mode).unwrap()), b"kept");
+        assert_eq!(read_all(&*open(vfs, &written, mode)), b"kept");
     }
 
     let appended = root.join("appended");
-    let file = vfs
-        .open(&appended, OpenMode::Append(Create::IfMissing))
-        .unwrap();
+    let file = open(vfs, &appended, OpenMode::Append(Create::IfMissing));
     assert_eq!(file.append(b"new").unwrap(), 0);
     assert_eq!(read_path(vfs, &appended), b"new");
 }
 
 pub(crate) fn write_at_round_trips_and_overwrites(vfs: &dyn Vfs, root: &Path) {
-    let file = vfs
-        .open(&root.join("file"), OpenMode::Write(Create::New))
-        .unwrap();
+    let file = open(vfs, &root.join("file"), OpenMode::Write(Create::New));
     let mut expected = bytes(10_000, 1);
     file.write_at(&expected, 0).unwrap();
     assert_eq!(read_all(&*file), expected);
@@ -211,9 +233,7 @@ pub(crate) fn write_at_round_trips_and_overwrites(vfs: &dyn Vfs, root: &Path) {
 }
 
 pub(crate) fn write_at_past_the_end_leaves_zeros(vfs: &dyn Vfs, root: &Path) {
-    let file = vfs
-        .open(&root.join("file"), OpenMode::Write(Create::New))
-        .unwrap();
+    let file = open(vfs, &root.join("file"), OpenMode::Write(Create::New));
     file.write_at(b"head", 0).unwrap();
     file.write_at(b"tail", 5_000).unwrap();
     assert_eq!(file.len().unwrap(), 5_004);
@@ -228,7 +248,7 @@ pub(crate) fn read_at_stops_at_the_end_of_the_file(vfs: &dyn Vfs, root: &Path) {
     let path = root.join("file");
     let content = bytes(1_000, 4);
     write_new(vfs, &path, &content);
-    let file = vfs.open(&path, OpenMode::Read).unwrap();
+    let file = open(vfs, &path, OpenMode::Read);
 
     let mut buf = [0; 300];
     assert_eq!(file.read_at(&mut buf, 0).unwrap(), 300);
@@ -237,6 +257,7 @@ pub(crate) fn read_at_stops_at_the_end_of_the_file(vfs: &dyn Vfs, root: &Path) {
     assert_eq!(buf[..100], content[900..]);
     assert_eq!(file.read_at(&mut buf, 1_000).unwrap(), 0);
     assert_eq!(file.read_at(&mut buf, 1_000_000).unwrap(), 0);
+    assert_eq!(file.read_at(&mut buf, u64::MAX).unwrap(), 0);
     assert_eq!(file.read_at(&mut [], 0).unwrap(), 0);
 }
 
@@ -244,7 +265,7 @@ pub(crate) fn read_exact_at_needs_every_byte(vfs: &dyn Vfs, root: &Path) {
     let path = root.join("file");
     let content = bytes(1_000, 5);
     write_new(vfs, &path, &content);
-    let file = vfs.open(&path, OpenMode::Read).unwrap();
+    let file = open(vfs, &path, OpenMode::Read);
 
     let mut buf = vec![0; 1_000];
     file.read_exact_at(&mut buf, 0).unwrap();
@@ -252,13 +273,13 @@ pub(crate) fn read_exact_at_needs_every_byte(vfs: &dyn Vfs, root: &Path) {
     file.read_exact_at(&mut buf[..1], 999).unwrap();
     assert_eq!(buf[0], content[999]);
 
-    assert_eq!(
-        kind(file.read_exact_at(&mut buf[..2], 999)),
-        ErrorKind::UnexpectedEof
+    assert_fails(
+        file.read_exact_at(&mut buf[..2], 999),
+        ErrorKind::UnexpectedEof,
     );
-    assert_eq!(
-        kind(file.read_exact_at(&mut buf[..1], 1_000)),
-        ErrorKind::UnexpectedEof
+    assert_fails(
+        file.read_exact_at(&mut buf[..1], 1_000),
+        ErrorKind::UnexpectedEof,
     );
     file.read_exact_at(&mut [], 1_000).unwrap();
 }
@@ -272,17 +293,13 @@ pub(crate) fn large_unaligned_io_round_trips(vfs: &dyn Vfs, root: &Path) {
     let content = bytes(len, 6);
     let mut buf = vec![0; len];
 
-    let written = vfs
-        .open(&root.join("written"), OpenMode::Write(Create::New))
-        .unwrap();
+    let written = open(vfs, &root.join("written"), OpenMode::Write(Create::New));
     written.write_at(&content, 4_093).unwrap();
     assert_eq!(written.len().unwrap(), 4_093 + len as u64);
     written.read_exact_at(&mut buf, 4_093).unwrap();
     assert!(buf == content);
 
-    let appended = vfs
-        .open(&root.join("appended"), OpenMode::Append(Create::New))
-        .unwrap();
+    let appended = open(vfs, &root.join("appended"), OpenMode::Append(Create::New));
     assert_eq!(appended.append(b"x").unwrap(), 0);
     assert_eq!(appended.append(&content).unwrap(), 1);
     buf.fill(0);
@@ -291,9 +308,7 @@ pub(crate) fn large_unaligned_io_round_trips(vfs: &dyn Vfs, root: &Path) {
 }
 
 pub(crate) fn append_returns_consecutive_offsets(vfs: &dyn Vfs, root: &Path) {
-    let file = vfs
-        .open(&root.join("file"), OpenMode::Append(Create::New))
-        .unwrap();
+    let file = open(vfs, &root.join("file"), OpenMode::Append(Create::New));
     let mut expected = Vec::new();
     for (seed, len) in [1, 4_096, 0, 37, 10_000, 5].into_iter().enumerate() {
         let record = bytes(len, seed as u64);
@@ -308,20 +323,16 @@ pub(crate) fn append_starts_at_the_end_of_an_existing_file(vfs: &dyn Vfs, root: 
     let path = root.join("file");
     write_new(vfs, &path, b"0123456789");
 
-    let file = vfs.open(&path, OpenMode::Append(Create::Never)).unwrap();
+    let file = open(vfs, &path, OpenMode::Append(Create::Never));
     assert_eq!(file.append(b"abc").unwrap(), 10);
     drop(file);
-    let file = vfs
-        .open(&path, OpenMode::Append(Create::IfMissing))
-        .unwrap();
+    let file = open(vfs, &path, OpenMode::Append(Create::IfMissing));
     assert_eq!(file.append(b"def").unwrap(), 13);
     assert_eq!(read_all(&*file), b"0123456789abcdef");
 }
 
 pub(crate) fn concurrent_appends_land_whole(vfs: &dyn Vfs, root: &Path) {
-    let file = vfs
-        .open(&root.join("file"), OpenMode::Append(Create::New))
-        .unwrap();
+    let file = open(vfs, &root.join("file"), OpenMode::Append(Create::New));
     let file = &*file;
 
     let mut placed: Vec<(u64, Vec<u8>)> = thread::scope(|scope| {
@@ -362,9 +373,9 @@ pub(crate) fn concurrent_appends_land_whole(vfs: &dyn Vfs, root: &Path) {
 
 pub(crate) fn reads_run_alongside_appends(vfs: &dyn Vfs, root: &Path) {
     let path = root.join("file");
-    let appender = vfs.open(&path, OpenMode::Append(Create::New)).unwrap();
+    let appender = open(vfs, &path, OpenMode::Append(Create::New));
     let appender = &*appender;
-    let reader = vfs.open(&path, OpenMode::Read).unwrap();
+    let reader = open(vfs, &path, OpenMode::Read);
     let reader = &*reader;
     let appended = AtomicU64::new(0);
     let done = AtomicBool::new(false);
@@ -406,25 +417,23 @@ pub(crate) fn handles_refuse_operations_outside_their_mode(vfs: &dyn Vfs, root: 
     let path = root.join("file");
     write_new(vfs, &path, b"content");
 
-    let read = vfs.open(&path, OpenMode::Read).unwrap();
-    assert_eq!(kind(read.write_at(b"x", 0)), ErrorKind::InvalidInput);
-    assert_eq!(kind(read.append(b"x")), ErrorKind::InvalidInput);
-    assert_eq!(kind(read.set_len(0)), ErrorKind::InvalidInput);
+    let read = open(vfs, &path, OpenMode::Read);
+    assert_fails(read.write_at(b"x", 0), ErrorKind::InvalidInput);
+    assert_fails(read.append(b"x"), ErrorKind::InvalidInput);
+    assert_fails(read.set_len(0), ErrorKind::InvalidInput);
 
-    let write = vfs.open(&path, OpenMode::Write(Create::Never)).unwrap();
-    assert_eq!(kind(write.append(b"x")), ErrorKind::InvalidInput);
+    let write = open(vfs, &path, OpenMode::Write(Create::Never));
+    assert_fails(write.append(b"x"), ErrorKind::InvalidInput);
     drop(write);
 
-    let append = vfs.open(&path, OpenMode::Append(Create::Never)).unwrap();
-    assert_eq!(kind(append.write_at(b"x", 0)), ErrorKind::InvalidInput);
+    let append = open(vfs, &path, OpenMode::Append(Create::Never));
+    assert_fails(append.write_at(b"x", 0), ErrorKind::InvalidInput);
 
     assert_eq!(read_all(&*read), b"content");
 }
 
 pub(crate) fn set_len_shrinks_and_grows(vfs: &dyn Vfs, root: &Path) {
-    let file = vfs
-        .open(&root.join("file"), OpenMode::Write(Create::New))
-        .unwrap();
+    let file = open(vfs, &root.join("file"), OpenMode::Write(Create::New));
     let content = bytes(1_000, 7);
     file.write_at(&content, 0).unwrap();
 
@@ -444,9 +453,7 @@ pub(crate) fn set_len_shrinks_and_grows(vfs: &dyn Vfs, root: &Path) {
 }
 
 pub(crate) fn append_follows_set_len(vfs: &dyn Vfs, root: &Path) {
-    let file = vfs
-        .open(&root.join("file"), OpenMode::Append(Create::New))
-        .unwrap();
+    let file = open(vfs, &root.join("file"), OpenMode::Append(Create::New));
     assert_eq!(file.append(b"0123456789").unwrap(), 0);
 
     file.set_len(4).unwrap();
@@ -459,7 +466,7 @@ pub(crate) fn append_follows_set_len(vfs: &dyn Vfs, root: &Path) {
 pub(crate) fn sync_succeeds_in_every_mode(vfs: &dyn Vfs, root: &Path) {
     let path = root.join("file");
 
-    let write = vfs.open(&path, OpenMode::Write(Create::New)).unwrap();
+    let write = open(vfs, &path, OpenMode::Write(Create::New));
     write.sync_data().unwrap();
     write.sync_all().unwrap();
     write.write_at(b"written", 0).unwrap();
@@ -467,13 +474,13 @@ pub(crate) fn sync_succeeds_in_every_mode(vfs: &dyn Vfs, root: &Path) {
     write.sync_all().unwrap();
     drop(write);
 
-    let append = vfs.open(&path, OpenMode::Append(Create::Never)).unwrap();
+    let append = open(vfs, &path, OpenMode::Append(Create::Never));
     append.append(b" appended").unwrap();
     append.sync_data().unwrap();
     append.sync_all().unwrap();
     append.sync_data().unwrap();
 
-    let read = vfs.open(&path, OpenMode::Read).unwrap();
+    let read = open(vfs, &path, OpenMode::Read);
     read.sync_data().unwrap();
     read.sync_all().unwrap();
     assert_eq!(read_all(&*read), b"written appended");
@@ -481,10 +488,10 @@ pub(crate) fn sync_succeeds_in_every_mode(vfs: &dyn Vfs, root: &Path) {
 
 pub(crate) fn handles_share_one_file(vfs: &dyn Vfs, root: &Path) {
     let path = root.join("file");
-    let writer = vfs.open(&path, OpenMode::Write(Create::New)).unwrap();
-    let early = vfs.open(&path, OpenMode::Read).unwrap();
+    let writer = open(vfs, &path, OpenMode::Write(Create::New));
+    let early = open(vfs, &path, OpenMode::Read);
     writer.write_at(b"shared", 0).unwrap();
-    let late = vfs.open(&path, OpenMode::Read).unwrap();
+    let late = open(vfs, &path, OpenMode::Read);
     assert_eq!(read_all(&*early), b"shared");
     assert_eq!(read_all(&*late), b"shared");
 
@@ -496,10 +503,10 @@ pub(crate) fn handles_share_one_file(vfs: &dyn Vfs, root: &Path) {
 pub(crate) fn rename_moves_a_file(vfs: &dyn Vfs, root: &Path) {
     let (from, to) = (root.join("from"), root.join("to"));
     write_new(vfs, &from, b"moved");
-    let handle = vfs.open(&from, OpenMode::Write(Create::Never)).unwrap();
+    let handle = open(vfs, &from, OpenMode::Write(Create::Never));
 
     vfs.rename(&from, &to).unwrap();
-    assert_eq!(kind(vfs.open(&from, OpenMode::Read)), ErrorKind::NotFound);
+    assert_fails(vfs.open(&from, OpenMode::Read), ErrorKind::NotFound);
     assert_eq!(read_path(vfs, &to), b"moved");
 
     handle.write_at(b"MOVED", 0).unwrap();
@@ -517,7 +524,7 @@ pub(crate) fn rename_replaces_the_destination(vfs: &dyn Vfs, root: &Path) {
     let (current, next) = (root.join("current"), root.join("next"));
     write_new(vfs, &current, b"old content");
     write_new(vfs, &next, b"new");
-    let old = vfs.open(&current, OpenMode::Read).unwrap();
+    let old = open(vfs, &current, OpenMode::Read);
 
     vfs.rename(&next, &current).unwrap();
     assert_eq!(read_path(vfs, &current), b"new");
@@ -528,17 +535,26 @@ pub(crate) fn rename_replaces_the_destination(vfs: &dyn Vfs, root: &Path) {
 pub(crate) fn rename_of_a_missing_file_is_not_found(vfs: &dyn Vfs, root: &Path) {
     let to = root.join("to");
     write_new(vfs, &to, b"kept");
-    assert_eq!(
-        kind(vfs.rename(&root.join("missing"), &to)),
-        ErrorKind::NotFound
-    );
+    assert_fails(vfs.rename(&root.join("missing"), &to), ErrorKind::NotFound);
     assert_eq!(read_path(vfs, &to), b"kept");
     assert_eq!(names(vfs, root), ["to"]);
 }
 
+pub(crate) fn rename_between_names_of_one_file_changes_nothing(vfs: &dyn Vfs, root: &Path) {
+    let (first, second) = (root.join("first"), root.join("second"));
+    write_new(vfs, &first, b"content");
+    vfs.hard_link(&first, &second).unwrap();
+
+    vfs.rename(&first, &second).unwrap();
+    vfs.rename(&first, &first).unwrap();
+    assert_eq!(names(vfs, root), ["first", "second"]);
+    assert_eq!(read_path(vfs, &first), b"content");
+    assert_eq!(read_path(vfs, &second), b"content");
+}
+
 pub(crate) fn hard_link_is_another_name_for_the_same_file(vfs: &dyn Vfs, root: &Path) {
     let (original, link) = (root.join("original"), root.join("link"));
-    let appender = vfs.open(&original, OpenMode::Append(Create::New)).unwrap();
+    let appender = open(vfs, &original, OpenMode::Append(Create::New));
     appender.append(b"before ").unwrap();
 
     vfs.hard_link(&original, &link).unwrap();
@@ -547,7 +563,7 @@ pub(crate) fn hard_link_is_another_name_for_the_same_file(vfs: &dyn Vfs, root: &
     assert_eq!(read_path(vfs, &link), b"before after");
     drop(appender);
 
-    let through_link = vfs.open(&link, OpenMode::Write(Create::Never)).unwrap();
+    let through_link = open(vfs, &link, OpenMode::Write(Create::Never));
     through_link.write_at(b"BEFORE", 0).unwrap();
     assert_eq!(read_path(vfs, &original), b"BEFORE after");
     assert_eq!(names(vfs, root), ["link", "original"]);
@@ -558,14 +574,11 @@ pub(crate) fn hard_link_refuses_a_taken_name_and_a_missing_file(vfs: &dyn Vfs, r
     write_new(vfs, &first, b"first");
     write_new(vfs, &second, b"second");
 
-    assert_eq!(
-        kind(vfs.hard_link(&first, &second)),
-        ErrorKind::AlreadyExists
-    );
+    assert_fails(vfs.hard_link(&first, &second), ErrorKind::AlreadyExists);
     assert_eq!(read_path(vfs, &second), b"second");
-    assert_eq!(
-        kind(vfs.hard_link(&root.join("missing"), &root.join("link"))),
-        ErrorKind::NotFound
+    assert_fails(
+        vfs.hard_link(&root.join("missing"), &root.join("link")),
+        ErrorKind::NotFound,
     );
     assert_eq!(names(vfs, root), ["first", "second"]);
 }
@@ -576,10 +589,7 @@ pub(crate) fn hard_link_outlives_the_original_name(vfs: &dyn Vfs, root: &Path) {
     vfs.hard_link(&original, &link).unwrap();
 
     vfs.remove_file(&original).unwrap();
-    assert_eq!(
-        kind(vfs.open(&original, OpenMode::Read)),
-        ErrorKind::NotFound
-    );
+    assert_fails(vfs.open(&original, OpenMode::Read), ErrorKind::NotFound);
     assert_eq!(read_path(vfs, &link), b"content");
     assert_eq!(names(vfs, root), ["link"]);
 }
@@ -587,11 +597,11 @@ pub(crate) fn hard_link_outlives_the_original_name(vfs: &dyn Vfs, root: &Path) {
 pub(crate) fn remove_file_removes_the_name_only(vfs: &dyn Vfs, root: &Path) {
     let path = root.join("file");
     write_new(vfs, &path, b"still here");
-    let handle = vfs.open(&path, OpenMode::Write(Create::Never)).unwrap();
+    let handle = open(vfs, &path, OpenMode::Write(Create::Never));
 
     vfs.remove_file(&path).unwrap();
-    assert_eq!(kind(vfs.open(&path, OpenMode::Read)), ErrorKind::NotFound);
-    assert_eq!(kind(vfs.remove_file(&path)), ErrorKind::NotFound);
+    assert_fails(vfs.open(&path, OpenMode::Read), ErrorKind::NotFound);
+    assert_fails(vfs.remove_file(&path), ErrorKind::NotFound);
     assert!(vfs.read_dir(root).unwrap().is_empty());
 
     assert_eq!(read_all(&*handle), b"still here");
@@ -608,11 +618,11 @@ pub(crate) fn create_dir_needs_its_parent_and_a_free_name(vfs: &dyn Vfs, root: &
     vfs.create_dir(&dir).unwrap();
     write_new(vfs, &file, b"");
 
-    assert_eq!(kind(vfs.create_dir(&dir)), ErrorKind::AlreadyExists);
-    assert_eq!(kind(vfs.create_dir(&file)), ErrorKind::AlreadyExists);
-    assert_eq!(
-        kind(vfs.create_dir(&root.join("missing").join("dir"))),
-        ErrorKind::NotFound
+    assert_fails(vfs.create_dir(&dir), ErrorKind::AlreadyExists);
+    assert_fails(vfs.create_dir(&file), ErrorKind::AlreadyExists);
+    assert_fails(
+        vfs.create_dir(&root.join("missing").join("dir")),
+        ErrorKind::NotFound,
     );
 
     write_new(vfs, &dir.join("inside"), b"in a directory");
@@ -628,12 +638,12 @@ pub(crate) fn remove_dir_needs_an_empty_directory(vfs: &dyn Vfs, root: &Path) {
     vfs.create_dir(&dir).unwrap();
     write_new(vfs, &dir.join("file"), b"content");
 
-    assert_eq!(kind(vfs.remove_dir(&dir)), ErrorKind::DirectoryNotEmpty);
+    assert_fails(vfs.remove_dir(&dir), ErrorKind::DirectoryNotEmpty);
     assert_eq!(read_path(vfs, &dir.join("file")), b"content");
 
     vfs.remove_file(&dir.join("file")).unwrap();
     vfs.remove_dir(&dir).unwrap();
-    assert_eq!(kind(vfs.remove_dir(&dir)), ErrorKind::NotFound);
+    assert_fails(vfs.remove_dir(&dir), ErrorKind::NotFound);
     assert!(vfs.read_dir(root).unwrap().is_empty());
 }
 
@@ -662,14 +672,8 @@ pub(crate) fn read_dir_lists_sorted_names_with_kinds(vfs: &dyn Vfs, root: &Path)
         vfs.read_dir(&wal).unwrap(),
         [entry("00000001.log", EntryKind::File)]
     );
-    assert_eq!(
-        kind(vfs.read_dir(&root.join("missing"))),
-        ErrorKind::NotFound
-    );
-    assert_eq!(
-        kind(vfs.read_dir(&root.join("a"))),
-        ErrorKind::NotADirectory
-    );
+    assert_fails(vfs.read_dir(&root.join("missing")), ErrorKind::NotFound);
+    assert_fails(vfs.read_dir(&root.join("a")), ErrorKind::NotADirectory);
 }
 
 pub(crate) fn sync_dir_takes_directories_only(vfs: &dyn Vfs, root: &Path) {
@@ -681,25 +685,19 @@ pub(crate) fn sync_dir_takes_directories_only(vfs: &dyn Vfs, root: &Path) {
     vfs.sync_dir(&dir).unwrap();
     vfs.sync_dir(root).unwrap();
 
-    assert_eq!(
-        kind(vfs.sync_dir(&root.join("missing"))),
-        ErrorKind::NotFound
-    );
-    assert_eq!(
-        kind(vfs.sync_dir(&dir.join("file"))),
-        ErrorKind::NotADirectory
-    );
+    assert_fails(vfs.sync_dir(&root.join("missing")), ErrorKind::NotFound);
+    assert_fails(vfs.sync_dir(&dir.join("file")), ErrorKind::NotADirectory);
 }
 
 pub(crate) fn lock_excludes_until_it_is_dropped(vfs: &dyn Vfs, root: &Path) {
     let path = root.join("LOCK");
     let guard = vfs.lock(&path).unwrap();
-    assert_eq!(kind(vfs.lock(&path)), ErrorKind::WouldBlock);
-    assert_eq!(kind(vfs.lock(&path)), ErrorKind::WouldBlock);
+    assert_fails(vfs.lock(&path), ErrorKind::WouldBlock);
+    assert_fails(vfs.lock(&path), ErrorKind::WouldBlock);
 
     drop(guard);
     let guard = vfs.lock(&path).unwrap();
-    assert_eq!(kind(vfs.lock(&path)), ErrorKind::WouldBlock);
+    assert_fails(vfs.lock(&path), ErrorKind::WouldBlock);
     drop(guard);
 }
 
@@ -711,16 +709,16 @@ pub(crate) fn lock_creates_its_file_and_leaves_it(vfs: &dyn Vfs, root: &Path) {
         [entry("LOCK", EntryKind::File)]
     );
 
-    let file = vfs.open(&path, OpenMode::Write(Create::Never)).unwrap();
+    let file = open(vfs, &path, OpenMode::Write(Create::Never));
     file.write_at(b"kept", 0).unwrap();
     let guard = vfs.lock(&path).unwrap();
     assert_eq!(read_all(&*file), b"kept");
     drop(guard);
     assert_eq!(read_all(&*file), b"kept");
 
-    assert_eq!(
-        kind(vfs.lock(&root.join("missing").join("LOCK"))),
-        ErrorKind::NotFound
+    assert_fails(
+        vfs.lock(&root.join("missing").join("LOCK")),
+        ErrorKind::NotFound,
     );
 }
 
@@ -730,10 +728,10 @@ pub(crate) fn locks_on_different_files_are_independent(vfs: &dyn Vfs, root: &Pat
     let second_guard = vfs.lock(&second).unwrap();
 
     drop(first_guard);
-    assert_eq!(kind(vfs.lock(&second)), ErrorKind::WouldBlock);
+    assert_fails(vfs.lock(&second), ErrorKind::WouldBlock);
     let first_guard = vfs.lock(&first).unwrap();
     drop(second_guard);
-    assert_eq!(kind(vfs.lock(&first)), ErrorKind::WouldBlock);
+    assert_fails(vfs.lock(&first), ErrorKind::WouldBlock);
     drop(first_guard);
 }
 
@@ -772,7 +770,7 @@ pub(crate) fn a_file_is_replaced_by_write_sync_rename_sync_dir(vfs: &dyn Vfs, ro
     let (manifest, temporary) = (root.join("MANIFEST"), root.join("MANIFEST.tmp"));
     for version in 1..=3 {
         let content = bytes(2_000 * version, version as u64);
-        let file = vfs.open(&temporary, OpenMode::Write(Create::New)).unwrap();
+        let file = open(vfs, &temporary, OpenMode::Write(Create::New));
         file.write_at(&content, 0).unwrap();
         file.sync_data().unwrap();
         drop(file);
@@ -786,32 +784,29 @@ pub(crate) fn a_file_is_replaced_by_write_sync_rename_sync_dir(vfs: &dyn Vfs, ro
 
 pub(crate) fn a_checkpoint_is_a_directory_of_hard_links(vfs: &dyn Vfs, root: &Path) {
     let (live, checkpoint) = (root.join("live"), root.join("checkpoint"));
+    let (live_segment, linked_segment) =
+        (live.join("00000001.seg"), checkpoint.join("00000001.seg"));
     vfs.create_dir(&live).unwrap();
-    let segment = vfs
-        .open(&live.join("00000001.seg"), OpenMode::Append(Create::New))
-        .unwrap();
+    let segment = open(vfs, &live_segment, OpenMode::Append(Create::New));
     let committed = bytes(5_000, 8);
     segment.append(&committed).unwrap();
     segment.sync_data().unwrap();
     let valid_len = segment.len().unwrap();
 
     vfs.create_dir(&checkpoint).unwrap();
-    vfs.hard_link(&live.join("00000001.seg"), &checkpoint.join("00000001.seg"))
-        .unwrap();
+    vfs.hard_link(&live_segment, &linked_segment).unwrap();
     vfs.sync_dir(&checkpoint).unwrap();
     vfs.sync_dir(root).unwrap();
 
     segment.append(&bytes(3_000, 9)).unwrap();
-    let linked = vfs
-        .open(&checkpoint.join("00000001.seg"), OpenMode::Read)
-        .unwrap();
+    let linked = open(vfs, &linked_segment, OpenMode::Read);
     assert_eq!(linked.len().unwrap(), 8_000);
     let mut prefix = vec![0; valid_len as usize];
     linked.read_exact_at(&mut prefix, 0).unwrap();
     assert_eq!(prefix, committed);
 
     drop(segment);
-    vfs.remove_file(&live.join("00000001.seg")).unwrap();
+    vfs.remove_file(&live_segment).unwrap();
     linked.read_exact_at(&mut prefix, 0).unwrap();
     assert_eq!(prefix, committed);
     drop(linked);

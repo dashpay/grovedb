@@ -26,20 +26,33 @@
 //! A crash is a power loss or a kernel failure. A process that exits or is
 //! killed loses nothing it wrote. After a crash only this is certain:
 //!
-//! - **Content.** A file's bytes and length are durable once
+//! - **Synced content.** A file's bytes and length are durable once
 //!   [`VfsFile::sync_data`] or [`VfsFile::sync_all`] returns `Ok` on any handle
 //!   of that file. That covers every write, append and length change that
-//!   returned before the sync began. Of the changes not yet synced, a crash may
-//!   keep any subset, in any order, and any of them torn.
+//!   returned before the sync began, unless a sync of the file failed in
+//!   between (see below).
+//! - **Unsynced content.** After a crash a file is its last synced state with
+//!   some of the later changes applied: any subset of them, in any order, and
+//!   a write possibly only in part, torn at any byte. Each lands where it was
+//!   made, an append at the offset it returned. So a crash damages no byte
+//!   that the unsynced changes did not touch, and where a length survives
+//!   without the bytes written below it, those bytes read as zeros.
 //! - **Names.** A name that was created, renamed, linked or removed, and a
 //!   directory that was created or removed, is durable once [`Vfs::sync_dir`]
-//!   returns `Ok` for the directory that holds the name. Syncing a file does
-//!   not make its name durable, and syncing a directory does not make a file's
-//!   content durable.
-//! - **Rename is atomic.** After a crash the destination name refers to the
-//!   file it referred to before the rename or to the renamed file, never to
-//!   nothing and never to a mix. Sync the file before renaming it, or the name
-//!   may survive without the content.
+//!   returns `Ok` for the directory that holds the name. Of the changes of
+//!   names not yet synced a crash may keep any subset, so it can bring back a
+//!   name that was removed or renamed away, such as a temporary file. Syncing
+//!   a file does not make its name durable, and syncing a directory does not
+//!   make a file's content durable.
+//! - **Rename is atomic.** After a crash the destination name refers to what
+//!   it referred to before the rename or to the renamed file: never to a mix
+//!   of the two, and never to nothing if it named a file before. Sync the file
+//!   before renaming it, or the name may survive without the content.
+//! - **A failed sync cannot be made good.** When a sync of a file fails, the
+//!   system may already have dropped the changes it was asked to write. A
+//!   later sync that returns `Ok`, on that handle or on any other, does not
+//!   cover them. Whatever was not synced before the failure has to be written
+//!   again, through another handle or to a new file, and synced there.
 //!
 //! # Errors
 //!
@@ -49,37 +62,43 @@
 //! | --- | --- |
 //! | [`NotFound`] | The path, or a directory leading to it, does not exist. |
 //! | [`AlreadyExists`] | [`Create::New`], [`Vfs::hard_link`] or [`Vfs::create_dir`] found the name taken. |
+//! | [`IsADirectory`] | [`Vfs::open`]: the path is a directory. |
+//! | [`NotADirectory`] | [`Vfs::read_dir`] or [`Vfs::sync_dir`]: the path is not a directory. |
+//! | [`DirectoryNotEmpty`] | [`Vfs::remove_dir`]: the directory has entries. |
 //! | [`WouldBlock`] | [`Vfs::lock`]: the lock is held. |
 //! | [`UnexpectedEof`] | [`VfsFile::read_exact_at`]: the file ends before the buffer is full. |
 //! | [`InvalidInput`] | The handle's [`OpenMode`] does not allow the operation. |
-//! | [`DirectoryNotEmpty`] | [`Vfs::remove_dir`]: the directory has entries. |
-//! | [`NotADirectory`] | [`Vfs::read_dir`] or [`Vfs::sync_dir`]: the path is not a directory. |
-//! | [`StorageFull`] | The device has no space left. |
+//! | [`StorageFull`], [`QuotaExceeded`] | The device, or a quota on it, has no space left. |
 //! | [`CrossesDevices`] | [`Vfs::hard_link`] or [`Vfs::rename`]: the two paths are on different filesystems. |
 //!
-//! Any other kind is a failure of the device or the system.
+//! Every other kind is whatever the system reported and may differ between
+//! backends.
 //!
 //! # Failures that stick
 //!
-//! Two failures leave a handle unable to vouch for its file, and the handle
-//! then keeps failing instead of reporting a success it cannot back:
+//! Two failures leave a handle unable to vouch for its file. The call that
+//! fails reports the cause. From then on the handle keeps failing with
+//! [`Other`], instead of reporting a success it cannot back:
 //!
-//! - After a sync fails, the system may have dropped the unsynced bytes, so a
-//!   later sync that succeeds proves nothing about them. Once
-//!   [`VfsFile::sync_data`] or [`VfsFile::sync_all`] fails on a handle, both
-//!   fail on that handle from then on.
+//! - Once [`VfsFile::sync_data`] or [`VfsFile::sync_all`] fails on a handle,
+//!   both fail on that handle from then on. The rule above about a failed
+//!   sync holds for every handle of the file, including the ones this does not
+//!   stop.
 //! - A failed [`VfsFile::append`] is undone: the file keeps the length it had.
 //!   If it cannot be undone, every later append on that handle fails.
 //!
 //! [`NotFound`]: std::io::ErrorKind::NotFound
 //! [`AlreadyExists`]: std::io::ErrorKind::AlreadyExists
+//! [`IsADirectory`]: std::io::ErrorKind::IsADirectory
+//! [`NotADirectory`]: std::io::ErrorKind::NotADirectory
+//! [`DirectoryNotEmpty`]: std::io::ErrorKind::DirectoryNotEmpty
 //! [`WouldBlock`]: std::io::ErrorKind::WouldBlock
 //! [`UnexpectedEof`]: std::io::ErrorKind::UnexpectedEof
 //! [`InvalidInput`]: std::io::ErrorKind::InvalidInput
-//! [`DirectoryNotEmpty`]: std::io::ErrorKind::DirectoryNotEmpty
-//! [`NotADirectory`]: std::io::ErrorKind::NotADirectory
 //! [`StorageFull`]: std::io::ErrorKind::StorageFull
+//! [`QuotaExceeded`]: std::io::ErrorKind::QuotaExceeded
 //! [`CrossesDevices`]: std::io::ErrorKind::CrossesDevices
+//! [`Other`]: std::io::ErrorKind::Other
 
 use std::{ffi::OsString, fmt, io, path::Path};
 
@@ -90,8 +109,8 @@ pub enum OpenMode {
     Read,
     /// Write at any offset with [`VfsFile::write_at`].
     Write(Create),
-    /// Write only at the end of the file with [`VfsFile::append`]. Bytes
-    /// already in the file cannot be overwritten through this handle.
+    /// Write only at the end of the file with [`VfsFile::append`], which
+    /// never overwrites a byte already in the file.
     ///
     /// While the handle is open nothing else may write to the file or change
     /// its length, or the offsets [`VfsFile::append`] returns are wrong.
@@ -133,18 +152,20 @@ pub struct DirEntry {
 ///
 /// See the [module documentation](self) for the contract.
 pub trait Vfs: fmt::Debug + Send + Sync {
-    /// Opens the file at `path`.
+    /// Opens the file at `path`, which must not be a directory.
     ///
     /// A file this creates has a name that is not durable until
     /// [`sync_dir`](Self::sync_dir) on its directory.
     fn open(&self, path: &Path, mode: OpenMode) -> io::Result<Box<dyn VfsFile>>;
 
     /// Gives the file named `from` the name `to` and removes the name `from`.
+    /// `from` must name a file, not a directory.
     ///
     /// A file already named `to` is replaced atomically: at every moment, and
-    /// after a crash, `to` names one of the two files. Durable after
-    /// [`sync_dir`](Self::sync_dir) on the directory of `to`, and on the
-    /// directory of `from` if it is a different one.
+    /// after a crash, `to` names one of the two files. If `from` and `to`
+    /// already name the same file, nothing changes and both names stay.
+    /// Durable after [`sync_dir`](Self::sync_dir) on the directory of `to`,
+    /// and on the directory of `from` if it is a different one.
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
 
     /// Adds `link` as another name for the file named `original`. No bytes are
@@ -191,7 +212,7 @@ pub trait Vfs: fmt::Debug + Send + Sync {
 pub trait VfsFile: fmt::Debug + Send + Sync {
     /// Reads from `offset` until `buf` is full or the file ends, and returns
     /// the number of bytes read. A count below `buf.len()` means the file ends
-    /// there.
+    /// there; reading at or past the end gives 0.
     fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize>;
 
     /// Fills `buf` from `offset`. Fails with
@@ -219,12 +240,20 @@ pub trait VfsFile: fmt::Debug + Send + Sync {
     /// Needs [`OpenMode::Append`]. If it fails, the file keeps the length it
     /// had and the next append starts there; if the file could not be put
     /// back, every later append on this handle fails.
+    ///
+    /// A crash can still keep part of an append that was not synced.
     fn append(&self, buf: &[u8]) -> io::Result<u64>;
 
     /// Makes the file's bytes and length durable.
+    ///
+    /// Once this or [`sync_all`](Self::sync_all) fails on a handle, both keep
+    /// failing on it.
     fn sync_data(&self) -> io::Result<()>;
 
     /// Makes the file's bytes, length and every other attribute durable.
+    ///
+    /// Once this or [`sync_data`](Self::sync_data) fails on a handle, both
+    /// keep failing on it.
     fn sync_all(&self) -> io::Result<()>;
 
     /// The file's length in bytes.

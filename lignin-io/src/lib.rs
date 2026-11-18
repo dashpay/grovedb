@@ -9,7 +9,7 @@
 
 #![deny(unsafe_code)]
 
-#[cfg(test)]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod conformance;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod std_fs;
