@@ -14,7 +14,7 @@
 
 use std::{
     cell::OnceCell,
-    collections::BTreeMap,
+    collections::{btree_map, BTreeMap},
     ops::Bound,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
@@ -254,23 +254,9 @@ impl<'a> View<'a> {
             } else {
                 (Bound::Unbounded, from.as_ref())
             };
-            let committed = {
-                let mut range = base.range::<StoredKey, _>(bounds);
-                if forward {
-                    range.next()
-                } else {
-                    range.next_back()
-                }
-            }
-            .map(|(key, _)| key);
-            let written = overlay.and_then(|overlay| {
-                let mut range = overlay.range::<StoredKey, _>(bounds);
-                if forward {
-                    range.next()
-                } else {
-                    range.next_back()
-                }
-            });
+            let committed = edge(base.range::<StoredKey, _>(bounds), forward).map(|(key, _)| key);
+            let written =
+                overlay.and_then(|overlay| edge(overlay.range::<StoredKey, _>(bounds), forward));
             let written_first = match (written, committed) {
                 (Some((written, _)), Some(committed)) => {
                     if forward {
@@ -293,6 +279,17 @@ impl<'a> View<'a> {
                 return base.get_key_value(key);
             }
         }
+    }
+}
+
+fn edge<'r, V>(
+    mut range: btree_map::Range<'r, StoredKey, V>,
+    forward: bool,
+) -> Option<(&'r StoredKey, &'r V)> {
+    if forward {
+        range.next()
+    } else {
+        range.next_back()
     }
 }
 
@@ -657,11 +654,8 @@ impl Cursor {
 
     /// Whether the cursor is on a record of the subtree `prefix`.
     pub fn valid(&self, prefix: Prefix) -> (bool, OperationCost) {
-        let on_record = self.on_record(prefix);
-        (
-            on_record.is_some(),
-            rules::cursor_key(on_record.map(|position| position.key.key.len())),
-        )
+        let (key, cost) = self.key(prefix);
+        (key.is_some(), cost)
     }
 
     /// The key of the record the cursor is on, without the prefix, when it
