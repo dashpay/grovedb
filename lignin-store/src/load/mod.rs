@@ -131,7 +131,7 @@
 //! | --- | --- | --- |
 //! | The bytes of a block are the bytes that were written: its checksum, which covers its tag and its body. | [`SegmentStore::read`] | [`LoadError::Block`] |
 //! | The block is of the kind the chain says: a base image first, runs after it. | the block's tag | [`LoadError::Content`] |
-//! | The payload decompresses to exactly the length it states. A run that states more than 255 times the length of its block, which no LZ4 block reaches, is refused before memory is taken for it; any other wrong length is found by the decompression, into memory of the stated length. | `Block::copy_payload_to` | [`LoadError::Payload`] |
+//! | The payload decompresses to exactly the length it states. A compressed block that states a length no longer than its stored bytes is not a block, and the segment store refuses it. A run that states more than 255 times the length of its block, which no LZ4 block reaches, is refused before memory is taken for it. A wrong length between the two is found by the decompression, into memory of the stated length. | [`SegmentStore::read`], `Block::copy_payload_to` | [`LoadError::Block`], [`LoadError::Payload`] |
 //! | The image is a well-formed page of the store's page size. | `TreePage::decode`, `FlatPage::decode` | [`LoadError::Payload`] |
 //! | The block holds the image and nothing behind it (`segment-manifest.md` S7). | the image's own length | [`LoadError::TrailingBytes`] |
 //! | The image is of the page asked for (`tree-page.md` TP2, `flat-page.md` P14). | the page id in its header | [`LoadError::Payload`] with `DeltaError::WrongPage` |

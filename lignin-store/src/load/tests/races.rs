@@ -168,10 +168,14 @@ impl Drop for Over<'_> {
 
 /// One thread commits changes to three pages and writes each back, as a
 /// run or as a new image, while readers ask for the pages at the versions
-/// that were published, in a pool too small to keep them. A load counts as
-/// beside the commits when it asked at a version a commit of this test
-/// published and ended before the commits did. The commits go on until 500
-/// loads were, and one commit more.
+/// that were published, in a pool too small to keep them. The commits go on
+/// until 500 loads asked at a version a commit of this test published and
+/// ended before the commits did, and one commit more.
+///
+/// This is a test of many schedules, not of one: which loads a commit
+/// overtakes is the scheduler's choice. The tests above hold a load at its
+/// block read across a free, and overtake a load with a commit, in a fixed
+/// order.
 #[test]
 fn readers_load_while_commits_and_write_back_go_on() {
     const PAGES: u64 = 3;
@@ -226,7 +230,7 @@ fn readers_load_while_commits_and_write_back_go_on() {
                     let born = born_at(index, at);
                     assert_eq!(frame.born(), version(born), "page {index} at {at}");
                     assert_eq!(mark_of(&frame), mark(born), "page {index} at {at}");
-                    if latest >= 2 && !over.load(Ordering::Acquire) {
+                    if at >= 2 && !over.load(Ordering::Acquire) {
                         beside.fetch_add(1, Ordering::Relaxed);
                     }
                 }
