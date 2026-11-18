@@ -259,7 +259,7 @@ Clearing a Merk the same way (`tree-layout.md` D4) is a drop that keeps the
 host: the Merk's directory entry becomes that of an empty Merk and is not
 removed. The three points above and CL6 hold for it as for a drop.
 
-What a clear is in the write set is not decided here. Today's `Merk::clear`
+What a clear is in the write set is GROVE-05's to state. Today's `Merk::clear`
 deletes node by node, and on existing GroveVersions a clear has to give the
 commit outcomes those deletes give (GM0, 14.5). One range delete of that
 Merk's records (ST4) gives them against every tree change, because a clear
@@ -2072,13 +2072,13 @@ took.
 | TREE-09 | A drop is a range delete in its transaction's write set (CV9, CF5). What it leaves is reclaimed by a walk, under CL6: after the pins and guards, in page steps (PV7), with a page freed once, at the drop's version or later. | The unlink, keeping the root's address, and the walk. |
 | STORE-03 | FL4 is `page-table.md` K4, K10 and K14, enforced where a checkpoint is installed. The count sample of DU5 is stored in its checkpoint file (K12). | The table and the checkpoint file. |
 | STORE-04 | LT2 to LT6, PN5, and the page step of PV7. A frame with a pending value is kept until the value is placed (FL7). What was never written back of a freed page is kept, not evictable, until no reader can ask for it (FL6). | Frames, latches, eviction. |
-| STORE-01, STORE-06, STORE-07 | FL1 to FL7, PV5, DU1a, DU2, DU3, DU5, CM9, ID4. The log goes first (FL4). Write-back places pending values in page steps (FL7, PV7). No committer waits for write-back its own copies hold back (FL5). Replay reports written and freed pages (ID4) and recovers the counts (DU5). Nothing older than a page's free link is written back, and no log file is held for it (FL6). Replay drops a change to a page the checkpoint has no image of, and checks that the page was freed or made again (FL4). The places of count samples never go back (DU5). | Thresholds, the table checkpoint, replay, how a failed group is put out of reach, and how a superseded page version with a pending value is kept (FL7). |
+| STORE-01, STORE-06, STORE-07 | FL1 to FL7, PV5, DU1a, DU2, DU3, DU5, CM9, ID4. The log goes first (FL4). Write-back places pending values in page steps (FL7, PV7). No committer waits for write-back its own copies hold back (FL5). Replay reports written and freed pages (ID4) and recovers the counts (DU5). Nothing older than a page's free link is written back, and no log file is held for it (FL6). Replay drops a change to a page the checkpoint has no image of, and checks that the page was freed or made again (FL4). The places of count samples never go back (DU5). | Thresholds, the table checkpoint, replay, how a failed group is put out of reach, and how a superseded page version with a pending value is kept (FL7). STORE-06 measures how long a pending value waits under a private copy, and how much log it holds (section 18, open point 2). |
 | STORE-08 | CL1 to CL7, PN6 with its three questions, CK3. | Liveness accounting, throttling. |
 | STORE-09, TREE-08 | PV4, PV6, PV7 and CL5: a value pointer rewrite takes no version, is installed in a page step that checks the current page version, the owner and private copies held at that moment, changes the counts in that step, is recovered with the pages, and an emptied file goes only when CL5 allows. FL1: a value appended ahead of its page step is held. FL7: new values come from write-back, not from commits. The counts lock is level 4a of LT7, and the counts recover by DU5. | When a file is cleaned, when a value is durable, regrouping, and what makes the page step one step. |
 | STORE-10 | ID1 to ID5, and the three questions of PN6. | The allocator. |
 | FMT-05 | The log group carries new values whole (FL7), says which pages the commit freed (ID4) and which value pointers its cells stopped holding (DU5). A background change has a record of its own in the log, with its count change (PV6, DU5). | The records. Whether a carried value is repeated or named (FL7). |
-| GROVE-05 | The drop removes the subtree's records in its own commit (CV9). The flush reclaims what the drop left without a version (CL6) and removes each pending-drop record with one commit (14.5 D3). | The liveness check and the report. |
-| GROVE-11, GROVE-12 | SC9 (pending marks), 14.4, SC3 and SC7. A scope's Merk cache keeps locations only under PN8. A host marked pending is not followed (SC9). GM3 does not cover a Merk that was empty when it was first written (14.2). | Stop points, finalize, the GroveDB scope. |
+| GROVE-05 | The drop removes the subtree's records in its own commit (CV9). The flush reclaims what the drop left without a version (CL6) and removes each pending-drop record with one commit (14.5 D3). | The liveness check and the report. What a clear that keeps the host is in the write set (CV9). |
+| GROVE-11, GROVE-12 | SC9 (pending marks), 14.4, SC3 and SC7. A scope's Merk cache keeps locations only under PN8. A host marked pending is not followed (SC9). GM3 does not cover a Merk that was empty when it was first written (14.2). | Stop points, finalize, the GroveDB scope. The rule for two transactions that each create the root of one empty Merk (GM3). |
 | VER-05 | Section 13, and the models and scenarios of 15.2. | The models. |
 | VER-08 | 14.3: the three mainnet heights run in the state of WT7b. | The replay. |
 | OPS-08 | CM9: what a commit that fails for lack of space must leave. | The ENOSPC campaign. |
@@ -2566,9 +2566,9 @@ these further choices were made. They are listed for the same reason.
     would spare write-back the wait for a long transaction, and would put
     the correction into step 7 of a commit. With the choice made here, **no
     committer waits for write-back that its own copies hold back** (FL5).
-    This choice decides when write-back can run, which the ruling did not.
-    STORE-06 should have the owner's word on it before it builds on it
-    (section 18, open point 2).
+    This choice decides when write-back can run, which the first ruling
+    did not. The owner has since ruled for it, with a measurement owed by
+    STORE-06 (section 18, open point 2).
 25. **A page version that is superseded with a pending value and still
     pinned is STORE-06's to keep readable**, in one of two ways (FL7).
     Nothing is counted for it either way. For a freed page FL6 has since
@@ -2659,22 +2659,29 @@ T-VL5, T-VL6, T-DU4 and T-CK4. Changed: T-CM1, T-VL1, T-VL2 and T-VL4.
 
 ### 18.7 Open points
 
-Found while the amendments were written, and not settled by them:
+Found while the amendments were written, and not settled by them. The
+project owner has since ruled on each. What is left of each is owed by the
+task it names:
 
 1. **Two transactions that each create the root of the same empty Merk
-   share no key in iteration two** until finalize (GM3, 14.4). GROVE-11
-   needs a rule for it, for example a record of the Merk's unit that every
-   change of its root writes.
-2. **Whether a pending value may be placed under a private copy.** The
-   ruling behind FL7 does not say. Choice 24 of section 17 says no, as PV7
-   does for a value move. A pending value on a page that a transaction has
-   copied then waits for that transaction, and its log file with it. It is
-   a choice for the owner, because it decides when write-back can run.
+   share no key in iteration two** until finalize (GM3, 14.4). Nothing is
+   wrong on existing GroveVersions. GROVE-11 owes the rule for the new
+   version, for example a record of the Merk's unit that every change of
+   its root writes.
+2. **Whether a pending value may be placed under a private copy.** It may
+   not: the owner ruled for choice 24 of section 17, as PV7 has it for a
+   value move. A pending value on a page that a transaction has copied then
+   waits for that transaction, and its log file with it. STORE-06 owes a
+   measurement on the reference workload with back-to-back blocks: how long
+   a pending value waits, and how much log it holds. If the log is held
+   without bound, STORE-06 takes the other way that choice 24 describes.
 3. **A superseded page version with a pending value that a pin still
-   needs** (choice 25): keeping it in memory needs FL3's rule on folding
-   read for a version that is kept there, and placing it for that version
-   alone needs a hold that outlives the step. For a page that has been
-   freed, FL6 settles it.
-4. **What a clear that keeps the host is in the write set** (CV9): one
-   range delete, which would be a new row of the table in 14.5, or the
-   per-node deletes of today's `Merk::clear`.
+   needs** (choice 25): STORE-06 chooses between the two ways and reports.
+   Keeping it in memory needs FL3's rule on folding read for a version that
+   is kept there, and placing it for that version alone needs a hold that
+   outlives the step. For a page that has been freed, FL6 settles it.
+4. **What a clear that keeps the host is in the write set** (CV9): GROVE-05
+   states it, under the constraint that commit outcomes on existing
+   GroveVersions equal RocksDB's. The candidates are one range delete, which
+   would be a new row of the table in 14.5, and the per-node deletes of
+   today's `Merk::clear`.

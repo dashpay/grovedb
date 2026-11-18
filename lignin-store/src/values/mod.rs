@@ -14,8 +14,9 @@
 //! The bytes are `lignin-format`'s: `docs/lignindb/value-log-format.md`
 //! specifies them, and its rules O4 to O9 are the cleaner's.
 //! `docs/lignindb/transactions.md` has the rules for the page step (PV6,
-//! PV7, CL5) and for values written ahead of a commit (FL1). This module
-//! knows no cell, key or page layout.
+//! PV7, CL5), for new values, which a commit carries in its log group and
+//! write-back appends here (FL7), and for values appended ahead of their
+//! page step (FL1). This module knows no cell, key or page layout.
 //!
 //! ```
 //! use std::sync::Arc;
@@ -38,16 +39,17 @@
 //! let mut writer = values.create()?;
 //! values.commit(&mut manifest)?;
 //!
-//! // A transaction appends a value for a cell of page 7, ahead of its commit.
+//! // At write-back the flusher appends a value that a commit left with a cell
+//! // of page 7, ahead of the page step that gives the cell its pointer.
 //! let page = PageId::new(7).expect("not zero");
 //! let mut hold = ValueHold::new();
 //! let pointer = writer.append(&mut hold, page, b"a value too long for its cell")?;
 //!
-//! // Before the commit stores the pointer, the manifest covers the value.
+//! // Before the page step stores the pointer, the manifest covers the value.
 //! writer.sync()?;
 //! values.commit(&mut manifest)?;
 //!
-//! // The commit makes the cell hold the pointer, and the value counts.
+//! // The page step makes the cell hold the pointer, and the value counts.
 //! let mut change = ValueChange::new();
 //! change.acquire(pointer);
 //! values.apply(&change, CommitVersion::new(1).expect("a version"))?;
@@ -84,8 +86,8 @@
 //! When a writer's file reaches the store's target length
 //! ([`ValueWriter::is_full`]), the writer is finished and another is created.
 //! A value is never split over two files. Several writers can be open at
-//! once, each on its own file: a transaction's, the cleaner's, the
-//! flusher's.
+//! once, each on its own file: the flusher's, for the values it places at
+//! write-back, and the cleaner's.
 //!
 //! A file that the manifest names was written by an earlier session if this
 //! session did not create it. Such a file is read and never written: its
@@ -126,6 +128,10 @@
 //! point, as one unit with the cell change. The releases are counted first,
 //! against the counts as they were before the change, so that what the
 //! change acquires cannot hide a release the count did not include.
+//!
+//! A commit appends nothing to the value log: its new values travel in its
+//! log group (FL7). So the change of a commit only releases. A new value is
+//! acquired in the page step of write-back that gives its cell the pointer.
 //!
 //! **The order of the log is the order of the counts.** A change point
 //! takes the store's lock on the counts ([`ValueStore::step`]), writes its
@@ -192,14 +198,15 @@
 //!
 //! # Values that no count includes yet
 //!
-//! A value is appended before the change that makes a cell hold its pointer:
-//! ahead of its transaction's commit, or ahead of the page step that
-//! installs a moved value. Until that change is applied, the value is held
-//! by the [`ValueHold`] it was appended under, and its file is not deleted
-//! (FL1). The hold is dropped after the change is applied, or when the
-//! values are given up, as after a rollback. They are then dead space and go
-//! with their file. No hold survives a crash, and neither does a value that
-//! no recovered change acquired.
+//! A value is appended before the page step that makes a cell hold its
+//! pointer: by the flusher at write-back, for a value that a commit carried
+//! in its log group (FL7), or by background work that moves a value. Until
+//! that step is applied, the value is held by the [`ValueHold`] it was
+//! appended under, and its file is not deleted (FL1). The hold is dropped
+//! after the change is applied, or when the values are given up, as when the
+//! step is refused. They are then dead space and go with their file. No hold
+//! survives a crash, and neither does a value that no recovered change
+//! acquired.
 //!
 //! # Cleaning
 //!
@@ -277,6 +284,8 @@
 //! value again under a [`ValueHold`], has the manifest cover it, takes
 //! [`ValueStore::step`], then its page step, and applies
 //! [`ValueChange::moved`] with [`CountStep::apply`] inside that page step.
+//! Write-back does the same for a new value, with a change that only
+//! acquires.
 //!
 //! [`ValueStore::cleanable`] lists the files worth a pass: closed, with live
 //! values, and with at least a given share of dead bytes. How often passes
@@ -291,7 +300,7 @@
 //! | --- | --- |
 //! | The file is closed. | A writer may still append a value to it. |
 //! | Its count is zero and not known to be wrong. | A cell of the latest version points into it (O6). |
-//! | No [`ValueHold`] is on it. | A transaction appended a value to it that its commit will count (FL1). |
+//! | No [`ValueHold`] is on it. | Write-back or the cleaner appended a value to it that a page step will count (FL1). |
 //! | The change that brought the count to zero is durable ([`ValueStore::mark_durable`]). | A crash would recover pages from before that change, which point into the file (CL5). |
 //! | It became empty at a version no later than the oldest version that was pinned when the caller began to wait. | A snapshot pinned before that version reads a page version in which a cell still holds a pointer into it (O8). |
 //! | It became empty before the caller began to wait, and every operation that was running then has ended. | An operation may have read a pointer into it and not yet followed it (PN6). |
@@ -379,10 +388,10 @@
 //! - It stores each change with its change point, stores a sample of the
 //!   counts with its place in the log, and recovers the counts from a
 //!   sample and every change after its place.
-//! - It appends every value under the [`ValueHold`] of the transaction or
-//!   background run the value is for, and drops the hold only after the
-//!   change that counts the value was applied, or when the value is given
-//!   up.
+//! - It appends every value under the [`ValueHold`] of the run of background
+//!   work the value is for (write-back, cleaning, regrouping), and drops the
+//!   hold only after the change that counts the value was applied, or when
+//!   the value is given up.
 //! - It calls [`ValueStore::mark_durable`] once the changes up to a mark
 //!   will survive a crash. It calls [`ValueStore::retire`] with the oldest
 //!   pinned version, and [`ValueStore::drop_empty`] with what that returned
