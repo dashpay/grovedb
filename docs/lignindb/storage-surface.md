@@ -39,10 +39,17 @@ python3 -I docs/lignindb/storage-surface-search.py run \
     --rev f69acc954a111a0f58a425b74e9f495715301cfd \
     --workdir /tmp/storage-surface > sites.tsv
 python3 -I docs/lignindb/storage-surface-search.py check \
-    --sites sites.tsv --doc docs/lignindb/storage-surface.md
+    --rev f69acc954a111a0f58a425b74e9f495715301cfd --sites sites.tsv \
+    --template docs/lignindb/storage-surface.template.md \
+    --doc docs/lignindb/storage-surface.md
 ```
 
-`check` reads every inventory row below (site, API item and call count). It fails if a site is missing on either side or the counts differ. It ends with `OK: the document lists exactly the call sites the search found`.
+`check` does two things:
+
+1. It reads every inventory row below (site, API item and call count). It fails if a site is missing on either side or the counts differ, and prints `OK: the document lists exactly the call sites the search found`.
+2. It runs [`storage-surface-gen.py`](storage-surface-gen.py) on the same search output and the [template](storage-surface.template.md), and fails unless this document is byte-for-byte equal to the result. It prints `OK: the document is the generator's output`. So every class, seam, cost and note, every summary count and Appendix A come from the committed rules, not from hand edits.
+
+The class, seam and cost of a site are a function of its API item, its crate and file, and, for a few files, its line. The rules are in `classify` in the generator, with the line lists for flat namespaces, immediate contexts, escape hatches and aux cursors next to it. Test-only sites go through the same rules.
 
 What the search does not cover:
 
@@ -54,7 +61,7 @@ What the search does not cover:
 
 ## The API and what each call charges
 
-`grovedb-storage` exposes four traits (`storage/src/storage.rs`): `Storage` (line 60), `StorageContext` (148), `Batch` (245) and `RawIterator` (284). It also has the `StorageBatch` struct, and the RocksDB implementation in `storage/src/rocksdb_storage/`.
+`grovedb-storage` has four storage-operation traits (`storage/src/storage.rs`): `Storage` (line 60), `StorageContext` (148), `Batch` (245) and `RawIterator` (284). Its fifth public trait, `WorstKeyLength` (`storage/src/worst_case_costs.rs:32`), feeds estimates only (finding 11). It also has the `StorageBatch` struct, and the RocksDB implementation in `storage/src/rocksdb_storage/`.
 
 A storage context is a view of one 32-byte prefix in four column families: default (Merk nodes, or the records of a flat store), `aux`, `roots` and `meta`. There are two kinds of context, and they charge differently:
 
@@ -84,7 +91,7 @@ The cost column of the inventory uses these codes. All of them are `OperationCos
 
 When a site's context is generic (Merk and the append-only crates take any `StorageContext`), the cost reads `R-tx / R-imm` (or `W-tx / W-imm`, `B-part / B-imm`): the first applies on the transactional contexts GroveDB normally passes, the second on the immediate contexts of state-sync restore.
 
-Some library sites throw the returned cost away (`.unwrap()` or `.value` on the `CostContext`). The note column says "cost dropped by the caller" at those sites. That flag is found mechanically and covers only a `.unwrap()` or `.value` applied directly to the call. Mostly these are verification, replication and test-helper paths.
+Some library sites throw the returned cost away (`.unwrap()` or `.value` on the `CostContext`). The note column says "cost dropped by the caller" at those sites. The generator sets that flag by a heuristic: a `.unwrap()` or `.value` applied directly to the call. A cost bound to a variable and dropped later is not flagged, so the flag marks a lower bound. Mostly these are verification, replication and test-helper paths.
 
 ## Classes and seams
 
@@ -97,7 +104,7 @@ The register names ten classes. The inventory uses them as written and adds six,
 | aux | `aux` column family |
 | meta | `meta` column family, including the pending-prefix-drop redo records |
 | roots | `roots` column family (the Merk root-key pointer) |
-| iterator | an ordered cursor over a namespace: `raw_iter` and every `RawIterator` method |
+| iterator | an ordered cursor over a namespace: `raw_iter` and every `RawIterator` method (a cursor from `raw_iter_aux` is an iterator owned by FlatStore; the `raw_iter_aux` open itself is aux) |
 | by-prefix open | a context opened from a 32-byte prefix the caller already holds |
 | immediate context | an immediate context opened, by path or by prefix |
 | range delete | every record under a prefix removed: `clear`, `wipe`, `delete_prefix_ranges` |
@@ -112,7 +119,7 @@ The register names ten classes. The inventory uses them as written and adds six,
 The seam column names the seam that will own the call:
 
 - **NodeStore** (SEAM-01): Merk node access, root pointer, change-set commit, and ordered cursors over Merk records.
-- **FlatStore** (SEAM-03): flat records, aux, meta and pending-drop records, and range deletes over flat namespaces.
+- **FlatStore** (SEAM-03): flat records, aux, meta and pending-drop records, the cursor over aux (`get_aux_by_key_prefix`), and range deletes over flat namespaces.
 - **Engine** (SEAM-04): opening subtree handles by path and by prefix, transactions, the multi-context batch, checkpoints, wipe, and the database-level drop reclamation.
 - **Estimates** (SEAM-08): the `estimated_costs` helpers.
 
@@ -146,8 +153,8 @@ Library code, per seam:
 
 | Seam | Calls | Classes |
 | --- | --- | --- |
-| NodeStore | 146 | tree-node access 17, roots 5, iterator 95, escape hatch 19, batch 10 |
-| FlatStore | 42 | flat key-value 16, aux 9, meta 7, range delete 6, escape hatch 2, prefix 2 |
+| NodeStore | 142 | tree-node access 17, roots 5, iterator 91, escape hatch 19, batch 10 |
+| FlatStore | 46 | flat key-value 16, aux 9, meta 7, iterator 4, range delete 6, escape hatch 2, prefix 2 |
 | Engine | 230 | path open 82, by-prefix open 18, immediate context 10, range delete 8, escape hatch 7, batch 62, transaction 10, lifecycle 5, prefix 28 |
 | Estimates | 51 | estimate 51 |
 
@@ -176,7 +183,7 @@ Test-only code (test, bench and example targets, and `#[cfg(test)]` items):
 These follow from the inventory. They are what SEAM-01, SEAM-03, SEAM-04, SEAM-08 and BASE-06 need to account for.
 
 1. **Merk's own surface is small.** Merk makes 71 library calls. Thirteen of them are in `merk/src/test_utils/`, which the `test_utils` feature (part of `full`) compiles into the library. That is also the only library code in Merk that names a RocksDB type (`RocksDbStorage`, `PrefixedRocksDbTransactionContext`, `TempStorage`). Node fetch is `TreeNode::get` (`merk/src/tree/encoding.rs:73`) and `fetch_node` (`merk/src/merk/mod.rs:1091`). Commit is one `new_batch`, the `Batch` puts and deletes and one `commit_batch` in `Merk::commit` (`merk/src/merk/mod.rs:424` to 535). The root pointer is handled by `load_base_root` and `set_base_root_key`. Restore writes through `Restorer` (`merk/src/merk/restore.rs`), and ordered walks through `KVIterator`, `is_empty_tree` and `clear`. The two traits the plan names sit directly above these calls. `Fetch` for `MerkSource` (`merk/src/merk/source.rs:43`) calls `TreeNode::get`. `Commit` for `MerkCommitter` (`merk/src/merk/committer.rs:27`) collects the change set that `Merk::commit` writes through `Batch`.
-2. **Merk's cursor is used outside Merk.** `grovedb-query` (`QueryItem::seek_for_iter`, 30 calls) positions node iterators. GroveDB iterates raw Merk records in 45 library calls (`Element::iterator`, `KVIterator::new(merk.storage.raw_iter(), ..)`, `ElementsIterator`, replication `visit_nodes`). It also decodes node records it reads through iterators itself (`snapshot_fetch_node`, `merk/src/proofs/query/count_offset/pinned_view.rs`). The `NodeStore` cursor must serve all of these, not only Merk.
+2. **Merk's cursor is used outside Merk.** `grovedb-query` (`QueryItem::seek_for_iter`, 30 calls) positions node iterators. GroveDB iterates raw Merk records in 41 library calls (`Element::iterator`, `KVIterator::new(merk.storage.raw_iter(), ..)`, `ElementsIterator`, replication `visit_nodes`). It also decodes node records it reads through iterators itself (`snapshot_fetch_node`, `merk/src/proofs/query/count_offset/pinned_view.rs`). The `NodeStore` cursor must serve all of these, not only Merk.
 3. **GroveDB reads and writes Merk records directly.** The node-level escape hatches are:
    - `has_raw` (`grovedb/src/operations/get/mod.rs:607`)
    - the deletion visitor's raw delete (`grovedb/src/operations/delete/delete_internal_on_transaction/v2.rs:394`)
@@ -543,10 +550,10 @@ Columns:
 | `grovedb/src/operations/auxiliary.rs:131` | `GroveDb::get_aux` | `StorageContext::get_aux` | 1 | aux | FlatStore | R-tx |  |
 | `grovedb/src/operations/auxiliary.rs:155` | `GroveDb::get_aux_by_key_prefix` | `Storage::get_transactional_storage_context` | 1 | path open | Engine | P-path | root-path context used for aux |
 | `grovedb/src/operations/auxiliary.rs:158` | `GroveDb::get_aux_by_key_prefix` | `StorageContext::raw_iter_aux` | 1 | aux | FlatStore | zero | prefix scan of aux keys |
-| `grovedb/src/operations/auxiliary.rs:159` | `GroveDb::get_aux_by_key_prefix` | `RawIterator::seek` | 1 | iterator | NodeStore | I-move |  |
-| `grovedb/src/operations/auxiliary.rs:162` | `GroveDb::get_aux_by_key_prefix` | `RawIterator::key` | 1 | iterator | NodeStore | I-key |  |
-| `grovedb/src/operations/auxiliary.rs:168` | `GroveDb::get_aux_by_key_prefix` | `RawIterator::value` | 1 | iterator | NodeStore | I-value |  |
-| `grovedb/src/operations/auxiliary.rs:172` | `GroveDb::get_aux_by_key_prefix` | `RawIterator::next` | 1 | iterator | NodeStore | I-move |  |
+| `grovedb/src/operations/auxiliary.rs:159` | `GroveDb::get_aux_by_key_prefix` | `RawIterator::seek` | 1 | iterator | FlatStore | I-move |  |
+| `grovedb/src/operations/auxiliary.rs:162` | `GroveDb::get_aux_by_key_prefix` | `RawIterator::key` | 1 | iterator | FlatStore | I-key |  |
+| `grovedb/src/operations/auxiliary.rs:168` | `GroveDb::get_aux_by_key_prefix` | `RawIterator::value` | 1 | iterator | FlatStore | I-value |  |
+| `grovedb/src/operations/auxiliary.rs:172` | `GroveDb::get_aux_by_key_prefix` | `RawIterator::next` | 1 | iterator | FlatStore | I-move |  |
 | `grovedb/src/operations/auxiliary.rs:254` | `GroveDb::clear_subtree_storage_recursively` | `Storage::get_transactional_storage_context` | 1 | path open | Engine | P-path |  |
 | `grovedb/src/operations/auxiliary.rs:258` | `GroveDb::clear_subtree_storage_recursively` | `PrefixedRocksDbTransactionContext::clear` | 1 | range delete | Engine | CLR | clears every Merk subtree found under a deleted path |
 | `grovedb/src/operations/auxiliary.rs:268` | `GroveDb::clear_subtree_storage_recursively` | `RocksDbStorage::build_prefix` | 1 | prefix | Engine | P-path |  |

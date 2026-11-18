@@ -13,8 +13,9 @@ all reported.
 
     python3 -I docs/lignindb/storage-surface-search.py run --rev <commit> \
         --workdir /work/scratch/base04-search > sites.tsv
-    python3 -I docs/lignindb/storage-surface-search.py check \
-        --sites sites.tsv --doc docs/lignindb/storage-surface.md
+    python3 -I docs/lignindb/storage-surface-search.py check --rev <commit> \
+        --sites sites.tsv --template docs/lignindb/storage-surface.template.md \
+        --doc docs/lignindb/storage-surface.md
 
 `run` prints tab-separated lines in four sections:
     ## calls           <path>:<line> <count> <API item> <enclosing function> <lib|test>
@@ -36,9 +37,13 @@ site is "lib" when the `--lib --bins` pass reports it, "test" when only the
 `check` compares the `## calls` lines with the inventory tables of the
 document (rows starting `| `path:line` | `function` | `item` | count |`) and
 fails if a site is listed in one but not the other, or with a different count.
+It then runs storage-surface-gen.py on the same search output and template and
+fails unless the document equals its output byte for byte, so the class, seam,
+cost and note columns are checked too.
 """
 
 import argparse
+import difflib
 import json
 import os
 import re
@@ -555,6 +560,21 @@ def check(args):
     if missing or extra or wrong:
         sys.exit(1)
     print("OK: the document lists exactly the call sites the search found")
+    gen = os.path.join(os.path.dirname(os.path.abspath(__file__)), "storage-surface-gen.py")
+    built = subprocess.run(
+        [sys.executable, "-I", gen, "--rev", args.rev, "--sites", args.sites,
+         "--template", args.template],
+        check=True, capture_output=True, text=True).stdout
+    with open(args.doc) as f:
+        doc = f.read()
+    if doc != built:
+        diff = difflib.unified_diff(built.splitlines(), doc.splitlines(),
+                                    "generated", args.doc, lineterm="", n=0)
+        for line in list(diff)[:40]:
+            print(line)
+        print("FAIL: the document differs from the generator's output")
+        sys.exit(1)
+    print("OK: the document is the generator's output")
 
 
 def main():
@@ -564,7 +584,9 @@ def main():
     r.add_argument("--rev", default="HEAD")
     r.add_argument("--workdir", required=True)
     c = sub.add_parser("check")
+    c.add_argument("--rev", required=True)
     c.add_argument("--sites", required=True)
+    c.add_argument("--template", required=True)
     c.add_argument("--doc", required=True)
     args = ap.parse_args()
     {"run": run, "check": check}[args.cmd](args)
