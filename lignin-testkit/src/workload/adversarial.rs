@@ -14,7 +14,7 @@ use super::{
     build::{self, batch, batch::insert_or_queue, child, path, sum, value},
     op::{AppendEntry, BatchOp, Op, Path, Query, QueryItem},
     rng::Rng,
-    zoo::{hashes_aggregates, TreeKind},
+    zoo::TreeKind,
     Features, Prepared, Stream,
 };
 
@@ -564,10 +564,11 @@ impl LargeValues {
 
 /// Thousands of subtrees holding one to three elements each.
 ///
-/// Most are plain trees of items, the shape of an index. The rest rotate
-/// through every Merk tree type. A third of them are then deleted, and half
-/// of those are created again under the same key, as another type, so the
-/// engine sees a subtree path reused.
+/// Five in eight are plain trees of items, the shape of an index. Each of
+/// the rest is a Merk tree of a type drawn at random from all but the
+/// indexed ones. A third of the subtrees are then deleted, and half of those
+/// are created again under the same key, the mixed ones with a newly drawn
+/// type, so the engine sees a subtree path reused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TinySubtrees {
     /// How many subtrees to create.
@@ -608,15 +609,10 @@ impl TinySubtrees {
         let group_path = |group: u32| child(&root, format!("group-{group}").as_bytes());
         let mut ops = vec![build::insert(&[], b"tiny", Element::empty_tree())];
         for group in 0..TINY_GROUPS {
-            let element = match group {
-                5 => Element::empty_sum_tree(),
-                6 => Element::empty_count_tree(),
-                _ => Element::empty_tree(),
-            };
             ops.push(build::insert(
                 &root,
                 format!("group-{group}").as_bytes(),
-                element,
+                tiny_group(group),
             ));
         }
         ops.push(Op::Commit);
@@ -678,8 +674,10 @@ impl TinySubtrees {
                 .element()
                 .tree_type()
                 .expect("a tiny subtree is a tree");
-            let direct = rng.chance(1, 2)
-                && (features.direct_delete_of_provable_trees || !hashes_aggregates(tree_type));
+            let group_type = tiny_group(tree.group)
+                .tree_type()
+                .expect("a group is a tree");
+            let direct = rng.chance(1, 2) && features.deletes_tree_directly(group_type, tree_type);
             if direct {
                 ops.push(build::delete(&parent, &tree.key));
             } else {
@@ -775,9 +773,21 @@ fn tiny_reads(
         vec![QueryItem::RangeFull],
         Some(10),
     )));
+    if subtrees.is_empty() {
+        return;
+    }
     let from = rng.index(subtrees.len());
     if let Some(tree) = subtrees[from..].iter().find(|tree| tree.alive) {
         ops.push(build::get(&child(&group_path(tree.group), &tree.key), &[0]));
+    }
+}
+
+/// The tree every subtree of a group is stored in.
+fn tiny_group(group: u32) -> Element {
+    match group {
+        5 => Element::empty_sum_tree(),
+        6 => Element::empty_count_tree(),
+        _ => Element::empty_tree(),
     }
 }
 
@@ -966,7 +976,10 @@ impl DeleteHeavy {
         }
         ops.push(Op::Commit);
         let tree_type = element.tree_type().expect("the churned element is a tree");
-        if self.features.direct_delete_of_provable_trees || !hashes_aggregates(tree_type) {
+        if self
+            .features
+            .deletes_tree_directly(TreeType::NormalTree, tree_type)
+        {
             ops.push(build::delete(root, name));
         } else {
             ops.push(Op::Batch(vec![batch::delete_tree(root, name, tree_type)]));
@@ -1221,6 +1234,7 @@ impl ReferenceChains {
                     reference: hop.reference.clone(),
                     max_hop: hop.max_hop,
                     flags: None,
+                    non_counted: false,
                     trusted: position % 2 == 0,
                 });
             }

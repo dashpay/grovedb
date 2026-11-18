@@ -109,6 +109,8 @@ pub enum BatchOp {
         max_hop: Option<u8>,
         /// The flags, as stored.
         flags: Option<ElementFlags>,
+        /// Whether the reference is stored inside a `NonCounted` wrapper.
+        non_counted: bool,
         /// Whether GroveDB writes the fields above without reading the
         /// stored reference first.
         trusted: bool,
@@ -312,6 +314,7 @@ impl BatchOp {
                 reference,
                 max_hop,
                 flags,
+                non_counted,
                 trusted,
             } => {
                 out.push(4);
@@ -321,6 +324,7 @@ impl BatchOp {
                     out,
                     &Element::Reference(reference.clone(), *max_hop, flags.clone()),
                 );
+                out.push(u8::from(*non_counted));
                 out.push(u8::from(*trusted));
             }
             BatchOp::Delete { path, key } => {

@@ -7,10 +7,13 @@
 //! [`Op::Commit`] without committing anything.
 
 use grovedb::{
-    batch::{QualifiedGroveDbOp, SubelementsDeletionBehavior},
-    operations::delete::{ClearOptions, DeleteOptions},
+    batch::{BatchApplyOptions, QualifiedGroveDbOp, SubelementsDeletionBehavior},
+    operations::{
+        delete::{ClearOptions, DeleteOptions},
+        insert::InsertOptions,
+    },
     query_result_type::{QueryResultElements, QueryResultType},
-    Element, Error, GroveDb, PathQuery, SizedQuery, TransactionArg,
+    BackwardsReferences, Element, Error, GroveDb, PathQuery, SizedQuery, TransactionArg,
 };
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_version::version::GroveVersion;
@@ -30,7 +33,47 @@ pub enum Outcome {
     EndOfBlock,
 }
 
+/// How [`Write::Insert`] is applied: an insert replaces a value but not a
+/// tree.
+pub const INSERT_OPTIONS: InsertOptions = InsertOptions {
+    validate_insertion_does_not_override: false,
+    validate_insertion_does_not_override_tree: true,
+    base_root_storage_is_free: true,
+    backwards_references: BackwardsReferences::Check,
+};
+
+/// How [`Write::Delete`] is applied: a tree is deleted with everything under
+/// it.
+pub const DELETE_OPTIONS: DeleteOptions = DeleteOptions {
+    allow_deleting_non_empty_trees: true,
+    deleting_non_empty_trees_returns_error: true,
+    base_root_storage_is_free: true,
+    validate_tree_at_path_exists: false,
+    backwards_references: BackwardsReferences::Check,
+};
+
+/// How [`Write::ClearSubtree`] is applied: the subtrees under the cleared
+/// tree go with it.
+pub const CLEAR_OPTIONS: ClearOptions = ClearOptions {
+    check_for_subtrees: true,
+    allow_deleting_subtrees: true,
+    trying_to_clear_with_subtrees_returns_error: true,
+    backwards_references: BackwardsReferences::Check,
+};
+
+/// How [`Op::Batch`] is applied.
+pub const BATCH_OPTIONS: BatchApplyOptions = BatchApplyOptions {
+    validate_insertion_does_not_override: false,
+    validate_insertion_does_not_override_tree: false,
+    disable_operation_consistency_check: false,
+    base_root_storage_is_free: true,
+    batch_pause_height: None,
+};
+
 /// Applies one operation inside `transaction`.
+///
+/// Every option GroveDB takes is spelled out in the constants above, so a
+/// change to one of GroveDB's defaults cannot change how a stream replays.
 pub fn apply(
     db: &GroveDb,
     op: &Op,
@@ -42,7 +85,7 @@ pub fn apply(
         Op::Batch(ops) => db
             .apply_batch(
                 ops.iter().map(BatchOp::to_grove_op).collect(),
-                None,
+                Some(BATCH_OPTIONS),
                 transaction,
                 grove_version,
             )
@@ -91,27 +134,21 @@ fn apply_write(
             path.as_slice(),
             key,
             element.clone(),
-            None,
+            Some(INSERT_OPTIONS),
             transaction,
             grove_version,
         ),
         Write::Delete { path, key } => db.delete(
             path.as_slice(),
             key,
-            Some(DeleteOptions {
-                allow_deleting_non_empty_trees: true,
-                ..DeleteOptions::default()
-            }),
+            Some(DELETE_OPTIONS),
             transaction,
             grove_version,
         ),
         Write::ClearSubtree { path } => db
             .clear_subtree(
                 path.as_slice(),
-                Some(ClearOptions {
-                    allow_deleting_subtrees: true,
-                    ..ClearOptions::default()
-                }),
+                Some(CLEAR_OPTIONS),
                 transaction,
                 grove_version,
             )
@@ -145,7 +182,7 @@ fn apply_write(
                     .map_ok(|_| ()),
                 AppendEntry::Commitment { .. } => db.apply_batch(
                     vec![append_op(path.clone(), entry)],
-                    None,
+                    Some(BATCH_OPTIONS),
                     transaction,
                     grove_version,
                 ),
@@ -208,6 +245,7 @@ impl BatchOp {
                 reference,
                 max_hop,
                 flags,
+                non_counted,
                 trusted,
             } => QualifiedGroveDbOp::refresh_reference_op(
                 path.clone(),
@@ -215,7 +253,7 @@ impl BatchOp {
                 reference.clone(),
                 *max_hop,
                 flags.clone(),
-                false,
+                *non_counted,
                 *trusted,
             ),
             BatchOp::Delete { path, key } => {

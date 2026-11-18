@@ -33,6 +33,7 @@ mod build;
 
 use std::collections::VecDeque;
 
+use grovedb::TreeType;
 use grovedb_version::version::GroveVersion;
 
 pub use self::{
@@ -61,10 +62,13 @@ pub struct Features {
     pub sum_item_in_count_sum_indexed_tree: bool,
     /// The same append-only tree appended to more than once in one batch.
     pub repeated_appends_in_batch: bool,
-    /// `GroveDb::delete` of a populated tree whose node hashes carry an
-    /// aggregate (the provable and the indexed trees). Grove versions 1 to 3
-    /// panic on it under a parent of another kind, and are kept that way for
-    /// replay, so a workload for them deletes such a tree through a batch.
+    /// `GroveDb::delete` of a populated tree when it or its parent commits
+    /// an aggregate into its node hashes (the provable and the indexed
+    /// trees). Grove versions 1 to 3 reopen the parent as the child's tree
+    /// type: they panic when only the child is of that kind and commit a
+    /// link hash no proof verifies against when only the parent is. Both are
+    /// kept for replay, so a workload for those versions deletes such a tree
+    /// through a batch.
     pub direct_delete_of_provable_trees: bool,
     /// Proofs in the V1 envelope, which a query needs when it is hosted by a
     /// `ProvableCountProvableSumTree` or by an indexed tree.
@@ -104,17 +108,39 @@ impl Features {
             v1_proofs: grovedb.operations.proof.prove_query_non_serialized >= 1,
         }
     }
+
+    /// Whether `GroveDb::delete` may remove a populated `child` tree from a
+    /// `parent` tree. Where it may not, a batch `DeleteTree` does it.
+    pub fn deletes_tree_directly(&self, parent: TreeType, child: TreeType) -> bool {
+        self.direct_delete_of_provable_trees
+            || !(hashes_aggregates(parent) || hashes_aggregates(child))
+    }
+}
+
+/// Whether a tree of this type commits an aggregate into its node hashes.
+fn hashes_aggregates(tree_type: TreeType) -> bool {
+    matches!(
+        tree_type,
+        TreeType::ProvableCountTree
+            | TreeType::ProvableCountSumTree
+            | TreeType::ProvableSumTree
+            | TreeType::ProvableCountProvableSumTree
+            | TreeType::ProvableCountProvableBigSumTree
+            | TreeType::ProvableSumIndexedTree
+            | TreeType::ProvableCountIndexedTree
+            | TreeType::ProvableCountProvableSumIndexedTree
+    )
 }
 
 /// The operations of one workload for one seed, generated as they are read.
 pub struct Stream {
-    source: Box<dyn Source>,
+    source: Box<dyn Source + Send>,
     pending: VecDeque<Op>,
     exhausted: bool,
 }
 
 impl Stream {
-    pub(crate) fn new(source: impl Source + 'static) -> Self {
+    pub(crate) fn new(source: impl Source + Send + 'static) -> Self {
         Self {
             source: Box::new(source),
             pending: VecDeque::new(),
@@ -251,5 +277,27 @@ impl Workload {
             Workload::DeleteHeavy(workload) => workload.stream(seed),
             Workload::ReferenceChains(workload) => workload.stream(seed),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_reference_documents_stream_is_generated_as_it_is_read() {
+        let mut stream = drive::Documents::reference().stream(1);
+        for _ in 0..10_000 {
+            stream.next().expect("a million documents are more");
+            assert!(stream.pending.len() < 100, "a block was not the chunk");
+        }
+        assert!(!stream.exhausted);
+    }
+
+    #[test]
+    fn a_stream_can_be_sent_to_another_thread() {
+        fn assert_send<T: Send>() {}
+        assert_send::<Stream>();
+        assert_send::<Op>();
     }
 }

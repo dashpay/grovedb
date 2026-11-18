@@ -23,10 +23,13 @@ const DOMAIN_DOCUMENT_ID: u64 = 0xD0C2;
 const DOMAIN_DOCUMENT_OWNER: u64 = 0xD0C3;
 const DOMAIN_DOCUMENT_BODY: u64 = 0xD0C4;
 const DOMAIN_DOCUMENT_UPDATE: u64 = 0xD0C5;
+const DOMAIN_DOCUMENT_READS: u64 = 0xD0C6;
 const DOMAIN_IDENTITY: u64 = 0x1D00;
 const DOMAIN_BALANCES: u64 = 0xBA1A;
+const DOMAIN_BALANCE_READS: u64 = 0xBA1B;
 const DOMAIN_TOKENS: u64 = 0x70C0;
 const DOMAIN_TOKEN_ID: u64 = 0x70C1;
+const DOMAIN_TOKEN_READS: u64 = 0x70C2;
 
 /// Drive's root tree keys.
 const ROOT_DOCUMENTS: &[u8] = &[64];
@@ -79,7 +82,8 @@ pub struct Documents {
     pub updates: u64,
     /// How many document deletions follow the updates; at most `documents`.
     pub deletes: u64,
-    /// How many reads follow each block.
+    /// How many reads follow each block. Reads draw from a generator of
+    /// their own, so this changes no write.
     pub reads_per_block: u32,
 }
 
@@ -128,6 +132,7 @@ impl Documents {
             config: *self,
             seed,
             rng,
+            read_rng: Rng::derive(seed, DOMAIN_DOCUMENT_READS, 0),
             phase: Phase::Setup,
             block: 0,
             created: 0,
@@ -136,7 +141,7 @@ impl Documents {
             reads: 0,
             stride,
             start,
-            live_per_owner: vec![0; self.owners as usize],
+            live_per_owner: BTreeMap::new(),
         })
     }
 
@@ -234,6 +239,7 @@ struct DocumentsSource {
     config: Documents,
     seed: u64,
     rng: Rng,
+    read_rng: Rng,
     phase: Phase,
     block: u64,
     created: u64,
@@ -242,7 +248,7 @@ struct DocumentsSource {
     reads: u64,
     stride: u64,
     start: u64,
-    live_per_owner: Vec<u32>,
+    live_per_owner: BTreeMap<u64, u64>,
 }
 
 impl DocumentsSource {
@@ -308,7 +314,7 @@ impl DocumentsSource {
             Element::new_item_with_flags(body, storage_flags(epoch, Some(&owner))),
         )];
         let references = config.owner_references_path(seed, owner_index);
-        let live = &mut self.live_per_owner[owner_index as usize];
+        let live = self.live_per_owner.entry(owner_index).or_insert(0);
         if *live == 0 {
             let owner_tree = &references[..references.len() - 1];
             let index_tree = &owner_tree[..owner_tree.len() - 1];
@@ -358,6 +364,7 @@ impl DocumentsSource {
                 reference,
                 max_hop,
                 flags,
+                non_counted: false,
                 trusted: true,
             },
         ])
@@ -375,9 +382,13 @@ impl DocumentsSource {
             batch::delete(&references, &id),
             batch::delete(&config.primary_path(seed), &id),
         ];
-        let live = &mut self.live_per_owner[owner_index as usize];
+        let live = self
+            .live_per_owner
+            .get_mut(&owner_index)
+            .expect("a deleted document was created");
         *live -= 1;
         if *live == 0 {
+            self.live_per_owner.remove(&owner_index);
             let owner_tree = &references[..references.len() - 1];
             let index_tree = &owner_tree[..owner_tree.len() - 1];
             ops.push(batch::delete_tree(
@@ -394,10 +405,12 @@ impl DocumentsSource {
     fn live_document(&mut self) -> Option<u64> {
         match self.phase {
             Phase::Setup | Phase::Done => None,
-            Phase::Create => (self.created > 0).then(|| self.rng.below(self.created)),
-            Phase::Update => Some(self.rng.below(self.config.documents)),
+            Phase::Create => (self.created > 0).then(|| self.read_rng.below(self.created)),
+            Phase::Update => Some(self.read_rng.below(self.config.documents)),
             Phase::Delete => (self.deleted < self.config.documents).then(|| {
-                let position = self.rng.between(self.deleted, self.config.documents - 1);
+                let position = self
+                    .read_rng
+                    .between(self.deleted, self.config.documents - 1);
                 self.deletion_order(position)
             }),
         }
@@ -503,7 +516,9 @@ fn gcd(mut a: u64, mut b: u64) -> u64 {
 ///
 /// Each identity is created by one state transition: its balance as a sum
 /// item under `Balances`, and its own tree under `Identities` holding a
-/// nonce. A transfer then replaces two balances and the sender's nonce.
+/// nonce. A transfer then replaces the sender's and the recipient's balance
+/// and the sender's nonce; a sender with nothing to send is topped up
+/// instead, which replaces only its own balance and nonce.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Balances {
     /// How many identities to create.
@@ -512,7 +527,8 @@ pub struct Balances {
     pub transfers: u64,
     /// How many state transitions make a block.
     pub transitions_per_block: u32,
-    /// How many reads follow each block.
+    /// How many reads follow each block. Reads draw from a generator of
+    /// their own, so this changes no write.
     pub reads_per_block: u32,
 }
 
@@ -536,6 +552,7 @@ impl Balances {
             config: *self,
             seed,
             rng: Rng::derive(seed, DOMAIN_BALANCES, 0),
+            read_rng: Rng::derive(seed, DOMAIN_BALANCE_READS, 0),
             started: false,
             block: 0,
             balances: Vec::new(),
@@ -550,6 +567,7 @@ struct BalancesSource {
     config: Balances,
     seed: u64,
     rng: Rng,
+    read_rng: Rng,
     started: bool,
     block: u64,
     balances: Vec<i64>,
@@ -628,7 +646,7 @@ impl BalancesSource {
         }
         let balances_path = path(&[ROOT_BALANCES]);
         for _ in 0..self.config.reads_per_block {
-            let id = identity_id(self.seed, self.rng.below(self.balances.len() as u64));
+            let id = identity_id(self.seed, self.read_rng.below(self.balances.len() as u64));
             let kind = self.reads % 3;
             self.reads += 1;
             out.push(match kind {
@@ -690,7 +708,8 @@ pub struct Tokens {
     pub actions: u64,
     /// How many state transitions make a block.
     pub transitions_per_block: u32,
-    /// How many reads follow each block.
+    /// How many reads follow each block. Reads draw from a generator of
+    /// their own, so this changes no write.
     pub reads_per_block: u32,
 }
 
@@ -715,6 +734,7 @@ impl Tokens {
             config: *self,
             seed,
             rng: Rng::derive(seed, DOMAIN_TOKENS, 0),
+            read_rng: Rng::derive(seed, DOMAIN_TOKEN_READS, 0),
             started: false,
             block: 0,
             tokens: Vec::new(),
@@ -734,6 +754,7 @@ struct TokensSource {
     config: Tokens,
     seed: u64,
     rng: Rng,
+    read_rng: Rng,
     started: bool,
     block: u64,
     tokens: Vec<TokenState>,
@@ -778,9 +799,8 @@ impl TokensSource {
     }
 
     /// The holder at or after a random position, wrapping to the first.
-    fn existing_holder(&mut self, token: usize) -> Option<u64> {
-        let from = self.rng.below(self.config.holders);
-        let balances = &self.tokens[token].balances;
+    fn existing_holder(balances: &BTreeMap<u64, i64>, holders: u64, rng: &mut Rng) -> Option<u64> {
+        let from = rng.below(holders);
         balances
             .range(from..)
             .next()
@@ -818,7 +838,11 @@ impl TokensSource {
         let source = if roll < 8 {
             None
         } else {
-            self.existing_holder(token)
+            Self::existing_holder(
+                &self.tokens[token].balances,
+                self.config.holders,
+                &mut self.rng,
+            )
         };
         let mut ops = Vec::new();
         let mut record = Vec::with_capacity(73);
@@ -840,9 +864,10 @@ impl TokensSource {
                     self.rng.between(1, balance as u64) as i64
                 };
                 ops.push(self.set_balance(token, holder, balance - amount));
-                record.push(if roll < 17 { 1 } else { 2 });
+                let transfer = roll < 17 && self.config.holders > 1;
+                record.push(if transfer { 1 } else { 2 });
                 record.extend_from_slice(&identity_id(self.seed, holder));
-                if roll < 17 && self.config.holders > 1 {
+                if transfer {
                     let recipient = (holder + 1 + self.rng.below(self.config.holders - 1))
                         % self.config.holders;
                     let held = self.balance(token, recipient);
@@ -867,13 +892,18 @@ impl TokensSource {
             return;
         }
         for _ in 0..self.config.reads_per_block {
-            let token = self.rng.index(self.tokens.len());
+            let token = self.read_rng.index(self.tokens.len());
             let id = self.tokens[token].id;
             let kind = self.reads % 4;
             self.reads += 1;
             match kind {
                 0 => {
-                    if let Some(holder) = self.existing_holder(token) {
+                    let holder = Self::existing_holder(
+                        &self.tokens[token].balances,
+                        self.config.holders,
+                        &mut self.read_rng,
+                    );
+                    if let Some(holder) = holder {
                         out.push(build::get(
                             &Self::balances_path(&id),
                             &identity_id(self.seed, holder),

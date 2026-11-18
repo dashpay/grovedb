@@ -5,7 +5,8 @@
 //! references, each tree type as a child, the three wrappers, the
 //! backward-reference family and the five append-only trees, which it then
 //! appends to. Each parent is filled twice, once through direct calls and
-//! once through batches, and a second pass replaces, refreshes and deletes
+//! once through batches (an indexed parent through batches only, the one way
+//! GroveDB writes to it), and a second pass replaces, refreshes and deletes
 //! part of what the first stored. What gets stored is fixed by the features;
 //! the seed only chooses values, sizes and the order.
 
@@ -692,6 +693,7 @@ impl Zoo {
     fn revisit(&mut self, index: usize) {
         let (parent, mode, parent_path) = self.parents[index].clone();
         let batched = mode == Mode::Batch || parent.indexed();
+        let parent_type = parent.element().tree_type().expect("a parent is a tree");
         let members: Vec<usize> = (0..self.entries.len())
             .filter(|&entry| self.entries[entry].path == parent_path)
             .collect();
@@ -718,13 +720,18 @@ impl Zoo {
                 }
                 Role::Reference => {
                     if roll < 4 {
-                        if let Element::Reference(reference, max_hop, flags) = &entry.element {
+                        let (stored, non_counted) = match &entry.element {
+                            Element::NonCounted(inner) => (inner.as_ref(), true),
+                            stored => (stored, false),
+                        };
+                        if let Element::Reference(reference, max_hop, flags) = stored {
                             self.ops.push(Op::Batch(vec![BatchOp::RefreshReference {
                                 path: entry.path.clone(),
                                 key: entry.key.clone(),
                                 reference: reference.clone(),
                                 max_hop: *max_hop,
                                 flags: flags.clone(),
+                                non_counted,
                                 trusted: roll.is_multiple_of(2),
                             }]));
                         }
@@ -751,11 +758,7 @@ impl Zoo {
                             self.ops.push(build::delete(&tree, b"g0"));
                         }
                     } else if roll < 9 {
-                        let tree_type = entry.element.tree_type();
-                        let through_batch = batched
-                            || !self.features.direct_delete_of_provable_trees
-                                && tree_type.is_some_and(hashes_aggregates);
-                        self.remove(&entry, through_batch, tree_type);
+                        self.remove_tree(&entry, batched, parent_type);
                     }
                 }
                 Role::Append(kind) => {
@@ -767,7 +770,7 @@ impl Zoo {
                         };
                         self.append(member, count);
                     } else if roll < 7 {
-                        self.remove(&entry, batched, entry.element.tree_type());
+                        self.remove_tree(&entry, batched, parent_type);
                     }
                 }
                 Role::Pinned => {}
@@ -775,6 +778,12 @@ impl Zoo {
         }
         self.ops.push(Op::Commit);
         self.read_parent(parent, &parent_path);
+    }
+
+    fn remove_tree(&mut self, entry: &Entry, batched: bool, parent_type: TreeType) {
+        let tree_type = entry.element.tree_type().expect("the entry is a tree");
+        let through_batch = batched || !self.features.deletes_tree_directly(parent_type, tree_type);
+        self.remove(entry, through_batch, Some(tree_type));
     }
 
     fn remove(&mut self, entry: &Entry, batched: bool, tree_type: Option<TreeType>) {
@@ -848,21 +857,6 @@ impl Zoo {
             build::storage_flags(epoch, Some(&owner))
         }
     }
-}
-
-/// Whether a tree of this type commits an aggregate into its node hashes.
-pub(crate) fn hashes_aggregates(tree_type: TreeType) -> bool {
-    matches!(
-        tree_type,
-        TreeType::ProvableCountTree
-            | TreeType::ProvableCountSumTree
-            | TreeType::ProvableSumTree
-            | TreeType::ProvableCountProvableSumTree
-            | TreeType::ProvableCountProvableBigSumTree
-            | TreeType::ProvableSumIndexedTree
-            | TreeType::ProvableCountIndexedTree
-            | TreeType::ProvableCountProvableSumIndexedTree
-    )
 }
 
 fn target_key(index: u64) -> Vec<u8> {

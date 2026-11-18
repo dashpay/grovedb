@@ -2,7 +2,7 @@
 //!
 //! - The same seed gives the same stream on any machine:
 //!   `streams_are_pinned`, `a_suite_is_pinned_for_every_grove_version` and
-//!   `the_reference_documents_stream_is_pinned_and_lazy` compare stream
+//!   `the_reference_documents_stream_is_pinned` compare stream
 //!   digests with values written down here.
 //! - Every `Element` variant and `TreeType` is produced at least once:
 //!   `the_suite_produces_every_element_variant_and_tree_type`. The lists it
@@ -18,9 +18,10 @@ use grovedb::{GroveDb, PathQuery};
 use grovedb_commitment_tree::{ciphertext_payload_size, DashMemo};
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 use lignin_testkit::workload::{
+    adversarial::{DeepNesting, DeleteHeavy, LargeValues, LongKeys, ReferenceChains, TinySubtrees},
     apply,
     coverage::{ELEMENT_VARIANTS, REFERENCE_PATH_TYPES, TREE_TYPES},
-    drive::Documents,
+    drive::{Balances, Documents, Tokens},
     zoo::{ElementZoo, COMMITMENT_PAYLOAD_LEN},
     Coverage, Features, Op, Outcome, Read, StreamDigest, Workload,
 };
@@ -161,34 +162,189 @@ fn prove(
     );
 }
 
-#[test]
-fn every_workload_applies_on_every_grove_version() {
-    let only = std::env::var("WORKLOAD_ONLY").ok();
-    let only = only.as_deref();
+/// Runs `body` once per grove version, each on its own thread.
+fn on_every_grove_version(body: impl Fn(&'static GroveVersion) + Sync) {
+    let body = &body;
     thread::scope(|scope| {
         for grove_version in GROVE_VERSIONS {
             thread::Builder::new()
                 .stack_size(STACK_BYTES)
-                .spawn_scoped(scope, move || {
-                    let version = grove_version.protocol_version;
-                    let suite = Workload::suite(Features::for_grove_version(grove_version));
-                    let (_shared_dir, shared) = open();
-                    for workload in suite {
-                        let name = workload.name();
-                        if only.is_some_and(|only| only != name) {
-                            continue;
-                        }
-                        let (_dir, db) = open();
-                        let applied = run(name, &db, workload.stream(SEED), grove_version);
-                        report_verify_issues(name, &db, grove_version);
-                        println!("grove v{version} {name}: {applied} operations applied");
-                        run(name, &shared, workload.stream(OTHER_SEED), grove_version);
-                    }
-                    report_verify_issues("suite", &shared, grove_version);
-                })
+                .spawn_scoped(scope, move || body(grove_version))
                 .expect("spawn");
         }
     });
+}
+
+#[test]
+fn every_workload_applies_on_every_grove_version() {
+    let only = std::env::var("WORKLOAD_ONLY").ok();
+    let only = only.as_deref();
+    on_every_grove_version(|grove_version| {
+        let version = grove_version.protocol_version;
+        let suite = Workload::suite(Features::for_grove_version(grove_version));
+        let (_shared_dir, shared) = open();
+        for workload in suite {
+            let name = workload.name();
+            if only.is_some_and(|only| only != name) {
+                continue;
+            }
+            let (_dir, db) = open();
+            let applied = run(name, &db, workload.stream(SEED), grove_version);
+            report_verify_issues(name, &db, grove_version);
+            println!("grove v{version} {name}: {applied} operations applied");
+            run(name, &shared, workload.stream(OTHER_SEED), grove_version);
+        }
+        report_verify_issues("suite", &shared, grove_version);
+    });
+}
+
+/// The zoo's second pass picks what to replace, refresh and delete by seed,
+/// so each seed meets other pairs of parent and child. `WORKLOAD_SEEDS` sets
+/// how many seeds to try.
+#[test]
+fn the_zoo_applies_for_many_seeds() {
+    let seeds: u64 = std::env::var("WORKLOAD_SEEDS")
+        .ok()
+        .map_or(12, |seeds| seeds.parse().expect("a number of seeds"));
+    on_every_grove_version(|grove_version| {
+        let features = Features::for_grove_version(grove_version);
+        for seed in 2..2 + seeds {
+            let (_dir, db) = open();
+            let name = format!("element-zoo seed {seed}");
+            run(
+                &name,
+                &db,
+                ElementZoo { features }.stream(seed),
+                grove_version,
+            );
+        }
+    });
+}
+
+#[test]
+fn the_smallest_workloads_apply() {
+    let features = Features::ALL;
+    let workloads = [
+        Workload::Documents(Documents {
+            documents: 1,
+            owners: 1,
+            deletes: 1,
+            updates: 1,
+            ..Documents::default()
+        }),
+        Workload::Documents(Documents {
+            documents: 7,
+            owners: u64::MAX,
+            deletes: 7,
+            transitions_per_block: 1,
+            ..Documents::default()
+        }),
+        Workload::Balances(Balances {
+            identities: 1,
+            transfers: 5,
+            ..Balances::default()
+        }),
+        Workload::Tokens(Tokens {
+            tokens: 1,
+            holders: 1,
+            actions: 30,
+            ..Tokens::default()
+        }),
+        Workload::DeepNesting(DeepNesting {
+            depth: 1,
+            chains: 4,
+            leaves: 1,
+        }),
+        Workload::DeepNesting(DeepNesting {
+            depth: 2,
+            chains: 0,
+            leaves: 1,
+        }),
+        Workload::LongKeys(LongKeys {
+            keys: 0,
+            nesting: 0,
+        }),
+        Workload::LongKeys(LongKeys {
+            keys: 1,
+            nesting: 1,
+        }),
+        Workload::LargeValues(LargeValues {
+            max_value_size: 0,
+            random_values: 0,
+        }),
+        Workload::TinySubtrees(TinySubtrees {
+            subtrees: 0,
+            features,
+        }),
+        Workload::TinySubtrees(TinySubtrees {
+            subtrees: 1,
+            features,
+        }),
+        Workload::DeleteHeavy(DeleteHeavy {
+            keys: 1,
+            rounds: 0,
+            features,
+        }),
+        Workload::ReferenceChains(ReferenceChains {
+            chains: 0,
+            features,
+        }),
+    ];
+    let grove_version = GroveVersion::latest();
+    for workload in workloads {
+        for seed in [0, u64::MAX] {
+            let (_dir, db) = open();
+            run(workload.name(), &db, workload.stream(seed), grove_version);
+        }
+    }
+}
+
+/// A benchmark can compare a workload with and without its reads: the
+/// writes are the same.
+#[test]
+fn reads_do_not_change_the_writes() {
+    fn writes(workload: Workload) -> (u64, String) {
+        digest(
+            workload
+                .stream(SEED)
+                .filter(|op| !matches!(op, Op::Read(_))),
+        )
+    }
+    let pairs = [
+        (
+            Workload::Documents(Documents::default()),
+            Workload::Documents(Documents {
+                reads_per_block: 0,
+                ..Documents::default()
+            }),
+        ),
+        (
+            Workload::Balances(Balances::default()),
+            Workload::Balances(Balances {
+                reads_per_block: 0,
+                ..Balances::default()
+            }),
+        ),
+        (
+            Workload::Tokens(Tokens::default()),
+            Workload::Tokens(Tokens {
+                reads_per_block: 0,
+                ..Tokens::default()
+            }),
+        ),
+    ];
+    for (with_reads, without_reads) in pairs {
+        assert!(with_reads.stream(SEED).any(|op| matches!(op, Op::Read(_))));
+        assert!(!without_reads
+            .stream(SEED)
+            .any(|op| matches!(op, Op::Read(_))));
+        assert_eq!(
+            writes(with_reads),
+            writes(without_reads),
+            "{}",
+            with_reads.name()
+        );
+    }
 }
 
 #[test]
@@ -262,14 +418,14 @@ fn coverage_reports_what_a_stream_lacks() {
 /// [`Features::ALL`]: name, seed, operations, digest.
 #[rustfmt::skip]
 const PINNED_STREAMS: &[(&str, u64, u64, &str)] = &[
-    ("documents", 0x1, 1208, "2f0b270f7c78d34a47427df22c0146dd01b5b1998ce89c40f0cf9673d2430c46"),
-    ("documents", 0x4c49474e494e, 1208, "da97d89975cde193292d60e4da87ca4b2b374b97fdb298bd25425fc6a96c7611"),
-    ("balances", 0x1, 963, "2b9f7555dbb9f1c251eb2f21d5c403e4e95dd002b358cf8031d9c81a0e3a1089"),
-    ("balances", 0x4c49474e494e, 963, "ba5e4bf2840006c2d4f974bce9ef371022e6f2906485b700b2d2d2cb638ed6ea"),
-    ("tokens", 0x1, 1013, "58f0e7fae2cd195300ad77aa20852d4e25c2f71d8184effc69a7730b3fbd8cda"),
-    ("tokens", 0x4c49474e494e, 1013, "fce0ab0f2bd09d1056d27e7c46b395ac3353e51d08d6fffbe4b4382abf81f093"),
-    ("element-zoo", 0x1, 2016, "50ac5186570445b60f2ebfc7ebac0b63c1704cb7f06a50c8a9148be25dd19364"),
-    ("element-zoo", 0x4c49474e494e, 2025, "b81afd3b23f6b590266b5790d0abf4a7b2a17e8b3fd31ef031c345e012e09d02"),
+    ("documents", 0x1, 1208, "fbb70cc59ad376efbda8b7ce167df16b78191c23e91c92c6bd9fdbbb7190bf80"),
+    ("documents", 0x4c49474e494e, 1208, "659032e87a47cf5a8bbf2f827276816645f1eba0ecdd51b03c87f806fd426d76"),
+    ("balances", 0x1, 963, "5e9b74a10a9b77c52c6e3fbde4730dbcf5230cfeee582a82ebc54423dc1bd6b1"),
+    ("balances", 0x4c49474e494e, 963, "bd2093107784baea22f85168ebc5fac77e5d36070a7c1f2431e7e7e2dcc7f508"),
+    ("tokens", 0x1, 1013, "9c854f5c4192d2caff3a11e28a5c86191d8efd5b8adb6f3c8b750eeac081e92c"),
+    ("tokens", 0x4c49474e494e, 1013, "42317281250ae58cdb2793ef11663af995a571e41096cf7eb64e403c330a461c"),
+    ("element-zoo", 0x1, 2019, "52e9aa3fb0721dfbdd81865f0aab125dbf252db20b3b8d0d1ce942486d40ed0d"),
+    ("element-zoo", 0x4c49474e494e, 2026, "3636474016c3c914098e1061a6acc4e40ad0771b8bf05d15faf132744a67bf05"),
     ("deep-nesting", 0x1, 377, "6461d8f8cf75990e32746b1e6f2bcbb5838bf1226e33ba916c9c53372146ea8a"),
     ("deep-nesting", 0x4c49474e494e, 377, "9ff40c4595ee15f9fd0111466e67b7c08de4391489b3f2a1239bb487f2c09d21"),
     ("long-keys", 0x1, 448, "8cabc4d420d4ec8a4a4c19c3cef115d06c07013aba75b78db11089cc6eb86560"),
@@ -280,8 +436,8 @@ const PINNED_STREAMS: &[(&str, u64, u64, &str)] = &[
     ("tiny-subtrees", 0x4c49474e494e, 3710, "708de79761442cf04386ef9054fcdd0ea50aa034f3eabb1fd7c8d3e2ad57c437"),
     ("delete-heavy", 0x1, 6246, "7351393ef5fd04ef9b32b0a145e858465707c0cb7529a149c0be595b7278da26"),
     ("delete-heavy", 0x4c49474e494e, 6246, "2e9de83aa09c295c2cba188785c401fb2ba19136860685595a46c594ec411531"),
-    ("reference-chains", 0x1, 460, "1b4d07ee4ad1546f26e20cb507a8adacb18a371fc4f8bc6acd072a8acd4893ff"),
-    ("reference-chains", 0x4c49474e494e, 460, "cea5f6f76c7d507a4ca622cc818dd28484ce702856e6e2bee4e5a9661e818f5a"),
+    ("reference-chains", 0x1, 460, "76d941fb245d7cb0be8005bbbc8aaf78bf04cf82fab6c233d0071865b95421b5"),
+    ("reference-chains", 0x4c49474e494e, 460, "776d86bf9f6a7d87b8f7a5da2d14d27047dc6a9ab3439b7eec97092b75308e6b"),
 ];
 
 #[test]
@@ -314,11 +470,11 @@ fn streams_are_pinned() {
 /// features, seed [`SEED`]: protocol version, operations, digest.
 #[rustfmt::skip]
 const PINNED_SUITES: &[(u32, u64, &str)] = &[
-    (1, 16116, "0e0bde9030970934d7585f20410a52ec40023dcddc0b185a5dd56610693e719e"),
-    (2, 16116, "0e0bde9030970934d7585f20410a52ec40023dcddc0b185a5dd56610693e719e"),
-    (3, 16116, "94af5e158ced5369571d9985fcc7f153a4053f97d2e59392fd6966fc56027b2d"),
-    (4, 16335, "7d8f0d45679d1619574a979b9de3ab95fd651596f54ae6d255dacee9d00498e4"),
-    (5, 16563, "1cd25fb7266ae89727ef5c964f9654f92ddda6ae018bef1e02b7c364341dc90d"),
+    (1, 16118, "fea4d535565fe51e32179da75b73ce01b1ac655836e7b285f2d2b0397fd2d932"),
+    (2, 16118, "fea4d535565fe51e32179da75b73ce01b1ac655836e7b285f2d2b0397fd2d932"),
+    (3, 16118, "84301809e2ceca9c01cccb2f3a9928024cb2ff8c8be89f28690e5525f2916fce"),
+    (4, 16337, "88f545c9f7dec6a47b85746e3939a55f43d873f0d8ebab3854505e44a6d50870"),
+    (5, 16566, "35d4619423f3763603141161426242f3d5789a400fcb9857f012cf5251af88dd"),
 ];
 
 #[test]
@@ -364,7 +520,7 @@ const PINNED_REFERENCE_PREFIX: &str =
     "e212500dcfe1a4f8d491e8b0cfae9f19db17de9c7fcbaebed13d38037857f8e9";
 
 #[test]
-fn the_reference_documents_stream_is_pinned_and_lazy() {
+fn the_reference_documents_stream_is_pinned() {
     let reference = Documents::reference();
     assert_eq!(reference.documents, 1_000_000);
     assert_eq!(reference.document_size, 400);
