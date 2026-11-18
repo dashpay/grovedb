@@ -23,6 +23,10 @@ use crate::segment::{
     BlockLocation, FileNames, ManifestStore, SegmentStore, SegmentStoreError,
 };
 
+/// A log that is durable through every version, for the tests that are not
+/// about the log.
+const LOG: CommitVersion = CommitVersion::MAX;
+
 fn id(raw: u32) -> FileId {
     FileId::new(raw).expect("not zero")
 }
@@ -149,7 +153,7 @@ impl Db {
     ) -> Result<CheckpointInfo, PageTableError> {
         let written = self.checkpoints.write(table, version(covers))?;
         self.checkpoints
-            .install(&written, &mut self.manifest, &self.segments)?;
+            .install(&written, LOG, &mut self.manifest, &self.segments)?;
         Ok(written)
     }
 }

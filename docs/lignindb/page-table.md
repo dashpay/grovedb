@@ -181,7 +181,8 @@ A kind that stands where it is not allowed is
 
 **P5. A links record holds 1 to 4096 links** (`LINKS_PER_RECORD`). So its
 payload is at most 114,689 bytes, and a reader never needs more than one
-record in memory.
+record in memory. The limit holds for a payload that is handed to the
+decoder without its frame as well (`RecordTooLong`).
 
 **P6. Every links record except the last holds exactly 4096 links.** A
 links record with fewer is followed by the end record. So a list of links
@@ -287,7 +288,8 @@ bytes at offset 4124. Page 9 was freed at version 38. It is 146 bytes:
 
 **K1. A checkpoint that covers version *C* is enough, with the log after
 *C*, to rebuild every page.** Every change that a commit up to *C* made to a
-page is in a block that a link of the checkpoint points to. So:
+page is in a block that a link of the checkpoint points to. With K4, which
+keeps the log ahead of the checkpoint:
 
 - recovery loads the checkpoint and replays the log from the group of
   *C* + 1 (STORE-07);
@@ -310,17 +312,27 @@ chain holds every change up to *v* (T3). So replay applies to a page only
 the changes of versions above the page's newest link. Without this rule, a
 change that is both in a block and in the log would be applied twice.
 
-**K4. Nothing newer than the log survives** (FL4, DU3). Recovery can land on
-a version *r* below "reaches" only if the log was not durable through
-"reaches" when the manifest named the checkpoint. The plan leaves the choice
-to STORE-06 and STORE-07, and the table serves both:
+**K4. The log goes first** (FL4, DU3). A manifest names a checkpoint only
+once the log is durable through the newest version the checkpoint covers or
+reaches. Whoever installs the checkpoint says which version the log is
+durable through, and a checkpoint that needs more is refused
+(`PageTableError::LogBehind`). So a recovery never lands on a version below
+a link of the checkpoint it loads, and never below the version the
+checkpoint covers.
 
-- *The log goes first.* The log is made durable through "reaches" after the
-  checkpoint is written and before the manifest names it. Then *r* is never
-  below "reaches".
-- *Recovery discards.* The links above *r* are removed (T12). That gives the
-  table of *r* only if the links they replaced are still in their chains, so
-  trim (T11) must not have run past the version the log was durable through.
+K1 depends on this. A checkpoint that reaches past *C* may hold, for a
+page, only a base image newer than *C*: the links that gave the page at *C*
+can have been trimmed (T11), before the checkpoint was written or while it
+was. Such a chain still holds every change up to *C*, but it cannot give the
+page as a commit between *C* and that image left it. With the log durable
+through "reaches", recovery never asks for that.
+
+FL4 offers a second way, in which recovery removes the page versions born
+after the version it lands on. The table has the operation (T12), and it is
+not enough by itself: it gives the table of that version only if the links
+that the removed ones replaced are still in their chains, which nothing
+here makes sure of. A recovery that finds a link above the version it lands
+on has found this rule broken.
 
 **K5. A checkpoint is taken while the table changes.** Each chain is copied
 in one step (T16), and different chains at different moments. This is sound
@@ -354,13 +366,13 @@ force may already be gone.
 | 1 | The file `table/<id>.pt` is created under an id above every id used before, with its header, and the file and its name are made durable. |
 | 2 | The links are appended, a record at a time, and then the end record. |
 | 3 | The file is synced. |
-| 4 | Every segment is synced. |
+| 4 | The checkpoint is refused unless the log is durable through what it covers and reaches (K4). Every segment is synced. |
 | 5 | The manifest is replaced by one that names the checkpoint, and the segments with the lengths that are now durable (K6). |
 | 6 | The file of the checkpoint that was named before is deleted. |
 
 Steps 1 to 3 are `TableCheckpoints::write`, and steps 4 to 6 are
-`TableCheckpoints::install`. Between them the caller can make the log
-durable (K4).
+`TableCheckpoints::install`. Between them the caller makes the log durable
+through the checkpoint's "reaches" (K4).
 
 **K8. A checkpoint id is never given to two files that a manifest named.**
 The manifest records the last id it named (M7). An id whose file was written
@@ -456,9 +468,16 @@ STORE-10 build on it.
 8. **A checkpoint is copied chain by chain while the table changes** (K5),
    and written a record at a time. Its totals are therefore in an end
    record, not in a header.
-9. **Whether the log goes first or recovery discards is left to STORE-06
-   and STORE-07** (K4), as the plan has it. The checkpoint's "reaches" and
-   `PageTable::discard_after` are there for either.
+9. **The log goes first, and installing a checkpoint enforces it** (K4).
+   FL4 left the choice between this and a recovery that discards newer page
+   versions to STORE-06 and STORE-07. The second way is sound only if
+   trimming never passes the version the log is durable through, at any
+   time, which would hold back reclaiming until the next sync of the log.
+   The cost of the first is one sync of the log for each table checkpoint.
+   `PageTable::discard_after` stays, for a recovery to find the rule broken.
+   No version pin is held while a checkpoint is written: a chain that is
+   trimmed, consolidated or freed during the copy is still a chain that K4
+   makes safe to recover from.
 10. **The manifest must vouch for every block of the checkpoint it names**
     (K6), checked at installation and at load. The segment store states the
     rule; here it is enforced.
@@ -497,7 +516,8 @@ Run the tests with `cargo test -p lignin-format table` and
 | P12, P13 | `lignin_format::table::End` | Each total wrong; bytes after the end record. |
 | B8, B10 | both decoders | 40,000 forged files with valid checksums decode only to what encodes back to them; arbitrary and mutated bytes give an error, never a panic. |
 | K1 to K3 | `table::{TableCheckpoints, CheckpointInfo}`, `PageTable::load` | What a checkpoint reports; a table that has no checkpoint; an empty one; several records. |
-| K5 | `TableCheckpoints::write` | Checkpoints written while another thread pushes: each loaded chain is a chain the page once had. |
+| K5 | `TableCheckpoints::write` | Checkpoints written while another thread pushes: each loaded chain is a chain the page once had. Checkpoints written while another thread pushes, consolidates, trims, frees and reuses: each loaded chain gives a whole page version, a base image and every delta after it, no older than the page had when the write began. |
+| K4 | `TableCheckpoints::install` | A checkpoint whose page was trimmed to an image newer than the version it covers is refused until the log is durable through that image's version; so is one that covers more than the log has. |
 | K6, K7 | `TableCheckpoints::install`, `PageTable::load` | A link past a segment's end and one into no segment are not installed; a manifest with a shorter or a missing segment does not load; a checkpoint that covers less is refused. |
 | K8, K9 | `TableCheckpoints::{open, discard, manifest_replaced}` | Ids across sessions; an older checkpoint does not replace a newer one; what opening removes and leaves. |
 | 4.3 | the whole module | A crash after every operation that can leave something new, in a script of 27 steps: all 138 crash points, every state of each (81,437 plans, 1,169 distinct states); again with writes torn at 16 bytes; three drawn workloads; a database that goes on through 100 crashes. Each state is opened as a session opens it and checked against a model: the checkpoint is the old one or the new one, it loads, every block it points to reads back with the bytes appended, `table/` holds no other checkpoint, and a new checkpoint can be installed. |

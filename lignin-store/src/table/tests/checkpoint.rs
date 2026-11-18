@@ -349,7 +349,7 @@ fn a_checkpoint_the_manifest_cannot_vouch_for_is_not_installed() {
     let db = &mut fixture.db;
     let error = db
         .checkpoints
-        .install(&written, &mut db.manifest, &db.segments)
+        .install(&written, LOG, &mut db.manifest, &db.segments)
         .unwrap_err();
     assert!(matches!(
         error,
@@ -380,7 +380,7 @@ fn a_checkpoint_the_manifest_cannot_vouch_for_is_not_installed() {
     let db = &mut fixture.db;
     let error = db
         .checkpoints
-        .install(&written, &mut db.manifest, &db.segments)
+        .install(&written, LOG, &mut db.manifest, &db.segments)
         .unwrap_err();
     assert!(matches!(
         error,
@@ -392,7 +392,7 @@ fn a_checkpoint_the_manifest_cannot_vouch_for_is_not_installed() {
     fixture.table.push(page(8), base(10, good)).unwrap();
     let db = &mut fixture.db;
     db.checkpoints
-        .install(&written, &mut db.manifest, &db.segments)
+        .install(&written, LOG, &mut db.manifest, &db.segments)
         .unwrap_err();
     let second = fixture.checkpoint(10);
     assert_eq!(second.file(), id(4));
@@ -422,7 +422,7 @@ fn a_checkpoint_never_covers_less_than_the_one_before_it() {
     let db = &mut fixture.db;
     let error = db
         .checkpoints
-        .install(&written, &mut db.manifest, &db.segments)
+        .install(&written, LOG, &mut db.manifest, &db.segments)
         .unwrap_err();
     assert!(matches!(
         error,
@@ -439,6 +439,70 @@ fn a_checkpoint_never_covers_less_than_the_one_before_it() {
 }
 
 #[test]
+fn a_checkpoint_is_not_named_before_the_log_is_durable_through_all_it_holds() {
+    let mut fixture = Fixture::new();
+    let old = fixture.block(1, BlockContent::Base, 50);
+    let change = fixture.block(1, BlockContent::Delta, 9);
+    let new = fixture.block(1, BlockContent::Base, 50);
+    fixture.table.push(page(1), base(1, old)).unwrap();
+    fixture.table.push(page(1), delta(2, change)).unwrap();
+    fixture.table.push(page(1), base(3, new)).unwrap();
+    let mut removed = Vec::new();
+    fixture.table.trim(page(1), version(3), &mut removed);
+    assert_eq!(chain_of(&fixture.table, 1), [base(3, new)]);
+
+    let db = &mut fixture.db;
+    let written = db.checkpoints.write(&fixture.table, version(2)).unwrap();
+    assert_eq!(
+        (written.covers(), written.reaches()),
+        (version(2), Some(version(3)))
+    );
+    for durable in [0, 2] {
+        let error = db
+            .checkpoints
+            .install(&written, version(durable), &mut db.manifest, &db.segments)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            PageTableError::LogBehind { needed, durable: found }
+                if needed == version(3) && found == version(durable)
+        ));
+        assert_eq!(db.named(), None);
+    }
+    db.checkpoints
+        .install(&written, version(3), &mut db.manifest, &db.segments)
+        .unwrap();
+    assert_eq!(db.named(), Some(written.named()));
+
+    let ahead = db.checkpoints.write(&fixture.table, version(5)).unwrap();
+    let error = db
+        .checkpoints
+        .install(&ahead, version(4), &mut db.manifest, &db.segments)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        PageTableError::LogBehind { needed, .. } if needed == version(5)
+    ));
+    assert_eq!(db.named(), Some(written.named()));
+    db.checkpoints
+        .install(&ahead, version(5), &mut db.manifest, &db.segments)
+        .unwrap();
+
+    let empty = db.checkpoints.write(&PageTable::new(), version(6)).unwrap();
+    assert_eq!(empty.reaches(), None);
+    let error = db
+        .checkpoints
+        .install(&empty, version(5), &mut db.manifest, &db.segments)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        PageTableError::LogBehind { needed, .. } if needed == version(6)
+    ));
+    db.checkpoints.discard(empty, &db.manifest).unwrap();
+    assert_eq!(fixture.table_files(), [checkpoint_name(2)]);
+}
+
+#[test]
 fn an_older_checkpoint_does_not_replace_a_newer_one() {
     let mut fixture = Fixture::new();
     let newest = fixture.fill();
@@ -452,7 +516,7 @@ fn an_older_checkpoint_does_not_replace_a_newer_one() {
         .write(&fixture.table, version(newest))
         .unwrap();
     db.checkpoints
-        .install(&newer, &mut db.manifest, &db.segments)
+        .install(&newer, LOG, &mut db.manifest, &db.segments)
         .unwrap();
     assert_eq!(
         names_in(&fixture.fs, &table_dir()),
@@ -460,7 +524,7 @@ fn an_older_checkpoint_does_not_replace_a_newer_one() {
     );
     let error = db
         .checkpoints
-        .install(&older, &mut db.manifest, &db.segments)
+        .install(&older, LOG, &mut db.manifest, &db.segments)
         .unwrap_err();
     assert!(matches!(
         store_error(error),
@@ -471,7 +535,7 @@ fn an_older_checkpoint_does_not_replace_a_newer_one() {
     ));
     assert_eq!(db.named(), Some(newer.named()));
     db.checkpoints
-        .install(&newer, &mut db.manifest, &db.segments)
+        .install(&newer, LOG, &mut db.manifest, &db.segments)
         .unwrap();
     db.checkpoints.discard(older, &db.manifest).unwrap();
     assert_eq!(names_in(&fixture.fs, &table_dir()), ["00000002.pt"]);
@@ -500,12 +564,12 @@ fn the_parts_of_another_directory_are_refused() {
     };
     wrong(
         db.checkpoints
-            .install(&written, &mut elsewhere, &db.segments)
+            .install(&written, LOG, &mut elsewhere, &db.segments)
             .unwrap_err(),
     );
     wrong(
         db.checkpoints
-            .install(&written, &mut db.manifest, &segments_elsewhere)
+            .install(&written, LOG, &mut db.manifest, &segments_elsewhere)
             .unwrap_err(),
     );
     wrong(db.checkpoints.manifest_replaced(&elsewhere).unwrap_err());
@@ -516,7 +580,7 @@ fn the_parts_of_another_directory_are_refused() {
     );
     assert_eq!(db.checkpoints.dir(), db_dir());
     db.checkpoints
-        .install(&written, &mut db.manifest, &db.segments)
+        .install(&written, LOG, &mut db.manifest, &db.segments)
         .unwrap();
 }
 
@@ -625,6 +689,85 @@ fn a_checkpoint_written_while_the_table_changes_holds_each_chain_as_it_once_was(
         assert_eq!(written.links(), loaded.links());
     }
     assert!(load_under(&fs, &whole).is_ok());
+}
+
+/// A page whose chain is `base(b)`, then a delta for each version up to
+/// `n`: the blocks of the page version that a reader of the newest version
+/// is given must be exactly those, with none left out.
+#[test]
+fn a_checkpoint_written_while_chains_are_consolidated_and_trimmed_holds_whole_page_versions() {
+    let fs = sim_fs(SimConfig::new(5));
+    let db = Db::create(&fs);
+    let table = PageTable::new();
+    let pages = 2 * format::LINKS_PER_RECORD as u32;
+    let block = |file: u32, raw_page: u32, born: u64| {
+        at(file, 20 + (u64::from(raw_page) * 1000 + born) * 64)
+    };
+    let born_of = |location: BlockLocation| ((location.offset - 20) / 64) % 1000;
+    for raw_page in 1..=pages {
+        table
+            .push(page(raw_page), base(0, block(1, raw_page, 0)))
+            .unwrap();
+    }
+    let done = AtomicBool::new(false);
+    let mut checkpoints = Vec::new();
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            let mut removed = Vec::new();
+            let mut born = 0;
+            while !done.load(Ordering::Acquire) && born < 900 {
+                born += 1;
+                for raw_page in (1..=pages).step_by(53) {
+                    let change = block(1, raw_page, born);
+                    table.push(page(raw_page), delta(born, change)).unwrap();
+                    if born % 3 == 0 {
+                        let image = block(2, raw_page, born);
+                        table.consolidate(page(raw_page), change, image).unwrap();
+                    }
+                    if born % 6 == 0 {
+                        table.trim(page(raw_page), version(born), &mut removed);
+                    }
+                    if born % 30 == 0 {
+                        table.push(page(raw_page), free(born)).unwrap();
+                        table.trim(page(raw_page), version(born), &mut removed);
+                        let image = block(2, raw_page, born);
+                        table.push(page(raw_page), base(born, image)).unwrap();
+                    }
+                }
+            }
+        });
+        for _ in 0..6 {
+            let started_at = table.newest(page(1)).unwrap().version;
+            let written = db.checkpoints.write(&table, started_at).unwrap();
+            checkpoints.push((started_at, written));
+        }
+        done.store(true, Ordering::Release);
+    });
+
+    let (mut consolidated, mut freed) = (0, 0);
+    for (started_at, written) in checkpoints {
+        let manifest = manifest_naming(written.named(), &[(1, u64::MAX), (2, u64::MAX)]);
+        let (loaded, _) = PageTable::load(&fs, db_dir(), &manifest).unwrap();
+        let mut newest = None;
+        for raw_page in (1..=pages).step_by(53) {
+            let Some((born, blocks)) = read_at(&loaded, raw_page, u64::MAX - 1) else {
+                freed += 1;
+                continue;
+            };
+            assert!(born.get() + 1 >= started_at.get(), "page {raw_page}");
+            let first = born_of(blocks[0]);
+            assert_eq!(blocks[0].file, id(if first == 0 { 1 } else { 2 }));
+            for (step, block) in blocks.iter().enumerate().skip(1) {
+                assert_eq!((block.file, born_of(*block)), (id(1), first + step as u64));
+            }
+            assert_eq!(born.get(), first + blocks.len() as u64 - 1);
+            consolidated += usize::from(first != 0);
+            newest = newest.max(Some(born));
+        }
+        assert!(written.reaches() >= newest);
+    }
+    println!("{consolidated} consolidated chains, {freed} pages found freed");
+    assert!(consolidated > 0);
 }
 
 #[test]

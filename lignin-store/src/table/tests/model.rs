@@ -493,7 +493,7 @@ impl Run {
                 session.written = Some(written.clone());
                 let db = &mut session.db;
                 db.checkpoints
-                    .install(&written, &mut db.manifest, &db.segments)?;
+                    .install(&written, covers, &mut db.manifest, &db.segments)?;
                 session.written = None;
                 self.model.installed();
             }

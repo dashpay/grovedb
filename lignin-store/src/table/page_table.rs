@@ -214,9 +214,14 @@ impl PageTable {
     /// Removes every link with a version above `version`, from every chain,
     /// and returns how many there were.
     ///
-    /// This is for recovery that lands on `version` with a table that
-    /// reaches further. It gives the table as of `version` only if the links
-    /// that the removed ones had replaced are still in their chains.
+    /// A recovery that lands on `version` calls this on the table it
+    /// loaded. A checkpoint is named only once the log is durable through
+    /// every link it holds ([`TableCheckpoints::install`]), so the answer
+    /// is zero. If it is not, that rule was broken, and what is left is the
+    /// table of `version` only if the links that the removed ones had
+    /// replaced were still in their chains.
+    ///
+    /// [`TableCheckpoints::install`]: super::TableCheckpoints::install
     pub fn discard_after(&self, version: CommitVersion) -> u64 {
         self.write_lock().discard_after(version)
     }

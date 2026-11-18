@@ -306,7 +306,13 @@ impl TableCheckpoints {
     /// Replaces the manifest with one that names `checkpoint`, which
     /// [`Self::write`] returned, and deletes the checkpoint it named before.
     ///
-    /// First every segment is synced, so that the blocks the checkpoint
+    /// `log_durable` is the commit version the log is durable through. The
+    /// checkpoint is refused if it covers, or holds a link of, a later
+    /// version ([`PageTableError::LogBehind`]): sync the log through
+    /// [`CheckpointInfo::reaches`] first. A recovery then never lands below
+    /// a link of the checkpoint it loads.
+    ///
+    /// Then every segment is synced, so that the blocks the checkpoint
     /// points to are durable. The new manifest names the segments as they
     /// are then ([`SegmentStore::describe`]), and it is installed only if it
     /// vouches for every block the checkpoint points to
@@ -324,11 +330,22 @@ impl TableCheckpoints {
     pub fn install(
         &self,
         checkpoint: &CheckpointInfo,
+        log_durable: CommitVersion,
         manifest: &mut ManifestStore,
         segments: &SegmentStore,
     ) -> Result<(), PageTableError> {
         self.check_same_dir(manifest.dir())?;
         self.check_same_dir(segments.dir())?;
+        let covers = checkpoint.covers();
+        let needed = checkpoint
+            .reaches()
+            .map_or(covers, |reaches| reaches.max(covers));
+        if needed > log_durable {
+            return Err(PageTableError::LogBehind {
+                needed,
+                durable: log_durable,
+            });
+        }
         segments.sync()?;
         let manifest_path = self.dir.join(ManifestStore::FILE_NAME);
         manifest.update(|current| {

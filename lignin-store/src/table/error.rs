@@ -145,6 +145,16 @@ pub enum PageTableError {
         /// The version the offered checkpoint covers.
         offered: CommitVersion,
     },
+    /// The checkpoint offered holds a link of a version, or covers a
+    /// version, that the log is not yet durable through. Naming it could
+    /// leave a recovery with a page version newer than the last commit it
+    /// finds.
+    LogBehind {
+        /// The newest version the checkpoint covers or reaches.
+        needed: CommitVersion,
+        /// The version the log is durable through.
+        durable: CommitVersion,
+    },
     /// The manifest no longer names a checkpoint, but its file could not be
     /// deleted. Everything else the call had to do was done. The deletion is
     /// tried again whenever the checkpoints are told of a manifest, and by
@@ -252,6 +262,11 @@ impl fmt::Display for PageTableError {
                 f,
                 "a checkpoint that covers version {offered} cannot replace one that covers \
                  {current}"
+            ),
+            Self::LogBehind { needed, durable } => write!(
+                f,
+                "the checkpoint needs the log durable through version {needed}, and it is \
+                 durable through {durable}"
             ),
             Self::NotDeleted { path, source } => write!(
                 f,

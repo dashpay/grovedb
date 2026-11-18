@@ -124,6 +124,14 @@ fn a_page_table_error_says_what_failed_and_where() {
             false,
         ),
         (
+            PageTableError::LogBehind {
+                needed: version(9),
+                durable: version(7),
+            },
+            "the checkpoint needs the log durable through version 9, and it is durable through 7",
+            false,
+        ),
+        (
             PageTableError::NotDeleted {
                 path: path(),
                 source: io_error(),

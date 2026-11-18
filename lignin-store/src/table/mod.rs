@@ -55,9 +55,10 @@
 //! assert_eq!(chain, [image, change]);
 //!
 //! // A checkpoint that covers version 2: it is written, and then the
-//! // manifest names it. Installing it syncs the segments first.
+//! // manifest names it. The log must be durable through every version the
+//! // checkpoint holds, here 2. Installing it syncs the segments first.
 //! let written = checkpoints.write(&table, version(2))?;
-//! checkpoints.install(&written, &mut manifest, &segments)?;
+//! checkpoints.install(&written, version(2), &mut manifest, &segments)?;
 //!
 //! // The next session loads it from the manifest.
 //! let (loaded, info) = PageTable::load(&*vfs, dir.path(), manifest.manifest()?)?;
@@ -104,7 +105,7 @@
 //! | [`PageTable::consolidate`] | consolidation | Adds a base image right after the link it was made through, which is named by its location. Later links stay in front of it. |
 //! | [`PageTable::relocate`] | the cleaner | Points one link at a copy of its block. Fails if the link is gone, so a superseded block is never brought back. |
 //! | [`PageTable::trim`] | whoever knows the oldest version a reader can ask for | Removes the links no reader at that version or later needs, and reports them. |
-//! | [`PageTable::discard_after`] | recovery | Removes the links above a version. |
+//! | [`PageTable::discard_after`] | recovery | Removes the links above a version. There are none if the log was kept ahead of the checkpoint. |
 //!
 //! The table trusts its callers on what a block holds: that a base image
 //! holds the page as its version left it, that a delta run holds every
@@ -153,9 +154,9 @@
 //! | Step | What happens |
 //! | --- | --- |
 //! | Write | [`TableCheckpoints::write`] creates `table/<id>.pt` under an id above every id used before, appends the links and the end record, and syncs the file. |
-//! | Install | [`TableCheckpoints::install`] syncs the segments, replaces the manifest with one that names the checkpoint and the segments as they are then, and deletes the checkpoint that was named before. |
+//! | Install | [`TableCheckpoints::install`] checks that the log is durable through all the checkpoint holds, syncs the segments, replaces the manifest with one that names the checkpoint and the segments as they are then, and deletes the checkpoint that was named before. |
 //!
-//! Between the two the caller can make the log durable (see below). A
+//! Between the two the caller makes the log durable (see below). A
 //! checkpoint that is written and not installed is deleted by
 //! [`TableCheckpoints::discard`], or by the next session.
 //!
@@ -194,13 +195,12 @@
 //! - It holds the directory's lock while a [`TableCheckpoints`] of the
 //!   directory exists, and opens it after the manifest.
 //! - It passes [`TableCheckpoints::write`] a version that the table covers.
-//! - It keeps the log ahead of the table. A link born at version *v* may
-//!   become durable only once the log is durable through *v*, or recovery
-//!   could land on a version below it. Either the log is synced through
-//!   [`CheckpointInfo::reaches`] between `write` and `install`, or recovery
-//!   removes the newer links with [`PageTable::discard_after`], which gives
-//!   the table of that version only if [`PageTable::trim`] has left the
-//!   links they replaced.
+//! - It keeps the log ahead of the checkpoint. Between `write` and
+//!   `install` it syncs the log through [`CheckpointInfo::reaches`], and it
+//!   tells `install` which version the log is durable through. A checkpoint
+//!   that covers or reaches a later version is refused
+//!   ([`PageTableError::LogBehind`]), because a recovery could then land
+//!   below one of its links, on a page version its chain no longer gives.
 //! - It deletes a segment, or lets the manifest name it shorter, only when
 //!   neither the table nor the checkpoint in force points into it:
 //!   [`CheckpointInfo::segments`] lists what a checkpoint points into.
