@@ -2,7 +2,7 @@ lignin-golden-trace 1
 name legacy-drop-flat-in-batch
 seed 0x0
 grove-version 1
-engine f101691960d8eb7b679f19e72853c8a04ff7502c
+engine 2a79d035167b1e484ba66d53186396057658be9f
 workload legacy-drop-flat-in-batch
 cff5creb64
   step 0
