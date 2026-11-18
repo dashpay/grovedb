@@ -15,7 +15,7 @@
 #![cfg(feature = "rocksdb_storage")]
 
 use grovedb_costs::{
-    cost_model::ledger,
+    cost_model::{ledger, StorageCostModel},
     storage_cost::{
         key_value_cost::KeyValueStorageCost,
         removal::{StorageRemovalPerEpochByIdentifier, StorageRemovedBytes},
@@ -25,7 +25,7 @@ use grovedb_costs::{
 };
 use grovedb_storage::{
     rocksdb_storage::{test_utils::TempStorage, RocksDbStorage},
-    worst_case_costs::WorstKeyLength,
+    worst_case_costs::{get_storage_context_cost, WorstKeyLength},
     Batch, Error, FlatStore, RawIterator, Storage, StorageBatch, StorageContext,
 };
 
@@ -205,7 +205,7 @@ fn the_engine_reports_what_the_model_hands_out_and_nothing_else() {
             .iter()
             .map(|segment| Longest(segment.len() as u8))
             .collect();
-        reported.cost(RocksDbStorage::get_storage_context_cost(&longest));
+        reported.cost(get_storage_context_cost(StorageCostModel::V0, &longest));
     }
     let prefix = reported.by(RocksDbStorage::build_prefix(SUBTREE.into()));
     reported.by(RocksDbStorage::secondary_prefix_for(&prefix, 1));

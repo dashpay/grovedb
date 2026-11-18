@@ -3,6 +3,7 @@
 
 use grovedb_costs::{cost_return_on_error_into_no_add, CostResult, CostsExt, OperationCost};
 use grovedb_merk::{
+    cost_model::storage_cost_model,
     estimated_costs::{
         add_cost_case_merk_insert_layered, add_cost_case_merk_patch,
         worst_case_costs::{
@@ -16,7 +17,10 @@ use grovedb_merk::{
     tree_type::{CostSize, TreeType},
     HASH_LENGTH,
 };
-use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
+use grovedb_storage::{
+    worst_case_costs::{get_storage_context_cost, WorstKeyLength},
+    Storage,
+};
 use grovedb_version::{check_grovedb_v0, check_grovedb_v0_with_cost, version::GroveVersion};
 use integer_encoding::VarInt;
 
@@ -58,7 +62,7 @@ impl GroveDb {
                 ) as u64;
             }
         }
-        *cost += S::get_storage_context_cost(path.as_vec());
+        *cost += get_storage_context_cost(storage_cost_model(grove_version), path.as_vec());
         Ok(())
     }
 
@@ -275,7 +279,7 @@ impl GroveDb {
         );
         cost.seek_count += 1;
         cost.storage_loaded_bytes += value_size as u64;
-        *cost += S::get_storage_context_cost(path.as_vec());
+        *cost += get_storage_context_cost(storage_cost_model(grove_version), path.as_vec());
         Ok(())
     }
 
@@ -364,7 +368,7 @@ impl GroveDb {
         cost.seek_count += 1 + max_references_sizes.len() as u32;
         cost.storage_loaded_bytes +=
             value_size as u64 + max_references_sizes.iter().map(|x| *x as u64).sum::<u64>();
-        *cost += S::get_storage_context_cost(path.as_vec());
+        *cost += get_storage_context_cost(storage_cost_model(grove_version), path.as_vec());
         Ok(())
     }
 }

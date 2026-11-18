@@ -23,7 +23,6 @@ use crate::{
     error::Error,
     flat::{pending_prefix_drops_namespace, PendingPrefixDropRecord, PendingPrefixDrops},
     storage::AbstractBatchOperation,
-    worst_case_costs::WorstKeyLength,
     Storage, StorageBatch,
 };
 
@@ -555,16 +554,6 @@ impl<'db> Storage<'db> for RocksDbStorage {
             cost_return_on_error!(&mut cost, self.build_write_batch(batch));
         self.commit_db_write_batch(db_batch, pending_costs, transaction)
             .add_cost(cost)
-    }
-
-    fn get_storage_context_cost<L: WorstKeyLength>(path: &[L]) -> OperationCost {
-        if path.is_empty() {
-            OperationCost::default()
-        } else {
-            let (body_len, _) =
-                rules::prefix_body_len(path.iter().map(|segment| segment.max_length() as usize));
-            OperationCost::with_hash_node_calls(rules::blake3_blocks(body_len))
-        }
     }
 
     fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {

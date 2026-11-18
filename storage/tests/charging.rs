@@ -476,6 +476,7 @@ fn the_storage_crate_charges_only_through_the_cost_model() {
         "rocksdb_storage/storage_context/raw_iterator.rs",
         "flat.rs",
         "storage.rs",
+        "worst_case_costs.rs",
         TESTS,
     ] {
         assert!(files.contains(&expected), "{expected} was not read");
