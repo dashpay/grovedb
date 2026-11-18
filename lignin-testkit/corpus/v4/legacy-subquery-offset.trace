@@ -2,7 +2,7 @@ lignin-golden-trace 1
 name legacy-subquery-offset
 seed 0x0
 grove-version 4
-engine 22f163c2b82d9bc5c985a77034529a32ef9a7c04
+engine f101691960d8eb7b679f19e72853c8a04ff7502c
 workload legacy-subquery-offset
 cff5creb64
   step 0

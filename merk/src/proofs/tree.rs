@@ -13,9 +13,9 @@ use grovedb_costs::{
 use super::{Node, Op};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::tree::{
-    combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, node_hash_with_count,
-    node_hash_with_count_and_big_sum, node_hash_with_count_and_sum, node_hash_with_sum, value_hash,
-    NULL_HASH,
+    combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, node_hash_with_big_sum,
+    node_hash_with_count, node_hash_with_count_and_big_sum, node_hash_with_count_and_sum,
+    node_hash_with_sum, value_hash, NULL_HASH,
 };
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::{
@@ -71,6 +71,7 @@ impl Child {
                 key.as_slice(),
                 AggregateData::ProvableCountAndProvableBigSum(*count, *sum),
             ),
+            Node::KVBigSum(key, _, sum) => (key.as_slice(), AggregateData::ProvableBigSum(*sum)),
             // for the connection between the trunk and leaf chunks, we don't
             // have the child key so we must first write in an empty one. once
             // the leaf gets verified, we can write in this key to its parent
@@ -161,16 +162,6 @@ impl Tree {
                 kv_digest_to_kv_hash(key.as_slice(), value_hash)
                     .flat_map(|kv_hash| compute_hash(self, kv_hash))
             }
-            Node::KVBackwardsReferencesValueHash(key, value, backrefs_hash) => {
-                // The node's value hash is combine(H(stripped_value),
-                // backrefs_hash) and we RECOMPUTE it here, so the payload
-                // bytes are bound by the proof (unlike KVValueHash, whose
-                // bytes ride on trust in the carried hash).
-                value_hash(value.as_slice())
-                    .flat_map(|inner| combine_hash(&inner, backrefs_hash))
-                    .flat_map(|vh| kv_digest_to_kv_hash(key.as_slice(), &vh))
-                    .flat_map(|kv_hash| compute_hash(self, kv_hash))
-            }
             Node::KVValueHashFeatureType(key, _, value_hash, feature_type)
             | Node::KVValueHashFeatureTypeWithChildHash(key, _, value_hash, feature_type, _) => {
                 // Note: Same as KVValueHash - cannot verify hash(value) == value_hash
@@ -222,6 +213,12 @@ impl Tree {
                             &self.child_hash(true),
                             &self.child_hash(false),
                             *count,
+                            *sum,
+                        ),
+                        TreeFeatureType::ProvableBigSummedMerkNode(sum) => node_hash_with_big_sum(
+                            &kv_hash,
+                            &self.child_hash(true),
+                            &self.child_hash(false),
                             *sum,
                         ),
                         _ => compute_hash(self, kv_hash),
@@ -330,6 +327,58 @@ impl Tree {
                         *sum,
                     )
                 })
+            }
+            // ProvableBigSumTree proof-node hash dispatch: all five variants
+            // pipe through `node_hash_with_big_sum`, the hash
+            // `Tree::hash_for_link` and the commit path use for
+            // `TreeType::ProvableBigSumTree`.
+            Node::HashWithBigSum(kv_hash, left_child_hash, right_child_hash, sum) => {
+                node_hash_with_big_sum(kv_hash, left_child_hash, right_child_hash, *sum)
+            }
+            Node::KVBigSum(key, value, sum) => {
+                kv_hash(key.as_slice(), value.as_slice()).flat_map(|kv_hash| {
+                    node_hash_with_big_sum(
+                        &kv_hash,
+                        &self.child_hash(true),
+                        &self.child_hash(false),
+                        *sum,
+                    )
+                })
+            }
+            Node::KVHashBigSum(kv_hash, sum) => node_hash_with_big_sum(
+                kv_hash,
+                &self.child_hash(true),
+                &self.child_hash(false),
+                *sum,
+            ),
+            Node::KVDigestBigSum(key, value_hash, sum) => kv_digest_to_kv_hash(key, value_hash)
+                .flat_map(|kv_hash| {
+                    node_hash_with_big_sum(
+                        &kv_hash,
+                        &self.child_hash(true),
+                        &self.child_hash(false),
+                        *sum,
+                    )
+                }),
+            Node::KVRefValueHashBigSum(key, referenced_value, node_value_hash, sum) => {
+                let mut cost = OperationCost::default();
+                let referenced_value_hash =
+                    value_hash(referenced_value.as_slice()).unwrap_add_cost(&mut cost);
+                let combined_value_hash = combine_hash(node_value_hash, &referenced_value_hash)
+                    .unwrap_add_cost(&mut cost);
+
+                // The cost includes hashing the referenced value and
+                // combining it with the node's value hash.
+                kv_digest_to_kv_hash(key.as_slice(), &combined_value_hash)
+                    .flat_map(|kv_hash| {
+                        node_hash_with_big_sum(
+                            &kv_hash,
+                            &self.child_hash(true),
+                            &self.child_hash(false),
+                            *sum,
+                        )
+                    })
+                    .add_cost(cost)
             }
             // ProvableCountProvableSumTree proof-node hash dispatch — all
             // five variants pipe through `node_hash_with_count_and_sum`,
@@ -573,6 +622,7 @@ impl Tree {
             Node::Hash(_)
                 | Node::HashWithCount(..)
                 | Node::HashWithSum(..)
+                | Node::HashWithBigSum(..)
                 | Node::HashWithCountAndSum(..)
                 | Node::HashWithCountAndBigSum(..)
         )
@@ -658,7 +708,6 @@ impl Tree {
         match &self.node {
             Node::KV(key, _)
             | Node::KVValueHash(key, ..)
-            | Node::KVBackwardsReferencesValueHash(key, ..)
             | Node::KVRefValueHash(key, ..)
             | Node::KVValueHashFeatureType(key, ..)
             | Node::KVValueHashFeatureTypeWithChildHash(key, ..)
@@ -667,8 +716,11 @@ impl Tree {
             | Node::KVCount(key, ..)
             | Node::KVRefValueHashCount(key, ..)
             | Node::KVSum(key, ..)
+            | Node::KVBigSum(key, ..)
             | Node::KVDigestSum(key, ..)
+            | Node::KVDigestBigSum(key, ..)
             | Node::KVRefValueHashSum(key, ..)
+            | Node::KVRefValueHashBigSum(key, ..)
             | Node::KVCountBigSum(key, ..)
             | Node::KVCountSum(key, ..)
             | Node::KVDigestCountBigSum(key, ..)
@@ -681,7 +733,9 @@ impl Tree {
             | Node::KVHashCount(..)
             | Node::HashWithCount(..)
             | Node::KVHashSum(..)
+            | Node::KVHashBigSum(..)
             | Node::HashWithSum(..)
+            | Node::HashWithBigSum(..)
             | Node::KVHashCountBigSum(..)
             | Node::KVHashCountSum(..)
             | Node::HashWithCountAndBigSum(..)
@@ -717,6 +771,9 @@ impl Tree {
             Node::HashWithCountAndBigSum(.., count, sum) => {
                 Ok(AggregateData::ProvableCountAndProvableBigSum(*count, *sum))
             }
+            // ProvableBigSumTree proof nodes map to ProvableBigSum.
+            Node::KVBigSum(_, _, sum) => Ok(AggregateData::ProvableBigSum(*sum)),
+            Node::HashWithBigSum(.., sum) => Ok(AggregateData::ProvableBigSum(*sum)),
             Node::KV(..) | Node::KVValueHash(..) => Ok(AggregateData::NoAggregateData),
             _ => Err(Error::InvalidProofError(
                 "Cannot extract aggregate data from this node type".to_string(),
@@ -953,15 +1010,17 @@ where
                 | Node::KVDigest(key, _)
                 | Node::KVDigestCount(key, ..)
                 | Node::KVSum(key, ..)
+                | Node::KVBigSum(key, ..)
                 | Node::KVDigestSum(key, ..)
+                | Node::KVDigestBigSum(key, ..)
                 | Node::KVRefValueHashSum(key, ..)
+                | Node::KVRefValueHashBigSum(key, ..)
                 | Node::KVCountBigSum(key, ..)
                 | Node::KVCountSum(key, ..)
                 | Node::KVDigestCountBigSum(key, ..)
                 | Node::KVDigestCountSum(key, ..)
                 | Node::KVRefValueHashCountBigSum(key, ..)
-                | Node::KVRefValueHashCountSum(key, ..)
-                | Node::KVBackwardsReferencesValueHash(key, ..) = &node
+                | Node::KVRefValueHashCountSum(key, ..) = &node
                 {
                     // keys should always increase
                     if let Some(last_key) = &maybe_last_key
@@ -1001,15 +1060,17 @@ where
                 | Node::KVDigest(key, _)
                 | Node::KVDigestCount(key, ..)
                 | Node::KVSum(key, ..)
+                | Node::KVBigSum(key, ..)
                 | Node::KVDigestSum(key, ..)
+                | Node::KVDigestBigSum(key, ..)
                 | Node::KVRefValueHashSum(key, ..)
+                | Node::KVRefValueHashBigSum(key, ..)
                 | Node::KVCountBigSum(key, ..)
                 | Node::KVCountSum(key, ..)
                 | Node::KVDigestCountBigSum(key, ..)
                 | Node::KVDigestCountSum(key, ..)
                 | Node::KVRefValueHashCountBigSum(key, ..)
-                | Node::KVRefValueHashCountSum(key, ..)
-                | Node::KVBackwardsReferencesValueHash(key, ..) = &node
+                | Node::KVRefValueHashCountSum(key, ..) = &node
                 {
                     // keys should always decrease
                     if let Some(last_key) = &maybe_last_key
@@ -1188,53 +1249,6 @@ mod test {
             assert_node(iter.next().unwrap(), i);
         }
         assert!(iter.next().is_none());
-    }
-
-    #[test]
-    fn backwards_references_nodes_enforce_key_ordering() {
-        // Regression: `KVBackwardsReferencesValueHash` carries a key and
-        // must participate in the Push/PushInverted ordering checks —
-        // otherwise a malicious proof could push an authenticated parent
-        // before its real left child (attached via ChildInverted) and
-        // make an exact query for the child read as absent while the
-        // reconstructed root still matches.
-        let parent_before_child = vec![
-            Op::Push(Node::KVBackwardsReferencesValueHash(
-                vec![2],
-                vec![2],
-                [0; 32],
-            )),
-            Op::Push(Node::KVBackwardsReferencesValueHash(
-                vec![1],
-                vec![1],
-                [0; 32],
-            )),
-            Op::ChildInverted,
-        ];
-        let result = execute(parent_before_child.into_iter().map(Ok), false, |_| Ok(())).unwrap();
-        assert!(
-            matches!(result, Err(Error::InvalidProofError(ref s)) if s.contains("ordering")),
-            "got: {result:?}"
-        );
-
-        let inverted_wrong_order = vec![
-            Op::PushInverted(Node::KVBackwardsReferencesValueHash(
-                vec![1],
-                vec![1],
-                [0; 32],
-            )),
-            Op::PushInverted(Node::KVBackwardsReferencesValueHash(
-                vec![2],
-                vec![2],
-                [0; 32],
-            )),
-            Op::Child,
-        ];
-        let result = execute(inverted_wrong_order.into_iter().map(Ok), false, |_| Ok(())).unwrap();
-        assert!(
-            matches!(result, Err(Error::InvalidProofError(ref s)) if s.contains("ordering")),
-            "got: {result:?}"
-        );
     }
 
     #[test]

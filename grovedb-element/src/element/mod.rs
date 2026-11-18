@@ -151,19 +151,19 @@ pub enum Element {
     /// at construction and at deserialization.
     NonCounted(Box<Element>),
     /// Not-summed wrapper: contains a sum-bearing tree variant (`SumTree`,
-    /// `BigSumTree`, `CountSumTree`, `ProvableCountSumTree`,
-    /// `ProvableSumTree`, `ProvableCountProvableSumTree`) and behaves
+    /// `BigSumTree`, `CountSumTree`, `CountBigSumTree`,
+    /// `ProvableCountSumTree`, `ProvableSumTree`, `ProvableBigSumTree`,
+    /// `ProvableCountProvableSumTree`, `ProvableCountProvableBigSumTree`)
+    /// and behaves
     /// identically to it for storage, hashing, and its own internal sum
     /// aggregate, but contributes 0 to its parent sum tree's running sum
     /// when inserted. Counts still propagate.
     ///
-    /// May only be inserted into sum-bearing trees (`SumTree`, `BigSumTree`,
-    /// `CountSumTree`, `ProvableCountSumTree`, `ProvableSumTree`,
-    /// `ProvableCountProvableSumTree`).
+    /// May only be inserted into sum-bearing trees (the same variants).
     ///
     /// Invariants (enforced at construction, serialization, and
     /// deserialization):
-    /// - The inner element MUST be one of the six sum-bearing tree variants
+    /// - The inner element MUST be one of the sum-bearing tree variants
     ///   above.
     /// - A `NotSummed` may not wrap another `NotSummed`, a `NonCounted`,
     ///   a `NotCountedOrSummed`, or any non-tree element.
@@ -175,9 +175,10 @@ pub enum Element {
     /// aggregates, but contributes 0 to BOTH its parent's running sum AND
     /// the parent's count when inserted.
     ///
-    /// May only be inserted into `CountSumTree` — the only non-provable
-    /// count-AND-sum-bearing tree, where suppressing both axes is
-    /// meaningful and the parent count is NOT cryptographically committed.
+    /// May only be inserted into `CountSumTree` or `CountBigSumTree`, the
+    /// non-provable count-AND-sum-bearing trees, where suppressing both
+    /// axes is meaningful and the parent count is NOT cryptographically
+    /// committed.
     /// `ProvableCountSumTree` and `ProvableCountProvableSumTree` are
     /// rejected for the same reason as in `NonCounted`: their count
     /// (and, for PCPS, sum) is bound into every node hash, so a
@@ -194,8 +195,8 @@ pub enum Element {
     ///
     /// Invariants (enforced at construction, serialization, and
     /// deserialization):
-    /// - The inner element MUST be one of the six sum-bearing tree variants
-    ///   above.
+    /// - The inner element MUST be one of the sum-bearing tree variants
+    ///   `NotSummed` accepts.
     /// - A `NotCountedOrSummed` may not wrap any other wrapper or any
     ///   non-tree element.
     NotCountedOrSummed(Box<Element>),
@@ -352,27 +353,27 @@ pub enum Element {
     /// Variant order in this enum determines bincode's variant-index
     /// encoding on disk. This variant gets index 24.
     PrivateDocumentStore(u64, u32, u8, Option<ElementFlags>),
-    /// A reference that registers itself in its target's backward-reference
-    /// meta storage, so target updates propagate back along the chain (or
-    /// cascade-delete it). Resolves like `Reference` on reads. May only
+    /// A reference that registers itself in its target's referrer list, so
+    /// target updates propagate back along the chain (or cascade-delete
+    /// it). Resolves like `Reference` on reads. May only
     /// target elements with backward-reference support
     /// (`ItemWithBackwardsReferences`, `SumItemWithBackwardsReferences`,
     /// or another `BidirectionalReference`).
     ///
     /// May not be wrapped in `NonCounted` / `NotSummed` /
-    /// `NotCountedOrSummed`, and is rejected by `apply_batch` (batch
-    /// support for backward-reference propagation is not implemented yet).
+    /// `NotCountedOrSummed`. Written directly or in a batch from
+    /// `GROVE_V4`; earlier versions refuse it.
     ///
     /// Discriminant 25.
     BidirectionalReference(BidirectionalReference, Option<ElementFlags>),
     /// An ordinary value that supports being targeted by bidirectional
-    /// references: up to 32 backward references are carried ON the element
-    /// and covered by the node hash through the two-layer scheme described
-    /// in [`crate::bidirectional_reference`]. Behaves like `Item` in every
+    /// references: its backward references are carried ON the element and
+    /// stay outside the node hash, as described in
+    /// [`crate::bidirectional_reference`]. Behaves like `Item` in every
     /// other way; readers and proofs see the stripped (inner) form.
     ///
-    /// May not be wrapped in the aggregation wrappers and is rejected by
-    /// `apply_batch` (same reason as `BidirectionalReference`).
+    /// May not be wrapped in the aggregation wrappers. Written directly or
+    /// in a batch from `GROVE_V4`; earlier versions refuse it.
     ///
     /// Discriminant 26.
     ItemWithBackwardsReferences(
@@ -384,8 +385,8 @@ pub enum Element {
     /// being targeted by bidirectional references. Behaves like `SumItem`
     /// in every other way.
     ///
-    /// May not be wrapped in the aggregation wrappers and is rejected by
-    /// `apply_batch` (same reason as `BidirectionalReference`).
+    /// May not be wrapped in the aggregation wrappers. Written directly or
+    /// in a batch from `GROVE_V4`; earlier versions refuse it.
     ///
     /// Discriminant 27.
     SumItemWithBackwardsReferences(
@@ -397,12 +398,12 @@ pub enum Element {
     /// `ItemWithSumItem`) AND supports being targeted by bidirectional
     /// references. The sum contributes to sum-bearing parents exactly as
     /// `ItemWithSumItem`'s does; the referrer list is carried ON the
-    /// element and covered by the node hash through the two-layer scheme
-    /// described in [`crate::bidirectional_reference`]. Readers and proofs
-    /// see the stripped (inner) form.
+    /// element and stays outside the node hash, as described in
+    /// [`crate::bidirectional_reference`]. Readers and proofs see the
+    /// stripped (inner) form.
     ///
-    /// May not be wrapped in the aggregation wrappers and is rejected by
-    /// `apply_batch` (same reason as `BidirectionalReference`).
+    /// May not be wrapped in the aggregation wrappers. Written directly or
+    /// in a batch from `GROVE_V4`; earlier versions refuse it.
     ///
     /// Discriminant 28.
     ItemWithSumItemWithBackwardsReferences(
@@ -427,6 +428,31 @@ pub enum Element {
         BigSumValue,
         Option<ElementFlags>,
     ),
+    /// A tree that keeps its element count and a 128-bit sum in the
+    /// element, not in node hashes: the wide counterpart of `CountSumTree`,
+    /// for sums that can pass the i64 range. Like `CountSumTree` it accepts
+    /// `NonCounted`, `NotSummed` and `NotCountedOrSummed` children. The
+    /// trees with a provable count refuse the two that leave a child out of
+    /// the count (`NonCounted`, `NotCountedOrSummed`).
+    ///
+    /// Fields: `(root_key, count, big_sum, flags)`.
+    ///
+    /// Discriminant 30.
+    CountBigSumTree(
+        Option<Vec<u8>>,
+        CountValue,
+        BigSumValue,
+        Option<ElementFlags>,
+    ),
+    /// A tree that bakes a 128-bit sum into every node hash and keeps no
+    /// count: the wide counterpart of `ProvableSumTree`, for sums that can
+    /// pass the i64 range. Children contribute to the sum exactly as they
+    /// would to a `BigSumTree`.
+    ///
+    /// Fields: `(root_key, big_sum, flags)`.
+    ///
+    /// Discriminant 31.
+    ProvableBigSumTree(Option<Vec<u8>>, BigSumValue, Option<ElementFlags>),
 }
 
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {
@@ -744,6 +770,29 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
+            Element::CountBigSumTree(root_key, count_value, sum_value, flags) => {
+                write!(
+                    f,
+                    "CountBigSumTree({}, {}, {}{})",
+                    root_key.as_ref().map_or("None".to_string(), hex::encode),
+                    count_value,
+                    sum_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
+            Element::ProvableBigSumTree(root_key, sum_value, flags) => {
+                write!(
+                    f,
+                    "ProvableBigSumTree({}, {}{})",
+                    root_key.as_ref().map_or("None".to_string(), hex::encode),
+                    sum_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
             Element::NotCountedOrSummed(inner) => {
                 write!(f, "NotCountedOrSummed({})", inner)
             }
@@ -843,6 +892,8 @@ impl Element {
             Element::ProvableCountProvableBigSumTree(..) => {
                 ElementType::ProvableCountProvableBigSumTree
             }
+            Element::CountBigSumTree(..) => ElementType::CountBigSumTree,
+            Element::ProvableBigSumTree(..) => ElementType::ProvableBigSumTree,
             Element::ReferenceWithSumItem(..) => ElementType::ReferenceWithSumItem,
             Element::ProvableSumIndexedTree(..) => ElementType::ProvableSumIndexedTree,
             Element::ProvableCountIndexedTree(..) => ElementType::ProvableCountIndexedTree,
@@ -894,6 +945,8 @@ impl Element {
                 ElementType::ProvableCountProvableBigSumTree => {
                     ElementType::NonCountedProvableCountProvableBigSumTree
                 }
+                ElementType::CountBigSumTree => ElementType::NonCountedCountBigSumTree,
+                ElementType::ProvableBigSumTree => ElementType::NonCountedProvableBigSumTree,
                 // Inner is always a base type — nested wrappers are
                 // forbidden at construction and (de)serialization.
                 already_non_counted => already_non_counted,
@@ -910,7 +963,9 @@ impl Element {
                 ElementType::ProvableCountProvableBigSumTree => {
                     ElementType::NotSummedProvableCountProvableBigSumTree
                 }
-                // Inner is always one of the seven sum-tree variants above —
+                ElementType::CountBigSumTree => ElementType::NotSummedCountBigSumTree,
+                ElementType::ProvableBigSumTree => ElementType::NotSummedProvableBigSumTree,
+                // Inner is always one of the nine sum-tree variants above —
                 // construction and (de)serialization forbid anything else.
                 // Returning the inner type is the safest fallback for the
                 // unreachable case.
@@ -930,7 +985,11 @@ impl Element {
                 ElementType::ProvableCountProvableBigSumTree => {
                     ElementType::NotCountedOrSummedProvableCountProvableBigSumTree
                 }
-                // Inner is always one of the 7 sum-tree variants above —
+                ElementType::CountBigSumTree => ElementType::NotCountedOrSummedCountBigSumTree,
+                ElementType::ProvableBigSumTree => {
+                    ElementType::NotCountedOrSummedProvableBigSumTree
+                }
+                // Inner is always one of the 9 sum-tree variants above —
                 // see comment on the NotSummed arm above.
                 other => other,
             },
@@ -1016,15 +1075,18 @@ impl Element {
                 Element::SumTree(..)
                 | Element::BigSumTree(..)
                 | Element::CountSumTree(..)
+                | Element::CountBigSumTree(..)
                 | Element::ProvableCountSumTree(..)
                 | Element::ProvableSumTree(..)
+                | Element::ProvableBigSumTree(..)
                 | Element::ProvableCountProvableSumTree(..)
                 | Element::ProvableCountProvableBigSumTree(..) => {}
                 _ => {
                     return Err(crate::error::ElementError::InvalidInput(
                         "NotSummed inner element must be a sum-tree variant (SumTree, \
-                         BigSumTree, CountSumTree, ProvableCountSumTree, ProvableSumTree, \
-                         ProvableCountProvableSumTree, or ProvableCountProvableBigSumTree)",
+                         BigSumTree, CountSumTree, CountBigSumTree, ProvableCountSumTree, \
+                         ProvableSumTree, ProvableBigSumTree, ProvableCountProvableSumTree, \
+                         or ProvableCountProvableBigSumTree)",
                     ));
                 }
             },
@@ -1032,16 +1094,18 @@ impl Element {
                 Element::SumTree(..)
                 | Element::BigSumTree(..)
                 | Element::CountSumTree(..)
+                | Element::CountBigSumTree(..)
                 | Element::ProvableCountSumTree(..)
                 | Element::ProvableSumTree(..)
+                | Element::ProvableBigSumTree(..)
                 | Element::ProvableCountProvableSumTree(..)
                 | Element::ProvableCountProvableBigSumTree(..) => {}
                 _ => {
                     return Err(crate::error::ElementError::InvalidInput(
                         "NotCountedOrSummed inner element must be a sum-bearing tree variant \
-                         (SumTree, BigSumTree, CountSumTree, ProvableCountSumTree, \
-                         ProvableSumTree, ProvableCountProvableSumTree, or \
-                         ProvableCountProvableBigSumTree)",
+                         (SumTree, BigSumTree, CountSumTree, CountBigSumTree, \
+                         ProvableCountSumTree, ProvableSumTree, ProvableBigSumTree, \
+                         ProvableCountProvableSumTree, or ProvableCountProvableBigSumTree)",
                     ));
                 }
             },
@@ -1166,6 +1230,13 @@ mod serde_impl {
             BigSumValue,
             Option<ElementFlags>,
         ),
+        CountBigSumTree(
+            Option<Vec<u8>>,
+            CountValue,
+            BigSumValue,
+            Option<ElementFlags>,
+        ),
+        ProvableBigSumTree(Option<Vec<u8>>, BigSumValue, Option<ElementFlags>),
     }
 
     // An uninhabited wrapper payload makes a second wrapper impossible to
@@ -1260,6 +1331,8 @@ mod serde_impl {
                 ElementShadow::ProvableCountProvableBigSumTree(k, c, s, f) => {
                     Element::ProvableCountProvableBigSumTree(k, c, s, f)
                 }
+                ElementShadow::CountBigSumTree(k, c, s, f) => Element::CountBigSumTree(k, c, s, f),
+                ElementShadow::ProvableBigSumTree(k, s, f) => Element::ProvableBigSumTree(k, s, f),
             }
         }
     }

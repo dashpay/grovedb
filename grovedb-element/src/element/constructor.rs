@@ -645,6 +645,78 @@ impl Element {
         Element::ProvableCountProvableBigSumTree(maybe_root_key, count_value, big_sum_value, flags)
     }
 
+    /// Set element to default empty count big sum tree without flags.
+    ///
+    /// `CountBigSumTree` is the wide counterpart of `CountSumTree`: it keeps
+    /// a count and a 128-bit sum in the element, not in node hashes.
+    pub fn empty_count_big_sum_tree() -> Self {
+        Element::new_count_big_sum_tree(Default::default())
+    }
+
+    /// Set element to default empty count big sum tree with flags.
+    pub fn empty_count_big_sum_tree_with_flags(flags: Option<ElementFlags>) -> Self {
+        Element::new_count_big_sum_tree_with_flags(Default::default(), flags)
+    }
+
+    /// Set element to a count big sum tree without flags.
+    pub fn new_count_big_sum_tree(maybe_root_key: Option<Vec<u8>>) -> Self {
+        Element::CountBigSumTree(maybe_root_key, 0, 0, None)
+    }
+
+    /// Set element to a count big sum tree with flags.
+    pub fn new_count_big_sum_tree_with_flags(
+        maybe_root_key: Option<Vec<u8>>,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::CountBigSumTree(maybe_root_key, 0, 0, flags)
+    }
+
+    /// Set element to a count big sum tree with flags, count, and big sum
+    /// value.
+    pub fn new_count_big_sum_tree_with_flags_and_sum_and_count_value(
+        maybe_root_key: Option<Vec<u8>>,
+        count_value: CountValue,
+        big_sum_value: BigSumValue,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::CountBigSumTree(maybe_root_key, count_value, big_sum_value, flags)
+    }
+
+    /// Set element to default empty provable big sum tree without flags.
+    ///
+    /// `ProvableBigSumTree` is the wide counterpart of `ProvableSumTree`: it
+    /// bakes a 128-bit per-node sum into the node hash.
+    pub fn empty_provable_big_sum_tree() -> Self {
+        Element::new_provable_big_sum_tree(Default::default())
+    }
+
+    /// Set element to default empty provable big sum tree with flags.
+    pub fn empty_provable_big_sum_tree_with_flags(flags: Option<ElementFlags>) -> Self {
+        Element::new_provable_big_sum_tree_with_flags(Default::default(), flags)
+    }
+
+    /// Set element to a provable big sum tree without flags.
+    pub fn new_provable_big_sum_tree(maybe_root_key: Option<Vec<u8>>) -> Self {
+        Element::ProvableBigSumTree(maybe_root_key, 0, None)
+    }
+
+    /// Set element to a provable big sum tree with flags.
+    pub fn new_provable_big_sum_tree_with_flags(
+        maybe_root_key: Option<Vec<u8>>,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::ProvableBigSumTree(maybe_root_key, 0, flags)
+    }
+
+    /// Set element to a provable big sum tree with flags and big sum value.
+    pub fn new_provable_big_sum_tree_with_flags_and_sum_value(
+        maybe_root_key: Option<Vec<u8>>,
+        big_sum_value: BigSumValue,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::ProvableBigSumTree(maybe_root_key, big_sum_value, flags)
+    }
+
     /// Set element to an empty commitment tree.
     ///
     /// Returns `InvalidInput` if `chunk_power > 31`.
@@ -1002,9 +1074,11 @@ impl Element {
     /// parent sum tree's running sum when inserted. Counts (if any) still
     /// propagate.
     ///
-    /// Only the six sum-bearing tree variants are accepted: `SumTree`,
-    /// `BigSumTree`, `CountSumTree`, `ProvableCountSumTree`,
-    /// `ProvableSumTree`, `ProvableCountProvableSumTree`. Any other
+    /// Only the sum-bearing tree variants are accepted: `SumTree`,
+    /// `BigSumTree`, `CountSumTree`, `CountBigSumTree`,
+    /// `ProvableCountSumTree`, `ProvableSumTree`, `ProvableBigSumTree`,
+    /// `ProvableCountProvableSumTree`, `ProvableCountProvableBigSumTree`.
+    /// Any other
     /// element — including items, sum items, references, non-sum trees, and
     /// any wrapper (`NonCounted`, `NotSummed`, `NotCountedOrSummed`) — is
     /// rejected with `InvalidInput`.
@@ -1013,16 +1087,19 @@ impl Element {
             Element::SumTree(..)
             | Element::BigSumTree(..)
             | Element::CountSumTree(..)
+            | Element::CountBigSumTree(..)
             | Element::ProvableCountSumTree(..)
             | Element::ProvableSumTree(..)
+            | Element::ProvableBigSumTree(..)
             | Element::ProvableCountProvableSumTree(..)
             | Element::ProvableCountProvableBigSumTree(..) => {
                 Ok(Element::NotSummed(Box::new(inner)))
             }
             _ => Err(ElementError::InvalidInput(
                 "NotSummed inner element must be a sum-tree variant (SumTree, BigSumTree, \
-                 CountSumTree, ProvableCountSumTree, ProvableSumTree, \
-                 ProvableCountProvableSumTree, or ProvableCountProvableBigSumTree)",
+                 CountSumTree, CountBigSumTree, ProvableCountSumTree, ProvableSumTree, \
+                 ProvableBigSumTree, ProvableCountProvableSumTree, or \
+                 ProvableCountProvableBigSumTree)",
             )),
         }
     }
@@ -1055,14 +1132,17 @@ impl Element {
     /// to BOTH its parent's running sum AND its parent's count when
     /// inserted.
     ///
-    /// Only the six sum-bearing tree variants are accepted: `SumTree`,
-    /// `BigSumTree`, `CountSumTree`, `ProvableCountSumTree`,
-    /// `ProvableSumTree`, `ProvableCountProvableSumTree`. Any other
+    /// Only the sum-bearing tree variants are accepted: `SumTree`,
+    /// `BigSumTree`, `CountSumTree`, `CountBigSumTree`,
+    /// `ProvableCountSumTree`, `ProvableSumTree`, `ProvableBigSumTree`,
+    /// `ProvableCountProvableSumTree`, `ProvableCountProvableBigSumTree`.
+    /// Any other
     /// element — including items, sum items, references, non-sum trees, and
     /// any wrapper (`NonCounted`, `NotSummed`, `NotCountedOrSummed`) — is
     /// rejected with `InvalidInput`.
     ///
-    /// Note: at insert time the parent must be `CountSumTree`. Provable
+    /// Note: at insert time the parent must be `CountSumTree` or
+    /// `CountBigSumTree`. Provable
     /// count-and-sum parents (`ProvableCountSumTree`,
     /// `ProvableCountProvableSumTree`) reject the wrapper at the
     /// merk-layer insert guard — they cryptographically commit the
@@ -1073,16 +1153,19 @@ impl Element {
             Element::SumTree(..)
             | Element::BigSumTree(..)
             | Element::CountSumTree(..)
+            | Element::CountBigSumTree(..)
             | Element::ProvableCountSumTree(..)
             | Element::ProvableSumTree(..)
+            | Element::ProvableBigSumTree(..)
             | Element::ProvableCountProvableSumTree(..)
             | Element::ProvableCountProvableBigSumTree(..) => {
                 Ok(Element::NotCountedOrSummed(Box::new(inner)))
             }
             _ => Err(ElementError::InvalidInput(
                 "NotCountedOrSummed inner element must be a sum-bearing tree variant (SumTree, \
-                 BigSumTree, CountSumTree, ProvableCountSumTree, ProvableSumTree, \
-                 ProvableCountProvableSumTree, or ProvableCountProvableBigSumTree)",
+                 BigSumTree, CountSumTree, CountBigSumTree, ProvableCountSumTree, \
+                 ProvableSumTree, ProvableBigSumTree, ProvableCountProvableSumTree, or \
+                 ProvableCountProvableBigSumTree)",
             )),
         }
     }

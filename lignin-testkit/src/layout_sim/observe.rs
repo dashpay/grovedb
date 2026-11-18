@@ -14,6 +14,13 @@
 //! across Merks. The records the walk reads are therefore exactly the node
 //! records the write changed, which are the ones Merk handed to storage.
 //!
+//! One part of a record is in no hash: the referrer list of an element that
+//! takes backward references. Registering or removing a referrer changes the
+//! record of the target and leaves its hash, and every hash above it, as it
+//! was. The diff cannot reach such a record, so after the walk the observer
+//! reads again each record that carries a referrer list and that the walk
+//! did not report.
+//!
 //! A node is found deleted when it was the child of a changed node and the
 //! walk did not meet it again anywhere in its tree.
 //!
@@ -22,7 +29,7 @@
 //! reported like those of a dropped Merk. The records cannot tell a clear
 //! from a batch that deletes every key, and the first is the usual one.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use grovedb::{Element, GroveDb, Transaction};
 use grovedb_merk::{
@@ -49,6 +56,8 @@ pub struct Observer {
     grove: Grove,
     grove_version: &'static GroveVersion,
     observations: u32,
+    /// The nodes whose element carries a referrer list.
+    with_referrer_list: BTreeSet<NodeId>,
 }
 
 impl Observer {
@@ -58,6 +67,7 @@ impl Observer {
             grove: Grove::new(),
             grove_version,
             observations: 0,
+            with_referrer_list: BTreeSet::new(),
         }
     }
 
@@ -84,12 +94,14 @@ impl Observer {
             storage: db.raw_storage(),
             transaction,
             grove: &mut self.grove,
+            with_referrer_list: &mut self.with_referrer_list,
             grove_version: self.grove_version,
             observation: self.observations,
             changes: ChangeSet::default(),
             old_roots: Vec::new(),
         };
         walk.merk(MerkId::ROOT, root_key.as_deref());
+        walk.referrer_lists();
         let Walk {
             mut changes,
             old_roots,
@@ -244,6 +256,7 @@ struct Walk<'a, 'db> {
     storage: &'db RocksDbStorage,
     transaction: &'db Transaction<'db>,
     grove: &'a mut Grove,
+    with_referrer_list: &'a mut BTreeSet<NodeId>,
     grove_version: &'static GroveVersion,
     observation: u32,
     changes: ChangeSet,
@@ -334,6 +347,20 @@ impl<'db> Walk<'_, 'db> {
             node.parent = parent;
             return id;
         }
+        self.read(context, merk, key, link_hash, parent, candidates)
+    }
+
+    /// Reads the record under `key` and brings its node up to date.
+    fn read(
+        &mut self,
+        context: &Context<'db>,
+        merk: MerkId,
+        key: &[u8],
+        link_hash: Option<&[u8; 32]>,
+        parent: Option<NodeId>,
+        candidates: &mut Vec<NodeId>,
+    ) -> NodeId {
+        let existing = self.grove.find(merk, key);
         let record = context
             .get(key)
             .unwrap()
@@ -452,10 +479,53 @@ impl<'db> Walk<'_, 'db> {
         id
     }
 
-    /// Follows the Merks that the element stored in node `id` hosts.
+    /// Reads again every record that carries a referrer list and that the
+    /// walk did not report, a node before the nodes below it.
+    fn referrer_lists(&mut self) {
+        let grove = &*self.grove;
+        self.with_referrer_list.retain(|id| grove.node(*id).live);
+        let mut unreported: Vec<(usize, NodeId)> = self
+            .with_referrer_list
+            .iter()
+            .filter(|id| grove.node(**id).event == 0)
+            .map(|id| {
+                let depth = std::iter::successors(Some(*id), |id| grove.grove_parent(*id)).count();
+                (depth, *id)
+            })
+            .collect();
+        unreported.sort_unstable();
+        for (_, id) in unreported {
+            let node = self.grove.node(id);
+            let (merk, key, node_hash, parent) =
+                (node.merk, node.key.clone(), node.node_hash, node.parent);
+            let prefix = self.grove.merk(merk).prefix;
+            let context = self
+                .storage
+                .get_transactional_storage_context_by_subtree_prefix(prefix, None, self.transaction)
+                .unwrap();
+            let mut candidates = Vec::new();
+            self.read(
+                &context,
+                merk,
+                &key,
+                Some(&node_hash),
+                parent,
+                &mut candidates,
+            );
+            self.sweep(candidates);
+        }
+    }
+
+    /// Follows the Merks that the element stored in node `id` hosts, and
+    /// notes whether the element carries a referrer list.
     fn hosted(&mut self, id: NodeId, merk: MerkId, key: &[u8], value: &[u8]) {
         let element =
             Element::deserialize(value, self.grove_version).expect("a Merk value is an element");
+        if element.supports_backward_references() {
+            self.with_referrer_list.insert(id);
+        } else {
+            self.with_referrer_list.remove(&id);
+        }
         let roots = hosted_roots(&element);
         let mut hosted = self.grove.node(id).hosted.clone();
         let same_trees = hosted.len() == roots.len()

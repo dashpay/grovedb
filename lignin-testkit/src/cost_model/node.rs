@@ -37,6 +37,10 @@ pub enum Aggregate {
     ProvableCountAndProvableSum(u64, i64),
     /// Tag 9: a hashed count as a varint and a hashed sum of 16 bytes.
     ProvableCountAndProvableBigSum(u64, i128),
+    /// Tag 10: a count as a varint and a sum of 16 bytes.
+    CountAndBigSum(u64, i128),
+    /// Tag 11: a sum of 16 bytes that is hashed into the node.
+    ProvableBigSum(i128),
 }
 
 /// The fixed-size class an aggregate is charged in, whatever its varints
@@ -78,6 +82,8 @@ impl Aggregate {
             Aggregate::ProvableSum(_) => 7,
             Aggregate::ProvableCountAndProvableSum(..) => 8,
             Aggregate::ProvableCountAndProvableBigSum(..) => 9,
+            Aggregate::CountAndBigSum(..) => 10,
+            Aggregate::ProvableBigSum(_) => 11,
         }
     }
 
@@ -86,14 +92,15 @@ impl Aggregate {
         match self {
             Aggregate::None => 0,
             Aggregate::Sum(sum) | Aggregate::ProvableSum(sum) => signed_varint_len(*sum),
-            Aggregate::BigSum(_) => 16,
+            Aggregate::BigSum(_) | Aggregate::ProvableBigSum(_) => 16,
             Aggregate::Count(count) | Aggregate::ProvableCount(count) => varint_len(*count),
             Aggregate::CountAndSum(count, sum)
             | Aggregate::ProvableCountAndSum(count, sum)
             | Aggregate::ProvableCountAndProvableSum(count, sum) => {
                 varint_len(*count) + signed_varint_len(*sum)
             }
-            Aggregate::ProvableCountAndProvableBigSum(count, _) => varint_len(*count) + 16,
+            Aggregate::ProvableCountAndProvableBigSum(count, _)
+            | Aggregate::CountAndBigSum(count, _) => varint_len(*count) + 16,
         }
     }
 
@@ -108,8 +115,10 @@ impl Aggregate {
             Aggregate::CountAndSum(..)
             | Aggregate::ProvableCountAndSum(..)
             | Aggregate::ProvableCountAndProvableSum(..) => Some(CostClass::TwoVarints),
-            Aggregate::BigSum(_) => Some(CostClass::Wide),
-            Aggregate::ProvableCountAndProvableBigSum(..) => Some(CostClass::VarintAndWide),
+            Aggregate::BigSum(_) | Aggregate::ProvableBigSum(_) => Some(CostClass::Wide),
+            Aggregate::ProvableCountAndProvableBigSum(..) | Aggregate::CountAndBigSum(..) => {
+                Some(CostClass::VarintAndWide)
+            }
         }
     }
 
@@ -118,7 +127,9 @@ impl Aggregate {
         match self {
             Aggregate::None => {}
             Aggregate::Sum(sum) | Aggregate::ProvableSum(sum) => put_varint(out, zigzag(*sum)),
-            Aggregate::BigSum(sum) => out.extend_from_slice(&sum.to_be_bytes()),
+            Aggregate::BigSum(sum) | Aggregate::ProvableBigSum(sum) => {
+                out.extend_from_slice(&sum.to_be_bytes())
+            }
             Aggregate::Count(count) | Aggregate::ProvableCount(count) => put_varint(out, *count),
             Aggregate::CountAndSum(count, sum)
             | Aggregate::ProvableCountAndSum(count, sum)
@@ -126,7 +137,8 @@ impl Aggregate {
                 put_varint(out, *count);
                 put_varint(out, zigzag(*sum));
             }
-            Aggregate::ProvableCountAndProvableBigSum(count, sum) => {
+            Aggregate::ProvableCountAndProvableBigSum(count, sum)
+            | Aggregate::CountAndBigSum(count, sum) => {
                 put_varint(out, *count);
                 out.extend_from_slice(&sum.to_be_bytes());
             }
@@ -148,6 +160,8 @@ impl Aggregate {
                 take_signed_varint(input)?,
             ),
             9 => Aggregate::ProvableCountAndProvableBigSum(take_varint(input)?, take_wide(input)?),
+            10 => Aggregate::CountAndBigSum(take_varint(input)?, take_wide(input)?),
+            11 => Aggregate::ProvableBigSum(take_wide(input)?),
             _ => return None,
         })
     }

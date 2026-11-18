@@ -78,6 +78,7 @@ impl ElementCostPrivateExtensions for Element {
             // (Option<Vec<u8>>, i64, Option<Vec<u8>>). It uses the same
             // SUM_TREE_COST_SIZE.
             Element::ProvableSumTree(..) => Ok(SUM_TREE_COST_SIZE),
+            Element::ProvableBigSumTree(..) => Ok(BIG_SUM_TREE_COST_SIZE),
             // ProvableCountProvableSumTree has the same on-disk layout as
             // ProvableCountSumTree: (Option<Vec<u8>>, u64, i64,
             // Option<Vec<u8>>) and reuses COUNT_SUM_TREE_COST_SIZE.
@@ -85,6 +86,7 @@ impl ElementCostPrivateExtensions for Element {
             // ProvableCountProvableBigSumTree carries a count and a 128-bit
             // sum: (Option<Vec<u8>>, u64, i128, Option<Vec<u8>>).
             Element::ProvableCountProvableBigSumTree(..) => Ok(COUNT_BIG_SUM_TREE_COST_SIZE),
+            Element::CountBigSumTree(..) => Ok(COUNT_BIG_SUM_TREE_COST_SIZE),
             // ProvableSumIndexedTree shares the indexed-tree two-root-key
             // layout (primary + secondary root keys + scalar aggregate +
             // flags), so the cost is the same as the legacy cidx slot.
@@ -233,6 +235,17 @@ impl ElementCostExtensions for Element {
                     key_len, value_len, node_type,
                 )
             }
+            Element::ProvableBigSumTree(_, _sum_value, flags) => {
+                let flags_len = flags.map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = BIG_SUM_TREE_COST_SIZE + flags_len + wrapper_overhead;
+                let key_len = key.len() as u32;
+                KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                    key_len, value_len, node_type,
+                )
+            }
             Element::ProvableCountProvableSumTree(.., flags) => {
                 let flags_len = flags.map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
@@ -245,6 +258,17 @@ impl ElementCostExtensions for Element {
                 )
             }
             Element::ProvableCountProvableBigSumTree(.., flags) => {
+                let flags_len = flags.map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = COUNT_BIG_SUM_TREE_COST_SIZE + flags_len + wrapper_overhead;
+                let key_len = key.len() as u32;
+                KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                    key_len, value_len, node_type,
+                )
+            }
+            Element::CountBigSumTree(.., flags) => {
                 let flags_len = flags.map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
@@ -407,9 +431,11 @@ impl ElementCostExtensions for Element {
             | Element::BigSumTree(..)
             | Element::CountTree(..)
             | Element::CountSumTree(..)
+            | Element::CountBigSumTree(..)
             | Element::ProvableCountTree(..)
             | Element::ProvableCountSumTree(..)
             | Element::ProvableSumTree(..)
+            | Element::ProvableBigSumTree(..)
             | Element::ProvableCountProvableSumTree(..)
             | Element::ProvableCountProvableBigSumTree(..)
             | Element::CommitmentTree(..)
@@ -448,8 +474,10 @@ impl ElementCostExtensions for Element {
             Element::ProvableCountTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::ProvableCountSumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::ProvableSumTree(..) => Some(LayeredValueDefinedCost(cost)),
+            Element::ProvableBigSumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::ProvableCountProvableSumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::ProvableCountProvableBigSumTree(..) => Some(LayeredValueDefinedCost(cost)),
+            Element::CountBigSumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::ProvableSumIndexedTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::ProvableCountIndexedTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::ProvableCountProvableSumIndexedTree(..) => Some(LayeredValueDefinedCost(cost)),
@@ -523,5 +551,36 @@ mod tests {
             Element::value_defined_cost_for_serialized_value(&serialized, grove_version),
             Some(LayeredValueDefinedCost(layered))
         );
+    }
+
+    /// A tree with a 128-bit sum is priced from its serialized bytes, and
+    /// its flags add their length and the length's own prefix.
+    #[test]
+    fn big_sum_tree_costs_grow_with_their_flags() {
+        let grove_version = GroveVersion::latest();
+        let cost = |element: &Element| {
+            let serialized = element.serialize(grove_version).expect("serialize");
+            Element::specialized_costs_for_key_value(
+                b"key",
+                &serialized,
+                NodeType::NormalNode,
+                grove_version,
+            )
+            .expect("cost for key value")
+        };
+        let flags = Some(vec![1u8, 2, 3]);
+        for (bare, flagged) in [
+            (
+                Element::CountBigSumTree(None, 0, 0, None),
+                Element::CountBigSumTree(None, 0, 0, flags.clone()),
+            ),
+            (
+                Element::ProvableBigSumTree(None, 0, None),
+                Element::ProvableBigSumTree(None, 0, flags.clone()),
+            ),
+        ] {
+            // Three flag bytes and one byte for their length.
+            assert_eq!(cost(&flagged), cost(&bare) + 4, "{flagged:?}");
+        }
     }
 }

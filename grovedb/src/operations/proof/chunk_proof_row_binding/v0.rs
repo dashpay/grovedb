@@ -94,6 +94,7 @@ impl GroveDb {
             Node::KVRefValueHash(..)
             | Node::KVRefValueHashCount(..)
             | Node::KVRefValueHashSum(..)
+            | Node::KVRefValueHashBigSum(..)
             | Node::KVRefValueHashCountBigSum(..)
             | Node::KVRefValueHashCountSum(..) => {
                 // KVRefValueHash{,Count,Sum,CountSum} carries an opaque

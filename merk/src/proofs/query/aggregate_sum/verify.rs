@@ -157,9 +157,12 @@ pub fn verify_aggregate_big_sum_on_range_proof(
 
     let tree_result: CostResult<ProofTree, Error> =
         execute_with_options(decoder, false, false, |node| match node {
-            Node::HashWithCountAndBigSum(_, _, _, _, _) | Node::KVDigestCountBigSum(_, _, _, _) => {
-                Ok(())
-            }
+            // A `ProvableCountProvableBigSumTree` host emits the count and
+            // big sum nodes, a `ProvableBigSumTree` host the big sum ones.
+            Node::HashWithCountAndBigSum(_, _, _, _, _)
+            | Node::KVDigestCountBigSum(_, _, _, _)
+            | Node::HashWithBigSum(_, _, _, _)
+            | Node::KVDigestBigSum(_, _, _) => Ok(()),
             other => Err(Error::InvalidProofError(format!(
                 "unexpected node type in aggregate big sum proof: {}",
                 other
@@ -233,6 +236,7 @@ fn verify_sum_shape(
                 Node::HashWithSum(_, _, _, sum) => i128::from(*sum),
                 Node::HashWithCountAndSum(_, _, _, _, sum) => i128::from(*sum),
                 Node::HashWithCountAndBigSum(_, _, _, _, sum) => *sum,
+                Node::HashWithBigSum(_, _, _, sum) => *sum,
                 other => {
                     return Err(Error::InvalidProofError(format!(
                         "aggregate-sum proof: expected HashWithSum or HashWithCountAndSum at \
@@ -257,6 +261,7 @@ fn verify_sum_shape(
                 Node::HashWithSum(_, _, _, sum) => i128::from(*sum),
                 Node::HashWithCountAndSum(_, _, _, _, sum) => i128::from(*sum),
                 Node::HashWithCountAndBigSum(_, _, _, _, sum) => *sum,
+                Node::HashWithBigSum(_, _, _, sum) => *sum,
                 other => {
                     return Err(Error::InvalidProofError(format!(
                         "aggregate-sum proof: expected HashWithSum or HashWithCountAndSum at \
@@ -283,6 +288,7 @@ fn verify_sum_shape(
                 Node::KVDigestSum(key, _, aggregate) => (key, i128::from(*aggregate)),
                 Node::KVDigestCountSum(key, _, _, aggregate) => (key, i128::from(*aggregate)),
                 Node::KVDigestCountBigSum(key, _, _, aggregate) => (key, *aggregate),
+                Node::KVDigestBigSum(key, _, aggregate) => (key, *aggregate),
                 other => {
                     return Err(Error::InvalidProofError(format!(
                         "aggregate-sum proof: expected KVDigestSum or KVDigestCountSum at \

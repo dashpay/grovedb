@@ -20,10 +20,12 @@ use crate::{
     CryptoHash, Error, Merk,
 };
 
-/// How a direct element read reports a node it cannot read.
+/// How a direct element read reports a node it cannot read: a read that
+/// failed in storage keeps its type, so that a caller can tell it from a key
+/// that is not there; a record that does not decode is corrupted data.
 fn unreadable_node(e: Error) -> Error {
     match e {
-        Error::StorageError(e) => Error::CorruptedData(e.to_string()),
+        Error::StorageError(_) => e,
         Error::EdError(e) => Error::CorruptedData(e.to_string()),
         e => Error::CorruptedData(e.to_string()),
     }
@@ -103,6 +105,16 @@ pub trait ElementFetchFromStorageExtensions {
     ) -> CostResult<(Element, CryptoHash), Error>;
 }
 
+/// A failed read through a Merk as the element getters report it: a read
+/// that failed in storage keeps its type, so that a caller can tell it from
+/// what the Merk holds; anything else is corrupted data.
+fn merk_read_error(error: Error) -> Error {
+    match error {
+        Error::StorageError(_) => error,
+        error => Error::CorruptedData(error.to_string()),
+    }
+}
+
 trait ElementFetchFromStoragePrivateExtensions {
     /// Get an element directly from storage under a key
     /// Merk does not need to be loaded
@@ -174,7 +186,7 @@ impl ElementFetchFromStorageExtensions for Element {
                 Some(&Element::value_defined_cost_for_serialized_value),
                 grove_version
             )
-            .map_err(|e| Error::CorruptedData(e.to_string()))
+            .map_err(merk_read_error)
         );
         let element = cost_return_on_error_no_add!(
             cost,
@@ -331,7 +343,7 @@ impl ElementFetchFromStorageExtensions for Element {
                 Some(&Element::value_defined_cost_for_serialized_value),
                 grove_version
             )
-            .map_err(|e| Error::CorruptedData(e.to_string()))
+            .map_err(merk_read_error)
         );
 
         Ok(value_hash).wrap_with_cost(cost)
@@ -358,7 +370,7 @@ impl ElementFetchFromStorageExtensions for Element {
                 Some(&Element::value_defined_cost_for_serialized_value),
                 grove_version
             )
-            .map_err(|e| Error::CorruptedData(e.to_string()))
+            .map_err(merk_read_error)
         ) else {
             return Err(Error::PathKeyNotFound(format!(
                 "get: key \"{}\" not found in Merk that has a root key [{}] and is of type {}",
@@ -458,10 +470,11 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
             | Some(Element::SumTree(_, _, flags))
             | Some(Element::BigSumTree(_, _, flags))
             | Some(Element::CountTree(_, _, flags))
-            | Some(Element::CountSumTree(.., flags))
+            | Some(Element::CountSumTree(.., flags) | Element::CountBigSumTree(.., flags))
             | Some(Element::ProvableCountTree(_, _, flags))
             | Some(Element::ProvableCountSumTree(.., flags))
             | Some(Element::ProvableSumTree(_, _, flags))
+            | Some(Element::ProvableBigSumTree(_, _, flags))
             | Some(Element::ProvableCountProvableSumTree(.., flags))
             | Some(Element::ProvableCountProvableBigSumTree(.., flags))
             | Some(Element::CommitmentTree(_, _, flags))
@@ -577,9 +590,11 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
             | Element::BigSumTree(_, _, flags)
             | Element::CountTree(_, _, flags)
             | Element::CountSumTree(.., flags)
+            | Element::CountBigSumTree(.., flags)
             | Element::ProvableCountTree(_, _, flags)
             | Element::ProvableCountSumTree(.., flags)
             | Element::ProvableSumTree(_, _, flags)
+            | Element::ProvableBigSumTree(_, _, flags)
             | Element::ProvableCountProvableSumTree(.., flags)
             | Element::ProvableCountProvableBigSumTree(.., flags)
             | Element::CommitmentTree(_, _, flags)
@@ -620,12 +635,11 @@ mod tests {
     use crate::{element::insert::ElementInsertToStorageExtensions, tree_type::TreeType};
 
     #[test]
-    fn a_node_that_cannot_be_read_is_corrupted_data() {
+    fn a_failed_read_keeps_its_type_and_any_other_unreadable_node_is_corrupted_data() {
         let storage_error = grovedb_storage::Error::StorageError("disk".to_string());
-        let storage_text = storage_error.to_string();
         assert!(matches!(
             unreadable_node(Error::StorageError(storage_error)),
-            Error::CorruptedData(text) if text == storage_text
+            Error::StorageError(grovedb_storage::Error::StorageError(text)) if text == "disk"
         ));
 
         let decode_text = ed::Error::UnexpectedByte(7).to_string();

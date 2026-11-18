@@ -51,12 +51,16 @@ impl ElementTreeTypeExtensions for Element {
                 Some((root_key, TreeType::ProvableCountSumTree))
             }
             Element::ProvableSumTree(root_key, ..) => Some((root_key, TreeType::ProvableSumTree)),
+            Element::ProvableBigSumTree(root_key, ..) => {
+                Some((root_key, TreeType::ProvableBigSumTree))
+            }
             Element::ProvableCountProvableSumTree(root_key, ..) => {
                 Some((root_key, TreeType::ProvableCountProvableSumTree))
             }
             Element::ProvableCountProvableBigSumTree(root_key, ..) => {
                 Some((root_key, TreeType::ProvableCountProvableBigSumTree))
             }
+            Element::CountBigSumTree(root_key, ..) => Some((root_key, TreeType::CountBigSumTree)),
             Element::CommitmentTree(_, chunk_power, _) => {
                 Some((None, TreeType::CommitmentTree(chunk_power)))
             }
@@ -110,12 +114,16 @@ impl ElementTreeTypeExtensions for Element {
                 Some((root_key, TreeType::ProvableCountSumTree))
             }
             Element::ProvableSumTree(root_key, ..) => Some((root_key, TreeType::ProvableSumTree)),
+            Element::ProvableBigSumTree(root_key, ..) => {
+                Some((root_key, TreeType::ProvableBigSumTree))
+            }
             Element::ProvableCountProvableSumTree(root_key, ..) => {
                 Some((root_key, TreeType::ProvableCountProvableSumTree))
             }
             Element::ProvableCountProvableBigSumTree(root_key, ..) => {
                 Some((root_key, TreeType::ProvableCountProvableBigSumTree))
             }
+            Element::CountBigSumTree(root_key, ..) => Some((root_key, TreeType::CountBigSumTree)),
             Element::CommitmentTree(_, chunk_power, _) => {
                 Some((&NONE_ROOT_KEY, TreeType::CommitmentTree(*chunk_power)))
             }
@@ -161,12 +169,14 @@ impl ElementTreeTypeExtensions for Element {
                 Some((flags, TreeType::ProvableCountSumTree))
             }
             Element::ProvableSumTree(_, _, flags) => Some((flags, TreeType::ProvableSumTree)),
+            Element::ProvableBigSumTree(_, _, flags) => Some((flags, TreeType::ProvableBigSumTree)),
             Element::ProvableCountProvableSumTree(_, _, _, flags) => {
                 Some((flags, TreeType::ProvableCountProvableSumTree))
             }
             Element::ProvableCountProvableBigSumTree(_, _, _, flags) => {
                 Some((flags, TreeType::ProvableCountProvableBigSumTree))
             }
+            Element::CountBigSumTree(_, _, _, flags) => Some((flags, TreeType::CountBigSumTree)),
             Element::CommitmentTree(_, chunk_power, flags) => {
                 Some((flags, TreeType::CommitmentTree(*chunk_power)))
             }
@@ -209,12 +219,14 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountTree(..) => Some(TreeType::ProvableCountTree),
             Element::ProvableCountSumTree(..) => Some(TreeType::ProvableCountSumTree),
             Element::ProvableSumTree(..) => Some(TreeType::ProvableSumTree),
+            Element::ProvableBigSumTree(..) => Some(TreeType::ProvableBigSumTree),
             Element::ProvableCountProvableSumTree(..) => {
                 Some(TreeType::ProvableCountProvableSumTree)
             }
             Element::ProvableCountProvableBigSumTree(..) => {
                 Some(TreeType::ProvableCountProvableBigSumTree)
             }
+            Element::CountBigSumTree(..) => Some(TreeType::CountBigSumTree),
             Element::CommitmentTree(_, chunk_power, _) => {
                 Some(TreeType::CommitmentTree(*chunk_power))
             }
@@ -258,11 +270,17 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableSumTree(_, value, _) => {
                 Some(TreeFeatureType::ProvableSummedMerkNode(*value))
             }
+            Element::ProvableBigSumTree(_, value, _) => {
+                Some(TreeFeatureType::ProvableBigSummedMerkNode(*value))
+            }
             Element::ProvableCountProvableSumTree(_, count, sum, _) => Some(
                 TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(*count, *sum),
             ),
             Element::ProvableCountProvableBigSumTree(_, count, sum, _) => {
                 Some(TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(*count, *sum))
+            }
+            Element::CountBigSumTree(_, count, sum, _) => {
+                Some(TreeFeatureType::CountedBigSummedMerkNode(*count, *sum))
             }
             Element::CommitmentTree(..) => Some(BasicMerkNode),
             Element::MmrTree(..) => Some(BasicMerkNode),
@@ -302,12 +320,14 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountTree(..) => MaybeTree::Tree(TreeType::ProvableCountTree),
             Element::ProvableCountSumTree(..) => MaybeTree::Tree(TreeType::ProvableCountSumTree),
             Element::ProvableSumTree(..) => MaybeTree::Tree(TreeType::ProvableSumTree),
+            Element::ProvableBigSumTree(..) => MaybeTree::Tree(TreeType::ProvableBigSumTree),
             Element::ProvableCountProvableSumTree(..) => {
                 MaybeTree::Tree(TreeType::ProvableCountProvableSumTree)
             }
             Element::ProvableCountProvableBigSumTree(..) => {
                 MaybeTree::Tree(TreeType::ProvableCountProvableBigSumTree)
             }
+            Element::CountBigSumTree(..) => MaybeTree::Tree(TreeType::CountBigSumTree),
             Element::CommitmentTree(_, chunk_power, _) => {
                 MaybeTree::Tree(TreeType::CommitmentTree(*chunk_power))
             }
@@ -397,6 +417,20 @@ impl ElementTreeTypeExtensions for Element {
                 let v = self.count_big_sum_value_or_default();
                 Ok(TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(v.0, v.1))
             }
+            // CountBigSumTree aggregates a u64 count and an i128 sum in its
+            // element, carried via `CountedBigSummedMerkNode`. The wrappers
+            // zero the count, the sum or both, as under a `CountSumTree`.
+            TreeType::CountBigSumTree => {
+                let v = self.count_big_sum_value_or_default();
+                Ok(TreeFeatureType::CountedBigSummedMerkNode(v.0, v.1))
+            }
+            // ProvableBigSumTree aggregates an i128 sum (the arithmetic of a
+            // `BigSumTree`) carried via `ProvableBigSummedMerkNode`, so the
+            // sum is baked into every node's hash via
+            // `node_hash_with_big_sum`.
+            TreeType::ProvableBigSumTree => Ok(TreeFeatureType::ProvableBigSummedMerkNode(
+                self.big_sum_value_or_default(),
+            )),
             // ProvableSumIndexedTree's primary aggregates like ProvableSumTree.
             TreeType::ProvableSumIndexedTree => Ok(TreeFeatureType::ProvableSummedMerkNode(
                 self.sum_value_or_default(),
@@ -976,6 +1010,32 @@ mod tests {
                 "expected ProvableCountedAndProvableSummedMerkNode, got {:?}",
                 other
             ),
+        }
+    }
+
+    /// Every per-variant arm, for the trees with a 128-bit sum.
+    #[test]
+    fn big_sum_tree_extension_arms_direct() {
+        let root = Some(b"root".to_vec());
+        let flags = Some(vec![9u8, 8]);
+        for (element, tree_type) in [
+            (
+                Element::CountBigSumTree(root.clone(), 3, 42, flags.clone()),
+                TreeType::CountBigSumTree,
+            ),
+            (
+                Element::ProvableBigSumTree(root.clone(), 42, flags.clone()),
+                TreeType::ProvableBigSumTree,
+            ),
+        ] {
+            assert_eq!(element.root_key_and_tree_type(), Some((&root, tree_type)));
+            assert_eq!(element.tree_flags_and_type(), Some((&flags, tree_type)));
+            assert_eq!(element.tree_type(), Some(tree_type));
+            assert_eq!(element.maybe_tree_type(), MaybeTree::Tree(tree_type));
+            assert_eq!(
+                element.root_key_and_tree_type_owned(),
+                Some((root.clone(), tree_type))
+            );
         }
     }
 }

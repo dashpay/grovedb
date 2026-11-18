@@ -52,8 +52,9 @@ use grovedb_version::version::GroveVersion;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use hash::{
     axes_digest, combine_hash, combine_hash_three, kv_digest_to_kv_hash, kv_hash, node_hash,
-    node_hash_with_count, node_hash_with_count_and_big_sum, node_hash_with_count_and_sum,
-    node_hash_with_sum, value_hash, CryptoHash, HASH_LENGTH, NULL_HASH,
+    node_hash_with_big_sum, node_hash_with_count, node_hash_with_count_and_big_sum,
+    node_hash_with_count_and_sum, node_hash_with_sum, value_hash, CryptoHash, HASH_LENGTH,
+    NODE_HASH_WITH_BIG_SUM_DOMAIN_TAG, NULL_HASH,
 };
 #[cfg(feature = "minimal")]
 pub use hash::{HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH_U32, HASH_LENGTH_U32_X2};
@@ -743,9 +744,11 @@ impl TreeNode {
                     AggregateData::ProvableCountAndProvableSum(c, s) => {
                         c.encode_var_vec().len() as u32 + s.encode_var_vec().len() as u32
                     }
-                    AggregateData::ProvableCountAndProvableBigSum(c, _) => {
+                    AggregateData::ProvableCountAndProvableBigSum(c, _)
+                    | AggregateData::CountAndBigSum(c, _) => {
                         c.encode_var_vec().len() as u32 + 16_u32
                     }
+                    AggregateData::ProvableBigSum(_) => 16_u32,
                 },
             )
         })
@@ -840,9 +843,11 @@ impl TreeNode {
                 // by `child_aggregate_count_data_as_u64`.
                 AggregateData::ProvableCountAndProvableSum(_, s) => Ok(s),
                 // A 128-bit sum cannot be narrowed, exactly as for `BigSum`.
-                AggregateData::ProvableCountAndProvableBigSum(..) => Err(
-                    Error::BigSumTreeUnderNormalSumTree("for aggregate data as i64".to_string()),
-                ),
+                AggregateData::ProvableCountAndProvableBigSum(..)
+                | AggregateData::CountAndBigSum(..)
+                | AggregateData::ProvableBigSum(_) => Err(Error::BigSumTreeUnderNormalSumTree(
+                    "for aggregate data as i64".to_string(),
+                )),
             },
             _ => Ok(0),
         }
@@ -878,6 +883,9 @@ impl TreeNode {
                 // component for count aggregation.
                 AggregateData::ProvableCountAndProvableSum(c, _) => Ok(c),
                 AggregateData::ProvableCountAndProvableBigSum(c, _) => Ok(c),
+                AggregateData::CountAndBigSum(c, _) => Ok(c),
+                // `ProvableBigSum` carries no count; behaves like `BigSum`.
+                AggregateData::ProvableBigSum(_) => Ok(0),
             },
             _ => Ok(0),
         }
@@ -911,6 +919,8 @@ impl TreeNode {
                 // to i128 the same way.
                 AggregateData::ProvableCountAndProvableSum(_, s) => s as i128,
                 AggregateData::ProvableCountAndProvableBigSum(_, s) => s,
+                AggregateData::CountAndBigSum(_, s) => s,
+                AggregateData::ProvableBigSum(s) => s,
             },
             _ => 0,
         }
@@ -1083,6 +1093,28 @@ impl TreeNode {
                     );
                 }
             }
+            TreeType::ProvableBigSumTree => {
+                // For ProvableBigSumTree, include the aggregate 128-bit sum
+                // in the hash via `node_hash_with_big_sum`.
+                let aggregate_data = self
+                    .aggregate_data()
+                    .expect("ProvableBigSumTree::hash_for_link: aggregate_data() failed");
+                if let AggregateData::ProvableBigSum(sum) = aggregate_data {
+                    node_hash_with_big_sum(
+                        self.inner.kv.hash(),
+                        self.child_hash(true),
+                        self.child_hash(false),
+                        sum,
+                    )
+                } else {
+                    panic!(
+                        "ProvableBigSumTree::hash_for_link: expected \
+                         AggregateData::ProvableBigSum, got {:?}; the node's feature_type is \
+                         inconsistent with its tree_type",
+                        aggregate_data
+                    );
+                }
+            }
             _ => self.hash(),
         }
     }
@@ -1112,6 +1144,7 @@ impl TreeNode {
             | TreeType::ProvableCountIndexedTree
             | TreeType::ProvableCountSumTree
             | TreeType::ProvableSumTree
+            | TreeType::ProvableBigSumTree
             | TreeType::ProvableSumIndexedTree
             | TreeType::ProvableCountProvableSumTree
             | TreeType::ProvableCountProvableSumIndexedTree
@@ -1145,6 +1178,15 @@ impl TreeNode {
                         sum,
                     )
                     .map(Ok),
+                    (TreeType::ProvableBigSumTree, AggregateData::ProvableBigSum(sum)) => {
+                        node_hash_with_big_sum(
+                            self.inner.kv.hash(),
+                            self.child_hash(true),
+                            self.child_hash(false),
+                            sum,
+                        )
+                        .map(Ok)
+                    }
                     (
                         TreeType::ProvableCountProvableSumTree
                         | TreeType::ProvableCountProvableSumIndexedTree,
@@ -1341,6 +1383,37 @@ impl TreeNode {
                     aggregated_sum_value,
                 ))
             }
+            // `CountedBigSummedMerkNode` aggregates the count like
+            // `CountedSummedMerkNode` and the sum in i128 like
+            // `BigSummedMerkNode`. Neither enters the node hash.
+            TreeFeatureType::CountedBigSummedMerkNode(count_value, sum_value) => {
+                let left_count = self.child_aggregate_count_data_as_u64(true)?;
+                let right_count = self.child_aggregate_count_data_as_u64(false)?;
+
+                let aggregated_count_value = count_value
+                    .checked_add(left_count)
+                    .and_then(|a| a.checked_add(right_count))
+                    .ok_or(Overflow("count is overflowing"))?;
+
+                let aggregated_sum_value = sum_value
+                    .checked_add(self.child_aggregate_sum_data_as_i128(true))
+                    .and_then(|a| a.checked_add(self.child_aggregate_sum_data_as_i128(false)))
+                    .ok_or(Overflow("big sum is overflowing"))?;
+
+                Ok(AggregateData::CountAndBigSum(
+                    aggregated_count_value,
+                    aggregated_sum_value,
+                ))
+            }
+            // `ProvableBigSummedMerkNode` aggregates exactly like a
+            // `BigSummedMerkNode`, but yields a distinct
+            // `AggregateData::ProvableBigSum` so the hash dispatch routes
+            // through `node_hash_with_big_sum`.
+            TreeFeatureType::ProvableBigSummedMerkNode(value) => value
+                .checked_add(self.child_aggregate_sum_data_as_i128(true))
+                .and_then(|a| a.checked_add(self.child_aggregate_sum_data_as_i128(false)))
+                .ok_or(Overflow("provable big sum is overflowing"))
+                .map(AggregateData::ProvableBigSum),
         }
     }
 
@@ -1667,7 +1740,7 @@ impl TreeNode {
     /// reference commits to (`None` for the item variants). It is needed
     /// only when a just-in-time value update rewrites the bytes of a
     /// replaced element: the node value hash is then recomputed from the
-    /// final bytes with the family's two-layer scheme, so a flags-update
+    /// final bytes with the family's rule, so a flags-update
     /// callback can never commit bytes that disagree with their hash.
     #[allow(clippy::too_many_arguments)]
     pub fn put_value_with_provided_value_hash(
@@ -1729,11 +1802,10 @@ impl TreeNode {
             // a flags-update callback rewrite, e.g. storage flags absorbing
             // the bytes an added referrer entry costs) changes those bytes,
             // so the node value hash is recomputed from the FINAL bytes
-            // with the family's two-layer scheme: combine(H(stripped),
-            // H(referrer list)), further combined with the end hash for a
-            // bidirectional reference. Only backward-references elements
-            // are written this way; anything else mutated here would
-            // commit bytes no scheme rebinds — fail closed.
+            // with the family's rule: H(stripped), combined with the end
+            // hash for a bidirectional reference. Only backward-references
+            // elements are written this way; anything else mutated here
+            // would commit bytes no scheme rebinds — fail closed.
             if self.inner.kv.value_as_slice() != value_before_update.as_slice() {
                 value_hash = cost_return_on_error!(
                     &mut cost,
@@ -1755,10 +1827,9 @@ impl TreeNode {
     }
 
     /// The node value hash a backward-references element with these stored
-    /// bytes commits to: `combine(H(stripped), H(referrer list))`, combined
-    /// once more with `end_hash` for a bidirectional reference (which must
-    /// carry one). Errors for bytes that are not a backward-references
-    /// element.
+    /// bytes commits to: `H(stripped)`, combined with `end_hash` for a
+    /// bidirectional reference (which must carry one). Errors for bytes
+    /// that are not a backward-references element.
     fn recompute_backward_references_value_hash(
         bytes: &[u8],
         end_hash: Option<CryptoHash>,
@@ -1776,16 +1847,7 @@ impl TreeNode {
                 ))
             })
         );
-        let hashes = cost_return_on_error!(
-            &mut cost,
-            element
-                .backward_references_hashes(grove_version)
-                .map_err(|e| Error::ClientCorruptionError(format!(
-                    "cannot rehash a provided-value-hash write after a just-in-time value \
-                     update: {e}"
-                )))
-        );
-        let Some(hashes) = hashes else {
+        if !element.supports_backward_references() {
             return Err(Error::ClientCorruptionError(
                 "a just-in-time value update cannot apply to a provided-value-hash write of a \
                  non-backward-references element: the mutated bytes would no longer match \
@@ -1793,16 +1855,25 @@ impl TreeNode {
                     .to_string(),
             ))
             .wrap_with_cost(cost);
-        };
+        }
+        let inner = cost_return_on_error!(
+            &mut cost,
+            element
+                .logical_value_hash(grove_version)
+                .map_err(|e| Error::ClientCorruptionError(format!(
+                    "cannot rehash a provided-value-hash write after a just-in-time value \
+                     update: {e}"
+                )))
+        );
         let is_reference = matches!(
             element,
             grovedb_element::Element::BidirectionalReference(..)
         );
         let value_hash = match (is_reference, end_hash) {
             (true, Some(end_hash)) => {
-                hash::combine_hash(&hashes.combined, &end_hash).unwrap_add_cost(&mut cost)
+                hash::combine_hash(&inner, &end_hash).unwrap_add_cost(&mut cost)
             }
-            (false, None) => hashes.combined,
+            (false, None) => inner,
             (true, None) => {
                 return Err(Error::ClientCorruptionError(
                     "a provided-value-hash write of a bidirectional reference must carry its \
@@ -2028,6 +2099,13 @@ impl TreeNode {
                         )
                         .unwrap_add_cost(&mut cost)
                     }
+                    AggregateData::ProvableBigSum(sum) => node_hash_with_big_sum(
+                        tree.inner.kv.hash(),
+                        tree.child_hash(true),
+                        tree.child_hash(false),
+                        *sum,
+                    )
+                    .unwrap_add_cost(&mut cost),
                     _ => tree.hash().unwrap_add_cost(&mut cost),
                 };
                 self.inner.left = Some(Link::Loaded {
@@ -2096,6 +2174,13 @@ impl TreeNode {
                         )
                         .unwrap_add_cost(&mut cost)
                     }
+                    AggregateData::ProvableBigSum(sum) => node_hash_with_big_sum(
+                        tree.inner.kv.hash(),
+                        tree.child_hash(true),
+                        tree.child_hash(false),
+                        *sum,
+                    )
+                    .unwrap_add_cost(&mut cost),
                     _ => tree.hash().unwrap_add_cost(&mut cost),
                 };
                 self.inner.right = Some(Link::Loaded {

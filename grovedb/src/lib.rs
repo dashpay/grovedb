@@ -2357,10 +2357,11 @@ impl GroveDb {
         Ok(())
     }
 
-    /// Reciprocal audit for one element's authenticated referrer list:
-    /// every backward entry must name a live `BidirectionalReference`
-    /// whose forward path resolves back to this exact position, and no
-    /// inverted path may appear twice. Violations are recorded in
+    /// Reciprocal audit for one element's referrer list: every backward
+    /// entry must name a live `BidirectionalReference` whose forward path
+    /// resolves back to this exact position and whose cascade policy the
+    /// entry records, no inverted path may appear twice, and the list must
+    /// be in its canonical order. Violations are recorded in
     /// `issues` keyed by the REFERRER's qualified path, with a zero hash
     /// in the middle slot marking a reciprocity (not value-hash) failure.
     #[allow(clippy::too_many_arguments)]
@@ -2377,10 +2378,9 @@ impl GroveDb {
         let Some(backward_references) = element.backward_references() else {
             return Ok(());
         };
-        let hashes = element
-            .backward_references_hashes(grove_version)
-            .unwrap()?
-            .expect("backward-references elements carry hashes");
+        // Reciprocity issues are reported under this element's own
+        // commitment: the hash of its serialization with the list emptied.
+        let own_hash = element.logical_value_hash(grove_version).unwrap()?;
         let mut expected_forward = path.to_vec();
         expected_forward.push(key.to_vec());
 
@@ -2395,14 +2395,14 @@ impl GroveDb {
                 Err(_) => {
                     let mut marker = expected_forward.clone();
                     marker.push(b"?invalid-inverse".to_vec());
-                    issues.insert(marker, (hashes.combined, [0; 32], hashes.combined));
+                    issues.insert(marker, (own_hash, [0; 32], own_hash));
                     continue;
                 }
             };
             if !seen.insert(referrer_qualified.clone()) {
                 let mut marker = referrer_qualified.clone();
                 marker.push(b"?duplicate-inverse".to_vec());
-                issues.insert(marker, (hashes.combined, [0; 32], hashes.combined));
+                issues.insert(marker, (own_hash, [0; 32], own_hash));
                 continue;
             }
             let Some((referrer_key, referrer_path)) = referrer_qualified.split_last() else {
@@ -2411,31 +2411,34 @@ impl GroveDb {
                 // silently passing the audit.
                 let mut marker = expected_forward.clone();
                 marker.push(b"?invalid-inverse".to_vec());
-                issues.insert(marker, (hashes.combined, [0; 32], hashes.combined));
+                issues.insert(marker, (own_hash, [0; 32], own_hash));
                 continue;
             };
-            let referrer_path_slices: Vec<&[u8]> =
-                referrer_path.iter().map(|p| p.as_slice()).collect();
-            let occupant = self
-                .get_raw_optional(
-                    referrer_path_slices.as_slice().into(),
-                    referrer_key,
-                    Some(transaction),
-                    grove_version,
-                )
-                .unwrap();
+            // A read that failed in storage proves nothing about the edge,
+            // so it ends the audit instead of being reported as a missing
+            // one.
+            let occupant = self.stored_element_for_reciprocity_audit(
+                referrer_path,
+                referrer_key,
+                allow_cache,
+                transaction,
+                None,
+                grove_version,
+            )?;
             let reciprocal = match occupant {
-                Ok(Some(Element::BidirectionalReference(ref referrer, _))) => {
-                    path_from_reference_path_type(
-                        referrer.forward_reference_path.clone(),
-                        referrer_path,
-                        Some(referrer_key),
-                    )
-                    .map(|forward| forward == expected_forward)
-                    .unwrap_or(false)
+                // The entry mirrors its referrer: the referrer points back
+                // here and carries the cascade policy the entry records.
+                Some(Element::BidirectionalReference(ref referrer, _)) => {
+                    referrer.cascade_on_update == entry.cascade_on_update
+                        && path_from_reference_path_type(
+                            referrer.forward_reference_path.clone(),
+                            referrer_path,
+                            Some(referrer_key),
+                        )
+                        .map(|forward| forward == expected_forward)
+                        .unwrap_or(false)
                 }
-                Ok(_) => false,
-                Err(_) => false,
+                _ => false,
             };
             if !reciprocal {
                 // A marker component keeps this reciprocity diagnostic from
@@ -2444,11 +2447,123 @@ impl GroveDb {
                 // `?invalid-inverse` convention above.
                 let mut marker = referrer_qualified;
                 marker.push(b"?no-reciprocal-forward-edge".to_vec());
-                issues.insert(marker, (hashes.combined, [0; 32], hashes.combined));
+                issues.insert(marker, (own_hash, [0; 32], own_hash));
             }
         }
-        let _ = allow_cache;
+        // A list is stored in one canonical order, so that every node walks
+        // a target's referrers in the same order whether it executed the
+        // registrations or received the list from a peer.
+        if !grovedb_element::backward_references_are_canonical(backward_references) {
+            let mut marker = expected_forward;
+            marker.push(b"?referrers-out-of-order".to_vec());
+            issues.insert(marker, (own_hash, [0; 32], own_hash));
+        }
         Ok(())
+    }
+
+    /// The FORWARD direction of the reciprocity audit: the immediate target
+    /// of the `BidirectionalReference` at `path`/`key` must carry the
+    /// edge's canonical inverse in its referrer list. A missing
+    /// registration leaves a live edge with no reverse path for
+    /// propagation or cascade to follow. A violation is recorded in
+    /// `issues` under the TARGET's qualified path.
+    #[allow(clippy::too_many_arguments)]
+    fn verify_bidirectional_reference_is_registered<B: AsRef<[u8]>>(
+        &self,
+        reference: &BidirectionalReference,
+        path: &SubtreePath<B>,
+        key: &[u8],
+        allow_cache: bool,
+        transaction: &Transaction,
+        batch: Option<&StorageBatch>,
+        grove_version: &GroveVersion,
+        issues: &mut HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>,
+    ) -> Result<(), Error> {
+        let target_qualified = path_from_reference_path_type(
+            reference.forward_reference_path.clone(),
+            &path.to_vec(),
+            Some(key),
+        )?;
+        let expected_inverse = reference
+            .forward_reference_path
+            .clone()
+            .invert(path.clone(), key);
+        let registered = match (target_qualified.split_last(), expected_inverse) {
+            (Some((target_key, target_path)), Some(inverse)) => {
+                // A read that failed in storage proves nothing about the
+                // edge, so it ends the audit instead of being reported as
+                // a missing registration.
+                let target_element = self.stored_element_for_reciprocity_audit(
+                    target_path,
+                    target_key,
+                    allow_cache,
+                    transaction,
+                    batch,
+                    grove_version,
+                )?;
+                match target_element {
+                    Some(target) => target
+                        .backward_references()
+                        .map(|refs| refs.iter().any(|r| r.inverted_reference == inverse))
+                        .unwrap_or(false),
+                    None => false,
+                }
+            }
+            _ => false,
+        };
+        if !registered {
+            let mut marker = target_qualified;
+            marker.push(b"?missing-registration".to_vec());
+            issues.insert(marker, ([0; 32], [0; 32], [0; 32]));
+        }
+        Ok(())
+    }
+
+    /// The element at `path` / `key` as the reciprocity audit of
+    /// bidirectional references reads it: a Merk-level read, because public
+    /// reads strip the referrer list one direction of the audit inspects.
+    /// `None` when nothing resolves there. A read that failed in storage,
+    /// opening the subtree or fetching the element, is returned as the error
+    /// it is: it proves nothing about the edge.
+    fn stored_element_for_reciprocity_audit<'a>(
+        &'a self,
+        path: &[Vec<u8>],
+        key: &[u8],
+        allow_cache: bool,
+        transaction: &'a Transaction,
+        batch: Option<&'a StorageBatch>,
+        grove_version: &GroveVersion,
+    ) -> Result<Option<Element>, Error> {
+        let path_slices: Vec<&[u8]> = path.iter().map(|p| p.as_slice()).collect();
+        let merk = match self
+            .open_transactional_merk_at_path(
+                path_slices.as_slice().into(),
+                transaction,
+                batch,
+                grove_version,
+            )
+            .unwrap()
+        {
+            Ok(merk) => merk,
+            Err(e @ Error::StorageError(_)) => return Err(e),
+            Err(_) => return Ok(None),
+        };
+        Self::element_for_reciprocity_audit(&merk, key, allow_cache, grove_version)
+    }
+
+    /// The element under `key` in an opened Merk, for
+    /// [`Self::stored_element_for_reciprocity_audit`].
+    fn element_for_reciprocity_audit<'db, S: StorageContext<'db>>(
+        merk: &Merk<S>,
+        key: &[u8],
+        allow_cache: bool,
+        grove_version: &GroveVersion,
+    ) -> Result<Option<Element>, Error> {
+        match Element::get_optional(merk, key, allow_cache, grove_version).unwrap() {
+            Ok(element) => Ok(element),
+            Err(e @ grovedb_merk::Error::StorageError(_)) => Err(MerkError(e)),
+            Err(_) => Ok(None),
+        }
     }
 
     fn verify_merk_and_submerks_in_transaction<'db, B: AsRef<[u8]>, S: StorageContext<'db>>(
@@ -2592,9 +2707,11 @@ impl GroveDb {
                 | Element::BigSumTree(..)
                 | Element::CountTree(..)
                 | Element::CountSumTree(..)
+                | Element::CountBigSumTree(..)
                 | Element::ProvableCountTree(..)
                 | Element::ProvableCountSumTree(..)
                 | Element::ProvableSumTree(..)
+                | Element::ProvableBigSumTree(..)
                 | Element::ProvableCountProvableSumTree(..)
                 | Element::ProvableCountProvableBigSumTree(..)
                 | Element::CommitmentTree(..)
@@ -2849,8 +2966,9 @@ impl GroveDb {
                 Element::ItemWithBackwardsReferences(..)
                 | Element::SumItemWithBackwardsReferences(..)
                 | Element::ItemWithSumItemWithBackwardsReferences(..) => {
-                    // The node commits to combine(inner_hash, backrefs_hash),
-                    // both recomputable from the stored bytes.
+                    // The node commits to the hash of the element's
+                    // serialization with the referrer list emptied,
+                    // recomputable from the stored bytes.
                     let (_, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
@@ -2865,14 +2983,11 @@ impl GroveDb {
                             hex_to_ascii(&key),
                             element.type_str()
                         )))?;
-                    let hashes = element
-                        .backward_references_hashes(grove_version)
-                        .unwrap()?
-                        .expect("backward-references elements carry hashes");
-                    if hashes.combined != element_value_hash {
+                    let actual_value_hash = element.logical_value_hash(grove_version).unwrap()?;
+                    if actual_value_hash != element_value_hash {
                         issues.insert(
                             path.derive_owned_with_child(key.clone()).to_vec(),
-                            (hashes.combined, element_value_hash, hashes.combined),
+                            (actual_value_hash, element_value_hash, actual_value_hash),
                         );
                     }
                     if verify_references {
@@ -2921,17 +3036,13 @@ impl GroveDb {
                             hex_to_ascii(&key)
                         )))?;
 
-                    // A bidirectional reference commits to THREE inputs: its
-                    // stripped bytes, the resolved end hash, and its
-                    // referrer-list hash — its "self" hash in the commitment
-                    // is combine(inner, backrefs), not H(stored bytes).
+                    // A bidirectional reference commits to its bytes with
+                    // the referrer list emptied and to the resolved end
+                    // hash: its "self" hash in the commitment is the hash
+                    // of the stripped bytes, not H(stored bytes).
                     let self_actual_value_hash =
                         if let Element::BidirectionalReference(..) = &element {
-                            element
-                                .backward_references_hashes(grove_version)
-                                .unwrap()?
-                                .expect("bidirectional references carry hashes")
-                                .combined
+                            element.logical_value_hash(grove_version).unwrap()?
                         } else {
                             value_hash(&kv_value).unwrap()
                         };
@@ -2984,67 +3095,17 @@ impl GroveDb {
                             grove_version,
                             &mut issues,
                         )?;
-                        // The FORWARD direction of the reciprocity audit:
-                        // this edge's immediate target must carry the
-                        // edge's canonical inverse in its referrer list —
-                        // a missing registration leaves a live edge with
-                        // no reverse path for propagation or cascade to
-                        // follow.
                         if let Element::BidirectionalReference(ref reference, _) = element {
-                            let target_qualified = path_from_reference_path_type(
-                                reference.forward_reference_path.clone(),
-                                &path.to_vec(),
-                                Some(&key),
+                            self.verify_bidirectional_reference_is_registered(
+                                reference,
+                                path,
+                                &key,
+                                allow_cache,
+                                transaction,
+                                batch,
+                                grove_version,
+                                &mut issues,
                             )?;
-                            let expected_inverse = reference
-                                .forward_reference_path
-                                .clone()
-                                .invert(path.clone(), &key);
-                            let registered = match (target_qualified.split_last(), expected_inverse)
-                            {
-                                (Some((target_key, target_path)), Some(inverse)) => {
-                                    // Merk-level read: public reads STRIP
-                                    // referrer lists, and the list is
-                                    // exactly what this audit inspects.
-                                    let target_path_slices: Vec<&[u8]> =
-                                        target_path.iter().map(|p| p.as_slice()).collect();
-                                    let target_element = self
-                                        .open_transactional_merk_at_path(
-                                            target_path_slices.as_slice().into(),
-                                            transaction,
-                                            batch,
-                                            grove_version,
-                                        )
-                                        .unwrap()
-                                        .ok()
-                                        .and_then(|target_merk| {
-                                            Element::get_optional(
-                                                &target_merk,
-                                                target_key,
-                                                allow_cache,
-                                                grove_version,
-                                            )
-                                            .unwrap()
-                                            .ok()
-                                            .flatten()
-                                        });
-                                    match target_element {
-                                        Some(target) => target
-                                            .backward_references()
-                                            .map(|refs| {
-                                                refs.iter().any(|r| r.inverted_reference == inverse)
-                                            })
-                                            .unwrap_or(false),
-                                        None => false,
-                                    }
-                                }
-                                _ => false,
-                            };
-                            if !registered {
-                                let mut marker = target_qualified;
-                                marker.push(b"?missing-registration".to_vec());
-                                issues.insert(marker, ([0; 32], [0; 32], [0; 32]));
-                            }
                         }
                     }
                 }
@@ -4057,12 +4118,14 @@ fn root_hash_commits_to_aggregate(tree_type: TreeType) -> bool {
         | NodeType::ProvableCountSumNode
         | NodeType::ProvableSumNode
         | NodeType::ProvableCountProvableSumNode
-        | NodeType::ProvableCountProvableBigSumNode => true,
+        | NodeType::ProvableCountProvableBigSumNode
+        | NodeType::ProvableBigSumNode => true,
         NodeType::NormalNode
         | NodeType::SumNode
         | NodeType::BigSumNode
         | NodeType::CountNode
-        | NodeType::CountSumNode => false,
+        | NodeType::CountSumNode
+        | NodeType::CountBigSumNode => false,
     }
 }
 
@@ -4307,6 +4370,47 @@ fn aggregate_consistency_labels(
             Element::ProvableCountProvableBigSumTree(_, recorded_count, recorded_sum, _),
             AggregateData::NoAggregateData,
         ) if *recorded_count == 0 && *recorded_sum == 0 => None,
+        (
+            Element::CountBigSumTree(_, recorded_count, recorded_sum, _),
+            AggregateData::CountAndBigSum(actual_count, actual_sum),
+        ) => {
+            if recorded_count == actual_count && recorded_sum == actual_sum {
+                None
+            } else {
+                Some((
+                    format!(
+                        "CountBigSumTree recorded count {} sum {}",
+                        recorded_count, recorded_sum
+                    ),
+                    format!(
+                        "inner aggregate CountAndBigSum count {} sum {}",
+                        actual_count, actual_sum
+                    ),
+                ))
+            }
+        }
+        (
+            Element::CountBigSumTree(_, recorded_count, recorded_sum, _),
+            AggregateData::NoAggregateData,
+        ) if *recorded_count == 0 && *recorded_sum == 0 => None,
+        (
+            Element::ProvableBigSumTree(_, recorded, _),
+            AggregateData::ProvableBigSum(actual_sum),
+        ) => {
+            if recorded == actual_sum {
+                None
+            } else {
+                Some((
+                    format!("ProvableBigSumTree recorded sum {}", recorded),
+                    format!("inner aggregate ProvableBigSum {}", actual_sum),
+                ))
+            }
+        }
+        (Element::ProvableBigSumTree(_, recorded, _), AggregateData::NoAggregateData)
+            if *recorded == 0 =>
+        {
+            None
+        }
 
         // --- Non-Merk data trees: caller skips us via
         // `uses_non_merk_data_storage`; if we end up here anyway, do not

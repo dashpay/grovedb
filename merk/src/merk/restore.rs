@@ -317,6 +317,7 @@ impl<'db, S: NodeStore<'db>> Restorer<S> {
                     | Node::KVValueHash(..)
                     | Node::KVCount(..)
                     | Node::KVSum(..)
+                    | Node::KVBigSum(..)
                     | Node::KVCountBigSum(..)
                     | Node::KVCountSum(..)
             ) {
@@ -405,32 +406,29 @@ impl<'db, S: NodeStore<'db>> Restorer<S> {
                 match &proof_node.node {
                     Node::KVValueHashFeatureType(key, value, vh, feature_type) => {
                         // A backward-references ITEM's stored value hash is
-                        // combine(H(stripped), H(referrer list)) — fully
-                        // recomputable from the carried bytes. Recompute and
-                        // compare so a crafted chunk cannot persist a
-                        // bytes/hash pair that never hashes together (a
+                        // H(its serialization with the referrer list
+                        // emptied), recomputable from the carried bytes.
+                        // Recompute and compare so a chunk cannot persist a
+                        // payload that never hashes to the carried hash (a
                         // bidirectional reference's end-hash component is not
                         // locally derivable, matching the existing trust
                         // model for plain references in chunks).
-                        if matches!(
-                            grovedb_element::ElementType::from_serialized_value(value)
-                                .map(|et| et.base()),
-                            Ok(grovedb_element::ElementType::ItemWithBackwardsReferences
-                                | grovedb_element::ElementType::SumItemWithBackwardsReferences
-                                | grovedb_element::ElementType::ItemWithSumItemWithBackwardsReferences)
-                        ) {
+                        //
+                        // The referrer list itself is outside the hash, so
+                        // nothing here ties it to the root: the GroveDB
+                        // session checks it against the restored
+                        // bidirectional references before it commits.
+                        if grovedb_element::ElementType::from_serialized_value(value)
+                            .map(|et| et.is_backward_references_item())
+                            .unwrap_or(false)
+                        {
                             use crate::element::ElementExt;
                             let expected =
                                 grovedb_element::Element::deserialize(value, grove_version)
                                     .ok()
                                     .and_then(|element| {
-                                        element
-                                            .backward_references_hashes(grove_version)
-                                            .unwrap()
-                                            .ok()
-                                            .flatten()
-                                    })
-                                    .map(|hashes| hashes.combined);
+                                        element.logical_value_hash(grove_version).unwrap().ok()
+                                    });
                             if expected != Some(*vh) {
                                 return Err(Error::ChunkRestoringError(
                                     ChunkError::InvalidChunkProof(
@@ -482,7 +480,7 @@ impl<'db, S: NodeStore<'db>> Restorer<S> {
                     Node::KVValueHash(key, value, vh) => {
                         // Backward-references ITEM variants must arrive as
                         // KVValueHashFeatureType (where a recompute check
-                        // binds the bytes to the combined hash); accepting
+                        // binds the payload to the value hash); accepting
                         // them here would let the bytes ride unbound on the
                         // carried hash. A `BidirectionalReference` is the
                         // exception: the chunk producer legitimately emits
@@ -589,7 +587,28 @@ impl<'db, S: NodeStore<'db>> Restorer<S> {
                             key.clone(),
                             value.clone(),
                             vh,
-                            TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(*count, *sum),
+                            TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(
+                                *count, *sum,
+                            ),
+                        )
+                        .unwrap();
+
+                        tree.set_link(LEFT, proof_node.left.as_ref().map(Child::as_link));
+                        tree.set_link(RIGHT, proof_node.right.as_ref().map(Child::as_link));
+
+                        family_check(&tree)?;
+                        let node = change_set.prepare_node(&tree, NodeChange::ValueWritten);
+                        change_set.put_node(key, node, None)
+                    }
+                    Node::KVBigSum(key, value, sum) => {
+                        // Items in ProvableBigSumTree: the wide counterpart
+                        // of the KVSum arm above.
+                        let vh = value_hash(value.as_slice()).unwrap();
+                        let mut tree = TreeNode::new_with_value_hash(
+                            key.clone(),
+                            value.clone(),
+                            vh,
+                            TreeFeatureType::ProvableBigSummedMerkNode(*sum),
                         )
                         .unwrap();
 
@@ -1202,7 +1221,8 @@ fn provable_sum_of(data: AggregateData) -> i64 {
 /// zero for an aggregate that carries none.
 fn provable_big_sum_of(data: AggregateData) -> i128 {
     match data {
-        AggregateData::ProvableCountAndProvableBigSum(_, sum) => sum,
+        AggregateData::ProvableCountAndProvableBigSum(_, sum)
+        | AggregateData::ProvableBigSum(sum) => sum,
         _ => 0,
     }
 }
@@ -1282,6 +1302,9 @@ fn own_contribution_from_subtree_total(
                 own_count(count)?,
                 own_big_sum(sum)?,
             )
+        }
+        TreeFeatureType::ProvableBigSummedMerkNode(sum) => {
+            TreeFeatureType::ProvableBigSummedMerkNode(own_big_sum(sum)?)
         }
         own => own,
     })

@@ -929,13 +929,17 @@ impl GroveDb {
         // `KVValueHashFeatureType` node the hash does not bind the
         // value bytes; on a `KVCount` / `KVCountSum` node the bytes
         // cannot match the committed root, because the tree never
-        // stores that type. Today that means the backward-references
-        // items, which Provable* count trees refuse at insert. Rows
-        // resolved through a reference are exempt: their value is
-        // the target, which the `KVRefValueHash*` combine binds.
+        // stores that type. A backward-references item is a simple
+        // item here: it arrives with its referrer list emptied, the
+        // bytes `KVCount` / `KVCountSum` rehash. Rows resolved
+        // through a reference are exempt: their value is the target,
+        // which the `KVRefValueHash*` combine binds.
         if !item.resolved_from_reference {
             let element_type = inner.element_type();
-            if !(element_type.has_simple_value_hash() || element_type.is_tree()) {
+            if !(element_type.has_simple_value_hash()
+                || element_type.is_backward_references_item()
+                || element_type.is_tree())
+            {
                 return Err(Error::InvalidProof(
                     query.clone(),
                     format!(
@@ -1603,10 +1607,9 @@ impl GroveDb {
             // its value itself (`H(value) == value_hash`); a composite row
             // (tree, reference) is bound only when the merk verifier
             // checked `combine_hash(H(value), child_hash) == value_hash`
-            // on a node carrying the child hash; a backward-references
-            // item row (`KVBackwardsReferencesValueHash`) is bound the same
-            // way, the merk verifier having recomputed
-            // `combine_hash(H(stripped), referrer_list_hash)` into the root.
+            // on a node carrying the child hash. A backward-references
+            // item row is an item row: it arrives with its referrer list
+            // emptied, the bytes its value hash is taken over.
             // A bare `KVValueHash` row satisfies neither: its bytes are
             // free for a prover to rewrite under a genuine root, which is
             // exactly how a sum item could be disguised as a tree and
@@ -2099,6 +2102,19 @@ impl GroveDb {
                         continue;
                     }
 
+                    // Whether the query goes below this key, which decides
+                    // if a tree without a lower layer is an empty child or
+                    // a result row. The prover classifies it through the
+                    // same function (`proof.subquery_descent_on_key`).
+                    let descends = element.is_any_tree()
+                        && Self::query_descends_on_key(
+                            query,
+                            &internal_query,
+                            current_path,
+                            key,
+                            grove_version,
+                        )?;
+
                     if let Some(lower_layer) = lower_layers.get(key) {
                         // MmrTree/BulkAppendTree have root_key=None (no child Merk data),
                         // so they match on (..) rather than (Some(_), ..)
@@ -2333,9 +2349,11 @@ impl GroveDb {
                             | Element::BigSumTree(Some(_), ..)
                             | Element::CountTree(Some(_), ..)
                             | Element::CountSumTree(Some(_), ..)
+                            | Element::CountBigSumTree(Some(_), ..)
                             | Element::ProvableCountTree(Some(_), ..)
                             | Element::ProvableCountSumTree(Some(_), ..)
                             | Element::ProvableSumTree(Some(_), ..)
+                            | Element::ProvableBigSumTree(Some(_), ..)
                             | Element::ProvableCountProvableSumTree(Some(_), ..)
                             | Element::ProvableCountProvableBigSumTree(Some(_), ..)
                             | Element::CommitmentTree(..)
@@ -2698,9 +2716,11 @@ impl GroveDb {
                             | Element::BigSumTree(None, ..)
                             | Element::CountTree(None, ..)
                             | Element::CountSumTree(None, ..)
+                            | Element::CountBigSumTree(None, ..)
                             | Element::ProvableCountTree(None, ..)
                             | Element::ProvableCountSumTree(None, ..)
                             | Element::ProvableSumTree(None, ..)
+                            | Element::ProvableBigSumTree(None, ..)
                             | Element::ProvableCountProvableSumTree(None, ..)
                             | Element::ProvableCountProvableBigSumTree(None, ..)
                             | Element::SumItem(..)
@@ -2726,7 +2746,7 @@ impl GroveDb {
                             }
                         }
                     } else if element.is_any_item()
-                        || !internal_query.has_subquery_or_matching_in_path_on_key(key)
+                        || !descends
                             && (options.include_empty_trees_in_result
                                 || !matches!(element, Element::Tree(None, _)))
                     {
@@ -2796,10 +2816,7 @@ impl GroveDb {
                         if limit_state.is_exhausted(frame_instance) {
                             break;
                         }
-                    } else if element.is_any_tree()
-                        && !element.is_non_empty_tree()
-                        && internal_query.has_subquery_or_matching_in_path_on_key(key)
-                    {
+                    } else if element.is_any_tree() && !element.is_non_empty_tree() && descends {
                         // An EMPTY tree a subquery matches: an empty
                         // child, not a result row. "Empty" is so far
                         // only what the element bytes CLAIM, and a
@@ -2838,9 +2855,7 @@ impl GroveDb {
                         if limit_state.is_exhausted(frame_instance) {
                             break;
                         }
-                    } else if element.is_non_empty_tree()
-                        && internal_query.has_subquery_or_matching_in_path_on_key(key)
-                    {
+                    } else if element.is_non_empty_tree() && descends {
                         return Err(Error::InvalidProof(
                             query.clone(),
                             format!(
@@ -2858,6 +2873,18 @@ impl GroveDb {
                         // must be bound exactly like a reported empty
                         // tree (issue #869).
                         Self::verify_empty_tree_binding(query, key, &element, value_bytes, hash)?;
+                        // The prover charged this row, as the trusted
+                        // read counts it. From `GROVE_V5` the verifier
+                        // charges it too and stops where the budget is
+                        // spent; earlier versions charge nothing
+                        // (`proof.unreported_empty_tree_row_charge`).
+                        if Self::charge_unreported_empty_tree_row(
+                            limit_state,
+                            &mut frame_instance,
+                            grove_version,
+                        )? {
+                            break;
+                        }
                     } else {
                         // Every classification the verifier can act on
                         // is either descended into (bound through its
@@ -2979,6 +3006,7 @@ impl GroveDb {
             if matches!(
                 element,
                 Element::CountSumTree(None, ..)
+                    | Element::CountBigSumTree(None, ..)
                     | Element::ProvableCountTree(None, ..)
                     | Element::ProvableCountSumTree(None, ..)
             ) && hash == &element_hash
@@ -3715,9 +3743,11 @@ impl GroveDb {
                             | Element::BigSumTree(Some(_), ..)
                             | Element::CountTree(Some(_), ..)
                             | Element::CountSumTree(Some(_), ..)
+                            | Element::CountBigSumTree(Some(_), ..)
                             | Element::ProvableCountTree(Some(_), ..)
                             | Element::ProvableCountSumTree(Some(_), ..)
                             | Element::ProvableSumTree(Some(_), ..)
+                            | Element::ProvableBigSumTree(Some(_), ..)
                             | Element::ProvableCountProvableSumTree(Some(_), ..)
                             | Element::ProvableCountProvableBigSumTree(Some(_), ..) => {
                                 path.push(key);
@@ -3840,9 +3870,11 @@ impl GroveDb {
                             | Element::BigSumTree(None, ..)
                             | Element::CountTree(None, ..)
                             | Element::CountSumTree(None, ..)
+                            | Element::CountBigSumTree(None, ..)
                             | Element::ProvableCountTree(None, ..)
                             | Element::ProvableCountSumTree(None, ..)
                             | Element::ProvableSumTree(None, ..)
+                            | Element::ProvableBigSumTree(None, ..)
                             | Element::ProvableCountProvableSumTree(None, ..)
                             | Element::ProvableCountProvableBigSumTree(None, ..)
                             | Element::CommitmentTree(..)
@@ -5010,7 +5042,6 @@ impl GroveDb {
         match node {
             Node::KV(key, value)
             | Node::KVValueHash(key, value, ..)
-            | Node::KVBackwardsReferencesValueHash(key, value, ..)
             | Node::KVValueHashFeatureType(key, value, ..)
             | Node::KVValueHashFeatureTypeWithChildHash(key, value, ..)
             | Node::KVCount(key, value, ..)
@@ -5021,11 +5052,14 @@ impl GroveDb {
             | Node::KVCountBigSum(key, value, ..)
             | Node::KVCountSum(key, value, ..)
             | Node::KVRefValueHashCountBigSum(key, value, ..)
-            | Node::KVRefValueHashCountSum(key, value, ..) => Some((key.clone(), value.clone())),
+            | Node::KVRefValueHashCountSum(key, value, ..)
+            | Node::KVBigSum(key, value, ..)
+            | Node::KVRefValueHashBigSum(key, value, ..) => Some((key.clone(), value.clone())),
             // These nodes don't have values, only key+hash or just hash
             Node::KVDigest(..)
             | Node::KVDigestCount(..)
             | Node::KVDigestSum(..)
+            | Node::KVDigestBigSum(..)
             | Node::KVDigestCountBigSum(..)
             | Node::KVDigestCountSum(..)
             | Node::Hash(_)
@@ -5033,7 +5067,9 @@ impl GroveDb {
             | Node::KVHashCount(..)
             | Node::HashWithCount(..)
             | Node::KVHashSum(..)
+            | Node::KVHashBigSum(..)
             | Node::HashWithSum(..)
+            | Node::HashWithBigSum(..)
             | Node::KVHashCountBigSum(..)
             | Node::KVHashCountSum(..)
             | Node::HashWithCountAndBigSum(..)
@@ -5049,6 +5085,7 @@ impl GroveDb {
         match element.underlying() {
             Element::CountTree(_, count, _)
             | Element::CountSumTree(_, count, ..)
+            | Element::CountBigSumTree(_, count, ..)
             | Element::ProvableCountTree(_, count, _)
             | Element::ProvableCountSumTree(_, count, ..)
             | Element::ProvableCountProvableSumTree(_, count, ..)

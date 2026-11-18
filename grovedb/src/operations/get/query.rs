@@ -338,9 +338,11 @@ where {
             | Element::BigSumTree(..)
             | Element::CountTree(..)
             | Element::CountSumTree(..)
+            | Element::CountBigSumTree(..)
             | Element::ProvableCountTree(..)
             | Element::ProvableCountSumTree(..)
             | Element::ProvableSumTree(..)
+            | Element::ProvableBigSumTree(..)
             | Element::ProvableCountProvableSumTree(..)
             | Element::ProvableCountProvableBigSumTree(..) => {
                 // Public results carry the logical (stripped) form; the
@@ -529,9 +531,11 @@ where {
                         | Element::BigSumTree(..)
                         | Element::CountTree(..)
                         | Element::CountSumTree(..)
+                        | Element::CountBigSumTree(..)
                         | Element::ProvableCountTree(..)
                         | Element::ProvableCountSumTree(..)
                         | Element::ProvableSumTree(..)
+                        | Element::ProvableBigSumTree(..)
                         | Element::ProvableCountProvableSumTree(..)
                         | Element::ProvableCountProvableBigSumTree(..)
                         | Element::CommitmentTree(..)
@@ -708,6 +712,18 @@ where {
                                             count_value,
                                             big_sum_value,
                                         )),
+                                        Element::CountBigSumTree(
+                                            _,
+                                            count_value,
+                                            big_sum_value,
+                                            _,
+                                        ) => Ok(QueryItemOrSumReturnType::CountBigSumValue(
+                                            count_value,
+                                            big_sum_value,
+                                        )),
+                                        Element::ProvableBigSumTree(_, big_sum_value, _) => {
+                                            Ok(QueryItemOrSumReturnType::BigSumValue(big_sum_value))
+                                        }
                                         Element::ProvableCountIndexedTree(.., count_value, _) => {
                                             Ok(QueryItemOrSumReturnType::CountValue(count_value))
                                         }
@@ -784,6 +800,12 @@ where {
                             count_value,
                             big_sum_value,
                         )),
+                        Element::CountBigSumTree(_, count_value, big_sum_value, _) => Ok(
+                            QueryItemOrSumReturnType::CountBigSumValue(count_value, big_sum_value),
+                        ),
+                        Element::ProvableBigSumTree(_, big_sum_value, _) => {
+                            Ok(QueryItemOrSumReturnType::BigSumValue(big_sum_value))
+                        }
                         Element::ProvableCountIndexedTree(.., count_value, _) => {
                             Ok(QueryItemOrSumReturnType::CountValue(count_value))
                         }
@@ -1395,9 +1417,11 @@ where {
                         | Element::BigSumTree(..)
                         | Element::CountTree(..)
                         | Element::CountSumTree(..)
+                        | Element::CountBigSumTree(..)
                         | Element::ProvableCountTree(..)
                         | Element::ProvableCountSumTree(..)
                         | Element::ProvableSumTree(..)
+                        | Element::ProvableBigSumTree(..)
                         | Element::ProvableCountProvableSumTree(..)
                         | Element::ProvableCountProvableBigSumTree(..)
                         | Element::CommitmentTree(..)

@@ -28,6 +28,14 @@ pub mod indexed_axis;
 /// verifiers' completeness/soundness checks (count-independent cost).
 #[cfg(any(feature = "minimal", feature = "verify"))]
 mod position_intervals;
+/// Whether a query goes below a key of a layer, as the V1 prover and
+/// verifier classify it, versioned.
+#[cfg(any(feature = "minimal", feature = "verify"))]
+mod subquery_descent_on_key;
+/// Whether a V1 verifier charges an empty tree row it does not report,
+/// versioned.
+#[cfg(any(feature = "minimal", feature = "verify"))]
+mod unreported_empty_tree_row_charge;
 /// Utility functions for proof display and conversion.
 pub mod util;
 mod verify;
@@ -1167,12 +1175,6 @@ fn node_to_string(node: &Node) -> Result<String, fmt::Error> {
             element_hex_to_ascii(value)?,
             hex::encode(value_hash)
         ),
-        Node::KVBackwardsReferencesValueHash(key, value, backrefs_hash) => format!(
-            "KVBackwardsReferencesValueHash({}, {}, HASH[{}])",
-            hex_to_ascii(key),
-            element_hex_to_ascii(value)?,
-            hex::encode(backrefs_hash)
-        ),
         Node::KVDigest(key, value_hash) => format!(
             "KVDigest({}, HASH[{}])",
             hex_to_ascii(key),
@@ -1259,6 +1261,35 @@ fn node_to_string(node: &Node) -> Result<String, fmt::Error> {
         ),
         Node::HashWithSum(kv_hash, left_child_hash, right_child_hash, sum) => format!(
             "HashWithSum(kv_hash=HASH[{}], left=HASH[{}], right=HASH[{}], sum={})",
+            hex::encode(kv_hash),
+            hex::encode(left_child_hash),
+            hex::encode(right_child_hash),
+            sum
+        ),
+        Node::KVBigSum(key, value, sum) => format!(
+            "KVBigSum({}, {}, {})",
+            hex_to_ascii(key),
+            element_hex_to_ascii(value)?,
+            sum
+        ),
+        Node::KVHashBigSum(kv_hash, sum) => {
+            format!("KVHashBigSum(HASH[{}], {})", hex::encode(kv_hash), sum)
+        }
+        Node::KVRefValueHashBigSum(key, value, value_hash, sum) => format!(
+            "KVRefValueHashBigSum({}, {}, HASH[{}], {})",
+            hex_to_ascii(key),
+            element_hex_to_ascii(value)?,
+            hex::encode(value_hash),
+            sum
+        ),
+        Node::KVDigestBigSum(key, value_hash, sum) => format!(
+            "KVDigestBigSum({}, HASH[{}], {})",
+            hex_to_ascii(key),
+            hex::encode(value_hash),
+            sum
+        ),
+        Node::HashWithBigSum(kv_hash, left_child_hash, right_child_hash, sum) => format!(
+            "HashWithBigSum(kv_hash=HASH[{}], left=HASH[{}], right=HASH[{}], sum={})",
             hex::encode(kv_hash),
             hex::encode(left_child_hash),
             hex::encode(right_child_hash),

@@ -345,6 +345,7 @@ impl Link {
                     key.len() + 44 // 1 + 32 + 2 + 1 + 8
                 }
                 AggregateData::BigSum(_)
+                | AggregateData::ProvableBigSum(_)
                 | AggregateData::CountAndSum(..)
                 | AggregateData::ProvableCountAndSum(..)
                 | AggregateData::ProvableCountAndProvableSum(..) => {
@@ -358,7 +359,8 @@ impl Link {
                     //    sum_len for sum vale
                     key.len() + 52 // 1 + 32 + 2 + 1 + 16
                 }
-                AggregateData::ProvableCountAndProvableBigSum(..) => {
+                AggregateData::ProvableCountAndProvableBigSum(..)
+                | AggregateData::CountAndBigSum(..) => {
                     // as above, with 8 for the count and 16 for the sum
                     key.len() + 60 // 1 + 32 + 2 + 1 + 24
                 }
@@ -387,12 +389,14 @@ impl Link {
                     tree.key().len() + 44 // 1 + 32 + 2 + 1 + 8
                 }
                 AggregateData::BigSum(_)
+                | AggregateData::ProvableBigSum(_)
                 | AggregateData::CountAndSum(..)
                 | AggregateData::ProvableCountAndSum(..)
                 | AggregateData::ProvableCountAndProvableSum(..) => {
                     tree.key().len() + 52 // 1 + 32 + 2 + 1 + 16
                 }
-                AggregateData::ProvableCountAndProvableBigSum(..) => {
+                AggregateData::ProvableCountAndProvableBigSum(..)
+                | AggregateData::CountAndBigSum(..) => {
                     tree.key().len() + 60 // 1 + 32 + 2 + 1 + 24
                 }
             },
@@ -499,6 +503,18 @@ impl Encode for Link {
                 out.write_varint(*count_value)?;
                 out.write_i128::<BigEndian>(*big_sum_value)?;
             }
+            // Tag bytes 10 and 11 parallel
+            // `TreeFeatureType::CountedBigSummedMerkNode` and
+            // `TreeFeatureType::ProvableBigSummedMerkNode`.
+            AggregateData::CountAndBigSum(count_value, big_sum_value) => {
+                out.write_all(&[10])?;
+                out.write_varint(*count_value)?;
+                out.write_i128::<BigEndian>(*big_sum_value)?;
+            }
+            AggregateData::ProvableBigSum(big_sum_value) => {
+                out.write_all(&[11])?;
+                out.write_i128::<BigEndian>(*big_sum_value)?;
+            }
         }
 
         Ok(())
@@ -527,7 +543,7 @@ impl Encode for Link {
                     //    sum_len for sum vale
                     key.len() + encoded_sum_value.len() + 36 // 1 + 32 + 2 + 1
                 }
-                AggregateData::BigSum(_) => {
+                AggregateData::BigSum(_) | AggregateData::ProvableBigSum(_) => {
                     // 1 for key len
                     // key_len for keys
                     // 32 for hash
@@ -573,7 +589,8 @@ impl Encode for Link {
                     let encoded_count_value = count.encode_var_vec();
                     key.len() + encoded_sum_value.len() + encoded_count_value.len() + 36
                 }
-                AggregateData::ProvableCountAndProvableBigSum(count, _) => {
+                AggregateData::ProvableCountAndProvableBigSum(count, _)
+                | AggregateData::CountAndBigSum(count, _) => {
                     let encoded_count_value = count.encode_var_vec();
                     key.len() + encoded_count_value.len() + 52 // 1 + 32 + 2 + 1 + 16
                 }
@@ -599,7 +616,7 @@ impl Encode for Link {
                     let encoded_sum_value = sum_value.encode_var_vec();
                     tree.key().len() + encoded_sum_value.len() + 36 // 1 + 32 + 2 + 1
                 }
-                AggregateData::BigSum(_) => {
+                AggregateData::BigSum(_) | AggregateData::ProvableBigSum(_) => {
                     tree.key().len() + 52 // 1 + 32 + 2 + 1 + 16
                 }
                 AggregateData::Count(count_value) => {
@@ -629,7 +646,8 @@ impl Encode for Link {
                     let encoded_count_value = count.encode_var_vec();
                     tree.key().len() + encoded_sum_value.len() + encoded_count_value.len() + 36
                 }
-                AggregateData::ProvableCountAndProvableBigSum(count, _) => {
+                AggregateData::ProvableCountAndProvableBigSum(count, _)
+                | AggregateData::CountAndBigSum(count, _) => {
                     let encoded_count_value = count.encode_var_vec();
                     tree.key().len() + encoded_count_value.len() + 52 // 1 + 32 + 2 + 1 + 16
                 }
@@ -730,6 +748,15 @@ impl Decode for Link {
                     let encoded_count: u64 = input.read_varint()?;
                     let encoded_big_sum: i128 = input.read_i128::<BigEndian>()?;
                     AggregateData::ProvableCountAndProvableBigSum(encoded_count, encoded_big_sum)
+                }
+                10 => {
+                    let encoded_count: u64 = input.read_varint()?;
+                    let encoded_big_sum: i128 = input.read_i128::<BigEndian>()?;
+                    AggregateData::CountAndBigSum(encoded_count, encoded_big_sum)
+                }
+                11 => {
+                    let encoded_big_sum: i128 = input.read_i128::<BigEndian>()?;
+                    AggregateData::ProvableBigSum(encoded_big_sum)
                 }
                 byte => return Err(ed::Error::UnexpectedByte(byte)),
             };
@@ -1041,6 +1068,45 @@ mod test {
             assert_eq!(key, vec![9, 9, 9]);
         } else {
             panic!("expected Link::Reference after decode");
+        }
+    }
+
+    /// `AggregateData::CountAndBigSum` (tag 10) and
+    /// `AggregateData::ProvableBigSum` (tag 11) encode on a link with 16
+    /// big-endian sum bytes and decode back.
+    #[test]
+    fn round_trip_aggregate_data_count_and_big_sum_and_provable_big_sum() {
+        for (count, sum) in [
+            (0u64, 0i128),
+            (3, i128::from(i64::MAX) * 3),
+            (300, i128::from(i64::MIN) * 3),
+            (u64::MAX, i128::MAX),
+            (u64::MAX, i128::MIN),
+        ] {
+            for (aggregate_data, tag, cost) in [
+                (AggregateData::CountAndBigSum(count, sum), 10u8, 60usize),
+                (AggregateData::ProvableBigSum(sum), 11, 52),
+            ] {
+                let original = Link::Reference {
+                    hash: [55; 32],
+                    aggregate_data,
+                    child_heights: (1, 2),
+                    key: vec![9, 9, 9],
+                };
+                let mut bytes = vec![];
+                original.encode_into(&mut bytes).expect("encode the link");
+                assert_eq!(bytes[1 + 3 + 32 + 2], tag, "the aggregate tag byte");
+                assert_eq!(&bytes[bytes.len() - 16..], &sum.to_be_bytes());
+                assert_eq!(
+                    bytes.len(),
+                    original.encoding_length().expect("encoding_length")
+                );
+                assert_eq!(original.encoding_cost().expect("encoding_cost"), 3 + cost);
+
+                let decoded = Link::decode(bytes.as_slice()).expect("decode the link");
+                assert_eq!(decoded.aggregate_data(), aggregate_data);
+                assert!(Link::decode(&bytes[..bytes.len() - 1]).is_err());
+            }
         }
     }
 

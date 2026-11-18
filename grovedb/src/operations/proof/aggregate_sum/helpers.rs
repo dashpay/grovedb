@@ -75,13 +75,14 @@ impl SumWidth for NarrowSum {
     }
 }
 
-/// An `i128` sum, proved against a `ProvableCountProvableBigSumTree`.
+/// An `i128` sum, proved against a `ProvableBigSumTree` or a
+/// `ProvableCountProvableBigSumTree`.
 pub(in crate::operations::proof) struct WideSum;
 
 impl SumWidth for WideSum {
     type Sum = i128;
 
-    const TERMINAL_TREES: &'static str = "ProvableCountProvableBigSumTree";
+    const TERMINAL_TREES: &'static str = "ProvableBigSumTree or ProvableCountProvableBigSumTree";
 
     fn verify_leaf(
         leaf_bytes: &[u8],
@@ -91,7 +92,10 @@ impl SumWidth for WideSum {
     }
 
     fn is_terminal_tree(element: &Element) -> bool {
-        matches!(element, Element::ProvableCountProvableBigSumTree(..))
+        matches!(
+            element,
+            Element::ProvableBigSumTree(..) | Element::ProvableCountProvableBigSumTree(..)
+        )
     }
 }
 

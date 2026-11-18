@@ -784,6 +784,13 @@ unchanged, and the walk stops there. The records the walk does read are
 exactly the node records the transition changed, which are the ones Merk
 handed to RocksDB.
 
+One part of a record is in no hash: the referrer list of an element that
+takes backward references (GroveDB #1059). Registering or removing a
+referrer changes the target's record and leaves its hash, and every hash
+above it, as it was, so the walk does not reach it. After the walk the
+observer therefore reads again each record that carries a referrer list and
+that the walk did not report, and reports the ones that changed.
+
 **Deletions.** A node is deleted if it was a child of a changed node, or the
 root, and the walk did not meet it again in its tree. A Merk is dropped if
 its host is deleted, or its element stops being a tree or becomes another

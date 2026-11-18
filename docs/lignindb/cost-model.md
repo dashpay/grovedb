@@ -6,7 +6,7 @@ This document specifies what GroveDB charges today, as an `OperationCost`, for e
 
 It builds on the [storage surface inventory](storage-surface.md) (BASE-04), the [FlatStore seam](flat-store.md) (SEAM-03), the [NodeStore seam](node-store.md) (SEAM-01) and rule GM0 of the [transaction rules](transactions.md) (TXN-01). The cost codes of the inventory (`P-path`, `R-tx`, `B-commit` and so on) are named next to each rule.
 
-**Pinned commit:** the engine sources of `feat/LigninDB` at `54e36fb4` ("Merge BASE-01: the remaining cost-bearing operations"). The golden corpus names the engine of `develop` `22f163c2`, whose sources these are, and replays unchanged on that commit. Functions are cited by name, with the line at the pinned commit.
+**Pinned commit:** the engine sources of `feat/LigninDB` at `54e36fb4` ("Merge BASE-01: the remaining cost-bearing operations"), which are those of `develop` `22f163c2`. Functions are cited by name, with the line at the pinned commit. Since then `develop` has been merged up to `f1016919` and the golden corpus recorded again from that commit (`lignin-testkit/corpus/README.md`). The rules below predict every cost of the new corpus as they did of the old, and the citations have not been moved.
 
 **Result:** the storage rules of section 5, applied to a logical state that holds no node record, reproduce every `OperationCost` of the golden corpus: 290 traces and 216,069 steps on grove versions 1 to 5 at the standard scale, and the five reference traces of 1,050,008 operations each. Section 12 says how that is run, what it shows and what it does not. One thing it does not show: the corpus cannot tell whether a delete with no writer's cost is charged from the committed state or from the transaction's view (rule D2), because the two differ only for a record the same transaction wrote, and the corpus deletes such records only in an operation whose cost GroveDB drops. The storage crate's tests pin that instead.
 
@@ -81,6 +81,8 @@ The node's own key is not in the record. The aggregate of a link and the feature
 | 7 | `ProvableSum`, `ProvableSummedMerkNode` | signed varint | one varint, 8 |
 | 8 | `ProvableCountAndProvableSum`, `ProvableCountedAndProvableSummedMerkNode` | varint, signed varint | two varints, 16 |
 | 9 | `ProvableCountAndProvableBigSum`, `ProvableCountedAndProvableBigSummedMerkNode` | varint, 16 bytes | varint and wide, 24 |
+| 10 | `CountAndBigSum`, `CountedBigSummedMerkNode` | varint, 16 bytes | varint and wide, 24 |
+| 11 | `ProvableBigSum`, `ProvableBigSummedMerkNode` | 16 bytes | wide, 16 |
 
 `payload_len` is the length of the payload: it depends on the values of the counts and sums, through their varints. The **cost class** is the fixed number of bytes the feature is charged as in a storage cost, whatever its varints take (`TreeCostType`, rule K2).
 

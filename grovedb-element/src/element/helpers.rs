@@ -129,6 +129,7 @@ impl Element {
             | Element::ProvableCountSumTree(_, count_value, ..)
             | Element::ProvableCountProvableSumTree(_, count_value, ..)
             | Element::ProvableCountProvableBigSumTree(_, count_value, ..)
+            | Element::CountBigSumTree(_, count_value, ..)
             | Element::ProvableCountIndexedTree(.., count_value, _) => *count_value,
             // PCPSIT: count_value is the second field.
             Element::ProvableCountProvableSumIndexedTree(_, count_value, ..) => *count_value,
@@ -170,7 +171,10 @@ impl Element {
             Element::ProvableCountTree(_, count_value, _) => (*count_value, 0),
             // A big sum does not fit the i64 axis, so like a `BigSumTree` it
             // contributes no sum here; its count still propagates.
-            Element::ProvableCountProvableBigSumTree(_, count_value, ..) => (*count_value, 0),
+            Element::ProvableCountProvableBigSumTree(_, count_value, ..)
+            | Element::CountBigSumTree(_, count_value, ..) => (*count_value, 0),
+            // A `ProvableBigSumTree` falls through to `(1, 0)`: it counts
+            // once, as a `BigSumTree` does, and its sum does not fit either.
             Element::ProvableCountIndexedTree(.., count_value, _) => (*count_value, 0),
             // PSIT contributes (1, sum) like a plain sum-bearing leaf.
             Element::ProvableSumIndexedTree(_, _, sum_value, _) => (1, *sum_value),
@@ -207,7 +211,9 @@ impl Element {
                 *sum_value as i128
             }
             Element::BigSumTree(_, sum_value, _)
-            | Element::ProvableCountProvableBigSumTree(_, _, sum_value, _) => *sum_value,
+            | Element::ProvableBigSumTree(_, sum_value, _)
+            | Element::ProvableCountProvableBigSumTree(_, _, sum_value, _)
+            | Element::CountBigSumTree(_, _, sum_value, _) => *sum_value,
             _ => 0,
         }
     }
@@ -405,6 +411,57 @@ impl Element {
         }
     }
 
+    /// Check if the element is a `CountBigSumTree`. Looks through wrappers.
+    pub fn is_count_big_sum_tree(&self) -> bool {
+        matches!(self.underlying(), Element::CountBigSumTree(..))
+    }
+
+    /// Decoded (count, sum) from a `CountBigSumTree`. Looks through wrappers.
+    pub fn as_count_big_sum_tree_value(&self) -> Result<(u64, i128), ElementError> {
+        match self.underlying() {
+            Element::CountBigSumTree(_, count, sum, _) => Ok((*count, *sum)),
+            _ => Err(ElementError::WrongElementType(
+                "expected a count big sum tree",
+            )),
+        }
+    }
+
+    /// Owned variant of [`Self::as_count_big_sum_tree_value`].
+    pub fn into_count_big_sum_tree_value(self) -> Result<(u64, i128), ElementError> {
+        match self.into_underlying() {
+            Element::CountBigSumTree(_, count, sum, _) => Ok((count, sum)),
+            _ => Err(ElementError::WrongElementType(
+                "expected a count big sum tree",
+            )),
+        }
+    }
+
+    /// Check if the element is a `ProvableBigSumTree`. Looks through
+    /// wrappers.
+    pub fn is_provable_big_sum_tree(&self) -> bool {
+        matches!(self.underlying(), Element::ProvableBigSumTree(..))
+    }
+
+    /// Decoded sum from a `ProvableBigSumTree`. Looks through wrappers.
+    pub fn as_provable_big_sum_tree_value(&self) -> Result<i128, ElementError> {
+        match self.underlying() {
+            Element::ProvableBigSumTree(_, value, _) => Ok(*value),
+            _ => Err(ElementError::WrongElementType(
+                "expected a provable big sum tree",
+            )),
+        }
+    }
+
+    /// Owned variant of [`Self::as_provable_big_sum_tree_value`].
+    pub fn into_provable_big_sum_tree_value(self) -> Result<i128, ElementError> {
+        match self.into_underlying() {
+            Element::ProvableBigSumTree(_, value, _) => Ok(value),
+            _ => Err(ElementError::WrongElementType(
+                "expected a provable big sum tree",
+            )),
+        }
+    }
+
     /// Check if the element is a tree but not a sum tree. Looks through
     /// `NonCounted`.
     pub fn is_basic_tree(&self) -> bool {
@@ -420,9 +477,11 @@ impl Element {
                 | Element::BigSumTree(..)
                 | Element::CountTree(..)
                 | Element::CountSumTree(..)
+                | Element::CountBigSumTree(..)
                 | Element::ProvableCountTree(..)
                 | Element::ProvableCountSumTree(..)
                 | Element::ProvableSumTree(..)
+                | Element::ProvableBigSumTree(..)
                 | Element::ProvableCountProvableSumTree(..)
                 | Element::ProvableCountProvableBigSumTree(..)
                 | Element::CommitmentTree(..)
@@ -545,9 +604,11 @@ impl Element {
                 | Element::BigSumTree(Some(_), ..)
                 | Element::CountTree(Some(_), ..)
                 | Element::CountSumTree(Some(_), ..)
+                | Element::CountBigSumTree(Some(_), ..)
                 | Element::ProvableCountTree(Some(_), ..)
                 | Element::ProvableCountSumTree(Some(_), ..)
                 | Element::ProvableSumTree(Some(_), ..)
+                | Element::ProvableBigSumTree(Some(_), ..)
                 | Element::ProvableCountProvableSumTree(Some(_), ..)
                 | Element::ProvableCountProvableBigSumTree(Some(_), ..)
                 | Element::CommitmentTree(..)
@@ -578,9 +639,11 @@ impl Element {
                 | Element::BigSumTree(Some(_), ..)
                 | Element::CountTree(Some(_), ..)
                 | Element::CountSumTree(Some(_), ..)
+                | Element::CountBigSumTree(Some(_), ..)
                 | Element::ProvableCountTree(Some(_), ..)
                 | Element::ProvableCountSumTree(Some(_), ..)
                 | Element::ProvableSumTree(Some(_), ..)
+                | Element::ProvableBigSumTree(Some(_), ..)
                 | Element::ProvableCountProvableSumTree(Some(_), ..)
                 | Element::ProvableCountProvableBigSumTree(Some(_), ..)
                 | Element::ProvableSumIndexedTree(Some(_), ..)
@@ -759,9 +822,11 @@ impl Element {
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
             | Element::CountSumTree(.., flags)
+            | Element::CountBigSumTree(.., flags)
             | Element::ProvableCountTree(.., flags)
             | Element::ProvableCountSumTree(.., flags)
             | Element::ProvableSumTree(.., flags)
+            | Element::ProvableBigSumTree(.., flags)
             | Element::ProvableCountProvableSumTree(.., flags)
             | Element::ProvableCountProvableBigSumTree(.., flags)
             | Element::ItemWithSumItem(.., flags)
@@ -797,9 +862,11 @@ impl Element {
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
             | Element::CountSumTree(.., flags)
+            | Element::CountBigSumTree(.., flags)
             | Element::ProvableCountTree(.., flags)
             | Element::ProvableCountSumTree(.., flags)
             | Element::ProvableSumTree(.., flags)
+            | Element::ProvableBigSumTree(.., flags)
             | Element::ProvableCountProvableSumTree(.., flags)
             | Element::ProvableCountProvableBigSumTree(.., flags)
             | Element::ItemWithSumItem(.., flags)
@@ -835,9 +902,11 @@ impl Element {
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
             | Element::CountSumTree(.., flags)
+            | Element::CountBigSumTree(.., flags)
             | Element::ProvableCountTree(.., flags)
             | Element::ProvableCountSumTree(.., flags)
             | Element::ProvableSumTree(.., flags)
+            | Element::ProvableBigSumTree(.., flags)
             | Element::ProvableCountProvableSumTree(.., flags)
             | Element::ProvableCountProvableBigSumTree(.., flags)
             | Element::ItemWithSumItem(.., flags)
@@ -872,9 +941,11 @@ impl Element {
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
             | Element::CountSumTree(.., flags)
+            | Element::CountBigSumTree(.., flags)
             | Element::ProvableCountTree(.., flags)
             | Element::ProvableCountSumTree(.., flags)
             | Element::ProvableSumTree(.., flags)
+            | Element::ProvableBigSumTree(.., flags)
             | Element::ProvableCountProvableSumTree(.., flags)
             | Element::ProvableCountProvableBigSumTree(.., flags)
             | Element::ItemWithSumItem(.., flags)
@@ -1492,6 +1563,106 @@ mod flag_accessor_tests {
     fn dense_append_only_tree_flag_accessors() {
         let e = Element::DenseAppendOnlyFixedSizeTree(0, 0, flags());
         check_accessors_round_trip(e);
+    }
+
+    /// Each constructor of a tree with a 128-bit sum builds the element its
+    /// name says, and the accessors read back what the element holds,
+    /// through a wrapper too.
+    #[test]
+    fn big_sum_tree_constructors_and_accessors() {
+        const WIDE: i128 = 3 * (i64::MAX as i128);
+        let flags = Some(vec![7u8]);
+        let root = Some(b"root".to_vec());
+
+        assert_eq!(
+            Element::empty_count_big_sum_tree_with_flags(flags.clone()),
+            Element::CountBigSumTree(None, 0, 0, flags.clone())
+        );
+        assert_eq!(
+            Element::new_count_big_sum_tree_with_flags(root.clone(), flags.clone()),
+            Element::CountBigSumTree(root.clone(), 0, 0, flags.clone())
+        );
+        let counted = Element::new_count_big_sum_tree_with_flags_and_sum_and_count_value(
+            root.clone(),
+            3,
+            WIDE,
+            flags.clone(),
+        );
+        assert!(counted.is_count_big_sum_tree());
+        assert_eq!(counted.as_count_big_sum_tree_value().unwrap(), (3, WIDE));
+        assert_eq!(
+            Element::NonCounted(Box::new(counted))
+                .into_count_big_sum_tree_value()
+                .unwrap(),
+            (3, WIDE)
+        );
+
+        assert_eq!(
+            Element::empty_provable_big_sum_tree_with_flags(flags.clone()),
+            Element::ProvableBigSumTree(None, 0, flags.clone())
+        );
+        assert_eq!(
+            Element::new_provable_big_sum_tree_with_flags(root.clone(), flags.clone()),
+            Element::ProvableBigSumTree(root.clone(), 0, flags.clone())
+        );
+        let summed = Element::new_provable_big_sum_tree_with_flags_and_sum_value(root, WIDE, flags);
+        assert!(summed.is_provable_big_sum_tree());
+        assert_eq!(summed.as_provable_big_sum_tree_value().unwrap(), WIDE);
+        assert_eq!(
+            Element::NotSummed(Box::new(summed))
+                .into_provable_big_sum_tree_value()
+                .unwrap(),
+            WIDE
+        );
+
+        // An element of another kind has neither value.
+        let other = Element::empty_tree();
+        assert!(!other.is_count_big_sum_tree() && !other.is_provable_big_sum_tree());
+        assert!(other.as_count_big_sum_tree_value().is_err());
+        assert!(other.clone().into_count_big_sum_tree_value().is_err());
+        assert!(other.as_provable_big_sum_tree_value().is_err());
+        assert!(other.into_provable_big_sum_tree_value().is_err());
+    }
+
+    /// A wrapped tree with a 128-bit sum reports the wrapper's element type,
+    /// and each such type has its own name.
+    #[test]
+    fn wrapped_big_sum_trees_report_their_element_types() {
+        use crate::element_type::ElementType;
+
+        let wrap = |wrapper: fn(Box<Element>) -> Element, inner: &Element| {
+            wrapper(Box::new(inner.clone())).element_type()
+        };
+        let count_big_sum = Element::CountBigSumTree(None, 0, 0, None);
+        let provable_big_sum = Element::ProvableBigSumTree(None, 0, None);
+
+        let types = [
+            wrap(Element::NonCounted, &count_big_sum),
+            wrap(Element::NonCounted, &provable_big_sum),
+            wrap(Element::NotSummed, &count_big_sum),
+            wrap(Element::NotSummed, &provable_big_sum),
+            wrap(Element::NotCountedOrSummed, &count_big_sum),
+            wrap(Element::NotCountedOrSummed, &provable_big_sum),
+        ];
+        assert_eq!(
+            types,
+            [
+                ElementType::NonCountedCountBigSumTree,
+                ElementType::NonCountedProvableBigSumTree,
+                ElementType::NotSummedCountBigSumTree,
+                ElementType::NotSummedProvableBigSumTree,
+                ElementType::NotCountedOrSummedCountBigSumTree,
+                ElementType::NotCountedOrSummedProvableBigSumTree,
+            ]
+        );
+        let mut names: Vec<&str> = types
+            .iter()
+            .map(|element_type| element_type.as_str())
+            .collect();
+        assert!(names.iter().all(|name| name.contains("big sum")));
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), types.len());
     }
 
     #[test]

@@ -1158,6 +1158,47 @@ mod tests {
     }
 
     #[test]
+    fn a_direct_element_read_reports_a_failed_read_as_a_storage_error() {
+        use grovedb_element::Element;
+        use grovedb_version::version::v1::GROVE_V1;
+
+        use crate::element::get::ElementFetchFromStorageExtensions;
+
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let tape = Tape::default();
+        let store = tape.recording(
+            storage
+                .get_transactional_storage_context(SubtreePath::empty(), None, &tx)
+                .unwrap(),
+        );
+
+        for grove_version in [&GROVE_V1, GroveVersion::latest()] {
+            tape.take();
+            tape.fail(Some("get"));
+            let optional = Element::get_optional_from_storage(&store, b"key", grove_version);
+            let required = Element::get_from_storage(&store, b"key", grove_version);
+            tape.fail(None);
+
+            for read in [optional.map_ok(|_| ()), required.map_ok(|_| ())] {
+                assert_eq!(read.cost, failed_call());
+                assert!(matches!(
+                    read.value,
+                    Err(Error::StorageError(grovedb_storage::Error::StorageError(text)))
+                        if text == "get failed"
+                ));
+            }
+            assert_eq!(
+                tape.take(),
+                [call("get", b"key", b""), call("get", b"key", b"")]
+            );
+
+            let absent = Element::get_optional_from_storage(&store, b"key", grove_version);
+            assert!(matches!(absent.value, Ok(None)));
+        }
+    }
+
+    #[test]
     fn the_root_key_and_the_side_records_are_records_of_the_context() {
         let storage = TempStorage::new();
         let tx = storage.start_transaction();
