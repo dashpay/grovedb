@@ -111,9 +111,13 @@ struct PageVersion {
 struct Pages(BTreeMap<PageId, Vec<PageVersion>>);
 
 impl Pages {
-    fn current(&self, id: PageId) -> Option<&Page> {
+    fn current_version(&self, id: PageId) -> Option<&PageVersion> {
         let version = self.0.get(&id)?.last()?;
-        version.superseded.is_none().then_some(&version.page)
+        version.superseded.is_none().then_some(version)
+    }
+
+    fn current(&self, id: PageId) -> Option<&Page> {
+        self.current_version(id).map(|version| &version.page)
     }
 
     fn current_cells(&self, id: PageId) -> Vec<Cell> {
@@ -522,25 +526,30 @@ impl PageStore {
 }
 
 impl ValueOwners for PageStore {
-    fn holds(&self, page: PageId, pointer: ValuePointer) -> Result<bool, OwnersError> {
+    /// The version at which the page version that was looked at was born.
+    type Found = u64;
+
+    fn find(&self, page: PageId, pointer: ValuePointer) -> Result<Option<u64>, OwnersError> {
         let inner = self.inner.borrow();
-        Ok(inner
-            .pages
-            .current(page)
-            .is_some_and(|page| page.holds(pointer)))
+        let current = inner.pages.current_version(page);
+        Ok(current
+            .filter(|current| current.page.holds(pointer))
+            .map(|current| current.born))
     }
 
-    fn rewrite(&self, step: PointerRewrite<'_>) -> Result<Rewrite, OwnersError> {
+    fn rewrite(&self, step: PointerRewrite<'_>, found: u64) -> Result<Rewrite, OwnersError> {
         let mut inner = self.inner.borrow_mut();
         let (page, from, to) = (step.page(), step.from(), step.to());
         if inner.private.contains_key(&page) {
             return Ok(Rewrite::Refused(Refusal::Busy));
         }
-        if !inner
-            .pages
-            .current(page)
-            .is_some_and(|page| page.holds(from))
-        {
+        let Some(current) = inner.pages.current_version(page) else {
+            return Ok(Rewrite::Refused(Refusal::OwnerGone));
+        };
+        if current.born != found {
+            return Ok(Rewrite::Refused(Refusal::Busy));
+        }
+        if !current.page.holds(from) {
             return Ok(Rewrite::Refused(Refusal::OwnerGone));
         }
         inner.log(&Record::Step { page, from, to })?;
@@ -703,7 +712,7 @@ impl Db {
                 counts: values.counts(),
             },
         )?;
-        values.mark_durable(values.applied());
+        values.mark_durable(values.applied())?;
         values.commit(&mut manifest)?;
         Ok(Self {
             fs: fs.clone(),
@@ -836,9 +845,20 @@ impl Db {
         self.values.commit(&mut self.manifest)
     }
 
-    /// Commits `txn` and returns the new version.
+    /// Commits `txn` and returns the new version. A transaction that holds
+    /// a pointer the manifest does not cover is rolled back, with nothing
+    /// written to the journal.
     pub(super) fn commit(&mut self, txn: Txn) -> Result<u64, ValueStoreError> {
-        match self.prepare(&txn) {
+        let prepared = self.prepare(&txn).and_then(|()| {
+            let uncovered = txn
+                .acquired
+                .iter()
+                .find(|&&pointer| !self.values.covers(pointer));
+            uncovered.map_or(Ok(()), |&pointer| {
+                Err(ValueStoreError::NotCovered { pointer })
+            })
+        });
+        match prepared {
             Ok(()) => commit_prepared(&self.pages, &self.values, txn),
             Err(error) => {
                 self.rollback(txn);
@@ -858,8 +878,7 @@ impl Db {
         let synced = inner.journal.sync_data();
         inner.journal_failed |= synced.is_err();
         synced.map_err(journal_error("sync", JOURNAL))?;
-        self.values.mark_durable(mark);
-        Ok(())
+        self.values.mark_durable(mark)
     }
 
     /// Writes a checkpoint of the pages, with the counts, to the journal.
@@ -899,7 +918,9 @@ impl Db {
     /// Drops the files nothing can reach and replaces the manifest, which
     /// deletes them.
     pub(super) fn drop_empty(&mut self) -> Result<Vec<FileId>, ValueStoreError> {
-        let dropped = self.values.drop_empty(self.pages.oldest_pin())?;
+        let dropped = self
+            .values
+            .drop_empty(self.pages.oldest_pin(), self.values.applied())?;
         self.values.commit(&mut self.manifest)?;
         Ok(dropped)
     }

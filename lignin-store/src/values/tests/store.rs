@@ -109,13 +109,15 @@ impl Store {
 
     /// Makes every change applied so far durable, as a sync of the log does.
     pub(super) fn all_durable(&self) {
-        self.values.mark_durable(self.values.applied());
+        self.values
+            .mark_durable(self.values.applied())
+            .expect("the store's own mark");
     }
 
     pub(super) fn drop_empty(&mut self, oldest_pin: u64) -> Vec<u32> {
         let dropped = self
             .values
-            .drop_empty(version(oldest_pin))
+            .drop_empty(version(oldest_pin), self.values.applied())
             .expect("writable");
         self.commit();
         dropped.into_iter().map(FileId::get).collect()
@@ -278,10 +280,11 @@ fn a_value_above_what_one_record_holds_is_still_one_read_and_moves_whole() {
 
     struct OnePage(std::cell::Cell<Option<ValuePointer>>);
     impl ValueOwners for OnePage {
-        fn holds(&self, owner: PageId, _: ValuePointer) -> Result<bool, OwnersError> {
-            Ok(owner == page(9))
+        type Found = ();
+        fn find(&self, owner: PageId, _: ValuePointer) -> Result<Option<()>, OwnersError> {
+            Ok((owner == page(9)).then_some(()))
         }
-        fn rewrite(&self, step: PointerRewrite<'_>) -> Result<Rewrite, OwnersError> {
+        fn rewrite(&self, step: PointerRewrite<'_>, (): ()) -> Result<Rewrite, OwnersError> {
             self.0.set(Some(step.to()));
             Ok(Rewrite::Installed(step.install(version(1))))
         }
@@ -729,7 +732,7 @@ fn a_read_only_store_reads_and_changes_nothing() {
         Err(ValueStoreError::ReadOnly)
     ));
     assert!(matches!(
-        reader.drop_empty(first),
+        reader.drop_empty(first, reader.applied()),
         Err(ValueStoreError::ReadOnly)
     ));
     assert!(matches!(
@@ -1042,7 +1045,9 @@ fn values_are_read_while_they_are_appended_counted_and_synced() {
                 values.sync().unwrap();
                 let _ = values.counts();
                 let _ = values.cleanable(0);
-                let dropped = values.drop_empty(CommitVersion::MAX).unwrap();
+                let dropped = values
+                    .drop_empty(CommitVersion::MAX, values.applied())
+                    .unwrap();
                 assert!(dropped.is_empty(), "every file is held or being written");
             }
         });
@@ -1108,4 +1113,139 @@ pub(super) fn three_values(counted: usize) -> (Store, ValueWriter, Vec<ValuePoin
     store.commit();
     store.apply(&acquired(&pointers[..counted]), 1);
     (store, cleaner, pointers)
+}
+
+/// A file layer that stops the creation of one file until it is told to go
+/// on.
+#[derive(Debug, Clone)]
+struct Pausing {
+    inner: SimVfs,
+    name: &'static str,
+    reached: std::sync::mpsc::Sender<()>,
+    resume: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>,
+}
+
+impl Vfs for Pausing {
+    fn open(&self, path: &Path, mode: OpenMode) -> std::io::Result<Box<dyn lignin_io::VfsFile>> {
+        if mode == OpenMode::Append(Create::New) && path.ends_with(self.name) {
+            self.reached.send(()).expect("the test waits");
+            self.resume
+                .lock()
+                .unwrap()
+                .recv()
+                .expect("the test goes on");
+        }
+        self.inner.open(path, mode)
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        self.inner.rename(from, to)
+    }
+
+    fn hard_link(&self, original: &Path, link: &Path) -> std::io::Result<()> {
+        self.inner.hard_link(original, link)
+    }
+
+    fn remove_file(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.remove_file(path)
+    }
+
+    fn create_dir(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.create_dir(path)
+    }
+
+    fn remove_dir(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.remove_dir(path)
+    }
+
+    fn read_dir(&self, path: &Path) -> std::io::Result<Vec<lignin_io::DirEntry>> {
+        self.inner.read_dir(path)
+    }
+
+    fn sync_dir(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.sync_dir(path)
+    }
+
+    fn lock(&self, path: &Path) -> std::io::Result<Box<dyn lignin_io::VfsLock>> {
+        self.inner.lock(path)
+    }
+}
+
+#[test]
+fn a_manifest_written_while_a_file_is_created_does_not_use_up_its_id() {
+    let (reached, was_reached) = std::sync::mpsc::channel();
+    let (resume, resumed) = std::sync::mpsc::channel();
+    let pausing = Pausing {
+        inner: sim_fs(traced(6, 512)),
+        name: "00000001.val",
+        reached,
+        resume: Arc::new(std::sync::Mutex::new(resumed)),
+    };
+    let mut manifest =
+        ManifestStore::create(Arc::new(pausing.clone()), db_dir(), empty_manifest()).unwrap();
+    let values = ValueStore::open(&manifest, &[]).unwrap();
+
+    std::thread::scope(|scope| {
+        let creating = scope.spawn(|| values.create());
+        was_reached.recv().expect("the creation began");
+        values.commit(&mut manifest).unwrap();
+        assert_eq!(
+            manifest.manifest().unwrap().last_file_ids().value_log,
+            None,
+            "the id of a file that is not in the store yet is not recorded"
+        );
+        resume.send(()).unwrap();
+        let mut writer = creating
+            .join()
+            .expect("the creation ran")
+            .expect("the file is created");
+        assert_eq!(writer.file_id(), file_id(1));
+
+        values
+            .commit(&mut manifest)
+            .expect("the manifest names the new file");
+        assert_eq!(
+            run::named_values(manifest.manifest().unwrap()),
+            [value_file(1, FileState::Open, HEADER)]
+        );
+        let mut hold = ValueHold::new();
+        writer.append(&mut hold, page(1), b"named").unwrap();
+    });
+}
+
+#[test]
+fn a_file_is_not_dropped_between_a_writers_hold_and_its_last_value() {
+    let mut store = Store::new();
+    for round in 0..200u32 {
+        let mut writer = store.writer();
+        let file = writer.file_id();
+        let values = &store.values;
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let stop = &stop;
+        std::thread::scope(|scope| {
+            let dropping = scope.spawn(move || {
+                let mut dropped = Vec::new();
+                while !stop.load(std::sync::atomic::Ordering::Acquire) {
+                    let retired = values.applied();
+                    dropped.extend(values.drop_empty(CommitVersion::MAX, retired).unwrap());
+                }
+                dropped
+            });
+            let mut hold = ValueHold::new();
+            let pointer = writer.append(&mut hold, page(1), b"held").unwrap();
+            writer.finish().unwrap();
+            std::thread::yield_now();
+            let mut buf = Vec::new();
+            let read = values.read(pointer, page(1), &mut buf);
+            stop.store(true, std::sync::atomic::Ordering::Release);
+            let dropped = dropping.join().expect("the reclaimer ran");
+            assert!(
+                read.is_ok() && !dropped.contains(&file),
+                "round {round}: the file went while its value was held"
+            );
+            drop(hold);
+        });
+        store.all_durable();
+        assert_eq!(store.drop_empty(0), [file.get()]);
+    }
 }

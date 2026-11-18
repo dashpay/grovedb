@@ -122,6 +122,13 @@ pub enum ValueStoreError {
         /// The live values the counts give it.
         values: u64,
     },
+    /// The counts that were recovered show that the count of a file was too
+    /// low, so a cell may still point into it, and the manifest does not
+    /// name that file although it is still in `val/`. Nothing was removed.
+    MiscountedFileNotNamed {
+        /// The file.
+        file: FileId,
+    },
     /// The manifest no longer names a dropped file, but the file could not be
     /// deleted. Everything else the call had to do was done. The deletion is
     /// tried again whenever the store is told of a manifest, and by the next
@@ -180,6 +187,9 @@ pub enum ValueStoreError {
     FileIdsExhausted,
     /// The value log was opened read-only.
     ReadOnly,
+    /// A writer, a set of copied values or a mark was passed to a store it
+    /// does not come from, or to the store of a later session.
+    WrongStore,
     /// A pointer was reported that the counts cannot take. The rest of the
     /// change was applied. If a file's count is now known to be wrong, the
     /// file is kept whatever its count says.
@@ -297,6 +307,11 @@ impl fmt::Display for ValueStoreError {
                 f,
                 "value-log file {file} has {values} live values, but the manifest does not name it"
             ),
+            Self::MiscountedFileNotNamed { file } => write!(
+                f,
+                "the count of value-log file {file} was too low, and the manifest does not name \
+                 the file"
+            ),
             Self::NotDeleted { path, source } => write!(
                 f,
                 "the manifest no longer names {}, but it could not be deleted: {source}",
@@ -327,6 +342,10 @@ impl fmt::Display for ValueStoreError {
             Self::FileFailed { file } => write!(f, "a sync of value-log file {file} failed"),
             Self::FileIdsExhausted => write!(f, "every value-log file id has been used"),
             Self::ReadOnly => write!(f, "the value log is read-only"),
+            Self::WrongStore => write!(
+                f,
+                "a writer, copies or a mark of another value log, or of an earlier session"
+            ),
             Self::Miscounted { pointer, why } => write!(
                 f,
                 "the value at offset {} of value-log file {} cannot be counted: {why}",

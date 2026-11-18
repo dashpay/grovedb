@@ -77,11 +77,20 @@ pub struct FileCount {
 /// A place in the sequence of changes applied to the counts.
 ///
 /// [`ValueStore::applied`](super::ValueStore::applied) gives the place of
-/// the last change applied, and
+/// the last change applied.
 /// [`ValueStore::mark_durable`](super::ValueStore::mark_durable) takes it
-/// back once every change up to it is durable.
+/// back once every change up to it is durable, and
+/// [`ValueStore::drop_empty`](super::ValueStore::drop_empty) once every
+/// operation that was running at it has ended.
+///
+/// A mark belongs to the store that gave it, for the session that store
+/// lives: it means nothing to another store or after the database was opened
+/// again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ChangeMark(pub(super) u64);
+pub struct ChangeMark {
+    pub(super) session: u64,
+    pub(super) change: u64,
+}
 
 /// When a file's count last became zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

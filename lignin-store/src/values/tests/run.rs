@@ -1,7 +1,9 @@
 //! A workload on the model database, with a record of what every committed
 //! version holds, written from the rules and not from the store.
 
-use lignin_format::{manifest::LiveFile, FileId, FileKind};
+use std::collections::BTreeMap;
+
+use lignin_format::{manifest::LiveFile, value_log::ValuePointer, FileId, FileKind};
 use lignin_io::sim::{SimRng, SimVfs};
 
 use super::{
@@ -57,6 +59,10 @@ pub(super) struct Run {
     pub(super) pins: Vec<u64>,
     pub(super) steps: u64,
     pub(super) tally: Tally,
+    /// The pointers each key's cell has held at each version, since the
+    /// journal was last made durable: the ones a recovery to that version
+    /// may find. A rewrite that became durable takes the older pointer off.
+    pub(super) pointers: BTreeMap<u64, BTreeMap<u32, Vec<ValuePointer>>>,
     rng: SimRng,
     next_key: u32,
 }
@@ -72,6 +78,7 @@ impl Run {
             pins: Vec::new(),
             steps: 0,
             tally: Tally::default(),
+            pointers: BTreeMap::new(),
             rng: SimRng::new(seed),
             next_key: 1,
         }
@@ -101,6 +108,8 @@ impl Run {
         self.history.truncate(version as usize + 1);
         self.durable = version;
         self.db = Some(db);
+        self.pointers.clear();
+        self.note_pointers();
         Ok(())
     }
 
@@ -110,6 +119,29 @@ impl Run {
 
     fn latest(&self) -> u64 {
         self.db.as_ref().map_or(0, |db| db.pages.latest())
+    }
+
+    /// Notes the pointer each cell holds now, as one a recovery to the
+    /// latest version may find.
+    ///
+    /// Once an append to the journal has failed, a crash can still bring
+    /// the record back, with a rewrite this record of the run never saw
+    /// installed. So nothing is said about pointers from then on.
+    fn note_pointers(&mut self) {
+        let Some(db) = &self.db else { return };
+        if db.pages.journal_failed() {
+            self.pointers.clear();
+            return;
+        }
+        let held = self.pointers.entry(db.pages.latest()).or_default();
+        for (_, cells) in db.pages.all() {
+            for cell in cells {
+                let seen: &mut Vec<ValuePointer> = held.entry(cell.key).or_default();
+                if !seen.contains(&cell.pointer) {
+                    seen.push(cell.pointer);
+                }
+            }
+        }
     }
 
     /// The newest version whose commit may be in the journal.
@@ -185,6 +217,7 @@ impl Run {
             self.history.pop();
         }
         self.tally.commits += u64::from(committed.is_ok());
+        self.note_pointers();
         committed.map(Some)
     }
 
@@ -236,6 +269,8 @@ impl Run {
         self.db().flush()?;
         self.durable = self.latest();
         self.tally.flushes += 1;
+        self.pointers.clear();
+        self.note_pointers();
         Ok(())
     }
 
@@ -246,7 +281,9 @@ impl Run {
     }
 
     pub(super) fn clean(&mut self, file: FileId) -> Result<Cleaned, ValueStoreError> {
-        let cleaned = self.db().clean(file)?;
+        let cleaned = self.db().clean(file);
+        self.note_pointers();
+        let cleaned = cleaned?;
         self.tally.passes += 1;
         self.tally.moved += cleaned.moved;
         self.tally.unowned += cleaned.unowned;
@@ -434,8 +471,10 @@ pub(super) fn named_values(manifest: &Manifest) -> Vec<LiveFile> {
 /// - it is at one committed version, no older than the newest durable one
 /// - every key of that version is there, in its page, and its value reads
 ///   back unchanged through the pointer its cell holds, in one read
+/// - no cell holds a pointer older than one that was durable
 /// - the counts are what the recovered cells give
-/// - `val/` holds exactly the files the manifest names
+/// - `val/` holds exactly the files the manifest names, and each of them is
+///   whole values up to its valid length
 pub(super) fn check_recovered(fs: &SimVfs, run: &Run) -> Db {
     let db = Db::open(fs).unwrap_or_else(|error| panic!("the database does not open: {error}"));
     let version = db.pages.latest();
@@ -450,11 +489,28 @@ pub(super) fn check_recovered(fs: &SimVfs, run: &Run) -> Db {
         run.history[version as usize],
         "version {version}"
     );
+    if let Some(held) = run.pointers.get(&version) {
+        for (page, cells) in db.pages.all() {
+            for cell in cells {
+                let seen = held.get(&cell.key);
+                assert!(
+                    seen.is_none_or(|seen| seen.contains(&cell.pointer)),
+                    "the cell {} of {page} holds {:?}, and held {seen:?} since the journal was \
+                     last made durable",
+                    cell.key,
+                    cell.pointer
+                );
+            }
+        }
+    }
     db.assert_counts_agree();
-    let named: Vec<FileId> = named_values(db.manifest.manifest().expect("not in doubt"))
-        .iter()
-        .map(LiveFile::id)
-        .collect();
-    assert_eq!(db.files_on_disk().into_iter().collect::<Vec<_>>(), named);
+    let named = named_values(db.manifest.manifest().expect("not in doubt"));
+    let ids: Vec<FileId> = named.iter().map(LiveFile::id).collect();
+    assert_eq!(db.files_on_disk().into_iter().collect::<Vec<_>>(), ids);
+    for file in named {
+        let mut walk = db.values.walk(file.id()).expect("a named file is walked");
+        while walk.next_value().expect("a whole value").is_some() {}
+        assert_eq!(walk.offset(), file.valid_len(), "{file:?}");
+    }
     db
 }

@@ -64,11 +64,13 @@ fn lost_power(error: &ValueStoreError) -> bool {
 struct Everything;
 
 impl ValueOwners for Everything {
-    fn holds(&self, _: PageId, _: ValuePointer) -> Result<bool, OwnersError> {
-        Ok(true)
+    type Found = ();
+
+    fn find(&self, _: PageId, _: ValuePointer) -> Result<Option<()>, OwnersError> {
+        Ok(Some(()))
     }
 
-    fn rewrite(&self, step: PointerRewrite<'_>) -> Result<Rewrite, OwnersError> {
+    fn rewrite(&self, step: PointerRewrite<'_>, (): ()) -> Result<Rewrite, OwnersError> {
         Ok(Rewrite::Installed(step.install(version(1))))
     }
 }

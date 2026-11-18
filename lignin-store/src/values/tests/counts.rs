@@ -5,6 +5,7 @@ use lignin_format::value_log::ValuePointer;
 use lignin_io::{Create, OpenMode};
 
 use super::{
+    sim::*,
     store::{acquired, acquired_counts, bytes, released, Store},
     *,
 };
@@ -222,12 +223,12 @@ fn a_file_is_not_dropped_before_the_change_that_emptied_it_is_durable() {
     assert!(before < emptied);
     assert!(store.drop_empty(3).is_empty());
 
-    store.values.mark_durable(before);
+    store.values.mark_durable(before).unwrap();
     assert!(store.drop_empty(3).is_empty());
     assert!(store.exists(1));
 
-    store.values.mark_durable(emptied);
-    store.values.mark_durable(before);
+    store.values.mark_durable(emptied).unwrap();
+    store.values.mark_durable(before).unwrap();
     assert_eq!(store.drop_empty(3), [1]);
 }
 
@@ -235,7 +236,11 @@ fn a_file_is_not_dropped_before_the_change_that_emptied_it_is_durable() {
 fn a_mark_past_the_changes_applied_makes_no_later_change_durable() {
     let (mut store, pointers) = one_closed_file(&[40]);
     store.apply(&acquired(&pointers), 1);
-    store.values.mark_durable(ChangeMark(99));
+    let later = ChangeMark {
+        change: 99,
+        ..store.values.applied()
+    };
+    store.values.mark_durable(later).unwrap();
     store.apply(&released(&pointers), 2);
     assert!(store.drop_empty(2).is_empty());
     store.all_durable();
@@ -302,7 +307,13 @@ fn a_dropped_file_is_deleted_once_no_durable_manifest_names_it() {
     let (store, pointers) = one_closed_file(&[40]);
     let named = store.named();
     store.all_durable();
-    assert_eq!(store.values.drop_empty(version(0)).unwrap(), [file_id(1)]);
+    assert_eq!(
+        store
+            .values
+            .drop_empty(version(0), store.values.applied())
+            .unwrap(),
+        [file_id(1)]
+    );
     assert!(store.exists(1));
     assert_eq!(store.named(), named, "the durable manifest still names it");
     assert!(matches!(
@@ -325,7 +336,10 @@ fn a_dropped_file_is_deleted_once_no_durable_manifest_names_it() {
 fn a_session_that_ends_before_the_manifest_is_replaced_leaves_the_file_to_the_next() {
     let (store, _) = one_closed_file(&[40]);
     store.all_durable();
-    store.values.drop_empty(version(0)).unwrap();
+    store
+        .values
+        .drop_empty(version(0), store.values.applied())
+        .unwrap();
     let mut store = store.reopen(&[]);
     assert!(store.exists(1));
     assert_eq!(store.named().len(), 1);
@@ -382,9 +396,12 @@ fn a_file_that_recovery_left_empty_is_kept_until_what_was_recovered_is_durable()
     store.apply(&acquired(&[later]), 4);
     store.apply(&released(&[later]), 5);
     drop(hold);
-    let recovered = ChangeMark(1);
+    let recovered = ChangeMark {
+        change: 1,
+        ..store.values.applied()
+    };
     assert!(recovered < store.values.applied());
-    store.values.mark_durable(recovered);
+    store.values.mark_durable(recovered).unwrap();
     assert_eq!(
         store.drop_empty(9),
         [1],
@@ -554,8 +571,11 @@ fn recovery_reports_a_release_from_a_count_of_zero() {
         ..count(1, &[])
     };
     assert_eq!(recovered.counts(), [wrong]);
-    recovered.mark_durable(recovered.applied());
-    assert!(recovered.drop_empty(version(9)).unwrap().is_empty());
+    recovered.mark_durable(recovered.applied()).unwrap();
+    assert!(recovered
+        .drop_empty(version(9), recovered.applied())
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -615,4 +635,132 @@ fn the_files_worth_cleaning_are_the_closed_ones_with_the_largest_dead_share() {
         [cleanable(3, 2), cleanable(5, 2), cleanable(2, 7)],
         "files with the same dead share come in order of their ids"
     );
+}
+
+#[test]
+fn a_file_that_became_empty_after_the_caller_stopped_waiting_is_not_dropped() {
+    let (mut store, pointers) = one_closed_file(&[40]);
+    store.apply(&acquired(&pointers), 1);
+    let waited_for = store.values.applied();
+    store.apply(&released(&pointers), 2);
+    store.all_durable();
+
+    let dropped = store.values.drop_empty(version(2), waited_for).unwrap();
+    assert!(
+        dropped.is_empty(),
+        "an operation that began after the mark may hold a pointer into the file"
+    );
+    assert_eq!(store.read(pointers[0], 1).unwrap(), bytes(40, 0));
+    assert_eq!(store.drop_empty(2), [1]);
+}
+
+#[test]
+fn a_checkpoint_holds_the_files_it_sampled_until_it_has_linked_them() {
+    let (mut store, _) = one_closed_file(&[40]);
+    store.all_durable();
+    let sampled = store.values.hold_files();
+    assert_eq!(sampled.files().collect::<Vec<_>>(), [file_id(1)]);
+    assert!(store.drop_empty(0).is_empty());
+    drop(sampled);
+
+    store
+        .values
+        .drop_empty(version(0), store.values.applied())
+        .unwrap();
+    let sampled = store.values.hold_files();
+    assert_eq!(
+        sampled.files().collect::<Vec<_>>(),
+        [file_id(1)],
+        "a file that was dropped and is still on disk is held too"
+    );
+    store.commit();
+    assert!(store.named().is_empty());
+    assert!(
+        store.exists(1),
+        "the manifest no longer names it, and it stays"
+    );
+    store.values.manifest_replaced(&store.manifest).unwrap();
+    assert!(store.exists(1));
+
+    drop(sampled);
+    store.values.manifest_replaced(&store.manifest).unwrap();
+    assert!(!store.exists(1));
+}
+
+#[test]
+fn an_acquisition_does_not_hide_a_release_the_count_did_not_include() {
+    let (store, pointers) = one_closed_file(&[40, 50]);
+    let [held, new] = pointers[..] else {
+        unreachable!()
+    };
+    let mut change = acquired(&[new]);
+    change.release(held);
+    assert_eq!(
+        miscount(store.values.apply(&change, version(1))),
+        (held, Miscount::CountIsZero)
+    );
+    let wrong = FileCount {
+        miscounted: true,
+        ..count(1, &[new])
+    };
+    assert_eq!(store.values.counts(), [wrong]);
+
+    let mut recovery = ValueStore::recover(&store.manifest, &[]).unwrap();
+    assert_eq!(
+        miscount(recovery.apply(&change)),
+        (held, Miscount::CountIsZero)
+    );
+    assert_eq!(recovery.finish().unwrap().counts(), [wrong]);
+
+    let mut twice = acquired(&[held, held, new]);
+    twice.release(held);
+    twice.release(new);
+    let (store, _) = one_closed_file(&[40, 50]);
+    store.apply(&twice, 1);
+    assert_eq!(
+        store.values.counts(),
+        [count(1, &[held])],
+        "a pointer released and acquired in one change is taken off both, once for each pair"
+    );
+}
+
+#[test]
+fn recovery_does_not_remove_a_file_whose_count_was_found_too_low() {
+    let (store, pointers) = one_closed_file(&[40, 50]);
+    store.all_durable();
+    store
+        .values
+        .drop_empty(version(0), store.values.applied())
+        .unwrap();
+    let mut store = store;
+    let manifest = store.manifest.manifest().unwrap().clone();
+    store
+        .manifest
+        .update(|_| {
+            Manifest::new(manifest.last_file_ids(), None, Vec::new()).map_err(|source| {
+                ValueStoreError::Format {
+                    path: db_dir().to_path_buf(),
+                    offset: 0,
+                    source,
+                }
+            })
+        })
+        .unwrap();
+    assert!(store.exists(1), "dropped, no longer named, not yet deleted");
+
+    let mut recovery = ValueStore::recover(&store.manifest, &[]).unwrap();
+    assert_eq!(
+        miscount(recovery.apply(&released(&pointers[..1]))),
+        (pointers[0], Miscount::CountIsZero)
+    );
+    assert!(matches!(
+        recovery.finish(),
+        Err(ValueStoreError::MiscountedFileNotNamed { file }) if file == file_id(1)
+    ));
+    assert!(store.exists(1), "nothing was removed");
+
+    store.fs.remove_file(&store.path(1)).unwrap();
+    let mut recovery = ValueStore::recover(&store.manifest, &[]).unwrap();
+    recovery.apply(&released(&pointers[..1])).unwrap_err();
+    assert!(recovery.finish().unwrap().counts().is_empty());
 }

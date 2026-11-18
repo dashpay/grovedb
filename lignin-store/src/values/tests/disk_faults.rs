@@ -11,7 +11,7 @@ use lignin_io::sim::{Fault, FaultRule, OpKind, SimError, SimVfs};
 
 use super::{
     crash::life,
-    run::{check_recovered, Run},
+    run::{check_recovered, put, Run},
     sim::*,
     store::{bytes, three_values, Store},
     *,
@@ -401,7 +401,10 @@ fn a_dropped_file_that_cannot_be_deleted_is_deleted_by_the_next_call() {
     drop(hold);
     store.commit();
     store.all_durable();
-    let dropped = store.values.drop_empty(version(0)).unwrap();
+    let dropped = store
+        .values
+        .drop_empty(version(0), store.values.applied())
+        .unwrap();
     assert_eq!(dropped, [file_id(1), file_id(2)]);
 
     fail(&store.fs, OpKind::RemoveFile, "00000001.val");
@@ -440,4 +443,35 @@ fn a_pass_whose_copies_cannot_be_made_durable_installs_nothing() {
             assert_eq!(store.read(pointer, 1).unwrap(), bytes(30, at as u8));
         }
     }
+}
+
+#[test]
+fn a_transaction_whose_value_a_failed_sync_cut_off_is_not_written_to_the_journal() {
+    let fs = sim_fs(traced(54, 512));
+    let mut run = Run::started(&fs, 54);
+    run.commit(&[put(1, 10, 40)]).unwrap();
+    let (outstanding, next) = run.begin(&[put(3, 30, 60)]).unwrap();
+
+    fail(&fs, OpKind::SyncData, "00000001.val");
+    let error = run.commit(&[put(5, 50, 20)]).unwrap_err();
+    assert!(
+        matches!(error, ValueStoreError::Io { op: "sync", .. }),
+        "{error}"
+    );
+    fs.clear_rules();
+    run.drop_writers();
+    run.check_session();
+
+    let error = run.end(outstanding, next, true).unwrap_err();
+    assert!(
+        matches!(error, ValueStoreError::NotCovered { pointer } if pointer.file() == file_id(1)),
+        "{error}"
+    );
+    assert_eq!(run.db().pages.latest(), 1);
+    run.check_session();
+    run.commit(&[put(3, 30, 61)]).unwrap();
+    run.flush().unwrap();
+    run.check_session();
+    run.end_session();
+    assert_eq!(check_recovered(&fs, &run).pages.latest(), 2);
 }

@@ -20,22 +20,31 @@ use crate::segment::ManifestStore;
 /// for the cleaner. Both methods are about the page version that is current
 /// when they are called, never about an older one.
 pub trait ValueOwners {
-    /// Whether the page `page` exists and one of its cells holds `pointer`.
+    /// What a look at a page found: whatever the implementation needs to
+    /// tell, in the page step, whether the page is still as it was looked
+    /// at. The version of the page that was current is enough.
+    type Found;
+
+    /// Looks in the page `page` for a cell that holds `pointer`.
     ///
-    /// `true` proves the value is live, and that cell is its owner. `false`
-    /// says only that the owner is not in this page: the value is dead, or
-    /// its cell was carried to another page without it.
-    fn holds(&self, page: PageId, pointer: ValuePointer) -> Result<bool, OwnersError>;
+    /// `Some` proves the value is live, and that cell is its owner. `None`
+    /// says only that the owner is not in this page: the page does not
+    /// exist, the value is dead, or its cell was carried to another page
+    /// without it.
+    fn find(&self, page: PageId, pointer: ValuePointer)
+        -> Result<Option<Self::Found>, OwnersError>;
 
     /// Gives the cell of [`step.page()`](PointerRewrite::page) that holds
     /// [`step.from()`](PointerRewrite::from) the pointer
-    /// [`step.to()`](PointerRewrite::to) instead, in one page step.
+    /// [`step.to()`](PointerRewrite::to) instead, in one page step. `found`
+    /// is what [`Self::find`] gave for that cell.
     ///
     /// The step is one step with respect to every commit that installs a
     /// version of that page and to the making of any private copy of it. In
     /// it, the implementation checks that:
     ///
-    /// 1. the page version it changes is the current one
+    /// 1. the page version it changes is the current one, and is the one
+    ///    that was looked at: no commit has superseded the page since
     /// 2. a cell of it still holds `from`
     /// 3. no open write transaction holds a private copy of the page
     ///
@@ -45,16 +54,27 @@ pub trait ValueOwners {
     /// to the counts, installs the new pointer, calls
     /// [`step.install`](PointerRewrite::install) inside the same step, and
     /// returns what that gave.
-    fn rewrite(&self, step: PointerRewrite<'_>) -> Result<Rewrite, OwnersError>;
+    fn rewrite(&self, step: PointerRewrite<'_>, found: Self::Found)
+        -> Result<Rewrite, OwnersError>;
 }
 
 impl<O: ValueOwners + ?Sized> ValueOwners for &O {
-    fn holds(&self, page: PageId, pointer: ValuePointer) -> Result<bool, OwnersError> {
-        (**self).holds(page, pointer)
+    type Found = O::Found;
+
+    fn find(
+        &self,
+        page: PageId,
+        pointer: ValuePointer,
+    ) -> Result<Option<Self::Found>, OwnersError> {
+        (**self).find(page, pointer)
     }
 
-    fn rewrite(&self, step: PointerRewrite<'_>) -> Result<Rewrite, OwnersError> {
-        (**self).rewrite(step)
+    fn rewrite(
+        &self,
+        step: PointerRewrite<'_>,
+        found: Self::Found,
+    ) -> Result<Rewrite, OwnersError> {
+        (**self).rewrite(step, found)
     }
 }
 
@@ -129,9 +149,9 @@ pub enum Refusal {
     /// No cell of the current page version holds the old pointer any more:
     /// the value died, or was appended again, after the cleaner looked.
     OwnerGone,
-    /// The page cannot take a rewrite now, for example because an open write
-    /// transaction holds a private copy of it. The value is tried again
-    /// later.
+    /// The page cannot take a rewrite now: a commit has superseded it since
+    /// the cleaner looked, or an open write transaction holds a private copy
+    /// of it. The value is tried again later.
     Busy,
 }
 
@@ -174,10 +194,11 @@ impl Cleaned {
 }
 
 #[derive(Debug)]
-struct Move {
+struct Move<F> {
     page: PageId,
     from: ValuePointer,
     to: ValuePointer,
+    found: F,
 }
 
 /// The live values of one file, copied to another file and not yet owned
@@ -185,17 +206,21 @@ struct Move {
 ///
 /// It holds the file the copies are in. Dropping it gives the copies up:
 /// they are dead space.
+///
+/// `F` is what the owners' look found for each value
+/// ([`ValueOwners::Found`]).
 #[derive(Debug)]
-pub struct CopiedValues {
+pub struct CopiedValues<F> {
     file: FileId,
+    session: u64,
     began: u64,
-    moves: Vec<Move>,
+    moves: Vec<Move<F>>,
     unowned: u64,
     copied_bytes: u64,
     hold: ValueHold,
 }
 
-impl CopiedValues {
+impl<F> CopiedValues<F> {
     /// The file that is being cleaned.
     pub fn file(&self) -> FileId {
         self.file
@@ -219,8 +244,11 @@ impl ValueStore {
     ///
     /// It walks the file. For each value it asks `owners` whether the page
     /// the value's back pointer names holds the pointer to it
-    /// ([`ValueOwners::holds`]). If not, it goes on to the next value. If
+    /// ([`ValueOwners::find`]). If not, it goes on to the next value. If
     /// so, it appends the value to `to` with the same back pointer.
+    ///
+    /// `to` must be a writer of this store
+    /// ([`ValueStoreError::WrongStore`]).
     ///
     /// Nothing points at the copies yet. Before [`Self::install`], make them
     /// durable and have the manifest cover them: sync `to` and replace the
@@ -232,8 +260,9 @@ impl ValueStore {
         file: FileId,
         to: &mut ValueWriter,
         owners: &O,
-    ) -> Result<CopiedValues, ValueStoreError> {
+    ) -> Result<CopiedValues<O::Found>, ValueStoreError> {
         self.check_writable()?;
+        self.check_own(to.session())?;
         let source = self.file(file)?;
         if !source.is_closed() {
             return Err(ValueStoreError::NotClosed { file });
@@ -247,6 +276,7 @@ impl ValueStore {
 
         let mut copies = CopiedValues {
             file,
+            session: self.session(),
             began: self.applied_so_far(),
             moves: Vec::new(),
             unowned: 0,
@@ -256,13 +286,18 @@ impl ValueStore {
         let mut walk = ValueWalk::new(source);
         while let Some(walked) = walk.next_walked()? {
             let (page, from) = (walked.value.owner(), walked.pointer);
-            if !owners.holds(page, from).map_err(ValueStoreError::Owners)? {
+            let Some(found) = owners.find(page, from).map_err(ValueStoreError::Owners)? else {
                 copies.unowned += 1;
                 continue;
-            }
+            };
             let to = to.append_records(&mut copies.hold, from.value_len(), walked.records)?;
             copies.copied_bytes += walked.records.len() as u64;
-            copies.moves.push(Move { page, from, to });
+            copies.moves.push(Move {
+                page,
+                from,
+                to,
+                found,
+            });
         }
         Ok(copies)
     }
@@ -276,7 +311,8 @@ impl ValueStore {
     ///
     /// Fails with [`ValueStoreError::NotCovered`], and installs nothing, if
     /// the durable manifest does not cover every copy: a page must not point
-    /// at a value that a crash could take away.
+    /// at a value that a crash could take away. Fails with
+    /// [`ValueStoreError::WrongStore`] for copies another store made.
     ///
     /// If it fails part way, the rewrites installed so far stand, and the
     /// other copies are dead space. A rewrite that could not be counted as
@@ -285,10 +321,11 @@ impl ValueStore {
     /// any other error.
     pub fn install<O: ValueOwners + ?Sized>(
         &self,
-        copies: CopiedValues,
+        copies: CopiedValues<O::Found>,
         owners: &O,
     ) -> Result<Cleaned, ValueStoreError> {
         self.check_writable()?;
+        self.check_own(copies.session)?;
         if let Some(uncovered) = copies.moves.iter().find(|copy| !self.covers(copy.to)) {
             return Err(ValueStoreError::NotCovered {
                 pointer: uncovered.to,
@@ -301,7 +338,20 @@ impl ValueStore {
         };
         let mut miscount = None;
         let mut failed = None;
-        for &Move { page, from, to } in &copies.moves {
+        let CopiedValues {
+            file,
+            began,
+            moves,
+            hold,
+            ..
+        } = copies;
+        for Move {
+            page,
+            from,
+            to,
+            found,
+        } in moves
+        {
             let counted = AtomicBool::new(false);
             let step = PointerRewrite {
                 store: self,
@@ -310,7 +360,7 @@ impl ValueStore {
                 from,
                 to,
             };
-            let outcome = owners.rewrite(step);
+            let outcome = owners.rewrite(step, found);
             if counted.into_inner() && !matches!(outcome, Ok(Rewrite::Installed(_))) {
                 self.mark_miscounted(from.file());
                 miscount.get_or_insert(ValueStoreError::Miscounted {
@@ -332,7 +382,8 @@ impl ValueStore {
             }
         }
         let refused = cleaned.busy != 0 || failed.is_some();
-        cleaned.live = self.end_pass(copies.file, copies.began, refused);
+        cleaned.live = self.end_pass(file, began, refused);
+        drop(hold);
         miscount.or(failed).map_or(Ok(cleaned), Err)
     }
 
@@ -351,6 +402,10 @@ impl ValueStore {
     ///
     /// The manifest is needed for step 2 alone. A caller that must not keep
     /// it from others for the length of a pass makes the three steps itself.
+    ///
+    /// The manifest this writes may stop naming a file that
+    /// [`Self::drop_empty`] took out. That file is deleted by the next
+    /// [`Self::manifest_replaced`], not here.
     pub fn clean<O: ValueOwners + ?Sized>(
         &self,
         file: FileId,

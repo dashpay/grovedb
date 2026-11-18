@@ -34,8 +34,7 @@ struct Life {
 }
 
 /// The atomics are what a reader, an appender and the store's own lock
-/// holders look at, so that none of them waits for a sync, which holds
-/// `life` for its whole length.
+/// holders look at, so that none of them waits behind `life`.
 #[derive(Debug)]
 pub(super) struct ValueFile {
     id: FileId,
@@ -47,6 +46,7 @@ pub(super) struct ValueFile {
     closed: AtomicBool,
     holds: AtomicUsize,
     covered: AtomicU64,
+    syncing: Mutex<()>,
     life: Mutex<Life>,
 }
 
@@ -130,6 +130,7 @@ impl ValueFile {
             closed: AtomicBool::new(phase == Phase::Closed),
             holds: AtomicUsize::new(0),
             covered: AtomicU64::new(0),
+            syncing: Mutex::new(()),
             life: Mutex::new(Life {
                 phase,
                 durable_len: len,
@@ -279,26 +280,40 @@ impl ValueFile {
         }
     }
 
+    /// Syncs the file. One sync runs at a time, and `life` is not held while
+    /// it does, so that ending a writer waits for no sync.
     pub(super) fn sync(&self) -> Result<u64, ValueStoreError> {
+        let _one_at_a_time = self.syncing.lock().unwrap_or_else(PoisonError::into_inner);
+        let end = {
+            let mut life = self.life();
+            if life.phase == Phase::Closed {
+                return Ok(life.durable_len);
+            }
+            if life.failed {
+                return Err(ValueStoreError::FileFailed { file: self.id });
+            }
+            let end = self.end();
+            if end == life.durable_len {
+                self.settle(&mut life);
+                return Ok(life.durable_len);
+            }
+            end
+        };
+        let synced = self.file.sync_data();
         let mut life = self.life();
-        if life.phase == Phase::Closed {
-            return Ok(life.durable_len);
-        }
-        if life.failed {
-            return Err(ValueStoreError::FileFailed { file: self.id });
-        }
-        let end = self.end();
-        if end > life.durable_len {
-            if let Err(error) = self.file.sync_data() {
+        let result = match synced {
+            Ok(()) => {
+                life.durable_len = end;
+                Ok(end)
+            }
+            Err(error) => {
                 life.failed = true;
                 self.appendable.store(false, Ordering::Release);
-                self.settle(&mut life);
-                return Err(ValueStoreError::io("sync", &self.path)(error));
+                Err(ValueStoreError::io("sync", &self.path)(error))
             }
-            life.durable_len = end;
-        }
+        };
         self.settle(&mut life);
-        Ok(life.durable_len)
+        result
     }
 
     pub(super) fn release_writer(&self) {

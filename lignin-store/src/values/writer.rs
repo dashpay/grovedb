@@ -43,7 +43,7 @@ impl ValueHold {
         self.files.iter().map(|file| file.id())
     }
 
-    fn add(&mut self, file: &Arc<ValueFile>) {
+    pub(super) fn add(&mut self, file: &Arc<ValueFile>) {
         if !self.files.iter().any(|held| Arc::ptr_eq(held, file)) {
             file.hold();
             self.files.push(file.clone());
@@ -79,10 +79,16 @@ pub struct ValueWriter {
     end: u64,
     buf: Vec<u8>,
     target_len: u64,
+    session: u64,
 }
 
 impl ValueWriter {
-    pub(super) fn new(file: Arc<ValueFile>, appender: Box<dyn VfsFile>, target_len: u64) -> Self {
+    pub(super) fn new(
+        file: Arc<ValueFile>,
+        appender: Box<dyn VfsFile>,
+        target_len: u64,
+        session: u64,
+    ) -> Self {
         let end = file.end();
         Self {
             file,
@@ -90,7 +96,12 @@ impl ValueWriter {
             end,
             buf: Vec::new(),
             target_len,
+            session,
         }
+    }
+
+    pub(super) fn session(&self) -> u64 {
+        self.session
     }
 
     /// The id of the file.

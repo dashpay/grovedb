@@ -122,10 +122,11 @@ fn a_pass_moves_the_live_values_and_leaves_the_rest() {
 fn a_moved_value_is_the_same_bytes_with_the_same_owner() {
     struct Everything(RefCell<Vec<(ValuePointer, ValuePointer)>>);
     impl ValueOwners for Everything {
-        fn holds(&self, _: PageId, _: ValuePointer) -> Result<bool, OwnersError> {
-            Ok(true)
+        type Found = ();
+        fn find(&self, _: PageId, _: ValuePointer) -> Result<Option<()>, OwnersError> {
+            Ok(Some(()))
         }
-        fn rewrite(&self, step: PointerRewrite<'_>) -> Result<Rewrite, OwnersError> {
+        fn rewrite(&self, step: PointerRewrite<'_>, (): ()) -> Result<Rewrite, OwnersError> {
             assert_eq!(step.change(), ValueChange::moved(step.from(), step.to()));
             self.0.borrow_mut().push((step.from(), step.to()));
             let latest = version(1);
@@ -397,26 +398,29 @@ struct Racing<'a, F: FnOnce()> {
 }
 
 impl<F: FnOnce()> ValueOwners for Racing<'_, F> {
-    fn holds(&self, page: PageId, pointer: ValuePointer) -> Result<bool, OwnersError> {
-        self.pages.holds(page, pointer)
+    type Found = u64;
+
+    fn find(&self, page: PageId, pointer: ValuePointer) -> Result<Option<u64>, OwnersError> {
+        self.pages.find(page, pointer)
     }
 
-    fn rewrite(&self, step: PointerRewrite<'_>) -> Result<Rewrite, OwnersError> {
+    fn rewrite(&self, step: PointerRewrite<'_>, found: u64) -> Result<Rewrite, OwnersError> {
         if let Some(race) = self.race.borrow_mut().take() {
             race();
         }
-        self.pages.rewrite(step)
+        self.pages.rewrite(step, found)
     }
 }
 
 #[test]
-fn a_commit_that_supersedes_the_page_after_the_cleaner_looked_wins() {
+fn a_move_is_abandoned_when_a_commit_superseded_the_page_after_the_cleaner_looked() {
     let mut run = started(7);
     run.commit(&[
         put(1, 10, 40),
         put(1, 11, 50),
         put(3, 30, 60),
         put(3, 31, 20),
+        put(5, 50, 30),
     ])
     .unwrap();
     run.db().rotate().unwrap();
@@ -425,7 +429,7 @@ fn a_commit_that_supersedes_the_page_after_the_cleaner_looked_wins() {
         .unwrap();
     run.db().prepare(&txn).unwrap();
     run.history.push(next);
-    let unchanged = pointer_of(run.db(), 3, 30);
+    let before = [30, 31].map(|key| pointer_of(run.db(), 3, key));
 
     let cleaned = run
         .db()
@@ -439,22 +443,32 @@ fn a_commit_that_supersedes_the_page_after_the_cleaner_looked_wins() {
     assert_eq!(
         cleaned,
         Cleaned {
-            moved: 2,
+            moved: 1,
             unowned: 0,
-            gone: 2,
-            busy: 0,
-            live: 0,
-            copied_bytes: 40 + 50 + 60 + 20 + 4 * 18,
-        }
+            gone: 0,
+            busy: 4,
+            live: 2,
+            copied_bytes: 40 + 50 + 60 + 20 + 30 + 5 * 18,
+        },
+        "only the page the commit left alone took its rewrite"
     );
     assert_eq!(run.db().pages.latest(), 2);
-    let moved = pointer_of(run.db(), 3, 30);
-    assert_ne!(moved, unchanged);
-    assert_ne!(
-        moved.file(),
-        file_id(1),
-        "the version the commit installed took the rewrite"
+    assert_eq!(
+        [30, 31].map(|key| pointer_of(run.db(), 3, key)),
+        before,
+        "the cells the commit did not touch still hold the old pointers"
     );
+    assert_ne!(pointer_of(run.db(), 5, 50).file(), file_id(1));
+    run.check_session();
+    assert_eq!(run.db().values.cleanable(0).len(), 1);
+
+    let cleaned = run.clean(file_id(1)).unwrap();
+    assert_eq!(
+        (cleaned.moved, cleaned.unowned, cleaned.live),
+        (2, 3, 0),
+        "a fresh pass finds the two owners the commit left"
+    );
+    let moved = pointer_of(run.db(), 3, 30);
     run.check_session();
 
     run.flush().unwrap();
@@ -552,20 +566,22 @@ struct Failing<'a> {
 }
 
 impl ValueOwners for Failing<'_> {
-    fn holds(&self, page: PageId, pointer: ValuePointer) -> Result<bool, OwnersError> {
+    type Found = u64;
+
+    fn find(&self, page: PageId, pointer: ValuePointer) -> Result<Option<u64>, OwnersError> {
         if self.fail_holds {
             return Err("the page cannot be read".into());
         }
-        self.pages.holds(page, pointer)
+        self.pages.find(page, pointer)
     }
 
-    fn rewrite(&self, step: PointerRewrite<'_>) -> Result<Rewrite, OwnersError> {
+    fn rewrite(&self, step: PointerRewrite<'_>, found: u64) -> Result<Rewrite, OwnersError> {
         let mut left = self.rewrites_before_failure.borrow_mut();
         if *left == 0 {
             return Err("the page cannot be latched".into());
         }
         *left -= 1;
-        self.pages.rewrite(step)
+        self.pages.rewrite(step, found)
     }
 }
 
@@ -726,10 +742,11 @@ fn a_file_with_no_live_value_is_copied_to_nothing() {
     store.apply(&released(&pointers), 2);
     struct Nothing;
     impl ValueOwners for Nothing {
-        fn holds(&self, _: PageId, _: ValuePointer) -> Result<bool, OwnersError> {
-            Ok(false)
+        type Found = ();
+        fn find(&self, _: PageId, _: ValuePointer) -> Result<Option<()>, OwnersError> {
+            Ok(None)
         }
-        fn rewrite(&self, _: PointerRewrite<'_>) -> Result<Rewrite, OwnersError> {
+        fn rewrite(&self, _: PointerRewrite<'_>, (): ()) -> Result<Rewrite, OwnersError> {
             unreachable!("nothing was copied")
         }
     }
@@ -758,11 +775,13 @@ struct CountsAndFails {
 }
 
 impl ValueOwners for CountsAndFails {
-    fn holds(&self, _: PageId, _: ValuePointer) -> Result<bool, OwnersError> {
-        Ok(true)
+    type Found = ();
+
+    fn find(&self, _: PageId, _: ValuePointer) -> Result<Option<()>, OwnersError> {
+        Ok(Some(()))
     }
 
-    fn rewrite(&self, step: PointerRewrite<'_>) -> Result<Rewrite, OwnersError> {
+    fn rewrite(&self, step: PointerRewrite<'_>, (): ()) -> Result<Rewrite, OwnersError> {
         let _counted = step.install(version(1));
         if self.refuses {
             Ok(Rewrite::Refused(Refusal::Busy))
@@ -843,4 +862,55 @@ fn a_file_is_worth_another_pass_when_a_value_was_counted_while_the_last_one_ran(
     let cleaned = run.clean(file_id(1)).unwrap();
     assert_eq!((cleaned.moved, cleaned.live), (1, 0));
     run.check_session();
+}
+
+#[test]
+fn a_pass_takes_only_what_its_own_store_made() {
+    let (mut store, mut cleaner, _) = three_values(3);
+    let (mut other, mut foreign, _) = three_values(3);
+
+    assert!(matches!(
+        store
+            .values
+            .copy_live(file_id(1), &mut foreign, &Everything),
+        Err(ValueStoreError::WrongStore)
+    ));
+    assert!(matches!(
+        store
+            .values
+            .clean(file_id(1), &mut foreign, &mut store.manifest, &Everything),
+        Err(ValueStoreError::WrongStore)
+    ));
+
+    let copies = other
+        .values
+        .copy_live(file_id(1), &mut foreign, &Everything)
+        .unwrap();
+    foreign.sync().unwrap();
+    other.commit();
+    cleaner.sync().unwrap();
+    store.commit();
+    assert!(matches!(
+        store.values.install(copies, &Everything),
+        Err(ValueStoreError::WrongStore)
+    ));
+    assert_eq!(
+        (live(&store.values, 1), live(&store.values, 2)),
+        (Some(3), Some(0))
+    );
+
+    assert!(matches!(
+        store.values.mark_durable(other.values.applied()),
+        Err(ValueStoreError::WrongStore)
+    ));
+    assert!(matches!(
+        store.values.drop_empty(version(9), other.values.applied()),
+        Err(ValueStoreError::WrongStore)
+    ));
+    let earlier = store.values.applied();
+    let reopened = store.reopen(&[]);
+    assert!(matches!(
+        reopened.values.mark_durable(earlier),
+        Err(ValueStoreError::WrongStore)
+    ));
 }

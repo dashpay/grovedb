@@ -124,7 +124,9 @@
 //! was deleted, was given another value, had its value appended again (the
 //! move rule, O5), or went with a dropped page. They call
 //! [`ValueStore::apply`] at the change point, as one unit with the cell
-//! change.
+//! change. The releases are counted first, against the counts as they were
+//! before the change, so that what the change acquires cannot hide a
+//! release the count did not include.
 //!
 //! **Where the count is stored.** Not in the value log's own files, and not
 //! in the manifest. It is part of the page state, and is stored and
@@ -173,8 +175,9 @@
 //!
 //! 1. It walks the file. Each value comes with its back pointer, a page id,
 //!    and with the pointer its owner must hold.
-//! 2. It asks [`ValueOwners::holds`] whether the current version of that page
-//!    holds the pointer. A hit proves the value is live. A miss proves
+//! 2. It asks [`ValueOwners::find`] whether the current version of that page
+//!    holds the pointer. A hit proves the value is live, and comes with what
+//!    the implementation needs to know the page version again. A miss proves
 //!    nothing: the pass does nothing with the value and goes on (O4).
 //! 3. It appends each value that was hit to the other file, with the same
 //!    back pointer. The value's bytes, length and owner do not change.
@@ -188,8 +191,9 @@
 //!    nothing if it does not.
 //! 5. It asks [`ValueOwners::rewrite`] to install each new pointer in one
 //!    page step (PV7). The implementation checks that it changes the current
-//!    page version, that a cell of it still holds the old pointer, and that
-//!    no open write transaction holds a private copy of the page. If so it
+//!    page version, that no commit has superseded the page since the pass
+//!    looked at it (CL5), that a cell of it still holds the old pointer, and
+//!    that no open write transaction holds a private copy of the page. If so it
 //!    stores the rewrite with the pages, installs the pointer and calls
 //!    [`PointerRewrite::install`], which takes one value off the old file's
 //!    count and adds one to the new file's, inside that step. If not,
@@ -205,9 +209,13 @@
 //! What makes the page step one step is the lock the implementation of
 //! [`ValueOwners::rewrite`] holds on the page while it checks and installs
 //! (level 5 of the lock order LT7). The store's own lock on the counts is
-//! taken inside it, for the length of [`PointerRewrite::install`], and the
-//! store calls nothing while it holds that lock. A commit applies its
-//! change the same way, where it installs its pages.
+//! taken inside it, for the length of [`PointerRewrite::install`]. That
+//! lock is the innermost there is: while the store holds it, it takes no
+//! other lock, touches no file and calls nothing, and no reader ever takes
+//! it. A commit applies its change the same way, where it installs its
+//! pages. LT7 says of a level 5 lock that nothing else is acquired under
+//! it: the lock on the counts is the one exception, and it is what lets a
+//! count change in the same step as the cell.
 //!
 //! Other background work that rewrites a value pointer, such as regrouping
 //! a page's values when the page is consolidated (TREE-08), appends the
@@ -230,10 +238,17 @@
 //! | No [`ValueHold`] is on it. | A transaction appended a value to it that its commit will count (FL1). |
 //! | The change that brought the count to zero is durable ([`ValueStore::mark_durable`]). | A crash would recover pages from before that change, which point into the file (CL5). |
 //! | It became empty at a version no later than the oldest pinned version. | A snapshot pinned before that version reads a page version in which a cell still holds a pointer into it (O8). |
+//! | It became empty no later than the mark the caller passes. | An operation that was running when it became empty may have read a pointer into it and not yet followed it (PN6). |
 //!
-//! The caller adds one more, which only it can see: every operation that was
-//! running when the file became empty has ended (PN6), since one of them may
-//! have read a pointer and not yet followed it.
+//! The last one is the caller's part. It takes a mark with
+//! [`ValueStore::applied`], waits until every operation that was running
+//! then has ended, and passes the mark to [`ValueStore::drop_empty`]. A file
+//! that became empty after the mark waits for the next one.
+//!
+//! A checkpoint that is being created needs the files of the manifest it
+//! sampled until it has linked them, whatever their counts (CK3). It takes
+//! [`ValueStore::hold_files`] in its sampling step. A file under that hold
+//! is neither dropped nor, if it was dropped before, deleted.
 //!
 //! The file itself is removed once a durable manifest no longer names it. A
 //! crash between the two leaves a file that no manifest names, which the
@@ -274,9 +289,17 @@
 //!   manifest names value-log files, so no other store has to be told of
 //!   the manifests they write.
 //! - It stores a [`ValuePointer`] where a later session will find it only
-//!   under a manifest that covers the value. When a manifest gives a file
-//!   that holds pointers a new valid length, the value-log files are synced
-//!   after that file and before [`ValueStore::describe`].
+//!   under a manifest that covers the value. Before it writes a change to
+//!   the log, it checks [`ValueStore::covers`] for every pointer the change
+//!   acquires, while the hold on those values is alive. When a manifest
+//!   gives a file that holds pointers a new valid length, the value-log
+//!   files are synced after that file and before [`ValueStore::describe`].
+//! - It syncs a value-log file that is being written through the store and
+//!   through nothing else ([`ValueStore::sync`], [`ValueWriter::sync`]). The
+//!   file layer does not say, on one handle, that a sync through another
+//!   failed, and a value appended before such a failure would then pass for
+//!   durable. A checkpoint links a file up to the valid length its manifest
+//!   gives, which is durable already.
 //! - It reports every pointer a cell starts or stops holding, at its change
 //!   point ([`ValueStore::apply`]), stores that change and the counts with
 //!   the pages, and recovers them with the pages.
@@ -286,10 +309,12 @@
 //!   up.
 //! - It calls [`ValueStore::mark_durable`] once the changes up to a mark
 //!   will survive a crash, and [`ValueStore::drop_empty`] with the oldest
-//!   pinned version, once the operations that were running have ended. After
-//!   it opened or recovered the store, it does so once what it opened from
-//!   is durable: a log that a killed process left reads back whole and can
-//!   still be cut short by a loss of power.
+//!   pinned version and with a mark that every operation running at it has
+//!   outlived. After it opened or recovered the store, it marks what it
+//!   opened from durable once it is: a log that a killed process left reads
+//!   back whole and can still be cut short by a loss of power.
+//! - It takes [`ValueStore::hold_files`] for a checkpoint, from its sampling
+//!   step until the files are linked.
 //!
 //! [`SegmentStore::describe`]: crate::segment::SegmentStore::describe
 //! [`ManifestStore`]: crate::segment::ManifestStore
