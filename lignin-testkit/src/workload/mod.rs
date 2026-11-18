@@ -166,3 +166,90 @@ impl Source for Prepared {
         false
     }
 }
+
+/// Every workload, at a size of its own choosing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Workload {
+    /// [`drive::Documents`].
+    Documents(drive::Documents),
+    /// [`drive::Balances`].
+    Balances(drive::Balances),
+    /// [`drive::Tokens`].
+    Tokens(drive::Tokens),
+    /// [`zoo::ElementZoo`].
+    ElementZoo(zoo::ElementZoo),
+    /// [`adversarial::DeepNesting`].
+    DeepNesting(adversarial::DeepNesting),
+    /// [`adversarial::LongKeys`].
+    LongKeys(adversarial::LongKeys),
+    /// [`adversarial::LargeValues`].
+    LargeValues(adversarial::LargeValues),
+    /// [`adversarial::TinySubtrees`].
+    TinySubtrees(adversarial::TinySubtrees),
+    /// [`adversarial::DeleteHeavy`].
+    DeleteHeavy(adversarial::DeleteHeavy),
+    /// [`adversarial::ReferenceChains`].
+    ReferenceChains(adversarial::ReferenceChains),
+}
+
+impl Workload {
+    /// Every workload at its default size, generated for `features`.
+    ///
+    /// Each one writes under root keys of its own, so the streams of a suite
+    /// can also be applied one after another to the same database.
+    pub fn suite(features: Features) -> Vec<Workload> {
+        vec![
+            Workload::Documents(drive::Documents::default()),
+            Workload::Balances(drive::Balances::default()),
+            Workload::Tokens(drive::Tokens::default()),
+            Workload::ElementZoo(zoo::ElementZoo { features }),
+            Workload::DeepNesting(adversarial::DeepNesting::default()),
+            Workload::LongKeys(adversarial::LongKeys::default()),
+            Workload::LargeValues(adversarial::LargeValues::default()),
+            Workload::TinySubtrees(adversarial::TinySubtrees {
+                features,
+                ..Default::default()
+            }),
+            Workload::DeleteHeavy(adversarial::DeleteHeavy {
+                features,
+                ..Default::default()
+            }),
+            Workload::ReferenceChains(adversarial::ReferenceChains {
+                features,
+                ..Default::default()
+            }),
+        ]
+    }
+
+    /// A short name, stable across releases, for file names and reports.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Workload::Documents(_) => "documents",
+            Workload::Balances(_) => "balances",
+            Workload::Tokens(_) => "tokens",
+            Workload::ElementZoo(_) => "element-zoo",
+            Workload::DeepNesting(_) => "deep-nesting",
+            Workload::LongKeys(_) => "long-keys",
+            Workload::LargeValues(_) => "large-values",
+            Workload::TinySubtrees(_) => "tiny-subtrees",
+            Workload::DeleteHeavy(_) => "delete-heavy",
+            Workload::ReferenceChains(_) => "reference-chains",
+        }
+    }
+
+    /// The stream for `seed`.
+    pub fn stream(&self, seed: u64) -> Stream {
+        match self {
+            Workload::Documents(workload) => workload.stream(seed),
+            Workload::Balances(workload) => workload.stream(seed),
+            Workload::Tokens(workload) => workload.stream(seed),
+            Workload::ElementZoo(workload) => workload.stream(seed),
+            Workload::DeepNesting(workload) => workload.stream(seed),
+            Workload::LongKeys(workload) => workload.stream(seed),
+            Workload::LargeValues(workload) => workload.stream(seed),
+            Workload::TinySubtrees(workload) => workload.stream(seed),
+            Workload::DeleteHeavy(workload) => workload.stream(seed),
+            Workload::ReferenceChains(workload) => workload.stream(seed),
+        }
+    }
+}

@@ -755,7 +755,7 @@ impl Zoo {
                                 reference: reference.clone(),
                                 max_hop: *max_hop,
                                 flags: flags.clone(),
-                                trusted: roll % 2 == 0,
+                                trusted: roll.is_multiple_of(2),
                             }]));
                         }
                     } else if roll < 7 {
