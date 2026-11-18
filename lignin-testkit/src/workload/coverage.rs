@@ -651,11 +651,8 @@ impl Coverage {
 
     /// An element stored at `key` in the subtree at `path`.
     fn put(&mut self, path: &Path, key: &[u8], element: &Element) {
-        for subtrees in [&mut self.filled, &mut self.written] {
-            if !subtrees.contains(path) {
-                subtrees.insert(path.clone());
-            }
-        }
+        self.filled.insert(path.clone());
+        self.written.insert(path.clone());
         if element.is_any_tree() {
             let mut tree = path.clone();
             tree.push(key.to_vec());
@@ -694,9 +691,7 @@ impl Coverage {
                 }
             }
         }
-        if !self.written.contains(path) {
-            self.written.insert(path.clone());
-        }
+        self.written.insert(path.clone());
     }
 
     /// Counts what an operation that runs Drive's callbacks does to the

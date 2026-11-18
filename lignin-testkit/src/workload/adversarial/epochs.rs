@@ -249,7 +249,11 @@ impl Script {
         let mut step = 0;
         while !self.history(ladder).later.is_empty() {
             let held = self.history(ladder).later.len();
-            let within = (step % 2 == 0).then(|| self.within(ladder)).flatten();
+            let within = if step % 2 == 0 {
+                self.within(ladder)
+            } else {
+                None
+            };
             let len = match within {
                 Some(len) => len,
                 None => self.across(ladder, (1 + step / 2 % 3).min(held)),

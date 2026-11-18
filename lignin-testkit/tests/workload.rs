@@ -830,10 +830,9 @@ impl FlagsModel {
     /// two name different owners, and one of them is an owner the batch
     /// hands over fully to or from.
     fn is_full_handover(&self, held: Option<&Epochs>, written: Option<&Epochs>) -> bool {
-        let (Some(full), Some(held), Some(written)) = (&self.handover, held, written) else {
-            return false;
-        };
-        let (Some(held), Some(written)) = (held.owner, written.owner) else {
+        let owner = |epochs: Option<&Epochs>| epochs.and_then(|epochs| epochs.owner);
+        let (Some(full), Some(held), Some(written)) = (&self.handover, owner(held), owner(written))
+        else {
             return false;
         };
         held != written && (full.contains(&held) || full.contains(&written))
@@ -3616,8 +3615,9 @@ fn of_group<'a>(
     operations: impl IntoIterator<Item = &'a Operation>,
     group: &str,
 ) -> Vec<Operation> {
-    let operations = operations.into_iter().copied();
     operations
+        .into_iter()
+        .copied()
         .filter(|operation| operation.group() == group)
         .collect()
 }
@@ -3666,8 +3666,9 @@ fn the_callbacks_keep_the_flags_and_split_what_is_freed() {
         let version = grove_version.protocol_version;
         let features = Features::for_grove_version(grove_version);
         let supported = |operations: &[Operation]| -> Vec<Operation> {
-            let operations = operations.iter().copied();
             operations
+                .iter()
+                .copied()
                 .filter(|operation| features.supports(*operation))
                 .collect()
         };

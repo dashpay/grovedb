@@ -483,7 +483,7 @@ impl Histories {
             | Write::SectionalDeleteUpTree { .. } => None,
         };
         if let Some((path, key)) = place {
-            self.delete(&path.to_vec(), key, &mut Seen::default());
+            self.delete(path, key, &mut Seen::default());
         }
     }
 
@@ -528,11 +528,11 @@ impl Histories {
 
     /// Forgets the element at the key and, where the key held a tree,
     /// everything under it.
-    fn delete(&mut self, path: &Path, key: &[u8], seen: &mut Seen) {
-        if let Some(history) = self.elements.remove(&(path.clone(), key.to_vec())) {
+    fn delete(&mut self, path: &[Vec<u8>], key: &[u8], seen: &mut Seen) {
+        if let Some(history) = self.elements.remove(&(path.to_vec(), key.to_vec())) {
             seen.deleted_several_epochs |= !history.later.is_empty();
         }
-        let mut tree = path.clone();
+        let mut tree = path.to_vec();
         tree.push(key.to_vec());
         self.elements
             .retain(|(path, _), _| !path.starts_with(&tree));
