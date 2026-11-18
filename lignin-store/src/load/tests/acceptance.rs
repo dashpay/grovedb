@@ -171,6 +171,7 @@ fn corrupt_bytes(
                     .expect("the byte is restored");
             }
             assert_eq!(db.stored(location), original);
+            db.vfs.take_calls();
         }
         assert_eq!(pool.census(), Default::default(), "nothing was installed");
         assert_eq!(

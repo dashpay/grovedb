@@ -123,6 +123,7 @@ fn a_page_freed_while_it_is_loaded_ends_at_the_free() {
     one_page(&mut db);
     let pool = db.pool(2);
     let loader = db.loader(&pool);
+    db.vfs.take_calls();
     let at_the_block = db.vfs.stop_after(0, Op::Read, SEGMENT);
 
     std::thread::scope(|scope| {
@@ -138,6 +139,15 @@ fn a_page_freed_while_it_is_loaded_ends_at_the_free() {
     });
 
     assert_eq!(pool.stats().misses, 2);
+    let block_reads = db.vfs.take_calls();
+    assert_eq!(
+        block_reads,
+        [
+            (Op::Read, SEGMENT.to_owned()),
+            (Op::Read, SEGMENT.to_owned())
+        ],
+        "the block is read again for the second fill"
+    );
     assert!(pool.get(page(7), version(1)).is_ok());
     assert!(pool.get(page(7), version(2)).is_err());
     assert!(matches!(
@@ -158,8 +168,10 @@ impl Drop for Over<'_> {
 
 /// One thread commits changes to three pages and writes each back, as a
 /// run or as a new image, while readers ask for the pages at the versions
-/// that were published, in a pool too small to keep them. The commits go
-/// on until the readers have loaded 500 pages beside them.
+/// that were published, in a pool too small to keep them. A load counts as
+/// beside the commits when it asked at a version a commit of this test
+/// published and ended before the commits did. The commits go on until 500
+/// loads were, and one commit more.
 #[test]
 fn readers_load_while_commits_and_write_back_go_on() {
     const PAGES: u64 = 3;
@@ -214,7 +226,7 @@ fn readers_load_while_commits_and_write_back_go_on() {
                     let born = born_at(index, at);
                     assert_eq!(frame.born(), version(born), "page {index} at {at}");
                     assert_eq!(mark_of(&frame), mark(born), "page {index} at {at}");
-                    if !over.load(Ordering::Acquire) {
+                    if latest >= 2 && !over.load(Ordering::Acquire) {
                         beside.fetch_add(1, Ordering::Relaxed);
                     }
                 }
@@ -223,7 +235,15 @@ fn readers_load_while_commits_and_write_back_go_on() {
 
         let mut buffers = LoadBuffers::new();
         let mut born = 1;
-        while born < COMMITS || (beside.load(Ordering::Relaxed) < BESIDE && born < MOST_COMMITS) {
+        let mut enough_at = None;
+        loop {
+            if enough_at.is_none() && beside.load(Ordering::Relaxed) >= BESIDE {
+                enough_at = Some(born);
+            }
+            let committed_since = enough_at.is_some_and(|enough_at| born > enough_at);
+            if (born >= COMMITS && committed_since) || born >= MOST_COMMITS {
+                break;
+            }
             born += 1;
             let index = born % PAGES;
             let id = ids[index as usize];
@@ -254,6 +274,7 @@ fn readers_load_while_commits_and_write_back_go_on() {
             pool.mark_written(&new).unwrap();
         }
         drop(commits_end);
+        assert!(enough_at.is_some_and(|enough_at| born > enough_at));
         born
     });
 

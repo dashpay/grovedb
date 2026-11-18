@@ -131,7 +131,7 @@
 //! | --- | --- | --- |
 //! | The bytes of a block are the bytes that were written: its checksum, which covers its tag and its body. | [`SegmentStore::read`] | [`LoadError::Block`] |
 //! | The block is of the kind the chain says: a base image first, runs after it. | the block's tag | [`LoadError::Content`] |
-//! | The payload decompresses to the length it states. A run that states more than its stored bytes can expand to is refused before memory is taken for it. | `Block::copy_payload_to` | [`LoadError::Payload`] |
+//! | The payload decompresses to exactly the length it states. A run that states more than 255 times the length of its block, which no LZ4 block reaches, is refused before memory is taken for it; any other wrong length is found by the decompression, into memory of the stated length. | `Block::copy_payload_to` | [`LoadError::Payload`] |
 //! | The image is a well-formed page of the store's page size. | `TreePage::decode`, `FlatPage::decode` | [`LoadError::Payload`] |
 //! | The block holds the image and nothing behind it (`segment-manifest.md` S7). | the image's own length | [`LoadError::TrailingBytes`] |
 //! | The image is of the page asked for (`tree-page.md` TP2, `flat-page.md` P14). | the page id in its header | [`LoadError::Payload`] with `DeltaError::WrongPage` |
@@ -167,13 +167,16 @@
 //!
 //! # What the callers do
 //!
-//! - **A reader** asks at a version it has pinned, or at the latest
-//!   version, as it asks the pool, and **holds an operation guard** from
-//!   before it asks until the load has returned (`transactions.md` PN5). A
-//!   pin keeps the page version; the guard is what keeps the blocks that
-//!   the page table named readable while they are read, when a cleaner
-//!   moves them meanwhile (PN6). Without it a load can fail with
-//!   [`LoadError::Block`] for a segment that is gone.
+//! - **A reader holds an operation guard** for the whole load
+//!   (`transactions.md` PN5): it takes the guard before it reads the latest
+//!   version, or before it asks at a version it has pinned, and holds it
+//!   until the load has returned. It asks at a version it has pinned or at
+//!   the latest version it read under the guard, as it asks the pool. A pin
+//!   keeps the page version; the guard is what keeps the blocks that the
+//!   page table named readable while they are read, when a cleaner moves
+//!   them meanwhile (PN6). Without it a load can fail with
+//!   [`LoadError::Block`] for a segment that is gone, or with
+//!   [`LoadError::NoPage`] for a version that was trimmed.
 //! - **It holds what it loaded** until it has used it. A page that was
 //!   loaded into a frame beside the pool's fixed ones is gone when its last
 //!   [`PageRef`] is dropped.
