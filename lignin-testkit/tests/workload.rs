@@ -132,6 +132,7 @@ fn run(
     let mut savepoints: Vec<[u8; 32]> = Vec::new();
     let mut snapshot_answers: VecDeque<String> = VecDeque::new();
     let mut trunks: BTreeMap<Vec<Vec<u8>>, BTreeMap<Vec<u8>, LeafInfo>> = BTreeMap::new();
+    let mut committed_root = root_hash(None);
     let mut index = 0usize;
     while let Some(op) = ahead.pop_front().or_else(|| ops.next()) {
         let context = format!("{name} on grove v{version}: op {index}\n{op:?}");
@@ -162,12 +163,22 @@ fn run(
             }
         }
         let expected = expected_outcome(db, &op, transactions.block(), grove_version);
+        let replaced = match &op {
+            Op::Write(
+                Write::InsertIfNotExists { path, key, .. }
+                | Write::InsertIfChanged { path, key, .. },
+            ) => stored(db, path, key, Some(transactions.block()), grove_version),
+            _ => None,
+        };
         let outcome = transactions
             .apply(&op, grove_version)
             .unwrap()
             .unwrap_or_else(|error| panic!("{context}\nrefused: {error:?}"));
         if let Some(expected) = expected {
             assert_eq!(format!("{outcome:?}"), expected, "{context}");
+        }
+        if matches!(op, Op::Commit) {
+            committed_root = root_hash(None);
         }
         if op.ends_transaction() {
             committed = true;
@@ -213,9 +224,15 @@ fn run(
                 applied.branches_verified +=
                     check_proof(&context, db, read, &outcome, &mut trunks, grove_version);
             }
-            (Op::Write(write), outcome) => {
-                check_write(&context, db, write, &outcome, block, grove_version)
-            }
+            (Op::Write(write), outcome) => check_write(
+                &context,
+                db,
+                write,
+                &outcome,
+                replaced,
+                block,
+                grove_version,
+            ),
             (Op::Transaction(step), outcome) => match step {
                 TransactionOp::SetSavepoint => savepoints.push(root_hash(Some(block))),
                 TransactionOp::RollbackToSavepoint => assert_eq!(
@@ -224,9 +241,9 @@ fn run(
                     "{context}\ndid not restore the root hash of its savepoint"
                 ),
                 TransactionOp::Rollback | TransactionOp::Abandon => assert_eq!(
-                    root_hash(Some(block)),
-                    root_hash(None),
-                    "{context}\ndid not restore the committed root hash"
+                    (root_hash(Some(block)), root_hash(None)),
+                    (committed_root, committed_root),
+                    "{context}\ndid not restore the root hash of the last commit"
                 ),
                 TransactionOp::BlockRead(read) => {
                     check_answer(&context, db, read, &outcome, Some(block), grove_version)
@@ -348,16 +365,29 @@ fn check_write(
     db: &GroveDb,
     write: &Write,
     outcome: &Outcome,
+    replaced: Option<Element>,
     transaction: &Transaction,
     grove_version: &GroveVersion,
 ) {
     let stored =
         |path: &[Vec<u8>], key: &[u8]| stored(db, path, key, Some(transaction), grove_version);
     match (write, outcome) {
+        // A key that was taken keeps what it held.
         (
-            Write::InsertIfNotExists { path, key, .. } | Write::InsertIfChanged { path, key, .. },
+            Write::InsertIfNotExists {
+                path, key, element, ..
+            },
             _,
-        ) => assert!(stored(path, key).is_some(), "{context}\nstored nothing"),
+        ) => assert_eq!(
+            stored(path, key),
+            replaced.or_else(|| Some(element.clone())),
+            "{context}\nleft another element"
+        ),
+        (Write::InsertIfChanged { path, key, element }, _) => assert_eq!(
+            stored(path, key).as_ref(),
+            Some(element),
+            "{context}\nleft another element"
+        ),
         (
             Write::DeleteBuilt { path, key }
             | Write::DeleteIfEmptyTree { path, key }
@@ -526,6 +556,30 @@ fn check_answer(
         }
         _ => {}
     }
+}
+
+/// The byte strings of a state sync answer: a 32-bit big-endian count, then
+/// each string behind a 32-bit big-endian length.
+fn unpacked(context: &str, packed: &[u8]) -> Vec<Vec<u8>> {
+    fn number(rest: &mut &[u8]) -> Option<usize> {
+        let (number, tail) = rest.split_first_chunk::<4>()?;
+        *rest = tail;
+        Some(u32::from_be_bytes(*number) as usize)
+    }
+    fn strings(rest: &mut &[u8]) -> Option<Vec<Vec<u8>>> {
+        let mut strings = Vec::new();
+        for _ in 0..number(rest)? {
+            let length = number(rest)?;
+            let (string, tail) = rest.split_at_checked(length)?;
+            *rest = tail;
+            strings.push(string.to_vec());
+        }
+        Some(strings)
+    }
+    let mut rest = packed;
+    let strings = strings(&mut rest).unwrap_or_else(|| panic!("{context}\nis cut short"));
+    assert!(rest.is_empty(), "{context}\nholds more than it says");
+    strings
 }
 
 /// A key, its count where one was asked for, and its sum.
@@ -754,7 +808,23 @@ fn check_proof(
                     return 1;
                 }
             }
-            Prove::Chunk { .. } => assert!(!proof.is_empty(), "{context}\nserved nothing"),
+            Prove::Chunk { ids, .. } => {
+                // One answer for the one subtree asked for, holding a chunk
+                // for each chunk id, or the chunk at the root for none, or
+                // one page of entries.
+                let asked = match ids {
+                    lignin_testkit::workload::ChunkIds::Merk(ids) => ids.len().max(1),
+                    lignin_testkit::workload::ChunkIds::Entries { .. } => 1,
+                };
+                let subtrees = unpacked(context, proof);
+                assert_eq!(subtrees.len(), 1, "{context}");
+                let chunks = unpacked(context, &subtrees[0]);
+                assert_eq!(chunks.len(), asked, "{context}");
+                assert!(
+                    chunks.iter().all(|chunk| !chunk.is_empty()),
+                    "{context}\nserved an empty chunk"
+                );
+            }
         },
         _ => {}
     }
@@ -1682,8 +1752,8 @@ const PINNED_STREAMS: &[(&str, u64, u64, &str)] = &[
     ("identity-reads", 0x4c49474e494e, 180, "7ac1e426b8ea750863c4439fdee37b73ab6afe80c83424f6f24b23fabd5a2664"),
     ("chunk-proofs", 0x1, 262, "f341f5745226be883674d89660944dd66b7294ec7da07d658743a24d325df0a6"),
     ("chunk-proofs", 0x4c49474e494e, 267, "4bdd019fd5874626982eb8e99692ad40fcdb14062bd1631bd3b3a0d9700442a9"),
-    ("block-execution", 0x1, 713, "7ba90184be818949de2e93b9ef4e58ad977ea136e6359b28ecf8d58ab14bcc85"),
-    ("block-execution", 0x4c49474e494e, 729, "7ab9efbea976847e8fd4f5602e5f71be4774857e8bd9fbb3a4bb32fd068d1e3f"),
+    ("block-execution", 0x1, 684, "d7b09d7424f2cfab718032e4933e9bd1af731e2c0d142df2c367217faf1f2235"),
+    ("block-execution", 0x4c49474e494e, 687, "cbe8343d2304f8abbcfb2b3ff9377ba9d707d1caced7776c0cd1b0f69668818c"),
 ];
 
 #[test]
@@ -1716,11 +1786,11 @@ fn streams_are_pinned() {
 /// features, seed [`SEED`]: protocol version, operations, digest.
 #[rustfmt::skip]
 const PINNED_SUITES: &[(u32, u64, &str)] = &[
-    (1, 21068, "4671cdfa769a39f2e510693e904a4f01770e3d7d75154bce623881a9dd690e68"),
-    (2, 21068, "4671cdfa769a39f2e510693e904a4f01770e3d7d75154bce623881a9dd690e68"),
-    (3, 21092, "590be9cc12ad102ca24635d34105b673d535c42b47233d1bf7885f85733bc45a"),
-    (4, 21574, "d13447e2f56207cae32767d3abb3aec4690c00dd545dc2fe42614473b7a95552"),
-    (5, 21880, "ea204d78153ea574f98991f02d60e7f9cb7b10b028bd8fdd9baebc348aa456eb"),
+    (1, 21039, "6815859bff4dd2cac910d946579317a46e2560801101565ace1165acebf64688"),
+    (2, 21039, "6815859bff4dd2cac910d946579317a46e2560801101565ace1165acebf64688"),
+    (3, 21063, "4a450b692bcb79e2940958d6bf2a3e0400892344c1fb37647ea0adf366cbc09f"),
+    (4, 21545, "f39ff946552ae57e023ee671fe47c94ec10b5e1a42e26df8fa1b6e6aa95363a3"),
+    (5, 21851, "6424ec412bdc91b888f2390001960c626b98db9704a127d64a0aefabf0952aaa"),
 ];
 
 #[test]

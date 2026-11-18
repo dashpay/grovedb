@@ -33,7 +33,7 @@
 //! chunk proofs, the remaining query entry points, and transactions that
 //! roll back, use savepoints or are read under a snapshot.
 //!
-//! [`Workload`] lists them all. [`apply`] turns an operation into GroveDB
+//! [`Workload`] lists them all. [`apply()`] turns an operation into GroveDB
 //! calls, [`coverage`] reports which element types, tree types and
 //! operations a stream produced, and [`surface`] names every public
 //! operation of GroveDB as produced or as left out, with the reason.

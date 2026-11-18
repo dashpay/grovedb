@@ -25,6 +25,8 @@ const PRIVATE_DOCUMENTS: &[u8] = b"private-documents";
 
 const CHUNK_POWER: u8 = 2;
 const DENSE_HEIGHT: u8 = 5;
+/// A dense tree of height `h` holds `2^h - 1` values.
+const DENSE_CAPACITY: u64 = (1 << DENSE_HEIGHT) - 1;
 const PRIVATE_DOCUMENT_ENTRY_SIZE: u32 = 20;
 
 /// The fewest rows a Merk tree of this workload holds. An AVL tree of that
@@ -158,6 +160,7 @@ impl ChunkProofs {
         ops.push(Op::Commit);
 
         let mut entries = 0u64;
+        let mut dense_entries = 0u64;
         for round in 0..self.rounds {
             // Rows: a first fill, then a few more and a few fewer.
             let writes = if round == 0 { self.rows } else { 6 };
@@ -192,10 +195,14 @@ impl ChunkProofs {
                     &tree(BULK),
                     AppendEntry::Bulk(value(&mut rng, 1, 40)),
                 ));
-                ops.push(build::append(
-                    &tree(DENSE),
-                    AppendEntry::Dense(value(&mut rng, 1, 40)),
-                ));
+                // The dense tree takes no more once it is full.
+                if dense_entries < DENSE_CAPACITY {
+                    ops.push(build::append(
+                        &tree(DENSE),
+                        AppendEntry::Dense(value(&mut rng, 1, 40)),
+                    ));
+                    dense_entries += 1;
+                }
                 ops.push(Op::Batch(vec![batch::append(
                     &tree(COMMITMENTS),
                     commitment_entry(&mut rng),
@@ -242,7 +249,16 @@ impl ChunkProofs {
                 };
                 ops.push(chunk(&tree(MMR), page(mmr_size(entries), 0)));
                 ops.push(chunk(&tree(BULK), page(entries, CHUNK_POWER)));
-                ops.push(chunk(&tree(DENSE), page(entries, DENSE_HEIGHT)));
+                // The dense tree holds fewer entries once it has filled up,
+                // and its page starts inside what it holds.
+                ops.push(chunk(
+                    &tree(DENSE),
+                    ChunkIds::Entries {
+                        start: start.min(dense_entries - 1),
+                        state: dense_entries,
+                        parameter: DENSE_HEIGHT,
+                    },
+                ));
                 ops.push(chunk(&tree(COMMITMENTS), page(entries, CHUNK_POWER)));
                 if stores {
                     ops.push(chunk(&tree(PRIVATE_DOCUMENTS), page(entries, CHUNK_POWER)));

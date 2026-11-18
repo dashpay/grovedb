@@ -2,7 +2,7 @@
 //!
 //! A workload is a flat stream of [`Op`]s. The types hold plain data (paths,
 //! keys, elements), so a consumer can apply a stream to a GroveDB (see
-//! [`super::apply`]), record it, replay it, or read it without a database at
+//! [`super::apply()`]), record it, replay it, or read it without a database at
 //! all, as a tree-layout simulation does.
 
 use grovedb::{
@@ -23,11 +23,11 @@ pub enum Op {
     Write(Write),
     /// One `apply_batch` call: the unit a state transition is.
     Batch(Vec<BatchOp>),
-    /// One read. Reads only follow an operation that leaves the open
-    /// transaction without a write ([`Op::ends_transaction`]), a
-    /// [`Op::FlushPendingDrops`], a step that leaves the open transaction as
-    /// it is or another read, so the same read can be proved against
-    /// committed state.
+    /// One read. A read only runs while the open transaction holds no
+    /// write: nothing but reads and steps that write nothing
+    /// ([`Op::keeps_transaction`]) lies between it and the last operation
+    /// that ended a transaction ([`Op::ends_transaction`]). The same read
+    /// can then be proved against committed state.
     Read(Read),
     /// The end of a block: the open transaction is committed.
     Commit,
@@ -58,7 +58,7 @@ pub enum TransactionOp {
     Rollback,
     /// The open transaction is dropped without a commit and without a
     /// rollback, and another is started. The transaction belongs to the
-    /// caller of [`super::apply`], which is told to do so.
+    /// caller of [`super::apply()`], which is told to do so.
     Abandon,
     /// `Transaction::set_savepoint`: a savepoint is pushed on the stack of
     /// the open transaction.
@@ -68,7 +68,7 @@ pub enum TransactionOp {
     RollbackToSavepoint,
     /// `GroveDb::start_snapshot_read_transaction`: the committed state of
     /// this moment is pinned. The snapshot belongs to the caller of
-    /// [`super::apply`], which is told to open it. At most one is open.
+    /// [`super::apply()`], which is told to open it. At most one is open.
     OpenSnapshot,
     /// The snapshot is dropped.
     CloseSnapshot,
@@ -203,8 +203,9 @@ pub enum Write {
     },
     /// What Drive does to delete one key: the delete is built as a batch
     /// operation by `GroveDb::delete_operation_for_delete_internal`, which
-    /// reads whether the key holds a tree, and one batch applies it. A key
-    /// that is not there deletes nothing.
+    /// reads the key to learn whether it holds a tree, and one batch
+    /// applies it. The key is stored, and a tree it holds is empty: GroveDB
+    /// refuses any other.
     DeleteBuilt {
         /// The subtree to delete from.
         path: Path,
@@ -673,7 +674,7 @@ pub enum Prove {
     /// `GroveDb::fetch_chunk`: what a node serves to another that is
     /// syncing its state. A chunk is asked for by the hash of the subtree's
     /// path, its root key and its type, which a syncing node reads from the
-    /// tree's element; [`super::apply`] reads them the same way, so the
+    /// tree's element; [`super::apply()`] reads them the same way, so the
     /// stream names the subtree by its path. The root tree is asked for by
     /// the root hash.
     Chunk {

@@ -264,7 +264,7 @@ operations! {
         TrunkChunk = "`GroveDb::prove_trunk_chunk`.",
         BranchChunk = "`GroveDb::prove_branch_chunk`.",
         RootChunk = "`GroveDb::fetch_chunk` of the root tree, asked for by the root hash.",
-        RootTreeChunk = "`GroveDb::fetch_chunk` of chunks below the root of the root tree.",
+        RootTreeChunk = "`GroveDb::fetch_chunk` of the root tree, asked for by chunk id.",
         MerkChunk = "`GroveDb::fetch_chunk` of the chunk at the root of a Merk tree.",
         MerkChunkBelowRoot = "`GroveDb::fetch_chunk` of chunks below the root of a Merk tree.",
         EntriesChunk = "`GroveDb::fetch_chunk` of a page of an append-only tree.";
@@ -551,11 +551,11 @@ impl Coverage {
                 {
                     self.produced(Operation::SnapshotReadAfterCommit);
                 }
-                self.operations.extend(read_operations(read));
+                self.operations.extend(unproven(read));
             }
             TransactionOp::BlockRead(read) => {
                 self.produced(Operation::BlockRead);
-                self.operations.extend(read_operations(read));
+                self.operations.extend(unproven(read));
             }
         }
     }
@@ -662,7 +662,15 @@ fn write_operation(write: &Write) -> Operation {
     }
 }
 
-/// The operations a read stands for.
+/// The operations a read stands for when it runs through a snapshot or
+/// inside a block, where nothing is proved.
+fn unproven(read: &Read) -> impl Iterator<Item = Operation> {
+    read_operations(read)
+        .into_iter()
+        .filter(|operation| *operation != Operation::AbsenceProof)
+}
+
+/// The operations a read of committed state stands for.
 fn read_operations(read: &Read) -> Vec<Operation> {
     let rows_reader = |raw: bool| {
         if raw {

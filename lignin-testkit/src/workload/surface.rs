@@ -6,18 +6,18 @@
 //! engines. [`PUBLIC_OPERATIONS`] says of every public method of `GroveDb`,
 //! and of the transaction it hands out, which of four things is true:
 //!
-//! - [`Status::Produced`]: [`super::apply`] calls it, for the
+//! - [`Status::Produced`]: [`super::apply()`] calls it, for the
 //!   [`Operation`]s named, each of which the suite produces.
 //! - [`Status::Inside`]: a method that is produced calls it.
 //! - [`Status::Consumer`]: whoever applies a stream calls it, outside
-//!   [`super::apply`]: opening the database, proving a read, checking the
+//!   [`super::apply()`]: opening the database, proving a read, checking the
 //!   result.
 //! - [`Status::LeftOut`]: no stream reaches it, for the reason given.
 //!
 //! The list is checked against GroveDB's source by `tests/surface.rs`, which
 //! reads the public methods from the source when it runs. A method added to
 //! GroveDB fails that test until it is classified here, and a method listed
-//! as produced fails it unless [`super::apply`] calls it.
+//! as produced fails it unless [`super::apply()`] calls it.
 
 use std::fmt;
 
@@ -26,7 +26,7 @@ use super::coverage::Operation;
 /// Whether the workloads produce a public operation of GroveDB.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
-    /// [`super::apply`] calls it when it applies these operations.
+    /// [`super::apply()`] calls it when it applies these operations.
     Produced(&'static [Operation]),
     /// A method that is produced, or one the consumer calls, calls it.
     Inside {
@@ -114,8 +114,9 @@ const CLOSURES: &str = "flag updates and splits of removed bytes other than Grov
 
 const AGGREGATE_READER: Status = inside("run_path_query");
 
-/// Every public method of `GroveDb`, and of the transaction it hands out
-/// under the name `Transaction::…`, in alphabetical order.
+/// Every public method of `GroveDb`, the methods of the traits implemented
+/// for it included, and every public method of the transaction it hands
+/// out under the name `Transaction::…`, in alphabetical order.
 pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
     ("Transaction::commit", inside("commit_transaction")),
     (
@@ -149,7 +150,10 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
     ("add_average_case_has_raw_tree_cost", ESTIMATE),
     (
         "add_delete_operations_for_delete_up_tree_while_empty",
-        inside("delete_up_tree_while_empty_with_sectional_storage"),
+        inside_but(
+            "delete_up_tree_while_empty_with_sectional_storage",
+            "a batch that already holds operations for it to add to",
+        ),
     ),
     ("add_worst_case_get_cost", ESTIMATE),
     ("add_worst_case_get_merk_at_path", ESTIMATE),
@@ -174,7 +178,7 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
     (
         "apply_operations_without_batching",
         Status::LeftOut(
-            "applies batch operations one at a time through `insert` and `delete`, which are \
+            "applies batch operations one at a time through the direct methods, which are \
              produced; GroveDB documents it as for tests and debugging, and Platform does not \
              call it",
         ),
@@ -301,7 +305,14 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
             Operation::EntriesChunk,
         ]),
     ),
-    ("find_subtrees", inside("delete")),
+    (
+        "find_subtrees",
+        inside_but(
+            "delete",
+            "on the grove versions that delete through the third version of the internal \
+             delete, which finds the subtrees itself",
+        ),
+    ),
     (
         "flush",
         Status::LeftOut(
@@ -469,9 +480,9 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
     (
         "query_aggregate_sums",
         Status::LeftOut(
-            "`query_aggregate_sums_with_options`, which is produced, with GroveDB's default \
-             options; `workload::apply` spells every option out, so that a changed default \
-             cannot change how a stream replays",
+            "`query_aggregate_sums_with_options`, which is produced, with two of its four \
+             options left at GroveDB's defaults; `workload::apply` spells every option out, \
+             so that a changed default cannot change how a stream replays",
         ),
     ),
     (
@@ -482,7 +493,8 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
         "query_encoded_many",
         Status::LeftOut(
             "deprecated, and Platform does not call it; it reads through the same private \
-             reader as `query_many_raw`, which is produced",
+             reader as `query_many_raw`, which is produced, and then follows each row's \
+             reference as `get` does",
         ),
     ),
     ("query_item_value", produced(&[Operation::ItemValues])),
@@ -612,6 +624,13 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
     ("verify_subset_query_with_absence_proof", VERIFIER),
     ("verify_trunk_chunk_proof", VERIFIER),
     (
+        "visualize",
+        Status::LeftOut(
+            "the `Visualize` trait's drawing of the whole database for a person to read; no \
+             caller computes with it",
+        ),
+    ),
+    (
         "visualize_verify_grovedb",
         Status::LeftOut(
             "`verify_grovedb`, which the consumer of a stream calls, with its report \
@@ -621,8 +640,8 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
     (
         "wipe",
         Status::LeftOut(
-            "destroys the database, files of other owners in its directory included; TXN-06 \
-             and TXN-07 specify and test it",
+            "empties every column family with range deletes, outside any transaction and at \
+             no cost; TXN-06 and TXN-07 specify and test it",
         ),
     ),
     ("worst_case_delete_operation_for_delete", ESTIMATE),

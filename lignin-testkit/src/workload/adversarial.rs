@@ -24,7 +24,7 @@ use std::collections::BTreeSet;
 pub use self::{
     chunks::{ChunkProofs, MIN_CHUNKED_ROWS},
     drops::FlatDrops,
-    indexed::IndexedWrites,
+    indexed::{IndexedWrites, MAX_INDEXED_ROUNDS},
     moves::Moves,
     pages::Pagination,
     partial::PartialBatches,

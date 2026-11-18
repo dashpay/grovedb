@@ -58,7 +58,8 @@ use super::op::{
 /// What applying an [`Op`] produced.
 #[derive(Debug)]
 pub enum Outcome {
-    /// A write or a batch was applied.
+    /// A write or a batch was applied, and GroveDB returned nothing for
+    /// it.
     Written,
     /// The element a [`Read::Get`] returned.
     Element(Element),
@@ -85,7 +86,9 @@ pub enum Outcome {
     /// The records a [`Read::AuxByPrefix`] returned, in key order.
     AuxEntries(Vec<(Vec<u8>, Vec<u8>)>),
     /// Whether a conditional write wrote or deleted, or what a check
-    /// answered.
+    /// answered. A [`Write::DeleteBuilt`] always deletes: the flag says
+    /// that GroveDB built a delete, which it refuses to do for a key it
+    /// cannot delete.
     Flag(bool),
     /// The element a [`Write::InsertIfNotExists`] found in the way, or the
     /// one a [`Fetch::RawOptional`] found, if there is one.
@@ -99,11 +102,14 @@ pub enum Outcome {
     },
     /// How many keys a [`Write::DeleteUpTree`] deleted.
     Deleted(u16),
-    /// What a [`Write::CommitmentInsert`] returned.
+    /// What an append through a typed method returned: a
+    /// [`Write::Append`] other than of a commitment, which goes through a
+    /// batch, or a [`Write::CommitmentInsert`].
     Appended {
-        /// The Sinsemilla root of the tree after the insert.
+        /// The root of the tree after the append. For a commitment tree it
+        /// is the Sinsemilla root.
         root: [u8; 32],
-        /// The position the note was stored at.
+        /// The position the value was stored at.
         position: u64,
     },
     /// The whole transaction, or what followed the newest savepoint, was
@@ -217,7 +223,7 @@ pub const DELETE_UP_TREE_OPTIONS: DeleteUpTreeOptions = DeleteUpTreeOptions {
 };
 
 /// How a [`Write::DeleteBuilt`] builds its delete: the key may hold a tree
-/// only if the tree is empty, and a key that is not there is no error.
+/// only if the tree is empty.
 pub const DELETE_BUILT_OPTIONS: DeleteOptions = DeleteOptions {
     allow_deleting_non_empty_trees: false,
     deleting_non_empty_trees_returns_error: true,
@@ -758,16 +764,20 @@ fn apply_prove(
             },
             grove_version,
         ),
-        Prove::Chunk { path, ids } => free(
-            chunk_request(db, path, ids, transaction, grove_version).and_then(|request| {
-                db.fetch_chunk(
-                    &request,
-                    transaction,
-                    CURRENT_STATE_SYNC_VERSION,
-                    grove_version,
-                )
-            }),
-        ),
+        Prove::Chunk { path, ids } => {
+            let mut cost = OperationCost::default();
+            let request = cost_return_on_error!(
+                &mut cost,
+                chunk_request(db, path, ids, transaction, grove_version)
+            );
+            db.fetch_chunk(
+                &request,
+                transaction,
+                CURRENT_STATE_SYNC_VERSION,
+                grove_version,
+            )
+            .wrap_with_cost(cost)
+        }
     }
 }
 
@@ -779,16 +789,19 @@ fn apply_prove(
 /// key behind a 16-bit big-endian length, its tree type, and the local
 /// chunk ids, packed. A page of entries is asked for by one local id: the
 /// position it starts at and the state of the tree as two 64-bit big-endian
-/// numbers, and the parameter of the tree. GroveDB charges nothing for
-/// serving a chunk, and what is read here to name it is not part of the
-/// operation, so no cost is returned.
+/// numbers, and the parameter of the tree.
+///
+/// GroveDB charges nothing for serving a chunk. The cost returned is that
+/// of the reads that name it: the root hash, or the root key, or the
+/// element of the tree.
 fn chunk_request(
     db: &GroveDb,
     path: &[Vec<u8>],
     ids: &ChunkIds,
     transaction: TransactionArg,
     grove_version: &GroveVersion,
-) -> Result<Vec<u8>, Error> {
+) -> CostResult<Vec<u8>, Error> {
+    let mut cost = OperationCost::default();
     let entries_page;
     let local_ids = match ids {
         ChunkIds::Merk(local_ids) => local_ids.as_slice(),
@@ -808,22 +821,33 @@ fn chunk_request(
         None if local_ids.is_empty() => {
             return db
                 .root_hash(transaction, grove_version)
-                .value
-                .map(|root_hash| root_hash.to_vec());
+                .map_ok(|root_hash| root_hash.to_vec())
+                .add_cost(cost);
         }
-        None => (
-            db.root_key(transaction, grove_version).value?,
-            TreeType::NormalTree,
-        ),
-        Some((key, parent)) => db
-            .get_raw(parent.into(), key, transaction, grove_version)
-            .value?
-            .root_key_and_tree_type_owned()
-            .ok_or(Error::InvalidInput("a chunk is served from a tree"))?,
+        None => {
+            let root_key =
+                cost_return_on_error!(&mut cost, db.root_key(transaction, grove_version));
+            (root_key, TreeType::NormalTree)
+        }
+        Some((key, parent)) => {
+            let element = cost_return_on_error!(
+                &mut cost,
+                db.get_raw(parent.into(), key, transaction, grove_version)
+            );
+            cost_return_on_error_no_add!(
+                cost,
+                element
+                    .root_key_and_tree_type_owned()
+                    .ok_or(Error::InvalidInput("a chunk is served from a tree"))
+            )
+        }
     };
     let root_key = root_key.unwrap_or_default();
-    let root_key_len = u16::try_from(root_key.len())
-        .map_err(|_| Error::InvalidInput("a root key is at most 65535 bytes"))?;
+    let root_key_len = cost_return_on_error_no_add!(
+        cost,
+        u16::try_from(root_key.len())
+            .map_err(|_| Error::InvalidInput("a root key is at most 65535 bytes"))
+    );
     let mut global_id = RocksDbStorage::build_prefix(path.into()).value.to_vec();
     global_id.extend_from_slice(&root_key_len.to_be_bytes());
     global_id.extend_from_slice(&root_key);
@@ -831,7 +855,7 @@ fn chunk_request(
     pack_nested_bytes(&mut global_id, local_ids);
     let mut request = Vec::new();
     pack_nested_bytes(&mut request, &[global_id]);
-    Ok(request)
+    Ok(request).wrap_with_cost(cost)
 }
 
 /// GroveDB's state sync packing of a list of byte strings: a 32-bit
@@ -892,16 +916,17 @@ fn apply_write(
                 ))
                 .wrap_with_cost(OperationCost::default());
             };
+            let appended = |(root, position)| Outcome::Appended { root, position };
             match entry {
                 AppendEntry::Mmr(value) => db
                     .mmr_tree_append(parent, key, value.clone(), transaction, grove_version)
-                    .map_ok(|_| ()),
+                    .map_ok(appended),
                 AppendEntry::Bulk(value) => db
                     .bulk_append(parent, key, value.clone(), transaction, grove_version)
-                    .map_ok(|_| ()),
+                    .map_ok(appended),
                 AppendEntry::Dense(value) => db
                     .dense_tree_insert(parent, key, value.clone(), transaction, grove_version)
-                    .map_ok(|_| ()),
+                    .map_ok(|(root, position)| appended((root, u64::from(position)))),
                 AppendEntry::PrivateDocument(value) => db
                     .private_document_store_insert(
                         parent,
@@ -910,15 +935,16 @@ fn apply_write(
                         transaction,
                         grove_version,
                     )
-                    .map_ok(|_| ()),
-                AppendEntry::Commitment { .. } => db.apply_batch(
-                    vec![append_op(path.clone(), entry)],
-                    Some(BATCH_OPTIONS),
-                    transaction,
-                    grove_version,
-                ),
+                    .map_ok(appended),
+                AppendEntry::Commitment { .. } => db
+                    .apply_batch(
+                        vec![append_op(path.clone(), entry)],
+                        Some(BATCH_OPTIONS),
+                        transaction,
+                        grove_version,
+                    )
+                    .map_ok(written),
             }
-            .map_ok(written)
         }
         Write::PutAux { key, value } => db.put_aux(key, value, None, transaction).map_ok(written),
         Write::DeleteAux { key } => db.delete_aux(key, None, transaction).map_ok(written),

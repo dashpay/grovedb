@@ -16,6 +16,10 @@ use crate::workload::{
 
 const ROOT: &[u8] = b"indexed";
 
+/// The most rounds [`IndexedWrites`] runs: a key holds its round in one
+/// byte.
+pub const MAX_INDEXED_ROUNDS: u32 = 256;
+
 /// The three types of indexed tree, written entry by entry.
 ///
 /// An indexed tree keeps, beside its entries, a secondary tree for each
@@ -34,7 +38,7 @@ const ROOT: &[u8] = b"indexed";
 /// version reads by rank, its top entries are read and proven.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IndexedWrites {
-    /// How many rounds to run.
+    /// How many rounds to run, at most [`MAX_INDEXED_ROUNDS`].
     pub rounds: u32,
     /// What the target grove version can store.
     pub features: Features,
@@ -73,6 +77,10 @@ impl Indexed {
 impl IndexedWrites {
     /// The stream for `seed`.
     pub fn stream(&self, seed: u64) -> Stream {
+        assert!(
+            self.rounds <= MAX_INDEXED_ROUNDS,
+            "a key holds its round in one byte"
+        );
         let mut rng = Rng::derive(seed, DOMAIN_INDEXED, 0);
         let root = path(&[ROOT]);
         let mut trees = [

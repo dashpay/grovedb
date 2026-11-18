@@ -26,12 +26,13 @@ const NONCES: &[u8] = b"nonces";
 ///
 /// - **A proposal being prepared.** Platform sets a savepoint before each
 ///   state transition. One that turns out invalid after it has written is
-///   rolled back to its savepoint, which is then set again for the next.
-///   GroveDB has no call that releases a savepoint, so the savepoints of
-///   the transitions that are kept stay on the stack until the commit.
-/// - **Genesis.** A savepoint is set once, each attempt sets its own inside
-///   it and is rolled back, and the last attempt rolls back to the first
-///   savepoint before the block is written for good.
+///   rolled back to its savepoint. GroveDB has no call that releases a
+///   savepoint, so the savepoints of the transitions that are kept stay on
+///   the stack, one above the other, until the commit.
+/// - **Genesis.** One savepoint is set when the chain starts, and the
+///   transitions of a round get none of their own. Each further round
+///   rolls back to that savepoint, which takes the round before it away,
+///   and sets it again. The last round is committed.
 /// - **A proposal that is refused.** Everything the block wrote is rolled
 ///   back with `rollback_transaction`, and the transaction goes on to hold
 ///   the next block.
@@ -179,19 +180,20 @@ impl BlockExecution {
             };
 
             match block % 6 {
-                // Genesis: attempts inside one savepoint, all rolled back.
+                // Genesis: three rounds over one savepoint, the last one
+                // kept.
                 0 => {
                     ops.push(step(TransactionOp::SetSavepoint));
-                    for _ in 0..2 {
-                        ops.push(step(TransactionOp::SetSavepoint));
-                        ops.push(state.transfer());
-                        ops.push(step(TransactionOp::RollbackToSavepoint));
-                        state.open = state.committed.clone();
+                    for round in 0..3 {
+                        if round > 0 {
+                            ops.push(step(TransactionOp::RollbackToSavepoint));
+                            ops.push(step(TransactionOp::SetSavepoint));
+                            state.open = state.committed.clone();
+                        }
+                        for _ in 0..self.transitions_per_block {
+                            ops.push(state.transfer());
+                        }
                     }
-                    ops.push(state.transfer());
-                    ops.push(step(TransactionOp::RollbackToSavepoint));
-                    state.open = state.committed.clone();
-                    self.proposal(&mut state, &mut ops);
                     self.commit(&mut state, &mut ops);
                 }
                 // A refused proposal: the block is rolled back, and the
@@ -242,7 +244,6 @@ impl BlockExecution {
             ops.push(state.transfer());
             if state.rng.chance(1, 4) {
                 ops.push(step(TransactionOp::RollbackToSavepoint));
-                ops.push(step(TransactionOp::SetSavepoint));
                 state.open = before;
             }
         }
