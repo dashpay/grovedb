@@ -258,19 +258,6 @@ impl Visualize for Element {
                     drawer = f.visualize(drawer)?;
                 }
             }
-            Element::ProvableBigSumIndexedTree(primary, secondary, sum_value, flags) => {
-                drawer.write(b"provable_big_sum_indexed_tree: primary=")?;
-                drawer = primary.as_deref().visualize(drawer)?;
-                drawer.write(b", secondary=")?;
-                drawer = secondary.as_deref().visualize(drawer)?;
-                drawer.write(format!(", sum: {sum_value}").as_bytes())?;
-
-                if let Some(f) = flags
-                    && !f.is_empty()
-                {
-                    drawer = f.visualize(drawer)?;
-                }
-            }
             Element::ProvableCountIndexedTree(primary, secondary, count_value, flags) => {
                 drawer.write(b"provable_count_indexed_tree: primary=")?;
                 drawer = primary.as_deref().visualize(drawer)?;
@@ -292,36 +279,6 @@ impl Visualize for Element {
                 flags,
             ) => {
                 drawer.write(b"provable_count_provable_sum_indexed_tree: primary=")?;
-                drawer = primary.as_deref().visualize(drawer)?;
-                drawer.write(
-                    format!(", count: {count_value}, sum: {sum_value}, axes: [").as_bytes(),
-                )?;
-                let mut first = true;
-                for (tag, sk) in axes {
-                    if !first {
-                        drawer.write(b", ")?;
-                    }
-                    first = false;
-                    drawer.write(format!("({tag}, ").as_bytes())?;
-                    drawer = sk.as_deref().visualize(drawer)?;
-                    drawer.write(b")")?;
-                }
-                drawer.write(b"]")?;
-
-                if let Some(f) = flags
-                    && !f.is_empty()
-                {
-                    drawer = f.visualize(drawer)?;
-                }
-            }
-            Element::ProvableCountProvableBigSumIndexedTree(
-                primary,
-                count_value,
-                sum_value,
-                axes,
-                flags,
-            ) => {
-                drawer.write(b"provable_count_provable_big_sum_indexed_tree: primary=")?;
                 drawer = primary.as_deref().visualize(drawer)?;
                 drawer.write(
                     format!(", count: {count_value}, sum: {sum_value}, axes: [").as_bytes(),

@@ -11,8 +11,9 @@
 //! absence/parent-info APIs have their own limit/offset requirements. Those
 //! restrictions are not additional query shapes.
 
-use grovedb_merk::proofs::query::IndexAxis;
-use grovedb_version::{error::GroveVersionError, version::GroveVersion};
+#[cfg(feature = "minimal")]
+use grovedb_version::error::GroveVersionError;
+use grovedb_version::version::GroveVersion;
 
 #[cfg(feature = "minimal")]
 use super::AggregateKind;
@@ -35,59 +36,15 @@ pub(crate) struct ValidatedPathQuery<'q> {
     has_local_offsets: bool,
 }
 
-/// Refuse an axis read that names the big sum axis at a grove version that
-/// does not serve it. Every read, prove and verify dispatcher validates its
-/// query before it touches storage or a proof, so an absent path cannot
-/// answer such a query with an empty result.
-fn reject_unserved_big_sum_axis(
-    shape: PathQueryShape<'_>,
-    grove_version: &GroveVersion,
-) -> Result<(), Error> {
-    // Exhaustive over the shapes so adding one forces a decision here.
-    let axis = match shape {
-        PathQueryShape::AxisRead { axis } | PathQueryShape::BranchedAxisRead { axis, .. } => {
-            axis.axis
-        }
-        PathQueryShape::KeySelection
-        | PathQueryShape::CountOffsetPaginated { .. }
-        | PathQueryShape::AggregateLeaf { .. }
-        | PathQueryShape::AggregateCarrier { .. }
-        | PathQueryShape::SumBudget { .. } => return Ok(()),
-    };
-    if axis != IndexAxis::BigSum {
-        return Ok(());
-    }
-    match grove_version
-        .grovedb_versions
-        .operations
-        .indexed_axis
-        .big_sum_axis
-    {
-        0 => Err(Error::NotSupported(
-            "the big sum axis is not served at this grove version".to_string(),
-        )),
-        1 => Ok(()),
-        received => Err(Error::VersionError(
-            GroveVersionError::UnknownVersionMismatch {
-                method: "path query (big_sum_axis)".to_string(),
-                known_versions: vec![0, 1],
-                received,
-            },
-        )),
-    }
-}
-
 impl<'q> ValidatedPathQuery<'q> {
     pub(crate) fn new(
         query: &'q PathQuery,
         grove_version: &'q GroveVersion,
     ) -> Result<Self, Error> {
         query.reject_unserved_local_offsets(grove_version)?;
-        let shape = query.classify()?;
-        reject_unserved_big_sum_axis(shape, grove_version)?;
         Ok(Self {
             query,
-            shape,
+            shape: query.classify()?,
             grove_version,
             #[cfg(feature = "minimal")]
             has_local_offsets: query.query.query.has_instance_offset_anywhere(),
@@ -155,7 +112,6 @@ impl<'q> ValidatedPathQuery<'q> {
             1 => Ok(()),
             received => Err(unknown_prove_version(received)),
         })?;
-        reject_unserved_big_sum_axis(shape, grove_version)?;
         let validated = Self {
             query,
             shape,

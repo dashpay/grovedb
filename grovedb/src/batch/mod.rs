@@ -2945,10 +2945,8 @@ where
             | Element::BulkAppendTree(..)
             | Element::DenseAppendOnlyFixedSizeTree(..)
             | Element::ProvableSumIndexedTree(..)
-            | Element::ProvableBigSumIndexedTree(..)
             | Element::ProvableCountIndexedTree(..)
             | Element::ProvableCountProvableSumIndexedTree(..)
-            | Element::ProvableCountProvableBigSumIndexedTree(..)
             | Element::PrivateDocumentStore(..) => Err(Error::InvalidBatchOperation(
                 "references can not point to trees being updated",
             ))
@@ -3235,10 +3233,8 @@ where
                         | Element::BulkAppendTree(..)
                         | Element::DenseAppendOnlyFixedSizeTree(..)
                         | Element::ProvableSumIndexedTree(..)
-                        | Element::ProvableBigSumIndexedTree(..)
                         | Element::ProvableCountIndexedTree(..)
                         | Element::ProvableCountProvableSumIndexedTree(..)
-                        | Element::ProvableCountProvableBigSumIndexedTree(..)
                         | Element::PrivateDocumentStore(..) => Err(Error::InvalidBatchOperation(
                             "references can not point to trees being updated",
                         ))
@@ -3356,10 +3352,8 @@ where
                     | Element::BulkAppendTree(..)
                     | Element::DenseAppendOnlyFixedSizeTree(..)
                     | Element::ProvableSumIndexedTree(..)
-                    | Element::ProvableBigSumIndexedTree(..)
                     | Element::ProvableCountIndexedTree(..)
                     | Element::ProvableCountProvableSumIndexedTree(..)
-                    | Element::ProvableCountProvableBigSumIndexedTree(..)
                     | Element::PrivateDocumentStore(..) => Err(Error::InvalidBatchOperation(
                         "references can not point to trees being updated",
                     ))
@@ -4123,61 +4117,6 @@ where
                                 )
                             );
                         }
-                        Element::ProvableBigSumIndexedTree(primary, secondary, sum_value, _) => {
-                            if primary.is_some() || secondary.is_some() || *sum_value != 0 {
-                                return Err(Error::InvalidBatchOperation(
-                                    "a ProvableBigSumIndexedTree must be empty at the moment of \
-                                     batch insertion (both primary_root_key and \
-                                     secondary_root_key must be None and sum = 0); item-level \
-                                     mutations require the dedicated insert_into_indexed_tree \
-                                     API",
-                                ))
-                                .wrap_with_cost(cost);
-                            }
-                            if is_insert_if_not_exists
-                                || batch_apply_options.validate_insertion_does_not_override
-                            {
-                                let merk = self.merks.get_mut(path).expect("the Merk is cached");
-                                let existing = cost_return_on_error_into!(
-                                    &mut cost,
-                                    element.element_at_key_already_exists(
-                                        merk,
-                                        key_info.get_key_clone().as_slice(),
-                                        grove_version,
-                                    )
-                                );
-                                if existing {
-                                    if error_if_exists
-                                        || batch_apply_options.validate_insertion_does_not_override
-                                    {
-                                        return Err(Error::InvalidBatchOperation(
-                                            "attempting to insert ProvableBigSumIndexedTree element \
-                                             that already exists",
-                                        ))
-                                        .wrap_with_cost(cost);
-                                    }
-                                    continue;
-                                }
-                            }
-                            let merk_feature_type = cost_return_on_error_into!(
-                                &mut cost,
-                                element
-                                    .get_feature_type(in_tree_type)
-                                    .wrap_with_cost(OperationCost::default())
-                            );
-                            cost_return_on_error_into!(
-                                &mut cost,
-                                element.insert_count_indexed_subtree_into_batch_operations(
-                                    key_info.get_key_clone(),
-                                    NULL_HASH,
-                                    NULL_HASH,
-                                    false,
-                                    &mut batch_operations,
-                                    merk_feature_type,
-                                    grove_version,
-                                )
-                            );
-                        }
                         // ProvableCountProvableSumIndexedTree empty-creation:
                         // primary_root_key = None, count = 0, sum = 0,
                         // and every axis slot's secondary_root_key =
@@ -4243,100 +4182,6 @@ where
                                         return Err(Error::InvalidBatchOperation(
                                             "attempting to insert \
                                              ProvableCountProvableSumIndexedTree element that \
-                                             already exists",
-                                        ))
-                                        .wrap_with_cost(cost);
-                                    }
-                                    continue;
-                                }
-                            }
-                            let merk_feature_type = cost_return_on_error_into!(
-                                &mut cost,
-                                element
-                                    .get_feature_type(in_tree_type)
-                                    .wrap_with_cost(OperationCost::default())
-                            );
-                            // For an empty PCPSIT each configured axis
-                            // contributes NULL_HASH to the digest. The
-                            // merk-side helper takes a single second
-                            // hash (axes_digest in this case).
-                            let zero_axes: Vec<(u8, grovedb_merk::CryptoHash)> =
-                                axes.iter().map(|(t, _)| (*t, NULL_HASH)).collect();
-                            let empty_axes_digest = grovedb_merk::tree::axes_digest(&zero_axes)
-                                .unwrap_add_cost(&mut cost);
-                            cost_return_on_error_into!(
-                                &mut cost,
-                                element.insert_count_indexed_subtree_into_batch_operations(
-                                    key_info.get_key_clone(),
-                                    NULL_HASH,
-                                    empty_axes_digest,
-                                    false,
-                                    &mut batch_operations,
-                                    merk_feature_type,
-                                    grove_version,
-                                )
-                            );
-                        }
-                        Element::ProvableCountProvableBigSumIndexedTree(
-                            primary,
-                            count_value,
-                            sum_value,
-                            axes,
-                            _,
-                        ) => {
-                            let axes_all_empty = axes.iter().all(|(_, sk)| sk.is_none());
-                            if primary.is_some()
-                                || *count_value != 0
-                                || *sum_value != 0
-                                || !axes_all_empty
-                            {
-                                return Err(Error::InvalidBatchOperation(
-                                    "a ProvableCountProvableBigSumIndexedTree must be empty at the \
-                                     moment of batch insertion (primary_root_key = None, count \
-                                     = 0, sum = 0, every axis secondary_root_key = None); \
-                                     item-level mutations require the dedicated \
-                                     insert_into_indexed_tree API",
-                                ))
-                                .wrap_with_cost(cost);
-                            }
-                            // Full canonical-axes validation (1..=3 entries,
-                            // sorted ascending by tag, no duplicates, known
-                            // tags) — reuses the same check the Element
-                            // constructors run. Without this, a batch caller
-                            // could persist an empty PCPSIT whose axes are
-                            // unsorted / duplicated / out-of-range (the
-                            // axes_digest is computed over whatever TLV is
-                            // supplied; it does not validate).
-                            cost_return_on_error_no_add!(
-                                cost,
-                                Element::validate_pcpbsit_axes(axes).map_err(|_| {
-                                    Error::InvalidBatchOperation(
-                                        "a ProvableCountProvableBigSumIndexedTree must have \
-                                         canonical axes (1..=3 entries, sorted ascending by \
-                                         tag, no duplicates, each of the count, avg and big \
-                                         sum axes)",
-                                    )
-                                })
-                            );
-                            if is_insert_if_not_exists
-                                || batch_apply_options.validate_insertion_does_not_override
-                            {
-                                let merk = self.merks.get_mut(path).expect("the Merk is cached");
-                                let existing = cost_return_on_error_into!(
-                                    &mut cost,
-                                    element.element_at_key_already_exists(
-                                        merk,
-                                        key_info.get_key_clone().as_slice(),
-                                        grove_version,
-                                    )
-                                );
-                                if existing {
-                                    if error_if_exists
-                                        || batch_apply_options.validate_insertion_does_not_override
-                                    {
-                                        return Err(Error::InvalidBatchOperation(
-                                            "attempting to insert \
-                                             ProvableCountProvableBigSumIndexedTree element that \
                                              already exists",
                                         ))
                                         .wrap_with_cost(cost);
@@ -5066,7 +4911,80 @@ where
                     not_counted_or_summed,
                 } => {
                     // Standard Merk trees — infer element from aggregate_data
-                    let element = merk_tree_from_aggregate(root_key, flags, aggregate_data);
+                    let element = match aggregate_data {
+                        AggregateData::NoAggregateData => {
+                            Element::new_tree_with_flags(root_key, flags)
+                        }
+                        AggregateData::Sum(sum_value) => {
+                            Element::new_sum_tree_with_flags_and_sum_value(
+                                root_key, sum_value, flags,
+                            )
+                        }
+                        AggregateData::BigSum(sum_value) => {
+                            Element::new_big_sum_tree_with_flags_and_sum_value(
+                                root_key, sum_value, flags,
+                            )
+                        }
+                        AggregateData::Count(count_value) => {
+                            Element::new_count_tree_with_flags_and_count_value(
+                                root_key,
+                                count_value,
+                                flags,
+                            )
+                        }
+                        AggregateData::CountAndSum(count_value, sum_value) => {
+                            Element::new_count_sum_tree_with_flags_and_sum_and_count_value(
+                                root_key,
+                                count_value,
+                                sum_value,
+                                flags,
+                            )
+                        }
+                        AggregateData::ProvableCount(count_value) => {
+                            Element::new_provable_count_tree_with_flags_and_count_value(
+                                root_key,
+                                count_value,
+                                flags,
+                            )
+                        }
+                        AggregateData::ProvableCountAndSum(count_value, sum_value) => {
+                            Element::ProvableCountSumTree(root_key, count_value, sum_value, flags)
+                        }
+                        AggregateData::ProvableSum(sum_value) => {
+                            Element::new_provable_sum_tree_with_flags_and_sum_value(
+                                root_key, sum_value, flags,
+                            )
+                        }
+                        AggregateData::ProvableCountAndProvableSum(count_value, sum_value) => {
+                            Element::new_provable_count_provable_sum_tree_with_flags_and_sum_and_count_value(
+                                root_key,
+                                count_value,
+                                sum_value,
+                                flags,
+                            )
+                        }
+                        AggregateData::ProvableCountAndProvableBigSum(count_value, sum_value) => {
+                            Element::new_provable_count_provable_big_sum_tree_with_flags_and_sum_and_count_value(
+                                root_key,
+                                count_value,
+                                sum_value,
+                                flags,
+                            )
+                        }
+                        AggregateData::CountAndBigSum(count_value, sum_value) => {
+                            Element::new_count_big_sum_tree_with_flags_and_sum_and_count_value(
+                                root_key,
+                                count_value,
+                                sum_value,
+                                flags,
+                            )
+                        }
+                        AggregateData::ProvableBigSum(sum_value) => {
+                            Element::new_provable_big_sum_tree_with_flags_and_sum_value(
+                                root_key, sum_value, flags,
+                            )
+                        }
+                    };
                     // Re-wrap if the original element was wrapped, so the
                     // on-disk bytes preserve the wrapper and the parent's
                     // aggregate excludes this subtree from the right
@@ -5102,24 +5020,6 @@ where
                         Ok(element)
                     };
                     let element = cost_return_on_error_no_add!(cost, element);
-                    // A tree the batch created and filled never reached the
-                    // insert arm, where the parent's rules for a wrapper are
-                    // checked. The trees with a 128-bit sum are held to them
-                    // here; the trees that shipped before them keep the
-                    // behaviour they shipped with.
-                    if matches!(
-                        element.underlying(),
-                        Element::CountBigSumTree(..)
-                            | Element::ProvableBigSumTree(..)
-                            | Element::ProvableCountProvableBigSumTree(..)
-                    ) {
-                        cost_return_on_error_no_add!(
-                            cost,
-                            element
-                                .validate_insertable_into(in_tree_type)
-                                .map_err(Error::MerkError)
-                        );
-                    }
                     let merk_feature_type = cost_return_on_error_into_no_add!(
                         cost,
                         element.get_feature_type(in_tree_type)
@@ -5665,77 +5565,6 @@ where
     }
 }
 
-/// The Merk tree element an [`GroveOp::InsertTreeWithRootHash`] writes: its
-/// type is the one `aggregate_data` names, since the op carries no element.
-/// The wrappers the op records are applied by the caller.
-#[cfg(feature = "minimal")]
-pub(in crate::batch) fn merk_tree_from_aggregate(
-    root_key: Option<Vec<u8>>,
-    flags: Option<ElementFlags>,
-    aggregate_data: AggregateData,
-) -> Element {
-    match aggregate_data {
-        AggregateData::NoAggregateData => Element::new_tree_with_flags(root_key, flags),
-        AggregateData::Sum(sum_value) => {
-            Element::new_sum_tree_with_flags_and_sum_value(root_key, sum_value, flags)
-        }
-        AggregateData::BigSum(sum_value) => {
-            Element::new_big_sum_tree_with_flags_and_sum_value(root_key, sum_value, flags)
-        }
-        AggregateData::Count(count_value) => {
-            Element::new_count_tree_with_flags_and_count_value(root_key, count_value, flags)
-        }
-        AggregateData::CountAndSum(count_value, sum_value) => {
-            Element::new_count_sum_tree_with_flags_and_sum_and_count_value(
-                root_key,
-                count_value,
-                sum_value,
-                flags,
-            )
-        }
-        AggregateData::ProvableCount(count_value) => {
-            Element::new_provable_count_tree_with_flags_and_count_value(
-                root_key,
-                count_value,
-                flags,
-            )
-        }
-        AggregateData::ProvableCountAndSum(count_value, sum_value) => {
-            Element::ProvableCountSumTree(root_key, count_value, sum_value, flags)
-        }
-        AggregateData::ProvableSum(sum_value) => {
-            Element::new_provable_sum_tree_with_flags_and_sum_value(root_key, sum_value, flags)
-        }
-        AggregateData::ProvableCountAndProvableSum(count_value, sum_value) => {
-            Element::new_provable_count_provable_sum_tree_with_flags_and_sum_and_count_value(
-                root_key,
-                count_value,
-                sum_value,
-                flags,
-            )
-        }
-        AggregateData::ProvableCountAndProvableBigSum(count_value, sum_value) => {
-            Element::new_provable_count_provable_big_sum_tree_with_flags_and_sum_and_count_value(
-                root_key,
-                count_value,
-                sum_value,
-                flags,
-            )
-        }
-        AggregateData::CountAndBigSum(count_value, sum_value) => {
-            Element::new_count_big_sum_tree_with_flags_and_sum_and_count_value(
-                root_key,
-                count_value,
-                sum_value,
-                flags,
-            )
-        }
-        AggregateData::ProvableBigSum(sum_value) => {
-            Element::new_provable_big_sum_tree_with_flags_and_sum_value(root_key, sum_value, flags)
-        }
-    }
-}
-
 /// Merge a user-facing insert of `element` at a position whose subtree this
 /// batch has already executed with that subtree's propagated root state.
 ///
@@ -5859,10 +5688,8 @@ pub(in crate::batch) fn insert_op_with_propagated_root(
         // comes from the mirror this level just ran (the fresh secondaries
         // were opened from the in-batch element).
         Element::ProvableSumIndexedTree(..)
-        | Element::ProvableBigSumIndexedTree(..)
         | Element::ProvableCountIndexedTree(..)
-        | Element::ProvableCountProvableSumIndexedTree(..)
-        | Element::ProvableCountProvableBigSumIndexedTree(..) => {
+        | Element::ProvableCountProvableSumIndexedTree(..) => {
             if non_counted || not_summed || not_counted_or_summed {
                 return Err(Error::InvalidBatchOperation(
                     "indexed-tree elements cannot be wrapped in NonCounted / NotSummed / \

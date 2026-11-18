@@ -783,10 +783,7 @@ impl GroveDb {
                 )
                 .map_err(Error::MerkError)
         );
-        let (count, sum) = crate::operations::indexed_tree::entry_count_and_sum(
-            element,
-            crate::operations::indexed_tree::is_wide_indexed_primary(primary_merk.tree_type),
-        );
+        let (count, sum) = element.count_sum_value_or_default();
         // A present entry with no reachable node hash is corruption, not
         // absence. Collapsing the two would hand the mirror `None` and
         // delete a live row (or, on the old side, skip the delete of a row
@@ -1002,12 +999,7 @@ impl GroveDb {
                                 )
                                 .map_err(Error::MerkError)
                         );
-                        let (count, sum) = crate::operations::indexed_tree::entry_count_and_sum(
-                            &element,
-                            crate::operations::indexed_tree::is_wide_indexed_primary(
-                                child_tree.tree_type,
-                            ),
-                        );
+                        let (count, sum) = element.count_sum_value_or_default();
                         // Present-but-unreachable is corruption, not
                         // absence: collapsing them would delete a live row.
                         let value_hash = cost_return_on_error_no_add!(
@@ -1035,12 +1027,7 @@ impl GroveDb {
                     grovedb_element::indexed::IndexAxis::Sum.tag(),
                     secondary.clone(),
                 )],
-                Element::ProvableBigSumIndexedTree(_, secondary, ..) => vec![(
-                    grovedb_element::indexed::IndexAxis::BigSum.tag(),
-                    secondary.clone(),
-                )],
-                Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _)
-                | Element::ProvableCountProvableBigSumIndexedTree(_, _, _, axes, _) => axes.clone(),
+                Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => axes.clone(),
                 _ => {
                     return Err(Error::CorruptedData(
                         "an indexed primary is not held by an indexed-tree element".to_string(),
@@ -1051,7 +1038,6 @@ impl GroveDb {
             let is_multi_axis = matches!(
                 indexed_element.underlying(),
                 Element::ProvableCountProvableSumIndexedTree(..)
-                    | Element::ProvableCountProvableBigSumIndexedTree(..)
             );
 
             let mut refreshed: Vec<(u8, Hash, Option<Vec<u8>>)> = Vec::with_capacity(axes.len());
@@ -1156,10 +1142,7 @@ impl GroveDb {
                         )
                         .map_err(Error::MerkError)
                 );
-                let (count, sum) = crate::operations::indexed_tree::entry_count_and_sum(
-                    &old_element,
-                    crate::operations::indexed_tree::is_wide_indexed_primary(parent_tree.tree_type),
-                );
+                let (count, sum) = old_element.count_sum_value_or_default();
                 // `Element::get` above already established the entry
                 // exists, so a missing node hash is corruption. Treating it
                 // as absence would skip the delete of a row that moved.
@@ -1212,12 +1195,7 @@ impl GroveDb {
                     Element::ProvableSumIndexedTree(_, secondary, ..) => {
                         Some((grovedb_element::indexed::IndexAxis::Sum, secondary.clone()))
                     }
-                    Element::ProvableBigSumIndexedTree(_, secondary, ..) => Some((
-                        grovedb_element::indexed::IndexAxis::BigSum,
-                        secondary.clone(),
-                    )),
-                    Element::ProvableCountProvableSumIndexedTree(..)
-                    | Element::ProvableCountProvableBigSumIndexedTree(..) => None,
+                    Element::ProvableCountProvableSumIndexedTree(..) => None,
                     _ => {
                         return Err(Error::CorruptedData(
                             "expected an indexed-tree element when child_tree is an indexed \
@@ -1283,8 +1261,7 @@ impl GroveDb {
                         }
                     } else {
                         let axes = match cidx_element.underlying() {
-                            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _)
-                            | Element::ProvableCountProvableBigSumIndexedTree(_, _, _, axes, _) => {
+                            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => {
                                 axes.clone()
                             }
                             _ => unreachable!("single_axis is None only for PCPSIT"),
@@ -1383,10 +1360,7 @@ impl GroveDb {
                     Element::get(&parent_tree, parent_key, true, grove_version)
                         .map_err(Error::MerkError)
                 );
-                let (new_count, new_sum) = crate::operations::indexed_tree::entry_count_and_sum(
-                    &new_element_in_parent,
-                    crate::operations::indexed_tree::is_wide_indexed_primary(parent_tree.tree_type),
-                );
+                let (new_count, new_sum) = new_element_in_parent.count_sum_value_or_default();
                 // Read the POST-write commitment: this is the hash the
                 // canonical row must bind, and it is exactly what moved when
                 // the child subtree's root changed.
@@ -1460,16 +1434,7 @@ impl GroveDb {
                             secondary.clone(),
                         )]
                     }
-                    Element::ProvableBigSumIndexedTree(_, secondary, ..) => {
-                        vec![(
-                            grovedb_element::indexed::IndexAxis::BigSum.tag(),
-                            secondary.clone(),
-                        )]
-                    }
-                    Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _)
-                    | Element::ProvableCountProvableBigSumIndexedTree(_, _, _, axes, _) => {
-                        axes.clone()
-                    }
+                    Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => axes.clone(),
                     _ => {
                         return Err(Error::CorruptedData(
                             "expected an indexed-tree element in grandparent during cascading \
@@ -1483,7 +1448,6 @@ impl GroveDb {
                     && !matches!(
                         indexed_element.underlying(),
                         Element::ProvableCountProvableSumIndexedTree(..)
-                            | Element::ProvableCountProvableBigSumIndexedTree(..)
                     );
 
                 let mut last_axis_state: Option<(Hash, Option<Vec<u8>>)> = None;
@@ -1738,7 +1702,6 @@ impl GroveDb {
         let is_multi_axis = matches!(
             element.underlying(),
             Element::ProvableCountProvableSumIndexedTree(..)
-                | Element::ProvableCountProvableBigSumIndexedTree(..)
         );
         let rebuilt = if is_multi_axis {
             let axes_tlv: Vec<(u8, Option<Vec<u8>>)> = axes
@@ -2072,7 +2035,6 @@ impl GroveDb {
             grovedb_element::indexed::IndexAxis::Count => "count",
             grovedb_element::indexed::IndexAxis::Sum => "sum",
             grovedb_element::indexed::IndexAxis::Avg => "avg",
-            grovedb_element::indexed::IndexAxis::BigSum => "big_sum",
         }
     }
 
@@ -2097,14 +2059,12 @@ impl GroveDb {
             grovedb_element::indexed::IndexAxis::Count => "count",
             grovedb_element::indexed::IndexAxis::Sum => "sum",
             grovedb_element::indexed::IndexAxis::Avg => "avg",
-            grovedb_element::indexed::IndexAxis::BigSum => "big_sum",
         };
         // Decode a secondary key's sort-key prefix back to its ordering
         // value, right-aligned in a hash slot for reporting.
         let decode_sort_value = |sec_key: &[u8]| -> CryptoHash {
             use grovedb_element::indexed::sort_keys::{
-                decode_avg_sort_key, decode_big_sum_sort_key, decode_count_sort_key,
-                decode_sum_sort_key,
+                decode_avg_sort_key, decode_count_sort_key, decode_sum_sort_key,
             };
             let mut slot = [0u8; 32];
             match axis {
@@ -2122,11 +2082,6 @@ impl GroveDb {
                     let mut b = [0u8; 16];
                     b.copy_from_slice(&sec_key[..16]);
                     slot[16..32].copy_from_slice(&decode_avg_sort_key(&b).to_be_bytes());
-                }
-                grovedb_element::indexed::IndexAxis::BigSum => {
-                    let mut b = [0u8; 16];
-                    b.copy_from_slice(&sec_key[..16]);
-                    slot[16..32].copy_from_slice(&decode_big_sum_sort_key(&b).to_be_bytes());
                 }
             }
             slot
@@ -2163,10 +2118,7 @@ impl GroveDb {
                 continue;
             }
             let p_elem = Element::raw_decode(&p_value, grove_version)?;
-            let (count, sum) = crate::operations::indexed_tree::entry_count_and_sum(
-                &p_elem,
-                crate::operations::indexed_tree::is_wide_indexed_primary(primary_merk.tree_type),
-            );
+            let (count, sum) = p_elem.count_sum_value_or_default();
             // The row the mirror writes for this axis, so a row filed under
             // the right key but carrying the wrong reference or the wrong
             // carried sum is caught too — the key alone pins neither.
@@ -3105,7 +3057,7 @@ impl GroveDb {
                 // primary_root_hash, secondary_root_hash)`, compare
                 // to the parent's stored combined value hash, and
                 // recurse into the primary.
-                Element::ProvableSumIndexedTree(..) | Element::ProvableBigSumIndexedTree(..) => {
+                Element::ProvableSumIndexedTree(..) => {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
@@ -3133,19 +3085,14 @@ impl GroveDb {
                         .unwrap()?;
                     let primary_root_hash = root_hash_if_computable(&primary_merk);
 
-                    let (sum_axis, secondary_root_key) = match element {
-                        Element::ProvableSumIndexedTree(_, ref s, ..) => {
-                            (grovedb_element::indexed::IndexAxis::Sum, s.clone())
-                        }
-                        Element::ProvableBigSumIndexedTree(_, ref s, ..) => {
-                            (grovedb_element::indexed::IndexAxis::BigSum, s.clone())
-                        }
+                    let secondary_root_key = match element {
+                        Element::ProvableSumIndexedTree(_, ref s, ..) => s.clone(),
                         _ => unreachable!("matched PSIT variant above"),
                     };
                     let secondary_merk = self
                         .open_indexed_secondary_at_path(
                             new_path_ref.clone(),
-                            sum_axis,
+                            grovedb_element::indexed::IndexAxis::Sum,
                             secondary_root_key,
                             transaction,
                             batch,
@@ -3173,7 +3120,7 @@ impl GroveDb {
                     Self::verify_indexed_axis_content(
                         &primary_merk,
                         &secondary_merk,
-                        sum_axis,
+                        grovedb_element::indexed::IndexAxis::Sum,
                         "__psit_",
                         &new_path.to_vec(),
                         &mut issues,
@@ -3205,8 +3152,7 @@ impl GroveDb {
                 // value_hash, primary_root_hash, axes_digest)`, and
                 // compare to the parent's stored hash. Then recurse
                 // into the primary.
-                Element::ProvableCountProvableSumIndexedTree(..)
-                | Element::ProvableCountProvableBigSumIndexedTree(..) => {
+                Element::ProvableCountProvableSumIndexedTree(..) => {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
@@ -3235,8 +3181,7 @@ impl GroveDb {
                     let primary_root_hash = root_hash_if_computable(&primary_merk);
 
                     let axes = match element {
-                        Element::ProvableCountProvableSumIndexedTree(_, _, _, ref a, _)
-                        | Element::ProvableCountProvableBigSumIndexedTree(_, _, _, ref a, _) => {
+                        Element::ProvableCountProvableSumIndexedTree(_, _, _, ref a, _) => {
                             a.clone()
                         }
                         _ => unreachable!("matched PCPSIT variant above"),
@@ -4177,12 +4122,6 @@ fn aggregate_consistency_labels(
         Element::ProvableSumIndexedTree(_, _, sum, _) => Some(AggregateData::ProvableSum(*sum)),
         Element::ProvableCountProvableSumIndexedTree(_, count, sum, ..) => {
             Some(AggregateData::ProvableCountAndProvableSum(*count, *sum))
-        }
-        Element::ProvableBigSumIndexedTree(_, _, sum, _) => {
-            Some(AggregateData::ProvableBigSum(*sum))
-        }
-        Element::ProvableCountProvableBigSumIndexedTree(_, count, sum, ..) => {
-            Some(AggregateData::ProvableCountAndProvableBigSum(*count, *sum))
         }
         _ => None,
     };

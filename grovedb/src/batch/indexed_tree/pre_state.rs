@@ -16,8 +16,8 @@ use grovedb_version::version::GroveVersion;
 
 use super::{read_entry_aggregates, MaybeEntryState};
 use crate::{
-    batch::{merk_tree_from_aggregate, GroveOp, KeyInfo},
-    operations::indexed_tree::{validate_indexed_child_for_variant, MAX_CIDX_ITEM_KEY_LEN},
+    batch::{GroveOp, KeyInfo},
+    operations::indexed_tree::MAX_CIDX_ITEM_KEY_LEN,
     Element, Error,
 };
 
@@ -64,31 +64,11 @@ fn enforce_indexed_item_key_ceiling(
 /// child as an aggregate mismatch (recorded 9 against an empty inner Merk).
 /// The legitimate way to reach count 9 is to insert the child empty and
 /// populate it in the same batch, letting propagation derive it.
-/// The type rules for an entry that reaches an indexed primary as the
-/// computed root of a tree the same batch created and filled: what the tree
-/// type accepts, and what the indexed variant accepts. Its aggregate is
-/// derived from its contents, so the rootless-claim rule does not apply.
-fn validate_propagated_entry(
-    entry: &Element,
-    primary_tree_type: grovedb_merk::TreeType,
-    grove_version: &GroveVersion,
-) -> Result<(), Error> {
-    entry
-        .validate_insertable_into(primary_tree_type)
-        .map_err(Error::MerkError)?;
-    validate_indexed_child_for_variant(entry, primary_tree_type, grove_version)
-}
-
 fn validate_indexed_child_ops(
     ops_at_path_by_key: &BTreeMap<KeyInfo, GroveOp>,
     primary_tree_type: grovedb_merk::TreeType,
     grove_version: &GroveVersion,
 ) -> Result<(), Error> {
-    let wide_primary = matches!(
-        primary_tree_type,
-        grovedb_merk::TreeType::ProvableBigSumIndexedTree
-            | grovedb_merk::TreeType::ProvableCountProvableBigSumIndexedTree
-    );
     for op in ops_at_path_by_key.values() {
         // EXHAUSTIVE on purpose — no `_` arm. An earlier revision used a
         // catch-all and silently skipped `GroveOp::Patch`, which carries an
@@ -109,51 +89,17 @@ fn validate_indexed_child_ops(
             | GroveOp::InsertWithKnownToNotAlreadyExist { element } => element,
             // Ops that carry no caller-supplied element, or whose element is
             // internally derived rather than caller-claimed.
-            // A tree inserted and filled by the same batch arrives as its
-            // computed root state, with the caller's element gone: the type
-            // it had is the one the aggregate names. The indexed trees with a
-            // 128-bit sum hold it to their child rule here, where a plain
-            // tree would otherwise pass as an entry with a sum of zero. Their
-            // 64-bit counterparts keep the behaviour they shipped with.
-            GroveOp::InsertTreeWithRootHash {
-                aggregate_data,
-                non_counted,
-                not_summed,
-                not_counted_or_summed,
-                ..
-            } => {
-                if wide_primary {
-                    let tree = merk_tree_from_aggregate(None, None, *aggregate_data);
-                    let tree = if *non_counted {
-                        Element::NonCounted(Box::new(tree))
-                    } else if *not_summed {
-                        Element::NotSummed(Box::new(tree))
-                    } else if *not_counted_or_summed {
-                        Element::NotCountedOrSummed(Box::new(tree))
-                    } else {
-                        tree
-                    };
-                    validate_propagated_entry(&tree, primary_tree_type, grove_version)?;
-                }
-                continue;
-            }
-            // An indexed tree created and filled by the same batch keeps the
-            // caller's element in the op, and is held to the same rule.
-            GroveOp::InsertAggregateIndexedTreeRootKeys { element, .. } => {
-                if wide_primary {
-                    validate_propagated_entry(element, primary_tree_type, grove_version)?;
-                }
-                continue;
-            }
             GroveOp::Delete
             | GroveOp::DeleteDontCheckForBackwardsReferences
             | GroveOp::DeleteTree(..)
             | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..)
             | GroveOp::ReplaceBackwardReferenceFamilyMember { .. }
             | GroveOp::ReplaceTreeRootKey { .. }
+            | GroveOp::InsertTreeWithRootHash { .. }
             | GroveOp::ReplaceNonMerkTreeRoot { .. }
             | GroveOp::InsertNonMerkTree { .. }
             | GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. }
+            | GroveOp::InsertAggregateIndexedTreeRootKeys { .. }
             | GroveOp::RefreshReference { .. }
             | GroveOp::CommitmentTreeInsert { .. }
             | GroveOp::MmrTreeAppend { .. }
@@ -181,7 +127,11 @@ fn validate_indexed_child_ops(
         element
             .validate_insertable_into(primary_tree_type)
             .map_err(Error::MerkError)?;
-        validate_indexed_child_for_variant(element, primary_tree_type, grove_version)?;
+        crate::operations::indexed_tree::validate_indexed_child_for_variant(
+            element,
+            primary_tree_type,
+            grove_version,
+        )?;
         let rootless_with_aggregate = match element.underlying() {
             Element::SumTree(None, sum, _) | Element::ProvableSumTree(None, sum, _) => *sum != 0,
             Element::BigSumTree(None, big_sum, _)

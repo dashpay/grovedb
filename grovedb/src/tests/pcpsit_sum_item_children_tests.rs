@@ -111,7 +111,7 @@ mod tests {
                 .into_iter()
                 .map(|entry| (entry.ordering_value as i128, entry.primary_key))
                 .collect(),
-            AxisEntries::Avg(entries) | AxisEntries::BigSum(entries) => entries
+            AxisEntries::Avg(entries) => entries
                 .into_iter()
                 .map(|entry| (entry.ordering_value, entry.primary_key))
                 .collect(),

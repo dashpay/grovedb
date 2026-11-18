@@ -23,9 +23,7 @@ use grovedb_version::version::GroveVersion;
 
 use crate::{util::TxRef, Element, Error, GroveDb, Transaction, TransactionArg};
 
-use super::verify::{
-    big_sum_aggregate_inner_range, count_aggregate_inner_range, sum_aggregate_inner_range,
-};
+use super::verify::{count_aggregate_inner_range, sum_aggregate_inner_range};
 // Test-oracle-only (see the module doc): the standalone envelope
 // builders and their entry points are `#[cfg(test)]`.
 #[cfg(test)]
@@ -218,12 +216,10 @@ fn build_ancestor_attestations<'db>(
         );
         let att = match intermediate.underlying() {
             Element::ProvableCountIndexedTree(_, secondary_root_key, ..)
-            | Element::ProvableSumIndexedTree(_, secondary_root_key, ..)
-            | Element::ProvableBigSumIndexedTree(_, secondary_root_key, ..) => {
+            | Element::ProvableSumIndexedTree(_, secondary_root_key, ..) => {
                 let axis = match intermediate.underlying() {
                     Element::ProvableCountIndexedTree(..) => IndexAxis::Count,
                     Element::ProvableSumIndexedTree(..) => IndexAxis::Sum,
-                    Element::ProvableBigSumIndexedTree(..) => IndexAxis::BigSum,
                     // Structurally unreachable: the outer arm already
                     // bound this value as PCIT or PSIT. Return a graceful
                     // error rather than panicking if that invariant is
@@ -260,8 +256,7 @@ fn build_ancestor_attestations<'db>(
                 );
                 AncestorAttestation::SingleSecondary(sec_hash)
             }
-            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _)
-            | Element::ProvableCountProvableBigSumIndexedTree(_, _, _, axes, _) => {
+            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => {
                 let ancestor_path_owned: SubtreePathBuilder<Vec<u8>> =
                     SubtreePathBuilder::owned_from_iter(path_keys[..=depth].iter().cloned());
                 let ancestor_path = SubtreePath::from(&ancestor_path_owned);
@@ -398,15 +393,10 @@ fn read_queried_axis_info_with_path_keys<'db>(
         (IndexAxis::Count, Element::ProvableCountIndexedTree(_, secondary, ..)) => {
             Ok((secondary.clone(), Vec::new(), false)).wrap_with_cost(cost)
         }
-        (IndexAxis::Sum, Element::ProvableSumIndexedTree(_, secondary, ..))
-        | (IndexAxis::BigSum, Element::ProvableBigSumIndexedTree(_, secondary, ..)) => {
+        (IndexAxis::Sum, Element::ProvableSumIndexedTree(_, secondary, ..)) => {
             Ok((secondary.clone(), Vec::new(), false)).wrap_with_cost(cost)
         }
-        (
-            _,
-            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _)
-            | Element::ProvableCountProvableBigSumIndexedTree(_, _, _, axes, _),
-        ) => {
+        (_, Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _)) => {
             let want_tag = axis.tag();
             let mut queried_secondary: Option<Option<Vec<u8>>> = None;
             let mut other: Vec<(u8, [u8; 32])> = Vec::new();
@@ -704,10 +694,7 @@ impl GroveDb {
                 ))
             })
         );
-        let (count, sum) = crate::operations::indexed_tree::entry_count_and_sum(
-            &item_element,
-            crate::operations::indexed_tree::is_wide_indexed_primary(primary_merk.tree_type),
-        );
+        let (count, sum) = item_element.count_sum_value_or_default();
         let secondary_key = make_axis_secondary_key(axis, count, sum, item_key);
 
         // 2. Compute the rank: the count of entries strictly before the
@@ -881,9 +868,7 @@ impl GroveDb {
         );
         let mut cost = OperationCost::default();
         match axis {
-            // The big sum axis has a population and no total; the builder
-            // refuses the total.
-            IndexAxis::Count | IndexAxis::Sum | IndexAxis::BigSum => {}
+            IndexAxis::Count | IndexAxis::Sum => {}
             IndexAxis::Avg => {
                 return Err(Error::NotSupported(
                     "indexed-axis aggregate proofs are not defined for the Avg axis".to_string(),
@@ -1671,17 +1656,6 @@ where
     let inner_range = match axis {
         IndexAxis::Count => count_aggregate_inner_range(lo, hi),
         IndexAxis::Sum => sum_aggregate_inner_range(lo, hi),
-        // The rows of the big sum axis carry no sum (the entry's 128-bit
-        // sum is in the key), so the band has a population and no total,
-        // mirroring `AxisQuery::validate`.
-        IndexAxis::BigSum => match fold {
-            AggregateFold::Population => big_sum_aggregate_inner_range(lo, hi),
-            AggregateFold::Total => {
-                return Err(Error::NotSupported(
-                    "the BigSum axis has no value-range total".to_string(),
-                ));
-            }
-        },
         IndexAxis::Avg => {
             return Err(Error::NotSupported(
                 "value-range aggregates are not defined for the Avg axis".to_string(),

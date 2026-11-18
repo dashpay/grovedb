@@ -369,12 +369,6 @@ pub enum ElementType {
     /// `ProvableSumTree`: an i128 sum is baked into node hashes, and no
     /// count is kept.
     ProvableBigSumTree = 31,
-    /// Provable big-sum-indexed tree - discriminant 32. The wide
-    /// counterpart of `ProvableSumIndexedTree`.
-    ProvableBigSumIndexedTree = 32,
-    /// Provable count + provable big sum indexed tree - discriminant 33.
-    /// The wide counterpart of `ProvableCountProvableSumIndexedTree`.
-    ProvableCountProvableBigSumIndexedTree = 33,
     /// Non-counted wrapper around `Item` - discriminant 128
     NonCountedItem = 128,
     /// Non-counted wrapper around `Reference` - discriminant 129
@@ -433,12 +427,6 @@ pub enum ElementType {
     /// Non-counted wrapper around `ProvableBigSumTree` - discriminant 159
     /// (`0x80 | 31`)
     NonCountedProvableBigSumTree = 159,
-    /// Non-counted wrapper around `ProvableBigSumIndexedTree` - discriminant
-    /// 160 (`0x80 | 32`)
-    NonCountedProvableBigSumIndexedTree = 160,
-    /// Non-counted wrapper around `ProvableCountProvableBigSumIndexedTree` -
-    /// discriminant 161 (`0x80 | 33`)
-    NonCountedProvableCountProvableBigSumIndexedTree = 161,
     /// Not-summed wrapper around `SumTree` - discriminant 180 (`0xB4`)
     NotSummedSumTree = 180,
     /// Not-summed wrapper around `BigSumTree` - discriminant 181 (`0xB5`)
@@ -553,7 +541,7 @@ impl ElementType {
             // variants landing without updating the guard.
             if !matches!(
                 inner_byte,
-                0..=14 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 29 | 30 | 31 | 32 | 33
+                0..=14 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 29 | 30 | 31
             ) {
                 return Err(ElementError::CorruptedData(format!(
                     "NonCounted inner discriminant must be a base type \
@@ -828,12 +816,9 @@ impl ElementType {
         let is_provable_count_and_provable_big_sum_tree = matches!(
             parent_base,
             Some(ElementType::ProvableCountProvableBigSumTree)
-                | Some(ElementType::ProvableCountProvableBigSumIndexedTree)
         );
-        let is_provable_big_sum_only_tree = matches!(
-            parent_base,
-            Some(ElementType::ProvableBigSumTree) | Some(ElementType::ProvableBigSumIndexedTree)
-        );
+        let is_provable_big_sum_only_tree =
+            matches!(parent_base, Some(ElementType::ProvableBigSumTree));
         let is_provable_aggregate_tree = is_provable_count_only_tree
             || is_provable_sum_only_tree
             || is_provable_count_and_provable_sum_tree
@@ -949,10 +934,8 @@ impl ElementType {
                 | ElementType::BulkAppendTree
                 | ElementType::DenseAppendOnlyFixedSizeTree
                 | ElementType::ProvableSumIndexedTree
-                | ElementType::ProvableBigSumIndexedTree
                 | ElementType::ProvableCountIndexedTree
                 | ElementType::ProvableCountProvableSumIndexedTree
-                | ElementType::ProvableCountProvableBigSumIndexedTree
                 | ElementType::PrivateDocumentStore
         )
     }
@@ -977,10 +960,8 @@ impl ElementType {
         matches!(
             self.base(),
             ElementType::ProvableSumIndexedTree
-                | ElementType::ProvableBigSumIndexedTree
                 | ElementType::ProvableCountIndexedTree
                 | ElementType::ProvableCountProvableSumIndexedTree
-                | ElementType::ProvableCountProvableBigSumIndexedTree
         )
     }
 
@@ -1050,10 +1031,6 @@ impl ElementType {
             ElementType::ProvableCountProvableBigSumTree => "provable count provable big sum tree",
             ElementType::CountBigSumTree => "count big sum tree",
             ElementType::ProvableBigSumTree => "provable big sum tree",
-            ElementType::ProvableBigSumIndexedTree => "provable big sum indexed tree",
-            ElementType::ProvableCountProvableBigSumIndexedTree => {
-                "provable count provable big sum indexed tree"
-            }
             ElementType::NonCountedItem => "non_counted item",
             ElementType::NonCountedReference => "non_counted reference",
             ElementType::NonCountedTree => "non_counted tree",
@@ -1089,12 +1066,6 @@ impl ElementType {
             }
             ElementType::NonCountedCountBigSumTree => "non_counted count big sum tree",
             ElementType::NonCountedProvableBigSumTree => "non_counted provable big sum tree",
-            ElementType::NonCountedProvableBigSumIndexedTree => {
-                "non_counted provable big sum indexed tree"
-            }
-            ElementType::NonCountedProvableCountProvableBigSumIndexedTree => {
-                "non_counted provable count provable big sum indexed tree"
-            }
             ElementType::NotSummedSumTree => "not_summed sum tree",
             ElementType::NotSummedBigSumTree => "not_summed big sum tree",
             ElementType::NotSummedCountSumTree => "not_summed count sum tree",
@@ -1176,8 +1147,6 @@ impl TryFrom<u8> for ElementType {
             29 => Ok(ElementType::ProvableCountProvableBigSumTree),
             30 => Ok(ElementType::CountBigSumTree),
             31 => Ok(ElementType::ProvableBigSumTree),
-            32 => Ok(ElementType::ProvableBigSumIndexedTree),
-            33 => Ok(ElementType::ProvableCountProvableBigSumIndexedTree),
             128 => Ok(ElementType::NonCountedItem),
             129 => Ok(ElementType::NonCountedReference),
             130 => Ok(ElementType::NonCountedTree),
@@ -1203,8 +1172,6 @@ impl TryFrom<u8> for ElementType {
             157 => Ok(ElementType::NonCountedProvableCountProvableBigSumTree),
             158 => Ok(ElementType::NonCountedCountBigSumTree),
             159 => Ok(ElementType::NonCountedProvableBigSumTree),
-            160 => Ok(ElementType::NonCountedProvableBigSumIndexedTree),
-            161 => Ok(ElementType::NonCountedProvableCountProvableBigSumIndexedTree),
             // NotSummed twins occupy the 0xB0..=0xBF family range; slots
             // are assigned explicitly per variant.
             177 => Ok(ElementType::NotSummedProvableSumTree),
@@ -1353,16 +1320,8 @@ mod tests {
             ElementType::try_from(31).unwrap(),
             ElementType::ProvableBigSumTree
         );
-        assert_eq!(
-            ElementType::try_from(32).unwrap(),
-            ElementType::ProvableBigSumIndexedTree
-        );
-        assert_eq!(
-            ElementType::try_from(33).unwrap(),
-            ElementType::ProvableCountProvableBigSumIndexedTree
-        );
-        // 34..=127 are unallocated and invalid.
-        assert!(ElementType::try_from(34).is_err());
+        // 32..=127 are unallocated and invalid.
+        assert!(ElementType::try_from(32).is_err());
         assert!(ElementType::try_from(100).is_err());
 
         // NonCounted twins (0x80 | base): 128..142, plus 146 (= 0x80|18 =
@@ -1426,17 +1385,7 @@ mod tests {
             ElementType::try_from(159).unwrap(),
             ElementType::NonCountedProvableBigSumTree
         );
-        // 160 (= 0x80|32) and 161 (= 0x80|33): the ProvableBigSumIndexedTree
-        // and ProvableCountProvableBigSumIndexedTree twins.
-        assert_eq!(
-            ElementType::try_from(160).unwrap(),
-            ElementType::NonCountedProvableBigSumIndexedTree
-        );
-        assert_eq!(
-            ElementType::try_from(161).unwrap(),
-            ElementType::NonCountedProvableCountProvableBigSumIndexedTree
-        );
-        assert!(ElementType::try_from(162).is_err());
+        assert!(ElementType::try_from(160).is_err());
         // Bytes between the base and NonCounted-twin ranges are invalid.
         assert!(ElementType::try_from(127).is_err());
         // 143 (= 0x80|15), 144 (= 0x80|16), 145 (= 0x80|17): wrapper bytes
@@ -1445,7 +1394,7 @@ mod tests {
         assert!(ElementType::try_from(144).is_err());
         assert!(ElementType::try_from(145).is_err());
         // 153..=176 (between NonCounted-twin and NotSummed-twin ranges) are
-        // invalid, apart from 157..=161 above (177 = NotSummedProvableSumTree,
+        // invalid, apart from 157..=159 above (177 = NotSummedProvableSumTree,
         // 178 = NotSummedProvableCountProvableSumTree and
         // 179 = NotSummedProvableCountProvableBigSumTree follow).
         assert!(ElementType::try_from(153).is_err());

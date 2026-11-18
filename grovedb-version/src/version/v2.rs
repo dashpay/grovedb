@@ -175,7 +175,6 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
                 read: 0,
                 prove_single_path: 0,
                 verify_single_path: 0,
-                big_sum_axis: 0,
             },
             proof: GroveDBOperationsProofVersions {
                 prove_query: 0,

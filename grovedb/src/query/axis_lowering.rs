@@ -14,8 +14,7 @@
 //! verifier).
 
 use grovedb_element::indexed::{
-    encode_avg_sort_key, encode_big_sum_sort_key, encode_count_sort_key, encode_sum_sort_key,
-    IndexAxis,
+    encode_avg_sort_key, encode_count_sort_key, encode_sum_sort_key, IndexAxis,
 };
 use grovedb_merk::proofs::{
     query::{query_item::QueryItem as MerkQueryItem, AxisQuery, AxisTraversal},
@@ -62,12 +61,6 @@ pub(crate) fn axis_bounded_merk_query(axis_query: &AxisQuery) -> Result<MerkQuer
             encode_avg_sort_key(lo).to_vec(),
             hi.checked_add(1)
                 .map(|next| encode_avg_sort_key(next).to_vec()),
-        ),
-        // A 128-bit sum takes every i128, so the bounds are used as given.
-        IndexAxis::BigSum => (
-            encode_big_sum_sort_key(lo).to_vec(),
-            hi.checked_add(1)
-                .map(|next| encode_big_sum_sort_key(next).to_vec()),
         ),
     };
 

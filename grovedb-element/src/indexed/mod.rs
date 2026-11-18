@@ -13,9 +13,8 @@
 pub mod sort_keys;
 
 pub use sort_keys::{
-    compute_avg_fixed_point, compute_big_avg_fixed_point, decode_avg_sort_key,
-    decode_big_sum_sort_key, decode_count_sort_key, decode_sum_sort_key, encode_avg_sort_key,
-    encode_big_sum_sort_key, encode_count_sort_key, encode_sum_sort_key, AVG_FIXED_POINT_SCALE,
+    compute_avg_fixed_point, decode_avg_sort_key, decode_count_sort_key, decode_sum_sort_key,
+    encode_avg_sort_key, encode_count_sort_key, encode_sum_sort_key, AVG_FIXED_POINT_SCALE,
 };
 
 use crate::error::ElementError;
