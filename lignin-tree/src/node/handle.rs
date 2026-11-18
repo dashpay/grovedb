@@ -61,11 +61,12 @@ pub(super) fn issue(counter: &AtomicU64) -> Option<NonZeroU64> {
 ///    new lease when it rebases, and reads such a page under another lease
 ///    until it has.
 ///
-/// One thing the store keeps: a page step changes the current version of a
-/// page and no older one, and none goes through while a private copy of the
-/// page exists (`transactions.md` PV7). So the versions of a page are one
-/// line, in whatever order they are read, and a private copy is on the line
-/// of the version it was made from.
+/// One thing the store keeps: a page step of background work changes the
+/// current version of a page and no older one, and none goes through while
+/// a private copy of the page exists (`transactions.md` PV7). A commit that
+/// installs a private copy puts it behind the version it was made from. So
+/// the versions of a page are one line, in whatever order they are read,
+/// and a private copy is on the line of the version it was made from.
 ///
 /// This is the rule of PN8 for a location that is kept between operations.
 /// A handle of a lease that was given up is refused from then on.

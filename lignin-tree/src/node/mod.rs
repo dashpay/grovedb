@@ -201,8 +201,10 @@
 //!   own, and takes a new one when it rebases or reconciles a merged scope
 //!   (`transactions.md` PN8).
 //! - **Background work takes a cell out of the current version of a page
-//!   only**, as the pool's page step does (PV7). A version that is no
-//!   longer current keeps its cells and its count.
+//!   only**, and not while a private copy of the page exists, as the pool's
+//!   page step does for it (PV7). A version that is no longer current keeps
+//!   its cells and its count. A commit's own step, which installs a private
+//!   copy as the next version, is not background work.
 //! - **A reader holds an operation guard** for as long as it uses what it
 //!   read, taken before it reads the latest version (PN5).
 //! - **A writer holds the exclusive latch** of the copy it changes for one
