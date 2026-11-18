@@ -65,9 +65,6 @@ pub struct Config {
     /// split where it is: its root goes up and its halves stay. With 100 a
     /// fragment may fill a page.
     pub largest_fragment_percent: u32,
-    /// The same limit for an inner fragment: one with a link to a cell of
-    /// another page. Never below the limit for the others.
-    pub largest_inner_fragment_percent: u32,
     /// A page takes a fragment from another page only if that leaves it at
     /// most this many percent full. With 0 such a fragment always starts a
     /// fresh page.
@@ -105,7 +102,6 @@ impl Config {
             inline_max: 256,
             small_fragment_divisor: 16,
             largest_fragment_percent: 50,
-            largest_inner_fragment_percent: 50,
             seed_limit_percent: 75,
             merge_below_percent: 35,
             colocate: true,
@@ -128,11 +124,6 @@ impl Config {
     /// The size above which a fragment is split where it is.
     pub fn largest_fragment(&self) -> u32 {
         (u64::from(self.capacity()) * u64::from(self.largest_fragment_percent) / 100) as u32
-    }
-
-    /// The size above which an inner fragment is split where it is.
-    pub fn largest_inner_fragment(&self) -> u32 {
-        (u64::from(self.capacity()) * u64::from(self.largest_inner_fragment_percent) / 100) as u32
     }
 
     /// The most bytes a page may hold after it took a fragment from another
@@ -194,7 +185,6 @@ pub struct Model {
     capacity: u32,
     small: u32,
     largest: u32,
-    largest_inner: u32,
     seed_limit: u32,
     merge_below: u32,
     /// The pages the current write deleted a cell from.
@@ -235,11 +225,6 @@ impl Model {
             "a fragment is at most a page"
         );
         assert!(
-            (config.largest_fragment_percent..=100)
-                .contains(&config.largest_inner_fragment_percent),
-            "an inner fragment may be at least as large as any other, and at most a page"
-        );
-        assert!(
             config.small_fragment() * 3 <= config.largest_fragment(),
             "half of a split fragment must not count as small"
         );
@@ -253,7 +238,6 @@ impl Model {
             capacity: config.capacity(),
             small: config.small_fragment(),
             largest: config.largest_fragment(),
-            largest_inner: config.largest_inner_fragment(),
             seed_limit: config.seed_limit(),
             merge_below: config.merge_below(),
             shrunk: Vec::new(),
@@ -409,10 +393,7 @@ impl Model {
                     .iter()
                     .find(|(taker, _)| *taker == node)
                     .map(|(_, page)| *page)
-                    .or_else(|| {
-                        self.parent(grove, node)
-                            .map(|parent| self.page_of[parent.index()])
-                    })
+                    .or_else(|| self.parent_page(grove, node))
                     .filter(|page| *page != 0)
                     .or_else(|| {
                         self.children(grove, node)
@@ -434,10 +415,9 @@ impl Model {
         for event in sandwiches {
             let node = event.node;
             let page = self.page_of[node.index()];
-            let Some(parent) = self.parent(grove, node) else {
+            let Some(above) = self.parent_page(grove, node) else {
                 continue;
             };
-            let above = self.page_of[parent.index()];
             if above != page
                 && self
                     .children(grove, node)
@@ -454,9 +434,7 @@ impl Model {
         self.merge_underfull(grove);
         self.settle_overflow(grove);
 
-        for merk in &changes.roots_changed {
-            self.directory.push(*merk);
-        }
+        self.directory.extend(&changes.roots_changed);
         self.directory.extend(&changes.merks_created);
         self.directory.sort_unstable();
         self.directory.dedup();
@@ -472,13 +450,9 @@ impl Model {
         stats.records += changes.events.len() as u64;
         stats.record_bytes += changes.record_bytes;
         stats.hash_only_records += u64::from(changes.hash_only);
-        stats.value_records += changes
-            .events
-            .iter()
-            .filter(|event| event.value_changed)
-            .count() as u64;
         stats.created += changes.events.iter().filter(|event| event.created).count() as u64;
         for event in changes.events.iter().filter(|event| event.value_changed) {
+            stats.value_records += 1;
             let value_len = grove.node(event.node).value_len;
             if self.config.is_out_of_line(value_len) {
                 stats.out_of_line_bytes +=
@@ -500,13 +474,19 @@ impl Model {
 
     /// Records where the layout stands.
     pub fn sample(&mut self) {
-        self.samples.push(Sample {
+        let sample = self.snapshot();
+        self.samples.push(sample);
+    }
+
+    /// Where the layout stands now.
+    pub(crate) fn snapshot(&self) -> Sample {
+        Sample {
             stats: self.stats.clone(),
             cells: self.cells,
             pages: self.live_pages,
             used_bytes: self.used_bytes,
             fill: self.fill(),
-        });
+        }
     }
 
     /// Checks the model's bookkeeping against a recount from the grove:
@@ -573,6 +553,11 @@ impl Model {
         } else {
             grove.node(node).parent
         }
+    }
+
+    fn parent_page(&self, grove: &Grove, node: NodeId) -> Option<u32> {
+        self.parent(grove, node)
+            .map(|parent| self.page_of[parent.index()])
     }
 
     fn children<'g>(&self, grove: &'g Grove, node: NodeId) -> impl Iterator<Item = NodeId> + 'g {
@@ -690,13 +675,8 @@ impl Model {
     }
 
     fn relink(&mut self, grove: &Grove, node: NodeId) {
-        if let Some(parent) = self.parent(grove, node) {
+        if let Some(parent) = grove.grove_parent(node) {
             let page = self.page_of[parent.index()];
-            if page != 0 {
-                self.dirty(page);
-            }
-        } else if let Some(host) = grove.grove_parent(node) {
-            let page = self.page_of[host.index()];
             if page != 0 {
                 self.dirty(page);
             }
@@ -829,10 +809,7 @@ impl Model {
     /// its parent's page when it is small, otherwise to a page beside it
     /// that has room, or to a fresh page.
     fn move_out(&mut self, grove: &Grove, root: NodeId, bytes: u32) {
-        let above = self
-            .parent(grove, root)
-            .map(|parent| self.page_of[parent.index()])
-            .filter(|page| *page != 0);
+        let above = self.parent_page(grove, root).filter(|page| *page != 0);
         match above {
             Some(above) if bytes < self.small => {
                 self.stats.crowded_up += 1;
@@ -898,17 +875,7 @@ impl Model {
             if entry.cells == 0 || entry.used >= self.merge_below {
                 continue;
             }
-            let mut roots: Vec<NodeId> = Vec::new();
-            for held in 0..self.held.len() {
-                let node = self.held[held];
-                if self.page_of[node.index()] == page {
-                    let root = self.fragment_root(grove, node);
-                    if !roots.contains(&root) {
-                        roots.push(root);
-                    }
-                }
-            }
-            for root in roots {
+            for root in self.held_roots(grove, |held| held == page) {
                 let bytes = self.fragment_bytes(grove, root, u32::MAX);
                 if let Some(to) = self.beside(grove, root, bytes) {
                     self.stats.merged += 1;
@@ -940,20 +907,6 @@ impl Model {
             if self.fragment_bytes(grove, root, self.largest + 1) <= self.largest {
                 continue;
             }
-            if self.largest_inner > self.largest {
-                let root_page = self.page_of[root.index()];
-                let mut bytes = 0u32;
-                let mut inner = false;
-                for node in self.fragment(grove, root) {
-                    bytes += self.cell_of[node.index()];
-                    inner |= self
-                        .children(grove, node)
-                        .any(|child| self.page_of[child.index()] != root_page);
-                }
-                if inner && bytes <= self.largest_inner {
-                    continue;
-                }
-            }
             let above = self.page_of[parent.index()];
             self.stats.capped += 1;
             self.stats.promoted += 1;
@@ -967,8 +920,7 @@ impl Model {
     fn split(&mut self, grove: &Grove, page: u32, root: NodeId) {
         self.stats.splits += 1;
         let above = self
-            .parent(grove, root)
-            .map(|parent| self.page_of[parent.index()])
+            .parent_page(grove, root)
             .filter(|above| *above != 0 && *above != page);
         let mut parts: Vec<(NodeId, u32)> = Vec::new();
         self.peel(grove, page, root, above, &mut parts);
@@ -1037,23 +989,11 @@ impl Model {
 
     /// A small fragment whose parent's page has room for it moves there.
     fn absorb_small(&mut self, grove: &Grove) {
-        let mut roots: Vec<NodeId> = Vec::new();
-        for index in 0..self.held.len() {
-            let node = self.held[index];
-            if self.page_of[node.index()] == 0 {
-                continue;
-            }
-            let root = self.fragment_root(grove, node);
-            if !roots.contains(&root) {
-                roots.push(root);
-            }
-        }
-        for root in roots {
+        for root in self.held_roots(grove, |page| page != 0) {
             let page = self.page_of[root.index()];
-            let Some(parent) = self.parent(grove, root) else {
+            let Some(above) = self.parent_page(grove, root) else {
                 continue;
             };
-            let above = self.page_of[parent.index()];
             if above == 0 || above == page {
                 continue;
             }
@@ -1064,11 +1004,30 @@ impl Model {
             }
         }
     }
+
+    /// The distinct roots of the fragments that hold a node the write holds
+    /// in a page that passes `keep`, in the order the write took them.
+    fn held_roots(&self, grove: &Grove, keep: impl Fn(u32) -> bool) -> Vec<NodeId> {
+        let mut roots: Vec<NodeId> = Vec::new();
+        for node in &self.held {
+            if keep(self.page_of[node.index()]) {
+                let root = self.fragment_root(grove, *node);
+                if !roots.contains(&root) {
+                    roots.push(root);
+                }
+            }
+        }
+        roots
+    }
 }
 
 /// Which parts to move so that their bytes come closest to `target`: a bit
 /// set over `parts`, never empty. Ties go to fewer bytes, then to the parts
 /// listed first.
+///
+/// Up to twelve parts every choice is tried. Above that, which no workload
+/// here reaches, the 32 parts listed first are taken largest first, each
+/// only if it brings the sum closer.
 fn choose(parts: &[(NodeId, u32)], target: u32) -> u32 {
     const EXHAUSTIVE: usize = 12;
     if parts.len() > EXHAUSTIVE {
@@ -1117,7 +1076,6 @@ mod tests {
         Config {
             small_fragment_divisor: 8,
             largest_fragment_percent: 100,
-            largest_inner_fragment_percent: 100,
             seed_limit_percent: 0,
             merge_below_percent: 0,
             ..Config::with_page_size(1024)

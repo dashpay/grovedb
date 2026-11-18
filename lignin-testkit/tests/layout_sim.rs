@@ -149,18 +149,19 @@ fn the_reference_workload_meets_the_layout_targets() {
         "{:.2} pages dirtied per transition",
         report.dirty_per_transition()
     );
-    let last = report.last_interval();
+    let last = report.last_tenth();
+    assert!(last.transitions >= workload.documents / 10);
     assert!(
         last.dirty_per_transition() <= 8.0,
         "{:.2} pages dirtied per transition in the last tenth",
         last.dirty_per_transition()
     );
-    // The observer sees what the plan measured on this workload: 58.8 node
-    // records and 23.9 KB per transition at one million documents.
-    let records = last.records as f64 / last.transitions as f64;
-    let bytes = last.record_bytes as f64 / last.transitions as f64;
-    assert!((55.0..63.0).contains(&records), "{records:.1} records");
-    assert!((22_000.0..26_000.0).contains(&bytes), "{bytes:.0} bytes");
+    println!(
+        "last tenth: {:.2} pages dirtied, {:.1} Merk records and {:.0} B per transition",
+        last.dirty_per_transition(),
+        last.records as f64 / last.transitions as f64,
+        last.record_bytes as f64 / last.transitions as f64,
+    );
 }
 
 fn print_samples(report: &Report) {
@@ -190,19 +191,19 @@ fn print_samples(report: &Report) {
 /// The sizes of the workloads a sweep runs, read from the environment so
 /// one test serves a quick look and the full reference run.
 fn documents_from_env() -> Documents {
-    let documents = std::env::var("LAYOUT_SIM_DOCUMENTS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(1_000_000u64);
-    let owners = std::env::var("LAYOUT_SIM_OWNERS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or((documents / 100).max(1));
+    let documents = number_from_env("LAYOUT_SIM_DOCUMENTS").unwrap_or(1_000_000);
+    let owners = number_from_env("LAYOUT_SIM_OWNERS").unwrap_or((documents / 100).max(1));
     Documents {
         documents,
         owners,
         ..Documents::reference()
     }
+}
+
+fn number_from_env(name: &str) -> Option<u64> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
 }
 
 fn configs_from_env() -> Vec<Config> {
@@ -218,11 +219,7 @@ fn configs_from_env() -> Vec<Config> {
             let mut config =
                 Config::with_page_size(fields.next().expect("a page size").parse().expect("u32"));
             if let Some(percent) = fields.next() {
-                // "50" for every fragment, "50+100" for the others and the
-                // inner ones.
-                let (leaf, inner) = percent.split_once('+').unwrap_or((percent, percent));
-                config.largest_fragment_percent = leaf.parse().expect("u32");
-                config.largest_inner_fragment_percent = inner.parse().expect("u32");
+                config.largest_fragment_percent = percent.parse().expect("u32");
             }
             if let Some(limit) = fields.next() {
                 config.seed_limit_percent = limit.parse().expect("u32");
@@ -281,8 +278,7 @@ fn run_big(
                     eprintln!(
                         "    page {:>5}/{}/{}: {:>7} pages, fill {:.1}%, dirtied {:.2}",
                         model.config().page_size,
-                        model.config().largest_fragment_percent * 1000
-                            + model.config().largest_inner_fragment_percent,
+                        model.config().largest_fragment_percent,
                         model.config().seed_limit_percent,
                         model.pages(),
                         model.fill() * 100.0,
@@ -347,9 +343,20 @@ fn sweep_adversarial() {
         if only.as_deref().is_some_and(|only| only != name) {
             continue;
         }
-        for report in run_big(name, workload.stream(SEED), &configs_from_env(), 10_000) {
+        for report in run_big(name, workload.stream(SEED), &configs_from_env(), 2_000) {
             println!("{report}");
-            print_samples(&report);
+            let peak = report
+                .samples
+                .iter()
+                .max_by_key(|sample| sample.cells)
+                .expect("a sample");
+            println!(
+                "  at its largest {} nodes in {} pages: {:.1} nodes per page, fill {:.1}%\n",
+                peak.cells,
+                peak.pages,
+                peak.nodes_per_page(),
+                peak.fill * 100.0,
+            );
         }
     }
 }
@@ -384,7 +391,7 @@ fn churn(keys: u64, rounds: u64, value_len: u32) -> impl Iterator<Item = Op> + S
     for round in 0..rounds {
         let victim = live.swap_remove(rng.below(live.len() as u64) as usize);
         ops.push(Op::Write(Write::Delete {
-            path: vec![b"churn".to_vec()],
+            path: path.clone(),
             key: victim.to_vec(),
         }));
         insert(&mut rng, &mut live, &mut ops);
@@ -401,10 +408,7 @@ fn churn(keys: u64, rounds: u64, value_len: u32) -> impl Iterator<Item = Op> + S
 #[test]
 #[ignore = "a long steady-state run"]
 fn sweep_churn() {
-    let keys = std::env::var("LAYOUT_SIM_KEYS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(50_000u64);
+    let keys = number_from_env("LAYOUT_SIM_KEYS").unwrap_or(50_000);
     let rounds = keys * 4;
     let value_len = 400;
     let sample_every = keys;

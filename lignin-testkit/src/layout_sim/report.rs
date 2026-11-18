@@ -218,6 +218,14 @@ impl Stats {
         for (now, then) in dirty_histogram.iter_mut().zip(earlier.dirty_histogram) {
             *now -= then;
         }
+        // The histogram's last entry stands for everything above it, so the
+        // most pages of the interval is only known below that entry.
+        let last = dirty_histogram.len() - 1;
+        let max_dirty = match dirty_histogram.iter().rposition(|count| *count > 0) {
+            Some(pages) if pages < last => pages as u64,
+            Some(_) => self.max_dirty,
+            None => 0,
+        };
         let mut moves = self.moves;
         for (now, then) in moves.iter_mut().zip(earlier.moves) {
             *now = now.minus(then);
@@ -229,7 +237,7 @@ impl Stats {
             dirty_pages_by_block: self.dirty_pages_by_block - earlier.dirty_pages_by_block,
             directory_writes: self.directory_writes - earlier.directory_writes,
             dirty_histogram,
-            max_dirty: self.max_dirty,
+            max_dirty,
             records: self.records - earlier.records,
             record_bytes: self.record_bytes - earlier.record_bytes,
             hash_only_records: self.hash_only_records - earlier.hash_only_records,
@@ -297,13 +305,7 @@ pub struct Report {
 impl Report {
     /// The report of `model` after a workload.
     pub fn new(workload: &str, model: &Model) -> Self {
-        let end = Sample {
-            stats: model.stats().clone(),
-            cells: model.cells(),
-            pages: model.pages(),
-            used_bytes: model.used_bytes(),
-            fill: model.fill(),
-        };
+        let end = model.snapshot();
         let mut samples = model.samples().to_vec();
         if samples.last() != Some(&end) {
             samples.push(end.clone());
@@ -332,15 +334,19 @@ impl Report {
         self.end.stats.dirty_per_transition()
     }
 
-    /// The counters of the last interval between two samples: the workload
-    /// at its largest.
-    pub fn last_interval(&self) -> Stats {
-        match self.samples.len() {
-            0 | 1 => self.end.stats.clone(),
-            len => self.samples[len - 1]
-                .stats
-                .since(&self.samples[len - 2].stats),
-        }
+    /// The counters of the last tenth of the workload, when the trees are
+    /// largest: what happened since the latest sample that has at most nine
+    /// tenths of the transitions. Without such a sample, the whole workload.
+    pub fn last_tenth(&self) -> Stats {
+        let transitions = self.end.stats.transitions;
+        self.samples
+            .iter()
+            .rev()
+            .find(|sample| sample.stats.transitions * 10 <= transitions * 9)
+            .map_or_else(
+                || self.end.stats.clone(),
+                |sample| self.end.stats.since(&sample.stats),
+            )
     }
 
     /// The lowest fill any sample saw.
@@ -355,18 +361,17 @@ impl Report {
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let stats = &self.end.stats;
-        let last = self.last_interval();
+        let last = self.last_tenth();
         let transitions = stats.transitions;
         writeln!(
             f,
-            "{}: page {} B, inline up to {} B, fragments {} to {} B (inner {} B), seed limit {}%, \
-             merge below {}%, colocate {}, carry on rotation {}, on delete {}",
+            "{}: page {} B, inline up to {} B, fragments {} to {} B, seed limit {}%, merge below \
+             {}%, colocate {}, carry on rotation {}, on delete {}",
             self.workload,
             self.config.page_size,
             self.config.inline_max,
             self.config.small_fragment(),
             self.config.largest_fragment(),
-            self.config.largest_inner_fragment(),
             self.config.seed_limit_percent,
             self.config.merge_below_percent,
             self.config.colocate,
@@ -386,7 +391,7 @@ impl fmt::Display for Report {
         writeln!(
             f,
             "  pages dirtied  {:.2} per transition ({:.2} tree pages + {:.2} directory entries); \
-             last interval {:.2}; p50 {} p99 {} max {}; counted once per block {:.2}",
+             last tenth {:.2}; p50 {} p99 {} max {}; counted once per block {:.2}",
             stats.dirty_per_transition(),
             ratio(stats.dirty_pages, transitions),
             ratio(stats.directory_writes, transitions),
@@ -536,17 +541,12 @@ mod tests {
         );
         assert_eq!(between.moved().cells, 6);
         assert_eq!(between.dirty_per_transition(), 6.5);
-        assert_eq!(
-            later.since(&later),
-            Stats::default().since(&Stats::default()).with_max(5)
-        );
-    }
-
-    impl Stats {
-        fn with_max(mut self, max_dirty: u64) -> Self {
-            self.max_dirty = max_dirty;
-            self
-        }
+        assert_eq!(between.max_dirty, 5);
+        assert_eq!(later.since(&later), Stats::default());
+        let mut wide = stats(1, &[]);
+        wide.dirty_histogram[63] = 1;
+        wide.max_dirty = 500;
+        assert_eq!(wide.since(&Stats::default()).max_dirty, 500);
     }
 
     #[test]
@@ -565,7 +565,7 @@ mod tests {
         let empty = Report::new("empty", &model);
         assert_eq!((empty.fill(), empty.nodes_per_page()), (0.0, 0.0));
         assert_eq!(empty.samples.len(), 1, "the end is not sampled twice");
-        assert_eq!(empty.last_interval(), empty.end.stats);
+        assert_eq!(empty.last_tenth(), empty.end.stats);
 
         let mut report = empty.clone();
         report.workload = "documents".to_string();
@@ -579,11 +579,21 @@ mod tests {
         report.end.stats.moves[Cause::Split as usize].value_bytes = 30_000;
         report.samples.push(Sample {
             fill: 0.6,
+            stats: stats(90, &[6; 90]),
+            ..report.end.clone()
+        });
+        report.samples.push(Sample {
+            stats: stats(95, &[6; 95]),
             ..report.end.clone()
         });
         report.samples.push(report.end.clone());
         assert_eq!(report.lowest_fill(), 0.0, "the first sample was empty");
-        assert_eq!(report.last_interval().transitions, 0);
+        let last = report.last_tenth();
+        assert_eq!(
+            (last.transitions, last.dirty_pages),
+            (10, 160),
+            "since the sample at nine tenths, not the one after it",
+        );
         assert_eq!(report.nodes_per_page(), 100.0);
         assert_eq!(report.dirty_per_transition(), 7.0);
         let text = report.to_string();

@@ -44,8 +44,8 @@ pub struct Observer {
     grove: Grove,
     grove_version: &'static GroveVersion,
     observations: u32,
-    /// Tree elements met inside a Merk that has no path, which the walk
-    /// cannot follow.
+    /// Times the walk met a tree element inside a Merk that has no path,
+    /// and so could not follow it.
     unfollowed: u64,
 }
 
@@ -65,8 +65,9 @@ impl Observer {
         &self.grove
     }
 
-    /// How many tree elements the walk could not follow because they sit in
-    /// a Merk that is not reached by path.
+    /// How many times the walk could not follow a tree element because it
+    /// sits in a Merk that is not reached by path. An element is counted
+    /// again each time it changes.
     pub fn unfollowed(&self) -> u64 {
         self.unfollowed
     }
@@ -183,14 +184,12 @@ impl<'db> Walk<'_, 'db> {
         self.grove.merk_mut(merk).root = Some(root);
         if old_root != Some(root) {
             self.changes.roots_changed.push(merk);
-            candidates.extend(old_root);
+            if let Some(old_root) = old_root {
+                candidates.push(old_root);
+                self.old_roots.push((merk, old_root));
+            }
         }
         self.sweep(candidates);
-        if let Some(old_root) = old_root
-            && old_root != root
-        {
-            self.old_roots.push((merk, old_root));
-        }
     }
 
     /// Retires the nodes among `candidates` that the walk did not meet in
@@ -263,7 +262,10 @@ impl<'db> Walk<'_, 'db> {
             .flatten()
             .map(|link| 35 + link.key().len())
             .sum();
-        let meta_len = record.len() - 2 - link_bytes - 64 - value.len();
+        let meta_len = record
+            .len()
+            .checked_sub(2 + link_bytes + 64 + value.len())
+            .expect("a record holds two link markers, its links, two hashes and its value");
 
         let (id, created) = match existing {
             Some(id) => (id, false),
@@ -291,18 +293,16 @@ impl<'db> Walk<'_, 'db> {
             links_changed,
         });
         self.changes.record_bytes += (32 + key.len() + record.len()) as u64;
-        {
-            let node = self.grove.node_mut(id);
-            node.seen = self.observation;
-            node.event = self.changes.events.len() as u32;
-            node.parent = parent;
-            node.node_hash = link_hash.copied().unwrap_or([0; 32]);
-            node.record_print = record_print;
-            node.value_print = value_print;
-            node.value_hash_print = value_hash_print;
-            node.value_len = value.len() as u32;
-            node.meta_len = meta_len as u32;
-        }
+        let node = self.grove.node_mut(id);
+        node.seen = self.observation;
+        node.event = self.changes.events.len() as u32;
+        node.parent = parent;
+        node.node_hash = link_hash.copied().unwrap_or([0; 32]);
+        node.record_print = record_print;
+        node.value_print = value_print;
+        node.value_hash_print = value_hash_print;
+        node.value_len = value.len() as u32;
+        node.meta_len = meta_len as u32;
 
         let mut children = [None, None];
         for (child, link) in children.iter_mut().zip(links) {
@@ -350,14 +350,13 @@ impl<'db> Walk<'_, 'db> {
             return;
         }
         if hosted.is_empty() {
-            let Some(parent_path) = self.grove.merk(merk).path.clone() else {
+            let Some(mut path) = self.grove.merk(merk).path.clone() else {
                 self.unfollowed += 1;
                 return;
             };
-            let mut path = parent_path;
             path.push(key.to_vec());
             let primary = RocksDbStorage::build_prefix(SubtreePath::from(path.as_slice())).unwrap();
-            for (index, (axis, _)) in roots.iter().enumerate() {
+            for (axis, _) in &roots {
                 let created = match axis {
                     None => self.grove.add_merk(primary, Some(path.clone()), id),
                     Some(axis) => {
@@ -365,7 +364,6 @@ impl<'db> Walk<'_, 'db> {
                         self.grove.add_merk(prefix, None, id)
                     }
                 };
-                debug_assert_eq!(index, hosted.len());
                 hosted.push(created);
                 self.changes.merks_created.push(created);
             }

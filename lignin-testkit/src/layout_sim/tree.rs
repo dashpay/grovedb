@@ -82,6 +82,28 @@ pub struct Node {
     pub live: bool,
 }
 
+impl Node {
+    fn unlinked(merk: MerkId, key: Box<[u8]>, live: bool) -> Self {
+        Node {
+            merk,
+            key,
+            parent: None,
+            left: None,
+            right: None,
+            hosted: Vec::new(),
+            value_len: 0,
+            meta_len: 0,
+            node_hash: [0; 32],
+            record_print: 0,
+            value_print: 0,
+            value_hash_print: 0,
+            seen: 0,
+            event: 0,
+            live,
+        }
+    }
+}
+
 /// One Merk: a subtree of the grove.
 #[derive(Clone, Debug)]
 pub struct Merk {
@@ -117,25 +139,8 @@ impl Default for Grove {
 impl Grove {
     /// An empty grove: the root Merk with no node.
     pub fn new() -> Self {
-        let placeholder = Node {
-            merk: MerkId::ROOT,
-            key: Box::default(),
-            parent: None,
-            left: None,
-            right: None,
-            hosted: Vec::new(),
-            value_len: 0,
-            meta_len: 0,
-            node_hash: [0; 32],
-            record_print: 0,
-            value_print: 0,
-            value_hash_print: 0,
-            seen: 0,
-            event: 0,
-            live: false,
-        };
         Grove {
-            nodes: vec![placeholder],
+            nodes: vec![Node::unlinked(MerkId::ROOT, Box::default(), false)],
             merks: vec![Merk {
                 prefix: [0; 32],
                 path: Some(Vec::new()),
@@ -268,23 +273,7 @@ impl Grove {
 
     pub(crate) fn add_node(&mut self, merk: MerkId, key: &[u8]) -> NodeId {
         let id = NodeId::from_index(self.nodes.len());
-        self.nodes.push(Node {
-            merk,
-            key: key.into(),
-            parent: None,
-            left: None,
-            right: None,
-            hosted: Vec::new(),
-            value_len: 0,
-            meta_len: 0,
-            node_hash: [0; 32],
-            record_print: 0,
-            value_print: 0,
-            value_hash_print: 0,
-            seen: 0,
-            event: 0,
-            live: true,
-        });
+        self.nodes.push(Node::unlinked(merk, key.into(), true));
         self.merk_mut(merk).keys.insert(key.into(), id);
         self.live_nodes += 1;
         id
@@ -315,10 +304,7 @@ impl Grove {
         let node = &mut self.nodes[id.index()];
         debug_assert!(node.live, "a node is retired once");
         node.live = false;
-        let merk = node.merk;
-        let key = std::mem::take(&mut node.key);
-        self.merks[merk.index()].keys.remove(&key);
-        self.nodes[id.index()].key = key;
+        self.merks[node.merk.index()].keys.remove(&node.key);
         self.live_nodes -= 1;
     }
 
