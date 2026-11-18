@@ -18,7 +18,9 @@ check.sh profile [VERSION]    the cost of a few common operations and the
                               rules applied (section 11.1 of the document)
 ```
 
-A replay is BASE-02's: it compares the cost, result, root hash and proof of every step with the committed corpus and names the first step that differs. After it, the script prints how often each rule was applied (`target/cost-model/rule-hits.tsv`) and fails if the model met a node whose link sizes are not the ones Merk passed with it. A test run leaves its counts in the same file, added up over its test processes.
+A replay is BASE-02's: it compares the cost, result, root hash and proof of every step with the committed corpus and names the first step that differs. After it, the script prints how often each rule was applied (`target/cost-model/rule-hits.tsv`) and fails if the model met a node whose link sizes are not the ones Merk passed with it, or had to keep as bytes a record that Merk passed sizes with. A test run leaves its counts in the same file, added up over its test processes.
+
+At the reference scale a trace has a digest every 1,000 steps, so a difference is named by its interval. `check.sh dump --reference --grove-version N --steps FROM..TO --out DIR`, and `lignin-golden dump` with the same arguments on RocksDB, give the steps of the interval to compare.
 
 `check.sh test -p grovedb-storage ...` also runs the model's own unit tests, which the stand-in crate includes; `-- --skip cost_model::` leaves them out. GroveDB's suite passes on the model but for `test_checkpoint_wal_under_threshold_is_preserved`, which looks for RocksDB's WAL files.
 
@@ -27,7 +29,7 @@ When the corpus grows, run `check.sh` again: it replays whatever `lignin-testkit
 ## What the model does not do
 
 - It commits every transaction: there are no commit conflicts.
-- It keeps its state in memory. A directory gets a small file that names its database, so for the life of the process a reopen finds what was committed there, and a checkpoint is a database of its own that can be opened either way. Another process finds an empty database.
+- It keeps its state in memory. A directory gets a small file that names its database, so for the life of the process a reopen finds what was committed there, and a checkpoint is a database of its own that can be opened either way. Another process finds an empty database. A database is let go when its directory has gone.
 - It reads no SST files (`ingest_subtree_sst`).
 
 ## When this goes away

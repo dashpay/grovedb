@@ -6,9 +6,9 @@ This document specifies what GroveDB charges today, as an `OperationCost`, for e
 
 It builds on the [storage surface inventory](storage-surface.md) (BASE-04), the [FlatStore seam](flat-store.md) (SEAM-03), the [NodeStore seam](node-store.md) (SEAM-01) and rule GM0 of the [transaction rules](transactions.md) (TXN-01). The cost codes of the inventory (`P-path`, `R-tx`, `B-commit` and so on) are named next to each rule.
 
-**Pinned commit:** the engine sources of `feat/LigninDB` at `da8ad1cc` ("Merge BASE-02: golden trace corpus"). The golden corpus was recorded from `develop` `22f163c2` and replays unchanged on that commit. Functions are cited by name, with the line at the pinned commit.
+**Pinned commit:** the engine sources of `feat/LigninDB` at `54e36fb4` ("Merge BASE-01: the remaining cost-bearing operations"). The golden corpus names the engine of `develop` `22f163c2`, whose sources these are, and replays unchanged on that commit. Functions are cited by name, with the line at the pinned commit.
 
-**Result:** the storage rules of section 5, applied to a logical state that holds no node record, reproduce every `OperationCost` of the golden corpus: 260 traces and 191,851 steps on grove versions 1 to 5 at the standard scale, and the five reference traces of 1,050,008 operations each. Section 12 says how that is run, what it shows and what it does not.
+**Result:** the storage rules of section 5, applied to a logical state that holds no node record, reproduce every `OperationCost` of the golden corpus: 290 traces and 216,069 steps on grove versions 1 to 5 at the standard scale, and the five reference traces of 1,050,008 operations each. Section 12 says how that is run, what it shows and what it does not. One thing it does not show: the corpus cannot tell whether a delete with no writer's cost is charged from the committed state or from the transaction's view (rule D2), because the two differ only for a record the same transaction wrote, and the corpus deletes such records only in an operation whose cost GroveDB drops. The storage crate's tests pin that instead.
 
 ## 1. How to read this document
 
@@ -48,7 +48,7 @@ A fallible call returns its cost whether it succeeds or not (`CostResult`). Wher
 - **Record.** What a keyspace holds under a key. In the data keyspace of a Merk it is a node; everywhere else it is the caller's bytes, of length `value_len`.
 - **Record length of a node.** The number of bytes today's engine stores a node in. Section 4 gives it as a function of the node's fields. No rule needs the bytes.
 - **Deferred handle** and **immediate handle.** The two ways a subtree is opened inside a transaction (inventory: transactional and immediate context). A deferred handle stages its writes in a batch that is charged when it is applied. An immediate handle writes at once. GroveDB uses immediate handles only in state-sync restore.
-- **Committed state.** What the database holds outside any open transaction at the moment of a call.
+- **Committed state.** What the database holds outside any open transaction at the moment of a call. A **snapshot read transaction** reads the committed state of the moment it was started, whatever is committed later, and refuses writes.
 - `varint(n)` is the length of `n` as an unsigned LEB128 varint: 1 below 128, 2 below 16,384, and so on. A signed number is zigzag-encoded first, so `varint_signed(s) = varint((s << 1) ^ (s >> 63))`.
 - `blocks(n)` is the number of 64-byte Blake3 blocks of an `n`-byte message: 1 for `n = 0`, otherwise `1 + (n - 1) / 64`.
 
@@ -100,7 +100,7 @@ The record length changes when nothing about the node's own value does: a child 
 
 **Where it is charged.** Rule R1 (every node fetch), rule C3 (a cursor reads a node), rule D2 (a node removed with no writer's cost), rule K2 for a node written with no link sizes (a raw copy, or chunk restore), and the pinned-view read of section 6.5. A node written by a Merk commit is not charged by its record length: the links cancel out of rule K2.
 
-**N2.** With a node, Merk passes the storage layer the sizes of its links and feature (`NodeWriteCost`, `ChildrenSizesWithIsSumTree`): for each child `(child_key_len + 36, payload_len)`, and for the feature its cost class and `payload_len`. They are the node's own sizes as defined above. An engine that holds the node's fields does not need them handed over.
+**N2.** With a node, Merk passes the storage layer the sizes of its links and feature (`NodeWriteCost`, `ChildrenSizesWithIsSumTree`): for each child `(child_key_len + 36, payload_len)`, and for the feature its cost class and `payload_len`. They are the node's own sizes as defined above. An engine that holds the node's fields does not need them handed over. The check of section 12 compares the two on every put that comes with sizes, and counts a record that comes with sizes and is not a node as a difference.
 
 ## 5. Storage rules
 
@@ -132,7 +132,7 @@ seek_count           += 1
 storage_loaded_bytes += the record's length, 0 if there is none
 ```
 
-For a node the length is `record_len` of section 4. A read of a key with no record still charges the seek. The read sees the transaction's applied writes over the committed state, and never a write staged in a batch that has not been applied.
+For a node the length is `record_len` of section 4. A read of a key with no record still charges the seek. The read sees the transaction's applied writes over the committed state (for a snapshot read transaction, the state of its start), and never a write staged in a batch that has not been applied.
 
 **R2. A read through an immediate handle** (`R-imm`): nothing.
 
@@ -193,14 +193,14 @@ removed_bytes        += (32 + key_len) + v + varint(32 + key_len) + varint(v)   
       v = the length of the record the committed state holds under the key, 0 if it holds none
 ```
 
-A record the same transaction wrote and has not committed counts as absent: two seeks, no loaded bytes, and the stored key with its varint plus one byte removed. For a node, `v` is the `record_len` of the node as committed. This is the one read of the write path that does not go through the transaction ([transactions.md](transactions.md), GM0 and RD2).
+What the transaction itself has written does not count. A key it created and has not committed is absent: two seeks, no loaded bytes, and the stored key with its varint plus one byte removed. A record it replaced is charged at the length of the committed record it replaced, not of the one it wrote. For a node, `v` is the `record_len` of the node as committed. This is the one read of the write path that does not go through the transaction ([transactions.md](transactions.md), GM0 and RD2).
 
-It is what these are charged: every record removed by `clear` (C4), which is how GroveDB empties the keyspace of a deleted or cleared append-only tree and of an indexed tree's secondaries; every node removed by `Merk::clear`; every node removed by the visitor that deletes a subtree without opening its Merk (`delete_internal_on_transaction/v2.rs`); `delete_aux` when the caller gives no cost; the meta deletes; and the removal of a base root key outside a commit (`set_base_root_key(None)`).
+It is what these are charged on a deferred handle: every record removed by `clear` (C4), which is how GroveDB empties the keyspace of a deleted or cleared append-only tree and of an indexed tree's secondaries; every node removed by `Merk::clear`; every node removed by the visitor that deletes a subtree without opening its Merk (`delete_internal_on_transaction/v2.rs`); `delete_aux` when the caller gives no cost; the meta deletes; and the removal of a base root key outside a commit (`set_base_root_key(None)`).
 
 **B1. Applying a batch** (`commit_multi_context_batch`, `storage.rs:1110`).
 
 - A batch holds one final operation per keyspace and stored key, not a log (`StorageBatch`, `storage/src/storage.rs`). Within one operation a put wins over a delete of the same key. After `next_operation`, a later delete replaces an earlier put. A later put always replaces. Only the surviving operation is charged.
-- Operations are charged in the order meta, aux, roots, data, and by stored key within each.
+- Operations are charged in the order meta, aux, roots, data, and by stored key within each. Their storage costs are added to one running cost in that order, a put's key cost before its value cost. The order shows in the result: on grove versions 1 to 3 a sectioned removal added to a plain one drops the default owner's section, and a plain one added to a sectioned one keeps it (`costs/src/storage_cost/removal.rs`, `AddAssign`).
 - Seeks and loaded bytes are charged as each operation is taken from the batch. Storage costs are held back and added only if every operation was accepted and the engine took the writes. A refused put (K3) keeps the seeks and loaded bytes charged up to and including its own, and none of the storage costs.
 - Applying the batch is itself free, and so is merging a Merk commit's part into it (`B-part`). An empty batch charges nothing, so an operation that writes nothing ([transactions.md](transactions.md), GM0: a conditional insert that finds its key taken, an operation that fails before it applies its batch, any read) is charged its reads and hashes only.
 
@@ -232,9 +232,13 @@ storage_loaded_bytes += 32 + key_len     on a record
 
 **C3. `value()`** (`I-value`): C2, and on a record also the record's length (for a node, `record_len`).
 
-**C4. `clear`** (`CLR`; `FlatStore::clear`, `storage/src/flat.rs:110`) is defined by the others: one C1 to the first record, then for each record C2 twice (`valid`, `key`), one staged delete with no cost (D2 when the batch is applied) and one C1, and a last C2 for the `valid` that ends the walk. It clears the data keyspace only.
+**C4. `clear`** (`CLR`; `FlatStore::clear`, `storage/src/flat.rs:110`) is defined by the others: one C1 to the first record, then for each record C2 twice (`valid`, `key`), one delete with no writer's cost and one C1, and a last C2 for the `valid` that ends the walk.
 
-A cursor sees the committed state of the moment it was opened, under the writes its transaction has applied.
+- It clears the keyspace of the handle it is called on and no other: the data keyspace for a subtree handle, the aux or the meta keyspace for the handles a subtree handle gives out (`storage_context/flat.rs`).
+- On a deferred handle each delete is staged and charged by D2 when the batch is applied.
+- On an immediate handle each delete is made at once and is free (M1), so `clear` costs the walk and nothing else.
+
+A cursor sees the committed state of the moment it was opened, under the writes its transaction has applied. In a snapshot read transaction it sees the state of the transaction's start instead, so a commit between the start and the opening of the cursor does not change what it reads or what it loads.
 
 ### 5.6 What is free
 
@@ -296,7 +300,7 @@ old <  new:   replaced = old,  added   = new - old
 
 The old cost is worked out from the old value by the same three formulas (the callback `old_specialized_cost` for value-defined costs). A node whose value did not change but whose links or hashes did is such an update with `old == new`: it is charged a seek and its whole value cost as `replaced_bytes`.
 
-**Flags.** GroveDB's callbacks may rewrite the flags of the new value according to the cost (`just_in_time_tree_node_value_update`, three versions), split removed bytes by owner and epoch (`section_removal_bytes`, giving a sectioned removal), or account an update as a removal and an insertion (grove version 5). They read the old value's bytes.
+**Flags.** The client's callbacks may rewrite the flags of the new value according to the cost, split removed bytes by owner and epoch, or have an update accounted as a removal and an insertion. Section 6.6 says where they enter.
 
 **Removal.** A removed node is deleted with a writer's cost (D1): the key `stored_key_len + varint(stored_key_len)` and the value's cost as above, both as removed bytes, possibly sectioned (`merk/src/tree/ops.rs:744`).
 
@@ -307,14 +311,52 @@ The old cost is worked out from the old value by the same three formulas (the ca
 - A base Merk's root key record is written through W3 with no cost, so it is charged a seek and nothing else. A standalone Merk gives `KeyValueStorageCost::for_updated_root_cost` (key 34 bytes; value the root key's length with its varint, split as an update against the previous root key's). GroveDB opens no standalone Merk.
 - When a base Merk becomes empty its root key record is deleted, with an empty writer's cost (D1, one seek, nothing removed) when `base_root_storage_is_free`, otherwise with none (D2).
 - Aux records of a commit pass the caller's cost through. `set_base_root_key` and the meta records write with no cost (W3 with none, W2 with none, D2).
-- `Merk::clear` (`merk/src/merk/clear.rs:17`) is the walk of C4 with a `valid`, a `key` and a delete with no cost per node, so each node is charged by D2 at its committed record length.
+- `Merk::clear` (`merk/src/merk/clear.rs:17`) is the walk of C4 with a `valid`, a `key` and a delete with no cost per node. The deletes go into a change set that is committed at the end. On a deferred handle each node is therefore charged by D2 at its committed record length. On an immediate handle the change set is the handle's batch, so each node is charged by M2: one seek, nothing loaded and nothing removed.
 - `is_empty_tree` is one C1 and one C2.
 
 ### 6.5 Reads that replace or skip the storage charge
 
-- **An element read by key** (`Element::get_optional_from_storage`, `merk/src/element/get.rs:109`). It makes one R1 and then **replaces** `storage_loaded_bytes` with the element's value cost of section 6.3 (ordinary, specialized or layered, by the kind of element). On grove version 1 the node is taken to have no feature, whatever its tree; from grove version 2 its own feature's class is used. The seek stays. A key with no record keeps R1 as it is. So this read does not depend on the node's links.
+- **An element read by key** (`Element::get_optional_from_storage`, `merk/src/element/get.rs:109`). It makes one R1 and then **replaces** `storage_loaded_bytes` with a figure worked out from the element, by its kind. `L` is the element's serialized length, and `link = key_len + 36 + class` as in section 6.3:
+
+  | Element | Loaded bytes |
+  | --- | --- |
+  | items and references | `L + varint(L) + link` (`value_byte_cost_size_for_key_and_value_lengths`). This is not the writer's cost of section 6.3: the 65 bytes of the node's hashes and feature tag are not in it. |
+  | sum items | the specialized cost of section 6.3, with `c = 11 + flags` (`flags` is the flags' length with its varint) |
+  | items with a sum item | from grove version 2 the specialized cost with `c = item_len + varint(item_len) + 11 + flags`; on grove version 1, as an item of length `L + 11` |
+  | trees of every kind | the layered cost of section 6.3, with `c` the tree type's cost size plus `flags` |
+
+  A wrapped element (`NonCounted` and the like) adds one byte to `c`. On grove version 1 the node is taken to have no feature, whatever its tree; from grove version 2 its own feature's class is used. The seek stays. A key with no record keeps R1 as it is. So this read does not depend on the node's links. GroveDB reads this way the parent element from which it opens a subtree's Merk (`open_transactional_merk_at_path`) and the rows of an indexed tree. An element read through an open Merk, as `GroveDb::get` reads the element it returns, is not: it is charged as section 6.1 says, R1 as it stands.
 - **A pinned-view read** (`stored_node_bytes`, `merk/src/proofs/query/count_offset/pinned_view.rs:88`; inventory finding 10). It seeks a cursor to the key and reads the key and value without billing the cursor's own C2 and C3. It charges the seek (C1) and, when the key is there, the record's length: the same as R1 on a found record.
 - **Costs a caller drops.** The inventory marks the library sites that discard a returned cost. `Merk::commit` on grove versions 1 and 2 is one (M2). `GroveDb::clear_subtree` is another (section 11).
+
+### 6.6 The client's two callbacks: storage flags and sectioned removals
+
+`apply_batch_with_element_flags_update` and `apply_partial_batch_with_element_flags_update` take two closures from the client. The other entry points pass closures that leave flags alone and remove bytes as plain numbers.
+
+- `flags_update(cost, old_flags, new_flags)` may rewrite the flags of the element being written, knowing the storage cost of its value, and says whether it did. Drive merges its epoch-based storage flags here.
+- `split_removal_bytes(flags, key_bytes, value_bytes)` turns the bytes a write frees into removals by owner and epoch. Drive splits them by the epochs the flags name.
+
+**Where they run.** Inside Merk, while a subtree's operations are applied and before anything is handed to the storage layer: on a node whose value is replaced (`just_in_time_tree_node_value_update`, `merk/src/tree/just_in_time_value_update/`) and on a node that is removed (`merk/src/tree/ops.rs:744`). GroveDB wraps the client's closures (`grovedb/src/batch/just_in_time_value_update.rs`): it decodes the old and the new element to reach their flags and encodes the new element again when its flags changed. A node that is new does not go through the update. The flags callback is not called for a new element that has no flags, and the split is not called for an old element that has none: its bytes are removed as plain numbers.
+
+**What they are given.** The old value is the one that came with the node Merk fetched on its way to the key (one R1, section 6.1). The cost is the value's storage cost of section 6.3, computed from the lengths of the old and the new value. Nothing is read for a callback and nothing is charged for calling it: no seek, no loaded byte, no hash.
+
+**What they change, all of it above the storage layer:**
+
+1. **The bytes of the new value**, through its flags, and with them its length. Merk measures the value's cost again from the new bytes and asks the callback again, until the size stops changing (the rounds are bounded by `MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES`, 8). The value hash is taken over the final bytes (section 6.2).
+2. **The form of the removed bytes.** A plain removal of the value's bytes goes through `split_removal_bytes` with the old element's flags and comes back plain or sectioned. On a delete both halves are split: the key's `stored_key_len + varint(stored_key_len)` and the old value's cost.
+3. **From grove version 5, how an update is accounted**: the callback may answer `AccountAsReplacement`, and the update is then charged as the removal of the old element and the insertion of the new one.
+
+The three versions of the update differ in the measurement they keep (`merk_versions.tree.just_in_time_value_update`, section 8). Version 0, on grove versions 1 to 3, first measures the new value carrying the old flags and keeps that measurement when the callback says it changed nothing. If the new value is stored with flags of another length, the cost Merk hands down is then not the one of the bytes it writes, and K3 refuses the commit. Version 1, on grove version 4, measures again from the bytes it stores. Version 2 adds the third point.
+
+The same update is run once more, on a detached node, by the preprocessor of backward references, which has to know the final bytes of an item before the apply (`predict_put_final_bytes`). It works on values that were already read and charges nothing.
+
+**What the storage layer is asked for.** Only the result: the final bytes of the value and one `KeyValueStorageCost`, with the put (W2) or the delete (D1). The storage layer then
+
+- checks `added + replaced` of the value against the paid length of K2 when the cost asks for it (K3), which is what catches version 0's stale measurement;
+- adds the removed bytes as they come, plain or sectioned, in the order of B1;
+- never calls a callback, never produces a sectioned removal itself, and removes only plain numbers of its own (D2).
+
+So for SEAM-05 nothing of the callbacks moves: the cost functions take the writer's cost as an input, and what they have to preserve is K3 and the order in which storage costs meet the running cost (B1), because of the arithmetic of grove versions 1 to 3. For GROVE-03 the rule is that the callbacks need, from an engine, the old value's bytes with the node that is fetched for a write, and nothing else (section 9).
 
 ## 7. Charges made above Merk
 
@@ -327,7 +369,7 @@ A search of the library code of every crate above the storage layer for statemen
 | `GroveDb::add_element_to_cached_merk` (`operations/insert/add_element_on_transaction/v0.rs`, `v1.rs`, `v2.rs`) | `hash_node_calls += 2` when a private-document store is created: its config hash and empty state root |
 | `non_merk_tree_child_hash` (`operations/proof/bind_terminal_non_merk_tree/v1.rs`) | `hash_node_calls += 2` for the same two hashes of an empty store |
 | the range walk of a path query (`element/query.rs`, `path_query_push`) and of a sum-budget walk (`element/aggregate_sum_query/mod.rs`) | `seek_count += 1` after each cursor step, on top of the step's own C1 |
-| `moved_record_cost` (`batch/move_element.rs`) | the writer's cost of a record copied from one subtree to another: the stored key and the record, each with its varint, as `replaced_bytes`, with no check asked for. The copy is a W2 put with no link sizes, so a node is charged by its `record_len`. The source is removed by the walk of C4. |
+| `moved_record_cost`, `copy_next_record` (`batch/move_element.rs`) | the writer's cost of a record copied from one subtree to another: the stored key and the record, each with its varint, as `replaced_bytes`. The value half is checked (K3). The copy is a W2 put with no link sizes, so a node is charged by its `record_len`. The walk charges, per record, C2 twice, C3 once and C1 once. The source record is deleted with an empty writer's cost: D1, one seek and nothing removed, not D2. |
 | the just-in-time reference update (`batch/just_in_time_reference_update/v0.rs`) | splits a reference's removed bytes by its flags |
 | `GroveDb::bulk_append`, `preprocess_bulk_append_ops` (`operations/bulk_append_tree.rs`), `mmr_tree_append`, `preprocess_mmr_tree_ops` (`operations/mmr_tree.rs`) | add the hash counts the trees report, and one hash for a state root |
 
@@ -405,7 +447,7 @@ Two things are not sizes of one node and are easy to miss:
 - **What moves.** Rules P1 to P3, R1, R2, W1 to W4, D1, D2, B1, M1, M2 and C1 to C4, and N1 as the definition of a node's length. Rule K is already engine-neutral code in `grovedb-costs`; it needs the record length as an input and nothing else from an engine.
 - **Signatures.** `lignin-testkit/src/cost_model/rules.rs` has one function per rule, taking lengths and returning an `OperationCost` (a pair for the writes of a batch: what is owed at once and what is owed on success). They can be taken as they are or used as the reference for the versioned functions. Their unit tests pin each number.
 - **What does not move.** Sections 6 and 7. In particular the stored key's 32 bytes are counted by Merk's own cost rules too (`KV::node_key_byte_cost_size`, the removal cost in `ops.rs`); that is a fee rule, whatever an engine stores.
-- **Ordering that is observable.** Only through a refused put (B1): the cost returned with the error holds the seeks and loaded bytes of the operations before it in batch order. The corpus refuses no put. One engine test does (GroveDB's `grove_v3_refuses_a_replacement_keeping_flags_of_another_length`), and it asserts the error, not the cost. The cost is compared with RocksDB for one batch in `cost_model/against_rocksdb.rs`: a meta put, a refused aux put and a data put that is never reached.
+- **Ordering that is observable.** In two ways. In a batch that is applied, through its removed bytes: the storage costs of its operations are added to one running cost in batch order, and on grove versions 1 to 3 that addition depends on the order when plain and sectioned removals meet (B1). `cost_model/against_rocksdb.rs` has the case, in both orders and across two keyspaces. So the versioned functions have to keep the order of B1, the key before the value within a put, and the batch's storage cost as one sum that joins the caller's cost after the writes are taken. And through a refused put: the cost returned with the error holds the seeks and loaded bytes of the operations before it in batch order. The corpus refuses no put. One engine test does (GroveDB's `grove_v3_refuses_a_replacement_keeping_flags_of_another_length`), and it asserts the error, not the cost. The cost is compared with RocksDB for one batch in `cost_model/against_rocksdb.rs`: a meta put, a refused aux put and a data put that is never reached.
 - **Where a cost is reported** stays as [flat-store.md](flat-store.md) and [node-store.md](node-store.md) have it: reads at the call, staged writes when the batch is applied, an immediate handle's batch when it is committed.
 - **A check for the moved functions.** `lignin-testkit/cost-model-storage/check.sh` replays the corpus on the model and fails on the first step that differs. After SEAM-05 the same replay on RocksDB and on the model says whether a rule changed in the move.
 
@@ -448,18 +490,25 @@ Costs differ between grove versions where section 8 says so: on grove version 1 
 
 ### 11.2 Operations the corpus cannot check
 
-- **`GroveDb::clear_subtree`** returns `Result<bool, Error>`: it computes a cost (`clear_subtree_with_costs`, `operations/delete/clear_subtree/`) and drops it, so a `ClearSubtree` step records zero. From the code, the dropped cost is: P1 and the fetches to open the Merk at the path; for an append-only tree the read of the parent element and a `clear` of the flat keyspace (C4), for a Merk the check for subtrees and `Merk::clear` (section 6.4); then the parent element rewritten and the change propagated to the root as for any write; then B1, where every removed record is charged by D2 from the committed state. Its effect on the state is checked: the root hash after it is recorded, and later steps read what it left.
-- **The typed append methods** (`mmr_tree_append`, `bulk_append`, `dense_tree_insert`, `private_document_store_insert`) return a cost, which the corpus records and the model reproduces. What `workload::apply` dropped is their returned value (the new root and position). That is a blind spot of results, not of costs.
+- **`GroveDb::clear_subtree`** returns `Result<bool, Error>`: it computes a cost (`clear_subtree_with_costs`, `operations/delete/clear_subtree/v0.rs` and `v1.rs`) and drops it, so a `ClearSubtree` step records zero. From the code, the dropped cost is:
+  - On every grove version, P1 and the fetches to open the Merk at the path.
+  - **For a Merk:** when the options ask for it, a cursor walk over its elements to look for subtrees, with a `delete` of each subtree it may delete; then `Merk::clear` (section 6.4), the new root propagated to the ancestors as for any write, and B1, where every removed node is charged by D2. From grove version 4 a check for backward references may come first.
+  - **For an append-only tree on grove versions 1 to 3** (`clear_subtree` version 0): a second handle on the path (P1), `clear` of its data keyspace (C4), and B1 with one D2 per record. Nothing else: the parent element is not read or written.
+  - **For an append-only tree on grove versions 4 and 5** (version 1): the parent element is read first, then the same `clear`; then the parent's Merk is opened, the element is written back in its empty state and the change propagated to the root; then B1.
+
+  Its effect on the state is checked: the root hash after it is recorded, and later steps read what it left.
+- **The typed append methods** (`mmr_tree_append`, `bulk_append`, `dense_tree_insert`, `private_document_store_insert`) return a cost, which the corpus has always recorded and the model reproduces. What `workload::apply` used to drop is their returned value (the new root and position). The corpus now records it (`result appended`), so this blind spot is closed.
 
 ### 11.3 What the corpus does not contain yet
 
-The third BASE-01 unit adds conditional inserts and deletes, raw existence checks, direct writes to indexed trees, typed reads of the append-only trees, chunk proofs, the remaining query entry points, rollbacks and savepoints. The rules above cover them: they are made of the same events, and the check runs on whatever corpus is there (section 12.1). Three of them use something this document specifies from the code and the present corpus never reaches:
+The corpus now has the third unit of BASE-01: conditional inserts and deletes, raw existence checks, direct writes to indexed trees, typed reads of the append-only trees, chunk proofs, the remaining query entry points, and transactions with rollbacks, savepoints and snapshot reads. The model reproduces all of it (section 12.3). Two rules of this document that those operations exercise:
 
-- `has_raw` is one R1 on the data keyspace, charged as it stands (the record length, not the element rule of section 6.5).
+- `has_raw` opens a handle by path and reads the key in the data keyspace: P1 and one R1, charged as it stands (the record length, not the element rule of section 6.5). A key that is not there still pays P1 and the seek.
 - Rollbacks and savepoints are free (section 5.6). They undo writes of the transaction and leave the committed state, which D2 reads, as it was.
-- Chunk restore and state sync write through immediate handles (M1, M2).
 
-Section 12.4 lists every rule with how often the corpus applies it.
+Still to come, in a fourth unit: batches applied with Drive's two closures, and the deletes that section removed bytes. Section 6.6 is their rule. They are made of the same storage events. What they add is flags that change the bytes written and removed bytes in sectioned form; the steps the corpus holds in full so far show plain removals only. The check is to be run again on those traces when they exist.
+
+What no workload reaches: writes through immediate handles (chunk restore and state sync: M1, M2, R2), reads of the meta keyspace, a root key put with a cost, a refused write, and D1 outside the data keyspace. Section 12.4 lists every rule with how often the corpus applies it.
 
 ## 12. The check
 
@@ -495,21 +544,23 @@ The rules of sections 6 and 7 are therefore executed by the code that owns them,
 
 ```text
 $ lignin-testkit/cost-model-storage/check.sh
-golden corpus: 260 traces replayed, 260 as recorded (191851 steps), 0 not
+golden corpus: 290 traces replayed, 290 as recorded (216069 steps), 0 not
 ```
 
-The replay is BASE-02's: it compares the cost, the result, the root hash and the proof of every step with the committed corpus, and names the first step and part that differ. A green replay on the model therefore also says that the model held the same state as RocksDB at every step.
+The replay is BASE-02's: it compares the cost, the result, the root hash and the proof of every step with the committed corpus, and names the first step and part that differ. A green replay on the model therefore also says that the model gave the same answers as RocksDB wherever the corpus looks: every result read, every root hash and every proof. It does not say that the two states are equal record by record; an aux or meta record that nothing reads would not be noticed.
+
+At the reference scale a trace has a digest every 1,000 steps and not a line per step, so a difference is named by its interval of 1,000 steps. The step is found by dumping that interval on both sides and comparing: `check.sh dump --reference --grove-version N --steps FROM..TO --out DIR` on the model, and `lignin-golden dump` with the same arguments on RocksDB.
 
 Everything that was run on the model, at the pinned commit:
 
 | What | Command | Result |
 | --- | --- | --- |
-| The corpus at the standard scale: 52 workloads on grove versions 1 to 5 | `check.sh` | 260 traces as recorded, 191,851 steps |
+| The corpus at the standard scale: 58 workloads on grove versions 1 to 5 | `check.sh` | 290 traces as recorded, 216,069 steps |
 | The corpus at the reference scale: 1,050,008 operations on each grove version | `check.sh replay --reference` | 5 traces as recorded, 5,250,055 steps |
 | The storage crate's tests | `check.sh test -p grovedb-storage --features rocksdb_storage -- --skip cost_model::` | 51 pass. The crate's other 14 are unit tests inside `rocksdb_storage/storage.rs`, the file the model replaces. |
 | Merk's tests | `check.sh test -p grovedb-merk` | 872 and 9 doc tests pass |
 | GroveDB's tests, with its default features | `check.sh test -p grovedb --no-fail-fast` | 3,782 of the library's tests pass, 8 are ignored as they are on RocksDB, and 1 fails: `test_checkpoint_wal_under_threshold_is_preserved` looks for RocksDB's WAL files in a checkpoint directory, and the model writes none. The 80 tests of the eight integration binaries and the 3 doc tests pass. |
-| Each rule against RocksDB, in the workspace's own tests | `cargo test -p lignin-testkit --lib cost_model` | 36 pass |
+| Each rule against RocksDB, in the workspace's own tests | `cargo test -p lignin-testkit --lib cost_model` | 37 pass |
 
 The three test suites are the engine's own, unchanged. They assert costs in many places, so a rule the corpus does not reach is still compared with numbers that were written against RocksDB. The `--skip` leaves out the model's own unit tests, which the stand-in crate also compiles.
 
@@ -517,44 +568,44 @@ The last row runs inside the real workspace: `cost_model/against_rocksdb.rs` per
 
 **Sensitivity.** A check that cannot fail shows nothing, so each rule was changed in the model, one change at a time, and the corpus replayed:
 
-| Rule | Change made to the model | Traces that then differ, of 260 | First difference the replay names |
+| Rule | Change made to the model | Traces that then differ, of 290 | First difference the replay names |
 | --- | --- | ---: | --- |
 | P1 | block length 64 -> 63 | 25 | `v1/element-zoo.trace` step 459: cost |
-| P1 | segment count word 8 -> 4 bytes | 20 | `v1/element-zoo.trace` step 280: cost |
-| P1 | no length byte per segment | 25 | `v1/element-zoo.trace` step 280: cost |
-| P2 | a hash for a handle opened by prefix | 148 | `v1/element-zoo.trace` step 53: cost |
-| P3 | secondary prefix 1 -> 2 hashes | 138 | `v1/element-zoo.trace` step 53: cost |
-| R1 | loaded bytes of a found record + 1 | 260 | `v1/documents.trace` step 1: cost |
-| R1 | no seek for an absent key | 260 | `v1/documents.trace` step 0: cost |
-| W1 | stored key without its varint | 255 | `v1/documents.trace` step 0: cost and error and root hash |
-| W2 | no seek for a data put | 255 | `v1/documents.trace` step 0: cost |
-| W3 | no seek for a free root key put | 255 | `v1/documents.trace` step 0: cost |
-| W4 | a seek for a prepaid put | 10 | `v4/element-zoo.trace` step 40: cost |
-| K1 | key with no writer's cost without its varint | 46 | `v1/element-zoo.trace` step 35: cost |
-| K2 | link hook 4 -> 5 | 234 | `v1/documents.trace` step 2: cost and error and root hash |
-| K2 | flat value without its varint | 50 | `v1/element-zoo.trace` step 35: cost |
-| K2 | one-varint feature class 8 -> 9 | 145 | `v1/tokens.trace` step 13: cost and error and root hash |
-| K2 | link option bytes 2 -> 1 | 234 | `v1/documents.trace` step 2: cost and error and root hash |
-| D1 | 2 seeks for a delete with a cost | 165 | `v1/documents.trace` step 908: cost |
-| D1 | the writer's removed bytes not charged | 159 | `v1/documents.trace` step 908: cost |
-| D2 | 1 seek for a delete with no cost | 111 | `v1/element-zoo.trace` step 1236: cost |
-| D2 | removed bytes without the value's varint | 111 | `v1/element-zoo.trace` step 1236: cost |
-| D2 | no loaded bytes | 111 | `v1/element-zoo.trace` step 1236: cost |
+| P1 | no length byte per segment | 30 | `v1/element-zoo.trace` step 280: cost |
+| P1 | segment count word 8 -> 4 bytes | 25 | `v1/element-zoo.trace` step 280: cost |
+| P2 | a hash for a handle opened by prefix | 153 | `v1/element-zoo.trace` step 53: cost |
+| P3 | secondary prefix 1 -> 2 hashes | 143 | `v1/element-zoo.trace` step 53: cost |
+| R1 | loaded bytes of a found record + 1 | 290 | `v1/documents.trace` step 1: cost |
+| R1 | no seek for an absent key | 290 | `v1/documents.trace` step 0: cost |
+| W1 | stored key without its varint | 285 | `v1/documents.trace` step 0: cost and error and root hash |
+| W2 | no seek for a data put | 285 | `v1/documents.trace` step 0: cost |
+| W3 | no seek for a free root key put | 285 | `v1/documents.trace` step 0: cost |
+| W4 | a seek for a prepaid put | 14 | `v4/element-zoo.trace` step 40: cost |
+| K1 | key with no writer's cost without its varint | 56 | `v1/element-zoo.trace` step 35: cost |
+| K2 | link option bytes 2 -> 1 | 259 | `v1/documents.trace` step 2: cost and error and root hash |
+| K2 | flat value without its varint | 60 | `v1/element-zoo.trace` step 35: cost |
+| K2 | link hook 4 -> 5 | 259 | `v1/documents.trace` step 2: cost and error and root hash |
+| K2 | one-varint feature class 8 -> 9 | 155 | `v1/tokens.trace` step 13: cost and error and root hash |
+| D1 | 2 seeks for a delete with a cost | 180 | `v1/documents.trace` step 908: cost |
+| D1 | the writer's removed bytes not charged | 174 | `v1/documents.trace` step 908: cost |
 | D2 | charged from the transaction's view | 0 | none (see below) |
-| D2 | the committed record taken as absent | 111 | `v1/element-zoo.trace` step 1236: cost |
-| C1 | no seek for a step back | 36 | `v1/tokens.trace` step 36: cost |
-| C1 | no seek for a step forward | 229 | `v1/documents.trace` step 31: cost |
-| C2 | boundary 288 -> 287 | 214 | `v1/documents.trace` step 31: cost |
-| C2 | key without the prefix | 229 | `v1/documents.trace` step 31: cost |
-| C3 | value length + 1 | 229 | `v1/documents.trace` step 31: cost |
-| C3 | value without the key's bytes | 229 | `v1/documents.trace` step 31: cost |
-| N1 | link + 1 byte | 240 | `v1/documents.trace` step 3: cost and error and root hash |
-| N1 | feature payload left out | 215 | `v1/balances.trace` step 4: cost |
-| N1 | child aggregate payload left out | 200 | `v1/balances.trace` step 5: cost |
+| D2 | 1 seek for a delete with no cost | 116 | `v1/element-zoo.trace` step 1236: cost |
+| D2 | removed bytes without the value's varint | 116 | `v1/element-zoo.trace` step 1236: cost |
+| D2 | no loaded bytes | 116 | `v1/element-zoo.trace` step 1236: cost |
+| D2 | the committed record taken as absent | 116 | `v1/element-zoo.trace` step 1236: cost |
+| C1 | no seek for a step back | 38 | `v1/tokens.trace` step 36: cost |
+| C1 | no seek for a step forward | 249 | `v1/documents.trace` step 31: cost |
+| C2 | boundary 288 -> 287 | 234 | `v1/documents.trace` step 31: cost |
+| C2 | key without the prefix | 249 | `v1/documents.trace` step 31: cost |
+| C3 | value length + 1 | 249 | `v1/documents.trace` step 31: cost |
+| C3 | value without the key's bytes | 249 | `v1/documents.trace` step 31: cost |
+| N1 | feature payload left out | 235 | `v1/balances.trace` step 4: cost |
+| N1 | link + 1 byte | 270 | `v1/documents.trace` step 3: cost and error and root hash |
+| N1 | child aggregate payload left out | 220 | `v1/balances.trace` step 5: cost |
 
 Every change is found but one, and for each the replay names the trace, the step and what differs. Where a changed cost makes the engine refuse a write, the result and the root hash differ too.
 
-The one that is not found is the word *committed* in D2. The corpus does apply D2 to records that the same open transaction wrote, 2,000 times: `delete-heavy`, and `suite` which contains it, insert 50 items into each of four trees and clear the tree before they commit. Every one of those is inside a `ClearSubtree` step, whose cost GroveDB does not return (section 11.2). An operation that returns its cost shows the difference (the last two rows of section 11.1), and the corpus has none that deletes, with no writer's cost, a record its own transaction wrote. So the corpus does not tell the committed state from the transaction's view in D2.
+The one that is not found is the word *committed* in D2. The corpus does apply D2 to records that the same open transaction wrote: 2,000 times to a record it created and 160 times to a node it rewrote. All of them are in `delete-heavy` and in `suite`, which contains it: they insert 50 items into each of four trees and clear the tree before they commit. Every one is therefore inside a `ClearSubtree` step, whose cost GroveDB does not return (section 11.2). The workloads added since, with their rollbacks, savepoints and writes inside an open block, add no such delete. An operation that returns its cost shows the difference (the last two rows of section 11.1), and the corpus has none that deletes, with no writer's cost, a record its own transaction wrote. So the corpus does not tell the committed state from the transaction's view in D2.
 
 Merk's and GroveDB's test suites do not tell them apart either: with this change both pass on the model exactly as before. What pins the rule is the storage crate's `flat_store::a_deferred_handle_stages_writes_and_costs_what_the_context_costs` and `flat_store::clear_costs_the_walk_and_one_uncosted_delete_per_record`, which fail on the model with the change, and the comparison with RocksDB in `against_rocksdb.rs`. Section 13 proposes a workload that would put it in the corpus.
 
@@ -564,61 +615,61 @@ The model counts every application of a rule, by case. `check.sh` prints the cou
 
 | Rule | Case | Corpus | Storage tests | Merk tests | GroveDB tests |
 | --- | --- | ---: | ---: | ---: | ---: |
-| P1 | a subtree handle opened by the empty path | 549,848 | 0 | 3,541 | 227,613 |
-| P1 | a subtree handle opened by a path of one segment or more | 1,618,759 | 132 | 3 | 801,434 |
-| P2 | a subtree handle opened by a prefix | 30,326 | 13 | 0 | 33,547 |
-| P3 | the prefix of an indexed tree's secondary derived | 28,468 | 0 | 0 | 18,363 |
-| R1 | a data record read through a deferred handle | 4,381,716 | 24 | 217,766 | 1,607,026 |
-| R1 | a data key with no record read through a deferred handle | 28,803 | 13 | 1 | 9,620 |
+| P1 | a subtree handle opened by the empty path | 592,219 | 0 | 3,541 | 227,613 |
+| P1 | a subtree handle opened by a path of one segment or more | 1,715,620 | 132 | 3 | 801,434 |
+| P2 | a subtree handle opened by a prefix | 33,729 | 13 | 0 | 33,547 |
+| P3 | the prefix of an indexed tree's secondary derived | 31,092 | 0 | 0 | 18,362 |
+| R1 | a data record read through a deferred handle | 4,633,672 | 24 | 217,766 | 1,607,100 |
+| R1 | a data key with no record read through a deferred handle | 32,966 | 13 | 1 | 9,623 |
 | R1 | an aux record read through a deferred handle | 290 | 12 | 1 | 19 |
 | R1 | an aux key with no record read through a deferred handle | 40 | 10 | 0 | 178 |
-| R1 | a root key record read through a deferred handle | 358,985 | 11 | 3,008 | 117,932 |
-| R1 | an absent root key record read through a deferred handle | 3,335 | 4 | 421 | 12,728 |
+| R1 | a root key record read through a deferred handle | 385,742 | 11 | 3,008 | 117,923 |
+| R1 | an absent root key record read through a deferred handle | 3,445 | 4 | 421 | 12,733 |
 | R1 | a meta record read through a deferred handle | 0 | 10 | 0 | 8 |
 | R1 | a meta key with no record read through a deferred handle | 0 | 4 | 2 | 22 |
 | R2 | a read through an immediate handle | 0 | 461 | 29,226 | 16,366 |
-| W1 | the stored key added to the key cost of a new data record | 223,731 | 1 | 108,684 | 250,138 |
-| W2 | a data put with the sizes of a node's links and feature | 2,732,155 | 0 | 162,830 | 915,054 |
-| W2 | a data put with no link sizes | 12,101 | 78 | 23,135 | 39,798 |
+| W1 | the stored key added to the key cost of a new data record | 233,115 | 1 | 108,684 | 250,138 |
+| W2 | a data put with the sizes of a node's links and feature | 2,844,678 | 0 | 162,830 | 915,178 |
+| W2 | a data put with no link sizes | 14,873 | 78 | 23,135 | 39,798 |
 | W2 | an aux put | 1,155 | 34 | 2 | 21 |
 | W2 | a meta put | 522 | 33 | 2 | 35 |
 | W3 | a root key put with a cost | 0 | 2 | 0 | 0 |
-| W3 | a root key put with no cost | 125,163 | 23 | 3,100 | 28,687 |
-| W4 | a prepaid put | 961 | 14 | 0 | 745 |
-| K2 | a value cost worked out from the record length | 859,230 | 132 | 181,551 | 505,320 |
-| K2 | a value cost taken from the writer as given | 1,886,703 | 15 | 4,418 | 449,588 |
-| K3 | a writer's value cost checked against the record length | 851,358 | 2 | 158,412 | 488,378 |
-| K3 | a writer's key cost checked against the stored key | 223,731 | 1 | 108,382 | 250,061 |
+| W3 | a root key put with no cost | 132,841 | 23 | 3,100 | 28,687 |
+| W4 | a prepaid put | 1,213 | 14 | 0 | 745 |
+| K2 | a value cost worked out from the record length | 896,828 | 132 | 181,551 | 505,444 |
+| K2 | a value cost taken from the writer as given | 1,964,400 | 15 | 4,418 | 449,588 |
+| K3 | a writer's value cost checked against the record length | 887,252 | 2 | 158,412 | 488,502 |
+| K3 | a writer's key cost checked against the stored key | 233,115 | 1 | 108,382 | 250,061 |
 | K3 | a write refused because the writer's cost does not match | 0 | 0 | 0 | 3 |
-| D1 | a data delete with the writer's cost | 67,304 | 0 | 1,852 | 10,543 |
+| D1 | a data delete with the writer's cost | 69,504 | 0 | 1,852 | 10,543 |
 | D1 | an aux delete with the writer's cost | 0 | 0 | 0 | 0 |
 | D1 | a root key delete with the writer's cost | 0 | 0 | 1 | 65 |
 | D1 | a meta delete with the writer's cost | 0 | 0 | 0 | 0 |
-| D2 | a delete with no cost of a record in the committed state | 24,015 | 24 | 0 | 1,011 |
+| D2 | a delete with no cost of a record in the committed state | 24,045 | 24 | 0 | 1,011 |
 | D2 | a delete with no cost of a key the committed state lacks | 2,000 | 11 | 0 | 23 |
 | M1 | a write through an immediate handle | 0 | 481 | 5,192 | 2,407 |
 | M2 | a put in the batch of an immediate handle | 0 | 7 | 24,501 | 12,024 |
 | M2 | a delete in the batch of an immediate handle | 0 | 1 | 3 | 0 |
-| C1 | a cursor moved to the first record | 64,269 | 86 | 1,630 | 26,188 |
-| C1 | a cursor moved to the last record | 657 | 10 | 12 | 434 |
-| C1 | a cursor moved to the first key at or after a key | 1,561 | 3 | 307 | 5,050 |
+| C1 | a cursor moved to the first record | 67,088 | 86 | 1,630 | 26,191 |
+| C1 | a cursor moved to the last record | 675 | 10 | 12 | 434 |
+| C1 | a cursor moved to the first key at or after a key | 2,479 | 3 | 307 | 5,050 |
 | C1 | a cursor moved to the last key at or before a key | 91 | 2 | 0 | 233 |
-| C1 | a cursor stepped forward | 160,718 | 106 | 43,047 | 49,207 |
-| C1 | a cursor stepped back | 7,668 | 28 | 3,348 | 4,839 |
-| C2 | a cursor asked for its key or validity on a record | 588,820 | 388 | 148,950 | 214,693 |
-| C2 | a cursor asked for its key or validity off its subtree | 57,353 | 92 | 208 | 18,790 |
-| C3 | a cursor asked for the value of a record | 141,381 | 110 | 46,699 | 56,654 |
-| B1 | a batch applied to a transaction | 171,776 | 43 | 3,413 | 88,148 |
+| C1 | a cursor stepped forward | 170,796 | 106 | 43,047 | 49,207 |
+| C1 | a cursor stepped back | 7,714 | 28 | 3,348 | 4,839 |
+| C2 | a cursor asked for its key or validity on a record | 630,654 | 388 | 148,950 | 214,692 |
+| C2 | a cursor asked for its key or validity off its subtree | 58,487 | 92 | 208 | 18,794 |
+| C3 | a cursor asked for the value of a record | 151,493 | 110 | 46,699 | 56,654 |
+| B1 | a batch applied to a transaction | 182,398 | 43 | 3,413 | 88,148 |
 | B1 | a batch whose writes were refused | 0 | 1 | 0 | 2 |
-| N1 | a data record kept as the fields of a node | 2,735,990 | 0 | 191,097 | 941,938 |
-| N1 | a data record that is not a node, kept as bytes | 8,266 | 207 | 2 | 14,839 |
-| N2 | the link and feature sizes Merk gave with a node are the node's | 2,732,155 | 0 | 162,830 | 915,054 |
+| N1 | a data record kept as the fields of a node | 2,848,940 | 0 | 191,097 | 942,062 |
+| N1 | a data record that is not a node, kept as bytes | 10,611 | 207 | 2 | 14,839 |
+| N2 | the link and feature sizes Merk gave with a node are the node's | 2,844,678 | 0 | 162,830 | 915,178 |
 | N2 | the link and feature sizes Merk gave with a node are not the node's | 0 | 0 | 0 | 0 |
 
 ### 12.5 What the check does not show
 
 - **Rules the corpus does not reach** (zero in the first column above) are specified from the code: reads of the meta keyspace, R2, a root key put with a cost (W3), a refused write (K3, B1), D1 outside the data keyspace, M1 and M2. The engine's suites reach all of them but D1 in the aux and meta keyspaces. `cost_model/against_rocksdb.rs` compares every one of them with RocksDB.
-- **N2** has to stay at zero in its second row, and does: on 3,810,039 node writes of the four runs, and on 235,356,610 of the reference scale, the sizes Merk passed were the node's own.
+- **N2** has to stay at zero in its second row, and does: on 3,922,686 node writes of the four runs, and on 235,356,610 of the reference scale, the sizes Merk passed were the node's own.
 - **D2 on a record the same transaction wrote** is applied by the corpus only inside operations whose cost is dropped (section 12.3, Sensitivity).
 - **Commit conflicts** are not modelled: the model commits every transaction. No workload has two open write transactions.
 - **Persistence** is in memory: a database lives as long as the process and is found again through a mark left in its directory, and a checkpoint is a database of its own that starts as the committed state of the moment it was taken.
@@ -630,4 +681,4 @@ The model counts every application of a rule, by case. `check.sh` prints the cou
 2. **Reading the committed version inside a write transaction** (section 9, D2). TXN-03 and MERK-05 have to offer it for `clear` and `Merk::clear`.
 3. **`GroveDb::clear_subtree` returns no cost.** Whether it should is outside this task; while it does not, nothing can compare its cost across engines.
 4. **The committed view of D2 is not in the corpus** (section 12.3), nor in Merk's or GroveDB's tests. A workload that fills a tree and deletes it whole in the same transaction, on every grove version, would record it: `GroveDb::delete` returns its cost, and section 11.1 shows that the cost differs. It fits the unit of BASE-01 that is still to be merged, or a follow-up to it, since BASE-02 records again then.
-5. **A refused put** keeps the seeks charged before it in batch order (B1). No test of the engine asserts the cost that comes back with a refusal; the one comparison with RocksDB is a batch in `cost_model/against_rocksdb.rs`. SEAM-05 should pin it in the storage crate's own tests, since the order is otherwise unobservable.
+5. **The order of a batch** (B1) shows in the removed bytes of a batch that is applied, on grove versions 1 to 3, and in the cost that comes back with a refused put. No test of the engine asserts either; the comparisons with RocksDB are in `cost_model/against_rocksdb.rs`. SEAM-05 should pin both in the storage crate's own tests.
