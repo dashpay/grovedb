@@ -39,6 +39,10 @@ fn features() -> Vec<(TreeFeatureType, Aggregate)> {
             TreeFeatureType::BigSummedMerkNode(sum),
             Aggregate::BigSum(sum),
         ));
+        all.push((
+            TreeFeatureType::ProvableBigSummedMerkNode(sum),
+            Aggregate::ProvableBigSum(sum),
+        ));
     }
     for count in COUNTS {
         all.push((
@@ -68,6 +72,10 @@ fn features() -> Vec<(TreeFeatureType, Aggregate)> {
                 TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(count, sum),
                 Aggregate::ProvableCountAndProvableBigSum(count, sum),
             ));
+            all.push((
+                TreeFeatureType::CountedBigSummedMerkNode(count, sum),
+                Aggregate::CountAndBigSum(count, sum),
+            ));
         }
     }
     all
@@ -91,6 +99,8 @@ fn merk_aggregate(aggregate: &Aggregate) -> AggregateData {
         Aggregate::ProvableCountAndProvableBigSum(count, sum) => {
             AggregateData::ProvableCountAndProvableBigSum(count, sum)
         }
+        Aggregate::CountAndBigSum(count, sum) => AggregateData::CountAndBigSum(count, sum),
+        Aggregate::ProvableBigSum(sum) => AggregateData::ProvableBigSum(sum),
     }
 }
 

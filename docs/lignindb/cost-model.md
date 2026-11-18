@@ -81,6 +81,8 @@ The node's own key is not in the record. The aggregate of a link and the feature
 | 7 | `ProvableSum`, `ProvableSummedMerkNode` | signed varint | one varint, 8 |
 | 8 | `ProvableCountAndProvableSum`, `ProvableCountedAndProvableSummedMerkNode` | varint, signed varint | two varints, 16 |
 | 9 | `ProvableCountAndProvableBigSum`, `ProvableCountedAndProvableBigSummedMerkNode` | varint, 16 bytes | varint and wide, 24 |
+| 10 | `CountAndBigSum`, `CountedBigSummedMerkNode` | varint, 16 bytes | varint and wide, 24 |
+| 11 | `ProvableBigSum`, `ProvableBigSummedMerkNode` | 16 bytes | wide, 16 |
 
 `payload_len` is the length of the payload: it depends on the values of the counts and sums, through their varints. The **cost class** is the fixed number of bytes the feature is charged as in a storage cost, whatever its varints take (`TreeCostType`, rule K2).
 
