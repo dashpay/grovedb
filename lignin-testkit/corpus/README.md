@@ -61,6 +61,26 @@ but a new recording. Record again only when the operation streams change or
 when a change to an existing grove version's results has been decided; a
 replay that differs for any other reason is a bug in the change under test.
 
+**Recording from the pinned engine.** A recording comes from the engine
+crates of the checkout it runs in, and `feat/LigninDB` changes those crates.
+To add to the corpus without moving the pin, record in a worktree of a
+commit whose engine crates are the pinned ones, with this crate taken from
+the branch that has the new workloads, and write into that branch's corpus:
+
+```text
+git worktree add <scratch>/pinned 3551b707
+git -C <scratch>/pinned checkout <branch> -- lignin-testkit
+cd <scratch>/pinned
+cargo run --release -p lignin-testkit --bin lignin-golden -- record \
+    --corpus <checkout of the branch>/lignin-testkit/corpus
+```
+
+`3551b707` is the commit of `feat/LigninDB` this corpus was recorded on. Its
+engine crates are those of `22f163c2`, so the traces come out naming
+`22f163c2`. Then replay on
+the branch itself: what was recorded from the pinned engine has to come out
+the same there.
+
 ## What is recorded
 
 For each grove version (`v1` to `v5`):
@@ -227,12 +247,13 @@ recorded and replayed only on request (`--reference`, or the ignored test
 
 - Recording or replaying one grove version takes 7 to 8 minutes on the
   machine above, in a release build with the database on a memory-backed
-  directory (`--scratch /dev/shm/…`), and a gigabyte of scratch. All five
-  take that long side by side (`--jobs 5`), or five times as long one after
-  another, which is the default.
+  directory (`--scratch /dev/shm/…`), and a gigabyte of scratch. One after
+  another, which is the default, all five take 40 minutes. Three at a time
+  (`--jobs 3`) they took 13 minutes.
 - When the machine is short of memory the same run takes several times as
   long, on a disk or in memory: RocksDB reads through memory-mapped files,
-  and those pages are the first to be evicted.
+  and those pages are the first to be evicted. Five at a time on that
+  machine took 37 minutes for that reason.
 
 The file has a checkpoint every 1,000 steps and then, in full, the root
 hash and the two named proofs:

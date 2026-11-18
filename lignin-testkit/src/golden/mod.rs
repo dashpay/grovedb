@@ -55,13 +55,18 @@
 //! # Extending it
 //!
 //! A new workload in the suite needs no change here: record again. A new
-//! kind of operation is applied by `workload::apply` and recorded as it is.
-//! Two places name what `apply` can return and what can be proved, and the
-//! compiler points at the first when it grows:
-//! [`Runner`](run::Runner)'s `value`, which turns an
-//! [`Outcome`](crate::workload::Outcome) into the bytes that are compared,
-//! and its `step`, which proves a [`Read::Query`](crate::workload::Read).
-//! A new kind of read that GroveDB can prove has to be proved there.
+//! kind of write is applied by `workload::apply` and recorded as it is. Two
+//! places name every case of a workload type, without a fallback, so the
+//! compiler stops at them when the type grows:
+//!
+//! - [`Runner`](run::Runner)'s `value` turns what `apply` returned, an
+//!   [`Outcome`](crate::workload::Outcome), into the bytes that are
+//!   compared. A new outcome needs its encoding.
+//! - [`run::provable`] says which [`Read`](crate::workload::Read) is proved
+//!   and with what. A new kind of read that GroveDB can prove has to be
+//!   proved, or its proof bytes are compared by nothing.
+//!
+//! Another engine is opened in one place, `record`'s `fresh_database`.
 
 pub mod cli;
 pub mod corpus;

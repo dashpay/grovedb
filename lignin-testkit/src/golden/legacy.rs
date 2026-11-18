@@ -15,7 +15,8 @@
 //!    parent that commits a link hash no proof verifies against, until the
 //!    next write to the parent recomputes it ([`cases`], the `delete-…`
 //!    ones). Where the parent's nodes are then hashed as another provable
-//!    type, the engine panics ([`excluded`]).
+//!    type, the engine panics ([`excluded`]). Where the child's type hashes
+//!    what the parent's does, every pair of types is a case.
 //! 2. **A query hosted by a `ProvableCountProvableSumTree` or an indexed
 //!    tree**, which grove versions 1 and 2 refuse to prove (the
 //!    `query-in-…` cases).
@@ -438,21 +439,29 @@ pub fn cases() -> Vec<Case> {
             "As for a Merk child: grove versions 1 to 3 reopen the parent as an MmrTree, which \
              hashes like a plain tree.",
         ),
-        delete_case(
-            provable_count_tree(),
-            provable_count_tree(),
-            true,
-            "The child is of the parent's type, so the reopened parent hashes as it should. \
-             Grove versions 1 to 3 still charge for reopening it.",
-        ),
-        delete_case(
-            provable_count_tree(),
-            provable_count_indexed_tree(),
-            true,
-            "An indexed child whose type hashes what its parent's does: a count. Grove \
-             versions 1 to 3 reopen the parent as the indexed type and hash it as it should \
-             be.",
-        ),
+    ];
+    let same_hashes = "The child's type hashes what the parent's does, so the parent reopened as \
+                       the child's type hashes as it should. Grove versions 1 to 3 still charge \
+                       for reopening it.";
+    cases.extend(
+        [
+            (provable_count_tree(), provable_count_tree()),
+            (provable_count_tree(), provable_count_indexed_tree()),
+            (provable_count_sum_tree(), provable_count_sum_tree()),
+            (provable_sum_tree(), provable_sum_tree()),
+            (provable_sum_tree(), provable_sum_indexed_tree()),
+            (
+                provable_count_provable_sum_tree(),
+                provable_count_provable_sum_tree(),
+            ),
+            (
+                provable_count_provable_sum_tree(),
+                provable_count_provable_sum_indexed_tree(),
+            ),
+        ]
+        .map(|(parent, child)| delete_case(parent, child, true, same_hashes)),
+    );
+    cases.extend([
         delete_case(
             tree(),
             provable_count_tree(),
@@ -473,7 +482,7 @@ pub fn cases() -> Vec<Case> {
             "The parent is left empty, so its link hash is the same whatever type it is \
              reopened as.",
         ),
-    ];
+    ]);
     cases.extend(
         [
             provable_count_provable_sum_tree(),
@@ -605,7 +614,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(cases().len(), 15);
+        assert_eq!(cases().len(), 20);
         assert_eq!(excluded().len(), 4 * 8 + 3 * 8);
     }
 
@@ -622,11 +631,24 @@ mod tests {
             (provable_sum_tree(), count_tree()),
             (provable_count_provable_sum_tree(), tree()),
             (provable_count_tree(), mmr_tree()),
-            (provable_count_tree(), provable_count_tree()),
-            (provable_count_tree(), provable_count_indexed_tree()),
             (tree(), provable_count_tree()),
             (tree(), provable_sum_indexed_tree()),
         ];
+        let mut matching = 0;
+        for child in children() {
+            for parent in parents() {
+                if child.hashes != Hashes::Plain && child.hashes == parent.hashes {
+                    let name = delete_case(parent.clone(), child.clone(), true, "about").name;
+                    assert!(
+                        cases().iter().any(|case| case.name == name),
+                        "{name} does not panic and is not a case"
+                    );
+                    deletes.push((parent, child.clone()));
+                    matching += 1;
+                }
+            }
+        }
+        assert_eq!(matching, 7);
         for child in children() {
             for parent in parents() {
                 if legacy_delete_panics(&parent, &child) {
@@ -807,6 +829,10 @@ mod tests {
                 assert_eq!(refused, [0, 0, 2, 0, 0], "{name}");
                 assert_eq!(unproved, [3, 3, 0, 0, 0], "{name}");
                 assert_ne!(roots_after_delete[2], roots_after_delete[3], "{name}");
+            } else if name.ends_with("-under-provable-count-provable-sum-tree") {
+                assert_eq!(refused, [0; 5], "{name}");
+                assert_eq!(unproved, [3, 3, 0, 0, 0], "{name}");
+                assert_eq!(roots_after_delete[2], roots_after_delete[3], "{name}");
             } else if name.starts_with("delete-") {
                 assert_eq!(refused, [0; 5], "{name}");
                 assert_eq!(unproved, [0; 5], "{name}");

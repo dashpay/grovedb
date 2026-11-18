@@ -562,6 +562,46 @@ pub fn engine_commit(repository: &Path) -> Result<String, Error> {
     Ok(commit)
 }
 
+/// A git repository to take an engine commit from, for tests that must not
+/// depend on the state of the checkout they run in.
+#[cfg(test)]
+pub(crate) mod test_repository {
+    use std::{fs, path::Path, process::Command};
+
+    pub(crate) fn git(repository: &Path, arguments: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repository)
+            .args([
+                "-c",
+                "user.name=golden",
+                "-c",
+                "user.email=golden@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(arguments)
+            .output()
+            .expect("git runs");
+        assert!(output.status.success(), "git {arguments:?}: {output:?}");
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    /// A repository whose one commit touches an engine crate, and that
+    /// commit.
+    pub(crate) fn with_an_engine_commit() -> (tempfile::TempDir, String) {
+        let repository = tempfile::tempdir().expect("temp dir");
+        let at = repository.path();
+        git(at, &["init", "--quiet"]);
+        fs::create_dir(at.join("merk")).expect("create");
+        fs::write(at.join("merk/lib.rs"), "one").expect("write");
+        git(at, &["add", "."]);
+        git(at, &["commit", "--quiet", "-m", "merk"]);
+        let commit = git(at, &["rev-parse", "HEAD"]);
+        (repository, commit)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use grovedb_version::version::GROVE_VERSIONS;
@@ -893,26 +933,10 @@ mod tests {
         );
     }
 
-    fn git(repository: &Path, arguments: &[&str]) {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(repository)
-            .args([
-                "-c",
-                "user.name=golden",
-                "-c",
-                "user.email=golden@example.invalid",
-                "-c",
-                "commit.gpgsign=false",
-            ])
-            .args(arguments)
-            .output()
-            .expect("git runs");
-        assert!(status.status.success(), "git {arguments:?}: {status:?}");
-    }
-
     #[test]
     fn the_engine_commit_is_the_newest_one_touching_an_engine_crate() {
+        use test_repository::git;
+
         let repository = tempfile::tempdir().expect("temp dir");
         let at = repository.path();
         let not_a_repository = engine_commit(at).expect_err("no repository");
@@ -944,16 +968,19 @@ mod tests {
         git(at, &["add", "."]);
         git(at, &["commit", "--quiet", "-m", "merk"]);
         let engine = engine_commit(at).expect("engine commit");
-        assert_eq!(engine.len(), 40);
+        assert_eq!(engine, git(at, &["rev-parse", "HEAD"]));
 
         fs::write(at.join("lignin-testkit/lib.rs"), "two").expect("write");
         git(at, &["add", "."]);
         git(at, &["commit", "--quiet", "-m", "testkit again"]);
         assert_eq!(
             engine_commit(at),
-            Ok(engine),
+            Ok(engine.clone()),
             "a LigninDB commit is not an engine commit"
         );
+
+        let (fixture, commit) = test_repository::with_an_engine_commit();
+        assert_eq!(engine_commit(fixture.path()), Ok(commit));
     }
 
     /// The list a recording's commit is taken from has every workspace

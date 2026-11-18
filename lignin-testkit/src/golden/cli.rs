@@ -1,6 +1,10 @@
 //! The `lignin-golden` command: record, replay, dump and list the corpus.
 
-use std::{io::Write, ops::Range, path::PathBuf};
+use std::{
+    io::Write,
+    ops::Range,
+    path::{Path, PathBuf},
+};
 
 use super::{
     corpus::{self, corpus_dir, engine_commit, repository_dir, Selection, Settings, Written},
@@ -32,9 +36,10 @@ options:
   --out DIR           dump: the directory to write into
   --steps FROM..TO    dump: only these steps in full, the rest as the corpus
                       has them (the way to look into the reference scale)
-  --engine COMMIT     record, dump: the engine commit to write into the
-                      traces (default: the newest commit that touched an
-                      engine crate; record refuses uncommitted changes there)
+
+A recording names the engine commit it came from: the newest commit that
+touched an engine crate of this checkout. record refuses to run while an
+engine crate has uncommitted changes. A dump of such a checkout says so.
 ";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,7 +58,6 @@ struct Invocation {
     settings: Settings,
     out: Option<PathBuf>,
     steps: Option<Range<u64>>,
-    engine: Option<String>,
 }
 
 fn parse(arguments: &[String]) -> Result<Invocation, String> {
@@ -73,7 +77,6 @@ fn parse(arguments: &[String]) -> Result<Invocation, String> {
         settings: Settings::default(),
         out: None,
         steps: None,
-        engine: None,
     };
     let mut jobs = None;
     while let Some(option) = arguments.next() {
@@ -104,7 +107,6 @@ fn parse(arguments: &[String]) -> Result<Invocation, String> {
                 invocation.steps =
                     Some(range.ok_or_else(|| format!("`{value}` is not a range FROM..TO"))?);
             }
-            "--engine" => invocation.engine = Some(value()?),
             other => return Err(format!("`{other}` is not an option")),
         }
     }
@@ -119,9 +121,6 @@ fn parse(arguments: &[String]) -> Result<Invocation, String> {
     if command != Command::Dump && (invocation.out.is_some() || invocation.steps.is_some()) {
         return Err("`--out` and `--steps` are options of dump".to_string());
     }
-    if matches!(command, Command::Replay | Command::List) && invocation.engine.is_some() {
-        return Err("`--engine` is an option of record and dump".to_string());
-    }
     Ok(invocation)
 }
 
@@ -129,6 +128,11 @@ fn parse(arguments: &[String]) -> Result<Invocation, String> {
 /// replay that differs from the corpus or a generated workload that records
 /// a failure, 2 for a command that could not run.
 pub fn run(arguments: &[String], out: &mut dyn Write) -> u8 {
+    run_in(&repository_dir(), arguments, out)
+}
+
+/// [`run`], taking the engine commit from the checkout at `repository`.
+fn run_in(repository: &Path, arguments: &[String], out: &mut dyn Write) -> u8 {
     let invocation = match parse(arguments) {
         Ok(invocation) => invocation,
         Err(error) => {
@@ -136,7 +140,7 @@ pub fn run(arguments: &[String], out: &mut dyn Write) -> u8 {
             return 2;
         }
     };
-    match execute(&invocation, out) {
+    match execute(&invocation, repository, out) {
         Ok(code) => code,
         Err(error) => {
             let _ = writeln!(out, "error: {error}");
@@ -145,7 +149,7 @@ pub fn run(arguments: &[String], out: &mut dyn Write) -> u8 {
     }
 }
 
-fn execute(invocation: &Invocation, out: &mut dyn Write) -> Result<u8, Error> {
+fn execute(invocation: &Invocation, repository: &Path, out: &mut dyn Write) -> Result<u8, Error> {
     let Invocation {
         selection,
         corpus,
@@ -179,20 +183,12 @@ fn execute(invocation: &Invocation, out: &mut dyn Write) -> Result<u8, Error> {
             Ok(0)
         }
         Command::Record => {
-            let engine = match &invocation.engine {
-                Some(engine) => engine.clone(),
-                None => engine_commit(&repository_dir())?,
-            };
+            let engine = engine_commit(repository)?;
             let written = corpus::record(corpus, selection, &engine, settings)?;
             Ok(summarize(out, "recorded", &written, &engine, corpus))
         }
         Command::Dump => {
-            let engine = match &invocation.engine {
-                Some(engine) => engine.clone(),
-                None => {
-                    engine_commit(&repository_dir()).unwrap_or_else(|_| "uncommitted".to_string())
-                }
-            };
+            let engine = engine_commit(repository).unwrap_or_else(|_| "uncommitted".to_string());
             let directory = invocation.out.as_deref().unwrap_or(corpus);
             let steps = invocation.steps.clone();
             let written = corpus::dump(directory, selection, &engine, steps, settings)?;
@@ -214,7 +210,7 @@ fn summarize(
     done: &str,
     written: &[Written],
     engine: &str,
-    directory: &std::path::Path,
+    directory: &Path,
 ) -> u8 {
     let steps: u64 = written.iter().map(|written| written.steps).sum();
     let bytes: u64 = written.iter().map(|written| written.bytes).sum();
@@ -254,11 +250,21 @@ mod tests {
         )
     }
 
+    /// [`output`], with the engine commit taken from `repository`.
+    fn output_in(repository: &Path, line: &str) -> (u8, String) {
+        let mut out = Vec::new();
+        let code = run_in(repository, &arguments(line), &mut out);
+        (
+            code,
+            String::from_utf8(out).expect("the command writes text"),
+        )
+    }
+
     #[test]
     fn options_are_read() {
         let invocation = parse(&arguments(
             "dump --reference --only reference --grove-version 4 --corpus /c --scratch /s --jobs \
-             3 --out /o --steps 2000..3000 --engine abc",
+             3 --out /o --steps 2000..3000",
         ))
         .expect("parse");
         assert_eq!(
@@ -277,7 +283,6 @@ mod tests {
                 },
                 out: Some(PathBuf::from("/o")),
                 steps: Some(2000..3000),
-                engine: Some("abc".to_string()),
             }
         );
         let defaults = parse(&arguments("replay")).expect("parse");
@@ -333,14 +338,7 @@ mod tests {
                 "dump --out /o --steps a..9",
                 "`a..9` is not a range FROM..TO",
             ),
-            (
-                "replay --engine abc",
-                "`--engine` is an option of record and dump",
-            ),
-            (
-                "list --engine abc",
-                "`--engine` is an option of record and dump",
-            ),
+            ("record --engine abc", "`--engine` is not an option"),
         ] {
             let (code, text) = output(line);
             assert_eq!(code, 2, "{line}");
@@ -381,13 +379,18 @@ mod tests {
     fn a_trace_is_recorded_replayed_and_dumped() {
         let corpus = tempfile::tempdir().expect("temp dir");
         let dumped = tempfile::tempdir().expect("temp dir");
+        let (repository, engine) = corpus::test_repository::with_an_engine_commit();
+        let output = |line: &str| output_in(repository.path(), line);
         let scope = "--only legacy-query-in-provable-count-indexed-tree --grove-version 2";
         let at = corpus.path().display();
 
-        let (code, text) = output(&format!("record {scope} --corpus {at} --engine abc123"));
+        let (code, text) = output(&format!("record {scope} --corpus {at}"));
         assert_eq!(code, 0, "{text}");
         assert!(text.starts_with("recorded 1 traces (10 steps, "), "{text}");
-        assert!(text.contains(" from engine commit abc123 into "), "{text}");
+        assert!(
+            text.contains(&format!(" from engine commit {engine} into ")),
+            "{text}"
+        );
 
         let (code, text) = output(&format!("replay {scope} --corpus {at}"));
         assert_eq!(code, 0, "{text}");
@@ -396,10 +399,7 @@ mod tests {
             "golden corpus: 1 traces replayed, 1 as recorded (10 steps), 0 not\n"
         );
 
-        let (code, text) = output(&format!(
-            "dump {scope} --out {} --engine abc123",
-            dumped.path().display()
-        ));
+        let (code, text) = output(&format!("dump {scope} --out {}", dumped.path().display()));
         assert_eq!(code, 0, "{text}");
         assert!(text.starts_with("dumped 1 traces (10 steps, "), "{text}");
         let file = "v2/legacy-query-in-provable-count-indexed-tree.trace";
@@ -410,7 +410,7 @@ mod tests {
         );
 
         let (code, text) = output(&format!(
-            "dump {scope} --out {} --engine abc123 --steps 2..4",
+            "dump {scope} --out {} --steps 2..4",
             dumped.path().display()
         ));
         assert_eq!(code, 0, "{text}");
@@ -422,13 +422,43 @@ mod tests {
         assert_eq!(code, 1, "{text}");
         assert!(text.contains("unreadable"), "{text}");
 
-        let (code, text) = output(&format!("record {scope} --corpus {at} --engine abc123"));
+        let (code, text) = output(&format!("record {scope} --corpus {at}"));
         assert_eq!(code, 0, "{text}");
         let (code, text) = output(&format!(
             "replay {scope} --corpus {at} --scratch /nonexistent"
         ));
         assert_eq!(code, 2, "{text}");
         assert!(text.starts_with("error: /nonexistent: "), "{text}");
+    }
+
+    /// A recording has to name the code it came from, so it is refused
+    /// while an engine crate has uncommitted changes. A dump is for looking
+    /// at exactly such a checkout, and says what it is of.
+    #[test]
+    fn a_checkout_with_uncommitted_engine_changes_is_dumped_but_not_recorded() {
+        let corpus = tempfile::tempdir().expect("temp dir");
+        let (repository, _) = corpus::test_repository::with_an_engine_commit();
+        std::fs::write(repository.path().join("merk/lib.rs"), "changed").expect("write");
+        let scope = "--only legacy-query-in-provable-count-indexed-tree --grove-version 5";
+        let at = corpus.path().display();
+
+        let (code, text) = output_in(repository.path(), &format!("record {scope} --corpus {at}"));
+        assert_eq!(code, 2, "{text}");
+        assert!(
+            text.starts_with("error: the engine crates have uncommitted changes"),
+            "{text}"
+        );
+        assert!(
+            !corpus.path().join("v5").exists(),
+            "nothing is written when a recording is refused"
+        );
+
+        let (code, text) = output_in(repository.path(), &format!("dump {scope} --out {at}"));
+        assert_eq!(code, 0, "{text}");
+        assert!(
+            text.contains(" from engine commit uncommitted into "),
+            "{text}"
+        );
     }
 
     #[test]
@@ -473,9 +503,8 @@ mod tests {
         );
     }
 
-    /// Without `--engine` the commit comes from the checkout the crate was
-    /// built from, which a recording refuses to guess when the engine crates
-    /// have uncommitted changes and a dump writes down as `uncommitted`.
+    /// The command takes the engine commit from the checkout the crate was
+    /// built from, whatever state that checkout is in.
     #[test]
     fn the_engine_commit_defaults_to_the_checkout() {
         let corpus = tempfile::tempdir().expect("temp dir");

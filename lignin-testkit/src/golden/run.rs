@@ -89,8 +89,7 @@ impl<'db> Runner<'db> {
             Err(error) => failed(&error, "failed", &mut remarks),
         };
         let (root_hash, proof) = match op {
-            Op::Read(Read::Query(query)) => (None, Some(self.prove(query, &mut remarks)?)),
-            Op::Read(_) => (None, None),
+            Op::Read(read) => (None, self.prove(read, &mut remarks)?),
             _ => (
                 Some(root_hash(
                     self.db,
@@ -132,8 +131,12 @@ impl<'db> Runner<'db> {
         })
     }
 
-    /// Proves `query` against committed state and verifies the proof.
-    fn prove(&self, query: &Query, remarks: &mut Vec<String>) -> Result<Proof, Error> {
+    /// Proves a read against committed state and verifies the proof. `None`
+    /// for a read GroveDB has no proof for.
+    fn prove(&self, read: &Read, remarks: &mut Vec<String>) -> Result<Option<Proof>, Error> {
+        let Some(query) = provable(read) else {
+            return Ok(None);
+        };
         let path_query = query.to_path_query();
         let CostContext { value, cost } =
             self.db.prove_query(&path_query, None, self.grove_version);
@@ -153,7 +156,20 @@ impl<'db> Runner<'db> {
                 Proved::Failed(error_name(&error))
             }
         };
-        Ok(Proof { cost, proved })
+        Ok(Some(Proof { cost, proved }))
+    }
+}
+
+/// The query a read is proved with, for a read GroveDB can prove.
+///
+/// Every kind of read is named here and none falls through, so a kind added
+/// to the workloads does not compile until it is said whether, and how, it
+/// is proved. A read that is recorded without its proof is a read whose
+/// proof bytes no replay compares.
+pub fn provable(read: &Read) -> Option<&Query> {
+    match read {
+        Read::Get { .. } => None,
+        Read::Query(query) => Some(query),
     }
 }
 
