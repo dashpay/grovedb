@@ -246,7 +246,7 @@ A cursor sees the committed state of the moment it was opened, under the writes 
 
 ### 5.6 What is free
 
-Starting, committing and rolling back a transaction, savepoints, flush, checkpoints, `wipe`, `delete_prefix_ranges`, listing and removing pending-drop records, and the `StorageBatch` bookkeeping charge nothing (`zero`, `DB`). `get_storage_context_cost` (`EST`) charges nothing either: it returns P1 computed from the longest length each segment may have, for estimates.
+Starting, committing and rolling back a transaction, savepoints, flush, checkpoints, `wipe`, `delete_prefix_ranges`, listing and removing pending-drop records, and the `StorageBatch` bookkeeping charge nothing (`zero`, `DB`). `get_storage_context_cost` (`EST`) charges nothing either: it returns P1 computed from the longest length each segment may have, for estimates. It is a function of `grovedb_storage::worst_case_costs` and of no engine (section 14.7).
 
 ## 6. Merk's rules
 
@@ -711,7 +711,7 @@ LigninDB task SEAM-05 ([task register 1](https://github.com/dashpay/grovedb/issu
 
 | Rule | Function of `StorageCostModel` | Where the RocksDB engine calls it |
 | --- | --- | --- |
-| P1 | `open_by_path(segment_lens)` | `RocksDbStorage::build_prefix`. `get_storage_context_cost` calls it with the longest length each segment may have. |
+| P1 | `open_by_path(segment_lens)` | `RocksDbStorage::build_prefix`. The estimate `grovedb_storage::worst_case_costs::get_storage_context_cost` calls it with the longest length each segment may have, and is no part of the engine (section 14.7). |
 | P2 | `open_by_prefix()` | the two openers that take a prefix |
 | P3 | `secondary_prefix()` | `secondary_prefix_for` |
 | R1 | `read(found)` | the four reads of a deferred context |
@@ -784,7 +784,34 @@ The last three rows guard one property from three sides, and none of them is eno
 
 ### 14.6 For later tasks
 
-- **SEAM-08.** `get_storage_context_cost` is one call of `open_by_path` with no engine in it; it can leave the `Storage` trait as it is.
+- **SEAM-08.** Done: section 14.7.
 - **MERK-03.** `grovedb_merk::cost_model` is the module to extend. Every storage charge of the LigninDB path is a call of a function above: `read` with `node_record_len` for a fetch, `BatchCharge` for a commit, the cursor functions with `node_record_len` for a record under a cursor. A store that holds a `TreeNode` has its record length from `grovedb_merk::cost_model::node_record_len`. One that holds the fields only gives N1 the encoded lengths of the feature and of each link, measured by Merk's encoders and not by a table of kinds. The ledger is the test that such a store reports only what the model hands out: the same comparison as `storage/tests/model_ledger.rs`, on the store's operations.
 - **GROVE-04, MERK-05, TXN-08.** A `FlatStore` on LigninDB is an adapter that takes each cost from these functions. A batch has to be charged in the order of `batch_order()` and by stored key, which is prefix first. A range delete reports `clear_walk` and stages its deletes for D2.
 - **GROVE-13.** New storage rules are a new variant of `StorageCostModel`, and `storage_cost_model` maps the new grove version to it (section 14.3).
+
+### 14.7 Estimates (SEAM-08)
+
+LigninDB task SEAM-08 took the one storage number of the estimated-cost helpers out of the engine.
+
+`get_storage_context_cost` was an associated function of the `Storage` trait, so an estimate of what a subtree handle costs to open had to name a storage engine to ask. It is now a free function, `grovedb_storage::worst_case_costs::get_storage_context_cost(model, path)`, next to `WorstKeyLength`, the trait that gives the longest length a path segment may have. It is one call of `open_by_path` (P1) with those lengths. The module is built without the `rocksdb_storage` feature, and its tests run with no RocksDB crate among the crates that are built. The `Storage` trait has no estimate left, so a second engine implements none.
+
+The function takes the `StorageCostModel` and names no version. GroveDB's six callers (`add_worst_case_get_merk_at_path`, `add_worst_case_has_raw_cost`, `add_worst_case_get_cost` and their three average-case forms) pass `storage_cost_model(grove_version)`, so an estimate follows the rules of the grove version it is made for. No number changed: for grove versions 1 to 5 that is `V0`, the rules the RocksDB engine reported the estimate by.
+
+What is left as it was:
+
+- **The `S: Storage` parameter** of the fifteen public estimate helpers of `GroveDb` (the eleven `add_worst_case_*` and `add_average_case_*` functions and the four delete estimators). No helper takes anything from it any more: it is passed on or left unused. It stays because Platform calls two of the delete estimators with `::<RocksDbStorage>` (P-32 of [platform-requirements.md](platform-requirements.md)), so five call sites inside GroveDB's estimate code still name `RocksDbStorage` to fill it. Removing the parameter changes the public interface and is made in step with Platform (SEAM-07, OPS-03). Until then GroveDB's estimate code is built with an engine's type in scope, though no number comes from it.
+- **Merk's and GroveDB's own estimates** (`merk::estimated_costs`, `grovedb::estimated_costs`, `grovedb::batch::estimated_costs`): the seeks, loaded bytes, storage bytes and hash counts they add from estimated sizes are estimates of sections 6 and 7 and name no engine.
+- **Two estimates that restate a storage rule in their own arithmetic.** `average_case_indexed_secondary_mirror` adds one hash for the prefix of a secondary (P3), and `add_flat_drop_record_put_estimate` (`grovedb/src/operations/delete/flat_drop.rs`) works out the blocks of P1, three hashes of P3 and the bytes of the record's put. Neither needs an engine. A version of the storage rules that changes P1 or P3 (GROVE-13) has to change them, or route them through the model then.
+
+An estimate hands out a cost of the model, so it is in the ledger of section 14.2 like any other. A test that holds an engine to the ledger makes no estimate between taking the ledger and comparing, or counts it as reported, as `storage/tests/model_ledger.rs` does.
+
+How it was checked:
+
+| What | Where | Holds |
+| --- | --- | --- |
+| The estimate with no engine | `cargo test -p grovedb-storage` (no feature: RocksDB is not built) | `worst_case_costs::tests`: the root costs nothing, a path is charged the hash blocks of its longest form at each block boundary, and the estimate is `open_by_path` of the longest lengths |
+| The estimate against a real handle | `storage/src/rocksdb_storage/tests.rs`, module `charging` | A handle opened by path, deferred or immediate, costs what the estimate gives for the same lengths |
+| That the crate still works out no charge | `storage/tests/charging.rs`, `storage/tests/model_ledger.rs` | The source check reads `worst_case_costs.rs` and finds no charge stated; the estimate is in the ledger as reported |
+| GroveDB's estimates on RocksDB | `cargo test -p grovedb` | Every estimate test passes as before |
+| GroveDB's estimates with no engine | `lignin-testkit/cost-model-storage/check.sh test -p grovedb --lib`, in the workspace where the storage crate is the model | Every estimate test passes. The stand-in for the storage crate has no estimate of its own any more, and a handle is charged by the second implementation of the rules, so the tests that compare an estimate with an operation compare the two implementations of P1. The RocksDB engine of `grovedb-storage` is not built there. The `rocksdb` crate still is, as a dev-dependency of `grovedb` that one test uses under `unsafe-dump-load`; with that line left out of the manifest no RocksDB crate is in the build graph (`cargo tree -e normal,build,dev`) and the same tests pass |
+| That no number moved | a sweep run before and after the change | The fifteen helpers and the batch estimator, for 119 paths of every block boundary, seven tree types and the five grove versions: 86,460 results, the same bytes before and after. With one byte added to each segment in the new function, 7,075 of them differ |
