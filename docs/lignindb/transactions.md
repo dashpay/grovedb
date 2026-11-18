@@ -561,8 +561,14 @@ the exact test calls needed.
 Readable means in memory, or rebuildable from what is on disk (PN2). For
 one kind of page version it means in memory only. What was not yet written
 back of a page when a commit freed it is never written back, and the buffer
-pool keeps it, not evictable, for as long as it is needed (FL6). Only pins
-of the running session can need it. No recovery asks for it.
+pool keeps it, not evictable, for as long as it is needed (FL6). Only
+readers of the running session can ask for it. No recovery does.
+
+"Needed" speaks of pins. A running operation that holds no pin can still
+have reached a frame, and its guard keeps the frame until it ends (PN5).
+So a frame that is kept in memory because nothing else holds its content,
+under FL6 or FL7, goes only by PN6: when the page version is no longer
+needed and the operations that were running then have ended.
 
 **PV4. Background work may change how a page version is stored, never what
 it says.** Relocating its blocks, consolidating its delta chain into a new
@@ -1394,10 +1400,15 @@ checkpoint was written after that and covers less than *w*. The log then
 holds changes to the page from commits between the two, and the checkpoint
 has no image of the page. Replay drops such a change. Nothing needs the
 page version it belonged to: the log is durable through *w*, so replay goes
-on to the commit that frees the page. When replay ends, recovery checks that
-every page with a dropped change was freed, or made again, by a later commit
-it replayed (STORE-07). If one was not, the checkpoint or the log is
-damaged. A change that makes a page needs no image, and is never dropped.
+on to the commit that frees the page. The record of a background change to
+that page, between the two commits, is treated the same way (DU2). Only the
+change to the page is dropped. What the change did to a count of live
+values is still applied (DU5), and the freeing commit then releases what the
+page's cells held. When replay ends, recovery checks that every page with a
+dropped change, of a commit or of background work, was freed, or made again,
+by a later commit it replayed (STORE-07). If one was not, the checkpoint or
+the log is damaged. A change that makes a page needs no image, and is never
+dropped.
 
 One more thing follows the same order. A value pointer is stored where a
 later session will find it only under a durable manifest that covers the
@@ -1426,7 +1437,9 @@ only the log and the buffer pool hold then:
 - count as written back when the version a table checkpoint covers is
   chosen (`page-table.md` K1)
 - stay in the buffer pool, which cannot evict them, until no reader can ask
-  for a version below the freeing one (PV3, PN6). Then the pool drops them.
+  for a version below the freeing one: no pin is below it, and the
+  operations that were running when that became true have ended (PV3, PN6).
+  Then the pool drops them.
 
 Those page versions, and a pending value in one of them, are needed only by
 readers of the running session, which the pool serves. No recovery needs
@@ -1434,8 +1447,13 @@ them. A checkpoint that holds the free link, or that lost it to trimming,
 is named only once the log is durable through the freeing version (FL4), so
 a recovery from it lands where the page is free. A checkpoint from before
 the free link covers less than those changes, and the second case above
-keeps the log for it. So no log file is held back for them, although a pin
-may still read them: no pin survives a crash (DU3).
+keeps the log for it.
+
+So no log file is held back for the sake of those readers, although a pin
+or a running operation may still read the page versions: neither survives a
+crash (DU3). The other reasons stand. A log file that replay still needs
+for a commit the checkpoint in force does not cover, or for a count change
+after the sample's place, is kept as before.
 
 **FL7. A new value reaches the value log at write-back, not at commit.** A
 value that is too long for its cell (TREE-08) and that a commit writes
@@ -1450,9 +1468,10 @@ From its commit until it is placed, the value is a **pending value** of its
 cell.
 
 - **Where it is.** Its bytes are in the log group and in the frame of its
-  page version. The store keeps that frame until the value is placed or the
-  page version is no longer needed (PV3). It keeps the log file as well,
-  except where FL6 lets the frame stand for it.
+  page version. The store keeps that frame until the value is placed, or
+  until the page version is no longer needed and no running operation can
+  still reach it (PV3, PN6). It keeps the log file as well, except where FL6
+  lets the frame stand for it.
 - **Reading it.** A read through any handle that sees the commit is answered
   from the frame. It reads neither the log nor the value log. It returns the
   bytes, and charges the cost, that it will once the value is placed (RD9).
@@ -1694,9 +1713,16 @@ had treated as happened (CM9), or one it had not yet answered for.
 
 The records of background changes lie in the same log, between the groups
 (PV6). They change no record of the state, so they do not move *Lr*.
-Recovery reads them under the same test and to the same point. It applies
-one to the page it is for unless the page already has the change, and it
-applies its count change by DU5.
+Recovery reads them under the same test and to the same point. What it does
+with one has two parts, and each is decided by itself:
+
+| Part of the record | Recovery |
+| --- | --- |
+| its change to the page | applies it, unless the page already has the change (DU5) or the checkpoint has no image of the page (FL4). Then it skips it. |
+| its change to a count of live values | applies it exactly when the record is after the place of the count sample (DU5), whatever became of the first part |
+
+The same two parts, under the same two rules, are what the group of a commit
+is to one page it changed (`page-table.md` K3 and K11).
 
 **DU3. Nothing else survives.** No uncommitted write, no private frame, no
 pin, no scope and no page version born after *Lr* is reachable after
@@ -1735,7 +1761,8 @@ What the counts include is decided by the place alone. A table checkpoint
 copies each chain at another moment (`page-table.md` K5), so a page in it
 can already hold a change whose record is after the place. Replay skips
 that change for the page, which has it (`page-table.md` K3), and still
-counts it.
+counts it. It also still counts a change that it dropped because the
+checkpoint has no image of the page (FL4).
 
 A background change has no version, so replay cannot tell by version
 whether a page already has it. Its record must be recognisable against the
