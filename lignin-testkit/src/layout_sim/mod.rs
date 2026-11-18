@@ -112,12 +112,12 @@ pub fn simulate(
                 apply(db, &op, Some(&transaction), grove_version)
                     .unwrap()
                     .unwrap_or_else(|error| panic!("{name}: {op:?} refused: {error:?}"));
+                open_block = true;
                 let changes = observer.observe(db, &transaction);
                 if changes.is_empty() {
                     continue;
                 }
                 transitions += 1;
-                open_block = true;
                 for model in &mut models {
                     model.apply(observer.grove(), &changes);
                 }

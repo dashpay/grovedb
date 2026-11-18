@@ -823,7 +823,9 @@ The page model sees nothing else.
   fifty thousand blocks of two million nodes is out of reach. Between two
   comparisons a miss could be put right by a later write to the same node
   before it is seen. What guards against that is the runs that compare at
-  every block, on the same generators and the same code.
+  every block: the nineteen workloads of BASE-01's suite at their default
+  size, on the same code. The stream of deletes and inserts of 14.4 is not
+  one of them and is compared at its samples only.
 - On the reference workload it counts 46.5 node records and 20.5 KB per
   transition as RocksDB receives them, averaged over the load, and 49.3
   records in its last tenth. The plan states 58.8 records and 23.9 KB for
@@ -1054,7 +1056,7 @@ workloads ends by deleting much of what it built.
   186 nodes of some 60 subtrees. A third of what is counted is directory
   entries: every transition creates a Merk.
 - **Long keys.** A cell is about 400 bytes, a page holds 61, and a write
-  still dirties under 4 pages.
+  still dirties under 4 pages on average.
 - **Moves.** A move is measured as the copy RocksDB makes (D5). `moves` is
   a hundred nodes in one page: every transition writes that page, and the
   rest of what is counted is directory entries, one for each subtree a move
@@ -1067,10 +1069,10 @@ workloads ends by deleting much of what it built.
   write the two cells of each move and the same directory entries, and no
   cell of the moved trees.
 - **The average of pages dirtied stays below 8 on all seven**, and nodes per
-  page above 15. Single transitions go far above 8 on six of them. The
-  largest are transitions that create or drop many Merks at once, each a
-  directory entry: 195 for a chain of 127 nested trees, 80 in
-  `tiny-subtrees`.
+  page above 15. Single transitions go far above 8 on six of them. In
+  `deep-nesting` the whole grove is six pages, so at least 189 of the 195
+  of its largest transition are directory entries: it creates or drops a
+  chain of nested trees. The runs do not break the other peaks down.
 - **Fill is below 70% wherever much was deleted.** M2 moves a fragment only
   out of a page below the merge threshold of 35%. A workload that deletes a
   third of everything leaves its pages near half full, above that
@@ -1122,7 +1124,8 @@ Each of these is a decision the plan did not make. They are listed so the
 owner can overrule one before FMT-02 and TREE-03 build on it.
 
 1. **The proposed page size is 32 KiB.** It is the smallest size at which
-   the reference workload dirties at most 8 pages per transition (14.2). The
+   the reference workload dirties at most 8 pages per transition on average
+   (14.2). The
    targets of 15 nodes per page and 70% fill read like a page of 4 KiB; at
    that size a transition dirties 13.9 pages, or 9.5 counted once per block.
    FMT-02 sets the size. A page of 64 KiB is the largest that 16-bit offsets

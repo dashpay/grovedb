@@ -320,6 +320,33 @@ fn a_run_that_ends_without_a_commit_still_ends_its_block() {
         "the reclaimer came after the last block too"
     );
     assert_eq!((end.cells, end.pages), (0, 0));
+
+    // A write that changes no Merk node is no transition, but the block it
+    // is in is a block, with a commit or without one.
+    let aux = || {
+        Op::Write(Write::PutAux {
+            key: b"aux".to_vec(),
+            value: vec![1],
+        })
+    };
+    for ops in [vec![aux()], vec![aux(), Op::Commit]] {
+        let (_dir, db) = open();
+        let reports = simulate(
+            "aux only",
+            &db,
+            ops.into_iter(),
+            GroveVersion::latest(),
+            &[Config::proposed()],
+            Run {
+                sample_every: 0,
+                check_every: 1,
+                verify_mirror: true,
+            },
+            |_, _, _| {},
+        );
+        let stats = &reports[0].end.stats;
+        assert_eq!((stats.transitions, stats.blocks), (0, 1));
+    }
 }
 
 /// The "done when" of TREE-01: on the reference workload the proposed
