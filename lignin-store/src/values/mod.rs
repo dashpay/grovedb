@@ -43,6 +43,10 @@
 //! let mut hold = ValueHold::new();
 //! let pointer = writer.append(&mut hold, page, b"a value too long for its cell")?;
 //!
+//! // Before the commit stores the pointer, the manifest covers the value.
+//! writer.sync()?;
+//! values.commit(&mut manifest)?;
+//!
 //! // The commit makes the cell hold the pointer, and the value counts.
 //! let mut change = ValueChange::new();
 //! change.acquire(pointer);
