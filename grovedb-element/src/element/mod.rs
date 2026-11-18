@@ -353,27 +353,27 @@ pub enum Element {
     /// Variant order in this enum determines bincode's variant-index
     /// encoding on disk. This variant gets index 24.
     PrivateDocumentStore(u64, u32, u8, Option<ElementFlags>),
-    /// A reference that registers itself in its target's backward-reference
-    /// meta storage, so target updates propagate back along the chain (or
-    /// cascade-delete it). Resolves like `Reference` on reads. May only
+    /// A reference that registers itself in its target's referrer list, so
+    /// target updates propagate back along the chain (or cascade-delete
+    /// it). Resolves like `Reference` on reads. May only
     /// target elements with backward-reference support
     /// (`ItemWithBackwardsReferences`, `SumItemWithBackwardsReferences`,
     /// or another `BidirectionalReference`).
     ///
     /// May not be wrapped in `NonCounted` / `NotSummed` /
-    /// `NotCountedOrSummed`, and is rejected by `apply_batch` (batch
-    /// support for backward-reference propagation is not implemented yet).
+    /// `NotCountedOrSummed`. Written directly or in a batch from
+    /// `GROVE_V4`; earlier versions refuse it.
     ///
     /// Discriminant 25.
     BidirectionalReference(BidirectionalReference, Option<ElementFlags>),
     /// An ordinary value that supports being targeted by bidirectional
-    /// references: up to 32 backward references are carried ON the element
-    /// and covered by the node hash through the two-layer scheme described
-    /// in [`crate::bidirectional_reference`]. Behaves like `Item` in every
+    /// references: its backward references are carried ON the element and
+    /// stay outside the node hash, as described in
+    /// [`crate::bidirectional_reference`]. Behaves like `Item` in every
     /// other way; readers and proofs see the stripped (inner) form.
     ///
-    /// May not be wrapped in the aggregation wrappers and is rejected by
-    /// `apply_batch` (same reason as `BidirectionalReference`).
+    /// May not be wrapped in the aggregation wrappers. Written directly or
+    /// in a batch from `GROVE_V4`; earlier versions refuse it.
     ///
     /// Discriminant 26.
     ItemWithBackwardsReferences(
@@ -385,8 +385,8 @@ pub enum Element {
     /// being targeted by bidirectional references. Behaves like `SumItem`
     /// in every other way.
     ///
-    /// May not be wrapped in the aggregation wrappers and is rejected by
-    /// `apply_batch` (same reason as `BidirectionalReference`).
+    /// May not be wrapped in the aggregation wrappers. Written directly or
+    /// in a batch from `GROVE_V4`; earlier versions refuse it.
     ///
     /// Discriminant 27.
     SumItemWithBackwardsReferences(
@@ -398,12 +398,12 @@ pub enum Element {
     /// `ItemWithSumItem`) AND supports being targeted by bidirectional
     /// references. The sum contributes to sum-bearing parents exactly as
     /// `ItemWithSumItem`'s does; the referrer list is carried ON the
-    /// element and covered by the node hash through the two-layer scheme
-    /// described in [`crate::bidirectional_reference`]. Readers and proofs
-    /// see the stripped (inner) form.
+    /// element and stays outside the node hash, as described in
+    /// [`crate::bidirectional_reference`]. Readers and proofs see the
+    /// stripped (inner) form.
     ///
-    /// May not be wrapped in the aggregation wrappers and is rejected by
-    /// `apply_batch` (same reason as `BidirectionalReference`).
+    /// May not be wrapped in the aggregation wrappers. Written directly or
+    /// in a batch from `GROVE_V4`; earlier versions refuse it.
     ///
     /// Discriminant 28.
     ItemWithSumItemWithBackwardsReferences(

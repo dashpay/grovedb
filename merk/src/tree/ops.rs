@@ -48,10 +48,10 @@ pub enum Op {
     PutCombinedReference(Vec<u8>, CryptoHash, TreeFeatureType),
     /// Insert or Update an element whose node value hash is supplied fully
     /// computed by the caller. In GroveDB this is used for
-    /// backward-references elements, whose value hash combines the STRIPPED
-    /// serialization's hash with the backward-references hash (and, for a
-    /// bidirectional reference, with the resolved end-of-chain hash carried
-    /// in the third field). When a just-in-time value update (a flags
+    /// backward-references elements, whose value hash is the hash of the
+    /// STRIPPED serialization (referrer list emptied), combined for a
+    /// bidirectional reference with the resolved end-of-chain hash carried
+    /// in the third field. When a just-in-time value update (a flags
     /// carry-over or a flags-update callback) rewrites the bytes of a
     /// replaced element, the value hash is recomputed from the final bytes
     /// with the same scheme, so the committed bytes and hash always agree.

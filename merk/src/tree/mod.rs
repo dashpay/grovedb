@@ -1548,7 +1548,7 @@ impl TreeNode {
     /// reference commits to (`None` for the item variants). It is needed
     /// only when a just-in-time value update rewrites the bytes of a
     /// replaced element: the node value hash is then recomputed from the
-    /// final bytes with the family's two-layer scheme, so a flags-update
+    /// final bytes with the family's rule, so a flags-update
     /// callback can never commit bytes that disagree with their hash.
     #[allow(clippy::too_many_arguments)]
     pub fn put_value_with_provided_value_hash(
@@ -1610,11 +1610,10 @@ impl TreeNode {
             // a flags-update callback rewrite, e.g. storage flags absorbing
             // the bytes an added referrer entry costs) changes those bytes,
             // so the node value hash is recomputed from the FINAL bytes
-            // with the family's two-layer scheme: combine(H(stripped),
-            // H(referrer list)), further combined with the end hash for a
-            // bidirectional reference. Only backward-references elements
-            // are written this way; anything else mutated here would
-            // commit bytes no scheme rebinds — fail closed.
+            // with the family's rule: H(stripped), combined with the end
+            // hash for a bidirectional reference. Only backward-references
+            // elements are written this way; anything else mutated here
+            // would commit bytes no scheme rebinds — fail closed.
             if self.inner.kv.value_as_slice() != value_before_update.as_slice() {
                 value_hash = cost_return_on_error!(
                     &mut cost,
@@ -1636,10 +1635,9 @@ impl TreeNode {
     }
 
     /// The node value hash a backward-references element with these stored
-    /// bytes commits to: `combine(H(stripped), H(referrer list))`, combined
-    /// once more with `end_hash` for a bidirectional reference (which must
-    /// carry one). Errors for bytes that are not a backward-references
-    /// element.
+    /// bytes commits to: `H(stripped)`, combined with `end_hash` for a
+    /// bidirectional reference (which must carry one). Errors for bytes
+    /// that are not a backward-references element.
     fn recompute_backward_references_value_hash(
         bytes: &[u8],
         end_hash: Option<CryptoHash>,
@@ -1657,16 +1655,7 @@ impl TreeNode {
                 ))
             })
         );
-        let hashes = cost_return_on_error!(
-            &mut cost,
-            element
-                .backward_references_hashes(grove_version)
-                .map_err(|e| Error::ClientCorruptionError(format!(
-                    "cannot rehash a provided-value-hash write after a just-in-time value \
-                     update: {e}"
-                )))
-        );
-        let Some(hashes) = hashes else {
+        if !element.supports_backward_references() {
             return Err(Error::ClientCorruptionError(
                 "a just-in-time value update cannot apply to a provided-value-hash write of a \
                  non-backward-references element: the mutated bytes would no longer match \
@@ -1674,16 +1663,25 @@ impl TreeNode {
                     .to_string(),
             ))
             .wrap_with_cost(cost);
-        };
+        }
+        let inner = cost_return_on_error!(
+            &mut cost,
+            element
+                .logical_value_hash(grove_version)
+                .map_err(|e| Error::ClientCorruptionError(format!(
+                    "cannot rehash a provided-value-hash write after a just-in-time value \
+                     update: {e}"
+                )))
+        );
         let is_reference = matches!(
             element,
             grovedb_element::Element::BidirectionalReference(..)
         );
         let value_hash = match (is_reference, end_hash) {
             (true, Some(end_hash)) => {
-                hash::combine_hash(&hashes.combined, &end_hash).unwrap_add_cost(&mut cost)
+                hash::combine_hash(&inner, &end_hash).unwrap_add_cost(&mut cost)
             }
-            (false, None) => hashes.combined,
+            (false, None) => inner,
             (true, None) => {
                 return Err(Error::ClientCorruptionError(
                     "a provided-value-hash write of a bidirectional reference must carry its \

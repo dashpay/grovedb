@@ -104,12 +104,43 @@ impl<S> RefWalker<'_, S>
 where
     S: Fetch + Sized + Clone,
 {
-    #[allow(dead_code)]
+    /// The value bytes a value-carrying proof node (`KV`, `KVCount`,
+    /// `KVSum`, `KVCountSum`, `KVCountBigSum`, `KVBigSum`) holds for the root
+    /// node: the
+    /// bytes whose hash is the node's value hash.
+    ///
+    /// That is the stored value for everything except a backward-references
+    /// item, whose value hash is taken over its serialization with the
+    /// referrer list emptied. The verifier recomputes `H(value)`, so those
+    /// are the bytes the proof must carry, and they are what a result set
+    /// receives.
+    ///
+    /// Stored bytes that carry one of the family's type bytes but do not
+    /// decode as an element (raw Merk values) are returned as stored.
+    pub(crate) fn hashed_value_bytes(&self, grove_version: &GroveVersion) -> Vec<u8> {
+        let stored = self.tree().value_as_slice();
+        let is_backward_references_item = ElementType::from_serialized_value(stored)
+            .map(|element_type| element_type.is_backward_references_item())
+            .unwrap_or(false);
+        if is_backward_references_item {
+            let stripped =
+                grovedb_element::Element::deserialize(stored, grove_version).and_then(|element| {
+                    element
+                        .stripped_of_backward_references()
+                        .serialize(grove_version)
+                });
+            if let Ok(stripped) = stripped {
+                return stripped;
+            }
+        }
+        stored.to_vec()
+    }
+
     /// Creates a `Node::KV` from the key/value pair of the root node.
-    pub(crate) fn to_kv_node(&self) -> Node {
+    pub(crate) fn to_kv_node(&self, grove_version: &GroveVersion) -> Node {
         Node::KV(
             self.tree().key().to_vec(),
-            self.tree().value_as_slice().to_vec(),
+            self.hashed_value_bytes(grove_version),
         )
     }
 
@@ -227,7 +258,7 @@ where
     /// tamper-resistant (verifier computes hash from value) while including the
     /// count. Note: Uses aggregate count (sum of self + children) to match hash
     /// calculation
-    pub(crate) fn to_kv_count_node(&self) -> Node {
+    pub(crate) fn to_kv_count_node(&self, grove_version: &GroveVersion) -> Node {
         let count = match self.tree().aggregate_data() {
             Ok(AggregateData::ProvableCount(count)) => count,
             Ok(AggregateData::ProvableCountAndSum(count, _)) => count,
@@ -236,7 +267,7 @@ where
         };
         Node::KVCount(
             self.tree().key().to_vec(),
-            self.tree().value_as_slice().to_vec(),
+            self.hashed_value_bytes(grove_version),
             count,
         )
     }
@@ -246,14 +277,14 @@ where
     /// tamper-resistant (verifier computes hash from value) while including
     /// both the count and the sum so the verifier can recompute
     /// `node_hash_with_count_and_sum`.
-    pub(crate) fn to_kv_count_sum_node(&self) -> Node {
+    pub(crate) fn to_kv_count_sum_node(&self, grove_version: &GroveVersion) -> Node {
         let (count, sum) = match self.tree().aggregate_data() {
             Ok(AggregateData::ProvableCountAndProvableSum(c, s)) => (c, s),
             _ => (0, 0),
         };
         Node::KVCountSum(
             self.tree().key().to_vec(),
-            self.tree().value_as_slice().to_vec(),
+            self.hashed_value_bytes(grove_version),
             count,
             sum,
         )
@@ -289,14 +320,14 @@ where
     /// (count, big sum) of the root node. Used for Items in
     /// `ProvableCountProvableBigSumTree`, the wide counterpart of
     /// `to_kv_count_sum_node`.
-    pub(crate) fn to_kv_count_big_sum_node(&self) -> Node {
+    pub(crate) fn to_kv_count_big_sum_node(&self, grove_version: &GroveVersion) -> Node {
         let (count, sum) = match self.tree().aggregate_data() {
             Ok(AggregateData::ProvableCountAndProvableBigSum(c, s)) => (c, s),
             _ => (0, 0),
         };
         Node::KVCountBigSum(
             self.tree().key().to_vec(),
-            self.tree().value_as_slice().to_vec(),
+            self.hashed_value_bytes(grove_version),
             count,
             sum,
         )
@@ -352,14 +383,14 @@ where
     /// node. Parallel to `to_kv_count_node` for queried Items in a
     /// ProvableSumTree. Tamper-resistant (verifier computes hash from value)
     /// while including the sum in the node hash.
-    pub(crate) fn to_kv_sum_node(&self) -> Node {
+    pub(crate) fn to_kv_sum_node(&self, grove_version: &GroveVersion) -> Node {
         let sum = match self.tree().aggregate_data() {
             Ok(AggregateData::ProvableSum(sum)) => sum,
             _ => 0,
         };
         Node::KVSum(
             self.tree().key().to_vec(),
-            self.tree().value_as_slice().to_vec(),
+            self.hashed_value_bytes(grove_version),
             sum,
         )
     }
@@ -389,14 +420,14 @@ where
     /// Creates a `Node::KVBigSum` from the key/value pair and 128-bit sum of
     /// the root node. The wide counterpart of `to_kv_sum_node`, for queried
     /// Items in a `ProvableBigSumTree`.
-    pub(crate) fn to_kv_big_sum_node(&self) -> Node {
+    pub(crate) fn to_kv_big_sum_node(&self, grove_version: &GroveVersion) -> Node {
         let sum = match self.tree().aggregate_data() {
             Ok(AggregateData::ProvableBigSum(sum)) => sum,
             _ => 0,
         };
         Node::KVBigSum(
             self.tree().key().to_vec(),
-            self.tree().value_as_slice().to_vec(),
+            self.hashed_value_bytes(grove_version),
             sum,
         )
     }
@@ -659,54 +690,16 @@ where
             // GroveDB post-processes these to KVRefValueHash or KVRefValueHashCount
             // with dereferenced values.
             let node = match proof_node_type {
-                ProofNodeType::Kv => self.to_kv_node(),
-                ProofNodeType::KvCount => self.to_kv_count_node(),
-                ProofNodeType::KvSum => self.to_kv_sum_node(),
-                ProofNodeType::KvCountSum => self.to_kv_count_sum_node(),
-                ProofNodeType::KvCountBigSum => self.to_kv_count_big_sum_node(),
-                ProofNodeType::KvBigSum => self.to_kv_big_sum_node(),
+                // The value-carrying nodes hold `hashed_value_bytes`: the
+                // stored value, or for a backward-references item its
+                // serialization with the referrer list emptied.
+                ProofNodeType::Kv => self.to_kv_node(grove_version),
+                ProofNodeType::KvCount => self.to_kv_count_node(grove_version),
+                ProofNodeType::KvSum => self.to_kv_sum_node(grove_version),
+                ProofNodeType::KvCountSum => self.to_kv_count_sum_node(grove_version),
+                ProofNodeType::KvCountBigSum => self.to_kv_count_big_sum_node(grove_version),
+                ProofNodeType::KvBigSum => self.to_kv_big_sum_node(grove_version),
                 ProofNodeType::KvValueHash => self.to_kv_value_hash_node(),
-                // Backward-references elements: emit the dedicated wire
-                // node — STRIPPED bytes plus the referrer-list hash — so
-                // the verifier recombines and binds the payload. The stored
-                // bytes always deserialize for honestly written elements;
-                // failing to rebuild means corrupted storage, and emitting a
-                // plain KVValueHash instead would only move the failure to
-                // the verifier with a misleading message — error out here.
-                ProofNodeType::KvBackwardsReferencesValueHash => {
-                    use crate::element::ElementExt;
-                    let rebuilt = grovedb_element::Element::deserialize(
-                        self.tree().value_ref(),
-                        grove_version,
-                    )
-                    .ok()
-                    .and_then(|element| {
-                        let hashes = element
-                            .backward_references_hashes(grove_version)
-                            .unwrap_add_cost(&mut cost)
-                            .ok()
-                            .flatten()?;
-                        let stripped = element
-                            .stripped_of_backward_references()
-                            .serialize(grove_version)
-                            .ok()?;
-                        Some(Node::KVBackwardsReferencesValueHash(
-                            self.tree().key().to_vec(),
-                            stripped,
-                            hashes.backrefs,
-                        ))
-                    });
-                    match rebuilt {
-                        Some(node) => node,
-                        None => {
-                            return Err(Error::CorruptedData(format!(
-                                "cannot rebuild the backward-references proof node for key {}",
-                                hex::encode(self.tree().key())
-                            )))
-                            .wrap_with_cost(cost);
-                        }
-                    }
-                }
                 ProofNodeType::KvValueHashFeatureType => self.to_kv_value_hash_feature_type_node(),
                 // References: at merk level, generate same node type as non-ref counterpart
                 // GroveDB will post-process to KVRefValueHash with dereferenced value

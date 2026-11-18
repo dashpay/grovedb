@@ -14,7 +14,12 @@ use crate::error::ElementError;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(not(feature = "visualize"), derive(Debug))]
 /// Reference path variants
-#[derive(Hash, Eq, PartialEq, Encode, Decode, Clone, DecodeUntrusted)]
+///
+/// The derived order (by variant in declaration order, then by fields) is
+/// the canonical order of a referrer list; see
+/// [`crate::bidirectional_reference`]. Like the encoding, it depends on the
+/// order the variants are declared in.
+#[derive(Hash, Eq, PartialEq, PartialOrd, Ord, Encode, Decode, Clone, DecodeUntrusted)]
 pub enum ReferencePathType {
     /// Holds the absolute path to the element the reference points to
     AbsolutePathReference(Vec<Vec<u8>>),

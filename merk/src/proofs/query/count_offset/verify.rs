@@ -751,13 +751,11 @@ fn classify_self<'a>(
             // against the target chain for indexed-axis secondaries).
             // Everything else fails closed, including element types
             // added later. Today that refuses:
-            //   - `Item` / `SumItem` / `ItemWithSumItem`, which an
-            //     honest prover emits as `KVCount` / `KVCountSum`, where
-            //     the verifier recomputes `H(value)`;
-            //   - the three backward-references items. Provable* count
-            //     trees refuse them at insert, so no honest count-offset
-            //     proof carries one, and elsewhere they ride on
-            //     `KVBackwardsReferencesValueHash`.
+            //   - `Item` / `SumItem` / `ItemWithSumItem` and the three
+            //     backward-references items, which an honest prover emits
+            //     as `KVCount` / `KVCountSum`, where the verifier
+            //     recomputes `H(value)` (for a backward-references item,
+            //     over its serialization with the referrer list emptied).
             let element_type = grovedb_element::ElementType::from_serialized_value(
                 value.as_slice(),
             )
