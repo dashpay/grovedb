@@ -344,11 +344,11 @@ The old cost is worked out from the old value by the same three formulas (the ca
 
 1. **The bytes of the new value**, through its flags, and with them its length. Merk measures the value's cost again from the new bytes and asks the callback again, until the size stops changing (the rounds are bounded by `MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES`, 8). The value hash is taken over the final bytes (section 6.2).
 2. **The form of the removed bytes.** A plain removal of the value's bytes goes through `split_removal_bytes` with the old element's flags and comes back plain or sectioned. On a delete both halves are split: the key's `stored_key_len + varint(stored_key_len)` and the old value's cost.
-3. **From grove version 5, how an update is accounted**: the callback may answer `AccountAsReplacement`, and the update is then charged as the removal of the old element and the insertion of the new one.
+3. **From grove version 5, how an update is accounted**: the callback may answer `AccountAsReplacement`, and the update is then charged as the removal of the old element and the insertion of the new one. On grove versions 1 to 4 Merk refuses that answer. On every version GroveDB refuses it, and the batch with it, for a write whose flags are byte for byte the stored ones (`batch_flags_update`).
 
 The three versions of the update differ in the measurement they keep (`merk_versions.tree.just_in_time_value_update`, section 8). Version 0, on grove versions 1 to 3, first measures the new value carrying the old flags and keeps that measurement when the callback says it changed nothing. If the new value is stored with flags of another length, the cost Merk hands down is then not the one of the bytes it writes, and K3 refuses the commit. Version 1, on grove version 4, measures again from the bytes it stores. Version 2 adds the third point.
 
-The same update is run once more, on a detached node, by the preprocessor of backward references, which has to know the final bytes of an item before the apply (`predict_put_final_bytes`). It works on values that were already read and charges nothing.
+The same update is run ahead of the apply, on a detached node, wherever a batch has to know the final bytes of a value before it writes them (`predict_put_final_bytes`; on grove versions 1 to 3 a hand-written copy in `batch/just_in_time_reference_update/v0.rs`). Two places do: the preprocessor of backward references, and a reference to an item that the same batch writes, which commits to the item's value hash. Both call the client's callbacks again, on values that were already read. The prediction itself charges nothing; the second place charges the value hash of the predicted bytes (section 6.2). The storage cost worked out on the way is only what the callback is shown.
 
 **What the storage layer is asked for.** Only the result: the final bytes of the value and one `KeyValueStorageCost`, with the put (W2) or the delete (D1). The storage layer then
 
@@ -370,7 +370,7 @@ A search of the library code of every crate above the storage layer for statemen
 | `non_merk_tree_child_hash` (`operations/proof/bind_terminal_non_merk_tree/v1.rs`) | `hash_node_calls += 2` for the same two hashes of an empty store |
 | the range walk of a path query (`element/query.rs`, `path_query_push`) and of a sum-budget walk (`element/aggregate_sum_query/mod.rs`) | `seek_count += 1` after each cursor step, on top of the step's own C1 |
 | `moved_record_cost`, `copy_next_record` (`batch/move_element.rs`) | the writer's cost of a record copied from one subtree to another: the stored key and the record, each with its varint, as `replaced_bytes`. The value half is checked (K3). The copy is a W2 put with no link sizes, so a node is charged by its `record_len`. The walk charges, per record, C2 twice, C3 once and C1 once. The source record is deleted with an empty writer's cost: D1, one seek and nothing removed, not D2. |
-| the just-in-time reference update (`batch/just_in_time_reference_update/v0.rs`) | splits a reference's removed bytes by its flags |
+| the prediction of a reference's target in the same batch (`batch/just_in_time_reference_update/v0.rs`, `v1.rs`) | `hash_node_calls` of one `value_hash` over the bytes the target will hold after the flags callback (section 6.6). The storage cost it works out on the way is shown to the callback and not charged. |
 | `GroveDb::bulk_append`, `preprocess_bulk_append_ops` (`operations/bulk_append_tree.rs`), `mmr_tree_append`, `preprocess_mmr_tree_ops` (`operations/mmr_tree.rs`) | add the hash counts the trees report, and one hash for a state root |
 
 `grovedb/src/operations/delete/flat_drop.rs` also builds a cost from sizes, for an estimate; it is not charged to an operation.
@@ -408,7 +408,8 @@ Above the storage layer, these switches change what an operation is charged. The
 | `operations.insert.add_element_on_transaction` | 0, 0, 1, 2, 2 | Which subtrees an insert opens and what it reads |
 | `operations.delete.delete_internal_on_transaction`, `clear_subtree` | 2 and 1 from 4 | The same for a delete and a clear |
 | `merk_versions.tree.put_value` | 1 from 4 | How a value put computes its hashes and cost |
-| `merk_versions.tree.just_in_time_value_update` | 0, 0, 0, 1, 2 | The flags update and, on 5, replacement accounting |
+| `merk_versions.tree.just_in_time_value_update` | 0, 0, 0, 1, 2 | The flags update and, on 5, replacement accounting (section 6.6) |
+| `apply_batch.same_batch_reference_target_prediction` | 1 from 4 | How the final bytes of a reference's target are predicted (section 6.6) |
 | `add_basic_storage_removal_to_sectioned_storage_removal` | 1 from 4 | How a plain removal adds to a sectioned one |
 | the append-only tree switches of section 7.3 | 1 from 4 | The trees' own cost model and prepaid puts |
 | `path_query_push`, `merge`, the read modes | 1 from 4, 2 on 5 | What a query walks |
