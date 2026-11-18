@@ -37,6 +37,7 @@ struct Fault {
 struct Script {
     calls: Vec<(Op, String)>,
     faults: Vec<Fault>,
+    skip_syncs: bool,
 }
 
 /// Passes every call on to another file layer, records it, and fails the
@@ -55,19 +56,23 @@ fn name_of(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-fn enter(script: &Mutex<Script>, op: Op, name: &str) -> io::Result<()> {
+/// Records the call and says whether to pass it on: `Ok(false)` for a sync
+/// that is skipped.
+fn enter(script: &Mutex<Script>, op: Op, name: &str) -> io::Result<bool> {
     let mut script = script.lock().unwrap();
     script.calls.push((op, name.to_owned()));
+    let is_sync = matches!(op, Op::SyncData | Op::SyncAll | Op::SyncDir);
+    let pass_on = !(is_sync && script.skip_syncs);
     let Some(at) = script
         .faults
         .iter()
         .position(|fault| fault.op == op && fault.name == name)
     else {
-        return Ok(());
+        return Ok(pass_on);
     };
     if script.faults[at].skip > 0 {
         script.faults[at].skip -= 1;
-        return Ok(());
+        return Ok(pass_on);
     }
     script.faults.remove(at);
     Err(io::Error::new(INJECTED, format!("injected into {op:?}")))
@@ -79,6 +84,15 @@ impl FaultyVfs {
             inner,
             script: Arc::default(),
         }
+    }
+
+    /// As [`Self::new`], and no sync reaches the file layer below. A test
+    /// in which nothing crashes loses nothing by that, and does not wait for
+    /// a disk.
+    pub(super) fn without_syncs(inner: Arc<dyn Vfs>) -> Self {
+        let vfs = Self::new(inner);
+        vfs.script.lock().unwrap().skip_syncs = true;
+        vfs
     }
 
     /// Fails the next `op` on the file or directory called `name`.
@@ -104,7 +118,7 @@ impl FaultyVfs {
         self.script.lock().unwrap().faults.len()
     }
 
-    fn enter(&self, op: Op, path: &Path) -> io::Result<()> {
+    fn enter(&self, op: Op, path: &Path) -> io::Result<bool> {
         enter(&self.script, op, &name_of(path))
     }
 }
@@ -150,8 +164,10 @@ impl Vfs for FaultyVfs {
     }
 
     fn sync_dir(&self, path: &Path) -> io::Result<()> {
-        self.enter(Op::SyncDir, path)?;
-        self.inner.sync_dir(path)
+        if self.enter(Op::SyncDir, path)? {
+            self.inner.sync_dir(path)?;
+        }
+        Ok(())
     }
 
     fn lock(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
@@ -168,7 +184,7 @@ struct FaultyFile {
 }
 
 impl FaultyFile {
-    fn enter(&self, op: Op) -> io::Result<()> {
+    fn enter(&self, op: Op) -> io::Result<bool> {
         enter(&self.script, op, &self.name)
     }
 }
@@ -190,13 +206,17 @@ impl VfsFile for FaultyFile {
     }
 
     fn sync_data(&self) -> io::Result<()> {
-        self.enter(Op::SyncData)?;
-        self.inner.sync_data()
+        if self.enter(Op::SyncData)? {
+            self.inner.sync_data()?;
+        }
+        Ok(())
     }
 
     fn sync_all(&self) -> io::Result<()> {
-        self.enter(Op::SyncAll)?;
-        self.inner.sync_all()
+        if self.enter(Op::SyncAll)? {
+            self.inner.sync_all()?;
+        }
+        Ok(())
     }
 
     fn len(&self) -> io::Result<u64> {

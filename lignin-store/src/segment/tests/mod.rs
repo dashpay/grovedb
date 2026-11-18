@@ -2,6 +2,7 @@ mod errors;
 mod faulty;
 mod files;
 mod manifest;
+mod model;
 mod store;
 mod writer;
 
