@@ -374,20 +374,17 @@ impl Step {
 pub fn differing_parts(expected: &str, actual: &str) -> Option<Vec<Part>> {
     let expected = parse_line(expected)?;
     let actual = parse_line(actual)?;
-    let mut parts: Vec<Part> = Part::ALL
-        .into_iter()
-        .filter(|part| {
-            let digest = |fields: &[(Part, String)]| {
-                fields
-                    .iter()
-                    .find(|(field, _)| field == part)
-                    .map(|(_, digest)| digest.clone())
-            };
-            digest(&expected) != digest(&actual)
-        })
-        .collect();
-    parts.sort();
-    Some(parts)
+    fn digest(fields: &[(Part, String)], part: Part) -> Option<&String> {
+        fields
+            .iter()
+            .find_map(|(field, digest)| (*field == part).then_some(digest))
+    }
+    Some(
+        Part::ALL
+            .into_iter()
+            .filter(|part| digest(&expected, *part) != digest(&actual, *part))
+            .collect(),
+    )
 }
 
 /// Whether `line` has the form [`Step::line`] writes.
@@ -401,10 +398,7 @@ fn parse_line(line: &str) -> Option<Vec<(Part, String)>> {
     while let Some(tag) = rest.chars().next() {
         let part = Part::of_tag(tag)?;
         let digest = rest.get(1..5)?;
-        if !digest
-            .bytes()
-            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
-        {
+        if !is_lower_hex(digest) {
             return None;
         }
         if fields.iter().any(|(seen, _)| *seen == part) {
@@ -414,6 +408,12 @@ fn parse_line(line: &str) -> Option<Vec<(Part, String)>> {
         rest = &rest[5..];
     }
     Some(fields)
+}
+
+/// Whether `text` is lower-case hex digits only.
+pub(crate) fn is_lower_hex(text: &str) -> bool {
+    text.bytes()
+        .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// A cost as text: every field by name. Removed bytes are `-` when the
@@ -520,7 +520,7 @@ fn put_len(out: &mut Vec<u8>, len: usize) {
 
 /// Appends `bytes` with their length, the framing every recorded byte string
 /// uses.
-pub(crate) fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
     put_len(out, bytes.len());
     out.extend_from_slice(bytes);
 }

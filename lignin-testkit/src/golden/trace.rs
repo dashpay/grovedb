@@ -39,9 +39,12 @@
 
 use std::fmt::{self, Write as _};
 
-use super::step::{differing_parts, is_step_line, Part};
+use super::step::{differing_parts, is_lower_hex, is_step_line, Part};
 
 const MAGIC: &str = "lignin-golden-trace 1";
+
+/// The longest line a report shows: a proof runs to thousands of characters.
+const REPORT_CHARS: usize = 200;
 
 /// A trace, as it is stored.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -219,6 +222,9 @@ impl Trace {
             if end.is_some() {
                 return Err(error(format!("`{line}` follows the end of the trace")));
             }
+            if tally.is_some() && !line.starts_with("end ") {
+                return Err(error(format!("`{line}` follows the tally")));
+            }
             if let Some(indented) = line.strip_prefix("  ") {
                 let segment = open
                     .as_mut()
@@ -263,8 +269,8 @@ impl Trace {
                 let (steps, digest) = count_and_digest(number, checkpoint, 8)?;
                 segment.entries.push(Entry::Checkpoint(steps, digest));
             } else if let Some(counts) = line.strip_prefix("tally ") {
-                if open.is_some() || tally.is_some() {
-                    return Err(error("the tally is not where it belongs".into()));
+                if open.is_some() {
+                    return Err(error("the tally is inside a workload".into()));
                 }
                 tally = Some(tally_at(number, counts)?);
             } else if let Some(summary) = line.strip_prefix("end ") {
@@ -469,21 +475,19 @@ fn line_differences(expected: &[String], actual: &[String]) -> String {
             continue;
         }
         if let Some(expected) = expected {
-            let _ = writeln!(out, "      recorded: {}", shortened(expected));
+            let _ = writeln!(out, "      recorded: {}", shortened(expected, REPORT_CHARS));
         }
         if let Some(actual) = actual {
-            let _ = writeln!(out, "      replayed: {}", shortened(actual));
+            let _ = writeln!(out, "      replayed: {}", shortened(actual, REPORT_CHARS));
         }
     }
     out.pop();
     out
 }
 
-/// A line cut to what a report can show: a proof runs to thousands of
-/// characters.
-fn shortened(line: &str) -> String {
-    const LIMIT: usize = 200;
-    match line.char_indices().nth(LIMIT) {
+/// `line` cut to its first `limit` characters, saying how long it was.
+pub(crate) fn shortened(line: &str, limit: usize) -> String {
+    match line.char_indices().nth(limit) {
         Some((end, _)) => format!("{}… ({} characters)", &line[..end], line.chars().count()),
         None => line.to_string(),
     }
@@ -526,10 +530,7 @@ fn count_and_digest(
     let (count, digest) = text
         .split_once(' ')
         .ok_or_else(|| ParseError::new(line, format!("`{text}` is not a count and a digest")))?;
-    let is_hex = digest
-        .bytes()
-        .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
-    if digest.len() != hex_digits || !is_hex {
+    if digest.len() != hex_digits || !is_lower_hex(digest) {
         return Err(ParseError::new(
             line,
             format!("`{digest}` is not a digest of {hex_digits} hex digits"),
@@ -760,13 +761,19 @@ mod tests {
             (
                 with(18, "tally failed=0 unproved=0 unverified=0"),
                 19,
-                "the tally is not where",
+                "the tally is inside a workload",
             ),
             (
                 with(20, "tally failed=0 unproved=0 unverified=0"),
                 21,
-                "the tally is not where",
+                "follows the tally",
             ),
+            (
+                with(20, "workload late"),
+                21,
+                "`workload late` follows the tally",
+            ),
+            (with(20, "c0001"), 21, "`c0001` follows the tally"),
             (without(19), 20, "the trace ends without a tally"),
             (
                 with(19, "tally failed=0 unproved=0"),
@@ -945,10 +952,10 @@ mod tests {
 
     #[test]
     fn a_long_line_is_cut_in_a_report() {
-        assert_eq!(shortened("short"), "short");
+        assert_eq!(shortened("short", REPORT_CHARS), "short");
         let long = "é".repeat(250);
-        let cut = shortened(&long);
-        assert!(cut.starts_with(&"é".repeat(200)));
+        let cut = shortened(&long, REPORT_CHARS);
+        assert!(cut.starts_with(&"é".repeat(REPORT_CHARS)));
         assert!(cut.ends_with("… (250 characters)"), "{cut}");
         assert_eq!(
             line_differences(&["same".to_string()], &["same".to_string()]),

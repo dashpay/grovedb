@@ -73,6 +73,10 @@ pub struct Planned {
     pub file: String,
     /// The trace.
     pub spec: TraceSpec,
+    /// Whether the trace is a hand-written case, which may record an
+    /// operation that fails or a proof that does not verify. A generated
+    /// workload may not.
+    pub hand_written: bool,
 }
 
 /// Every trace of `scale`, for every grove version.
@@ -107,6 +111,7 @@ pub fn standard(grove_version: &'static GroveVersion) -> Vec<Planned> {
             grove_version,
             segments,
         },
+        hand_written: seed == HAND_WRITTEN_SEED,
     };
     let mut planned: Vec<Planned> = suite
         .iter()
@@ -158,6 +163,7 @@ pub fn reference(grove_version: &'static GroveVersion) -> Planned {
                 },
             ],
         },
+        hand_written: false,
     }
 }
 
@@ -208,10 +214,12 @@ mod tests {
                 assert_eq!(planned.spec.grove_version.protocol_version, version);
                 assert_eq!(planned.spec.segments.len(), 1);
                 assert_eq!(planned.spec.segments[0].workload, workload.name());
+                assert!(!planned.hand_written);
             }
             let whole = &traces[suite.len()];
             assert_eq!(whole.file, format!("v{version}/suite.trace"));
             assert_eq!(whole.spec.seed, SUITE_SEED);
+            assert!(!whole.hand_written);
             let workloads: Vec<&str> = whole
                 .spec
                 .segments
@@ -222,6 +230,7 @@ mod tests {
             assert_eq!(workloads, names);
             for planned in &traces[suite.len() + 1..] {
                 assert!(planned.spec.name.starts_with("legacy-"));
+                assert!(planned.hand_written);
                 assert_eq!(planned.spec.seed, HAND_WRITTEN_SEED);
                 assert_eq!(planned.spec.segments[0].sample, Sample::Everything);
                 assert_eq!(planned.spec.segments[0].workload, planned.spec.name);
@@ -235,6 +244,7 @@ mod tests {
         assert_eq!(planned.len(), GROVE_VERSIONS.len());
         let first = &planned[0];
         assert_eq!(first.file, "reference/v1.trace");
+        assert!(!first.hand_written);
         assert_eq!(first.spec.seed, SEED);
         let [stream, proofs] = first.spec.segments.as_slice() else {
             panic!("the reference trace has two segments");

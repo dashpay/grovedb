@@ -20,8 +20,7 @@ use std::{
     thread,
 };
 
-use grovedb_version::version::GROVE_VERSIONS;
-
+pub use super::trace::Tally;
 use super::{
     plan::{plan, Planned, Scale},
     record::{self, Detailing},
@@ -139,6 +138,20 @@ pub struct Written {
     pub digest: String,
     /// The size of the file.
     pub bytes: u64,
+    /// How many steps of the trace did not succeed.
+    pub tally: Tally,
+    /// Whether the trace is a hand-written case.
+    pub hand_written: bool,
+}
+
+impl Written {
+    /// Whether the trace is a generated workload that records an operation
+    /// that fails or a proof that does not verify. Every generated stream
+    /// is meant to apply and prove on its grove version, so this is a fault
+    /// of the generator or of the engine, and not something to commit.
+    pub fn is_unexpected(&self) -> bool {
+        !self.hand_written && !self.tally.is_clean()
+    }
 }
 
 /// Records the selected traces into `corpus`, replacing their files.
@@ -202,6 +215,8 @@ fn write(
             steps: trace.steps,
             digest: trace.digest,
             bytes: text.len() as u64,
+            tally: trace.tally,
+            hand_written: planned.hand_written,
         })
     })
     .into_iter()
@@ -214,27 +229,31 @@ fn strays(corpus: &Path, scale: Scale) -> Result<Vec<String>, Error> {
         .into_iter()
         .map(|planned| planned.file)
         .collect();
-    let directories: Vec<String> = match scale {
-        Scale::Standard => GROVE_VERSIONS
-            .iter()
-            .map(|grove_version| format!("v{}", grove_version.protocol_version))
-            .collect(),
-        Scale::Reference => vec!["reference".to_string()],
+    let names = |directory: &Path| -> Result<Vec<String>, Error> {
+        let entries = match fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(Error::io(directory, &error)),
+        };
+        entries
+            .map(|entry| match entry {
+                Ok(entry) => Ok(entry.file_name().to_string_lossy().into_owned()),
+                Err(error) => Err(Error::io(directory, &error)),
+            })
+            .collect()
+    };
+    let is_of_scale = |directory: &str| match scale {
+        Scale::Standard => directory
+            .strip_prefix('v')
+            .is_some_and(|version| version.parse::<u32>().is_ok()),
+        Scale::Reference => directory == "reference",
     };
     let mut strays = Vec::new();
-    for directory in directories {
-        let path = corpus.join(&directory);
-        let entries = match fs::read_dir(&path) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(Error::io(&path, &error)),
-        };
-        for entry in entries {
-            let name = entry
-                .map_err(|error| Error::io(&path, &error))?
-                .file_name()
-                .to_string_lossy()
-                .into_owned();
+    for directory in names(corpus)? {
+        if !is_of_scale(&directory) {
+            continue;
+        }
+        for name in names(&corpus.join(&directory))? {
             let file = format!("{directory}/{name}");
             if name.ends_with(".trace") && !planned.contains(&file) {
                 strays.push(file);
@@ -545,6 +564,8 @@ pub fn engine_commit(repository: &Path) -> Result<String, Error> {
 
 #[cfg(test)]
 mod tests {
+    use grovedb_version::version::GROVE_VERSIONS;
+
     use super::*;
     use crate::golden::{plan::SEED, trace::Entry};
 
@@ -627,6 +648,13 @@ mod tests {
             );
             assert_eq!(trace.engine, "engine");
             assert_eq!(trace.details().count() as u64, trace.steps);
+            assert_eq!(written.tally, trace.tally);
+            assert!(written.hand_written && !written.is_unexpected());
+            assert_eq!(
+                written.tally.is_clean(),
+                grove_version.protocol_version > 2,
+                "the case is one grove versions 1 and 2 cannot verify"
+            );
         }
         let report = replay(corpus.path(), &selection, &settings()).expect("replay");
         assert!(report.is_green(), "{report}");
@@ -793,8 +821,10 @@ mod tests {
             strays(corpus.path(), Scale::Standard),
             Ok(vec![
                 "v1/gone.trace".to_string(),
-                "v5/also-gone.trace".to_string()
-            ])
+                "v5/also-gone.trace".to_string(),
+                "v9/unknown.trace".to_string(),
+            ]),
+            "a grove version the plan does not know is looked into as well"
         );
         assert_eq!(
             strays(corpus.path(), Scale::Reference),

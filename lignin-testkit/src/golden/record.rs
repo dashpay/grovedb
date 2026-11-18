@@ -5,7 +5,11 @@
 //! in which steps are written out in full: the ones the plan samples, the
 //! ones the recorded file has, or all of them.
 
-use std::{collections::BTreeSet, mem::discriminant, path::Path};
+use std::{
+    collections::BTreeSet,
+    mem::{discriminant, Discriminant},
+    path::Path,
+};
 
 use grovedb::GroveDb;
 use grovedb_version::version::GroveVersion;
@@ -13,10 +17,10 @@ use grovedb_version::version::GroveVersion;
 use super::{
     run::{Observed, Runner},
     step::TraceDigest,
-    trace::{Detail, Entry, Segment, Tally, Trace},
+    trace::{shortened, Detail, Entry, Segment, Tally, Trace},
     Error,
 };
-use crate::workload::{Op, StreamDigest, Workload};
+use crate::workload::{Op, Read, StreamDigest, Workload, Write};
 
 /// A trace to record: the streams applied, one after another, to one
 /// database that starts empty.
@@ -112,22 +116,37 @@ fn fresh_database(scratch: &Path) -> Result<(tempfile::TempDir, GroveDb), Error>
 /// returned for it, as values, not text.
 ///
 /// This is for a consumer that computes with the steps, such as a check of
-/// a cost model against every `OperationCost` of the corpus. Call it on a
-/// thread with a stack of [`STACK_BYTES`](super::run::STACK_BYTES).
+/// a cost model against every `OperationCost` of the corpus. The trace runs
+/// on a thread of its own, with the stack it needs.
 pub fn each_step(
     spec: &TraceSpec,
     scratch: &Path,
-    mut visit: impl FnMut(usize, &Op, Observed),
+    mut visit: impl FnMut(usize, &Op, Observed) + Send,
 ) -> Result<(), Error> {
-    let (_dir, db) = fresh_database(scratch)?;
-    let mut runner = Runner::new(&db, spec.grove_version)?;
-    for (index, segment) in spec.segments.iter().enumerate() {
-        for op in segment.source.ops(spec.seed) {
-            let observed = runner.step(&op)?;
-            visit(index, &op, observed);
+    on_a_deep_stack(|| {
+        let (_dir, db) = fresh_database(scratch)?;
+        let mut runner = Runner::new(&db, spec.grove_version)?;
+        for (index, segment) in spec.segments.iter().enumerate() {
+            for op in segment.source.ops(spec.seed) {
+                let observed = runner.step(&op)?;
+                visit(index, &op, observed);
+            }
         }
-    }
-    Ok(())
+        Ok(())
+    })
+}
+
+/// Runs `body` on a thread with the stack a trace needs and returns what it
+/// returned.
+fn on_a_deep_stack<T: Send>(body: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(super::run::STACK_BYTES)
+            .spawn_scoped(scope, body)
+            .expect("a thread can be started")
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    })
 }
 
 /// Runs `spec` on a fresh database under `scratch` and returns the trace.
@@ -227,11 +246,7 @@ fn checkpoint(digest: &TraceDigest) -> Entry {
 
 /// The operation as a remark, cut to a readable length.
 fn quoted(op: &Op) -> String {
-    let debug = format!("{op:?}");
-    match debug.char_indices().nth(REMARK_CHARS) {
-        Some((end, _)) => format!("{}… ({} characters)", &debug[..end], debug.chars().count()),
-        None => debug,
-    }
+    shortened(&format!("{op:?}"), REMARK_CHARS)
 }
 
 /// The kind of an operation, as far as sampling tells kinds apart. An
@@ -239,9 +254,9 @@ fn quoted(op: &Op) -> String {
 /// its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Kind {
-    op: std::mem::Discriminant<Op>,
-    write: Option<std::mem::Discriminant<crate::workload::Write>>,
-    read: Option<std::mem::Discriminant<crate::workload::Read>>,
+    op: Discriminant<Op>,
+    write: Option<Discriminant<Write>>,
+    read: Option<Discriminant<Read>>,
 }
 
 impl Kind {
@@ -258,19 +273,6 @@ impl Kind {
             },
         }
     }
-}
-
-/// Runs `body` on a thread with the stack a trace needs and returns what it
-/// returned.
-pub fn on_a_deep_stack<T: Send>(body: impl FnOnce() -> T + Send) -> T {
-    std::thread::scope(|scope| {
-        std::thread::Builder::new()
-            .stack_size(super::run::STACK_BYTES)
-            .spawn_scoped(scope, body)
-            .expect("a thread can be started")
-            .join()
-            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
-    })
 }
 
 #[cfg(test)]
@@ -432,6 +434,13 @@ mod tests {
         let missing = Path::new("/nonexistent/lignin-golden");
         let error = each_step(&spec, missing, |_, _, _| {}).expect_err("no scratch");
         assert!(matches!(error, Error::Io { .. }), "{error}");
+
+        let panic = std::panic::catch_unwind(|| {
+            let scratch = tempfile::tempdir().expect("temp dir");
+            each_step(&spec, scratch.path(), |_, _, _| panic!("inside"))
+        });
+        let panic = panic.expect_err("a panic of the visitor comes through");
+        assert_eq!(panic.downcast_ref::<&str>(), Some(&"inside"));
     }
 
     #[test]
@@ -563,13 +572,5 @@ mod tests {
             matches!(&error, Error::Io { path, .. } if path == missing),
             "{error}"
         );
-    }
-
-    #[test]
-    fn a_deep_stack_returns_and_panics_like_a_call() {
-        assert_eq!(on_a_deep_stack(|| 6 * 7), 42);
-        let panic = std::panic::catch_unwind(|| on_a_deep_stack(|| panic!("inside")));
-        let panic = panic.expect_err("the panic comes through");
-        assert_eq!(panic.downcast_ref::<&str>(), Some(&"inside"));
     }
 }

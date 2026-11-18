@@ -70,8 +70,7 @@ impl<'db> Runner<'db> {
             apply(self.db, op, self.transaction.as_ref(), self.grove_version);
         let outcome = match value {
             Ok(Applied::EndOfBlock) => {
-                let transaction = self.transaction.take();
-                let committed = match transaction {
+                let committed = match self.transaction.take() {
                     Some(transaction) => {
                         let committed = self.db.commit_transaction(transaction);
                         cost += committed.cost;
@@ -89,19 +88,17 @@ impl<'db> Runner<'db> {
             Ok(applied) => Outcome::Returned(self.value(applied)?),
             Err(error) => failed(&error, "failed", &mut remarks),
         };
-        let is_read = matches!(op, Op::Read(_));
-        let root_hash = if is_read {
-            None
-        } else {
-            Some(root_hash(
-                self.db,
-                self.transaction.as_ref(),
-                self.grove_version,
-            )?)
-        };
-        let proof = match op {
-            Op::Read(Read::Query(query)) => Some(self.prove(query, &mut remarks)?),
-            _ => None,
+        let (root_hash, proof) = match op {
+            Op::Read(Read::Query(query)) => (None, Some(self.prove(query, &mut remarks)?)),
+            Op::Read(_) => (None, None),
+            _ => (
+                Some(root_hash(
+                    self.db,
+                    self.transaction.as_ref(),
+                    self.grove_version,
+                )?),
+                None,
+            ),
         };
         Ok(Observed {
             step: Step {
@@ -194,12 +191,31 @@ fn root_hash(
         .map_err(|error| Error::engine("reading the root hash", &error))
 }
 
-/// The name of an error: its variant, without what the variant carries.
+/// The name of an error: its variant, and for a variant that only wraps the
+/// error of a lower layer, that error's variant as well, as in
+/// `MerkError::StorageError`.
 ///
 /// The name is what a caller matches on and what another engine has to
 /// return as well. The message is free text and is not compared.
-pub fn error_name(error: &impl Debug) -> String {
-    let debug = format!("{error:?}");
+pub fn error_name(error: &grovedb::Error) -> String {
+    let wrapped = match error {
+        grovedb::Error::MerkError(wrapped) => Some(variant_name(wrapped)),
+        grovedb::Error::StorageError(wrapped) => Some(variant_name(wrapped)),
+        grovedb::Error::VersionError(wrapped) => Some(variant_name(wrapped)),
+        grovedb::Error::ElementError(wrapped) => Some(variant_name(wrapped)),
+        grovedb::Error::QueryError(wrapped) => Some(variant_name(wrapped)),
+        _ => None,
+    };
+    match wrapped {
+        Some(wrapped) => format!("{}::{wrapped}", variant_name(error)),
+        None => variant_name(error),
+    }
+}
+
+/// The name of the variant of an enum value, without what the variant
+/// carries.
+fn variant_name(value: &impl Debug) -> String {
+    let debug = format!("{value:?}");
     let end = debug
         .find(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
         .unwrap_or(debug.len());
@@ -253,8 +269,31 @@ mod tests {
             Named { field: u8 },
             Unit2,
         }
-        assert_eq!(error_name(&Shapes::Named { field: 1 }), "Named");
-        assert_eq!(error_name(&Shapes::Unit2), "Unit2");
+        assert_eq!(variant_name(&Shapes::Named { field: 1 }), "Named");
+        assert_eq!(variant_name(&Shapes::Unit2), "Unit2");
+
+        assert_eq!(
+            error_name(&GroveError::MerkError(
+                grovedb_merk::Error::KeyNotFoundError("a key")
+            )),
+            "MerkError::KeyNotFoundError"
+        );
+        assert_eq!(
+            error_name(&GroveError::MerkError(grovedb_merk::Error::CorruptedState(
+                "a state"
+            ))),
+            "MerkError::CorruptedState"
+        );
+        assert_eq!(
+            error_name(&GroveError::VersionError(
+                grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                    method: "a method".to_string(),
+                    known_versions: vec![0],
+                    received: 1,
+                }
+            )),
+            "VersionError::UnknownVersionMismatch"
+        );
     }
 
     #[test]

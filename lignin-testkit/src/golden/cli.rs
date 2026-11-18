@@ -126,7 +126,8 @@ fn parse(arguments: &[String]) -> Result<Invocation, String> {
 }
 
 /// Runs the command and returns its exit code: 0 for success, 1 for a
-/// replay that differs from the corpus, 2 for a command that could not run.
+/// replay that differs from the corpus or a generated workload that records
+/// a failure, 2 for a command that could not run.
 pub fn run(arguments: &[String], out: &mut dyn Write) -> u8 {
     let invocation = match parse(arguments) {
         Ok(invocation) => invocation,
@@ -183,8 +184,7 @@ fn execute(invocation: &Invocation, out: &mut dyn Write) -> Result<u8, Error> {
                 None => engine_commit(&repository_dir())?,
             };
             let written = corpus::record(corpus, selection, &engine, settings)?;
-            summarize(out, "recorded", &written, &engine, corpus);
-            Ok(0)
+            Ok(summarize(out, "recorded", &written, &engine, corpus))
         }
         Command::Dump => {
             let engine = match &invocation.engine {
@@ -196,8 +196,7 @@ fn execute(invocation: &Invocation, out: &mut dyn Write) -> Result<u8, Error> {
             let directory = invocation.out.as_deref().unwrap_or(corpus);
             let steps = invocation.steps.clone();
             let written = corpus::dump(directory, selection, &engine, steps, settings)?;
-            summarize(out, "dumped", &written, &engine, directory);
-            Ok(0)
+            Ok(summarize(out, "dumped", &written, &engine, directory))
         }
         Command::Replay => {
             let report = corpus::replay(corpus, selection, settings)?;
@@ -207,13 +206,16 @@ fn execute(invocation: &Invocation, out: &mut dyn Write) -> Result<u8, Error> {
     }
 }
 
+/// Says what was written, and returns the exit code: 1 when a generated
+/// workload records an operation that fails or a proof that does not
+/// verify.
 fn summarize(
     out: &mut dyn Write,
     done: &str,
     written: &[Written],
     engine: &str,
     directory: &std::path::Path,
-) {
+) -> u8 {
     let steps: u64 = written.iter().map(|written| written.steps).sum();
     let bytes: u64 = written.iter().map(|written| written.bytes).sum();
     let _ = writeln!(
@@ -222,6 +224,17 @@ fn summarize(
         written.len(),
         directory.display()
     );
+    let mut code = 0;
+    for written in written.iter().filter(|written| written.is_unexpected()) {
+        let _ = writeln!(
+            out,
+            "{}: a generated workload records {}. Every generated stream is meant to apply and \
+             prove, so this is not a trace to commit.",
+            written.file, written.tally
+        );
+        code = 1;
+    }
+    code
 }
 
 #[cfg(test)]
@@ -416,6 +429,48 @@ mod tests {
         ));
         assert_eq!(code, 2, "{text}");
         assert!(text.starts_with("error: /nonexistent: "), "{text}");
+    }
+
+    #[test]
+    fn a_generated_workload_that_records_a_failure_is_pointed_out() {
+        let written = |file: &str, hand_written: bool, unverified: u64| Written {
+            file: file.to_string(),
+            steps: 10,
+            digest: "0".repeat(64),
+            bytes: 100,
+            tally: corpus::Tally {
+                unverified,
+                ..corpus::Tally::default()
+            },
+            hand_written,
+        };
+        let mut out = Vec::new();
+        let expected = [
+            written("v1/documents.trace", false, 0),
+            written("v1/legacy-case.trace", true, 2),
+        ];
+        assert_eq!(
+            summarize(&mut out, "recorded", &expected, "abc", "/c".as_ref()),
+            0
+        );
+        assert_eq!(
+            String::from_utf8(out).expect("text"),
+            "recorded 2 traces (20 steps, 200 bytes) from engine commit abc into /c\n"
+        );
+        let mut out = Vec::new();
+        let unexpected = [written("v1/documents.trace", false, 3)];
+        assert_eq!(
+            summarize(&mut out, "recorded", &unexpected, "abc", "/c".as_ref()),
+            1
+        );
+        let text = String::from_utf8(out).expect("text");
+        assert!(
+            text.contains(
+                "\nv1/documents.trace: a generated workload records failed=0 unproved=0 \
+                 unverified=3. "
+            ),
+            "{text}"
+        );
     }
 
     /// Without `--engine` the commit comes from the checkout the crate was
