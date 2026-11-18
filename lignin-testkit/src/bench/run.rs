@@ -323,7 +323,22 @@ fn sampled_count_row(id: &str, phase: &str, unit: &str, samples: Vec<f64>, sourc
     row
 }
 
+/// Whether `op` is a state transition: a direct write or a batch, whole or
+/// in segments, under GroveDB's callbacks or Drive's.
+fn is_transition(op: &Op) -> bool {
+    match op {
+        Op::Write(_)
+        | Op::Batch(_)
+        | Op::PartialBatch(_)
+        | Op::FlagsBatch(_)
+        | Op::FlagsPartialBatch(_) => true,
+        Op::Read(_) | Op::Commit | Op::FlushPendingDrops | Op::Transaction(_) => false,
+    }
+}
+
 /// Key and value bytes `op` writes: each key plus its serialized element.
+/// An element is counted as it is written: the storage flags Drive's
+/// callbacks store with it may be longer.
 fn logical_bytes(op: &Op, grove_version: &GroveVersion) -> u64 {
     match op {
         Op::Write(
@@ -332,11 +347,10 @@ fn logical_bytes(op: &Op, grove_version: &GroveVersion) -> u64 {
             | Write::InsertIfChanged { key, element, .. }
             | Write::IndexedInsert { key, element, .. },
         ) => entry_bytes(key, element, grove_version),
-        Op::Batch(ops) => batch_bytes(ops, grove_version),
-        Op::PartialBatch(batch) => {
-            batch_bytes(&batch.ops, grove_version) + batch_bytes(&batch.add_on, grove_version)
+        Op::Batch(_) | Op::PartialBatch(_) | Op::FlagsBatch(_) | Op::FlagsPartialBatch(_) => {
+            batch_bytes(op.batch_ops(), grove_version)
         }
-        _ => 0,
+        Op::Write(_) | Op::Read(_) | Op::Commit | Op::FlushPendingDrops | Op::Transaction(_) => 0,
     }
 }
 
@@ -349,33 +363,32 @@ fn entry_bytes(key: &[u8], element: &Element, grove_version: &GroveVersion) -> u
 }
 
 /// [`logical_bytes`] of the operations of a batch.
-fn batch_bytes(ops: &[BatchOp], grove_version: &GroveVersion) -> u64 {
-    ops.iter()
-        .map(|op| match op {
-            BatchOp::InsertOrReplace { key, element, .. }
-            | BatchOp::InsertOnly { key, element, .. }
-            | BatchOp::InsertIfNotExists { key, element, .. }
-            | BatchOp::Replace { key, element, .. }
-            | BatchOp::Patch { key, element, .. } => entry_bytes(key, element, grove_version),
-            BatchOp::RefreshReference {
-                key,
-                reference,
-                max_hop,
-                flags,
-                non_counted,
-                ..
-            } => {
-                let reference = Element::Reference(reference.clone(), *max_hop, flags.clone());
-                let stored = if *non_counted {
-                    Element::NonCounted(Box::new(reference))
-                } else {
-                    reference
-                };
-                entry_bytes(key, &stored, grove_version)
-            }
-            _ => 0,
-        })
-        .sum()
+fn batch_bytes<'a>(ops: impl Iterator<Item = &'a BatchOp>, grove_version: &GroveVersion) -> u64 {
+    ops.map(|op| match op {
+        BatchOp::InsertOrReplace { key, element, .. }
+        | BatchOp::InsertOnly { key, element, .. }
+        | BatchOp::InsertIfNotExists { key, element, .. }
+        | BatchOp::Replace { key, element, .. }
+        | BatchOp::Patch { key, element, .. } => entry_bytes(key, element, grove_version),
+        BatchOp::RefreshReference {
+            key,
+            reference,
+            max_hop,
+            flags,
+            non_counted,
+            ..
+        } => {
+            let reference = Element::Reference(reference.clone(), *max_hop, flags.clone());
+            let stored = if *non_counted {
+                Element::NonCounted(Box::new(reference))
+            } else {
+                reference
+            };
+            entry_bytes(key, &stored, grove_version)
+        }
+        _ => 0,
+    })
+    .sum()
 }
 
 /// What a write phase measured.
@@ -440,9 +453,7 @@ fn write_phase<E: Engine>(
             let (result, elapsed) = timed(|| transaction.apply(op, grove_version));
             cost += result?;
             apply_time += elapsed;
-            if matches!(op, Op::Batch(_) | Op::PartialBatch(_) | Op::Write(_)) {
-                writes += 1;
-            }
+            writes += u64::from(is_transition(op));
         }
         apply_meter.stop(mark);
         let mark = commit_meter.start();
@@ -1304,5 +1315,74 @@ mod tests {
         let wrapped = logical_bytes(&Op::Batch(vec![reference(true)]), grove_version);
         assert!(wrapped > plain, "the NonCounted wrapper is stored too");
         assert_eq!(logical_bytes(&Op::Commit, grove_version), 0);
+    }
+
+    /// A batch applied with Drive's storage-flag callbacks writes what the
+    /// same batch writes under GroveDB's own, and is a transition like it.
+    #[test]
+    fn a_batch_under_drives_callbacks_is_counted_like_any_other() {
+        let grove_version = GroveVersion::latest();
+        let flags = vec![0, 0, 3];
+        let element = Element::new_item_with_flags(vec![1; 10], Some(flags));
+        let entry = entry_bytes(b"key", &element, grove_version);
+        let put = BatchOp::Replace {
+            path: vec![],
+            key: b"key".to_vec(),
+            element,
+        };
+        let delete = BatchOp::Delete {
+            path: vec![],
+            key: b"key".to_vec(),
+        };
+        let ops = vec![put.clone(), delete.clone()];
+        let partial = PartialBatch {
+            ops: vec![put.clone()],
+            add_on: vec![put, delete],
+            pause_height: None,
+        };
+        let pairs = [
+            (Op::FlagsBatch(ops.clone()), Op::Batch(ops), entry),
+            (
+                Op::FlagsPartialBatch(partial.clone()),
+                Op::PartialBatch(partial),
+                2 * entry,
+            ),
+        ];
+        for (with_drives, with_grovedbs, bytes) in pairs {
+            assert_eq!(logical_bytes(&with_drives, grove_version), bytes);
+            assert_eq!(logical_bytes(&with_grovedbs, grove_version), bytes);
+            assert!(is_transition(&with_drives) && is_transition(&with_grovedbs));
+        }
+
+        // A delete writes no key and no element, with either callback.
+        let deletes = [
+            Write::Delete {
+                path: vec![],
+                key: b"key".to_vec(),
+            },
+            Write::SectionalDelete {
+                path: vec![],
+                key: b"key".to_vec(),
+            },
+            Write::SectionalDeleteUpTree {
+                path: vec![b"tree".to_vec()],
+                key: b"key".to_vec(),
+                stop_path_height: Some(0),
+            },
+        ];
+        for delete in deletes {
+            let delete = Op::Write(delete);
+            assert_eq!(logical_bytes(&delete, grove_version), 0);
+            assert!(is_transition(&delete));
+        }
+        let get = Op::Read(Read::Get {
+            path: vec![],
+            key: b"key".to_vec(),
+        });
+        let step = Op::Transaction(crate::workload::TransactionOp::SetSavepoint);
+        for other in [get, Op::Commit, Op::FlushPendingDrops, step] {
+            assert_eq!(logical_bytes(&other, grove_version), 0);
+            assert!(!is_transition(&other), "{other:?}");
+        }
     }
 }
