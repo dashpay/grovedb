@@ -5,7 +5,7 @@ This is the specification for task FMT-01 of the LigninDB plan
 fixes the identifiers and rules that every LigninDB file shares:
 
 - how bytes are laid out (section 2)
-- page ids, commit versions and file ids (section 3)
+- page ids, commit versions, file ids and slot numbers (section 3)
 - the record checksum (section 4)
 - what a record is, and the default record frame (section 5)
 - the header every file starts with (section 6)
@@ -98,6 +98,7 @@ later record or in the manifest, which is replaced as a whole file (STORE-02).
 | Page id | `PageId` | `u32`, 4 bytes | 1 to 2^32 − 1 | 0: no page |
 | Commit version | `CommitVersion` | `u64`, 8 bytes | 0 to 2^64 − 2 | 2^64 − 1: no version |
 | File id | `FileId` | `u32`, 4 bytes | 1 to 2^32 − 1 | 0: no file |
+| Slot number | `SlotId` | `u16`, 2 bytes | 1 to 2^16 − 1 | 0: no slot |
 
 A field that must hold an identifier rejects the reserved pattern
 (`MissingId`). A field that may be empty stores the reserved pattern for
@@ -188,6 +189,28 @@ A file id is the number in a numbered file's name: `seg/00000310.seg` is file
 A pointer to a place in a file is a file id plus a `u64` offset, with a length
 where the reader needs one. The formats that store such pointers (FMT-02,
 FMT-06, FMT-07 and the page table) fix their exact layout.
+
+### 3.4 Slot number and cell address
+
+A slot number names one cell inside one tree page: an entry of that page's
+slot directory ([`tree-page.md`](tree-page.md)).
+
+- **It is a name, not a position.** A cell keeps its slot number from the
+  commit that puts it into the page to the commit that takes it out, whatever
+  happens to the page in between (S1 of [`tree-layout.md`](tree-layout.md)).
+  A freed number is used again, the lowest first.
+- **From 1.** Slot 1 is the first entry of the directory, and 0 is "no slot"
+  (B6).
+- **Tree pages only.** A flat page has positions, which move when a smaller
+  key is added (P13 of [`flat-page.md`](flat-page.md)), and no slot numbers.
+- **Sixteen bits** is more than a page can use: a page is at most 65,535
+  bytes and a slot costs two of them.
+
+A **cell address** is a page id followed by a slot number, six bytes
+(`CellAddress`). It is what a link to a child stores, and what the subtree
+directory stores for the root of a Merk (TREE-05). All zero is "no cell". A
+page id with no slot, or a slot with no page id, is not a valid address
+(`MissingId`).
 
 ## 4. Checksums
 
@@ -508,7 +531,7 @@ changes and U6 applies without exception.
 
 | Task | Takes from here | Still its own to define |
 | --- | --- | --- |
-| FMT-02 Tree page codec | `PageId` for cross-page pointers, with 0 for "none". A page image is a record: it has a checksum (section 4) and no version of its own (R5). | In-page slot numbers, cell layout, the page header, and how a cell stores the value pointer. The pointer's fields and its 16-byte encoding are FMT-07's. |
+| FMT-02 Tree page codec | `PageId` for cross-page pointers, with 0 for "none". A page image has no version of its own (R5). It lies in a record with a checksum (R1, R4): the segment block that holds it, so it carries none itself ([`tree-page.md`](tree-page.md), TP3). | The cell layout, the page header, and how a cell stores the value pointer. `SlotId` and `CellAddress` (3.4) were added by this task. The pointer's fields and its 16-byte encoding are FMT-07's. |
 | FMT-03 Page delta records | The record rules R1 to R7 and the checksum. | Its own compact header, to meet the 48-byte hash delta. |
 | FMT-04 Flat page codec | As FMT-02. | Everything inside the page. |
 | FMT-05 Log record format | `CommitVersion` for a commit group; consecutive groups differ by one (3.2). The default frame. A group above 128 MiB is several records (C5). | Group layout, record kinds, and what a failed record means for the tail (R7). |
@@ -542,11 +565,12 @@ owner can overrule one before formats are built on it.
    rolling a build back. It was not chosen because it needs every encoder kept
    for every old version. The bytes on disk are the same either way, so this
    can still change when version 2 is designed.
-7. **In-page slot numbers are not defined here.** They are part of the page
-   layout (FMT-02). The plan has since fixed their width at 16 bits.
-   TREE-05's subtree location needs a cell address, which is a page id plus
-   a slot. FMT-07's back pointer does not: it names a page and stores no
-   slot (section 5 of `value-log-format.md`).
+7. **In-page slot numbers were not defined by FMT-01.** They are part of the
+   page layout, and the plan fixed their width at 16 bits. FMT-02 added
+   `SlotId` and the cell address (3.4): TREE-05's subtree location needs a
+   cell address, which is a page id plus a slot. FMT-07's back pointer does
+   not: it names a page and stores no slot (section 5 of
+   `value-log-format.md`).
 8. **`crc32c` is a dependency** (section 4), in place of a slower checksum
    written in safe Rust inside the crate. Its software fallback is not
    exercised by the tests on the development machine.
@@ -566,7 +590,7 @@ All of this is in `lignin-format`. Run the tests with
 
 | Rule | Code | Tests |
 | --- | --- | --- |
-| Identifiers (section 3) | `ids::{PageId, FileId, CommitVersion}` | Round trip in both directions over boundary and random values; the reserved pattern; byte order; ordering; `CommitVersion::next`. |
+| Identifiers (section 3) | `ids::{PageId, FileId, CommitVersion, SlotId, CellAddress}` | Round trip in both directions over boundary and random values; the reserved pattern; byte order; ordering; `CommitVersion::next`. Every slot number; half a cell address. |
 | C1 | `checksum::Checksum` (the CRC itself is private) | RFC 3720 vectors; agreement with a bit-at-a-time reference on random input. |
 | C2, C3 | `checksum::Checksum` | Masked vectors; round trip; the same checksum however the covered bytes are split; every single-bit flip rejected; the nesting test. |
 | C4 | `checksum::Checksum` | No zero checksum for any run of 0 to 2^27 zero bytes; zero-filled bytes rejected as a file header and as a record. |
