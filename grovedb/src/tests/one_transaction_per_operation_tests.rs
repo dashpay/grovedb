@@ -22,9 +22,12 @@ use grovedb_version::version::GroveVersion;
 use tempfile::TempDir;
 
 use crate::{
-    batch::QualifiedGroveDbOp, engine::SubtreeCursor, query_result_type::QueryResultType,
-    reference_path::ReferencePathType, AggregateSumPathQuery, Element, Engine, GroveDb, PathQuery,
-    RocksDbEngine, SizedQuery,
+    batch::QualifiedGroveDbOp,
+    engine::SubtreeCursor,
+    query_result_type::QueryResultType,
+    reference_path::ReferencePathType,
+    tests::faultable_reads::{with_failed_parent_read, INJECTED_READ_FAILURE},
+    AggregateSumPathQuery, Element, Engine, Error, GroveDb, PathQuery, RocksDbEngine, SizedQuery,
 };
 
 struct PinnedReads {
@@ -487,6 +490,37 @@ fn an_append_only_tree_is_read_in_the_transaction_of_its_element() {
     .unwrap()
     .expect("leaf");
     assert_eq!(leaf, Some(b"leaf".to_vec()));
+}
+
+#[test]
+fn a_failed_parent_read_is_a_storage_error_on_a_second_engine() {
+    let grove_version = GroveVersion::latest();
+    let (_dir, db) = database(grove_version);
+    let inner: &[&[u8]] = &[TREE, INNER];
+    let read = || {
+        db.get_raw_optional(inner.into(), b"i1", None, grove_version)
+            .unwrap()
+    };
+
+    // Opening `inner` reads its element in `tree`. The read fails in the
+    // handle of this engine, behind the node store.
+    let failed = with_failed_parent_read(INNER, read);
+    assert!(
+        matches!(
+            &failed,
+            Err(Error::StorageError(StorageError::StorageError(message)))
+                if message == INJECTED_READ_FAILURE
+        ),
+        "got {failed:?}"
+    );
+    assert_eq!(read().expect("a healthy read"), Some(item(b"inner one")));
+    // A parent that is not there is still absence.
+    let absent: &[&[u8]] = &[TREE, b"absent"];
+    let below_nothing = with_failed_parent_read(INNER, || {
+        db.get_raw_optional(absent.into(), b"i1", None, grove_version)
+            .unwrap()
+    });
+    assert_eq!(below_nothing.expect("absence"), None);
 }
 
 #[test]

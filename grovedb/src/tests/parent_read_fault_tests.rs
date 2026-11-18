@@ -11,7 +11,7 @@ use grovedb_merk::{
     element::{costs::ElementCostExtensions, get::ElementFetchFromStorageExtensions},
     Error as MerkError, Merk, TreeType,
 };
-use grovedb_storage::{RawIterator, Storage, StorageContext};
+use grovedb_storage::{FlatStore, RawIterator};
 use grovedb_version::version::{v4::GROVE_V4, GroveVersion, GROVE_VERSIONS};
 
 use crate::{
@@ -27,7 +27,7 @@ use crate::{
         },
         make_empty_grovedb, make_test_grovedb, TempGroveDb, TEST_LEAF,
     },
-    BackwardsReferences, Element, Error, PathQuery, PendingPrefixDropsReport, Query,
+    BackwardsReferences, Element, Engine, Error, PathQuery, PendingPrefixDropsReport, Query,
 };
 
 const PARENT: &[u8] = b"parent";
@@ -225,12 +225,8 @@ fn should_still_report_a_missing_parent_key_as_absence() {
 /// The first record a non-Merk tree at `path` keeps in its own data storage.
 fn first_stored_record(db: &TempGroveDb, path: &[&[u8]]) -> (Vec<u8>, Vec<u8>) {
     let tx = db.start_transaction();
-    let storage = db
-        .db
-        .storage()
-        .get_transactional_storage_context(path.into(), None, &tx)
-        .unwrap();
-    let mut iter = storage.raw_iter();
+    let storage = db.db.subtree(path.into(), None, &tx).unwrap();
+    let mut iter = FlatStore::cursor(&storage);
     iter.seek_to_first().unwrap();
     let key = iter.key().unwrap().expect("a stored record").to_vec();
     let value = iter.value().unwrap().expect("a stored record").to_vec();
@@ -544,8 +540,7 @@ fn should_return_the_storage_error_when_a_merk_node_read_fails() {
     };
     let storage = db
         .db
-        .storage()
-        .get_transactional_storage_context([TEST_LEAF].as_ref().into(), None, &tx)
+        .subtree([TEST_LEAF].as_ref().into(), None, &tx)
         .unwrap();
     let merk = Merk::open_layered_with_root_key(
         FaultableReads(storage),
