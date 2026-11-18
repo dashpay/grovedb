@@ -5,7 +5,7 @@
 //!
 //! How a sum-bearing item (`SumItem` or `ItemWithSumItem`, wrapped or not) is
 //! sized is gated on `average_case.average_case_sum_item_cost_size`, and how
-//! creating a `PrivateDocumentStore` is priced on
+//! a wrapped tree is sized and creating a `PrivateDocumentStore` is priced on
 //! `average_case.average_case_merk_insert_element`:
 //!
 //! * **[v0]** — released behaviour, `GROVE_V1`..`GROVE_V3`. Every element that
@@ -15,10 +15,14 @@
 //!   estimate's `added_bytes` come in below the applied ones by up to 8 per
 //!   item (8 for any sum value that encodes in one byte).
 //! * **[v1]** — `GROVE_V4`. A sum-bearing item is sized by the specialized
-//!   cost the apply writes it with.
+//!   cost the apply writes it with. A tree wrapped in `NonCounted`,
+//!   `NotSummed` or `NotCountedOrSummed` is sized as the tree alone, in v0 as
+//!   well, so its `added_bytes` come in 1 below the applied ones, which
+//!   charge the wrapper's byte.
 //! * **[v2]** — `GROVE_V5`+ (`average_case_merk_insert_element: 1`). v1, and
-//!   creating a `PrivateDocumentStore` is priced as the apply prices it: its
-//!   existence check and the two hashes of its empty root.
+//!   a wrapped tree is sized with its wrapper's byte, and creating a
+//!   `PrivateDocumentStore` is priced as the apply prices it: its existence
+//!   check and the two hashes of its empty root.
 //!
 //! The estimate is the admission bound historical blocks are replayed
 //! against, so the released versions keep their sizing.

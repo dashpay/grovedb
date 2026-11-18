@@ -23,9 +23,13 @@
 //!   estimators price creating a `PrivateDocumentStore` as the apply does,
 //!   adding the existence check a write-once store makes and the two hashes
 //!   deriving its empty root, and in the worst case pricing the store as the
-//!   layered tree the apply writes rather than as an item. V4 keeps the
-//!   6.1.1 estimates, which price a store's creation below its apply. Gated
-//!   because the estimate is the admission bound.
+//!   layered tree the apply writes rather than as an item. The average-case
+//!   estimator also sizes a tree wrapped in `NonCounted`, `NotSummed` or
+//!   `NotCountedOrSummed` with the byte of its wrapper, which the apply
+//!   charges; the worst-case one always has. V4 keeps the 6.1.1 estimates,
+//!   which price a store's creation below its apply and a wrapped tree's
+//!   insert 1 byte below its apply. Gated because the estimate is the
+//!   admission bound.
 //!
 //! - `operations.proof.count_offset_reference_empty_tree_rows: 1`: the
 //!   global count-offset verifier exempts rows resolved through a reference
@@ -186,7 +190,8 @@ pub const GROVE_V5: GroveVersion = GroveVersion {
         },
         operations: GroveDBOperationsVersions {
             average_case: GroveDBOperationsAverageCaseVersions {
-                average_case_merk_insert_element: 1, // changed: prices a store's creation
+                // changed: prices a store's creation and a tree's wrapper byte
+                average_case_merk_insert_element: 1,
                 ..GROVE_V4.grovedb_versions.operations.average_case
             },
             worst_case: GroveDBOperationsWorstCaseVersions {

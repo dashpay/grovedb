@@ -4102,6 +4102,138 @@ mod tests {
         }
     }
 
+    /// Empty trees in each wrapper, each with the aggregating tree it is
+    /// placed under and the same tree without its wrapper: `NonCounted` needs
+    /// a count-carrying parent, `NotSummed` a sum-carrying one and
+    /// `NotCountedOrSummed` one carrying both.
+    fn wrapped_empty_tree_children() -> Vec<(TreeType, Element, Element, Element)> {
+        let flags = Some(vec![1, 2, 3]);
+        let non_counted = |element: Element| {
+            Element::new_non_counted(element).expect("expected a tree to wrap as non-counted")
+        };
+        let not_summed = |element: Element| {
+            Element::new_not_summed(element).expect("expected a sum tree to wrap as not-summed")
+        };
+        let not_counted_or_summed = |element: Element| {
+            Element::new_not_counted_or_summed(element)
+                .expect("expected a sum tree to wrap as not-counted-or-summed")
+        };
+        let count_tree = || (TreeType::CountTree, Element::empty_count_tree());
+        let sum_tree = || (TreeType::SumTree, Element::empty_sum_tree());
+        let count_sum_tree = || (TreeType::CountSumTree, Element::empty_count_sum_tree());
+        let case =
+            |(tree_type, tree): (TreeType, Element),
+             wrap: &dyn Fn(Element) -> Element,
+             child: Element| { (tree_type, tree, wrap(child.clone()), child) };
+        vec![
+            case(count_tree(), &non_counted, Element::empty_tree()),
+            case(
+                count_tree(),
+                &non_counted,
+                Element::empty_tree_with_flags(flags.clone()),
+            ),
+            case(count_tree(), &non_counted, Element::empty_count_tree()),
+            case(count_sum_tree(), &non_counted, Element::empty_sum_tree()),
+            case(
+                count_sum_tree(),
+                &non_counted,
+                Element::empty_provable_count_sum_tree(),
+            ),
+            case(sum_tree(), &not_summed, Element::empty_sum_tree()),
+            case(
+                sum_tree(),
+                &not_summed,
+                Element::empty_big_sum_tree_with_flags(flags.clone()),
+            ),
+            case(
+                count_sum_tree(),
+                &not_summed,
+                Element::empty_count_sum_tree(),
+            ),
+            case(
+                count_sum_tree(),
+                &not_counted_or_summed,
+                Element::empty_sum_tree(),
+            ),
+            case(
+                count_sum_tree(),
+                &not_counted_or_summed,
+                Element::empty_count_sum_tree_with_flags(flags),
+            ),
+        ]
+    }
+
+    /// The apply charges a wrapped tree the byte of its wrapper
+    /// (`NonCounted`, `NotSummed` or `NotCountedOrSummed`) on top of the
+    /// tree's own size. From V5 the element estimate sizes it the same way,
+    /// so the estimate's added bytes are the applied ones, one above the
+    /// same tree without its wrapper (issue #911).
+    #[test]
+    fn test_batch_wrapped_empty_tree_insert_average_case_added_bytes_match_actual() {
+        let grove_version = GroveVersion::latest();
+        for (tree_type, tree, wrapped, bare) in wrapped_empty_tree_children() {
+            let (estimated, applied) = child_created_with_its_tree_costs(
+                tree_type,
+                tree.clone(),
+                wrapped.clone(),
+                grove_version,
+            );
+            assert_eq!(
+                estimated.storage_cost.added_bytes, applied.storage_cost.added_bytes,
+                "{wrapped}: estimated added_bytes must be the applied ones",
+            );
+            let (bare_estimated, bare_applied) =
+                child_created_with_its_tree_costs(tree_type, tree, bare, grove_version);
+            assert_eq!(
+                bare_estimated.storage_cost.added_bytes, bare_applied.storage_cost.added_bytes,
+                "{wrapped}: without its wrapper, estimated added_bytes must be the applied ones",
+            );
+            assert_eq!(
+                estimated.storage_cost.added_bytes,
+                bare_estimated.storage_cost.added_bytes + 1,
+                "{wrapped}: the wrapper must be estimated at exactly one byte",
+            );
+        }
+    }
+
+    /// Replay guarantee: `GROVE_V4` is live, and its element estimate sizes a
+    /// wrapped tree without its wrapper's byte, one below what the apply
+    /// charges. Pinned to the figures from before the byte was added.
+    #[test]
+    fn test_batch_wrapped_empty_tree_insert_average_case_pinned_on_grove_v4() {
+        // The estimate's added_bytes for the whole batch, per child.
+        let pinned = [249, 253, 258, 283, 292, 258, 269, 292, 283, 296];
+        let cases = wrapped_empty_tree_children();
+        assert_eq!(
+            cases.len(),
+            pinned.len(),
+            "every wrapped tree needs a pinned V4 figure",
+        );
+        for ((tree_type, tree, wrapped, bare), added_bytes) in cases.into_iter().zip(pinned) {
+            let (estimated, applied) = child_created_with_its_tree_costs(
+                tree_type,
+                tree.clone(),
+                wrapped.clone(),
+                &GROVE_V4,
+            );
+            assert_eq!(
+                estimated.storage_cost.added_bytes, added_bytes,
+                "{wrapped}: V4 insert estimate must not move",
+            );
+            assert_eq!(
+                estimated.storage_cost.added_bytes + 1,
+                applied.storage_cost.added_bytes,
+                "{wrapped}: V4 estimates the tree without its wrapper's byte",
+            );
+            let (bare_estimated, _) =
+                child_created_with_its_tree_costs(tree_type, tree, bare, &GROVE_V4);
+            assert_eq!(
+                estimated.storage_cost.added_bytes, bare_estimated.storage_cost.added_bytes,
+                "{wrapped}: V4 estimates the tree as it does without its wrapper",
+            );
+        }
+    }
+
     /// Estimate and actual cost of removing each entry, one at a time, from
     /// a full indexed primary of `2^height - 1` large items. Returns the
     /// estimate (the same for every key) and the costliest removal seen in

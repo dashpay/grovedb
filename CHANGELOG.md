@@ -485,6 +485,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in the worst case) below its apply, which the batch estimate's
   propagation headroom happens to cover. Estimates of every other element,
   applied costs, stored data and proofs do not change.
+- From `GROVE_V5`, the average-case insert estimate of a tree wrapped in
+  `NonCounted`, `NotSummed` or `NotCountedOrSummed` includes the wrapper's
+  byte. `average_case_merk_insert_element` sized such a tree as the tree
+  alone, so its `added_bytes` came in 1 below what the apply charges for
+  every wrapped tree a batch inserts as an element (an empty one, say): a
+  batch creating a `CountTree` with a `NonCounted` empty `Tree` in it was
+  estimated at 249 added bytes and applied at 250. v2 of the estimator (`average_case_merk_insert_element: 1`,
+  which `GROVE_V5` already selects) now sizes a wrapped tree as
+  `average_case_merk_insert_tree` does with a `wrapper_overhead` of 1. v1,
+  which `GROVE_V4` keeps, is unchanged from 6.1.1. The worst-case estimate
+  already counted the byte and does not change, and neither do the estimates
+  of unwrapped trees and of items, applied costs, stored data and proofs
+  (issue #911).
 - From `GROVE_V5`, count-offset proof verification accepts pages whose rows
   resolve through a reference to an empty tree, which earlier versions could
   persist. The empty-tree hash check applies only to direct tree rows on the
