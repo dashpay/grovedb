@@ -365,7 +365,11 @@ the records carry it as they are:
 - **record 21** with a value pointer **places** it: the 12 bytes of the
   place are overwritten and no other byte of the page changes, because the
   value length is the same. Nothing moves, so the layout of a page never
-  depends on when write-back runs.
+  depends on when write-back runs. That the pointer has the pending
+  value's length is the writer's rule, as with every place a writer gives
+  (PD10): a record 21 with another length is applied like any other, and
+  writes the 4 bytes of the length in the cell's header as well, since it
+  is then another value and not the same one placed.
 
 A pending value may stand in a page in a buffer, in a log record, and
 inside a run. It may not stand in a page version that a segment makes
@@ -726,9 +730,9 @@ owner can overrule one while version 1 is still open (U10).
     two (the value hash and the key-value hash), 70 bytes. A record for
     the pair would be 67. Not taken: it is a second way to write two
     changes.
-11. **A value pointer record holds the whole 16-byte pointer**, value
-    length included, although the cell has that length already when a
-    value is placed or moved. One record then also serves a value that is
+11. **A value pointer record holds all 16 bytes of the value's place**, a
+    pointer or a pending value (PD16), value length included, although the
+    cell has that length already when a value is placed or moved. One record then also serves a value that is
     replaced by a longer or shorter one out of line. A record without the
     length would be 4 bytes shorter and could only move a value.
 12. **No record names a carried cell** (8.1).

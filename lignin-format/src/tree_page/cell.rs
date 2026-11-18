@@ -183,7 +183,8 @@ impl<'a> CellValue<'a> {
         }
     }
 
-    const fn of_place(place: ValuePlace) -> Self {
+    /// What a cell stores for a value that is at `place`.
+    pub const fn of_place(place: ValuePlace) -> Self {
         match place {
             ValuePlace::Placed(pointer) => Self::OutOfLine(pointer),
             ValuePlace::Pending(pending) => Self::Pending(pending),
@@ -215,10 +216,12 @@ impl<'a> CellValue<'a> {
     }
 
     fn write(&self, out: &mut Writer<'_>) {
-        match self.place() {
-            None => out.put(self.inline().unwrap_or_default()),
-            Some(place) => out.put(&place.encode()[..TreeCell::VALUE_LOCATION_LEN]),
-        }
+        let place = match *self {
+            Self::Inline(value) => return out.put(value),
+            Self::OutOfLine(pointer) => ValuePlace::Placed(pointer),
+            Self::Pending(pending) => ValuePlace::Pending(pending),
+        };
+        out.put(&place.encode()[..TreeCell::VALUE_LOCATION_LEN]);
     }
 }
 
@@ -540,8 +543,9 @@ impl<'a> TreeCell<'a> {
     /// Bytes of one hosted-root pointer.
     pub const HOSTED_ROOT_LEN: usize = CellAddress::ENCODED_LEN;
     /// Bytes a cell stores in place of a value that is out of line: the file
-    /// id and the offset of the value pointer. The pointer's value length is
-    /// the cell's own value length.
+    /// id and the offset of the value pointer, or the reserved file id and
+    /// the id of a pending value. The value length of either is the cell's
+    /// own value length.
     pub const VALUE_LOCATION_LEN: usize = FileId::ENCODED_LEN + VALUE_OFFSET_LEN;
     /// The longest key.
     pub const MAX_KEY_LEN: usize = MAX_FIELD_LEN;

@@ -231,11 +231,15 @@ those of the version in the header of the file the pointer names, not of
 the file that holds the pointer. `extent_len`, `ValuePointer::read` and the
 decoders take that version.
 
-**P6. In a flat leaf the pointer is the entry's value.** An entry whose
-out-of-line flag is set (P5 of `flat-page.md`) holds these 16 bytes as its
-value bytes, and nothing else. FMT-02 decides how a tree page cell stores
-the pointer. A cell that already stores the value length can store the file
-id and the offset alone and build the pointer from the three.
+**P6. In a flat leaf the value's place is the entry's value.** An entry
+whose out-of-line flag is set (P5 of `flat-page.md`) holds 16 bytes as its
+value bytes, and nothing else: these 16 bytes of the pointer once the value
+is in the value log, and before that the 16 bytes of a pending value, which
+have the same layout and the reserved file id (P7; P15 of `flat-page.md`).
+FMT-02 decides how a tree page cell stores the place. A cell that already
+stores the value length stores the first 12 bytes alone, the file id and
+the offset, and builds the pointer or the pending value from the three
+(TP13 of `tree-page.md`).
 
 Example: the pointer to the record in section 2, when it is the first
 record of `val/00000012.val`, is
@@ -513,7 +517,8 @@ owner can overrule one while version 1 is still open (U10).
    from one record to the next. The cost is that a writer appends a value's
    records without interleaving.
 4. **The value pointer is defined here**, is 16 bytes, and is what a flat
-   leaf stores as an out-of-line value (section 4). `format.md` and
+   leaf stores as an out-of-line value once the value is placed (section 4;
+   before that it stores the pending form, of the same 16 bytes, P7). `format.md` and
    `flat-page.md` first left it to FMT-02 and now point here. FMT-02 still
    owns how a tree cell stores it.
 5. **The back pointer is a page id, with no slot** (O1). The owner is found

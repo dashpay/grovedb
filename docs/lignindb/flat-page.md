@@ -13,8 +13,10 @@ rule to its tests.
 
 Two things changed after FMT-02 (the owner's decision D-049): an image no
 longer has a checksum of its own (P12), and an out-of-line value is checked
-to be a value pointer (P5). One more changed after that (D-050): a page
-holds its own page id (P14), in the four bytes the checksum had taken.
+(P5), at that time to be a value pointer. Two more changed after that: a
+page holds its own page id (P14, D-050), in the four bytes the checksum had
+taken, and an out-of-line value may also be a value that is not in the
+value log yet, so the check is for either (P15, D-055).
 
 ## 1. Scope
 

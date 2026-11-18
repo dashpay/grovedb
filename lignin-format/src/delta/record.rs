@@ -654,10 +654,7 @@ impl<'a> Reader<'a> {
             }
             Kind::ValuePointer => Delta::Value {
                 slot,
-                value: match ValuePlace::decode(*self.array()?)? {
-                    ValuePlace::Placed(pointer) => CellValue::OutOfLine(pointer),
-                    ValuePlace::Pending(pending) => CellValue::Pending(pending),
-                },
+                value: CellValue::of_place(ValuePlace::decode(*self.array()?)?),
             },
         }))
     }

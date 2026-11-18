@@ -686,7 +686,7 @@ owner can overrule one while version 1 is still open (U10).
    under every hash update.
 8. **The value's length is in the cell header, and a value out of line
    stores 12 bytes** (TP13), as P6 of `value-log-format.md` suggests. A flat
-   leaf stores the whole 16-byte pointer. A pending value takes the same 12
+   leaf stores all 16 bytes of the place. A pending value takes the same 12
    bytes (D-055): the cell needed no third form and no new flag, only a
    third case in what its reader returns.
 9. **`departures` is 64 bits and the page's creator gives its start** (TP7).
@@ -706,11 +706,14 @@ owner can overrule one while version 1 is still open (U10).
     The price is that a base image is written by a pass that orders the
     cells, not by copying the frame.
 12. **Whether flat-page decode should check the length of an out-of-line
-    value.** It should: FMT-07 fixed the pointer at 16 bytes after FMT-04
-    was written, so a flat leaf entry that is marked out of line and is not
-    a valid `ValuePointer` is damage, and `FlatPage::decode` can say so with
-    `ValuePointer::decode`. That was a change to `flat_page`, not made by
-    this task; `FlatPage::decode` checks it now (P5 of `flat-page.md`).
+    value.** It should: FMT-07 fixed the place of a value at 16 bytes after
+    FMT-04 was written, so a flat leaf entry that is marked out of line and
+    does not hold the valid place of a value is damage, and
+    `FlatPage::decode` can say so. That was a change to `flat_page`, not
+    made by this task; `FlatPage::decode` checks it now (P5 of
+    `flat-page.md`). Since D-055 a valid place is a value pointer or a
+    pending value (TP13; P15 of `flat-page.md`), so the check is
+    `ValuePlace::decode` and no longer `ValuePointer::decode`.
 13. **A cell is replaced only by a cell with the same key** (W1). The
     plan's "cell update" needs no more, and it makes "a slot names one node
     between two departures" a property of the writer instead of a rule for

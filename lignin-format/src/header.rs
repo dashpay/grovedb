@@ -648,6 +648,13 @@ mod tests {
             assert_eq!(last.file_id(), Some(FileId::MAX));
             assert_eq!(FileHeader::decode(&last.encode()), Ok(last));
         }
+        assert_eq!(
+            FormatError::InvalidFileSequence {
+                kind: FileKind::Segment
+            }
+            .to_string(),
+            "Segment file with a sequence number that is no file id"
+        );
         for sequence in [0, FileId::RESERVED] {
             let manifest =
                 FileHeader::new(FileKind::Manifest, FormatVersion::V1, sequence).expect("valid");

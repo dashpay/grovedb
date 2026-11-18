@@ -769,23 +769,35 @@ fn file_ids_go_up_and_are_never_given_twice() {
     let mut store = store.reopen(&[]);
     assert_eq!(store.writer().file_id(), file_id(4));
 
-    let fs = sim_fs(traced(1, 512));
-    let last = Manifest::new(
-        PageSize::DEFAULT,
-        lignin_format::manifest::LastFileIds {
-            value_log: Some(FileId::MAX),
-            ..Default::default()
-        },
-        None,
-        Vec::new(),
-    )
-    .unwrap();
-    let manifest = ManifestStore::create(shared(&fs), db_dir(), last).unwrap();
-    let values = ValueStore::open(&manifest, &[]).unwrap();
-    assert!(matches!(
-        values.create(),
-        Err(ValueStoreError::FileIdsExhausted)
-    ));
+    // The last id is given out, and the reserved number after it never.
+    for (last, given) in [
+        (FileId::MAX.get() - 1, Some(FileId::MAX)),
+        (FileId::MAX.get(), None),
+    ] {
+        let fs = sim_fs(traced(1, 512));
+        let last = Manifest::new(
+            PageSize::DEFAULT,
+            lignin_format::manifest::LastFileIds {
+                value_log: FileId::new(last),
+                ..Default::default()
+            },
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        let manifest = ManifestStore::create(shared(&fs), db_dir(), last).unwrap();
+        let values = ValueStore::open(&manifest, &[]).unwrap();
+        if let Some(given) = given {
+            assert_eq!(values.create().unwrap().file_id(), given);
+        }
+        for _ in 0..2 {
+            assert!(matches!(
+                values.create(),
+                Err(ValueStoreError::FileIdsExhausted)
+            ));
+        }
+    }
+    assert_eq!(FileId::MAX.get(), u32::MAX - 1);
 }
 
 #[test]

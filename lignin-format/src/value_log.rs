@@ -810,8 +810,9 @@ impl ValuePlace {
         }
     }
 
-    /// Whether the sixteen bytes `bytes` start with the reserved file id,
-    /// which is what makes a place a pending value.
+    /// Whether `bytes` start with the reserved file id, which is what makes
+    /// the sixteen bytes of a place a pending value. Total on bytes of any
+    /// length: fewer than four start with no file id.
     pub(crate) fn names_no_file(bytes: &[u8]) -> bool {
         bytes.first_chunk() == Some(&FileId::RESERVED.to_le_bytes())
     }

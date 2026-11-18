@@ -284,12 +284,15 @@ impl<'a> TreePageMut<'a> {
         )
     }
 
-    /// Replaces the value of the cell in `slot`, by a value or by a pointer
-    /// to one. The hashes and links of the cell keep their bytes.
+    /// Replaces the value of the cell in `slot`, by a value, by a pointer
+    /// to one, or by a pending value. The hashes and links of the cell keep
+    /// their bytes.
     ///
     /// A value that takes the same room in the cell is overwritten where it
-    /// is: a value of the same length, or another pointer in place of a
-    /// pointer.
+    /// is: a value of the same length, or one place of a value out of line
+    /// in place of another. A pointer that takes the place of a pending
+    /// value of the same length changes the twelve bytes of the place and
+    /// no other byte of the page.
     pub fn set_value(&mut self, slot: SlotId, value: CellValue<'_>) -> Result<(), FormatError> {
         let mut location = [0; TreeCell::VALUE_LOCATION_LEN];
         let (bytes, len) = cell::stored_value(&value, &mut location)?;
