@@ -1,0 +1,295 @@
+lignin-golden-trace 1
+name chunk-proofs
+seed 0x1
+grove-version 4
+engine 22f163c2b82d9bc5c985a77034529a32ef9a7c04
+workload chunk-proofs
+c3268r6676
+  step 0
+  # Write(Insert { path: [], key: [99, 104, 117, 110, 107, 115], element: tree: None })
+  cost seeks=3 loaded=0 added=119 replaced=0 removed=- hashes=3 sinsemilla=0
+  root f63f01f884dbcdacf58d3169a2365c1871c0fd93738527c384e3c40df92c8354
+c4c54r3dbc
+c7c65rd130
+c46fbr8ade
+ce824r8938
+c5baarc724
+c1558r0116
+cd8abrb135
+c1bd8rff97
+c0398rd4ee
+c611dr6097
+ccf67r45f4
+cb7ddr45f4
+  step 12
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 0de6b5877c80ff5975fe1705700c2cd6df278ee23965028a345daef202a01b22
+c4d21rf5e1
+  step 13
+  # Batch([InsertOrReplace { path: [[99, 104, 117, 110, 107, 115], [112, 108, 97, 105, 110]], key: [28, 124, 72, 101, 216, 202, 230, 90], element: item: [hex: 5b2e03e7..1f5ea64f] }, InsertOrReplace { path: [[99, 104, 117, 110, 107, 115], [112, 108, 97, 105, 110]], key: [226, 81, 77, 166, 34, 190, 83, 140, 209, 161, 168, 167], element: item: [hex: 25bf63ad..f011c729] }, InsertOrReplace { path: [[99, 10… (8166 characters)
+  cost seeks=58 loaded=478 added=8592 replaced=239 removed=- hashes=207 sinsemilla=0
+  root bd364404d41b8491b859124be4bfb423c202d63c3ec367bfb96f5c0a82889a81
+ca3ccr1993
+c8fd3r3fc4
+c538cr2207
+ccf68v5a91r050b
+  step 17
+  # Write(Append { path: [[99, 104, 117, 110, 107, 115], [109, 109, 114]], entry: Mmr([80, 84, 227, 67, 108, 118, 235, 218, 20, 140, 123, 177, 181, 53, 6, 94, 43, 135, 239, 204, 189, 70, 157, 88, 55, 120, 228, 160, 50, 233, 139, 87]) })
+  cost seeks=15 loaded=1013 added=111 replaced=334 removed=- hashes=16 sinsemilla=0
+  result appended
+  root 0xaf45d33cd39408627eac032650ea581f0fd23c6db39ed55d5b7223d31aa25e63
+  position 0
+  root 2f70a47fb01bb03a833016ae732f7948313bc7ae9d8dd473a13149f377e750fa
+ce2acv56der21e1
+c28e6va013r4644
+cc028r4c1b
+c08a0v7825r4cd6
+cb110v74c4rbee0
+c1604v413br512b
+ceccbv794frf099
+cc028r4e89
+c08a0v2e38r7f1d
+cf3ddv227ar7d49
+ccd21vbf4dr183e
+c7078v3e78r5184
+cc028re234
+c08a0v4671r1339
+cb838va8e5r4dd3
+c0847v2ab4r0e49
+ce1ffv8f0frcda3
+cc028r8593
+c08a0ve42cr060e
+c61edvbc1frfda4
+c83fbve127r9193
+c08aave8f2rf1e7
+cc028r63af
+c08a0vfb14r4cd7
+cb7ddr4cd7
+c8eb8v4c95
+  step 43
+  # Read(Prove(Chunk { path: [], ids: Merk([]) }))
+  cost seeks=2 loaded=82 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  result proof
+  proof 0x000000010000003b000000010000003304066368756e6b730009020105706c61696e0046e7abc97d701baefaa031708c337cbc7c2dfb77d767f172f21583b833318283
+cfd30v4c95
+cfd30v014b
+c5cb6v5d87
+c5cb6v3bd9
+c5cb6vdcc0
+c24a0v802d
+c24a0vf512
+c24a0v77f7
+c5b2cv978e
+c5b2cv0de6
+c5b2cve70b
+c8504v6d87
+c8504v44f3
+c8504vb4b0
+cf767vc2a6
+c724dv9270
+c34a3v57da
+cc218vf73b
+cc218va6ff
+cf0d7v85cc
+c724dv009f
+c34a3v470b
+cc218v7078
+cc218vd64e
+cf0d7v6e9f
+cda27vc906
+c6e32vb7cf
+c8bfav8355
+c1ca2vccdd
+c829fv2753
+c5ea5v72b1
+c3fb0vf3da
+c1799v393d
+cd8d6ve69a
+ceb02v1838
+caef6v1864
+cb1c1r3dd1
+c764er21ca
+cf257r38b3
+c5786r2c01
+c4bf0v0901reed1
+ceb16v131dr2a15
+c0f72v8ceer8a1c
+cc028r46d2
+c08a0vad45r78e5
+cdfcev2c70r580b
+c6c3eve704r2c92
+cbee7v8535rf401
+cc028ree7f
+c08a0v6b2crcf09
+c40d5v38d9r14af
+c6c3ev5a60r2c31
+cdefev2ccbr340f
+cc028rc0c0
+c08a0vda90r42bf
+c2c42v966fr426b
+c1905v59bar0ae5
+ceccbv8615r7dfe
+cc028rc2fd
+c08a0v7951r6e9e
+c098evec28r83a0
+cd9c6vb753rffd0
+ca81av4c34r166c
+cc028r5544
+c08a0vf0adreb64
+cb7ddreb64
+c8eb8va588
+cfd30va588
+cfd30v3d69
+c5cb6v3b03
+c5cb6vd13f
+c5cb6v5bd3
+c24a0va550
+c24a0vc5dd
+c24a0v0c59
+c5b2cv3960
+c5b2cv568c
+c5b2cv24c0
+c8504vabb5
+c8504v87e0
+c8504v2cee
+cf767vc2a6
+c724dv06e7
+c34a3v5263
+cc218v491f
+cc218v8cd7
+cf0d7vf430
+c724dvc674
+c34a3v72b2
+cc218vff1c
+cc218v8218
+cf0d7v18a4
+c3277v3b48
+c68ecvfcb1
+ca45eve1fe
+cef8dvb913
+c48c8v4c98
+c5599v5f81
+c05e4v6117
+c6dc1v2f39
+c3fecv2a58
+ceb6dv277f
+c3d75v2757
+ccc9drb547
+c24a2rdc52
+c4009r144d
+c8e2dr4692
+c5f8bva08arccb0
+c83fbv6288r6084
+ce1ffv8544r869b
+cc028rfbbf
+c08a0vbeacra669
+cdd74v2fb2r96cc
+ca2f9v9ad1r3d8d
+ce1ffvd07cr8817
+cc028rc37e
+c08a0v1be0r78b0
+c8f2cv2540r2bcc
+c9f9cv27c7rf02c
+cbee7v8438r6644
+cc028ra13a
+c08a0v223crb924
+c4d12vcb18r57f0
+c9455vcef7r5288
+c55b1v57dare7f3
+cc028rf70b
+c08a0vb0f9rfd04
+c529cv027br60b1
+c9189v5095r577d
+c32d6v242ar9122
+cc028r34fb
+c08a0v3fa9rd086
+cb7ddrd086
+c8eb8vadd2
+cfd30vadd2
+cfd30vcfc5
+c5cb6v5931
+c5cb6v5663
+c5cb6vee02
+c24a0v88d0
+c24a0v6e66
+c24a0v19a9
+c5b2cv5a95
+c5b2cv07cd
+c5b2cv7e9b
+c8504v586d
+c8504v9a90
+c8504v7c2f
+c159fvc2a6
+c724dve2e6
+c34a3vd199
+cc218vf050
+cc218v5853
+cf0d7v8230
+c724dv7d26
+c34a3v460a
+cc218v36f1
+cc218vab9a
+cf0d7v7d1e
+cdbb2ve12f
+c17bfv67b0
+ccbf2v8355
+c0715v3832
+cef8dvd201
+c7effvcf98
+c4a46v459f
+c1f1dvc997
+c0290v1961
+c3cb3v8357
+cfaebvfe46
+cdd0fvb533
+cef8dvb913
+cb771vd8ef
+cc0fav946d
+cddd3v7715
+c8763v7547
+cc593vb399
+c7effvb2ba
+c0d86vb22f
+c4215vca15
+c3191vcce7
+ca487v84dc
+c1da2vf61f
+c3cb3va9e0
+c895evf560
+c6956vfb81
+cc209v013f
+c9286v662b
+cd6acv3ade
+c3950v7127
+c742ev3c2c
+ceb44vcb07
+c59f0vce42
+c7efavaab5
+c765ev9ef7
+cbb66vecef
+cf517v91f9
+c1da2vff12
+c5a3bvfada
+ccbf2vdfd4
+cc593v80ef
+c9249v897f
+c2c27v7842
+c573av1d76
+c5483vb717
+c17bfveaaf
+ced16v5427
+c4215v3de6
+cc209v460c
+c765evaf5b
+c704av1d2d
+cdd0fv215e
+c703bvc3b6
+c5f46v42b8
+cb6afva469
+ca524vb477
+c3a48ve9f9
+c5836ve2e0
+stream 262 f341f5745226be883674d89660944dd66b7294ec7da07d658743a24d325df0a6
+tally failed=0 unproved=0 unverified=0
+end 262 e07dcdbdd73b52874280d8c336b6970f989ef4a081affe312caa3ecb7c363b38

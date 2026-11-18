@@ -18,7 +18,10 @@
 //!   aggregate queries.
 
 mod aggregates;
+mod blocks;
+mod conditional;
 mod expiry;
+mod identity_reads;
 mod keys;
 mod rekey;
 mod state;
@@ -27,7 +30,10 @@ use std::collections::BTreeMap;
 
 pub use self::{
     aggregates::IndexAggregates,
+    blocks::BlockExecution,
+    conditional::ConditionalWrites,
     expiry::Expiration,
+    identity_reads::IdentityReads,
     keys::IdentityKeys,
     rekey::{IndexRekey, MAX_INDEX_VALUES},
     state::PlatformState,
@@ -60,6 +66,9 @@ const DOMAIN_PLATFORM_STATE: u64 = 0x57A7;
 const DOMAIN_INDEX_REKEY: u64 = 0xD0C7;
 const DOMAIN_EXPIRATION: u64 = 0xD0C8;
 const DOMAIN_INDEX_AGGREGATES: u64 = 0xD0C9;
+const DOMAIN_CONDITIONAL: u64 = 0xD0CA;
+const DOMAIN_IDENTITY_READS: u64 = 0x1D02;
+const DOMAIN_BLOCKS: u64 = 0xB10C;
 
 /// Drive's root tree keys.
 const ROOT_DOCUMENTS: &[u8] = &[64];

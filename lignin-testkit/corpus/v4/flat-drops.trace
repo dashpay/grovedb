@@ -33,25 +33,28 @@ ce248ree4d
 c9abdr5df2
 c81d7r2a98
 c83b0r0ec8
-cfb35r949c
+cfb35v5dder949c
   step 17
   # Write(Append { path: [[100, 114, 111, 112, 115], [114, 111, 117, 110, 100, 45, 48, 58, 109, 109, 114]], entry: Mmr([4, 85, 211, 249, 93, 79, 156, 77, 20, 14, 121, 29, 71, 198, 19, 139, 217, 246, 254, 39, 110, 23, 74, 228, 29, 44, 53, 17, 186, 207, 99, 43, 242, 81, 233, 158, 88, 42]) })
   cost seeks=15 loaded=1300 added=117 replaced=404 removed=- hashes=16 sinsemilla=0
+  result appended
+  root 0xacaae63731bd77a6d14684c6c8e9569d662a3dda3183c864ac9866d40a80769e
+  position 0
   root 7be21cd3dc7e2308206abd621f6b153600ebd859cbea851d744646dde42b9c8b
-cb350r815d
-ca762rf1c4
-ce36aref91
-c985ar20c2
-cb713r44e5
-c8a8fra499
-c2508r4937
-c9745raa39
+cb350v418cr815d
+ca762v910crf1c4
+ce36av59aaref91
+c985av8171r20c2
+cb713va8d9r44e5
+c8a8fv4d6dra499
+c2508v7ecfr4937
+c9745vb867raa39
 cf7dbr044b
 cf7dbrde44
 cf7dbr837d
-c21f9r5618
-c21f9r8968
-c21f9rb99f
+c21f9v9458r5618
+c21f9vddc7r8968
+c21f9v45c7rb99f
 cb7ddrb99f
 c78e5re1e7
 c67d6r83d3
@@ -113,21 +116,21 @@ ce248r2544
 c9abdr07f2
 cad00ra71f
 c4520rf1a8
-c2e09rb7dc
-c5806r79cb
-ce537r48ad
-c3535r1c74
-c4043r5cd5
-c35b9r70d9
-ccd05rb8fd
-c7c93r96a2
-cbd06r99cf
+c2e09v91b4rb7dc
+c5806v77f6r79cb
+ce537vbd06r48ad
+c3535v90dbr1c74
+c4043v2914r5cd5
+c35b9v38far70d9
+ccd05v9fb2rb8fd
+c7c93vecefr96a2
+cbd06vf82dr99cf
 c2139rc38c
 c2139r2b6a
 c2139r404a
-c21f9rc474
-c21f9r76de
-c21f9rbb90
+c21f9v81ddrc474
+c21f9veb3dr76de
+c21f9v21e5rbb90
 cb7ddrbb90
 c32c5rfea2
 cdaa7rdd61
@@ -170,21 +173,21 @@ ce571r3883
 c2179rce68
 cc2acr0f47
 c4943r78c8
-cb777rf462
-c1f98r7f4b
-c63e4r7bf0
-c14cfr71aa
-c601fr50cf
-ce9edr1189
-c862dr421f
-cf7c0re48d
-c862dr43e3
+cb777v7099rf462
+c1f98vf932r7f4b
+c63e4vc3a2r7bf0
+c14cfv9a60r71aa
+c601fv5d2cr50cf
+ce9edv6360r1189
+c862dv11a8r421f
+cf7c0v39eere48d
+c862dv2034r43e3
 ca743r096a
 ca743r3f15
 ca743re5d6
-c28a0rcfa4
-c28a0rb17c
-c28a0rf6a0
+c28a0v964ercfa4
+c28a0vc93arb17c
+c28a0vf5adrf6a0
 cb7ddrf6a0
 c52e6rdfb4
 c6951rcdea
@@ -215,4 +218,4 @@ cd482v7602qdcd1p5349
 c9398ve10dq2504p945a
 stream 173 6b881cd6b4039e8ff38243a64b9ec1d9a8dab032b6f2244c39ba2f5c873285e4
 tally failed=0 unproved=0 unverified=0
-end 173 13ce71fd34f323b077a502913801726aa7874dbe424004152710960b528eaf1b
+end 173 47a1ce8f6269a12d06e04a334c8bb00c13086489c43fe0b796f4ccd3bafe4964

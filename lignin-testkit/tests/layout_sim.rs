@@ -23,7 +23,7 @@ use lignin_testkit::{
         adversarial::{DeepNesting, DeleteHeavy, LargeValues, LongKeys, Moves, TinySubtrees},
         apply::apply,
         drive::{Documents, IndexRekey},
-        Features, Op, Rng, Workload, Write,
+        Features, Op, Rng, TransactionOp, Workload, Write,
     },
 };
 
@@ -346,6 +346,78 @@ fn a_run_that_ends_without_a_commit_still_ends_its_block() {
         );
         let stats = &reports[0].end.stats;
         assert_eq!((stats.transitions, stats.blocks), (0, 1));
+    }
+}
+
+#[test]
+fn a_block_that_is_taken_back_is_still_a_block() {
+    let item = || Element::new_item(vec![7; 8]);
+    let first_block = || {
+        vec![
+            Op::Write(insert(&[], b"tree", Element::empty_tree())),
+            Op::Write(insert(&[b"tree"], b"a", item())),
+            Op::Commit,
+        ]
+    };
+    let taken_back = || {
+        vec![
+            Op::Write(insert(&[b"tree"], b"b", item())),
+            Op::Write(Write::Delete {
+                path: Vec::new(),
+                key: b"tree".to_vec(),
+            }),
+        ]
+    };
+    let run = |ops: Vec<Op>| {
+        let (_dir, db) = open();
+        simulate(
+            "taken back",
+            &db,
+            ops.into_iter(),
+            GroveVersion::latest(),
+            &[Config::proposed()],
+            Run {
+                sample_every: 0,
+                check_every: 1,
+                verify_mirror: true,
+            },
+            |_, _, _| {},
+        )
+        .remove(0)
+    };
+    let kept = run(first_block());
+    let step = |step| Op::Transaction(step);
+    let endings = [
+        (vec![], step(TransactionOp::Rollback)),
+        (vec![], step(TransactionOp::Abandon)),
+        (
+            vec![step(TransactionOp::SetSavepoint)],
+            step(TransactionOp::RollbackToSavepoint),
+        ),
+    ];
+    for (before, ending) in endings {
+        let mut ops = first_block();
+        ops.extend(before);
+        ops.extend(taken_back());
+        ops.push(ending.clone());
+        let open_ended = run(ops.clone());
+        let end = &open_ended.end;
+        assert_eq!(
+            (end.stats.transitions, end.stats.blocks),
+            (5, 2),
+            "{ending:?}: two writes, two more and what took them back, in two blocks"
+        );
+        assert_eq!(
+            (end.cells, end.pages),
+            (kept.end.cells, kept.end.pages),
+            "{ending:?}: the layout is that of the first block"
+        );
+        assert_eq!(
+            end.stats.dropped, end.stats.reclaimed,
+            "{ending:?}: the reclaimer came after the block that was taken back"
+        );
+        ops.push(Op::Commit);
+        assert_eq!(open_ended, run(ops), "{ending:?}: with a commit or without");
     }
 }
 

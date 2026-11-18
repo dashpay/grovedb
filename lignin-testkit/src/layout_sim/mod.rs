@@ -28,7 +28,7 @@ pub use self::{
     report::{Report, Sample, Stats},
     tree::{ChangeSet, Event, Grove, MerkId, NodeId},
 };
-use crate::workload::{apply, Op};
+use crate::workload::{apply, Op, TransactionOp};
 
 /// How a simulation is run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,9 +53,16 @@ pub struct Run {
 /// A transition is one direct write or one batch, whole or in segments,
 /// that changes a Merk node. A write that changes none, such as an aux
 /// record, is applied and not counted. A block ends at each [`Op::Commit`],
-/// where the transaction is committed. Reads are skipped: they change no
-/// node. `progress` is called after every sample with the number of
+/// where the transaction is committed. Reads are skipped, in the block, of
+/// committed state or through a snapshot, which is not opened: they change
+/// no node. `progress` is called after every sample with the number of
 /// transitions so far.
+///
+/// A rollback, of the whole transaction or to a savepoint, and a
+/// transaction dropped for a new one take the nodes back to what they
+/// were. Each is a transition like a write when it changes a node: the
+/// layouts follow the grove back, and what that costs is counted with the
+/// writes. The block stays open: it ends at its commit or with the run.
 ///
 /// At the end of the run the mirror is compared with a scan of storage and
 /// every layout is recounted from the mirror. A run that does not end with
@@ -84,7 +91,13 @@ pub fn simulate(
     };
     for op in ops {
         match op {
-            Op::Read(_) => {}
+            Op::Read(_)
+            | Op::Transaction(
+                TransactionOp::OpenSnapshot
+                | TransactionOp::CloseSnapshot
+                | TransactionOp::SnapshotRead(_)
+                | TransactionOp::BlockRead(_),
+            ) => {}
             Op::Commit => {
                 if run.verify_mirror {
                     verify(&observer, &transaction, transitions);
@@ -108,10 +121,14 @@ pub fn simulate(
                 );
                 verify(&observer, &transaction, transitions);
             }
-            Op::Write(_) | Op::Batch(_) | Op::PartialBatch(_) => {
-                apply(db, &op, Some(&transaction), grove_version)
-                    .unwrap()
-                    .unwrap_or_else(|error| panic!("{name}: {op:?} refused: {error:?}"));
+            Op::Write(_) | Op::Batch(_) | Op::PartialBatch(_) | Op::Transaction(_) => {
+                if matches!(op, Op::Transaction(TransactionOp::Abandon)) {
+                    transaction = db.start_transaction();
+                } else {
+                    apply(db, &op, Some(&transaction), grove_version)
+                        .unwrap()
+                        .unwrap_or_else(|error| panic!("{name}: {op:?} refused: {error:?}"));
+                }
                 open_block = true;
                 let changes = observer.observe(db, &transaction);
                 if changes.is_empty() {

@@ -2,7 +2,7 @@
 //!
 //! A workload is a flat stream of [`Op`]s. The types hold plain data (paths,
 //! keys, elements), so a consumer can apply a stream to a GroveDB (see
-//! [`super::apply`]), record it, replay it, or read it without a database at
+//! [`super::apply()`]), record it, replay it, or read it without a database at
 //! all, as a tree-layout simulation does.
 
 use grovedb::{
@@ -23,9 +23,11 @@ pub enum Op {
     Write(Write),
     /// One `apply_batch` call: the unit a state transition is.
     Batch(Vec<BatchOp>),
-    /// One read. Reads only follow a [`Op::Commit`], a
-    /// [`Op::FlushPendingDrops`] or another read, so the same read can be
-    /// proved against committed state.
+    /// One read. A read only runs while the open transaction holds no
+    /// write: nothing but reads and steps that write nothing
+    /// ([`Op::keeps_transaction`]) lies between it and the last operation
+    /// that ended a transaction ([`Op::ends_transaction`]). The same read
+    /// can then be proved against committed state.
     Read(Read),
     /// The end of a block: the open transaction is committed.
     Commit,
@@ -37,6 +39,47 @@ pub enum Op {
     /// database itself, outside any transaction, so it only follows a
     /// [`Op::Commit`], as Platform calls it after each block.
     FlushPendingDrops,
+    /// A step on the open transaction itself, or on a snapshot read
+    /// transaction held beside it.
+    Transaction(TransactionOp),
+}
+
+/// A step that is neither a write nor a read of the block's state: the open
+/// transaction is rolled back or dropped, a savepoint is set or returned to,
+/// or a snapshot read transaction is opened, read through and closed.
+///
+/// GroveDB has no call that releases a savepoint. One that is not returned
+/// to stays on the transaction's stack until the transaction ends, which is
+/// how Platform leaves the savepoint of every state transition it keeps.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TransactionOp {
+    /// `GroveDb::rollback_transaction`: every write since the last commit is
+    /// discarded, with every savepoint, and the transaction stays open.
+    Rollback,
+    /// The open transaction is dropped without a commit and without a
+    /// rollback, and another is started. The transaction belongs to the
+    /// caller of [`super::apply()`], which is told to do so.
+    Abandon,
+    /// `Transaction::set_savepoint`: a savepoint is pushed on the stack of
+    /// the open transaction.
+    SetSavepoint,
+    /// `Transaction::rollback_to_savepoint`: every write since the newest
+    /// savepoint is discarded and that savepoint is popped.
+    RollbackToSavepoint,
+    /// `GroveDb::start_snapshot_read_transaction`: the committed state of
+    /// this moment is pinned. The snapshot belongs to the caller of
+    /// [`super::apply()`], which is told to open it. At most one is open.
+    OpenSnapshot,
+    /// The snapshot is dropped.
+    CloseSnapshot,
+    /// A read through the open snapshot: it returns what was committed when
+    /// the snapshot was opened, whatever has been committed since. Never
+    /// proven: GroveDB proves the latest committed state.
+    SnapshotRead(Read),
+    /// A read inside the open transaction, between its writes, which it
+    /// sees: how Drive checks what is stored before it builds the batch of
+    /// a state transition. Never proven: GroveDB proves committed state.
+    BlockRead(Read),
 }
 
 /// A batch applied in two segments.
@@ -108,6 +151,122 @@ pub enum Write {
         /// The key of the tree.
         key: Vec<u8>,
     },
+    /// `GroveDb::insert_if_not_exists`, or, when the element found is
+    /// returned, `GroveDb::insert_if_not_exists_return_existing_element`:
+    /// the element is stored unless the key is taken.
+    InsertIfNotExists {
+        /// The subtree to insert into.
+        path: Path,
+        /// The key to insert at.
+        key: Vec<u8>,
+        /// The element to store.
+        element: Element,
+        /// Whether the call returns the element it found in the way.
+        return_existing: bool,
+    },
+    /// `GroveDb::insert_if_changed_value`: the element is stored unless the
+    /// same element is stored at the key already.
+    InsertIfChanged {
+        /// The subtree to insert into.
+        path: Path,
+        /// The key to insert at.
+        key: Vec<u8>,
+        /// The element to store.
+        element: Element,
+    },
+    /// `GroveDb::delete_if_empty_tree`: the tree at the key is deleted
+    /// unless it holds something.
+    DeleteIfEmptyTree {
+        /// The subtree to delete from.
+        path: Path,
+        /// The key of the tree.
+        key: Vec<u8>,
+    },
+    /// The key is deleted, and then every tree above it that the delete
+    /// left empty, up to the root tree or to a stop height.
+    DeleteUpTree {
+        /// The subtree to delete from.
+        path: Path,
+        /// The key to delete.
+        key: Vec<u8>,
+        /// The length of the path the climb stops at: nothing stored
+        /// directly in a subtree at a path of that length is deleted.
+        /// Without one the climb ends at the root tree, whose keys GroveDB
+        /// refuses to delete this way.
+        stop_path_height: Option<u16>,
+        /// How the deletes are applied. Directly is
+        /// `GroveDb::delete_up_tree_while_empty`. Built is what Drive does:
+        /// `GroveDb::delete_operations_for_delete_up_tree_while_empty`
+        /// returns the deletes as batch operations, and one batch applies
+        /// them.
+        built: bool,
+    },
+    /// What Drive does to delete one key: the delete is built as a batch
+    /// operation by `GroveDb::delete_operation_for_delete_internal`, which
+    /// reads the key to learn whether it holds a tree, and one batch
+    /// applies it. The key is stored, and a tree it holds is empty: GroveDB
+    /// refuses any other.
+    DeleteBuilt {
+        /// The subtree to delete from.
+        path: Path,
+        /// The key to delete.
+        key: Vec<u8>,
+    },
+    /// An insert into an indexed tree through the method of its type, such
+    /// as `GroveDb::insert_into_count_indexed_tree`.
+    IndexedInsert {
+        /// The path of the indexed tree itself, its own key last.
+        path: Path,
+        /// The key to insert at.
+        key: Vec<u8>,
+        /// The element to store.
+        element: Element,
+        /// The type of the indexed tree.
+        tree: IndexedTree,
+    },
+    /// A delete from an indexed tree through the method of its type, such
+    /// as `GroveDb::delete_from_count_indexed_tree`.
+    IndexedDelete {
+        /// The path of the indexed tree itself, its own key last.
+        path: Path,
+        /// The key to delete.
+        key: Vec<u8>,
+        /// The type of the indexed tree.
+        tree: IndexedTree,
+    },
+    /// `GroveDb::reconcile_indexed_tree_secondaries`: the secondary trees of
+    /// an indexed tree are rebuilt from what it holds.
+    ReconcileIndexed {
+        /// The path of the indexed tree itself, its own key last.
+        path: Path,
+    },
+    /// `GroveDb::commitment_tree_insert`, the typed method: the payload is
+    /// handed over as a note ciphertext.
+    CommitmentInsert {
+        /// The path of the commitment tree itself, its own key last.
+        path: Path,
+        /// The note commitment, a canonical Pallas base field element.
+        cmx: [u8; 32],
+        /// The nullifier of the spent note.
+        rho: [u8; 32],
+        /// The value commitment.
+        cv_net: [u8; 32],
+        /// The serialized note ciphertext.
+        payload: Vec<u8>,
+    },
+}
+
+/// The three types of indexed tree, each written through methods of its
+/// own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndexedTree {
+    /// `ProvableCountIndexedTree`: `…_count_indexed_tree`.
+    Count,
+    /// `ProvableSumIndexedTree`: `…_provable_sum_indexed_tree`.
+    Sum,
+    /// `ProvableCountProvableSumIndexedTree`:
+    /// `…_provable_count_provable_sum_indexed_tree`.
+    CountSum,
 }
 
 /// One operation of a batch.
@@ -313,6 +472,244 @@ pub enum Read {
         /// The prefix.
         prefix: Vec<u8>,
     },
+    /// `GroveDb::has_raw`: whether a key is stored, read from storage
+    /// without opening the subtree.
+    HasRaw {
+        /// The subtree holding the key.
+        path: Path,
+        /// The key to look for.
+        key: Vec<u8>,
+    },
+    /// `GroveDb::is_empty_tree`.
+    IsEmptyTree {
+        /// The path of the tree itself, its own key last.
+        path: Path,
+    },
+    /// One element by key through one of the other `get` methods.
+    Fetch {
+        /// The subtree holding the key.
+        path: Path,
+        /// The key to read.
+        key: Vec<u8>,
+        /// Which method reads it.
+        fetch: Fetch,
+        /// Whether the subtree's nodes may be read through GroveDB's cache.
+        /// Without it the element is read from storage directly.
+        cache: bool,
+    },
+    /// A typed read of an append-only tree.
+    Tree {
+        /// The path of the tree itself, its own key last.
+        path: Path,
+        /// What to read.
+        read: TreeRead,
+    },
+    /// `GroveDb::query_keys_optional`, or `GroveDb::query_raw_keys_optional`
+    /// for elements as stored: a query for keys, answered with a row for
+    /// every key asked for, empty where nothing is stored. The query names
+    /// keys only and has a limit.
+    ///
+    /// Every grove version proves it: `GroveDb::prove_query`, verified by
+    /// `GroveDb::verify_query_with_absence_proof`, which gives the same
+    /// rows, the absent keys included.
+    KeysOptional {
+        /// The query.
+        query: Box<PathQuery>,
+        /// Whether elements are returned as stored.
+        raw: bool,
+    },
+    /// `GroveDb::query_item_value`: the values of the items a query
+    /// selects, references followed. With sums it is
+    /// `GroveDb::query_item_value_or_sum`, which also returns what a sum
+    /// item or a tree with an aggregate holds.
+    ItemValues {
+        /// The query.
+        query: Box<PathQuery>,
+        /// Whether sums are returned as well.
+        or_sums: bool,
+    },
+    /// `GroveDb::query_sums`: the sums of the sum items a query selects.
+    SumValues {
+        /// The query.
+        query: Box<PathQuery>,
+    },
+    /// `GroveDb::query_many_raw`: several path queries merged into one and
+    /// run, elements returned as stored.
+    Many {
+        /// The queries.
+        queries: Vec<PathQuery>,
+    },
+    /// The sum of a key range as 128 bits, which a
+    /// `ProvableCountProvableBigSumTree` answers:
+    /// `GroveDb::query_aggregate_big_sum`, with the count
+    /// `GroveDb::query_aggregate_count_and_big_sum`, and the forms of both
+    /// that answer for each selected key.
+    ///
+    /// A grove version that stores such a tree proves the query:
+    /// `GroveDb::prove_query`, verified by the verifier named after the
+    /// reader, such as `GroveDb::verify_aggregate_big_sum_query`.
+    BigSum {
+        /// The query: an aggregate over a key range, or for the forms that
+        /// answer per key, keys with that aggregate as their subquery.
+        query: Box<PathQuery>,
+        /// Whether the count is returned with the sum.
+        with_count: bool,
+        /// Whether there is one answer for each selected key.
+        per_key: bool,
+    },
+    /// A proof GroveDB builds from committed state through an entry point
+    /// other than `GroveDb::prove_query`. The read returns the proof bytes.
+    Prove(Prove),
+}
+
+/// The `get` method a [`Read::Fetch`] reads through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fetch {
+    /// `GroveDb::get_caching_optional`: references followed.
+    Resolved,
+    /// `GroveDb::get_raw`, or without the cache
+    /// `GroveDb::get_raw_caching_optional`: the element as stored.
+    Raw,
+    /// `GroveDb::get_raw_optional`, or without the cache
+    /// `GroveDb::get_raw_optional_caching_optional`: the element as stored,
+    /// or nothing where the key or its subtree is missing.
+    RawOptional,
+}
+
+/// A typed read of an append-only tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TreeRead {
+    /// `GroveDb::mmr_tree_get_value`: a leaf by index.
+    MmrValue(u64),
+    /// `GroveDb::mmr_tree_root_hash`.
+    MmrRootHash,
+    /// `GroveDb::mmr_tree_leaf_count`.
+    MmrLeafCount,
+    /// `GroveDb::bulk_get_value`: a value by position.
+    BulkValue(u64),
+    /// `GroveDb::bulk_get_range`: a page of values.
+    BulkRange {
+        /// The position of the first value.
+        start: u64,
+        /// The most values to return.
+        limit: u16,
+    },
+    /// `GroveDb::bulk_get_chunk`: a completed chunk by index.
+    BulkChunk(u64),
+    /// `GroveDb::bulk_get_buffer`: the values not yet in a chunk.
+    BulkBuffer,
+    /// `GroveDb::bulk_count`.
+    BulkCount,
+    /// `GroveDb::bulk_chunk_count`.
+    BulkChunkCount,
+    /// `GroveDb::dense_tree_get`: a value by position.
+    DenseValue(u16),
+    /// `GroveDb::dense_tree_root_hash`.
+    DenseRootHash,
+    /// `GroveDb::dense_tree_count`.
+    DenseCount,
+    /// `GroveDb::commitment_tree_get_value`: a note by position.
+    CommitmentValue(u64),
+    /// `GroveDb::commitment_tree_get_range`: a page of notes.
+    CommitmentRange {
+        /// The position of the first note.
+        start: u64,
+        /// The most notes to return.
+        limit: u16,
+    },
+    /// `GroveDb::commitment_tree_anchor`.
+    CommitmentAnchor,
+    /// `GroveDb::commitment_tree_count`.
+    CommitmentCount,
+    /// `GroveDb::private_document_store_get_value`: an entry by position.
+    PrivateDocumentValue(u64),
+    /// `GroveDb::private_document_store_get_range`: a page of entries.
+    PrivateDocumentRange {
+        /// The position of the first entry.
+        start: u64,
+        /// The most entries to return.
+        limit: u16,
+    },
+    /// `GroveDb::private_document_store_count`.
+    PrivateDocumentCount,
+}
+
+/// A proof built through an entry point of its own.
+#[derive(Clone, Debug)]
+pub enum Prove {
+    /// `GroveDb::get_proved_path_query`, the method Drive proves every
+    /// query through: `GroveDb::prove_query` for a caller that has a
+    /// transaction to hand it, which it refuses. It is given none.
+    PathQuery(Box<PathQuery>),
+    /// `GroveDb::prove_query_many`: one proof for several path queries.
+    Many(Vec<PathQuery>),
+    /// `GroveDb::prove_bulk_position_range`: a page of the values of a
+    /// `BulkAppendTree`, a `CommitmentTree` or a `PrivateDocumentStore`.
+    BulkPositionRange {
+        /// The subtree holding the tree.
+        path: Path,
+        /// The key of the tree.
+        key: Vec<u8>,
+        /// The position of the first value.
+        start: u64,
+        /// The most values to prove.
+        limit: u16,
+    },
+    /// `GroveDb::prove_trunk_chunk`: the top of a tree down to a depth.
+    TrunkChunk {
+        /// The path of the tree itself, its own key last.
+        path: Path,
+        /// The most levels a chunk holds.
+        max_depth: u8,
+        /// The fewest levels a chunk holds, for a tree that commits its
+        /// count.
+        min_depth: Option<u8>,
+    },
+    /// `GroveDb::prove_branch_chunk`: the part of a tree below one of its
+    /// keys, down to a depth.
+    BranchChunk {
+        /// The path of the tree itself, its own key last.
+        path: Path,
+        /// The key the branch hangs from.
+        key: Vec<u8>,
+        /// The most levels to return.
+        depth: u8,
+    },
+    /// `GroveDb::fetch_chunk`: what a node serves to another that is
+    /// syncing its state. A chunk is asked for by the hash of the subtree's
+    /// path, its root key and its type, which a syncing node reads from the
+    /// tree's element; [`super::apply()`] reads them the same way, so the
+    /// stream names the subtree by its path. The root tree is asked for by
+    /// the root hash.
+    Chunk {
+        /// The path of the subtree itself, its own key last. Empty for the
+        /// root tree.
+        path: Path,
+        /// The chunks of the subtree to serve.
+        ids: ChunkIds,
+    },
+}
+
+/// The chunks of one subtree a [`Prove::Chunk`] asks for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChunkIds {
+    /// Chunks of a Merk tree. Each is the walk from the root of the tree to
+    /// the root of the chunk, one byte per step: 1 to the left, 0 to the
+    /// right. None at all asks for the chunk at the root.
+    Merk(Vec<Vec<u8>>),
+    /// A page of the entries of an append-only tree, which has no Merk
+    /// nodes to serve.
+    Entries {
+        /// The position of the first entry of the page.
+        start: u64,
+        /// What the tree's element says of its size: the MMR size of an
+        /// `MmrTree`, the number of entries of any other tree.
+        state: u64,
+        /// The parameter of the tree: the height of a
+        /// `DenseAppendOnlyFixedSizeTree`, nothing for an `MmrTree`, the
+        /// chunk power of any other tree.
+        parameter: u8,
+    },
 }
 
 impl PartialEq for Read {
@@ -407,13 +804,22 @@ impl Op {
                 put_option(out, batch.pause_height, |out, height| out.push(height));
             }
             Op::FlushPendingDrops => out.push(5),
+            Op::Transaction(step) => {
+                out.push(6);
+                step.encode(out);
+            }
         }
     }
 
     /// Every element the op stores, outermost form.
     pub fn elements(&self) -> Vec<&Element> {
         match self {
-            Op::Write(Write::Insert { element, .. }) => vec![element],
+            Op::Write(
+                Write::Insert { element, .. }
+                | Write::InsertIfNotExists { element, .. }
+                | Write::InsertIfChanged { element, .. }
+                | Write::IndexedInsert { element, .. },
+            ) => vec![element],
             Op::Batch(ops) => ops.iter().filter_map(BatchOp::element).collect(),
             Op::PartialBatch(batch) => batch
                 .ops
@@ -421,7 +827,11 @@ impl Op {
                 .chain(&batch.add_on)
                 .filter_map(BatchOp::element)
                 .collect(),
-            Op::Write(_) | Op::Read(_) | Op::Commit | Op::FlushPendingDrops => Vec::new(),
+            Op::Write(_)
+            | Op::Read(_)
+            | Op::Commit
+            | Op::FlushPendingDrops
+            | Op::Transaction(_) => Vec::new(),
         }
     }
 
@@ -429,6 +839,65 @@ impl Op {
     /// transaction as it is: a read or [`Op::FlushPendingDrops`].
     pub fn follows_a_commit(&self) -> bool {
         matches!(self, Op::Read(_) | Op::FlushPendingDrops)
+    }
+
+    /// Whether the open transaction holds no write once the op is applied:
+    /// it was committed, rolled back whole or dropped. What the transaction
+    /// reads is then the committed state.
+    pub fn ends_transaction(&self) -> bool {
+        matches!(
+            self,
+            Op::Commit | Op::Transaction(TransactionOp::Rollback | TransactionOp::Abandon)
+        )
+    }
+
+    /// Whether the op leaves the writes of the open transaction as they
+    /// are: a read of any kind, [`Op::FlushPendingDrops`], a savepoint
+    /// being set or the snapshot being opened or closed.
+    pub fn keeps_transaction(&self) -> bool {
+        matches!(
+            self,
+            Op::Read(_)
+                | Op::FlushPendingDrops
+                | Op::Transaction(
+                    TransactionOp::SetSavepoint
+                        | TransactionOp::OpenSnapshot
+                        | TransactionOp::CloseSnapshot
+                        | TransactionOp::SnapshotRead(_)
+                        | TransactionOp::BlockRead(_)
+                )
+        )
+    }
+}
+
+impl TransactionOp {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            TransactionOp::Rollback => out.push(0),
+            TransactionOp::Abandon => out.push(1),
+            TransactionOp::SetSavepoint => out.push(2),
+            TransactionOp::RollbackToSavepoint => out.push(3),
+            TransactionOp::OpenSnapshot => out.push(4),
+            TransactionOp::CloseSnapshot => out.push(5),
+            TransactionOp::SnapshotRead(read) => {
+                out.push(6);
+                read.encode(out);
+            }
+            TransactionOp::BlockRead(read) => {
+                out.push(7);
+                read.encode(out);
+            }
+        }
+    }
+}
+
+impl IndexedTree {
+    fn encode(self, out: &mut Vec<u8>) {
+        out.push(match self {
+            IndexedTree::Count => 0,
+            IndexedTree::Sum => 1,
+            IndexedTree::CountSum => 2,
+        });
     }
 }
 
@@ -463,6 +932,73 @@ impl Write {
                 out.push(6);
                 put_path(out, path);
                 put_bytes(out, key);
+            }
+            Write::InsertIfNotExists {
+                path,
+                key,
+                element,
+                return_existing,
+            } => {
+                put_insert(out, 7, path, key, element);
+                out.push(u8::from(*return_existing));
+            }
+            Write::InsertIfChanged { path, key, element } => put_insert(out, 8, path, key, element),
+            Write::DeleteIfEmptyTree { path, key } => {
+                out.push(9);
+                put_path(out, path);
+                put_bytes(out, key);
+            }
+            Write::DeleteUpTree {
+                path,
+                key,
+                stop_path_height,
+                built,
+            } => {
+                out.push(10);
+                put_path(out, path);
+                put_bytes(out, key);
+                put_option(out, *stop_path_height, |out, height| {
+                    out.extend_from_slice(&height.to_le_bytes())
+                });
+                out.push(u8::from(*built));
+            }
+            Write::DeleteBuilt { path, key } => {
+                out.push(11);
+                put_path(out, path);
+                put_bytes(out, key);
+            }
+            Write::IndexedInsert {
+                path,
+                key,
+                element,
+                tree,
+            } => {
+                put_insert(out, 12, path, key, element);
+                tree.encode(out);
+            }
+            Write::IndexedDelete { path, key, tree } => {
+                out.push(13);
+                put_path(out, path);
+                put_bytes(out, key);
+                tree.encode(out);
+            }
+            Write::ReconcileIndexed { path } => {
+                out.push(14);
+                put_path(out, path);
+            }
+            Write::CommitmentInsert {
+                path,
+                cmx,
+                rho,
+                cv_net,
+                payload,
+            } => {
+                out.push(15);
+                put_path(out, path);
+                out.extend_from_slice(cmx);
+                out.extend_from_slice(rho);
+                out.extend_from_slice(cv_net);
+                put_bytes(out, payload);
             }
         }
     }
@@ -659,6 +1195,178 @@ impl Read {
                 out.push(6);
                 put_path_query(out, query);
                 out.push(u8::from(*raw));
+            }
+            Read::HasRaw { path, key } => {
+                out.push(7);
+                put_path(out, path);
+                put_bytes(out, key);
+            }
+            Read::IsEmptyTree { path } => {
+                out.push(8);
+                put_path(out, path);
+            }
+            Read::Fetch {
+                path,
+                key,
+                fetch,
+                cache,
+            } => {
+                out.push(9);
+                put_path(out, path);
+                put_bytes(out, key);
+                out.push(match fetch {
+                    Fetch::Resolved => 0,
+                    Fetch::Raw => 1,
+                    Fetch::RawOptional => 2,
+                });
+                out.push(u8::from(*cache));
+            }
+            Read::Tree { path, read } => {
+                out.push(10);
+                put_path(out, path);
+                read.encode(out);
+            }
+            Read::KeysOptional { query, raw } => {
+                out.push(11);
+                put_path_query(out, query);
+                out.push(u8::from(*raw));
+            }
+            Read::ItemValues { query, or_sums } => {
+                out.push(12);
+                put_path_query(out, query);
+                out.push(u8::from(*or_sums));
+            }
+            Read::SumValues { query } => {
+                out.push(13);
+                put_path_query(out, query);
+            }
+            Read::Many { queries } => {
+                out.push(14);
+                put_path_queries(out, queries);
+            }
+            Read::BigSum {
+                query,
+                with_count,
+                per_key,
+            } => {
+                out.push(15);
+                put_path_query(out, query);
+                out.push(u8::from(*with_count));
+                out.push(u8::from(*per_key));
+            }
+            Read::Prove(prove) => {
+                out.push(16);
+                prove.encode(out);
+            }
+        }
+    }
+}
+
+fn put_path_queries(out: &mut Vec<u8>, queries: &[PathQuery]) {
+    put_len(out, queries.len());
+    for query in queries {
+        put_path_query(out, query);
+    }
+}
+
+fn put_u64(out: &mut Vec<u8>, value: u64) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn put_range(out: &mut Vec<u8>, tag: u8, start: u64, limit: u16) {
+    out.push(tag);
+    put_u64(out, start);
+    out.extend_from_slice(&limit.to_le_bytes());
+}
+
+impl TreeRead {
+    fn encode(&self, out: &mut Vec<u8>) {
+        let at = |out: &mut Vec<u8>, tag: u8, position: u64| {
+            out.push(tag);
+            put_u64(out, position);
+        };
+        match *self {
+            TreeRead::MmrValue(index) => at(out, 0, index),
+            TreeRead::MmrRootHash => out.push(1),
+            TreeRead::MmrLeafCount => out.push(2),
+            TreeRead::BulkValue(position) => at(out, 3, position),
+            TreeRead::BulkRange { start, limit } => put_range(out, 4, start, limit),
+            TreeRead::BulkChunk(index) => at(out, 5, index),
+            TreeRead::BulkBuffer => out.push(6),
+            TreeRead::BulkCount => out.push(7),
+            TreeRead::BulkChunkCount => out.push(8),
+            TreeRead::DenseValue(position) => at(out, 9, u64::from(position)),
+            TreeRead::DenseRootHash => out.push(10),
+            TreeRead::DenseCount => out.push(11),
+            TreeRead::CommitmentValue(position) => at(out, 12, position),
+            TreeRead::CommitmentRange { start, limit } => put_range(out, 13, start, limit),
+            TreeRead::CommitmentAnchor => out.push(14),
+            TreeRead::CommitmentCount => out.push(15),
+            TreeRead::PrivateDocumentValue(position) => at(out, 16, position),
+            TreeRead::PrivateDocumentRange { start, limit } => put_range(out, 17, start, limit),
+            TreeRead::PrivateDocumentCount => out.push(18),
+        }
+    }
+}
+
+impl Prove {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Prove::Many(queries) => {
+                out.push(0);
+                put_path_queries(out, queries);
+            }
+            Prove::BulkPositionRange {
+                path,
+                key,
+                start,
+                limit,
+            } => {
+                out.push(1);
+                put_path(out, path);
+                put_bytes(out, key);
+                put_u64(out, *start);
+                out.extend_from_slice(&limit.to_le_bytes());
+            }
+            Prove::TrunkChunk {
+                path,
+                max_depth,
+                min_depth,
+            } => {
+                out.push(2);
+                put_path(out, path);
+                out.push(*max_depth);
+                put_option(out, *min_depth, |out, depth| out.push(depth));
+            }
+            Prove::BranchChunk { path, key, depth } => {
+                out.push(3);
+                put_path(out, path);
+                put_bytes(out, key);
+                out.push(*depth);
+            }
+            Prove::PathQuery(query) => {
+                out.push(5);
+                put_path_query(out, query);
+            }
+            Prove::Chunk { path, ids } => {
+                out.push(4);
+                put_path(out, path);
+                match ids {
+                    ChunkIds::Merk(local_ids) => {
+                        out.push(0);
+                        put_path(out, local_ids);
+                    }
+                    ChunkIds::Entries {
+                        start,
+                        state,
+                        parameter,
+                    } => {
+                        out.push(1);
+                        put_u64(out, *start);
+                        put_u64(out, *state);
+                        out.push(*parameter);
+                    }
+                }
             }
         }
     }

@@ -1,0 +1,304 @@
+lignin-golden-trace 1
+name typed-reads
+seed 0x1
+grove-version 3
+engine 22f163c2b82d9bc5c985a77034529a32ef9a7c04
+workload typed-reads
+cfb3br6bca
+  step 0
+  # Write(Insert { path: [], key: [116, 121, 112, 101, 100], element: tree: None })
+  cost seeks=3 loaded=0 added=117 replaced=0 removed=- hashes=3 sinsemilla=0
+  root 68908b53bf3cc2c8c88a184204e09c8e95c51312c5cf9690f217e8e2b8c4fa18
+c63d3r5ef6
+c7c98r6624
+c4902r6196
+ca2e9re95c
+cb7ddre95c
+  step 5
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 577942facf8bb247d5eba99257088e51f9dfd65692a6e1ca55e3b50764586b74
+cbf7ev8287r34c4
+  step 6
+  # Write(Append { path: [[116, 121, 112, 101, 100], [109, 109, 114]], entry: Mmr([159, 73, 243, 200, 94, 28, 129, 59, 57, 163, 85, 14, 183, 95, 95, 237, 196, 132, 117, 47]) })
+  cost seeks=13 loaded=736 added=99 replaced=246 removed=- hashes=14 sinsemilla=0
+  result appended
+  root 0xf6ce9c7e65852a653b8f66d1d5497ab68a3052a4ad8b8092b1f2c1e54876d4f7
+  position 0
+  root 007550d7c6982bb06932a626eaabddf5b92940919e27ecfa984b66f3791510fb
+c6df4v15f5r9623
+c8a37v0512re283
+  step 8
+  # Write(CommitmentInsert { path: [[116, 121, 112, 101, 100], [99, 111, 109, 109, 105, 116, 109, 101, 110, 116, 115]], cmx: [210, 33, 250, 32, 9, 124, 147, 133, 131, 110, 74, 36, 63, 150, 140, 123, 206, 65, 19, 69, 150, 229, 150, 120, 112, 152, 17, 15, 104, 128, 143, 35], rho: [21, 133, 197, 93, 143, 115, 136, 239, 61, 4, 164, 142, 238, 124, 52, 225, 50, 194, 244, 84, 232, 174, 128, 210, 36, 71, 173,… (1572 characters)
+  cost seeks=16 loaded=799 added=436 replaced=342 removed=- hashes=18 sinsemilla=32
+  result appended
+  root 0x82fbb6bfad86f58bd609065cd68b3836b7314c7fd5aa239f77f54426c639f030
+  position 0
+  root 10861aa40345ed0d6970ade9447286c6f5b776d35b462ee43940ffdadb7ee6d5
+c20cev612erfeb2
+c332eve151r3d5b
+caaa4v6141r4723
+c997cv9340r5685
+c3753v0cafr1255
+ccd39v0e32rd437
+cf74bv5b31r89fb
+c6007ve480rc9c7
+cd0bdv856er622d
+c8eafv3d5br2b04
+cb7ddr2b04
+cc67av803f
+  step 20
+  # Read(Tree { path: [[116, 121, 112, 101, 100], [109, 109, 114]], read: MmrValue(0) })
+  cost seeks=4 loaded=356 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  result value
+  value 0x9f49f3c85e1c813b39a3550eb75f5fedc484752f
+ca7e0vf408
+ccd18vbbdc
+cb021v8e7c
+  step 23
+  # Read(Tree { path: [[116, 121, 112, 101, 100], [109, 109, 114]], read: MmrRootHash })
+  cost seeks=4 loaded=332 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  result hash
+  hash 0x8aa5b652b6e6cd5847c4a60bc67e2eb3092ff263a1c88e0f3eb0124d30661388
+ccd18vf316
+  step 24
+  # Read(Tree { path: [[116, 121, 112, 101, 100], [109, 109, 114]], read: MmrLeafCount })
+  cost seeks=3 loaded=299 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result count
+  count 4
+cd53dv1aac
+cd53dvf547
+c5cf5vbbdc
+c27d9v03cc
+  step 28
+  # Read(Tree { path: [[116, 121, 112, 101, 100], [98, 117, 108, 107]], read: BulkRange { start: 2, limit: 3 } })
+  cost seeks=4 loaded=472 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  result page
+  entries 2
+  item 2 0xad68984f0e166705983a86e8583dd12d363999cb91cc068eb7bc293b3670e8f419dbdb66269c33064d16
+  item 3 0x05695aacc7ddd5010b7b23d7fe61
+  total 4
+cd53dv1516
+cd53dvbbdc
+cd53dv9ea1
+  step 31
+  # Read(Tree { path: [[116, 121, 112, 101, 100], [98, 117, 108, 107]], read: BulkBuffer })
+  cost seeks=3 loaded=347 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  result values
+  values 0
+c5cf5vf316
+c5cf5v866a
+cd2a2v2318
+c089evbbdc
+c0bf5vcf73
+c089ev866a
+c669eva5c4
+c604bvbbdc
+c73e0v8868
+c669ev3a18
+c604bvf316
+cf2b8vd604
+  step 43
+  # Read(Prove(BulkPositionRange { path: [[116, 121, 112, 101, 100]], key: [98, 117, 108, 107], start: 2, limit: 3 }))
+  cost seeks=8 loaded=775 added=0 replaced=0 removed=- hashes=3 sinsemilla=0
+  result proof
+  proof 0x01003204057479706564000902010564656e7365003630734f8be2a6b8b60bc6cb6c42a8e03f47abfa5ab990e9bd4540bc46fb0436010574797065640092040462756c6b00040d0402004e690285e7157ed728ebe66a25c7c6faaa382b6d36ca9ba88c1d2381a5ab23de01eee8776aaff542609b6f1000c60fa7ce1ef33f6b1c11f0cfdc299fbdb2bd10a21102fe98adeb89843d559003866142798c1acc072b4a9dbdadad5f7c5073e1636f8a1001839cab9d3f0eceaafcfd8ce0d5ee58eb805abc01d8ec0fdf6f56929a52dae64411010462756c6b02600101005800000000027d470000000d8a76554344509ba5243e564d3d0000002aad68984f0e166705983a86e8583dd12d363999cb91cc068eb7bc293b3670e8f419dbdb66269c33064d160000000e05695aacc7ddd5010b7b23d7fe610000000000
+cf2b8vd604
+c142avd62a
+c142avd62a
+cc306v787er7fb9
+cecf0vc0c4r630d
+ceb51v6c65r2364
+ced63v7c78re5e9
+c0c5avfdf4raa10
+c2171vf60ar92ab
+c728avce8br8f33
+cb20dvb899r6d02
+caf85vc44er5a0d
+ca322vb401r0800
+c3859ve2e3r8428
+c584bvb224rea67
+cfac5v86b9r0b03
+cb7ddr0b03
+cf973vb138
+c6d13v9f9b
+ccd18vbbdc
+cb021vfd3d
+ccd18v5f7a
+cd53dvf915
+cd53dv8db3
+c5cf5vbbdc
+ce571v0ea5
+cd53dv47d2
+cd53dvbbdc
+cd53dv9ea1
+c5cf5v5f7a
+c5cf5vfeae
+cf60ev3a60
+c089evbbdc
+c3fc5vadcc
+c089evfeae
+ca108vd285
+c604bvbbdc
+c981cv1809
+ca108ve248
+c604bv5f7a
+cf2b8v1022
+cf2b8v1022
+c142avfeac
+c142avfeac
+c28ffvf2f1rd3d4
+cbeb5v71b0r6b66
+cf034v3317r7e4b
+ccd29v6969r910c
+c6a5cv99bbrf702
+c2171vbe71re5ad
+c0734v98fcr5251
+cb7ddr5251
+cc67av803f
+c253bv639b
+ccd18vbbdc
+c3626v2737
+ccd18v6e2e
+cd53dv1aac
+cd53dv3248
+c5cf5vbbdc
+c27d9v6de6
+cd53dv47d2
+cd53dvbbdc
+cd53dv78f0
+c5cf5v6e2e
+c5cf5vfeae
+cd2a2v2318
+c089evbbdc
+c1ccbv16b3
+c089evaa37
+c669eva5c4
+c604bvbbdc
+c73e0v975d
+c669evda56
+c604bv6e2e
+cf2b8v4952
+cf2b8v4a86
+c142av61e9
+c142avc492
+cc31av9b10r7c81
+c8295vbdd8r99bd
+caf85ve83crb858
+cdceavd51cr8c55
+ce34ev41b0red81
+c42fcvba3dra992
+c5f2fv1575r12f9
+cb7ddr12f9
+cf973v5e66
+c7de5v4dbd
+ccd18vbbdc
+c3626vc046
+ccd18v49f1
+cd53dvb873
+cd53dvf82d
+c5cf5vbbdc
+c5123vb5cf
+cd53dvcd09
+cd53dvbbdc
+cd53dv9ea1
+c5cf5v49f1
+c5cf5vaa37
+cf60ev3a60
+c089evbbdc
+c599cv9006
+c089evf316
+ca108va5d4
+c604bvbbdc
+c981cvc96a
+ca108vb336
+c604bv49f1
+cf2b8v2758
+cf2b8v2758
+c142av4ab4
+c142av4ab4
+c75bfveda7r20e4
+cc353v9fd1raa46
+c922fvde62r906e
+c6671v3184rb0c2
+cf850vf31ar9cf2
+ce48cvb7bfr3c2b
+c7113v8f1ar6fe6
+cac64v38c1rbd83
+cbbddvd5ebr54b4
+c0047v3aa0r5da2
+c91b3v3cefrb2cd
+cbcc7v6789r74c4
+c2a45v6da7r48ed
+cb7ddr48ed
+cf973vbb9c
+c3308v63fc
+ccd18vbbdc
+cb021v9381
+ccd18v7b7a
+cd53dvd570
+cd53dvcb45
+c5cf5vbbdc
+ce571v2080
+cd53dv99b5
+cd53dvbbdc
+cd53dv9ea1
+c5cf5v7b7a
+c5cf5vf316
+c7bc4vce07
+c089evbbdc
+c18b4vf4ac
+c089evcf44
+c9e44v7b71
+c604bvbbdc
+cfee5va926
+c9e44v9a2d
+c604bv7b7a
+cf2b8v05ec
+cf2b8v7b6f
+c142av0a22
+c142av3db1
+c9912vf555r17ec
+c8d82v84cerb7d9
+c67f3v5c20rafc2
+cf5e3v4285rdeef
+ca227v454brbd81
+c2171vdf2ar6457
+c18bbv87f6rb662
+cf080v4788r9c20
+caf85vcab0r4986
+c7968v7ef6r6272
+c3fdcve391r8279
+c42fcv43ffre9b2
+c7c04vf444re81e
+cb7ddre81e
+cd372vf8b0
+c5eb0v4098
+ccd18vbbdc
+c3626v6ada
+ccd18vde53
+cd53dvb4e4
+cd53dveb43
+c5cf5vbbdc
+c1251v19f7
+cd53dv5df1
+cd53dvbbdc
+cd53dv9ea1
+c5cf5vde53
+c5cf5vcf44
+c7bc4vce07
+c089evbbdc
+c7a8fv0da8
+c089evf36c
+ca108v90a3
+c604bvbbdc
+c981cv3f68
+ca108v55d0
+c604bvde53
+cf2b8v0b65
+cf2b8v0b65
+c142av96bf
+c142av96bf
+stream 240 50275cc3527eb20794b49376230b418838a69e5b031188404c85189eb86f566b
+tally failed=0 unproved=0 unverified=0
+end 240 d27bdf6b749c928297b7db8fa04a7fd4f0b960103ea5dc3775e878eea54219e2

@@ -34,25 +34,28 @@ c76afrd9a0
 ca60erb072
 c033br3e5e
 cace5ra75f
-cb2bdr7d40
+cb2bdv5214r7d40
   step 18
   # Write(Append { path: [[100, 114, 111, 112, 115], [114, 111, 117, 110, 100, 45, 48, 58, 109, 109, 114]], entry: Mmr([157, 65, 232, 177, 247]) })
   cost seeks=19 loaded=1339 added=84 replaced=600 removed=- hashes=20 sinsemilla=0
+  result appended
+  root 0x1475aaf8812e0ea3ab6539f37b92d0811644edfb7bb388e7eefe191596969173
+  position 0
   root 24b22147a98a411f7f550222ebb038f1b621ebc4e47ab4ab72108adf4f2af600
-cdf95rf838
-cb0c7r207b
-cea4er06e8
-cadd8rd542
-c72d9r07b6
-cea50r0604
-ca793r940b
-c2b24r265e
+cdf95v5cfarf838
+cb0c7vd829r207b
+cea4evb8d9r06e8
+cadd8v9ba9rd542
+c72d9v24e0r07b6
+cea50v100br0604
+ca793v02ffr940b
+c2b24vd225r265e
 cc7a7rc20e
 cc7a7r192a
 cc7a7r8c31
-c20f0rf95b
-c20f0rd430
-c20f0rc0ef
+c20f0va559rf95b
+c20f0v9951rd430
+c20f0v194frc0ef
 cb7ddrc0ef
 c3eebr80d8
 c477ar5b60
@@ -116,21 +119,21 @@ c94c4rd15c
 ca60er4298
 c1c70redd8
 c32c0r2d15
-c3fe5rb1ea
-c167crabad
-ca042r0873
-cabadr537f
-cd27araa66
-c1e98r1bc5
-c506erf1b2
-cadaer54a1
-c80d7rf724
+c3fe5v3dd9rb1ea
+c167cv05e0rabad
+ca042v7f25r0873
+cabadv8dfcr537f
+cd27avc248raa66
+c1e98vdfecr1bc5
+c506ev9fb2rf1b2
+cadaevecefr54a1
+c80d7vf82drf724
 cb110r5315
 cb110r59e9
 cb110rf241
-c20f0r2ecc
-c20f0r48b0
-c20f0r990b
+c20f0v81ddr2ecc
+c20f0veb3dr48b0
+c20f0v21e5r990b
 cb7ddr990b
 c5700rd334
 c2956rcd68
@@ -175,21 +178,21 @@ c76afr7f7d
 ca60er2e2a
 c182dr9a94
 c68cerb9cc
-c6578r8ed5
-ca032r193b
-cbce6re1ad
-c6baer6ab3
-cdcd6r5522
-cb359rf71e
-ccffbrace9
-c5fbcr578f
-cacb2rd35f
+c6578v7e57r8ed5
+ca032v374fr193b
+cbce6va778re1ad
+c6baev3013r6ab3
+cdcd6v0d4ar5522
+cb359v6e5drf71e
+ccffbv7f59race9
+c5fbcvac58r578f
+cacb2v36eard35f
 cb110r3619
 cb110r28d9
 cb110r72db
-c20f0ra486
-c20f0r6557
-c20f0rf7d6
+c20f0v2f91ra486
+c20f0vf354r6557
+c20f0v5db2rf7d6
 cb7ddrf7d6
 ce49ar6084
 cc84er5740
@@ -221,4 +224,4 @@ ca12eved36qd605p9128
 c5fddv2405qd986p3289
 stream 179 b080d17288c227df6bd39f7db4eaaf76036ff8b4a3eafff029c66812c8a56d0b
 tally failed=0 unproved=0 unverified=0
-end 179 420f905ab0dccf32179014d31148f1adfc0b2f5b6e151382724c8d204b236c07
+end 179 10c7367476d64d77d87703db72781aeb54f2f3c87a76a5838236533ef29e12e4

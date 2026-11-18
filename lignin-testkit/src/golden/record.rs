@@ -20,7 +20,7 @@ use super::{
     trace::{one_line, shortened, Detail, Entry, Segment, Tally, Trace},
     Error,
 };
-use crate::workload::{Op, Read, StreamDigest, Workload, Write};
+use crate::workload::{Op, Read, StreamDigest, TransactionOp, Workload, Write};
 
 /// A trace to record: the streams applied, one after another, to one
 /// database that starts empty.
@@ -261,6 +261,7 @@ struct Kind {
     op: Discriminant<Op>,
     write: Option<Discriminant<Write>>,
     read: Option<Discriminant<Read>>,
+    step: Option<Discriminant<TransactionOp>>,
     record: Option<&'static str>,
 }
 
@@ -277,7 +278,14 @@ impl Kind {
                 _ => None,
             },
             read: match op {
-                Op::Read(read) => Some(discriminant(read)),
+                Op::Read(read)
+                | Op::Transaction(
+                    TransactionOp::BlockRead(read) | TransactionOp::SnapshotRead(read),
+                ) => Some(discriminant(read)),
+                _ => None,
+            },
+            step: match op {
+                Op::Transaction(step) => Some(discriminant(step)),
                 _ => None,
             },
         }
