@@ -870,8 +870,11 @@ impl Element {
     /// the sum widened, inside the same wrapper. An indexed tree's sum axis
     /// becomes the big sum axis, which takes its place in the tag order.
     ///
-    /// `None` for an element that is not a tree with a 64-bit sum, and for a
-    /// `ProvableCountSumTree`, which has no counterpart with a 128-bit sum.
+    /// A `ProvableCountSumTree` becomes a `ProvableCountProvableBigSumTree`,
+    /// the one tree with a provable count and a 128-bit sum: no tree with a
+    /// 128-bit sum has the count in its node hashes and the sum beside them.
+    ///
+    /// `None` for an element that is not a tree with a 64-bit sum.
     pub fn big_sum_counterpart(&self) -> Option<Element> {
         match self {
             Element::SumTree(root_key, sum, flags) => Some(Element::BigSumTree(
@@ -890,7 +893,8 @@ impl Element {
                 i128::from(*sum),
                 flags.clone(),
             )),
-            Element::ProvableCountProvableSumTree(root_key, count, sum, flags) => {
+            Element::ProvableCountSumTree(root_key, count, sum, flags)
+            | Element::ProvableCountProvableSumTree(root_key, count, sum, flags) => {
                 Some(Element::ProvableCountProvableBigSumTree(
                     root_key.clone(),
                     *count,
@@ -1734,6 +1738,10 @@ mod flag_accessor_tests {
                 Element::ProvableBigSumTree(root.clone(), i128::from(i64::MIN), flags.clone()),
             ),
             (
+                Element::ProvableCountSumTree(root.clone(), 4, 9, flags.clone()),
+                Element::ProvableCountProvableBigSumTree(root.clone(), 4, 9, flags.clone()),
+            ),
+            (
                 Element::ProvableCountProvableSumTree(root.clone(), 4, 9, flags.clone()),
                 Element::ProvableCountProvableBigSumTree(root.clone(), 4, 9, flags.clone()),
             ),
@@ -1796,7 +1804,6 @@ mod flag_accessor_tests {
         for without in [
             Element::Tree(root.clone(), None),
             Element::CountTree(root.clone(), 4, None),
-            Element::ProvableCountSumTree(root.clone(), 4, 9, None),
             Element::ProvableCountIndexedTree(root.clone(), secondary, 4, None),
             Element::SumItem(9, None),
             Element::NonCounted(Box::new(Element::Tree(root, None))),

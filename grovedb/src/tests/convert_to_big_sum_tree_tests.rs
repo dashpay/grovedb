@@ -57,7 +57,10 @@ mod tests {
         );
     }
 
-    /// The four trees without a ranking: `(name, the tree, its counterpart)`.
+    /// The five trees without a ranking: `(name, the tree, its counterpart)`.
+    /// A `ProvableCountSumTree` and a `ProvableCountProvableSumTree` have the
+    /// same counterpart: no tree with a 128-bit sum has its count in its
+    /// node hashes and its sum beside them.
     fn plain_trees() -> Vec<(&'static str, Element, Element)> {
         vec![
             (
@@ -74,6 +77,11 @@ mod tests {
                 "ProvableSumTree",
                 Element::empty_provable_sum_tree(),
                 Element::empty_provable_big_sum_tree(),
+            ),
+            (
+                "ProvableCountSumTree",
+                Element::empty_provable_count_sum_tree(),
+                Element::empty_provable_count_provable_big_sum_tree(),
             ),
             (
                 "ProvableCountProvableSumTree",
@@ -707,8 +715,8 @@ mod tests {
             (b"count".as_slice(), Element::empty_count_tree()),
             (b"big".as_slice(), Element::empty_big_sum_tree()),
             (
-                b"provable_count_sum".as_slice(),
-                Element::empty_provable_count_sum_tree(),
+                b"provable_count".as_slice(),
+                Element::empty_provable_count_tree(),
             ),
             (
                 b"count_indexed".as_slice(),

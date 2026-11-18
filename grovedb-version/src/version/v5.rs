@@ -164,8 +164,8 @@
 //!   `GroveDb::convert_to_big_sum_tree` turns a tree that keeps a 64-bit sum
 //!   into its counterpart with a 128-bit sum, in place: the same path, the
 //!   same children. V1..V4 refuse the call: 6.1.1 has no such operation, and
-//!   knows only one of the six trees it can produce. Gated because it flips
-//!   an accepted/rejected outcome.
+//!   knows only one of the six trees it can produce (`BigSumTree`). Gated
+//!   because it flips an accepted/rejected outcome.
 //!
 //! - `operations.indexed_axis.big_sum_axis: 1`: a `PathQuery` axis read can
 //!   name the big sum axis (`IndexAxis::BigSum`), the axis those two indexed

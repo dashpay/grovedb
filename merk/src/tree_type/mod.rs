@@ -281,15 +281,20 @@ impl TreeType {
     }
 
     /// The tree type that holds the same children with the sum in 128 bits
-    /// instead of 64, or `None` where there is none: the tree keeps no
-    /// 64-bit sum, or it is a `ProvableCountSumTree`, which has no
-    /// counterpart with a 128-bit sum.
+    /// instead of 64, or `None` for a tree that keeps no 64-bit sum.
+    ///
+    /// Six of the seven are the same tree but for the width of the sum. The
+    /// seventh, `ProvableCountSumTree`, has its count in its node hashes and
+    /// its sum beside them, and no tree with a 128-bit sum does that: its
+    /// counterpart is `ProvableCountProvableBigSumTree`, the one tree with a
+    /// provable count and a 128-bit sum, which has the sum in its node
+    /// hashes as well.
     pub const fn big_sum_counterpart(&self) -> Option<TreeType> {
         match self {
             TreeType::SumTree => Some(TreeType::BigSumTree),
             TreeType::CountSumTree => Some(TreeType::CountBigSumTree),
             TreeType::ProvableSumTree => Some(TreeType::ProvableBigSumTree),
-            TreeType::ProvableCountProvableSumTree => {
+            TreeType::ProvableCountSumTree | TreeType::ProvableCountProvableSumTree => {
                 Some(TreeType::ProvableCountProvableBigSumTree)
             }
             TreeType::ProvableSumIndexedTree => Some(TreeType::ProvableBigSumIndexedTree),
@@ -300,7 +305,6 @@ impl TreeType {
             | TreeType::BigSumTree
             | TreeType::CountTree
             | TreeType::ProvableCountTree
-            | TreeType::ProvableCountSumTree
             | TreeType::CommitmentTree(_)
             | TreeType::MmrTree
             | TreeType::BulkAppendTree(_)
@@ -723,6 +727,12 @@ mod tests {
             (TreeType::SumTree, TreeType::BigSumTree),
             (TreeType::CountSumTree, TreeType::CountBigSumTree),
             (TreeType::ProvableSumTree, TreeType::ProvableBigSumTree),
+            // The one counterpart that is more than the same tree with a
+            // wider sum: the sum joins the count in the node hashes.
+            (
+                TreeType::ProvableCountSumTree,
+                TreeType::ProvableCountProvableBigSumTree,
+            ),
             (
                 TreeType::ProvableCountProvableSumTree,
                 TreeType::ProvableCountProvableBigSumTree,
@@ -756,7 +766,6 @@ mod tests {
             TreeType::NormalTree,
             TreeType::CountTree,
             TreeType::ProvableCountTree,
-            TreeType::ProvableCountSumTree,
             TreeType::ProvableCountIndexedTree,
             TreeType::CommitmentTree(0),
             TreeType::MmrTree,

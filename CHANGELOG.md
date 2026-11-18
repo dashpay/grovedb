@@ -147,13 +147,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   converts a tree that keeps a 64-bit sum into its counterpart with a
   128-bit sum, in place. `SumTree` becomes `BigSumTree`, `CountSumTree`
   becomes `CountBigSumTree`, `ProvableSumTree` becomes `ProvableBigSumTree`,
-  `ProvableCountProvableSumTree` becomes `ProvableCountProvableBigSumTree`,
-  `ProvableSumIndexedTree` becomes `ProvableBigSumIndexedTree` and
-  `ProvableCountProvableSumIndexedTree` becomes
-  `ProvableCountProvableBigSumIndexedTree`. The tree keeps its path, its
-  children, its flags, its count, its sum and its wrapper, and the result
-  is the tree built with a 128-bit sum from the start: the same element
-  and, for the four trees without a ranking, the same root hash. Every node
+  `ProvableCountSumTree` and `ProvableCountProvableSumTree` become
+  `ProvableCountProvableBigSumTree`, `ProvableSumIndexedTree` becomes
+  `ProvableBigSumIndexedTree` and `ProvableCountProvableSumIndexedTree`
+  becomes `ProvableCountProvableBigSumIndexedTree`. Six of the seven
+  become the same tree but for the width of the sum. `ProvableCountSumTree`
+  has its count in its node hashes and its sum beside them, which no tree
+  with a 128-bit sum does: it becomes the one tree with a provable count
+  and a 128-bit sum, and its sum enters its node hashes. The tree keeps its
+  path, its children, its flags, its count, its sum and its wrapper, and
+  the result is the tree built with a 128-bit sum from the start: the same
+  element and, for the five trees without a ranking, the same root hash. Every node
   of the tree is rewritten (a node and the link to it record sums at the
   tree's width): one visit per child, with the tree in memory until the
   write, and 16 added bytes per child (one more where a node's length
@@ -162,10 +166,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   axis as one change to its secondary, so only the sums of the finished
   secondary are computed: `O(n log n)` per such axis, with the rows' own
   storage cost. Refused, leaving the tree as it was:
-  - for any other element (a `ProvableCountSumTree` has no counterpart);
+  - for any other element;
   - for a tree that adds its sum to a parent keeping a 64-bit sum (convert
-    the parent first; under a `ProvableCountSumTree`, which cannot be
-    converted, neither can the child);
+    the parent first);
   - for a tree holding a child that would add a different count or sum to
     it once converted, which is a tree with a 128-bit sum inside it (it
     adds nothing to a 64-bit sum and its whole sum to a 128-bit one);

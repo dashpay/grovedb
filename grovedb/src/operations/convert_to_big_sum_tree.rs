@@ -38,6 +38,7 @@ impl GroveDb {
     /// | `SumTree`                             | `BigSumTree`                             |
     /// | `CountSumTree`                        | `CountBigSumTree`                        |
     /// | `ProvableSumTree`                     | `ProvableBigSumTree`                     |
+    /// | `ProvableCountSumTree`                | `ProvableCountProvableBigSumTree`        |
     /// | `ProvableCountProvableSumTree`        | `ProvableCountProvableBigSumTree`        |
     /// | `ProvableSumIndexedTree`              | `ProvableBigSumIndexedTree`              |
     /// | `ProvableCountProvableSumIndexedTree` | `ProvableCountProvableBigSumIndexedTree` |
@@ -48,20 +49,24 @@ impl GroveDb {
     /// axis. From then on the tree accepts what its new type accepts, and
     /// its sum can pass the `i64` range.
     ///
+    /// Six of the seven become the same tree but for the width of the sum.
+    /// A `ProvableCountSumTree` has its count in its node hashes and its sum
+    /// beside them, and no tree with a 128-bit sum does that. It becomes the
+    /// one tree with a provable count and a 128-bit sum, which has the sum
+    /// in its node hashes too: its sum becomes provable, and its proofs are
+    /// those of a `ProvableCountProvableBigSumTree` from then on.
+    ///
     /// Only the tree named is converted. A tree inside it keeps its type,
     /// and goes on adding its own 64-bit sum to the converted tree's.
     ///
     /// # Refusals
     ///
-    /// - The element is not one of the six trees above. A
-    ///   `ProvableCountSumTree` has no counterpart with a 128-bit sum.
+    /// - The element is not one of the seven trees above.
     /// - The tree adds its sum to a parent that keeps a 64-bit sum. A tree
     ///   with a 128-bit sum adds nothing to such a parent, so the parent
-    ///   would stop following it. Where the parent is one of the six trees,
-    ///   convert it first. Where it is a `ProvableCountSumTree`, neither can
-    ///   be converted, and the layout cannot be moved to a 128-bit sum in
-    ///   place. A tree wrapped in `NotSummed` or `NotCountedOrSummed` adds
-    ///   nothing either way and is converted, under any parent.
+    ///   would stop following it: convert the parent first. A tree wrapped in
+    ///   `NotSummed` or `NotCountedOrSummed` adds nothing either way and is
+    ///   converted.
     /// - The tree holds a child that would add a different count or sum to
     ///   it once it is converted. That is a tree with a 128-bit sum inside
     ///   the tree: it adds nothing to a 64-bit sum and its whole sum to a
@@ -98,9 +103,10 @@ impl GroveDb {
     /// work for each of those axes, with their own storage cost beside the
     /// primary's. The count rows stay as they are.
     ///
-    /// A tree whose sum is in its node hashes gets a new root hash. The
-    /// other two keep theirs, and only the element that describes the tree
-    /// changes.
+    /// A tree whose sum is in its node hashes gets a new root hash, and so
+    /// does a `ProvableCountSumTree`, whose sum enters them. A `SumTree` and
+    /// a `CountSumTree` keep theirs, and only the element that describes the
+    /// tree changes.
     ///
     /// Everything is written at the end, in one batch: a call that is
     /// refused or fails leaves the tree as it was.
@@ -158,7 +164,7 @@ impl GroveDb {
             return Err(Error::InvalidInput(
                 "only a tree that keeps a 64-bit sum and has a counterpart with a 128-bit sum \
                  can be converted to a big sum tree (SumTree, CountSumTree, ProvableSumTree, \
-                 ProvableCountProvableSumTree, ProvableSumIndexedTree or \
+                 ProvableCountSumTree, ProvableCountProvableSumTree, ProvableSumIndexedTree or \
                  ProvableCountProvableSumIndexedTree)",
             ))
             .wrap_with_cost(cost);
@@ -218,8 +224,7 @@ impl GroveDb {
         if parent_sums_in_64_bits && !left_out_of_the_parent_sum {
             return Err(Error::InvalidInput(
                 "the tree adds its sum to a parent that keeps a 64-bit sum, and would add \
-                 nothing to it with a 128-bit sum: convert the parent first, if it is a tree \
-                 that can be converted",
+                 nothing to it with a 128-bit sum: convert the parent first",
             ))
             .wrap_with_cost(cost);
         }

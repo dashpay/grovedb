@@ -15,7 +15,12 @@ use crate::{
 
 /// The feature type of a node that keeps a 64-bit sum, with the same count
 /// and the sum in 128 bits. `None` for a feature type that keeps no 64-bit
-/// sum, and for `ProvableCountedSummedMerkNode`, which has no counterpart.
+/// sum.
+///
+/// `ProvableCountedSummedMerkNode` has its count in the node hash and its
+/// sum beside it. No feature type with a 128-bit sum does, and it takes the
+/// one that has both in the hash, as its tree type does
+/// ([`TreeType::big_sum_counterpart`]).
 fn widened_feature_type(feature_type: TreeFeatureType) -> Option<TreeFeatureType> {
     match feature_type {
         TreeFeatureType::SummedMerkNode(sum) => {
@@ -27,14 +32,14 @@ fn widened_feature_type(feature_type: TreeFeatureType) -> Option<TreeFeatureType
         TreeFeatureType::ProvableSummedMerkNode(sum) => {
             Some(TreeFeatureType::ProvableBigSummedMerkNode(i128::from(sum)))
         }
-        TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, sum) => Some(
+        TreeFeatureType::ProvableCountedSummedMerkNode(count, sum)
+        | TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, sum) => Some(
             TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(count, i128::from(sum)),
         ),
         TreeFeatureType::BasicMerkNode
         | TreeFeatureType::BigSummedMerkNode(_)
         | TreeFeatureType::CountedMerkNode(_)
         | TreeFeatureType::ProvableCountedMerkNode(_)
-        | TreeFeatureType::ProvableCountedSummedMerkNode(..)
         | TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(..)
         | TreeFeatureType::CountedBigSummedMerkNode(..)
         | TreeFeatureType::ProvableBigSummedMerkNode(_) => None,
@@ -55,8 +60,9 @@ where
     /// of the tree is read and written again. Each node keeps the count and
     /// the sum it contributes, with the sum widened; keys, values, value
     /// hashes and the shape of the tree stay as they are. A tree whose sum
-    /// is in its node hashes gets new node hashes and a new root hash. The
-    /// other trees keep theirs.
+    /// is in its node hashes gets new node hashes and a new root hash, and
+    /// so does a `ProvableCountSumTree`, whose sum enters them. A `SumTree`
+    /// and a `CountSumTree` keep theirs.
     ///
     /// The values are opaque here, as they are to [`Merk::apply`]. What
     /// they mean is the caller's:
@@ -260,10 +266,14 @@ mod tests {
     /// cost the call returns.
     type ImmediateMerk<'a> = Merk<PrefixedRocksDbImmediateStorageContext<'a>>;
 
-    const PAIRS: [(TreeType, TreeType); 6] = [
+    const PAIRS: [(TreeType, TreeType); 7] = [
         (TreeType::SumTree, TreeType::BigSumTree),
         (TreeType::CountSumTree, TreeType::CountBigSumTree),
         (TreeType::ProvableSumTree, TreeType::ProvableBigSumTree),
+        (
+            TreeType::ProvableCountSumTree,
+            TreeType::ProvableCountProvableBigSumTree,
+        ),
         (
             TreeType::ProvableCountProvableSumTree,
             TreeType::ProvableCountProvableBigSumTree,
@@ -418,7 +428,7 @@ mod tests {
             TreeType::NormalTree,
             TreeType::BigSumTree,
             TreeType::CountTree,
-            TreeType::ProvableCountSumTree,
+            TreeType::ProvableCountTree,
         ] {
             let storage = TempStorage::new();
             let tx = storage.start_transaction();

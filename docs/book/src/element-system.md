@@ -195,19 +195,27 @@ sum, where it stands:
 | `SumTree` | `BigSumTree` |
 | `CountSumTree` | `CountBigSumTree` |
 | `ProvableSumTree` | `ProvableBigSumTree` |
+| `ProvableCountSumTree` | `ProvableCountProvableBigSumTree` |
 | `ProvableCountProvableSumTree` | `ProvableCountProvableBigSumTree` |
 | `ProvableSumIndexedTree` | `ProvableBigSumIndexedTree` |
 | `ProvableCountProvableSumIndexedTree` | `ProvableCountProvableBigSumIndexedTree` |
 
 The tree keeps its path, its children, its flags, its count, its sum and
 the wrapper it is in. The result is the tree built wide from the start: the
-same element and, for the first four, the same root hash.
+same element and, for the first five, the same root hash.
+
+Six of the seven become the same tree but for the width of the sum.
+`ProvableCountSumTree` has its count in its node hashes and its sum beside
+them, and no tree with a 128-bit sum does that. It becomes the one tree
+with a provable count and a 128-bit sum, `ProvableCountProvableBigSumTree`,
+which has the sum in its node hashes too: its sum becomes provable, and
+its proofs are that tree's from then on.
 
 It is not a relabeling of the element. Each node stores its own
 contribution, and each link the aggregate of the child under it, at the
 width of the tree's sum, so every node of the tree is read and written
-again, and the trees with the sum in their node hashes are rehashed from
-the leaves up. That is one visit per child, with the whole tree in memory
+again, and the trees with the sum in their node hashes, before or after,
+are rehashed from the leaves up. That is one visit per child, with the whole tree in memory
 until the write. The storage cost reports 16 added bytes per child (8 in
 the node, 8 in the link to it, and one more where the node's length prefix
 grows) and 7 for the tree's element. An indexed tree also rewrites the rows
@@ -216,16 +224,12 @@ of its sum and avg axes, sorted and applied as one change per axis:
 
 These are refused, and a refused call leaves the tree as it was:
 
-- An element that is not one of the six trees. `ProvableCountSumTree` has
-  no counterpart with a 128-bit sum.
+- An element that is not one of the seven trees.
 - A tree that adds its sum to a parent keeping a 64-bit sum. A tree with a
   128-bit sum adds nothing to such a parent, so the parent's total would
-  stop following it. Where the parent is one of the six trees, convert it
-  first, then its children. Where it is a `ProvableCountSumTree`, which has
-  no counterpart, neither can be converted: that layout cannot be moved to
-  a 128-bit sum in place. A child wrapped in `NotSummed` or
-  `NotCountedOrSummed` adds nothing either way and is converted where it
-  is, under any parent.
+  stop following it. Convert the parent first, then its children. A child
+  wrapped in `NotSummed` or `NotCountedOrSummed` adds nothing either way
+  and is converted where it is.
 - A tree holding a child that would add a different count or sum to it
   once converted. That is a tree with a 128-bit sum inside it: it adds
   nothing to a 64-bit sum and its whole sum to a 128-bit one, so the
