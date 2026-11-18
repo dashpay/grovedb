@@ -14,16 +14,19 @@
 
 use std::{collections::BTreeSet, thread};
 
-use grovedb::{GroveDb, PathQuery};
+use grovedb::{query_result_type::PathKeyElementTrio, Element, GroveDb};
 use grovedb_commitment_tree::{ciphertext_payload_size, DashMemo};
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 use lignin_testkit::workload::{
-    adversarial::{DeepNesting, DeleteHeavy, LargeValues, LongKeys, ReferenceChains, TinySubtrees},
+    adversarial::{
+        DeepNesting, DeleteHeavy, LargeValues, LongKeys, ReferenceChains, TinySubtrees,
+        MAX_NESTING_DEPTH,
+    },
     apply,
     coverage::{ELEMENT_VARIANTS, REFERENCE_PATH_TYPES, TREE_TYPES},
     drive::{Balances, Documents, Tokens},
     zoo::{ElementZoo, COMMITMENT_PAYLOAD_LEN},
-    Coverage, Features, Op, Outcome, Read, StreamDigest, Workload,
+    Coverage, Features, Op, Outcome, Query, Read, StreamDigest, Workload,
 };
 
 const SEED: u64 = 1;
@@ -86,8 +89,8 @@ fn run(
                     name,
                     index,
                     db,
-                    &query.to_path_query(),
-                    rows.len(),
+                    query,
+                    rows.to_path_key_elements(),
                     grove_version,
                 );
             }
@@ -122,43 +125,79 @@ fn open() -> (tempfile::TempDir, GroveDb) {
     (dir, db)
 }
 
-/// Proves a query against committed state and checks the proof verifies to
-/// the same number of rows.
+/// Proves a query against committed state and checks that the proof
+/// verifies to the database's root hash and to the rows the query returned:
+/// the same paths, keys and elements in the same order.
+///
+/// A proof carries the value a reference points at, never the reference, so
+/// a raw query's reference rows are compared with what `get` resolves them
+/// to.
 fn prove(
     name: &str,
     index: usize,
     db: &GroveDb,
-    path_query: &PathQuery,
-    rows: usize,
+    query: &Query,
+    rows: Vec<PathKeyElementTrio>,
     grove_version: &GroveVersion,
 ) {
+    let version = grove_version.protocol_version;
+    let path_query = query.to_path_query();
     let proof = db
-        .prove_query(path_query, None, grove_version)
+        .prove_query(&path_query, None, grove_version)
         .unwrap()
         .unwrap_or_else(|error| {
-            panic!(
-                "{name} on grove v{}: query {index} not provable: {error:?}\n{path_query:?}",
-                grove_version.protocol_version
-            )
+            panic!("{name} on grove v{version}: query {index} not provable: {error:?}\n{query:?}")
         });
-    let (root_hash, proved) = GroveDb::verify_query(&proof, path_query, grove_version)
-        .unwrap_or_else(|error| {
-            panic!(
-                "{name} on grove v{}: proof of query {index} does not verify: {error:?}\n{path_query:?}",
-                grove_version.protocol_version
-            )
-        });
+    let refused = |error| -> ! {
+        panic!(
+            "{name} on grove v{version}: proof of query {index} does not verify: {error:?}\n{query:?}"
+        )
+    };
+    let (root_hash, proved): (_, Vec<PathKeyElementTrio>) = if query.raw {
+        let (root_hash, proved) = GroveDb::verify_query_raw(&proof, &path_query, grove_version)
+            .unwrap_or_else(|error| refused(error));
+        let proved = proved
+            .into_iter()
+            .map(|row| {
+                let element = Element::deserialize(&row.value, grove_version)
+                    .expect("a proved value is an element");
+                (row.path, row.key, element)
+            })
+            .collect();
+        (root_hash, proved)
+    } else {
+        let (root_hash, proved) = GroveDb::verify_query(&proof, &path_query, grove_version)
+            .unwrap_or_else(|error| refused(error));
+        let proved = proved
+            .into_iter()
+            .map(|(path, key, element)| (path, key, element.expect("a proved row has a value")))
+            .collect();
+        (root_hash, proved)
+    };
     assert_eq!(
         root_hash,
         db.root_hash(None, grove_version)
             .unwrap()
             .expect("root hash"),
-        "{name}: proof of query {index} verifies to another root"
+        "{name} on grove v{version}: proof of query {index} verifies to another root"
     );
-    assert_eq!(
-        proved.len(),
-        rows,
-        "{name}: query {index} proves another row count"
+    let expected: Vec<PathKeyElementTrio> = rows
+        .into_iter()
+        .map(|(path, key, element)| {
+            let element = if element.underlying().is_reference() {
+                db.get(path.as_slice(), &key, None, grove_version)
+                    .unwrap()
+                    .expect("a stored reference resolves")
+            } else {
+                element
+            };
+            (path, key, element)
+        })
+        .collect();
+    assert!(
+        proved == expected,
+        "{name} on grove v{version}: query {index} proves other rows\n{query:?}\nproved: \
+         {proved:?}\nexpected: {expected:?}"
     );
 }
 
@@ -297,6 +336,31 @@ fn the_smallest_workloads_apply() {
             run(workload.name(), &db, workload.stream(seed), grove_version);
         }
     }
+}
+
+#[test]
+fn the_deepest_nesting_applies_on_every_grove_version() {
+    on_every_grove_version(|grove_version| {
+        let deepest = DeepNesting {
+            depth: MAX_NESTING_DEPTH,
+            chains: 4,
+            leaves: 2,
+        };
+        let (_dir, db) = open();
+        run("deepest-nesting", &db, deepest.stream(SEED), grove_version);
+    });
+}
+
+#[test]
+fn the_largest_parameters_do_not_overflow() {
+    let tokens = Tokens {
+        tokens: 1,
+        holders: u64::MAX,
+        actions: 200,
+        ..Tokens::default()
+    };
+    let (_dir, db) = open();
+    run("tokens", &db, tokens.stream(SEED), GroveVersion::latest());
 }
 
 /// A benchmark can compare a workload with and without its reads: the

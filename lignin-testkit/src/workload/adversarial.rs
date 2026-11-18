@@ -21,6 +21,10 @@ use super::{
 /// The longest key GroveDB accepts.
 pub const MAX_KEY_LEN: u32 = 255;
 
+/// The deepest [`DeepNesting`] goes. GroveDB proves a query at most 128
+/// trees below the root, and every chain hangs under one root tree.
+pub const MAX_NESTING_DEPTH: u32 = 127;
+
 /// The most references GroveDB follows from one read.
 pub const MAX_REFERENCE_HOPS: u32 = 10;
 
@@ -45,7 +49,8 @@ const DOMAIN_REFERENCES: u64 = 0xAD06;
 /// thread or a test gets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeepNesting {
-    /// How many trees are nested in one chain.
+    /// How many trees are nested in one chain, at most
+    /// [`MAX_NESTING_DEPTH`].
     pub depth: u32,
     /// How many chains to build.
     pub chains: u32,
@@ -67,6 +72,11 @@ impl DeepNesting {
     /// The stream for `seed`.
     pub fn stream(&self, seed: u64) -> Stream {
         assert!(self.depth > 0 && self.leaves > 0, "nothing to generate");
+        assert!(
+            self.depth <= MAX_NESTING_DEPTH,
+            "GroveDB cannot prove a query {} trees deep",
+            self.depth
+        );
         let mut rng = Rng::derive(seed, DOMAIN_DEEP, 0);
         let root = path(&[b"deep"]);
         let mut ops = vec![

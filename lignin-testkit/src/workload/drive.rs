@@ -492,6 +492,13 @@ impl Source for DocumentsSource {
     }
 }
 
+/// A uniform position in `0..count` other than `this`. `count` must be at
+/// least two.
+fn another(rng: &mut Rng, count: u64, this: u64) -> u64 {
+    let offset = 1 + u128::from(rng.below(count - 1));
+    ((u128::from(this) + offset) % u128::from(count)) as u64
+}
+
 /// A step size that visits every one of `count` positions once.
 fn coprime_stride(rng: &mut Rng, count: u64) -> u64 {
     if count <= 2 {
@@ -602,7 +609,7 @@ impl BalancesSource {
         let identities = self.balances.len() as u64;
         let sender = self.rng.below(identities);
         let recipient = if identities > 1 {
-            (sender + 1 + self.rng.below(identities - 1)) % identities
+            another(&mut self.rng, identities, sender)
         } else {
             sender
         };
@@ -868,8 +875,7 @@ impl TokensSource {
                 record.push(if transfer { 1 } else { 2 });
                 record.extend_from_slice(&identity_id(self.seed, holder));
                 if transfer {
-                    let recipient = (holder + 1 + self.rng.below(self.config.holders - 1))
-                        % self.config.holders;
+                    let recipient = another(&mut self.rng, self.config.holders, holder);
                     let held = self.balance(token, recipient);
                     ops.push(self.set_balance(token, recipient, held + amount));
                     record.extend_from_slice(&identity_id(self.seed, recipient));
