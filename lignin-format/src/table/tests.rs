@@ -249,6 +249,11 @@ fn checkpoints_round_trip_in_both_directions() {
 
 #[test]
 fn every_record_but_the_last_holds_exactly_4096_links() {
+    assert_eq!((LINK_LEN, LINKS_PER_RECORD), (28, 4096));
+    assert_eq!((MAX_PAYLOAD_LEN, MAX_RECORD_LEN), (114_689, 114_697));
+    assert_eq!(END_RECORD_LEN, 33);
+    let two_records = encode(id(1), version(1), (1..=4097).map(|page| base(page, 1))).unwrap();
+    assert_eq!(two_records.len(), 20 + 114_697 + 37 + 33);
     for (count, lens) in [
         (LINKS_PER_RECORD - 1, vec![LINKS_PER_RECORD - 1]),
         (LINKS_PER_RECORD, vec![LINKS_PER_RECORD]),
