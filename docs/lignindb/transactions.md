@@ -413,7 +413,9 @@ this must stay true:
    it can be rebuilt from what is on disk.
 2. So the segment blocks, the log records not yet written back, and the
    value-log entries that those page versions consist of or point to are not
-   deleted and not overwritten.
+   deleted and not overwritten. One case differs: what was never written
+   back of a page that has since been freed is kept in memory, and its log
+   records may go (FL6).
 3. No page id that is reachable at *s* names a different page (ID2).
 4. The subtree directory and the flat keyspaces at *s* are readable. They are
    pages, so 1 to 3 cover them.
@@ -488,7 +490,9 @@ the same three questions.
 
 **PN7. Pins never block and are never refused.** A pin held for a long time
 costs disk space, never correctness: it holds back the cleaner (CL1) and page
-id reuse (ID2). STORE-08 bounds and reports that cost.
+id reuse (ID2). STORE-08 bounds and reports that cost. It costs memory as
+well, where a page version it needs is kept in the buffer pool and nowhere
+else (FL6, FL7).
 
 **PN8. A location is good only at the version it was read at.** A location is
 a page id, with or without a slot. An id names a page only together with a
@@ -553,6 +557,12 @@ The simple sufficient test is *w* ≤ *H*: nothing older than the oldest pin
 can be asked for. The exact test is that no pinned *s* has *b* ≤ *s* < *w*.
 An implementation may use either. It must never reclaim a page version that
 the exact test calls needed.
+
+Readable means in memory, or rebuildable from what is on disk (PN2). For
+one kind of page version it means in memory only. What was not yet written
+back of a page when a commit freed it is never written back, and the buffer
+pool keeps it, not evictable, for as long as it is needed (FL6). Only pins
+of the running session can need it. No recovery asks for it.
 
 **PV4. Background work may change how a page version is stored, never what
 it says.** Relocating its blocks, consolidating its delta chain into a new
@@ -1324,7 +1334,9 @@ counts is read under the lock, together with its place in the log (DU5).
 ### 10.1 Flusher
 
 **FL1. The flusher writes only published page versions.** It never reads or
-writes a private frame. An open write transaction writes to no data file
+writes a private frame. It does not write every published one: what is
+older than the free link of a freed page, and not yet written back, never is
+(FL6). An open write transaction writes to no data file
 (WT4): its values reach the log with its commit and the value log at
 write-back (FL7). The only bytes a transaction has outside the log are those
 of a spill file, which no manifest names and which recovery ignores (WT4).
@@ -1354,10 +1366,14 @@ reachable (DU3). So a manifest names a table checkpoint only once the log
 is durable through:
 
 - the newest version the checkpoint covers or reaches (`page-table.md` K4)
-- the version of the newest free link that trimming has taken out of the
-  page table (`page-alloc.md` section 8 item 9, and the follow-up to
-  STORE-03 that closes it). Without this, a freed page whose chain was
-  trimmed away could be lost when the crash loses the commit that freed it.
+- the newest free link the checkpoint may have lost to trimming
+  (`page-table.md` T17, K10). The table remembers the newest free link a
+  trim has removed, and a checkpoint notes that version after it has copied
+  its last chain. Without this, a freed page whose chain was trimmed away
+  could be lost when the crash loses the commit that freed it
+  (`page-alloc.md` section 8 item 9)
+- the place of the count sample the checkpoint carries (`page-table.md` K14,
+  DU5)
 
 "Durable through *v*" means what recovery would reach: the groups up to *v*
 are synced, in the part of the log that recovery reads (CM9). The rule is
@@ -1372,10 +1388,20 @@ discarding as a second way and left the choice to STORE-06 and STORE-07. It
 is unsafe unless trimming never passes the version the log is durable
 through (`page-table.md` section 6 item 9).
 
-Two more things follow the same order. A sample of the live-value counts is
-in force only once the log is durable through its place (DU5). And a value
-pointer is stored where a later session will find it only under a durable
-manifest that covers the value (FL7).
+Replay can still meet a change it has nothing to apply to (`page-table.md`
+K11). A page was freed at version *w* and its chain was trimmed, and the
+checkpoint was written after that and covers less than *w*. The log then
+holds changes to the page from commits between the two, and the checkpoint
+has no image of the page. Replay drops such a change. Nothing needs the
+page version it belonged to: the log is durable through *w*, so replay goes
+on to the commit that frees the page. When replay ends, recovery checks that
+every page with a dropped change was freed, or made again, by a later commit
+it replayed (STORE-07). If one was not, the checkpoint or the log is
+damaged. A change that makes a page needs no image, and is never dropped.
+
+One more thing follows the same order. A value pointer is stored where a
+later session will find it only under a durable manifest that covers the
+value (FL7).
 
 **FL5. Backpressure stops commits only between commits.** When write-back
 falls behind (STORE-06), the committer waits before step 2 of CM3, not while
@@ -1389,6 +1415,27 @@ Write-back that a private copy of the waiting transaction itself holds back
 needed page version, of a commit that the last durable table checkpoint does
 not cover, of a pending value (FL7), or of a count change that recovery
 would still apply (DU5).
+
+**A copy that the buffer pool is bound to keep counts as a copy.** That is
+the case for a page that has been freed (`page-table.md` T18). The commit
+that frees a page gives it its free link at once, and from then on nothing
+older of that page is written back. The changes of earlier commits that
+only the log and the buffer pool hold then:
+
+- leave the write-back queue
+- count as written back when the version a table checkpoint covers is
+  chosen (`page-table.md` K1)
+- stay in the buffer pool, which cannot evict them, until no reader can ask
+  for a version below the freeing one (PV3, PN6). Then the pool drops them.
+
+Those page versions, and a pending value in one of them, are needed only by
+readers of the running session, which the pool serves. No recovery needs
+them. A checkpoint that holds the free link, or that lost it to trimming,
+is named only once the log is durable through the freeing version (FL4), so
+a recovery from it lands where the page is free. A checkpoint from before
+the free link covers less than those changes, and the second case above
+keeps the log for it. So no log file is held back for them, although a pin
+may still read them: no pin survives a crash (DU3).
 
 **FL7. A new value reaches the value log at write-back, not at commit.** A
 value that is too long for its cell (TREE-08) and that a commit writes
@@ -1404,7 +1451,8 @@ cell.
 
 - **Where it is.** Its bytes are in the log group and in the frame of its
   page version. The store keeps that frame until the value is placed or the
-  page version is no longer needed (PV3), and it keeps the log file (FL6).
+  page version is no longer needed (PV3). It keeps the log file as well,
+  except where FL6 lets the frame stand for it.
 - **Reading it.** A read through any handle that sees the commit is answered
   from the frame. It reads neither the log nor the value log. It returns the
   bytes, and charges the cost, that it will once the value is placed (RD9).
@@ -1436,7 +1484,8 @@ the page version must stay readable (PN2), and nothing is counted for it,
 because the counts are those of the latest version. How it is kept is
 STORE-06's choice: in memory, with its value in the log, or with the value
 placed for that version alone under a hold that lasts for as long as the
-version is needed.
+version is needed. For a page that has been freed there is no choice: FL6
+keeps it in memory and writes nothing of it back.
 
 ### 10.2 Cleaner
 
@@ -1672,14 +1721,15 @@ value log's files and not in the manifest.
 - Every change point that changes a count stores the change with its
   record: the log group of a commit, the record of a page step (LT7).
 - A **sample** of all the counts is stored in the table checkpoint file
-  (STORE-03) with its **place in the log**: the counts in it include every
-  change whose record is before that place, and none whose record is after
-  it. It is read under the counts lock.
+  (`page-table.md` K12) with its **place in the log**: the counts in it
+  include every change whose record is before that place, and none whose
+  record is after it. It is read under the counts lock.
 - Recovery takes the sample of the table checkpoint that the recovered
   manifest names. To it, it applies the count change of every record it
   keeps after the sample's place, each once, in the order of the log
   (STORE-07). The counts are then those of the page state recovery lands on
-  (`value-log-format.md` O7).
+  (`value-log-format.md` O7). With no checkpoint named there is no sample:
+  the counts start from nothing, and every change in the log applies.
 
 What the counts include is decided by the place alone. A table checkpoint
 copies each chain at another moment (`page-table.md` K5), so a page in it
@@ -1693,18 +1743,24 @@ page. For a value pointer rewrite the test is that the cell no longer holds
 the old pointer. That is enough, because a pointer is never given to a
 second cell.
 
-Three things follow for the checkpoint and the log:
+Four things follow for the checkpoint and the log:
 
 - A sample is in force only with its checkpoint, and only once the log is
-  durable through its place (FL4).
+  durable up to its place (`page-table.md` K14, FL4).
 - "Covers version *C*" (`page-table.md` K1) speaks of commits. Whoever takes
   a table checkpoint vouches for background changes as well: every change
   whose record is before the place where replay starts for the pages is in
-  the checkpoint's chains.
-- The log is kept from the earlier of the two places: where replay starts
-  for the pages, and the sample's (FL6). The changes between them are
+  the checkpoint's chains. The one exception is K1's own: a change to a
+  page whose free link has been pushed since (FL6).
+- Recovery reads the log from two places, the group of *C* + 1 for the
+  pages and the sample's place for the counts, and the log is kept from the
+  earlier one (`page-table.md` K13, FL6). The changes between them are
   replayed for the pages only, or counted only, whichever place comes
   first.
+- The places of successive samples never go back. A later checkpoint with
+  an earlier place would ask for log that may be gone. The table does not
+  check this. STORE-06 takes the samples and deletes the log files, so it
+  keeps the rule (`page-table.md` K15).
 
 ## 13. Every pair of actors
 
@@ -1720,7 +1776,7 @@ whether either can be made to wait for the other.
 | 1 | Reader, reader | published page versions | PV2, LT6 | never |
 | 2 | Reader, writer | nothing: the reader cannot reach private frames | RD8, WT4 | never |
 | 3 | Reader, committer | *L*, and the page versions the commit supersedes | CM4, PN4, PV1, PV3 | never |
-| 4 | Reader, flusher | frames and locations of page versions, and pending values, which a reader takes from the frame | PN5, PV4, FL3, FL7 | never |
+| 4 | Reader, flusher | frames and locations of page versions; pending values and what was never written back of a freed page, both of which a reader takes from the frame | PN5, PV3, PV4, FL3, FL6, FL7 | never |
 | 5 | Reader, cleaner | blocks, files and page ids the reader's version needs | PN2, PN6, CL1 to CL5, ID2 | never |
 | 6 | Reader, checkpoint | files | PN5, CK7 | never |
 | 7a | Writer, writer in the same transaction | units, private frames, the transaction's merged writes | SC3, SC4, SC6, SC7, LT1 to LT5 | one physical step (LT3); a claim never waits |
@@ -1987,9 +2043,9 @@ took.
 | TREE-05 | ST3, SC2, SC9, CV9: an entry is no record; it is written by the scope that holds its Merk and is exact while the host is marked pending; an entry that a drop left behind is never returned. | The entry, and how a lookup tells a left-over one. |
 | TREE-06 | RD6. | The cursor. |
 | TREE-09 | A drop is a range delete in its transaction's write set (CV9, CF5). What it leaves is reclaimed by a walk, under CL6: after the pins and guards, in page steps (PV7), with a page freed once, at the drop's version or later. | The unlink, keeping the root's address, and the walk. |
-| STORE-03 | FL4 is `page-table.md` K4, with the follow-up for trimmed free links. The count sample of DU5 is stored in its checkpoint file. | The table and the checkpoint file. |
-| STORE-04 | LT2 to LT6, PN5, and the page step of PV7. A frame with a pending value is kept until the value is placed (FL7). | Frames, latches, eviction. |
-| STORE-01, STORE-06, STORE-07 | FL1 to FL7, PV5, DU1a, DU2, DU3, DU5, CM9, ID4. The log goes first (FL4). Write-back places pending values in page steps (FL7, PV7). No committer waits for write-back its own copies hold back (FL5). Replay reports written and freed pages (ID4) and recovers the counts (DU5). | Thresholds, the table checkpoint, replay, how a failed group is put out of reach, and how a superseded page version with a pending value is kept (FL7). |
+| STORE-03 | FL4 is `page-table.md` K4, K10 and K14, enforced where a checkpoint is installed. The count sample of DU5 is stored in its checkpoint file (K12). | The table and the checkpoint file. |
+| STORE-04 | LT2 to LT6, PN5, and the page step of PV7. A frame with a pending value is kept until the value is placed (FL7). What was never written back of a freed page is kept, not evictable, until no reader can ask for it (FL6). | Frames, latches, eviction. |
+| STORE-01, STORE-06, STORE-07 | FL1 to FL7, PV5, DU1a, DU2, DU3, DU5, CM9, ID4. The log goes first (FL4). Write-back places pending values in page steps (FL7, PV7). No committer waits for write-back its own copies hold back (FL5). Replay reports written and freed pages (ID4) and recovers the counts (DU5). Nothing older than a page's free link is written back, and no log file is held for it (FL6). Replay drops a change to a page the checkpoint has no image of, and checks that the page was freed or made again (FL4). The places of count samples never go back (DU5). | Thresholds, the table checkpoint, replay, how a failed group is put out of reach, and how a superseded page version with a pending value is kept (FL7). |
 | STORE-08 | CL1 to CL7, PN6 with its three questions, CK3. | Liveness accounting, throttling. |
 | STORE-09, TREE-08 | PV4, PV6, PV7 and CL5: a value pointer rewrite takes no version, is installed in a page step that checks the current page version, the owner and private copies held at that moment, changes the counts in that step, is recovered with the pages, and an emptied file goes only when CL5 allows. FL1: a value appended ahead of its page step is held. FL7: new values come from write-back, not from commits. The counts lock is level 4a of LT7, and the counts recover by DU5. | When a file is cleaned, when a value is durable, regrouping, and what makes the page step one step. |
 | STORE-10 | ID1 to ID5, and the three questions of PN6. | The allocator. |
@@ -2130,6 +2186,13 @@ TREE-09, VER-05)**
   commit that is installed and not yet published taken for the latest
   version, a guard taken after the read of *L* (PN5), the epoch started
   before the pin test.
+- T-PN7: a page is freed while changes of earlier commits to it are only
+  in the log and the buffer pool (FL6), owed by STORE-06 with STORE-04. A
+  snapshot below the freeing version keeps reading those page versions,
+  also after the log file that held them is deleted and under memory
+  pressure. They are never written back. The pool drops them when no reader
+  can ask for them any more. A crash at any point lands on a version at
+  which every page in use is whole.
 - T-ID1: after a crash at any point the allocator derived from the page
   table and from what replay reports is the allocator of the version
   recovery landed on: no id of a lost commit or of an open transaction is
@@ -2180,7 +2243,8 @@ TREE-09, VER-05)**
   and the records after its place equal, for each file, the number of
   recovered cells that point into it. That includes a checkpoint whose
   pages already hold a change whose record is after the place, and one
-  whose replay for the pages starts before it.
+  whose replay for the pages starts before it. No sample has a place
+  before the sample of the checkpoint before it.
 
 **Checkpoint and durability (TXN-06, VER-04)**
 
@@ -2207,7 +2271,9 @@ TREE-09, VER-05)**
   `page-alloc.md` reproduced: a page is freed, its chain is trimmed, and a
   checkpoint is written after that. The checkpoint is not installed while
   the log is durable only to a version before the freeing commit, so a
-  crash that loses that commit never finds it in force.
+  crash that loses that commit never finds it in force. Once it is in
+  force and covers less than the freeing commit, replay drops the changes
+  it has no image for and ends with that page freed or made again (FL4).
 - T-CK4: a checkpoint sampled while page steps append their records (CK2),
   owed by TXN-06. Its log ends at the end of a record, it opens, its state
   is *S(vc)*, and its counts of live values agree with its pages.
@@ -2478,7 +2544,8 @@ these further choices were made. They are listed for the same reason.
     (section 18, open point 2).
 25. **A page version that is superseded with a pending value and still
     pinned is STORE-06's to keep readable**, in one of two ways (FL7).
-    Nothing is counted for it either way.
+    Nothing is counted for it either way. For a freed page FL6 has since
+    settled it.
 26. **What a dropped subtree leaves behind is removed in page steps, under
     the checks of PV7, and only once no pin and no running operation can
     reach it** (CL6). `page-alloc.md` A4 asks for the page step; the wait
@@ -2500,10 +2567,11 @@ these further choices were made. They are listed for the same reason.
 ## 18. Amendments
 
 The first version of this document merged as `6ef51947`. Six units that
-merged after it found rules it lacked or stated inexactly, and the project
-owner ruled on each. This section lists what changed, by source. "New" marks
-a rule id that did not exist before. No rule id was renumbered or removed.
-LT7's levels are now a table, with one level added between 4 and 5.
+merged after it, and a follow-up to one of them, found rules it lacked or
+stated inexactly, and the project owner ruled on each. This section lists
+what changed, by source. "New" marks a rule id that did not exist before.
+No rule id was renumbered or removed. LT7's levels are now a table, with
+one level added between 4 and 5.
 
 ### 18.1 From TREE-01, `tree-layout.md`
 
@@ -2523,11 +2591,12 @@ LT7's levels are now a table, with one level added between 4 and 5.
 | --- | --- |
 | A storage batch does not hold "the final put or delete" of a key. Inside one operation generation a put wins over a delete, whichever came first. Only an entry of an earlier generation is replaced by a delete. | GM0, the row of 16.2 |
 
-### 18.3 From STORE-03, `page-table.md`, and STORE-10, `page-alloc.md`
+### 18.3 From STORE-03 and STORE-10, `page-table.md` and `page-alloc.md`
 
 | Change | Rules |
 | --- | --- |
-| The log goes first, enforced where a table checkpoint is installed, also for the newest free link that was trimmed away. Recovery discards nothing for being too new. | FL4 |
+| The log goes first, enforced where a table checkpoint is installed: through what the checkpoint covers, what it reaches, the newest free link it lost to trimming, and the place of its count sample (the last two from the follow-up to STORE-03). Recovery discards nothing for being too new. Replay drops a change to a page the checkpoint has no image of. | FL4 |
+| A copy that the buffer pool is bound to keep counts as a copy. Nothing older than a page's free link is written back, and no log file is held for it (from the same follow-up). | FL6, FL1, FL7, PV3, PN2, PN7 |
 | A reclaimer learns of pins and guards through three questions, asked in a fixed order. TXN-02 answers them. | PN6 |
 | An operation takes its guard before it reads *L*. | PN5 |
 | A commit publishes new page ids and frees old ones in step 7. A transaction keeps the ids it allocated. Whoever frees vouches for the version. | CM3, ID1, ID2, ID3 |
@@ -2547,7 +2616,7 @@ LT7's levels are now a table, with one level added between 4 and 5.
 | The placing of a pending value is a page step. A commit adds to no count; it only releases. | PV6, PV7, FL5 |
 | A value move is abandoned for a private copy only if the copy is held when the pointer is installed. | CL5 |
 | The value log's counts lock has a place in the lock order, and a change point writes its log record while it holds it. | LT7 (level 4a), CM3, CM8, CL7 |
-| The counts recover from a sample in the table checkpoint and the changes replayed after the sample's place. | DU5 (new), FL4, FL6 |
+| The counts recover from a sample in the table checkpoint and the changes replayed after the sample's place. The places of successive samples never go back. | DU5 (new), FL4, FL6 |
 | Records of background changes are in the log, between the groups. Recovery reads them under the same test as the groups. | CM9, CK2, DU2 |
 
 ### 18.6 Terms, tables and choices
@@ -2558,8 +2627,8 @@ pending value. Section 17 has the new items 24 to 31, and its items 14 and
 
 The pairs of section 13 (rows 4, 9, 10, 13, 14, 16 and 17) and its table of
 events, the table of tasks in 15.1, and the tests of 15.2 follow these
-changes. New tests: T-RD8, T-CF6, T-SC5, T-SC6, T-PN6, T-ID1, T-CL1, T-VL5,
-T-VL6, T-DU4 and T-CK4. Changed: T-CM1, T-VL1, T-VL2 and T-VL4.
+changes. New tests: T-RD8, T-CF6, T-SC5, T-SC6, T-PN6, T-PN7, T-ID1, T-CL1,
+T-VL5, T-VL6, T-DU4 and T-CK4. Changed: T-CM1, T-VL1, T-VL2 and T-VL4.
 
 ### 18.7 Open points
 
@@ -2577,7 +2646,8 @@ Found while the amendments were written, and not settled by them:
 3. **A superseded page version with a pending value that a pin still
    needs** (choice 25): keeping it in memory needs FL3's rule on folding
    read for a version that is kept there, and placing it for that version
-   alone needs a hold that outlives the step.
+   alone needs a hold that outlives the step. For a page that has been
+   freed, FL6 settles it.
 4. **What a clear that keeps the host is in the write set** (CV9): one
    range delete, which would be a new row of the table in 14.5, or the
    per-node deletes of today's `Merk::clear`.
