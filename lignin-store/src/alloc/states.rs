@@ -156,9 +156,8 @@ impl States {
     }
 
     /// Adds to `out` the ids that are not free, with their states, of the
-    /// first chunk from the page `from` on that has one. Returns the page to
-    /// go on from, or `None` if no id from `from` on has a state other than
-    /// free.
+    /// first chunk from the page `from` on that was ever used. Returns the
+    /// page to go on from, or `None` if there is no such chunk.
     pub(super) fn scan(&self, from: PageId, out: &mut Vec<(PageId, PageState)>) -> Option<PageId> {
         let (first, ..) = Self::place(from);
         let (chunk, words) = self

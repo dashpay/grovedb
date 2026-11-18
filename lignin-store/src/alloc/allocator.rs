@@ -39,7 +39,11 @@ impl Epoch {
 pub trait Pins {
     /// The oldest version a pin can reach, *H* of PN3. No version pin that
     /// is held now is on an earlier version, and none that is taken later
-    /// will be. When nothing is pinned it is the latest committed version.
+    /// will be. When nothing is pinned it is the latest published version.
+    ///
+    /// It is never above the version of the last commit that was published
+    /// (CM3 step 8). A commit that is installed and not yet published does
+    /// not count: a reader can still pin the version before it.
     fn oldest_pin(&self) -> CommitVersion;
 
     /// Starts the next epoch and returns it. Every operation guard that is
@@ -276,7 +280,12 @@ impl PageAllocator {
     /// A commit that frees a page calls this with its own version, before
     /// it is published. Whoever reclaims the pages of a dropped subtree
     /// calls it with the version of the drop, or with any later version up
-    /// to the latest committed one.
+    /// to the latest published one.
+    ///
+    /// The id must still name the page the caller means: the allocator
+    /// cannot tell a page from a later one under the same id. A commit
+    /// knows it once its conflict check has passed, and the pages of a
+    /// dropped subtree are freed by its reclaimer alone.
     ///
     /// The id is not handed out again before [`Self::reclaim`] finds that
     /// no reader can reach the page.
@@ -313,7 +322,9 @@ impl PageAllocator {
     /// held, one call frees it.
     ///
     /// Call this after a commit is published and after the oldest pin is
-    /// dropped. A call that finds nothing to do changes nothing.
+    /// dropped. An id that waits only for a guard is freed by the next
+    /// call, whenever that comes. A call that finds nothing to do changes
+    /// nothing.
     pub fn reclaim(&self, pins: &dyn Pins, released: &mut Vec<PageId>) {
         let oldest_pin = pins.oldest_pin();
         let epoch = pins.next_epoch();
@@ -357,12 +368,12 @@ impl PageAllocator {
 
     /// Adds to `out` the next ids that are not free, with their states,
     /// from the page `from` on, and returns the page to go on from, or
-    /// `None` once no id from `from` on is in use. The ids are in ascending
-    /// order.
+    /// `None` when the walk is over. The ids are in ascending order.
     ///
-    /// One call is one step, over a run of at most 4096 ids. A walk over
-    /// every id, from [`PageId::MIN`] until `None`, lets changes in between
-    /// its calls.
+    /// One call is one step, over a run of at most 4096 ids, and it can add
+    /// nothing and still return a page to go on from. A walk over every id,
+    /// from [`PageId::MIN`] until `None`, lets changes in between its
+    /// calls.
     pub fn scan(&self, from: PageId, out: &mut Vec<(PageId, PageState)>) -> Option<PageId> {
         self.lock().states.scan(from, out)
     }
