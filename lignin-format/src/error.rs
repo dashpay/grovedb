@@ -48,6 +48,8 @@ pub enum FormatError {
         /// The largest length allowed.
         max: u64,
     },
+    /// The bytes are not a run of page deltas, or a run does not apply.
+    Delta(crate::delta::DeltaError),
     /// The bytes are not a flat page image, or a flat page cannot be built.
     FlatPage(crate::flat_page::FlatPageError),
     /// The bytes are not a segment record, or a segment cannot be written.
@@ -98,6 +100,7 @@ impl fmt::Display for FormatError {
                     "record payload of {len} bytes exceeds the maximum of {max}"
                 )
             }
+            Self::Delta(error) => write!(f, "page delta: {error}"),
             Self::FlatPage(error) => write!(f, "flat page: {error}"),
             Self::Segment(error) => write!(f, "segment: {error}"),
             Self::Manifest(error) => write!(f, "manifest: {error}"),

@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod checksum;
+pub mod delta;
 pub mod error;
 pub mod flat_page;
 pub mod header;

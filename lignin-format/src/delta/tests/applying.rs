@@ -1,0 +1,427 @@
+//! Applying a run, a chain and a consolidation: what each needs and what
+//! each refuses.
+
+use super::*;
+
+/// A small page with cells in slots 1 to 6, in a frame, with its image.
+fn small_page(id: u32, size: TreePageSize) -> (Vec<u8>, ModelPage) {
+    let mut rng = Rng::new(0xA991 + u64::from(id));
+    let mut model = ModelPage::new(id, 4);
+    for raw in 1..=6 {
+        model.cells.insert(raw, rng.cell(model.id, 100));
+    }
+    (frame_of(&model, size), model)
+}
+
+#[test]
+fn a_run_is_applied_to_the_page_it_names() {
+    let size = TreePageSize::MIN;
+    let (mut frame, model) = small_page(7, size);
+    let hash = Op::Hash(1, HashField::Value, [9; 32]);
+    let before = frame.clone();
+
+    let other = run_of(page_id(8), None, std::slice::from_ref(&hash));
+    let refused = DeltaError::WrongPage {
+        run: page_id(8),
+        page: page_id(7),
+    };
+    assert_eq!(
+        decode(&other).apply(&mut frame, size, V1),
+        Err(refused.into())
+    );
+    assert!(frame == before);
+    let mut image = Vec::new();
+    assert_eq!(
+        consolidate(
+            Some(&model.assemble()),
+            [&decode(&other)],
+            V1,
+            size,
+            &mut image
+        ),
+        Err(refused.into())
+    );
+    assert!(image.is_empty());
+
+    let own = run_of(page_id(7), None, std::slice::from_ref(&hash));
+    decode(&own).apply(&mut frame, size, V1).expect("its page");
+    assert!(frame != before);
+}
+
+#[test]
+fn a_run_that_creates_its_page_needs_no_page() {
+    let size = TreePageSize::MIN;
+    let cell = ModelCell::leaf(b"key", b"value");
+    let bytes = run_of(page_id(9), Some(77), &[Op::Insert(2, cell.clone())]);
+    let run = decode(&bytes);
+    let mut expected = ModelPage::new(9, 77);
+    expected.cells.insert(2, cell);
+
+    // Whatever the frame held: nothing, noise, or another page.
+    let (other, _) = small_page(8, size);
+    let (same, _) = small_page(9, size);
+    for mut frame in [
+        vec![0; size.get()],
+        Rng::new(1).bytes(size.get()),
+        other,
+        same,
+    ] {
+        run.apply(&mut frame, size, V1).expect("creates");
+        assert_eq!(image_of(&frame), expected.assemble());
+        let page = TreePage::from_validated(&frame, V1).expect("a page");
+        page.check(size).expect("a valid page");
+        assert_eq!(page.departures(), 77);
+    }
+
+    // A frame is a buffer of the store's page size.
+    let mut short = vec![0; size.get() - 1];
+    assert_eq!(
+        run.apply(&mut short, size, V1),
+        Err(TreePageError::BufferTooSmall {
+            len: size.get() - 1,
+            needed: size.get(),
+        }
+        .into())
+    );
+    let hash = run_of(
+        page_id(9),
+        None,
+        std::slice::from_ref(&Op::Hash(2, HashField::Value, [9; 32])),
+    );
+    assert_eq!(
+        decode(&hash).apply(&mut short, size, V1),
+        Err(TreePageError::BufferTooSmall {
+            len: size.get() - 1,
+            needed: size.get(),
+        }
+        .into())
+    );
+
+    // A run that does not create its page needs one: bytes that are no
+    // page are refused before any change is made.
+    let mut noise = vec![0; size.get()];
+    assert_eq!(
+        decode(&hash).apply(&mut noise, size, V1),
+        Err(FormatError::UnknownRecordKind { code: 0 })
+    );
+    assert!(noise.iter().all(|&byte| byte == 0));
+}
+
+#[test]
+fn a_refused_change_keeps_the_changes_before_it_and_makes_none_after_it() {
+    let size = TreePageSize::MIN;
+    let (mut frame, mut model) = small_page(7, size);
+    let first = Op::Hash(1, HashField::Value, [9; 32]);
+    let refused = Op::Remove(40);
+    let last = Op::Hash(2, HashField::Value, [8; 32]);
+    let bytes = run_of(model.id, None, &[first.clone(), refused, last]);
+
+    assert_eq!(
+        decode(&bytes).apply(&mut frame, size, V1),
+        Err(TreePageError::SlotFree { slot: slot(40) }.into())
+    );
+    first.make(&mut model);
+    assert_eq!(image_of(&frame), model.assemble());
+
+    // In a chain, the runs after the refused one are not applied either.
+    let (mut frame, mut model) = small_page(7, size);
+    let good = run_of(model.id, None, std::slice::from_ref(&first));
+    let bad = run_of(model.id, None, &[Op::Remove(40)]);
+    let chain = [decode(&good), decode(&bad), decode(&good)];
+    assert_eq!(
+        apply_chain(&mut frame, size, V1, &chain),
+        Err(TreePageError::SlotFree { slot: slot(40) }.into())
+    );
+    first.make(&mut model);
+    assert_eq!(image_of(&frame), model.assemble());
+
+    // A consolidation that is refused writes nothing.
+    let (_, model) = small_page(7, size);
+    let mut out = vec![1, 2, 3];
+    assert_eq!(
+        consolidate(Some(&model.assemble()), &chain, V1, size, &mut out),
+        Err(TreePageError::SlotFree { slot: slot(40) }.into())
+    );
+    assert_eq!(out, [1, 2, 3]);
+}
+
+#[test]
+fn a_chain_with_no_base_must_create_its_page() {
+    let size = TreePageSize::MIN;
+    let hash = run_of(
+        page_id(9),
+        None,
+        std::slice::from_ref(&Op::Hash(1, HashField::Value, [9; 32])),
+    );
+    let create = run_of(page_id(9), Some(3), &[]);
+    let mut out = Vec::new();
+
+    let none: [&DeltaRun<'_>; 0] = [];
+    assert_eq!(
+        consolidate(None, none, V1, size, &mut out),
+        Err(DeltaError::MissingBase.into())
+    );
+    assert_eq!(
+        consolidate(None, [&decode(&hash)], V1, size, &mut out),
+        Err(DeltaError::MissingBase.into())
+    );
+    // A later run that creates the page does not stand in for the base of
+    // the runs before it.
+    assert_eq!(
+        consolidate(None, [&decode(&hash), &decode(&create)], V1, size, &mut out),
+        Err(DeltaError::MissingBase.into())
+    );
+    assert!(out.is_empty());
+
+    consolidate(None, [&decode(&create)], V1, size, &mut out).expect("creates");
+    assert_eq!(out, ModelPage::new(9, 3).assemble());
+
+    // A base image with no run is its own consolidation.
+    let (_, model) = small_page(9, size);
+    let base = model.assemble();
+    let mut out = Vec::new();
+    consolidate(Some(&base), none, V1, size, &mut out).expect("an image");
+    assert_eq!(out, base);
+
+    // A chain that creates its page again drops what the base held.
+    let mut out = Vec::new();
+    consolidate(Some(&base), [&decode(&create)], V1, size, &mut out).expect("creates");
+    assert_eq!(out, ModelPage::new(9, 3).assemble());
+}
+
+#[test]
+fn consolidation_takes_an_image_and_nothing_else() {
+    let size = TreePageSize::MIN;
+    let (mut frame, model) = small_page(7, size);
+    let run = run_of(
+        model.id,
+        None,
+        std::slice::from_ref(&Op::Hash(1, HashField::Value, [9; 32])),
+    );
+    let run = decode(&run);
+    let mut out = vec![7; 4];
+    let refused = |base: &[u8], size, out: &mut Vec<u8>| {
+        let error = consolidate(Some(base), [&run], V1, size, out).expect_err("not an image");
+        assert_eq!(*out, [7; 4]);
+        error
+    };
+
+    // A page in a buffer that has unused bytes among its cells is not an
+    // image.
+    open(&mut frame, size).remove(slot(2)).expect("a cell");
+    let page = TreePage::from_validated(&frame, V1).expect("a page");
+    assert!(page.unused_bytes() > 0);
+    assert!(matches!(
+        refused(page.as_bytes(), size, &mut out),
+        FormatError::TreePage(TreePageError::NotCompact { .. })
+    ));
+
+    // Bytes that are cut short, and bytes that are no page.
+    let image = model.assemble();
+    assert_eq!(
+        refused(&image[..image.len() - 1], size, &mut out),
+        FormatError::Truncated {
+            needed: image.len(),
+            available: image.len() - 1,
+        }
+    );
+    assert_eq!(
+        refused(&[0; 64], size, &mut out),
+        FormatError::UnknownRecordKind { code: 0 }
+    );
+
+    // An image that is longer than the store's pages.
+    let (_, large) = full_page(0xB16, TreePageSize::DEFAULT);
+    let large_image = large.assemble();
+    let large_run = run_of(large.id, None, &[Op::FragmentRoot(1, true)]);
+    let mut large_out = Vec::new();
+    assert_eq!(
+        consolidate(
+            Some(&large_image),
+            [&decode(&large_run)],
+            V1,
+            size,
+            &mut large_out
+        ),
+        Err(TreePageError::PageTooLong {
+            len: large_image.len(),
+            capacity: size.get(),
+        }
+        .into())
+    );
+    assert!(large_out.is_empty());
+
+    // The image itself is taken, and what follows it is ignored.
+    let mut padded = image.clone();
+    padded.extend([0xFF; 9]);
+    let mut out = Vec::new();
+    consolidate(Some(&padded), [&run], V1, size, &mut out).expect("an image");
+    let mut expected = model.clone();
+    Op::Hash(1, HashField::Value, [9; 32]).make(&mut expected);
+    assert_eq!(out, expected.assemble());
+}
+
+/// A page that is full takes a change that needs no room and refuses one
+/// that does, as its writer's page did.
+#[test]
+fn a_full_page_refuses_a_record_that_needs_room() {
+    for size in SIZES {
+        let (mut frame, model) = full_page(0xF011, size);
+        let free = model.free_bytes(size);
+        let cell = ModelCell::leaf(&[1; 200], &[2; 300]);
+        assert!(free < cell.len() + 2);
+        let raw = model.lowest_free_slot();
+        let new_slots = usize::from(raw).saturating_sub(model.slot_count());
+        let insert = run_of(model.id, None, &[Op::Insert(raw, cell.clone())]);
+        let before = frame.clone();
+        assert_eq!(
+            decode(&insert).apply(&mut frame, size, V1),
+            Err(TreePageError::PageFull {
+                needed: cell.len() + 2 * new_slots,
+                available: free,
+            }
+            .into())
+        );
+        assert!(frame == before);
+
+        // Once a cell has left, the same record applies.
+        let largest = model
+            .cells
+            .iter()
+            .max_by_key(|(_, cell)| cell.len())
+            .map(|(&raw, _)| raw)
+            .expect("a cell");
+        let remove = run_of(model.id, None, &[Op::Remove(largest)]);
+        let mut expected = model.clone();
+        let mut chain = vec![decode(&remove)];
+        Op::Remove(largest).make(&mut expected);
+        let fits = expected.free_bytes(size) >= cell.len() + 2 * new_slots;
+        if fits && largest != raw {
+            chain.push(decode(&insert));
+            expected.cells.insert(raw, cell);
+        }
+        apply_chain(&mut frame, size, V1, &chain).expect("applies");
+        assert_eq!(image_of(&frame), expected.assemble());
+    }
+}
+
+#[test]
+fn hosted_roots_are_the_same_list_given_or_read() {
+    let given = [Some(address(8, 2)), None, Some(address(9, 1))];
+    let list = RootList::from(given.as_slice());
+    assert_eq!(list.len(), 3);
+    assert!(!list.is_empty());
+    assert_eq!(list.iter().len(), 3);
+    assert_eq!(list.iter().collect::<Vec<_>>(), given);
+    assert!(RootList::EMPTY.is_empty());
+    assert_eq!(RootList::EMPTY.iter().next(), None);
+    assert_eq!(RootList::EMPTY, RootList::from([].as_slice()));
+
+    let op = Op::HostedRoots(3, given.to_vec());
+    let bytes = run_of(page_id(7), None, std::slice::from_ref(&op));
+    let Some(Delta::HostedRoots {
+        slot: read_slot,
+        roots: read,
+    }) = decode(&bytes).deltas().next()
+    else {
+        panic!("a list of hosted roots")
+    };
+    assert_eq!(read_slot, slot(3));
+    assert_eq!(read, list);
+    assert_eq!(list, read);
+    assert_eq!(read.len(), 3);
+    assert_eq!(read.iter().collect::<Vec<_>>(), given);
+    assert_ne!(read, RootList::EMPTY);
+    assert_ne!(read, RootList::from(&given[..2]));
+    let other = [Some(address(8, 2)), None, None];
+    assert_ne!(read, RootList::from(other.as_slice()));
+
+    // Both give a cell the same pointers.
+    let size = TreePageSize::MIN;
+    let (frame, _) = small_page(7, size);
+    let (mut as_given, mut as_read) = (frame.clone(), frame);
+    Delta::HostedRoots {
+        slot: slot(3),
+        roots: list,
+    }
+    .apply(&mut open(&mut as_given, size))
+    .expect("applies");
+    Delta::HostedRoots {
+        slot: slot(3),
+        roots: read,
+    }
+    .apply(&mut open(&mut as_read, size))
+    .expect("applies");
+    assert!(as_given == as_read);
+    let page = TreePage::from_validated(&as_read, V1).expect("a page");
+    let cell = page.cell(slot(3)).expect("a cell");
+    assert_eq!(cell.hosted_roots().collect::<Vec<_>>(), given);
+
+    // The longest list a cell takes, read from a record.
+    let most = vec![Some(address(2, 2)); TreeCell::MAX_HOSTED_ROOTS];
+    let bytes = run_of(page_id(7), None, &[Op::HostedRoots(1, most.clone())]);
+    let (mut frame, _) = small_page(7, TreePageSize::DEFAULT);
+    decode(&bytes)
+        .apply(&mut frame, TreePageSize::DEFAULT, V1)
+        .expect("applies");
+    let page = TreePage::from_validated(&frame, V1).expect("a page");
+    let cell = page.cell(slot(1)).expect("a cell");
+    assert_eq!(cell.hosted_roots().collect::<Vec<_>>(), most);
+}
+
+/// A change that was not read from a record, and could not be written as
+/// one, is refused by the page as its writer's call would be.
+#[test]
+fn a_change_too_long_for_a_record_is_refused_by_the_page_too() {
+    let size = TreePageSize::MIN;
+    let (mut frame, _) = small_page(7, size);
+    let before = frame.clone();
+    let mut page = open(&mut frame, size);
+    let slot = slot(1);
+
+    let too_many = vec![None; TreeCell::MAX_HOSTED_ROOTS + 1];
+    let roots = Delta::HostedRoots {
+        slot,
+        roots: too_many.as_slice().into(),
+    };
+    let refused = TreePageError::FieldTooLong {
+        field: CellField::HostedRoots,
+        len: 256,
+        max: 255,
+    };
+    assert_eq!(roots.apply(&mut page), Err(refused.into()));
+    assert_eq!(roots.encode_into(&mut Vec::new()), Err(refused.into()));
+
+    let long = [0; 256];
+    let feature = Delta::Feature {
+        slot,
+        feature: &long,
+    };
+    let refused = TreePageError::FieldTooLong {
+        field: CellField::Feature,
+        len: 256,
+        max: 255,
+    };
+    assert_eq!(feature.apply(&mut page), Err(refused.into()));
+    assert_eq!(feature.encode_into(&mut Vec::new()), Err(refused.into()));
+
+    let link = Delta::Link {
+        slot,
+        side: Side::Left,
+        link: Some(crate::tree_page::TreeLink {
+            child: address(2, 2),
+            hash: &[1; 32],
+            heights: (0, 0),
+            child_key_len: 0,
+            aggregate: &long,
+        }),
+    };
+    let refused = TreePageError::FieldTooLong {
+        field: CellField::Aggregate,
+        len: 256,
+        max: 255,
+    };
+    assert_eq!(link.apply(&mut page), Err(refused.into()));
+    assert_eq!(link.encode_into(&mut Vec::new()), Err(refused.into()));
+    assert!(frame == before);
+}
