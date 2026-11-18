@@ -15,7 +15,7 @@
 //!   then        the prefix, the slot directory, the cells
 //! ```
 
-use std::{cmp::Ordering, fmt, ops::Range};
+use std::{cmp::Ordering, fmt, iter::FusedIterator, ops::Range};
 
 use crate::{checksum::Checksum, error::FormatError, header::FormatVersion, ids::PageId};
 
@@ -190,6 +190,13 @@ pub struct FlatKey<'a> {
 }
 
 impl<'a> FlatKey<'a> {
+    const fn whole(key: &'a [u8]) -> Self {
+        Self {
+            prefix: key,
+            suffix: &[],
+        }
+    }
+
     /// The leading bytes, which every key of the page shares.
     pub const fn prefix(&self) -> &'a [u8] {
         self.prefix
@@ -232,6 +239,15 @@ impl<'a> FlatKey<'a> {
 
     fn bytes(&self) -> impl Iterator<Item = &'a u8> + use<'a> {
         self.prefix.iter().chain(self.suffix)
+    }
+
+    fn strip_prefix(&self, prefix: &[u8]) -> Option<Self> {
+        let (prefix, suffix) = match prefix.split_at_checked(self.prefix.len()) {
+            None => (self.prefix.strip_prefix(prefix)?, self.suffix),
+            Some((head, tail)) if head == self.prefix => (&[][..], self.suffix.strip_prefix(tail)?),
+            Some(_) => return None,
+        };
+        Some(Self { prefix, suffix })
     }
 }
 
@@ -366,8 +382,8 @@ impl<'a> View<'a> {
         if kind == FlatPageKind::Branch && page_id_at(header, FIRST_CHILD_AT).is_none() {
             return Err(FormatError::MissingId);
         }
-        let slots_at = header_len + prefix_len;
-        let cells_at = slots_at + count * kind.slot_len();
+        let slots_at = header_len.saturating_add(prefix_len);
+        let cells_at = slots_at.saturating_add(count.saturating_mul(kind.slot_len()));
         let (Some(prefix), Some(slots)) = (
             image.get(header_len..slots_at),
             image.get(slots_at..cells_at),
@@ -612,7 +628,9 @@ impl<'a> FlatLeaf<'a> {
 
     /// Bytes an entry adds to the image.
     pub const fn entry_len(key_suffix_len: usize, value_len: usize) -> usize {
-        Self::ENTRY_OVERHEAD + key_suffix_len + value_len
+        Self::ENTRY_OVERHEAD
+            .saturating_add(key_suffix_len)
+            .saturating_add(value_len)
     }
 
     /// The image, at its exact length.
@@ -698,7 +716,8 @@ impl<'a> Iterator for FlatLeafIter<'a> {
     type Item = (FlatKey<'a>, FlatValue<'a>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.leaf.entry(self.slots.next()?)
+        let entry = self.leaf.entry(self.slots.next()?);
+        self.stop_unless(entry)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -708,11 +727,23 @@ impl<'a> Iterator for FlatLeafIter<'a> {
 
 impl DoubleEndedIterator for FlatLeafIter<'_> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        self.leaf.entry(self.slots.next_back()?)
+        let entry = self.leaf.entry(self.slots.next_back()?);
+        self.stop_unless(entry)
     }
 }
 
 impl ExactSizeIterator for FlatLeafIter<'_> {}
+
+impl FusedIterator for FlatLeafIter<'_> {}
+
+impl<'a> FlatLeafIter<'a> {
+    fn stop_unless<T>(&mut self, entry: Option<T>) -> Option<T> {
+        if entry.is_none() {
+            self.slots = 0..0;
+        }
+        entry
+    }
+}
 
 /// A branch page image, borrowed: separator keys in ascending order between
 /// one more child than there are separators.
@@ -731,7 +762,7 @@ impl<'a> FlatBranch<'a> {
 
     /// Bytes an entry adds to the image.
     pub const fn entry_len(separator_suffix_len: usize) -> usize {
-        Self::ENTRY_OVERHEAD + separator_suffix_len
+        Self::ENTRY_OVERHEAD.saturating_add(separator_suffix_len)
     }
 
     /// The image, at its exact length.
@@ -818,7 +849,7 @@ impl Builder {
         if capacity > FlatPage::MAX_LEN {
             return Err(FlatPageError::CapacityOutOfRange { capacity }.into());
         }
-        let needed = kind.header_len() + prefix.len();
+        let needed = kind.header_len().saturating_add(prefix.len());
         if needed > capacity {
             return Err(FlatPageError::PageFull { needed, capacity }.into());
         }
@@ -848,16 +879,20 @@ impl Builder {
         self.image.len() + self.slots.len() * self.kind.slot_len() + self.cells.len()
     }
 
-    fn push(&mut self, key: &[u8], flags: u8, tail: &[u8]) -> Result<(), FormatError> {
+    fn push(&mut self, key: FlatKey<'_>, flags: u8, tail: &[u8]) -> Result<(), FormatError> {
         let suffix = key
             .strip_prefix(self.prefix())
             .ok_or(FlatPageError::KeyOutsidePrefix)?;
         let slot = self.slots.len();
         let last = self.cells.get(self.last_suffix.clone());
-        if slot > 0 && last.is_none_or(|last| last >= suffix) {
+        if slot > 0 && last.is_none_or(|last| suffix.cmp_bytes(last) != Ordering::Greater) {
             return Err(FlatPageError::KeysOutOfOrder { slot }.into());
         }
-        let needed = self.encoded_len() + self.kind.slot_len() + suffix.len() + tail.len();
+        let needed = self
+            .encoded_len()
+            .saturating_add(self.kind.slot_len())
+            .saturating_add(suffix.len())
+            .saturating_add(tail.len());
         if needed > self.capacity {
             return Err(FlatPageError::PageFull {
                 needed,
@@ -866,7 +901,7 @@ impl Builder {
             .into());
         }
         let start = self.cells.len();
-        self.cells.extend_from_slice(suffix);
+        suffix.append_to(&mut self.cells);
         self.last_suffix = start..self.cells.len();
         self.cells.extend_from_slice(tail);
         self.slots.push(BuilderSlot {
@@ -918,6 +953,12 @@ impl FlatLeafBuilder {
     /// On any error the builder is unchanged. [`FlatPageError::PageFull`]
     /// means the entry belongs on another page.
     pub fn push(&mut self, key: &[u8], value: FlatValue<'_>) -> Result<(), FormatError> {
+        self.push_key(FlatKey::whole(key), value)
+    }
+
+    /// Adds an entry whose key is borrowed from another page, as
+    /// [`Self::push`] does, without joining the key's two parts first.
+    pub fn push_key(&mut self, key: FlatKey<'_>, value: FlatValue<'_>) -> Result<(), FormatError> {
         self.0.push(key, value.flags(), value.bytes())
     }
 
@@ -974,6 +1015,12 @@ impl FlatBranchBuilder {
     /// On any error the builder is unchanged. [`FlatPageError::PageFull`]
     /// means the entry belongs on another page.
     pub fn push(&mut self, separator: &[u8], child: PageId) -> Result<(), FormatError> {
+        self.push_key(FlatKey::whole(separator), child)
+    }
+
+    /// Adds a separator borrowed from another page, as [`Self::push`] does,
+    /// without joining the key's two parts first.
+    pub fn push_key(&mut self, separator: FlatKey<'_>, child: PageId) -> Result<(), FormatError> {
         self.0.push(separator, 0, &child.encode())
     }
 
@@ -1119,6 +1166,16 @@ mod tests {
                         .collect(),
                 },
             }
+        }
+
+        fn with_prefix(&self, prefix: &[u8]) -> Self {
+            let mut contents = self.clone();
+            match &mut contents {
+                Self::Leaf { prefix: stored, .. } | Self::Branch { prefix: stored, .. } => {
+                    *stored = prefix.to_vec();
+                }
+            }
+            contents
         }
 
         fn keys(&self) -> Vec<&[u8]> {
@@ -1785,6 +1842,10 @@ mod tests {
 
         let invalid = |slot| flat(FlatPageError::InvalidSlot { slot });
         let cases = [
+            (
+                raw_leaf(b"p", &[(26, 2, 0), (30, 2, 4)], b"aaXaaYY"),
+                FormatError::NonZeroReserved,
+            ),
             (with_slots(&[(22, 2, 0), (30, 1, 0)]), invalid(0)),
             (with_slots(&[(31, 2, 0), (30, 1, 0)]), invalid(0)),
             (with_slots(&[(26, 4, 0), (30, 1, 0)]), invalid(0)),
@@ -1841,6 +1902,7 @@ mod tests {
 
         let invalid = |slot| flat(FlatPageError::InvalidSlot { slot });
         let no_child = [b"a".as_slice(), &[0; 4], b"bb", &[12, 0, 0, 0]].concat();
+        let no_child_and_unordered = [b"b".as_slice(), &[9, 0, 0, 0], b"a", &[0; 4]].concat();
         let same = [b"a".as_slice(), &[9, 0, 0, 0], b"a", &[12, 0, 0, 0], b"x"].concat();
         let cases = [
             (raw_branch(7, &[19, 31], &cells), invalid(0)),
@@ -1848,6 +1910,10 @@ mod tests {
             (raw_branch(7, &[25, 28], &cells), invalid(1)),
             (raw_branch(7, &[25, 32], &cells), invalid(1)),
             (raw_branch(7, &[25, 31], &no_child), FormatError::MissingId),
+            (
+                raw_branch(7, &[25, 30], &no_child_and_unordered),
+                FormatError::MissingId,
+            ),
             (
                 raw_branch(7, &[25, 30], &same),
                 flat(FlatPageError::KeysOutOfOrder { slot: 1 }),
@@ -1868,6 +1934,131 @@ mod tests {
         for (image, error) in cases {
             assert_eq!(decode_error(&image), error, "{}", hex(&image));
         }
+    }
+
+    #[test]
+    fn iteration_stops_at_a_slot_that_describes_no_cell() {
+        let image = raw_leaf(b"p", &[(31, 2, 0), (20, 1, 0), (33, 1, 0)], b"aaXbY");
+        assert_eq!(
+            decode_error(&image),
+            flat(FlatPageError::InvalidSlot { slot: 1 })
+        );
+        let leaf = FlatPage::from_validated(&image, V1)
+            .expect("valid header")
+            .leaf()
+            .expect("leaf");
+        assert!(leaf.entry(0).is_some() && leaf.entry(1).is_none() && leaf.entry(2).is_some());
+
+        let mut forward = leaf.iter();
+        assert_eq!(forward.len(), 3);
+        assert!(forward.next().is_some());
+        assert!(forward.next().is_none());
+        assert_eq!(forward.len(), 0);
+        assert!(forward.next().is_none() && forward.next_back().is_none());
+
+        let mut backward = leaf.iter();
+        assert!(backward.next_back().is_some());
+        assert!(backward.next_back().is_none());
+        assert!(backward.next_back().is_none() && backward.next().is_none());
+    }
+
+    #[test]
+    fn borrowed_keys_build_the_same_page_as_whole_keys() {
+        for contents in random_pages(0x2EB1, 600) {
+            let image = contents.image();
+            let page = FlatPage::decode(&image, V1).expect("valid");
+            let keys = contents.keys();
+            let (base, shared) = match (keys.first(), keys.last()) {
+                (Some(&first), Some(last)) => (first, common_prefix_len(first, last)),
+                _ => (contents.prefix(), contents.prefix().len()),
+            };
+            let stored = contents.prefix().len();
+            for prefix_len in [0, stored / 2, stored, shared] {
+                let prefix = &base[..prefix_len];
+                let rebuilt = match page {
+                    FlatPage::Leaf(leaf) => {
+                        let mut builder =
+                            FlatLeafBuilder::new(prefix, FlatPage::MAX_LEN).expect("fits");
+                        for (key, value) in leaf {
+                            builder.push_key(key, value).expect("fits");
+                        }
+                        builder.finish()
+                    }
+                    FlatPage::Branch(branch) => {
+                        let first_child = branch.child(0).expect("first child");
+                        let mut builder = FlatBranchBuilder::new(
+                            prefix,
+                            FlatPage::MAX_LEN,
+                            branch.level(),
+                            first_child,
+                        )
+                        .expect("fits");
+                        for slot in 0..branch.len() {
+                            let separator = branch.separator(slot).expect("in range");
+                            let child = branch.child(slot + 1).expect("in range");
+                            builder.push_key(separator, child).expect("fits");
+                        }
+                        builder.finish()
+                    }
+                };
+                assert_eq!(rebuilt, contents.with_prefix(prefix).image());
+            }
+        }
+    }
+
+    #[test]
+    fn a_builder_checks_borrowed_keys_as_it_checks_whole_ones() {
+        let mut source = FlatLeafBuilder::new(b"abc", 4096).expect("fits");
+        for key in [b"abcd".as_slice(), b"abcx"] {
+            source.push(key, FlatValue::Inline(b"v")).expect("fits");
+        }
+        let image = source.finish();
+        let leaf = decode_leaf(&image);
+        let (first, value) = leaf.entry(0).expect("in range");
+        let (second, _) = leaf.entry(1).expect("in range");
+
+        for outside in [b"x".as_slice(), b"abd", b"abce", b"abcd\0", b"abcde"] {
+            let mut builder = FlatLeafBuilder::new(outside, 4096).expect("fits");
+            assert_eq!(
+                builder.push_key(first, value).expect_err("outside"),
+                flat(FlatPageError::KeyOutsidePrefix),
+                "{outside:?}"
+            );
+            assert!(builder.is_empty());
+        }
+
+        for prefix in [b"".as_slice(), b"a", b"abc"] {
+            let mut builder = FlatLeafBuilder::new(prefix, 4096).expect("fits");
+            builder.push_key(second, value).expect("fits");
+            for not_greater in [first, second] {
+                assert_eq!(
+                    builder.push_key(not_greater, value).expect_err("order"),
+                    flat(FlatPageError::KeysOutOfOrder { slot: 1 })
+                );
+            }
+            assert_eq!(builder.len(), 1);
+        }
+
+        let mut exact = FlatLeafBuilder::new(b"abcd", 4096).expect("fits");
+        exact.push_key(first, value).expect("fits");
+        let image = exact.finish();
+        let leaf = decode_leaf(&image);
+        assert_eq!(leaf.key(0).expect("in range").suffix(), b"");
+        assert_eq!(leaf.get(b"abcd"), Some(value));
+
+        let first_child = page_id(1);
+        let mut branch = FlatBranchBuilder::new(b"abcx", 4096, 1, first_child).expect("fits");
+        assert_eq!(
+            branch.push_key(first, page_id(2)).expect_err("outside"),
+            flat(FlatPageError::KeyOutsidePrefix)
+        );
+        branch.push_key(second, page_id(2)).expect("fits");
+        assert_eq!(
+            branch.push_key(second, page_id(3)).expect_err("order"),
+            flat(FlatPageError::KeysOutOfOrder { slot: 1 })
+        );
+        let image = branch.finish();
+        assert_eq!(decode_branch(&image).child_for(b"abcx"), Some(page_id(2)));
     }
 
     #[test]

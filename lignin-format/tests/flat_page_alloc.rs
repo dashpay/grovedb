@@ -133,7 +133,10 @@ fn binary_search_over_a_leaf_does_not_allocate() {
                 Ok(slot) => {
                     found += 1;
                     value_bytes += leaf.value(slot).expect("in range").bytes().len();
-                    assert!(leaf.key(slot).expect("in range") == **probe);
+                    let key = leaf.key(slot).expect("in range");
+                    assert!(key == **probe);
+                    assert!(key.cmp_bytes(probe).is_eq());
+                    assert!(Some(key) == leaf.iter().nth(slot).map(|(key, _)| key));
                 }
                 Err(slot) => {
                     missing += 1;
@@ -185,15 +188,26 @@ fn routing_through_a_branch_does_not_allocate() {
     let image = branch_image();
     let probes = probes();
 
+    let mut frame = image.clone();
+    frame.resize(CAPACITY, 0);
+
     let (children, allocations) = allocations_during(|| {
-        let page = FlatPage::decode(&image, FormatVersion::V1).expect("valid");
-        let branch = page.branch().expect("branch");
+        let decoded = FlatPage::decode(&image, FormatVersion::V1).expect("valid");
+        let borrowed = FlatPage::from_validated(&frame, FormatVersion::V1).expect("valid");
         let mut children = 0u64;
-        for probe in &probes {
-            let index = branch.child_index(black_box(probe));
-            let child = branch.child_for(probe).expect("valid page");
-            assert_eq!(child.get() as usize, index + 1);
-            children += u64::from(child.get());
+        for page in [decoded, borrowed] {
+            let branch = page.branch().expect("branch");
+            for probe in &probes {
+                let index = branch.child_index(black_box(probe));
+                let child = branch.child_for(probe).expect("valid page");
+                assert_eq!(child.get() as usize, index + 1);
+                let below = index.checked_sub(1).and_then(|slot| branch.separator(slot));
+                assert!(below.is_none_or(|separator| separator.cmp_bytes(probe).is_le()));
+                let above = branch.separator(index);
+                assert!(above.is_none_or(|separator| separator.cmp_bytes(probe).is_gt()));
+                assert!(below < above || above.is_none());
+                children += u64::from(child.get());
+            }
         }
         children
     });

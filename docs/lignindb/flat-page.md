@@ -130,7 +130,10 @@ is valid, and so is an empty suffix (in at most one entry, by P2).
 byte string that every key starts with is a valid prefix, not only the longest
 one. This lets the tree pick a prefix that stays valid when keys are added:
 what the two bounds of the page's key range have in common. A prefix chosen
-that way changes only when the page is split or merged.
+that way changes only when the page is split or merged. Because one set of
+keys has several valid images, the tree must pick the prefix by a rule that
+depends only on the tree's content, so that equal histories give equal bytes
+(B9).
 
 **P5. A leaf value is inline or out of line.** If bit 0 of the flags is 0, the
 value bytes are the value. If it is 1, they are a pointer to a value stored
@@ -204,7 +207,11 @@ what follows, so it can be given a whole frame. It checks, in this order:
        `FlatPage(KeysOutOfOrder)`
 11. the last cell ends at `len`: else `FlatPage(UnusedBytes)`
 
-A run of zero bytes fails at step 2.
+A run of 8 or more zero bytes fails at step 2, and a shorter one at step 1.
+
+`len` is limited by the bytes given and by its own 16 bits. The page size is
+the store's to enforce: it gives the reader a frame of one page, or compares
+the image length with its page size.
 
 Step 10 costs one key comparison per entry. A page that sits in a buffer-pool
 frame was checked when it was loaded, so `FlatPage::from_validated` borrows it
@@ -242,6 +249,10 @@ length allowed, at most 65,535), then adds entries in ascending key order.
 - An entry that would take the image past the capacity is refused with
   `PageFull`, and the builder is unchanged. This is how a caller finds where a
   page ends and the next begins.
+- `push` takes a key as one byte string. `push_key` takes a key borrowed from
+  another page, in its two parts, and gives the same image. A page is rebuilt
+  from an old one this way, under the same prefix or another, without joining
+  each key first.
 
 Two helpers serve the tree's choice of keys. `common_prefix_len` is the number
 of leading bytes two keys share; the longest prefix a page can use is what its
@@ -291,7 +302,8 @@ owner can overrule one before TREE-07 and FMT-05 build on it.
    left to FMT-02 so that tree and flat cells use the same one.
 6. **Offsets are 16 bits, so an image is at most 65,535 bytes** (P10). The
    page size itself is not fixed here: the builders take it as a parameter,
-   and any value from the header length (12 or 16) to 65,535 works. FMT-02 sets the page size for tree
+   and any value up to 65,535 that has room for the header and the prefix
+   works. FMT-02 sets the page size for tree
    pages; if flat pages share it, nothing here changes.
 7. **Slot numbers in a flat page are positions** (P13), so no `SlotId` type
    was needed and none was added to `lignin-format::ids`. The positions fit in
@@ -329,8 +341,8 @@ All of this is in `lignin-format::flat_page`. Run the tests with
 | P6 | `FlatBranch::child_index`, `FlatBranch::child_for` | Routing agrees with a model for the same probes. |
 | No allocation | `FlatPage::decode`, `FlatPage::from_validated`, every accessor | `tests/flat_page_alloc.rs` runs under a counting allocator: decoding, 806 searches over a 400-entry leaf, iteration in both directions and routing through a branch allocate nothing. |
 | Section 4 | `FlatPage::decode`, `FlatPageError` | Each step is rejected with its error, in order; every shorter input; every single-bit flip; zero-filled bytes. |
-| B10 | `FlatPage::decode`, `FlatPage::from_validated` | 200,000 arbitrary byte strings, most of them given a plausible header and a valid checksum, and every damaged image above, go through every accessor without a panic. |
-| P10, sections 5 and 6 | the builders | Capacity and prefix limits; keys outside the prefix or out of order; a full page refuses an entry and is unchanged; the size formula; an image of exactly 65,535 bytes. |
+| B10 | `FlatPage::decode`, `FlatPage::from_validated` | 200,000 arbitrary byte strings, most of them given a plausible header and a valid checksum, and every damaged image above, go through every accessor without a panic. Iteration ends at the first slot that describes no cell. |
+| P10, sections 5 and 6 | the builders | Capacity and prefix limits; keys outside the prefix or out of order; a full page refuses an entry and is unchanged; the size formula; an image of exactly 65,535 bytes; pages rebuilt from borrowed keys under four different prefixes equal the pages built from whole keys. |
 
 The golden bytes were computed with an independent bit-at-a-time CRC-32C, not
 with the crate under test.
