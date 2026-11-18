@@ -140,7 +140,19 @@ impl Harness {
             0..30 => self.insert(),
             30..45 => self.remove(),
             45..52 => {
-                let new = self.rng.cell(own, 300);
+                let mut new = self.rng.cell(own, 300);
+                if self.rng.chance(10) && new.key != cell.key {
+                    // Another node does not take the slot this way.
+                    let before = self.frame.clone();
+                    let refused = Err(TreePageError::KeyChanged { slot }.into());
+                    assert_eq!(self.page().replace(slot, &new.content()), refused);
+                    let bytes = new.assemble();
+                    let other = TreeCell::decode(&bytes, V1).expect("valid");
+                    assert_eq!(self.page().replace_encoded(slot, other), refused);
+                    assert!(self.frame == before);
+                    return;
+                }
+                new.key = cell.key.clone();
                 match self.rng.chance(50) {
                     true => self.change(raw, new, |page, new| page.replace(slot, &new.content())),
                     false => self.change(raw, new, |page, new| {
@@ -1099,4 +1111,37 @@ fn a_damaged_page_is_refused_where_the_damage_is_met() {
         page.insert(slot(8), &ModelCell::leaf(b"", b"").content()),
         Err(invalid)
     );
+}
+
+#[test]
+fn a_cell_is_replaced_only_by_a_cell_of_the_same_node() {
+    let size = TreePageSize::DEFAULT;
+    let mut frame = frame_of(&example(), size);
+    let before = frame.clone();
+    let mut page = open(&mut frame, size);
+    let departures = page.page().departures();
+
+    // A slot names one node until its cell leaves the page. A cell with
+    // another key is another node, and is refused.
+    let refused = Err(TreePageError::KeyChanged { slot: slot(3) }.into());
+    for key in [&b"ab"[..], b"abcd", b"abd", b""] {
+        let other = ModelCell::leaf(key, b"v");
+        assert_eq!(page.replace(slot(3), &other.content()), refused);
+        let bytes = other.assemble();
+        let other = TreeCell::decode(&bytes, V1).expect("valid");
+        assert_eq!(page.replace_encoded(slot(3), other), refused);
+    }
+    assert!(frame == before);
+
+    // The same key with everything else changed is the same node.
+    let mut page = open(&mut frame, size);
+    let mut same = example().cells[&1].clone();
+    same.key = b"abc".to_vec();
+    same.value = ModelValue::Inline(vec![7; 500]);
+    page.replace(slot(3), &same.content())
+        .expect("the same key");
+    assert_eq!(page.page().departures(), departures);
+    let mut model = example();
+    model.cells.insert(3, same);
+    model.assert_is(view(&frame), size);
 }

@@ -203,8 +203,10 @@ slot in use: its last entry is never free.
 goes up by one each time a cell is removed from the page, because its node
 was deleted or because it was carried to another page. Nothing else changes
 it: not a change to a cell, not a cell that moves inside the page, not a new
-image. So a slot number that was read when the count was *n* names the same
-cell for as long as the count is *n*. This is the check S6 of
+image. And nothing else puts another node into a slot: a cell is replaced
+only by a cell with the same key (W1). So a slot number that was read when
+the count was *n* names the same node for as long as the count is *n*. This
+is the check S6 of
 `tree-layout.md` proposes for an address kept in memory. The count is 64
 bits and does not wrap in practice. A page that is created starts at 0, or
 at a count its creator gives (section 8, item 9).
@@ -251,7 +253,9 @@ The table can be derived from the page alone, because a page knows its id:
 a cell is a fragment root exactly when no link and no hosted-root pointer of
 the page names it. `TreePage::check_fragments` checks that, and that no
 address into the page names a free slot, the cell it is in, or a cell
-another address names (C5). It is not part of `decode`: between two changes
+another address names (C5), and that a link to a cell of the page states
+the length that cell's key has (TP10). It is not part of `decode`: between
+two changes
 of one write a page is read while a link is ahead of the cell it names, and
 inside a transaction of iteration two a hosted-root pointer may be behind
 (T3 of `tree-layout.md`). VER-07 runs it on committed states.
@@ -329,9 +333,10 @@ equal pages have equal images, whatever was done to them in which order
 (B9), and what was read encodes back to the same bytes.
 
 **TP17. A page in a buffer has the same layout, with room to change.** Its
-cells may be in any order, with unused bytes between them and between the
-directory and the first cell. `unused` counts those bytes, and `len` is
-where the last cell ends. The header, the directory and the cells are read
+cells may be in any order, with unused bytes before, between and after
+them. No cell lies past `len`, and `unused` counts the bytes between the
+directory and `len` that belong to no cell. The header, the directory and
+the cells are read
 in the same way, so the same accessors serve both, and an image that is
 copied to the start of a buffer is a page in a buffer with nothing else to
 do. Going back is `TreePage::write_image`, which writes the cells in slot
@@ -390,7 +395,8 @@ no allocation. A page that sits in a buffer was checked when it was loaded,
 so `TreePage::from_validated` borrows it again in constant time: it runs
 steps 1 to 7. Its accessors never read out of bounds and never panic,
 whatever the bytes are, but on bytes that were never checked their answers
-mean nothing.
+mean nothing. `write_image` of such bytes writes at most 65,535 bytes,
+though slots that share a cell would give more.
 
 `TreePage::check` is the full check for a page in a buffer. It runs
 everything above except steps 9 and 12 and the order of step 10.1, and
@@ -422,12 +428,17 @@ opens what the buffer holds in constant time.
 | one hosted-root pointer | `set_hosted_root` | 6 bytes, where they are |
 | a link | `set_link` | the link where it is, if there was one with an aggregate of the same length. Otherwise the cell is laid out again |
 | the feature | `set_feature` | the feature where it is, if its length is the same. Otherwise the cell is laid out again |
-| the value | `set_value` | the value where it is, if it takes the same room: a value of the same length, or a pointer in place of a pointer. Otherwise the cell is laid out again |
+| the value | `set_value` | the value where it is, if it takes the same room: a value of the same length, a pointer in place of a pointer, or a pointer and a value of 12 bytes in place of each other. Otherwise the cell is laid out again |
 | all hosted-root pointers | `set_hosted_roots` | where they are, if their number is the same. Otherwise the cell is laid out again |
-| the whole cell | `replace`, `replace_encoded` | the cell, where it is if it is not longer |
+| the whole cell, for the same key | `replace`, `replace_encoded` | the cell, where it is if it is not longer |
 
-**W1. No change moves a slot number.** A cell that is laid out again keeps
-its slot. Only `remove` counts as a departure (TP7).
+**W1. No change moves a slot number, and a slot keeps its node.** A cell
+that is laid out again keeps its slot. Only `remove` counts as a departure
+(TP7). `replace` takes a cell with the same key and refuses any other
+(`KeyChanged`): a node never changes its key, so another key is another
+node, and that one arrives by `remove` and `insert`. The page cannot tell
+two nodes with equal keys apart, which cells of different Merks may have;
+that `replace` is given the same node is its caller's part.
 
 **W2. A cell that grows moves to the end of the page.** The bytes it leaves
 are unused, and `unused` counts them. A cell that shrinks stays where it is.
@@ -445,8 +456,9 @@ first cell starts where its directory ends.
 
 **W4. A write that is refused changes nothing.** `PageFull` (the page has
 too few free bytes), `CellTooLarge` (TP14), `SlotOccupied`, `SlotFree`,
-`NoSuchLink`, `NoSuchHostedRoot` and `FieldTooLong` are found before a byte
-is written. `TreePage::free_bytes` is what a page still has for cells and
+`KeyChanged`, `NoSuchLink`, `NoSuchHostedRoot` and `FieldTooLong` are found
+before a byte is written, and so is a cell handed to `insert_encoded` or
+`replace_encoded` whose hosted-root pointers do not decode (`MissingId`). `TreePage::free_bytes` is what a page still has for cells and
 their slots: its capacity less the directory and the cells.
 
 **W5. `TreePageMut` needs a valid page.** It keeps a valid page valid: one
@@ -527,7 +539,7 @@ against 1.626 and 0.803 (368 bytes).
 | MERK-01 LigninNodeStore | The link gives the child's key length, so `record_len` and Merk's link sizes are computed from the parent's cell alone. The key of a link is in the child's cell. The feature and the aggregates are MERK-01's bytes to encode (TP12). | The encoding of features and aggregates. |
 | MERK-05 Iteration | A cursor's value is a node record in Merk's encoding, which repeats each child's key. Those keys come from the children's cells, by the addresses in the links. | Whether records are built, or callers move to node views (PERF-05). |
 | FMT-08 Decoder fuzzing | The decoders: `TreePage::decode`, `TreePage::from_validated` with every accessor, `TreePage::check`, `TreePage::check_fragments`, `TreeCell::decode`. `TreePageMut` is fuzzed from valid pages only (W5). The golden bytes of section 2.5. | The targets. |
-| VER-07 Physical invariant checker | `TreePage::check_fragments` for F3 and C5 inside a page. `TreePage::check` for a page in a buffer. | Links that cross pages. |
+| VER-07 Physical invariant checker | `TreePage::check_fragments` for F3 and C5 inside a page, and for the key length a link states for a child in the same page. `TreePage::check` for a page in a buffer. | Links that cross pages: the address, and the key length. The heights and the aggregate in a link, which are Merk's to check: the page does not interpret them. |
 | FMT-04 Flat page codec | Nothing changes in its bytes. Two things it could follow, both for the owner (section 8, items 3 and 12). | |
 
 ## 8. Choices made here that the plan left open
@@ -583,15 +595,19 @@ owner can overrule one while version 1 is still open (U10).
     was written, so a flat leaf entry that is marked out of line and is not
     a valid `ValuePointer` is damage, and `FlatPage::decode` can say so with
     `ValuePointer::decode`. That is a change to `flat_page`, not made here.
-13. **`TreePageMut` does not survive damaged pages** (W5). Making every
+13. **A cell is replaced only by a cell with the same key** (W1). The
+    plan's "cell update" needs no more, and it makes "a slot names one node
+    between two departures" a property of the writer instead of a rule for
+    its callers.
+14. **`TreePageMut` does not survive damaged pages** (W5). Making every
     write total on arbitrary bytes would cost a full check on each open.
-14. **Cells are not placed into gaps** (W2). A page gathers its unused bytes
+15. **Cells are not placed into gaps** (W2). A page gathers its unused bytes
     when the end has no room. A free list inside the page would save some of
     those passes and is not part of the format, so it can be added later.
-15. **The tree page's errors are one variant of `FormatError`**,
+16. **The tree page's errors are one variant of `FormatError`**,
     `TreePage(TreePageError)`, as for the other formats. A value pointer
     that is not valid keeps the value log's errors.
-16. **The simulation's default sizes are now this format's**
+17. **The simulation's default sizes are now this format's**
     (`CellCosts::tree_page`). The tables of sections 14 and 15 of
     `tree-layout.md` were computed with the assumed sizes and are not
     recomputed here, except the three targets (section 6).
@@ -606,14 +622,14 @@ All of this is in `lignin-format::tree_page`. Run the tests with
 | Layout (section 2) | `TreePage`, `TreeCell`, `TreeLink`, `CellContent` | `golden_bytes`: the example of 2.5, written out by hand, is what the codec writes and what it reads. `the_empty_page_is_its_header`. `sizes_are_the_documented_ones`. A second layout of every page and cell, written from this document in the tests (`tests/model.rs`), is compared with the codec's bytes in every test below. |
 | Round trip (TP16, B8) | `TreePage::decode`, `TreePage::write_image`, `TreeCell::decode`, `CellContent::encode` | `random_changes_keep_every_cell_under_its_slot`: 48,000 random changes on five pages of four sizes, each checked against a model through every accessor, and the page's image against the model's bytes, decoded and encoded again. `a_cell_reads_back_from_its_own_bytes`. `every_single_bit_flip_is_rejected_or_reads_as_what_it_says`: an image with one bit flipped is rejected or decodes to content that encodes back to exactly those bytes. |
 | TP9: hashes | `TreeCell::hash`, `TreePageMut::set_hash` | **Acceptance test**, `any_stored_hash_can_be_read_or_overwritten_without_touching_the_value_bytes`: on full pages of three sizes, every hash of every cell is the 32 bytes at an offset before the key and the value; overwriting it changes those 32 bytes and no other byte of the page, and the value is where it was. `a_hash_is_read_from_bytes_that_are_not_the_key_or_the_value`: with every key and value in the page overwritten, every hash and link reads the same. |
-| TP5 to TP7: slots | `SlotId`, `TreePage::lowest_free_slot`, `TreePage::departures`, `TreePageMut::remove` | `slot_numbers_stay_and_the_lowest_free_one_is_taken_next`, `the_count_of_departures_wraps_and_never_stops`, and the random test, whose model counts departures. |
+| TP5 to TP7, W1: slots | `SlotId`, `TreePage::lowest_free_slot`, `TreePage::departures`, `TreePageMut::{remove, replace}` | `slot_numbers_stay_and_the_lowest_free_one_is_taken_next`, `the_count_of_departures_wraps_and_never_stops`, `a_cell_is_replaced_only_by_a_cell_of_the_same_node`, and the random test, whose model counts departures. |
 | TP8: a cell is its bytes | `TreePageMut::insert_encoded`, `replace_encoded` | `a_cell_is_carried_to_another_page_as_its_bytes`, `a_cell_that_would_not_decode_is_not_taken`. |
 | TP10, section 5: in place | `TreePageMut::{set_child, set_link, set_fragment_root, set_hosted_root, set_hosted_roots, set_feature, set_value}` | `a_change_of_the_same_size_is_made_where_the_cell_is`: each change writes only the bytes of its part, and no cell moves. |
 | TP11: fragment roots | `TreePage::fragment_roots`, `TreePage::check_fragments` | `the_fragment_roots_are_the_cells_no_cell_of_the_page_points_at`, `the_fragment_check_agrees_with_the_model_on_random_pages` (3,000 pages). |
 | TP13: values | `CellValue`, `TreeCell::value_len`, `TreePage::find_value_pointer` | `the_cell_that_holds_a_value_pointer_is_found_by_the_pointer`, and the pointer errors in `each_check_of_a_cell_has_its_error`. |
 | TP4, TP14: sizes | `TreePageSize`, `TreeCell::MAX_OUT_OF_LINE_LEN`, `TreeCell::len_of` | `a_page_size_is_8_to_64_kib`. `a_cell_is_smaller_than_half_a_page_whatever_its_key_and_value`: the largest cell with its value out of line fits three times in the smallest page; every key length from 0 to 255 fits; a value one byte above the longest inline value is refused and fits out of line. `a_cell_too_large_for_a_smaller_page_size_is_refused_on_reading`. A compile-time assertion ties the smallest page to the largest out-of-line cell. |
 | Section 4 | `TreePage::decode`, `TreePage::check`, `TreeCell::decode`, `TreePageError` | Each step is rejected with its error, and in order (`each_check_of_the_header_has_its_error`, `each_check_of_the_slots_has_its_error`, `each_check_of_a_cell_has_its_error`, `the_checks_run_in_their_documented_order`, `each_check_of_a_page_in_a_buffer_has_its_error`); every shorter input; zero-filled bytes; a page longer than its store's pages. |
-| B10 | every reader | `arbitrary_bytes_are_an_error_or_a_page_and_never_a_panic`: 60,000 byte strings, a third arbitrary, a third arbitrary behind a header that passes, a third valid images with bytes changed, through every accessor. |
+| B10 | every reader | `arbitrary_bytes_are_an_error_or_a_page_and_never_a_panic`: 60,000 byte strings, a third arbitrary, a third arbitrary behind a header that passes and with slots that share an offset, a third valid images with bytes changed, through every accessor. `a_page_whose_slots_share_a_cell_is_written_out_within_a_page`. |
 | Section 5 | `TreePageMut` | `a_full_page_refuses_a_write_and_takes_it_once_there_is_room`, `the_directory_grows_past_the_cells_in_its_way`, `the_directory_grows_in_a_page_with_no_room_at_its_end`, `gathering_the_unused_bytes_gives_the_image`, `a_write_to_a_free_slot_or_a_missing_part_is_refused`, `a_page_is_opened_in_a_buffer_of_its_page_size`. In the random test every refused write is compared with what the model expects, and must leave every byte of the buffer as it was. `a_damaged_page_is_refused_where_the_damage_is_met` shows W5: a slot that leads nowhere is `InvalidSlot` to whatever touches it. |
 | No allocation | every accessor, and the writes of section 5 that are made in place | `tests/tree_page_alloc.rs` runs under a counting allocator. |
 | Identifiers | `ids::{SlotId, CellAddress}` | Round trip of every slot number; the reserved patterns; half an address. |

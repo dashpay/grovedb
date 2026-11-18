@@ -456,6 +456,10 @@ impl<'a> TreePage<'a> {
 
     /// Appends the page's image to `out`: the header, the slot directory,
     /// and the cells in slot order with no unused byte.
+    ///
+    /// On a page that was never checked, where slots may share a cell, the
+    /// output is not an image, and it ends before it would pass
+    /// [`Self::MAX_LEN`].
     pub fn write_image(&self, out: &mut Vec<u8>) {
         let start = out.len();
         let cells_at = self.header.cells_at();
@@ -463,6 +467,9 @@ impl<'a> TreePage<'a> {
         out.resize(start + cells_at, 0);
         for (slot, cell) in self.cells() {
             let offset = out.len() - start;
+            if offset + cell.encoded_len() > Self::MAX_LEN {
+                break;
+            }
             set_slot_offset(&mut out[start..], slot.index(), offset);
             out.extend_from_slice(cell.as_bytes());
         }
@@ -485,8 +492,9 @@ impl<'a> TreePage<'a> {
     ///
     /// Every link and hosted-root pointer that names a slot of this page
     /// must name a cell, other than the one it is in, and no cell may be
-    /// named twice. A cell must be marked as a fragment root exactly when no
-    /// cell of the page names it.
+    /// named twice. A link to a cell of this page must state the length of
+    /// that cell's key. A cell must be marked as a fragment root exactly
+    /// when no cell of the page names it.
     ///
     /// This holds in every committed state. It is not part of
     /// [`Self::decode`], because a page is also read between two changes
@@ -498,14 +506,18 @@ impl<'a> TreePage<'a> {
             let children = Side::BOTH
                 .into_iter()
                 .filter_map(|side| cell.link(side))
-                .map(|link| link.child);
-            for address in children.chain(cell.hosted_roots().flatten()) {
+                .map(|link| (link.child, Some(link.child_key_len)));
+            let hosted = cell.hosted_roots().flatten().map(|root| (root, None));
+            for (address, key_len) in children.chain(hosted) {
                 if address.page() != self.header.page {
                     continue;
                 }
                 let index = address.slot().index();
-                if address.slot() == slot || self.cell_at(index).is_none() {
+                let Some(target) = self.cell_at(index).filter(|_| address.slot() != slot) else {
                     return Err(TreePageError::DanglingAddress { slot }.into());
+                };
+                if key_len.is_some_and(|len| usize::from(len) != target.key().len()) {
+                    return Err(TreePageError::ChildKeyLengthMismatch { slot }.into());
                 }
                 let (word, mask) = bit(index);
                 let word = &mut named[word];

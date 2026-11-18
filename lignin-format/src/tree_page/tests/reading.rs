@@ -50,7 +50,7 @@ fn exercise(bytes: &[u8]) {
     };
     let _ = page.check(TreePageSize::MAX);
     let _ = page.check_fragments();
-    let _ = page.to_image();
+    assert!(page.to_image().len() <= TreePage::MAX_LEN);
     let _ = page.lowest_free_slot();
     let _ = page.fragment_roots().count();
     let _ = page.find_value_pointer(&pointer(1, 20, 1));
@@ -609,9 +609,13 @@ fn arbitrary_bytes_are_an_error_or_a_page_and_never_a_panic() {
                 put16(&mut bytes, 2, stated as u16);
                 let slots = rng.below((stated - 22) / 2 + 1).min(rng.below(12));
                 put16(&mut bytes, 8, slots as u16);
+                let shared = 22 + 2 * slots + rng.below(stated);
                 for index in 0..slots {
                     if rng.chance(70) {
-                        let offset = 22 + 2 * slots + rng.below(stated);
+                        let offset = match rng.chance(30) {
+                            true => shared,
+                            false => 22 + 2 * slots + rng.below(stated),
+                        };
                         put16(&mut bytes, 22 + 2 * index, offset as u16);
                     }
                 }
@@ -635,6 +639,44 @@ fn arbitrary_bytes_are_an_error_or_a_page_and_never_a_panic() {
                 ModelCell::read(cell).assert_is(cell);
             }
         }
+    }
+}
+
+#[test]
+fn a_page_whose_slots_share_a_cell_is_written_out_within_a_page() {
+    // Bytes that were never checked: many slots lead to one large cell.
+    // Writing each slot's cell out would pass the longest page many times.
+    for (slots, value_len) in [(100, 900), (16_000, 30_000), (16_378, 32_679)] {
+        let cell = ModelCell::leaf(b"shared", &vec![0x5A; value_len]).assemble();
+        let cells_at = 22 + 2 * slots;
+        let mut bytes = ModelPage::new(4, 0).assemble();
+        bytes.resize(cells_at, 0);
+        bytes.extend(&cell);
+        assert!(bytes.len() <= TreePage::MAX_LEN);
+        put16(&mut bytes, 2, (cells_at + cell.len()) as u16);
+        put16(&mut bytes, 8, slots as u16);
+        put16(&mut bytes, 10, slots as u16);
+        for index in 0..slots {
+            put16(&mut bytes, 22 + 2 * index, cells_at as u16);
+        }
+        TreePage::decode(&bytes, V1, TreePageSize::MAX).expect_err("not an image");
+        let page = view(&bytes);
+        page.check(TreePageSize::MAX).expect_err("not a valid page");
+        if slots == 100 {
+            assert_eq!(
+                decode_error(&bytes),
+                TreePageError::CellsOutOfOrder { slot: slot(2) }.into()
+            );
+            assert_eq!(
+                page.check(TreePageSize::MAX),
+                Err(TreePageError::OverlappingCells { slot: slot(2) }.into())
+            );
+        }
+        assert_eq!(page.cells().count(), slots);
+        let image = page.to_image();
+        assert!(image.len() <= TreePage::MAX_LEN);
+        assert!(image.len() >= cells_at + cell.len());
+        exercise(&bytes);
     }
 }
 
@@ -736,6 +778,16 @@ fn each_check_of_a_page_in_a_buffer_has_its_error() {
     );
 }
 
+/// The key length a link of `cell` states for the child at `address`, when
+/// it is a link and not a hosted-root pointer that names it first.
+fn key_len_of(cell: &ModelCell, address: CellAddress) -> Option<u8> {
+    [&cell.left, &cell.right]
+        .into_iter()
+        .flatten()
+        .find(|link| link.child == address)
+        .map(|link| link.child_key_len)
+}
+
 /// What `check_fragments` must say about `model`, worked out from the model.
 fn expected_fragment_check(model: &ModelPage) -> Result<(), TreePageError> {
     let mut named = Vec::new();
@@ -751,6 +803,10 @@ fn expected_fragment_check(model: &ModelPage) -> Result<(), TreePageError> {
             let target = address.slot().get();
             if target == raw || !model.cells.contains_key(&target) {
                 return Err(TreePageError::DanglingAddress { slot: slot(raw) });
+            }
+            let key_len = model.cells[&target].key.len();
+            if key_len_of(cell, address).is_some_and(|len| usize::from(len) != key_len) {
+                return Err(TreePageError::ChildKeyLengthMismatch { slot: slot(raw) });
             }
             if named.contains(&target) {
                 return Err(TreePageError::CellNamedTwice { slot: slot(target) });
@@ -839,6 +895,25 @@ fn the_fragment_roots_are_the_cells_no_cell_of_the_page_points_at() {
     changed.cells.get_mut(&2).expect("a cell").hosted[1] = Some(address(6, 2));
     assert_eq!(check(&changed), dangling(2));
 
+    // A link that states another length than its child's key has. The
+    // length of a child in another page cannot be checked here.
+    for key_len in [0, 2, 255] {
+        let mut changed = model.clone();
+        let top = changed.cells.get_mut(&1).expect("a cell");
+        top.left.as_mut().expect("a link").child_key_len = key_len;
+        assert_eq!(
+            check(&changed),
+            TreePageError::ChildKeyLengthMismatch { slot: slot(1) }
+        );
+    }
+    let mut changed = model.clone();
+    let top = changed.cells.get_mut(&1).expect("a cell");
+    top.right.as_mut().expect("a link").child_key_len = 77;
+    decode(&changed.assemble())
+        .expect("valid")
+        .check_fragments()
+        .expect("consistent");
+
     // A cell that two cells point at.
     let mut changed = model.clone();
     let top = changed.cells.get_mut(&1).expect("a cell");
@@ -884,7 +959,7 @@ fn the_fragment_check_agrees_with_the_model_on_random_pages() {
                 child,
                 hash: rng.hash(),
                 heights: (0, 0),
-                child_key_len: 1,
+                child_key_len: 1 + u8::from(rng.chance(3)),
                 aggregate: Vec::new(),
             };
             if cell.left.is_none() {

@@ -115,9 +115,16 @@ impl<'a> TreePageMut<'a> {
         Ok(())
     }
 
-    /// Replaces the cell in `slot` by another. The slot keeps its number,
-    /// and no cell counts as having left the page.
+    /// Replaces the cell in `slot` by another cell of the same node: one
+    /// with the same key. The slot keeps its number, and no cell counts as
+    /// having left the page.
+    ///
+    /// A cell with another key is refused. Another node takes a slot only
+    /// through [`Self::remove`] and [`Self::insert`], so that the count of
+    /// departures tells.
     pub fn replace(&mut self, slot: SlotId, cell: &CellContent<'_>) -> Result<(), FormatError> {
+        self.size.check_cell_len(cell.checked_len()?)?;
+        self.check_same_key(slot, cell.key)?;
         let bytes = cell.encode()?;
         self.replace_bytes(slot, &bytes)
     }
@@ -126,7 +133,17 @@ impl<'a> TreePageMut<'a> {
     /// decoded from its own bytes, as [`Self::replace`] does.
     pub fn replace_encoded(&mut self, slot: SlotId, cell: TreeCell<'_>) -> Result<(), FormatError> {
         cell.check_hosted_roots()?;
+        self.size.check_cell_len(cell.encoded_len())?;
+        self.check_same_key(slot, cell.key())?;
         self.replace_bytes(slot, cell.as_bytes())
+    }
+
+    fn check_same_key(&self, slot: SlotId, key: &[u8]) -> Result<(), FormatError> {
+        let (_, cell) = self.occupied(slot)?;
+        if cell.key() != key {
+            return Err(TreePageError::KeyChanged { slot }.into());
+        }
+        Ok(())
     }
 
     /// Takes the cell in `slot` out of the page: the node was deleted, or

@@ -238,7 +238,7 @@ fn a_page_size_is_8_to_64_kib() {
 #[test]
 fn every_error_has_its_message() {
     let slot = slot(4);
-    let cases: [(TreePageError, &str); 25] = [
+    let cases: [(TreePageError, &str); 27] = [
         (
             TreePageError::PageSizeOutOfRange { page_size: 512 },
             "page size 512 is outside 8192 to 65536",
@@ -358,6 +358,14 @@ fn every_error_has_its_message() {
         (
             TreePageError::CellNamedTwice { slot },
             "two cells of the page point at the cell of slot 4",
+        ),
+        (
+            TreePageError::ChildKeyLengthMismatch { slot },
+            "a link of the cell of slot 4 states a wrong length for its child's key",
+        ),
+        (
+            TreePageError::KeyChanged { slot },
+            "the cell of slot 4 cannot be replaced by another key's cell",
         ),
         (
             TreePageError::FragmentRootMismatch { slot },

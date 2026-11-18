@@ -246,6 +246,18 @@ pub enum TreePageError {
         /// The slot of the cell that holds the address.
         slot: SlotId,
     },
+    /// A link to a cell of its own page states another length for the
+    /// child's key than that cell's key has.
+    ChildKeyLengthMismatch {
+        /// The slot of the cell that holds the link.
+        slot: SlotId,
+    },
+    /// A cell was to be replaced by a cell with another key. A slot names
+    /// one node until its cell leaves the page.
+    KeyChanged {
+        /// The slot.
+        slot: SlotId,
+    },
     /// Two links or hosted-root pointers of the page name the same cell of
     /// the page.
     CellNamedTwice {
@@ -331,6 +343,16 @@ impl fmt::Display for TreePageError {
                 f,
                 "the cell of slot {slot} points at no cell of its own page"
             ),
+            Self::ChildKeyLengthMismatch { slot } => write!(
+                f,
+                "a link of the cell of slot {slot} states a wrong length for its child's key"
+            ),
+            Self::KeyChanged { slot } => {
+                write!(
+                    f,
+                    "the cell of slot {slot} cannot be replaced by another key's cell"
+                )
+            }
             Self::CellNamedTwice { slot } => {
                 write!(f, "two cells of the page point at the cell of slot {slot}")
             }
