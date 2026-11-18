@@ -64,13 +64,11 @@ fn new_manifest_is_in_place(failed: &OpRecord) -> bool {
 
 /// Runs `workload` once for every operation of it that `disk` can fail,
 /// with the disk failing from that operation on, and checks what the failure
-/// leaves: at once, after a crash that leaves a state in `plans`, and after
-/// the process has ended. Returns how often each kind of operation was
-/// failed.
+/// leaves: at once, after a crash, and after the process has ended. Returns
+/// how often each kind of operation was failed.
 fn fail_everywhere(
     seed: u64,
     disk: Disk,
-    plans: &Plans,
     workload: impl Fn(&mut Run) -> Result<(), SegmentStoreError>,
 ) -> BTreeMap<OpKind, usize> {
     let mut failed_kinds = BTreeMap::new();
@@ -105,7 +103,7 @@ fn fail_everywhere(
         assert_eq!(&manifest_in(&fs), expected, "while the disk still fails");
 
         let image = fs.crash_image();
-        for (plan, state) in crash_states(&image, plans).states {
+        for (plan, state) in crash_states(&image, &SOME_STATES).states {
             let context = || format!("{image:?}\n{plan:?}");
             let _context = OnFailure(&context);
             check_recovered(Arc::new(state), db_dir(), model);
@@ -158,8 +156,8 @@ fn a_fault_at_any_operation_fails_the_step_and_leaves_a_whole_manifest() {
         (Disk::TearsAnAppend(Fault::Enospc), &[OpKind::Append]),
     ];
     for (disk, kinds) in cases {
-        let mut failed = fail_everywhere(51, disk, &SOME_STATES, |run| run.script(&SEGMENT_LIFE));
-        for (kind, count) in fail_everywhere(52, disk, &A_FEW_STATES, |run| run.run(60)) {
+        let mut failed = fail_everywhere(51, disk, |run| run.script(&SEGMENT_LIFE));
+        for (kind, count) in fail_everywhere(52, disk, |run| run.run(40)) {
             *failed.entry(kind).or_insert(0) += count;
         }
         println!("{disk:?}: {failed:?}");

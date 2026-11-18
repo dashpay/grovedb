@@ -92,11 +92,9 @@ pub(super) fn failed_ops(fs: &SimVfs) -> Vec<OpRecord> {
 pub(super) struct Plans {
     /// Every plan of an image is taken if there are at most this many.
     pub(super) every_plan_limit: usize,
-    /// Whether an image with more plans gets the plans of a file system that
-    /// writes in order, with every tear of the first lost write, each change
-    /// lost alone, and each change applied late.
-    pub(super) in_order_and_one_off: bool,
-    /// An image with more plans gets the two ends and this many plans drawn
+    /// An image with more plans gets the two ends, the plans of a file system
+    /// that writes in order, with every tear of the first lost write, each
+    /// change lost alone, each change applied late, and this many plans drawn
     /// from the seed.
     pub(super) samples: u64,
 }
@@ -115,11 +113,9 @@ pub(super) fn crash_states(image: &CrashImage, plans: &Plans) -> CrashStates {
         Some(plans) => (plans, true),
         None => {
             let mut some = vec![image.lose_all(), image.keep_all()];
-            if plans.in_order_and_one_off {
-                some.extend(image.prefixes());
-                some.extend(image.holes());
-                some.extend(image.reorders());
-            }
+            some.extend(image.prefixes());
+            some.extend(image.holes());
+            some.extend(image.reorders());
             some.extend((0..plans.samples).map(|draw| image.sample(draw)));
             (some, false)
         }
@@ -142,21 +138,12 @@ pub(super) fn crash_states(image: &CrashImage, plans: &Plans) -> CrashStates {
 
 pub(super) const EVERY_STATE: Plans = Plans {
     every_plan_limit: 200_000,
-    in_order_and_one_off: true,
     samples: 0,
 };
 
 pub(super) const SOME_STATES: Plans = Plans {
     every_plan_limit: 2_000,
-    in_order_and_one_off: true,
     samples: 24,
-};
-
-/// For the many crashes of a long workload whose images have many changes.
-pub(super) const A_FEW_STATES: Plans = Plans {
-    every_plan_limit: 2_000,
-    in_order_and_one_off: false,
-    samples: 8,
 };
 
 /// Says where a check failed, if it did.
