@@ -1,0 +1,168 @@
+//! Deterministic, seeded workload generators.
+//!
+//! A workload turns a seed into a stream of [`Op`]s: writes, batches, reads
+//! and block boundaries. The golden corpus, the benchmarks, the tree-layout
+//! model and the differential fuzzer all consume these streams, so the one
+//! property everything rests on is that a seed gives the same stream on any
+//! machine. That is why the random numbers come from [`rng`], which pins its
+//! algorithm, and why nothing in a generator depends on `usize`, on a float
+//! or on the iteration order of a hash map.
+//!
+//! Two families are provided:
+//!
+//! - [`drive`]: the shapes Dash Platform's Drive stores. Documents with
+//!   index references, identity balances in sum trees, tokens in count
+//!   trees.
+//! - [`adversarial`] and [`zoo`]: deep nesting, 255-byte keys, large values,
+//!   thousands of tiny subtrees, delete-heavy streams, reference chains, and
+//!   every element and tree type, the append-only trees included.
+//!
+//! [`Workload`] lists them all. [`apply`] turns an operation into GroveDB
+//! calls, and [`coverage`] reports which element and tree types a stream
+//! produced.
+
+pub mod adversarial;
+pub mod apply;
+pub mod coverage;
+pub mod drive;
+pub mod op;
+pub mod rng;
+pub mod zoo;
+
+mod build;
+
+use std::collections::VecDeque;
+
+use grovedb_version::version::GroveVersion;
+
+pub use self::{
+    apply::{apply, Outcome},
+    coverage::Coverage,
+    op::{AppendEntry, BatchOp, Op, Path, Query, QueryItem, Read, StreamDigest, Write},
+    rng::Rng,
+};
+
+/// What the target grove version can store.
+///
+/// A workload leaves out what its features switch off, so a stream generated
+/// for a grove version applies to that version without a refused operation.
+/// The features are part of a workload's parameters: a different set gives a
+/// different stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Features {
+    /// `BidirectionalReference` and the three `…WithBackwardsReferences`
+    /// items.
+    pub backward_references: bool,
+    /// `PrivateDocumentStore`.
+    pub private_document_store: bool,
+    /// `ProvableCountProvableBigSumTree`.
+    pub provable_count_provable_big_sum_tree: bool,
+    /// A bare `SumItem` under a `ProvableCountProvableSumIndexedTree`.
+    pub sum_item_in_count_sum_indexed_tree: bool,
+    /// The same append-only tree appended to more than once in one batch.
+    pub repeated_appends_in_batch: bool,
+    /// `GroveDb::delete` of a populated tree whose node hashes carry an
+    /// aggregate (the provable and the indexed trees). Grove versions 1 to 3
+    /// panic on it under a parent of another kind, and are kept that way for
+    /// replay, so a workload for them deletes such a tree through a batch.
+    pub direct_delete_of_provable_trees: bool,
+    /// Proofs in the V1 envelope, which a query needs when it is hosted by a
+    /// `ProvableCountProvableSumTree` or by an indexed tree.
+    pub v1_proofs: bool,
+}
+
+impl Features {
+    /// Everything the newest grove version stores.
+    pub const ALL: Features = Features {
+        backward_references: true,
+        private_document_store: true,
+        provable_count_provable_big_sum_tree: true,
+        sum_item_in_count_sum_indexed_tree: true,
+        repeated_appends_in_batch: true,
+        direct_delete_of_provable_trees: true,
+        v1_proofs: true,
+    };
+
+    /// What `grove_version` stores.
+    pub fn for_grove_version(grove_version: &GroveVersion) -> Self {
+        let grovedb = &grove_version.grovedb_versions;
+        let insert = &grovedb.operations.insert;
+        Features {
+            backward_references: grovedb.apply_batch.backward_references_maintenance >= 1
+                && insert.insert_on_transaction >= 1,
+            private_document_store: grovedb.operations.private_document_store.element_creation >= 1,
+            provable_count_provable_big_sum_tree: insert
+                .provable_count_provable_big_sum_tree_creation
+                >= 1,
+            sum_item_in_count_sum_indexed_tree: insert.validate_indexed_child_for_variant >= 1,
+            repeated_appends_in_batch: grovedb.apply_batch.keyless_append_repeats >= 1,
+            direct_delete_of_provable_trees: grovedb
+                .operations
+                .delete
+                .delete_internal_on_transaction
+                >= 1,
+            v1_proofs: grovedb.operations.proof.prove_query_non_serialized >= 1,
+        }
+    }
+}
+
+/// The operations of one workload for one seed, generated as they are read.
+pub struct Stream {
+    source: Box<dyn Source>,
+    pending: VecDeque<Op>,
+    exhausted: bool,
+}
+
+impl Stream {
+    pub(crate) fn new(source: impl Source + 'static) -> Self {
+        Self {
+            source: Box::new(source),
+            pending: VecDeque::new(),
+            exhausted: false,
+        }
+    }
+}
+
+impl Iterator for Stream {
+    type Item = Op;
+
+    fn next(&mut self) -> Option<Op> {
+        loop {
+            if let Some(op) = self.pending.pop_front() {
+                return Some(op);
+            }
+            if self.exhausted {
+                return None;
+            }
+            let mut chunk = Vec::new();
+            self.exhausted = !self.source.fill(&mut chunk);
+            self.pending.extend(chunk);
+        }
+    }
+}
+
+/// A generator, asked for its stream one chunk at a time so a million-document
+/// workload never sits in memory at once.
+pub(crate) trait Source {
+    /// Appends the next chunk of operations. Returns false once the stream
+    /// has ended; a chunk pushed by that last call is still part of it.
+    fn fill(&mut self, out: &mut Vec<Op>) -> bool;
+}
+
+/// A source whose whole stream is built up front, for the small workloads.
+pub(crate) struct Prepared(Option<Vec<Op>>);
+
+impl Prepared {
+    pub(crate) fn stream(ops: Vec<Op>) -> Stream {
+        Stream::new(Prepared(Some(ops)))
+    }
+}
+
+impl Source for Prepared {
+    fn fill(&mut self, out: &mut Vec<Op>) -> bool {
+        if let Some(ops) = self.0.take() {
+            out.extend(ops);
+        }
+        false
+    }
+}
