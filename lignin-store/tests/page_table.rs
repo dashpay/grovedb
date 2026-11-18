@@ -8,6 +8,7 @@ use std::{sync::Arc, time::Instant};
 
 use lignin_format::{
     manifest::{FileState, LastFileIds, LiveFile, Manifest},
+    tree_page::TreePageSize,
     CommitVersion, FileId, FileKind, PageId,
 };
 use lignin_io::{StdVfs, Vfs};
@@ -84,7 +85,13 @@ fn the_table_for_a_million_pages_fits_in_32_megabytes() {
 
     let dir = tempfile::tempdir().expect("a directory");
     let vfs: Arc<dyn Vfs> = Arc::new(StdVfs);
-    let empty = Manifest::new(LastFileIds::default(), None, Vec::new()).expect("a manifest");
+    let empty = Manifest::new(
+        TreePageSize::DEFAULT,
+        LastFileIds::default(),
+        None,
+        Vec::new(),
+    )
+    .expect("a manifest");
     let manifest = ManifestStore::create(vfs.clone(), dir.path(), empty).expect("a manifest");
     let checkpoints = TableCheckpoints::open(&manifest).expect("the checkpoints open");
     let start = Instant::now();
@@ -112,7 +119,13 @@ fn the_table_for_a_million_pages_fits_in_32_megabytes() {
         page_table: Some(written.file()),
         ..LastFileIds::default()
     };
-    let named = Manifest::new(last_file_ids, Some(written.named()), segments).expect("a manifest");
+    let named = Manifest::new(
+        TreePageSize::DEFAULT,
+        last_file_ids,
+        Some(written.named()),
+        segments,
+    )
+    .expect("a manifest");
     let start = Instant::now();
     let (loaded, info) = PageTable::load(&*vfs, dir.path(), &named).expect("the checkpoint loads");
     println!("loaded in {:?}", start.elapsed());

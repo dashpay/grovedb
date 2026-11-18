@@ -11,6 +11,7 @@ use std::{path::Path, sync::Arc};
 
 use lignin_format::{
     manifest::{FileState, LiveFile, Manifest},
+    tree_page::TreePageSize,
     value_log::ValuePointer,
     CommitVersion, FileHeader, FileId, FileKind, FormatVersion, PageId,
 };
@@ -39,7 +40,8 @@ fn version(raw: u64) -> CommitVersion {
 }
 
 fn empty_manifest() -> Manifest {
-    Manifest::new(Default::default(), None, Vec::new()).expect("a valid manifest")
+    Manifest::new(TreePageSize::DEFAULT, Default::default(), None, Vec::new())
+        .expect("a valid manifest")
 }
 
 fn value_file(raw_id: u32, state: FileState, valid_len: u64) -> LiveFile {

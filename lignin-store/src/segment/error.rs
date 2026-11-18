@@ -5,13 +5,20 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use lignin_format::{FileId, FileKind, FormatError, FormatVersion};
+use lignin_format::{tree_page::TreePageSize, FileId, FileKind, FormatError, FormatVersion};
 
 use super::store::BlockLocation;
 
 /// A change that a manifest must not make to the manifest it replaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManifestChange {
+    /// The page size is not the one the store was created with.
+    PageSizeChanged {
+        /// The page size of the manifest in force.
+        from: TreePageSize,
+        /// The page size of the manifest offered.
+        to: TreePageSize,
+    },
     /// The last file id of a kind is lower than it was.
     LastFileIdLowered {
         /// The kind whose last id went down.
@@ -51,6 +58,12 @@ pub enum ManifestChange {
 impl fmt::Display for ManifestChange {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::PageSizeChanged { from, to } => write!(
+                f,
+                "the page size is {}, and the store was created with {}",
+                to.get(),
+                from.get()
+            ),
             Self::LastFileIdLowered { kind } => {
                 write!(f, "the last {kind:?} file id is lower than it was")
             }
@@ -113,6 +126,16 @@ pub enum SegmentStoreError {
     /// The manifest offered as a replacement breaks a rule against the one
     /// it would replace.
     ManifestChange(ManifestChange),
+    /// The store was created with another page size than the one it is
+    /// opened with.
+    PageSizeMismatch {
+        /// The database directory.
+        dir: PathBuf,
+        /// The page size in the manifest.
+        stored: TreePageSize,
+        /// The page size the store was opened with.
+        requested: TreePageSize,
+    },
     /// A manifest of another directory was passed.
     WrongDirectory {
         /// The directory of the segment store.
@@ -252,6 +275,17 @@ impl fmt::Display for SegmentStoreError {
                 dir.display()
             ),
             Self::ManifestChange(change) => write!(f, "invalid manifest replacement: {change}"),
+            Self::PageSizeMismatch {
+                dir,
+                stored,
+                requested,
+            } => write!(
+                f,
+                "{} has pages of {} bytes and was opened with pages of {}",
+                dir.display(),
+                stored.get(),
+                requested.get()
+            ),
             Self::WrongDirectory { expected, found } => write!(
                 f,
                 "manifest of {} passed to the segment store of {}",

@@ -11,7 +11,8 @@ use std::{
 
 use lignin_format::{
     flat_page::{FlatBranchBuilder, FlatLeafBuilder, FlatPage, FlatValue},
-    FormatVersion, PageId,
+    value_log::ValuePointer,
+    FileId, FormatVersion, PageId,
 };
 
 thread_local! {
@@ -69,8 +70,11 @@ fn leaf_image() -> Vec<u8> {
     let mut builder = FlatLeafBuilder::new(&PREFIX, CAPACITY).expect("fits");
     for index in 0..ENTRIES {
         let value = [index as u8; VALUE_LEN];
+        let pointer = ValuePointer::new(FileId::MIN, 20 + index, VALUE_LEN as u32)
+            .expect("valid")
+            .encode();
         let value = if index % 5 == 0 {
-            FlatValue::OutOfLine(&value)
+            FlatValue::OutOfLine(&pointer)
         } else {
             FlatValue::Inline(&value)
         };
@@ -151,7 +155,11 @@ fn binary_search_over_a_leaf_does_not_allocate() {
     assert_eq!(allocations, 0);
     assert_eq!(found, ENTRIES);
     assert_eq!(missing, ENTRIES + 6);
-    assert_eq!(value_bytes, ENTRIES as usize * VALUE_LEN);
+    let out_of_line = ENTRIES as usize / 5;
+    assert_eq!(
+        value_bytes,
+        (ENTRIES as usize - out_of_line) * VALUE_LEN + out_of_line * ValuePointer::ENCODED_LEN
+    );
 }
 
 #[test]

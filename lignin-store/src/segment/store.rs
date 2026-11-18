@@ -650,9 +650,16 @@ impl SegmentStore {
         }
         let mut last_file_ids = base.last_file_ids();
         last_file_ids.segment = last_file_ids.segment.max(last_id);
-        Manifest::new(last_file_ids, base.table_checkpoint(), files).map_err(
-            SegmentStoreError::format(&self.dir.join(ManifestStore::FILE_NAME), 0),
+        Manifest::new(
+            base.page_size(),
+            last_file_ids,
+            base.table_checkpoint(),
+            files,
         )
+        .map_err(SegmentStoreError::format(
+            &self.dir.join(ManifestStore::FILE_NAME),
+            0,
+        ))
     }
 
     /// Tells the store that the manifest was replaced. Call it after every

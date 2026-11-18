@@ -17,6 +17,7 @@
 //! use lignin_format::{
 //!     manifest::Manifest,
 //!     segment::{BlockContent, Compression},
+//!     tree_page::TreePageSize,
 //!     PageId,
 //! };
 //! use lignin_io::{StdVfs, Vfs};
@@ -25,7 +26,7 @@
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let dir = tempfile::tempdir()?;
 //! let vfs: Arc<dyn Vfs> = Arc::new(StdVfs);
-//! let empty = Manifest::new(Default::default(), None, Vec::new())?;
+//! let empty = Manifest::new(TreePageSize::DEFAULT, Default::default(), None, Vec::new())?;
 //! let mut manifest = ManifestStore::create(vfs, dir.path(), empty)?;
 //! let segments = SegmentStore::open(&manifest)?;
 //!
@@ -65,6 +66,13 @@
 //! | before step 3 | The old one, which was not touched. `MANIFEST.tmp` may exist, with any content. |
 //! | from step 3 until step 4 returns | The old one or the new one. The file layer keeps a rename whole or not at all, and the new file was synced before it was renamed. |
 //! | after step 4 | The new one. |
+//!
+//! A replacement is refused if it breaks a rule against the manifest it
+//! would replace ([`ManifestChange`]). One of those rules is that the page
+//! size never changes: the first manifest of a directory sets it, for tree
+//! pages and flat pages alike, and a page image does not hold it. Whoever
+//! opens a store with a page size of its own calls
+//! [`ManifestStore::check_page_size`] before it reads a page.
 //!
 //! The first manifest of a directory is written the same way, so a directory
 //! has no manifest or a whole one. [`ManifestStore::open`] removes a

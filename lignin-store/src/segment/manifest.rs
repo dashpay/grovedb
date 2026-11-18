@@ -8,8 +8,9 @@ use std::{
 };
 
 use lignin_format::{
-    manifest::{FileState, LiveFile, Manifest, MAX_LIVE_FILES},
-    FileHeader, FileKind, RecordHeader,
+    manifest::{FileState, LiveFile, Manifest},
+    tree_page::TreePageSize,
+    FileKind,
 };
 use lignin_io::{Create, OpenMode, Vfs};
 
@@ -17,14 +18,6 @@ use super::{
     error::{ManifestChange, SegmentStoreError},
     files::remove_if_present,
 };
-
-const BODY_FIXED_LEN: usize = 36;
-const BODY_ENTRY_LEN: usize = 16;
-
-pub(super) const MAX_FILE_LEN: usize = FileHeader::ENCODED_LEN
-    + RecordHeader::ENCODED_LEN
-    + BODY_FIXED_LEN
-    + BODY_ENTRY_LEN * MAX_LIVE_FILES;
 
 /// Reads the manifest of the database directory `dir` and changes nothing.
 ///
@@ -45,7 +38,7 @@ pub fn read_manifest(vfs: &dyn Vfs, dir: &Path) -> Result<Manifest, SegmentStore
     let len = file
         .len()
         .map_err(SegmentStoreError::io("measure", &path))?;
-    let mut bytes = vec![0; len.min(MAX_FILE_LEN as u64 + 1) as usize];
+    let mut bytes = vec![0; len.min(Manifest::MAX_ENCODED_LEN as u64 + 1) as usize];
     file.read_exact_at(&mut bytes, 0)
         .map_err(SegmentStoreError::io("read", &path))?;
     Manifest::decode(&bytes).map_err(SegmentStoreError::format(&path, 0))
@@ -77,7 +70,10 @@ impl ManifestStore {
     /// must exist and must not have one.
     ///
     /// A new database starts from the empty manifest. A checkpoint starts
-    /// from a manifest that names the files linked into its directory.
+    /// from a manifest that names the files linked into its directory. The
+    /// page size of this manifest is the store's from then on: no
+    /// replacement changes it. A checkpoint takes the page size of the
+    /// database it was made from.
     pub fn create(
         vfs: Arc<dyn Vfs>,
         dir: &Path,
@@ -142,6 +138,27 @@ impl ManifestStore {
             })
         } else {
             Ok(&self.manifest)
+        }
+    }
+
+    /// Checks that the store's pages are `page_size` bytes, the size the
+    /// caller is about to read and write pages with.
+    ///
+    /// A page image does not hold the page size, so whoever opens a store
+    /// with a page size calls this before it reads a page:
+    /// [`SegmentStoreError::PageSizeMismatch`] if the manifest records
+    /// another size. A caller with no size of its own takes the store's
+    /// from [`Manifest::page_size`].
+    pub fn check_page_size(&self, page_size: TreePageSize) -> Result<(), SegmentStoreError> {
+        let stored = self.manifest()?.page_size();
+        if stored == page_size {
+            Ok(())
+        } else {
+            Err(SegmentStoreError::PageSizeMismatch {
+                dir: self.dir.clone(),
+                stored,
+                requested: page_size,
+            })
         }
     }
 
@@ -238,6 +255,11 @@ fn write_temporary(
 }
 
 fn check_change(current: &Manifest, next: &Manifest) -> Result<(), ManifestChange> {
+    let (from, to) = (current.page_size(), next.page_size());
+    if from != to {
+        return Err(ManifestChange::PageSizeChanged { from, to });
+    }
+
     let (last, next_last) = (current.last_file_ids(), next.last_file_ids());
     for kind in FileKind::ALL {
         if next_last.of(kind) < last.of(kind) {

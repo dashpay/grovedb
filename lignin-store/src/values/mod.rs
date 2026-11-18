@@ -21,7 +21,7 @@
 //! ```
 //! use std::sync::Arc;
 //!
-//! use lignin_format::{manifest::Manifest, CommitVersion, PageId};
+//! use lignin_format::{manifest::Manifest, tree_page::TreePageSize, CommitVersion, PageId};
 //! use lignin_io::{StdVfs, Vfs};
 //! use lignin_store::{
 //!     segment::ManifestStore,
@@ -31,7 +31,7 @@
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let dir = tempfile::tempdir()?;
 //! let vfs: Arc<dyn Vfs> = Arc::new(StdVfs);
-//! let empty = Manifest::new(Default::default(), None, Vec::new())?;
+//! let empty = Manifest::new(TreePageSize::DEFAULT, Default::default(), None, Vec::new())?;
 //! let mut manifest = ManifestStore::create(vfs, dir.path(), empty)?;
 //! let values = ValueStore::open(&manifest, &[])?;
 //!

@@ -153,7 +153,8 @@ impl Model {
         files.extend(self.live.iter().map(|(id, segment)| segment.named(*id)));
         let mut last = base.last_file_ids();
         last.segment = last.segment.max(FileId::new(self.last_id));
-        Manifest::new(last, base.table_checkpoint(), files).expect("a valid manifest")
+        Manifest::new(base.page_size(), last, base.table_checkpoint(), files)
+            .expect("a valid manifest")
     }
 
     fn replaced(&mut self) {
@@ -240,7 +241,13 @@ pub(super) fn with_another_log(manifest: &Manifest) -> Manifest {
         })
         .collect();
     files.push(live(FileKind::Wal, next, FileState::Open, 20));
-    Manifest::new(last, manifest.table_checkpoint(), files).expect("a valid manifest")
+    Manifest::new(
+        manifest.page_size(),
+        last,
+        manifest.table_checkpoint(),
+        files,
+    )
+    .expect("a valid manifest")
 }
 
 /// One step of a workload. A number is the id of the segment the step is
