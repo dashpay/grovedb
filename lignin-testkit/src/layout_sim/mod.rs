@@ -62,7 +62,7 @@ pub struct Run {
 /// transaction dropped for a new one take the nodes back to what they
 /// were. Each is a transition like a write when it changes a node: the
 /// layouts follow the grove back, and what that costs is counted with the
-/// writes.
+/// writes. The block stays open: it ends at its commit or with the run.
 ///
 /// At the end of the run the mirror is compared with a scan of storage and
 /// every layout is recounted from the mirror. A run that does not end with
@@ -129,7 +129,7 @@ pub fn simulate(
                         .unwrap()
                         .unwrap_or_else(|error| panic!("{name}: {op:?} refused: {error:?}"));
                 }
-                open_block = !op.ends_transaction();
+                open_block = true;
                 let changes = observer.observe(db, &transaction);
                 if changes.is_empty() {
                     continue;
