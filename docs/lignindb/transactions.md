@@ -609,10 +609,12 @@ cleaner never wait for it.
    would have failed).
 5. Evaluate every hash that is still dirty (TREE-04). After this step no
    stored hash differs from its recomputation.
-6. Take version *v* = *L* + 1 and append one log group for *v*: new values,
-   structure deltas, one record per changed hash, flat records and range
-   deletes (STORE-01). This is the last step that can report an error. If
-   it does, CM9 decides whether the commit happened.
+6. Take version *v* = *L* + 1 and do all the file I/O of the commit: append
+   one log group for *v* (new values, structure deltas, one record per
+   changed hash, flat records and range deletes; STORE-01), and then, if the
+   sync policy asks for an fsync at commit, that fsync. This is the only
+   step that touches a file and the last that can report an error. If it
+   does, CM9 decides whether the commit happened.
 7. Install, in memory only: turn the private frames into page versions born
    at *v*, mark the page versions they replace as superseded at *v*, and
    retire the page ids the commit frees. This step writes to no file and
@@ -635,9 +637,9 @@ handle sees part of a commit.
 | success | ended | *L* is *v* |
 | `ScopesOpen`, `NotFinalized` | still open, unchanged | unchanged |
 | `Conflict` | ended, its writes discarded | unchanged |
-| a storage error that leaves the group incomplete in the log, for example no space | ended, its writes discarded | unchanged and still readable; no recovery ever brings the commit back (CM9, OPS-08) |
-| `NotDurable`: the whole group is in the log, but an fsync that the sync policy asked for failed | ended | *L* is *v*; *v* is not known to be durable (DU1) |
-| unsettled: the engine could not find out what reached the log (CM9) | ended | unchanged in this session, which accepts no further commit; the next open settles it (DU2) |
+| a storage error that leaves the group out of the log (CM9), for example no space | ended, its writes discarded | unchanged and still readable; no recovery ever brings the commit back (OPS-08) |
+| `NotDurable`: the group is in the log (CM9), but the fsync that the sync policy asked for failed | ended | *L* is *v*; *v* is not known to be durable (DU1) |
+| unsettled: the engine could not find out whether the group is in the log (CM9) | ended | unchanged in this session, which accepts no further commit; the next open settles it (DU2) |
 
 A crash between steps 6 and 8 can leave a complete log group for *v*.
 Recovery then includes *v* (DU2), though the caller never saw success. No
@@ -648,43 +650,62 @@ for the two precondition errors. This is what today's `commit_transaction`
 does: it takes the transaction by value.
 
 **CM7. Commit does not fsync** unless the sync policy says so (DEC-04,
-section 12).
+section 12). Where it does, the fsync is part of step 6 of CM3, after the
+append and before anything is installed or published.
 
 **CM8. Commit waits only for the commit lock and for flusher backpressure**
 (FL5). It never waits for a reader, for another open write transaction, for
 the cleaner or for the creation of a checkpoint beyond its sampling step.
 
 **CM9. The log decides whether a commit happened, and the engine must agree
-with it.** A recovery takes a commit exactly when its whole group is in the
-log (DU2). So a commit that the engine reports as failed must be one that no
-recovery, at any later time, can bring back. When step 6 reports an error:
+with it.** Recovery takes a commit exactly when it finds its group in the
+log (DU2). The engine uses the same test. The group of *v* is **in the log**
+when, read back from the log file as it is now, it passes recovery's own
+test: it decodes, its checksum verifies (FMT-05, format.md C7), and it lies
+in the part of the file that recovery reads (DU2).
 
-1. The engine finds out how much of the group is in the log. The file layer
-   says how many bytes it accepted; where that does not settle it, the engine
-   reads the file's length.
-2. **The whole group is in the log: the commit has happened.** Steps 7 and 8
-   run. Commit returns success, or `NotDurable` if what failed was an fsync
-   that the sync policy asked for. With the default policy there is no such
-   fsync (DEC-04), so this case does not arise there.
-3. **The group is not whole: the commit has failed.** Nothing was installed
-   (step 7 has not run), *L* is unchanged, no page version born at *v*
-   exists, and the transaction is ended as by WT9. The group is incomplete,
-   and nothing ever completes it, so no recovery takes it.
-4. **Before the next commit is appended, the incomplete group must be out of
-   the way.** Recovery stops reading a log file at its first incomplete
-   group, and the next commit will carry the same version *v*. So the engine
-   ends that log file at the end of its last complete group, records that
-   length durably where recovery reads it, and goes on in a new file. A
-   later commit is then reachable by recovery, and the torn bytes are never
-   read as part of any group. STORE-01 and OPS-08 choose the mechanics.
+Four things hold at all times:
+
+- (a) *v* is published only if its group is in the log. When the file layer
+  accepts every byte of the group without an error, that is established, and
+  nothing is read back.
+- (b) A commit reported as failed has no group in the log and never gets
+  one. So no recovery, at any later time, brings it back.
+- (c) Nothing that fails recovery's test lies before the group of a
+  published commit in what recovery reads. So a published commit can be lost
+  only by losing its own bytes (DU1), never by being out of recovery's
+  reach.
+- (d) When the engine cannot tell whether a group is in the log, it says so
+  and publishes nothing more.
+
+When step 6 of CM3 reports an error, these give one procedure:
+
+1. The engine finds out whether the group is in the log. If the error came
+   from the fsync, it is: the append had returned cleanly. If it came from
+   the append, the engine applies the test, reading the group back unless
+   the file layer's answer already shows that bytes are missing. A group of
+   full length whose bytes do not verify is not in the log.
+2. **In the log: the commit has happened.** Steps 7 and 8 run. Commit
+   returns `NotDurable` if it was the fsync that failed, and success
+   otherwise. With the default policy there is no fsync at commit (DEC-04).
+3. **Not in the log: the commit has failed.** Nothing was installed (step 7
+   has not run), *L* is unchanged, no page version born at *v* exists, and
+   the transaction is ended as by WT9. Nothing ever completes the group, so
+   (b) holds from this moment, whenever a crash comes.
+4. **Before the next commit is appended, the failed bytes are cut off.**
+   Recovery stops reading a log file at the first group that fails its test,
+   and the next commit will carry the same version *v*. So, for (c), the
+   engine ends that log file at the end of its last good group, records that
+   length durably where recovery reads it, and goes on in a new file.
+   STORE-01 and OPS-08 choose the mechanics.
 5. While it cannot do that, for example because the disk is still full, the
    engine accepts no commit. It resumes when it can. Every read keeps
    working throughout.
-6. If the engine cannot find out what is in the log (1), the outcome is
-   unsettled. Commit returns an error that says so, the session accepts no
-   further commit, and the next open settles the matter by DU2. This is the
-   only case in which a commit that returned an error can turn out to have
-   happened, and the error names it.
+6. If the engine cannot apply the test, because the read-back itself fails,
+   the outcome is unsettled (d). Commit returns an error that says so, the
+   session accepts no further commit, and the next open settles the matter
+   by DU2. This is the only case in which a commit that returned an error
+   can turn out to have happened, and the error names it.
 7. Whatever else the transaction wrote to data files is dead space (FL1).
 
 ### 8.2 The conflict rule
@@ -1081,15 +1102,15 @@ order.
 
 **DU2. After a crash the state is one committed version.** Recovery lands on
 *S(Lr)* for a single *Lr*, with *Ld* ≤ *Lr* ≤ *Lc*, where *Ld* is the newest
-version known durable before the crash and *Lc* the newest version whose log
-group was completely appended. Never part of a commit, and never a mix of
-two.
+version known durable before the crash and *Lc* the newest version whose
+group was in the log, in the sense of CM9, when the crash came. Never part
+of a commit, and never a mix of two.
 
 Recovery reads each log file only up to the valid length recorded for it,
-where one is recorded (CM9, DU3). A group beyond that length does not count
-for *Lc*, complete or not. Within what it reads, every complete group is a
-commit the engine had treated as happened (CM9), or one it had not yet
-answered for.
+where one is recorded (CM9, DU3), and stops at the first group that fails
+its test. A group beyond either point does not count, whatever its bytes.
+Within what recovery reads, every group that passes is a commit the engine
+had treated as happened (CM9), or one it had not yet answered for.
 
 **DU3. Nothing else survives.** No uncommitted write, no private frame, no
 pin, no scope and no page version born after *Lr* is reachable after
@@ -1399,12 +1420,16 @@ same result.
 - T-CF5: operations that apply an empty batch add nothing (cases B18, B20,
   B22), and a plain insert of an equal element does write (B19). Both
   engines.
-- T-CM1: the log append of a commit is made to fail at every write boundary
-  (IO-02). A commit reported as failed is never recovered, whenever the
-  crash comes: at once, after the cut of CM9 item 4, or after later commits.
-  Every handle reads what it read before, the next commit takes the same
-  version and succeeds once space is back, and it is recovered. A group that
-  reached the log whole is published, not reported as failed (CM9).
+- T-CM1: every write and every fsync of step 6 of a commit is made to fail
+  or to tear at every boundary (IO-02), under the default policy and under
+  one that fsyncs each commit, and the outcome is checked against a model
+  that applies recovery's test to the log (CM9). A commit reported as failed
+  is never recovered, whenever the crash comes: at once, after the cut of
+  item 4, or after later commits. A commit reported as succeeded or as
+  `NotDurable` is recovered whenever its bytes survive, and always after a
+  later successful `flush()`. A group of full length whose bytes do not
+  verify counts as failed. Every handle reads what it read before a failed
+  commit, and the next commit takes the same version and is recovered.
 
 **Rebase (TXN-03)**
 
@@ -1687,9 +1712,10 @@ are listed so the owner can overrule one before code depends on it.
 21. **A location kept between operations must be checked before it is
     followed** (PN8). This binds the path cache of PERF-03 and the scope
     caches of GROVE-12.
-22. **The log decides whether a commit happened** (CM9): a group that
-    reached the log whole is published even if the call that wrote it
-    reported an error, and a commit reported as failed can never be
-    recovered. This adds two commit outcomes, `NotDurable` and unsettled
-    (CM5). And **`flush()` covers the commits published before it read *L***
-    (DU1a).
+22. **The log decides whether a commit happened** (CM9): the engine applies
+    recovery's own test to the group. A group that passes is published even
+    if the call that wrote it reported an error, and a commit reported as
+    failed can never be recovered. All file I/O of a commit, a per-commit
+    fsync included, is in one step before anything is installed (CM3, CM7).
+    This adds two commit outcomes, `NotDurable` and unsettled (CM5). And
+    **`flush()` covers the commits published before it read *L*** (DU1a).
