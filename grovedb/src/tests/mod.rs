@@ -1,6 +1,7 @@
 //! Tests
 
 pub mod common;
+pub(crate) mod faultable_reads;
 
 mod query_tests;
 
@@ -117,6 +118,7 @@ mod not_counted_or_summed_tests;
 mod not_summed_tests;
 mod operations_coverage_tests;
 mod overlong_path_segment_tests;
+mod parent_read_fault_tests;
 mod parent_tree_info_result_row_tests;
 mod partial_batch_coherence_tests;
 mod partial_batch_consistency_tests;
