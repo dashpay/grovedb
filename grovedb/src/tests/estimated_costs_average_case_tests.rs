@@ -1001,7 +1001,13 @@ fn test_average_case_merk_insert_element_wrapped_tree_is_unchanged_on_grove_v4()
     // `added_bytes` of each wrapped tree of `wrapped_trees`, under a 4-byte
     // key in a count and sum tree.
     let pinned = [147, 151, 156, 165, 156, 167, 165, 156, 169];
-    for ((wrapped, bare), added_bytes) in wrapped_trees().into_iter().zip(pinned) {
+    let cases = wrapped_trees();
+    assert_eq!(
+        cases.len(),
+        pinned.len(),
+        "every wrapped tree needs a pinned V4 figure",
+    );
+    for ((wrapped, bare), added_bytes) in cases.into_iter().zip(pinned) {
         let wrapped_cost = average_insert_element_cost(&wrapped, None, &GROVE_V4);
         assert_eq!(
             wrapped_cost.storage_cost.added_bytes, added_bytes,
@@ -1018,4 +1024,49 @@ fn test_average_case_merk_insert_element_wrapped_tree_is_unchanged_on_grove_v4()
             "{bare}: an unwrapped tree is estimated the same in V4 and V5",
         );
     }
+}
+
+/// The value hash is estimated at one call per 64-byte block of the sized
+/// value. A plain tree with 60 flag bytes is sized at exactly 64 bytes (3 for
+/// the tree, 60 flag bytes and 1 for their length), so from `GROVE_V5` the
+/// byte of its wrapper takes it into a second block and adds one hash call.
+/// One flag byte fewer leaves room for the wrapper's byte in the first block.
+#[test]
+fn test_average_case_merk_insert_element_wrapper_byte_can_add_a_value_hash_block() {
+    let grove_version = GroveVersion::latest();
+    let wrapped_and_bare = |flags_len: usize| {
+        let bare = Element::empty_tree_with_flags(Some(vec![7; flags_len]));
+        let wrapped = Element::new_non_counted(bare.clone()).expect("a tree wraps as non-counted");
+        (wrapped, bare)
+    };
+
+    let (wrapped, bare) = wrapped_and_bare(60);
+    let wrapped_cost = average_insert_element_cost(&wrapped, None, grove_version);
+    let bare_cost = average_insert_element_cost(&bare, None, grove_version);
+    assert_eq!(
+        wrapped_cost.hash_node_calls,
+        bare_cost.hash_node_calls + 1,
+        "a 65-byte wrapped tree must be estimated one hash call above the 64-byte tree",
+    );
+    assert_eq!(
+        wrapped_cost.storage_cost.added_bytes,
+        bare_cost.storage_cost.added_bytes + 1,
+    );
+    assert_eq!(
+        wrapped_cost,
+        average_insert_tree_cost(&wrapped, 1, None, grove_version),
+    );
+    // `GROVE_V4` sizes the wrapped tree as the tree alone, hash calls
+    // included.
+    assert_eq!(
+        average_insert_element_cost(&wrapped, None, &GROVE_V4),
+        average_insert_element_cost(&bare, None, &GROVE_V4),
+    );
+
+    let (wrapped, bare) = wrapped_and_bare(59);
+    assert_eq!(
+        average_insert_element_cost(&wrapped, None, grove_version).hash_node_calls,
+        average_insert_element_cost(&bare, None, grove_version).hash_node_calls,
+        "a 64-byte wrapped tree still fits the first block",
+    );
 }

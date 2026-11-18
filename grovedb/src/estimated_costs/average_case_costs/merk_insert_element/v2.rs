@@ -49,6 +49,13 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         let insert = match value.tree_flags_and_type() {
             // Wrappers do not nest, so a wrapped tree carries exactly one.
+            //
+            // The dedicated tree estimator is called on purpose, although it
+            // is gated by its own slot (`average_case_merk_insert_tree`): the
+            // same wrapped tree must get the same estimate whether a batch
+            // inserts it as an element or as `InsertTreeWithRootHash`. A
+            // grove version that changes that slot changes this estimate
+            // with it; the versions that keep the slot keep their figures.
             Some((flags, tree_type)) if value.is_wrapped() => Self::average_case_merk_insert_tree(
                 key,
                 flags,

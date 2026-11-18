@@ -4201,9 +4201,13 @@ mod tests {
     fn test_batch_wrapped_empty_tree_insert_average_case_pinned_on_grove_v4() {
         // The estimate's added_bytes for the whole batch, per child.
         let pinned = [249, 253, 258, 283, 292, 258, 269, 292, 283, 296];
-        for ((tree_type, tree, wrapped, bare), added_bytes) in
-            wrapped_empty_tree_children().into_iter().zip(pinned)
-        {
+        let cases = wrapped_empty_tree_children();
+        assert_eq!(
+            cases.len(),
+            pinned.len(),
+            "every wrapped tree needs a pinned V4 figure",
+        );
+        for ((tree_type, tree, wrapped, bare), added_bytes) in cases.into_iter().zip(pinned) {
             let (estimated, applied) = child_created_with_its_tree_costs(
                 tree_type,
                 tree.clone(),
