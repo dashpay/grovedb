@@ -15,7 +15,7 @@ grovedb-merk = { version = "6.1.1", path = "../merk" }
 grovedb-version = { version = "6.1.1", path = "../grovedb-version" }
 blake3 = { workspace = true }
 hex = { workspace = true }
+tempfile = { workspace = true }
 
 [dev-dependencies]
 grovedb-commitment-tree = { version = "6.1.1", path = "../grovedb-commitment-tree" }
-tempfile = { workspace = true }
