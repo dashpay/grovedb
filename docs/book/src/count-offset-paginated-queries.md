@@ -261,8 +261,8 @@ an allowlist, it refused only `Item` / `SumItem` / `ItemWithSumItem`,
 and a forged `ItemWithBackwardsReferences`, `SumItemWithBackwardsReferences`
 or `ItemWithSumItemWithBackwardsReferences` row verified under the
 genuine root. An honest proof carries these types like any item, on
-`KVCount` / `KVCountSum` with the referrer list emptied, where the
-verifier recomputes the hash from the bytes.
+`KVCount` / `KVCountSum` / `KVCountBigSum` with the referrer list emptied,
+where the verifier recomputes the hash from the bytes.
 
 ## Unsupported in-range value shapes (P1 / P2)
 

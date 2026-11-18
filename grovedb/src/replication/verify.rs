@@ -255,8 +255,10 @@ impl GroveDb {
                 // check above does not reach it. Bind it to the restored
                 // bidirectional references instead, which the check above
                 // does bind: every entry must name a live reference that
-                // points back with the entry's cascade policy, and every
-                // reference must be listed by its target.
+                // points back with the entry's cascade policy, every
+                // reference must be listed by its target, and the list
+                // must be in its canonical order. Together these fix the
+                // list byte for byte.
                 if element.supports_backward_references() {
                     self.verify_restored_backward_references(
                         &element,

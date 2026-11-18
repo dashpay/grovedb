@@ -138,11 +138,13 @@ pub(in crate::batch) const BACKWARD_REFERENCES_AVERAGE_REFERENCE_RESOLUTION_LOAD
 #[cfg(feature = "minimal")]
 pub(in crate::batch) const BACKWARD_REFERENCES_AVERAGE_ANCESTOR_LEVELS: u32 = 2;
 
-/// Hash calls charged per derived family rewrite. A rewrite makes four:
-/// the stripped value hash, the end-hash combine, the kv digest and the
-/// node hash. The charge is an upper bound and keeps the two further calls
-/// it allowed for while the referrer list was hashed, so estimates are
-/// unchanged.
+/// Hash calls charged per derived family rewrite: a fixed allowance that
+/// does not scale with the payload, so it is not a bound for a large one
+/// (a value hash costs one call per 64-byte block). It was sized as one
+/// call each for the stripped value hash, the referrer-list hash, its
+/// combine, the end-hash combine, the kv digest and the node hash. The
+/// list hash and its combine are no longer computed; the allowance is kept
+/// so estimates are unchanged.
 #[cfg(feature = "minimal")]
 pub(in crate::batch) const BACKWARD_REFERENCES_REWRITE_HASH_CALLS: u32 = 6;
 

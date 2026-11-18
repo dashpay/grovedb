@@ -826,6 +826,13 @@ impl ElementType {
     ///
     /// These must use `Node::KVValueHash` in proofs because the verifier
     /// cannot recompute the combined hash without additional information.
+    ///
+    /// This is the negation of [`Self::has_simple_value_hash`], so it is
+    /// also true for the backward-references items, although nothing is
+    /// combined into their value hash: it is the plain hash of their
+    /// serialization with the referrer list emptied, and they are proved in
+    /// the value-carrying nodes. See
+    /// [`ElementType::is_backward_references_item`].
     #[inline]
     pub fn has_combined_value_hash(&self) -> bool {
         !self.has_simple_value_hash()

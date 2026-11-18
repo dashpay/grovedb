@@ -3096,9 +3096,9 @@ mod tests {
     }
 
     /// A source whose `TEST_LEAF` holds two backward-references items,
-    /// `value` (referred to by the bidirectional reference `r1`) and
-    /// `spare` (no referrer).
-    fn source_with_one_registered_referrer(grove_version: &GroveVersion) -> TempGroveDb {
+    /// `value` (referred to by the bidirectional references `r1` and `r2`)
+    /// and `spare` (no referrer).
+    fn source_with_registered_referrers(grove_version: &GroveVersion) -> TempGroveDb {
         use crate::reference_path::ReferencePathType;
 
         let source = make_test_grovedb(grove_version);
@@ -3115,26 +3115,28 @@ mod tests {
                 .unwrap()
                 .unwrap();
         }
-        source
-            .insert(
-                [TEST_LEAF].as_ref(),
-                b"r1",
-                Element::new_bidirectional_reference_with_options(
-                    ReferencePathType::SiblingReference(b"value".to_vec()),
+        for referrer in [b"r1", b"r2"] {
+            source
+                .insert(
+                    [TEST_LEAF].as_ref(),
+                    referrer,
+                    Element::new_bidirectional_reference_with_options(
+                        ReferencePathType::SiblingReference(b"value".to_vec()),
+                        None,
+                        true,
+                        None,
+                    ),
                     None,
-                    true,
                     None,
-                ),
-                None,
-                None,
-                grove_version,
-            )
-            .unwrap()
-            .unwrap();
+                    grove_version,
+                )
+                .unwrap()
+                .unwrap();
+        }
         source
     }
 
-    /// Run a sync of [`source_with_one_registered_referrer`] in which the
+    /// Run a sync of [`source_with_registered_referrers`] in which the
     /// stored element under `key` is replaced in flight by
     /// `alter(element)`, with its chunk node's carried value hash left as
     /// the source sent it.
@@ -3149,7 +3151,7 @@ mod tests {
         use grovedb_merk::proofs::{Node, Op};
         use std::cell::Cell;
 
-        let source = source_with_one_registered_referrer(grove_version);
+        let source = source_with_registered_referrers(grove_version);
         let altered = Cell::new(false);
         let result = run_sync_with_version(
             &source,
@@ -3200,7 +3202,7 @@ mod tests {
     #[test]
     fn state_sync_restores_an_unaltered_referrer_list() {
         let grove_version = GroveVersion::latest();
-        let source = source_with_one_registered_referrer(grove_version);
+        let source = source_with_registered_referrers(grove_version);
         let dest = sync_with_altered_backward_references_item(b"value", &|e| e, grove_version)
             .expect("an unaltered chunk restores");
         assert_eq!(
@@ -3217,8 +3219,10 @@ mod tests {
     /// reconstruct the app hash. The session checks every restored list
     /// against the restored bidirectional references before it commits,
     /// and refuses a list that drops a registration, names a referrer that
-    /// does not exist, or records another cascade policy than its referrer
-    /// declares.
+    /// does not exist, records another cascade policy than its referrer
+    /// declares, or holds the right entries in another order than the
+    /// canonical one (referrers are walked in list order, so the order has
+    /// to be the same on every node).
     #[test]
     fn state_sync_refuses_an_altered_referrer_list() {
         use crate::{
@@ -3226,7 +3230,7 @@ mod tests {
         };
 
         let grove_version = GroveVersion::latest();
-        let cases: [(&str, &'static [u8], &dyn Fn(Element) -> Element); 3] = [
+        let cases: [(&str, &'static [u8], &dyn Fn(Element) -> Element); 4] = [
             ("a dropped registration", b"value", &|mut element| {
                 element.backward_references_mut().unwrap().clear();
                 element
@@ -3250,6 +3254,12 @@ mod tests {
             ("another cascade policy", b"value", &|mut element| {
                 let entry = &mut element.backward_references_mut().unwrap()[0];
                 entry.cascade_on_update = !entry.cascade_on_update;
+                element
+            }),
+            ("another order", b"value", &|mut element| {
+                let entries = element.backward_references_mut().unwrap();
+                assert_eq!(entries.len(), 2);
+                entries.reverse();
                 element
             }),
         ];

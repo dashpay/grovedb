@@ -12,7 +12,10 @@
 //! node hash, as described in `grovedb_element::bidirectional_reference`:
 //! the target and its forward references commit to the target's INNER
 //! (stripped) hash, so registering or removing a referrer rewrites only the
-//! target's stored bytes and moves no hash.
+//! target's stored bytes and by itself moves no hash. The inner hash covers
+//! every other field, flags included: a flags-update callback that changes
+//! the target's flags because its stored value grew moves the hash like
+//! any flags change, and the referrers are then brought up to date.
 
 use grovedb_costs::{
     cost_return_on_error, storage_cost::removal::StorageRemovedBytes, CostResult, CostsExt,

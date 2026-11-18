@@ -32,11 +32,13 @@ pub trait ElementExt {
 
     /// The hash this element commits to: the hash of its serialization with
     /// the referrer list emptied. For a backward-references item this is the
-    /// node value hash itself; for a `BidirectionalReference` it is the half
-    /// of the node value hash that is combined with the resolved end hash;
-    /// and it is what a reference to either stores. Registering or removing
-    /// a referrer therefore moves no hash. For every other element it is the
-    /// plain serialized-bytes hash.
+    /// node value hash itself, and it is what a reference whose chain ends
+    /// on the item stores. For a `BidirectionalReference` it is the half of
+    /// its own node value hash that is combined with the resolved end hash;
+    /// a reference whose chain passes through one does not store it, but
+    /// the logical hash of the element the chain ends at. Registering or
+    /// removing a referrer by itself therefore moves no hash. For every
+    /// other element it is the plain serialized-bytes hash.
     fn logical_value_hash(
         &self,
         grove_version: &grovedb_version::version::GroveVersion,

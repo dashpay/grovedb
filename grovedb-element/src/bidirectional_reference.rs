@@ -23,14 +23,21 @@
 //! it stays in the stripped bytes, so the inner hash covers it.
 //!
 //! Registering or removing a referrer rewrites the target's stored bytes
-//! and changes no hash: not the target's node hash, not its tree's root
-//! hash, not the hashes stored by other referrers. Every node that
-//! executes the same operations maintains the same lists, so the lists
-//! agree without being hashed. A node that receives its state from a peer
+//! and by itself changes no hash: not the target's node hash, not its
+//! tree's root hash, not the hashes stored by other referrers. (Flags are
+//! in the stripped bytes, so a write that also changes the target's flags
+//! changes its hash like any other flags change.)
+//!
+//! A list is kept in a canonical order, ascending by inverted reference
+//! path ([`register_backward_reference`]), so it is a function of the
+//! references that exist and not of the order they registered in. Every
+//! node that executes the same operations therefore holds the same lists
+//! without their being hashed. A node that receives its state from a peer
 //! instead (state sync) checks the lists against the bidirectional
 //! references it restored, which the hashes do cover: every list entry
-//! must name a reference that points back, and every reference must be
-//! listed by its target.
+//! must name a reference that points back, every reference must be listed
+//! by its target, and the list must be in canonical order. That fixes a
+//! restored list byte for byte.
 //!
 //! Proofs carry the stripped (inner) serialization in the ordinary
 //! value-carrying nodes, the verifier recomputes its hash, and result sets
@@ -187,6 +194,41 @@ pub struct BidirectionalReference {
     /// at most [`MAX_BACKWARD_REFERENCES_ON_REFERENCE`] other bidirectional
     /// references). Outside every hash; see the module docs.
     pub backward_references: Vec<BackwardReference>,
+}
+
+/// Register `entry` in a referrer list, keeping the list in its canonical
+/// order: ascending by `inverted_reference`, one entry per referrer.
+///
+/// A referrer is identified by its inverted path, so an entry for a
+/// referrer that is already listed replaces the old one in place. Returns
+/// whether the list grew.
+///
+/// The canonical order makes a list a function of the references that
+/// exist, not of the order they were registered in. Nothing hashes the
+/// list, so this is what lets a node that received its state from a peer
+/// hold the same bytes, and walk referrers in the same order, as a node
+/// that executed every registration.
+pub fn register_backward_reference(
+    list: &mut Vec<BackwardReference>,
+    entry: BackwardReference,
+) -> bool {
+    if let Some(existing) = list
+        .iter_mut()
+        .find(|r| r.inverted_reference == entry.inverted_reference)
+    {
+        *existing = entry;
+        return false;
+    }
+    let position = list.partition_point(|r| r.inverted_reference < entry.inverted_reference);
+    list.insert(position, entry);
+    true
+}
+
+/// Whether a referrer list is in its canonical order: strictly ascending
+/// by `inverted_reference`, which also rules out a referrer listed twice.
+pub fn backward_references_are_canonical(list: &[BackwardReference]) -> bool {
+    list.windows(2)
+        .all(|pair| pair[0].inverted_reference < pair[1].inverted_reference)
 }
 
 #[cfg(test)]
@@ -616,6 +658,62 @@ mod tests {
         );
         assert!(over.validate_backward_references_limits().is_err());
         assert!(over.serialize(grove_version).is_err());
+    }
+
+    /// Registration keeps a list in one order whatever order the referrers
+    /// arrive in, replaces the entry of a referrer already listed, and the
+    /// order spans the path variants in their declared order.
+    #[test]
+    fn registration_keeps_the_canonical_order() {
+        let entry = |inverted_reference, cascade_on_update| BackwardReference {
+            inverted_reference,
+            cascade_on_update,
+        };
+        let referrers = [
+            ReferencePathType::SiblingReference(b"b".to_vec()),
+            ReferencePathType::AbsolutePathReference(vec![b"z".to_vec()]),
+            ReferencePathType::SiblingReference(b"a".to_vec()),
+            ReferencePathType::UpstreamRootHeightReference(1, vec![b"k".to_vec()]),
+            ReferencePathType::AbsolutePathReference(vec![b"a".to_vec(), b"b".to_vec()]),
+        ];
+        let canonical = vec![
+            entry(referrers[4].clone(), true),
+            entry(referrers[1].clone(), true),
+            entry(referrers[3].clone(), true),
+            entry(referrers[2].clone(), true),
+            entry(referrers[0].clone(), true),
+        ];
+        assert!(backward_references_are_canonical(&canonical));
+
+        for order in [[0, 1, 2, 3, 4], [4, 3, 2, 1, 0], [2, 0, 4, 1, 3]] {
+            let mut list = Vec::new();
+            for index in order {
+                assert!(register_backward_reference(
+                    &mut list,
+                    entry(referrers[index].clone(), true)
+                ));
+            }
+            assert_eq!(list, canonical, "registered in order {order:?}");
+        }
+
+        // A referrer already listed is replaced where it stands.
+        let mut list = canonical.clone();
+        assert!(!register_backward_reference(
+            &mut list,
+            entry(referrers[1].clone(), false)
+        ));
+        assert_eq!(list.len(), canonical.len());
+        assert!(!list[1].cascade_on_update);
+        assert!(backward_references_are_canonical(&list));
+
+        // Any other order, and a referrer listed twice, are not canonical.
+        let mut swapped = canonical.clone();
+        swapped.swap(0, 1);
+        assert!(!backward_references_are_canonical(&swapped));
+        let mut twice = canonical.clone();
+        twice.insert(1, canonical[0].clone());
+        assert!(!backward_references_are_canonical(&twice));
+        assert!(backward_references_are_canonical(&[]));
     }
 
     /// The declared capacity bounds registrations, the protocol ceiling

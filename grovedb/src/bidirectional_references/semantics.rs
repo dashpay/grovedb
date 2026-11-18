@@ -244,24 +244,21 @@ fn with_registration(target: Element, entry: BackwardReference) -> Result<Elemen
             .ok_or(Error::BidirectionalReferenceRule(
                 "target does not support backward references".to_owned(),
             ))?;
-        if let Some(existing) = refs
-            .iter_mut()
-            .find(|r| r.inverted_reference == entry.inverted_reference)
-        {
-            *existing = entry;
-        } else {
-            // The target declares how many referrers it accepts (an item's
-            // `max_incoming`, one for a bidirectional reference); a full
-            // list refuses the registration rather than growing past what
-            // the target's owner agreed to pay for on updates.
-            if refs.len() >= capacity as usize {
-                return Err(Error::BidirectionalReferenceRule(format!(
-                    "the target accepts at most {capacity} incoming backward references and is \
-                     full"
-                )));
-            }
-            refs.push(entry);
+        // The list is kept in its canonical order, so its bytes depend on
+        // which referrers exist and not on the order they registered in.
+        let listed = refs
+            .iter()
+            .any(|r| r.inverted_reference == entry.inverted_reference);
+        // The target declares how many referrers it accepts (an item's
+        // `max_incoming`, one for a bidirectional reference); a full list
+        // refuses a new registration rather than growing past what the
+        // target's owner agreed to pay for on updates.
+        if !listed && refs.len() >= capacity as usize {
+            return Err(Error::BidirectionalReferenceRule(format!(
+                "the target accepts at most {capacity} incoming backward references and is full"
+            )));
         }
+        grovedb_element::register_backward_reference(refs, entry);
     }
     target.validate_backward_references_limits().map_err(|e| {
         Error::BidirectionalReferenceRule(format!("backward references budget exceeded: {e}"))

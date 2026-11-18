@@ -2357,10 +2357,11 @@ impl GroveDb {
         Ok(())
     }
 
-    /// Reciprocal audit for one element's authenticated referrer list:
-    /// every backward entry must name a live `BidirectionalReference`
-    /// whose forward path resolves back to this exact position, and no
-    /// inverted path may appear twice. Violations are recorded in
+    /// Reciprocal audit for one element's referrer list: every backward
+    /// entry must name a live `BidirectionalReference` whose forward path
+    /// resolves back to this exact position and whose cascade policy the
+    /// entry records, no inverted path may appear twice, and the list must
+    /// be in its canonical order. Violations are recorded in
     /// `issues` keyed by the REFERRER's qualified path, with a zero hash
     /// in the middle slot marking a reciprocity (not value-hash) failure.
     #[allow(clippy::too_many_arguments)]
@@ -2448,6 +2449,14 @@ impl GroveDb {
                 marker.push(b"?no-reciprocal-forward-edge".to_vec());
                 issues.insert(marker, (own_hash, [0; 32], own_hash));
             }
+        }
+        // A list is stored in one canonical order, so that every node walks
+        // a target's referrers in the same order whether it executed the
+        // registrations or received the list from a peer.
+        if !grovedb_element::backward_references_are_canonical(backward_references) {
+            let mut marker = expected_forward;
+            marker.push(b"?referrers-out-of-order".to_vec());
+            issues.insert(marker, (own_hash, [0; 32], own_hash));
         }
         let _ = allow_cache;
         Ok(())

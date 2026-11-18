@@ -251,7 +251,10 @@ impl KV {
     /// Sets the value hash to the provided (already fully computed) hash
     /// and recomputes the kv hash. Used for backward-references elements,
     /// whose value hash is taken over the STRIPPED serialization (referrer
-    /// list emptied) rather than over the stored bytes.
+    /// list emptied) rather than over the stored bytes. The hash is stored
+    /// as given, so the caller passes the complete value hash: `H(stripped)`
+    /// for an item, `combine(H(stripped), end_hash)` for a bidirectional
+    /// reference.
     #[inline]
     pub fn update_hashes_with_provided_value_hash(
         mut self,

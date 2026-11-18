@@ -116,9 +116,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   commits to its own stripped hash and the resolved end hash (it also
   committed to a hash of its own list). The stored bytes still hold the
   list and the declared capacity (`max_incoming`) is still hashed.
-  Registering or removing a referrer therefore changes no hash. The
-  change has no version gate: no network has stored an element of this
-  family, so no stored value hash moves.
+  Registering or removing a referrer therefore changes no hash by itself
+  (a flags-update callback that changes the target's flags still does, as
+  flags are hashed). The change has no version gate: no network has stored
+  an element of this family. A database that has never stored one is
+  unaffected and needs no migration. A database that did store one with an
+  earlier build holds value hashes under the old rule, which this build
+  does not reproduce: its `verify_grovedb` reports those elements and
+  their proofs do not verify.
+  - A referrer list is kept in a canonical order (ascending by inverted
+    reference path; `ReferencePathType` now implements `Ord`) instead of
+    registration order, so its bytes depend only on which referrers
+    exist. New: `register_backward_reference` and
+    `backward_references_are_canonical` in `grovedb-element`.
   - These items are proved like the plain items they extend, in `KV` /
     `KVCount` / `KVSum` / `KVCountSum` / `KVCountBigSum` nodes carrying the
     stripped bytes. `Node::KVBackwardsReferencesValueHash` and
@@ -133,9 +143,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - State sync checks a restored item's bytes against the stripped hash
     and, before a session commits, checks every restored referrer list
     against the restored bidirectional references in both directions. A
-    list that disagrees fails the session with "restored backward
-    references are not reciprocal". `verify_grovedb` also reports a list
-    entry whose cascade policy differs from its referrer's.
+    list that disagrees, or is not in canonical order, fails the session
+    with "restored backward references are not reciprocal".
+    `verify_grovedb` also reports a list entry whose cascade policy
+    differs from its referrer's and a list that is out of order
+    (`?referrers-out-of-order`).
   - Removed from `grovedb-merk`: `ElementExt::backward_references_hashes`
     and `BackwardsReferencesHashes` (use `ElementExt::logical_value_hash`,
     which is now the item's node value hash). Removed from

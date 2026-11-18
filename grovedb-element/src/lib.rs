@@ -3,7 +3,8 @@ mod element;
 mod element_type;
 
 pub use bidirectional_reference::{
-    BackwardReference, BackwardReferences, BidirectionalReference, CascadeOnUpdate,
+    backward_references_are_canonical, register_backward_reference, BackwardReference,
+    BackwardReferences, BidirectionalReference, CascadeOnUpdate,
     DEFAULT_BACKWARD_REFERENCES_CAPACITY, MAX_BACKWARD_REFERENCES,
     MAX_BACKWARD_REFERENCES_ON_REFERENCE,
 };

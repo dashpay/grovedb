@@ -287,9 +287,13 @@ capacity (`max_incoming`) is not part of the list and stays in the hashed bytes.
 
 Every reference in a chain (ordinary or bidirectional) commits to the target's *logical*
 (`inner`) hash, which for an item target is simply its node value hash. Registering another
-referrer on a target changes no hash at all: not the target's node, not its tree's root,
-not the nodes of the referrers that already point at it. Hash propagation only happens when
-the *payload* — the logical hash — actually changes.
+referrer on a target changes no hash by itself: not the target's node, not its tree's root,
+not the nodes of the referrers that already point at it. (Element flags are hashed, so a
+flags-update callback that changes the target's flags in reaction to the larger stored
+value does move the target's hash, like any other flags change.) The hash values that
+propagation writes to referrers change only when the *payload* — the logical hash —
+changes; an update that leaves it unchanged still rewrites the referrers, with the same
+values.
 
 Nodes agree on the lists without hashing them because registrations happen in consensus:
 every node that executes the same operations maintains the same lists. The earlier design
@@ -316,8 +320,15 @@ restoring node therefore checks two things:
   entry records, no entry appears twice, and every `BidirectionalReference` is listed by
   its immediate target.
 
-A session that fails either check fails the sync. The second check fixes each list as a
-set; the order of its entries is not derivable from the hashed state.
+A session that fails either check fails the sync.
+
+The second check also requires each list to be in its canonical order: ascending by
+inverted reference path (`ReferencePathType`'s order: by variant, then by fields).
+Registration inserts at the canonical position, so a list is a function of the references
+that exist and not of the order they registered in. Together the checks fix every restored
+list byte for byte. The order matters beyond the bytes: a cascade deletes referrers in list
+order, one at a time, and the shape of a Merk tree after several deletions depends on their
+order.
 
 ### Proofs
 

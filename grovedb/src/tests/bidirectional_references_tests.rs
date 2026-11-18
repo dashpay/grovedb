@@ -1409,6 +1409,56 @@ fn registering_a_referrer_leaves_existing_referrer_nodes_untouched() {
         .is_empty());
 }
 
+/// A referrer list is kept in a canonical order, so the bytes stored on a
+/// target depend on which referrers exist and not on the order they
+/// registered in.
+#[test]
+fn referrer_lists_do_not_depend_on_registration_order() {
+    use grovedb_merk::element::get::ElementFetchFromStorageExtensions;
+
+    let grove_version = GroveVersion::latest();
+    let stored_target = |order: [&[u8]; 3]| {
+        let db = db_with_bwr_item();
+        for referrer in order {
+            db.insert(
+                &[TEST_LEAF],
+                referrer,
+                sibling_bidi(b"value", true),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+        }
+        let tx = db.start_transaction();
+        let merk = db
+            .open_transactional_merk_at_path(
+                SubtreePath::from(&[TEST_LEAF]),
+                &tx,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+        Element::get(&merk, b"value", true, grove_version)
+            .unwrap()
+            .unwrap()
+    };
+
+    let ascending = stored_target([b"ra", b"rb", b"rc"]);
+    let entries = ascending.backward_references().unwrap();
+    assert_eq!(entries.len(), 3);
+    assert!(grovedb_element::backward_references_are_canonical(entries));
+    for order in [[b"rc".as_slice(), b"rb", b"ra"], [b"rb", b"rc", b"ra"]] {
+        assert_eq!(
+            stored_target(order).serialize(grove_version).unwrap(),
+            ascending.serialize(grove_version).unwrap(),
+            "registered in order {order:?}"
+        );
+    }
+}
+
 /// Proofs over backward-references items use the ordinary `KV` node: the
 /// payload is the STRIPPED element, whose hash is the node's value hash,
 /// and the referrer list is in no hash. The verifier recomputes the hash
