@@ -11,6 +11,9 @@
 #[cfg(feature = "minimal")]
 pub mod merk;
 
+#[cfg(feature = "minimal")]
+pub mod cost_model;
+
 /// Debug inspection support for GroveDbg.
 #[cfg(feature = "grovedbg")]
 pub mod debugger;
