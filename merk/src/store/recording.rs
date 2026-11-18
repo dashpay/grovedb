@@ -56,9 +56,9 @@ impl Call {
         let shown_value = ["put_root", "put_aux", "put_meta"]
             .iter()
             .any(|put| self.name.ends_with(put));
-        for bytes in [Some(&self.key), shown_value.then_some(&self.value)]
+        let value: &[u8] = if shown_value { &self.value } else { &[] };
+        for bytes in [self.key.as_slice(), value]
             .into_iter()
-            .flatten()
             .filter(|bytes| !bytes.is_empty())
         {
             brief.push(' ');
@@ -271,7 +271,7 @@ pub(crate) struct RecordingBatch<B> {
 }
 
 macro_rules! recorded_batch_puts {
-    ($($name:ident $recorded:literal)*) => {$(
+    ($prefix:literal $($name:ident)*) => {$(
         fn $name<K: AsRef<[u8]>>(
             &mut self,
             key: K,
@@ -280,7 +280,7 @@ macro_rules! recorded_batch_puts {
         ) -> Result<(), grovedb_costs::error::Error> {
             self.tape.record(Call {
                 cost: cost_info.clone(),
-                ..call($recorded, key.as_ref(), value)
+                ..call(concat!($prefix, stringify!($name)), key.as_ref(), value)
             });
             self.inner.$name(key, value, cost_info)
         }
@@ -288,11 +288,11 @@ macro_rules! recorded_batch_puts {
 }
 
 macro_rules! recorded_batch_deletes {
-    ($($name:ident $recorded:literal)*) => {$(
+    ($prefix:literal $($name:ident)*) => {$(
         fn $name<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
             self.tape.record(Call {
                 cost: cost_info.clone(),
-                ..call($recorded, key.as_ref(), b"")
+                ..call(concat!($prefix, stringify!($name)), key.as_ref(), b"")
             });
             self.inner.$name(key, cost_info)
         }
@@ -315,11 +315,9 @@ impl<B: Batch> Batch for RecordingBatch<B> {
         self.inner.put(key, value, children_sizes, cost_info)
     }
 
-    recorded_batch_puts!(put_aux "batch.put_aux" put_root "batch.put_root");
+    recorded_batch_puts!("batch." put_aux put_root);
 
-    recorded_batch_deletes!(
-        delete "batch.delete" delete_aux "batch.delete_aux" delete_root "batch.delete_root"
-    );
+    recorded_batch_deletes!("batch." delete delete_aux delete_root);
 }
 
 /// The cursor of a [`Recording`] context. It charges what the wrapped cursor
@@ -330,30 +328,27 @@ pub(crate) struct RecordingCursor<I> {
 }
 
 macro_rules! recorded_moves {
-    ($($name:ident $recorded:literal)*) => {$(
+    ($prefix:literal $($name:ident)*) => {$(
         fn $name(&mut self) -> CostContext<()> {
-            self.tape.record(call($recorded, b"", b""));
+            self.tape.record(call(concat!($prefix, stringify!($name)), b"", b""));
             self.inner.$name()
         }
     )*};
 }
 
 macro_rules! recorded_seeks {
-    ($($name:ident $recorded:literal)*) => {$(
+    ($prefix:literal $($name:ident)*) => {$(
         fn $name<K: AsRef<[u8]>>(&mut self, key: K) -> CostContext<()> {
-            self.tape.record(call($recorded, key.as_ref(), b""));
+            self.tape.record(call(concat!($prefix, stringify!($name)), key.as_ref(), b""));
             self.inner.$name(key)
         }
     )*};
 }
 
 impl<I: RawIterator> RawIterator for RecordingCursor<I> {
-    recorded_moves!(
-        seek_to_first "cursor.seek_to_first" seek_to_last "cursor.seek_to_last"
-        next "cursor.next" prev "cursor.prev"
-    );
+    recorded_moves!("cursor." seek_to_first seek_to_last next prev);
 
-    recorded_seeks!(seek "cursor.seek" seek_for_prev "cursor.seek_for_prev");
+    recorded_seeks!("cursor." seek seek_for_prev);
 
     fn value(&self) -> CostContext<Option<&[u8]>> {
         self.tape.record(call("cursor.value", b"", b""));
