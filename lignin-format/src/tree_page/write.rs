@@ -2,7 +2,7 @@
 
 use super::{
     cell::{self, patch},
-    page::{set_slot_offset, slot_offset, Header},
+    page::{directory_end, invalid_slot, last_slot_is_free, set_slot_offset, slot_offset, Header},
     CellContent, CellValue, Hash, HashField, Side, TreeCell, TreeLink, TreePage, TreePageError,
     TreePageSize,
 };
@@ -65,14 +65,7 @@ impl<'a> TreePageMut<'a> {
     ) -> Result<Self, FormatError> {
         Self::check_buffer(buffer, size)?;
         let header = Header::read(buffer, version)?;
-        let capacity = size.image_capacity();
-        if header.len > capacity {
-            return Err(TreePageError::PageTooLong {
-                len: header.len,
-                capacity,
-            }
-            .into());
-        }
+        header.check_len(size)?;
         Ok(Self {
             buffer,
             size,
@@ -150,7 +143,7 @@ impl<'a> TreePageMut<'a> {
         if self.header.cell_count == 0 {
             self.header = Header::empty(self.header.page, self.header.departures);
         }
-        while self.last_slot_is_free() {
+        while last_slot_is_free(self.buffer, self.header.slot_count) {
             self.header.slot_count -= 1;
             self.header.unused += SLOT_LEN;
         }
@@ -305,10 +298,14 @@ impl<'a> TreePageMut<'a> {
 
     fn occupied(&self, slot: SlotId) -> Result<(usize, TreeCell<'_>), FormatError> {
         let index = slot.index();
-        if index >= self.header.slot_count || slot_offset(self.buffer, index) == 0 {
+        let offset = if index < self.header.slot_count {
+            slot_offset(self.buffer, index)
+        } else {
+            0
+        };
+        if offset == 0 {
             return Err(TreePageError::SlotFree { slot }.into());
         }
-        let offset = slot_offset(self.buffer, index);
         Ok((offset, self.cell_at(index, offset)?))
     }
 
@@ -319,13 +316,6 @@ impl<'a> TreePageMut<'a> {
             return Err(invalid_slot(index));
         }
         TreeCell::at_start(bytes, self.version).map_err(|_| invalid_slot(index))
-    }
-
-    fn last_slot_is_free(&self) -> bool {
-        self.header
-            .slot_count
-            .checked_sub(1)
-            .is_some_and(|last| slot_offset(self.buffer, last) == 0)
     }
 
     fn release(&mut self, offset: usize, len: usize) {
@@ -367,7 +357,7 @@ impl<'a> TreePageMut<'a> {
 
     fn grow_directory(&mut self, slot_count: usize) -> Result<(), FormatError> {
         let old_cells_at = self.header.cells_at();
-        let cells_at = TreePage::HEADER_LEN + slot_count * SLOT_LEN;
+        let cells_at = directory_end(slot_count);
         let cell_bytes = self.header.len - old_cells_at - self.header.unused;
         while let Some((offset, index)) = self.lowest_cell().filter(|&(at, _)| at < cells_at) {
             let len = self.cell_at(index, offset)?.encoded_len();
@@ -398,7 +388,7 @@ impl<'a> TreePageMut<'a> {
     fn repack(&mut self, slot_count: usize) -> Result<(), FormatError> {
         let old_cells_at = self.header.cells_at();
         let cells = self.buffer[old_cells_at..self.header.len].to_vec();
-        let mut next = TreePage::HEADER_LEN + slot_count * SLOT_LEN;
+        let mut next = directory_end(slot_count);
         self.buffer[old_cells_at..next].fill(0);
         for index in 0..self.header.slot_count {
             let offset = slot_offset(self.buffer, index);
@@ -472,13 +462,6 @@ impl<'a> TreePageMut<'a> {
         patch_header(&mut new);
         self.replace_bytes(slot, &new)
     }
-}
-
-fn invalid_slot(index: usize) -> FormatError {
-    TreePageError::InvalidSlot {
-        slot: SlotId::from_index(index).unwrap_or(SlotId::MAX),
-    }
-    .into()
 }
 
 fn no_link(slot: SlotId, side: Side) -> FormatError {

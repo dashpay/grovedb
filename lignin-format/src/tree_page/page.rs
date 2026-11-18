@@ -33,12 +33,19 @@ fn le16(value: usize) -> [u8; 2] {
     (value as u16).to_le_bytes()
 }
 
-const fn directory_end(slot_count: usize) -> usize {
+pub(super) const fn directory_end(slot_count: usize) -> usize {
     HEADER_LEN + slot_count * SLOT_LEN
 }
 
 fn slot_of(index: usize) -> SlotId {
     SlotId::from_index(index).unwrap_or(SlotId::MAX)
+}
+
+pub(super) fn invalid_slot(index: usize) -> FormatError {
+    TreePageError::InvalidSlot {
+        slot: slot_of(index),
+    }
+    .into()
 }
 
 /// The fields of a page header.
@@ -128,10 +135,28 @@ impl Header {
     pub(super) const fn cells_at(&self) -> usize {
         directory_end(self.slot_count)
     }
+
+    pub(super) fn check_len(&self, size: TreePageSize) -> Result<(), FormatError> {
+        let capacity = size.image_capacity();
+        if self.len > capacity {
+            return Err(TreePageError::PageTooLong {
+                len: self.len,
+                capacity,
+            }
+            .into());
+        }
+        Ok(())
+    }
 }
 
 pub(super) fn slot_offset(bytes: &[u8], index: usize) -> usize {
     u16_at(bytes, directory_end(index))
+}
+
+pub(super) fn last_slot_is_free(bytes: &[u8], slot_count: usize) -> bool {
+    slot_count
+        .checked_sub(1)
+        .is_some_and(|last| slot_offset(bytes, last) == 0)
 }
 
 pub(super) fn set_slot_offset(bytes: &mut [u8], index: usize, offset: usize) {
@@ -174,7 +199,7 @@ impl<'a> TreePage<'a> {
         size: TreePageSize,
     ) -> Result<Self, FormatError> {
         let page = Self::from_validated(bytes, version)?;
-        page.check_len(size)?;
+        page.header.check_len(size)?;
         if page.header.unused != 0 {
             return Err(TreePageError::NotCompact {
                 unused: page.header.unused,
@@ -235,7 +260,7 @@ impl<'a> TreePage<'a> {
     ///
     /// Unlike the accessors, this allocates.
     pub fn check(&self, size: TreePageSize) -> Result<(), FormatError> {
-        self.check_len(size)?;
+        self.header.check_len(size)?;
         let cells_at = self.header.cells_at();
         let mut extents = Vec::with_capacity(self.header.cell_count);
         for index in 0..self.header.slot_count {
@@ -244,10 +269,7 @@ impl<'a> TreePage<'a> {
                 continue;
             }
             if offset < cells_at {
-                return Err(TreePageError::InvalidSlot {
-                    slot: slot_of(index),
-                }
-                .into());
+                return Err(invalid_slot(index));
             }
             let cell = self.checked_cell(index, offset, size)?;
             extents.push((offset, offset + cell.encoded_len(), index));
@@ -277,18 +299,6 @@ impl<'a> TreePage<'a> {
         self.check_cell_count(extents.len())
     }
 
-    fn check_len(&self, size: TreePageSize) -> Result<(), FormatError> {
-        let capacity = size.image_capacity();
-        if self.header.len > capacity {
-            return Err(TreePageError::PageTooLong {
-                len: self.header.len,
-                capacity,
-            }
-            .into());
-        }
-        Ok(())
-    }
-
     fn checked_cell(
         &self,
         index: usize,
@@ -297,10 +307,7 @@ impl<'a> TreePage<'a> {
     ) -> Result<TreeCell<'a>, FormatError> {
         let bytes = self.bytes.get(offset..).unwrap_or_default();
         let cell = TreeCell::at_start(bytes, self.version).map_err(|error| match error {
-            FormatError::Truncated { .. } => TreePageError::InvalidSlot {
-                slot: slot_of(index),
-            }
-            .into(),
+            FormatError::Truncated { .. } => invalid_slot(index),
             error => error,
         })?;
         cell.check_hosted_roots()?;
@@ -309,12 +316,10 @@ impl<'a> TreePage<'a> {
     }
 
     fn check_last_slot(&self) -> Result<(), FormatError> {
-        match self.header.slot_count.checked_sub(1) {
-            Some(last) if slot_offset(self.bytes, last) == 0 => {
-                Err(TreePageError::TrailingFreeSlot.into())
-            }
-            _ => Ok(()),
+        if last_slot_is_free(self.bytes, self.header.slot_count) {
+            return Err(TreePageError::TrailingFreeSlot.into());
         }
+        Ok(())
     }
 
     fn check_cell_count(&self, found: usize) -> Result<(), FormatError> {
