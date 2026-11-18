@@ -5,7 +5,7 @@ mod faulty;
 mod files;
 mod manifest;
 mod model;
-mod sim;
+pub(crate) mod sim;
 mod store;
 mod writer;
 

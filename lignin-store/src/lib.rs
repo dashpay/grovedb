@@ -3,3 +3,4 @@
 #![deny(unsafe_code)]
 
 pub mod segment;
+pub mod table;

@@ -54,6 +54,8 @@ pub enum FormatError {
     Segment(crate::segment::SegmentError),
     /// The bytes are not a manifest, or a manifest cannot be built.
     Manifest(crate::manifest::ManifestError),
+    /// The bytes are not a page-table checkpoint, or one cannot be written.
+    Table(crate::table::TableError),
     /// The bytes are not a valid value-log encoding, or a value cannot be
     /// encoded.
     ValueLog(crate::value_log::ValueLogError),
@@ -96,6 +98,7 @@ impl fmt::Display for FormatError {
             Self::FlatPage(error) => write!(f, "flat page: {error}"),
             Self::Segment(error) => write!(f, "segment: {error}"),
             Self::Manifest(error) => write!(f, "manifest: {error}"),
+            Self::Table(error) => write!(f, "page-table checkpoint: {error}"),
             Self::ValueLog(error) => write!(f, "value log: {error}"),
             Self::MissingId => write!(f, "identifier field holds no identifier"),
             Self::NonZeroReserved => write!(f, "reserved field is not zero"),
