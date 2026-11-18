@@ -342,17 +342,22 @@ The old cost is worked out from the old value by the same three formulas (the ca
 
 **What they change, all of it above the storage layer:**
 
-1. **The bytes of the new value**, through its flags, and with them its length. Merk measures the value's cost again from the new bytes and asks the callback again, until the size stops changing (the rounds are bounded by `MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES`, 8). The value hash is taken over the final bytes (section 6.2).
+1. **The bytes of the new value**, through its flags, and with them its length and its cost (the loop below). The value hash is taken over the final bytes (section 6.2).
 2. **The form of the removed bytes.** A plain removal of the value's bytes goes through `split_removal_bytes` with the old element's flags and comes back plain or sectioned. On a delete both halves are split: the key's `stored_key_len + varint(stored_key_len)` and the old value's cost.
 3. **From grove version 5, how an update is accounted**: the callback may answer `AccountAsReplacement`, and the update is then charged as the removal of the old element and the insertion of the new one. On grove versions 1 to 4 Merk refuses that answer. On every version GroveDB refuses it, and the batch with it, for a write whose flags are byte for byte the stored ones (`batch_flags_update`).
 
-The three versions of the update differ in the measurement they keep (`merk_versions.tree.just_in_time_value_update`, section 8). Version 0, on grove versions 1 to 3, first measures the new value carrying the old flags and keeps that measurement when the callback says it changed nothing. If the new value is stored with flags of another length, the cost Merk hands down is then not the one of the bytes it writes, and K3 refuses the commit. Version 1, on grove version 4, measures again from the bytes it stores. Version 2 adds the third point.
+**The loop** (`v0.rs`, `v1.rs`; `merk_versions.tree.just_in_time_value_update`, section 8). Merk first measures the value's cost. For an ordinary value, an item or a reference, that first measurement is taken with the new value carrying the *old* flags, when the old value has any. For a value whose cost its element defines, a sum item or a tree, it is taken as the value stands. Then, in rounds bounded by `MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES` (8), a plain removal in the cost is split and the flags callback is asked with the cost.
+
+- **If it answers that it changed the flags:** when the value with those flags has the size last measured, the loop ends and the value keeps those flags. Otherwise Merk measures again from those bytes, puts the new value back as it was given, and asks again with the new cost.
+- **If it answers that it changed nothing,** the loop ends, and the versions differ in the measurement they keep. Version 0, on grove versions 1 to 3, keeps the last one as it is; in the first round that is the one taken with the old flags. Version 1, on grove version 4, measures once more from the bytes it stores when their size is not the one last measured, and does not ask again. Version 2, on grove version 5, is version 1 with the third point above.
+
+So on grove versions 1 to 3 a new value that comes with flags of another length than the stored ones, and whose flags the callback leaves alone, is handed down with a cost that is not the cost of the bytes written. For an ordinary value the storage layer notices: K3 compares `added + replaced` with the bytes and refuses the commit (GroveDB's `grove_v3_refuses_a_replacement_keeping_flags_of_another_length`). A cost that the element defines is not checked (`needs_value_verification` is false, section 6.3), so whatever the update measured is charged.
 
 The same update is run ahead of the apply, on a detached node, wherever a batch has to know the final bytes of a value before it writes them (`predict_put_final_bytes`; on grove versions 1 to 3 a hand-written copy in `batch/just_in_time_reference_update/v0.rs`). Two places do: the preprocessor of backward references, and a reference to an item that the same batch writes, which commits to the item's value hash. Both call the client's callbacks again, on values that were already read. The prediction itself charges nothing; the second place charges the value hash of the predicted bytes (section 6.2). The storage cost worked out on the way is only what the callback is shown.
 
 **What the storage layer is asked for.** Only the result: the final bytes of the value and one `KeyValueStorageCost`, with the put (W2) or the delete (D1). The storage layer then
 
-- checks `added + replaced` of the value against the paid length of K2 when the cost asks for it (K3), which is what catches version 0's stale measurement;
+- checks `added + replaced` of the value against the paid length of K2 when the cost asks for it (K3), which it does for an ordinary value only; that is what catches version 0's stale measurement of an item or a reference;
 - adds the removed bytes as they come, plain or sectioned, in the order of B1;
 - never calls a callback, never produces a sectioned removal itself, and removes only plain numbers of its own (D2).
 
