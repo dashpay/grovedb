@@ -732,10 +732,11 @@ impl Encoder {
         place: Option<LogPlace>,
         out: &mut Vec<u8>,
     ) -> Result<End, FormatError> {
+        let place = place.map(sample_place).transpose()?;
         if self.payload.len() > KIND_LEN {
             self.flush(out)?;
         }
-        let end = self.order.end(covers, place.map(sample_place).transpose()?);
+        let end = self.order.end(covers, place);
         write_record(&end.encode(), out)?;
         Ok(end)
     }

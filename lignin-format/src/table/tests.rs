@@ -1036,6 +1036,15 @@ fn the_end_record_must_agree_with_the_counts_and_name_a_place_in_the_log() {
         let refused = Encoder::new().finish(version(1), Some(place(1, offset)), &mut Vec::new());
         assert_eq!(refused, Err(invalid), "{offset}");
     }
+    // It is refused before the count that is left over is written.
+    let mut out = b"before".to_vec();
+    let mut encoder = Encoder::new();
+    encoder.push_value_count(count(4, 9), &mut out).unwrap();
+    assert_eq!(
+        encoder.finish(version(1), Some(place(1, 61)), &mut out),
+        Err(invalid)
+    );
+    assert_eq!(out, b"before");
 }
 
 #[test]
