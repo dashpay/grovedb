@@ -7,7 +7,7 @@ use crate::{
     error::FormatError,
     header::FormatVersion,
     ids::{CellAddress, FileId},
-    value_log::ValuePointer,
+    value_log::{PendingValue, ValuePlace, ValuePointer},
 };
 
 /// Bytes of a hash.
@@ -138,6 +138,9 @@ pub enum CellValue<'a> {
     Inline(&'a [u8]),
     /// A pointer to the value in the value log.
     OutOfLine(ValuePointer),
+    /// The value is out of line and not in the value log yet: what stands
+    /// where its pointer will be.
+    Pending(PendingValue),
 }
 
 impl<'a> CellValue<'a> {
@@ -150,15 +153,40 @@ impl<'a> CellValue<'a> {
     pub const fn inline(&self) -> Option<&'a [u8]> {
         match *self {
             Self::Inline(value) => Some(value),
-            Self::OutOfLine(_) => None,
+            Self::OutOfLine(_) | Self::Pending(_) => None,
         }
     }
 
-    /// The pointer to the value, if the value is out of line.
+    /// The pointer to the value, if the value is in the value log.
     pub const fn pointer(&self) -> Option<ValuePointer> {
         match *self {
-            Self::Inline(_) => None,
+            Self::Inline(_) | Self::Pending(_) => None,
             Self::OutOfLine(pointer) => Some(pointer),
+        }
+    }
+
+    /// The pending value, if the value is out of line and not in the value
+    /// log yet.
+    pub const fn pending(&self) -> Option<PendingValue> {
+        match *self {
+            Self::Inline(_) | Self::OutOfLine(_) => None,
+            Self::Pending(pending) => Some(pending),
+        }
+    }
+
+    /// Where the value is, if it is not in the cell.
+    pub const fn place(&self) -> Option<ValuePlace> {
+        match *self {
+            Self::Inline(_) => None,
+            Self::OutOfLine(pointer) => Some(ValuePlace::Placed(pointer)),
+            Self::Pending(pending) => Some(ValuePlace::Pending(pending)),
+        }
+    }
+
+    const fn of_place(place: ValuePlace) -> Self {
+        match place {
+            ValuePlace::Placed(pointer) => Self::OutOfLine(pointer),
+            ValuePlace::Pending(pending) => Self::Pending(pending),
         }
     }
 
@@ -167,7 +195,7 @@ impl<'a> CellValue<'a> {
     pub const fn stored_len(&self) -> usize {
         match self {
             Self::Inline(value) => value.len(),
-            Self::OutOfLine(_) => TreeCell::VALUE_LOCATION_LEN,
+            Self::OutOfLine(_) | Self::Pending(_) => TreeCell::VALUE_LOCATION_LEN,
         }
     }
 
@@ -175,23 +203,21 @@ impl<'a> CellValue<'a> {
         match self {
             Self::Inline(value) => inline_value_len(value.len()),
             Self::OutOfLine(pointer) => Ok(pointer.value_len()),
+            Self::Pending(pending) => Ok(pending.value_len()),
         }
     }
 
     const fn flags(&self) -> u8 {
         match self {
             Self::Inline(_) => 0,
-            Self::OutOfLine(_) => OUT_OF_LINE,
+            Self::OutOfLine(_) | Self::Pending(_) => OUT_OF_LINE,
         }
     }
 
     fn write(&self, out: &mut Writer<'_>) {
-        match self {
-            Self::Inline(value) => out.put(value),
-            Self::OutOfLine(pointer) => {
-                out.put(&pointer.file().encode());
-                out.put(&pointer.offset().to_le_bytes());
-            }
+        match self.place() {
+            None => out.put(self.inline().unwrap_or_default()),
+            Some(place) => out.put(&place.encode()[..TreeCell::VALUE_LOCATION_LEN]),
         }
     }
 }
@@ -406,7 +432,7 @@ struct Layout {
     key_at: usize,
     value_at: usize,
     end: usize,
-    pointer: Option<ValuePointer>,
+    place: Option<ValuePlace>,
 }
 
 impl Layout {
@@ -447,20 +473,21 @@ impl Layout {
         let feature_at = hosted_at + usize::from(hosted_count) * TreeCell::HOSTED_ROOT_LEN;
         let key_at = feature_at + usize::from(feature_len);
         let value_at = key_at + usize::from(key_len);
-        let (pointer, stored_len) = if flags & OUT_OF_LINE == 0 {
+        let (place, stored_len) = if flags & OUT_OF_LINE == 0 {
             (None, usize::try_from(value_len).unwrap_or(usize::MAX))
         } else {
             let needed = value_at + TreeCell::VALUE_LOCATION_LEN;
-            let Some((file, offset)) = bytes
+            let Some(location) = bytes
                 .get(value_at..needed)
-                .and_then(<[u8]>::split_first_chunk::<{ FileId::ENCODED_LEN }>)
-                .and_then(|(file, rest)| Some((file, rest.first_chunk::<VALUE_OFFSET_LEN>()?)))
+                .and_then(<[u8]>::first_chunk::<{ TreeCell::VALUE_LOCATION_LEN }>)
             else {
                 return Err(truncated(needed));
             };
-            let file = FileId::decode(*file).ok_or(FormatError::MissingId)?;
-            let pointer = ValuePointer::new(file, u64::from_le_bytes(*offset), value_len)?;
-            (Some(pointer), TreeCell::VALUE_LOCATION_LEN)
+            let mut place = [0; ValuePlace::ENCODED_LEN];
+            place[..TreeCell::VALUE_LOCATION_LEN].copy_from_slice(location);
+            place[TreeCell::VALUE_LOCATION_LEN..].copy_from_slice(&value_len.to_le_bytes());
+            let place = ValuePlace::decode(place)?;
+            (Some(place), TreeCell::VALUE_LOCATION_LEN)
         };
         let end = value_at.saturating_add(stored_len);
         if bytes.len() < end {
@@ -475,7 +502,7 @@ impl Layout {
             key_at,
             value_at,
             end,
-            pointer,
+            place,
         })
     }
 
@@ -631,17 +658,36 @@ impl<'a> TreeCell<'a> {
         self.layout.value_len
     }
 
-    /// The node's value, or the pointer to it.
+    /// The node's value, the pointer to it, or what stands for a value that
+    /// is not in the value log yet.
     pub fn value(&self) -> CellValue<'a> {
-        match self.layout.pointer {
-            Some(pointer) => CellValue::OutOfLine(pointer),
+        match self.layout.place {
+            Some(place) => CellValue::of_place(place),
             None => CellValue::Inline(self.part(self.layout.value_at, self.layout.end)),
         }
     }
 
-    /// The pointer to the node's value, if the value is out of line.
+    /// The pointer to the node's value, if the value is in the value log.
+    /// `None` for a value in the cell and for a pending one.
     pub const fn value_pointer(&self) -> Option<ValuePointer> {
-        self.layout.pointer
+        match self.layout.place {
+            Some(place) => place.pointer(),
+            None => None,
+        }
+    }
+
+    /// The pending value, if the node's value is out of line and not in
+    /// the value log yet.
+    pub const fn pending_value(&self) -> Option<PendingValue> {
+        match self.layout.place {
+            Some(place) => place.pending(),
+            None => None,
+        }
+    }
+
+    /// Where the node's value is, if it is not in the cell.
+    pub const fn value_place(&self) -> Option<ValuePlace> {
+        self.layout.place
     }
 
     /// Whether the cell is marked as the root of a fragment.
@@ -813,7 +859,7 @@ pub(super) fn stored_value<'a>(
     let len = value.value_len()?;
     Ok(match value {
         CellValue::Inline(value) => (value, len),
-        CellValue::OutOfLine(_) => {
+        CellValue::OutOfLine(_) | CellValue::Pending(_) => {
             value.write(&mut Writer(&mut location[..]));
             (location, len)
         }

@@ -9,7 +9,7 @@ use crate::{
         CellField, CellValue, Hash, HashField, Side, TreeCell, TreeLink, TreePageError,
         TreePageMut, HASH_LEN,
     },
-    value_log::ValuePointer,
+    value_log::ValuePlace,
 };
 
 const ADDRESS_LEN: usize = CellAddress::ENCODED_LEN;
@@ -262,13 +262,15 @@ pub enum Delta<'a> {
         /// The feature.
         feature: &'a [u8],
     },
-    /// The value of a cell is replaced, by a value or by a pointer to one.
+    /// The value of a cell is replaced, by a value or by the place of one.
     /// With a pointer this is the record that installs a value's place in
-    /// the value log.
+    /// the value log: where the cell held a pending value, twelve bytes are
+    /// overwritten and nothing else. With a pending value it makes the
+    /// value pending where it is.
     Value {
         /// The cell's slot.
         slot: SlotId,
-        /// The value, or the pointer to it.
+        /// The value, the pointer to it, or the pending value.
         value: CellValue<'a>,
     },
 }
@@ -315,7 +317,7 @@ impl<'a> Delta<'a> {
                 ..
             } => Kind::Value,
             Self::Value {
-                value: CellValue::OutOfLine(_),
+                value: CellValue::OutOfLine(_) | CellValue::Pending(_),
                 ..
             } => Kind::ValuePointer,
         }
@@ -338,7 +340,7 @@ impl<'a> Delta<'a> {
             Self::Feature { feature, .. } => 1 + feature.len(),
             Self::Value { value, .. } => match value {
                 CellValue::Inline(value) => INLINE_LEN_LEN + value.len(),
-                CellValue::OutOfLine(_) => ValuePointer::ENCODED_LEN,
+                CellValue::OutOfLine(_) | CellValue::Pending(_) => ValuePlace::ENCODED_LEN,
             },
         };
         1 + SlotId::ENCODED_LEN + fields
@@ -427,6 +429,9 @@ impl<'a> Delta<'a> {
                     out.extend_from_slice(value);
                 }
                 CellValue::OutOfLine(pointer) => out.extend_from_slice(&pointer.encode()),
+                CellValue::Pending(pending) => {
+                    out.extend_from_slice(&ValuePlace::Pending(pending).encode());
+                }
             },
         }
         Ok(())
@@ -649,7 +654,10 @@ impl<'a> Reader<'a> {
             }
             Kind::ValuePointer => Delta::Value {
                 slot,
-                value: CellValue::OutOfLine(ValuePointer::decode(*self.array()?)?),
+                value: match ValuePlace::decode(*self.array()?)? {
+                    ValuePlace::Placed(pointer) => CellValue::OutOfLine(pointer),
+                    ValuePlace::Pending(pending) => CellValue::Pending(pending),
+                },
             },
         }))
     }

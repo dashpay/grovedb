@@ -74,8 +74,8 @@ A leaf slot is 5 bytes:
 | 4 | 1 | flags. Bit 0: the value is out of line. Bits 1 to 7 are reserved. |
 
 A leaf cell is the key suffix (`key_len` bytes) followed by the value bytes
-(the rest of the cell). For a value out of line they are the 16 bytes of a
-value pointer (P5).
+(the rest of the cell). For a value out of line they are the 16 bytes of
+its place: a value pointer, or a pending value (P5, P15).
 
 A branch slot is 2 bytes: `end`, as above. A branch cell is the separator's
 suffix followed by a 4-byte child page id, so it is at least 4 bytes.
@@ -150,14 +150,15 @@ depends only on the tree's content, so that equal histories give equal bytes
 (B9).
 
 **P5. A leaf value is inline or out of line.** If bit 0 of the flags is 0, the
-value bytes are the value, and it may be empty. If it is 1, they are a
-pointer to a value stored in the value log: the 16 bytes of the value
-pointer that FMT-07 defines (section 4 of `value-log-format.md`), and
-nothing else. An out-of-line value of another length, or one whose 16 bytes
-are not a valid pointer, is damage, and a reader rejects it. The page checks
-the pointer's own rules (a file id, an offset a value can start at, a length
-of at least 1). Whether the pointer leads to a value is the value log's to
-say.
+value bytes are the value, and it may be empty. If it is 1, they are the
+place of a value stored outside the page: the 16 bytes that FMT-07 defines
+(section 4 of `value-log-format.md`), and nothing else. They are a value
+pointer, or, with the reserved file id, a pending value (P15). An
+out-of-line value of another length, or one whose 16 bytes are neither, is
+damage, and a reader rejects it. The page checks the place's own rules: for
+a pointer a file id, an offset a value can start at and a length of at
+least 1; for a pending value an id that is not zero and a length of at
+least 1. Whether a pointer leads to a value is the value log's to say.
 
 **P6. A branch with *n* separators has *n* + 1 children.** Child 0 is the
 first child, in the header. Child *i* + 1 is stored with separator *i*. Every
@@ -233,6 +234,27 @@ whether the id is the one the reader asked for is the reader's comparison,
 because `decode` is not told which page it was asked for. Writing a page
 under another id is a new image, as every change to a flat page is (P11).
 
+**P15. An out-of-line value may be pending, but not in an image a segment
+makes durable.** A value that is not in the value log yet is a place that
+names no file: the reserved file id, `ff ff ff ff`, then the 8 bytes that
+identify the pending value, then the value length (P7 of
+`value-log-format.md`). The decoder and the leaf builder accept it wherever
+they accept a pointer. The 8 bytes are the log format's and mean nothing
+to a page, except that all zero is no id. So a reader of a leaf tells
+three cases apart: the value in the page, a placed value and a pending
+one. `FlatValue::OutOfLine` holds the 16 bytes for the last two,
+`FlatValue::is_pending` says which it is from the file id alone, and
+`ValuePlace::decode` gives the fields.
+
+A leaf with a pending value may stand in a buffer and in a log record. No
+leaf image written to a segment has one: the flusher places the values
+first, and placing builds a new image, as every change to a flat page does
+(P11), which differs from the old one in the 12 bytes of the place.
+`FlatLeaf::has_pending_value` and `FlatPage::has_pending_value` say whether
+an image has one; whoever writes a leaf to a segment asks (STORE-06,
+TREE-07) and the invariant checker checks (VER-07). The format does not
+refuse it, because the same image is valid in a log and in a buffer.
+
 ## 4. Reading a page
 
 `FlatPage::decode` reads the image at the start of a byte string and ignores
@@ -255,9 +277,10 @@ what follows, so it can be given a whole frame. It checks, in this order:
        child id (branch): else `FlatPage(InvalidSlot)`
     2. leaf: the reserved flag bits are 0: else `NonZeroReserved`
     3. leaf, value out of line: the value bytes are 16 bytes long: else
-       `FlatPage(PointerLength)`; and they are a valid value pointer: else
-       the error `ValuePointer::decode` gives, which is `MissingId`,
-       `ValueLog(InvalidOffset)` or `ValueLog(EmptyValue)`
+       `FlatPage(PointerLength)`; and they are a valid place, a value
+       pointer or a pending value: else the error `ValuePlace::decode`
+       gives, which is `MissingId` (no file id, or a pending value with no
+       id), `ValueLog(InvalidOffset)` or `ValueLog(EmptyValue)`
     4. branch: the child is not 0: else `MissingId`
     5. its key is greater than the previous slot's: else
        `FlatPage(KeysOutOfOrder)`
@@ -306,9 +329,9 @@ ascending key order.
 
 - A key that does not start with the prefix is refused (`KeyOutsidePrefix`),
   and so is one that is not greater than the last (`KeysOutOfOrder`).
-- An out-of-line value that is not a value pointer is refused, with the
-  errors of step 10.3 of section 4, so a builder writes no image that a
-  reader rejects.
+- An out-of-line value that is neither a value pointer nor a pending value
+  is refused, with the errors of step 10.3 of section 4, so a builder
+  writes no image that a reader rejects.
 - An entry that would take the image past the capacity is refused with
   `PageFull`, and the builder is unchanged. This is how a caller finds where a
   page ends and the next begins.
@@ -368,7 +391,9 @@ owner can overrule one before TREE-07 and FMT-05 build on it.
    reader checks it, and so does a builder. `FlatValue::OutOfLine` still
    holds the 16 bytes as they are in the page, so the accessors of a page
    borrowed with `from_validated` stay total; a caller that wants the fields
-   passes them to `ValuePointer::decode`.
+   passes them to `ValuePlace::decode`, which reads a pointer and a pending
+   value (P15), or to `ValuePointer::decode` when only a placed value will
+   do.
 6. **Offsets are 16 bits, so an image is at most 65,535 bytes** (P10). The
    page size itself is not fixed here: the builders take it as a parameter,
    and any value up to 65,535 that has room for the header and the prefix
@@ -423,6 +448,7 @@ All of this is in `lignin-format::flat_page`. Run the tests with
 | P14 | the builders, `FlatPage::id`, `FlatLeaf::id`, `FlatBranch::id` | The golden bytes hold four different ids, the smallest and one that shows the byte order among them. Every random page of the round trip has an id of its own, the smallest and the largest among them, read back by `decode` and by `from_validated` and found at offset 4. `the_header_is_checked_in_order`: an id of 0 is `MissingId` in a leaf and in a branch, from `decode` and from `from_validated`, after the kind, the level and a branch's header length and before the first child and the directory. |
 | Round trip (P11, B8) | the builders, `FlatLeaf`, `FlatBranch` | 2,000 random pages: content to bytes to content, and bytes to content to bytes. 80,000 images with a bit flipped or bytes changed decode only to content that encodes back to the same bytes. |
 | P5 | `FlatPage::decode`, `FlatLeafBuilder` | `an_out_of_line_value_is_a_value_pointer`: 15, 17, 1 and 0 bytes; no file id; an offset below 20 and one above 2^63 − 1; a length of 0. Each is rejected with its error, before the key order is looked at and after the reserved bits, and the builder refuses the same values and is unchanged. The same bytes are accepted as an inline value. |
+| P15 | `FlatPage::decode`, `FlatLeafBuilder`, `FlatValue::is_pending`, `FlatLeaf::has_pending_value`, `FlatPage::has_pending_value` | `a_pending_value_stands_where_a_pointer_does`: a leaf with a pending value, written out by hand; the decoder and the builder accept it; the same 16 bytes as a value in the page are not pending; the leaf with the value placed differs in the 12 bytes of the place only and has no pending value; a pending value with no id or no length is rejected by the decoder and refused by the builder, which stays unchanged; a branch and an empty leaf have none. `tests/flat_page_alloc.rs`: a leaf with 40 pending values is read, and asked whether it has one, with no allocation. |
 | P12 | `segment::Block`, `FlatPage::decode` | `the_block_that_holds_an_image_detects_every_changed_bit`: every single-bit flip of a raw and of an LZ4 block that holds a flat page image is rejected by the block. Of the same flips made in the image alone, more than a thousand decode as a page, which is why the block's checksum is what detects damage. |
 | P1 to P4, section 4.1 | `FlatLeaf::search`, `FlatLeaf::get`, `FlatKey` | Search agrees with a sorted model for keys in the page, next to them, shorter than the prefix and outside it. Keys compare by their bytes wherever the prefix ends. |
 | P6 | `FlatBranch::child_index`, `FlatBranch::child_for` | Routing agrees with a model for the same probes. |

@@ -302,7 +302,11 @@ one. A file id is never reused, even after its file is deleted (format.md
 3.3), and this field is what remembers the ids of deleted files.
 
 **M8. Every id in the manifest is at most the last id of its kind.** A store
-gives a new file a higher id than the last one.
+gives a new file a higher id than the last one. No id in a manifest is the
+reserved file id (3.3 of `format.md`), which names no file: a last id, the
+checkpoint's file or an entry's id that holds it is `ReservedFileId`, so the
+largest last id is 2^32 − 2 and a store that has reached it creates no more
+files of that kind.
 
 ### 3.4 Page-table checkpoint
 
@@ -380,9 +384,12 @@ kind at once.
    1. its length is 40 bytes and a whole number of entries (M5): else
       `ManifestError::LengthMismatch`
    2. the page size (M17): else `ManifestError::InvalidPageSize`
-   3. the checkpoint (M10, M11)
-   4. each entry, in order (3.5)
-   5. the number of entries, their order, and each id, the checkpoint's
+   3. no last id, and not the checkpoint's file, is the reserved file id
+      (M8): else `ReservedFileId`
+   4. the checkpoint (M10, M11)
+   5. each entry, in order (3.5), its id not the reserved one: else
+      `ReservedFileId`
+   6. the number of entries, their order, and each id, the checkpoint's
       included, against the last id of its kind (M6, M12, M8)
 
 Every rule of this section is checked, so a manifest has exactly one encoding

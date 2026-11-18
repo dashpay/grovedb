@@ -5,9 +5,9 @@ use crate::{
         tests::{
             address, example, frame_of,
             model::{ModelCell, ModelLink, ModelPage, ModelValue, Rng},
-            open, page_id, pointer, slot, view, SIZES, V1,
+            open, page_id, pending, pointer, slot, view, SIZES, V1,
         },
-        CellField, Hash, HashField, Side, TreePage, TreePageError, TreePageMut,
+        CellField, CellValue, Hash, HashField, Side, TreePage, TreePageError, TreePageMut,
     },
     value_log::ValueLogError,
     CellAddress,
@@ -264,7 +264,16 @@ impl Op {
                 };
                 Self::Feature(raw, rng.bytes(len))
             }
-            _ => Self::Value(raw, rng.value(max_inline)),
+            // A value that is waiting for its place gets it half of the
+            // time: record 21 as write-back writes it.
+            _ => match old.map(|old| &old.value) {
+                Some(ModelValue::Pending(waiting)) if rng.chance(50) => {
+                    let place = rng.pointer();
+                    let place = pointer(place.file().get(), place.offset(), waiting.value_len());
+                    Self::Value(raw, ModelValue::OutOfLine(place))
+                }
+                _ => Self::Value(raw, rng.value(max_inline)),
+            },
         }
     }
 }

@@ -4,7 +4,7 @@ use super::*;
 use crate::{
     flat_page::FlatPageKind,
     test_util::SplitMix64,
-    value_log::{ValueLogError, ValuePointer},
+    value_log::{PendingValue, ValueLogError, ValuePlace, ValuePointer},
     CellAddress, FileId, FormatError, FormatVersion, PageId,
 };
 
@@ -39,6 +39,10 @@ pub(crate) fn address(page: u32, raw_slot: u16) -> CellAddress {
 
 pub(crate) fn pointer(file: u32, offset: u64, value_len: u32) -> ValuePointer {
     ValuePointer::new(FileId::new(file).expect("non-zero"), offset, value_len).expect("valid")
+}
+
+pub(crate) fn pending(id: u64, value_len: u32) -> PendingValue {
+    PendingValue::new(id.to_le_bytes(), value_len).expect("valid")
 }
 
 fn tree_page_error(error: FormatError) -> TreePageError {

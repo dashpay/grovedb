@@ -293,7 +293,9 @@ and a list of counts has one way of being split into records (B8). A record
 with more is `TableError::LengthMismatch`.
 
 **P16. A count names its file, and its reserved bits are 0.** A file id of
-0 is `MissingId`, and a reserved bit that is set is `NonZeroReserved`. The
+0 is `MissingId`, the reserved file id is `ReservedFileId` (3.3 of
+`format.md`; the same holds for the file of a link and of the place in the
+log), and a reserved bit that is set is `NonZeroReserved`. The
 two numbers can be anything: whether a count is one a file can have is for
 the value log to say when it takes the sample back.
 

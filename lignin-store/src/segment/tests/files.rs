@@ -48,25 +48,31 @@ fn an_id_is_padded_to_eight_digits_and_written_in_full_above_that() {
     assert_eq!(names.file_name(id(1)), "00000001.seg");
     assert_eq!(names.file_name(id(99_999_999)), "99999999.seg");
     assert_eq!(names.file_name(id(100_000_000)), "100000000.seg");
-    assert_eq!(names.file_name(id(u32::MAX)), "4294967295.seg");
+    assert_eq!(names.file_name(FileId::MAX), "4294967294.seg");
 }
 
 #[test]
 fn a_name_parses_to_the_id_that_gives_that_name() {
     let noise = random(4000, 3);
-    let samples = [1, 2, 9, 10, 310, 99_999_999, 100_000_000, u32::MAX - 1]
+    let samples = [1, 2, 9, 10, 310, 99_999_999, 100_000_000, u32::MAX - 2]
         .into_iter()
-        .chain([u32::MAX])
-        .chain(
-            noise
-                .chunks(4)
-                .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()).max(1)),
-        );
+        .chain([FileId::MAX.get()])
+        .chain(noise.chunks(4).map(|chunk| {
+            u32::from_le_bytes(chunk.try_into().unwrap()).clamp(1, FileId::MAX.get())
+        }));
     for raw in samples {
         for names in ALL {
             let name = names.file_name(id(raw));
             assert_eq!(names.parse(OsStr::new(&name)), Some(id(raw)), "{name}");
         }
+    }
+    // The reserved id names no file, so the name it would give is not the
+    // name of a file of the store.
+    for names in ALL {
+        let last = names.file_name(FileId::MAX);
+        let reserved = last.replace("4294967294", "4294967295");
+        assert_ne!(reserved, last);
+        assert_eq!(names.parse(OsStr::new(&reserved)), None, "{reserved}");
     }
 }
 

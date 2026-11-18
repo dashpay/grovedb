@@ -69,9 +69,20 @@ impl Rng {
         }
     }
 
+    pub(crate) fn pending(&mut self) -> PendingValue {
+        let id = match self.below(8) {
+            0 => 1,
+            1 => u64::MAX,
+            2 => 1 << 63,
+            _ => self.0.next_u64() | 1 << self.below(64),
+        };
+        pending(id, 1 + self.0.next_u64() as u32 % 100_000)
+    }
+
     pub(crate) fn value(&mut self, max_inline: usize) -> ModelValue {
         match self.below(10) {
-            0..=3 => ModelValue::OutOfLine(self.pointer()),
+            0 | 1 => ModelValue::OutOfLine(self.pointer()),
+            2 | 3 => ModelValue::Pending(self.pending()),
             4 => ModelValue::Inline(Vec::new()),
             5 => {
                 let len = self.below(max_inline + 1);
@@ -157,6 +168,7 @@ impl ModelLink {
 pub(crate) enum ModelValue {
     Inline(Vec<u8>),
     OutOfLine(ValuePointer),
+    Pending(PendingValue),
 }
 
 impl ModelValue {
@@ -164,6 +176,7 @@ impl ModelValue {
         match self {
             Self::Inline(value) => CellValue::Inline(value),
             Self::OutOfLine(pointer) => CellValue::OutOfLine(*pointer),
+            Self::Pending(pending) => CellValue::Pending(*pending),
         }
     }
 
@@ -171,6 +184,7 @@ impl ModelValue {
         match value {
             CellValue::Inline(value) => Self::Inline(value.to_vec()),
             CellValue::OutOfLine(pointer) => Self::OutOfLine(pointer),
+            CellValue::Pending(pending) => Self::Pending(pending),
         }
     }
 
@@ -178,6 +192,7 @@ impl ModelValue {
         match self {
             Self::Inline(value) => value.len() as u32,
             Self::OutOfLine(pointer) => pointer.value_len(),
+            Self::Pending(pending) => pending.value_len(),
         }
     }
 }
@@ -279,7 +294,7 @@ impl ModelCell {
         if self.right.is_some() {
             flags |= 2;
         }
-        if matches!(self.value, ModelValue::OutOfLine(_)) {
+        if !matches!(self.value, ModelValue::Inline(_)) {
             flags |= 4;
         }
         if self.fragment_root {
@@ -314,6 +329,10 @@ impl ModelCell {
                 out.extend(pointer.file().get().to_le_bytes());
                 out.extend(pointer.offset().to_le_bytes());
             }
+            ModelValue::Pending(pending) => {
+                out.extend([0xFF; 4]);
+                out.extend(pending.id());
+            }
         }
         out
     }
@@ -330,10 +349,28 @@ impl ModelCell {
         assert_eq!(cell.encoded_len(), bytes.len());
         assert_eq!(self.content().encoded_len(), bytes.len());
         assert_eq!(cell.value_len(), self.value.value_len());
-        assert_eq!(cell.value_pointer(), self.value.value().pointer());
+        let (pointer, pending) = match &self.value {
+            ModelValue::Inline(_) => (None, None),
+            ModelValue::OutOfLine(pointer) => (Some(*pointer), None),
+            ModelValue::Pending(pending) => (None, Some(*pending)),
+        };
+        assert_eq!(cell.value_pointer(), pointer);
+        assert_eq!(cell.pending_value(), pending);
+        assert_eq!(cell.value().pointer(), pointer);
+        assert_eq!(cell.value().pending(), pending);
+        assert_eq!(
+            cell.value_place(),
+            pointer
+                .map(ValuePlace::Placed)
+                .or(pending.map(ValuePlace::Pending))
+        );
+        assert_eq!(cell.value().place(), cell.value_place());
         let value = self.value.value();
         assert_eq!(cell.value().inline(), value.inline());
-        assert_eq!(cell.value().is_inline(), value.pointer().is_none());
+        assert_eq!(
+            cell.value().is_inline(),
+            pointer.is_none() && pending.is_none()
+        );
         assert_eq!(cell.value().stored_len(), value.stored_len());
         let count = self.hosted.len();
         assert_eq!(cell.hosted_root_count(), count);
@@ -479,6 +516,17 @@ impl ModelPage {
             .map(|(&raw, _)| raw)
             .collect();
         assert_eq!(roots, marked);
+
+        let waiting: Vec<(SlotId, PendingValue)> = self
+            .cells
+            .iter()
+            .filter_map(|(&raw, cell)| match cell.value {
+                ModelValue::Pending(pending) => Some((slot(raw), pending)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(page.pending_values().collect::<Vec<_>>(), waiting);
+        assert_eq!(page.has_pending_value(), !waiting.is_empty());
 
         let image = page.to_image();
         assert_eq!(image, self.assemble());

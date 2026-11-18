@@ -125,14 +125,14 @@ impl FileHeader {
 
     /// A header for a file of `kind` written in format `version`.
     ///
-    /// `sequence` is the file's [`FileId`] for a numbered kind and must not be
-    /// zero there.
+    /// `sequence` is the file's [`FileId`] for a numbered kind and must be
+    /// one there: not zero, and not [`FileId::RESERVED`].
     pub const fn new(
         kind: FileKind,
         version: FormatVersion,
         sequence: u32,
     ) -> Result<Self, FormatError> {
-        if kind.is_numbered() && sequence == 0 {
+        if kind.is_numbered() && FileId::new(sequence).is_none() {
             return Err(FormatError::InvalidFileSequence { kind });
         }
         Ok(Self {
@@ -439,7 +439,7 @@ mod tests {
     #[test]
     fn file_header_round_trips() {
         let mut rng = SplitMix64::new(0xF11E);
-        let sequences: Vec<u32> = [0, 1, 2, 99_999_999, 100_000_000, u32::MAX]
+        let sequences: Vec<u32> = [0, 1, 2, 99_999_999, 100_000_000, u32::MAX - 1, u32::MAX]
             .into_iter()
             .chain((0..2_000).map(|_| rng.next_u64() as u32))
             .collect();
@@ -449,7 +449,7 @@ mod tests {
                     Ok(header) => header,
                     Err(error) => {
                         assert_eq!(error, FormatError::InvalidFileSequence { kind });
-                        assert!(kind.is_numbered() && sequence == 0);
+                        assert!(kind.is_numbered() && [0, u32::MAX].contains(&sequence));
                         continue;
                     }
                 };
@@ -628,24 +628,32 @@ mod tests {
     }
 
     #[test]
-    fn file_header_rejects_a_numbered_file_with_sequence_zero() {
+    fn file_header_rejects_a_numbered_file_whose_sequence_is_no_file_id() {
         for kind in FileKind::ALL.into_iter().filter(|kind| kind.is_numbered()) {
-            assert_eq!(
-                FileHeader::new(kind, FormatVersion::V1, 0),
-                Err(FormatError::InvalidFileSequence { kind })
-            );
-            let mut bytes = FileHeader::new(kind, FormatVersion::V1, 1)
-                .expect("valid")
-                .encode();
-            bytes[12..16].copy_from_slice(&[0; 4]);
-            assert_eq!(
-                FileHeader::decode(&with_checksum(bytes)),
-                Err(FormatError::InvalidFileSequence { kind })
-            );
+            for no_id in [0, FileId::RESERVED] {
+                assert_eq!(
+                    FileHeader::new(kind, FormatVersion::V1, no_id),
+                    Err(FormatError::InvalidFileSequence { kind })
+                );
+                let mut bytes = FileHeader::new(kind, FormatVersion::V1, 1)
+                    .expect("valid")
+                    .encode();
+                bytes[12..16].copy_from_slice(&no_id.to_le_bytes());
+                assert_eq!(
+                    FileHeader::decode(&with_checksum(bytes)),
+                    Err(FormatError::InvalidFileSequence { kind })
+                );
+            }
+            let last = FileHeader::new(kind, FormatVersion::V1, FileId::MAX.get()).expect("valid");
+            assert_eq!(last.file_id(), Some(FileId::MAX));
+            assert_eq!(FileHeader::decode(&last.encode()), Ok(last));
         }
-        let manifest = FileHeader::new(FileKind::Manifest, FormatVersion::V1, 0).expect("valid");
-        assert_eq!(manifest.file_id(), None);
-        assert_eq!(FileHeader::decode(&manifest.encode()), Ok(manifest));
+        for sequence in [0, FileId::RESERVED] {
+            let manifest =
+                FileHeader::new(FileKind::Manifest, FormatVersion::V1, sequence).expect("valid");
+            assert_eq!(manifest.file_id(), None);
+            assert_eq!(FileHeader::decode(&manifest.encode()), Ok(manifest));
+        }
     }
 
     #[test]

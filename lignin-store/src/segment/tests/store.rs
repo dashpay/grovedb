@@ -1536,9 +1536,10 @@ fn no_manifest_records_the_id_of_a_creation_that_failed_and_a_later_session_uses
 #[test]
 fn segment_ids_run_out_at_the_largest_one() {
     let db = Db::with_manifest(
-        manifest_of([0, u32::MAX - 1, 0, 0], None, Vec::new()),
+        manifest_of([0, FileId::MAX.get() - 1, 0, 0], None, Vec::new()),
         |_| {},
     );
+    assert_eq!(FileId::MAX.get(), u32::MAX - 1);
     assert_eq!(db.segments.create().unwrap().file_id(), FileId::MAX);
     for _ in 0..2 {
         assert!(matches!(
@@ -1546,7 +1547,7 @@ fn segment_ids_run_out_at_the_largest_one() {
             SegmentStoreError::FileIdsExhausted
         ));
     }
-    assert_eq!(names(&db.seg_dir()), ["4294967295.seg"]);
+    assert_eq!(names(&db.seg_dir()), ["4294967294.seg"]);
 }
 
 #[test]

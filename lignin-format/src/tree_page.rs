@@ -31,7 +31,8 @@
 //!   then        the hosted-root pointers, 6 bytes each: a cell address or 0
 //!   then        the feature, the key
 //!   then        the value, or for a value out of line 12 bytes: the file id
-//!               and the offset of its value pointer
+//!               and the offset of its value pointer, or the reserved file id
+//!               and the id of a value that is not in the value log yet
 //! ```
 //!
 //! ```text

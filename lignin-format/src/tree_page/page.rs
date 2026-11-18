@@ -7,7 +7,7 @@ use crate::{
     error::FormatError,
     header::FormatVersion,
     ids::{CellAddress, PageId, SlotId},
-    value_log::ValuePointer,
+    value_log::{PendingValue, ValuePointer},
 };
 
 const RESERVED_AT: usize = 1;
@@ -413,7 +413,7 @@ impl<'a> TreePage<'a> {
     }
 
     #[cfg(test)]
-    pub(super) fn cell_range(&self, slot: SlotId) -> Option<Range<usize>> {
+    pub(crate) fn cell_range(&self, slot: SlotId) -> Option<Range<usize>> {
         let offset = slot_offset(self.bytes, slot.index());
         Some(offset..offset + self.cell(slot)?.encoded_len())
     }
@@ -452,6 +452,23 @@ impl<'a> TreePage<'a> {
         self.cells()
             .find(|(_, cell)| cell.value_pointer().as_ref() == Some(pointer))
             .map(|(slot, _)| slot)
+    }
+
+    /// The cells whose value is out of line and not in the value log yet,
+    /// each with its slot, in slot order.
+    pub fn pending_values(&self) -> impl Iterator<Item = (SlotId, PendingValue)> + use<'a> {
+        self.cells()
+            .filter_map(|(slot, cell)| Some((slot, cell.pending_value()?)))
+    }
+
+    /// Whether a cell of the page has a pending value.
+    ///
+    /// A page version that a segment makes durable has none: not a base
+    /// image, and not the page at the end of a run of deltas (PD16 of
+    /// `docs/lignindb/page-delta.md`). Whoever writes a page to a segment
+    /// asks this of the page as it is after the last change it writes.
+    pub fn has_pending_value(&self) -> bool {
+        self.pending_values().next().is_some()
     }
 
     /// Appends the page's image to `out`: the header, the slot directory,

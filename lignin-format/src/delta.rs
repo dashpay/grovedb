@@ -29,7 +29,8 @@
 //!                                                           4 + 6 for each
 //!   19  feature                slot, length (1), the feature     4 + feature
 //!   20  value                  slot, length (2), the value         5 + value
-//!   21  value pointer          slot, the value pointer (16)               19
+//!   21  value pointer          slot, the value's place (16): a pointer,   19
+//!                              or a pending value
 //! ```
 //!
 //! A link in a record is the child's cell address (6), the child's hash

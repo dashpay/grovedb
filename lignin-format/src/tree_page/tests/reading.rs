@@ -283,7 +283,16 @@ mod at {
 
 #[test]
 fn each_check_of_a_cell_has_its_error() {
-    let cases: [(&[(usize, u8)], FormatError); 11] = [
+    let reserved = [0, 1, 2, 3].map(|byte| (at::LOCATION + byte, 0xFF));
+    let no_id: Vec<(usize, u8)> = (0..12)
+        .map(|byte| (at::LOCATION + byte, if byte < 4 { 0xFF } else { 0 }))
+        .collect();
+    let empty = [
+        reserved.as_slice(),
+        &[(at::VALUE_LEN, 0), (at::VALUE_LEN + 1, 0)],
+    ]
+    .concat();
+    let cases: [(&[(usize, u8)], FormatError); 13] = [
         (&[(at::FLAGS, 0x1D)], FormatError::NonZeroReserved),
         (&[(at::FLAGS, 0x8D)], FormatError::NonZeroReserved),
         // The left child's page id, then its slot.
@@ -312,7 +321,21 @@ fn each_check_of_a_cell_has_its_error() {
             &[(at::VALUE_LEN, 0), (at::VALUE_LEN + 1, 0)],
             ValueLogError::EmptyValue.into(),
         ),
+        // A pending value: no id, no length.
+        (&no_id, FormatError::MissingId),
+        (&empty, ValueLogError::EmptyValue.into()),
     ];
+    // The reserved file id alone makes the value of slot 1 pending: its
+    // offset becomes its id.
+    let mut waiting = image();
+    for (at, byte) in reserved {
+        waiting[at] = byte;
+    }
+    let cell = decode(&waiting)
+        .expect("valid")
+        .cell(slot(1))
+        .expect("a cell");
+    assert!(cell.pending_value().is_some() && cell.value_pointer().is_none());
     for (changes, error) in cases {
         let mut bytes = image();
         for &(at, byte) in changes {
@@ -328,6 +351,131 @@ fn each_check_of_a_cell_has_its_error() {
         let cell = &bytes[SLOT_1_AT..SLOT_3_AT];
         assert_eq!(TreeCell::decode(cell, V1).expect_err("damaged"), error);
     }
+}
+
+/// A cell whose value is not in the value log yet has the bytes of one
+/// whose value is, but for the twelve bytes of the place: the reserved file
+/// id and the eight bytes of the pending value's id.
+#[test]
+fn a_pending_value_stands_where_the_pointer_will_be() {
+    let waiting = pending(0x0102_0304_0506_0708, 300);
+    let place = pointer(12, 20, 300);
+    let cell_with = |value: ModelValue| ModelCell {
+        value,
+        ..ModelCell::leaf(b"key", b"")
+    };
+    let pending_cell = cell_with(ModelValue::Pending(waiting));
+    let placed_cell = cell_with(ModelValue::OutOfLine(place));
+
+    // Written by hand: flags (bit 2, out of line), key length 3, no
+    // feature, no hosted root, value length 300, two hashes, the key, the
+    // place.
+    let mut golden = vec![0x04, 3, 0, 0, 0x2C, 0x01, 0, 0];
+    golden.extend(pending_cell.value_hash);
+    golden.extend(pending_cell.kv_hash);
+    golden.extend(b"key");
+    golden.extend([0xFF, 0xFF, 0xFF, 0xFF, 8, 7, 6, 5, 4, 3, 2, 1]);
+    let bytes = pending_cell.content().encode().expect("valid");
+    assert_eq!(bytes, golden);
+    assert_eq!(bytes.len(), 8 + 64 + 3 + 12);
+
+    let cell = TreeCell::decode(&bytes, V1).expect("valid");
+    pending_cell.assert_is(cell);
+    assert_eq!(cell.value(), CellValue::Pending(waiting));
+    assert_eq!(cell.pending_value(), Some(waiting));
+    assert_eq!(cell.value_place(), Some(ValuePlace::Pending(waiting)));
+    assert_eq!(cell.value_pointer(), None);
+    assert_eq!(cell.value_len(), 300);
+    assert!(!cell.value().is_inline());
+    assert_eq!(cell.value().stored_len(), TreeCell::VALUE_LOCATION_LEN);
+    assert_eq!(cell.value().inline(), None);
+
+    // The placed cell differs in those twelve bytes and in no other.
+    let placed = placed_cell.content().encode().expect("valid");
+    assert_eq!(placed.len(), bytes.len());
+    assert_eq!(placed[..75], bytes[..75]);
+    assert_eq!(placed[75..], [12, 0, 0, 0, 20, 0, 0, 0, 0, 0, 0, 0]);
+    let cell = TreeCell::decode(&placed, V1).expect("valid");
+    assert_eq!(cell.value(), CellValue::OutOfLine(place));
+    assert_eq!(cell.value_place(), Some(ValuePlace::Placed(place)));
+    assert_eq!(cell.pending_value(), None);
+
+    // An id of zero is no id, and a pending value is not empty. A value
+    // in the cell is neither placed nor pending.
+    let mut no_id = bytes.clone();
+    no_id[79..].fill(0);
+    assert_eq!(
+        TreeCell::decode(&no_id, V1).expect_err("no id"),
+        FormatError::MissingId
+    );
+    let mut empty = bytes.clone();
+    empty[4..8].fill(0);
+    assert_eq!(
+        TreeCell::decode(&empty, V1).expect_err("empty"),
+        ValueLogError::EmptyValue.into()
+    );
+    let mut both = no_id.clone();
+    both[4..8].fill(0);
+    assert_eq!(
+        TreeCell::decode(&both, V1).expect_err("no id"),
+        FormatError::MissingId
+    );
+    let inline = cell_with(ModelValue::Inline(bytes[75..].to_vec()));
+    let inline = inline.content().encode().expect("valid");
+    let cell = TreeCell::decode(&inline, V1).expect("valid");
+    assert_eq!(cell.value(), CellValue::Inline(&bytes[75..]));
+    assert_eq!((cell.value_place(), cell.pending_value()), (None, None));
+
+    // The largest pending cell is the largest cell with a value out of
+    // line, and an id is not an offset: every bit may be set.
+    let last = pending(u64::MAX, u32::MAX);
+    let cell = cell_with(ModelValue::Pending(last));
+    let bytes = cell.content().encode().expect("valid");
+    cell.assert_is(TreeCell::decode(&bytes, V1).expect("valid"));
+}
+
+/// A page says which of its cells wait for their value's place, and a
+/// pending value is never found as a pointer.
+#[test]
+fn a_page_lists_the_cells_whose_value_is_pending() {
+    let mut model = ModelPage::new(8, 0);
+    let values = [
+        ModelValue::OutOfLine(pointer(3, 20, 500)),
+        ModelValue::Pending(pending(1, 500)),
+        ModelValue::Inline(vec![0xFF; 16]),
+        ModelValue::Pending(pending(20, 500)),
+        ModelValue::Inline(Vec::new()),
+    ];
+    for (index, value) in values.iter().enumerate() {
+        let mut cell = ModelCell::leaf(&[index as u8], b"");
+        cell.value = value.clone();
+        model.cells.insert(2 * index as u16 + 1, cell);
+    }
+    let image = model.assemble();
+    let page = decode(&image).expect("valid");
+    assert!(page.has_pending_value());
+    assert_eq!(
+        page.pending_values().collect::<Vec<_>>(),
+        [(slot(3), pending(1, 500)), (slot(7), pending(20, 500))]
+    );
+    // The pending value with id 20 is not the value at offset 20 of a file.
+    for file in [1, 3, u32::MAX - 1] {
+        assert_eq!(
+            page.find_value_pointer(&pointer(file, 20, 500)),
+            (file == 3).then(|| slot(1))
+        );
+    }
+    model.assert_is(page, PageSize::DEFAULT);
+
+    // Without them the page has none, and so has an empty page.
+    model.cells.remove(&3);
+    model.cells.remove(&7);
+    let image = model.assemble();
+    let page = decode(&image).expect("valid");
+    assert!(!page.has_pending_value());
+    assert_eq!(page.pending_values().next(), None);
+    let empty = ModelPage::new(8, 0).assemble();
+    assert!(!view(&empty).has_pending_value());
 }
 
 #[test]
@@ -533,7 +681,7 @@ fn a_part_longer_than_its_length_field_is_refused() {
             aggregate: longest.clone(),
         });
     }
-    cell.value = ModelValue::OutOfLine(pointer(u32::MAX, i64::MAX as u64, u32::MAX));
+    cell.value = ModelValue::OutOfLine(pointer(u32::MAX - 1, i64::MAX as u64, u32::MAX));
     let bytes = cell.content().encode().expect("valid");
     assert_eq!(bytes.len(), TreeCell::MAX_OUT_OF_LINE_LEN);
     cell.assert_is(TreeCell::decode(&bytes, V1).expect("valid"));
@@ -1049,7 +1197,7 @@ fn a_hash_is_read_from_bytes_that_are_not_the_key_or_the_value() {
             let key_start = value_start - cell.key().len();
             let end = match cell.value() {
                 CellValue::Inline(_) => value_end,
-                CellValue::OutOfLine(_) => value_start,
+                CellValue::OutOfLine(_) | CellValue::Pending(_) => value_start,
             };
             for byte in &mut scrambled[start + key_start..start + end] {
                 *byte = !*byte;

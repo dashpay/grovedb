@@ -253,6 +253,30 @@ fn each_check_of_a_record_has_its_error() {
         refused(&install(13, 64, 0)),
         ValueLogError::EmptyValue.into()
     );
+
+    // The same record with the reserved file id carries a pending value:
+    // the eight bytes are its id, which is any number but zero.
+    for id in [1, 19, 64, 1 << 63, u64::MAX] {
+        let bytes = install(u32::MAX, id, 300);
+        let run = decode(&bytes);
+        assert_eq!(
+            run.deltas().next(),
+            Some(Delta::Value {
+                slot: slot(1),
+                value: CellValue::Pending(pending(id, 300)),
+            })
+        );
+    }
+    assert_eq!(refused(&install(u32::MAX, 0, 300)), FormatError::MissingId);
+    assert_eq!(refused(&install(u32::MAX, 0, 0)), FormatError::MissingId);
+    assert_eq!(
+        refused(&install(u32::MAX, 64, 0)),
+        ValueLogError::EmptyValue.into()
+    );
+    assert_eq!(
+        refused(&install(u32::MAX, 64, 300)[..22]),
+        truncated(23, 22)
+    );
 }
 
 #[test]

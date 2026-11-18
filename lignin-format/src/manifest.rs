@@ -524,12 +524,12 @@ impl Manifest {
             FormatError::Manifest(ManifestError::InvalidPageSize { found: page_size })
         })?;
         let last_file_ids = LastFileIds {
-            wal: FileId::decode(take(&mut fields).ok_or(short)?),
-            segment: FileId::decode(take(&mut fields).ok_or(short)?),
-            value_log: FileId::decode(take(&mut fields).ok_or(short)?),
-            page_table: FileId::decode(take(&mut fields).ok_or(short)?),
+            wal: FileId::decode(take(&mut fields).ok_or(short)?)?,
+            segment: FileId::decode(take(&mut fields).ok_or(short)?)?,
+            value_log: FileId::decode(take(&mut fields).ok_or(short)?)?,
+            page_table: FileId::decode(take(&mut fields).ok_or(short)?)?,
         };
-        let table_file = FileId::decode(take(&mut fields).ok_or(short)?);
+        let table_file = FileId::decode(take(&mut fields).ok_or(short)?)?;
         let table_valid_len = u64::from_le_bytes(take(&mut fields).ok_or(short)?);
         let table_covers = CommitVersion::decode(take(&mut fields).ok_or(short)?);
         let table_checkpoint = match (table_file, table_covers) {
@@ -557,7 +557,7 @@ impl Manifest {
             if reserved != 0 {
                 return Err(FormatError::NonZeroReserved);
             }
-            let id = FileId::decode(id).ok_or(FormatError::MissingId)?;
+            let id = FileId::decode(id)?.ok_or(FormatError::MissingId)?;
             files.push(LiveFile::new(
                 kind,
                 id,
@@ -867,7 +867,7 @@ mod tests {
         for round in 0..2_000 {
             let last = [0; 4].map(|_| match rng.next_u64() % 8 {
                 0 => 0,
-                1 => u32::MAX,
+                1 => FileId::MAX.get(),
                 _ => (rng.next_u64() % 60) as u32,
             });
             let last = last_ids(last);
@@ -1215,7 +1215,25 @@ mod tests {
             ids[at] = last;
             assert_eq!(decode(ids, TABLE), invalid);
         }
-        assert!(decode([u32::MAX; 4], TABLE).is_ok());
+        assert!(decode([FileId::MAX.get(); 4], TABLE).is_ok());
+
+        // The reserved id is no file's: not a last id, not the checkpoint's
+        // file, not a live file.
+        for at in 0..4 {
+            let mut ids = [FileId::MAX.get(); 4];
+            ids[at] = FileId::RESERVED;
+            assert_eq!(decode(ids, TABLE), Err(FormatError::ReservedFileId));
+        }
+        assert_eq!(
+            decode([FileId::MAX.get(); 4], (FileId::RESERVED, 4116, 9000)),
+            Err(FormatError::ReservedFileId)
+        );
+        let mut entries = ENTRIES;
+        entries[4].3 = FileId::RESERVED;
+        assert_eq!(
+            Manifest::decode(&forge(&body([FileId::MAX.get(); 4], TABLE, &entries))),
+            Err(FormatError::ReservedFileId)
+        );
 
         assert!(decode(LAST, NO_TABLE).is_ok());
         assert!(decode([45, 310, 12, 0], NO_TABLE).is_ok());
@@ -1279,7 +1297,7 @@ mod tests {
 
     #[test]
     fn a_manifest_names_at_most_the_stated_number_of_files() {
-        let last = last_ids([0, u32::MAX, 0, 0]);
+        let last = last_ids([0, FileId::MAX.get(), 0, 0]);
         let mut files: Vec<LiveFile> = (1..=MAX_LIVE_FILES as u32 + 1)
             .map(|raw_id| file(FileKind::Segment, raw_id, FileState::Closed, 20))
             .collect();
@@ -1293,7 +1311,7 @@ mod tests {
         let mut entries: Vec<Entry> = (1..=MAX_LIVE_FILES as u32 + 1)
             .map(|raw_id| (3, 2, 0, raw_id, 20))
             .collect();
-        let forged = forge(&body([0, u32::MAX, 0, 0], NO_TABLE, &entries));
+        let forged = forge(&body([0, FileId::MAX.get(), 0, 0], NO_TABLE, &entries));
         assert_eq!(
             Manifest::decode(&forged),
             Err(FormatError::RecordTooLong {
@@ -1307,7 +1325,7 @@ mod tests {
         let manifest = Manifest::new(PAGE_SIZE, last, None, files).expect("fits");
         let bytes = manifest.encode().expect("fits");
         assert_eq!(bytes.len(), Manifest::MAX_ENCODED_LEN);
-        assert!(bytes == forge(&body([0, u32::MAX, 0, 0], NO_TABLE, &entries)));
+        assert!(bytes == forge(&body([0, FileId::MAX.get(), 0, 0], NO_TABLE, &entries)));
         assert!(Manifest::decode(&bytes).as_ref() == Ok(&manifest));
     }
 

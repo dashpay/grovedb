@@ -21,7 +21,7 @@
 
 use std::{cmp::Ordering, fmt, iter::FusedIterator, ops::Range};
 
-use crate::{error::FormatError, header::FormatVersion, ids::PageId, value_log::ValuePointer};
+use crate::{error::FormatError, header::FormatVersion, ids::PageId, value_log::ValuePlace};
 
 const COMMON_HEADER_LEN: usize = 12;
 const LEN_AT: usize = 2;
@@ -112,7 +112,7 @@ impl fmt::Display for FlatPageError {
             Self::PointerLength { slot, len } => write!(
                 f,
                 "out-of-line value {slot} is {len} bytes long, not the {} of a value pointer",
-                ValuePointer::ENCODED_LEN
+                ValuePlace::ENCODED_LEN
             ),
             Self::KeysOutOfOrder { slot } => {
                 write!(f, "key {slot} is not greater than the key before it")
@@ -298,8 +298,9 @@ impl PartialEq<[u8]> for FlatKey<'_> {
 pub enum FlatValue<'a> {
     /// The value itself.
     Inline(&'a [u8]),
-    /// The 16 bytes of a [`ValuePointer`] to a value stored outside the
-    /// page.
+    /// The 16 bytes of the place of a value stored outside the page: a
+    /// value pointer, or what stands for a value that is not in the value
+    /// log yet. [`ValuePlace::decode`] reads them.
     OutOfLine(&'a [u8]),
 }
 
@@ -314,6 +315,15 @@ impl<'a> FlatValue<'a> {
     /// Whether the stored bytes are the value itself.
     pub const fn is_inline(&self) -> bool {
         matches!(self, Self::Inline(_))
+    }
+
+    /// Whether the value is out of line and not in the value log yet: its
+    /// place names no file.
+    pub fn is_pending(&self) -> bool {
+        match self {
+            Self::Inline(_) => false,
+            Self::OutOfLine(place) => ValuePlace::names_no_file(place),
+        }
     }
 
     const fn flags(&self) -> u8 {
@@ -362,7 +372,7 @@ fn check_pointer(bytes: &[u8], slot: usize) -> Result<(), FormatError> {
         }
         .into());
     };
-    ValuePointer::decode(pointer).map(|_| ())
+    ValuePlace::decode(pointer).map(|_| ())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -625,6 +635,15 @@ impl<'a> FlatPage<'a> {
         self.len() == 0
     }
 
+    /// Whether the page is a leaf with a pending value. A branch has no
+    /// values.
+    pub fn has_pending_value(&self) -> bool {
+        match self {
+            Self::Leaf(leaf) => leaf.has_pending_value(),
+            Self::Branch(_) => false,
+        }
+    }
+
     /// The page as a leaf, if it is one.
     pub const fn leaf(self) -> Option<FlatLeaf<'a>> {
         match self {
@@ -699,6 +718,15 @@ impl<'a> FlatLeaf<'a> {
         } else {
             FlatValue::OutOfLine(value)
         })
+    }
+
+    /// Whether an entry of the leaf has a pending value: one that is out of
+    /// line and not in the value log yet.
+    ///
+    /// A leaf image that a segment makes durable has none (P15 of
+    /// `docs/lignindb/flat-page.md`).
+    pub fn has_pending_value(&self) -> bool {
+        (0..self.len()).any(|slot| self.value(slot).is_some_and(|value| value.is_pending()))
     }
 
     /// The key and value at position `slot`.
@@ -987,7 +1015,8 @@ impl FlatLeafBuilder {
 
     /// Adds an entry. `key` is the whole key, prefix included, and must be
     /// greater than the key added before it. An out-of-line value must be
-    /// the 16 bytes of a valid [`ValuePointer`].
+    /// the 16 bytes of a valid [`ValuePlace`]: a value pointer, or a pending
+    /// value.
     ///
     /// On any error the builder is unchanged. [`FlatPageError::PageFull`]
     /// means the entry belongs on another page.
@@ -1116,7 +1145,7 @@ mod tests {
         ids::FileId,
         segment::{self, Block, BlockContent, Compression},
         test_util::SplitMix64,
-        value_log::ValueLogError,
+        value_log::{ValueLogError, ValuePointer},
     };
 
     const V1: FormatVersion = FormatVersion::V1;
@@ -1476,6 +1505,7 @@ mod tests {
             let probes: [&[u8]; 4] = [b"", page.prefix(), &[0xFF; 40], bytes];
             let positions = (0..page.len() + 2).chain([usize::MAX / 5, usize::MAX]);
             assert!(page.as_bytes().len() <= bytes.len());
+            let _ = page.has_pending_value();
             match page {
                 FlatPage::Leaf(leaf) => {
                     for slot in positions {
@@ -2045,7 +2075,7 @@ mod tests {
         );
         for bytes in [
             pointer(1, 20, 1),
-            pointer(u32::MAX, (1 << 63) - 1, u32::MAX),
+            pointer(u32::MAX - 1, (1 << 63) - 1, u32::MAX),
         ] {
             let image = leaf_with([0, 1], b"b", &bytes);
             let value = decode_leaf(&image).get(b"pb").expect("the entry");
@@ -2133,6 +2163,132 @@ mod tests {
             .push(b"pb", FlatValue::OutOfLine(&good))
             .expect("fits");
         assert_eq!(builder.finish(), image);
+    }
+
+    /// The out-of-line value of a leaf entry may be a value that is not in
+    /// the value log yet: the sixteen bytes of a place that names no file.
+    #[test]
+    fn a_pending_value_stands_where_a_pointer_does() {
+        let waiting = pointer(u32::MAX, 0x0102_0304_0506_0708, 70_000);
+        let placed = pointer(3, 20, 70_000);
+        let build = |second: &[u8; 16]| {
+            let mut builder = FlatLeafBuilder::new(page_id(9), b"user/", 4096).expect("fits");
+            builder
+                .push(b"user/alice", FlatValue::Inline(&waiting))
+                .expect("fits");
+            builder
+                .push(b"user/bob", FlatValue::OutOfLine(second))
+                .expect("fits");
+            builder
+                .push(b"user/carol", FlatValue::Inline(b""))
+                .expect("fits");
+            builder.finish()
+        };
+
+        // Written by hand: the header of page 9, the prefix, three slots,
+        // then "alice" with 16 bytes that are its value, "bob" with the
+        // pending place, and "carol".
+        let image = build(&waiting);
+        let golden = "01004d000900000003000500757365722f\
+                      350005000048000300014d00050000\
+                      616c696365ffffffff0807060504030201 70110100\
+                      626f62ffffffff0807060504030201 70110100\
+                      6361726f6c"
+            .replace(' ', "");
+        assert_eq!(hex(&image), golden);
+        assert_eq!(image.len(), 77);
+
+        let page = FlatPage::decode(&image, V1).expect("valid");
+        let leaf = page.leaf().expect("leaf");
+        let value = leaf.get(b"user/bob").expect("the entry");
+        assert_eq!(value, FlatValue::OutOfLine(&waiting));
+        assert!(value.is_pending() && !value.is_inline());
+        let place = ValuePlace::decode(waiting).expect("a place");
+        assert!(place.is_pending());
+        assert_eq!(place.value_len(), 70_000);
+        assert_eq!(
+            ValuePointer::decode(waiting),
+            Err(FormatError::ReservedFileId)
+        );
+        // The same bytes as a value in the page are a value, not a place.
+        let inline = leaf.get(b"user/alice").expect("the entry");
+        assert_eq!(inline, FlatValue::Inline(&waiting));
+        assert!(!inline.is_pending());
+        assert!(!leaf.get(b"user/carol").expect("the entry").is_pending());
+        assert!(leaf.has_pending_value() && page.has_pending_value());
+        assert!(FlatPage::from_validated(&image, V1)
+            .expect("valid")
+            .has_pending_value());
+        assert_encodes_back(page);
+
+        // Placed, the leaf differs in the twelve bytes of the place only,
+        // and no longer has a pending value.
+        let after = build(&placed);
+        assert_eq!(after.len(), image.len());
+        let differing: Vec<usize> = (0..image.len())
+            .filter(|&at| image[at] != after[at])
+            .collect();
+        assert_eq!(differing, (56..68).collect::<Vec<_>>());
+        let page = FlatPage::decode(&after, V1).expect("valid");
+        assert!(!page.has_pending_value());
+        assert!(!page.leaf().expect("leaf").has_pending_value());
+
+        // A branch has no values, and an empty leaf has none pending.
+        let branch = FlatBranchBuilder::new(page_id(3), b"", 4096, 1, page_id(u32::MAX))
+            .expect("fits")
+            .finish();
+        assert!(!FlatPage::decode(&branch, V1)
+            .expect("valid")
+            .has_pending_value());
+        let empty = FlatLeafBuilder::new(page_id(9), b"", 4096)
+            .expect("fits")
+            .finish();
+        assert!(!FlatPage::decode(&empty, V1)
+            .expect("valid")
+            .has_pending_value());
+
+        // A pending value has an id and a length, for the decoder and for
+        // the builder alike.
+        let refused: [([u8; 16], FormatError); 3] = [
+            (pointer(u32::MAX, 0, 70_000), FormatError::MissingId),
+            (pointer(u32::MAX, 0, 0), FormatError::MissingId),
+            (
+                pointer(u32::MAX, 7, 0),
+                FormatError::ValueLog(ValueLogError::EmptyValue),
+            ),
+        ];
+        for (bytes, error) in refused {
+            let mut damaged = image.clone();
+            damaged[56..72].copy_from_slice(&bytes);
+            assert_eq!(decode_error(&damaged), error);
+            let mut builder = FlatLeafBuilder::new(page_id(9), b"user/", 4096).expect("fits");
+            assert_eq!(
+                builder
+                    .push(b"user/bob", FlatValue::OutOfLine(&bytes))
+                    .expect_err("not a place"),
+                error
+            );
+            assert!(builder.is_empty());
+            // Unchecked bytes still say whether they name no file.
+            let unchecked = FlatPage::from_validated(&damaged, V1).expect("a valid header");
+            assert!(unchecked.has_pending_value());
+        }
+        // An id is not an offset: every non-zero id is one.
+        for id in [1, 19, 1 << 63, u64::MAX] {
+            let mut builder = FlatLeafBuilder::new(page_id(9), b"", 4096).expect("fits");
+            let bytes = pointer(u32::MAX, id, 1);
+            builder
+                .push(b"k", FlatValue::OutOfLine(&bytes))
+                .expect("fits");
+            assert!(FlatPage::decode(&builder.finish(), V1)
+                .expect("valid")
+                .has_pending_value());
+        }
+        // A value out of line that is too short to be a place is not
+        // pending, whatever its bytes.
+        assert!(!FlatValue::OutOfLine(&[0xFF; 3]).is_pending());
+        assert!(FlatValue::OutOfLine(&[0xFF; 4]).is_pending());
+        assert!(!FlatValue::Inline(&[0xFF; 16]).is_pending());
     }
 
     #[test]

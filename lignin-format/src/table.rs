@@ -387,7 +387,7 @@ impl Link {
             return Err(FormatError::NonZeroReserved);
         }
         let len = word & LEN_MASK;
-        let file = FileId::decode(array(&bytes[8..12]));
+        let file = FileId::decode(array(&bytes[8..12]))?;
         let offset = u64::from_le_bytes(array(&bytes[12..20]));
         let version = CommitVersion::decode(array(&bytes[20..])).ok_or(FormatError::MissingId)?;
         let kind = match (word >> KIND_SHIFT) & KIND_MASK {
@@ -481,7 +481,7 @@ impl ValueCount {
     }
 
     fn decode_v1(bytes: &[u8; VALUE_COUNT_LEN]) -> Result<Self, FormatError> {
-        let file = FileId::decode(array(&bytes[..4])).ok_or(FormatError::MissingId)?;
+        let file = FileId::decode(array(&bytes[..4]))?.ok_or(FormatError::MissingId)?;
         let flags = u32::from_le_bytes(array(&bytes[4..8]));
         if flags & !MISCOUNTED != 0 {
             return Err(FormatError::NonZeroReserved);
@@ -537,7 +537,7 @@ impl End {
             }));
         };
         let offset = u64::from_le_bytes(array(&body[28..36]));
-        let place = match FileId::decode(array(&body[24..28])) {
+        let place = match FileId::decode(array(&body[24..28]))? {
             Some(file) => Some(LogPlace::new(file, offset)?),
             None if offset == 0 => None,
             None => return Err(FormatError::Table(TableError::InvalidLogPlace)),

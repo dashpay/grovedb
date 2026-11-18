@@ -11,7 +11,7 @@ use std::{
 
 use lignin_format::{
     flat_page::{FlatBranchBuilder, FlatLeafBuilder, FlatPage, FlatValue},
-    value_log::ValuePointer,
+    value_log::{PendingValue, ValuePlace, ValuePointer},
     FileId, FormatVersion, PageId,
 };
 
@@ -71,11 +71,15 @@ fn leaf_image() -> Vec<u8> {
     let mut builder = FlatLeafBuilder::new(PAGE, &PREFIX, CAPACITY).expect("fits");
     for index in 0..ENTRIES {
         let value = [index as u8; VALUE_LEN];
-        let pointer = ValuePointer::new(FileId::MIN, 20 + index, VALUE_LEN as u32)
-            .expect("valid")
-            .encode();
+        let pointer = ValuePointer::new(FileId::MIN, 20 + index, VALUE_LEN as u32).expect("valid");
+        let waiting = PendingValue::new((1 + index).to_le_bytes(), VALUE_LEN as u32);
+        let place = match index % 10 {
+            0 => ValuePlace::Pending(waiting.expect("valid")),
+            _ => ValuePlace::Placed(pointer),
+        }
+        .encode();
         let value = if index % 5 == 0 {
-            FlatValue::OutOfLine(&pointer)
+            FlatValue::OutOfLine(&place)
         } else {
             FlatValue::Inline(&value)
         };
@@ -170,26 +174,36 @@ fn reading_a_leaf_does_not_allocate() {
     let mut frame = image.clone();
     frame.resize(CAPACITY, 0);
 
-    let ((entries, out_of_line, key_bytes), allocations) = allocations_during(|| {
+    let ((entries, out_of_line, pending, key_bytes), allocations) = allocations_during(|| {
         let page = FlatPage::from_validated(&frame, FormatVersion::V1).expect("valid");
         assert_eq!(page.as_bytes().len(), image.len());
+        assert!(page.has_pending_value());
         let leaf = page.leaf().expect("leaf");
+        assert!(leaf.has_pending_value());
         let (mut entries, mut out_of_line, mut key_bytes) = (0u64, 0u64, 0usize);
+        let mut pending = 0u64;
         let mut previous = None;
         for (key, value) in leaf {
             entries += 1;
             out_of_line += u64::from(!value.is_inline());
+            if let FlatValue::OutOfLine(place) = value {
+                let place = ValuePlace::decode(place.try_into().expect("16 bytes"));
+                let place = place.expect("a place");
+                assert_eq!(place.is_pending(), value.is_pending());
+                pending += u64::from(place.is_pending());
+            }
             key_bytes += key.len();
             assert!(previous.is_none_or(|previous| previous < key));
             previous = Some(key);
         }
         assert_eq!(leaf.iter().rev().count(), leaf.len());
-        (entries, out_of_line, key_bytes)
+        (entries, out_of_line, pending, key_bytes)
     });
 
     assert_eq!(allocations, 0);
     assert_eq!(entries, ENTRIES);
     assert_eq!(out_of_line, ENTRIES / 5);
+    assert_eq!(pending, ENTRIES / 10);
     assert_eq!(key_bytes, ENTRIES as usize * 40);
 }
 

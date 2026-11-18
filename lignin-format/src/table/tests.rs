@@ -508,7 +508,7 @@ fn block_pointers_are_checked() {
 #[test]
 fn a_forged_link_is_rejected_by_the_rule_it_breaks() {
     let invalid = table_error(TableError::InvalidLink);
-    let cases: [(Vec<u8>, FormatError); 16] = [
+    let cases: [(Vec<u8>, FormatError); 18] = [
         (item(0, BASE, 64, 3, 20, 1), FormatError::MissingId),
         (item(1, BASE, 64, 0, 20, 1), FormatError::MissingId),
         (item(1, DELTA, 64, 0, 20, 1), FormatError::MissingId),
@@ -537,6 +537,14 @@ fn a_forged_link_is_rejected_by_the_rule_it_breaks() {
         (item(1, FREE, 8, 0, 0, 1), invalid),
         (item(1, FREE, 0, 3, 0, 1), invalid),
         (item(1, FREE, 0, 0, 20, 1), invalid),
+        (
+            item(1, BASE, 64, u32::MAX, 20, 1),
+            FormatError::ReservedFileId,
+        ),
+        (
+            item(1, FREE, 0, u32::MAX, 0, 1),
+            FormatError::ReservedFileId,
+        ),
     ];
     for (forged, error) in cases {
         assert_eq!(
@@ -829,9 +837,13 @@ fn a_forged_count_is_rejected_by_the_rule_it_breaks() {
     let good = with_counts(&[
         count_item(1, 0, 0, 0),
         count_item(2, 1, u64::MAX, u64::MAX),
-        count_item(u32::MAX, 0, 7, 1),
+        count_item(u32::MAX - 1, 0, 7, 1),
     ])
     .unwrap();
+    assert_eq!(
+        with_counts(&[count_item(1, 0, 0, 0), count_item(u32::MAX, 0, 7, 1)]),
+        Err(FormatError::ReservedFileId)
+    );
     assert_eq!(good.value_counts.len(), 3);
     assert!(good.value_counts[1].miscounted && !good.value_counts[0].miscounted);
     assert_eq!(
@@ -852,7 +864,7 @@ fn a_forged_count_is_rejected_by_the_rule_it_breaks() {
             );
         }
     }
-    for (first, second) in [(3, 3), (3, 2), (u32::MAX, 1)] {
+    for (first, second) in [(3, 3), (3, 2), (u32::MAX - 1, 1)] {
         assert_eq!(
             with_counts(&[count_item(first, 0, 1, 1), count_item(second, 0, 1, 1)]),
             Err(out_of_order)
@@ -963,9 +975,15 @@ fn the_end_record_must_agree_with_the_counts_and_name_a_place_in_the_log() {
     assert_eq!(with_end((0, 0), 2).unwrap().end.place, None);
     assert_eq!(with_end((9, 20), 2).unwrap().end.place, Some(place(9, 20)));
     assert_eq!(
-        with_end((u32::MAX, u64::MAX), 2).unwrap().end.place,
-        Some(place(u32::MAX, u64::MAX))
+        with_end((u32::MAX - 1, u64::MAX), 2).unwrap().end.place,
+        Some(place(u32::MAX - 1, u64::MAX))
     );
+    for offset in [0, 20, u64::MAX] {
+        assert_eq!(
+            with_end((u32::MAX, offset), 2),
+            Err(FormatError::ReservedFileId)
+        );
+    }
     let invalid = table_error(TableError::InvalidLogPlace);
     for log_end in [(0, 1), (0, 20), (0, u64::MAX), (9, 0), (9, 19)] {
         assert_eq!(with_end(log_end, 2), Err(invalid), "{log_end:?}");

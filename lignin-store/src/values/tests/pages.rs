@@ -381,7 +381,7 @@ impl Record {
                 counts: (0..reader.u32()?)
                     .map(|_| {
                         Some(FileCount {
-                            file: FileId::decode(reader.take()?)?,
+                            file: FileId::decode(reader.take()?).ok()??,
                             values: reader.u64()?,
                             bytes: reader.u64()?,
                             miscounted: reader.take::<1>()? == [1],

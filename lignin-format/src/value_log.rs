@@ -19,6 +19,10 @@
 //!
 //! The owner is the back pointer. The cell is the one in that page that
 //! holds the [`ValuePointer`] to the value.
+//!
+//! A cell whose value is not in the value log yet holds a [`PendingValue`]
+//! where the pointer will be: a place that names no file. [`ValuePlace`]
+//! is either of the two.
 
 use std::{fmt, slice};
 
@@ -600,10 +604,16 @@ impl ValuePointer {
 
     /// Reads a pointer. The checks run in a fixed order: file id, offset,
     /// value length.
+    ///
+    /// The place of a value that is not in the value log yet is not a
+    /// pointer: its file id is the reserved one, and this gives
+    /// [`FormatError::ReservedFileId`]. [`ValuePlace::decode`] reads both.
     pub const fn decode(bytes: [u8; Self::ENCODED_LEN]) -> Result<Self, FormatError> {
         let fields = u128::from_le_bytes(bytes);
-        let Some(file) = FileId::new(fields as u32) else {
-            return Err(FormatError::MissingId);
+        let file = match FileId::decode((fields as u32).to_le_bytes()) {
+            Ok(Some(file)) => file,
+            Ok(None) => return Err(FormatError::MissingId),
+            Err(error) => return Err(error),
         };
         Self::new(
             file,
@@ -662,6 +672,148 @@ impl ValuePointer {
             .into());
         }
         finish_value(extent, first, rest, layout).map(|(value, _)| value)
+    }
+}
+
+/// A value that is not in the value log yet: what stands where its pointer
+/// will be.
+///
+/// It has the shape of a [`ValuePointer`] that names no file. The file id
+/// is [`FileId::RESERVED`], the eight bytes of the offset identify the
+/// pending value, and the value length is the value's.
+///
+/// ```text
+/// offset  size  field
+///      0     4  the reserved file id, ff ff ff ff
+///      4     8  the pending value's id, not all zero
+///     12     4  value length
+/// ```
+///
+/// The eight bytes are the log format's: they lead from the cell to the
+/// value's bytes. The page formats copy and compare them and give them no
+/// meaning, except that all zero is not an id.
+///
+/// A pending value may stand in a page in a buffer, in a log record and
+/// inside a run of page deltas. It may not stand in a page version that a
+/// segment makes durable (PD16 of `docs/lignindb/page-delta.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PendingValue {
+    id: [u8; Self::ID_LEN],
+    value_len: u32,
+}
+
+impl PendingValue {
+    /// Bytes of the id of a pending value.
+    pub const ID_LEN: usize = 8;
+
+    /// The pending value `id`, of `value_len` bytes. An id that is all zero
+    /// is [`FormatError::MissingId`], and a value of no bytes is never out
+    /// of line.
+    pub const fn new(id: [u8; Self::ID_LEN], value_len: u32) -> Result<Self, FormatError> {
+        if u64::from_le_bytes(id) == 0 {
+            return Err(FormatError::MissingId);
+        }
+        if value_len == 0 {
+            return Err(FormatError::ValueLog(ValueLogError::EmptyValue));
+        }
+        Ok(Self { id, value_len })
+    }
+
+    /// The eight bytes that identify the value, as the log format defines
+    /// them.
+    pub const fn id(&self) -> [u8; Self::ID_LEN] {
+        self.id
+    }
+
+    /// The value's length in bytes.
+    pub const fn value_len(&self) -> u32 {
+        self.value_len
+    }
+}
+
+/// Where a value that is not in its cell is: in the value log, or not there
+/// yet.
+///
+/// Sixteen bytes on disk either way. The file id tells the two apart:
+/// [`FileId::RESERVED`] is a pending value, and every other id is a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ValuePlace {
+    /// The value is in the value log, at this pointer.
+    Placed(ValuePointer),
+    /// The value is not in the value log yet.
+    Pending(PendingValue),
+}
+
+impl ValuePlace {
+    /// Bytes the place takes on disk.
+    pub const ENCODED_LEN: usize = ValuePointer::ENCODED_LEN;
+
+    /// The value's length in bytes.
+    pub const fn value_len(&self) -> u32 {
+        match self {
+            Self::Placed(pointer) => pointer.value_len(),
+            Self::Pending(pending) => pending.value_len(),
+        }
+    }
+
+    /// The pointer to the value, if the value is in the value log.
+    pub const fn pointer(&self) -> Option<ValuePointer> {
+        match *self {
+            Self::Placed(pointer) => Some(pointer),
+            Self::Pending(_) => None,
+        }
+    }
+
+    /// The pending value, if the value is not in the value log yet.
+    pub const fn pending(&self) -> Option<PendingValue> {
+        match *self {
+            Self::Placed(_) => None,
+            Self::Pending(pending) => Some(pending),
+        }
+    }
+
+    /// Whether the value is not in the value log yet.
+    pub const fn is_pending(&self) -> bool {
+        matches!(self, Self::Pending(_))
+    }
+
+    /// The sixteen bytes written to disk.
+    pub const fn encode(&self) -> [u8; Self::ENCODED_LEN] {
+        match self {
+            Self::Placed(pointer) => pointer.encode(),
+            Self::Pending(pending) => {
+                let fields = FileId::RESERVED as u128
+                    | (u64::from_le_bytes(pending.id) as u128) << ValuePointer::OFFSET_SHIFT
+                    | (pending.value_len as u128) << ValuePointer::VALUE_LEN_SHIFT;
+                fields.to_le_bytes()
+            }
+        }
+    }
+
+    /// Reads a place. The file id is looked at first: zero is
+    /// [`FormatError::MissingId`], the reserved id is a pending value, whose
+    /// id and then length are checked, and any other is a pointer, with the
+    /// checks of [`ValuePointer::decode`].
+    pub const fn decode(bytes: [u8; Self::ENCODED_LEN]) -> Result<Self, FormatError> {
+        let fields = u128::from_le_bytes(bytes);
+        if fields as u32 != FileId::RESERVED {
+            return match ValuePointer::decode(bytes) {
+                Ok(pointer) => Ok(Self::Placed(pointer)),
+                Err(error) => Err(error),
+            };
+        }
+        let id = ((fields >> ValuePointer::OFFSET_SHIFT) as u64).to_le_bytes();
+        let value_len = (fields >> ValuePointer::VALUE_LEN_SHIFT) as u32;
+        match PendingValue::new(id, value_len) {
+            Ok(pending) => Ok(Self::Pending(pending)),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Whether the sixteen bytes `bytes` start with the reserved file id,
+    /// which is what makes a place a pending value.
+    pub(crate) fn names_no_file(bytes: &[u8]) -> bool {
+        bytes.first_chunk() == Some(&FileId::RESERVED.to_le_bytes())
     }
 }
 
@@ -1489,6 +1641,152 @@ mod tests {
         }
         assert!(accepted > 1_000 && rejected > 1_000);
         assert_eq!(ValuePointer::decode([0; 16]), Err(FormatError::MissingId));
+    }
+
+    #[test]
+    fn a_pending_value_is_a_place_that_names_no_file() {
+        let waiting = PendingValue::new([1, 0, 0, 0, 0, 0, 0, 0], 12).expect("valid");
+        let place = ValuePlace::Pending(waiting);
+        assert_eq!(hex(&place.encode()), "ffffffff01000000000000000c000000");
+        assert_eq!(ValuePlace::decode(place.encode()), Ok(place));
+
+        let id = [0x0C, 0x0B, 0x0A, 0x09, 0x08, 0x07, 0x06, 0x05];
+        let waiting = PendingValue::new(id, 0x0D0E_0F10).expect("valid");
+        let place = ValuePlace::Pending(waiting);
+        assert_eq!(hex(&place.encode()), "ffffffff0c0b0a0908070605100f0e0d");
+        assert_eq!(ValuePlace::decode(place.encode()), Ok(place));
+        assert_eq!((waiting.id(), waiting.value_len()), (id, 0x0D0E_0F10));
+        assert_eq!(place.value_len(), 0x0D0E_0F10);
+        assert_eq!((place.pending(), place.pointer()), (Some(waiting), None));
+        assert!(place.is_pending());
+        assert_eq!(PendingValue::ID_LEN, 8);
+        assert_eq!(ValuePlace::ENCODED_LEN, 16);
+
+        // A value pointer cannot hold it, so no function of the value log
+        // is handed a place that names no file.
+        assert_eq!(
+            ValuePointer::decode(place.encode()),
+            Err(FormatError::ReservedFileId)
+        );
+        assert_eq!(FileId::new(u32::MAX), None);
+
+        // A place in a file is the pointer, byte for byte.
+        let pointer = ValuePointer::new(file_id(12), 20, 12).expect("valid");
+        let placed = ValuePlace::Placed(pointer);
+        assert_eq!(placed.encode(), pointer.encode());
+        assert_eq!(ValuePlace::decode(pointer.encode()), Ok(placed));
+        assert_eq!((placed.pending(), placed.pointer()), (None, Some(pointer)));
+        assert_eq!(placed.value_len(), 12);
+        assert!(!placed.is_pending());
+        let last = ValuePointer::new(FileId::MAX, 20, 12).expect("valid");
+        assert_eq!(hex(&last.encode()), "feffffff14000000000000000c000000");
+        assert_eq!(
+            ValuePlace::decode(last.encode()),
+            Ok(ValuePlace::Placed(last))
+        );
+
+        // The id is not all zero, and the value is not empty. The id is
+        // looked at first.
+        assert_eq!(PendingValue::new([0; 8], 12), Err(FormatError::MissingId));
+        assert_eq!(PendingValue::new([0; 8], 0), Err(FormatError::MissingId));
+        assert_eq!(
+            PendingValue::new(id, 0),
+            Err(value_log(ValueLogError::EmptyValue))
+        );
+        let raw = |id: u64, value_len: u32| {
+            let mut bytes = [0xFF; 16];
+            bytes[4..12].copy_from_slice(&id.to_le_bytes());
+            bytes[12..].copy_from_slice(&value_len.to_le_bytes());
+            bytes
+        };
+        assert_eq!(ValuePlace::decode(raw(0, 12)), Err(FormatError::MissingId));
+        assert_eq!(ValuePlace::decode(raw(0, 0)), Err(FormatError::MissingId));
+        assert_eq!(
+            ValuePlace::decode(raw(1, 0)),
+            Err(value_log(ValueLogError::EmptyValue))
+        );
+        assert_eq!(ValuePlace::decode([0; 16]), Err(FormatError::MissingId));
+        // Every id with one bit set is an id, and an id is not an offset:
+        // none of a pointer's rules about offsets apply to it.
+        for bit in 0..64 {
+            let bytes = raw(1 << bit, 1);
+            let decoded = ValuePlace::decode(bytes).expect("a pending value");
+            assert_eq!(
+                decoded.pending().map(|p| p.id()),
+                Some((1u64 << bit).to_le_bytes())
+            );
+            assert_eq!(decoded.encode(), bytes);
+        }
+        assert!(ValuePlace::decode(raw(u64::MAX, u32::MAX)).is_ok());
+    }
+
+    #[test]
+    fn a_value_place_decodes_only_from_the_bytes_it_encodes_to() {
+        let mut rng = SplitMix64::new(0x9019);
+        let (mut placed, mut pending, mut rejected) = (0, 0, 0);
+        for _ in 0..30_000 {
+            let file = match rng.next_u64() % 6 {
+                0 => 0,
+                1 | 2 => u32::MAX,
+                3 => u32::MAX - 1,
+                _ => rng.next_u64() as u32,
+            };
+            let offset = match rng.next_u64() % 8 {
+                0 => 0,
+                1 => 19,
+                2 => 20,
+                3 => MAX_VALUE_OFFSET,
+                4 => MAX_VALUE_OFFSET + 1,
+                5 => u64::MAX,
+                _ => rng.next_u64(),
+            };
+            let value_len = match rng.next_u64() % 4 {
+                0 => 0,
+                _ => rng.next_u64() as u32,
+            };
+            let mut bytes = [0; ValuePlace::ENCODED_LEN];
+            bytes[..4].copy_from_slice(&file.to_le_bytes());
+            bytes[4..12].copy_from_slice(&offset.to_le_bytes());
+            bytes[12..].copy_from_slice(&value_len.to_le_bytes());
+
+            let decoded = ValuePlace::decode(bytes);
+            assert_eq!(ValuePlace::names_no_file(&bytes), file == u32::MAX);
+            if file == u32::MAX {
+                // The eight bytes are an id: any but zero.
+                let expected = if offset == 0 {
+                    Err(FormatError::MissingId)
+                } else if value_len == 0 {
+                    Err(value_log(ValueLogError::EmptyValue))
+                } else {
+                    Ok(bytes)
+                };
+                assert_eq!(decoded.map(|place| place.encode()), expected);
+                assert_eq!(
+                    ValuePointer::decode(bytes),
+                    Err(FormatError::ReservedFileId)
+                );
+                if let Ok(place) = decoded {
+                    let waiting = place.pending().expect("pending");
+                    assert_eq!(waiting.id(), offset.to_le_bytes());
+                    assert_eq!(waiting.value_len(), value_len);
+                    assert_eq!(PendingValue::new(waiting.id(), value_len), Ok(waiting));
+                    pending += 1;
+                } else {
+                    rejected += 1;
+                }
+            } else {
+                // Any other file id: a pointer, with a pointer's checks.
+                assert_eq!(decoded, ValuePointer::decode(bytes).map(ValuePlace::Placed));
+                match decoded {
+                    Ok(place) => {
+                        assert_eq!(place.encode(), bytes);
+                        placed += 1;
+                    }
+                    Err(_) => rejected += 1,
+                }
+            }
+        }
+        assert!(placed > 1_000 && pending > 1_000 && rejected > 1_000);
     }
 
     #[test]
