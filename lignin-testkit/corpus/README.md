@@ -190,8 +190,8 @@ version the stream was generated for. Such a proof is verified with
 against the streams: a step has a proof exactly when its read is one of
 these.
 
-The standard scale is 290 traces and 216,069 steps in 4.5 MB: for each
-grove version the 25 workloads of the suite, `suite` and 32 hand-written
+The standard scale is 310 traces and 224,531 steps in 5.1 MB: for each
+grove version the 29 workloads of the suite, `suite` and 32 hand-written
 cases. On the machine it was recorded on (28 cores, shared), recording it
 takes under a minute in a release build and the replay test about a minute
 in a debug build, eight traces at a time.
