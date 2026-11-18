@@ -32,6 +32,8 @@
 
 /// Cost Contexts
 pub mod context;
+/// The cost rules of the storage layer
+pub mod cost_model;
 /// Cost Errors
 pub mod error;
 /// Storage Costs
