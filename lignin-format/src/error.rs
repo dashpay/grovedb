@@ -56,6 +56,9 @@ pub enum FormatError {
     Manifest(crate::manifest::ManifestError),
     /// The bytes are not a page-table checkpoint, or one cannot be written.
     Table(crate::table::TableError),
+    /// The bytes are not a tree page or a tree page cell, or a tree page
+    /// cannot take what was written to it.
+    TreePage(crate::tree_page::TreePageError),
     /// The bytes are not a valid value-log encoding, or a value cannot be
     /// encoded.
     ValueLog(crate::value_log::ValueLogError),
@@ -99,6 +102,7 @@ impl fmt::Display for FormatError {
             Self::Segment(error) => write!(f, "segment: {error}"),
             Self::Manifest(error) => write!(f, "manifest: {error}"),
             Self::Table(error) => write!(f, "page-table checkpoint: {error}"),
+            Self::TreePage(error) => write!(f, "tree page: {error}"),
             Self::ValueLog(error) => write!(f, "value log: {error}"),
             Self::MissingId => write!(f, "identifier field holds no identifier"),
             Self::NonZeroReserved => write!(f, "reserved field is not zero"),
