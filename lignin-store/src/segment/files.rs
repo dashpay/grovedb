@@ -122,6 +122,9 @@ pub fn list_or_create_dir(
 /// [`FileHeader::ENCODED_LEN`]. The directory of the kind must exist and
 /// have a durable name ([`list_or_create_dir`]). If any step fails the file
 /// is removed again.
+///
+/// A manifest written while this runs must not record `id` as used: see
+/// [the module documentation](super#files-of-the-other-kinds).
 pub fn create_file(
     vfs: &dyn Vfs,
     db: &Path,
