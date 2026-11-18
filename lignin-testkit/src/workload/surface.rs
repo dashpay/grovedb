@@ -105,8 +105,8 @@ const CHECKPOINT: Status = Status::LeftOut(
 );
 
 const DUMP_LOAD: Status = Status::LeftOut(
-    "behind the `unsafe-dump-load` feature, which this crate does not enable; GROVE-09 \
-     replaces the hatch",
+    "an escape hatch behind the `unsafe-dump-load` feature, which works on storage beneath \
+     GroveDB's operations; GROVE-09 replaces the hatch",
 );
 
 const CLOSURES: &str = "flag updates and splits of removed bytes other than GroveDB's own: a \
@@ -526,8 +526,8 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
         "replace_subtree_root",
         Status::LeftOut(
             "takes the root hash of the subtree from its caller, which a stream of plain data \
-             cannot name, and is behind the `unsafe-dump-load` feature, which this crate does \
-             not enable; GROVE-09 replaces the hatch",
+             cannot name, and is an escape hatch behind the `unsafe-dump-load` feature; \
+             GROVE-09 replaces the hatch",
         ),
     ),
     ("rollback_transaction", produced(&[Operation::Rollback])),
