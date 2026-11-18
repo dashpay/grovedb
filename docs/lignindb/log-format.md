@@ -627,7 +627,8 @@ CL6).
   (`page-alloc.md` A4), and is one that a commit before the record has
   (`WalError::FreedAhead`). A step that frees a page whose cells are all
   left-overs need not list them.
-- It lists the value pointers the removed cells held, in ascending order.
+- It lists the value pointers that the cells it removed held, in ascending
+  order, also where it frees the page and does not list the cells.
 - It removes something or frees its page.
 
 **LG28. How replay tells a page that has a background change from one that
@@ -715,11 +716,14 @@ order (LG14), and so on for each rule of sections 5 to 8.
 | --- | --- | --- |
 | between items | a value or carried value record, which begins a group; part 0 of the next version; a change; a mark | `MisplacedStart`, `UnexpectedValuePart`, `UnexpectedPart`, `VersionGap` |
 | inside a value | the value's next part, with the same owner and length | `UnfinishedValue`, `UnexpectedValuePart`, `PartOfAnotherValue` |
-| among the values of a group | another value or carried value; part 0 of the next version | `GroupInterrupted`, `UnexpectedPart`, `VersionGap` |
-| among the parts of a group | the next part of the same version | `GroupInterrupted`, `UnexpectedPart`, `PartOfAnotherGroup` |
+| among the values of a group | another value or carried value; part 0 of the next version | `GroupInterrupted`, `MisplacedStart`, `UnexpectedValuePart`, `UnexpectedPart`, `VersionGap` |
+| among the parts of a group | the next part of the same version | `GroupInterrupted`, `MisplacedStart`, `UnexpectedPart`, `PartOfAnotherGroup`, `PartNotFull`, `EntriesOutOfOrder` |
 
-A value begins with its part 0. Parts are as full as LG18 has them and
-their entries in the order of LG14, across parts.
+A value begins with its part 0 (`UnexpectedValuePart`). A part that
+follows another is as full as LG18 has it (`PartNotFull`), and its entries
+go on in the order of LG14 (`EntriesOutOfOrder`). A part with no entry that
+is not the only part of its group is refused when it is read by itself
+(`EmptyPart`, 9.1).
 
 ### 9.3 The tail
 

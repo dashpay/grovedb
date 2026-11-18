@@ -296,4 +296,58 @@ fn an_entry_too_long_for_a_record_is_refused() {
 
     assert_eq!(MAX_RUN_LEN, MAX_RECORD_PAYLOAD_LEN - 14 - 5);
     assert_eq!(MAX_RUN_LEN, (1 << 27) - 23);
+
+    // Entries that fill a part to its last byte are one part, and the
+    // next entry begins another: 3 freed pages and a run of 166 bytes are
+    // the 186 bytes a part holds.
+    let mut out = Vec::new();
+    let mut group = GroupWriter::with_limits(version(1), address(45), SMALL, &mut out).unwrap();
+    for raw_page in 1..=3 {
+        group.freed(page(raw_page)).unwrap();
+    }
+    let mut filling = run_of(54);
+    filling[..4].copy_from_slice(&page(4).encode());
+    assert_eq!(filling.len(), 166);
+    group
+        .tree_run(&DeltaRun::decode(&filling, V1).unwrap())
+        .unwrap();
+    assert_eq!(group.encoded_len(), 8 + SMALL.max_payload);
+    group.freed(page(5)).unwrap();
+    assert_eq!(group.finish(), 8 + SMALL.max_payload + PART_HEADER_LEN + 5);
+    let (Record::Part(full), len) = Record::decode_with(&out, V1, SMALL).unwrap() else {
+        panic!("a part");
+    };
+    assert_eq!(
+        (len, full.is_last(), full.entries().count()),
+        (208, false, 4)
+    );
+    let mut log = new_log(1, &LogStart::FIRST);
+    log.extend_from_slice(&out);
+    assert_eq!(items_with(&log, SMALL).1.failure(), None);
+
+    // The same entries with the cut one entry earlier are not the group.
+    let entries = [
+        freed_entry(1),
+        freed_entry(2),
+        freed_entry(3),
+        run_entry(1, &filling),
+        freed_entry(5),
+    ];
+    let early = [
+        part_record(0, 1, 0, &entries[..3].concat()),
+        part_record(1, 1, 1, &entries[3..].concat()),
+    ]
+    .concat();
+    assert_eq!(
+        tail_after(&LogStart::FIRST, SMALL, &early)
+            .failure()
+            .map(|failure| failure.error),
+        Some(wal_error(WalError::PartNotFull))
+    );
+    let exact = [
+        part_record(0, 1, 0, &entries[..4].concat()),
+        part_record(1, 1, 1, &entries[4..].concat()),
+    ]
+    .concat();
+    assert_eq!(exact, out);
 }
