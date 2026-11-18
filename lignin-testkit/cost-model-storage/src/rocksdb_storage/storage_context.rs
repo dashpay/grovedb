@@ -107,10 +107,13 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         children_sizes: ChildrenSizesWithIsSumTree,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        let cost_info = rules::complete_new_key_cost(cost_info, key.as_ref().len());
+        let key_len = key.as_ref().len();
         self.stage(
             "put",
-            |batch, key| batch.put(key, value.to_vec(), children_sizes, cost_info),
+            |batch, key| {
+                let cost_info = rules::complete_new_key_cost(cost_info, key_len);
+                batch.put(key, value.to_vec(), children_sizes, cost_info)
+            },
             key.as_ref(),
         )
     }
@@ -493,7 +496,7 @@ impl PrefixedRocksDbBatch<'_> {
             children_sizes,
             cost_info.as_ref(),
         ) {
-            Ok(cost) => self.cost_acc += cost,
+            Ok(charge) => charge.add_all_to(&mut self.cost_acc),
             Err((error, owed)) => {
                 self.cost_acc += owed;
                 return Err(error);
@@ -513,7 +516,7 @@ impl PrefixedRocksDbBatch<'_> {
         key: &[u8],
         cost_info: Option<KeyValueStorageCost>,
     ) {
-        self.cost_acc += rules::immediate_batch_delete(cost_info);
+        rules::immediate_batch_delete(cost_info).add_all_to(&mut self.cost_acc);
         self.writes.push(Write {
             keyspace,
             key: StoredKey::new(self.prefix, key),

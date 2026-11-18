@@ -4,7 +4,10 @@ use std::{
     collections::BTreeMap,
     fmt,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex, MutexGuard, PoisonError,
+    },
     time::{Duration, Instant},
 };
 
@@ -15,9 +18,7 @@ use super::{PrefixedRocksDbImmediateStorageContext, PrefixedRocksDbTransactionCo
 use crate::{
     cost_model::{
         rules::{self, Keyspace},
-        state::{
-            charge_batch, BatchOp, Cursor, Database, Record, StoredKey, Tables, Transaction, Write,
-        },
+        state::{charge_batch, BatchOp, Cursor, Database, Record, StoredKey, Transaction, Write},
     },
     error::Error,
     flat::{pending_prefix_drops_namespace, PendingPrefixDropRecord, PendingPrefixDrops},
@@ -33,18 +34,67 @@ pub type SubtreePrefix = [u8; 32];
 /// dropped, if this variable is set.
 const HITS_FILE_VARIABLE: &str = "LIGNIN_COST_MODEL_HITS";
 
-/// The databases of this process, each under the directory it was opened
-/// at, so that a storage opened there again finds what was committed. A
-/// database goes when its directory has gone.
-static DATABASES: Mutex<BTreeMap<PathBuf, Arc<Database>>> = Mutex::new(BTreeMap::new());
+/// The file that marks a directory as holding a database of the model, and
+/// names which.
+const MARK_FILE: &str = "COST-MODEL";
 
-/// The checkpoints of this process: the committed state each was taken of,
-/// under the directory that stands for it on disk.
-static CHECKPOINTS: Mutex<BTreeMap<PathBuf, Arc<Tables>>> = Mutex::new(BTreeMap::new());
+/// A database of this process and the directory it was last found in.
+struct Opened {
+    at: PathBuf,
+    db: Arc<Database>,
+}
+
+/// The databases of this process by the mark in their directory, so that a
+/// storage or a checkpoint opened again finds what was committed there. A
+/// database goes when its directory, or the mark in it, has gone.
+static DATABASES: Mutex<BTreeMap<String, Opened>> = Mutex::new(BTreeMap::new());
+
+static NEXT_MARK: AtomicU64 = AtomicU64::new(0);
+
+fn refused(path: &Path, what: impl fmt::Display) -> Error {
+    Error::RocksDBError(EngineError(format!("{}: {what}", path.display())))
+}
+
+fn mark_in(directory: &Path) -> Option<String> {
+    std::fs::read_to_string(directory.join(MARK_FILE)).ok()
+}
+
+/// The database whose mark `directory` holds, if this process has it.
+fn database_at(directory: &Path) -> Option<Arc<Database>> {
+    let mark = mark_in(directory)?;
+    let mut databases = DATABASES.lock().unwrap_or_else(PoisonError::into_inner);
+    let found = databases.get_mut(&mark).map(|opened| {
+        opened.at = directory.to_path_buf();
+        Arc::clone(&opened.db)
+    });
+    databases.retain(|mark, opened| mark_in(&opened.at).as_deref() == Some(mark));
+    found
+}
+
+/// Marks `directory` as holding `db`.
+fn keep_at(directory: &Path, db: &Arc<Database>) -> Result<(), Error> {
+    let mark = format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT_MARK.fetch_add(1, Ordering::Relaxed)
+    );
+    std::fs::write(directory.join(MARK_FILE), &mark).map_err(|error| refused(directory, error))?;
+    DATABASES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(
+            mark,
+            Opened {
+                at: directory.to_path_buf(),
+                db: Arc::clone(db),
+            },
+        );
+    Ok(())
+}
 
 /// What the engine under the storage layer refused. The model has no such
-/// engine, so this is only ever a savepoint that was not set or a
-/// checkpoint that cannot be taken or opened.
+/// engine, so this is only ever a savepoint that was not set or a directory
+/// that cannot be used.
 #[derive(Debug)]
 pub struct EngineError(String);
 
@@ -167,7 +217,16 @@ pub struct RocksDbStorage {
 impl Drop for RocksDbStorage {
     fn drop(&mut self) {
         if let Some(file) = std::env::var_os(HITS_FILE_VARIABLE) {
-            let _ = std::fs::write(file, rules::hits_report());
+            let file = PathBuf::from(file);
+            let mut written = file.clone().into_os_string();
+            written.push(format!(
+                ".{}-{}",
+                std::process::id(),
+                NEXT_MARK.fetch_add(1, Ordering::Relaxed)
+            ));
+            if std::fs::write(&written, rules::hits_report()).is_ok() {
+                let _ = std::fs::rename(&written, file);
+            }
         }
     }
 }
@@ -229,41 +288,29 @@ fn batch_op(op: AbstractBatchOperation) -> BatchOp {
 
 impl RocksDbStorage {
     /// The storage at `path`. The model keeps its state in memory: `path`
-    /// is created as a directory and names the state, so that opening the
-    /// same directory again in this process finds what was committed there.
+    /// is created as a directory and marked, so that opening the same
+    /// directory again in this process, or a checkpoint taken into it,
+    /// finds what was committed there.
     pub fn default_rocksdb_with_path<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let path = path.as_ref();
-        std::fs::create_dir_all(path).map_err(|error| {
-            Error::RocksDBError(EngineError(format!(
-                "IO error: {}: {error}",
-                path.display()
-            )))
-        })?;
-        let mut databases = DATABASES.lock().unwrap_or_else(PoisonError::into_inner);
-        databases.retain(|opened_at, _| opened_at.is_dir());
-        let db = Arc::clone(databases.entry(path.to_path_buf()).or_default());
+        std::fs::create_dir_all(path).map_err(|error| refused(path, error))?;
+        let db = match database_at(path) {
+            Some(db) => db,
+            None => {
+                let db = Arc::default();
+                keep_at(path, &db)?;
+                db
+            }
+        };
         Ok(RocksDbStorage { db })
     }
 
-    /// Opens the checkpoint taken at `path` by a storage of this process,
-    /// as a storage of its own.
+    /// Opens the database or checkpoint at `path`, which has to be there.
     pub fn checkpoint_rocksdb_with_path<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let path = path.as_ref();
-        let taken = CHECKPOINTS
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(path)
-            .cloned()
-            .filter(|_| path.is_dir());
-        match taken {
-            Some(tables) => Ok(RocksDbStorage {
-                db: Arc::new(Database::from_committed(tables)),
-            }),
-            None => Err(Error::RocksDBError(EngineError(format!(
-                "Invalid argument: {}: no checkpoint of this process",
-                path.display()
-            )))),
-        }
+        database_at(path)
+            .map(|db| RocksDbStorage { db })
+            .ok_or_else(|| refused(path, "no database of this process"))
     }
 
     /// The prefix of the subtree at `path`: the Blake3 hash of its
@@ -371,15 +418,17 @@ impl RocksDbStorage {
     /// Removes every record under each of `prefixes`, in all four
     /// keyspaces, at once and outside any transaction.
     pub fn delete_prefix_ranges(&self, prefixes: &[SubtreePrefix]) -> Result<(), Error> {
-        if prefixes.contains(&[0xFF; 32]) {
-            return Err(Error::StorageError(
+        let refused = prefixes.iter().position(|prefix| *prefix == [0xFF; 32]);
+        let taken = &prefixes[..refused.unwrap_or(prefixes.len())];
+        if !taken.is_empty() {
+            self.db.delete_prefixes(taken);
+        }
+        match refused {
+            Some(_) => Err(Error::StorageError(
                 "delete_prefix_ranges: refusing to range-delete the all-0xFF prefix".to_string(),
-            ));
+            )),
+            None => Ok(()),
         }
-        if !prefixes.is_empty() {
-            self.db.delete_prefixes(prefixes);
-        }
-        Ok(())
     }
 
     /// Lists every committed pending-prefix-drop record, in the order of
@@ -513,15 +562,8 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
     fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
         let path = path.as_ref();
-        std::fs::create_dir(path).map_err(|error| {
-            Error::RocksDBError(EngineError(format!(
-                "Invalid argument: {}: {error}",
-                path.display()
-            )))
-        })?;
-        let mut checkpoints = CHECKPOINTS.lock().unwrap_or_else(PoisonError::into_inner);
-        checkpoints.retain(|taken_at, _| taken_at.is_dir());
-        checkpoints.insert(path.to_path_buf(), self.db.committed());
-        Ok(())
+        std::fs::create_dir(path).map_err(|error| refused(path, error))?;
+        let checkpoint = Arc::new(Database::from_committed(self.db.committed()));
+        keep_at(path, &checkpoint)
     }
 }

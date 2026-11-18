@@ -13,9 +13,10 @@
 # (default: target/cost-model) in which every crate is this checkout's and
 # `storage` is `lignin-testkit/cost-model-storage`, and runs Cargo there.
 # A replay fails if RocksDB is among the crates that build, if a step
-# differs from the corpus, or if the model met a node whose link sizes are
-# not the ones Merk gave with it. The rule counts of the run are printed
-# last and kept in $LIGNIN_COST_MODEL_WORK/rule-hits.tsv.
+# differs from the corpus, if the model met a node whose link sizes are not
+# the ones Merk gave with it, or if it left no rule counts. The rule counts
+# of the run are printed last and kept in
+# $LIGNIN_COST_MODEL_WORK/rule-hits.tsv.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -72,10 +73,13 @@ MANIFEST
     exec cargo run --quiet --release -- "$@"
 fi
 
-if cargo tree -p lignin-testkit -e normal,build --prefix none | grep -qi rocksdb; then
+built=$(cargo tree -p lignin-testkit -e normal,build --prefix none)
+case "$built" in
+*[Rr]ocks[Dd][Bb]*)
     echo "RocksDB is among the crates lignin-testkit builds in this workspace" >&2
     exit 2
-fi
+    ;;
+esac
 
 [ $# -gt 0 ] || set -- replay
 status=0
@@ -90,5 +94,8 @@ if [ -e "$hits" ]; then
         echo "the link sizes Merk gave with a node differ from the node's" >&2
         [ "$status" -ne 0 ] || status=3
     fi
+elif [ "$1" = replay ] && [ "$status" -eq 0 ]; then
+    echo "the replay left no rule counts in $hits: it did not run on the model" >&2
+    status=4
 fi
 exit "$status"

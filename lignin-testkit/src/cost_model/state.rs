@@ -491,7 +491,11 @@ pub fn charge_batch(
                 cost_info,
             } => {
                 let record = Record::new(keyspace, &value);
-                note_link_sizes(&record, &children_sizes);
+                match link_sizes_agree(&record, &children_sizes) {
+                    Some(true) => hit(Rule::LinkSizesAgree),
+                    Some(false) => hit(Rule::LinkSizesDiffer),
+                    None => {}
+                }
                 match rules::put(
                     keyspace,
                     key.key.len(),
@@ -499,10 +503,7 @@ pub fn charge_batch(
                     &children_sizes,
                     cost_info.as_ref(),
                 ) {
-                    Ok(charge) => {
-                        at_once += charge.at_once;
-                        on_success += charge.on_success;
-                    }
+                    Ok(charge) => charge.add_to(&mut at_once, &mut on_success),
                     Err((error, owed)) => return (Err(error), at_once + owed),
                 }
                 writes.push(Write {
@@ -520,9 +521,8 @@ pub fn charge_batch(
                     Some(_) => None,
                     None => db.committed().get(keyspace, &key).map(Record::len),
                 };
-                let charge = rules::delete(keyspace, key.key.len(), cost_info, committed_len);
-                at_once += charge.at_once;
-                on_success += charge.on_success;
+                rules::delete(keyspace, key.key.len(), cost_info, committed_len)
+                    .add_to(&mut at_once, &mut on_success);
                 writes.push(Write {
                     keyspace,
                     key,
@@ -534,12 +534,16 @@ pub fn charge_batch(
     (Ok(on_success), at_once)
 }
 
-/// Counts whether the sizes a Merk gave with a node are the ones the node's
-/// fields have: the link of each child as its key and 36 bytes next to the
-/// length of its aggregate, and the feature as its cost class and length.
-pub fn note_link_sizes(record: &Record, children_sizes: &ChildrenSizesWithIsSumTree) {
+/// Whether the sizes a Merk gave with a node are the ones the node's fields
+/// have: the link of each child as its key and 36 bytes next to the length
+/// of its aggregate, and the feature as its cost class and length. `None`
+/// when the record is not a node or came with no sizes.
+pub fn link_sizes_agree(
+    record: &Record,
+    children_sizes: &ChildrenSizesWithIsSumTree,
+) -> Option<bool> {
     let (Record::Node(node), Some((feature, left, right))) = (record, children_sizes) else {
-        return;
+        return None;
     };
     let sizes = node.sizes();
     let link = |child: Option<(usize, u32)>| {
@@ -552,14 +556,11 @@ pub fn note_link_sizes(record: &Record, children_sizes: &ChildrenSizesWithIsSumT
         .feature
         .cost_class()
         .map(|class| (class.size(), sizes.feature_payload_len));
-    let agree = given_feature == own_feature
-        && *left == link(sizes.children[0])
-        && *right == link(sizes.children[1]);
-    hit(if agree {
-        Rule::LinkSizesAgree
-    } else {
-        Rule::LinkSizesDiffer
-    });
+    Some(
+        given_feature == own_feature
+            && *left == link(sizes.children[0])
+            && *right == link(sizes.children[1]),
+    )
 }
 
 struct Position {
@@ -1068,12 +1069,6 @@ mod tests {
 
         use super::super::node::{Aggregate, LogicalLink};
 
-        let count = |rule: Rule| {
-            rules::hits()
-                .into_iter()
-                .find(|(counted, _)| *counted == rule)
-                .map_or(0, |(_, count)| count)
-        };
         let node = Record::Node(Box::new(LogicalNode {
             left: Some(LogicalLink {
                 key: b"left".to_vec(),
@@ -1095,18 +1090,13 @@ mod tests {
                 None,
             ))
         };
-        let (agree, differ) = (count(Rule::LinkSizesAgree), count(Rule::LinkSizesDiffer));
-        note_link_sizes(&node, &sizes(1, 40));
-        assert_eq!(count(Rule::LinkSizesAgree), agree + 1);
-        note_link_sizes(&node, &sizes(2, 40));
-        note_link_sizes(&node, &sizes(1, 41));
-        assert!(count(Rule::LinkSizesDiffer) >= differ + 2);
-        let counted = count(Rule::LinkSizesAgree) + count(Rule::LinkSizesDiffer);
-        note_link_sizes(&node, &None);
-        note_link_sizes(&Record::Bytes(Vec::new()), &sizes(1, 40));
+        assert_eq!(link_sizes_agree(&node, &sizes(1, 40)), Some(true));
+        assert_eq!(link_sizes_agree(&node, &sizes(2, 40)), Some(false));
+        assert_eq!(link_sizes_agree(&node, &sizes(1, 41)), Some(false));
+        assert_eq!(link_sizes_agree(&node, &None), None);
         assert_eq!(
-            count(Rule::LinkSizesAgree) + count(Rule::LinkSizesDiffer),
-            counted
+            link_sizes_agree(&Record::Bytes(Vec::new()), &sizes(1, 40)),
+            None
         );
     }
 }

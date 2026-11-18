@@ -25,7 +25,7 @@ When the corpus grows, run `check.sh` again: it replays whatever `lignin-testkit
 ## What the model does not do
 
 - It commits every transaction: there are no commit conflicts.
-- It keeps its state in memory. A database is kept per directory for the life of the process, so a reopen finds it, and a checkpoint is the committed state at the moment it was taken.
+- It keeps its state in memory. A directory gets a small file that names its database, so for the life of the process a reopen finds what was committed there, and a checkpoint is a database of its own that can be opened either way. Another process finds an empty database.
 - It reads no SST files (`ingest_subtree_sst`).
 
 ## When this goes away

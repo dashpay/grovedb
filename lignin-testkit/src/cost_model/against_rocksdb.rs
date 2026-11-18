@@ -602,8 +602,9 @@ fn an_immediate_handle_costs_what_the_rules_say() {
     let record = summed.encode();
     let mut batch = context.new_batch();
     let mut expected = OperationCost::default();
-    let charged = |cost: Result<OperationCost, _>| match cost {
-        Ok(cost) | Err((_, cost)) => cost,
+    let mut expect = |charge: Result<rules::WriteCharge, (_, OperationCost)>| match charge {
+        Ok(charge) => charge.add_all_to(&mut expected),
+        Err((_, owed)) => expected += owed,
     };
 
     batch
@@ -614,7 +615,7 @@ fn an_immediate_handle_costs_what_the_rules_say() {
             Some(new_node_cost(value_cost)),
         )
         .expect("a node with its cost");
-    expected += charged(rules::immediate_batch_put(
+    expect(rules::immediate_batch_put(
         Keyspace::Data,
         6,
         Record::new(Keyspace::Data, &record).len(),
@@ -622,11 +623,11 @@ fn an_immediate_handle_costs_what_the_rules_say() {
         rules::complete_new_key_cost(Some(new_node_cost(value_cost)), 6).as_ref(),
     ));
     batch.put_aux(b"aux", b"value", None).expect("an aux put");
-    expected += charged(rules::immediate_batch_put(Keyspace::Aux, 3, 5, &None, None));
+    expect(rules::immediate_batch_put(Keyspace::Aux, 3, 5, &None, None));
     batch
         .put_root(b"r", b"summed", None)
         .expect("a free root put");
-    expected += charged(rules::immediate_batch_put(
+    expect(rules::immediate_batch_put(
         Keyspace::Roots,
         1,
         6,
@@ -636,7 +637,7 @@ fn an_immediate_handle_costs_what_the_rules_say() {
     batch
         .put_aux(b"refused", b"value", Some(new_node_cost(1)))
         .expect_err("a cost that does not match");
-    expected += charged(rules::immediate_batch_put(
+    expect(rules::immediate_batch_put(
         Keyspace::Aux,
         7,
         5,
@@ -644,11 +645,11 @@ fn an_immediate_handle_costs_what_the_rules_say() {
         Some(&new_node_cost(1)),
     ));
     batch.delete(b"direct", None);
-    expected += rules::immediate_batch_delete(None);
+    expect(Ok(rules::immediate_batch_delete(None)));
     batch.delete_aux(b"gone", Some(removal(35, 6)));
-    expected += rules::immediate_batch_delete(Some(removal(35, 6)));
+    expect(Ok(rules::immediate_batch_delete(Some(removal(35, 6)))));
     batch.delete_root(b"gone", None);
-    expected += rules::immediate_batch_delete(None);
+    expect(Ok(rules::immediate_batch_delete(None)));
 
     let committed = context.commit_batch(batch);
     assert_eq!(committed.cost, expected);

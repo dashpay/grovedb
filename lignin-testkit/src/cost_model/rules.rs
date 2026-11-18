@@ -390,17 +390,44 @@ pub struct WriteCharge {
     /// refused.
     pub at_once: OperationCost,
     /// Charged only when the whole batch has been written: the storage
-    /// cost.
-    pub on_success: OperationCost,
+    /// cost, as the parts that are added to the running cost one after the
+    /// other. For a put they are the key's and the value's. Removed bytes
+    /// of different forms do not add up the same in every grouping, so the
+    /// parts are kept apart until they meet the running cost.
+    pub on_success: [StorageCost; 2],
 }
 
-fn storage_charge(seeks: u32, key: StorageCost, value: StorageCost) -> WriteCharge {
-    let mut on_success = OperationCost::default();
-    on_success.storage_cost += key;
-    on_success.storage_cost += value;
+impl WriteCharge {
+    /// Adds the charge to the two running costs of a batch that is being
+    /// applied.
+    pub fn add_to(self, at_once: &mut OperationCost, on_success: &mut OperationCost) {
+        *at_once += self.at_once;
+        for part in self.on_success {
+            on_success.storage_cost += part;
+        }
+    }
+
+    /// Adds the whole charge to one running cost, as the batch of an
+    /// immediate handle does.
+    pub fn add_all_to(self, cost: &mut OperationCost) {
+        *cost += self.at_once;
+        for part in self.on_success {
+            cost.storage_cost += part;
+        }
+    }
+}
+
+fn charge(at_once: OperationCost, key: StorageCost, value: StorageCost) -> WriteCharge {
     WriteCharge {
-        at_once: OperationCost::with_seek_count(seeks),
-        on_success,
+        at_once,
+        on_success: [key, value],
+    }
+}
+
+fn removal(removed_bytes: StorageRemovedBytes) -> StorageCost {
+    StorageCost {
+        removed_bytes,
+        ..Default::default()
     }
 }
 
@@ -434,10 +461,11 @@ pub fn put(
             (Keyspace::Roots, _, false) => Rule::PutRootsFree,
         },
     );
+    let seeks = OperationCost::with_seek_count(seeks);
     if keyspace == Keyspace::Roots && cost_info.is_none() {
         return Ok(WriteCharge {
-            at_once: OperationCost::with_seek_count(seeks),
-            on_success: OperationCost::default(),
+            at_once: seeks,
+            ..Default::default()
         });
     }
     let no_children = None;
@@ -452,8 +480,8 @@ pub fn put(
         children_sizes,
         cost_info,
     ) {
-        Ok((key, value)) => Ok(storage_charge(seeks, key, value)),
-        Err(error) => Err((error, OperationCost::with_seek_count(seeks))),
+        Ok((key, value)) => Ok(charge(seeks, key, value)),
+        Err(error) => Err((error, seeks)),
     }
 }
 
@@ -471,7 +499,6 @@ pub fn delete(
     cost_info: Option<KeyValueStorageCost>,
     committed_value_len: Option<u64>,
 ) -> WriteCharge {
-    let mut on_success = OperationCost::default();
     match cost_info {
         Some(info) => {
             hit(match keyspace {
@@ -480,11 +507,11 @@ pub fn delete(
                 Keyspace::Roots => Rule::DeleteRootsWithCost,
                 Keyspace::Meta => Rule::DeleteMetaWithCost,
             });
-            on_success.storage_cost.removed_bytes += info.combined_removed_bytes();
-            WriteCharge {
-                at_once: OperationCost::with_seek_count(1),
-                on_success,
-            }
+            charge(
+                OperationCost::with_seek_count(1),
+                removal(info.combined_removed_bytes()),
+                StorageCost::default(),
+            )
         }
         None => {
             hit(if committed_value_len.is_some() {
@@ -494,20 +521,20 @@ pub fn delete(
             });
             let value_len = committed_value_len.unwrap_or(0) as u32;
             let stored = stored_key_len(key_len);
-            on_success.storage_cost.removed_bytes += StorageRemovedBytes::BasicStorageRemoval(
-                stored
-                    + value_len
-                    + varint_len(u64::from(stored))
-                    + varint_len(u64::from(value_len)),
-            );
-            WriteCharge {
-                at_once: OperationCost {
+            charge(
+                OperationCost {
                     seek_count: 2,
                     storage_loaded_bytes: u64::from(value_len),
                     ..Default::default()
                 },
-                on_success,
-            }
+                removal(StorageRemovedBytes::BasicStorageRemoval(
+                    stored
+                        + value_len
+                        + varint_len(u64::from(stored))
+                        + varint_len(u64::from(value_len)),
+                )),
+                StorageCost::default(),
+            )
         }
     }
 }
@@ -519,29 +546,31 @@ pub fn write_immediate() -> OperationCost {
 }
 
 /// M2: a put in the batch of an immediate handle, charged as it is added.
-/// It is [`put`] with both parts charged at once.
+/// It is [`put`], with both parts owed at once
+/// ([`WriteCharge::add_all_to`]).
 pub fn immediate_batch_put(
     keyspace: Keyspace,
     key_len: usize,
     value_len: u64,
     children_sizes: &ChildrenSizesWithIsSumTree,
     cost_info: Option<&KeyValueStorageCost>,
-) -> Result<OperationCost, (CostError, OperationCost)> {
+) -> Result<WriteCharge, (CostError, OperationCost)> {
     hit(Rule::ImmediateBatchPut);
     put(keyspace, key_len, value_len, children_sizes, cost_info)
-        .map(|charge| charge.at_once + charge.on_success)
 }
 
 /// M2: a delete in the batch of an immediate handle, charged as it is
 /// added: one seek, and the writer's removed bytes when it gave a cost.
 /// Nothing is read for a delete with no cost.
-pub fn immediate_batch_delete(cost_info: Option<KeyValueStorageCost>) -> OperationCost {
+pub fn immediate_batch_delete(cost_info: Option<KeyValueStorageCost>) -> WriteCharge {
     hit(Rule::ImmediateBatchDelete);
-    let mut cost = OperationCost::with_seek_count(1);
-    if let Some(info) = cost_info {
-        cost.storage_cost.removed_bytes += info.combined_removed_bytes();
-    }
-    cost
+    charge(
+        OperationCost::with_seek_count(1),
+        cost_info.map_or_else(StorageCost::default, |info| {
+            removal(info.combined_removed_bytes())
+        }),
+        StorageCost::default(),
+    )
 }
 
 /// A move of a cursor.
@@ -636,6 +665,16 @@ mod tests {
                 BasicStorageRemoval(removed)
             },
         }
+    }
+
+    fn storage_owed(charge: &WriteCharge) -> StorageCost {
+        all(charge.clone()).storage_cost
+    }
+
+    fn all(charge: WriteCharge) -> OperationCost {
+        let mut cost = OperationCost::default();
+        charge.add_all_to(&mut cost);
+        cost
     }
 
     fn info(
@@ -769,10 +808,7 @@ mod tests {
     fn a_put_with_no_cost_adds_its_key_and_value() {
         let charge = put(Keyspace::Aux, 3, 10, &None, None).expect("charged");
         assert_eq!(charge.at_once, OperationCost::with_seek_count(1));
-        assert_eq!(
-            charge.on_success.storage_cost,
-            storage(35 + 1 + 10 + 1, 0, 0)
-        );
+        assert_eq!(storage_owed(&charge), storage(35 + 1 + 10 + 1, 0, 0));
         let ignored = Some((None, Some((40, 0)), None));
         assert_eq!(
             put(Keyspace::Meta, 3, 10, &ignored, None).expect("charged"),
@@ -785,11 +821,11 @@ mod tests {
         let key = storage(36, 0, 0);
         let given = info(key.clone(), storage(4, 7, 2), true, false);
         let charge = put(Keyspace::Data, 3, 500, &None, Some(&given)).expect("charged");
-        assert_eq!(charge.on_success.storage_cost, storage(40, 7, 2));
+        assert_eq!(storage_owed(&charge), storage(40, 7, 2));
 
         let verified = info(key.clone(), storage(4, 7, 0), true, true);
         let charge = put(Keyspace::Data, 3, 10, &None, Some(&verified)).expect("charged");
-        assert_eq!(charge.on_success.storage_cost, storage(40, 7, 0));
+        assert_eq!(storage_owed(&charge), storage(40, 7, 0));
 
         let wrong_value = info(key, storage(4, 8, 0), true, true);
         let (error, owed) =
@@ -815,17 +851,17 @@ mod tests {
 
         let update = info(storage(0, 0, 0), storage(4, 7, 0), false, true);
         let charge = put(Keyspace::Data, 3, 10, &None, Some(&update)).expect("charged");
-        assert_eq!(charge.on_success.storage_cost, storage(4, 7, 0));
+        assert_eq!(storage_owed(&charge), storage(4, 7, 0));
     }
 
     #[test]
     fn a_root_key_put_is_charged_only_with_a_cost() {
         let free = put(Keyspace::Roots, 1, 5, &None, None).expect("charged");
         assert_eq!(free.at_once, OperationCost::with_seek_count(1));
-        assert_eq!(free.on_success, OperationCost::default());
+        assert_eq!(storage_owed(&free), StorageCost::default());
         let given = KeyValueStorageCost::for_updated_root_cost(None, 5);
         let charged = put(Keyspace::Roots, 1, 5, &None, Some(&given)).expect("charged");
-        assert_eq!(charged.on_success.storage_cost, storage(34 + 6, 0, 0));
+        assert_eq!(storage_owed(&charged), storage(34 + 6, 0, 0));
     }
 
     #[test]
@@ -843,7 +879,7 @@ mod tests {
         for keyspace in Keyspace::ALL {
             let charge = delete(keyspace, 4, Some(given.clone()), Some(999));
             assert_eq!(charge.at_once, OperationCost::with_seek_count(1));
-            assert_eq!(charge.on_success.storage_cost, storage(0, 0, 117));
+            assert_eq!(storage_owed(&charge), storage(0, 0, 117));
         }
         let committed = delete(Keyspace::Data, 4, None, Some(200));
         assert_eq!(
@@ -854,32 +890,26 @@ mod tests {
                 ..Default::default()
             }
         );
-        assert_eq!(
-            committed.on_success.storage_cost,
-            storage(0, 0, 36 + 200 + 1 + 2)
-        );
+        assert_eq!(storage_owed(&committed), storage(0, 0, 36 + 200 + 1 + 2));
         let uncommitted = delete(Keyspace::Data, 4, None, None);
         assert_eq!(uncommitted.at_once, OperationCost::with_seek_count(2));
-        assert_eq!(
-            uncommitted.on_success.storage_cost,
-            storage(0, 0, 36 + 1 + 1)
-        );
+        assert_eq!(storage_owed(&uncommitted), storage(0, 0, 36 + 1 + 1));
     }
 
     #[test]
     fn the_batch_of_an_immediate_handle_is_charged_as_it_is_filled() {
-        let cost = immediate_batch_put(Keyspace::Aux, 3, 10, &None, None).expect("charged");
+        let cost = all(immediate_batch_put(Keyspace::Aux, 3, 10, &None, None).expect("charged"));
         assert_eq!(cost.seek_count, 1);
         assert_eq!(cost.storage_cost, storage(47, 0, 0));
         let wrong = info(storage(0, 0, 0), storage(1, 0, 0), false, true);
         assert!(immediate_batch_put(Keyspace::Aux, 3, 10, &None, Some(&wrong)).is_err());
 
         assert_eq!(
-            immediate_batch_delete(None),
+            all(immediate_batch_delete(None)),
             OperationCost::with_seek_count(1)
         );
         let given = info(storage(0, 0, 3), storage(0, 0, 4), false, false);
-        let cost = immediate_batch_delete(Some(given));
+        let cost = all(immediate_batch_delete(Some(given)));
         assert_eq!(cost.seek_count, 1);
         assert_eq!(cost.storage_cost, storage(0, 0, 7));
     }
@@ -912,6 +942,71 @@ mod tests {
             cursor_value(None),
             OperationCost::with_storage_loaded_bytes(288)
         );
+    }
+
+    #[test]
+    fn storage_costs_meet_the_running_cost_as_the_engine_adds_them() {
+        use grovedb_costs::storage_cost::removal::{
+            StorageRemovalPerEpochByIdentifier, StorageRemovedBytes::SectionedStorageRemoval,
+        };
+
+        let sectioned = |owner: u8, bytes: u32| {
+            let mut by_owner = StorageRemovalPerEpochByIdentifier::default();
+            by_owner.entry([owner; 32]).or_default().insert(0, bytes);
+            SectionedStorageRemoval(by_owner)
+        };
+        let forms = || {
+            [
+                NoStorageRemoval,
+                BasicStorageRemoval(5),
+                sectioned(0, 7),
+                sectioned(9, 11),
+            ]
+        };
+        let removed = |removed_bytes: &StorageRemovedBytes| StorageCost {
+            added_bytes: 1,
+            replaced_bytes: 2,
+            removed_bytes: removed_bytes.clone(),
+        };
+        for running in forms() {
+            for key in forms() {
+                for value in forms() {
+                    let given = info(removed(&key), removed(&value), false, false);
+                    let start = || OperationCost {
+                        storage_cost: removed(&running),
+                        ..Default::default()
+                    };
+                    let case = format!("{running:?} + {key:?} + {value:?}");
+
+                    let mut engine = start();
+                    engine
+                        .add_key_value_storage_costs(35, 10, None, Some(given.clone()))
+                        .expect("a cost taken as given");
+                    let (mut at_once, mut on_success) = (OperationCost::default(), start());
+                    put(Keyspace::Aux, 3, 10, &None, Some(&given))
+                        .expect("a cost taken as given")
+                        .add_to(&mut at_once, &mut on_success);
+                    assert_eq!(on_success.storage_cost, engine.storage_cost, "{case}");
+                    assert_eq!(at_once, OperationCost::with_seek_count(1));
+
+                    let mut at_once_too = start();
+                    immediate_batch_put(Keyspace::Aux, 3, 10, &None, Some(&given))
+                        .expect("a cost taken as given")
+                        .add_all_to(&mut at_once_too);
+                    assert_eq!(at_once_too.storage_cost, engine.storage_cost, "{case}");
+
+                    let mut engine = start();
+                    engine.storage_cost.removed_bytes += given.clone().combined_removed_bytes();
+                    let (mut at_once, mut on_success) = (OperationCost::default(), start());
+                    delete(Keyspace::Aux, 3, Some(given.clone()), None)
+                        .add_to(&mut at_once, &mut on_success);
+                    assert_eq!(on_success.storage_cost, engine.storage_cost, "{case}");
+                    let mut at_once_too = start();
+                    immediate_batch_delete(Some(given)).add_all_to(&mut at_once_too);
+                    assert_eq!(at_once_too.storage_cost, engine.storage_cost, "{case}");
+                }
+            }
+        }
     }
 
     #[test]
