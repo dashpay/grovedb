@@ -24,8 +24,9 @@
 //!   drops, moves, partial batches and pages over every kind of tree,
 //!   indexed trees written entry by entry, every typed read of the
 //!   append-only trees, trees served in chunks, storage flags in every
-//!   state Drive's callbacks leave them in, and trees deleted with what
-//!   they hold by the transaction that filled or rewrote them.
+//!   state Drive's callbacks leave them in, trees deleted with what they
+//!   hold by the transaction that filled or rewrote them, and ledgers in
+//!   the trees whose total is a 128-bit sum.
 //!
 //! Between them they produce the GroveDB operations that reach storage in a
 //! way of their own ([`coverage::Operation`]): patch, move, partial batches,
@@ -130,6 +131,8 @@ pub struct Features {
     /// An update accounted as a replacement: what the callback of an
     /// [`Op::FlagsHandoverBatch`] answers to a full handover.
     pub full_handovers: bool,
+    /// `CountBigSumTree` and `ProvableBigSumTree`.
+    pub big_sum_tree_twins: bool,
 }
 
 impl Features {
@@ -150,6 +153,7 @@ impl Features {
         private_document_ranges: true,
         flag_length_changes: true,
         full_handovers: true,
+        big_sum_tree_twins: true,
     };
 
     /// What `grove_version` stores.
@@ -187,6 +191,7 @@ impl Features {
                 && private_document_store.range_proof >= 1,
             flag_length_changes: grove_version.merk_versions.tree.just_in_time_value_update >= 1,
             full_handovers: grove_version.merk_versions.tree.just_in_time_value_update >= 2,
+            big_sum_tree_twins: insert.big_sum_tree_twins_creation >= 1,
         }
     }
 
@@ -221,6 +226,7 @@ fn hashes_aggregates(tree_type: TreeType) -> bool {
             | TreeType::ProvableSumTree
             | TreeType::ProvableCountProvableSumTree
             | TreeType::ProvableCountProvableBigSumTree
+            | TreeType::ProvableBigSumTree
             | TreeType::ProvableSumIndexedTree
             | TreeType::ProvableCountIndexedTree
             | TreeType::ProvableCountProvableSumIndexedTree
@@ -347,6 +353,8 @@ pub enum Workload {
     FlagEpochs(adversarial::FlagEpochs),
     /// [`adversarial::TreeDeletes`].
     TreeDeletes(adversarial::TreeDeletes),
+    /// [`adversarial::WideSums`].
+    WideSums(adversarial::WideSums),
 }
 
 impl Workload {
@@ -434,6 +442,10 @@ impl Workload {
                 ..Default::default()
             }),
             Workload::TreeDeletes(adversarial::TreeDeletes::default()),
+            Workload::WideSums(adversarial::WideSums {
+                features,
+                ..Default::default()
+            }),
         ]
     }
 
@@ -468,6 +480,7 @@ impl Workload {
             Workload::StorageFees(_) => "storage-fees",
             Workload::FlagEpochs(_) => "flag-epochs",
             Workload::TreeDeletes(_) => "tree-deletes",
+            Workload::WideSums(_) => "wide-sums",
         }
     }
 
@@ -502,6 +515,7 @@ impl Workload {
             Workload::StorageFees(workload) => workload.stream(seed),
             Workload::FlagEpochs(workload) => workload.stream(seed),
             Workload::TreeDeletes(workload) => workload.stream(seed),
+            Workload::WideSums(workload) => workload.stream(seed),
         }
     }
 }

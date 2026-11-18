@@ -20,6 +20,7 @@ mod partial;
 mod stock;
 mod tree_deletes;
 mod typed;
+mod wide_sums;
 
 use std::collections::BTreeSet;
 
@@ -33,6 +34,7 @@ pub use self::{
     partial::PartialBatches,
     tree_deletes::{TreeDeletes, MIN_TREE_DELETE_ITEMS},
     typed::TypedReads,
+    wide_sums::{WideSums, MIN_WIDE_SUM_ENTRIES},
 };
 
 use grovedb::{element::reference_path::ReferencePathType, Element, TreeType};
@@ -71,6 +73,7 @@ const DOMAIN_TYPED: u64 = 0xAD0C;
 const DOMAIN_CHUNKS: u64 = 0xAD0D;
 const DOMAIN_EPOCHS: u64 = 0xAD0E;
 const DOMAIN_TREE_DELETES: u64 = 0xAD0F;
+const DOMAIN_WIDE_SUMS: u64 = 0xAD10;
 
 /// Chains of trees nested `depth` levels deep.
 ///

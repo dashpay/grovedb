@@ -28,6 +28,7 @@ use std::{
 };
 
 use grovedb::{
+    element::reference_path::ReferencePathType,
     operations::{
         proof::{SumBudgetStop, VerifiedPathQuery},
         QueryItemOrSumReturnType,
@@ -53,8 +54,8 @@ use lignin_testkit::{
         adversarial::{
             ChunkProofs, DeepNesting, DeleteHeavy, FlagEpochs, FlatDrops, IndexedWrites,
             LargeValues, LongKeys, Moves, Pagination, PartialBatches, ReferenceChains,
-            TinySubtrees, TreeDeletes, TypedReads, MAX_LADDER_RUNGS, MAX_NESTING_DEPTH,
-            MIN_CHUNKED_ROWS, MIN_TREE_DELETE_ITEMS,
+            TinySubtrees, TreeDeletes, TypedReads, WideSums, MAX_LADDER_RUNGS, MAX_NESTING_DEPTH,
+            MIN_CHUNKED_ROWS, MIN_TREE_DELETE_ITEMS, MIN_WIDE_SUM_ENTRIES,
         },
         apply,
         coverage::{
@@ -1098,6 +1099,16 @@ fn check_answer(
                 .map(|(_, _, element)| match element {
                     Element::Item(value, _) => QueryItemOrSumReturnType::ItemData(value),
                     Element::SumItem(sum, _) => QueryItemOrSumReturnType::SumValue(sum),
+                    Element::ProvableSumTree(_, sum, _) => QueryItemOrSumReturnType::SumValue(sum),
+                    Element::CountSumTree(_, count, sum, _) => {
+                        QueryItemOrSumReturnType::CountSumValue(count, sum)
+                    }
+                    Element::ProvableBigSumTree(_, sum, _) => {
+                        QueryItemOrSumReturnType::BigSumValue(sum)
+                    }
+                    Element::CountBigSumTree(_, count, sum, _) => {
+                        QueryItemOrSumReturnType::CountBigSumValue(count, sum)
+                    }
                     other => panic!("{context}\nselects {other:?}"),
                 })
                 .collect();
@@ -2057,6 +2068,16 @@ fn the_smallest_workloads_apply() {
             rounds: 1,
             items: MIN_TREE_DELETE_ITEMS,
         }),
+        Workload::WideSums(WideSums {
+            rounds: 0,
+            entries: MIN_WIDE_SUM_ENTRIES,
+            features,
+        }),
+        Workload::WideSums(WideSums {
+            rounds: 3,
+            entries: MIN_WIDE_SUM_ENTRIES,
+            features,
+        }),
     ];
     let grove_version = GroveVersion::latest();
     for workload in workloads {
@@ -2146,9 +2167,9 @@ fn reads_do_not_change_the_writes() {
     }
 }
 
-/// The element variants and tree types no workload produces yet: added
-/// upstream by #1055; the fourth BASE-01 unit produces them.
-const NOT_YET_PRODUCED: [&str; 2] = ["CountBigSumTree", "ProvableBigSumTree"];
+/// The two trees the zoo does not hold: its streams were pinned before
+/// GroveDB had them, so `wide-sums` produces them.
+const NOT_IN_THE_ZOO: [&str; 2] = ["CountBigSumTree", "ProvableBigSumTree"];
 
 #[test]
 fn the_suite_produces_every_element_variant_and_tree_type() {
@@ -2163,8 +2184,8 @@ fn the_suite_produces_every_element_variant_and_tree_type() {
             coverage.record(&op);
         }
     }
-    assert_eq!(coverage.missing_elements(), NOT_YET_PRODUCED);
-    assert_eq!(coverage.missing_tree_types(), NOT_YET_PRODUCED);
+    assert_eq!(coverage.missing_elements(), Vec::<&str>::new());
+    assert_eq!(coverage.missing_tree_types(), Vec::<&str>::new());
     assert_eq!(coverage.missing_reference_paths(), Vec::<&str>::new());
     println!(
         "{} element variants: {:?}",
@@ -2188,8 +2209,14 @@ fn the_suite_produces_every_element_variant_and_tree_type() {
     .stream(OTHER_SEED)
     .collect();
     let zoo = Coverage::of(&zoo);
-    assert_eq!(zoo.missing_elements(), NOT_YET_PRODUCED);
-    assert_eq!(zoo.missing_tree_types(), NOT_YET_PRODUCED);
+    assert_eq!(zoo.missing_elements(), NOT_IN_THE_ZOO);
+    assert_eq!(zoo.missing_tree_types(), NOT_IN_THE_ZOO);
+    let ledgers: Vec<Op> = WideSums::default().stream(OTHER_SEED).collect();
+    let ledgers = Coverage::of(&ledgers);
+    for name in NOT_IN_THE_ZOO {
+        assert!(ledgers.elements().contains(name), "{name}");
+        assert!(ledgers.tree_types().contains(name), "{name}");
+    }
 }
 
 /// The workloads added for the operations that reach storage in a way of
@@ -2211,7 +2238,7 @@ fn the_operation_workloads_apply_for_many_seeds() {
     on_every_grove_version(|grove_version| {
         let features = Features::for_grove_version(grove_version);
         let workloads = operation_workloads(features);
-        assert_eq!(workloads.len(), 18);
+        assert_eq!(workloads.len(), 19);
         for workload in workloads {
             for seed in 2..2 + seeds {
                 let (_dir, db) = open();
@@ -2391,6 +2418,8 @@ const PINNED_STREAMS: &[(&str, u64, u64, &str)] = &[
     ("flag-epochs", 0x4c49474e494e, 149, "8b20523f2db8cd5765367eed3452262f595c6ee763baa1ab3d43f2f9f61c1a18"),
     ("tree-deletes", 0x1, 96, "b85e2cebee162a67848b7f9e51001329a58a24612782efd7ecd94ef926ea2a07"),
     ("tree-deletes", 0x4c49474e494e, 96, "1473dddd7a7f218f5a36e7ef7c0b54fa32333e6ebf739d85a1a3be882c1dfc76"),
+    ("wide-sums", 0x1, 149, "3d8885399924bfebf11cee4e76193c4599bff2572e3d324068441b86ad694134"),
+    ("wide-sums", 0x4c49474e494e, 149, "ff00c125b4ac7841eb0304a11cf53ac3295aa9987d814438f742aa34bf411052"),
 ];
 
 #[test]
@@ -2423,11 +2452,11 @@ fn streams_are_pinned() {
 /// features, seed [`SEED`]: protocol version, operations, digest.
 #[rustfmt::skip]
 const PINNED_SUITES: &[(u32, u64, &str)] = &[
-    (1, 21716, "a137b573fa8e0e4189f3fbf8b68db6c9587358c316cba2fda9f101e0ff6049ae"),
-    (2, 21716, "a137b573fa8e0e4189f3fbf8b68db6c9587358c316cba2fda9f101e0ff6049ae"),
-    (3, 21740, "ba8f61b8ff5baa4e25652386a670b68af99e7a7c6a47bea7c0d628cbfcd420a9"),
-    (4, 22228, "67acf0071537977173e5607cced138331aeeaac4d720665f1e51e5cd36356616"),
-    (5, 22543, "a8212502aa2d25bf9e823907673ff7bba4a08f2fdfa0d9de04239212750b3975"),
+    (1, 21865, "fc9abcf730f389fae42d884675e040ab2d532b76d1e8b1e7ce98c0cd3367596d"),
+    (2, 21865, "fc9abcf730f389fae42d884675e040ab2d532b76d1e8b1e7ce98c0cd3367596d"),
+    (3, 21889, "d0c46af96ef9755ecfeaeb6a12bf7aac5cba6c60ca834b9af166d0c4d6b17661"),
+    (4, 22377, "a8ccc5a338992593ac69837f79cf795819ac6fdcdcc1508759544f2caa361be1"),
+    (5, 22692, "1176786c28add902c69b691379a7efd78721e011cdafb8b9e18fc36b2deacffe"),
 ];
 
 #[test]
@@ -4138,6 +4167,413 @@ fn a_deleted_tree_is_charged_for_what_was_committed() {
                 // inserted is charged for no record.
                 assert!(rewritten.0 < untouched.0, "{context}");
             }
+        }
+    });
+}
+
+/// What the trees of `wide-sums` hold, followed from the operations of its
+/// stream: the elements of each tree by their key.
+#[derive(Default)]
+struct Ledgers {
+    held: BTreeMap<Vec<Vec<u8>>, BTreeMap<Vec<u8>, Element>>,
+}
+
+fn below(path: &[Vec<u8>], key: &[u8]) -> Vec<Vec<u8>> {
+    let mut path = path.to_vec();
+    path.push(key.to_vec());
+    path
+}
+
+/// `element` without what GroveDB adds to a tree it stores: the root key.
+fn without_root_key(element: Element) -> Element {
+    match element {
+        Element::Tree(_, flags) => Element::Tree(None, flags),
+        Element::CountSumTree(_, count, sum, flags) => {
+            Element::CountSumTree(None, count, sum, flags)
+        }
+        Element::ProvableSumTree(_, sum, flags) => Element::ProvableSumTree(None, sum, flags),
+        Element::CountBigSumTree(_, count, sum, flags) => {
+            Element::CountBigSumTree(None, count, sum, flags)
+        }
+        Element::ProvableBigSumTree(_, sum, flags) => Element::ProvableBigSumTree(None, sum, flags),
+        other => other,
+    }
+}
+
+impl Ledgers {
+    fn put(&mut self, path: &[Vec<u8>], key: &[u8], element: &Element) {
+        self.held
+            .entry(path.to_vec())
+            .or_default()
+            .insert(key.to_vec(), element.clone());
+    }
+
+    fn remove(&mut self, path: &[Vec<u8>], key: &[u8]) {
+        self.held
+            .get_mut(path)
+            .and_then(|tree| tree.remove(key))
+            .expect("the stream deletes what it wrote");
+        let under = below(path, key);
+        self.held.retain(|tree, _| !tree.starts_with(&under));
+    }
+
+    fn record(&mut self, op: &Op) {
+        match op {
+            Op::Write(Write::Insert { path, key, element }) => self.put(path, key, element),
+            Op::Write(Write::Delete { path, key }) => self.remove(path, key),
+            Op::Batch(ops) => {
+                for op in ops {
+                    match op {
+                        BatchOp::InsertOnly { path, key, element }
+                        | BatchOp::Replace { path, key, element } => self.put(path, key, element),
+                        BatchOp::Delete { path, key } | BatchOp::DeleteTree { path, key, .. } => {
+                            self.remove(path, key)
+                        }
+                        other => panic!("the model does not follow {other:?}"),
+                    }
+                }
+            }
+            Op::Commit | Op::Read(_) => {}
+            other => panic!("the model does not follow {other:?}"),
+        }
+    }
+
+    /// The count and the sum the tree at `path` keeps of what it holds.
+    fn total(&self, path: &[Vec<u8>]) -> (u64, i128) {
+        self.total_of(path, |_| true)
+    }
+
+    /// The count and the sum of the elements of the tree at `path` whose
+    /// key is `selected`.
+    fn total_of(&self, path: &[Vec<u8>], selected: impl Fn(&[u8]) -> bool) -> (u64, i128) {
+        self.held
+            .get(path)
+            .into_iter()
+            .flatten()
+            .filter(|(key, _)| selected(key))
+            .fold((0, 0), |(count, sum), (key, element)| {
+                let (counted, summed) = self.adds(path, key, element);
+                (count + counted, sum + summed)
+            })
+    }
+
+    /// What an element adds to the count and to the sum of the tree it is
+    /// in: an amount counts once and adds itself, an item and a reference
+    /// count once, a tree that keeps a count adds its count and its sum,
+    /// and a tree that keeps a sum alone counts once and adds its sum.
+    fn adds(&self, path: &[Vec<u8>], key: &[u8], element: &Element) -> (u64, i128) {
+        match element {
+            Element::SumItem(amount, _) => (1, i128::from(*amount)),
+            Element::Item(..) | Element::Reference(..) | Element::Tree(..) => (1, 0),
+            Element::CountSumTree(..) | Element::CountBigSumTree(..) => {
+                self.total(&below(path, key))
+            }
+            Element::ProvableSumTree(..) | Element::ProvableBigSumTree(..) => {
+                (1, self.total(&below(path, key)).1)
+            }
+            other => panic!("the model does not follow {other:?}"),
+        }
+    }
+
+    /// The element GroveDB must hold under `key`, without its root key: a
+    /// tree with the totals of what it holds, anything else as written.
+    fn stored(&self, path: &[Vec<u8>], key: &[u8]) -> Option<Element> {
+        let element = self.held.get(path)?.get(key)?.clone();
+        let (count, sum) = self.total(&below(path, key));
+        let narrow = || i64::try_from(sum).expect("a narrow total fits an i64");
+        Some(match element {
+            Element::CountSumTree(_, _, _, flags) => {
+                Element::CountSumTree(None, count, narrow(), flags)
+            }
+            Element::ProvableSumTree(_, _, flags) => {
+                Element::ProvableSumTree(None, narrow(), flags)
+            }
+            Element::CountBigSumTree(_, _, _, flags) => {
+                Element::CountBigSumTree(None, count, sum, flags)
+            }
+            Element::ProvableBigSumTree(_, _, flags) => {
+                Element::ProvableBigSumTree(None, sum, flags)
+            }
+            other => other,
+        })
+    }
+
+    /// The rows `query` selects, in the order of their keys. The queries of
+    /// the workload have no subquery and no offset. A query returns a
+    /// reference to a key next to it with the path spelled out.
+    fn rows(&self, query: &PathQuery) -> Vec<PathKeyElementTrio> {
+        let selects = &query.query.query;
+        assert!(!selects.has_subquery() && query.query.offset.is_none());
+        self.held
+            .get(&query.path)
+            .into_iter()
+            .flatten()
+            .filter(|(key, _)| selects.items.iter().any(|item| item.contains(key)))
+            .take(query.query.limit.map_or(usize::MAX, usize::from))
+            .map(|(key, _)| {
+                let element = match self.stored(&query.path, key).expect("a held key") {
+                    Element::Reference(
+                        ReferencePathType::SiblingReference(sibling),
+                        hops,
+                        flags,
+                    ) => {
+                        let absolute = below(&query.path, &sibling);
+                        Element::Reference(
+                            ReferencePathType::AbsolutePathReference(absolute),
+                            hops,
+                            flags,
+                        )
+                    }
+                    other => other,
+                };
+                (query.path.clone(), key.clone(), element)
+            })
+            .collect()
+    }
+
+    /// The sum of the range `query` asks for at `path`.
+    fn range_sum(&self, path: &[Vec<u8>], query: &grovedb::Query) -> i128 {
+        let [grovedb::QueryItem::AggregateSumOnRange(range)] = query.items.as_slice() else {
+            panic!("{query:?} does not sum one range");
+        };
+        self.total_of(path, |key| range.contains(key)).1
+    }
+
+    /// The sum of the range the subquery of `query` asks for in each of the
+    /// trees it names.
+    fn range_sums(&self, query: &PathQuery) -> Vec<(Vec<u8>, i128)> {
+        let carrier = &query.query.query;
+        let sums = carrier
+            .default_subquery_branch
+            .subquery
+            .as_deref()
+            .expect("a sum for each key has a subquery");
+        carrier
+            .items
+            .iter()
+            .map(|item| {
+                let grovedb::QueryItem::Key(key) = item else {
+                    panic!("{item:?} does not name a tree");
+                };
+                (key.clone(), self.range_sum(&below(&query.path, key), sums))
+            })
+            .collect()
+    }
+}
+
+/// What [`Ledgers`] checked, by the kind of read.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct LedgersChecked {
+    elements: u64,
+    rows: u64,
+    values_or_sums: u64,
+    optional_keys: u64,
+    range_sums: u64,
+    range_sums_per_tree: u64,
+    /// How many trees were read with a total no `i64` holds.
+    past_an_i64: u64,
+}
+
+fn compare_rows(
+    context: &str,
+    returned: Vec<PathKeyElementTrio>,
+    expected: Vec<PathKeyElementTrio>,
+) {
+    let returned: Vec<_> = returned
+        .into_iter()
+        .map(|(path, key, element)| (path, key, without_root_key(element)))
+        .collect();
+    for (returned, expected) in returned.iter().zip(&expected) {
+        assert!(
+            returned == expected,
+            "{context}\nreturned {returned:?}\nexpected {expected:?}"
+        );
+    }
+    assert_eq!(returned.len(), expected.len(), "{context}");
+}
+
+/// The trees of `wide-sums` keep the totals of what the stream wrote into
+/// them, and every reader returns what the model holds: the elements, the
+/// rows of a query, the numbers a tree is read as, and the sum of a range.
+#[test]
+fn the_ledgers_add_up_to_what_was_written() {
+    on_every_grove_version(|grove_version| {
+        let version = grove_version.protocol_version;
+        let features = Features::for_grove_version(grove_version);
+        let workload = WideSums {
+            features,
+            ..WideSums::default()
+        };
+        for seed in [SEED, OTHER_SEED, 2, 3] {
+            let (_dir, db) = open();
+            let mut transactions = Transactions::new(&db);
+            let mut ledgers = Ledgers::default();
+            let mut checked = LedgersChecked::default();
+            for (index, op) in workload.stream(seed).enumerate() {
+                let context =
+                    format!("wide-sums on grove v{version}, seed {seed}: op {index}\n{op:?}");
+                let outcome = transactions
+                    .apply(&op, grove_version)
+                    .unwrap()
+                    .unwrap_or_else(|error| panic!("{context}\nrefused: {error:?}"));
+                ledgers.record(&op);
+                let Op::Read(read) = &op else {
+                    continue;
+                };
+                match (read, outcome) {
+                    (Read::Get { path, key }, Outcome::Element(element)) => {
+                        let past_an_i64 = match &element {
+                            Element::CountBigSumTree(_, _, sum, _)
+                            | Element::ProvableBigSumTree(_, sum, _) => {
+                                i64::try_from(*sum).is_err()
+                            }
+                            _ => false,
+                        };
+                        checked.past_an_i64 += u64::from(past_an_i64);
+                        assert_eq!(
+                            Some(without_root_key(element)),
+                            ledgers.stored(path, key),
+                            "{context}"
+                        );
+                        checked.elements += 1;
+                    }
+                    (Read::Query(query), Outcome::Rows(rows)) => {
+                        assert_eq!(
+                            (query.items.as_slice(), query.limit, query.raw),
+                            (
+                                [lignin_testkit::workload::QueryItem::RangeFull].as_slice(),
+                                None,
+                                true
+                            ),
+                            "{context}"
+                        );
+                        let all = PathQuery::new_unsized(
+                            query.path.clone(),
+                            grovedb::Query::new_range_full(),
+                        );
+                        compare_rows(&context, rows.to_path_key_elements(), ledgers.rows(&all));
+                        checked.rows += 1;
+                    }
+                    (
+                        Read::PathQuery { query, .. },
+                        Outcome::Run(PathQueryRun::Elements { elements, .. }),
+                    ) => {
+                        compare_rows(
+                            &context,
+                            elements.to_path_key_elements(),
+                            ledgers.rows(query),
+                        );
+                        checked.rows += 1;
+                    }
+                    (
+                        Read::PathQuery { query, .. },
+                        Outcome::Run(PathQueryRun::AggregateSum(sum)),
+                    ) => {
+                        let expected = ledgers.range_sum(&query.path, &query.query.query);
+                        assert_eq!(i128::from(sum), expected, "{context}");
+                        checked.range_sums += 1;
+                    }
+                    (
+                        Read::PathQuery { query, .. },
+                        Outcome::Run(PathQueryRun::AggregateSumPerKey(per_key)),
+                    ) => {
+                        let per_key: Vec<_> = per_key
+                            .into_iter()
+                            .map(|(key, sum)| (key, i128::from(sum)))
+                            .collect();
+                        assert_eq!(per_key, ledgers.range_sums(query), "{context}");
+                        checked.range_sums_per_tree += 1;
+                    }
+                    (Read::BigSum { query, .. }, Outcome::BigSum { count: None, sum }) => {
+                        let expected = ledgers.range_sum(&query.path, &query.query.query);
+                        assert_eq!(sum, expected, "{context}");
+                        checked.range_sums += 1;
+                    }
+                    (Read::BigSum { query, .. }, Outcome::BigSumPerKey(per_key)) => {
+                        let per_key: Vec<_> = per_key
+                            .into_iter()
+                            .map(|(key, count, sum)| {
+                                assert_eq!(count, None, "{context}");
+                                (key, sum)
+                            })
+                            .collect();
+                        assert_eq!(per_key, ledgers.range_sums(query), "{context}");
+                        checked.range_sums_per_tree += 1;
+                    }
+                    (
+                        Read::ItemValues {
+                            query,
+                            or_sums: true,
+                        },
+                        Outcome::ItemValuesOrSums { values, .. },
+                    ) => {
+                        let expected: Vec<_> = ledgers
+                            .rows(query)
+                            .into_iter()
+                            .map(|(_, _, element)| match element {
+                                Element::CountSumTree(_, count, sum, _) => {
+                                    QueryItemOrSumReturnType::CountSumValue(count, sum)
+                                }
+                                Element::ProvableSumTree(_, sum, _) => {
+                                    QueryItemOrSumReturnType::SumValue(sum)
+                                }
+                                Element::CountBigSumTree(_, count, sum, _) => {
+                                    QueryItemOrSumReturnType::CountBigSumValue(count, sum)
+                                }
+                                Element::ProvableBigSumTree(_, sum, _) => {
+                                    QueryItemOrSumReturnType::BigSumValue(sum)
+                                }
+                                other => panic!("{context}\nreads {other:?} as a number"),
+                            })
+                            .collect();
+                        assert_eq!(values, expected, "{context}");
+                        checked.values_or_sums += 1;
+                    }
+                    (Read::KeysOptional { query, .. }, Outcome::OptionalRows(mut rows)) => {
+                        let mut expected: Vec<_> = query
+                            .query
+                            .query
+                            .items
+                            .iter()
+                            .map(|item| {
+                                let grovedb::QueryItem::Key(key) = item else {
+                                    panic!("{context}\n{item:?} is not a key");
+                                };
+                                (
+                                    query.path.clone(),
+                                    key.clone(),
+                                    ledgers.stored(&query.path, key),
+                                )
+                            })
+                            .collect();
+                        rows.sort_by(|a, b| a.1.cmp(&b.1));
+                        expected.sort_by(|a, b| a.1.cmp(&b.1));
+                        assert_eq!(rows, expected, "{context}");
+                        checked.optional_keys += 1;
+                    }
+                    (read, outcome) => panic!("{context}\n{read:?} returned {outcome:?}"),
+                }
+            }
+            let rounds = u64::from(workload.rounds);
+            assert_eq!(
+                checked,
+                LedgersChecked {
+                    elements: 2 * rounds,
+                    rows: 5 * rounds,
+                    values_or_sums: rounds,
+                    optional_keys: rounds,
+                    range_sums: rounds,
+                    range_sums_per_tree: rounds,
+                    past_an_i64: checked.past_an_i64,
+                },
+                "wide-sums on grove v{version}, seed {seed}"
+            );
+            assert_eq!(
+                checked.past_an_i64 > 0,
+                features.big_sum_tree_twins,
+                "wide-sums on grove v{version}, seed {seed}: {} totals past an i64",
+                checked.past_an_i64
+            );
         }
     });
 }

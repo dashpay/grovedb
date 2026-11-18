@@ -170,6 +170,18 @@ the length of a record that is not there, and loads less.
 `the_charge_for_a_deleted_tree_is_in_the_corpus` checks the files for
 this.
 
+`wide-sums` keeps two ledgers in the trees whose total is a 128-bit sum,
+which grove version 5 adds: a `CountBigSumTree`, with a count and a sum
+next to its root key, and a `ProvableBigSumTree`, whose sum is in every
+node hash. Grove versions 1 to 4 refuse to create either, so there the
+same ledgers are a `CountSumTree` and a `ProvableSumTree` and the amounts
+are small: the five traces of the workload hold one shape with a narrow
+and with a wide total. The totals are in the elements the reads return and
+in the sum of a range of keys of the second ledger, which is a `BigSum`
+step on grove version 5 and an aggregate `PathQuery` before. No other
+workload holds the two trees: the streams of `element-zoo` were pinned
+before GroveDB had them.
+
 A stream marks a path query as proven when GroveDB proves it on the grove
 version the stream was generated for. Such a proof is verified with
 `GroveDb::verify_path_query`, the proof of a `Query` with
