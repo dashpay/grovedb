@@ -155,7 +155,7 @@ mod store;
 mod writer;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use error::{ManifestChange, SegmentStoreError};
 pub use files::{create_file, list_or_create_dir, FileNames};

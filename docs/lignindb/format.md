@@ -127,8 +127,8 @@ table (STORE-03).
   are all encoded as 0.
 
 **Why 32 bits.** 2^32 − 1 pages is 16 TiB of live pages at 4 KiB a page, and
-more at larger pages. Well before that, the page table itself (32 bytes a
-page, STORE-03) would be 128 GiB, so the id is not the first limit to bind.
+more at larger pages. Well before that, the page table itself (28 bytes a
+page, STORE-03) would be 112 GiB, so the id is not the first limit to bind.
 Against that, the id is stored in every cross-page link, every delta that
 names a page, every directory entry and every back pointer. The plan's write
 target of 2.4 KB logged per transition is about 40 bytes for each changed
@@ -369,7 +369,7 @@ merely newer than it understands.
 | 2 | `Wal` | `wal/<n>.log` | FMT-05 |
 | 3 | `Segment` | `seg/<n>.seg` | FMT-06 |
 | 4 | `ValueLog` | `val/<n>.val` | FMT-07 |
-| 5 | `PageTable` | `table/<n>.pt` | STORE-03 |
+| 5 | `PageTable` | `table/<n>.pt` | STORE-03, [`page-table.md`](page-table.md) |
 
 The codes are registered here so that tasks working in parallel do not choose
 the same one. A new kind is a format change (U6).
