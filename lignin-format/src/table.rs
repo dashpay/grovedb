@@ -616,7 +616,17 @@ impl Decoder {
 
     /// Reads one record from its payload, which the caller has taken out of
     /// its frame with its checksum verified ([`RecordHeader`]).
+    ///
+    /// A payload longer than [`MAX_PAYLOAD_LEN`] is refused as
+    /// [`Self::read`] refuses it, so both give the same answer for the same
+    /// record.
     pub fn record<'a>(&mut self, payload: &'a [u8]) -> Result<Record<'a>, FormatError> {
+        if payload.len() > MAX_PAYLOAD_LEN {
+            return Err(FormatError::RecordTooLong {
+                len: payload.len() as u64,
+                max: MAX_PAYLOAD_LEN as u64,
+            });
+        }
         match self.version {
             FormatVersion::V1 => self.record_v1(payload),
         }

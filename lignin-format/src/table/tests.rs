@@ -560,6 +560,37 @@ fn records_that_are_misplaced_or_of_the_wrong_length_are_rejected() {
 }
 
 #[test]
+fn a_payload_is_bounded_whether_or_not_it_comes_in_a_frame() {
+    let mut full = vec![LINKS_RECORD];
+    full.extend(base_item(1, 1).repeat(LINKS_PER_RECORD));
+    let mut too_many = full.clone();
+    too_many.extend(base_item(1, 1));
+    let too_long = FormatError::RecordTooLong {
+        len: MAX_PAYLOAD_LEN as u64 + LINK_LEN as u64,
+        max: MAX_PAYLOAD_LEN as u64,
+    };
+
+    let mut decoder = Decoder::new(V1);
+    assert_eq!(decoder.record(&too_many).unwrap_err(), too_long);
+    let Record::Links(links) = decoder.record(&full).unwrap() else {
+        panic!("a links record");
+    };
+    assert_eq!(links.len(), LINKS_PER_RECORD);
+    let mut one_byte_more = full.clone();
+    one_byte_more.push(0);
+    assert!(matches!(
+        decoder.record(&one_byte_more).unwrap_err(),
+        FormatError::RecordTooLong { .. }
+    ));
+    let mut long_end = vec![END_RECORD];
+    long_end.resize(MAX_PAYLOAD_LEN + 1, 0);
+    assert!(matches!(
+        decoder.record(&long_end).unwrap_err(),
+        FormatError::RecordTooLong { .. }
+    ));
+}
+
+#[test]
 fn a_record_after_the_end_record_is_refused_by_the_decoder() {
     let mut decoder = Decoder::new(V1);
     let end = end_record(7, NO_VERSION, 0);
