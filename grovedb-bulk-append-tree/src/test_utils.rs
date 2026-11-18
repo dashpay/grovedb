@@ -102,11 +102,11 @@ impl FlatStore for MemStorageContext {
     }
 
     fn cursor(&self) -> Self::Cursor<'_> {
-        unimplemented!("MemStorageContext::raw_iter")
+        unimplemented!("MemStorageContext::cursor")
     }
 }
 
-// ── Batch and RawIterator stubs ───────────────────────────────────────
+// ── RawIterator stub ──────────────────────────────────────────────────
 
 /// Stub iterator (never used by the bulk append tree).
 pub struct MemRawIterator;

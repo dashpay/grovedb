@@ -2367,9 +2367,7 @@ mod snapshot_read_transactions {
 }
 
 mod flat_store {
-    use grovedb_costs::{
-        storage_cost::key_value_cost::KeyValueStorageCost, CostResult, OperationCost,
-    };
+    use grovedb_costs::{storage_cost::key_value_cost::KeyValueStorageCost, OperationCost};
 
     use super::*;
     use crate::{
@@ -2459,25 +2457,6 @@ mod flat_store {
         (result.value.expect("get through the context"), result.cost)
     }
 
-    // Both traits are in scope here and a context implements both, so the
-    // `FlatStore` calls go through these generic helpers.
-    fn write<S: FlatStore>(
-        store: &S,
-        key: &[u8],
-        value: &[u8],
-        cost_info: Option<KeyValueStorageCost>,
-    ) -> CostResult<(), Error> {
-        store.put(key, value, cost_info)
-    }
-
-    fn remove<S: FlatStore>(store: &S, key: &[u8]) -> CostResult<(), Error> {
-        store.delete(key, None)
-    }
-
-    fn clear<S: FlatStore>(store: &S) -> CostResult<(), Error> {
-        store.clear()
-    }
-
     fn read<S: FlatStore>(store: &S, key: &[u8]) -> (Option<Vec<u8>>, OperationCost) {
         let result = store.get(key);
         (result.value.expect("get"), result.cost)
@@ -2550,7 +2529,7 @@ mod flat_store {
                 .unwrap();
 
             for (key, value, cost_info) in writes {
-                let staged = with_keyspace!(keyspace, context, |store| write(
+                let staged = with_keyspace!(keyspace, context, |store| FlatStore::put(
                     store,
                     key,
                     value,
@@ -2619,14 +2598,17 @@ mod flat_store {
 
                 // A handle opened with no batch refuses to write.
                 assert!(matches!(
-                    write(store, b"k4", b"v4", None).value,
+                    FlatStore::put(store, b"k4", b"v4", None).value,
                     Err(Error::StorageError(_))
                 ));
                 assert!(matches!(
-                    remove(store, b"k1").value,
+                    FlatStore::delete(store, b"k1", None).value,
                     Err(Error::StorageError(_))
                 ));
-                assert!(matches!(clear(store).value, Err(Error::StorageError(_))));
+                assert!(matches!(
+                    FlatStore::clear(store).value,
+                    Err(Error::StorageError(_))
+                ));
             });
 
             // A delete is staged and charged like the context's.
@@ -2638,7 +2620,9 @@ mod flat_store {
             let twin_context = twin_storage
                 .get_transactional_storage_context(SUBTREE.into(), Some(&twin_batch), &twin_tx)
                 .unwrap();
-            let staged = with_keyspace!(keyspace, context, |store| remove(store, b"k2"));
+            let staged = with_keyspace!(keyspace, context, |store| FlatStore::delete(
+                store, b"k2", None
+            ));
             staged.value.expect("delete is staged");
             assert_eq!(
                 staged.cost,
@@ -2675,22 +2659,26 @@ mod flat_store {
         let other = storage
             .get_transactional_storage_context(OTHER_SUBTREE.into(), Some(&batch), &tx)
             .unwrap();
-        write(&context, b"key", b"data", None).unwrap().unwrap();
-        write(&context.aux(), b"key", b"aux", None)
+        FlatStore::put(&context, b"key", b"data", None)
             .unwrap()
             .unwrap();
-        write(&context.meta(), b"key", b"meta", None)
+        FlatStore::put(&context.aux(), b"key", b"aux", None)
+            .unwrap()
+            .unwrap();
+        FlatStore::put(&context.meta(), b"key", b"meta", None)
             .unwrap()
             .unwrap();
         context
             .put_root(b"key", b"root", None)
             .unwrap()
             .expect("root pointer");
-        write(&other, b"key", b"other-data", None).unwrap().unwrap();
-        write(&other.aux(), b"key", b"other-aux", None)
+        FlatStore::put(&other, b"key", b"other-data", None)
             .unwrap()
             .unwrap();
-        write(&other.meta(), b"key", b"other-meta", None)
+        FlatStore::put(&other.aux(), b"key", b"other-aux", None)
+            .unwrap()
+            .unwrap();
+        FlatStore::put(&other.meta(), b"key", b"other-meta", None)
             .unwrap()
             .unwrap();
         commit(&storage, batch, &tx);
@@ -2736,7 +2724,7 @@ mod flat_store {
             let context = storage
                 .get_transactional_storage_context(SUBTREE.into(), Some(&batch), &tx)
                 .unwrap();
-            with_keyspace!(keyspace, context, |store| clear(store)
+            with_keyspace!(keyspace, context, |store| FlatStore::clear(store)
                 .unwrap()
                 .expect("clear"));
             commit(&storage, batch, &tx);
@@ -2762,7 +2750,7 @@ mod flat_store {
                 (b"bb", b"22"),
                 (b"ccc", b"333"),
             ] {
-                write(&context, key, value, None).unwrap().unwrap();
+                FlatStore::put(&context, key, value, None).unwrap().unwrap();
             }
             commit(storage, batch, &tx);
             storage
@@ -2778,7 +2766,7 @@ mod flat_store {
         let context = storage
             .get_transactional_storage_context(SUBTREE.into(), Some(&batch), &tx)
             .unwrap();
-        let cleared = clear(&context);
+        let cleared = FlatStore::clear(&context);
         cleared.value.expect("clear");
 
         // The walk the contract names, written out against the context.
@@ -2857,13 +2845,15 @@ mod flat_store {
                 .get_immediate_storage_context(OTHER_SUBTREE.into(), &tx)
                 .unwrap();
 
-            with_keyspace!(keyspace, other, |store| write(store, b"k1", b"other", None)
-                .unwrap()
-                .expect("put"));
+            with_keyspace!(keyspace, other, |store| FlatStore::put(
+                store, b"k1", b"other", None
+            )
+            .unwrap()
+            .expect("put"));
 
             with_keyspace!(keyspace, context, |store| {
                 for (key, value) in [(b"k2", b"v2"), (b"k1", b"v1"), (b"k3", b"v3")] {
-                    let written = write(store, key, value, None);
+                    let written = FlatStore::put(store, key, value, None);
                     written.value.expect("put");
                     assert_eq!(written.cost, OperationCost::default(), "{keyspace:?}");
                 }
@@ -2883,15 +2873,15 @@ mod flat_store {
                     "{keyspace:?}"
                 );
 
-                let deleted = remove(store, b"k2");
+                let deleted = FlatStore::delete(store, b"k2", None);
                 deleted.value.expect("delete");
                 assert_eq!(deleted.cost, OperationCost::default(), "{keyspace:?}");
                 assert_eq!(read(store, b"k2").0, None, "{keyspace:?}");
-                remove(store, b"k2")
+                FlatStore::delete(store, b"k2", None)
                     .unwrap()
                     .expect("deleting an absent key");
 
-                clear(store).unwrap().expect("clear");
+                FlatStore::clear(store).unwrap().expect("clear");
                 assert!(forward(store).is_empty(), "{keyspace:?}");
             });
 
@@ -2949,11 +2939,13 @@ mod flat_store {
             let context = storage
                 .get_transactional_storage_context_by_subtree_prefix(prefix, Some(&batch), &tx)
                 .unwrap();
-            write(&context, b"key", b"data", None).unwrap().unwrap();
-            write(&context.aux(), b"key", b"aux", None)
+            FlatStore::put(&context, b"key", b"data", None)
                 .unwrap()
                 .unwrap();
-            write(&context.meta(), b"key", b"meta", None)
+            FlatStore::put(&context.aux(), b"key", b"aux", None)
+                .unwrap()
+                .unwrap();
+            FlatStore::put(&context.meta(), b"key", b"meta", None)
                 .unwrap()
                 .unwrap();
             context.put_root(b"key", b"root", None).unwrap().unwrap();

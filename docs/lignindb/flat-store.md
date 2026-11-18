@@ -12,8 +12,9 @@ GroveDB keeps two kinds of data: Merk nodes, and ordered key-value records that 
 
 | Records | Keyspace | Written by |
 | --- | --- | --- |
-| MMR nodes, bulk-append buffer and chunk records, dense-tree values and hash records, the commitment frontier, private-document entries | the data keyspace of the tree's subtree | the append-only tree crates, and GroveDB for the frontier and one dense read |
-| Auxiliary records (Platform state, protocol version, state-sync markers) | the aux keyspace of the root subtree | `GroveDb::put_aux`, `delete_aux`, `get_aux`, `get_aux_by_key_prefix`; Merk's `put_aux` |
+| MMR nodes, the bulk-append tree's cached MMR root, dense-tree values and hash records, the commitment frontier. A bulk-append tree is a dense tree and an MMR in one keyspace, and a commitment tree or a private-document store is a bulk-append tree with one more record or none. | the data keyspace of the tree's subtree | the append-only tree crates, and GroveDB for the frontier and one dense read |
+| Auxiliary records (Platform state, protocol version, the state-sync restore marker) | the aux keyspace of the root subtree | `GroveDb::put_aux`, `delete_aux`, `get_aux`, `get_aux_by_key_prefix` |
+| Auxiliary records of a Merk | the aux keyspace of the Merk's subtree | `Merk::commit` with aux operations, `Merk::get_aux` |
 | Merk metadata | the meta keyspace of a Merk's subtree | `Merk::put_meta`, `get_meta`, `delete_meta` |
 | Pending-prefix-drop redo records | the meta keyspace of the reserved subtree prefix `pending_prefix_drops_namespace()` | `GroveDb::drop_flat_subtree`, batch `DeleteTree` with a flat drop |
 
@@ -58,7 +59,7 @@ Rules that hold for every implementation:
 6. **`cursor`** returns a cursor that is not positioned: `valid()` is false until the first seek. It walks the records that were visible to the handle when the cursor was opened, in key order, and never shows a record outside the keyspace. `seek(k)` goes to the first key `>= k`, `seek_for_prev(k)` to the last key `<= k`. Stepping past either end makes the cursor invalid. From an invalid cursor only a seek gives a defined position again. `status()` tells an error from the end of the keyspace.
 7. **Cursor and writes.** One pattern of writing under an open cursor is defined: deleting the record the cursor stands on and then calling `next()`. `clear` uses it. Any other write to the keyspace while a cursor is open leaves that cursor's later results unspecified.
 8. **`clear`** is the range delete: it removes every record of the keyspace, and only of that keyspace. The aux, meta and roots records of the subtree stay when its data keyspace is cleared (inventory finding 6).
-9. **Errors.** A handle whose transaction cannot be written, such as a snapshot read transaction or a deferred handle opened with no batch, returns `Err` from `put`, `delete` and `clear` and changes nothing.
+9. **Refused writes.** A deferred handle opened with no batch is read-only: `put` and `delete` return `Err` and change nothing, and so does `clear` unless the keyspace is already empty. A snapshot read transaction is read-only as well. An immediate handle on it refuses each write, and a batch staged through deferred handles on it is refused when it is applied (`Error::SnapshotReadOnlyTransaction`).
 
 The cursor is the existing `RawIterator` trait. `FlatStore` does not define a second cursor trait, so code that walks a keyspace is the same for a flat keyspace and for Merk records.
 
@@ -68,7 +69,7 @@ A handle lives inside one transaction. The engine hands it out in one of two wri
 
 **Deferred.** `put`, `delete` and `clear` stage their writes in the multi-context batch (`StorageBatch`) the handle was opened with.
 
-- A staged write is not visible to `get` or to the cursor, through this handle or any other. The append-only trees are written for this: they keep what they wrote in memory and never read it back in the same batch.
+- A staged write is not visible to `get` or to the cursor, through this handle or any other. The append-only trees are written for this: they keep in memory what they have to read again before the batch is applied.
 - The batch is applied to the transaction as one unit (`commit_multi_context_batch`). Every write staged through any handle of that batch becomes visible at that moment, to every handle of the transaction.
 - The batch keeps one outcome per key, not a log. Within one operation a put wins over a delete of the same key. Across operation boundaries (`StorageBatch::next_operation`) the later operation wins. This rule is the batch's (TXN-08), not the handle's.
 - If the batch is dropped without being applied, none of its writes happen.
@@ -98,7 +99,7 @@ Every method returns its `OperationCost` with its result. The trait does not say
 | cursor moves and reads | reported by each call (`I-move`, `I-key`, `I-value`) | the same |
 | `clear` | the cursor walk at the call, the deletes when the batch is applied (`CLR`) | the cursor walk only |
 
-`cost_info` is the caller's own account of a write. When it is given, the model charges from it and not from the record. Three rules of today's model are visible through the seam and have to survive SEAM-05 unchanged:
+`cost_info` is the caller's own account of a write. When it is given, the model charges from it and not from the record. These rules of today's model are visible through the seam and have to survive SEAM-05 unchanged:
 
 - A `put` of a new record (`cost_info.new_node`) into a **data** keyspace gives the key's cost without the subtree prefix. The engine adds the cost of the full stored key, `32 + key length` plus the length of that number as a varint. The aux and meta keyspaces take `cost_info` as it is given.
 - A `put` with `KeyValueStorageCost::prepaid()` is charged nothing when the batch is applied, not even a seek.
@@ -162,9 +163,9 @@ On RocksDB the range delete is one range tombstone per prefix and column family,
 
 Inventory finding 7 lists three paths that write to the database directly. The drain is described above. The other two are engine operations (`Engine`, SEAM-04), not `FlatStore` methods, but they act on flat keyspaces, so their contract is recorded here.
 
-**`wipe`.** Removes every record of every keyspace of every subtree: tree data, roots, aux and meta, the pending-drop records with them. It takes no transaction and is not charged. On RocksDB it clears one column family after another (default, roots, aux, meta), each with one range tombstone, so it is not atomic: a crash part-way leaves some keyspaces empty and others full. The database must open after such a crash, and a second `wipe` completes the first. Platform relies on exactly that: it guards a wipe with a marker file and wipes again at the next start ([P-23](platform-requirements.md)). LigninDB may make `wipe` atomic. It may not leave a state that fails to open. What a transaction that is open during a wipe observes is not specified, and Platform does not hold one across it.
+**`wipe`.** Removes every record of every keyspace of every subtree: tree data, roots, aux and meta, the pending-drop records with them. It takes no transaction and is not charged. On RocksDB it clears one column family after another (default, roots, aux, meta), each with one range tombstone, so it is not atomic: a crash part-way leaves some keyspaces empty and others full. The database must open after such a crash, and a second `wipe` completes the first. Platform relies on exactly that: it guards a wipe with a marker file and wipes again at the next start ([P-23](platform-requirements.md)). LigninDB may make `wipe` atomic. It may not leave a state that fails to open. What a transaction that is open during a wipe observes is not specified.
 
-**`ingest_subtree_sst`** (feature `unsafe-dump-load`). Loads records prepared outside the database into one keyspace, bypassing any open transaction. The caller guarantees that the target subtree is empty and that a failure is recovered by wiping ([P-30](platform-requirements.md)). It is a dump-and-load hatch and belongs to GROVE-09.
+**`ingest_subtree_sst`** (feature `unsafe-dump-load`). Loads records prepared outside the database into one keyspace, bypassing any open transaction. The caller guarantees that the target subtree is empty and recovers from a failure by wiping, as the documentation of `GroveDb::ingest_subtree_sst` requires. Platform's use of it is [P-30](platform-requirements.md). It is a dump-and-load hatch and belongs to GROVE-09.
 
 ## What changed in the code
 
@@ -183,5 +184,6 @@ Inventory finding 7 lists three paths that write to the database directly. The d
 - **SEAM-04.** The RocksDB contexts expose the aux and meta handles as inherent methods. A handle type that is generic over the engine needs a trait for "the flat keyspaces of a subtree handle"; that belongs with the `Engine` trait, which decides what a subtree handle is. `PendingPrefixDrops` is meant to become a supertrait or a part of `Engine`, next to `wipe`.
 - **SEAM-04, GROVE-12.** `FlatStore` does not require `Send`. The RocksDB deferred handle holds a reference to a `StorageBatch`, which is not `Sync`. Parallel writers need a decision on that for flat handles as for Merk handles.
 - **SEAM-05.** The formulas in "Costs" move into the versioned cost model. The table of where each cost is reported stays.
+- **TREE-07, GROVE-01, GROVE-04.** `FlatStore` reports costs, and `lignin-tree` must not know cost rules. So LigninDB's implementation of `FlatStore` is an adapter above the engine: it wraps the engine's flat keyspace handle and cursor, and gets every cost from the model. The engine's own flat keyspace (TREE-07) needs the same operations and the same ordering, without costs.
 - **MERK-05.** Merk's aux and meta records can use `aux()` and `meta()` once Merk holds a handle that offers them.
 - **A cursor error inside `clear`.** `clear` stops when the cursor becomes invalid and does not look at `status()`, as before this task. A cursor that fails part-way therefore ends the walk without an error. Changing that changes behaviour and was left alone.

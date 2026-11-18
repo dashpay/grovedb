@@ -96,7 +96,7 @@ impl FlatStore for MemStorageContext {
     }
 
     fn cursor(&self) -> Self::Cursor<'_> {
-        unimplemented!("MemStorageContext::raw_iter")
+        unimplemented!("MemStorageContext::cursor")
     }
 }
 
@@ -170,7 +170,7 @@ impl FlatStore for FailingStorageContext {
     }
 }
 
-// ── Batch and RawIterator stubs ───────────────────────────────────────
+// ── RawIterator stub ──────────────────────────────────────────────────
 
 /// Stub iterator (never used by the dense tree).
 pub(crate) struct MemRawIterator;
