@@ -572,12 +572,12 @@ impl<'a> FlatPage<'a> {
     }
 
     /// The number of keys in the page.
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.view().count
     }
 
     /// Whether the page has no key.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
@@ -626,12 +626,12 @@ impl<'a> FlatLeaf<'a> {
     }
 
     /// The number of entries.
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.0.count
     }
 
     /// Whether the leaf has no entry.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
@@ -750,12 +750,12 @@ impl<'a> FlatBranch<'a> {
     }
 
     /// The number of separators. There is one more child.
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.0.count
     }
 
     /// Whether the branch has no separator, and so a single child.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
@@ -1072,6 +1072,10 @@ mod tests {
             }
         }
 
+        fn image(&self) -> Vec<u8> {
+            self.encode(FlatPage::MAX_LEN).expect("fits")
+        }
+
         fn encoded_len(&self) -> usize {
             match self {
                 Self::Leaf { prefix, entries } => {
@@ -1098,10 +1102,7 @@ mod tests {
                 FlatPage::Leaf(leaf) => Self::Leaf {
                     prefix: leaf.prefix().to_vec(),
                     entries: (0..leaf.len())
-                        .map(|slot| {
-                            let (key, value) = leaf.entry(slot).expect("in range");
-                            (key.to_vec(), !value.is_inline(), value.bytes().to_vec())
-                        })
+                        .map(|slot| owned_entry(leaf.entry(slot).expect("in range")))
                         .collect(),
                 },
                 FlatPage::Branch(branch) => Self::Branch {
@@ -1140,6 +1141,28 @@ mod tests {
         } else {
             FlatValue::Inline(bytes)
         }
+    }
+
+    fn owned_entry((key, value): (FlatKey<'_>, FlatValue<'_>)) -> (Vec<u8>, bool, Vec<u8>) {
+        (key.to_vec(), !value.is_inline(), value.bytes().to_vec())
+    }
+
+    fn decode_leaf(image: &[u8]) -> FlatLeaf<'_> {
+        FlatPage::decode(image, V1)
+            .expect("valid")
+            .leaf()
+            .expect("leaf")
+    }
+
+    fn decode_branch(image: &[u8]) -> FlatBranch<'_> {
+        FlatPage::decode(image, V1)
+            .expect("valid")
+            .branch()
+            .expect("branch")
+    }
+
+    fn assert_encodes_back(page: FlatPage<'_>) {
+        assert_eq!(Contents::read(page).image(), page.as_bytes());
     }
 
     fn page_id(raw: u32) -> PageId {
@@ -1396,7 +1419,7 @@ mod tests {
             (single_child, "02ff10003e7a0dac00000000ffffffff"),
         ];
         for (contents, image) in golden {
-            let encoded = contents.encode(FlatPage::MAX_LEN).expect("fits");
+            let encoded = contents.image();
             assert_eq!(hex(&encoded), image);
             assert_eq!(
                 Contents::read(FlatPage::decode(&encoded, V1).expect("valid")),
@@ -1409,7 +1432,7 @@ mod tests {
     fn random_pages_round_trip_in_both_directions() {
         let mut rng = SplitMix64::new(0xF1A7);
         for contents in random_pages(0x04, 2000) {
-            let image = contents.encode(FlatPage::MAX_LEN).expect("fits");
+            let image = contents.image();
             assert_eq!(image.len(), contents.encoded_len());
 
             let page = FlatPage::decode(&image, V1).expect("valid");
@@ -1450,11 +1473,8 @@ mod tests {
                 .map(|(key, out_of_line, value)| (key.as_slice(), (*out_of_line, value.as_slice())))
                 .collect();
             let keys = contents.keys();
-            let image = contents.encode(FlatPage::MAX_LEN).expect("fits");
-            let leaf = FlatPage::decode(&image, V1)
-                .expect("valid")
-                .leaf()
-                .expect("leaf");
+            let image = contents.image();
+            let leaf = decode_leaf(&image);
             for probe in probes(&mut rng, &contents) {
                 assert_eq!(
                     leaf.search(&probe),
@@ -1483,11 +1503,8 @@ mod tests {
             else {
                 panic!("odd pages are branches");
             };
-            let image = contents.encode(FlatPage::MAX_LEN).expect("fits");
-            let branch = FlatPage::decode(&image, V1)
-                .expect("valid")
-                .branch()
-                .expect("branch");
+            let image = contents.image();
+            let branch = decode_branch(&image);
             assert_eq!(branch.child(entries.len() + 1), None);
             assert_eq!(branch.separator(entries.len()), None);
             for probe in probes(&mut rng, &contents) {
@@ -1508,18 +1525,12 @@ mod tests {
             let Contents::Leaf { entries, .. } = &contents else {
                 panic!("even pages are leaves");
             };
-            let image = contents.encode(FlatPage::MAX_LEN).expect("fits");
-            let leaf = FlatPage::decode(&image, V1)
-                .expect("valid")
-                .leaf()
-                .expect("leaf");
-            let owned = |(key, value): (FlatKey<'_>, FlatValue<'_>)| {
-                (key.to_vec(), !value.is_inline(), value.bytes().to_vec())
-            };
+            let image = contents.image();
+            let leaf = decode_leaf(&image);
             assert_eq!(leaf.iter().len(), entries.len());
             assert_eq!(leaf.is_empty(), entries.is_empty());
-            assert_eq!(&leaf.iter().map(owned).collect::<Vec<_>>(), entries);
-            let mut backward: Vec<_> = leaf.into_iter().rev().map(owned).collect();
+            assert_eq!(&leaf.iter().map(owned_entry).collect::<Vec<_>>(), entries);
+            let mut backward: Vec<_> = leaf.into_iter().rev().map(owned_entry).collect();
             backward.reverse();
             assert_eq!(&backward, entries);
             assert_eq!(leaf.entry(entries.len()), None);
@@ -1539,14 +1550,8 @@ mod tests {
             builder.finish()
         };
         let (long, short) = (page(7), page(2));
-        let long = FlatPage::decode(&long, V1)
-            .expect("valid")
-            .leaf()
-            .expect("leaf");
-        let short = FlatPage::decode(&short, V1)
-            .expect("valid")
-            .leaf()
-            .expect("leaf");
+        let long = decode_leaf(&long);
+        let short = decode_leaf(&short);
         for (a, key_a) in keys.iter().enumerate() {
             let in_long = long.key(a).expect("in range");
             assert_eq!(in_long.prefix(), b"shared/");
@@ -1572,7 +1577,7 @@ mod tests {
     #[test]
     fn every_shorter_input_is_truncated() {
         for contents in random_pages(0x7214, 40) {
-            let image = contents.encode(FlatPage::MAX_LEN).expect("fits");
+            let image = contents.image();
             for available in 0..image.len() {
                 let needed = if available < 8 { 8 } else { image.len() };
                 let truncated = FormatError::Truncated { needed, available };
@@ -1588,7 +1593,7 @@ mod tests {
     #[test]
     fn every_single_bit_flip_is_rejected() {
         for contents in random_pages(0xF11B, 40) {
-            let image = contents.encode(FlatPage::MAX_LEN).expect("fits");
+            let image = contents.image();
             for bit in 0..image.len() * 8 {
                 let mut damaged = image.clone();
                 damaged[bit / 8] ^= 1 << (bit % 8);
@@ -1612,7 +1617,7 @@ mod tests {
         let mut rng = SplitMix64::new(0xDA3A6E);
         let (mut accepted, mut rejected) = (0, 0);
         for contents in random_pages(0x5EA1, 400) {
-            let image = contents.encode(FlatPage::MAX_LEN).expect("fits");
+            let image = contents.image();
             for _ in 0..200 {
                 let mut damaged = image.clone();
                 for _ in 0..1 + below(&mut rng, 3) {
@@ -1628,10 +1633,7 @@ mod tests {
                 exercise(&damaged);
                 match FlatPage::decode(&damaged, V1) {
                     Ok(page) => {
-                        let encoded = Contents::read(page)
-                            .encode(FlatPage::MAX_LEN)
-                            .expect("fits");
-                        assert_eq!(encoded, page.as_bytes());
+                        assert_encodes_back(page);
                         accepted += 1;
                     }
                     Err(_) => rejected += 1,
@@ -1662,10 +1664,7 @@ mod tests {
             exercise(&bytes);
             opened += usize::from(FlatPage::from_validated(&bytes, V1).is_ok());
             if let Ok(page) = FlatPage::decode(&bytes, V1) {
-                let encoded = Contents::read(page)
-                    .encode(FlatPage::MAX_LEN)
-                    .expect("fits");
-                assert_eq!(encoded, page.as_bytes());
+                assert_encodes_back(page);
                 decoded += 1;
             }
         }
@@ -1778,46 +1777,26 @@ mod tests {
 
     #[test]
     fn each_leaf_slot_must_describe_its_cell() {
-        let valid = raw_leaf(b"p", &[(26, 2, 0), (30, 1, 1)], b"aaXbYYY");
-        let leaf = FlatPage::decode(&valid, V1)
-            .expect("valid")
-            .leaf()
-            .expect("leaf");
+        let with_slots = |slots: &[(u16, u16, u8)]| raw_leaf(b"p", slots, b"aaXbYYY");
+        let valid = with_slots(&[(26, 2, 0), (30, 1, 1)]);
+        let leaf = decode_leaf(&valid);
         assert_eq!(leaf.get(b"paa"), Some(FlatValue::Inline(b"X")));
         assert_eq!(leaf.get(b"pb"), Some(FlatValue::OutOfLine(b"YYY")));
 
         let invalid = |slot| flat(FlatPageError::InvalidSlot { slot });
         let cases = [
+            (with_slots(&[(22, 2, 0), (30, 1, 0)]), invalid(0)),
+            (with_slots(&[(31, 2, 0), (30, 1, 0)]), invalid(0)),
+            (with_slots(&[(26, 4, 0), (30, 1, 0)]), invalid(0)),
+            (with_slots(&[(26, 2, 0), (25, 1, 0)]), invalid(1)),
+            (with_slots(&[(26, 2, 0), (31, 1, 0)]), invalid(1)),
+            (with_slots(&[(26, 2, 0), (30, 5, 0)]), invalid(1)),
             (
-                raw_leaf(b"p", &[(22, 2, 0), (30, 1, 0)], b"aaXbYYY"),
-                invalid(0),
-            ),
-            (
-                raw_leaf(b"p", &[(31, 2, 0), (30, 1, 0)], b"aaXbYYY"),
-                invalid(0),
-            ),
-            (
-                raw_leaf(b"p", &[(26, 4, 0), (30, 1, 0)], b"aaXbYYY"),
-                invalid(0),
-            ),
-            (
-                raw_leaf(b"p", &[(26, 2, 0), (25, 1, 0)], b"aaXbYYY"),
-                invalid(1),
-            ),
-            (
-                raw_leaf(b"p", &[(26, 2, 0), (31, 1, 0)], b"aaXbYYY"),
-                invalid(1),
-            ),
-            (
-                raw_leaf(b"p", &[(26, 2, 0), (30, 5, 0)], b"aaXbYYY"),
-                invalid(1),
-            ),
-            (
-                raw_leaf(b"p", &[(26, 2, 2), (30, 1, 0)], b"aaXbYYY"),
+                with_slots(&[(26, 2, 2), (30, 1, 0)]),
                 FormatError::NonZeroReserved,
             ),
             (
-                raw_leaf(b"p", &[(26, 2, 0), (30, 1, 0x81)], b"aaXbYYY"),
+                with_slots(&[(26, 2, 0), (30, 1, 0x81)]),
                 FormatError::NonZeroReserved,
             ),
             (
@@ -1833,19 +1812,16 @@ mod tests {
                 flat(FlatPageError::KeysOutOfOrder { slot: 1 }),
             ),
             (
-                raw_leaf(b"p", &[(26, 2, 0), (29, 1, 0)], b"aaXbYYY"),
+                with_slots(&[(26, 2, 0), (29, 1, 0)]),
                 flat(FlatPageError::UnusedBytes { used: 29, len: 30 }),
             ),
             (
                 raw_leaf(b"p", &[], b"x"),
                 flat(FlatPageError::UnusedBytes { used: 13, len: 14 }),
             ),
+            (with_slots(&[(26, 4, 2), (20, 1, 0)]), invalid(0)),
             (
-                raw_leaf(b"p", &[(26, 4, 2), (20, 1, 0)], b"aaXbYYY"),
-                invalid(0),
-            ),
-            (
-                raw_leaf(b"p", &[(26, 2, 2), (20, 1, 0)], b"aaXbYYY"),
+                with_slots(&[(26, 2, 2), (20, 1, 0)]),
                 FormatError::NonZeroReserved,
             ),
         ];
@@ -1858,10 +1834,7 @@ mod tests {
     fn each_branch_slot_must_describe_its_cell() {
         let cells = [b"a".as_slice(), &[9, 0, 0, 0], b"bb", &[12, 0, 0, 0]].concat();
         let valid = raw_branch(7, &[25, 31], &cells);
-        let branch = FlatPage::decode(&valid, V1)
-            .expect("valid")
-            .branch()
-            .expect("branch");
+        let branch = decode_branch(&valid);
         assert_eq!(branch.child_for(b""), Some(page_id(7)));
         assert_eq!(branch.child_for(b"a"), Some(page_id(9)));
         assert_eq!(branch.child_for(b"bb"), Some(page_id(12)));
@@ -1969,13 +1942,10 @@ mod tests {
                 let len = below(&mut rng, 300);
                 let value = rng.bytes(len);
                 let before = leaf.clone().finish();
+                let needed = before.len() + FlatLeaf::entry_len(key.len(), value.len());
                 match leaf.push(&key, FlatValue::Inline(&value)) {
-                    Ok(()) => assert_eq!(
-                        leaf.encoded_len(),
-                        before.len() + FlatLeaf::entry_len(key.len(), value.len())
-                    ),
+                    Ok(()) => assert_eq!(leaf.encoded_len(), needed),
                     Err(error) => {
-                        let needed = before.len() + FlatLeaf::entry_len(key.len(), value.len());
                         assert!(needed > capacity);
                         assert_eq!(error, flat(FlatPageError::PageFull { needed, capacity }));
                         assert_eq!(leaf.clone().finish(), before);
@@ -2049,10 +2019,7 @@ mod tests {
         }
         assert_eq!(usize::from(count), (FlatPage::MAX_LEN - 12) / 7);
         let image = many.finish();
-        let leaf = FlatPage::decode(&image, V1)
-            .expect("valid")
-            .leaf()
-            .expect("leaf");
+        let leaf = decode_leaf(&image);
         assert_eq!(leaf.len(), usize::from(count));
         assert_eq!(leaf.search(&(count - 1).to_be_bytes()), Ok(leaf.len() - 1));
     }
