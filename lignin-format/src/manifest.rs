@@ -74,6 +74,14 @@
 //! a whole record (R1). It is at least 20: a manifest names a file only once
 //! its header is written (H5).
 //!
+//! The valid length is a statement about another file, and this format knows
+//! no files. A manifest reader checks what the manifest alone can show: the
+//! length is at least 20; a segment's is 20 or at least 28, since its smallest
+//! record is 8 bytes; a sealed segment's is at least 48. Whether the file
+//! really holds whole records up to that length is checked by whoever reads
+//! the file. For a segment that is a walk of its blocks, or its footer read
+//! against the valid length; both fail on a length that splits a record.
+//!
 //! **State** says what the bytes past the valid length are.
 //!
 //! - **Open (1).** The session that wrote the manifest was still appending to
@@ -91,6 +99,14 @@
 //! A segment says nowhere in itself whether it has a footer, because a
 //! segment that a checkpoint shares may gain one later, past the checkpoint's
 //! valid length. Only the manifest can say.
+//!
+//! **The state is about reading, never about writing.** Open means the
+//! session that wrote the manifest had not finished the file. It does not
+//! make the file a place to append to. A later session appends to no file a
+//! manifest names, whatever its state, and creates its own files under ids
+//! above the last ids (B11). So the format puts no limit on how many files of
+//! a kind are open, or on which ids they have: a store may write several
+//! files of a kind at once.
 //!
 //! The page-table checkpoint is not in this list and has no state. It is
 //! written whole before the manifest names it.
@@ -150,6 +166,7 @@ const FIXED_LEN: usize = 36;
 const ENTRY_LEN: usize = 16;
 const MAX_BODY_LEN: usize = FIXED_LEN + MAX_LIVE_FILES * ENTRY_LEN;
 const MIN_VALID_LEN: u64 = FileHeader::ENCODED_LEN as u64;
+const MIN_SEGMENT_RECORD_END: u64 = MIN_VALID_LEN + FRAME_LEN as u64;
 const MIN_SEALED_LEN: u64 = MIN_VALID_LEN + (FRAME_LEN + SegmentTrailer::ENCODED_LEN) as u64;
 
 const HEADER: FileHeader = match FileHeader::new(FileKind::Manifest, FormatVersion::CURRENT, 0) {
@@ -204,23 +221,26 @@ impl LiveFile {
     /// A live file of `kind` with this id, state and valid length.
     ///
     /// The kind is a log, a segment or a value log. Only a segment can be
-    /// sealed. The valid length is at least 20, and at least 48 for a sealed
-    /// segment. Anything else is [`FormatError::InvalidManifestEntry`].
+    /// sealed. The valid length is at least 20. A segment's is 20 or at
+    /// least 28, and at least 48 if it is sealed. Anything else is
+    /// [`FormatError::InvalidManifestEntry`].
     pub const fn new(
         kind: FileKind,
         id: FileId,
         state: FileState,
         valid_len: u64,
     ) -> Result<Self, FormatError> {
-        let min_len = match (kind, state) {
-            (FileKind::Segment, FileState::Sealed) => MIN_SEALED_LEN,
-            (
-                FileKind::Wal | FileKind::Segment | FileKind::ValueLog,
-                FileState::Open | FileState::Closed,
-            ) => MIN_VALID_LEN,
-            _ => return Err(FormatError::InvalidManifestEntry),
+        let possible = match (kind, state) {
+            (FileKind::Segment, FileState::Sealed) => valid_len >= MIN_SEALED_LEN,
+            (FileKind::Segment, FileState::Open | FileState::Closed) => {
+                valid_len == MIN_VALID_LEN || valid_len >= MIN_SEGMENT_RECORD_END
+            }
+            (FileKind::Wal | FileKind::ValueLog, FileState::Open | FileState::Closed) => {
+                valid_len >= MIN_VALID_LEN
+            }
+            _ => false,
         };
-        if valid_len < min_len {
+        if !possible {
             return Err(FormatError::InvalidManifestEntry);
         }
         Ok(Self {
@@ -653,6 +673,7 @@ mod tests {
     fn limits_are_the_ones_the_format_states() {
         assert_eq!(MAX_LIVE_FILES, 1 << 20);
         assert_eq!(MIN_VALID_LEN, 20);
+        assert_eq!(MIN_SEGMENT_RECORD_END, 28);
         assert_eq!(MIN_SEALED_LEN, 48);
         assert_eq!(HEADER.kind(), FileKind::Manifest);
         assert_eq!(HEADER.version(), FormatVersion::CURRENT);
@@ -719,13 +740,14 @@ mod tests {
         let states = [FileState::Open, FileState::Closed, FileState::Sealed];
         for kind in FileKind::ALL {
             for state in states {
-                for valid_len in [0, 19, 20, 47, 48, u64::MAX] {
+                for valid_len in [0, 19, 20, 21, 27, 28, 47, 48, u64::MAX] {
                     let listed =
                         matches!(kind, FileKind::Wal | FileKind::Segment | FileKind::ValueLog);
                     let sealed = state == FileState::Sealed;
                     let valid = listed
                         && (!sealed || kind == FileKind::Segment)
-                        && valid_len >= if sealed { 48 } else { 20 };
+                        && valid_len >= if sealed { 48 } else { 20 }
+                        && !(kind == FileKind::Segment && (21..28).contains(&valid_len));
                     match LiveFile::new(kind, id(7), state, valid_len) {
                         Ok(file) => {
                             assert!(valid, "{kind:?} {state:?} {valid_len}");
@@ -994,6 +1016,20 @@ mod tests {
         assert!(decode_with(|entry| entry.4 = 48).is_ok());
         assert_eq!(decode_with(|entry| *entry = (3, 2, 0, 309, 19)), invalid);
         assert!(decode_with(|entry| *entry = (3, 2, 0, 309, 20)).is_ok());
+        for state in [1, 2] {
+            assert_eq!(
+                decode_with(|entry| *entry = (3, state, 0, 309, 21)),
+                invalid
+            );
+            assert_eq!(
+                decode_with(|entry| *entry = (3, state, 0, 309, 27)),
+                invalid
+            );
+            assert!(decode_with(|entry| *entry = (3, state, 0, 309, 28)).is_ok());
+        }
+        let mut log = ENTRIES;
+        log[0].4 = 21;
+        assert!(decode_entries(&log).is_ok());
 
         let mut above_last = ENTRIES;
         above_last[3].3 = 311;

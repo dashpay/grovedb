@@ -188,6 +188,8 @@ pub const MAX_BLOCKS: usize = MAX_BODY_LEN / IndexEntry::ENCODED_LEN;
 /// The file offset of a segment's first block.
 pub const DATA_START: u64 = FileHeader::ENCODED_LEN as u64;
 
+const _: () = assert!(MAX_BLOCKS as u64 * ((FRAME_LEN + MAX_BODY_LEN) as u64) < u64::MAX / 2);
+
 const KIND_SHIFT: u32 = 27;
 const LEN_MASK: u32 = (1 << KIND_SHIFT) - 1;
 const RAW_LEN_FIELD: usize = 4;
@@ -632,12 +634,6 @@ impl IndexEntry {
     }
 }
 
-fn blocks_end(blocks: impl IntoIterator<Item = BlockTag>) -> Option<u64> {
-    blocks.into_iter().try_fold(DATA_START, |end, tag| {
-        end.checked_add(tag.block_len() as u64)
-    })
-}
-
 /// Appends the footer of a segment to `out`: the index record and the
 /// trailer. This seals the segment.
 ///
@@ -659,10 +655,12 @@ pub fn write_footer(
             });
         }
     };
-    let expected = blocks_end(blocks.iter().map(|block| block.tag));
-    if expected != Some(index_offset) {
+    let expected = blocks
+        .iter()
+        .fold(DATA_START, |end, block| end + block.tag.block_len() as u64);
+    if expected != index_offset {
         return Err(FormatError::InconsistentLength {
-            expected: expected.unwrap_or(u64::MAX),
+            expected,
             found: index_offset,
         });
     }
@@ -790,14 +788,13 @@ impl<'a> SegmentIndex<'a> {
                 found: frame.body.len() as u64,
             });
         }
-        let mut end = Some(DATA_START);
+        let mut end = DATA_START;
         for entry in entries {
-            let entry = IndexEntry::decode(entry, version)?;
-            end = end.and_then(|end| end.checked_add(entry.tag.block_len() as u64));
+            end += IndexEntry::decode(entry, version)?.tag.block_len() as u64;
         }
-        if end != Some(trailer.index_offset) {
+        if end != trailer.index_offset {
             return Err(FormatError::InconsistentLength {
-                expected: end.unwrap_or(u64::MAX),
+                expected: end,
                 found: trailer.index_offset,
             });
         }
