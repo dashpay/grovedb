@@ -490,3 +490,118 @@ fn a_change_too_long_for_a_record_is_refused_by_the_page_too() {
     assert_eq!(link.encode_into(&mut Vec::new()), Err(refused.into()));
     assert!(frame == before);
 }
+
+/// A carry, as the records it leaves in two pages. The cell leaves one
+/// page and arrives in another, the link that points at it gets its new
+/// address, and a value out of line gets a place of its own for the new
+/// page: the old pointer does not go with the cell.
+///
+/// What the arriving cell holds until its value is placed is not this
+/// format's to say. The test runs with two stand-ins for it: a pointer that
+/// names no file a store has, and the value itself in the cell.
+#[test]
+fn a_carried_cell_is_a_remove_in_one_page_and_an_insert_in_another() {
+    let size = TreePageSize::MIN;
+    let old_place = pointer(12, 20, 300);
+    let new_place = pointer(13, 64, 300);
+    let pending = [
+        ModelValue::OutOfLine(pointer(u32::MAX, 20, 300)),
+        ModelValue::Inline(vec![0x77; 300]),
+    ];
+    for pending in pending {
+        let carried = ModelCell {
+            value: ModelValue::OutOfLine(old_place),
+            ..ModelCell::leaf(b"child", b"")
+        };
+        let parent = ModelCell {
+            left: Some(ModelLink {
+                child: address(7, 2),
+                hash: [3; 32],
+                heights: (0, 0),
+                child_key_len: 5,
+                aggregate: Vec::new(),
+            }),
+            ..ModelCell::leaf(b"parent", b"p")
+        };
+        let mut from = ModelPage::new(7, 0);
+        from.cells.insert(1, parent);
+        from.cells.insert(2, carried.clone());
+        let mut to = ModelPage::new(9, 4);
+        to.cells.insert(1, ModelCell::leaf(b"other", b"o"));
+        let (mut from_frame, mut to_frame) = (frame_of(&from, size), frame_of(&to, size));
+
+        // The commit: 3 bytes for the cell that leaves and 9 for its new
+        // address, in the page of its parent.
+        let leaving = [Op::Remove(2), Op::Child(1, Side::Left, address(9, 2))];
+        let leaving_run = run_of(from.id, None, &leaving);
+        assert_eq!(leaving_run.len(), DeltaRun::HEADER_LEN + 3 + 9);
+        // And the cell in its new page, with its value pending there.
+        let arriving = ModelCell {
+            value: pending.clone(),
+            ..carried.clone()
+        };
+        let arriving_run = run_of(to.id, None, &[Op::Insert(2, arriving.clone())]);
+        assert_eq!(
+            arriving_run.len(),
+            DeltaRun::HEADER_LEN + 5 + arriving.len()
+        );
+        // Write-back: the value was appended again for the new page, and
+        // the cell is given its place.
+        let placed = Op::Value(2, ModelValue::OutOfLine(new_place));
+        let placing_run = run_of(to.id, None, std::slice::from_ref(&placed));
+        assert_eq!(placing_run.len(), DeltaRun::HEADER_LEN + 19);
+
+        decode(&leaving_run)
+            .apply(&mut from_frame, size, V1)
+            .expect("applies");
+        apply_chain(
+            to.id,
+            &mut to_frame,
+            size,
+            V1,
+            [&decode(&arriving_run), &decode(&placing_run)],
+        )
+        .expect("applies");
+
+        // The page the cell left: one departure, and the parent's link
+        // names the cell where it is now.
+        for op in &leaving {
+            op.make(&mut from);
+        }
+        assert_eq!(from.departures, 1);
+        assert_eq!(image_of(&from_frame), from.assemble());
+        let parent = view(&from_frame).cell(slot(1)).expect("the parent");
+        assert_eq!(
+            parent.link(Side::Left).map(|link| link.child),
+            Some(address(9, 2))
+        );
+
+        // The page it arrived in: the cell as it was, but for the place of
+        // its value.
+        to.cells.insert(
+            2,
+            ModelCell {
+                value: ModelValue::OutOfLine(new_place),
+                ..carried.clone()
+            },
+        );
+        assert_eq!(image_of(&to_frame), to.assemble());
+        let arrived = view(&to_frame).cell(slot(2)).expect("the cell");
+        assert_eq!(arrived.key(), b"child");
+        assert_eq!(arrived.value_len(), 300);
+        assert_eq!(arrived.value_pointer(), Some(new_place));
+
+        // No cell of either page holds the old pointer, or the stand-in.
+        for frame in [&from_frame, &to_frame] {
+            let page = view(frame);
+            assert_eq!(page.find_value_pointer(&old_place), None);
+            if let ModelValue::OutOfLine(stand_in) = &pending {
+                assert_eq!(page.find_value_pointer(stand_in), None);
+            }
+        }
+        assert_eq!(
+            view(&to_frame).find_value_pointer(&new_place),
+            Some(slot(2))
+        );
+    }
+}

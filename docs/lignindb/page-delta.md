@@ -262,6 +262,9 @@ the cells, and it must be the cell's own length. A cell in a record is at
 most 32,754 bytes (`MAX_CELL_LEN`): the longest cell the largest page
 takes (TP14). A longer one could go into no page, and has no record.
 
+A cell that is carried arrives with the bytes it left with, with one
+exception: the place of a value out of line does not go with it (8.2).
+
 **PD8. A changed hash is 35 bytes, and its record holds nothing of the cell
 but the hash.** No key, no value, no length of either. So a write that
 changes only hashes logs no value byte and writes none back, which is the
@@ -270,11 +273,20 @@ segments.
 
 **PD9. A link is updated as a whole, or by its address alone.**
 
-- A link record holds the link as its cell does: 43, 51, 59 or 67 bytes in
-  a tree of today's Merk (TP12), so the record is 46 to 70 bytes. Every
-  link of one Merk has the same length, so within one tree a link record
-  has a fixed size, as C4 of `tree-layout.md` asks, and it replaces a link
-  where it is (TP10).
+- A link record holds the link as its cell does, with the byte that says
+  how long its aggregate is: 42 bytes and the aggregate, behind the kind
+  and the slot. Every link of one Merk has an aggregate of the same length
+  (TP12), so within one tree the link record has one size, and it replaces
+  a link where it is (TP10): 46 bytes in a tree with no count or sum, and
+  54, 62 or 70 in the other trees of today's Merk.
+- It is not one size for every tree. `tree-layout.md` (C4 and section 16)
+  asked for a fixed-size record when a link was taken to have one size.
+  The owner has since ruled that a link is fixed for its tree's kind of
+  aggregate and not for all (D-049, TP12), and the record follows the
+  link. One size for all would be 70 bytes for every link update, 24 more
+  than a tree with no count or sum needs, and the format would have to
+  know the widest aggregate Merk has, which TP12 keeps out of it. So the
+  record takes what a cell takes: an aggregate of 0 to 255 bytes.
 - When only the child's hash changed, the hash record is shorter (35).
 - When only the child's cell moved, the address record is shorter (9).
   This is the record a carry leaves in the page of the carried cell's
@@ -289,6 +301,12 @@ value in record 20 is at most 32,682 bytes (`MAX_INLINE_VALUE_LEN`): the
 longest value the longest cell holds (PD7). A longer one could go into no
 cell, and has no record. Whether a value fits the cell and the page it is
 meant for is for the page to say when the record is applied.
+
+A value pointer, in record 21 or in the cell of an insert, is carried as
+it is. A pointer names a file and an offset. The page that owns the value
+is in the value log's record (O1 of `value-log-format.md`), so a record
+cannot tell whether a pointer is its page's own. That is the writer's rule
+(O5, TREE-03) and the invariant checker's (VER-07).
 
 **PD11. A page is created by the first record of a run, and only there.**
 The create record starts an empty page under the run's page id, with the
@@ -456,9 +474,14 @@ block (length, kind and checksum) it is 47. Each further hash of the same
 page is 35 bytes more. In the log, the 4 bytes of the page id and whatever
 FMT-05 puts around a run are paid once for each page a commit changes.
 
-**The cells of the reference workload** (section 6 of `tree-page.md`): a
-document node with two children is 203 bytes without its slot, so its
-insert record is 208, and a document leaf 122.
+**The cells of the reference workload.** `tree-page.md` (section 6) gives
+their sizes with the 2 bytes of the slot. A record has the cell without
+them, behind 5 bytes of its own:
+
+| | The cell | With its slot, as `tree-page.md` counts it | Its insert record |
+| --- | --- | --- | --- |
+| a document node with two children | 203 | 205 | 208 |
+| a document leaf | 117 | 119 | 122 |
 
 ## 8. Two questions left to this task
 
@@ -466,7 +489,8 @@ insert record is 208, and a document leaf 122.
 
 A carried cell is a remove in one page and an insert in another (S2), and
 the insert repeats the cell's bytes, which the old page's chain already
-holds. On the reference workload 1.63 cells are carried per transition
+holds (all of them but the place of a value out of line, 8.2). On the
+reference workload 1.63 cells are carried per transition
 (section 6 of `tree-page.md`), 304 bytes of cells by the owner's figure for
 this task. As inserts they cost those bytes and 5 more for each, about 312
 bytes per transition. A record that named the cell where it was, by its
@@ -474,6 +498,10 @@ old address, would be 9 bytes, 15 per transition. That is about 297 bytes
 per transition less in the log, 12% of the plan's target of 2.4 KB. On a
 tree that does not grow the saving is nearly nothing: 0.024 cells are
 carried per transition there (14.4 of `tree-layout.md`).
+
+These figures are per transition. A commit logs what a whole block
+changed, so a cell that is carried twice in a block, or created and
+carried in it, is one insert, and the log's share can only be smaller.
 
 **A segment cannot name it.** A page version is built from its own chain
 and from nothing else: that is what makes a block live or dead (CL1), lets
@@ -492,6 +520,9 @@ reason seen from recovery:
   apply the carry to the new page, and the old page it would copy from no
   longer holds the cell. Its earlier version may be consolidated away
   (T9) and trimmed (T11).
+- A run may hold the changes of several commits, with nothing in it to
+  say where one ends (PD5, FL3). The old page as it was just before the
+  carry may then never have been written at all.
 - A merge carries the cells out of a page and frees it in the same commit
   (M2, M3 of `tree-layout.md`). A freed page's chain is trimmed as soon as
   no reader needs it, and replay then finds changes to a page it has no
@@ -565,8 +596,25 @@ and the records here serve each of them unchanged:
 3. *A third form of the cell*, marked by one of its reserved flags. That
    is a change to `tree-page.md`.
 
-FMT-05 and TREE-08 need the answer: the first to tie a value in a log
-group to its cell, the second to read a pending value.
+**A carried cell is in the same position.** By O5 of
+`value-log-format.md` a cell that is carried to another page stops holding
+its old pointer at the commit that carries it, and its value is pending
+again in the new page (FL7). So the insert of a carried cell whose value
+is out of line does not repeat the cell byte for byte: where the value's
+place stood, it has the pending form, and record 21 gives it the new place
+once write-back has appended the value again. An insert that kept the old
+pointer would decode and apply like any other (PD10), and the value's
+record would name another page as its owner.
+
+**Who decides.** This is a rule about the tree page's cell and the value
+pointer, which are merged formats of other tasks, so it is put to the
+owner and not made here (section 10, item 13). FMT-05 needs the answer to
+tie a value in a log group to its cell, TREE-08 to read a pending value,
+and TREE-03 to write the insert of a carried cell. Until then a log cannot
+hold the insert of a cell whose value is new and out of line, or carried
+and out of line. Whatever is chosen, no byte of a record defined here
+changes for the first two ways. The third adds one kind code, for a value
+that is replaced by a pending one.
 
 ## 9. What the tasks that build on this take from it
 
@@ -577,7 +625,7 @@ group to its cell, the second to read a pending value.
 | STORE-06 Delta write-back | A run for the changes of one page since its last link, of one commit or of several folded together: pushing the changes of several runs into one writer is the fold. `consolidate`, or `apply_chain` and `write_image` on a frame, for a new base image. A hash-only change is 35 bytes for each hash and no value byte. Record 21 after the value is covered (8.2). | Thresholds. Where the changes of a page are kept until they are written. |
 | STORE-07 Recovery | A run applies once and in order (PD14): K3 decides whether a page already has it. A run that creates its page needs no image. | Replay. |
 | STORE-09 Value log | Moving a value is record 21 with the new pointer, 19 bytes in the page's run. | The page step. |
-| TREE-03 Fragment maintenance | A record for each thing it does to a page: insert, remove, the address in the parent's link (9 bytes), the mark (3), a hosted-root pointer (10). A carried cell is a remove and an insert with the cell's bytes (8.1). | Which changes a write makes. |
+| TREE-03 Fragment maintenance | A record for each thing it does to a page: insert, remove, the address in the parent's link (9 bytes), the mark (3), a hosted-root pointer (10). A carried cell is a remove and an insert with the cell's bytes (8.1), but for the place of a value out of line, which does not go with it: the value is pending again in the new page, and record 21 gives it its new place (8.2). | Which changes a write makes. That a carried cell never keeps its old pointer (O5), which no record can check (PD10). |
 | TREE-04 Lazy hashing | One 35-byte record for each hash that changed, whatever else the cell holds. A link whose hash, heights and aggregate changed together is one link record. | When hashes are evaluated. |
 | TREE-08 Out-of-line values | Record 20 puts a value into its cell, record 21 its place. The pending form (8.2). | The threshold, and the read of a pending value. |
 | TREE-09 Subtree drop | Removing a left-over cell is the remove record, 3 bytes. | The walk. |
@@ -615,8 +663,12 @@ owner can overrule one while version 1 is still open (U10).
    has a 2-byte length too, and is at most the longest value such a cell
    holds (PD10), although a cell's own field for the length of its value
    is 4 bytes: that field also serves a value out of line.
-9. **A link record holds the link at its own length**, 42 bytes and the
-   aggregate, not one size for all trees.
+9. **A link record holds the link at its own length, with its length
+   byte**: 42 bytes and the aggregate behind the kind and the slot. It has
+   one size within a tree and not one size for all trees (PD9). This reads
+   the "fixed-size record" of `tree-layout.md` (C4, section 16) as D-049
+   reads the link itself. The other way, a record of 70 bytes for every
+   link, was not taken.
 10. **One record for each changed hash.** A node whose value changed has
     two (the value hash and the key-value hash), 70 bytes. A record for
     the pair would be 67. Not taken: it is a second way to write two
@@ -629,8 +681,10 @@ owner can overrule one while version 1 is still open (U10).
 12. **No record names a carried cell** (8.1).
 13. **No record for a pending value, and no pending form** (8.2). This is
     an open point for the owner: `tree-page.md` has no form for a value
-    that is neither in its cell nor in the value log, and FMT-05 and
-    TREE-08 need one.
+    that is neither in its cell nor in the value log. FMT-05, TREE-08 and
+    TREE-03 need one, for a new value out of line and for a carried cell
+    that has one. This document recommends a value pointer that names no
+    file yet, which changes no byte of a record.
 14. **An empty run is not a run** (PD12).
 15. **Applying a run is not all or nothing** (A3). Making it so would cost
     a copy of the page for each run. The caller drops the frame.
@@ -667,6 +721,7 @@ All of this is in `lignin-format::delta`. Run the tests with
 | PD6, B8 | `Delta::encode_into`, `DeltaRun::decode` | `what_was_written_reads_back_and_what_was_read_is_written_the_same`: 3,000 runs. `every_single_bit_flip_is_rejected_or_reads_as_what_it_says`. `a_change_that_would_not_read_back_is_not_written`. `changes_are_compared_by_what_they_change`. |
 | Section 4 | `DeltaRun::decode` | Each check has its error, in order: `each_check_of_a_run_has_its_error`, `every_kind_code_is_a_record_or_an_error`, `each_check_of_a_record_has_its_error`, `each_check_of_a_cell_in_a_record_has_its_error`. `every_prefix_of_a_run_is_a_shorter_run_or_an_error`. |
 | B10, A4 | every reader, `DeltaRun::apply` | `arbitrary_bytes_are_an_error_or_a_run_and_never_a_panic`: 60,000 byte strings, a third arbitrary, a third records of every kind with arbitrary fields, a third valid runs with bytes changed. What decodes is written back to the same bytes and applied to a full page, which must be valid afterwards. |
+| S2, S3, PD10, section 8 | `Delta::Remove`, `Delta::Insert`, `Delta::Child`, `Delta::Value` | `a_carried_cell_is_a_remove_in_one_page_and_an_insert_in_another`: the records of a carry in the page a cell leaves, in the page of its parent and in the page it arrives in, with its value pending in either of two forms and then given its new place by record 21. Afterwards no cell of either page holds the old pointer. |
 | A2, A3, PD11, section 6 | `DeltaRun::apply`, `consolidate`, `DeltaError` | `a_run_is_applied_to_the_page_it_names`, `a_run_that_creates_its_page_needs_no_page`, `a_refused_change_keeps_the_changes_before_it_and_makes_none_after_it`, `a_chain_with_no_base_must_create_its_page`, `consolidation_takes_an_image_and_nothing_else`, `a_full_page_refuses_a_record_that_needs_room`, `a_change_too_long_for_a_record_is_refused_by_the_page_too`, `every_error_has_its_message`. |
 | No allocation | `DeltaRun::decode`, `DeltaRun::apply` | `tests/delta_alloc.rs` runs under a counting allocator. |
 
