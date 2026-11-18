@@ -370,22 +370,30 @@ care. Views are covered by their guard (PN5). This rule is about what a
 caller keeps after the view is gone: a pointer in a Merk link, a path cache,
 a Merk cache owned by a scope (GROVE-12).
 
-- Kept under a snapshot, a location stays good for the snapshot's life: the
-  pin holds the page and its id (PN2).
-- Kept through a write transaction, a location is good only as long as the
-  transaction still reads the base it was taken at, and no rollback, rollback
-  to a savepoint, scope rollback or scope merge has replaced the frame it
-  points into. A write transaction with an empty write set pins nothing
-  between operations (PN1), so for it every foreign commit ends the life of
-  every location it holds.
+What keeps a location good is the pin on the version it was read at, or,
+for a private frame, the frame itself:
+
+- A location into a committed page is good for as long as its holder pins
+  the version it was read at (PN1, PN2). A snapshot pins it for its life. A
+  cursor pins it for the cursor's life, and that includes a cursor of a
+  write transaction: the pages on its stack stay good across foreign
+  commits, whatever the transaction's write set. A write transaction with a
+  non-empty write set pins its base until it is rebased, committed or rolled
+  back.
+- Where nothing pins the version, the location is good only until the next
+  commit. That is the case for what a write transaction with an empty write
+  set keeps between operations, outside any cursor.
+- A location into a private frame is good until that frame is replaced: by a
+  rebase, a rollback, a rollback to a savepoint, a scope rollback, or the
+  reconciliation of a scope merge (LT4).
 - A location is never kept outside the handle it was read through.
 
 The engine must make it impossible to follow a location that is no longer
 good: an operation that is handed one must be able to tell, and must then
 find the record by its key (RD5) instead. One way: the transaction counts
-its rebases and rollbacks, a location carries the count at which it was
-issued, and a mismatch means "resolve by key". TXN-03 and MERK-01 choose the
-mechanism.
+the commits it has observed and its own rebases and rollbacks, a location
+carries the count at which it was issued, and a mismatch means "resolve by
+key". TXN-03 and MERK-01 choose the mechanism.
 
 ## 6. Page versions
 
@@ -603,8 +611,8 @@ cleaner never wait for it.
    stored hash differs from its recomputation.
 6. Take version *v* = *L* + 1 and append one log group for *v*: new values,
    structure deltas, one record per changed hash, flat records and range
-   deletes (STORE-01). This is the last step that can fail. If it fails, the
-   commit ends with a storage error and CM9 applies.
+   deletes (STORE-01). This is the last step that can report an error. If
+   it does, CM9 decides whether the commit happened.
 7. Install, in memory only: turn the private frames into page versions born
    at *v*, mark the page versions they replace as superseded at *v*, and
    retire the page ids the commit frees. This step writes to no file and
@@ -627,7 +635,9 @@ handle sees part of a commit.
 | success | ended | *L* is *v* |
 | `ScopesOpen`, `NotFinalized` | still open, unchanged | unchanged |
 | `Conflict` | ended, its writes discarded | unchanged |
-| a storage error up to and including step 6, for example no space | ended, its writes discarded | unchanged and still readable (CM9, OPS-08) |
+| a storage error that leaves the group incomplete in the log, for example no space | ended, its writes discarded | unchanged and still readable; no recovery ever brings the commit back (CM9, OPS-08) |
+| `NotDurable`: the whole group is in the log, but an fsync that the sync policy asked for failed | ended | *L* is *v*; *v* is not known to be durable (DU1) |
+| unsettled: the engine could not find out what reached the log (CM9) | ended | unchanged in this session, which accepts no further commit; the next open settles it (DU2) |
 
 A crash between steps 6 and 8 can leave a complete log group for *v*.
 Recovery then includes *v* (DU2), though the caller never saw success. No
@@ -644,22 +654,38 @@ section 12).
 (FL5). It never waits for a reader, for another open write transaction, for
 the cleaner or for the creation of a checkpoint beyond its sampling step.
 
-**CM9. A commit that fails leaves no trace.** When step 6 fails, whether the
-group was not written, written in part, or written in full but not confirmed:
+**CM9. The log decides whether a commit happened, and the engine must agree
+with it.** A recovery takes a commit exactly when its whole group is in the
+log (DU2). So a commit that the engine reports as failed must be one that no
+recovery, at any later time, can bring back. When step 6 reports an error:
 
-1. Nothing was installed (step 7 had not run). *L* is unchanged, no page
-   version born at *v* exists, and the transaction is ended as by WT9.
-2. The bytes of the failed group that reached the log must never be replayed
-   as a commit, by a recovery now or at any later time. This needs an
-   action, for two reasons: the next commit that succeeds will also be
-   version *v*, and recovery stops reading a log file at its first
-   incomplete group. So before another commit is published, the engine must
-   have put the failed group out of every later recovery's reach. One way:
-   end that log file at its last complete group, record that length where
-   recovery reads it, and go on in a new file. STORE-01 and OPS-08 choose.
-3. While it cannot do that, for example because the disk is still full, the
-   engine accepts no commit. Every read keeps working.
-4. Whatever else the transaction wrote to data files is dead space (FL1).
+1. The engine finds out how much of the group is in the log. The file layer
+   says how many bytes it accepted; where that does not settle it, the engine
+   reads the file's length.
+2. **The whole group is in the log: the commit has happened.** Steps 7 and 8
+   run. Commit returns success, or `NotDurable` if what failed was an fsync
+   that the sync policy asked for. With the default policy there is no such
+   fsync (DEC-04), so this case does not arise there.
+3. **The group is not whole: the commit has failed.** Nothing was installed
+   (step 7 has not run), *L* is unchanged, no page version born at *v*
+   exists, and the transaction is ended as by WT9. The group is incomplete,
+   and nothing ever completes it, so no recovery takes it.
+4. **Before the next commit is appended, the incomplete group must be out of
+   the way.** Recovery stops reading a log file at its first incomplete
+   group, and the next commit will carry the same version *v*. So the engine
+   ends that log file at the end of its last complete group, records that
+   length durably where recovery reads it, and goes on in a new file. A
+   later commit is then reachable by recovery, and the torn bytes are never
+   read as part of any group. STORE-01 and OPS-08 choose the mechanics.
+5. While it cannot do that, for example because the disk is still full, the
+   engine accepts no commit. It resumes when it can. Every read keeps
+   working throughout.
+6. If the engine cannot find out what is in the log (1), the outcome is
+   unsettled. Commit returns an error that says so, the session accepts no
+   further commit, and the next open settles the matter by DU2. This is the
+   only case in which a commit that returned an error can turn out to have
+   happened, and the error names it.
+7. Whatever else the transaction wrote to data files is dead space (FL1).
 
 ### 8.2 The conflict rule
 
@@ -1059,6 +1085,12 @@ version known durable before the crash and *Lc* the newest version whose log
 group was completely appended. Never part of a commit, and never a mix of
 two.
 
+Recovery reads each log file only up to the valid length recorded for it,
+where one is recorded (CM9, DU3). A group beyond that length does not count
+for *Lc*, complete or not. Within what it reads, every complete group is a
+commit the engine had treated as happened (CM9), or one it had not yet
+answered for.
+
 **DU3. Nothing else survives.** No uncommitted write, no private frame, no
 pin, no scope and no page version born after *Lr* is reachable after
 recovery (FL4).
@@ -1348,6 +1380,9 @@ same result.
   rollback to a savepoint and a scope rollback is never followed: the read
   returns the record RD3 names (PN8). Run with page ids being freed and
   reused in between.
+- T-RD7: a cursor opened through a write transaction, with an empty write
+  set and with a non-empty one, keeps reading its opening version while
+  foreign commits free and reuse the pages on its stack (RD6, PN1, PN8).
 
 **Conflict rule (TXN-05, GROVE-01)**
 
@@ -1365,10 +1400,11 @@ same result.
   B22), and a plain insert of an equal element does write (B19). Both
   engines.
 - T-CM1: the log append of a commit is made to fail at every write boundary
-  (IO-02). Afterwards every handle reads what it read before, the next
-  commit takes the same version and succeeds once space is back, and a crash
-  at any later point recovers to a version the model says was committed,
-  never to the failed one (CM9).
+  (IO-02). A commit reported as failed is never recovered, whenever the
+  crash comes: at once, after the cut of CM9 item 4, or after later commits.
+  Every handle reads what it read before, the next commit takes the same
+  version and succeeds once space is back, and it is recovered. A group that
+  reached the log whole is published, not reported as failed (CM9).
 
 **Rebase (TXN-03)**
 
@@ -1651,6 +1687,9 @@ are listed so the owner can overrule one before code depends on it.
 21. **A location kept between operations must be checked before it is
     followed** (PN8). This binds the path cache of PERF-03 and the scope
     caches of GROVE-12.
-22. **A failed commit must be put out of recovery's reach before the next
-    commit** (CM9), and **`flush()` covers the commits published before it
-    read *L*** (DU1a).
+22. **The log decides whether a commit happened** (CM9): a group that
+    reached the log whole is published even if the call that wrote it
+    reported an error, and a commit reported as failed can never be
+    recovered. This adds two commit outcomes, `NotDurable` and unsettled
+    (CM5). And **`flush()` covers the commits published before it read *L***
+    (DU1a).
