@@ -216,7 +216,7 @@ A Merk also keeps aux records (read by key, written in a commit) and meta record
 
 `merk::store::kv` implements `NodeStore<'db>` for every `S: StorageContext<'db>`. So `Merk<PrefixedRocksDbTransactionContext>` is the same type as before, GroveDB's code compiles unchanged, and so does every function that is generic over `S: StorageContext<'db>` and calls a Merk.
 
-The adapter is an `impl`, not a wrapper type. A wrapper (`Merk<KvNodeStore<Context>>`) would have changed the Merk type that GroveDB names, and every place where GroveDB calls a storage context's own methods on `merk.storage`. The inventory counts 78 uses of `PrefixedRocksDbTransactionContext` in GroveDB. SEAM-04 and SEAM-07 change those sites. SEAM-02 can still introduce a named type if the engine seam wants one.
+The adapter is an `impl`, not a wrapper type. A wrapper (`Merk<KvNodeStore<Context>>`) would have changed the Merk type that GroveDB names, and every place where GroveDB calls a storage context's own methods on `merk.storage`. The inventory counts 78 uses of `PrefixedRocksDbTransactionContext` in GroveDB. SEAM-04 and SEAM-07 change those sites. SEAM-02 left the adapter without a name, for the same reason: every storage context type is the handle already, and no caller has to write another type. A named `KvNodeStore` is needed only once a storage context type must have a second `NodeStore` implementation, or once the engine seam wants a RocksDB handle that is not also a storage context. `Engine` as SEAM-04's row describes it needs neither: its RocksDB subtree handle can be the context itself.
 
 Each operation is the storage call the code made before SEAM-01, with the same arguments, in the same order:
 
@@ -226,13 +226,43 @@ Each operation is the storage call the code made before SEAM-01, with the same a
 
 The change set of a context is its `Batch`, wrapped in `KvChangeSet` so that the batch's own methods are not part of Merk's vocabulary.
 
+### How the adapter is checked
+
+The adapter keeps no state and has no rule of its own. What can go wrong in it is a storage call that is missing, made twice, made out of order or made with other arguments, an error that is wrapped differently, and a cost that is dropped or added. SEAM-02 checked each of these twice: once against the code before the seam, and with tests that stay.
+
+**Against the code before the seam.** Two builds of the workspace were compared, the branch as it is and the branch with `merk/` as it was before SEAM-01 (the pinned engine of the golden corpus). In both, the RocksDB contexts, their batches and their cursors recorded every call made on them with its prefix, key, value, sizes and cost information, the result and the cost it returned, and so did the application of a storage batch with every entry it held (GM0). The calls of each test thread were reduced to one digest.
+
+| Run | Compared | Result |
+| --- | --- | --- |
+| Golden corpus, standard scale (260 traces, 191,851 steps, one trace at a time) | 13,619,047 storage calls | one digest, equal |
+| GroveDB suite (3,885 tests, all features) | 3,135 tests that reach storage, and 9 threads that are doc tests or are started by a test | 3,133 tests and the 9 threads equal, 4,889,177 calls. The other two tests draw random keys or a random seed and give another digest on every run of one build. |
+| Merk suite, the 843 tests that existed before the seam | 296 tests that reach storage, and one thread a test starts | 292 tests and the thread equal, 448,406 calls. In the other four the test reads a record itself, and SEAM-01 changed that read from `get` to a cursor; every other call in them is equal. |
+| Failure injection: twelve Merk workloads on two grove versions, on an in-memory storage context that makes one call fail, for every call in turn, as an error with a cost, as a record that does not decode and as a missing record | 46,576 runs, each with every call, every result with its error and cost, and the records left behind | one digest, equal |
+
+The last row covers commits, reads, proofs, cursors, the side records, the root key, `clear`, layered Merks, elements and chunk restore. The comparison has to be made again by hand when the storage calls are meant to change; the tests below are what holds them in between.
+
+**With tests that stay.** `merk/src/store/kv.rs` runs the adapter on a storage context that records every call (`merk/src/store/recording.rs`). It wraps a RocksDB context, passes each call on, adds one hash node call to the cost of every call it answers, and fails a call when told to. No storage call charges a hash node call, so a cost the adapter dropped or counted twice shows in the total.
+
+| Test | What it holds |
+| --- | --- |
+| `every_operation_is_one_storage_call_and_costs_what_that_call_costs` | Each operation of the trait makes the one storage call of the table in [Operations](#operations), with the same key and value, and returns the cost of that call, all of it and once. A link whose node is missing is `KeyNotFoundError` and is charged as the lookup. |
+| `every_change_is_one_batch_call_under_its_key_whatever_its_kind` | Each change is one call on the context's batch, in the order Merk made them, with the feature and child sizes and the cost information as Merk passed them. |
+| `a_storage_call_that_fails_is_a_storage_error_with_the_cost_of_that_call` | A storage call that fails ends the operation as `Error::StorageError` with that call's error and that call's cost. No other call follows it, and a commit that fails stages nothing. |
+| `a_put_the_batch_refuses_is_a_costs_error` | A RocksDB batch refuses a put whose cost information does not verify. That is `Error::CostsError`, for a node, the root key and an aux record, and nothing of the refused put is written. |
+| `an_undecodable_record_is_an_encoding_error`, `a_direct_element_read_reports_an_undecodable_record_as_before` | A record that does not decode is `Error::EdError`, charged as the read, and a direct element read still reports it as `CorruptedData` with the same text. |
+| `a_merk_makes_its_storage_calls_in_the_order_it_always_made_them` | The calls of a Merk on a storage context, by name, key and order: open, commit (the root key, then nodes in key order, then aux records), reads, the side records, the root key, `is_empty_tree`, `clear`, and a commit of an empty tree. The lists were read off the Merk before the seam. |
+| `a_chunk_restore_writes_uncharged_and_corrects_a_parent_with_a_direct_put` | Chunk restore: one batch of uncharged puts per chunk, the root key put directly after the first chunk, a parent read and put directly after each later one, and one batch for the corrected heights. |
+| `what_a_storage_batch_holds_is_read_once_the_batch_is_applied` | On a transactional context nothing the adapter writes, in a change set or at once, is seen by a read or a cursor before the storage batch is applied to the transaction. |
+| `a_read_is_answered_by_the_transaction_when_it_is_made` | RD3, RD5 and RD6 at the seam: a fetch returns the transaction's own node, a node committed by another transaction as soon as it is committed, and nothing of an uncommitted one. A cursor opened before that commit does not show it and the next cursor does. |
+| `the_cursor_and_the_batch_are_the_storage_contexts_own` | The cursor of the adapter is the context's raw iterator and its change set holds the context's batch. This is checked by the compiler. |
+
 ## What later tasks get
 
 | Task | What it builds on |
 | --- | --- |
-| SEAM-02 | The adapter exists and Merk runs on it. SEAM-02 proves it against the golden corpus and may harden it. |
-| SEAM-04 | A subtree handle of an engine is a `NodeStore<'db>`; `Merk<E::..>` needs no other bound. The side records move to `FlatStore`. |
-| SEAM-05 | Every storage charge Merk sees passes through this trait's return values, and every size Merk supplies is in `NodeWriteCost` or a `KeyValueStorageCost`. |
+| SEAM-02 | The adapter exists and Merk runs on it. SEAM-02 showed that it makes the storage calls the code made before the seam and added the tests of [How the adapter is checked](#how-the-adapter-is-checked). |
+| SEAM-04 | A subtree handle of an engine is a `NodeStore<'db>`; `Merk<E::..>` needs no other bound. The side records move to `FlatStore`. A RocksDB context is a `NodeStore` and a `FlatStore`, and both have a `cursor()`: code that has both traits in scope for a context names the trait (`NodeStore::cursor(&context)`). Generic code bounded by one of them is not affected. |
+| SEAM-05 | Every storage charge Merk sees passes through this trait's return values, and every size Merk supplies is in `NodeWriteCost` or a `KeyValueStorageCost`. The recording context of `merk/src/store/recording.rs` shows each storage call with the sizes and cost information it was given and the cost it returned, so a test can hold those while the place of the charging moves. |
 | SEAM-06 | `merk/src/store/mem.rs` is a second `NodeStore`, in memory, used by the tests here. It keeps of each written node only what its kind names and fails a commit whose result is not the node Merk wrote. It charges nothing, so it checks trees and proofs, not costs. |
 | MERK-01 | `fetch_node` takes the link and is defined by its key (RD5). `prepare_node` gets the node and the kind, so a value is copied only for `ValueWritten`. Every `put_node` and `delete_node` is one write of its key (ST6). |
 | MERK-02 | The kinds, and what they come from (`known_storage_cost` and the baseline for the value, `NodeMarks` for the children), are the dirty state to map. |
@@ -272,3 +302,8 @@ The plan left these open. Later tasks build on them.
 8. **Aux and meta records are operations of `NodeStore` until SEAM-04.**
 9. **`fetch_node` is defined by the link's key.** A location is a shortcut to the same node. The trait gives a store no way to pin a view for a handle.
 10. **A written node's location does not come back to Merk.** A link to a node the Merk wrote is followed by key until a later task decides how the location returns. See [Following a location](#following-a-location).
+
+SEAM-02 added two:
+
+11. **The adapter stays a blanket `impl` with no name.** See [The RocksDB adapter](#the-rocksdb-adapter) for when a `KvNodeStore` type would be needed.
+12. **`merk/src/store/recording.rs` is a test tool of `merk::store`**, next to `mem.rs`: a storage context that records the calls made on the context it wraps and can fail one of them.
