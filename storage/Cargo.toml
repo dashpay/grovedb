@@ -24,6 +24,7 @@ tempfile = { workspace = true, optional = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+grovedb-costs = { version = "6.1.1", path = "../costs", features = ["cost-model-ledger"] }
 syn = { version = "2", features = ["full", "visit"] }
 
 [features]

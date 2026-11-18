@@ -2,26 +2,37 @@
 //! the RocksDB engine reports is the result of a function of
 //! `grovedb_costs::cost_model`.
 //!
-//! The test parses every source file of the crate and walks the code that
-//! is built outside tests. In a function body, in the value of a constant
-//! and in a type alias it refuses:
+//! This is the check of the source. It parses every source file of the
+//! crate and walks the code that is built outside tests. In a function
+//! body, in the value of a constant and in a type alias, free or
+//! associated, it refuses:
 //!
-//! - the name of a type a cost is built from, under any path;
+//! - the name of a type a cost is built from, under any path, and the
+//!   names of the functions that build one;
 //! - `Default::default`, which builds one without naming it;
 //! - a field of a cost, read or written;
-//! - the methods that add costs up or measure a record;
+//! - the functions that add costs up or measure a record, called as
+//!   methods or by path;
 //! - the macros that add a cost to a running one;
 //! - `+` and `+=`: anywhere in the engine (`src/rocksdb_storage`), and in
 //!   the rest of the crate in a function whose signature names a type that
 //!   carries a cost.
 //!
-//! An import may not rename an item of `grovedb_costs` or take it by glob,
-//! and may take only the names listed in [`IMPORTS`], so a cost type cannot
-//! be reached under another name. Naming a cost type in a signature and
-//! passing a cost on (`wrap_with_cost`) are not charges.
+//! The tokens of a macro are not parsed, so the same names are looked for
+//! in them as words. An import may not rename an item of `grovedb_costs`
+//! or take it by glob, and may take only the names listed in [`IMPORTS`],
+//! so a cost type cannot be reached under another name. Naming a cost type
+//! in a signature and passing a cost on (`wrap_with_cost`) are not charges.
 //!
 //! Two functions of the engine-neutral part add up or drop costs without
 //! working any out, and are left out by name ([`EXEMPT`]).
+//!
+//! A check of the source holds the code to the names it lists and cannot
+//! list every way of writing a charge. `model_ledger.rs` is the check that
+//! does not depend on how the code is written: it compares what the engine
+//! reports with what the model handed out. What this one adds is that it
+//! also refuses an addition of two costs the model handed out, which
+//! balances in the ledger, and that it names the line.
 
 use std::{
     fs,
@@ -58,16 +69,33 @@ const COST_FIELDS: [&str; 11] = [
     "value_storage_cost",
 ];
 
-const COST_METHODS: [&str; 9] = [
+/// The functions that add costs up or measure a record. `flat_map` and
+/// `flat_map_ok` are the combinators of a `CostContext` that add the cost
+/// of what they chain.
+const COST_METHODS: [&str; 11] = [
     "add_key_value_storage_costs",
     "combined_removed_bytes",
     "required_space",
     "add_cost",
     "unwrap_add_cost",
+    "flat_map",
+    "flat_map_ok",
     "add",
     "add_assign",
     "saturating_add",
     "checked_add",
+];
+
+/// The functions that build a cost.
+const COST_CONSTRUCTORS: [&str; 8] = [
+    "with_seek_count",
+    "with_storage_written_bytes",
+    "with_storage_loaded_bytes",
+    "with_storage_freed_bytes",
+    "with_hash_node_calls",
+    "for_updated_root_cost",
+    "for_in_place_value_rewrite",
+    "prepaid",
 ];
 
 /// What the crate may import from `grovedb_costs`: the cost model, and the
@@ -213,27 +241,35 @@ impl Charges {
         }
     }
 
-    /// The tokens of a macro are not parsed. A cost type counts where it is
+    /// The tokens of a macro are not parsed, so names are looked for as
+    /// words. In the definition of a macro a cost type counts where it is
     /// followed by `::`, `{` or `(`, which is how one is built, and not
-    /// where a signature inside a macro names it.
+    /// where a signature in the macro names it. In a call of a macro it
+    /// counts wherever it stands.
     fn tokens(&mut self, tokens: String, of: &str) {
         let is_word = |c: char| c.is_alphanumeric() || c == '_';
+        let is_definition = of == "macro_rules";
         for word in tokens.split(|c| !is_word(c)) {
-            if COST_FIELDS
+            let stated = COST_FIELDS
                 .iter()
                 .chain(&COST_METHODS)
+                .chain(&COST_CONSTRUCTORS)
                 .any(|name| *name == word)
-            {
+                || word.starts_with("cost_return_on_error")
+                || (!is_definition && COST_TYPES.contains(&word));
+            if stated {
                 self.state(format!("`{word}` in `{of}!`"));
             }
         }
-        let dense: String = tokens.split_whitespace().collect();
-        for name in COST_TYPES {
-            let built = ["::", "{", "("]
-                .iter()
-                .any(|next| dense.contains(&format!("{name}{next}")));
-            if built {
-                self.state(format!("`{name}` in `{of}!`"));
+        if is_definition {
+            let dense: String = tokens.split_whitespace().collect();
+            for name in COST_TYPES {
+                let built = ["::", "{", "("]
+                    .iter()
+                    .any(|next| dense.contains(&format!("{name}{next}")));
+                if built {
+                    self.state(format!("`{name}` in `{of}!`"));
+                }
             }
         }
     }
@@ -268,6 +304,18 @@ impl<'ast> Visit<'ast> for Charges {
     fn visit_item_type(&mut self, alias: &'ast syn::ItemType) {
         self.item(&alias.ident, false, |this| {
             this.body(|this| this.visit_type(&alias.ty))
+        });
+    }
+
+    fn visit_impl_item_type(&mut self, alias: &'ast syn::ImplItemType) {
+        self.item(&alias.ident, false, |this| {
+            this.body(|this| this.visit_type(&alias.ty))
+        });
+    }
+
+    fn visit_trait_item_type(&mut self, alias: &'ast syn::TraitItemType) {
+        self.item(&alias.ident, false, |this| {
+            this.body(|this| visit::visit_trait_item_type(this, alias))
         });
     }
 
@@ -324,6 +372,15 @@ impl<'ast> Visit<'ast> for Charges {
             if names.ends_with(&["Default".to_string(), "default".to_string()]) {
                 self.state("`Default::default`".to_string());
             }
+            let called = names.last().is_some_and(|last| {
+                COST_METHODS
+                    .iter()
+                    .chain(&COST_CONSTRUCTORS)
+                    .any(|name| name == last)
+            });
+            if called {
+                self.state(format!("`{}`", names.join("::")));
+            }
         }
         visit::visit_path(self, path);
     }
@@ -337,7 +394,11 @@ impl<'ast> Visit<'ast> for Charges {
     }
 
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-        if COST_METHODS.iter().any(|method| call.method == method) {
+        let stated = COST_METHODS
+            .iter()
+            .chain(&COST_CONSTRUCTORS)
+            .any(|method| call.method == method);
+        if stated {
             self.state(format!("a call of `{}`", call.method));
         }
         visit::visit_expr_method_call(self, call);
@@ -607,6 +668,58 @@ fn a_charge_stated_outside_the_model_is_found() {
         let found = charges_stated_in("rocksdb_storage/engine.rs", item);
         assert_eq!(found, [charge], "{item}");
     }
+}
+
+#[test]
+fn a_charge_reached_by_an_associated_type_a_macro_or_a_path_is_found() {
+    let finds = |source: &str, charge: &str| {
+        let found = charges_stated_in("rocksdb_storage/engine.rs", source);
+        assert!(
+            found.iter().any(|stated| stated == charge),
+            "{source}: {found:?}"
+        );
+    };
+
+    let associated = "trait HiddenCost { type C; fn charge() -> OperationCost; }
+impl HiddenCost                       for RocksDbStorage { type C = OperationCost; fn charge() -> OperationCost {                       <Self as HiddenCost>::C::with_seek_count(1) } }";
+    finds(associated, "C: `OperationCost`");
+    finds(associated, "charge: `HiddenCost::C::with_seek_count`");
+    finds(
+        "trait HiddenCost { type C = OperationCost; }",
+        "C: `OperationCost`",
+    );
+
+    let by_macro = "macro_rules! make_cost { ($ty:ty) => { <$ty>::with_seek_count(1) }; }
+fn                     charge() -> OperationCost { make_cost!(OperationCost) }";
+    finds(by_macro, "the module: `with_seek_count` in `macro_rules!`");
+    finds(by_macro, "charge: `OperationCost` in `make_cost!`");
+    finds(
+        "macro_rules! add_up { ($cost:ident, $call:expr) => { cost_return_on_error!(&mut $cost,          $call) }; }",
+        "the module: `cost_return_on_error` in `macro_rules!`",
+    );
+
+    let by_path = "fn wrong() -> CostResult<(), Error> { Ok(()).wrap_with_cost(std::ops::Add::add(                    COST_MODEL.read(None), COST_MODEL.cursor_move())) }";
+    finds(by_path, "wrong: `std::ops::Add::add`");
+    finds(
+        "fn wrong(cost: &mut OperationCost) { AddAssign::add_assign(cost, COST_MODEL.cursor_move());          }",
+        "wrong: `AddAssign::add_assign`",
+    );
+    finds(
+        "fn wrong() -> CostContext<()> { first().flat_map(|()| second()) }",
+        "wrong: a call of `flat_map`",
+    );
+    finds(
+        "fn wrong() -> CostResult<(), Error> { CostContext::flat_map_ok(first(), |()| second()) }",
+        "wrong: `CostContext::flat_map_ok`",
+    );
+    finds(
+        "fn wrong() -> OperationCost { Cost::with_hash_node_calls(1) }",
+        "wrong: `Cost::with_hash_node_calls`",
+    );
+    finds(
+        "fn wrong(key: &[u8]) { let info = hidden().for_updated_root_cost(None, 4); }",
+        "wrong: a call of `for_updated_root_cost`",
+    );
 }
 
 #[test]
