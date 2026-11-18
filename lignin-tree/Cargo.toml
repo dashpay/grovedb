@@ -9,3 +9,9 @@ repository = "https://github.com/dashpay/grovedb"
 publish = false
 
 [dependencies]
+lignin-format = { version = "6.1.1", path = "../lignin-format" }
+lignin-store = { version = "6.1.1", path = "../lignin-store" }
+
+[dev-dependencies]
+lignin-io = { version = "6.1.1", path = "../lignin-io" }
+tempfile = { workspace = true }
