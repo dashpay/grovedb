@@ -295,7 +295,10 @@ fn node_variant_conversion() {
     let mut tree = make_6_node_tree();
     let walker = RefWalker::new(&mut tree, PanicSource {});
 
-    assert_eq!(walker.to_kv_node(), Node::KV(vec![5], vec![5]));
+    assert_eq!(
+        walker.to_kv_node(GroveVersion::latest()),
+        Node::KV(vec![5], vec![5])
+    );
     assert_eq!(
         walker.to_kvhash_node(),
         Node::KVHash([
@@ -320,6 +323,52 @@ fn node_variant_conversion() {
             177, 190, 30, 154, 156, 35, 214, 144, 79, 40, 41, 218, 142
         ])
     );
+}
+
+/// A value-carrying proof node holds the bytes the node's value hash is
+/// taken over: the stored value, except for a backward-references item,
+/// where it is the item with its referrer list emptied. Bytes that carry
+/// one of that family's type bytes without decoding as an element are raw
+/// Merk values and are carried as stored.
+#[test]
+fn value_carrying_nodes_hold_the_hashed_bytes() {
+    use grovedb_element::{reference_path::ReferencePathType, BackwardReference, Element};
+
+    let grove_version = GroveVersion::latest();
+    let proved = |value: Vec<u8>| {
+        let mut tree = TreeNode::new(vec![1], value, None, BasicMerkNode).unwrap();
+        let walker = RefWalker::new(&mut tree, PanicSource {});
+        match walker.to_kv_node(grove_version) {
+            Node::KV(_, value) => value,
+            other => panic!("expected a KV node, got {other:?}"),
+        }
+    };
+
+    let plain = Element::new_item(b"payload".to_vec())
+        .serialize(grove_version)
+        .unwrap();
+    assert_eq!(proved(plain.clone()), plain);
+
+    let stripped = Element::new_item_allowing_bidirectional_references(b"payload".to_vec());
+    let mut registered = stripped.clone();
+    registered
+        .backward_references_mut()
+        .unwrap()
+        .push(BackwardReference {
+            inverted_reference: ReferencePathType::SiblingReference(b"referrer".to_vec()),
+            cascade_on_update: true,
+        });
+    let stripped = stripped.serialize(grove_version).unwrap();
+    let registered = registered.serialize(grove_version).unwrap();
+    assert_ne!(registered, stripped);
+    assert_eq!(proved(registered), stripped);
+    assert_eq!(proved(stripped.clone()), stripped);
+
+    // Type byte 26 (`ItemWithBackwardsReferences`) followed by bytes that
+    // are not an element.
+    let raw = vec![26, 0xff, 0xff, 0xff];
+    assert!(Element::deserialize(&raw, grove_version).is_err());
+    assert_eq!(proved(raw.clone()), raw);
 }
 
 #[test]

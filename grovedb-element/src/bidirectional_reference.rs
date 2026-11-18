@@ -9,23 +9,40 @@
 //!
 //! # Storage & hashing model
 //!
-//! Backward references live **on the target element itself** and are covered
-//! by the node hash through a two-layer scheme:
+//! Backward references live **on the target element itself**, in its stored
+//! bytes, and are **not part of any node hash**:
 //!
 //! ```text
 //! inner_hash      = H(serialize(element with backward_references = []))
-//! backrefs_hash   = H(serialize(backward_references))
-//! node value_hash = combine(inner_hash, backrefs_hash)            // items
-//!                 = combine3(inner_hash, target_inner_hash,
-//!                            backrefs_hash)                       // bidi refs
+//! node value_hash = inner_hash                                    // items
+//!                 = combine(inner_hash, end_inner_hash)           // bidi refs
 //! ```
 //!
-//! Forward references (and every member of a reference chain) commit to the
-//! target's **inner** hash, so registering or removing a referrer changes
-//! only the target's own node hash — never the hashes stored by other
-//! referrers. Proofs carry the stripped (inner) serialization plus the
-//! 32-byte `backrefs_hash`, so the referrer set is authenticated without
-//! bloating or leaking into result sets.
+//! `end_inner_hash` is the inner hash of the element the reference chain
+//! ends at. The declared capacity (`max_incoming`) is not part of the list:
+//! it stays in the stripped bytes, so the inner hash covers it.
+//!
+//! Registering or removing a referrer rewrites the target's stored bytes
+//! and by itself changes no hash: not the target's node hash, not its
+//! tree's root hash, not the hashes stored by other referrers. (Flags are
+//! in the stripped bytes, so a write that also changes the target's flags
+//! changes its hash like any other flags change.)
+//!
+//! A list is kept in a canonical order, ascending by inverted reference
+//! path ([`register_backward_reference`]), so it is a function of the
+//! references that exist and not of the order they registered in. Every
+//! node that executes the same operations therefore holds the same lists
+//! without their being hashed. A node that receives its state from a peer
+//! instead (state sync) checks the lists against the bidirectional
+//! references it restored, which the hashes do cover: every list entry
+//! must name a reference that points back, every reference must be listed
+//! by its target, and the list must be in canonical order. That fixes a
+//! restored list byte for byte.
+//!
+//! Proofs carry the stripped (inner) serialization in the ordinary
+//! value-carrying nodes, the verifier recomputes its hash, and result sets
+//! receive the stripped element. A backward-references item is therefore
+//! proved exactly like the plain item it extends, in every tree type.
 
 use bincode::{Decode, DecodeUntrusted, Encode};
 
@@ -82,9 +99,9 @@ pub struct BackwardReference {
 /// capacity the element declares for it.
 ///
 /// `max_incoming` is authenticated with the element: it sits in the
-/// STRIPPED (inner) bytes, so every referrer's commitment covers it and
-/// every node enforces the same value. `entries` are the registered
-/// referrers, excluded from the inner hash (see the module docs); there
+/// STRIPPED (inner) bytes, so the element's node hash and every referrer's
+/// commitment cover it and every node enforces the same value. `entries`
+/// are the registered referrers, outside every hash (see the module docs); there
 /// are never more of them than `max_incoming`, and `max_incoming` never
 /// exceeds [`MAX_BACKWARD_REFERENCES`].
 ///
@@ -175,52 +192,43 @@ pub struct BidirectionalReference {
     pub max_hop: MaxReferenceHop,
     /// Referrers registered on THIS reference (it can itself be targeted by
     /// at most [`MAX_BACKWARD_REFERENCES_ON_REFERENCE`] other bidirectional
-    /// references). Excluded from the inner hash; see the module docs.
+    /// references). Outside every hash; see the module docs.
     pub backward_references: Vec<BackwardReference>,
 }
 
-/// Canonical serialization of a backward-references list (bincode, big
-/// endian, no limit — the same codec configuration `Element` uses). The
-/// 32-byte hash of these bytes is the `backrefs_hash` half of the node's
-/// combined value hash, so this encoding is consensus-critical.
-pub fn serialize_backward_references(
-    backward_references: &[BackwardReference],
-) -> Result<Vec<u8>, crate::error::ElementError> {
-    let config = bincode::config::standard()
-        .with_big_endian()
-        .with_no_limit();
-    bincode::encode_to_vec(backward_references, config).map_err(|e| {
-        crate::error::ElementError::CorruptedData(format!(
-            "unable to serialize backward references: {e}"
-        ))
-    })
+/// Register `entry` in a referrer list, keeping the list in its canonical
+/// order: ascending by `inverted_reference`, one entry per referrer.
+///
+/// A referrer is identified by its inverted path, so an entry for a
+/// referrer that is already listed replaces the old one in place. Returns
+/// whether the list grew.
+///
+/// The canonical order makes a list a function of the references that
+/// exist, not of the order they were registered in. Nothing hashes the
+/// list, so this is what lets a node that received its state from a peer
+/// hold the same bytes, and walk referrers in the same order, as a node
+/// that executed every registration.
+pub fn register_backward_reference(
+    list: &mut Vec<BackwardReference>,
+    entry: BackwardReference,
+) -> bool {
+    if let Some(existing) = list
+        .iter_mut()
+        .find(|r| r.inverted_reference == entry.inverted_reference)
+    {
+        *existing = entry;
+        return false;
+    }
+    let position = list.partition_point(|r| r.inverted_reference < entry.inverted_reference);
+    list.insert(position, entry);
+    true
 }
 
-/// Inverse of [`serialize_backward_references`].
-pub fn deserialize_backward_references(
-    bytes: &[u8],
-) -> Result<Vec<BackwardReference>, crate::error::ElementError> {
-    let config = bincode::config::standard()
-        .with_big_endian()
-        .with_no_limit();
-    bincode::decode_from_slice_untrusted(bytes, config)
-        .map_err(|e| {
-            crate::error::ElementError::CorruptedData(format!(
-                "unable to deserialize backward references: {e}"
-            ))
-        })
-        .and_then(|(v, consumed)| {
-            // Trailing bytes would let two different byte strings decode to
-            // the same list; the codec is consensus-critical, so reject
-            // them like `Element::deserialize` does.
-            if consumed == bytes.len() {
-                Ok(v)
-            } else {
-                Err(crate::error::ElementError::CorruptedData(
-                    "trailing bytes after backward references".to_string(),
-                ))
-            }
-        })
+/// Whether a referrer list is in its canonical order: strictly ascending
+/// by `inverted_reference`, which also rules out a referrer listed twice.
+pub fn backward_references_are_canonical(list: &[BackwardReference]) -> bool {
+    list.windows(2)
+        .all(|pair| pair[0].inverted_reference < pair[1].inverted_reference)
 }
 
 #[cfg(test)]
@@ -308,16 +316,55 @@ mod tests {
             sibling_ref()
         );
 
-        // Proof shapes: the reference resolves through KvRefValueHash; the
-        // items use the dedicated recombining node kind.
+        // Proof shapes: the reference resolves through the KvRefValueHash
+        // family and the items use the ordinary value-carrying nodes, with
+        // the aggregate-carrying variant under a provable parent.
         assert_eq!(
             ElementType::BidirectionalReference.proof_node_type(Some(ElementType::Tree)),
             ProofNodeType::KvRefValueHash
         );
         assert_eq!(
-            ElementType::ItemWithBackwardsReferences.proof_node_type(Some(ElementType::Tree)),
-            ProofNodeType::KvBackwardsReferencesValueHash
+            ElementType::BidirectionalReference
+                .proof_node_type(Some(ElementType::ProvableCountTree)),
+            ProofNodeType::KvRefValueHashCount
         );
+        for (parent, expected) in [
+            (ElementType::Tree, ProofNodeType::Kv),
+            (ElementType::ProvableCountTree, ProofNodeType::KvCount),
+            (ElementType::ProvableCountSumTree, ProofNodeType::KvCount),
+            (
+                ElementType::ProvableCountIndexedTree,
+                ProofNodeType::KvCount,
+            ),
+            (ElementType::ProvableSumTree, ProofNodeType::KvSum),
+            (ElementType::ProvableSumIndexedTree, ProofNodeType::KvSum),
+            (
+                ElementType::ProvableCountProvableSumTree,
+                ProofNodeType::KvCountSum,
+            ),
+            (
+                ElementType::ProvableCountProvableSumIndexedTree,
+                ProofNodeType::KvCountSum,
+            ),
+            (
+                ElementType::ProvableCountProvableBigSumTree,
+                ProofNodeType::KvCountBigSum,
+            ),
+        ] {
+            for member in [
+                ElementType::ItemWithBackwardsReferences,
+                ElementType::SumItemWithBackwardsReferences,
+                ElementType::ItemWithSumItemWithBackwardsReferences,
+            ] {
+                assert_eq!(
+                    member.proof_node_type(Some(parent)),
+                    expected,
+                    "{} under {}",
+                    member.as_str(),
+                    parent.as_str()
+                );
+            }
+        }
     }
 
     #[test]
@@ -500,11 +547,8 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_and_over_limit_bytes_are_rejected() {
+    fn over_limit_bytes_are_rejected() {
         let grove_version = GroveVersion::latest();
-
-        // Garbage referrer-list bytes fail the standalone codec.
-        assert!(deserialize_backward_references(&[0xff, 0xff, 0xff]).is_err());
 
         // Raw element bytes with an over-limit referrer list (crafted by
         // encoding the enum directly, bypassing `serialize`'s validation)
@@ -573,7 +617,7 @@ mod tests {
         assert_eq!(
             ElementType::ItemWithSumItemWithBackwardsReferences
                 .proof_node_type(Some(ElementType::Tree)),
-            ProofNodeType::KvBackwardsReferencesValueHash
+            ProofNodeType::Kv
         );
         let shown = format!("{element}");
         assert!(
@@ -616,24 +660,62 @@ mod tests {
         assert!(over.serialize(grove_version).is_err());
     }
 
+    /// Registration keeps a list in one order whatever order the referrers
+    /// arrive in, replaces the entry of a referrer already listed, and the
+    /// order spans the path variants in their declared order.
     #[test]
-    fn backward_references_codec_round_trips() {
-        let list = vec![backref(b"a"), backref(b"zz")];
-        let bytes = serialize_backward_references(&list).unwrap();
-        assert_eq!(deserialize_backward_references(&bytes).unwrap(), list);
-        // Trailing bytes are rejected — one list, one byte string.
-        let mut padded = bytes.clone();
-        padded.push(0);
-        assert!(deserialize_backward_references(&padded).is_err());
-        // The empty list has a stable 1-byte encoding (its hash is a
-        // protocol constant).
-        assert_eq!(serialize_backward_references(&[]).unwrap().len(), 1);
+    fn registration_keeps_the_canonical_order() {
+        let entry = |inverted_reference, cascade_on_update| BackwardReference {
+            inverted_reference,
+            cascade_on_update,
+        };
+        let referrers = [
+            ReferencePathType::SiblingReference(b"b".to_vec()),
+            ReferencePathType::AbsolutePathReference(vec![b"z".to_vec()]),
+            ReferencePathType::SiblingReference(b"a".to_vec()),
+            ReferencePathType::UpstreamRootHeightReference(1, vec![b"k".to_vec()]),
+            ReferencePathType::AbsolutePathReference(vec![b"a".to_vec(), b"b".to_vec()]),
+        ];
+        let canonical = vec![
+            entry(referrers[4].clone(), true),
+            entry(referrers[1].clone(), true),
+            entry(referrers[3].clone(), true),
+            entry(referrers[2].clone(), true),
+            entry(referrers[0].clone(), true),
+        ];
+        assert!(backward_references_are_canonical(&canonical));
 
-        // A declared list length without encoded entries is rejected before
-        // the decoder reserves space for the declaration.
-        let unbacked_length = [vec![252], u32::MAX.to_be_bytes().to_vec()].concat();
-        assert!(deserialize_backward_references(&unbacked_length).is_err());
+        for order in [[0, 1, 2, 3, 4], [4, 3, 2, 1, 0], [2, 0, 4, 1, 3]] {
+            let mut list = Vec::new();
+            for index in order {
+                assert!(register_backward_reference(
+                    &mut list,
+                    entry(referrers[index].clone(), true)
+                ));
+            }
+            assert_eq!(list, canonical, "registered in order {order:?}");
+        }
+
+        // A referrer already listed is replaced where it stands.
+        let mut list = canonical.clone();
+        assert!(!register_backward_reference(
+            &mut list,
+            entry(referrers[1].clone(), false)
+        ));
+        assert_eq!(list.len(), canonical.len());
+        assert!(!list[1].cascade_on_update);
+        assert!(backward_references_are_canonical(&list));
+
+        // Any other order, and a referrer listed twice, are not canonical.
+        let mut swapped = canonical.clone();
+        swapped.swap(0, 1);
+        assert!(!backward_references_are_canonical(&swapped));
+        let mut twice = canonical.clone();
+        twice.insert(1, canonical[0].clone());
+        assert!(!backward_references_are_canonical(&twice));
+        assert!(backward_references_are_canonical(&[]));
     }
+
     /// The declared capacity bounds registrations, the protocol ceiling
     /// bounds declarations, and decode enforces both.
     #[test]

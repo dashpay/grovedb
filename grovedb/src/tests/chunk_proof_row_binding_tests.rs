@@ -209,6 +209,72 @@ mod tests {
 
     // ── Honest proofs ──────────────────────────────────────────────────
 
+    /// A backward-references item in a trunk proof rides in a
+    /// value-carrying node with its referrer list emptied, the bytes its
+    /// value hash is taken over, so the row verifies and the result holds
+    /// the item without the list, also while a referrer is registered.
+    #[test]
+    fn trunk_proves_a_backward_references_item_without_its_referrer_list() {
+        let grove_version = GroveVersion::latest();
+        let db = count_tree_with_subtrees(grove_version, Element::empty_count_tree());
+        let item = Element::new_item_allowing_bidirectional_references(b"payload".to_vec());
+        db.insert(
+            [b"ct".as_slice()].as_ref(),
+            b"bwr",
+            item.clone(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert the item");
+        // The referrer lives in another tree, outside the trunk.
+        db.insert(
+            EMPTY_PATH,
+            b"refs",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert the referrer tree");
+        db.insert(
+            [b"refs".as_slice()].as_ref(),
+            b"ref",
+            Element::new_bidirectional_reference(
+                crate::reference_path::ReferencePathType::AbsolutePathReference(vec![
+                    b"ct".to_vec(),
+                    b"bwr".to_vec(),
+                ]),
+            ),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("register a referrer");
+
+        let query = PathTrunkChunkQuery::new(vec![b"ct".to_vec()], 6);
+        let proof = db
+            .prove_trunk_chunk(&query, grove_version)
+            .unwrap()
+            .expect("prove trunk");
+        let (root, result) = GroveDb::verify_trunk_chunk_proof(&proof, &query, grove_version)
+            .expect("the trunk proof verifies");
+        assert_eq!(root, db.root_hash(None, grove_version).unwrap().unwrap());
+        assert_eq!(result.elements.get(b"bwr".as_slice()), Some(&item));
+
+        let ops = target_layer_ops(&decode_v1(&proof), b"ct");
+        assert!(
+            ops.iter().filter_map(node_of).any(|node| matches!(
+                node,
+                Node::KV(key, value) if key == b"bwr" && *value == item.serialize(grove_version).unwrap()
+            )),
+            "the item is carried by a KV node holding its bytes without the list"
+        );
+    }
+
     #[test]
     fn trunk_v4_binds_every_tree_row_and_returns_stored_elements() {
         let grove_version = GroveVersion::latest();

@@ -156,7 +156,7 @@ where
             ) {
             self.to_kv_value_hash_feature_type_node()
         } else {
-            self.create_proof_node_for_chunk(tree_type)
+            self.create_proof_node_for_chunk(tree_type, for_restore, grove_version)
         };
         proof.push(Op::Push(node));
 
@@ -203,33 +203,44 @@ where
     /// For raw merk values (not GroveDB Elements), defaults to
     /// KVValueHashFeatureType for backward compatibility with
     /// restore/chunking operations.
-    fn create_proof_node_for_chunk(&self, tree_type: TreeType) -> Node {
+    fn create_proof_node_for_chunk(
+        &self,
+        tree_type: TreeType,
+        for_restore: bool,
+        grove_version: &GroveVersion,
+    ) -> Node {
         let parent_tree_type = tree_type.to_element_type();
+
+        let element_type = ElementType::from_serialized_value(self.tree().value_as_slice());
+
+        // A backward-references item's referrer list is state a restore
+        // must reproduce, so its restore chunk node carries the FULL stored
+        // bytes, the stored value hash and the feature type. The
+        // value-carrying nodes cannot: their hash is recomputed from the
+        // bytes, and this family's value hash is taken over the bytes with
+        // the list emptied. The restorer makes that comparison itself (see
+        // `write_chunk`). A trunk or branch proof is a proof, not a
+        // restore: it carries the item like any other proof does, in a
+        // value-carrying node with the list emptied.
+        if for_restore && matches!(element_type, Ok(et) if et.is_backward_references_item()) {
+            return self.to_kv_value_hash_feature_type_node();
+        }
 
         // Determine the proof node type based on element type
         // Default to KVValueHashFeatureType for raw merk (non-Element) values
         // to maintain backward compatibility with restore/chunking
-        let proof_node_type = ElementType::from_serialized_value(self.tree().value_as_slice())
+        let proof_node_type = element_type
             .map(|et| et.proof_node_type(parent_tree_type))
             .unwrap_or(ProofNodeType::KvValueHashFeatureType);
 
         // Convert ProofNodeType to actual Node
         match proof_node_type {
-            ProofNodeType::Kv => self.to_kv_node(),
-            ProofNodeType::KvCount => self.to_kv_count_node(),
-            ProofNodeType::KvSum => self.to_kv_sum_node(),
-            ProofNodeType::KvCountSum => self.to_kv_count_sum_node(),
-            ProofNodeType::KvCountBigSum => self.to_kv_count_big_sum_node(),
+            ProofNodeType::Kv => self.to_kv_node(grove_version),
+            ProofNodeType::KvCount => self.to_kv_count_node(grove_version),
+            ProofNodeType::KvSum => self.to_kv_sum_node(grove_version),
+            ProofNodeType::KvCountSum => self.to_kv_count_sum_node(grove_version),
+            ProofNodeType::KvCountBigSum => self.to_kv_count_big_sum_node(grove_version),
             ProofNodeType::KvValueHash => self.to_kv_value_hash_node(),
-            // Chunks must restore the FULL element (the referrer list is
-            // state), so the stripped/backrefs query node cannot be used.
-            // Emit KVValueHashFeatureType: it carries the full bytes, the
-            // stored (combined) value hash, and the feature type — and the
-            // restorer recomputes the combined hash from the bytes for the
-            // item variants, binding them (see `write_chunk`).
-            ProofNodeType::KvBackwardsReferencesValueHash => {
-                self.to_kv_value_hash_feature_type_node()
-            }
             ProofNodeType::KvValueHashFeatureType => self.to_kv_value_hash_feature_type_node(),
             // References: at merk level, generate same node type as non-ref counterpart
             // GroveDB will post-process if needed

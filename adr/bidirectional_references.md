@@ -156,8 +156,8 @@ just like regular references, bidirectional references cannot point to subtrees.
 - __A (Sum)Item with backward references declares how many bidirectional references may
 point at it__ (`BackwardReferences::max_incoming`, at most the protocol ceiling
 `MAX_BACKWARD_REFERENCES` = 256; the convenience constructors declare 32). The declaration is
-authenticated with the element — it sits in the inner (stripped) bytes every referrer commits
-to — so every node enforces the same value. Registration past the declared capacity fails,
+authenticated with the element — it sits in the inner (stripped) bytes the element's node
+hash and every referrer commit to — so every node enforces the same value. Registration past the declared capacity fails,
 declaring a capacity above the ceiling fails at construction and at decode, and an update may
 raise the capacity freely but may not lower it below the referrers already registered.
 Declaring capacity allocates nothing: the list stores only actual registrations. The
@@ -228,7 +228,7 @@ work regardless of op order, lets whole chains be created in one batch,
 and validates the hop/component budgets against the prospective
 post-batch state. Derived writes execute through the internal
 `GroveOp::ReplaceBackwardReferenceFamilyMember` (rejected when supplied by
-callers), which installs the fully-combined node value hash; user
+callers), which installs the computed node value hash; user
 reference ops are themselves converted into that form (an identical-edge
 re-insert converts into nothing, mirroring the live no-op), and
 registrations onto targets written in the same batch merge into the
@@ -262,67 +262,95 @@ existing parent and indexed-tree propagation; participating values reuse the
 prepared Merk inside `MerkCache` for reference maintenance. All pending
 changes share the caller's storage batch and commit only after validation.
 
-### On-element storage and two-layer hashing
+### On-element storage, outside the node hash
 
-The referrer list lives directly on the element: each of the four variants carries a
-`Vec<BackwardReference>`. Registering or removing a referrer rewrites the TARGET element's
-bytes — but a naive design would then re-hash the target's value, changing the very hash
-every existing referrer has committed to, and each registration would trigger a cascade of
-propagations across all other referrers.
+The referrer list lives directly on the element: each of the four variants carries its
+registered referrers in its stored bytes. Registering or removing a referrer rewrites the
+TARGET element's bytes. If those bytes were hashed as stored, every registration would
+change the hash every existing referrer has committed to and trigger a cascade of
+propagations across all other referrers, and would move the root hash of the target's
+tree.
 
-To avoid that, elements with backward references use a two-layer hash:
+So the referrer list is not part of any node hash. An element with backward references
+hashes its serialization with the list emptied:
 
 ```text
-inner_hash    = H(serialize(element with backward_references = []))   // the LOGICAL hash
-backrefs_hash = H(serialize(backward_references))
+inner_hash = H(serialize(element with backward_references = []))   // the LOGICAL hash
 node value_hash:
-  (Sum)ItemWithBackwardsReferences  = combine(inner_hash, backrefs_hash)
-  BidirectionalReference            = combine(combine(inner_hash, backrefs_hash), end_hash)
+  (Sum)ItemWithBackwardsReferences  = inner_hash
+  BidirectionalReference            = combine(inner_hash, end_hash)
 ```
 
-where `end_hash` for a bidirectional reference is the hash of what it transitively points
-at, and `combine` is the existing two-input node-hash combinator.
+where `end_hash` for a bidirectional reference is the logical hash of what it transitively
+points at, and `combine` is the existing two-input node-hash combinator. The declared
+capacity (`max_incoming`) is not part of the list and stays in the hashed bytes.
 
 Every reference in a chain (ordinary or bidirectional) commits to the target's *logical*
-(`inner`) hash — the hash of the stripped serialization. This rule binds every write
-path, including `apply_batch`: a batch-inserted plain reference that terminates on (or
-chains through) a backward-references element commits the stripped hash, never the
-node's combined hash. Registering another referrer on a
-target changes only `backrefs_hash`, so the target's own node re-hashes (and propagates up
-its subtree as usual), while every referrer that already points at it keeps its stored
-node hash bit-for-bit. Cascaded hash propagation only happens when the *payload* — the
-logical hash — actually changes.
+(`inner`) hash, which for an item target is simply its node value hash. Registering another
+referrer on a target changes no hash by itself: not the target's node, not its tree's root,
+not the nodes of the referrers that already point at it. (Element flags are hashed, so a
+flags-update callback that changes the target's flags in reaction to the larger stored
+value does move the target's hash, like any other flags change.) The hash values that
+propagation writes to referrers change only when the *payload* — the logical hash —
+changes; an update that leaves it unchanged still rewrites the referrers, with the same
+values.
+
+Nodes agree on the lists without hashing them because registrations happen in consensus:
+every node that executes the same operations maintains the same lists. The earlier design
+hashed the list as a second layer, `combine(inner_hash, H(serialize(backward_references)))`.
+That bought nothing for executing nodes, and it is what kept these elements out of the
+provable and indexed trees (see Proofs below).
 
 Public reads (`get`, `get_raw`, query results, proved results) return the STRIPPED
 element: the referrer list is internal bookkeeping and never crosses the API boundary.
 Internal flows (propagation, cascade deletion, `verify_grovedb`) read the full element at
 the merk level.
 
-Since the referrer list is ordinary element data, state sync and chunk restore carry it
-for free — no side-channel storage has to be reconstructed.
+### State sync
+
+The referrer list is ordinary element data, so chunks carry it and a restore writes it.
+Because no hash covers it, the app hash does not vouch for the list a chunk carries. A
+restoring node therefore checks two things:
+
+- while writing a chunk, that a backward-references item's bytes with the list emptied hash
+  to the value hash the chunk carries (which the app hash does cover);
+- before the session commits, that the lists agree with the restored bidirectional
+  references, which the hashes cover: every list entry names a live
+  `BidirectionalReference` that points back at the element with the cascade policy the
+  entry records, no entry appears twice, and every `BidirectionalReference` is listed by
+  its immediate target.
+
+A session that fails either check fails the sync.
+
+The second check also requires each list to be in its canonical order: ascending by
+inverted reference path (`ReferencePathType`'s order: by variant, then by fields).
+Registration inserts at the canonical position, so a list is a function of the references
+that exist and not of the order they registered in. Together the checks fix every restored
+list byte for byte. The order matters beyond the bytes: a cascade deletes referrers in list
+order, one at a time, and the shape of a Merk tree after several deletions depends on their
+order.
 
 ### Proofs
 
-Because the node's `value_hash` is no longer `H(value_bytes)`, a plain `KVValueHash` proof
-node cannot authenticate these elements. A dedicated proof node kind ships the stripped
-payload plus the 32-byte referrer-list hash:
+A backward-references item is proved like the plain item it extends: in the
+value-carrying node its tree uses for items (`KV`, `KVCount`, `KVSum`, `KVCountSum`,
+`KVCountBigSum`), carrying the STRIPPED serialization. The verifier recomputes the value
+hash from those bytes, so the payload is bound by the recomputation rather than trusted,
+and the result set receives the stripped element. The referrer list is in no proof.
 
-```text
-Node::KVBackwardsReferencesValueHash(key, stripped_value_bytes, backrefs_hash)
-```
+The verifier rejects backward-references items inside `KVValueHash` /
+`KVValueHashFeatureType` nodes, whose hash does not bind the value bytes. The V0 prover
+does not prove the family (V0 is a frozen wire format). Bidirectional references resolve
+through the existing `KVRefValueHash` mechanics with `inner_hash` as the carried
+self-hash.
 
-The verifier RECOMPUTES `combine(H(stripped_value_bytes), backrefs_hash)` as the node's
-value hash — the payload bytes are bound by the recomputation rather than trusted, and
-tampering with either the payload or the referrer-list hash breaks the root-hash chain.
-The verifier also rejects backward-references elements smuggled inside plain `KVValueHash`
-/ `KVValueHashFeatureType` nodes, and the node kind itself is rejected in V0 proofs
-(V0 is a frozen wire format). Bidirectional references resolve through the existing
-`KVRefValueHash` mechanics with `combine(inner, backrefs)` as the carried self-hash.
+Because nothing about their proof shape is special, elements with backward references
+live in every tree that takes the plain item they extend, including the `Provable*`
+aggregate trees and the indexed trees.
 
-One consequence: elements with backward references are rejected inside `Provable*`
-aggregate trees (`ProvableCountTree`, `ProvableSumTree`, `ProvableCountSumTree`,
-`ProvableCountProvableSumTree`) — their proof nodes carry aggregate data in shapes that
-have no backward-references twin. Plain `SumTree` / `CountTree` parents work.
+The node kind `KVBackwardsReferencesValueHash`, which carried the stripped payload next to
+the hash of the list while the list was hashed, is retired. Its encoding tags (0x50 to
+0x53) stay reserved and decode to an error.
 
 ### Propagation
 
