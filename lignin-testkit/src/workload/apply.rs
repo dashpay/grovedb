@@ -4,7 +4,9 @@
 //! recorder, a replayer and a benchmark all drive the database the same way.
 //! Block handling stays with the caller: [`apply`] runs inside the
 //! transaction it is given and reports [`Outcome::EndOfBlock`] for
-//! [`Op::Commit`] without committing anything.
+//! [`Op::Commit`] without committing anything. The one operation that does
+//! not run inside it is [`Op::FlushPendingDrops`], which GroveDB only offers
+//! on the database itself.
 
 use grovedb::{
     batch::{BatchApplyOptions, QualifiedGroveDbOp, SubelementsDeletionBehavior},
@@ -13,12 +15,13 @@ use grovedb::{
         insert::InsertOptions,
     },
     query_result_type::{QueryResultElements, QueryResultType},
-    BackwardsReferences, Element, Error, GroveDb, PathQuery, SizedQuery, TransactionArg,
+    AggregateSumQueryOptions, AggregateSumQueryResult, BackwardsReferences, Element, Error,
+    GroveDb, PathQuery, PathQueryRun, PendingPrefixDropsReport, SizedQuery, TransactionArg,
 };
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_version::version::GroveVersion;
 
-use super::op::{AppendEntry, BatchOp, Op, Query, QueryItem, Read, Write};
+use super::op::{AppendEntry, BatchOp, Op, PartialBatch, Query, QueryItem, Read, Write};
 
 /// What applying an [`Op`] produced.
 #[derive(Debug)]
@@ -31,6 +34,24 @@ pub enum Outcome {
     Rows(QueryResultElements),
     /// The op was [`Op::Commit`]: the caller commits its transaction.
     EndOfBlock,
+    /// An [`Op::PartialBatch`] was applied.
+    WrittenInSegments {
+        /// The cost GroveDB reported to its caller when the first segment
+        /// paused: what the call had cost so far, the first segment's
+        /// pending writes included.
+        first_segment: OperationCost,
+    },
+    /// What [`Op::FlushPendingDrops`] reclaimed.
+    Reclaimed(PendingPrefixDropsReport),
+    /// What a [`Read::PathQuery`] returned, in the form of its shape, or the
+    /// rows a [`Read::Rows`] returned with how many its offset skipped.
+    Run(PathQueryRun),
+    /// What a [`Read::SumBudget`] returned.
+    Sums(AggregateSumQueryResult),
+    /// The record a [`Read::GetAux`] returned, if there is one.
+    Aux(Option<Vec<u8>>),
+    /// The records a [`Read::AuxByPrefix`] returned, in key order.
+    AuxEntries(Vec<(Vec<u8>, Vec<u8>)>),
 }
 
 /// How [`Write::Insert`] is applied: an insert replaces a value but not a
@@ -70,6 +91,15 @@ pub const BATCH_OPTIONS: BatchApplyOptions = BatchApplyOptions {
     batch_pause_height: None,
 };
 
+/// How a [`Read::PathQuery`] is run: the same three switches a
+/// [`Read::Query`] is run with.
+const ALLOW_CACHE: bool = true;
+const DECREASE_LIMIT_ON_EMPTY_SUBQUERY: bool = true;
+const ERROR_IF_PATH_NOT_PRESENT: bool = true;
+
+/// The form query rows are returned in.
+const RESULT_TYPE: QueryResultType = QueryResultType::QueryPathKeyElementTrioResultType;
+
 /// Applies one operation inside `transaction`.
 ///
 /// Every option GroveDB takes is spelled out in the constants above, so a
@@ -90,36 +120,128 @@ pub fn apply(
                 grove_version,
             )
             .map_ok(|()| Outcome::Written),
-        Op::Read(Read::Get { path, key }) => db
+        Op::Read(read) => apply_read(db, read, transaction, grove_version),
+        Op::Commit => Ok(Outcome::EndOfBlock).wrap_with_cost(OperationCost::default()),
+        Op::PartialBatch(batch) => apply_partial_batch(db, batch, transaction, grove_version),
+        Op::FlushPendingDrops => db
+            .flush_pending_prefix_drops(grove_version)
+            .map(Outcome::Reclaimed)
+            .wrap_with_cost(OperationCost::default()),
+    }
+}
+
+fn apply_partial_batch(
+    db: &GroveDb,
+    batch: &PartialBatch,
+    transaction: TransactionArg,
+    grove_version: &GroveVersion,
+) -> CostResult<Outcome, Error> {
+    let mut first_segment = OperationCost::default();
+    db.apply_partial_batch(
+        batch.ops.iter().map(BatchOp::to_grove_op).collect(),
+        Some(BatchApplyOptions {
+            batch_pause_height: batch.pause_height,
+            ..BATCH_OPTIONS
+        }),
+        |cost, _left_over| {
+            first_segment = cost.clone();
+            Ok(batch.add_on.iter().map(BatchOp::to_grove_op).collect())
+        },
+        transaction,
+        grove_version,
+    )
+    .map_ok(|()| Outcome::WrittenInSegments { first_segment })
+}
+
+fn apply_read(
+    db: &GroveDb,
+    read: &Read,
+    transaction: TransactionArg,
+    grove_version: &GroveVersion,
+) -> CostResult<Outcome, Error> {
+    match read {
+        Read::Get { path, key } => db
             .get(path.as_slice(), key, transaction, grove_version)
             .map_ok(Outcome::Element),
-        Op::Read(Read::Query(query)) => {
+        Read::Query(query) => {
             let path_query = query.to_path_query();
-            let result_type = QueryResultType::QueryPathKeyElementTrioResultType;
             if query.raw {
                 db.query_raw(
                     &path_query,
-                    true,
-                    true,
-                    true,
-                    result_type,
+                    ALLOW_CACHE,
+                    DECREASE_LIMIT_ON_EMPTY_SUBQUERY,
+                    ERROR_IF_PATH_NOT_PRESENT,
+                    RESULT_TYPE,
                     transaction,
                     grove_version,
                 )
             } else {
                 db.query(
                     &path_query,
-                    true,
-                    true,
-                    true,
-                    result_type,
+                    ALLOW_CACHE,
+                    DECREASE_LIMIT_ON_EMPTY_SUBQUERY,
+                    ERROR_IF_PATH_NOT_PRESENT,
+                    RESULT_TYPE,
                     transaction,
                     grove_version,
                 )
             }
             .map_ok(|(rows, _skipped)| Outcome::Rows(rows))
         }
-        Op::Commit => Ok(Outcome::EndOfBlock).wrap_with_cost(OperationCost::default()),
+        Read::Rows { query, raw } => if *raw {
+            db.query_raw(
+                query,
+                ALLOW_CACHE,
+                DECREASE_LIMIT_ON_EMPTY_SUBQUERY,
+                ERROR_IF_PATH_NOT_PRESENT,
+                RESULT_TYPE,
+                transaction,
+                grove_version,
+            )
+        } else {
+            db.query(
+                query,
+                ALLOW_CACHE,
+                DECREASE_LIMIT_ON_EMPTY_SUBQUERY,
+                ERROR_IF_PATH_NOT_PRESENT,
+                RESULT_TYPE,
+                transaction,
+                grove_version,
+            )
+        }
+        .map_ok(|(elements, skipped)| Outcome::Run(PathQueryRun::Elements { elements, skipped })),
+        Read::PathQuery { query, .. } => db
+            .run_path_query(
+                query,
+                ALLOW_CACHE,
+                DECREASE_LIMIT_ON_EMPTY_SUBQUERY,
+                ERROR_IF_PATH_NOT_PRESENT,
+                RESULT_TYPE,
+                transaction,
+                grove_version,
+            )
+            .map_ok(Outcome::Run),
+        Read::SumBudget {
+            query,
+            skip_non_sum_items,
+            ignore_references,
+        } => db
+            .query_aggregate_sums_with_options(
+                query,
+                AggregateSumQueryOptions {
+                    allow_cache: ALLOW_CACHE,
+                    error_if_intermediate_path_tree_not_present: ERROR_IF_PATH_NOT_PRESENT,
+                    error_if_non_sum_item_found: !skip_non_sum_items,
+                    ignore_references: *ignore_references,
+                },
+                transaction,
+                grove_version,
+            )
+            .map_ok(Outcome::Sums),
+        Read::GetAux { key } => db.get_aux(key, transaction).map_ok(Outcome::Aux),
+        Read::AuxByPrefix { prefix } => db
+            .get_aux_by_key_prefix(prefix, transaction)
+            .map_ok(Outcome::AuxEntries),
     }
 }
 
@@ -188,6 +310,15 @@ fn apply_write(
                 ),
             }
         }
+        Write::PutAux { key, value } => db.put_aux(key, value, None, transaction),
+        Write::DeleteAux { key } => db.delete_aux(key, None, transaction),
+        Write::DropFlat { path, key } => db.drop_flat_subtree(
+            path.as_slice(),
+            key,
+            BackwardsReferences::DontCheck,
+            transaction,
+            grove_version,
+        ),
     }
     .map_ok(|()| Outcome::Written)
 }
@@ -270,6 +401,31 @@ impl BatchOp {
                 SubelementsDeletionBehavior::DeleteChildren,
             ),
             BatchOp::Append { path, entry } => append_op(path.clone(), entry),
+            BatchOp::Patch {
+                path,
+                key,
+                element,
+                change_in_bytes,
+            } => QualifiedGroveDbOp::patch_op(
+                path.clone(),
+                key.clone(),
+                element.clone(),
+                *change_in_bytes,
+            ),
+            BatchOp::Move { path, key, new_key } => {
+                QualifiedGroveDbOp::move_op(path.clone(), key.clone(), new_key.clone())
+            }
+            BatchOp::DropFlat {
+                path,
+                key,
+                tree_type,
+            } => QualifiedGroveDbOp::delete_tree_op(
+                path.clone(),
+                key.clone(),
+                *tree_type,
+                SubelementsDeletionBehavior::DropFlat,
+            )
+            .dont_check_for_backwards_references(),
         }
     }
 }

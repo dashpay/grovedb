@@ -5,8 +5,23 @@
 //! reference per document in an index tree, identity balances as sum items
 //! in one sum tree, and token balances as sum items in a count-sum tree per
 //! token under a big sum tree. Each state transition is one batch.
+//!
+//! The submodules hold the shapes around the operations that reach storage
+//! in a way of their own: identity keys ([`IdentityKeys`]: patch,
+//! conditional subqueries, pages by offset).
+
+mod aggregates;
+mod expiry;
+mod keys;
+mod rekey;
+mod state;
 
 use std::collections::BTreeMap;
+
+pub use self::{
+    aggregates::IndexAggregates, expiry::Expiration, keys::IdentityKeys, rekey::IndexRekey,
+    state::PlatformState,
+};
 
 use grovedb::{element::reference_path::ReferencePathType, Element, TreeType};
 
@@ -30,6 +45,11 @@ const DOMAIN_BALANCE_READS: u64 = 0xBA1B;
 const DOMAIN_TOKENS: u64 = 0x70C0;
 const DOMAIN_TOKEN_ID: u64 = 0x70C1;
 const DOMAIN_TOKEN_READS: u64 = 0x70C2;
+const DOMAIN_IDENTITY_KEYS: u64 = 0x1D01;
+const DOMAIN_PLATFORM_STATE: u64 = 0x57A7;
+const DOMAIN_INDEX_REKEY: u64 = 0xD0C7;
+const DOMAIN_EXPIRATION: u64 = 0xD0C8;
+const DOMAIN_INDEX_AGGREGATES: u64 = 0xD0C9;
 
 /// Drive's root tree keys.
 const ROOT_DOCUMENTS: &[u8] = &[64];

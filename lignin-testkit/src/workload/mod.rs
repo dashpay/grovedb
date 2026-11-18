@@ -30,6 +30,7 @@ pub mod rng;
 pub mod zoo;
 
 mod build;
+mod query_encoding;
 
 use std::collections::VecDeque;
 
@@ -38,8 +39,10 @@ use grovedb_version::version::GroveVersion;
 
 pub use self::{
     apply::{apply, Outcome},
-    coverage::Coverage,
-    op::{AppendEntry, BatchOp, Op, Path, Query, QueryItem, Read, StreamDigest, Write},
+    coverage::{Coverage, Operation},
+    op::{
+        AppendEntry, BatchOp, Op, PartialBatch, Path, Query, QueryItem, Read, StreamDigest, Write,
+    },
     rng::Rng,
 };
 
@@ -75,6 +78,18 @@ pub struct Features {
     /// the proof of a reference stored in a `ProvableCountSumTree` does not
     /// verify.
     pub v1_proofs: bool,
+    /// A batch `Move`.
+    pub move_element: bool,
+    /// Flat drops, by `GroveDb::drop_flat_subtree` and by a batch
+    /// `DeleteTree`: the one way a GroveDB operation writes a meta record.
+    pub flat_drop: bool,
+    /// The read modes of a query: the axis reads of indexed trees and the
+    /// sum-budget read, run and proven as path queries.
+    pub read_modes: bool,
+    /// `Query::limit`, a limit of its own for each subquery.
+    pub instance_limits: bool,
+    /// `Query::offset`, a page in count units for each subquery.
+    pub instance_offsets: bool,
 }
 
 impl Features {
@@ -87,12 +102,20 @@ impl Features {
         repeated_appends_in_batch: true,
         direct_delete_of_provable_trees: true,
         v1_proofs: true,
+        move_element: true,
+        flat_drop: true,
+        read_modes: true,
+        instance_limits: true,
+        instance_offsets: true,
     };
 
     /// What `grove_version` stores.
     pub fn for_grove_version(grove_version: &GroveVersion) -> Self {
         let grovedb = &grove_version.grovedb_versions;
         let insert = &grovedb.operations.insert;
+        let flat_drop = &grovedb.operations.flat_drop;
+        let proof = &grovedb.operations.proof;
+        let path_query = &grovedb.path_query_methods;
         Features {
             backward_references: grovedb.apply_batch.backward_references_maintenance >= 1
                 && insert.insert_on_transaction >= 1,
@@ -107,7 +130,15 @@ impl Features {
                 .delete
                 .delete_internal_on_transaction
                 >= 1,
-            v1_proofs: grovedb.operations.proof.prove_query_non_serialized >= 1,
+            v1_proofs: proof.prove_query_non_serialized >= 1,
+            move_element: grovedb.apply_batch.move_element >= 1,
+            flat_drop: flat_drop.drop_flat_subtree >= 1
+                && flat_drop.batch_delete_tree_drop_flat >= 1,
+            read_modes: path_query.unified_read_mode >= 1
+                && proof.axis_descent_in_v1_envelope >= 1
+                && proof.sum_budget_in_v1_envelope >= 1,
+            instance_limits: path_query.per_instance_query_limits >= 1,
+            instance_offsets: path_query.per_instance_query_offsets >= 1,
         }
     }
 
@@ -232,6 +263,24 @@ pub enum Workload {
     DeleteHeavy(adversarial::DeleteHeavy),
     /// [`adversarial::ReferenceChains`].
     ReferenceChains(adversarial::ReferenceChains),
+    /// [`drive::IdentityKeys`].
+    IdentityKeys(drive::IdentityKeys),
+    /// [`drive::PlatformState`].
+    PlatformState(drive::PlatformState),
+    /// [`drive::IndexRekey`].
+    IndexRekey(drive::IndexRekey),
+    /// [`drive::Expiration`].
+    Expiration(drive::Expiration),
+    /// [`drive::IndexAggregates`].
+    IndexAggregates(drive::IndexAggregates),
+    /// [`adversarial::FlatDrops`].
+    FlatDrops(adversarial::FlatDrops),
+    /// [`adversarial::Moves`].
+    Moves(adversarial::Moves),
+    /// [`adversarial::PartialBatches`].
+    PartialBatches(adversarial::PartialBatches),
+    /// [`adversarial::Pagination`].
+    Pagination(adversarial::Pagination),
 }
 
 impl Workload {
@@ -260,6 +309,36 @@ impl Workload {
                 features,
                 ..Default::default()
             }),
+            Workload::IdentityKeys(drive::IdentityKeys {
+                features,
+                ..Default::default()
+            }),
+            Workload::PlatformState(drive::PlatformState::default()),
+            Workload::IndexRekey(drive::IndexRekey {
+                features,
+                ..Default::default()
+            }),
+            Workload::Expiration(drive::Expiration {
+                features,
+                ..Default::default()
+            }),
+            Workload::IndexAggregates(drive::IndexAggregates {
+                features,
+                ..Default::default()
+            }),
+            Workload::FlatDrops(adversarial::FlatDrops {
+                features,
+                ..Default::default()
+            }),
+            Workload::Moves(adversarial::Moves {
+                features,
+                ..Default::default()
+            }),
+            Workload::PartialBatches(adversarial::PartialBatches::default()),
+            Workload::Pagination(adversarial::Pagination {
+                features,
+                ..Default::default()
+            }),
         ]
     }
 
@@ -276,6 +355,15 @@ impl Workload {
             Workload::TinySubtrees(_) => "tiny-subtrees",
             Workload::DeleteHeavy(_) => "delete-heavy",
             Workload::ReferenceChains(_) => "reference-chains",
+            Workload::IdentityKeys(_) => "identity-keys",
+            Workload::PlatformState(_) => "platform-state",
+            Workload::IndexRekey(_) => "index-rekey",
+            Workload::Expiration(_) => "expiration",
+            Workload::IndexAggregates(_) => "index-aggregates",
+            Workload::FlatDrops(_) => "flat-drops",
+            Workload::Moves(_) => "moves",
+            Workload::PartialBatches(_) => "partial-batches",
+            Workload::Pagination(_) => "pagination",
         }
     }
 
@@ -292,6 +380,15 @@ impl Workload {
             Workload::TinySubtrees(workload) => workload.stream(seed),
             Workload::DeleteHeavy(workload) => workload.stream(seed),
             Workload::ReferenceChains(workload) => workload.stream(seed),
+            Workload::IdentityKeys(workload) => workload.stream(seed),
+            Workload::PlatformState(workload) => workload.stream(seed),
+            Workload::IndexRekey(workload) => workload.stream(seed),
+            Workload::Expiration(workload) => workload.stream(seed),
+            Workload::IndexAggregates(workload) => workload.stream(seed),
+            Workload::FlatDrops(workload) => workload.stream(seed),
+            Workload::Moves(workload) => workload.stream(seed),
+            Workload::PartialBatches(workload) => workload.stream(seed),
+            Workload::Pagination(workload) => workload.stream(seed),
         }
     }
 }

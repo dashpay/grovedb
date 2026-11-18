@@ -1,9 +1,10 @@
 //! Small constructors shared by the generators.
 
-use grovedb::{Element, ElementFlags};
+use grovedb::{AggregateSumPathQuery, Element, ElementFlags, PathQuery, SizedQuery};
+use grovedb_merk::proofs::query::AggregateSumQuery;
 
 use super::{
-    op::{AppendEntry, BatchOp, Op, Path, Query, QueryItem, Read, Write},
+    op::{AppendEntry, BatchOp, Op, PartialBatch, Path, Query, QueryItem, Read, Write},
     rng::Rng,
 };
 
@@ -106,6 +107,105 @@ pub(crate) fn query(query: Query) -> Op {
     Op::Read(Read::Query(query))
 }
 
+/// A path query in GroveDB's own form that the target proves.
+pub(crate) fn proven(path_query: PathQuery) -> Op {
+    path_query_read(path_query, true)
+}
+
+/// A path query in GroveDB's own form that the target only runs.
+pub(crate) fn unproven(path_query: PathQuery) -> Op {
+    path_query_read(path_query, false)
+}
+
+pub(crate) fn path_query_read(path_query: PathQuery, proven: bool) -> Op {
+    Op::Read(Read::PathQuery {
+        query: Box::new(path_query),
+        proven,
+    })
+}
+
+/// A path query in GroveDB's own form run by the readers that return rows.
+pub(crate) fn rows(path_query: PathQuery, raw: bool) -> Op {
+    Op::Read(Read::Rows {
+        query: Box::new(path_query),
+        raw,
+    })
+}
+
+/// `query` at `path` with a limit and an offset.
+pub(crate) fn sized(
+    path: &[Vec<u8>],
+    query: grovedb::Query,
+    limit: Option<u16>,
+    offset: Option<u16>,
+) -> PathQuery {
+    PathQuery::new(path.to_vec(), SizedQuery::new(query, limit, offset))
+}
+
+/// A walk over the sum items `items` select in `path`, stopping at
+/// `sum_limit`. Elements without a sum are skipped and references followed.
+pub(crate) fn sum_budget(
+    path: &[Vec<u8>],
+    items: Vec<grovedb::QueryItem>,
+    left_to_right: bool,
+    sum_limit: u64,
+    limit: Option<u16>,
+) -> Op {
+    Op::Read(Read::SumBudget {
+        query: Box::new(AggregateSumPathQuery::new(
+            path.to_vec(),
+            AggregateSumQuery {
+                items,
+                left_to_right,
+                sum_limit,
+                limit_of_items_to_check: limit,
+            },
+        )),
+        skip_non_sum_items: true,
+        ignore_references: false,
+    })
+}
+
+pub(crate) fn put_aux(key: &[u8], value: Vec<u8>) -> Op {
+    Op::Write(Write::PutAux {
+        key: key.to_vec(),
+        value,
+    })
+}
+
+pub(crate) fn delete_aux(key: &[u8]) -> Op {
+    Op::Write(Write::DeleteAux { key: key.to_vec() })
+}
+
+pub(crate) fn get_aux(key: &[u8]) -> Op {
+    Op::Read(Read::GetAux { key: key.to_vec() })
+}
+
+pub(crate) fn aux_by_prefix(prefix: &[u8]) -> Op {
+    Op::Read(Read::AuxByPrefix {
+        prefix: prefix.to_vec(),
+    })
+}
+
+pub(crate) fn drop_flat(path: &[Vec<u8>], key: &[u8]) -> Op {
+    Op::Write(Write::DropFlat {
+        path: path.to_vec(),
+        key: key.to_vec(),
+    })
+}
+
+pub(crate) fn partial_batch(
+    ops: Vec<BatchOp>,
+    add_on: Vec<BatchOp>,
+    pause_height: Option<u8>,
+) -> Op {
+    Op::PartialBatch(PartialBatch {
+        ops,
+        add_on,
+        pause_height,
+    })
+}
+
 /// Constructors for the operations of a batch.
 pub(crate) mod batch {
     use super::*;
@@ -165,6 +265,36 @@ pub(crate) mod batch {
         BatchOp::Append {
             path: tree.to_vec(),
             entry,
+        }
+    }
+
+    pub(crate) fn patch(
+        path: &[Vec<u8>],
+        key: &[u8],
+        element: Element,
+        change_in_bytes: i32,
+    ) -> BatchOp {
+        BatchOp::Patch {
+            path: path.to_vec(),
+            key: key.to_vec(),
+            element,
+            change_in_bytes,
+        }
+    }
+
+    pub(crate) fn move_key(path: &[Vec<u8>], key: &[u8], new_key: &[u8]) -> BatchOp {
+        BatchOp::Move {
+            path: path.to_vec(),
+            key: key.to_vec(),
+            new_key: new_key.to_vec(),
+        }
+    }
+
+    pub(crate) fn drop_flat(path: &[Vec<u8>], key: &[u8], tree_type: grovedb::TreeType) -> BatchOp {
+        BatchOp::DropFlat {
+            path: path.to_vec(),
+            key: key.to_vec(),
+            tree_type,
         }
     }
 

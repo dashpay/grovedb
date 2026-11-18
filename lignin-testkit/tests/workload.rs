@@ -9,24 +9,35 @@
 //!   checks against come from an exhaustive `match`, so a variant added to
 //!   GroveDB stops the crate compiling until it is named and then fails that
 //!   test until a workload produces it.
+//! - Each operation that reaches storage in a way of its own is produced at
+//!   least once: `the_suite_produces_every_operation`, for the suite of the
+//!   latest grove version and, for every other grove version, for exactly
+//!   the operations that version has.
 //! - The streams are ones GroveDB accepts:
-//!   `every_workload_applies_on_every_grove_version`.
+//!   `every_workload_applies_on_every_grove_version`, and for more seeds
+//!   `the_operation_workloads_apply_for_many_seeds`.
 
 use std::{collections::BTreeSet, thread};
 
-use grovedb::{query_result_type::PathKeyElementTrio, Element, GroveDb};
+use grovedb::{
+    operations::proof::VerifiedPathQuery, query_result_type::PathKeyElementTrio,
+    AxisAggregateValue, Element, GroveDb, PathQuery, PathQueryRun,
+};
 use grovedb_commitment_tree::{ciphertext_payload_size, DashMemo};
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 use lignin_testkit::workload::{
     adversarial::{
-        DeepNesting, DeleteHeavy, LargeValues, LongKeys, ReferenceChains, TinySubtrees,
-        MAX_NESTING_DEPTH,
+        DeepNesting, DeleteHeavy, FlatDrops, LargeValues, LongKeys, Moves, Pagination,
+        PartialBatches, ReferenceChains, TinySubtrees, MAX_NESTING_DEPTH,
     },
     apply,
-    coverage::{ELEMENT_VARIANTS, REFERENCE_PATH_TYPES, TREE_TYPES},
-    drive::{Balances, Documents, Tokens},
+    coverage::{Operation, ELEMENT_VARIANTS, OPERATION_GROUPS, REFERENCE_PATH_TYPES, TREE_TYPES},
+    drive::{
+        Balances, Documents, Expiration, IdentityKeys, IndexAggregates, IndexRekey, PlatformState,
+        Tokens,
+    },
     zoo::{ElementZoo, COMMITMENT_PAYLOAD_LEN},
-    Coverage, Features, Op, Outcome, Query, Read, StreamDigest, Workload,
+    BatchOp, Coverage, Features, Op, Outcome, Query, Read, StreamDigest, Workload, Write,
 };
 
 const SEED: u64 = 1;
@@ -46,8 +57,10 @@ fn digest(ops: impl Iterator<Item = Op>) -> (u64, String) {
 
 /// Applies a stream to `db`, one transaction per block, and returns how many
 /// operations it applied. Panics on the first refused operation, on a read
-/// that does not follow a commit, and on a query whose proof does not verify
-/// to the rows the query returned.
+/// or a flush that does not follow a commit, on a query whose proof does not
+/// verify to what the query returned, on a query marked as not proven that
+/// GroveDB proves, and on a flush that does not reclaim every subtree
+/// dropped since the flush before it.
 fn run(
     name: &str,
     db: &GroveDb,
@@ -57,13 +70,15 @@ fn run(
     let mut transaction = db.start_transaction();
     let mut applied = 0u64;
     let mut committed = true;
+    let mut dropped = 0u64;
     for (index, op) in ops.enumerate() {
-        if matches!(op, Op::Read(_)) {
+        if op.follows_a_commit() {
             assert!(
                 committed,
-                "{name}: read {index} does not follow a commit: {op:?}"
+                "{name}: operation {index} does not follow a commit: {op:?}"
             );
         }
+        dropped += flat_drops(&op);
         if std::env::var_os("WORKLOAD_TRACE").is_some() {
             eprintln!(
                 "{name} v{} #{index}: {op:?}",
@@ -94,13 +109,44 @@ fn run(
                     grove_version,
                 );
             }
+            (Op::Read(Read::PathQuery { query, proven }), Outcome::Run(answer)) => {
+                prove_path_query(name, index, db, query, *proven, answer, grove_version);
+            }
+            (Op::FlushPendingDrops, Outcome::Reclaimed(report)) => {
+                assert_eq!(
+                    (
+                        report.reclaimed_records,
+                        report.skipped_live,
+                        report.unresolved_records
+                    ),
+                    (dropped, 0, 0),
+                    "{name}: flush {index} did not reclaim the {dropped} dropped subtrees"
+                );
+                dropped = 0;
+            }
             (Op::Read(_), _) => {}
             _ => committed = false,
         }
         applied += 1;
     }
     assert!(committed, "{name}: the stream does not end on a commit");
+    assert_eq!(dropped, 0, "{name}: the stream leaves dropped subtrees");
     applied
+}
+
+/// How many subtrees an operation drops flat.
+fn flat_drops(op: &Op) -> u64 {
+    let in_batch = |ops: &[BatchOp]| {
+        ops.iter()
+            .filter(|op| matches!(op, BatchOp::DropFlat { .. }))
+            .count() as u64
+    };
+    match op {
+        Op::Write(Write::DropFlat { .. }) => 1,
+        Op::Batch(ops) => in_batch(ops),
+        Op::PartialBatch(batch) => in_batch(&batch.ops) + in_batch(&batch.add_on),
+        _ => 0,
+    }
 }
 
 /// Paths `verify_grovedb` reports. Grove versions 1 to 4 leave orphan rows
@@ -198,6 +244,179 @@ fn prove(
         proved == expected,
         "{name} on grove v{version}: query {index} proves other rows\n{query:?}\nproved: \
          {proved:?}\nexpected: {expected:?}"
+    );
+}
+
+/// Proves a path query against committed state and checks that the proof
+/// verifies to the database's root hash and to the answer the query gave. A
+/// query the stream marks as not proven must be one GroveDB refuses to
+/// prove.
+fn prove_path_query(
+    name: &str,
+    index: usize,
+    db: &GroveDb,
+    query: &PathQuery,
+    proven: bool,
+    answer: PathQueryRun,
+    grove_version: &GroveVersion,
+) {
+    let version = grove_version.protocol_version;
+    let proof = db.prove_query(query, None, grove_version).unwrap();
+    if !proven {
+        assert!(
+            proof.is_err(),
+            "{name} on grove v{version}: query {index} is marked as not proven, but GroveDB \
+             proves it\n{query:?}"
+        );
+        return;
+    }
+    let proof = proof.unwrap_or_else(|error| {
+        panic!("{name} on grove v{version}: query {index} not provable: {error:?}\n{query:?}")
+    });
+    let verified =
+        GroveDb::verify_path_query(&proof, query, grove_version).unwrap_or_else(|error| {
+            panic!(
+                "{name} on grove v{version}: proof of query {index} does not verify: \
+                 {error:?}\n{query:?}"
+            )
+        });
+    assert_eq!(
+        *verified.root_hash(),
+        db.root_hash(None, grove_version)
+            .unwrap()
+            .expect("root hash"),
+        "{name} on grove v{version}: proof of query {index} verifies to another root"
+    );
+    let (expected, proved) = match (answer, verified) {
+        (
+            PathQueryRun::Elements { elements, .. },
+            VerifiedPathQuery::Elements {
+                elements: proved, ..
+            },
+        ) => {
+            let expected: Vec<_> = elements
+                .to_path_key_elements()
+                .into_iter()
+                .map(|(path, key, element)| {
+                    let element = if element.underlying().is_reference() {
+                        db.get(path.as_slice(), &key, None, grove_version)
+                            .unwrap()
+                            .expect("a stored reference resolves")
+                    } else {
+                        element
+                    };
+                    (path, key, Some(element))
+                })
+                .collect();
+            (format!("{expected:?}"), format!("{proved:?}"))
+        }
+        (
+            PathQueryRun::AggregateCount(count),
+            VerifiedPathQuery::AggregateCount { count: proved, .. },
+        ) => (format!("{count}"), format!("{proved}")),
+        (PathQueryRun::AggregateSum(sum), VerifiedPathQuery::AggregateSum { sum: proved, .. }) => {
+            (format!("{sum}"), format!("{proved}"))
+        }
+        (
+            PathQueryRun::AggregateCountAndSum { count, sum },
+            VerifiedPathQuery::AggregateCountAndSum {
+                count: proved_count,
+                sum: proved_sum,
+                ..
+            },
+        ) => (
+            format!("{:?}", (count, sum)),
+            format!("{:?}", (proved_count, proved_sum)),
+        ),
+        (
+            PathQueryRun::AggregateCountPerKey(per_key),
+            VerifiedPathQuery::AggregatePerKey {
+                per_key: proved, ..
+            },
+        ) => {
+            let expected: Vec<_> = per_key
+                .into_iter()
+                .map(|(key, count)| (key, Some(count), None::<i64>))
+                .collect();
+            (format!("{expected:?}"), format!("{proved:?}"))
+        }
+        (
+            PathQueryRun::AggregateSumPerKey(per_key),
+            VerifiedPathQuery::AggregatePerKey {
+                per_key: proved, ..
+            },
+        ) => {
+            let expected: Vec<_> = per_key
+                .into_iter()
+                .map(|(key, sum)| (key, None::<u64>, Some(sum)))
+                .collect();
+            (format!("{expected:?}"), format!("{proved:?}"))
+        }
+        (
+            PathQueryRun::AggregateCountAndSumPerKey(per_key),
+            VerifiedPathQuery::AggregatePerKey {
+                per_key: proved, ..
+            },
+        ) => {
+            let expected: Vec<_> = per_key
+                .into_iter()
+                .map(|(key, count, sum)| (key, Some(count), Some(sum)))
+                .collect();
+            (format!("{expected:?}"), format!("{proved:?}"))
+        }
+        (
+            PathQueryRun::AxisEntries { entries, skipped },
+            VerifiedPathQuery::AxisEntries {
+                entries: proved,
+                skipped: proved_skipped,
+                ..
+            },
+        ) => (
+            format!("{:?}", (entries, skipped)),
+            format!("{:?}", (proved, proved_skipped)),
+        ),
+        (
+            PathQueryRun::AxisKeys { keys, skipped },
+            VerifiedPathQuery::AxisEntries {
+                entries: proved,
+                skipped: proved_skipped,
+                ..
+            },
+        ) => (
+            format!("{:?}", (keys, skipped)),
+            format!("{:?}", (proved.to_keys(), proved_skipped)),
+        ),
+        (
+            PathQueryRun::BranchedAxisEntries(branches),
+            VerifiedPathQuery::BranchedAxisEntries {
+                branches: proved, ..
+            },
+        ) => (format!("{branches:?}"), format!("{proved:?}")),
+        (PathQueryRun::AxisRank(rank), VerifiedPathQuery::AxisRank { rank: proved, .. }) => {
+            (format!("{rank}"), format!("{proved}"))
+        }
+        (
+            PathQueryRun::AxisAggregate(value),
+            VerifiedPathQuery::AxisAggregate { value: proved, .. },
+        ) => {
+            let value = match value {
+                AxisAggregateValue::Population(population) => i128::from(population),
+                AxisAggregateValue::Total(total) => i128::from(total),
+            };
+            (format!("{value}"), format!("{proved}"))
+        }
+        (PathQueryRun::SumBudget(sums), VerifiedPathQuery::SumBudget { matches, .. }) => {
+            (format!("{:?}", sums.results), format!("{matches:?}"))
+        }
+        (answer, verified) => panic!(
+            "{name} on grove v{version}: query {index} was answered as {answer:?} and proved \
+             as {verified:?}"
+        ),
+    };
+    assert!(
+        proved == expected,
+        "{name} on grove v{version}: query {index} proves another answer\n{query:?}\nproved: \
+         {proved}\nexpected: {expected}"
     );
 }
 
@@ -328,6 +547,71 @@ fn the_smallest_workloads_apply() {
             chains: 0,
             features,
         }),
+        Workload::IdentityKeys(IdentityKeys {
+            identities: 1,
+            keys: 1,
+            updates: 12,
+            transitions_per_block: 1,
+            features,
+        }),
+        Workload::PlatformState(PlatformState {
+            masternodes: 0,
+            validator_sets: 0,
+            blocks: 5,
+            blocks_per_rotation: 1,
+        }),
+        Workload::IndexRekey(IndexRekey {
+            documents: 1,
+            values: 1,
+            twins: 1,
+            moves_per_batch: 1,
+            documents_after: 0,
+            features,
+        }),
+        Workload::IndexRekey(IndexRekey {
+            documents: 0,
+            twins: 0,
+            ..IndexRekey::default()
+        }),
+        Workload::Expiration(Expiration {
+            blocks: 3,
+            documents_per_block: 1,
+            longest_life: 1,
+            features,
+        }),
+        Workload::Expiration(Expiration {
+            blocks: 2,
+            documents_per_block: 0,
+            ..Expiration::default()
+        }),
+        Workload::IndexAggregates(IndexAggregates {
+            documents: 1,
+            deletes: 1,
+            owners: 1,
+            transitions_per_block: 1,
+            features,
+        }),
+        Workload::FlatDrops(FlatDrops {
+            rounds: 0,
+            features,
+        }),
+        Workload::Moves(Moves {
+            rounds: 0,
+            features,
+        }),
+        Workload::PartialBatches(PartialBatches {
+            transitions: 0,
+            transitions_per_block: 1,
+        }),
+        Workload::PartialBatches(PartialBatches {
+            transitions: 9,
+            transitions_per_block: 1,
+        }),
+        Workload::Pagination(Pagination {
+            rows: 8,
+            rounds: 1,
+            features,
+        }),
     ];
     let grove_version = GroveVersion::latest();
     for workload in workloads {
@@ -453,9 +737,115 @@ fn the_suite_produces_every_element_variant_and_tree_type() {
     assert_eq!(zoo.missing_tree_types(), Vec::<&str>::new());
 }
 
+/// The workloads added for the operations that reach storage in a way of
+/// their own.
+fn operation_workloads(features: Features) -> Vec<Workload> {
+    Workload::suite(features)
+        .into_iter()
+        .skip_while(|workload| workload.name() != "identity-keys")
+        .collect()
+}
+
+/// Which rows a workload reads, pages and moves depends on the seed.
+/// `WORKLOAD_SEEDS` sets how many seeds to try.
+#[test]
+fn the_operation_workloads_apply_for_many_seeds() {
+    let seeds: u64 = std::env::var("WORKLOAD_SEEDS")
+        .ok()
+        .map_or(4, |seeds| seeds.parse().expect("a number of seeds"));
+    on_every_grove_version(|grove_version| {
+        let features = Features::for_grove_version(grove_version);
+        let workloads = operation_workloads(features);
+        assert_eq!(workloads.len(), 9);
+        for workload in workloads {
+            for seed in 2..2 + seeds {
+                let (_dir, db) = open();
+                let name = format!("{} seed {seed}", workload.name());
+                run(&name, &db, workload.stream(seed), grove_version);
+            }
+        }
+    });
+}
+
+fn suite_coverage(features: Features) -> Coverage {
+    let mut coverage = Coverage::new();
+    for workload in Workload::suite(features) {
+        for op in workload.stream(SEED) {
+            coverage.record(&op);
+        }
+    }
+    coverage
+}
+
+#[test]
+fn the_suite_produces_every_operation() {
+    assert_eq!(
+        Features::for_grove_version(GroveVersion::latest()),
+        Features::ALL,
+        "the suite applied to the latest grove version is not the one checked here"
+    );
+    let coverage = suite_coverage(Features::ALL);
+    assert_eq!(coverage.missing_operations(), Vec::<Operation>::new());
+    for group in OPERATION_GROUPS {
+        let produced: Vec<&str> = coverage
+            .operations()
+            .iter()
+            .filter(|operation| operation.group() == *group)
+            .map(|operation| operation.name())
+            .collect();
+        assert!(!produced.is_empty(), "no workload produces {group}");
+        println!("{group}: {produced:?}");
+    }
+
+    for grove_version in GROVE_VERSIONS {
+        let features = Features::for_grove_version(grove_version);
+        let unsupported: Vec<Operation> = Operation::ALL
+            .iter()
+            .copied()
+            .filter(|operation| !features.supports(*operation))
+            .collect();
+        assert_eq!(
+            suite_coverage(features).missing_operations(),
+            unsupported,
+            "grove v{}",
+            grove_version.protocol_version
+        );
+        println!(
+            "grove v{}: every operation but {unsupported:?}",
+            grove_version.protocol_version
+        );
+    }
+
+    let first_unit: Vec<Workload> = Workload::suite(Features::ALL)
+        .into_iter()
+        .take_while(|workload| workload.name() != "identity-keys")
+        .collect();
+    assert_eq!(first_unit.len(), 10);
+    for workload in first_unit {
+        let ops: Vec<Op> = workload.stream(SEED).collect();
+        assert!(
+            Coverage::of(&ops).operations().is_empty(),
+            "{} produces one of the operations",
+            workload.name()
+        );
+    }
+}
+
 #[test]
 fn coverage_reports_what_a_stream_lacks() {
     let empty = Coverage::new();
+    assert_eq!(empty.missing_operations(), Operation::ALL);
+    let groups: BTreeSet<&str> = Operation::ALL
+        .iter()
+        .map(|operation| operation.group())
+        .collect();
+    assert_eq!(groups, OPERATION_GROUPS.iter().copied().collect());
+    assert_eq!(OPERATION_GROUPS.len(), 8);
+    let names: BTreeSet<&str> = Operation::ALL
+        .iter()
+        .map(|operation| operation.name())
+        .collect();
+    assert_eq!(names.len(), Operation::ALL.len());
     assert_eq!(empty.missing_elements(), ELEMENT_VARIANTS);
     assert_eq!(empty.missing_tree_types(), TREE_TYPES);
     assert_eq!(empty.missing_reference_paths(), REFERENCE_PATH_TYPES);
@@ -502,6 +892,24 @@ const PINNED_STREAMS: &[(&str, u64, u64, &str)] = &[
     ("delete-heavy", 0x4c49474e494e, 6246, "2e9de83aa09c295c2cba188785c401fb2ba19136860685595a46c594ec411531"),
     ("reference-chains", 0x1, 460, "76d941fb245d7cb0be8005bbbc8aaf78bf04cf82fab6c233d0071865b95421b5"),
     ("reference-chains", 0x4c49474e494e, 460, "776d86bf9f6a7d87b8f7a5da2d14d27047dc6a9ab3439b7eec97092b75308e6b"),
+    ("identity-keys", 0x1, 262, "c6fd27e8dc3216590d9efdb0a1fa300efab5a775211bf9d1754f859f6869c59f"),
+    ("identity-keys", 0x4c49474e494e, 262, "1afb0b1e6c527b5533b62000a7b9f47f581fa2dac3d6596e90d9a70ef321f35d"),
+    ("platform-state", 0x1, 227, "6bc725ba56b77c54da7e7117b0daa861baed8405a302aaa8c12c4d6e54939e40"),
+    ("platform-state", 0x4c49474e494e, 230, "06ca367cbf60635b0b50e46eb15a958b78d63f75fe8b86f3a26638d1c2998d32"),
+    ("index-rekey", 0x1, 320, "0d21d26fae26ed367c2eb28af967f53ea055edf5098bb6548db028fcd713c1f6"),
+    ("index-rekey", 0x4c49474e494e, 320, "59feab58060ff927842bcf09a9f1e294ed7f914a86d518c536c887f081734f1c"),
+    ("expiration", 0x1, 559, "a1e894ffe395c4d42af1510481d97d983dffe314e1c57fa15c27ab485b1cba0a"),
+    ("expiration", 0x4c49474e494e, 563, "e35fd0fbaa598145529309a6daeff4d73e3427f177480b245316e0c823665f31"),
+    ("index-aggregates", 0x1, 298, "6a61091f940c6221c70febe4aac33f52b37b4480419eee1fc45678ef37ca1957"),
+    ("index-aggregates", 0x4c49474e494e, 298, "33c0ce6a14dec75a1bdce6266aaa7fe98e7cb04c66b2bf77a69e3214d9a171fe"),
+    ("flat-drops", 0x1, 179, "b080d17288c227df6bd39f7db4eaaf76036ff8b4a3eafff029c66812c8a56d0b"),
+    ("flat-drops", 0x4c49474e494e, 179, "4f5039b35499b9f764c9326fd63bd5a1304371bbc1ee961473cfdb4641f09336"),
+    ("moves", 0x1, 149, "2a9a6d9237fc34b0dd1f6305794c79e7fb119a13195c1feaf568dfa049022e7d"),
+    ("moves", 0x4c49474e494e, 149, "3aae20b1f5f267fe966cff2535c1c95a68629580c46cfa7eecc911bc46f665f8"),
+    ("partial-batches", 0x1, 229, "28cdc7f483e259fd89742411a334febfb267a55b6e4dbb90ce19f8bc58137664"),
+    ("partial-batches", 0x4c49474e494e, 229, "3130e3f1ae85b4d1dea8f80e2ab282051649916ac747e64ae96c48eacc6ae6e1"),
+    ("pagination", 0x1, 450, "a5bbffc4df1584027994c26532e41894d01c32e8d558246a734e2ddc38c185a1"),
+    ("pagination", 0x4c49474e494e, 450, "d2006b61fde9aaaae706dea5f37829315a1c7ba852194204f01d4cc1371619ea"),
 ];
 
 #[test]
@@ -534,11 +942,11 @@ fn streams_are_pinned() {
 /// features, seed [`SEED`]: protocol version, operations, digest.
 #[rustfmt::skip]
 const PINNED_SUITES: &[(u32, u64, &str)] = &[
-    (1, 16118, "ec6a32267985f3af00832b42c11b3aa4c20fd09d85a07ad341784e4b6c90400c"),
-    (2, 16118, "ec6a32267985f3af00832b42c11b3aa4c20fd09d85a07ad341784e4b6c90400c"),
-    (3, 16118, "84301809e2ceca9c01cccb2f3a9928024cb2ff8c8be89f28690e5525f2916fce"),
-    (4, 16337, "88f545c9f7dec6a47b85746e3939a55f43d873f0d8ebab3854505e44a6d50870"),
-    (5, 16566, "35d4619423f3763603141161426242f3d5789a400fcb9857f012cf5251af88dd"),
+    (1, 18621, "6717e3ac3e99e69ec5d1a8b3dc35832ef1ddb2999d1e1a2a8647e5aab6df5d5e"),
+    (2, 18621, "6717e3ac3e99e69ec5d1a8b3dc35832ef1ddb2999d1e1a2a8647e5aab6df5d5e"),
+    (3, 18621, "b8393784803c2c37e147448d52a7d91204cdac8d2e159ad4094e6fc7cbc7b3a7"),
+    (4, 18993, "a2082e7a2d5ddd3a44aaa509202ebedf5afcbc7b21c82ec40195c3982c70acea"),
+    (5, 19239, "c7f28bec8217f26d797f87f4d9d7a14cbf934b07f1ed709c20ada77ecfb867d5"),
 ];
 
 #[test]
