@@ -52,17 +52,18 @@
 //!
 //! # When the v1 prover keeps the layer whole
 //!
-//! The cut relies on prover and verifier counting the same rows. They do,
-//! with one exception that predates this module: an empty plain `Tree` that
-//! is itself a result row is charged by the prover, and not by a verifier
-//! that leaves empty trees out of its result (the default). Once the walk has
-//! charged such a row the prover does not truncate, and the layer verifies
-//! as it does in v0. The verifier is not relaxed for it. The prover also
-//! keeps a layer whole when the instance budget outlasts it, when the global
-//! budget ends the walk first (the global limit already bounds that layer,
-//! and the two sides do not charge it identically for every empty descent),
-//! and when the rows before the cut exceed what a Merk limit (a `u16`) can
-//! express.
+//! The cut relies on prover and verifier counting the same rows against the
+//! instance budget. Under `GROVE_V5` they do: the one row the two sides used
+//! to count differently, an empty plain `Tree` that is itself a result row
+//! and that a default verifier does not report, is charged by the verifier
+//! too from the same version (`proof.unreported_empty_tree_row_charge`). The
+//! truncation is meant to be selected together with that slot.
+//!
+//! The prover keeps a layer whole when the instance budget outlasts it, when
+//! the global budget ends the walk first (the global limit already bounds
+//! that layer, and the two sides do not charge it identically for every
+//! empty descent), and when the rows before the cut exceed what a Merk limit
+//! (a `u16`) can express.
 //!
 //! [v0]: self::v0
 //! [v1]: self::v1
@@ -97,10 +98,9 @@ impl GroveDb {
     /// the walk processed already rewritten.
     /// `first_op_past_the_instance_budget` is the index of the first op the
     /// walk reached with a spent instance budget, `None` when that budget
-    /// outlasted the layer or the global budget ended the walk first. `charged_an_empty_plain_tree_row` says
-    /// the walk so far charged an empty plain `Tree` as a result row, which a
-    /// default verifier does not count. From v1 the layer is replaced by one
-    /// that reveals nothing after the last row within the budget.
+    /// outlasted the layer or the global budget ended the walk first. From v1
+    /// the layer is replaced by one that reveals nothing after the last row
+    /// within the budget.
     #[cfg(feature = "minimal")]
     pub(crate) fn truncate_instance_capped_layer<'a, S>(
         &self,
@@ -109,7 +109,6 @@ impl GroveDb {
         left_to_right: bool,
         merk_proof: &mut ProofWithoutEncodingResult,
         first_op_past_the_instance_budget: Option<usize>,
-        charged_an_empty_plain_tree_row: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
     where
@@ -128,7 +127,6 @@ impl GroveDb {
                 left_to_right,
                 merk_proof,
                 first_op_past_the_instance_budget,
-                charged_an_empty_plain_tree_row,
                 grove_version,
             ),
             version => Err(unknown_version(version)).wrap_with_cost(OperationCost::default()),

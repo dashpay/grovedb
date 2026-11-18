@@ -731,15 +731,16 @@ fn a_layer_longer_than_a_merk_limit_stays_whole() {
     );
 }
 
-/// The prover charges an empty plain `Tree` that is itself a result row; a
-/// verifier that leaves empty trees out of its result (the default) does
-/// not. After such a row the two budgets differ, and a layer cut by the
-/// prover's count would look to the verifier like one that stops with
-/// budget left. The prover therefore leaves the layer whole, and the proof
-/// verifies to the same rows as under V4.
+/// An empty plain `Tree` that is itself a result row counts toward the page
+/// on both sides under V5: the prover charges it, and so does a verifier
+/// that leaves empty trees out of its result (the default), from the same
+/// version. So a page it helps fill is cut like any other, and the verifier
+/// sees the budget spent. Under V4 the verifier does not count the row and
+/// the layer is whole.
 #[test]
-fn an_empty_tree_row_keeps_the_layer_whole() {
-    // The empty tree is a row below the capped layer: `index/a/t`.
+fn an_empty_tree_row_counts_toward_the_cut() {
+    // The empty tree is a row below the capped layer: `index/a/t`. With the
+    // item `index/a/d` it fills a page of two.
     let db = make_test_grovedb(&GROVE_V5);
     insert(&db, &[], INDEX, Element::empty_tree(), &GROVE_V5);
     for key in [b"a", b"b", b"c"] {
@@ -754,9 +755,15 @@ fn an_empty_tree_row_keeps_the_layer_whole() {
     );
     insert(&db, &[INDEX, b"a"], b"t", Element::empty_tree(), &GROVE_V5);
     let query = page(2, true);
-    for v in [&GROVE_V4, &GROVE_V5] {
+    for (v, revealed) in [(&GROVE_V4, 3), (&GROVE_V5, 1)] {
         let proof = db.prove_query(&query, None, v).unwrap().expect("proves");
-        assert_eq!(index_layer_rows(&proof).len(), 3, "v{}", v.protocol_version);
+        assert_eq!(
+            index_layer_rows(&proof).len(),
+            revealed,
+            "v{}",
+            v.protocol_version
+        );
+        // The item is reported; the empty tree is counted and left out.
         assert_eq!(
             verified_rows(&proof, &query, v).expect("the proof verifies"),
             vec![(vec![INDEX.to_vec(), b"a".to_vec()], b"d".to_vec())],
@@ -766,8 +773,9 @@ fn an_empty_tree_row_keeps_the_layer_whole() {
     }
 
     // The empty tree is a row of the capped layer itself: no branch selects
-    // `a`, so it is the first row of the page for the prover, and no row at
-    // all for the verifier, which takes `c` as the page.
+    // `a`, so it is the page of one. V5 stops the layer after it and the
+    // verifier, having counted it, reports nothing. V4's verifier does not
+    // count it and takes `c` as the page.
     let db = make_test_grovedb(&GROVE_V5);
     insert(&db, &[], INDEX, Element::empty_tree(), &GROVE_V5);
     insert(&db, &[INDEX], b"a", Element::empty_tree(), &GROVE_V5);
@@ -781,16 +789,20 @@ fn an_empty_tree_row_keeps_the_layer_whole() {
     );
     body.limit = Some(1);
     let query = PathQuery::new_unsized(vec![INDEX.to_vec()], body);
-    for v in [&GROVE_V4, &GROVE_V5] {
-        let proof = db.prove_query(&query, None, v).unwrap().expect("proves");
-        assert_eq!(index_layer_rows(&proof).len(), 3, "v{}", v.protocol_version);
-        assert_eq!(
-            verified_rows(&proof, &query, v).expect("the proof verifies"),
-            vec![(vec![INDEX.to_vec()], b"c".to_vec())],
-            "v{}",
-            v.protocol_version
-        );
-    }
+
+    let v4_proof = db.prove_query(&query, None, &GROVE_V4).unwrap().unwrap();
+    assert_eq!(index_layer_rows(&v4_proof).len(), 3);
+    assert_eq!(
+        verified_rows(&v4_proof, &query, &GROVE_V4).expect("V4 verifies"),
+        vec![(vec![INDEX.to_vec()], b"c".to_vec())]
+    );
+
+    let v5_proof = db.prove_query(&query, None, &GROVE_V5).unwrap().unwrap();
+    assert_eq!(index_layer_rows(&v5_proof), vec![b"a".to_vec()]);
+    assert_eq!(
+        verified_rows(&v5_proof, &query, &GROVE_V5).expect("V5 verifies"),
+        Rows::new()
+    );
 }
 
 /// Past the cut the layer hides range bounds as well as rows. A query that

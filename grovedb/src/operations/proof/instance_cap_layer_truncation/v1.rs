@@ -49,7 +49,6 @@ impl GroveDb {
         left_to_right: bool,
         merk_proof: &mut ProofWithoutEncodingResult,
         first_op_past_the_instance_budget: Option<usize>,
-        charged_an_empty_plain_tree_row: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
     where
@@ -62,16 +61,6 @@ impl GroveDb {
         let Some(first_op_past_the_instance_budget) = first_op_past_the_instance_budget else {
             return Ok(()).wrap_with_cost(cost);
         };
-        // The cut is only as good as the count behind it. The prover charges
-        // an empty plain `Tree` that is itself a result row; a verifier that
-        // leaves empty trees out of its result (the default) does not. After
-        // such a row the verifier's budgets run ahead of the prover's, and it
-        // would refuse a layer cut by the prover's count as one that stops
-        // with budget left. The layer stays whole, the shape v0 gives it.
-        if charged_an_empty_plain_tree_row {
-            return Ok(()).wrap_with_cost(cost);
-        }
-
         // What the walk left revealed past the budget: a row the page does
         // not need, or a range bound proving a later queried key absent.
         // Either is hidden by the cut.

@@ -170,10 +170,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `operations.proof.instance_cap_layer_truncation` slot (0 in V1..V4, 1 in
   V5; **BREAKING** for code building `GroveDBOperationsProofVersions` by
   hand). Proofs of queries without a per-instance cap are not affected. A
-  layer also stays whole once the walk has charged an empty plain `Tree` as
-  a result row, which the prover counts and a default verifier does not,
-  and when the global budget, not the instance one, ends the walk (the
-  global limit already bounds that layer). The
+  layer also stays whole when the global budget, not the instance one, ends
+  the walk (the global limit already bounds that layer). The cut relies on
+  both sides counting the same rows against the instance budget, which
+  `unreported_empty_tree_row_charge` (below) completes in the same version.
+  The
   prover still walks the whole layer once before it truncates it, as it
   does in V4, so the saving is in proof size and verifier work.
 - **BREAKING**: The referrer list of a bidirectional-reference target is
@@ -281,6 +282,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must move to 0.41 as well.
 
 ### Fixed
+- From `GROVE_V5`, a V1 proof verifier that leaves empty trees out of its
+  results (`verify_query`, `verify_subset_query` and their absence-proof
+  forms, or `VerifyOptions::include_empty_trees_in_result` false) counts an
+  empty plain `Tree` that is itself a result row against the query's limit
+  and per-instance caps, as the prover and the trusted read do, and stops
+  where the budget is spent. It bound the row and charged nothing, so its
+  budget ran ahead of the prover's: over `index/a/{d: item, t: empty tree}`
+  and `index/b/{d: item}`, a range query with a range subquery and limit 2
+  returns `a/d` and `a/t` from `query_raw`, and `verify_query` refused the
+  honest proof of that page with "V1 proof is missing lower layer for
+  non-empty tree at key 62". It now verifies and returns `a/d`. Where the
+  row after the spent budget was an item of the same layer, the verifier
+  reported it although the page had ended; it no longer does. A page can
+  therefore hold fewer rows than its limit while more rows follow: every
+  unreported empty tree takes one slot. The new
+  `proof.unreported_empty_tree_row_charge` slot is 0 in V1..V4, which verify
+  as 6.1.1 does, and 1 in V5 (**BREAKING** for code building
+  `GroveDBOperationsProofVersions` by hand). Proof bytes do not change.
+- From `GROVE_V5`, V1 proofs treat the element at a key whose conditional
+  branch has neither a subquery nor a subquery path
+  (`add_conditional_subquery(item, None, None)`, which exempts keys from the
+  default subquery) as the result row the trusted read returns. Prover and
+  verifier read every key a conditional branch matched as a descent. An empty
+  tree at such a key was proved as an empty child: no verifier reported it,
+  whatever `include_empty_trees_in_result` said, and it was charged against
+  the global limit only, so under a `Query::limit` of 1 `query_raw` returned
+  the tree and `verify_query` returned the first row after it. A populated
+  tree at such a key could not be proved: `prove_query` failed with
+  `CorruptedPath`. Both sides now ask whether the query has anything below
+  the key (`PathQuery::query_items_at_path`): an empty tree there is charged
+  as a row and reported like any other empty tree, and a populated one is
+  proved with its child hash like any tree reported without a subquery. The
+  new `proof.subquery_descent_on_key` slot is 0 in V1..V4, which prove and
+  verify as 6.1.1 does, and 1 in V5 (**BREAKING** for code building
+  `GroveDBOperationsProofVersions` by hand). Under `GROVE_V5` the proof of
+  such a query changes; proofs of queries without such a branch do not.
 - A storage read that fails while a subtree is opened is returned as
   `Error::StorageError` instead of being reported as a missing parent (first
   part of #1030). Opening a subtree reads its parent element, and every error

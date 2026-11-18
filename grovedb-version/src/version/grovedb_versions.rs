@@ -682,6 +682,42 @@ pub struct GroveDBOperationsProofVersions {
     /// rejected proof into an accepted one: a `0` verifier refuses the
     /// truncated layer. Prover and verifier read the same slot.
     pub instance_cap_layer_truncation: FeatureVersion,
+    /// Whether a V1 verifier that leaves empty trees out of its results
+    /// (`VerifyOptions::include_empty_trees_in_result` false, the default of
+    /// `verify_query` and `verify_subset_query`) charges an empty plain
+    /// `Tree` that is itself a result row against the query's budgets. The
+    /// prover charges that row and the trusted read counts it, whatever the
+    /// verifier reports.
+    ///
+    /// 0 (V1..V4, as 6.1.1 shipped): the row is bound and nothing is
+    /// charged, so the verifier's budget stands one slot above the prover's
+    /// for every such row. Past the point where the prover's budget is spent
+    /// the verifier refuses the honest proof for a lower layer the prover
+    /// left out, or reports an item of a later page. 1: the row is charged
+    /// against the global limit and the frame's per-instance cap, and the
+    /// walk stops where the budget is spent. Gated because it turns a
+    /// rejected proof into an accepted one and changes the rows returned for
+    /// a proof accepted before. The prover does not read this slot: proof
+    /// bytes are the same at both values.
+    pub unreported_empty_tree_row_charge: FeatureVersion,
+    /// How the V1 prover and verifier decide that a query goes below a key,
+    /// that is, whether a tree there is descended into or is itself a result
+    /// row. Both read this slot.
+    ///
+    /// 0 (V1..V4, as 6.1.1 shipped): a key descends whenever the layer's
+    /// query has a default subquery or any conditional branch matches it,
+    /// even a branch with neither a subquery nor a subquery path
+    /// (`add_conditional_subquery(item, None, None)`), which the trusted read
+    /// treats as "return this element". An empty tree at such a key is then
+    /// an empty child: never reported, and charged against the global limit
+    /// only, so a page under a per-instance cap runs past the trusted
+    /// read's. A populated tree there cannot be proved. 1: a key descends
+    /// only when the query has something below it
+    /// (`PathQuery::query_items_at_path`), so a tree at such a key is a
+    /// result row, charged and reported like any other. Gated because it
+    /// changes the proof emitted for such a query, turns a refused proof
+    /// request into a served one, and changes the rows a verifier returns.
+    pub subquery_descent_on_key: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

@@ -647,6 +647,8 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 // 0 = a layer with subquery branches under a per-instance cap
                 // is proven in full, as 6.1.1 shipped; truncation is GROVE_V5
                 instance_cap_layer_truncation: 0,
+                unreported_empty_tree_row_charge: 0,
+                subquery_descent_on_key: 0,
             },
             average_case: GroveDBOperationsAverageCaseVersions {
                 add_average_case_get_merk_at_path: 0,

@@ -38,6 +38,7 @@ mod chunk_proof_row_binding_tests;
 mod clear_append_tree_tests;
 mod commitment_tree_cost_bound_tests;
 mod commitment_tree_tests;
+mod conditional_branch_without_subquery_tests;
 mod coverage_round7_tests;
 mod non_merk_completeness_budget_tests;
 mod non_merk_subtree_discovery_tests;
@@ -59,6 +60,7 @@ mod reference_to_tree_terminal_tests;
 mod repeated_keyless_appends_tests;
 mod tree_insert_above_emptied_level_tests;
 mod unbound_empty_tree_tests;
+mod unreported_empty_tree_row_budget_tests;
 mod wrapped_terminal_reference_tests;
 // NOTE: the former `count_indexed_tree_tests` (~12.3k LOC) was written
 // against the now-removed non-provable `Element::CountIndexedTree` and was

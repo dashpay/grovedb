@@ -33,6 +33,14 @@ pub mod indexed_axis;
 /// verifiers' completeness/soundness checks (count-independent cost).
 #[cfg(any(feature = "minimal", feature = "verify"))]
 mod position_intervals;
+/// Whether a query goes below a key of a layer, as the V1 prover and
+/// verifier classify it, versioned.
+#[cfg(any(feature = "minimal", feature = "verify"))]
+mod subquery_descent_on_key;
+/// Whether a V1 verifier charges an empty tree row it does not report,
+/// versioned.
+#[cfg(any(feature = "minimal", feature = "verify"))]
+mod unreported_empty_tree_row_charge;
 /// Utility functions for proof display and conversion.
 pub mod util;
 mod verify;
@@ -203,12 +211,6 @@ pub(crate) struct V1LimitState {
     pub consumed_rows: u64,
     /// Rows plus empty-layer charges across the whole walk.
     pub consumed_total: u64,
-    /// Prover only: result rows charged for an empty plain `Tree`. A
-    /// verifier that leaves empty trees out of its result (the default)
-    /// charges nothing for such a row, so once this is non-zero its
-    /// budgets run ahead of the prover's.
-    #[cfg(feature = "minimal")]
-    pub empty_plain_tree_rows: u64,
 }
 
 impl V1LimitState {
@@ -217,8 +219,6 @@ impl V1LimitState {
             global,
             consumed_rows: 0,
             consumed_total: 0,
-            #[cfg(feature = "minimal")]
-            empty_plain_tree_rows: 0,
         }
     }
 

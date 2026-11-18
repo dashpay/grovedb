@@ -154,12 +154,11 @@ layer proof of more than 50,000 ops (`MAX_PROOF_OPS`), about 25,000
 keys, so past that length a `GROVE_V4` proof of even a small page does
 not verify. A truncated layer stays far below it.
 
-The prover also keeps the layer whole once its walk has charged an
-empty plain `Tree` as a result row. The prover counts such a row and a
-verifier that leaves empty trees out of its result (the default) does
-not, so a layer cut by the prover's count could look to that verifier
-like one that stops with budget left. A whole layer verifies as it does
-under `GROVE_V4`.
+The cut relies on prover and verifier counting the same rows against
+the instance budget. `GROVE_V5` completes that: an empty plain `Tree`
+that is itself a result row, which a default verifier does not report,
+is charged by the verifier too from the same version
+(`operations.proof.unreported_empty_tree_row_charge`).
 
 Two limits of the V5 prover: it still walks the whole layer once before
 truncating it, as V4 does, so the saving is in proof size and verifier
