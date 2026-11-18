@@ -5,9 +5,9 @@ use crate::{
         tests::{
             address, example, frame_of,
             model::{ModelCell, ModelLink, ModelPage, ModelValue, Rng},
-            open, page_id, pointer, slot, view, SIZES, V1,
+            open, page_id, pending, pointer, slot, view, SIZES, V1,
         },
-        CellField, Hash, HashField, Side, TreePage, TreePageError, TreePageMut,
+        CellField, CellValue, Hash, HashField, Side, TreePage, TreePageError, TreePageMut,
     },
     value_log::ValueLogError,
     CellAddress,
@@ -205,7 +205,7 @@ impl Op {
 
     /// A change to the page of `model`: most often one the page takes, and
     /// now and then one it must refuse.
-    fn random(rng: &mut Rng, model: &ModelPage, size: TreePageSize) -> Self {
+    fn random(rng: &mut Rng, model: &ModelPage, size: PageSize) -> Self {
         let own = model.id;
         let occupied: Vec<u16> = model.cells.keys().copied().collect();
         let raw = match occupied.is_empty() || rng.chance(3) {
@@ -264,7 +264,16 @@ impl Op {
                 };
                 Self::Feature(raw, rng.bytes(len))
             }
-            _ => Self::Value(raw, rng.value(max_inline)),
+            // A value that is waiting for its place gets it half of the
+            // time: record 21 as write-back writes it.
+            _ => match old.map(|old| &old.value) {
+                Some(ModelValue::Pending(waiting)) if rng.chance(50) => {
+                    let place = rng.pointer();
+                    let place = pointer(place.file().get(), place.offset(), waiting.value_len());
+                    Self::Value(raw, ModelValue::OutOfLine(place))
+                }
+                _ => Self::Value(raw, rng.value(max_inline)),
+            },
         }
     }
 }
@@ -453,7 +462,7 @@ fn golden_bytes() {
     assert_eq!(deltas.next(), None);
 
     // What the page of the example becomes.
-    let size = TreePageSize::DEFAULT;
+    let size = PageSize::DEFAULT;
     let mut model = example();
     let base = model.assemble();
     let mut frame = frame_of(&model, size);
@@ -541,13 +550,13 @@ fn a_run_that_creates_its_page_starts_with_the_create_record() {
     assert_eq!(run.created(), Some(u64::MAX));
     assert_eq!(run.deltas().next(), None);
     let mut image = Vec::new();
-    consolidate(page_id(9), None, [&run], V1, TreePageSize::MIN, &mut image).expect("consolidates");
+    consolidate(page_id(9), None, [&run], V1, PageSize::MIN, &mut image).expect("consolidates");
     assert_eq!(image, ModelPage::new(9, u64::MAX).assemble());
 }
 
 /// A page of `size` filled with random cells until no more fit, with its
 /// model.
-fn full_page(seed: u64, size: TreePageSize) -> (Vec<u8>, ModelPage) {
+fn full_page(seed: u64, size: PageSize) -> (Vec<u8>, ModelPage) {
     let mut rng = Rng::new(seed);
     let mut model = ModelPage::new(21, 0);
     let mut frame = frame_of(&model, size);
@@ -659,7 +668,7 @@ fn sizes_are_the_documented_ones() {
     assert_eq!(DeltaRun::HEADER_LEN, 4);
     assert_eq!(HASH_RECORD_LEN, 35);
     assert_eq!(MAX_CELL_LEN, 32_754);
-    assert_eq!(MAX_CELL_LEN, TreePageSize::MAX.max_cell_len());
+    assert_eq!(MAX_CELL_LEN, PageSize::MAX.max_cell_len());
     assert_eq!(MAX_INLINE_VALUE_LEN, 32_682);
 
     let len = |op: &Op| {

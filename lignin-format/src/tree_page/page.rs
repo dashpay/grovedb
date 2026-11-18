@@ -2,12 +2,12 @@
 
 use std::{iter::FusedIterator, ops::Range};
 
-use super::{Side, TreeCell, TreePageError, TreePageSize};
+use super::{PageSize, Side, TreeCell, TreePageError};
 use crate::{
     error::FormatError,
     header::FormatVersion,
     ids::{CellAddress, PageId, SlotId},
-    value_log::ValuePointer,
+    value_log::{PendingValue, ValuePointer},
 };
 
 const RESERVED_AT: usize = 1;
@@ -136,7 +136,7 @@ impl Header {
         directory_end(self.slot_count)
     }
 
-    pub(super) fn check_len(&self, size: TreePageSize) -> Result<(), FormatError> {
+    pub(super) fn check_len(&self, size: PageSize) -> Result<(), FormatError> {
         let capacity = size.image_capacity();
         if self.len > capacity {
             return Err(TreePageError::PageTooLong {
@@ -196,7 +196,7 @@ impl<'a> TreePage<'a> {
     pub fn decode(
         bytes: &'a [u8],
         version: FormatVersion,
-        size: TreePageSize,
+        size: PageSize,
     ) -> Result<Self, FormatError> {
         let page = Self::from_validated(bytes, version)?;
         page.header.check_len(size)?;
@@ -259,7 +259,7 @@ impl<'a> TreePage<'a> {
     /// header's counts are the page's.
     ///
     /// Unlike the accessors, this allocates.
-    pub fn check(&self, size: TreePageSize) -> Result<(), FormatError> {
+    pub fn check(&self, size: PageSize) -> Result<(), FormatError> {
         self.header.check_len(size)?;
         let cells_at = self.header.cells_at();
         let mut extents = Vec::with_capacity(self.header.cell_count);
@@ -303,7 +303,7 @@ impl<'a> TreePage<'a> {
         &self,
         index: usize,
         offset: usize,
-        size: TreePageSize,
+        size: PageSize,
     ) -> Result<TreeCell<'a>, FormatError> {
         let bytes = self.bytes.get(offset..).unwrap_or_default();
         let cell = TreeCell::at_start(bytes, self.version).map_err(|error| match error {
@@ -384,7 +384,7 @@ impl<'a> TreePage<'a> {
 
     /// The bytes a page of `size` still has for cells and their slots, once
     /// its unused bytes are gathered.
-    pub const fn free_bytes(&self, size: TreePageSize) -> usize {
+    pub const fn free_bytes(&self, size: PageSize) -> usize {
         size.image_capacity()
             .saturating_sub(self.header.len)
             .saturating_add(self.header.unused)
@@ -413,7 +413,7 @@ impl<'a> TreePage<'a> {
     }
 
     #[cfg(test)]
-    pub(super) fn cell_range(&self, slot: SlotId) -> Option<Range<usize>> {
+    pub(crate) fn cell_range(&self, slot: SlotId) -> Option<Range<usize>> {
         let offset = slot_offset(self.bytes, slot.index());
         Some(offset..offset + self.cell(slot)?.encoded_len())
     }
@@ -452,6 +452,23 @@ impl<'a> TreePage<'a> {
         self.cells()
             .find(|(_, cell)| cell.value_pointer().as_ref() == Some(pointer))
             .map(|(slot, _)| slot)
+    }
+
+    /// The cells whose value is out of line and not in the value log yet,
+    /// each with its slot, in slot order.
+    pub fn pending_values(&self) -> impl Iterator<Item = (SlotId, PendingValue)> + use<'a> {
+        self.cells()
+            .filter_map(|(slot, cell)| Some((slot, cell.pending_value()?)))
+    }
+
+    /// Whether a cell of the page has a pending value.
+    ///
+    /// A page version that a segment makes durable has none: not a base
+    /// image, and not the page at the end of a run of deltas (PD16 of
+    /// `docs/lignindb/page-delta.md`). Whoever writes a page to a segment
+    /// asks this of the page as it is after the last change it writes.
+    pub fn has_pending_value(&self) -> bool {
+        self.pending_values().next().is_some()
     }
 
     /// Appends the page's image to `out`: the header, the slot directory,

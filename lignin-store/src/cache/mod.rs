@@ -17,14 +17,14 @@
 //! (FL6, FL7).
 //!
 //! ```
-//! use lignin_format::{tree_page::TreePageSize, CommitVersion, PageId};
+//! use lignin_format::{CommitVersion, PageId, PageSize};
 //! use lignin_store::cache::{BufferPool, Loaded, OwnerId, PoolConfig};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let version = |raw| CommitVersion::new(raw).expect("a version");
 //! let page = PageId::new(7).expect("not zero");
 //! let pool = BufferPool::new(PoolConfig {
-//!     page_size: TreePageSize::DEFAULT,
+//!     page_size: PageSize::DEFAULT,
 //!     capacity: 8 << 20,
 //! })?;
 //!

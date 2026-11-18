@@ -10,8 +10,7 @@ use std::{path::Path, sync::Arc};
 
 use lignin_format::{
     manifest::{LastFileIds, Manifest, TableCheckpoint},
-    tree_page::TreePageSize,
-    CommitVersion, FileId, PageId,
+    CommitVersion, FileId, PageId, PageSize,
 };
 use lignin_io::{
     sim::{Fault, SimError, SimVfs},
@@ -107,13 +106,8 @@ fn all_links(table: &PageTable) -> Vec<(PageId, Link)> {
 }
 
 fn empty_manifest() -> Manifest {
-    Manifest::new(
-        TreePageSize::DEFAULT,
-        LastFileIds::default(),
-        None,
-        Vec::new(),
-    )
-    .expect("a valid manifest")
+    Manifest::new(PageSize::DEFAULT, LastFileIds::default(), None, Vec::new())
+        .expect("a valid manifest")
 }
 
 fn names_in(fs: &dyn Vfs, dir: &Path) -> Vec<String> {

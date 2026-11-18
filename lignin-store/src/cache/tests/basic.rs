@@ -1,14 +1,14 @@
 //! The read path, the load path, the clock and the frames beside the fixed
 //! ones.
 
-use lignin_format::tree_page::TreePageSize;
+use lignin_format::PageSize;
 
 use super::*;
 
 #[test]
 fn a_pool_is_as_many_frames_as_its_capacity_holds() {
     let config = PoolConfig {
-        page_size: TreePageSize::DEFAULT,
+        page_size: PageSize::DEFAULT,
         capacity: 1 << 20,
     };
     let pool = BufferPool::new(config).expect("a megabyte holds frames");
@@ -38,7 +38,7 @@ fn a_pool_is_as_many_frames_as_its_capacity_holds() {
 fn every_page_size_of_a_store_is_served() {
     for size in [8_192, 16_384, 32_768, 65_536] {
         let config = PoolConfig {
-            page_size: TreePageSize::new(size).expect("a page size"),
+            page_size: PageSize::new(size).expect("a page size"),
             capacity: 4 * size + 4_096,
         };
         let pool = BufferPool::new(config).expect("holds frames");
@@ -54,7 +54,7 @@ fn every_page_size_of_a_store_is_served() {
 #[test]
 fn a_capacity_below_one_frame_is_refused() {
     let config = PoolConfig {
-        page_size: TreePageSize::MIN,
+        page_size: PageSize::MIN,
         capacity: 8_192,
     };
     let Err(error) = BufferPool::new(config) else {
@@ -66,7 +66,7 @@ fn a_capacity_below_one_frame_is_refused() {
     assert_eq!(capacity, 8_192);
     assert!(frame > 8_192);
     let exact = PoolConfig {
-        page_size: TreePageSize::MIN,
+        page_size: PageSize::MIN,
         capacity: frame,
     };
     assert_eq!(BufferPool::new(exact).expect("one frame").frames(), 1);
@@ -75,7 +75,7 @@ fn a_capacity_below_one_frame_is_refused() {
 #[test]
 fn a_capacity_no_allocation_can_have_is_refused() {
     let config = PoolConfig {
-        page_size: TreePageSize::MIN,
+        page_size: PageSize::MIN,
         capacity: usize::MAX,
     };
     assert_eq!(
@@ -489,7 +489,7 @@ fn everything_can_be_shown() {
         format!(
             "{:?}",
             PoolConfig {
-                page_size: TreePageSize::DEFAULT,
+                page_size: PageSize::DEFAULT,
                 capacity: 1
             }
         ),

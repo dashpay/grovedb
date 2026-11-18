@@ -10,9 +10,7 @@ use std::{
 use lignin_format::{
     manifest::{FileState, LiveFile},
     segment::{BlockContent, Compression},
-    table as format,
-    tree_page::TreePageSize,
-    FileKind, FormatError,
+    table as format, FileKind, FormatError, PageSize,
 };
 use lignin_io::{sim::SimConfig, Create, OpenMode};
 
@@ -124,8 +122,7 @@ fn manifest_naming(named: TableCheckpoint, segments: &[(u32, u64)]) -> Manifest 
         page_table: Some(named.file()),
         ..LastFileIds::default()
     };
-    Manifest::new(TreePageSize::DEFAULT, last_file_ids, Some(named), files)
-        .expect("a valid manifest")
+    Manifest::new(PageSize::DEFAULT, last_file_ids, Some(named), files).expect("a valid manifest")
 }
 
 fn load_under(fs: &SimVfs, manifest: &Manifest) -> Result<PageTable, PageTableError> {
@@ -1319,16 +1316,16 @@ fn a_load_is_refused_when_the_file_is_not_the_checkpoint_the_manifest_names() {
 fn checkpoint_ids_run_out() {
     let fs = sim_fs(SimConfig::new(4));
     let last_file_ids = LastFileIds {
-        page_table: Some(id(u32::MAX - 1)),
+        page_table: Some(id(FileId::MAX.get() - 1)),
         ..LastFileIds::default()
     };
-    let manifest = Manifest::new(TreePageSize::DEFAULT, last_file_ids, None, Vec::new()).unwrap();
+    let manifest = Manifest::new(PageSize::DEFAULT, last_file_ids, None, Vec::new()).unwrap();
     let manifest = ManifestStore::create(arc(&fs), db_dir(), manifest).unwrap();
     let mut db = Db::with(manifest).unwrap();
     let table = PageTable::new();
     let last = db.checkpoint(&table, 0).unwrap();
-    assert_eq!(last.file(), id(u32::MAX));
-    assert_eq!(names_in(&fs, &table_dir()), ["4294967295.pt"]);
+    assert_eq!(last.file(), FileId::MAX);
+    assert_eq!(names_in(&fs, &table_dir()), ["4294967294.pt"]);
     for _ in 0..2 {
         assert!(matches!(
             db.checkpoints

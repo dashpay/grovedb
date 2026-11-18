@@ -11,11 +11,9 @@ use std::{
 };
 
 use lignin_format::{
-    tree_page::{
-        CellContent, CellValue, HashField, Side, TreeLink, TreePage, TreePageMut, TreePageSize,
-    },
-    value_log::ValuePointer,
-    CellAddress, FileId, FormatVersion, PageId, SlotId,
+    tree_page::{CellContent, CellValue, HashField, Side, TreeLink, TreePage, TreePageMut},
+    value_log::{PendingValue, ValuePointer},
+    CellAddress, FileId, FormatVersion, PageId, PageSize, SlotId,
 };
 
 thread_local! {
@@ -61,7 +59,7 @@ fn allocations_during<T>(work: impl FnOnce() -> T) -> (T, u64) {
 }
 
 const VERSION: FormatVersion = FormatVersion::CURRENT;
-const SIZE: TreePageSize = TreePageSize::DEFAULT;
+const SIZE: PageSize = PageSize::DEFAULT;
 const PAGE: PageId = PageId::MIN;
 const CELLS: u16 = 120;
 const AGGREGATE: [u8; 9] = [3, 0, 0, 0, 0, 0, 0, 0, 7];
@@ -75,6 +73,10 @@ fn pointer(index: u16) -> ValuePointer {
     ValuePointer::new(file, 20 + u64::from(index) * 500, 440).expect("valid")
 }
 
+fn pending(index: u16) -> PendingValue {
+    PendingValue::new(u64::from(index).to_le_bytes(), 440).expect("valid")
+}
+
 fn link<'a>(child: u16, hash: &'a [u8; 32]) -> TreeLink<'a> {
     TreeLink {
         child: CellAddress::new(PAGE, slot(child)),
@@ -86,7 +88,8 @@ fn link<'a>(child: u16, hash: &'a [u8; 32]) -> TreeLink<'a> {
 }
 
 /// A page of 120 nodes shaped as one fragment: node `n` has the children
-/// `2n` and `2n + 1`. Every other value is out of line.
+/// `2n` and `2n + 1`. Every other value is out of line, and every other of
+/// those is not in the value log yet.
 fn frame() -> Vec<u8> {
     let mut frame = vec![0; SIZE.get()];
     let mut page = TreePageMut::init(&mut frame, SIZE, PAGE, 0).expect("fits");
@@ -106,8 +109,9 @@ fn frame() -> Vec<u8> {
                 left: child(2 * index),
                 right: child(2 * index + 1),
                 hosted_roots: if index % 7 == 0 { &roots } else { &[] },
-                value: match index % 2 {
-                    0 => CellValue::OutOfLine(pointer(index)),
+                value: match index % 4 {
+                    0 => CellValue::Pending(pending(index)),
+                    2 => CellValue::OutOfLine(pointer(index)),
                     _ => CellValue::Inline(&value),
                 },
                 fragment_root: index == 1,
@@ -142,8 +146,11 @@ fn read_everything(page: &TreePage<'_>) -> u64 {
         seen += match cell.value() {
             CellValue::Inline(value) => value.len() as u64,
             CellValue::OutOfLine(pointer) => pointer.offset(),
+            CellValue::Pending(pending) => u64::from_le_bytes(pending.id()),
         };
     }
+    seen += u64::from(page.has_pending_value());
+    seen += page.pending_values().count() as u64;
     black_box(seen)
 }
 
@@ -170,13 +177,13 @@ fn reading_a_tree_page_allocates_nothing() {
 
         let (found, allocations) = allocations_during(|| {
             let roots = page.fragment_roots().count();
-            let owner = page.find_value_pointer(black_box(&pointer(CELLS)));
+            let owner = page.find_value_pointer(black_box(&pointer(CELLS - 2)));
             let free = page.lowest_free_slot();
             page.check_fragments().expect("one fragment");
             (roots, owner, free, page.free_bytes(SIZE), page.departures())
         });
         assert_eq!(allocations, 0, "the lookups over a page");
-        assert_eq!((found.0, found.1), (1, Some(slot(CELLS))));
+        assert_eq!((found.0, found.1), (1, Some(slot(CELLS - 2))));
         assert_eq!(found.2, slot(CELLS + 1));
     }
 }

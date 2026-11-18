@@ -17,7 +17,7 @@ fn put16(bytes: &mut [u8], at: usize, value: u16) {
 }
 
 fn decode(bytes: &[u8]) -> Result<TreePage<'_>, FormatError> {
-    TreePage::decode(bytes, V1, TreePageSize::DEFAULT)
+    TreePage::decode(bytes, V1, PageSize::DEFAULT)
 }
 
 fn decode_error(bytes: &[u8]) -> FormatError {
@@ -39,7 +39,7 @@ fn random_model(rng: &mut Rng, id: u32, cells: usize) -> ModelPage {
 
 /// Calls every accessor. Nothing here may panic, whatever the bytes are.
 fn exercise(bytes: &[u8]) {
-    for size in [TreePageSize::MIN, TreePageSize::MAX] {
+    for size in [PageSize::MIN, PageSize::MAX] {
         if let Ok(page) = TreePage::decode(bytes, V1, size) {
             assert_eq!(page.to_image(), page.as_bytes());
             page.check(size).expect("an image is a valid page");
@@ -48,7 +48,7 @@ fn exercise(bytes: &[u8]) {
     let Ok(page) = TreePage::from_validated(bytes, V1) else {
         return;
     };
-    let _ = page.check(TreePageSize::MAX);
+    let _ = page.check(PageSize::MAX);
     let _ = page.check_fragments();
     assert!(page.to_image().len() <= TreePage::MAX_LEN);
     let _ = page.lowest_free_slot();
@@ -60,7 +60,7 @@ fn exercise(bytes: &[u8]) {
         page.cell_count(),
         page.is_empty(),
     );
-    let _ = (page.free_bytes(TreePageSize::MIN), page.used_bytes());
+    let _ = (page.free_bytes(PageSize::MIN), page.used_bytes());
     let mut seen = 0;
     for (slot, cell) in page.cells().chain(page.cells().rev()) {
         seen += 1;
@@ -91,8 +91,8 @@ fn an_image_reads_back_and_later_bytes_are_ignored() {
     for bytes in [&image, &frame] {
         let page = decode(bytes).expect("valid");
         assert_eq!(page.as_bytes(), image);
-        example().assert_is(page, TreePageSize::DEFAULT);
-        example().assert_is(view(bytes), TreePageSize::DEFAULT);
+        example().assert_is(page, PageSize::DEFAULT);
+        example().assert_is(view(bytes), PageSize::DEFAULT);
     }
 }
 
@@ -190,25 +190,25 @@ fn a_page_longer_than_its_store_s_pages_is_refused() {
     let mut rng = Rng::new(0x10F6);
     let model = random_model(&mut rng, 5, 60);
     let image = model.assemble();
-    assert!(image.len() > TreePageSize::MIN.get());
-    model.assert_is(decode(&image).expect("valid"), TreePageSize::DEFAULT);
+    assert!(image.len() > PageSize::MIN.get());
+    model.assert_is(decode(&image).expect("valid"), PageSize::DEFAULT);
     let too_long: FormatError = TreePageError::PageTooLong {
         len: image.len(),
         capacity: 8_192,
     }
     .into();
     assert_eq!(
-        TreePage::decode(&image, V1, TreePageSize::MIN).expect_err("too long"),
+        TreePage::decode(&image, V1, PageSize::MIN).expect_err("too long"),
         too_long
     );
     assert_eq!(
-        view(&image).check(TreePageSize::MIN).expect_err("too long"),
+        view(&image).check(PageSize::MIN).expect_err("too long"),
         too_long
     );
     let mut frame = image.clone();
-    frame.resize(TreePageSize::DEFAULT.get(), 0);
+    frame.resize(PageSize::DEFAULT.get(), 0);
     assert_eq!(
-        TreePageMut::open(&mut frame, TreePageSize::MIN, V1).expect_err("too long"),
+        TreePageMut::open(&mut frame, PageSize::MIN, V1).expect_err("too long"),
         too_long
     );
 }
@@ -266,7 +266,7 @@ fn each_check_of_the_slots_has_its_error() {
     assert_eq!(decode_error(&bytes), TreePageError::TrailingFreeSlot.into());
     assert_eq!(
         view(&bytes)
-            .check(TreePageSize::DEFAULT)
+            .check(PageSize::DEFAULT)
             .expect_err("a free last slot"),
         TreePageError::TrailingFreeSlot.into()
     );
@@ -283,7 +283,16 @@ mod at {
 
 #[test]
 fn each_check_of_a_cell_has_its_error() {
-    let cases: [(&[(usize, u8)], FormatError); 11] = [
+    let reserved = [0, 1, 2, 3].map(|byte| (at::LOCATION + byte, 0xFF));
+    let no_id: Vec<(usize, u8)> = (0..12)
+        .map(|byte| (at::LOCATION + byte, if byte < 4 { 0xFF } else { 0 }))
+        .collect();
+    let empty = [
+        reserved.as_slice(),
+        &[(at::VALUE_LEN, 0), (at::VALUE_LEN + 1, 0)],
+    ]
+    .concat();
+    let cases: [(&[(usize, u8)], FormatError); 13] = [
         (&[(at::FLAGS, 0x1D)], FormatError::NonZeroReserved),
         (&[(at::FLAGS, 0x8D)], FormatError::NonZeroReserved),
         // The left child's page id, then its slot.
@@ -312,7 +321,21 @@ fn each_check_of_a_cell_has_its_error() {
             &[(at::VALUE_LEN, 0), (at::VALUE_LEN + 1, 0)],
             ValueLogError::EmptyValue.into(),
         ),
+        // A pending value: no id, no length.
+        (&no_id, FormatError::MissingId),
+        (&empty, ValueLogError::EmptyValue.into()),
     ];
+    // The reserved file id alone makes the value of slot 1 pending: its
+    // offset becomes its id.
+    let mut waiting = image();
+    for (at, byte) in reserved {
+        waiting[at] = byte;
+    }
+    let cell = decode(&waiting)
+        .expect("valid")
+        .cell(slot(1))
+        .expect("a cell");
+    assert!(cell.pending_value().is_some() && cell.value_pointer().is_none());
     for (changes, error) in cases {
         let mut bytes = image();
         for &(at, byte) in changes {
@@ -321,13 +344,138 @@ fn each_check_of_a_cell_has_its_error() {
         assert_eq!(decode_error(&bytes), error, "{changes:?}");
         assert_eq!(
             view(&bytes)
-                .check(TreePageSize::DEFAULT)
+                .check(PageSize::DEFAULT)
                 .expect_err("a damaged cell"),
             error
         );
         let cell = &bytes[SLOT_1_AT..SLOT_3_AT];
         assert_eq!(TreeCell::decode(cell, V1).expect_err("damaged"), error);
     }
+}
+
+/// A cell whose value is not in the value log yet has the bytes of one
+/// whose value is, but for the twelve bytes of the place: the reserved file
+/// id and the eight bytes of the pending value's id.
+#[test]
+fn a_pending_value_stands_where_the_pointer_will_be() {
+    let waiting = pending(0x0102_0304_0506_0708, 300);
+    let place = pointer(12, 20, 300);
+    let cell_with = |value: ModelValue| ModelCell {
+        value,
+        ..ModelCell::leaf(b"key", b"")
+    };
+    let pending_cell = cell_with(ModelValue::Pending(waiting));
+    let placed_cell = cell_with(ModelValue::OutOfLine(place));
+
+    // Written by hand: flags (bit 2, out of line), key length 3, no
+    // feature, no hosted root, value length 300, two hashes, the key, the
+    // place.
+    let mut golden = vec![0x04, 3, 0, 0, 0x2C, 0x01, 0, 0];
+    golden.extend(pending_cell.value_hash);
+    golden.extend(pending_cell.kv_hash);
+    golden.extend(b"key");
+    golden.extend([0xFF, 0xFF, 0xFF, 0xFF, 8, 7, 6, 5, 4, 3, 2, 1]);
+    let bytes = pending_cell.content().encode().expect("valid");
+    assert_eq!(bytes, golden);
+    assert_eq!(bytes.len(), 8 + 64 + 3 + 12);
+
+    let cell = TreeCell::decode(&bytes, V1).expect("valid");
+    pending_cell.assert_is(cell);
+    assert_eq!(cell.value(), CellValue::Pending(waiting));
+    assert_eq!(cell.pending_value(), Some(waiting));
+    assert_eq!(cell.value_place(), Some(ValuePlace::Pending(waiting)));
+    assert_eq!(cell.value_pointer(), None);
+    assert_eq!(cell.value_len(), 300);
+    assert!(!cell.value().is_inline());
+    assert_eq!(cell.value().stored_len(), TreeCell::VALUE_LOCATION_LEN);
+    assert_eq!(cell.value().inline(), None);
+
+    // The placed cell differs in those twelve bytes and in no other.
+    let placed = placed_cell.content().encode().expect("valid");
+    assert_eq!(placed.len(), bytes.len());
+    assert_eq!(placed[..75], bytes[..75]);
+    assert_eq!(placed[75..], [12, 0, 0, 0, 20, 0, 0, 0, 0, 0, 0, 0]);
+    let cell = TreeCell::decode(&placed, V1).expect("valid");
+    assert_eq!(cell.value(), CellValue::OutOfLine(place));
+    assert_eq!(cell.value_place(), Some(ValuePlace::Placed(place)));
+    assert_eq!(cell.pending_value(), None);
+
+    // An id of zero is no id, and a pending value is not empty. A value
+    // in the cell is neither placed nor pending.
+    let mut no_id = bytes.clone();
+    no_id[79..].fill(0);
+    assert_eq!(
+        TreeCell::decode(&no_id, V1).expect_err("no id"),
+        FormatError::MissingId
+    );
+    let mut empty = bytes.clone();
+    empty[4..8].fill(0);
+    assert_eq!(
+        TreeCell::decode(&empty, V1).expect_err("empty"),
+        ValueLogError::EmptyValue.into()
+    );
+    let mut both = no_id.clone();
+    both[4..8].fill(0);
+    assert_eq!(
+        TreeCell::decode(&both, V1).expect_err("no id"),
+        FormatError::MissingId
+    );
+    let inline = cell_with(ModelValue::Inline(bytes[75..].to_vec()));
+    let inline = inline.content().encode().expect("valid");
+    let cell = TreeCell::decode(&inline, V1).expect("valid");
+    assert_eq!(cell.value(), CellValue::Inline(&bytes[75..]));
+    assert_eq!((cell.value_place(), cell.pending_value()), (None, None));
+
+    // The largest pending cell is the largest cell with a value out of
+    // line, and an id is not an offset: every bit may be set.
+    let last = pending(u64::MAX, u32::MAX);
+    let cell = cell_with(ModelValue::Pending(last));
+    let bytes = cell.content().encode().expect("valid");
+    cell.assert_is(TreeCell::decode(&bytes, V1).expect("valid"));
+}
+
+/// A page says which of its cells wait for their value's place, and a
+/// pending value is never found as a pointer.
+#[test]
+fn a_page_lists_the_cells_whose_value_is_pending() {
+    let mut model = ModelPage::new(8, 0);
+    let values = [
+        ModelValue::OutOfLine(pointer(3, 20, 500)),
+        ModelValue::Pending(pending(1, 500)),
+        ModelValue::Inline(vec![0xFF; 16]),
+        ModelValue::Pending(pending(20, 500)),
+        ModelValue::Inline(Vec::new()),
+    ];
+    for (index, value) in values.iter().enumerate() {
+        let mut cell = ModelCell::leaf(&[index as u8], b"");
+        cell.value = value.clone();
+        model.cells.insert(2 * index as u16 + 1, cell);
+    }
+    let image = model.assemble();
+    let page = decode(&image).expect("valid");
+    assert!(page.has_pending_value());
+    assert_eq!(
+        page.pending_values().collect::<Vec<_>>(),
+        [(slot(3), pending(1, 500)), (slot(7), pending(20, 500))]
+    );
+    // The pending value with id 20 is not the value at offset 20 of a file.
+    for file in [1, 3, u32::MAX - 1] {
+        assert_eq!(
+            page.find_value_pointer(&pointer(file, 20, 500)),
+            (file == 3).then(|| slot(1))
+        );
+    }
+    model.assert_is(page, PageSize::DEFAULT);
+
+    // Without them the page has none, and so has an empty page.
+    model.cells.remove(&3);
+    model.cells.remove(&7);
+    let image = model.assemble();
+    let page = decode(&image).expect("valid");
+    assert!(!page.has_pending_value());
+    assert_eq!(page.pending_values().next(), None);
+    let empty = ModelPage::new(8, 0).assemble();
+    assert!(!view(&empty).has_pending_value());
 }
 
 #[test]
@@ -486,7 +634,7 @@ fn a_part_longer_than_its_length_field_is_refused() {
             too_long(CellField::HostedRoots),
         ),
     ];
-    let size = TreePageSize::DEFAULT;
+    let size = PageSize::DEFAULT;
     let mut frame = frame_of(&example(), size);
     let before = frame.clone();
     for (content, error) in cases {
@@ -533,7 +681,7 @@ fn a_part_longer_than_its_length_field_is_refused() {
             aggregate: longest.clone(),
         });
     }
-    cell.value = ModelValue::OutOfLine(pointer(u32::MAX, i64::MAX as u64, u32::MAX));
+    cell.value = ModelValue::OutOfLine(pointer(u32::MAX - 1, i64::MAX as u64, u32::MAX));
     let bytes = cell.content().encode().expect("valid");
     assert_eq!(bytes.len(), TreeCell::MAX_OUT_OF_LINE_LEN);
     cell.assert_is(TreeCell::decode(&bytes, V1).expect("valid"));
@@ -570,7 +718,7 @@ fn every_single_bit_flip_is_rejected_or_reads_as_what_it_says() {
                 // One encoding per content: what was read is exactly what
                 // these bytes say, and it encodes back to them.
                 assert_eq!(page.to_image(), flipped);
-                page.check(TreePageSize::DEFAULT).expect("valid");
+                page.check(PageSize::DEFAULT).expect("valid");
                 accepted += 1;
             }
         }
@@ -659,16 +807,16 @@ fn a_page_whose_slots_share_a_cell_is_written_out_within_a_page() {
         for index in 0..slots {
             put16(&mut bytes, 22 + 2 * index, cells_at as u16);
         }
-        TreePage::decode(&bytes, V1, TreePageSize::MAX).expect_err("not an image");
+        TreePage::decode(&bytes, V1, PageSize::MAX).expect_err("not an image");
         let page = view(&bytes);
-        page.check(TreePageSize::MAX).expect_err("not a valid page");
+        page.check(PageSize::MAX).expect_err("not a valid page");
         if slots == 100 {
             assert_eq!(
                 decode_error(&bytes),
                 TreePageError::CellsOutOfOrder { slot: slot(2) }.into()
             );
             assert_eq!(
-                page.check(TreePageSize::MAX),
+                page.check(PageSize::MAX),
                 Err(TreePageError::OverlappingCells { slot: slot(2) }.into())
             );
         }
@@ -690,7 +838,7 @@ fn a_page_with_unused_bytes_is_valid_but_is_not_an_image() {
     put16(&mut bytes, DIRECTORY_AT + 4, SLOT_3_AT as u16 + 4);
     put16(&mut bytes, 12, 4);
     let page = view(&bytes);
-    example().assert_is(page, TreePageSize::DEFAULT);
+    example().assert_is(page, PageSize::DEFAULT);
     assert_eq!(page.unused_bytes(), 4);
     assert_eq!(page.encoded_len(), 251);
     assert_eq!(page.to_image(), image);
@@ -706,7 +854,7 @@ fn a_page_with_unused_bytes_is_valid_but_is_not_an_image() {
     );
     assert_eq!(
         view(&bytes)
-            .check(TreePageSize::DEFAULT)
+            .check(PageSize::DEFAULT)
             .expect_err("a wrong count"),
         TreePageError::UnusedBytesMismatch {
             stated: 0,
@@ -720,7 +868,7 @@ fn a_page_with_unused_bytes_is_valid_but_is_not_an_image() {
 fn each_check_of_a_page_in_a_buffer_has_its_error() {
     let check = |bytes: &[u8]| {
         view(bytes)
-            .check(TreePageSize::DEFAULT)
+            .check(PageSize::DEFAULT)
             .expect_err("not a valid page")
     };
 
@@ -1049,7 +1197,7 @@ fn a_hash_is_read_from_bytes_that_are_not_the_key_or_the_value() {
             let key_start = value_start - cell.key().len();
             let end = match cell.value() {
                 CellValue::Inline(_) => value_end,
-                CellValue::OutOfLine(_) => value_start,
+                CellValue::OutOfLine(_) | CellValue::Pending(_) => value_start,
             };
             for byte in &mut scrambled[start + key_start..start + end] {
                 *byte = !*byte;

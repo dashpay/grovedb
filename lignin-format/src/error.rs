@@ -36,7 +36,8 @@ pub enum FormatError {
         /// The code found in the file header.
         code: u16,
     },
-    /// A numbered file kind carries sequence number zero.
+    /// A numbered file kind carries a sequence number that is no file id:
+    /// zero, or the reserved id.
     InvalidFileSequence {
         /// The kind of the file.
         kind: FileKind,
@@ -64,8 +65,16 @@ pub enum FormatError {
     /// The bytes are not a valid value-log encoding, or a value cannot be
     /// encoded.
     ValueLog(crate::value_log::ValueLogError),
+    /// A page size that is not 8,192, 16,384, 32,768 or 65,536 bytes.
+    InvalidPageSize {
+        /// The page size asked for, in bytes.
+        page_size: usize,
+    },
     /// A field that must hold an identifier holds the "none" pattern.
     MissingId,
+    /// A field that names a file holds the reserved file id, which no file
+    /// has.
+    ReservedFileId,
     /// A reserved field or bit is not zero.
     NonZeroReserved,
     /// The record kind code is zero or not defined in the file's format
@@ -92,7 +101,7 @@ impl fmt::Display for FormatError {
             }
             Self::UnknownFileKind { code } => write!(f, "unknown file kind code {code}"),
             Self::InvalidFileSequence { kind } => {
-                write!(f, "{kind:?} file with sequence number zero")
+                write!(f, "{kind:?} file with a sequence number that is no file id")
             }
             Self::RecordTooLong { len, max } => {
                 write!(
@@ -107,7 +116,12 @@ impl fmt::Display for FormatError {
             Self::Table(error) => write!(f, "page-table checkpoint: {error}"),
             Self::TreePage(error) => write!(f, "tree page: {error}"),
             Self::ValueLog(error) => write!(f, "value log: {error}"),
+            Self::InvalidPageSize { page_size } => write!(
+                f,
+                "page size {page_size} is not 8192, 16384, 32768 or 65536"
+            ),
             Self::MissingId => write!(f, "identifier field holds no identifier"),
+            Self::ReservedFileId => write!(f, "file id field holds the reserved id"),
             Self::NonZeroReserved => write!(f, "reserved field is not zero"),
             Self::UnknownRecordKind { code } => write!(f, "unknown record kind code {code}"),
         }

@@ -88,7 +88,7 @@ record has no slot.
 | 18 | all hosted roots | slot, count (1), a cell address or 0 for each (6) | 4 + 6 for each |
 | 19 | feature | slot, `len` (1), the feature | 4 + feature |
 | 20 | value | slot, `len` (2), the value | 5 + value |
-| 21 | value pointer | slot, the value pointer (16): file id (4), offset (8), value length (4) | 19 |
+| 21 | value pointer | slot, the value's place (16): file id (4), offset (8), value length (4); or, for a pending value, the reserved file id (4), the pending value's id (8), value length (4) (PD16) | 19 |
 
 The cell of records 2 and 3 is the cell's own bytes, as section 2.3 of
 `tree-page.md` lays them out. The value pointer of record 21 is the 16
@@ -294,19 +294,21 @@ segments.
 - A link that appears, or goes (records 13 and 14), changes the length of
   its cell. That is the page's business (W2 of `tree-page.md`).
 
-**PD10. A value is replaced by a value, or by a pointer.** Record 20 holds
-the value's bytes and puts them into the cell. Record 21 holds a value
-pointer and makes the cell hold it. Neither touches a hash or a link. A
+**PD10. A value is replaced by a value, or by the place of one.** Record 20
+holds the value's bytes and puts them into the cell. Record 21 holds the 16
+bytes of a value's place and makes the cell hold it: a value pointer, or a
+pending value (PD16). Neither touches a hash or a link. A
 value in record 20 is at most 32,682 bytes (`MAX_INLINE_VALUE_LEN`): the
 longest value the longest cell holds (PD7). A longer one could go into no
 cell, and has no record. Whether a value fits the cell and the page it is
 meant for is for the page to say when the record is applied.
 
-A record holds a value pointer as its writer gave it, in record 21 and in
-the cell of an insert or a replace, and does not interpret it. Which
-pointer a writer may give is not free: the cell of a carried node is not
-given the pointer it had in its old page (O5 of `value-log-format.md`,
-8.2). The format cannot check that. A pointer names a file and an offset,
+A record holds a value's place as its writer gave it, in record 21 and in
+the cell of an insert or a replace, and does not interpret it beyond the
+checks of `ValuePlace::decode`. Which pointer a writer may give is not
+free: the cell of a carried node is not given the pointer it had in its
+old page, and is inserted with a pending value (O5 of
+`value-log-format.md`, 8.2). The format cannot check that. A pointer names a file and an offset,
 and the page that owns the value is in the value log's record (O1), so a
 record cannot tell whether a pointer is its page's own. It is the writer's
 rule (TREE-03) and the invariant checker's (VER-07).
@@ -347,6 +349,59 @@ content (W4), and an image has one form (TP16). So the image that a base
 image and a chain give is, byte for byte, the image of the frame the
 changes were first made in. This is the acceptance test of the task.
 
+### 3.3 Pending values
+
+**PD16. A pending value may stand in a run and not at the end of a run
+that a segment holds.** A value that is not in the value log yet is a
+place that names no file (P7 of `value-log-format.md`): the reserved file
+id and the 8 bytes of the pending value's id, where the file id and the
+offset of a pointer will be. A cell with one is a cell like any other, so
+the records carry it as they are:
+
+- an **insert** or a **replace** puts a cell with a pending value into a
+  page: a new value that is too long for its cell, or a carried cell whose
+  value is out of line (O5)
+- **record 21** with a pending place makes a value pending where it is
+- **record 21** with a value pointer **places** it: the 12 bytes of the
+  place are overwritten and no other byte of the page changes, because the
+  value length is the same. Nothing moves, so the layout of a page never
+  depends on when write-back runs. That the pointer has the pending
+  value's length is the writer's rule, as with every place a writer gives
+  (PD10): a record 21 with another length is applied like any other, and
+  writes the 4 bytes of the length in the cell's header as well, since it
+  is then another value and not the same one placed.
+
+A pending value may stand in a page in a buffer, in a log record, and
+inside a run. It may not stand in a page version that a segment makes
+durable:
+
+1. **no base image written to a segment has a pending value**
+2. **at the end of every run written to a segment no cell of the page is
+   pending**
+
+A value may be pending between two records of such a run. The flusher
+places values first (PV7 of `transactions.md`), then writes the page.
+
+The format does not refuse a pending value anywhere, because the same run
+and the same image are valid in a log and in a buffer. `segment::write_block`
+does not check it either: it does not know what it carries. The rule is
+held where a page version is made durable. STORE-06 enforces it and VER-07
+checks it, each with one call on the page as it is after the last change
+written:
+
+- `TreePage::has_pending_value` says whether a base image, or a page in a
+  frame after a run or a chain was applied, has one. It reads each cell's
+  header and allocates nothing.
+- `TreePage::pending_values` lists them with their slots, for the flusher
+  that places them.
+- For a flat leaf, which has no deltas (PD13), the rule is the first one
+  alone: `FlatLeaf::has_pending_value` (P15 of `flat-page.md`).
+
+Whether a run ends with a pending value cannot be read from the run alone:
+a record 21 may place a value that an earlier run made pending, and a
+remove may take a pending cell away. It is a fact about the page after the
+run, which is why the check is on the page.
+
 ## 4. Reading a run
 
 `DeltaRun::decode(bytes, version)` reads the run that is exactly `bytes`.
@@ -371,8 +426,10 @@ A record is checked in this order:
    `Truncated`; then its value:
    - a child's address is a whole address: else `MissingId`
    - a hosted-root pointer is a whole address or all zero: else `MissingId`
-   - a value pointer is one `ValuePointer::decode` accepts: else
-     `MissingId`, `ValueLog(InvalidOffset)` or `ValueLog(EmptyValue)`
+   - the place of a value is one `ValuePlace::decode` accepts, a value
+     pointer or a pending value (PD16): else `MissingId` (no file id, or a
+     pending value with no id), `ValueLog(InvalidOffset)` or
+     `ValueLog(EmptyValue)`
    - a cell's `len` is at most 32,754: else `TreePage(CellTooLarge)`,
      before its bytes are asked for
    - a value's `len` is at most 32,682: else `TreePage(FieldTooLong)`,
@@ -576,31 +633,26 @@ It is used in two places:
   reader that must apply it only if the cell still holds another pointer
   looks at the cell first (`TreeCell::value_pointer`).
 
-**What the cell holds before that is not settled, and not by this
-format.** A record carries a cell as `tree-page.md` defines it, and that
-has two forms for a value: the bytes in the cell, or the place of the
-bytes in the value log. A pending value is neither. Three ways are open.
-The records here serve the first as they are, the second only for a value
-that fits a cell, and the third with one more kind:
+**What the cell holds before that is the pending form** (PD16; P7 of
+`value-log-format.md`). The cell has its final shape, with 12 bytes for
+the value's place, and until the value is placed those bytes hold the
+reserved file id and the 8 bytes that identify the pending value. The
+value's bytes are in the log group and beside the frame. Placing the
+value is record 21 with the pointer, and it overwrites those 12 bytes.
 
-1. *A place that names no file yet.* The cell has its final shape, with 12
-   bytes for the value's place, and those bytes hold a pattern that
-   `value-log-format.md` reserves for "not in the value log yet", for
-   example the last file id with a number of the holder's choice as the
-   offset. The value's bytes are in the log group and beside the frame.
-   Placing the value overwrites 12 bytes. This needs one rule in
-   `value-log-format.md` and no change to a page or to a record, and it is
-   the one this document recommends.
-2. *The value in the cell until it is placed.* Needs no new rule at all:
-   the insert record carries the value inside the cell, and record 21
-   later shrinks the cell. It is not a whole answer. It works only for a
+This task put three ways to the owner, and the owner ruled the first
+(D-055):
+
+1. *A place that names no file.* Ruled. It needed one rule in
+   `value-log-format.md`, a third case in what a cell says of its value,
+   and no new record kind: record 21 carries a place of either kind.
+2. *The value in the cell until it is placed.* Refused: it reaches only a
    value that fits a cell, 16,370 bytes in a page of 32 KiB, and FL7 lets
-   a pending value be of any length: a longer one has no cell, and so no
-   record (PD7, PD10). And until write-back a page holds its new values at
-   full length, so the layout would be planned for cells that are longer
-   than they stay.
-3. *A third form of the cell*, marked by one of its reserved flags. That
-   is a change to `tree-page.md`.
+   a pending value be of any length. And until write-back a page would
+   hold its new values at full length, so the layout would be planned for
+   cells that are longer than they stay.
+3. *A third form of the cell*, marked by one of its reserved flags.
+   Refused: a wider change for the same effect.
 
 **A carried cell is in the same position.** By O5 of
 `value-log-format.md` a cell that is carried to another page stops holding
@@ -612,30 +664,29 @@ once write-back has appended the value again. An insert that kept the old
 pointer would decode and apply like any other (PD10), and the value's
 record would name another page as its owner.
 
-**Who decides.** This is a rule about the tree page's cell and the value
-pointer, which are merged formats of other tasks, so it is put to the
-owner and not made here (section 10, item 13). FMT-05 needs the answer to
-tie a value in a log group to its cell, TREE-08 to read a pending value,
-and TREE-03 to write the insert of a carried cell. Until then a log cannot
-hold the insert of a cell whose value is new and out of line, or carried
-and out of line. No byte of a record defined here changes for the first
-way, nor for the second as far as it reaches. The third adds one kind
-code, for a value that is replaced by a pending one.
+**The 8 bytes of a pending value are FMT-05's.** They lead from the cell
+to the value's bytes with no lookup by key: into the log group that wrote
+the value, or for a carried cell to the value it was carried from. A
+record copies them and gives them no meaning, except that all zero is not
+an id (`MissingId`). FMT-05 ties a value in a log group to its cell
+through them, TREE-08 reads a pending value through them, and TREE-03
+writes them into the insert of a carried cell.
 
 ## 9. What the tasks that build on this take from it
 
 | Task | Takes from here | Still its own to define |
 | --- | --- | --- |
-| FMT-05 Log record format | A run is the unit for "the structure deltas and hash records of one page": the page id once, then the records in order. `DeltaRunWriter` writes it into a group's buffer, `DeltaRun::decode` reads it. A run has no length, checksum or version: the group gives all three. The create record says that a commit makes a page (PD11). Record 21 is the page change of a placed or moved value (8.2). | How runs are framed in a group. The value records, and how one is tied to its cell (8.2). The record of a background change. Whether a carried value is repeated or named. |
+| FMT-05 Log record format | A run is the unit for "the structure deltas and hash records of one page": the page id once, then the records in order. `DeltaRunWriter` writes it into a group's buffer, `DeltaRun::decode` reads it. A run has no length, checksum or version: the group gives all three. The create record says that a commit makes a page (PD11). Record 21 is the page change of a placed or moved value (8.2). A cell whose value is new and out of line, or carried and out of line, is in a record in its pending form (PD16). | How runs are framed in a group. The value records, and how one is tied to its cell: the 8 bytes of a pending value's id are this task's to define (8.2). The record of a background change. Whether a carried value is repeated or named. |
 | STORE-05 Page materialisation | The base image is copied to a frame, then `apply_chain` with the page's id and the runs of the chain. Each run is checked against that id (`WrongPage`). Any error rejects the page (A3). Decoding a run allocates nothing, and neither does applying a hash, an address, a mark, one hosted-root pointer, or a link, feature, value or value pointer that takes the room of the one before it. | The load path, and the checksums of the blocks. |
-| STORE-06 Delta write-back | A run for the changes of one page since its last link, of one commit or of several folded together: pushing the changes of several runs into one writer is the fold. `consolidate`, or `apply_chain` and `write_image` on a frame, for a new base image. A hash-only change is 35 bytes for each hash and no value byte. Record 21 after the value is covered (8.2). | Thresholds. Where the changes of a page are kept until they are written. |
+| STORE-06 Delta write-back | A run for the changes of one page since its last link, of one commit or of several folded together: pushing the changes of several runs into one writer is the fold. `consolidate`, or `apply_chain` and `write_image` on a frame, for a new base image. A hash-only change is 35 bytes for each hash and no value byte. Record 21 after the value is covered (8.2). No page version it writes to a segment has a pending value: `TreePage::has_pending_value` on the base image it writes, and on the page as it is after the last record of a run it writes; `pending_values` lists what is left to place (PD16). | Thresholds. Where the changes of a page are kept until they are written. When values are placed. |
 | STORE-07 Recovery | A run applies once and in order (PD14): K3 decides whether a page already has it. A run that creates its page needs no image. | Replay. |
 | STORE-09 Value log | Moving a value is record 21 with the new pointer, 19 bytes in the page's run. | The page step. |
 | TREE-03 Fragment maintenance | A record for each thing it does to a page: insert, remove, the address in the parent's link (9 bytes), the mark (3), a hosted-root pointer (10). A carried cell is a remove and an insert with the cell's bytes (8.1), but for the place of a value out of line, which does not go with it: the value is pending again in the new page, and record 21 gives it its new place (8.2). | Which changes a write makes. That a carried cell never keeps its old pointer (O5), which no record can check (PD10). |
 | TREE-04 Lazy hashing | One 35-byte record for each hash that changed, whatever else the cell holds. A link whose hash, heights and aggregate changed together is one link record. | When hashes are evaluated. |
-| TREE-08 Out-of-line values | Record 20 puts a value into its cell, record 21 its place. The pending form (8.2). | The threshold, and the read of a pending value. |
+| TREE-08 Out-of-line values | Record 20 puts a value into its cell, record 21 its place. The pending form: `CellValue::Pending` in the cell it writes, with the id the log gives the value (PD16, 8.2). | The threshold, and the read of a pending value. |
 | TREE-09 Subtree drop | Removing a left-over cell is the remove record, 3 bytes. | The walk. |
 | FMT-08 Decoder fuzzing | The decoder: `DeltaRun::decode`, with `deltas` and `created` on what it accepts. `DeltaRun::apply`, `apply_chain` and `consolidate` on valid pages only (A4). The golden bytes of section 2.4. | The targets. |
+| VER-07 Physical invariant checker | PD16 as an invariant of every segment: `TreePage::has_pending_value` is false for each base image, and for the page after each run of its chain is applied (`apply_chain` one run at a time, or `consolidate` up to that run). | The checker. |
 | PERF-04 Write-back tuning | The sizes of section 7, and the price of a carried cell in the log (8.1). | Tuning. |
 
 ## 10. Choices made here that the plan left open
@@ -679,18 +730,22 @@ owner can overrule one while version 1 is still open (U10).
     two (the value hash and the key-value hash), 70 bytes. A record for
     the pair would be 67. Not taken: it is a second way to write two
     changes.
-11. **A value pointer record holds the whole 16-byte pointer**, value
-    length included, although the cell has that length already when a
-    value is placed or moved. One record then also serves a value that is
+11. **A value pointer record holds all 16 bytes of the value's place**, a
+    pointer or a pending value (PD16), value length included, although the
+    cell has that length already when a value is placed or moved. One record then also serves a value that is
     replaced by a longer or shorter one out of line. A record without the
     length would be 4 bytes shorter and could only move a value.
 12. **No record names a carried cell** (8.1).
-13. **No record for a pending value, and no pending form** (8.2). This is
-    an open point for the owner: `tree-page.md` has no form for a value
-    that is neither in its cell nor in the value log. FMT-05, TREE-08 and
-    TREE-03 need one, for a new value out of line and for a carried cell
-    that has one. This document recommends a value pointer that names no
-    file yet, which changes no byte of a record.
+13. **A pending value is a value pointer that names no file, and it has
+    no record kind of its own** (PD16, 8.2). This was an open point for the
+    owner, who ruled it (D-055): `tree-page.md` had no form for a value
+    that is neither in its cell nor in the value log, and FMT-05, TREE-08
+    and TREE-03 need one. Record 21 carries a place of either kind, so no
+    kind code was added and no byte of a record changed. What changed is
+    what record 21 and a cell in a record accept: the reserved file id,
+    which was a valid file id before and is now the mark of a pending
+    value. Where a pending value may not stand is not enforced by this
+    format (PD16).
 14. **An empty run is not a run** (PD12).
 15. **Applying a run is not all or nothing** (A3). Making it so would cost
     a copy of the page for each run. The caller drops the frame.
@@ -727,7 +782,8 @@ All of this is in `lignin-format::delta`. Run the tests with
 | PD6, B8 | `Delta::encode_into`, `DeltaRun::decode` | `what_was_written_reads_back_and_what_was_read_is_written_the_same`: 3,000 runs. `every_single_bit_flip_is_rejected_or_reads_as_what_it_says`. `a_change_that_would_not_read_back_is_not_written`. `changes_are_compared_by_what_they_change`. |
 | Section 4 | `DeltaRun::decode` | Each check has its error, in order: `each_check_of_a_run_has_its_error`, `every_kind_code_is_a_record_or_an_error`, `each_check_of_a_record_has_its_error`, `each_check_of_a_cell_in_a_record_has_its_error`. `every_prefix_of_a_run_is_a_shorter_run_or_an_error`. |
 | B10, A4 | every reader, `DeltaRun::apply` | `arbitrary_bytes_are_an_error_or_a_run_and_never_a_panic`: 60,000 byte strings, a third arbitrary, a third records of every kind with arbitrary fields, a third valid runs with bytes changed. What decodes is written back to the same bytes and applied to a full page, which must be valid afterwards. |
-| S2, S3, PD10, section 8 | `Delta::Remove`, `Delta::Insert`, `Delta::Child`, `Delta::Value` | `a_carried_cell_is_a_remove_in_one_page_and_an_insert_in_another`: the records of a carry in the page a cell leaves, in the page of its parent and in the page it arrives in, with its value pending in either of two forms and then given its new place by record 21. After the commit's records no cell of either page holds the old pointer and the arrived cell holds the pending form; after record 21 it holds the new place. |
+| S2, S3, PD10, section 8 | `Delta::Remove`, `Delta::Insert`, `Delta::Child`, `Delta::Value` | `a_carried_cell_is_a_remove_in_one_page_and_an_insert_in_another`: the records of a carry in the page a cell leaves, in the page of its parent and in the page it arrives in, with its value pending and then given its new place by record 21. After the commit's records no cell of either page holds the old pointer and the arrived cell holds the pending form; after record 21 it holds the new place. |
+| PD16 | `Delta::Value`, `TreePage::has_pending_value`, `TreePage::pending_values` | In `a_carried_cell_is_a_remove_in_one_page_and_an_insert_in_another`, placing changes the 12 bytes of the place and no other byte of the whole frame. `a_placed_value_can_become_pending_again_and_is_placed_again`: record 21 with a pending place is the same 19 bytes and again changes only those 12; a run that places a value, replaces its cell by one with a pending value and places that has a pending value after its second record and none at its end. `each_check_of_a_record_has_its_error`: record 21 with the reserved file id reads as a pending value for any id but zero, which is `MissingId`, and a length of zero is `EmptyValue`. In the acceptance test a fifth of the values written are pending, cells arrive with one, values become pending where they are and are placed by record 21, and the chain is put together while the page holds pending values; `has_pending_value` and `pending_values` agree with the model on every image and on the writer's frame. |
 | A2, A3, PD11, section 6 | `DeltaRun::apply`, `consolidate`, `DeltaError` | `a_run_is_applied_to_the_page_it_names`, `a_run_that_creates_its_page_needs_no_page`, `a_refused_change_keeps_the_changes_before_it_and_makes_none_after_it`, `a_chain_with_no_base_must_create_its_page`, `consolidation_takes_an_image_and_nothing_else`, `a_full_page_refuses_a_record_that_needs_room`, `a_change_too_long_for_a_record_is_refused_by_the_page_too`, `every_error_has_its_message`. |
 | No allocation | `DeltaRun::decode`, `DeltaRun::apply` | `tests/delta_alloc.rs` runs under a counting allocator. |
 

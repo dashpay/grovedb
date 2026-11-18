@@ -17,7 +17,7 @@
 //! use lignin_format::{
 //!     manifest::Manifest,
 //!     segment::{BlockContent, Compression},
-//!     tree_page::TreePageSize,
+//!     PageSize,
 //!     PageId,
 //! };
 //! use lignin_io::{StdVfs, Vfs};
@@ -26,7 +26,7 @@
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let dir = tempfile::tempdir()?;
 //! let vfs: Arc<dyn Vfs> = Arc::new(StdVfs);
-//! let empty = Manifest::new(TreePageSize::DEFAULT, Default::default(), None, Vec::new())?;
+//! let empty = Manifest::new(PageSize::DEFAULT, Default::default(), None, Vec::new())?;
 //! let mut manifest = ManifestStore::create(vfs, dir.path(), empty)?;
 //! let segments = SegmentStore::open(&manifest)?;
 //!

@@ -97,7 +97,7 @@ later record or in the manifest, which is replaced as a whole file (STORE-02).
 | --- | --- | --- | --- | --- |
 | Page id | `PageId` | `u32`, 4 bytes | 1 to 2^32 − 1 | 0: no page |
 | Commit version | `CommitVersion` | `u64`, 8 bytes | 0 to 2^64 − 2 | 2^64 − 1: no version |
-| File id | `FileId` | `u32`, 4 bytes | 1 to 2^32 − 1 | 0: no file |
+| File id | `FileId` | `u32`, 4 bytes | 1 to 2^32 − 2 | 0: no file. 2^32 − 1: never a file (3.3) |
 | Slot number | `SlotId` | `u16`, 2 bytes | 1 to 2^16 − 1 | 0: no slot |
 
 A field that must hold an identifier rejects the reserved pattern
@@ -105,6 +105,8 @@ A field that must hold an identifier rejects the reserved pattern
 "none". Each type has
 `encode`, `encode_optional` and `decode` for this; `decode` returns `None` for
 the reserved pattern and the format decides whether `None` is allowed there.
+A file id has a second reserved number, which is not "none": `FileId::decode`
+gives an error for it (`ReservedFileId`), wherever a file is meant.
 
 ### 3.1 Page id
 
@@ -118,6 +120,10 @@ table (STORE-03).
   needs.
 - **One id space.** Tree pages, flat pages and any later page kind share it.
   The id says nothing about what the page holds.
+- **In the image.** Every page image holds its own id, the `u32` at offset
+  4 (TP2 of [`tree-page.md`](tree-page.md), P14 of
+  [`flat-page.md`](flat-page.md)). A reader that asked for a page compares
+  the two.
 - **Dense.** Ids are small numbers handed out from 1 upward, so the table is a
   directly indexed array with no hashing. Allocation, freeing and deferred
   reuse are STORE-10's.
@@ -179,6 +185,15 @@ A file id is the number in a numbered file's name: `seg/00000310.seg` is file
 - **From 1, increasing, never reused.** Within one database directory a number
   is used for at most one file of a kind, ever. A file that is deleted leaves
   its number unused.
+- **The last number names no file.** 2^32 − 1 is reserved
+  (`FileId::RESERVED`), for every kind, and the largest id is 2^32 − 2
+  (`FileId::MAX`). In the place of a value it marks a value that is not in
+  the value log yet (P7 of [`value-log-format.md`](value-log-format.md)). It
+  is the last number and not 0, so that zero-filled bytes stay damage (B6).
+  No `FileId` holds it: an allocator that counts past `FileId::MAX` gets no
+  id and reports that the ids are used up, a file header of a numbered kind
+  with that sequence is rejected (`InvalidFileSequence`), and a field that
+  names a file and holds it is rejected (`ReservedFileId`).
 - **In the name and in the header.** The name is the number in decimal, padded
   with leading zeros to eight digits. A number above 99,999,999 is written in
   full, with no padding. No other spelling names the file: `000000310.seg` is
@@ -188,7 +203,10 @@ A file id is the number in a numbered file's name: `seg/00000310.seg` is file
 
 A pointer to a place in a file is a file id plus a `u64` offset, with a length
 where the reader needs one. The formats that store such pointers (FMT-02,
-FMT-06, FMT-07 and the page table) fix their exact layout.
+FMT-06, FMT-07 and the page table) fix their exact layout. One of them has a
+second meaning for the same bytes: the place of a value is a pointer, or,
+with the reserved file id, a pending value whose 8 other bytes are an id
+that FMT-05 defines.
 
 ### 3.4 Slot number and cell address
 
@@ -211,6 +229,26 @@ A **cell address** is a page id followed by a slot number, six bytes
 directory stores for the root of a Merk (TREE-05). All zero is "no cell". A
 page id with no slot, or a slot with no page id, is not a valid address
 (`MissingId`).
+
+### 3.5 Page size
+
+A store has one page size, for tree pages and flat pages alike
+(`ids::PageSize`). It is not an identifier, and it is here because every
+page format and the manifest share it.
+
+- **One of four.** 8,192, 16,384, 32,768 or 65,536 bytes: a power of two
+  from 8 KiB to 64 KiB. 32,768 unless the store is told otherwise.
+  `PageSize::new` gives `InvalidPageSize` for any other number, so no value
+  of the type holds one.
+- **Recorded once.** The manifest holds it as a `u32` (M17 of
+  [`segment-manifest.md`](segment-manifest.md)) and no page image does. It
+  never changes (M18).
+- **An image is at most 65,535 bytes**, because offsets in a page are 16
+  bits (`PageSize::image_capacity`): a page of 65,536 bytes leaves its last
+  byte unused.
+
+What a tree page derives from the size (how much cells can use, how long
+one cell may be) is in [`tree-page.md`](tree-page.md), TP4 and TP14.
 
 ## 4. Checksums
 
@@ -400,7 +438,7 @@ The codes are registered here so that tasks working in parallel do not choose
 the same one. A new kind is a format change (U6).
 
 **H3. Sequence.** For a numbered kind it is the file's id (3.3) and is never
-0. A reader that finds a file under a name that does not match its header's
+0 and never the reserved id. A reader that finds a file under a name that does not match its header's
 kind and sequence must refuse it. For `Manifest` FMT-06 says what the field
 holds; this specification accepts any value there.
 
@@ -412,7 +450,8 @@ holds; this specification accepts any value there.
 4. the format version is one this build reads: else
    `UnsupportedFormatVersion`
 5. the kind code is defined in that version: else `UnknownFileKind`
-6. the sequence is not 0 for a numbered kind: else `InvalidFileSequence`
+6. the sequence is a file id for a numbered kind, not 0 and not the
+   reserved id: else `InvalidFileSequence`
 
 The checksum comes before the version so that a flipped bit in the version
 field is reported as damage, not as "written by a newer build". The version
@@ -535,10 +574,10 @@ changes and U6 applies without exception.
 | --- | --- | --- |
 | FMT-02 Tree page codec | `PageId` for cross-page pointers, with 0 for "none". A page image has no version of its own (R5). It lies in a record with a checksum (R1, R4): the segment block that holds it, so it carries none itself ([`tree-page.md`](tree-page.md), TP3). | The cell layout, the page header, and how a cell stores the value pointer. `SlotId` and `CellAddress` (3.4) were added by this task. The pointer's fields and its 16-byte encoding are FMT-07's. |
 | FMT-03 Page delta records | The record rules R1 to R7 and the checksum. A run of page deltas lies in a record with a checksum (R1, R4): the segment block or the log group that holds it, so it carries none itself ([`page-delta.md`](page-delta.md), PD4). | The records and the run. A changed hash is 35 bytes, and 47 as a block. |
-| FMT-04 Flat page codec | As FMT-02: a flat page image lies in the record that holds it and carries no checksum itself ([`flat-page.md`](flat-page.md), P12). | Everything inside the page. |
-| FMT-05 Log record format | `CommitVersion` for a commit group; consecutive groups differ by one (3.2). The default frame. A group above 128 MiB is several records (C5). | Group layout, record kinds, and what a failed record means for the tail (R7). |
+| FMT-04 Flat page codec | As FMT-02: a flat page image lies in the record that holds it and carries no checksum itself ([`flat-page.md`](flat-page.md), P12). `PageId` for the page's own id, which every page image holds at offset 4 (P14; TP2 of [`tree-page.md`](tree-page.md)). | Everything inside the page. |
+| FMT-05 Log record format | `CommitVersion` for a commit group; consecutive groups differ by one (3.2). The default frame. A group above 128 MiB is several records (C5). The reserved file id marks a pending value in a cell (3.3). | Group layout, record kinds, and what a failed record means for the tail (R7). The 8 bytes that identify a pending value (P7 of [`value-log-format.md`](value-log-format.md)). |
 | FMT-06 Segment, manifest format | The file header and kind codes. The manifest's header version is the database format version (V3). `FileId` for naming live files. | Block headers, the footer index, the manifest body, the meaning of the manifest's sequence field (H3). The manifest body also records the store's page size, which no page image holds ([`segment-manifest.md`](segment-manifest.md), M17). |
-| FMT-07 Value log format | The default frame. A value above 128 MiB is several records (C5). `PageId` for the back pointer and `FileId` for the value pointer. | The record layout, the value pointer, and the rules that make the back pointer enough to find the owning cell ([`value-log-format.md`](value-log-format.md)). |
+| FMT-07 Value log format | The default frame. A value above 128 MiB is several records (C5). `PageId` for the back pointer and `FileId` for the value pointer. | The record layout, the value pointer, the pending form of a value that is not in the value log yet, and the rules that make the back pointer enough to find the owning cell ([`value-log-format.md`](value-log-format.md)). |
 | TREE-01 Merkle host model | A page id is logical, stable under relocation, dense and shared by all page kinds (3.1). | Everything about what goes in a page. |
 | TXN-01 Version model | The commit version is a dense count from 0, with 2^64 − 1 free as a marker (3.2). | Visibility, pins, and every rule about writers. |
 | STORE-03 Page table, STORE-10 Page id allocation | Page ids run from 1 and are dense, so a table index is the id minus one. An id is reused only under STORE-10's rule. | The table's own file format and the allocator. |
@@ -595,14 +634,16 @@ All of this is in `lignin-format`. Run the tests with
 | Rule | Code | Tests |
 | --- | --- | --- |
 | Identifiers (section 3) | `ids::{PageId, FileId, CommitVersion, SlotId, CellAddress}` | Round trip in both directions over boundary and random values; the reserved pattern; byte order; ordering; `CommitVersion::next`. Every slot number; half a cell address. |
+| The reserved file id (3.3) | `FileId::{RESERVED, MAX, new, decode}`, `FormatError::ReservedFileId` | `file_id::the_last_number_is_reserved_and_names_no_file`; every 4 bytes decode to an id that encodes back to them, to none, or are the reserved number. `file_header_rejects_a_numbered_file_whose_sequence_is_no_file_id`. The manifest, the page-table checkpoint and the value pointer reject it in each field that names a file (their tests). |
+| Page size (3.5) | `ids::PageSize`, `FormatError::InvalidPageSize` | `a_page_size_is_one_of_four_powers_of_two`: of every number from 0 to 131,072 and every larger power of two, exactly the four sizes are accepted. |
 | C1 | `checksum::Checksum` (the CRC itself is private) | RFC 3720 vectors; agreement with a bit-at-a-time reference on random input. |
 | C2, C3 | `checksum::Checksum` | Masked vectors; round trip; the same checksum however the covered bytes are split; every single-bit flip rejected; the nesting test. |
 | C4 | `checksum::Checksum` | No zero checksum for any run of 0 to 2^27 zero bytes; zero-filled bytes rejected as a file header and as a record. |
 | C5 | `checksum::MAX_CHECKSUMMED_LEN`, `RecordHeader::MAX_PAYLOAD_LEN` | The polynomial's period is 2^31 − 1 bits and the limit lies inside it; the length bound at, above and far above the maximum. |
 | Default frame (5.1) | `header::{RecordHeader, read_record, write_record}` | Golden bytes; round trip of records one after another; random 8-byte headers decode only to what encodes back to them; every shorter input; every single-bit flip, with the error each one must give; the length checked before the payload. |
-| File header (section 6) | `header::{FileHeader, FileKind}` | Golden bytes for each kind; round trip from values, and from random headers with a valid checksum; every shorter input; every single-bit flip; every unreadable version and every unknown kind with a valid checksum; each step of the order of checks (H4); sequence 0. |
+| File header (section 6) | `header::{FileHeader, FileKind}` | Golden bytes for each kind; round trip from values, and from random headers with a valid checksum; every shorter input; every single-bit flip; every unreadable version and every unknown kind with a valid checksum; each step of the order of checks (H4); sequence 0 and the reserved id. |
 | Format version (section 7) | `header::FormatVersion` | Every `u16` either round-trips or is rejected. |
-| B10 | `error::FormatError` | Each rejection above is asserted by its error. `MissingId`, `NonZeroReserved` and `UnknownRecordKind` are defined here for the formats that need them and have no decoder yet. |
+| B10 | `error::FormatError` | Each rejection above is asserted by its error. `MissingId`, `NonZeroReserved` and `UnknownRecordKind` are defined here for the formats that need them and have no decoder yet. `InvalidPageSize` and `ReservedFileId` were added with the rules they report (3.5, 3.3). |
 
 The golden bytes and checksum vectors in the tests were computed with an
 independent bit-at-a-time CRC-32C, not with the crate under test.

@@ -11,7 +11,7 @@ use super::*;
 ///   read back, at once.
 /// - The chain is what a store keeps: a base image and the runs since.
 struct Chain {
-    size: TreePageSize,
+    size: PageSize,
     rng: Rng,
     model: ModelPage,
     writer: Vec<u8>,
@@ -21,6 +21,10 @@ struct Chain {
     creates: Option<u64>,
     open: Vec<Op>,
     written: [usize; Op::KINDS],
+    /// Cells put into the page with a pending value, values that became
+    /// pending where they were, pending values that were given their
+    /// place, and checks made while the page had a pending value.
+    pending: [usize; 4],
     refused: usize,
     creations: usize,
     consolidations: usize,
@@ -31,7 +35,7 @@ struct Chain {
 impl Chain {
     /// A chain for a page that exists, with a base image, or for one that
     /// its first run creates.
-    fn new(seed: u64, size: TreePageSize, with_base: bool) -> Self {
+    fn new(seed: u64, size: PageSize, with_base: bool) -> Self {
         let mut rng = Rng::new(seed);
         let mut model = ModelPage::new(17, 5);
         if with_base {
@@ -56,6 +60,7 @@ impl Chain {
             runs: Vec::new(),
             open: Vec::new(),
             written: [0; Op::KINDS],
+            pending: [0; 4],
             refused: 0,
             creations: 0,
             consolidations: 0,
@@ -141,6 +146,7 @@ impl Chain {
             Ok(()) => {
                 run.apply(&mut self.replica, self.size, V1)
                     .expect("the replica takes what the writer took");
+                self.count_pending(&op);
                 op.make(&mut self.model);
                 self.written[op.kind()] += 1;
                 self.open.push(op);
@@ -177,6 +183,25 @@ impl Chain {
         self.fullest = self.fullest.min(self.model.free_bytes(self.size));
     }
 
+    /// Counts what `op` does to a pending value, before the model has it.
+    fn count_pending(&mut self, op: &Op) {
+        let is_pending = |value: &ModelValue| matches!(value, ModelValue::Pending(_));
+        match op {
+            Op::Insert(_, cell) | Op::Replace(_, cell) if is_pending(&cell.value) => {
+                self.pending[0] += 1;
+            }
+            Op::Value(raw, value) => {
+                let was = is_pending(&self.model.cells[raw].value);
+                match (was, value) {
+                    (_, ModelValue::Pending(_)) => self.pending[1] += 1,
+                    (true, ModelValue::OutOfLine(_)) => self.pending[2] += 1,
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// The image `base` and `runs` give, by consolidation.
     fn consolidated(&self, base: Option<&[u8]>, runs: &[Vec<u8>]) -> Vec<u8> {
         let runs: Vec<DeltaRun<'_>> = runs.iter().map(|bytes| decode(bytes)).collect();
@@ -195,6 +220,15 @@ impl Chain {
         assert_eq!(image_of(&self.replica), expected);
         let page = TreePage::decode(&expected, V1, self.size).expect("an image");
         self.model.assert_is(page, self.size);
+        // A page in a buffer says the same as its image about the values
+        // that wait for their place.
+        let waiting: Vec<_> = page.pending_values().collect();
+        assert_eq!(
+            view(&self.writer).pending_values().collect::<Vec<_>>(),
+            waiting
+        );
+        assert_eq!(view(&self.writer).has_pending_value(), !waiting.is_empty());
+        self.pending[3] += usize::from(!waiting.is_empty());
 
         // The acceptance test: the base image and the chain are the
         // consolidated image.
@@ -256,16 +290,11 @@ impl Chain {
 #[test]
 fn a_base_image_plus_any_delta_chain_is_the_consolidated_image() {
     for (seed, size, with_base, steps) in [
-        (0xDE17A1, TreePageSize::MIN, true, 9_000),
-        (0xDE17A2, TreePageSize::MIN, false, 9_000),
-        (
-            0xDE17A3,
-            TreePageSize::new(11_111).expect("in range"),
-            true,
-            6_000,
-        ),
-        (0xDE17A4, TreePageSize::DEFAULT, false, 9_000),
-        (0xDE17A5, TreePageSize::MAX, true, 9_000),
+        (0xDE17A1, PageSize::MIN, true, 9_000),
+        (0xDE17A2, PageSize::MIN, false, 9_000),
+        (0xDE17A3, SIZES[1], true, 9_000),
+        (0xDE17A4, PageSize::DEFAULT, false, 9_000),
+        (0xDE17A5, PageSize::MAX, true, 9_000),
     ] {
         let mut chain = Chain::new(seed, size, with_base);
         // The page is freed and created again five times in the first part
@@ -290,6 +319,12 @@ fn a_base_image_plus_any_delta_chain_is_the_consolidated_image() {
         for (kind, &count) in chain.written.iter().enumerate() {
             assert!(count >= 20, "{count} changes of kind {kind}");
         }
+        // Pending values took part: cells arrived with one, values became
+        // pending where they were and were placed, and the chain was put
+        // together while the page held one.
+        for (what, &count) in chain.pending.iter().enumerate() {
+            assert!(count >= 20, "{count} of pending case {what}");
+        }
         assert!(chain.refused >= 200, "{} refused", chain.refused);
         assert!(chain.fullest < 300, "{} bytes free at least", chain.fullest);
         assert!(chain.model.departures > 0);
@@ -307,7 +342,7 @@ fn a_base_image_plus_any_delta_chain_is_the_consolidated_image() {
 /// runs or of the bytes the writer's frame happened to have.
 #[test]
 fn the_same_changes_give_the_same_image_however_they_are_cut() {
-    let size = TreePageSize::MIN;
+    let size = PageSize::MIN;
     let mut rng = Rng::new(0xC075);
     let mut model = ModelPage::new(3, 0);
     for raw in 1..=8 {

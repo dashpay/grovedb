@@ -52,7 +52,7 @@ impl Page {
     fn build(id: PageId, mut cells: Vec<Cell>) -> Self {
         if is_flat(id) {
             cells.sort_by_key(|cell| cell.key);
-            let mut builder = FlatLeafBuilder::new(b"", FlatPage::MAX_LEN).expect("a builder");
+            let mut builder = FlatLeafBuilder::new(id, b"", FlatPage::MAX_LEN).expect("a builder");
             for cell in cells {
                 let pointer = cell.pointer.encode();
                 builder
@@ -381,7 +381,7 @@ impl Record {
                 counts: (0..reader.u32()?)
                     .map(|_| {
                         Some(FileCount {
-                            file: FileId::decode(reader.take()?)?,
+                            file: FileId::decode(reader.take()?).ok()??,
                             values: reader.u64()?,
                             bytes: reader.u64()?,
                             miscounted: reader.take::<1>()? == [1],

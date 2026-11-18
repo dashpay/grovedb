@@ -1456,7 +1456,7 @@ mod tests {
         );
         assert_eq!(
             config.capacity() as usize,
-            lignin_format::tree_page::TreePageSize::DEFAULT.cell_capacity()
+            lignin_format::PageSize::DEFAULT.cell_capacity()
         );
     }
 

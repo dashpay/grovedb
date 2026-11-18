@@ -29,7 +29,8 @@
 //!                                                           4 + 6 for each
 //!   19  feature                slot, length (1), the feature     4 + feature
 //!   20  value                  slot, length (2), the value         5 + value
-//!   21  value pointer          slot, the value pointer (16)               19
+//!   21  value pointer          slot, the value's place (16): a pointer,   19
+//!                              or a pending value
 //! ```
 //!
 //! A link in a record is the child's cell address (6), the child's hash
@@ -41,12 +42,12 @@
 //! ```
 //! use lignin_format::{
 //!     delta::{consolidate, Delta, DeltaRun, DeltaRunWriter, HASH_RECORD_LEN},
-//!     tree_page::{CellContent, CellValue, HashField, TreePage, TreePageMut, TreePageSize},
-//!     FormatVersion, PageId, SlotId,
+//!     tree_page::{CellContent, CellValue, HashField, TreePage, TreePageMut},
+//!     FormatVersion, PageId, PageSize, SlotId,
 //! };
 //!
 //! # fn main() -> Result<(), lignin_format::FormatError> {
-//! let size = TreePageSize::DEFAULT;
+//! let size = PageSize::DEFAULT;
 //! let version = FormatVersion::CURRENT;
 //! let mut frame = vec![0; size.get()];
 //! let mut page = TreePageMut::init(&mut frame, size, PageId::MIN, 0)?;
@@ -92,8 +93,8 @@ use std::fmt;
 
 use crate::{
     error::FormatError,
-    ids::{PageId, SlotId},
-    tree_page::{TreeCell, TreePageSize, HASH_LEN},
+    ids::{PageId, PageSize, SlotId},
+    tree_page::{TreeCell, HASH_LEN},
 };
 
 mod record;
@@ -109,7 +110,7 @@ pub use run::{apply_chain, consolidate, DeltaRun, DeltaRunWriter, Deltas};
 pub const HASH_RECORD_LEN: usize = 1 + SlotId::ENCODED_LEN + HASH_LEN;
 
 /// The longest cell a record carries: the longest cell of the largest page.
-pub const MAX_CELL_LEN: usize = TreePageSize::MAX.max_cell_len();
+pub const MAX_CELL_LEN: usize = PageSize::MAX.max_cell_len();
 
 /// The longest value a record puts into a cell: the longest value the
 /// longest cell holds.

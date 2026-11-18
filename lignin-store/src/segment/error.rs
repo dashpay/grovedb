@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use lignin_format::{tree_page::TreePageSize, FileId, FileKind, FormatError, FormatVersion};
+use lignin_format::{FileId, FileKind, FormatError, FormatVersion, PageSize};
 
 use super::store::BlockLocation;
 
@@ -15,9 +15,9 @@ pub enum ManifestChange {
     /// The page size is not the one the store was created with.
     PageSizeChanged {
         /// The page size of the manifest in force.
-        from: TreePageSize,
+        from: PageSize,
         /// The page size of the manifest offered.
-        to: TreePageSize,
+        to: PageSize,
     },
     /// The last file id of a kind is lower than it was.
     LastFileIdLowered {
@@ -132,9 +132,9 @@ pub enum SegmentStoreError {
         /// The database directory.
         dir: PathBuf,
         /// The page size in the manifest.
-        stored: TreePageSize,
+        stored: PageSize,
         /// The page size the store was opened with.
-        requested: TreePageSize,
+        requested: PageSize,
     },
     /// A manifest of another directory was passed.
     WrongDirectory {

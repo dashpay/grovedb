@@ -11,7 +11,7 @@ use std::{
     hint::black_box,
 };
 
-use lignin_format::{tree_page::TreePageSize, CommitVersion, PageId};
+use lignin_format::{CommitVersion, PageId, PageSize};
 use lignin_store::cache::{BufferPool, Loaded, OwnerId, PageRef, PoolConfig};
 
 thread_local! {
@@ -76,7 +76,7 @@ fn version(raw: u64) -> CommitVersion {
 
 fn pool() -> BufferPool {
     let config = PoolConfig {
-        page_size: TreePageSize::new(PAGE_SIZE).expect("a page size"),
+        page_size: PageSize::new(PAGE_SIZE).expect("a page size"),
         capacity: FRAMES * PAGE_SIZE + 4_096,
     };
     let pool = BufferPool::new(config).expect("holds frames");

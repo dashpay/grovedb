@@ -31,7 +31,8 @@
 //!   then        the hosted-root pointers, 6 bytes each: a cell address or 0
 //!   then        the feature, the key
 //!   then        the value, or for a value out of line 12 bytes: the file id
-//!               and the offset of its value pointer
+//!               and the offset of its value pointer, or the reserved file id
+//!               and the id of a value that is not in the value log yet
 //! ```
 //!
 //! ```text
@@ -48,12 +49,12 @@
 //!
 //! ```
 //! use lignin_format::{
-//!     tree_page::{CellContent, CellValue, HashField, TreePage, TreePageMut, TreePageSize},
-//!     FormatVersion, PageId, SlotId,
+//!     tree_page::{CellContent, CellValue, HashField, TreePage, TreePageMut},
+//!     FormatVersion, PageId, PageSize, SlotId,
 //! };
 //!
 //! # fn main() -> Result<(), lignin_format::FormatError> {
-//! let size = TreePageSize::DEFAULT;
+//! let size = PageSize::DEFAULT;
 //! let mut frame = vec![0; size.get()];
 //! let mut page = TreePageMut::init(&mut frame, size, PageId::MIN, 0)?;
 //! page.insert(
@@ -87,7 +88,10 @@
 
 use std::fmt;
 
-use crate::{error::FormatError, ids::SlotId};
+use crate::{
+    error::FormatError,
+    ids::{PageSize, SlotId},
+};
 
 mod cell;
 mod page;
@@ -107,11 +111,6 @@ pub use write::TreePageMut;
 /// page cannot take what was written to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TreePageError {
-    /// A page size outside [`TreePageSize::MIN`] to [`TreePageSize::MAX`].
-    PageSizeOutOfRange {
-        /// The page size asked for.
-        page_size: usize,
-    },
     /// The buffer given for a page is smaller than a page of that size
     /// needs.
     BufferTooSmall {
@@ -275,12 +274,6 @@ pub enum TreePageError {
 impl fmt::Display for TreePageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::PageSizeOutOfRange { page_size } => write!(
-                f,
-                "page size {page_size} is outside {} to {}",
-                TreePageSize::MIN.get(),
-                TreePageSize::MAX.get()
-            ),
             Self::BufferTooSmall { len, needed } => {
                 write!(f, "buffer of {len} bytes for a page of {needed}")
             }
@@ -372,56 +365,18 @@ impl From<TreePageError> for FormatError {
     }
 }
 
-/// The size of a store's tree pages, which every tree page is read and
-/// written under.
-///
-/// The size bounds how long a page may grow and how large one cell may be: a
-/// cell and its slot take less than half of [`Self::cell_capacity`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct TreePageSize(usize);
-
-impl TreePageSize {
-    /// The smallest page size, 8 KiB. At this size and above, a cell whose
-    /// value is out of line fits whatever else it holds.
-    pub const MIN: Self = Self(8_192);
-    /// The largest page size, 64 KiB.
-    pub const MAX: Self = Self(65_536);
-    /// The page size a store uses unless it is told otherwise, 32 KiB.
-    pub const DEFAULT: Self = Self(32_768);
-
-    /// Pages of `bytes` bytes.
-    pub const fn new(bytes: usize) -> Result<Self, FormatError> {
-        if bytes < Self::MIN.0 || bytes > Self::MAX.0 {
-            return Err(FormatError::TreePage(TreePageError::PageSizeOutOfRange {
-                page_size: bytes,
-            }));
-        }
-        Ok(Self(bytes))
-    }
-
-    /// The page size in bytes.
-    pub const fn get(self) -> usize {
-        self.0
-    }
-
-    /// The longest a page of this size may be. Offsets inside a page are 16
-    /// bits, so a page of 64 KiB leaves its last byte unused.
-    pub const fn image_capacity(self) -> usize {
-        if self.0 < TreePage::MAX_LEN {
-            self.0
-        } else {
-            TreePage::MAX_LEN
-        }
-    }
-
-    /// The bytes of a page that cells and their slots can use.
+/// What the size of a store's pages means for the cells of a tree page: a
+/// cell and its slot take less than half of [`PageSize::cell_capacity`].
+impl PageSize {
+    /// The bytes of a tree page that cells and their slots can use.
     pub const fn cell_capacity(self) -> usize {
         self.image_capacity() - TreePage::HEADER_LEN
     }
 
-    /// The longest cell a page of this size takes, without its slot: the
-    /// cell and its slot together are smaller than half of
-    /// [`Self::cell_capacity`].
+    /// The longest cell a tree page of this size takes, without its slot:
+    /// the cell and its slot together are smaller than half of
+    /// [`Self::cell_capacity`]. At the smallest size and above, a cell whose
+    /// value is out of line fits whatever else it holds.
     pub const fn max_cell_len(self) -> usize {
         (self.cell_capacity() - 1) / 2 - TreePage::SLOT_LEN
     }
@@ -444,13 +399,7 @@ impl TreePageSize {
     }
 }
 
-impl Default for TreePageSize {
-    fn default() -> Self {
-        Self::DEFAULT
-    }
-}
-
 const _: () = assert!(
-    TreeCell::MAX_OUT_OF_LINE_LEN <= TreePageSize::MIN.max_cell_len(),
+    TreeCell::MAX_OUT_OF_LINE_LEN <= PageSize::MIN.max_cell_len(),
     "a cell with its value out of line fits in the smallest page"
 );

@@ -8,8 +8,7 @@ use std::{sync::Arc, time::Instant};
 
 use lignin_format::{
     manifest::{FileState, LastFileIds, LiveFile, Manifest},
-    tree_page::TreePageSize,
-    CommitVersion, FileId, FileKind, PageId,
+    CommitVersion, FileId, FileKind, PageId, PageSize,
 };
 use lignin_io::{StdVfs, Vfs};
 use lignin_store::{
@@ -85,13 +84,8 @@ fn the_table_for_a_million_pages_fits_in_32_megabytes() {
 
     let dir = tempfile::tempdir().expect("a directory");
     let vfs: Arc<dyn Vfs> = Arc::new(StdVfs);
-    let empty = Manifest::new(
-        TreePageSize::DEFAULT,
-        LastFileIds::default(),
-        None,
-        Vec::new(),
-    )
-    .expect("a manifest");
+    let empty = Manifest::new(PageSize::DEFAULT, LastFileIds::default(), None, Vec::new())
+        .expect("a manifest");
     let manifest = ManifestStore::create(vfs.clone(), dir.path(), empty).expect("a manifest");
     let checkpoints = TableCheckpoints::open(&manifest).expect("the checkpoints open");
     let start = Instant::now();
@@ -120,7 +114,7 @@ fn the_table_for_a_million_pages_fits_in_32_megabytes() {
         ..LastFileIds::default()
     };
     let named = Manifest::new(
-        TreePageSize::DEFAULT,
+        PageSize::DEFAULT,
         last_file_ids,
         Some(written.named()),
         segments,

@@ -257,7 +257,7 @@ version it read the manifest at. That is the first step of an upgrade (U3).
 
 | Offset | Size | Field |
 | --- | --- | --- |
-| 0 | 4 | page size in bytes, `u32`: 8,192 to 65,536 |
+| 0 | 4 | page size in bytes, `u32`: 8,192, 16,384, 32,768 or 65,536 |
 | 4 | 4 | last file id used for a log file, or 0 |
 | 8 | 4 | last file id used for a segment, or 0 |
 | 12 | 4 | last file id used for a value-log file, or 0 |
@@ -278,8 +278,9 @@ size, for tree pages and flat pages alike, and no page image holds it (TP4
 of `tree-page.md`, P10 of `flat-page.md`). It is what bounds how long a page
 may grow in a buffer and how large one cell may be, so pages written under
 one size cannot be served under a smaller one. The field is the size in
-bytes, and the valid values are those of `TreePageSize`: 8,192 to 65,536,
-every value in between included. A reader rejects any other
+bytes, and the valid values are those of `PageSize`: 8,192, 16,384, 32,768
+and 65,536 (3.5 of `format.md`). A reader rejects any other number, a
+number in between as well as one outside
 (`ManifestError::InvalidPageSize`), so a manifest that decodes always has a
 page size a store can have.
 
@@ -301,7 +302,11 @@ one. A file id is never reused, even after its file is deleted (format.md
 3.3), and this field is what remembers the ids of deleted files.
 
 **M8. Every id in the manifest is at most the last id of its kind.** A store
-gives a new file a higher id than the last one.
+gives a new file a higher id than the last one. No id in a manifest is the
+reserved file id (3.3 of `format.md`), which names no file: a last id, the
+checkpoint's file or an entry's id that holds it is `ReservedFileId`, so the
+largest last id is 2^32 − 2 and a store that has reached it creates no more
+files of that kind.
 
 ### 3.4 Page-table checkpoint
 
@@ -379,9 +384,12 @@ kind at once.
    1. its length is 40 bytes and a whole number of entries (M5): else
       `ManifestError::LengthMismatch`
    2. the page size (M17): else `ManifestError::InvalidPageSize`
-   3. the checkpoint (M10, M11)
-   4. each entry, in order (3.5)
-   5. the number of entries, their order, and each id, the checkpoint's
+   3. no last id, and not the checkpoint's file, is the reserved file id
+      (M8): else `ReservedFileId`
+   4. the checkpoint (M10, M11)
+   5. each entry, in order (3.5), its id not the reserved one: else
+      `ReservedFileId`
+   6. the number of entries, their order, and each id, the checkpoint's
       included, against the last id of its kind (M6, M12, M8)
 
 Every rule of this section is checked, so a manifest has exactly one encoding
@@ -438,10 +446,10 @@ owner can overrule one before STORE-02 and FMT-08 build on it.
 3. **A block does not carry its page id** (S14). There is no room for it
    within 8 bytes next to a length. A sealed segment has it in the footer. For
    an unsealed segment it has to come from the page table, or from the
-   payload: a flat page image does not hold its own page id, a delta names its
-   page (FMT-03), and FMT-02 decides for tree pages. If FMT-02 puts the page
-   id in the tree page header, a store can list the tree pages of an unsealed
-   segment by walking it.
+   payload: a delta names its page (FMT-03), a tree page image holds its
+   own page id (TP2 of `tree-page.md`), and a flat page image does too
+   since D-050 (P14 of `flat-page.md`). So a store can list every page of an
+   unsealed segment by walking its blocks.
 4. **No page image has a checksum of its own** (S8). The block's checksum
    covers the compressed bytes and delta runs, so it cannot be dropped, and
    a second one inside the image would be paid on every load. FMT-04 first
@@ -499,16 +507,15 @@ owner can overrule one before STORE-02 and FMT-08 build on it.
     manifest to the next.
 21. **The manifest's decoder checks the page size's range**, and the store
     checks that it does not change. The range is a property of one manifest,
-    and with it checked a `Manifest` holds a `TreePageSize`, not a number
+    and with it checked a `Manifest` holds a `PageSize`, not a number
     that every user would have to check again. The decoder takes the range
-    from `TreePageSize` and has no bounds of its own, so the two cannot
+    from `PageSize` and has no bounds of its own, so the two cannot
     disagree.
-22. **`TreePageSize` is used as it is, from `lignin-format::tree_page`.** It
-    is now the page size of the store, not only of tree pages, so the name
-    and the place are too narrow: it belongs in `lignin-format::ids` as
-    `PageSize`, with the limits that are about cells left in `tree_page`.
-    That move is not made here, because FMT-03 is writing next to
-    `tree_page` now. It changes no byte.
+22. **The page size type is `lignin-format::ids::PageSize`.** It is the
+    page size of the store, not only of tree pages. When the field was
+    added the type was `tree_page::TreePageSize`; it was renamed and moved
+    with no change to a byte (D-050). The limits that are about cells stay
+    in `tree_page`.
 
 ## 6. Code and tests
 
@@ -524,7 +531,7 @@ Run the tests with `cargo test -p lignin-format`.
 | S22 | `segment::decode_file_header` | Wrong kind, wrong id, damaged header. |
 | M1 to M6 | `manifest::Manifest` | Golden bytes; round trip of random manifests in both directions; wrong kind, sequence and version; every shorter and longer input; every body length; the largest manifest and one file more. |
 | M7 to M11 | `manifest::{LastFileIds, TableCheckpoint}` | Each id above its last id; each mix of set and unset checkpoint fields. |
-| M17 | `Manifest::page_size`, `ManifestError::InvalidPageSize` | `the_page_size_is_one_a_store_can_have`: sizes below 8,192 and above 65,536 are rejected, before the checkpoint and any entry are looked at and after the body's length, whether the body is too short or ends in part of an entry; the sizes at both ends and between them round-trip. Both golden manifests hold one (32,768 and 65,536). Random manifests round-trip with random sizes, and forged ones with sizes in and out of range. |
+| M17 | `Manifest::page_size`, `ManifestError::InvalidPageSize` | `the_page_size_is_one_a_store_can_have`: sizes below 8,192 and above 65,536, the neighbours of each of the four sizes and numbers between them that are not a power of two (11,111, 12,288, 24,576, 49,152) are rejected, before the checkpoint and any entry are looked at and after the body's length, whether the body is too short or ends in part of an entry; each of the four sizes round-trips. Both golden manifests hold one (32,768 and 65,536). Random manifests round-trip with each of the four sizes, and forged ones hold the four sizes, other powers of two, and numbers in and out of the range. |
 | M18 | `lignin-store::segment::ManifestStore` | `the_page_size_of_the_first_manifest_is_the_stores_for_good`: a replacement with another page size is refused (`ManifestChange::PageSizeChanged`) and writes nothing. `a_store_opened_with_another_page_size_is_refused`: `check_page_size` gives `SegmentStoreError::PageSizeMismatch`. |
 | M12 to M15 | `manifest::{LiveFile, FileState}` | Every kind, state and boundary length; every state code; forged entries for each rule; order and duplicates. |
 | B8, B10 | all decoders | Forged records with valid checksums decode only to what encodes back to them; arbitrary and mutated bytes give an error, never a panic. Every single-bit flip of a manifest, with the error each must give. |

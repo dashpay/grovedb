@@ -8,7 +8,8 @@ sit inside their cell:
 - the file (section 1)
 - the record (section 2)
 - how a value becomes one record or several (section 3)
-- the value pointer a cell stores in place of the value (section 4)
+- the value pointer a cell stores in place of the value, and what a cell
+  stores while its value is not in the value log yet (section 4)
 - the back pointer from a value to its owner: what it guarantees, what a
   cleaner may conclude from it, and the rule the layers above keep when a
   cell moves (section 5)
@@ -46,6 +47,29 @@ to say.
 **F5. Append only.** A record is never changed after it is written, and file
 space is never used twice (B11). So a file id and an offset name one value
 and no other, for ever. Section 5 depends on this.
+
+**F6. No file has the last id.** A file id is 1 to 2^32 − 2. The number
+2^32 − 1 is reserved and never names a file, of the value log or of any
+other kind (3.3 of `format.md`): where the place of a value has it, the
+value is pending (P7). It is the last number and not the first, so that
+zeroed bytes stay damage: a place of 16 zero bytes has no file id and is
+rejected (`MissingId`).
+
+`FileId` cannot hold the reserved number (`FileId::RESERVED`), so nothing
+that takes a `FileId` can be handed it. A decoder that reads the field of a
+file id rejects it (`ReservedFileId`): in the manifest, in a page-table
+checkpoint, in a file header (`InvalidFileSequence`) and in a value
+pointer. What `lignin-store` has to respect:
+
+- **An allocator stops at 2^32 − 2.** It makes the next id with
+  `FileId::new`, which gives none for the number after `FileId::MAX`, and
+  reports that the ids are used up. The three allocators (segments, value
+  logs, page-table checkpoints) do this already and are unchanged.
+- **A file named with the reserved number is not a file of the store.**
+  `4294967295.val` parses to no id, as any name outside the naming rule
+  does.
+- **No id is made by arithmetic on the number.** An id comes from
+  `FileId::new` or from a decoder.
 
 ## 2. The record
 
@@ -175,10 +199,12 @@ A cell whose value is in the value log stores a value pointer in its place
 **P1. It names a whole value.** The offset is that of part 0. The value
 length is the whole value's.
 
-**P2. What is valid.** The file id is not 0 (`MissingId`). The offset is at
-least 20, since the file header comes first, and at most 2^63 − 1, the
-largest offset a file API takes (`InvalidOffset`). The value length is at
-least 1 (`EmptyValue`). `ValuePointer::decode` checks them in that order.
+**P2. What is valid.** The file id is not 0 (`MissingId`) and not the
+reserved id (`ReservedFileId`, F6): a pointer names bytes in a file. The
+offset is at least 20, since the file header comes first, and at most
+2^63 − 1, the largest offset a file API takes (`InvalidOffset`). The value
+length is at least 1 (`EmptyValue`). `ValuePointer::decode` checks them in
+that order.
 
 **P3. It is enough for one positional read.** The value length gives the
 extent (V7), so a reader asks for `extent(L)` bytes at the offset and has
@@ -205,17 +231,78 @@ those of the version in the header of the file the pointer names, not of
 the file that holds the pointer. `extent_len`, `ValuePointer::read` and the
 decoders take that version.
 
-**P6. In a flat leaf the pointer is the entry's value.** An entry whose
-out-of-line flag is set (P5 of `flat-page.md`) holds these 16 bytes as its
-value bytes, and nothing else. FMT-02 decides how a tree page cell stores
-the pointer. A cell that already stores the value length can store the file
-id and the offset alone and build the pointer from the three.
+**P6. In a flat leaf the value's place is the entry's value.** An entry
+whose out-of-line flag is set (P5 of `flat-page.md`) holds 16 bytes as its
+value bytes, and nothing else: these 16 bytes of the pointer once the value
+is in the value log, and before that the 16 bytes of a pending value, which
+have the same layout and the reserved file id (P7; P15 of `flat-page.md`).
+FMT-02 decides how a tree page cell stores the place. A cell that already
+stores the value length stores the first 12 bytes alone, the file id and
+the offset, and builds the pointer or the pending value from the three
+(TP13 of `tree-page.md`).
 
 Example: the pointer to the record in section 2, when it is the first
 record of `val/00000012.val`, is
 
 ```text
 0c 00 00 00  14 00 00 00 00 00 00 00  0c 00 00 00
+```
+
+### 4.1 A value that is not in the value log yet
+
+**P7. A pending value is a place that names no file.** A commit that gives
+a cell a value too long for the cell does not append it to the value log:
+the value is in the commit's log group, and write-back appends it later
+(FL7 of [`transactions.md`](transactions.md)). Between the two, the cell
+has its final shape. Where the pointer will be, it holds 16 bytes of the
+same layout whose file id is the reserved one (`PendingValue`):
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | the reserved file id: `ff ff ff ff` |
+| 4 | 8 | the pending value's id: 8 bytes, not all zero |
+| 12 | 4 | value length, `u32`, at least 1 |
+
+The file id tells the two apart, so the place of a value that is not in
+its cell is one of two things (`ValuePlace`): **placed**, a value pointer,
+or **pending**. A value in its cell is the third case, and a reader of a
+tree cell or of a flat leaf tells the three apart: `TreeCell::value` gives
+`Inline`, `OutOfLine` or `Pending`; a flat leaf gives the 16 bytes of an
+out-of-line value, which `ValuePlace::decode` reads.
+
+- **The 8 bytes are the log format's** (FMT-05). They lead from the cell to
+  the value's bytes with no lookup by key: into the log group that wrote
+  the value or, for a carried cell, to the value it was carried from (O5).
+  The page formats copy and compare them and give them no meaning. They
+  are not an offset, and none of P2's rules about offsets apply. All zero
+  is no id (`MissingId`).
+- **`ValuePlace::decode` checks** the file id, then for a pending value its
+  id and its length (`MissingId`, `EmptyValue`), and for any other file id
+  what `ValuePointer::decode` checks.
+- **A value pointer is never pending.** `ValuePointer` cannot hold the
+  reserved id, so `ValuePointer::read`, the extent and every function that
+  names bytes in a file cannot be handed a pending place.
+  `find_value_pointer` and `find_in_flat_leaf` never find one.
+- **Placing is a 12-byte overwrite.** The file id and the offset take the
+  place of the reserved id and the pending id. The value length is the
+  same and nothing else in the page moves (record 21 of
+  [`page-delta.md`](page-delta.md), PD16), so the layout of a page never
+  depends on when write-back runs.
+- **A placed value can become pending again**: its cell is replaced by one
+  with a new value, or the cell is carried to another page (O5).
+- **Where it may stand:** in a page in a buffer, in a log record, and
+  inside a run of page deltas. **Not in a page version that a segment makes
+  durable:** a base image written to a segment has no pending value, and at
+  the end of every run written to a segment no cell of the page is pending
+  (PD16; P15 of `flat-page.md` for a flat leaf). The flusher places values
+  first (PV7). STORE-06 enforces it and VER-07 checks it, with
+  `TreePage::has_pending_value` and `FlatLeaf::has_pending_value`.
+
+Example: a pending value of 12 bytes whose id is the bytes
+`01 00 00 00 00 00 00 00` is
+
+```text
+ff ff ff ff  01 00 00 00 00 00 00 00  0c 00 00 00
 ```
 
 ## 5. The back pointer
@@ -294,7 +381,9 @@ never the old one. The commit that moves the cell makes it stop holding
 the old pointer and carries the value in its log group. Write-back appends
 the value and stores the new pointer, as for any new value (rule FL7 of
 [`transactions.md`](transactions.md)). The old records are dead from that
-commit.
+commit. From the commit to write-back the moved cell holds the pending
+form (P7): it is inserted into its new page with a pending value, never
+with the old pointer.
 
 Under O5 no back pointer is stale at any commit version, and a miss means
 dead. O5 applies to a move between pages only. Rewriting a cell where it
@@ -393,7 +482,9 @@ are specific to the value log are `FormatError::ValueLog(ValueLogError)`:
 | `InvalidOffset` | A pointer into the file header, or past 2^63 − 1 (P2). |
 
 `Truncated`, `RecordTooLong`, `ChecksumMismatch`, `MissingId` and the file
-header's errors keep their meaning from `format.md`. When a value of several
+header's errors keep their meaning from `format.md`. `ReservedFileId` is
+the reserved file id where a file is meant (F6, P2); `MissingId` is also a
+pending value whose id is all zero (P7). When a value of several
 records is cut short, `Truncated` counts from the first byte of the value.
 
 ## 7. What the tasks that build on this take from it
@@ -401,13 +492,15 @@ records is cut short, `Truncated` counts from the first byte of the value.
 | Task | Takes from here | Still its own to define |
 | --- | --- | --- |
 | STORE-09 Value log | `encode_value` or `write_value` to append, `ValuePointer` and its extent for the one positional read, `scan` and O4 to O9 for cleaning, `record_len` to read a file piece by piece. A value's records go into one file with nothing between (V7). The count of live values for each file, changed and recovered with the pages (O6, O7), and the rule for deleting an empty file (O8). | File rotation, when a value is durable, what a failed tail means, how the count is stored, when a file is cleaned. |
-| TREE-08 Out-of-line values | `ValuePointer::read` with the cell's page for the read path. `MAX_VALUE_LEN`. An empty value is never out of line (V2). Regrouping a page's values at consolidation appends them again with the same owner, which needs nothing more. | The inline threshold. Telling the store when a cell stops holding a pointer (O6). |
+| FMT-05 Log record format | The 8 bytes of a pending value's id (P7): what they are, and how they lead from a cell to the value's bytes in a log group or to the value a carried cell was carried from. They are not all zero. | Everything about them; the page formats treat them as opaque. |
+| STORE-06 Delta write-back | Places every pending value before a page version goes to a segment (P7, PD16): `TreePage::pending_values` lists them, record 21 or `set_value` places one, `TreePage::has_pending_value` and `FlatLeaf::has_pending_value` say whether one is left. An allocator of file ids stops at `FileId::MAX` (F6). | When values are placed. |
+| TREE-08 Out-of-line values | A value that goes out of line in a commit is written to its cell as `CellValue::Pending` with the id the log gives it (P7); a read of a pending value goes to the log through that id, not to the value log. `ValuePointer::read` with the cell's page for the read path. `MAX_VALUE_LEN`. An empty value is never out of line (V2). Regrouping a page's values at consolidation appends them again with the same owner, which needs nothing more. | The inline threshold. Telling the store when a cell stops holding a pointer (O6). |
 | TREE-03 Fragment maintenance, TREE-07 Flat keyspace | The move rule O5 for every cell with a value pointer that goes to another page in a split, a merge or a fragment move. | Which cells move. |
 | TREE-09 Subtree drop | A dropped cell that holds a value pointer counts as one fewer live value in its file (O6). | How it learns of those cells without reading every page, or whether it reads them. |
 | FMT-02 Tree page codec | The pointer's three fields and their valid ranges (section 4). An accessor that finds the cell holding a given pointer (O1). No slot id has to stay stable for the value log. | How the cell stores the pointer. Slot ids: this task adds none. |
-| FMT-04 Flat page codec | The out-of-line value of a flat leaf entry is the 16-byte pointer (P6). `FlatPage::decode` rejects one that is not a valid pointer (P2; P5 of `flat-page.md`). | Nothing changes in its bytes. |
-| FMT-08 Decoder fuzzing | The decoders to fuzz: `ValueRecord::decode`, `read_value`, `scan`, `record_len`, `ValuePointer::decode`, `ValuePointer::read`. Golden bytes are in the tests. | The fuzz targets and the committed golden files. |
-| VER-07 Physical invariant checker | O2 and O5 as invariants: every value pointer leads to a value whose owner is the page of the cell that holds it, and no two cells hold the same pointer. | The checker. |
+| FMT-04 Flat page codec | The out-of-line value of a flat leaf entry is the 16 bytes of a place: a pointer (P6) or a pending value (P7). `FlatPage::decode` rejects one that is neither (P2, P7; P5 of `flat-page.md`). | Nothing changes in its bytes. |
+| FMT-08 Decoder fuzzing | The decoders to fuzz: `ValueRecord::decode`, `read_value`, `scan`, `record_len`, `ValuePointer::decode`, `ValuePlace::decode`, `ValuePointer::read`. Golden bytes are in the tests. | The fuzz targets and the committed golden files. |
+| VER-07 Physical invariant checker | O2 and O5 as invariants: every value pointer leads to a value whose owner is the page of the cell that holds it, and no two cells hold the same pointer. P7 as an invariant: no page version in a segment has a pending value (`has_pending_value` on the base image and on the page after each run). | The checker. |
 
 ## 8. Choices made here that the plan left open
 
@@ -424,7 +517,8 @@ owner can overrule one while version 1 is still open (U10).
    from one record to the next. The cost is that a writer appends a value's
    records without interleaving.
 4. **The value pointer is defined here**, is 16 bytes, and is what a flat
-   leaf stores as an out-of-line value (section 4). `format.md` and
+   leaf stores as an out-of-line value once the value is placed (section 4;
+   before that it stores the pending form, of the same 16 bytes, P7). `format.md` and
    `flat-page.md` first left it to FMT-02 and now point here. FMT-02 still
    owns how a tree cell stores it.
 5. **The back pointer is a page id, with no slot** (O1). The owner is found
@@ -465,6 +559,13 @@ owner can overrule one while version 1 is still open (U10).
 12. **The value log's own errors are one variant of `FormatError`** that
     wraps `ValueLogError`, as the flat page's are.
 
+13. **The pending form is a pointer that names no file** (P7, F6). The
+    owner ruled it (D-055) from three ways FMT-03 put to it. The other two
+    are refused: the value in the cell until it is placed reaches only
+    values that fit a cell, and a third form of the cell is a wider change
+    for the same effect. The price is one file id out of 2^32 − 1, for
+    every kind of file, since `FileId` is one type.
+
 ## 9. Code and tests
 
 All of this is in `lignin-format::value_log`. Run the tests with
@@ -476,6 +577,7 @@ All of this is in `lignin-format::value_log`. Run the tests with
 | The record (section 2) | `ValueRecord`, `record_len`, `RECORD_HEADER_LEN` | Golden bytes; the record is the default frame around its fields and data; round trip; every shorter input; every single-bit flip, with the error each must give; each invalid field with a valid checksum; the order of checks; random records with a valid checksum decode only when valid and encode back to the same bytes. |
 | Values and parts (section 3) | `encode_value`, `write_value`, `read_value`, `Value`, `extent_len`, `checked_value_len`, `MAX_PART_LEN`, `MAX_VALUE_LEN` | A value one byte above `MAX_PART_LEN` is two records with golden headers, and one of exactly `MAX_PART_LEN` is one. The split at every length from 1 to 40 for part sizes 1 to 7, with the same code and a smaller part size. Parts out of order, missing, repeated or from another value. The length limits, without allocating a value. |
 | The value pointer (section 4) | `ValuePointer` | Golden bytes; round trip; random pointers decode only when valid, with the error each must give; a read through a pointer for the wrong page, with the wrong length, with too few bytes, or into the middle of a value is rejected; a pointer is found in a flat leaf only where it is an out-of-line value. |
+| F6, P7: the pending form | `FileId::RESERVED`, `PendingValue`, `ValuePlace` | `ids::tests::file_id::the_last_number_is_reserved_and_names_no_file`: no `FileId` has it, a field with it is `ReservedFileId`, and counting on from `FileId::MAX` gives no id. `a_pending_value_is_a_place_that_names_no_file`: golden bytes; `ValuePointer::decode` rejects them; an id of zero and a length of zero are rejected, the id first; every id with one bit set is an id. `a_value_place_decodes_only_from_the_bytes_it_encodes_to`: 30,000 random places, each rejected with its error or encoding back to its bytes, and agreeing with `ValuePointer::decode` for every file id but the reserved one. The decoders of the manifest, the page-table checkpoint and the file header reject the reserved id where a file is meant (their own tests). In `lignin-store`: the three allocators run out at `FileId::MAX`, and the name the reserved number would give parses to no id. |
 | O1 to O5: the back pointer finds the owner | `ValueRecord::owner`, `scan`, `ValuePointer::find_in_flat_leaf` | `the_back_pointer_is_enough_to_find_the_owning_cell`: 6,000 random inserts, overwrites, deletes and moves between pages, over tree pages (a model whose slots change on every write) and flat leaves (real FMT-04 images, rebuilt on every write), with page ids reused. A cleaner that sees only a file's bytes, and looks only in the page each back pointer names, finds every cell that points into the file, moves its value, and leaves every logical value unchanged. |
 | O4, O6, O10: the stale case | the same, and `ValuePointer::read` | `a_cell_carried_to_another_page_without_its_value_is_never_dropped`: a cell is moved between pages of each kind without its value. The back pointer misses, the reader gets `WrongOwner`, the cleaner finds fewer owners than the count and keeps the file, and the value's bytes are still there. Appending the value again repairs it, and the file can then be deleted. |
 | O8: snapshots | the same | `a_cleaned_file_outlives_the_snapshots_that_can_reach_it`: a snapshot is taken, then one cell is moved to another page, one overwritten and one deleted, and the cleaner empties the file. The file stays while the snapshot is open and every value reads through it; a snapshot taken after the file became empty does not keep it. |

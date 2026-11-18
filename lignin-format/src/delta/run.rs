@@ -9,8 +9,8 @@ use super::{
 use crate::{
     error::FormatError,
     header::FormatVersion,
-    ids::PageId,
-    tree_page::{TreePage, TreePageMut, TreePageSize},
+    ids::{PageId, PageSize},
+    tree_page::{TreePage, TreePageMut},
 };
 
 /// The records of one page, in the order the changes were made: what a
@@ -116,7 +116,7 @@ impl<'a> DeltaRun<'a> {
     pub fn apply(
         &self,
         frame: &mut [u8],
-        size: TreePageSize,
+        size: PageSize,
         version: FormatVersion,
     ) -> Result<(), FormatError> {
         match (self.version, version) {
@@ -233,7 +233,7 @@ fn check_page(found: PageId, expected: PageId) -> Result<(), FormatError> {
 pub fn apply_chain<'a, 'r: 'a>(
     page: PageId,
     frame: &mut [u8],
-    size: TreePageSize,
+    size: PageSize,
     version: FormatVersion,
     chain: impl IntoIterator<Item = &'a DeltaRun<'r>>,
 ) -> Result<(), FormatError> {
@@ -256,7 +256,7 @@ pub fn consolidate<'a, 'r: 'a>(
     base: Option<&[u8]>,
     chain: impl IntoIterator<Item = &'a DeltaRun<'r>>,
     version: FormatVersion,
-    size: TreePageSize,
+    size: PageSize,
     out: &mut Vec<u8>,
 ) -> Result<(), FormatError> {
     let mut chain = chain.into_iter().peekable();

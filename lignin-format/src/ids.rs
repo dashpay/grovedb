@@ -80,17 +80,83 @@ nonzero_id!(
     "2^32 - 1"
 );
 
-nonzero_id!(
-    /// The number in a numbered file's name: `seg/00000310.seg` is file 310 of
-    /// its kind.
-    ///
-    /// A 32-bit number from 1 up. Zero on disk means "no file".
-    FileId,
-    "file#",
-    u32,
-    NonZeroU32,
-    "2^32 - 1"
-);
+/// The number in a numbered file's name: `seg/00000310.seg` is file 310 of
+/// its kind.
+///
+/// A 32-bit number from 1 to 2^32 - 2. Zero on disk means "no file". The
+/// last number, [`Self::RESERVED`], never names a file: where a value's
+/// place has it, the value is not in a file yet
+/// ([`PendingValue`](crate::value_log::PendingValue)).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FileId(NonZeroU32);
+
+impl FileId {
+    /// Bytes the id takes on disk.
+    pub const ENCODED_LEN: usize = size_of::<u32>();
+    /// The number that is never a file's id, `2^32 - 1`.
+    pub const RESERVED: u32 = u32::MAX;
+    /// The smallest id, `1`.
+    pub const MIN: Self = Self(NonZeroU32::MIN);
+    /// The largest id, `2^32 - 2`. No file has an id after it, so an
+    /// allocator that is past it has no id to give.
+    pub const MAX: Self = match Self::new(Self::RESERVED - 1) {
+        Some(id) => id,
+        None => panic!("the number before the reserved one is an id"),
+    };
+
+    /// The id with this number, or `None` for zero, which is not an id, and
+    /// for [`Self::RESERVED`], which no file has.
+    pub const fn new(raw: u32) -> Option<Self> {
+        if raw == Self::RESERVED {
+            return None;
+        }
+        match NonZeroU32::new(raw) {
+            Some(raw) => Some(Self(raw)),
+            None => None,
+        }
+    }
+
+    /// The id's number.
+    pub const fn get(self) -> u32 {
+        self.0.get()
+    }
+
+    /// The bytes written to disk.
+    pub const fn encode(self) -> [u8; Self::ENCODED_LEN] {
+        self.get().to_le_bytes()
+    }
+
+    /// The bytes of a field that may hold no id: zero for `None`.
+    pub const fn encode_optional(id: Option<Self>) -> [u8; Self::ENCODED_LEN] {
+        match id {
+            Some(id) => id.encode(),
+            None => [0; Self::ENCODED_LEN],
+        }
+    }
+
+    /// Reads a field that names a file. Zero decodes to `None`.
+    /// [`Self::RESERVED`] names no file and is
+    /// [`FormatError::ReservedFileId`].
+    pub const fn decode(bytes: [u8; Self::ENCODED_LEN]) -> Result<Option<Self>, FormatError> {
+        let raw = u32::from_le_bytes(bytes);
+        if raw == Self::RESERVED {
+            return Err(FormatError::ReservedFileId);
+        }
+        Ok(Self::new(raw))
+    }
+}
+
+impl fmt::Debug for FileId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "file#{}", self.get())
+    }
+}
+
+impl fmt::Display for FileId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.get(), f)
+    }
+}
 
 nonzero_id!(
     /// Names one cell inside a tree page: its entry in the page's slot
@@ -188,6 +254,54 @@ impl fmt::Debug for CellAddress {
 impl fmt::Display for CellAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}/{}", self.page, self.slot)
+    }
+}
+
+/// The size of a store's pages, which every page of the store is read and
+/// written under. A store has one, and its manifest records it.
+///
+/// One of four: 8,192, 16,384, 32,768 or 65,536 bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PageSize(usize);
+
+impl PageSize {
+    /// The smallest page size, 8 KiB.
+    pub const MIN: Self = Self(8_192);
+    /// The largest page size, 64 KiB.
+    pub const MAX: Self = Self(65_536);
+    /// The page size a store uses unless it is told otherwise, 32 KiB.
+    pub const DEFAULT: Self = Self(32_768);
+
+    const MAX_IMAGE_LEN: usize = u16::MAX as usize;
+
+    /// Pages of `bytes` bytes, or [`FormatError::InvalidPageSize`] when
+    /// `bytes` is not a power of two from [`Self::MIN`] to [`Self::MAX`].
+    pub const fn new(bytes: usize) -> Result<Self, FormatError> {
+        if bytes < Self::MIN.0 || bytes > Self::MAX.0 || !bytes.is_power_of_two() {
+            return Err(FormatError::InvalidPageSize { page_size: bytes });
+        }
+        Ok(Self(bytes))
+    }
+
+    /// The page size in bytes.
+    pub const fn get(self) -> usize {
+        self.0
+    }
+
+    /// The longest a page of this size may be. Offsets inside a page are 16
+    /// bits, so a page of 64 KiB leaves its last byte unused.
+    pub const fn image_capacity(self) -> usize {
+        if self.0 < Self::MAX_IMAGE_LEN {
+            self.0
+        } else {
+            Self::MAX_IMAGE_LEN
+        }
+    }
+}
+
+impl Default for PageSize {
+    fn default() -> Self {
+        Self::DEFAULT
     }
 }
 
@@ -328,7 +442,81 @@ mod tests {
     }
 
     nonzero_u32_id_tests!(page_id, PageId, "page#");
-    nonzero_u32_id_tests!(file_id, FileId, "file#");
+
+    mod file_id {
+        use super::*;
+
+        #[test]
+        fn round_trips() {
+            for raw in u32_samples().into_iter().filter(|&raw| raw != u32::MAX) {
+                let id = FileId::new(raw).expect("an id");
+                assert_eq!(id.get(), raw);
+                assert_eq!(id.encode(), raw.to_le_bytes());
+                assert_eq!(FileId::decode(id.encode()), Ok(Some(id)));
+                assert_eq!(FileId::encode_optional(Some(id)), id.encode());
+            }
+        }
+
+        #[test]
+        fn every_byte_string_decodes_to_the_value_that_encodes_back_to_it_or_is_reserved() {
+            for raw in u32_samples().into_iter().chain([0]) {
+                let bytes = raw.to_le_bytes();
+                match FileId::decode(bytes) {
+                    Ok(id) => assert_eq!(FileId::encode_optional(id), bytes),
+                    Err(error) => {
+                        assert_eq!(error, FormatError::ReservedFileId);
+                        assert_eq!(raw, u32::MAX);
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn zero_is_no_id() {
+            assert_eq!(FileId::new(0), None);
+            assert_eq!(FileId::decode([0; 4]), Ok(None));
+            assert_eq!(FileId::encode_optional(None), [0; 4]);
+        }
+
+        #[test]
+        fn the_last_number_is_reserved_and_names_no_file() {
+            assert_eq!(FileId::RESERVED, u32::MAX);
+            assert_eq!(FileId::RESERVED.to_le_bytes(), [0xFF; 4]);
+            assert_eq!(FileId::new(FileId::RESERVED), None);
+            assert_eq!(FileId::decode([0xFF; 4]), Err(FormatError::ReservedFileId));
+            assert_eq!(
+                FormatError::ReservedFileId.to_string(),
+                "file id field holds the reserved id"
+            );
+            // The id before it is the last one, and counting on from it gives
+            // no id: what an allocator sees when the ids are used up.
+            assert_eq!(FileId::MAX.get(), u32::MAX - 1);
+            assert_eq!(FileId::new(u32::MAX - 1), Some(FileId::MAX));
+            assert_eq!(
+                FileId::decode([0xFE, 0xFF, 0xFF, 0xFF]),
+                Ok(Some(FileId::MAX))
+            );
+            assert_eq!(FileId::new(FileId::MAX.get().wrapping_add(1)), None);
+            assert_eq!(FileId::new(FileId::MAX.get().wrapping_add(2)), None);
+        }
+
+        #[test]
+        fn bounds_and_byte_order() {
+            assert_eq!(FileId::MIN.get(), 1);
+            assert_eq!(FileId::ENCODED_LEN, 4);
+            let id = FileId::new(0x0102_0304).expect("an id");
+            assert_eq!(id.encode(), [0x04, 0x03, 0x02, 0x01]);
+        }
+
+        #[test]
+        fn orders_by_number_and_prints_it() {
+            let low = FileId::new(9).expect("an id");
+            let high = FileId::new(10).expect("an id");
+            assert!(low < high && high < FileId::MAX);
+            assert_eq!(low.to_string(), "9");
+            assert_eq!(format!("{high:?}"), "file#10");
+        }
+    }
 
     #[test]
     fn slot_id_round_trips_for_every_number() {
@@ -363,6 +551,51 @@ mod tests {
         assert!(low < SlotId::MAX);
         assert_eq!(low.to_string(), "258");
         assert_eq!(format!("{low:?}"), "slot#258");
+    }
+
+    #[test]
+    fn a_page_size_is_one_of_four_powers_of_two() {
+        assert_eq!(PageSize::MIN.get(), 8_192);
+        assert_eq!(PageSize::DEFAULT.get(), 32_768);
+        assert_eq!(PageSize::MAX.get(), 65_536);
+        assert_eq!(PageSize::default(), PageSize::DEFAULT);
+        assert!(PageSize::MIN < PageSize::DEFAULT && PageSize::DEFAULT < PageSize::MAX);
+
+        let sizes = [8_192, 16_384, 32_768, 65_536];
+        for bytes in sizes {
+            let size = PageSize::new(bytes).expect("one of the four");
+            assert_eq!(size.get(), bytes);
+            assert_eq!(size.image_capacity(), bytes.min(65_535));
+        }
+
+        // Every number up to twice the largest size, the powers of two above
+        // it, and the neighbours of each size.
+        let mut accepted = Vec::new();
+        for bytes in (0..=131_072).chain((18..usize::BITS).map(|bit| 1 << bit)) {
+            match PageSize::new(bytes) {
+                Ok(size) => accepted.push(size.get()),
+                Err(error) => assert_eq!(error, FormatError::InvalidPageSize { page_size: bytes }),
+            }
+        }
+        assert_eq!(accepted, sizes);
+        for bytes in [
+            0, 1, 4_096, 8_191, 8_193, 11_111, 12_288, 24_576, 49_152, 65_535, 65_537,
+        ] {
+            assert_eq!(
+                PageSize::new(bytes),
+                Err(FormatError::InvalidPageSize { page_size: bytes })
+            );
+        }
+        assert_eq!(
+            PageSize::new(usize::MAX),
+            Err(FormatError::InvalidPageSize {
+                page_size: usize::MAX
+            })
+        );
+        assert_eq!(
+            FormatError::InvalidPageSize { page_size: 12_288 }.to_string(),
+            "page size 12288 is not 8192, 16384, 32768 or 65536"
+        );
     }
 
     fn address(page: u32, slot: u16) -> CellAddress {

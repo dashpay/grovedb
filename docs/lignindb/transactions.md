@@ -594,7 +594,9 @@ them out changes no read.
 **PV5. A page version records its born version where the store keeps it.**
 Deltas and base images carry the version that produced them, in memory and
 on disk, so that PV1 can be evaluated for a pin and after a crash (DU3). The
-byte layout is FMT-03, FMT-05 and STORE-03's.
+byte layout is FMT-03, FMT-05 and STORE-03's. A run of page deltas carries
+no commit version itself: the page table's link to it and the log group
+that holds it do (PD5 of `page-delta.md`).
 
 **PV6. A background change takes no version. It has a change point, as a
 commit has.** It is not a commit (CV3): *L* does not move, no write
@@ -1465,7 +1467,9 @@ manifest that covers the value (`lignin-store::values`;
 `segment-manifest.md` M13).
 
 From its commit until it is placed, the value is a **pending value** of its
-cell.
+cell. In the cell it has the pending form: a value pointer that names no
+file, whose 8 other bytes identify the value (P7 of `value-log-format.md`;
+PD16 of `page-delta.md` for where it may stand).
 
 - **Where it is.** Its bytes are in the log group and in the frame of its
   page version. The store keeps that frame until the value is placed, or
@@ -2593,8 +2597,8 @@ these further choices were made. They are listed for the same reason.
 
 ## 18. Amendments
 
-The first version of this document merged as `6ef51947`. Six units that
-merged after it, and a follow-up to one of them, found rules it lacked or
+The first version of this document merged as `6ef51947`. Seven units that
+merged after it, and follow-ups to two of them, found rules it lacked or
 stated inexactly, and the project owner ruled on each. This section lists
 what changed, by source. "New" marks a rule id that did not exist before.
 No rule id was renumbered or removed. LT7's levels are now a table, with
@@ -2646,7 +2650,14 @@ one level added between 4 and 5.
 | The counts recover from a sample in the table checkpoint and the changes replayed after the sample's place. The places of successive samples never go back. | DU5 (new), FL4, FL6 |
 | Records of background changes are in the log, between the groups. Recovery reads them under the same test as the groups. | CM9, CK2, DU2 |
 
-### 18.6 Terms, tables and choices
+### 18.6 From FMT-03, `page-delta.md` and `value-log-format.md`
+
+| Change | Rules |
+| --- | --- |
+| A run of page deltas carries no commit version. The page table's link and the log group carry it. | PV5 |
+| A pending value has a form in its cell: a value pointer that names no file. It does not stand in a page version that a segment makes durable. | FL7 |
+
+### 18.7 Terms, tables and choices
 
 Section 1 has four new terms: committed read, change point, page step and
 pending value. Section 17 has the new items 24 to 31, and its items 14 and
@@ -2657,7 +2668,7 @@ events, the table of tasks in 15.1, and the tests of 15.2 follow these
 changes. New tests: T-RD8, T-CF6, T-SC5, T-SC6, T-PN6, T-PN7, T-ID1, T-CL1,
 T-VL5, T-VL6, T-DU4 and T-CK4. Changed: T-CM1, T-VL1, T-VL2 and T-VL4.
 
-### 18.7 Open points
+### 18.8 Open points
 
 Found while the amendments were written, and not settled by them. The
 project owner has since ruled on each. What is left of each is owed by the
