@@ -13,8 +13,7 @@ use super::{
 };
 
 /// The bytes a cell and a page spend besides keys, values and Merk's own
-/// aggregate encoding. FMT-02 fixes the real layout; these are the sizes the
-/// simulation assumes for it.
+/// aggregate encoding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CellCosts {
     /// The page header.
@@ -26,6 +25,9 @@ pub struct CellCosts {
     /// A pointer to a child or to the root of a hosted Merk: a page id and a
     /// slot.
     pub pointer: u32,
+    /// What a link stores beside the child's pointer, hash, heights and
+    /// aggregate: the length of the child's key and of the aggregate.
+    pub link_lengths: u32,
     /// The pointer a cell stores in place of an out-of-line value.
     pub value_pointer: u32,
     /// The header of a value-log record.
@@ -35,17 +37,43 @@ pub struct CellCosts {
     pub value_part_max: u32,
 }
 
-impl Default for CellCosts {
-    fn default() -> Self {
+impl CellCosts {
+    /// The sizes of the tree page format, `docs/lignindb/tree-page.md`
+    /// (FMT-02), with the feature and the aggregates stored as Merk encodes
+    /// them.
+    pub const fn tree_page() -> Self {
+        CellCosts {
+            page_header: 22,
+            slot: 2,
+            cell_header: 8,
+            pointer: 6,
+            link_lengths: 2,
+            value_pointer: 12,
+            value_record_header: 18,
+            value_part_max: 134_217_714,
+        }
+    }
+
+    /// The sizes the simulation assumed before the tree page format
+    /// existed. Sections 14 and 15 of `docs/lignindb/tree-layout.md` were
+    /// computed with them.
+    pub const fn assumed() -> Self {
         CellCosts {
             page_header: 32,
             slot: 2,
             cell_header: 4,
             pointer: 6,
+            link_lengths: 0,
             value_pointer: 16,
             value_record_header: 18,
             value_part_max: 134_217_714,
         }
+    }
+}
+
+impl Default for CellCosts {
+    fn default() -> Self {
+        Self::tree_page()
     }
 }
 
@@ -178,7 +206,7 @@ impl Config {
             + entry.key.len() as u32
             + 2 * HASH
             + entry.meta_len
-            + grove.child_links(node) * (HASH + LINK_HEIGHTS + costs.pointer)
+            + grove.child_links(node) * (HASH + LINK_HEIGHTS + costs.pointer + costs.link_lengths)
             + grove.hosted_roots(node) * costs.pointer
             + value
     }
@@ -1249,17 +1277,20 @@ mod tests {
     use super::*;
     use crate::layout_sim::tree::{hand::Hand, Event, Side};
 
-    /// A small page, so a handful of nodes fills it. With a 32-byte value a
-    /// leaf cell is 2 + 4 + 4 + 64 + 1 + 32 = 107 bytes and each link adds
-    /// 41, so a page of 1024 bytes holds about seven nodes. A fragment may
-    /// fill the page, a fragment that leaves starts a fresh page and nothing
-    /// is merged, so each test meets one rule at a time.
+    /// A small page, so a handful of nodes fills it. The byte counts in
+    /// these tests are worked out for the sizes the simulation first
+    /// assumed: with a 32-byte value a leaf cell is 2 + 4 + 4 + 64 + 1 + 32 =
+    /// 107 bytes and each link adds 41, so a page of 1024 bytes holds about
+    /// seven nodes. A fragment may fill the page, a fragment that leaves
+    /// starts a fresh page and nothing is merged, so each test meets one
+    /// rule at a time.
     fn config() -> Config {
         Config {
             small_fragment_divisor: 8,
             largest_fragment_percent: 100,
             seed_limit_percent: 0,
             merge_below_percent: 0,
+            costs: CellCosts::assumed(),
             ..Config::with_page_size(1024)
         }
     }
@@ -1362,6 +1393,58 @@ mod tests {
         );
         assert_eq!(config.capacity(), 1024 - 32);
         assert_eq!(config.small_fragment(), 128);
+    }
+
+    #[test]
+    fn a_cell_of_the_tree_page_format_counts_its_real_parts() {
+        use lignin_format::tree_page::{TreeCell, TreeLink, TreePage};
+
+        let costs = CellCosts::tree_page();
+        assert_eq!(costs, CellCosts::default());
+        assert_eq!(costs.page_header as usize, TreePage::HEADER_LEN);
+        assert_eq!(costs.slot as usize, TreePage::SLOT_LEN);
+        assert_eq!(costs.cell_header as usize, TreeCell::HEADER_LEN);
+        assert_eq!(costs.pointer as usize, TreeCell::HOSTED_ROOT_LEN);
+        assert_eq!(costs.value_pointer as usize, TreeCell::VALUE_LOCATION_LEN);
+        assert_eq!(
+            (HASH + LINK_HEIGHTS + costs.pointer + costs.link_lengths) as usize,
+            TreeLink::FIXED_LEN
+        );
+        assert_eq!((costs.cell_header + 2 * HASH) as usize, TreeCell::FIXED_LEN);
+
+        // The same nodes as in `a_cell_counts_every_part_merk_stores`, each
+        // against the format's own formula. The model counts the feature
+        // and each aggregate as Merk encodes them: one byte each here.
+        let mut hand = Hand::new();
+        let root = hand.add(MerkId::ROOT, b"key", 32);
+        hand.set_root(MerkId::ROOT, Some(root));
+        let config = Config::proposed();
+        let slot = TreePage::SLOT_LEN;
+        assert_eq!(
+            config.cell_bytes(&hand.grove, root) as usize,
+            slot + TreeCell::len_of(3, 1, None, None, 0, 32)
+        );
+        let child = hand.add(MerkId::ROOT, b"a", 300);
+        hand.link(root, Side::Left, Some(child));
+        assert_eq!(
+            config.cell_bytes(&hand.grove, root) as usize,
+            slot + TreeCell::len_of(3, 1, Some(1), None, 0, 32)
+        );
+        assert_eq!(
+            config.cell_bytes(&hand.grove, child) as usize,
+            slot + TreeCell::len_of(1, 1, None, None, 0, TreeCell::VALUE_LOCATION_LEN)
+        );
+        let hosted = hand.host(child);
+        let inner = hand.add(hosted, b"inner", 1);
+        hand.set_root(hosted, Some(inner));
+        assert_eq!(
+            config.cell_bytes(&hand.grove, child) as usize,
+            slot + TreeCell::len_of(1, 1, None, None, 1, TreeCell::VALUE_LOCATION_LEN)
+        );
+        assert_eq!(
+            config.capacity() as usize,
+            lignin_format::tree_page::TreePageSize::DEFAULT.cell_capacity()
+        );
     }
 
     #[test]
@@ -2161,8 +2244,8 @@ mod tests {
     #[test]
     fn a_page_of_64_kib_keeps_one_byte_unused() {
         let config = Config::with_page_size(65_536);
-        assert_eq!(config.capacity(), 65_535 - 32);
-        assert_eq!(Config::with_page_size(65_535).capacity(), 65_535 - 32);
+        assert_eq!(config.capacity(), 65_535 - 22);
+        assert_eq!(Config::with_page_size(65_535).capacity(), 65_535 - 22);
         Model::new(config);
     }
 
