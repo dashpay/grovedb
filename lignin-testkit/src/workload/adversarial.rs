@@ -11,10 +11,10 @@ use grovedb::{element::reference_path::ReferencePathType, Element, TreeType};
 use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
 
 use super::{
-    build::{self, batch, child, path},
+    build::{self, batch, batch::insert_or_queue, child, path, sum, value},
     op::{AppendEntry, BatchOp, Op, Path, Query, QueryItem},
     rng::Rng,
-    zoo::hashes_aggregates,
+    zoo::{hashes_aggregates, TreeKind},
     Features, Prepared, Stream,
 };
 
@@ -30,15 +30,6 @@ const DOMAIN_VALUES: u64 = 0xAD03;
 const DOMAIN_TINY: u64 = 0xAD04;
 const DOMAIN_DELETES: u64 = 0xAD05;
 const DOMAIN_REFERENCES: u64 = 0xAD06;
-
-fn value(rng: &mut Rng, shortest: u64, longest: u64) -> Vec<u8> {
-    let len = rng.between(shortest, longest) as u32;
-    rng.bytes(len)
-}
-
-fn sum(rng: &mut Rng) -> i64 {
-    rng.between(0, 2_000_000) as i64 - 1_000_000
-}
 
 /// Chains of trees nested `depth` levels deep.
 ///
@@ -83,123 +74,116 @@ impl DeepNesting {
             Op::Commit,
         ];
         for chain in 0..self.chains {
-            let batched = chain % 2 == 1;
-            let mut levels: Vec<Path> = Vec::new();
-            let mut pending = Vec::new();
-            let mut parent = root.clone();
-            for level in 0..self.depth {
-                let key = if level == 0 {
-                    format!("chain-{chain}").into_bytes()
-                } else {
-                    value(&mut rng, 1, 16)
-                };
-                let tree = match level % 7 {
-                    3 => Element::empty_sum_tree(),
-                    5 => Element::empty_count_tree(),
-                    _ => Element::empty_tree(),
-                };
-                let sibling = Element::new_item(value(&mut rng, 0, 32));
-                if batched {
-                    pending.push(batch::insert_only(&parent, &key, tree));
-                } else {
-                    ops.push(build::insert(&parent, &key, tree));
-                }
-                let here = child(&parent, &key);
-                if level > 0 {
-                    if batched {
-                        pending.push(batch::insert_only(&parent, b"\xffside", sibling));
-                    } else {
-                        ops.push(build::insert(&parent, b"\xffside", sibling));
-                    }
-                }
-                levels.push(here.clone());
-                parent = here;
-            }
-            let bottom = parent;
-            for leaf in 0..self.leaves {
-                let element = Element::new_item(value(&mut rng, 1, 64));
-                let key = format!("leaf-{leaf}").into_bytes();
-                if batched {
-                    pending.push(batch::insert_only(&bottom, &key, element));
-                } else {
-                    ops.push(build::insert(&bottom, &key, element));
-                }
-            }
-            if batched {
-                ops.push(Op::Batch(pending));
-            }
-            ops.push(Op::Commit);
-            ops.push(build::get(&bottom, b"leaf-0"));
-            ops.push(build::query(build::select(
-                &bottom,
-                vec![QueryItem::RangeFull],
-                None,
-            )));
-
-            for round in 0..3u32 {
-                let leaf = format!("leaf-{}", rng.below(u64::from(self.leaves))).into_bytes();
-                let element = Element::new_item(value(&mut rng, 1, 64));
-                if (round + chain) % 2 == 0 {
-                    ops.push(build::insert(&bottom, &leaf, element));
-                } else {
-                    ops.push(Op::Batch(vec![batch::replace(&bottom, &leaf, element)]));
-                }
-            }
-            ops.push(Op::Commit);
-            ops.push(build::query(build::select(
-                &bottom,
-                vec![QueryItem::Key(b"leaf-0".to_vec())],
-                None,
-            )));
-
-            let middle = &levels[levels.len() / 2];
-            match chain % 4 {
-                0 => {
-                    for leaf in 0..self.leaves {
-                        ops.push(build::delete(&bottom, format!("leaf-{leaf}").as_bytes()));
-                    }
-                    for level in (levels.len() / 2 + 1..levels.len()).rev() {
-                        let (key, parent) = levels[level].split_last().expect("a level has a key");
-                        if level + 1 < levels.len() {
-                            ops.push(build::delete(&levels[level], b"\xffside"));
-                        }
-                        ops.push(build::delete(parent, key));
-                    }
-                    ops.push(Op::Commit);
-                    ops.push(build::query(build::select_raw(
-                        middle,
-                        vec![QueryItem::RangeFull],
-                        None,
-                    )));
-                    let (key, parent) = levels[0].split_last().expect("a level has a key");
-                    ops.push(build::delete(parent, key));
-                }
-                1 => {
-                    let (key, parent) = levels[0].split_last().expect("a level has a key");
-                    ops.push(Op::Batch(vec![batch::delete_tree(
-                        parent,
-                        key,
-                        TreeType::NormalTree,
-                    )]));
-                }
-                2 => {
-                    ops.push(build::clear(middle));
-                    ops.push(build::insert(
-                        middle,
-                        b"refilled",
-                        Element::new_item(value(&mut rng, 1, 32)),
-                    ));
-                }
-                _ => {}
-            }
-            ops.push(Op::Commit);
-            ops.push(build::query(build::select_raw(
-                &root,
-                vec![QueryItem::RangeFull],
-                None,
-            )));
+            self.chain(chain, &mut rng, &root, &mut ops);
         }
         Prepared::stream(ops)
+    }
+
+    /// Builds, writes to and takes apart chain number `chain`.
+    fn chain(&self, chain: u32, rng: &mut Rng, root: &[Vec<u8>], ops: &mut Vec<Op>) {
+        let batched = chain % 2 == 1;
+        let mut levels: Vec<Path> = Vec::new();
+        let mut pending = Vec::new();
+        let mut parent = root.to_vec();
+        for level in 0..self.depth {
+            let key = if level == 0 {
+                format!("chain-{chain}").into_bytes()
+            } else {
+                value(rng, 1, 16)
+            };
+            let tree = match level % 7 {
+                3 => Element::empty_sum_tree(),
+                5 => Element::empty_count_tree(),
+                _ => Element::empty_tree(),
+            };
+            let sibling = Element::new_item(value(rng, 0, 32));
+            insert_or_queue(batched, ops, &mut pending, &parent, &key, tree);
+            let here = child(&parent, &key);
+            if level > 0 {
+                insert_or_queue(batched, ops, &mut pending, &parent, b"\xffside", sibling);
+            }
+            levels.push(here.clone());
+            parent = here;
+        }
+        let bottom = parent;
+        for leaf in 0..self.leaves {
+            let element = Element::new_item(value(rng, 1, 64));
+            let key = format!("leaf-{leaf}").into_bytes();
+            insert_or_queue(batched, ops, &mut pending, &bottom, &key, element);
+        }
+        if batched {
+            ops.push(Op::Batch(pending));
+        }
+        ops.push(Op::Commit);
+        ops.push(build::get(&bottom, b"leaf-0"));
+        ops.push(build::query(build::select(
+            &bottom,
+            vec![QueryItem::RangeFull],
+            None,
+        )));
+
+        for round in 0..3u32 {
+            let leaf = format!("leaf-{}", rng.below(u64::from(self.leaves))).into_bytes();
+            let element = Element::new_item(value(rng, 1, 64));
+            if (round + chain).is_multiple_of(2) {
+                ops.push(build::insert(&bottom, &leaf, element));
+            } else {
+                ops.push(Op::Batch(vec![batch::replace(&bottom, &leaf, element)]));
+            }
+        }
+        ops.push(Op::Commit);
+        ops.push(build::query(build::select(
+            &bottom,
+            vec![QueryItem::Key(b"leaf-0".to_vec())],
+            None,
+        )));
+
+        let middle = &levels[levels.len() / 2];
+        match chain % 4 {
+            0 => {
+                for leaf in 0..self.leaves {
+                    ops.push(build::delete(&bottom, format!("leaf-{leaf}").as_bytes()));
+                }
+                for level in (levels.len() / 2 + 1..levels.len()).rev() {
+                    let (key, parent) = levels[level].split_last().expect("a level has a key");
+                    if level + 1 < levels.len() {
+                        ops.push(build::delete(&levels[level], b"\xffside"));
+                    }
+                    ops.push(build::delete(parent, key));
+                }
+                ops.push(Op::Commit);
+                ops.push(build::query(build::select_raw(
+                    middle,
+                    vec![QueryItem::RangeFull],
+                    None,
+                )));
+                let (key, parent) = levels[0].split_last().expect("a level has a key");
+                ops.push(build::delete(parent, key));
+            }
+            1 => {
+                let (key, parent) = levels[0].split_last().expect("a level has a key");
+                ops.push(Op::Batch(vec![batch::delete_tree(
+                    parent,
+                    key,
+                    TreeType::NormalTree,
+                )]));
+            }
+            2 => {
+                ops.push(build::clear(middle));
+                ops.push(build::insert(
+                    middle,
+                    b"refilled",
+                    Element::new_item(value(rng, 1, 32)),
+                ));
+            }
+            _ => {}
+        }
+        ops.push(Op::Commit);
+        ops.push(build::query(build::select_raw(
+            root,
+            vec![QueryItem::RangeFull],
+            None,
+        )));
     }
 }
 
@@ -237,7 +221,16 @@ impl LongKeys {
         }
         ops.push(Op::Commit);
 
-        let random = child(&root, b"random");
+        self.random_keys(&mut rng, &root, &mut ops);
+        self.shared_prefix_keys(&mut rng, &root, &mut ops);
+        edge_keys(&mut rng, &root, &mut ops);
+        self.nested_keys(&mut rng, &root, &mut ops);
+        Prepared::stream(ops)
+    }
+
+    /// Random 255-byte keys: inserted, range-read, then replaced and deleted.
+    fn random_keys(&self, rng: &mut Rng, root: &[Vec<u8>], ops: &mut Vec<Op>) {
+        let random = child(root, b"random");
         let mut keys: BTreeSet<Vec<u8>> = BTreeSet::new();
         while (keys.len() as u64) < u64::from(self.keys) {
             keys.insert(rng.bytes(MAX_KEY_LEN));
@@ -250,11 +243,7 @@ impl LongKeys {
                     chunk
                         .iter()
                         .map(|key| {
-                            batch::insert_only(
-                                &random,
-                                key,
-                                Element::new_item(value(&mut rng, 0, 48)),
-                            )
+                            batch::insert_only(&random, key, Element::new_item(value(rng, 0, 48)))
                         })
                         .collect(),
                 ));
@@ -263,15 +252,14 @@ impl LongKeys {
                     ops.push(build::insert(
                         &random,
                         key,
-                        Element::new_item(value(&mut rng, 0, 48)),
+                        Element::new_item(value(rng, 0, 48)),
                     ));
                 }
             }
         }
         ops.push(Op::Commit);
-        let sorted: Vec<Vec<u8>> = keys.iter().cloned().collect();
-        if let (Some(first), Some(last)) = (sorted.first(), sorted.last()) {
-            let middle = &sorted[sorted.len() / 2];
+        let middle = keys.iter().nth(keys.len() / 2);
+        if let (Some(first), Some(middle), Some(last)) = (keys.first(), middle, keys.last()) {
             ops.push(build::get(&random, middle));
             ops.push(build::query(build::select(
                 &random,
@@ -307,7 +295,7 @@ impl LongKeys {
                 1 => ops.push(Op::Batch(vec![batch::replace(
                     &random,
                     key,
-                    Element::new_item(value(&mut rng, 0, 48)),
+                    Element::new_item(value(rng, 0, 48)),
                 )])),
                 2 => ops.push(Op::Batch(vec![batch::delete(&random, key)])),
                 _ => {}
@@ -319,8 +307,11 @@ impl LongKeys {
             vec![QueryItem::RangeFull],
             Some(30),
         )));
+    }
 
-        let prefix = child(&root, b"prefix");
+    /// Keys sharing a 254-byte prefix.
+    fn shared_prefix_keys(&self, rng: &mut Rng, root: &[Vec<u8>], ops: &mut Vec<Op>) {
+        let prefix = child(root, b"prefix");
         let shared = rng.bytes(MAX_KEY_LEN - 1);
         let mut tails: Vec<u8> = (0..=255u8).collect();
         rng.shuffle(&mut tails);
@@ -331,7 +322,7 @@ impl LongKeys {
             ops.push(build::insert(
                 &prefix,
                 &key,
-                Element::new_item(value(&mut rng, 0, 16)),
+                Element::new_item(value(rng, 0, 16)),
             ));
         }
         ops.push(Op::Commit);
@@ -347,41 +338,11 @@ impl LongKeys {
             vec![QueryItem::RangeTo(below)],
             None,
         )));
+    }
 
-        let edges = child(&root, b"edges");
-        let mut edge_keys: Vec<Vec<u8>> = vec![
-            vec![0x00],
-            vec![0xff],
-            vec![0x00; 255],
-            vec![0xff; 255],
-            vec![0x00; 254],
-            vec![0xff; 254],
-        ];
-        for len in [1u32, 2, 31, 32, 33, 127, 128, 129, 253, 254, 255] {
-            edge_keys.push(rng.bytes(len));
-        }
-        let mut low = vec![0x00; 254];
-        low.push(0x01);
-        edge_keys.push(low);
-        let edge_keys: BTreeSet<Vec<u8>> = edge_keys.into_iter().collect();
-        ops.push(Op::Batch(
-            edge_keys
-                .iter()
-                .map(|key| {
-                    batch::insert_only(&edges, key, Element::new_item(value(&mut rng, 0, 16)))
-                })
-                .collect(),
-        ));
-        ops.push(Op::Commit);
-        ops.push(build::query(build::select(
-            &edges,
-            vec![QueryItem::RangeFull],
-            None,
-        )));
-        ops.push(build::get(&edges, &[0xff; 255]));
-        ops.push(build::get(&edges, &[0x00]));
-
-        let mut nested = child(&root, b"nested");
+    /// Paths of 255-byte segments, with a reference to their far end.
+    fn nested_keys(&self, rng: &mut Rng, root: &[Vec<u8>], ops: &mut Vec<Op>) {
+        let mut nested = child(root, b"nested");
         let top = nested.clone();
         let mut segments = Vec::new();
         for _ in 0..self.nesting {
@@ -394,7 +355,7 @@ impl LongKeys {
         ops.push(build::insert(
             &nested,
             &leaf,
-            Element::new_item(value(&mut rng, 1, 64)),
+            Element::new_item(value(rng, 1, 64)),
         ));
         let mut target = nested.clone();
         target.push(leaf.clone());
@@ -418,8 +379,41 @@ impl LongKeys {
                 ..build::select(&top, vec![QueryItem::Key(first.clone())], None)
             }));
         }
-        Prepared::stream(ops)
     }
+}
+
+/// The shortest, longest, lowest and highest keys there are.
+fn edge_keys(rng: &mut Rng, root: &[Vec<u8>], ops: &mut Vec<Op>) {
+    let edges = child(root, b"edges");
+    let mut edge_keys: Vec<Vec<u8>> = vec![
+        vec![0x00],
+        vec![0xff],
+        vec![0x00; 255],
+        vec![0xff; 255],
+        vec![0x00; 254],
+        vec![0xff; 254],
+    ];
+    for len in [1u32, 2, 31, 32, 33, 127, 128, 129, 253, 254, 255] {
+        edge_keys.push(rng.bytes(len));
+    }
+    let mut low = vec![0x00; 254];
+    low.push(0x01);
+    edge_keys.push(low);
+    let edge_keys: BTreeSet<Vec<u8>> = edge_keys.into_iter().collect();
+    ops.push(Op::Batch(
+        edge_keys
+            .iter()
+            .map(|key| batch::insert_only(&edges, key, Element::new_item(value(rng, 0, 16))))
+            .collect(),
+    ));
+    ops.push(Op::Commit);
+    ops.push(build::query(build::select(
+        &edges,
+        vec![QueryItem::RangeFull],
+        None,
+    )));
+    ops.push(build::get(&edges, &[0xff; 255]));
+    ops.push(build::get(&edges, &[0x00]));
 }
 
 /// Values from empty to `max_value_size` bytes.
@@ -594,63 +588,10 @@ impl Default for TinySubtrees {
 const TINY_GROUPS: u32 = 8;
 const TINY_PLAIN_GROUPS: u32 = 5;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TinyKind {
-    Tree,
-    Sum,
-    BigSum,
-    Count,
-    CountSum,
-    ProvableCount,
-    ProvableCountSum,
-    ProvableSum,
-    ProvableCountProvableSum,
-    ProvableCountProvableBigSum,
-}
-
-impl TinyKind {
-    const ALL: [TinyKind; 10] = [
-        TinyKind::Tree,
-        TinyKind::Sum,
-        TinyKind::BigSum,
-        TinyKind::Count,
-        TinyKind::CountSum,
-        TinyKind::ProvableCount,
-        TinyKind::ProvableCountSum,
-        TinyKind::ProvableSum,
-        TinyKind::ProvableCountProvableSum,
-        TinyKind::ProvableCountProvableBigSum,
-    ];
-
-    fn element(self) -> Element {
-        match self {
-            TinyKind::Tree => Element::empty_tree(),
-            TinyKind::Sum => Element::empty_sum_tree(),
-            TinyKind::BigSum => Element::empty_big_sum_tree(),
-            TinyKind::Count => Element::empty_count_tree(),
-            TinyKind::CountSum => Element::empty_count_sum_tree(),
-            TinyKind::ProvableCount => Element::empty_provable_count_tree(),
-            TinyKind::ProvableCountSum => Element::empty_provable_count_sum_tree(),
-            TinyKind::ProvableSum => Element::empty_provable_sum_tree(),
-            TinyKind::ProvableCountProvableSum => Element::empty_provable_count_provable_sum_tree(),
-            TinyKind::ProvableCountProvableBigSum => {
-                Element::empty_provable_count_provable_big_sum_tree()
-            }
-        }
-    }
-
-    fn sums(self) -> bool {
-        !matches!(
-            self,
-            TinyKind::Tree | TinyKind::Count | TinyKind::ProvableCount
-        )
-    }
-}
-
 struct Tiny {
     group: u32,
     key: Vec<u8>,
-    kind: TinyKind,
+    kind: TreeKind,
     alive: bool,
 }
 
@@ -659,12 +600,9 @@ impl TinySubtrees {
     pub fn stream(&self, seed: u64) -> Stream {
         let mut rng = Rng::derive(seed, DOMAIN_TINY, 0);
         let features = self.features;
-        let kinds: Vec<TinyKind> = TinyKind::ALL
+        let kinds: Vec<TreeKind> = TreeKind::ALL
             .into_iter()
-            .filter(|&kind| {
-                kind != TinyKind::ProvableCountProvableBigSum
-                    || features.provable_count_provable_big_sum_tree
-            })
+            .filter(|&kind| !kind.indexed() && kind.supported(features))
             .collect();
         let root = path(&[b"tiny"]);
         let group_path = |group: u32| child(&root, format!("group-{group}").as_bytes());
@@ -693,7 +631,7 @@ impl TinySubtrees {
             for _ in 0..burst {
                 let group = index % TINY_GROUPS;
                 let kind = if group < TINY_PLAIN_GROUPS {
-                    TinyKind::Tree
+                    TreeKind::Tree
                 } else {
                     kinds[rng.index(kinds.len())]
                 };
@@ -802,22 +740,21 @@ fn create_tiny(
     pending: &mut Vec<BatchOp>,
 ) {
     let here = child(parent, &tree.key);
-    if direct {
-        ops.push(build::insert(parent, &tree.key, tree.kind.element()));
-    } else {
-        pending.push(batch::insert_only(parent, &tree.key, tree.kind.element()));
-    }
+    insert_or_queue(
+        !direct,
+        ops,
+        pending,
+        parent,
+        &tree.key,
+        tree.kind.element(),
+    );
     for slot in 0..rng.between(1, 3) as u8 {
         let element = if tree.kind.sums() && slot > 0 {
             Element::new_sum_item(sum(rng))
         } else {
             Element::new_item(value(rng, 0, 24))
         };
-        if direct {
-            ops.push(build::insert(&here, &[slot], element));
-        } else {
-            pending.push(batch::insert_only(&here, &[slot], element));
-        }
+        insert_or_queue(!direct, ops, pending, &here, &[slot], element);
     }
 }
 
@@ -889,29 +826,127 @@ impl DeleteHeavy {
         ops.push(Op::Commit);
 
         for (name, element, sums) in &trees {
-            let tree = child(&root, name);
-            let mut keys: BTreeSet<Vec<u8>> = BTreeSet::new();
-            while (keys.len() as u64) < u64::from(self.keys) {
-                keys.insert(rng.bytes(8));
-            }
-            let keys: Vec<Vec<u8>> = keys.into_iter().collect();
-            let make = |rng: &mut Rng| {
-                if *sums {
-                    Element::new_sum_item(sum(rng))
-                } else {
-                    Element::new_item(value(rng, 0, 40))
-                }
-            };
+            self.churn(&mut rng, &root, name, element, *sums, &mut ops);
+        }
+        Prepared::stream(ops)
+    }
 
-            let mut order = keys.clone();
-            rng.shuffle(&mut order);
-            for chunk in order.chunks(10) {
-                ops.push(Op::Batch(
-                    chunk
-                        .iter()
-                        .map(|key| batch::insert_only(&tree, key, make(&mut rng)))
-                        .collect(),
-                ));
+    /// Fills, empties and churns the tree `name`, then deletes it whole.
+    fn churn(
+        &self,
+        rng: &mut Rng,
+        root: &[Vec<u8>],
+        name: &[u8],
+        element: &Element,
+        sums: bool,
+        ops: &mut Vec<Op>,
+    ) {
+        let tree = child(root, name);
+        let mut keys: BTreeSet<Vec<u8>> = BTreeSet::new();
+        while (keys.len() as u64) < u64::from(self.keys) {
+            keys.insert(rng.bytes(8));
+        }
+        let keys: Vec<Vec<u8>> = keys.into_iter().collect();
+        let make = |rng: &mut Rng| {
+            if sums {
+                Element::new_sum_item(sum(rng))
+            } else {
+                Element::new_item(value(rng, 0, 40))
+            }
+        };
+
+        let mut order = keys.clone();
+        rng.shuffle(&mut order);
+        for chunk in order.chunks(10) {
+            ops.push(Op::Batch(
+                chunk
+                    .iter()
+                    .map(|key| batch::insert_only(&tree, key, make(rng)))
+                    .collect(),
+            ));
+        }
+        ops.push(Op::Commit);
+        ops.push(build::query(build::select(
+            &tree,
+            vec![QueryItem::RangeFull],
+            Some(5),
+        )));
+
+        let third = keys.len() / 3;
+        for key in &keys[..third] {
+            ops.push(build::delete(&tree, key));
+        }
+        ops.push(Op::Commit);
+        ops.push(build::query(build::select(
+            &tree,
+            vec![QueryItem::Key(keys[0].clone())],
+            None,
+        )));
+        for chunk in keys[keys.len() - third..].rchunks(5) {
+            ops.push(Op::Batch(
+                chunk
+                    .iter()
+                    .rev()
+                    .map(|key| batch::delete(&tree, key))
+                    .collect(),
+            ));
+        }
+        ops.push(Op::Commit);
+        let mut rest: Vec<Vec<u8>> = keys[third..keys.len() - third].to_vec();
+        rng.shuffle(&mut rest);
+        for key in &rest {
+            ops.push(build::delete(&tree, key));
+        }
+        ops.push(Op::Commit);
+        ops.push(build::query(build::select(
+            &tree,
+            vec![QueryItem::RangeFull],
+            None,
+        )));
+        ops.push(build::get(root, name));
+
+        let mut live: Vec<Vec<u8>> = Vec::new();
+        let mut dead: Vec<Vec<u8>> = keys.clone();
+        for _ in 0..self.rounds {
+            rng.shuffle(&mut dead);
+            let refill = dead.len() / 2;
+            for key in dead.drain(..refill) {
+                ops.push(build::insert(&tree, &key, make(rng)));
+                live.push(key);
+            }
+            ops.push(Op::Commit);
+            let keep = live.len() / 20;
+            let mut step = 0u32;
+            while live.len() > keep {
+                step += 1;
+                if step.is_multiple_of(5) && !dead.is_empty() {
+                    let key = dead.swap_remove(rng.index(dead.len()));
+                    let element = make(rng);
+                    ops.push(Op::Batch(vec![if step.is_multiple_of(10) {
+                        batch::insert_if_not_exists(&tree, &key, element)
+                    } else {
+                        batch::insert_or_replace(&tree, &key, element)
+                    }]));
+                    live.push(key);
+                } else {
+                    let key = live.swap_remove(rng.index(live.len()));
+                    if step.is_multiple_of(2) {
+                        ops.push(build::delete(&tree, &key));
+                    } else {
+                        ops.push(Op::Batch(vec![batch::delete(&tree, &key)]));
+                    }
+                    dead.push(key);
+                }
+                if step.is_multiple_of(60) {
+                    ops.push(Op::Commit);
+                    if let Some(key) = dead.last() {
+                        ops.push(build::query(build::select(
+                            &tree,
+                            vec![QueryItem::Key(key.clone())],
+                            None,
+                        )));
+                    }
+                }
             }
             ops.push(Op::Commit);
             ops.push(build::query(build::select(
@@ -919,116 +954,31 @@ impl DeleteHeavy {
                 vec![QueryItem::RangeFull],
                 Some(5),
             )));
-
-            let third = keys.len() / 3;
-            for key in &keys[..third] {
-                ops.push(build::delete(&tree, key));
-            }
-            ops.push(Op::Commit);
-            ops.push(build::query(build::select(
-                &tree,
-                vec![QueryItem::Key(keys[0].clone())],
-                None,
-            )));
-            for chunk in keys[keys.len() - third..].rchunks(5) {
-                ops.push(Op::Batch(
-                    chunk
-                        .iter()
-                        .rev()
-                        .map(|key| batch::delete(&tree, key))
-                        .collect(),
-                ));
-            }
-            ops.push(Op::Commit);
-            let mut rest: Vec<Vec<u8>> = keys[third..keys.len() - third].to_vec();
-            rng.shuffle(&mut rest);
-            for key in &rest {
-                ops.push(build::delete(&tree, key));
-            }
-            ops.push(Op::Commit);
-            ops.push(build::query(build::select(
-                &tree,
-                vec![QueryItem::RangeFull],
-                None,
-            )));
-            ops.push(build::get(&root, name));
-
-            let mut live: Vec<Vec<u8>> = Vec::new();
-            let mut dead: Vec<Vec<u8>> = keys.clone();
-            for _ in 0..self.rounds {
-                rng.shuffle(&mut dead);
-                let refill = dead.len() / 2;
-                for key in dead.drain(..refill) {
-                    ops.push(build::insert(&tree, &key, make(&mut rng)));
-                    live.push(key);
-                }
-                ops.push(Op::Commit);
-                let keep = live.len() / 20;
-                let mut step = 0u32;
-                while live.len() > keep {
-                    step += 1;
-                    if step.is_multiple_of(5) && !dead.is_empty() {
-                        let key = dead.swap_remove(rng.index(dead.len()));
-                        let element = make(&mut rng);
-                        ops.push(Op::Batch(vec![if step.is_multiple_of(10) {
-                            batch::insert_if_not_exists(&tree, &key, element)
-                        } else {
-                            batch::insert_or_replace(&tree, &key, element)
-                        }]));
-                        live.push(key);
-                    } else {
-                        let key = live.swap_remove(rng.index(live.len()));
-                        if step.is_multiple_of(2) {
-                            ops.push(build::delete(&tree, &key));
-                        } else {
-                            ops.push(Op::Batch(vec![batch::delete(&tree, &key)]));
-                        }
-                        dead.push(key);
-                    }
-                    if step.is_multiple_of(60) {
-                        ops.push(Op::Commit);
-                        if let Some(key) = dead.last() {
-                            ops.push(build::query(build::select(
-                                &tree,
-                                vec![QueryItem::Key(key.clone())],
-                                None,
-                            )));
-                        }
-                    }
-                }
-                ops.push(Op::Commit);
-                ops.push(build::query(build::select(
-                    &tree,
-                    vec![QueryItem::RangeFull],
-                    Some(5),
-                )));
-            }
-
-            for key in dead.iter().take(50) {
-                ops.push(build::insert(&tree, key, make(&mut rng)));
-            }
-            ops.push(build::clear(&tree));
-            ops.push(Op::Commit);
-            for key in dead.iter().take(50) {
-                ops.push(build::insert(&tree, key, make(&mut rng)));
-            }
-            ops.push(Op::Commit);
-            let tree_type = element.tree_type().expect("the churned element is a tree");
-            if self.features.direct_delete_of_provable_trees || !hashes_aggregates(tree_type) {
-                ops.push(build::delete(&root, name));
-            } else {
-                ops.push(Op::Batch(vec![batch::delete_tree(&root, name, tree_type)]));
-            }
-            ops.push(build::insert(&root, name, element.clone()));
-            ops.push(build::insert(&tree, &keys[0], make(&mut rng)));
-            ops.push(Op::Commit);
-            ops.push(build::query(build::select(
-                &tree,
-                vec![QueryItem::RangeFull],
-                None,
-            )));
         }
-        Prepared::stream(ops)
+
+        for key in dead.iter().take(50) {
+            ops.push(build::insert(&tree, key, make(rng)));
+        }
+        ops.push(build::clear(&tree));
+        ops.push(Op::Commit);
+        for key in dead.iter().take(50) {
+            ops.push(build::insert(&tree, key, make(rng)));
+        }
+        ops.push(Op::Commit);
+        let tree_type = element.tree_type().expect("the churned element is a tree");
+        if self.features.direct_delete_of_provable_trees || !hashes_aggregates(tree_type) {
+            ops.push(build::delete(root, name));
+        } else {
+            ops.push(Op::Batch(vec![batch::delete_tree(root, name, tree_type)]));
+        }
+        ops.push(build::insert(root, name, element.clone()));
+        ops.push(build::insert(&tree, &keys[0], make(rng)));
+        ops.push(Op::Commit);
+        ops.push(build::query(build::select(
+            &tree,
+            vec![QueryItem::RangeFull],
+            None,
+        )));
     }
 }
 
@@ -1174,119 +1124,127 @@ impl ReferenceChains {
         trees.insert(root.clone());
 
         for chain in 0..self.chains {
-            let summed = chain % 3 == 2;
-            let batched = chain % 2 == 1;
-            let length = 1 + chain % MAX_REFERENCE_HOPS;
-            let base = child(&root, format!("chain-{chain}").as_bytes());
-            let item_path = child(&child(&base, b"origin"), b"inner");
-            let item_key = b"item".to_vec();
-
-            let mut hops: Vec<Hop> = Vec::new();
-            let (mut target_path, mut target_key) = (item_path.clone(), item_key.clone());
-            for hop in 0..length {
-                let (hop_path, key, reference) =
-                    place_hop(&base, hop, chain + hop, &target_path, &target_key);
-                let remaining = hop + 1;
-                hops.push(Hop {
-                    path: hop_path.clone(),
-                    key: key.clone(),
-                    reference,
-                    max_hop: (hop % 2 == 0).then_some(remaining as u8),
-                    sum: (summed && hop % 2 == 1).then(|| sum(&mut rng)),
-                });
-                (target_path, target_key) = (hop_path, key);
-            }
-
-            let mut pending = Vec::new();
-            let mut needed: Vec<Path> = vec![item_path.clone()];
-            needed.extend(hops.iter().map(|hop| hop.path.clone()));
-            for tree in needed {
-                for depth in root.len() + 1..=tree.len() {
-                    let ancestor = tree[..depth].to_vec();
-                    if trees.insert(ancestor.clone()) {
-                        let (key, parent) = ancestor.split_last().expect("below the root");
-                        let element = if summed {
-                            Element::empty_sum_tree()
-                        } else {
-                            Element::empty_tree()
-                        };
-                        if batched {
-                            pending.push(batch::insert_only(parent, key, element));
-                        } else {
-                            ops.push(build::insert(parent, key, element));
-                        }
-                    }
-                }
-            }
-            let item = Element::new_item(value(&mut rng, 1, 80));
-            if batched {
-                pending.push(batch::insert_only(&item_path, &item_key, item));
-                for hop in &hops {
-                    pending.push(batch::insert_only(&hop.path, &hop.key, hop.element()));
-                }
-                ops.push(Op::Batch(pending));
-            } else {
-                ops.push(build::insert(&item_path, &item_key, item));
-                for hop in &hops {
-                    ops.push(build::insert(&hop.path, &hop.key, hop.element()));
-                }
-            }
-            ops.push(Op::Commit);
-            let last = hops.last().expect("a chain has a hop");
-            ops.push(build::get(&last.path, &last.key));
-            ops.push(build::query(build::select(
-                &last.path,
-                vec![QueryItem::Key(last.key.clone())],
-                None,
-            )));
-            ops.push(build::query(build::select_raw(
-                &last.path,
-                vec![QueryItem::Key(last.key.clone())],
-                None,
-            )));
-
-            let item = Element::new_item(value(&mut rng, 1, 80));
-            let mut refresh = vec![batch::replace(&item_path, &item_key, item)];
-            for (position, hop) in hops.iter().enumerate() {
-                if hop.sum.is_some() {
-                    refresh.push(batch::replace(&hop.path, &hop.key, hop.element()));
-                } else {
-                    refresh.push(BatchOp::RefreshReference {
-                        path: hop.path.clone(),
-                        key: hop.key.clone(),
-                        reference: hop.reference.clone(),
-                        max_hop: hop.max_hop,
-                        flags: None,
-                        trusted: position % 2 == 0,
-                    });
-                }
-            }
-            ops.push(Op::Batch(refresh));
-            ops.push(Op::Commit);
-            ops.push(build::get(&last.path, &last.key));
-            ops.push(build::query(build::select(
-                &last.path,
-                vec![QueryItem::Key(last.key.clone())],
-                None,
-            )));
-
-            if chain % 4 == 3 {
-                for (position, hop) in hops.iter().enumerate().rev() {
-                    if position % 2 == 0 {
-                        ops.push(build::delete(&hop.path, &hop.key));
-                    } else {
-                        ops.push(Op::Batch(vec![batch::delete(&hop.path, &hop.key)]));
-                    }
-                }
-                ops.push(Op::Commit);
-                ops.push(build::get(&item_path, &item_key));
-            }
+            self.chain(chain, &mut rng, &root, &mut trees, &mut ops);
         }
 
         if self.features.backward_references {
             self.bidirectional(&mut rng, &root, &mut ops);
         }
         Prepared::stream(ops)
+    }
+
+    /// Builds, reads, refreshes and, for some, deletes chain number `chain`.
+    fn chain(
+        &self,
+        chain: u32,
+        rng: &mut Rng,
+        root: &[Vec<u8>],
+        trees: &mut BTreeSet<Path>,
+        ops: &mut Vec<Op>,
+    ) {
+        let summed = chain % 3 == 2;
+        let batched = chain % 2 == 1;
+        let length = 1 + chain % MAX_REFERENCE_HOPS;
+        let base = child(root, format!("chain-{chain}").as_bytes());
+        let item_path = child(&child(&base, b"origin"), b"inner");
+        let item_key = b"item".to_vec();
+
+        let mut hops: Vec<Hop> = Vec::new();
+        let (mut target_path, mut target_key) = (item_path.clone(), item_key.clone());
+        for hop in 0..length {
+            let (hop_path, key, reference) =
+                place_hop(&base, hop, chain + hop, &target_path, &target_key);
+            let remaining = hop + 1;
+            hops.push(Hop {
+                path: hop_path.clone(),
+                key: key.clone(),
+                reference,
+                max_hop: (hop % 2 == 0).then_some(remaining as u8),
+                sum: (summed && hop % 2 == 1).then(|| sum(rng)),
+            });
+            (target_path, target_key) = (hop_path, key);
+        }
+
+        let mut pending = Vec::new();
+        let mut needed: Vec<Path> = vec![item_path.clone()];
+        needed.extend(hops.iter().map(|hop| hop.path.clone()));
+        for tree in needed {
+            for depth in root.len() + 1..=tree.len() {
+                let ancestor = tree[..depth].to_vec();
+                if trees.insert(ancestor.clone()) {
+                    let (key, parent) = ancestor.split_last().expect("below the root");
+                    let element = if summed {
+                        Element::empty_sum_tree()
+                    } else {
+                        Element::empty_tree()
+                    };
+                    insert_or_queue(batched, ops, &mut pending, parent, key, element);
+                }
+            }
+        }
+        let item = Element::new_item(value(rng, 1, 80));
+        if batched {
+            pending.push(batch::insert_only(&item_path, &item_key, item));
+            for hop in &hops {
+                pending.push(batch::insert_only(&hop.path, &hop.key, hop.element()));
+            }
+            ops.push(Op::Batch(pending));
+        } else {
+            ops.push(build::insert(&item_path, &item_key, item));
+            for hop in &hops {
+                ops.push(build::insert(&hop.path, &hop.key, hop.element()));
+            }
+        }
+        ops.push(Op::Commit);
+        let last = hops.last().expect("a chain has a hop");
+        ops.push(build::get(&last.path, &last.key));
+        ops.push(build::query(build::select(
+            &last.path,
+            vec![QueryItem::Key(last.key.clone())],
+            None,
+        )));
+        ops.push(build::query(build::select_raw(
+            &last.path,
+            vec![QueryItem::Key(last.key.clone())],
+            None,
+        )));
+
+        let item = Element::new_item(value(rng, 1, 80));
+        let mut refresh = vec![batch::replace(&item_path, &item_key, item)];
+        for (position, hop) in hops.iter().enumerate() {
+            if hop.sum.is_some() {
+                refresh.push(batch::replace(&hop.path, &hop.key, hop.element()));
+            } else {
+                refresh.push(BatchOp::RefreshReference {
+                    path: hop.path.clone(),
+                    key: hop.key.clone(),
+                    reference: hop.reference.clone(),
+                    max_hop: hop.max_hop,
+                    flags: None,
+                    trusted: position % 2 == 0,
+                });
+            }
+        }
+        ops.push(Op::Batch(refresh));
+        ops.push(Op::Commit);
+        ops.push(build::get(&last.path, &last.key));
+        ops.push(build::query(build::select(
+            &last.path,
+            vec![QueryItem::Key(last.key.clone())],
+            None,
+        )));
+
+        if chain % 4 == 3 {
+            for (position, hop) in hops.iter().enumerate().rev() {
+                if position % 2 == 0 {
+                    ops.push(build::delete(&hop.path, &hop.key));
+                } else {
+                    ops.push(Op::Batch(vec![batch::delete(&hop.path, &hop.key)]));
+                }
+            }
+            ops.push(Op::Commit);
+            ops.push(build::get(&item_path, &item_key));
+        }
     }
 
     /// Chains of bidirectional references, whose targets push their changes

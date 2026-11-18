@@ -443,24 +443,21 @@ impl Source for DocumentsSource {
             Phase::Create => {
                 let end = (self.created + per_block).min(self.config.documents);
                 for index in self.created..end {
-                    let op = self.create(index);
-                    out.push(op);
+                    out.push(self.create(index));
                 }
                 self.created = end;
             }
             Phase::Update => {
                 let end = (self.updated + per_block).min(self.config.updates);
                 for update in self.updated..end {
-                    let op = self.update(update);
-                    out.push(op);
+                    out.push(self.update(update));
                 }
                 self.updated = end;
             }
             Phase::Delete => {
                 let end = (self.deleted + per_block).min(self.config.deletes);
                 for position in self.deleted..end {
-                    let op = self.delete(position);
-                    out.push(op);
+                    out.push(self.delete(position));
                 }
                 self.deleted = end;
             }
@@ -657,14 +654,12 @@ impl Source for BalancesSource {
             out.push(build::insert(&[], ROOT_IDENTITIES, Element::empty_tree()));
         } else if created < self.config.identities {
             for index in created..(created + per_block).min(self.config.identities) {
-                let op = self.create(index);
-                out.push(op);
+                out.push(self.create(index));
             }
         } else if self.transferred < self.config.transfers {
             let end = (self.transferred + per_block).min(self.config.transfers);
             for _ in self.transferred..end {
-                let op = self.transfer();
-                out.push(op);
+                out.push(self.transfer());
             }
             self.transferred = end;
         } else {
@@ -793,6 +788,15 @@ impl TokensSource {
             .map(|(&holder, _)| holder)
     }
 
+    /// A holder's balance, zero for an identity holding none.
+    fn balance(&self, token: usize, holder: u64) -> i64 {
+        self.tokens[token]
+            .balances
+            .get(&holder)
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// Sets a holder's balance, with the batch operation that does it.
     fn set_balance(&mut self, token: usize, holder: u64, balance: i64) -> BatchOp {
         let state = &mut self.tokens[token];
@@ -822,11 +826,7 @@ impl TokensSource {
             None => {
                 let holder = self.rng.below(self.config.holders);
                 let amount = self.rng.between(1, 1_000_000) as i64;
-                let balance = self.tokens[token]
-                    .balances
-                    .get(&holder)
-                    .copied()
-                    .unwrap_or(0);
+                let balance = self.balance(token, holder);
                 ops.push(self.set_balance(token, holder, balance + amount));
                 record.push(0);
                 record.extend_from_slice(&identity_id(self.seed, holder));
@@ -845,11 +845,7 @@ impl TokensSource {
                 if roll < 17 && self.config.holders > 1 {
                     let recipient = (holder + 1 + self.rng.below(self.config.holders - 1))
                         % self.config.holders;
-                    let held = self.tokens[token]
-                        .balances
-                        .get(&recipient)
-                        .copied()
-                        .unwrap_or(0);
+                    let held = self.balance(token, recipient);
                     ops.push(self.set_balance(token, recipient, held + amount));
                     record.extend_from_slice(&identity_id(self.seed, recipient));
                 }
@@ -929,14 +925,12 @@ impl Source for TokensSource {
             ));
         } else if created < wanted {
             for index in created..(created + per_block).min(wanted) {
-                let op = self.create(index);
-                out.push(op);
+                out.push(self.create(index));
             }
         } else if self.acted < self.config.actions {
             let end = (self.acted + per_block).min(self.config.actions);
             for _ in self.acted..end {
-                let op = self.act();
-                out.push(op);
+                out.push(self.act());
             }
             self.acted = end;
         } else {

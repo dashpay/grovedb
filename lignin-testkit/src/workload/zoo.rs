@@ -56,9 +56,9 @@ impl ElementZoo {
 
 const DOMAIN: u64 = 0x5A00;
 
-/// A Merk tree the zoo stores children under.
+/// A kind of Merk tree: a parent the zoo stores children under, or a child.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Parent {
+pub(crate) enum TreeKind {
     Tree,
     SumTree,
     BigSumTree,
@@ -74,60 +74,79 @@ enum Parent {
     CountSumIndexed,
 }
 
-impl Parent {
-    const ALL: [Parent; 13] = [
-        Parent::Tree,
-        Parent::SumTree,
-        Parent::BigSumTree,
-        Parent::CountTree,
-        Parent::CountSumTree,
-        Parent::ProvableCountTree,
-        Parent::ProvableCountSumTree,
-        Parent::ProvableSumTree,
-        Parent::ProvableCountProvableSumTree,
-        Parent::ProvableCountProvableBigSumTree,
-        Parent::SumIndexed,
-        Parent::CountIndexed,
-        Parent::CountSumIndexed,
+impl TreeKind {
+    /// Every kind, in the order the zoo fills them as parents.
+    pub(crate) const ALL: [TreeKind; 13] = [
+        TreeKind::Tree,
+        TreeKind::SumTree,
+        TreeKind::BigSumTree,
+        TreeKind::CountTree,
+        TreeKind::CountSumTree,
+        TreeKind::ProvableCountTree,
+        TreeKind::ProvableCountSumTree,
+        TreeKind::ProvableSumTree,
+        TreeKind::ProvableCountProvableSumTree,
+        TreeKind::ProvableCountProvableBigSumTree,
+        TreeKind::SumIndexed,
+        TreeKind::CountIndexed,
+        TreeKind::CountSumIndexed,
+    ];
+
+    /// Every kind, in the order the zoo stores them as children.
+    const CHILD_ORDER: [TreeKind; 13] = [
+        TreeKind::Tree,
+        TreeKind::SumTree,
+        TreeKind::BigSumTree,
+        TreeKind::CountTree,
+        TreeKind::CountSumTree,
+        TreeKind::ProvableCountTree,
+        TreeKind::ProvableCountSumTree,
+        TreeKind::ProvableSumTree,
+        TreeKind::ProvableCountProvableSumTree,
+        TreeKind::SumIndexed,
+        TreeKind::CountIndexed,
+        TreeKind::CountSumIndexed,
+        TreeKind::ProvableCountProvableBigSumTree,
     ];
 
     fn name(self) -> &'static str {
         match self {
-            Parent::Tree => "tree",
-            Parent::SumTree => "sum",
-            Parent::BigSumTree => "big-sum",
-            Parent::CountTree => "count",
-            Parent::CountSumTree => "count-sum",
-            Parent::ProvableCountTree => "provable-count",
-            Parent::ProvableCountSumTree => "provable-count-sum",
-            Parent::ProvableSumTree => "provable-sum",
-            Parent::ProvableCountProvableSumTree => "provable-count-provable-sum",
-            Parent::ProvableCountProvableBigSumTree => "provable-count-provable-big-sum",
-            Parent::SumIndexed => "sum-indexed",
-            Parent::CountIndexed => "count-indexed",
-            Parent::CountSumIndexed => "count-sum-indexed",
+            TreeKind::Tree => "tree",
+            TreeKind::SumTree => "sum",
+            TreeKind::BigSumTree => "big-sum",
+            TreeKind::CountTree => "count",
+            TreeKind::CountSumTree => "count-sum",
+            TreeKind::ProvableCountTree => "provable-count",
+            TreeKind::ProvableCountSumTree => "provable-count-sum",
+            TreeKind::ProvableSumTree => "provable-sum",
+            TreeKind::ProvableCountProvableSumTree => "provable-count-provable-sum",
+            TreeKind::ProvableCountProvableBigSumTree => "provable-count-provable-big-sum",
+            TreeKind::SumIndexed => "sum-indexed",
+            TreeKind::CountIndexed => "count-indexed",
+            TreeKind::CountSumIndexed => "count-sum-indexed",
         }
     }
 
-    fn element(self) -> Element {
+    /// The kind as an empty element.
+    pub(crate) fn element(self) -> Element {
         match self {
-            Parent::Tree => Element::empty_tree(),
-            Parent::SumTree => Element::empty_sum_tree(),
-            Parent::BigSumTree => Element::empty_big_sum_tree(),
-            Parent::CountTree => Element::empty_count_tree(),
-            Parent::CountSumTree => Element::empty_count_sum_tree(),
-            Parent::ProvableCountTree => Element::empty_provable_count_tree(),
-            Parent::ProvableCountSumTree => Element::empty_provable_count_sum_tree(),
-            Parent::ProvableSumTree => Element::empty_provable_sum_tree(),
-            Parent::ProvableCountProvableSumTree => {
+            TreeKind::Tree => Element::empty_tree(),
+            TreeKind::SumTree => Element::empty_sum_tree(),
+            TreeKind::BigSumTree => Element::empty_big_sum_tree(),
+            TreeKind::CountTree => Element::empty_count_tree(),
+            TreeKind::CountSumTree => Element::empty_count_sum_tree(),
+            TreeKind::ProvableCountTree => Element::empty_provable_count_tree(),
+            TreeKind::ProvableCountSumTree => Element::empty_provable_count_sum_tree(),
+            TreeKind::ProvableSumTree => Element::empty_provable_sum_tree(),
+            TreeKind::ProvableCountProvableSumTree => {
                 Element::empty_provable_count_provable_sum_tree()
             }
-            Parent::ProvableCountProvableBigSumTree => {
+            TreeKind::ProvableCountProvableBigSumTree => {
                 Element::empty_provable_count_provable_big_sum_tree()
             }
-            Parent::SumIndexed => Element::empty_provable_sum_indexed_tree(),
-            Parent::CountIndexed => Element::empty_provable_count_indexed_tree(),
-            Parent::CountSumIndexed => Element::ProvableCountProvableSumIndexedTree(
+            TreeKind::SumIndexed => Element::empty_provable_sum_indexed_tree(),
+            TreeKind::CountIndexed => Element::empty_provable_count_indexed_tree(),
+            TreeKind::CountSumIndexed => Element::ProvableCountProvableSumIndexedTree(
                 None,
                 0,
                 0,
@@ -137,24 +156,24 @@ impl Parent {
         }
     }
 
-    fn indexed(self) -> bool {
+    pub(crate) fn indexed(self) -> bool {
         matches!(
             self,
-            Parent::SumIndexed | Parent::CountIndexed | Parent::CountSumIndexed
+            TreeKind::SumIndexed | TreeKind::CountIndexed | TreeKind::CountSumIndexed
         )
     }
 
     /// Whether children add to a sum kept by this tree.
-    fn sums(self) -> bool {
+    pub(crate) fn sums(self) -> bool {
         matches!(
             self,
-            Parent::SumTree
-                | Parent::BigSumTree
-                | Parent::CountSumTree
-                | Parent::ProvableCountSumTree
-                | Parent::ProvableSumTree
-                | Parent::ProvableCountProvableSumTree
-                | Parent::ProvableCountProvableBigSumTree
+            TreeKind::SumTree
+                | TreeKind::BigSumTree
+                | TreeKind::CountSumTree
+                | TreeKind::ProvableCountSumTree
+                | TreeKind::ProvableSumTree
+                | TreeKind::ProvableCountProvableSumTree
+                | TreeKind::ProvableCountProvableBigSumTree
         )
     }
 
@@ -163,17 +182,36 @@ impl Parent {
     fn unprovable(self) -> bool {
         matches!(
             self,
-            Parent::Tree
-                | Parent::SumTree
-                | Parent::BigSumTree
-                | Parent::CountTree
-                | Parent::CountSumTree
+            TreeKind::Tree
+                | TreeKind::SumTree
+                | TreeKind::BigSumTree
+                | TreeKind::CountTree
+                | TreeKind::CountSumTree
         )
     }
 
-    fn supported(self, features: Features) -> bool {
-        self != Parent::ProvableCountProvableBigSumTree
+    pub(crate) fn supported(self, features: Features) -> bool {
+        self != TreeKind::ProvableCountProvableBigSumTree
             || features.provable_count_provable_big_sum_tree
+    }
+
+    /// What a child tree of this kind is filled with.
+    fn contents(self) -> Fill {
+        match self {
+            TreeKind::Tree
+            | TreeKind::CountTree
+            | TreeKind::ProvableCountTree
+            | TreeKind::CountIndexed => Fill::Items,
+            TreeKind::SumTree
+            | TreeKind::BigSumTree
+            | TreeKind::CountSumTree
+            | TreeKind::ProvableCountSumTree
+            | TreeKind::ProvableSumTree
+            | TreeKind::ProvableCountProvableSumTree
+            | TreeKind::ProvableCountProvableBigSumTree
+            | TreeKind::SumIndexed => Fill::SumItems,
+            TreeKind::CountSumIndexed => Fill::ItemsWithSums,
+        }
     }
 }
 
@@ -225,7 +263,7 @@ struct Child {
 
 #[derive(Clone, Debug)]
 struct Entry {
-    parent: Parent,
+    parent: TreeKind,
     mode: Mode,
     path: Path,
     key: Vec<u8>,
@@ -239,7 +277,7 @@ struct Zoo {
     rng: Rng,
     ops: Vec<Op>,
     entries: Vec<Entry>,
-    parents: Vec<(Parent, Mode, Path)>,
+    parents: Vec<(TreeKind, Mode, Path)>,
 }
 
 impl Zoo {
@@ -261,11 +299,10 @@ impl Zoo {
         self.ops.push(Op::Commit);
         self.ops.push(build::get(&targets, &target_key(0)));
 
-        let parents: Vec<Parent> = Parent::ALL
-            .into_iter()
-            .filter(|parent| parent.supported(self.features))
-            .collect();
-        for &parent in &parents {
+        for parent in TreeKind::ALL {
+            if !parent.supported(self.features) {
+                continue;
+            }
             if !parent.indexed() {
                 self.fill(parent, Mode::Direct);
             }
@@ -277,7 +314,7 @@ impl Zoo {
     }
 
     /// Creates one parent and stores every child it accepts under it.
-    fn fill(&mut self, parent: Parent, mode: Mode) {
+    fn fill(&mut self, parent: TreeKind, mode: Mode) {
         let root = path(&[ROOT]);
         let name = match mode {
             Mode::Direct => format!("{}:direct", parent.name()),
@@ -287,6 +324,7 @@ impl Zoo {
         self.parents.push((parent, mode, parent_path.clone()));
 
         let (free, dependent) = self.children(parent, &parent_path);
+        let first = self.entries.len();
         let mut pending = Vec::new();
         match mode {
             Mode::Direct => {
@@ -330,13 +368,6 @@ impl Zoo {
         }
         self.ops.push(Op::Commit);
 
-        let first = self.entries.len()
-            - self
-                .entries
-                .iter()
-                .rev()
-                .take_while(|entry| entry.path == parent_path)
-                .count();
         for index in first..self.entries.len() {
             self.populate(index);
         }
@@ -346,7 +377,7 @@ impl Zoo {
 
     /// The children a parent accepts: those with no dependency, shuffled,
     /// then those that point at a sibling.
-    fn children(&mut self, parent: Parent, parent_path: &[Vec<u8>]) -> (Vec<Child>, Vec<Child>) {
+    fn children(&mut self, parent: TreeKind, parent_path: &[Vec<u8>]) -> (Vec<Child>, Vec<Child>) {
         let features = self.features;
         let mut free = Vec::new();
         let mut dependent = Vec::new();
@@ -359,7 +390,7 @@ impl Zoo {
             ])
         };
 
-        if parent != Parent::SumIndexed && parent != Parent::CountSumIndexed {
+        if parent != TreeKind::SumIndexed && parent != TreeKind::CountSumIndexed {
             let value = self.value(0, 96);
             free.push(Child {
                 key: b"item".to_vec(),
@@ -387,9 +418,9 @@ impl Zoo {
                 role: Role::Reference,
             });
         }
-        if parent.sums() || parent.indexed() && parent != Parent::CountIndexed {
+        if parent.sums() || parent.indexed() && parent != TreeKind::CountIndexed {
             let sum = self.sum();
-            if parent != Parent::CountSumIndexed || features.sum_item_in_count_sum_indexed_tree {
+            if parent != TreeKind::CountSumIndexed || features.sum_item_in_count_sum_indexed_tree {
                 free.push(Child {
                     key: b"sum-item".to_vec(),
                     element: Element::new_sum_item(sum),
@@ -418,33 +449,28 @@ impl Zoo {
             role: Role::Reference,
         });
 
-        for (name, element, fill) in self.merk_trees() {
+        for kind in TreeKind::CHILD_ORDER {
+            if !kind.supported(features) {
+                continue;
+            }
+            let (name, element, fill) = (kind.name(), kind.element(), kind.contents());
             let accepted = match parent {
-                Parent::SumIndexed => {
-                    element.is_sum_bearing_child() && !matches!(element, Element::BigSumTree(..))
+                TreeKind::SumIndexed => {
+                    element.is_sum_bearing_child() && kind != TreeKind::BigSumTree
                 }
-                Parent::CountSumIndexed => element.is_count_and_sum_bearing_child(),
+                TreeKind::CountSumIndexed => element.is_count_and_sum_bearing_child(),
                 _ => true,
             };
             if !accepted {
                 continue;
             }
-            let sum_tree = matches!(
-                element,
-                Element::SumTree(..)
-                    | Element::BigSumTree(..)
-                    | Element::CountSumTree(..)
-                    | Element::ProvableCountSumTree(..)
-                    | Element::ProvableSumTree(..)
-                    | Element::ProvableCountProvableSumTree(..)
-                    | Element::ProvableCountProvableBigSumTree(..)
-            );
+            let sum_tree = kind.sums();
             free.push(Child {
                 key: format!("tree:{name}").into_bytes(),
                 element: element.clone(),
                 role: Role::Tree(fill),
             });
-            if parent == Parent::CountTree || parent == Parent::CountSumTree {
+            if parent == TreeKind::CountTree || parent == TreeKind::CountSumTree {
                 free.push(Child {
                     key: format!("non-counted:{name}").into_bytes(),
                     element: Element::new_non_counted(element.clone())
@@ -460,7 +486,7 @@ impl Zoo {
                     role: Role::Tree(fill),
                 });
             }
-            if parent == Parent::CountSumTree && sum_tree {
+            if parent == TreeKind::CountSumTree && sum_tree {
                 free.push(Child {
                     key: format!("not-counted-or-summed:{name}").into_bytes(),
                     element: Element::new_not_counted_or_summed(element.clone())
@@ -470,7 +496,7 @@ impl Zoo {
             }
         }
 
-        if !matches!(parent, Parent::SumIndexed | Parent::CountSumIndexed) {
+        if !matches!(parent, TreeKind::SumIndexed | TreeKind::CountSumIndexed) {
             for (name, element, kind) in self.append_trees() {
                 free.push(Child {
                     key: format!("append:{name}").into_bytes(),
@@ -480,7 +506,7 @@ impl Zoo {
             }
         }
 
-        if parent == Parent::CountTree || parent == Parent::CountSumTree {
+        if parent == TreeKind::CountTree || parent == TreeKind::CountSumTree {
             let value = self.value(1, 40);
             free.push(Child {
                 key: b"non-counted:item".to_vec(),
@@ -495,7 +521,7 @@ impl Zoo {
                 role: Role::Reference,
             });
         }
-        if parent == Parent::CountSumTree {
+        if parent == TreeKind::CountSumTree {
             let sum = self.sum();
             free.push(Child {
                 key: b"non-counted:sum-item".to_vec(),
@@ -540,60 +566,6 @@ impl Zoo {
 
         self.rng.shuffle(&mut free);
         (free, dependent)
-    }
-
-    /// Every Merk tree type as an empty element, with what to fill it with.
-    fn merk_trees(&self) -> Vec<(&'static str, Element, Fill)> {
-        let mut trees = vec![
-            ("tree", Element::empty_tree(), Fill::Items),
-            ("sum", Element::empty_sum_tree(), Fill::SumItems),
-            ("big-sum", Element::empty_big_sum_tree(), Fill::SumItems),
-            ("count", Element::empty_count_tree(), Fill::Items),
-            ("count-sum", Element::empty_count_sum_tree(), Fill::SumItems),
-            (
-                "provable-count",
-                Element::empty_provable_count_tree(),
-                Fill::Items,
-            ),
-            (
-                "provable-count-sum",
-                Element::empty_provable_count_sum_tree(),
-                Fill::SumItems,
-            ),
-            (
-                "provable-sum",
-                Element::empty_provable_sum_tree(),
-                Fill::SumItems,
-            ),
-            (
-                "provable-count-provable-sum",
-                Element::empty_provable_count_provable_sum_tree(),
-                Fill::SumItems,
-            ),
-            (
-                "sum-indexed",
-                Element::empty_provable_sum_indexed_tree(),
-                Fill::SumItems,
-            ),
-            (
-                "count-indexed",
-                Element::empty_provable_count_indexed_tree(),
-                Fill::Items,
-            ),
-            (
-                "count-sum-indexed",
-                Parent::CountSumIndexed.element(),
-                Fill::ItemsWithSums,
-            ),
-        ];
-        if self.features.provable_count_provable_big_sum_tree {
-            trees.push((
-                "provable-count-provable-big-sum",
-                Element::empty_provable_count_provable_big_sum_tree(),
-                Fill::SumItems,
-            ));
-        }
-        trees
     }
 
     /// Every append-only tree type as an empty element.
@@ -661,7 +633,7 @@ impl Zoo {
                     AppendKind::Dense => 4,
                     AppendKind::PrivateDocument => 5,
                     AppendKind::Commitment => {
-                        if entry.parent == Parent::Tree {
+                        if entry.parent == TreeKind::Tree {
                             5
                         } else {
                             1
@@ -723,7 +695,6 @@ impl Zoo {
         let members: Vec<usize> = (0..self.entries.len())
             .filter(|&entry| self.entries[entry].path == parent_path)
             .collect();
-        let mut deleted = Vec::new();
         for member in members {
             let entry = self.entries[member].clone();
             let roll = self.rng.below(12);
@@ -743,7 +714,6 @@ impl Zoo {
                         }
                     } else if roll < 8 {
                         self.remove(&entry, batched, None);
-                        deleted.push(member);
                     }
                 }
                 Role::Reference => {
@@ -760,7 +730,6 @@ impl Zoo {
                         }
                     } else if roll < 7 {
                         self.remove(&entry, batched, None);
-                        deleted.push(member);
                     }
                 }
                 Role::Tree(fill) => {
@@ -787,30 +756,23 @@ impl Zoo {
                             || !self.features.direct_delete_of_provable_trees
                                 && tree_type.is_some_and(hashes_aggregates);
                         self.remove(&entry, through_batch, tree_type);
-                        deleted.push(member);
                     }
                 }
                 Role::Append(kind) => {
                     if roll < 5 {
-                        let room = match kind {
-                            AppendKind::Dense => DENSE_CAPACITY - entry.appended,
+                        let count = match kind {
+                            AppendKind::Commitment => 1,
+                            AppendKind::Dense => (DENSE_CAPACITY - entry.appended).min(3),
                             _ => 3,
-                        };
-                        let count = if kind == AppendKind::Commitment {
-                            1
-                        } else {
-                            room.min(3)
                         };
                         self.append(member, count);
                     } else if roll < 7 {
                         self.remove(&entry, batched, entry.element.tree_type());
-                        deleted.push(member);
                     }
                 }
                 Role::Pinned => {}
             }
         }
-        let _ = deleted;
         self.ops.push(Op::Commit);
         self.read_parent(parent, &parent_path);
     }
@@ -829,10 +791,10 @@ impl Zoo {
 
     /// Reads a parent back: a slice of the whole tree where the target can
     /// prove that query, the parent element itself where it cannot.
-    fn read_parent(&mut self, parent: Parent, parent_path: &[Vec<u8>]) {
+    fn read_parent(&mut self, parent: TreeKind, parent_path: &[Vec<u8>]) {
         let limit = 4 + self.rng.below(5) as u16;
         let provable = self.features.v1_proofs
-            || !(parent.indexed() || parent == Parent::ProvableCountProvableSumTree);
+            || !(parent.indexed() || parent == TreeKind::ProvableCountProvableSumTree);
         if provable {
             self.ops.push(build::query(build::select_raw(
                 parent_path,
@@ -867,12 +829,11 @@ impl Zoo {
     }
 
     fn value(&mut self, shortest: u64, longest: u64) -> Vec<u8> {
-        let len = self.rng.between(shortest, longest) as u32;
-        self.rng.bytes(len)
+        build::value(&mut self.rng, shortest, longest)
     }
 
     fn sum(&mut self) -> i64 {
-        self.rng.between(0, 2_000_000) as i64 - 1_000_000
+        build::sum(&mut self.rng)
     }
 
     fn flags(&mut self) -> Option<Vec<u8>> {

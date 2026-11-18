@@ -25,13 +25,7 @@ pub struct Rng {
 impl Rng {
     /// A generator for `seed`.
     pub fn new(seed: u64) -> Self {
-        let mut sm = seed;
-        Self::from_state([
-            splitmix64(&mut sm),
-            splitmix64(&mut sm),
-            splitmix64(&mut sm),
-            splitmix64(&mut sm),
-        ])
+        Self::from_splitmix(seed)
     }
 
     /// A generator for one numbered item of one named substream of `seed`.
@@ -42,12 +36,17 @@ impl Rng {
     pub fn derive(seed: u64, domain: u64, index: u64) -> Self {
         let mut sm = seed;
         let mut sm = splitmix64(&mut sm) ^ domain.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-        let mut sm = splitmix64(&mut sm) ^ index.wrapping_mul(0xD1B5_4A32_D192_ED03);
+        let sm = splitmix64(&mut sm) ^ index.wrapping_mul(0xD1B5_4A32_D192_ED03);
+        Self::from_splitmix(sm)
+    }
+
+    /// A generator whose state is four SplitMix64 steps from `state`.
+    fn from_splitmix(mut state: u64) -> Self {
         Self::from_state([
-            splitmix64(&mut sm),
-            splitmix64(&mut sm),
-            splitmix64(&mut sm),
-            splitmix64(&mut sm),
+            splitmix64(&mut state),
+            splitmix64(&mut state),
+            splitmix64(&mut state),
+            splitmix64(&mut state),
         ])
     }
 

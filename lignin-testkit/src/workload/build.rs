@@ -2,7 +2,21 @@
 
 use grovedb::{Element, ElementFlags};
 
-use super::op::{AppendEntry, BatchOp, Op, Path, Query, QueryItem, Read, Write};
+use super::{
+    op::{AppendEntry, BatchOp, Op, Path, Query, QueryItem, Read, Write},
+    rng::Rng,
+};
+
+/// Random bytes, `shortest..=longest` of them.
+pub(crate) fn value(rng: &mut Rng, shortest: u64, longest: u64) -> Vec<u8> {
+    let len = rng.between(shortest, longest) as u32;
+    rng.bytes(len)
+}
+
+/// A sum in `-1_000_000..=1_000_000`.
+pub(crate) fn sum(rng: &mut Rng) -> i64 {
+    rng.between(0, 2_000_000) as i64 - 1_000_000
+}
 
 /// A path from its segments.
 pub(crate) fn path(segments: &[&[u8]]) -> Path {
@@ -151,6 +165,23 @@ pub(crate) mod batch {
         BatchOp::Append {
             path: tree.to_vec(),
             entry,
+        }
+    }
+
+    /// An insert as its own write when `batched` is false, otherwise as an
+    /// insert-only operation added to `pending`.
+    pub(crate) fn insert_or_queue(
+        batched: bool,
+        ops: &mut Vec<Op>,
+        pending: &mut Vec<BatchOp>,
+        path: &[Vec<u8>],
+        key: &[u8],
+        element: Element,
+    ) {
+        if batched {
+            pending.push(insert_only(path, key, element));
+        } else {
+            ops.push(super::insert(path, key, element));
         }
     }
 }

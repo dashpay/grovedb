@@ -262,12 +262,7 @@ impl Op {
 impl Write {
     fn encode(&self, out: &mut Vec<u8>) {
         match self {
-            Write::Insert { path, key, element } => {
-                out.push(0);
-                put_path(out, path);
-                put_bytes(out, key);
-                put_element(out, element);
-            }
+            Write::Insert { path, key, element } => put_insert(out, 0, path, key, element),
             Write::Delete { path, key } => {
                 out.push(1);
                 put_path(out, path);
@@ -304,29 +299,13 @@ impl BatchOp {
     fn encode(&self, out: &mut Vec<u8>) {
         match self {
             BatchOp::InsertOrReplace { path, key, element } => {
-                out.push(0);
-                put_path(out, path);
-                put_bytes(out, key);
-                put_element(out, element);
+                put_insert(out, 0, path, key, element)
             }
-            BatchOp::InsertOnly { path, key, element } => {
-                out.push(1);
-                put_path(out, path);
-                put_bytes(out, key);
-                put_element(out, element);
-            }
+            BatchOp::InsertOnly { path, key, element } => put_insert(out, 1, path, key, element),
             BatchOp::InsertIfNotExists { path, key, element } => {
-                out.push(2);
-                put_path(out, path);
-                put_bytes(out, key);
-                put_element(out, element);
+                put_insert(out, 2, path, key, element)
             }
-            BatchOp::Replace { path, key, element } => {
-                out.push(3);
-                put_path(out, path);
-                put_bytes(out, key);
-                put_element(out, element);
-            }
+            BatchOp::Replace { path, key, element } => put_insert(out, 3, path, key, element),
             BatchOp::RefreshReference {
                 path,
                 key,
@@ -496,6 +475,13 @@ fn put_element(out: &mut Vec<u8>, element: &Element) {
         .serialize(&GROVE_V1)
         .expect("a workload only builds elements GroveDB can serialize");
     put_bytes(out, &bytes);
+}
+
+fn put_insert(out: &mut Vec<u8>, tag: u8, path: &[Vec<u8>], key: &[u8], element: &Element) {
+    out.push(tag);
+    put_path(out, path);
+    put_bytes(out, key);
+    put_element(out, element);
 }
 
 fn put_tree_type(out: &mut Vec<u8>, tree_type: TreeType) {
