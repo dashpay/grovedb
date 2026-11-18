@@ -1197,3 +1197,97 @@ fn a_tree_under_a_private_document_store_is_refused_on_both_versions() {
         assert_eq!(root_hash(&db, v), before);
     }
 }
+
+/// The trees with a 128-bit sum exist only from the latest version, so they
+/// have no GROVE_V4 outcome to pin. They are held to the same rule by the
+/// same slot, as a parent, as an entry and as the tree created: none of the
+/// checks names a tree type of its own.
+fn wide_sum_cases() -> Vec<(&'static str, Element, Element, Element)> {
+    let count_big_sum_indexed = |count: u64, sum: i128| {
+        Element::ProvableCountProvableBigSumIndexedTree(
+            None,
+            count,
+            sum,
+            vec![(count_axis(), None)],
+            None,
+        )
+    };
+    vec![
+        // An entry of a 64-bit indexed tree that carries a 128-bit sum.
+        (
+            "a count big sum tree entry of a sum indexed tree",
+            Element::empty_provable_sum_indexed_tree(),
+            Element::empty_count_big_sum_tree(),
+            sum_item(),
+        ),
+        // A wrapped 64-bit tree under a parent with a 128-bit sum.
+        (
+            "a not-counted-or-summed tree under a provable big sum tree",
+            Element::empty_provable_big_sum_tree(),
+            not_counted_or_summed(Element::empty_sum_tree()),
+            sum_item(),
+        ),
+        // An indexed tree with a 128-bit sum that is not created empty.
+        (
+            "a big sum indexed tree claiming a sum",
+            Element::empty_tree(),
+            Element::ProvableBigSumIndexedTree(None, None, 7, None),
+            sum_item(),
+        ),
+        (
+            "a big sum indexed tree claiming a secondary root key",
+            Element::empty_tree(),
+            Element::ProvableBigSumIndexedTree(None, claimed_root_key(), 0, None),
+            sum_item(),
+        ),
+        (
+            "a count and big sum indexed tree claiming a count",
+            Element::empty_tree(),
+            count_big_sum_indexed(3, 0),
+            sum_item(),
+        ),
+        (
+            "a count and big sum indexed tree claiming a sum",
+            Element::empty_tree(),
+            count_big_sum_indexed(0, 7),
+            sum_item(),
+        ),
+        (
+            "a count and big sum indexed tree claiming an axis root key",
+            Element::empty_tree(),
+            Element::ProvableCountProvableBigSumIndexedTree(
+                None,
+                0,
+                0,
+                vec![(count_axis(), claimed_root_key())],
+                None,
+            ),
+            sum_item(),
+        ),
+    ]
+}
+
+/// Each of them is refused when the batch also fills the tree, with the
+/// error the insert alone gives, and nothing is written. With the slot at
+/// 0 the filled tree is taken: the slot carries the refusal.
+#[test]
+fn a_filled_tree_with_a_128_bit_sum_around_it_is_refused_as_the_insert_alone_is() {
+    let v = GroveVersion::latest();
+    let without_checks = latest_without_the_checks();
+    for (name, parent, tree, child) in wide_sum_cases() {
+        let db = db_with_parent(&parent, v);
+        let before = root_hash(&db, v);
+        let alone = apply(&db, create(&tree), v).expect_err(&format!("{name}: alone"));
+        let filled =
+            apply(&db, create_and_fill(&tree, &child), v).expect_err(&format!("{name}: filled"));
+        assert_eq!(format!("{filled:?}"), format!("{alone:?}"), "{name}");
+        assert_eq!(root_hash(&db, v), before, "{name}: nothing is written");
+        assert_verifies(&db, v, name);
+
+        let unchecked = db_with_parent(&parent, &without_checks);
+        apply(&unchecked, create(&tree), &without_checks)
+            .expect_err(&format!("{name}: alone, with the slot at 0"));
+        apply(&unchecked, create_and_fill(&tree, &child), &without_checks)
+            .unwrap_or_else(|e| panic!("{name}: taken with the slot at 0, got {e:?}"));
+    }
+}
