@@ -26,8 +26,8 @@
 | 13 | `BulkAppendTree` | 9 (BulkAppendTree) | `(total_count: u64, chunk_power: u8, flags)` | 12 | High-throughput append-only log |
 | 14 | `DenseAppendOnlyFixedSizeTree` | 10 (DenseAppendOnlyFixedSizeTree) | `(count: u16, height: u8, flags)` | 6 | Dense fixed-capacity Merkle storage |
 | 15 | *(NonCounted wrapper byte)* | — | inner element bytes follow | varies | On-disk wrapper for `Element::NonCounted`; `from_serialized_value` reads the next byte to resolve the inner type and returns the matching `NonCountedXxx` synthetic discriminant (high bit set). |
-| 16 | *(NotSummed wrapper byte)* | — | inner element bytes follow | varies | On-disk wrapper for `Element::NotSummed`; analogous to byte 15 but resolves to a `NotSummedXxx` twin (`0xb0 \| base`) for the four sum-bearing tree variants only. |
-| 17 | *(NotCountedOrSummed wrapper byte)* | — | inner element bytes follow | varies | On-disk wrapper for `Element::NotCountedOrSummed`; resolves to a `NotCountedOrSummedXxx` twin for the four sum-bearing tree variants only. |
+| 16 | *(NotSummed wrapper byte)* | — | inner element bytes follow | varies | On-disk wrapper for `Element::NotSummed`; analogous to byte 15 but resolves to a `NotSummedXxx` twin for the sum-bearing tree variants only (the notes below list each twin). |
+| 17 | *(NotCountedOrSummed wrapper byte)* | — | inner element bytes follow | varies | On-disk wrapper for `Element::NotCountedOrSummed`; resolves to a `NotCountedOrSummedXxx` twin for the sum-bearing tree variants only (the notes below list each twin). |
 | 18 | `ReferenceWithSumItem` | N/A | `(path, max_hop, sum, flags)` | varies | Reference + explicit sum contribution |
 | 19 | `ProvableSumTree` | 11 (ProvableSumTree) | `(root_key, sum: i64, flags)` | SUM_TREE_COST_SIZE | Sum baked into hash (see [Aggregate Sum on Range Queries](aggregate-sum-on-range-queries.md)) |
 | 20 | `ProvableCountProvableSumTree` | 12 (ProvableCountProvableSumTree) | `(root_key, count: u64, sum: i64, flags)` | COUNT_SUM_TREE_COST_SIZE | Count and sum both baked into the hash |
