@@ -4,7 +4,10 @@ use grovedb::{AggregateSumPathQuery, Element, ElementFlags, PathQuery, SizedQuer
 use grovedb_merk::proofs::query::AggregateSumQuery;
 
 use super::{
-    op::{AppendEntry, BatchOp, Op, PartialBatch, Path, Query, QueryItem, Read, Write},
+    op::{
+        AppendEntry, BatchOp, Fetch, Op, PartialBatch, Path, Prove, Query, QueryItem, Read,
+        TransactionOp, TreeRead, Write,
+    },
     rng::Rng,
 };
 
@@ -207,6 +210,68 @@ pub(crate) fn partial_batch(
         add_on,
         pause_height,
     })
+}
+
+pub(crate) fn step(step: TransactionOp) -> Op {
+    Op::Transaction(step)
+}
+
+/// `read` inside the open transaction, between its writes.
+pub(crate) fn in_block(read: Read) -> Op {
+    step(TransactionOp::BlockRead(read))
+}
+
+/// `read` through the open snapshot.
+pub(crate) fn through_snapshot(read: Read) -> Op {
+    step(TransactionOp::SnapshotRead(read))
+}
+
+pub(crate) fn prove(prove: Prove) -> Op {
+    Op::Read(Read::Prove(prove))
+}
+
+/// A typed read of the append-only tree at `tree`.
+pub(crate) fn tree_read(tree: &[Vec<u8>], read: TreeRead) -> Op {
+    Op::Read(Read::Tree {
+        path: tree.to_vec(),
+        read,
+    })
+}
+
+/// Constructors for reads, which a stream runs against committed state
+/// ([`Op::Read`]), inside the block ([`in_block`]) or through a snapshot
+/// ([`through_snapshot`]).
+pub(crate) mod read {
+    use super::*;
+
+    pub(crate) fn has_raw(path: &[Vec<u8>], key: &[u8]) -> Read {
+        Read::HasRaw {
+            path: path.to_vec(),
+            key: key.to_vec(),
+        }
+    }
+
+    pub(crate) fn is_empty_tree(tree: &[Vec<u8>]) -> Read {
+        Read::IsEmptyTree {
+            path: tree.to_vec(),
+        }
+    }
+
+    pub(crate) fn fetch(path: &[Vec<u8>], key: &[u8], fetch: Fetch, cache: bool) -> Read {
+        Read::Fetch {
+            path: path.to_vec(),
+            key: key.to_vec(),
+            fetch,
+            cache,
+        }
+    }
+
+    pub(crate) fn get(path: &[Vec<u8>], key: &[u8]) -> Read {
+        Read::Get {
+            path: path.to_vec(),
+            key: key.to_vec(),
+        }
+    }
 }
 
 /// Constructors for the operations of a batch.

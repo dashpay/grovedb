@@ -10,6 +10,7 @@ publish = false
 
 [dependencies]
 grovedb = { version = "6.1.1", path = "../grovedb", features = ["unsafe-dump-load"] }
+grovedb-commitment-tree = { version = "6.1.1", path = "../grovedb-commitment-tree" }
 grovedb-costs = { version = "6.1.1", path = "../costs" }
 grovedb-merk = { version = "6.1.1", path = "../merk" }
 grovedb-path = { version = "6.1.1", path = "../path" }
@@ -20,4 +21,4 @@ hex = { workspace = true }
 tempfile = { workspace = true }
 
 [dev-dependencies]
-grovedb-commitment-tree = { version = "6.1.1", path = "../grovedb-commitment-tree" }
+syn = { version = "2", features = ["full", "visit"] }

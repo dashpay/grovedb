@@ -39,7 +39,8 @@ use lignin_testkit::workload::{
         Tokens,
     },
     zoo::{ElementZoo, COMMITMENT_PAYLOAD_LEN},
-    BatchOp, Coverage, Features, Op, Outcome, Query, Read, StreamDigest, Workload, Write,
+    BatchOp, Coverage, Features, Op, Outcome, Query, Read, StreamDigest, Transactions, Workload,
+    Write,
 };
 
 const SEED: u64 = 1;
@@ -69,7 +70,7 @@ fn run(
     ops: impl Iterator<Item = Op>,
     grove_version: &GroveVersion,
 ) -> u64 {
-    let mut transaction = db.start_transaction();
+    let mut transactions = Transactions::new(db);
     let mut applied = 0u64;
     let mut committed = true;
     let mut dropped = 0u64;
@@ -87,7 +88,8 @@ fn run(
                 grove_version.protocol_version
             );
         }
-        let outcome = apply(db, &op, Some(&transaction), grove_version)
+        let outcome = transactions
+            .apply(&op, grove_version)
             .unwrap()
             .unwrap_or_else(|error| {
                 panic!(
@@ -95,12 +97,12 @@ fn run(
                     grove_version.protocol_version
                 )
             });
+        if op.ends_transaction() {
+            committed = true;
+        } else if !op.keeps_transaction() {
+            committed = false;
+        }
         match (&op, outcome) {
-            (Op::Commit, Outcome::EndOfBlock) => {
-                db.commit_transaction(transaction).unwrap().expect("commit");
-                transaction = db.start_transaction();
-                committed = true;
-            }
             (Op::Read(Read::Query(query)), Outcome::Rows(rows)) => {
                 prove(
                     name,
@@ -129,8 +131,7 @@ fn run(
                 );
                 dropped = 0;
             }
-            (Op::Read(_), _) => {}
-            _ => committed = false,
+            _ => {}
         }
         applied += 1;
     }

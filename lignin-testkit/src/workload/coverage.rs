@@ -8,10 +8,13 @@
 //! fails until a workload produces it. Nothing has to be kept in step by
 //! hand.
 //!
-//! [`Operation`] lists the GroveDB operations that reach storage in a way of
-//! their own, the ones the plan names for these generators. They are not the
-//! variants of one GroveDB type, so that list is written here; the coverage
-//! test fails when the suite stops producing one of them.
+//! [`Operation`] lists what a stream makes GroveDB do: the writes, batches
+//! and reads every workload is made of, the operations that reach storage
+//! in a way of their own, and the remaining ones that charge a cost of
+//! their own, in the groups the plan names for these generators. They are
+//! not the variants of one GroveDB type, so that list is written here; the
+//! coverage test fails when the suite stops producing one of them.
+//! [`super::surface`] names the public GroveDB method behind each.
 
 use std::collections::BTreeSet;
 
@@ -22,7 +25,10 @@ use grovedb::{
 use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
 
 use super::{
-    op::{BatchOp, Op, Read, Write},
+    op::{
+        AppendEntry, BatchOp, ChunkIds, Fetch, IndexedTree, Op, Prove, Read, TransactionOp,
+        TreeRead, Write,
+    },
     Features,
 };
 
@@ -122,7 +128,7 @@ named_variants! {
 
 macro_rules! operations {
     ($($group:literal: $($variant:ident = $doc:literal),+;)+) => {
-        /// A GroveDB operation that reaches storage in a way of its own.
+        /// Something a stream makes GroveDB do.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
         pub enum Operation {
             $($(#[doc = $doc] $variant,)+)+
@@ -147,13 +153,26 @@ macro_rules! operations {
             }
         }
 
-        /// The plan's list of operations that reach storage in their own
-        /// way.
+        /// The groups of operations, in the order of the plan's list.
         pub const OPERATION_GROUPS: &[&str] = &[$($group),+];
     };
 }
 
 operations! {
+    "writes, batches and reads":
+        Insert = "`GroveDb::insert`.",
+        Delete = "`GroveDb::delete`.",
+        ClearSubtree = "`GroveDb::clear_subtree`.",
+        MmrAppend = "`GroveDb::mmr_tree_append`.",
+        BulkAppend = "`GroveDb::bulk_append`.",
+        DenseInsert = "`GroveDb::dense_tree_insert`.",
+        PrivateDocumentInsert = "`GroveDb::private_document_store_insert`.",
+        Batch = "`GroveDb::apply_batch`.",
+        Get = "`GroveDb::get`.",
+        Query = "`GroveDb::query`.",
+        QueryRaw = "`GroveDb::query_raw`.",
+        PathQueryRun = "`GroveDb::run_path_query`.",
+        Commit = "The end of a block: the transaction is committed.";
     "patch":
         Patch = "A batch `Patch`.";
     "move":
@@ -190,6 +209,88 @@ operations! {
         AxisRankOfKey = "The rank of a key in an indexed tree.",
         AxisAggregate = "An aggregate over the entries whose aggregate is in a range.",
         BranchedAxisRead = "One axis read for each of several indexed trees.";
+    "conditional inserts and deletes":
+        InsertIfNotExists = "`GroveDb::insert_if_not_exists`.",
+        InsertIfNotExistsReturnExisting =
+            "`GroveDb::insert_if_not_exists_return_existing_element`.",
+        InsertIfChanged = "`GroveDb::insert_if_changed_value`.",
+        DeleteIfEmptyTree = "`GroveDb::delete_if_empty_tree`.",
+        DeleteUpTree = "`GroveDb::delete_up_tree_while_empty`.",
+        DeleteUpTreeBuilt =
+            "`GroveDb::delete_operations_for_delete_up_tree_while_empty`, applied as a batch.",
+        DeleteBuilt = "`GroveDb::delete_operation_for_delete_internal`, applied as a batch.";
+    "raw existence checks":
+        HasRaw = "`GroveDb::has_raw`.",
+        IsEmptyTree = "`GroveDb::is_empty_tree`.",
+        GetRaw = "`GroveDb::get_raw`.",
+        GetRawOptional = "`GroveDb::get_raw_optional`.",
+        GetUncached = "`GroveDb::get_caching_optional` without the cache.",
+        GetRawUncached = "`GroveDb::get_raw_caching_optional` without the cache.",
+        GetRawOptionalUncached =
+            "`GroveDb::get_raw_optional_caching_optional` without the cache.",
+        BlockRead = "A read inside the open transaction, which sees its writes.";
+    "direct writes to indexed trees":
+        IndexedInsertCount = "`GroveDb::insert_into_count_indexed_tree`.",
+        IndexedInsertSum = "`GroveDb::insert_into_provable_sum_indexed_tree`.",
+        IndexedInsertCountSum =
+            "`GroveDb::insert_into_provable_count_provable_sum_indexed_tree`.",
+        IndexedDeleteCount = "`GroveDb::delete_from_count_indexed_tree`.",
+        IndexedDeleteSum = "`GroveDb::delete_from_provable_sum_indexed_tree`.",
+        IndexedDeleteCountSum =
+            "`GroveDb::delete_from_provable_count_provable_sum_indexed_tree`.",
+        IndexedReconcile = "`GroveDb::reconcile_indexed_tree_secondaries`.";
+    "typed reads of the append-only trees":
+        MmrValue = "`GroveDb::mmr_tree_get_value`.",
+        MmrRootHash = "`GroveDb::mmr_tree_root_hash`.",
+        MmrLeafCount = "`GroveDb::mmr_tree_leaf_count`.",
+        BulkValue = "`GroveDb::bulk_get_value`.",
+        BulkRange = "`GroveDb::bulk_get_range`.",
+        BulkChunk = "`GroveDb::bulk_get_chunk`.",
+        BulkBuffer = "`GroveDb::bulk_get_buffer`.",
+        BulkCount = "`GroveDb::bulk_count`.",
+        BulkChunkCount = "`GroveDb::bulk_chunk_count`.",
+        DenseValue = "`GroveDb::dense_tree_get`.",
+        DenseRootHash = "`GroveDb::dense_tree_root_hash`.",
+        DenseCount = "`GroveDb::dense_tree_count`.",
+        CommitmentValue = "`GroveDb::commitment_tree_get_value`.",
+        CommitmentRange = "`GroveDb::commitment_tree_get_range`.",
+        CommitmentAnchor = "`GroveDb::commitment_tree_anchor`.",
+        CommitmentCount = "`GroveDb::commitment_tree_count`.",
+        PrivateDocumentValue = "`GroveDb::private_document_store_get_value`.",
+        PrivateDocumentRange = "`GroveDb::private_document_store_get_range`.",
+        PrivateDocumentCount = "`GroveDb::private_document_store_count`.",
+        CommitmentInsert = "`GroveDb::commitment_tree_insert`, the typed write.";
+    "chunk proofs":
+        TrunkChunk = "`GroveDb::prove_trunk_chunk`.",
+        BranchChunk = "`GroveDb::prove_branch_chunk`.",
+        RootChunk = "`GroveDb::fetch_chunk` of the root tree, asked for by the root hash.",
+        RootTreeChunk = "`GroveDb::fetch_chunk` of chunks below the root of the root tree.",
+        MerkChunk = "`GroveDb::fetch_chunk` of the chunk at the root of a Merk tree.",
+        MerkChunkBelowRoot = "`GroveDb::fetch_chunk` of chunks below the root of a Merk tree.",
+        EntriesChunk = "`GroveDb::fetch_chunk` of a page of an append-only tree.";
+    "remaining query entry points":
+        KeysOptional = "`GroveDb::query_keys_optional`.",
+        RawKeysOptional = "`GroveDb::query_raw_keys_optional`.",
+        AbsenceProof = "A proof that some of the keys asked for are not stored.",
+        ItemValues = "`GroveDb::query_item_value`.",
+        ItemValuesOrSums = "`GroveDb::query_item_value_or_sum`.",
+        SumValues = "`GroveDb::query_sums`.",
+        ManyRaw = "`GroveDb::query_many_raw`.",
+        ProveMany = "`GroveDb::prove_query_many`.",
+        BigSum = "`GroveDb::query_aggregate_big_sum`.",
+        CountAndBigSum = "`GroveDb::query_aggregate_count_and_big_sum`.",
+        BigSumPerKey = "`GroveDb::query_aggregate_big_sum_per_key`.",
+        CountAndBigSumPerKey = "`GroveDb::query_aggregate_count_and_big_sum_per_key`.",
+        BulkPositionRangeProof = "`GroveDb::prove_bulk_position_range`.";
+    "rollbacks and savepoints":
+        Rollback = "`GroveDb::rollback_transaction`.",
+        Abandon = "A transaction dropped without a commit.",
+        Savepoint = "`Transaction::set_savepoint`.",
+        SavepointRollback = "`Transaction::rollback_to_savepoint`.",
+        NestedSavepoint = "A savepoint set while another is on the stack.",
+        SavepointKept = "A savepoint still on the stack when its transaction commits.",
+        SnapshotRead = "A read through `GroveDb::start_snapshot_read_transaction`.",
+        SnapshotReadAfterCommit = "A read through a snapshot older than the last commit.";
 }
 
 impl Features {
@@ -224,6 +325,7 @@ impl Features {
             | Operation::AggregateSumPerKey
             | Operation::AggregateCountAndSumPerKey
             | Operation::SumBudget => true,
+            _ => true,
         }
     }
 }
@@ -235,6 +337,10 @@ pub struct Coverage {
     tree_types: BTreeSet<&'static str>,
     reference_paths: BTreeSet<&'static str>,
     operations: BTreeSet<Operation>,
+    /// How many savepoints are on the stack of the open transaction.
+    savepoints: u32,
+    /// How many blocks were committed since the open snapshot was opened.
+    commits_under_snapshot: Option<u32>,
 }
 
 impl Coverage {
@@ -252,10 +358,12 @@ impl Coverage {
         coverage
     }
 
-    /// Counts what one operation stores.
+    /// Counts what one operation stores and does.
     ///
     /// An element counts under its outermost variant. A tree counts under
-    /// the type of the subtree it creates, looked up through a wrapper.
+    /// the type of the subtree it creates, looked up through a wrapper. The
+    /// operations that depend on what came before, such as a savepoint set
+    /// inside another, are counted as the stream is recorded in order.
     pub fn record(&mut self, op: &Op) {
         for element in op.elements() {
             self.elements.insert(element_variant(element));
@@ -276,7 +384,11 @@ impl Coverage {
         let batch_ops: Vec<&BatchOp> = match op {
             Op::Batch(ops) => ops.iter().collect(),
             Op::PartialBatch(batch) => batch.ops.iter().chain(&batch.add_on).collect(),
-            Op::Write(_) | Op::Read(_) | Op::Commit | Op::FlushPendingDrops => Vec::new(),
+            Op::Write(_)
+            | Op::Read(_)
+            | Op::Commit
+            | Op::FlushPendingDrops
+            | Op::Transaction(_) => Vec::new(),
         };
         for batch_op in batch_ops {
             match batch_op {
@@ -303,41 +415,66 @@ impl Coverage {
             }
         }
         match op {
-            Op::PartialBatch(_) => {
-                self.operations.insert(Operation::PartialBatch);
+            Op::PartialBatch(_) => self.produced(Operation::PartialBatch),
+            Op::FlushPendingDrops => self.produced(Operation::PendingDropsFlush),
+            Op::Batch(_) => self.produced(Operation::Batch),
+            Op::Write(write) => self.produced(write_operation(write)),
+            Op::Read(read) => self.operations.extend(read_operations(read)),
+            Op::Commit => {
+                self.produced(Operation::Commit);
+                if self.savepoints > 0 {
+                    self.produced(Operation::SavepointKept);
+                }
+                self.savepoints = 0;
+                if let Some(commits) = &mut self.commits_under_snapshot {
+                    *commits += 1;
+                }
             }
-            Op::FlushPendingDrops => {
-                self.operations.insert(Operation::PendingDropsFlush);
+            Op::Transaction(step) => self.record_transaction_op(step),
+        }
+    }
+
+    fn produced(&mut self, operation: Operation) {
+        self.operations.insert(operation);
+    }
+
+    fn record_transaction_op(&mut self, step: &TransactionOp) {
+        match step {
+            TransactionOp::Rollback => {
+                self.produced(Operation::Rollback);
+                self.savepoints = 0;
             }
-            Op::Write(Write::PutAux { .. }) => {
-                self.operations.insert(Operation::AuxPut);
+            TransactionOp::Abandon => {
+                self.produced(Operation::Abandon);
+                self.savepoints = 0;
             }
-            Op::Write(Write::DeleteAux { .. }) => {
-                self.operations.insert(Operation::AuxDelete);
+            TransactionOp::SetSavepoint => {
+                self.produced(Operation::Savepoint);
+                if self.savepoints > 0 {
+                    self.produced(Operation::NestedSavepoint);
+                }
+                self.savepoints += 1;
             }
-            Op::Write(Write::DropFlat { .. }) => {
-                self.operations.insert(Operation::FlatDrop);
+            TransactionOp::RollbackToSavepoint => {
+                self.produced(Operation::SavepointRollback);
+                self.savepoints = self.savepoints.saturating_sub(1);
             }
-            Op::Read(Read::GetAux { .. }) => {
-                self.operations.insert(Operation::AuxGet);
+            TransactionOp::OpenSnapshot => self.commits_under_snapshot = Some(0),
+            TransactionOp::CloseSnapshot => self.commits_under_snapshot = None,
+            TransactionOp::SnapshotRead(read) => {
+                self.produced(Operation::SnapshotRead);
+                if self
+                    .commits_under_snapshot
+                    .is_some_and(|commits| commits > 0)
+                {
+                    self.produced(Operation::SnapshotReadAfterCommit);
+                }
+                self.operations.extend(read_operations(read));
             }
-            Op::Read(Read::AuxByPrefix { .. }) => {
-                self.operations.insert(Operation::AuxByPrefix);
+            TransactionOp::BlockRead(read) => {
+                self.produced(Operation::BlockRead);
+                self.operations.extend(read_operations(read));
             }
-            Op::Read(Read::SumBudget { .. }) => {
-                self.operations.insert(Operation::SumBudget);
-            }
-            Op::Read(Read::PathQuery { query, proven }) => {
-                self.operations.extend(query_operations(query, *proven));
-            }
-            Op::Read(Read::Rows { query, .. }) => {
-                self.operations.extend(selection_operations(query));
-            }
-            Op::Write(Write::Insert { .. } | Write::Delete { .. })
-            | Op::Write(Write::ClearSubtree { .. } | Write::Append { .. })
-            | Op::Read(Read::Get { .. } | Read::Query(_))
-            | Op::Batch(_)
-            | Op::Commit => {}
         }
     }
 
@@ -391,6 +528,159 @@ fn missing(all: &[&'static str], seen: &BTreeSet<&'static str>) -> Vec<&'static 
         .copied()
         .filter(|name| !seen.contains(name))
         .collect()
+}
+
+/// The operation a direct write is.
+fn write_operation(write: &Write) -> Operation {
+    match write {
+        Write::Insert { .. } => Operation::Insert,
+        Write::Delete { .. } => Operation::Delete,
+        Write::ClearSubtree { .. } => Operation::ClearSubtree,
+        Write::Append { entry, .. } => match entry {
+            AppendEntry::Mmr(_) => Operation::MmrAppend,
+            AppendEntry::Bulk(_) => Operation::BulkAppend,
+            AppendEntry::Dense(_) => Operation::DenseInsert,
+            AppendEntry::PrivateDocument(_) => Operation::PrivateDocumentInsert,
+            AppendEntry::Commitment { .. } => Operation::Batch,
+        },
+        Write::PutAux { .. } => Operation::AuxPut,
+        Write::DeleteAux { .. } => Operation::AuxDelete,
+        Write::DropFlat { .. } => Operation::FlatDrop,
+        Write::InsertIfNotExists {
+            return_existing, ..
+        } => {
+            if *return_existing {
+                Operation::InsertIfNotExistsReturnExisting
+            } else {
+                Operation::InsertIfNotExists
+            }
+        }
+        Write::InsertIfChanged { .. } => Operation::InsertIfChanged,
+        Write::DeleteIfEmptyTree { .. } => Operation::DeleteIfEmptyTree,
+        Write::DeleteUpTree { built, .. } => {
+            if *built {
+                Operation::DeleteUpTreeBuilt
+            } else {
+                Operation::DeleteUpTree
+            }
+        }
+        Write::DeleteBuilt { .. } => Operation::DeleteBuilt,
+        Write::IndexedInsert { tree, .. } => match tree {
+            IndexedTree::Count => Operation::IndexedInsertCount,
+            IndexedTree::Sum => Operation::IndexedInsertSum,
+            IndexedTree::CountSum => Operation::IndexedInsertCountSum,
+        },
+        Write::IndexedDelete { tree, .. } => match tree {
+            IndexedTree::Count => Operation::IndexedDeleteCount,
+            IndexedTree::Sum => Operation::IndexedDeleteSum,
+            IndexedTree::CountSum => Operation::IndexedDeleteCountSum,
+        },
+        Write::ReconcileIndexed { .. } => Operation::IndexedReconcile,
+        Write::CommitmentInsert { .. } => Operation::CommitmentInsert,
+    }
+}
+
+/// The operations a read stands for.
+fn read_operations(read: &Read) -> Vec<Operation> {
+    let rows_reader = |raw: bool| {
+        if raw {
+            Operation::QueryRaw
+        } else {
+            Operation::Query
+        }
+    };
+    match read {
+        Read::Get { .. } => vec![Operation::Get],
+        Read::Query(query) => vec![rows_reader(query.raw)],
+        Read::PathQuery { query, proven } => {
+            let mut operations = query_operations(query, *proven);
+            operations.push(Operation::PathQueryRun);
+            operations
+        }
+        Read::Rows { query, raw } => {
+            let mut operations = selection_operations(query);
+            operations.push(rows_reader(*raw));
+            operations
+        }
+        Read::SumBudget { .. } => vec![Operation::SumBudget],
+        Read::GetAux { .. } => vec![Operation::AuxGet],
+        Read::AuxByPrefix { .. } => vec![Operation::AuxByPrefix],
+        Read::HasRaw { .. } => vec![Operation::HasRaw],
+        Read::IsEmptyTree { .. } => vec![Operation::IsEmptyTree],
+        Read::Fetch { fetch, cache, .. } => vec![match (fetch, cache) {
+            (Fetch::Resolved, true) => Operation::Get,
+            (Fetch::Resolved, false) => Operation::GetUncached,
+            (Fetch::Raw, true) => Operation::GetRaw,
+            (Fetch::Raw, false) => Operation::GetRawUncached,
+            (Fetch::RawOptional, true) => Operation::GetRawOptional,
+            (Fetch::RawOptional, false) => Operation::GetRawOptionalUncached,
+        }],
+        Read::Tree { read, .. } => vec![tree_read_operation(*read)],
+        Read::KeysOptional { raw, .. } => vec![
+            if *raw {
+                Operation::RawKeysOptional
+            } else {
+                Operation::KeysOptional
+            },
+            Operation::AbsenceProof,
+        ],
+        Read::ItemValues { or_sums, .. } => vec![if *or_sums {
+            Operation::ItemValuesOrSums
+        } else {
+            Operation::ItemValues
+        }],
+        Read::SumValues { .. } => vec![Operation::SumValues],
+        Read::Many { .. } => vec![Operation::ManyRaw],
+        Read::BigSum {
+            with_count,
+            per_key,
+            ..
+        } => vec![match (with_count, per_key) {
+            (false, false) => Operation::BigSum,
+            (true, false) => Operation::CountAndBigSum,
+            (false, true) => Operation::BigSumPerKey,
+            (true, true) => Operation::CountAndBigSumPerKey,
+        }],
+        Read::Prove(prove) => vec![match prove {
+            Prove::Many(_) => Operation::ProveMany,
+            Prove::BulkPositionRange { .. } => Operation::BulkPositionRangeProof,
+            Prove::TrunkChunk { .. } => Operation::TrunkChunk,
+            Prove::BranchChunk { .. } => Operation::BranchChunk,
+            Prove::Chunk { path, ids } => match ids {
+                ChunkIds::Entries { .. } => Operation::EntriesChunk,
+                ChunkIds::Merk(ids) if path.is_empty() && ids.is_empty() => Operation::RootChunk,
+                ChunkIds::Merk(_) if path.is_empty() => Operation::RootTreeChunk,
+                ChunkIds::Merk(ids) if ids.iter().any(|id| !id.is_empty()) => {
+                    Operation::MerkChunkBelowRoot
+                }
+                ChunkIds::Merk(_) => Operation::MerkChunk,
+            },
+        }],
+    }
+}
+
+fn tree_read_operation(read: TreeRead) -> Operation {
+    match read {
+        TreeRead::MmrValue(_) => Operation::MmrValue,
+        TreeRead::MmrRootHash => Operation::MmrRootHash,
+        TreeRead::MmrLeafCount => Operation::MmrLeafCount,
+        TreeRead::BulkValue(_) => Operation::BulkValue,
+        TreeRead::BulkRange { .. } => Operation::BulkRange,
+        TreeRead::BulkChunk(_) => Operation::BulkChunk,
+        TreeRead::BulkBuffer => Operation::BulkBuffer,
+        TreeRead::BulkCount => Operation::BulkCount,
+        TreeRead::BulkChunkCount => Operation::BulkChunkCount,
+        TreeRead::DenseValue(_) => Operation::DenseValue,
+        TreeRead::DenseRootHash => Operation::DenseRootHash,
+        TreeRead::DenseCount => Operation::DenseCount,
+        TreeRead::CommitmentValue(_) => Operation::CommitmentValue,
+        TreeRead::CommitmentRange { .. } => Operation::CommitmentRange,
+        TreeRead::CommitmentAnchor => Operation::CommitmentAnchor,
+        TreeRead::CommitmentCount => Operation::CommitmentCount,
+        TreeRead::PrivateDocumentValue(_) => Operation::PrivateDocumentValue,
+        TreeRead::PrivateDocumentRange { .. } => Operation::PrivateDocumentRange,
+        TreeRead::PrivateDocumentCount => Operation::PrivateDocumentCount,
+    }
 }
 
 /// The operations a query stands for when it selects rows: what a

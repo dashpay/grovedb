@@ -18,6 +18,7 @@
 //!   aggregate queries.
 
 mod aggregates;
+mod conditional;
 mod expiry;
 mod keys;
 mod rekey;
@@ -27,6 +28,7 @@ use std::collections::BTreeMap;
 
 pub use self::{
     aggregates::IndexAggregates,
+    conditional::ConditionalWrites,
     expiry::Expiration,
     keys::IdentityKeys,
     rekey::{IndexRekey, MAX_INDEX_VALUES},
@@ -60,6 +62,7 @@ const DOMAIN_PLATFORM_STATE: u64 = 0x57A7;
 const DOMAIN_INDEX_REKEY: u64 = 0xD0C7;
 const DOMAIN_EXPIRATION: u64 = 0xD0C8;
 const DOMAIN_INDEX_AGGREGATES: u64 = 0xD0C9;
+const DOMAIN_CONDITIONAL: u64 = 0xD0CA;
 
 /// Drive's root tree keys.
 const ROOT_DOCUMENTS: &[u8] = &[64];

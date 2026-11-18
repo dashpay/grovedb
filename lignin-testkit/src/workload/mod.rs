@@ -34,6 +34,7 @@ pub mod coverage;
 pub mod drive;
 pub mod op;
 pub mod rng;
+pub mod surface;
 pub mod zoo;
 
 mod build;
@@ -45,10 +46,11 @@ use grovedb::TreeType;
 use grovedb_version::version::GroveVersion;
 
 pub use self::{
-    apply::{apply, Outcome},
+    apply::{apply, Outcome, Transactions},
     coverage::{Coverage, Operation},
     op::{
-        AppendEntry, BatchOp, Op, PartialBatch, Path, Query, QueryItem, Read, StreamDigest, Write,
+        AppendEntry, BatchOp, ChunkIds, Fetch, IndexedTree, Op, PartialBatch, Path, Prove, Query,
+        QueryItem, Read, StreamDigest, TransactionOp, TreeRead, Write,
     },
     rng::Rng,
 };
@@ -288,6 +290,8 @@ pub enum Workload {
     PartialBatches(adversarial::PartialBatches),
     /// [`adversarial::Pagination`].
     Pagination(adversarial::Pagination),
+    /// [`drive::ConditionalWrites`].
+    ConditionalWrites(drive::ConditionalWrites),
 }
 
 impl Workload {
@@ -348,6 +352,7 @@ impl Workload {
                 features,
                 ..Default::default()
             }),
+            Workload::ConditionalWrites(drive::ConditionalWrites::default()),
         ]
     }
 
@@ -373,6 +378,7 @@ impl Workload {
             Workload::Moves(_) => "moves",
             Workload::PartialBatches(_) => "partial-batches",
             Workload::Pagination(_) => "pagination",
+            Workload::ConditionalWrites(_) => "conditional-writes",
         }
     }
 
@@ -398,6 +404,7 @@ impl Workload {
             Workload::Moves(workload) => workload.stream(seed),
             Workload::PartialBatches(workload) => workload.stream(seed),
             Workload::Pagination(workload) => workload.stream(seed),
+            Workload::ConditionalWrites(workload) => workload.stream(seed),
         }
     }
 }
