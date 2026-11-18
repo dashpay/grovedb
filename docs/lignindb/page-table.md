@@ -115,6 +115,8 @@ or a free link:
   is left with no link has no entry, and its id can be used again (ID2).
 - If there is none, nothing goes.
 
+The table remembers the newest free link it removes this way (T17).
+
 Trim never changes what a reader at *h* or later is given. Whoever calls it
 knows *h*, the oldest version a reader can ask for, and retires the blocks
 it reports (PN6).
@@ -125,6 +127,37 @@ chain. It is for a recovery that lands on *r* (K4).
 **T13. The table trusts its callers on contents.** It cannot check that a
 base image holds what its chain gives, that a delta run holds every change
 since the link before it, or that a copy is a copy.
+
+**T17. The table remembers the newest free link that a trim removed.**
+`PageTable::trimmed_free` is the newest version of a free link that T11 has
+removed since the table was made or loaded, or nothing if it has removed
+none. It never goes down, and discard (T12) does not change it. Once the
+free link of a page is gone, and the links before it, nothing in the table
+says that the page was ever in use. K10 is what this version is for.
+
+**T18. Once a page has its free link, nothing older of it is written
+back.** The commit that frees a page pushes the free link at once (T8),
+whatever of the page is still to be written back. A change of an earlier
+commit that only the log and the buffer pool hold can then no longer get a
+link: a link below the free link is refused (T7, `LinkError::OutOfOrder`).
+It does not need one:
+
+- A reader below the freeing version is given those page versions by the
+  buffer pool (T6). The buffer pool keeps them, and cannot evict them,
+  until no reader can ask for a version below the freeing one, which is the
+  test T11 uses for the chain. Then it drops them.
+- No recovery needs them. A checkpoint that holds the free link, or that
+  was written after the free link was trimmed away, is named only once the
+  log is durable through the freeing version (K4, K10), so a recovery from
+  it lands where the page is free. A checkpoint that was begun before the
+  free link was pushed covers less than those changes (K1), and replay
+  takes them from the log.
+
+So whoever writes back (STORE-06) takes such changes out of its queue when
+the free link is pushed, counts them as written back when it says which
+version a checkpoint covers (K1), and holds no log file back for them
+(FL6): what a version pin still needs of them is in the buffer pool, and no
+pin survives a crash (DU3).
 
 ### 2.3 Lookup
 
@@ -287,9 +320,10 @@ bytes at offset 4124. Page 9 was freed at version 38. It is 146 bytes:
 ### 4.1 What a checkpoint covers
 
 **K1. A checkpoint that covers version *C* is enough, with the log after
-*C*, to rebuild every page.** Every change that a commit up to *C* made to a
-page is in a block that a link of the checkpoint points to. With K4, which
-keeps the log ahead of the checkpoint:
+*C*, to rebuild every page that is in use where recovery lands.** Every
+change that a commit up to *C* made to a page is in a block that a link of
+the checkpoint points to, unless a later commit freed the page (T18, K10).
+With K4 and K10, which keep the log ahead of the checkpoint:
 
 - recovery loads the checkpoint and replays the log from the group of
   *C* + 1 (STORE-07);
@@ -300,9 +334,10 @@ keeps the log ahead of the checkpoint:
   that the commits after *C* did, but for K3 (STORE-10).
 
 The table cannot check this. Whoever takes the checkpoint passes *C*, and
-vouches that write-back has reached it: no change of a commit up to *C* is
-still to be written back when the checkpoint is begun. A commit that failed
-(CM9) made no page version, and has no link.
+vouches that write-back has reached it: when the checkpoint is begun, no
+change of a commit up to *C* is still to be written back, except to a page
+whose free link has been pushed since (T18). A commit that failed (CM9) made
+no page version, and has no link.
 
 **K2. A checkpoint is a copy of every chain, not a cut at *C*.** It holds
 the chains as the table had them, which can include links of versions above
@@ -316,13 +351,14 @@ change that is both in a block and in the log would be applied twice.
 
 **K4. The log goes first** (FL4, DU3). A manifest names a checkpoint only
 once the log is durable through the newest version the checkpoint covers or
-reaches. Whoever installs the checkpoint says which version the log is
-durable through, and a checkpoint that needs more is refused
-(`PageTableError::LogBehind`). So a recovery never lands on a version below
-a link of the checkpoint it loads, and never below the version the
-checkpoint covers. The version stated is one that recovery would reach: the
-groups up to it are synced, in the part of the log that recovery reads
-(CM9).
+reaches, and through the newest free link it may have lost (K10). That
+version is `CheckpointInfo::log_needed`. Whoever installs the checkpoint
+says which version the log is durable through, and a checkpoint that needs
+more is refused (`PageTableError::LogBehind`). So a recovery never lands on
+a version below a link of the checkpoint it loads, and never below the
+version the checkpoint covers. The version stated is one that recovery would
+reach: the groups up to it are synced, in the part of the log that recovery
+reads (CM9).
 
 K1 depends on this. A checkpoint that reaches past *C* may hold, for a
 page, only a base image newer than *C*: the links that gave the page at *C*
@@ -363,6 +399,54 @@ covers an earlier version than the one in force
 (`PageTableError::CoversWentBack`): log files at or before the version in
 force may already be gone.
 
+**K10. A checkpoint never forgets a page that a crash can bring back.** A
+page that was freed at version *w* and then trimmed (T11) has no link left.
+A checkpoint that is written after that has no trace of the page, and its
+"reaches" does not include *w*. If it were named with the log durable only
+below *w*, a crash could lose the commit of *w*, and recovery would land
+where the page is in use, with a table that has no chain for it. A commit is
+published before it is durable (DU1), and a trim asks only whether a reader
+is left, so this needs nothing unusual: a base image at version 1, a free
+link at 2, a trim at 2, and a checkpoint that covers 1.
+
+So a checkpoint notes the newest free link that the table has trimmed away
+(T17), and K4 asks for the log to be durable through it as well. Then a
+recovery from the checkpoint lands at or above the version that freed every
+page the checkpoint has lost, and each of them is free there, or has been
+made again by a later commit that replay takes.
+
+- The version is noted **after the last chain is copied**, not when the
+  write begins. A trim can remove the free link of a page while the
+  checkpoint is being written (K5), before that page's chain is copied. A
+  version noted first could be older than a free link the copy lacks. Noted
+  afterwards it can be newer than the copy needs, and never older.
+- **The checkpoint file does not hold it**, and the bytes of section 3 are
+  as they were. Once the checkpoint is named, the log is durable through
+  that version and stays so, and nothing asks for it again. So a table that
+  is loaded starts with no such version (T17), although it lacks the pages
+  that earlier sessions freed and trimmed: no crash can bring those back.
+  `CheckpointInfo::trimmed_free` is therefore set for a checkpoint that was
+  written and empty for one that was loaded.
+- It asks for no more of the log where the page still has a link: a free
+  link that went from under a newer base image (T11) is older than that
+  image, which "reaches" covers.
+
+**K11. Replay can meet a change to a page that the table has no link of.**
+Let a checkpoint cover *C* and lack a page that was freed at *w* (K10), with
+*C* below *w*. If commits between *C* and *w* changed the page, replay
+(K3) finds their changes in the log and no image to apply them to. Such a
+change is dropped: the page version it belongs to is not rebuilt, and none
+is needed, because the log is durable through *w* and replay goes on to the
+commit that frees the page. Recovery can check it: when replay ends, every
+page that had a change dropped has been freed, or made again, by a later
+commit that was replayed. If one has not, the checkpoint or the log is
+damaged. The change that makes a page is not such a change: it needs no
+image.
+
+In the two other cases K3 already makes replay skip the old page: when its
+free link is still in the checkpoint, and when a link of a new page under
+the same id is.
+
 ### 4.2 Writing and naming
 
 | Step | What happens |
@@ -370,13 +454,15 @@ force may already be gone.
 | 1 | The file `table/<id>.pt` is created under an id above every id used before, with its header, and the file and its name are made durable. |
 | 2 | The links are appended, a record at a time, and then the end record. |
 | 3 | The file is synced. |
-| 4 | The checkpoint is refused unless the log is durable through what it covers and reaches (K4). Every segment is synced. |
+| 4 | The checkpoint is refused unless the log is durable through what it covers, reaches and may have lost (K4, K10). Every segment is synced. |
 | 5 | The manifest is replaced by one that names the checkpoint, and the segments with the lengths that are now durable (K6). |
 | 6 | The file of the checkpoint that was named before is deleted. |
 
 Steps 1 to 3 are `TableCheckpoints::write`, and steps 4 to 6 are
 `TableCheckpoints::install`. Between them the caller makes the log durable
-through the checkpoint's "reaches" (K4).
+through `CheckpointInfo::log_needed` (K4). At the end of step 2, when the
+last chain has been copied, the newest free link the table has trimmed away
+is noted (K10).
 
 **K8. A checkpoint id is never given to two files that a manifest named.**
 The manifest records the last id it named (M7). An id whose file was written
@@ -401,7 +487,10 @@ point leaves:
 
 In every case the checkpoint the manifest names loads, and every block it
 points to is in a segment the manifest names, below its valid length, with
-the bytes that were appended.
+the bytes that were appended. Whichever version recovery lands on, from the
+one the log was durable through to the last one in the log (DU2), the
+checkpoint and the log after the version it covers give every page that is
+in use at that version, and no other (K1, K4, K10).
 
 ### 4.4 When the file layer fails
 
@@ -421,7 +510,7 @@ the bytes that were appended.
 | A chunk of the array, and of the arena | 4096 links, 114,688 bytes |
 | A checkpoint | 53 bytes, plus 28 for each link, plus 9 for each links record |
 | Longest record of a checkpoint | 114,697 bytes |
-| Table of one million pages, one link each, in memory | 28,102,760 bytes |
+| Table of one million pages, one link each, in memory | 28,102,776 bytes |
 | Its checkpoint | 28,002,258 bytes |
 | Most links in the arena | 2^32 − 1 |
 
@@ -429,8 +518,8 @@ The plan's acceptance test is that the table for one million pages fits in
 32 MB. Both the table in memory and its checkpoint file do, with one link
 for each page, which is a page that has been consolidated. Every further
 link, a delta run or an older link kept for a reader, is 28 bytes more in
-each. One million pages with 1.1 million links are 30,970,472 bytes in
-memory, and 32,000,000 bytes hold one million pages with 139,187 further
+each. One million pages with 1.1 million links are 30,970,488 bytes in
+memory, and 32,000,000 bytes hold one million pages with 139,186 further
 links.
 
 ## 6. Choices made here that the plan left open
@@ -481,7 +570,7 @@ STORE-10 build on it.
    `PageTable::discard_after` stays, for a recovery to find the rule broken.
    No version pin is held while a checkpoint is written: a chain that is
    trimmed, consolidated or freed during the copy is still a chain that K4
-   makes safe to recover from.
+   and K10 make safe to recover from.
 10. **The manifest must vouch for every block of the checkpoint it names**
     (K6), checked at installation and at load. The segment store states the
     rule; here it is enforced.
@@ -501,6 +590,35 @@ STORE-10 build on it.
     everything about a checkpoint.
 16. **format.md 3.1 was corrected**: it said 32 bytes a page and 128 GiB for
     2^32 pages; it now says 28 bytes and 112 GiB.
+17. **The table remembers the newest free link it trimmed away, and a
+    checkpoint is named only once the log is durable through it** (T17,
+    K10; the owner's decision D-039). STORE-10 found that a checkpoint could
+    otherwise forget a page whose freeing commit a crash can still lose
+    (page-alloc.md, choice 9). The ways not taken:
+    - A rule on whoever trims (STORE-06, STORE-08): pass the smaller of the
+      oldest pin and the version the log is durable through. Every caller
+      would have to keep it, and reclaiming would wait for the log.
+    - Keeping the free link until the log is durable through it. The table
+      would have to be told of every sync of the log.
+    - Asking that the checkpoint *cover* the free link, not only that the
+      log be durable through it. Replay would then never meet the changes
+      of K11, but a checkpoint could not be named while write-back is
+      behind the newest trimmed free link, which under a steady load of
+      freed pages can be always.
+    - Writing the version into the checkpoint. Nothing reads it after the
+      checkpoint is named (K10), and the file would change.
+    The cost is at most one further sync of the log before a checkpoint is
+    named, which K4 asks for anyway when the checkpoint reaches past what
+    is durable.
+18. **Nothing older is written back once a page has its free link** (T18).
+    T8 has the commit push the free link, so that the table says a page is
+    free from the commit on (STORE-10 builds on that: page-alloc.md A11,
+    R2). The other way, in which write-back pushes the free link in the
+    order of versions after everything older, would keep those versions
+    evictable, and would leave a freed page looking in use until write-back
+    reaches its free. With T18 the buffer pool holds what is not written
+    back of a freed page until no reader can ask for it, and FL6 is read
+    with the buffer pool's copy counting as a copy.
 
 ## 7. Code and tests
 
@@ -512,6 +630,8 @@ Run the tests with `cargo test -p lignin-format table` and
 | T1 to T8 | `table::PageTable::{push, read, newest, chain}` | What a reader is given at every version; each refused link, by its error; a freed page and its reuse. A drawn workload of 36,000 steps, with refused ones, against a model that keeps each chain as a list. |
 | T9, T10 | `PageTable::{consolidate, relocate}` | An image through the newest link and through an older one; a later delta of the same version is kept; a location that is gone. |
 | T11, T12 | `PageTable::{trim, discard_after}` | Every oldest version of a chain with two base images; a freed page before and after its freeing version; the arena reuses what a trim frees. |
+| T17 | `PageTable::trimmed_free` | Free links trimmed in any order of their versions, with and without a newer link of the page; a trim that removes none; a discard. The drawn workload compares it with the model's. |
+| T18 | none: a rule for STORE-06 | The model of 4.3 has commits whose changes stay in the buffer pool, is told that a checkpoint covers them once their page is freed, and never writes them back: every landing version still has every page. |
 | T14, T15 | `table::chains` | **Acceptance test:** the newest link is one node read, and a page version one read for each of its links, in tables of 1 to 1,000,000 pages and for any page id. |
 | T16 | `PageTable` | Readers on three threads see whole chains while a writer pushes, relocates and trims. |
 | Section 5 | `PageTable::memory_usage`, `TableCheckpoints::write` | **Acceptance test** (`tests/page_table.rs`): one million pages are at most 32,000,000 bytes in memory and exactly 28,002,258 in the checkpoint file, which loads back; so are one million pages with 1.1 million links, in memory. |
@@ -522,9 +642,11 @@ Run the tests with `cargo test -p lignin-format table` and
 | K1 to K3 | `table::{TableCheckpoints, CheckpointInfo}`, `PageTable::load` | What a checkpoint reports; a table that has no checkpoint; an empty one; several records. |
 | K5 | `TableCheckpoints::write` | Checkpoints written while another thread pushes: each loaded chain is a chain the page once had. Checkpoints written while another thread pushes, consolidates, trims, frees and reuses: each loaded chain gives a whole page version, a base image and every delta after it, no older than the page had when the write began. |
 | K4 | `TableCheckpoints::install` | A checkpoint whose page was trimmed to an image newer than the version it covers is refused until the log is durable through that image's version; so is one that covers more than the log has. |
+| K10 | `TableCheckpoints::{write, install}`, `CheckpointInfo::{trimmed_free, log_needed}` | The case STORE-10 found: base image at 1, free link at 2, trim at 2, a checkpoint that covers 1 is refused with the log durable through 1, the checkpoint in force still gives the page at 1, and it is named once the log is durable through 2. What a checkpoint needs of the log when it covers, reaches or lost the newest version, and when the id is used again. What a loaded checkpoint and table say. Checkpoints written while another thread frees pages and trims them away, from the last page down: a checkpoint that lacks a page asks for the log through the commit that freed it, also when that came after the write began. |
+| K11 | none: a rule for STORE-07 | The model of 4.3 replays the log on what each crash leaves, drops a change it has no image for, and fails if a page is left that way. |
 | K6, K7 | `TableCheckpoints::install`, `PageTable::load` | A link past a segment's end and one into no segment are not installed; a manifest with a shorter or a missing segment does not load; a checkpoint that covers less is refused. |
 | K8, K9 | `TableCheckpoints::{open, discard, manifest_replaced}` | Ids across sessions; an older checkpoint does not replace a newer one; what opening removes and leaves. |
-| 4.3 | the whole module | A crash after every operation that can leave something new, in a script of 27 steps: all 138 crash points, every state of each (81,437 plans, 1,169 distinct states); again with writes torn at 16 bytes; three drawn workloads; a database that goes on through 100 crashes. Each state is opened as a session opens it and checked against a model: the checkpoint is the old one or the new one, it loads, every block it points to reads back with the bytes appended, `table/` holds no other checkpoint, and a new checkpoint can be installed. |
+| 4.3 | the whole module | A crash after every operation that can leave something new, in a script of 41 steps: all 190 crash points, every state of each (82,723 plans, 1,469 distinct states); again with writes torn at 16 bytes; three drawn workloads; a database that goes on through 100 crashes, 53 of which lose commits. Each state is opened as a session opens it and checked against a model: the checkpoint is the old one or the new one, it loads, every block it points to reads back with the bytes appended, `table/` holds no other checkpoint, and a new checkpoint can be installed. The model keeps the log, the version it is durable through and the commits each block holds, and for every version the crash can land on it works out what the checkpoint and the replayed log give of each page: that must be the page of that version, for a page in use and for a free one. The script frees pages and trims them away while the log is behind, one with a change that was never written back and one whose id is used again, and takes checkpoints that cover no more than the log has: 288 of its recoveries are from a checkpoint that has no link of a page which was in use at the version it covers, and replay drops a change in each. |
 | 4.4 | the whole module | `EIO` and `ENOSPC` at every operation of the same script, once and as a full disk, and appends that cannot be taken back: the step fails with the injected error, every crash state and the next session are checked as above, and a session that settles the failure goes on. |
 
 The golden bytes and their checksums were computed with an independent
