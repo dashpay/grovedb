@@ -50,6 +50,10 @@ pub enum FormatError {
     },
     /// The bytes are not a flat page image, or a flat page cannot be built.
     FlatPage(crate::flat_page::FlatPageError),
+    /// The bytes are not a segment record, or a segment cannot be written.
+    Segment(crate::segment::SegmentError),
+    /// The bytes are not a manifest, or a manifest cannot be built.
+    Manifest(crate::manifest::ManifestError),
     /// A field that must hold an identifier holds the "none" pattern.
     MissingId,
     /// A reserved field or bit is not zero.
@@ -87,6 +91,8 @@ impl fmt::Display for FormatError {
                 )
             }
             Self::FlatPage(error) => write!(f, "flat page: {error}"),
+            Self::Segment(error) => write!(f, "segment: {error}"),
+            Self::Manifest(error) => write!(f, "manifest: {error}"),
             Self::MissingId => write!(f, "identifier field holds no identifier"),
             Self::NonZeroReserved => write!(f, "reserved field is not zero"),
             Self::UnknownRecordKind { code } => write!(f, "unknown record kind code {code}"),
