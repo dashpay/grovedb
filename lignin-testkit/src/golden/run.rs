@@ -19,7 +19,8 @@
 use std::fmt::Debug;
 
 use grovedb::{
-    operations::proof::indexed_axis::AxisEntries, query_result_type::QueryResultElements,
+    operations::{proof::indexed_axis::AxisEntries, QueryItemOrSumReturnType},
+    query_result_type::QueryResultElements,
     AggregateSumQueryResult, AxisAggregateValue, AxisKeys, Element, GroveDb, IndexedAxisEntry,
     PathQuery, PathQueryRun, Transaction,
 };
@@ -30,7 +31,7 @@ use super::{
     step::{Field, Outcome, Proof, Proved, Row, Step, Value, Verification},
     Error,
 };
-use crate::workload::{apply, Op, Outcome as Applied, Query, Read};
+use crate::workload::{Op, Outcome as Applied, Query, Read, Transactions};
 
 /// The stack a thread needs to run a trace. GroveDB recurses once per level
 /// of nesting when it queries and proves, about 5 MiB at depth 64 in an
@@ -52,7 +53,7 @@ pub struct Observed {
 pub struct Runner<'db> {
     db: &'db GroveDb,
     grove_version: &'db GroveVersion,
-    transaction: Option<Transaction<'db>>,
+    transactions: Transactions<'db>,
     committed_root: [u8; 32],
 }
 
@@ -63,7 +64,7 @@ impl<'db> Runner<'db> {
         Ok(Self {
             db,
             grove_version,
-            transaction: Some(db.start_transaction()),
+            transactions: Transactions::new(db),
             committed_root,
         })
     }
@@ -71,26 +72,16 @@ impl<'db> Runner<'db> {
     /// Applies one operation and reads back everything the corpus compares.
     pub fn step(&mut self, op: &Op) -> Result<Observed, Error> {
         let mut remarks = Vec::new();
-        let CostContext { value, mut cost } =
-            apply(self.db, op, self.transaction.as_ref(), self.grove_version);
+        // The transactions are kept by `Transactions`, which commits at the
+        // end of a block and adds the cost of the commit, drops an
+        // abandoned transaction, and holds the snapshot a stream opens.
+        let CostContext { value, cost } = self.transactions.apply(op, self.grove_version);
+        if op.ends_transaction() {
+            self.committed_root = root_hash(self.db, None, self.grove_version)?;
+        }
         let outcome = match value {
-            Ok(Applied::EndOfBlock) => {
-                let committed = match self.transaction.take() {
-                    Some(transaction) => {
-                        let committed = self.db.commit_transaction(transaction);
-                        cost += committed.cost;
-                        committed.value
-                    }
-                    None => Ok(()),
-                };
-                self.transaction = Some(self.db.start_transaction());
-                self.committed_root = root_hash(self.db, None, self.grove_version)?;
-                match committed {
-                    Ok(()) => Outcome::Returned(Value::Nothing),
-                    Err(error) => failed(&error, "commit failed", &mut remarks),
-                }
-            }
             Ok(applied) => Outcome::Returned(self.value(applied, &mut remarks)?),
+            Err(error) if matches!(op, Op::Commit) => failed(&error, "commit failed", &mut remarks),
             Err(error) => failed(&error, "failed", &mut remarks),
         };
         let (root_hash, proof) = match op {
@@ -98,7 +89,7 @@ impl<'db> Runner<'db> {
             _ => (
                 Some(root_hash(
                     self.db,
-                    self.transaction.as_ref(),
+                    Some(self.transactions.block()),
                     self.grove_version,
                 )?),
                 None,
@@ -120,8 +111,109 @@ impl<'db> Runner<'db> {
     /// Every outcome is named here and none falls through, so an outcome
     /// added to the workloads does not compile until it is recorded.
     fn value(&self, applied: Applied, remarks: &mut Vec<String>) -> Result<Value, Error> {
+        let optional = |element: Option<Element>| -> Result<Field, Error> {
+            Ok(match element {
+                Some(element) => Field::Bytes(self.serialized(&element)?),
+                None => Field::Absent,
+            })
+        };
+        let bytes = |value: Option<Vec<u8>>| value.map_or(Field::Absent, Field::Bytes);
+        let count_or_absent = |count: Option<u64>| count.map_or(Field::Absent, number);
         Ok(match applied {
-            Applied::Written | Applied::EndOfBlock => Value::Nothing,
+            // A step on the transaction returns nothing: what it did shows
+            // in the root hash of the step and in the reads after it.
+            Applied::Written
+            | Applied::EndOfBlock
+            | Applied::RolledBack
+            | Applied::SavepointSet
+            | Applied::Abandoned
+            | Applied::SnapshotOpens
+            | Applied::SnapshotCloses => Value::Nothing,
+            Applied::Flag(flag) => Value::Record("flag", vec![("flag", Field::Flag(flag))]),
+            Applied::Existing(element) => {
+                Value::Record("existing", vec![("element", optional(element)?)])
+            }
+            Applied::Changed { changed, previous } => Value::Record(
+                "changed",
+                vec![
+                    ("changed", Field::Flag(changed)),
+                    ("previous", optional(previous)?),
+                ],
+            ),
+            Applied::Deleted(deleted) => {
+                Value::Record("deleted", vec![("deleted", number(deleted))])
+            }
+            Applied::Appended { root, position } => Value::Record(
+                "appended",
+                vec![
+                    ("root", Field::Bytes(root.to_vec())),
+                    ("position", number(position)),
+                ],
+            ),
+            Applied::Value(value) => Value::Record("value", vec![("value", bytes(value))]),
+            Applied::Values(values) => Value::Record(
+                "values",
+                vec![("values", list(values, |value| vec![Field::Bytes(value)]))],
+            ),
+            Applied::Hash(hash) => {
+                Value::Record("hash", vec![("hash", Field::Bytes(hash.to_vec()))])
+            }
+            Applied::Count(count) => Value::Record("count", vec![("count", number(count))]),
+            Applied::Page(page) => Value::Record(
+                "page",
+                vec![
+                    (
+                        "entries",
+                        list(page.entries, |(position, value)| {
+                            vec![number(position), Field::Bytes(value)]
+                        }),
+                    ),
+                    ("total", number(page.total_count)),
+                ],
+            ),
+            Applied::OptionalRows(rows) => {
+                let mut items = Vec::new();
+                for (path, key, element) in rows {
+                    let path = list(path, |segment| vec![Field::Bytes(segment)]);
+                    items.push(vec![path, Field::Bytes(key), optional(element)?]);
+                }
+                Value::Record("optional-rows", vec![("rows", Field::List(items))])
+            }
+            Applied::ItemValues { values, skipped } => Value::Record(
+                "item-values",
+                vec![
+                    ("values", list(values, |value| vec![Field::Bytes(value)])),
+                    ("skipped", number(skipped)),
+                ],
+            ),
+            Applied::ItemValuesOrSums { values, skipped } => Value::Record(
+                "item-values-or-sums",
+                vec![
+                    ("values", list(values, item_or_sum)),
+                    ("skipped", number(skipped)),
+                ],
+            ),
+            Applied::SumValues { sums, skipped } => Value::Record(
+                "sum-values",
+                vec![
+                    ("sums", list(sums, |sum| vec![number(sum)])),
+                    ("skipped", number(skipped)),
+                ],
+            ),
+            Applied::BigSum { count, sum } => Value::Record(
+                "big-sum",
+                vec![("count", count_or_absent(count)), ("sum", number(sum))],
+            ),
+            Applied::BigSumPerKey(keys) => Value::Record(
+                "big-sum-per-key",
+                vec![(
+                    "keys",
+                    list(keys, |(key, count, sum)| {
+                        vec![Field::Bytes(key), count_or_absent(count), number(sum)]
+                    }),
+                )],
+            ),
+            Applied::Proof(proof) => Value::Record("proof", vec![("proof", Field::Bytes(proof))]),
             Applied::Element(element) => Value::Element(self.serialized(&element)?),
             Applied::Rows(rows) => Value::Rows(self.rows(rows)?),
             Applied::WrittenInSegments { first_segment } => Value::Record(
@@ -322,7 +414,11 @@ impl<'db> Runner<'db> {
                 converted = query.to_path_query();
                 &converted
             }
-            Provable::Answer(path_query) => path_query,
+            Provable::Answer(path_query)
+            | Provable::KeysOptional(path_query)
+            | Provable::BigSum {
+                query: path_query, ..
+            } => path_query,
         };
         let CostContext { value, cost } = self.db.prove_query(path_query, None, self.grove_version);
         let proved = match value {
@@ -339,6 +435,19 @@ impl<'db> Runner<'db> {
                     Provable::Answer(_) => {
                         GroveDb::verify_path_query(&bytes, path_query, self.grove_version)
                             .map(|verified| *verified.root_hash())
+                    }
+                    Provable::KeysOptional(_) => GroveDb::verify_query_with_absence_proof(
+                        &bytes,
+                        path_query,
+                        self.grove_version,
+                    )
+                    .map(|(root, _)| root),
+                    Provable::BigSum {
+                        with_count,
+                        per_key,
+                        ..
+                    } => {
+                        verify_big_sum(&bytes, path_query, with_count, per_key, self.grove_version)
                     }
                 };
                 Proved::Bytes(bytes, verification(verified, &self.committed_root, remarks))
@@ -362,6 +471,76 @@ pub enum Provable<'read> {
     /// A path query in GroveDB's whole grammar, verified by
     /// `GroveDb::verify_path_query`.
     Answer(&'read PathQuery),
+    /// A query for keys that answers for each of them, verified by
+    /// `GroveDb::verify_query_with_absence_proof`.
+    KeysOptional(&'read PathQuery),
+    /// A 128-bit sum of a key range, verified by the verifier named after
+    /// its reader, such as `GroveDb::verify_aggregate_big_sum_query`.
+    BigSum {
+        /// The query.
+        query: &'read PathQuery,
+        /// Whether the count is returned with the sum.
+        with_count: bool,
+        /// Whether there is one answer for each selected key.
+        per_key: bool,
+    },
+}
+
+/// Verifies the proof of a [`Read::BigSum`] with the verifier of its form
+/// and returns the root hash it verifies to.
+#[expect(
+    clippy::result_large_err,
+    reason = "a verifier fails with GroveDB's own error, whatever its size"
+)]
+fn verify_big_sum(
+    proof: &[u8],
+    query: &PathQuery,
+    with_count: bool,
+    per_key: bool,
+    grove_version: &GroveVersion,
+) -> Result<[u8; 32], grovedb::Error> {
+    match (with_count, per_key) {
+        (false, false) => GroveDb::verify_aggregate_big_sum_query(proof, query, grove_version)
+            .map(|(root, _)| root),
+        (true, false) => {
+            GroveDb::verify_aggregate_count_and_big_sum_query(proof, query, grove_version)
+                .map(|(root, ..)| root)
+        }
+        (false, true) => {
+            GroveDb::verify_aggregate_big_sum_query_per_key(proof, query, grove_version)
+                .map(|(root, _)| root)
+        }
+        (true, true) => {
+            GroveDb::verify_aggregate_count_and_big_sum_query_per_key(proof, query, grove_version)
+                .map(|(root, _)| root)
+        }
+    }
+}
+
+/// One value `GroveDb::query_item_value_or_sum` returned: what it is, then
+/// what it holds.
+fn item_or_sum(value: QueryItemOrSumReturnType) -> Vec<Field> {
+    match value {
+        QueryItemOrSumReturnType::ItemData(item) => {
+            vec![Field::Word("item"), Field::Bytes(item)]
+        }
+        QueryItemOrSumReturnType::SumValue(sum) => vec![Field::Word("sum"), number(sum)],
+        QueryItemOrSumReturnType::BigSumValue(sum) => vec![Field::Word("big-sum"), number(sum)],
+        QueryItemOrSumReturnType::CountValue(count) => vec![Field::Word("count"), number(count)],
+        QueryItemOrSumReturnType::CountSumValue(count, sum) => {
+            vec![Field::Word("count-and-sum"), number(count), number(sum)]
+        }
+        QueryItemOrSumReturnType::CountBigSumValue(count, sum) => {
+            vec![Field::Word("count-and-big-sum"), number(count), number(sum)]
+        }
+        QueryItemOrSumReturnType::ItemDataWithSumValue(item, sum) => {
+            vec![
+                Field::Word("item-with-sum"),
+                Field::Bytes(item),
+                number(sum),
+            ]
+        }
+    }
 }
 
 /// How a read is proved, for a read that is.
@@ -374,7 +553,11 @@ pub enum Provable<'read> {
 /// A [`Read::PathQuery`] is proved when its stream marks it as proven. The
 /// ones it does not mark are the queries GroveDB refuses to prove on the
 /// grove version the stream was generated for. The readers that return
-/// rows, the sum-budget walk and the auxiliary keyspace have no proof.
+/// rows, the sum-budget walk and the auxiliary keyspace have no proof, and
+/// neither have the checks, the typed reads of the append-only trees and
+/// the readers that return values or sums. A [`Read::Prove`] returns the
+/// bytes of its proof as its result, so they are compared as the result
+/// and nothing is proved a second time.
 pub fn provable(read: &Read) -> Option<Provable<'_>> {
     match read {
         Read::Query(query) => Some(Provable::Rows(query)),
@@ -382,12 +565,30 @@ pub fn provable(read: &Read) -> Option<Provable<'_>> {
             query,
             proven: true,
         } => Some(Provable::Answer(query)),
+        Read::KeysOptional { query, .. } => Some(Provable::KeysOptional(query)),
+        Read::BigSum {
+            query,
+            with_count,
+            per_key,
+        } => Some(Provable::BigSum {
+            query,
+            with_count: *with_count,
+            per_key: *per_key,
+        }),
         Read::PathQuery { proven: false, .. }
         | Read::Get { .. }
         | Read::Rows { .. }
         | Read::SumBudget { .. }
         | Read::GetAux { .. }
-        | Read::AuxByPrefix { .. } => None,
+        | Read::AuxByPrefix { .. }
+        | Read::HasRaw { .. }
+        | Read::IsEmptyTree { .. }
+        | Read::Fetch { .. }
+        | Read::Tree { .. }
+        | Read::ItemValues { .. }
+        | Read::SumValues { .. }
+        | Read::Many { .. }
+        | Read::Prove(_) => None,
     }
 }
 
