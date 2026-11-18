@@ -26,7 +26,7 @@ use intmap::IntMap;
 use crate::{
     batch::{key_info::KeyInfo, GroveOp, KeyInfoPath, QualifiedGroveDbOp, TreeCache},
     operations::insert::check_wide_sum_tree_creation,
-    ElementFlags, Error,
+    Element, ElementFlags, Error,
 };
 
 /// Mapping from path to operations keyed by key info.
@@ -276,6 +276,23 @@ where
                     cost,
                     check_wide_sum_tree_creation(element, "batch insert", grove_version)
                 );
+                // For the same reason the axes of a count and big sum indexed
+                // tree are checked here: unsorted axes would be committed in
+                // the order given, and no proof of the tree would verify.
+                if let Element::ProvableCountProvableBigSumIndexedTree(_, _, _, axes, _) =
+                    element.underlying()
+                {
+                    cost_return_on_error_no_add!(
+                        cost,
+                        Element::validate_pcpbsit_axes(axes).map_err(|_| {
+                            Error::InvalidBatchOperation(
+                                "a ProvableCountProvableBigSumIndexedTree must have canonical \
+                                 axes (1..=3 entries, sorted ascending by tag, no duplicates, \
+                                 each of the count, avg and big sum axes)",
+                            )
+                        })
+                    );
+                }
             }
 
             // Validate key length: Merk link encoding stores key length as a

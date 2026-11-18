@@ -64,11 +64,31 @@ fn enforce_indexed_item_key_ceiling(
 /// child as an aggregate mismatch (recorded 9 against an empty inner Merk).
 /// The legitimate way to reach count 9 is to insert the child empty and
 /// populate it in the same batch, letting propagation derive it.
+/// The type rules for an entry that reaches an indexed primary as the
+/// computed root of a tree the same batch created and filled: what the tree
+/// type accepts, and what the indexed variant accepts. Its aggregate is
+/// derived from its contents, so the rootless-claim rule does not apply.
+fn validate_propagated_entry(
+    entry: &Element,
+    primary_tree_type: grovedb_merk::TreeType,
+    grove_version: &GroveVersion,
+) -> Result<(), Error> {
+    entry
+        .validate_insertable_into(primary_tree_type)
+        .map_err(Error::MerkError)?;
+    validate_indexed_child_for_variant(entry, primary_tree_type, grove_version)
+}
+
 fn validate_indexed_child_ops(
     ops_at_path_by_key: &BTreeMap<KeyInfo, GroveOp>,
     primary_tree_type: grovedb_merk::TreeType,
     grove_version: &GroveVersion,
 ) -> Result<(), Error> {
+    let wide_primary = matches!(
+        primary_tree_type,
+        grovedb_merk::TreeType::ProvableBigSumIndexedTree
+            | grovedb_merk::TreeType::ProvableCountProvableBigSumIndexedTree
+    );
     for op in ops_at_path_by_key.values() {
         // EXHAUSTIVE on purpose — no `_` arm. An earlier revision used a
         // catch-all and silently skipped `GroveOp::Patch`, which carries an
@@ -102,11 +122,7 @@ fn validate_indexed_child_ops(
                 not_counted_or_summed,
                 ..
             } => {
-                if matches!(
-                    primary_tree_type,
-                    grovedb_merk::TreeType::ProvableBigSumIndexedTree
-                        | grovedb_merk::TreeType::ProvableCountProvableBigSumIndexedTree
-                ) {
+                if wide_primary {
                     let tree = merk_tree_from_aggregate(None, None, *aggregate_data);
                     let tree = if *non_counted {
                         Element::NonCounted(Box::new(tree))
@@ -117,7 +133,15 @@ fn validate_indexed_child_ops(
                     } else {
                         tree
                     };
-                    validate_indexed_child_for_variant(&tree, primary_tree_type, grove_version)?;
+                    validate_propagated_entry(&tree, primary_tree_type, grove_version)?;
+                }
+                continue;
+            }
+            // An indexed tree created and filled by the same batch keeps the
+            // caller's element in the op, and is held to the same rule.
+            GroveOp::InsertAggregateIndexedTreeRootKeys { element, .. } => {
+                if wide_primary {
+                    validate_propagated_entry(element, primary_tree_type, grove_version)?;
                 }
                 continue;
             }
@@ -130,7 +154,6 @@ fn validate_indexed_child_ops(
             | GroveOp::ReplaceNonMerkTreeRoot { .. }
             | GroveOp::InsertNonMerkTree { .. }
             | GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. }
-            | GroveOp::InsertAggregateIndexedTreeRootKeys { .. }
             | GroveOp::RefreshReference { .. }
             | GroveOp::CommitmentTreeInsert { .. }
             | GroveOp::MmrTreeAppend { .. }

@@ -5102,6 +5102,24 @@ where
                         Ok(element)
                     };
                     let element = cost_return_on_error_no_add!(cost, element);
+                    // A tree the batch created and filled never reached the
+                    // insert arm, where the parent's rules for a wrapper are
+                    // checked. The trees with a 128-bit sum are held to them
+                    // here; the trees that shipped before them keep the
+                    // behaviour they shipped with.
+                    if matches!(
+                        element.underlying(),
+                        Element::CountBigSumTree(..)
+                            | Element::ProvableBigSumTree(..)
+                            | Element::ProvableCountProvableBigSumTree(..)
+                    ) {
+                        cost_return_on_error_no_add!(
+                            cost,
+                            element
+                                .validate_insertable_into(in_tree_type)
+                                .map_err(Error::MerkError)
+                        );
+                    }
                     let merk_feature_type = cost_return_on_error_into_no_add!(
                         cost,
                         element.get_feature_type(in_tree_type)

@@ -22,7 +22,7 @@ mod tests {
         operations::{
             get::{PathQueryRun, QueryItemOrSumReturnType},
             insert::InsertOptions,
-            proof::indexed_axis::AxisEntries,
+            proof::{indexed_axis::AxisEntries, VerifiedPathQuery},
         },
         query_result_type::{AxisKeys, QueryResultType},
         reference_path::ReferencePathType,
@@ -1206,5 +1206,172 @@ mod tests {
         };
         assert_eq!(count, 0, "the indexed tree is left out of the count");
         assert_verifies(&batched, v);
+    }
+
+    /// An entry that is itself an indexed tree, created and filled by the
+    /// same batch, is held to the child rule too.
+    #[test]
+    fn a_filled_indexed_entry_is_held_to_the_child_rule() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        populate_pbsit(&db, b"sum", v);
+        let before = db.root_hash(None, v).unwrap().expect("root");
+
+        // A count indexed tree gives the sum nothing.
+        let refused = db
+            .apply_batch(
+                vec![
+                    insert_op(
+                        &[TEST_LEAF, b"sum"],
+                        b"t",
+                        Element::empty_provable_count_indexed_tree(),
+                    ),
+                    insert_op(
+                        &[TEST_LEAF, b"sum", b"t"],
+                        b"k",
+                        Element::new_item(b"x".to_vec()),
+                    ),
+                ],
+                None,
+                None,
+                v,
+            )
+            .unwrap();
+        assert_invalid_input(
+            refused,
+            "ProvableBigSumIndexedTree only accepts sum-bearing children",
+        );
+        assert_eq!(db.root_hash(None, v).unwrap().expect("root"), before);
+
+        // A sum indexed tree does, and is ranked by the sum the batch gave it.
+        db.apply_batch(
+            vec![
+                insert_op(
+                    &[TEST_LEAF, b"sum"],
+                    b"t",
+                    Element::empty_provable_sum_indexed_tree(),
+                ),
+                insert_op(&[TEST_LEAF, b"sum", b"t"], b"k", Element::new_sum_item(40)),
+            ],
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("a sum indexed tree entry");
+        let Element::ProvableBigSumIndexedTree(_, _, sum, _) = stored(&db, b"sum", v) else {
+            panic!("expected a ProvableBigSumIndexedTree");
+        };
+        assert_eq!(sum, TOTAL + 40);
+        assert_verifies(&db, v);
+    }
+
+    /// Axes out of order are refused when the batch that creates the tree
+    /// also fills it, as they are when it only creates it.
+    #[test]
+    fn unsorted_axes_are_refused_when_the_batch_also_fills_the_tree() {
+        let v = GroveVersion::latest();
+        let tree = |axes: &[IndexAxis]| {
+            Element::ProvableCountProvableBigSumIndexedTree(
+                None,
+                0,
+                0,
+                axes.iter().map(|axis| (axis.tag(), None)).collect(),
+                None,
+            )
+        };
+        let create_and_fill = |db: &GroveDb, axes: &[IndexAxis]| {
+            db.apply_batch(
+                vec![
+                    insert_op(&[TEST_LEAF], b"w", tree(axes)),
+                    insert_op(&[TEST_LEAF, b"w"], b"k", Element::new_sum_item(5)),
+                ],
+                None,
+                None,
+                v,
+            )
+            .unwrap()
+        };
+
+        let db = make_test_grovedb(v);
+        let before = db.root_hash(None, v).unwrap().expect("root");
+        for bad_axes in [
+            vec![IndexAxis::BigSum, IndexAxis::Count],
+            vec![IndexAxis::Count, IndexAxis::Count],
+            vec![IndexAxis::Count, IndexAxis::Sum],
+        ] {
+            assert_invalid_batch(create_and_fill(&db, &bad_axes), "must have canonical axes");
+        }
+        assert_eq!(db.root_hash(None, v).unwrap().expect("root"), before);
+
+        // In order, the same batch is taken and its ranking is proved.
+        create_and_fill(&db, &[IndexAxis::Count, IndexAxis::BigSum]).expect("canonical axes");
+        let ranked = PathQuery::new_axis_top_k(
+            vec![TEST_LEAF.to_vec(), b"w".to_vec()],
+            IndexAxis::BigSum,
+            5,
+            0,
+            true,
+        );
+        let proof = db.prove_query(&ranked, None, v).unwrap().expect("prove");
+        let VerifiedPathQuery::AxisEntries {
+            root_hash, entries, ..
+        } = GroveDb::verify_path_query(&proof, &ranked, v).expect("verify")
+        else {
+            panic!("expected proved axis entries");
+        };
+        assert_eq!(root_hash, db.root_hash(None, v).unwrap().expect("root"));
+        assert_eq!(entries.len(), 1);
+    }
+
+    /// A wrapped tree that a batch creates and fills is held to its
+    /// parent's rule for the wrapper, as it is when the batch only creates
+    /// it.
+    #[test]
+    fn a_filled_tree_is_held_to_its_parents_wrapper_rule() {
+        let v = GroveVersion::latest();
+        let create_and_fill = |db: &GroveDb, tree: Element| {
+            db.apply_batch(
+                vec![
+                    insert_op(&[TEST_LEAF, b"p"], b"w", tree),
+                    insert_op(&[TEST_LEAF, b"p", b"w"], b"k", Element::new_sum_item(5)),
+                ],
+                None,
+                None,
+                v,
+            )
+            .unwrap()
+        };
+        let non_counted = |tree: Element| Element::NonCounted(Box::new(tree));
+
+        // A provable count tree commits its count and takes no child that
+        // is left out of it.
+        let db = make_test_grovedb(v);
+        create(&db, b"p", Element::empty_provable_count_tree(), v);
+        let before = db.root_hash(None, v).unwrap().expect("root");
+        for tree in [
+            Element::empty_count_big_sum_tree(),
+            Element::empty_provable_big_sum_tree(),
+            Element::empty_provable_count_provable_big_sum_tree(),
+        ] {
+            let refused = create_and_fill(&db, non_counted(tree));
+            let message = format!("{refused:?}");
+            assert!(
+                refused.is_err() && message.contains("non-counted elements may only be inserted"),
+                "{message}"
+            );
+        }
+        assert_eq!(db.root_hash(None, v).unwrap().expect("root"), before);
+
+        // A count tree does, and its count leaves the wrapped tree out.
+        let db = make_test_grovedb(v);
+        create(&db, b"p", Element::empty_count_tree(), v);
+        create_and_fill(&db, non_counted(Element::empty_count_big_sum_tree()))
+            .expect("a count tree takes the wrapped tree");
+        let Element::CountTree(_, count, _) = stored(&db, b"p", v) else {
+            panic!("expected a CountTree");
+        };
+        assert_eq!(count, 0);
+        assert_verifies(&db, v);
     }
 }
