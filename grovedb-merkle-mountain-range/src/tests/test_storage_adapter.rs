@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
 use grovedb_costs::{
-    storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, CostContext,
-    CostResult, CostsExt, OperationCost,
+    storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostResult, CostsExt,
+    OperationCost,
 };
-use grovedb_storage::StorageContext;
+use grovedb_storage::FlatStore;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
@@ -13,9 +13,9 @@ use crate::{
     MMRStoreReadOps, MMRStoreWriteOps, MmrNode, MMR,
 };
 
-// ── Minimal mock StorageContext ──────────────────────────────────────
+// ── Minimal mock FlatStore ──────────────────────────────────────
 
-/// In-memory key→value store implementing `StorageContext`.
+/// In-memory key→value store implementing `FlatStore`.
 ///
 /// Only `get` and `put` are functional — the rest are stubs since
 /// `MmrStore` never calls them.
@@ -29,44 +29,6 @@ impl MockStorageContext {
             data: std::cell::RefCell::new(BTreeMap::new()),
         }
     }
-}
-
-struct StubBatch;
-
-impl grovedb_storage::Batch for StubBatch {
-    fn put<K: AsRef<[u8]>>(
-        &mut self,
-        _key: K,
-        _value: &[u8],
-        _children_sizes: ChildrenSizesWithIsSumTree,
-        _cost_info: Option<KeyValueStorageCost>,
-    ) -> Result<(), grovedb_costs::error::Error> {
-        Ok(())
-    }
-
-    fn put_aux<K: AsRef<[u8]>>(
-        &mut self,
-        _key: K,
-        _value: &[u8],
-        _cost_info: Option<KeyValueStorageCost>,
-    ) -> Result<(), grovedb_costs::error::Error> {
-        Ok(())
-    }
-
-    fn put_root<K: AsRef<[u8]>>(
-        &mut self,
-        _key: K,
-        _value: &[u8],
-        _cost_info: Option<KeyValueStorageCost>,
-    ) -> Result<(), grovedb_costs::error::Error> {
-        Ok(())
-    }
-
-    fn delete<K: AsRef<[u8]>>(&mut self, _key: K, _cost_info: Option<KeyValueStorageCost>) {}
-
-    fn delete_aux<K: AsRef<[u8]>>(&mut self, _key: K, _cost_info: Option<KeyValueStorageCost>) {}
-
-    fn delete_root<K: AsRef<[u8]>>(&mut self, _key: K, _cost_info: Option<KeyValueStorageCost>) {}
 }
 
 struct StubRawIterator;
@@ -136,25 +98,11 @@ impl grovedb_storage::RawIterator for StubRawIterator {
     }
 }
 
-impl<'db> StorageContext<'db> for MockStorageContext {
-    type Batch = StubBatch;
-    type RawIterator = StubRawIterator;
-
-    fn put<K: AsRef<[u8]>>(
-        &self,
-        key: K,
-        value: &[u8],
-        _children_sizes: ChildrenSizesWithIsSumTree,
-        _cost_info: Option<KeyValueStorageCost>,
-    ) -> CostResult<(), grovedb_storage::Error> {
-        self.data
-            .borrow_mut()
-            .insert(key.as_ref().to_vec(), value.to_vec());
-        Ok(()).wrap_with_cost(OperationCost {
-            seek_count: 1,
-            ..Default::default()
-        })
-    }
+impl FlatStore for MockStorageContext {
+    type Cursor<'a>
+        = StubRawIterator
+    where
+        Self: 'a;
 
     fn get<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, grovedb_storage::Error> {
         let data = self.data.borrow();
@@ -167,31 +115,19 @@ impl<'db> StorageContext<'db> for MockStorageContext {
         })
     }
 
-    fn put_aux<K: AsRef<[u8]>>(
+    fn put<K: AsRef<[u8]>>(
         &self,
-        _key: K,
-        _value: &[u8],
+        key: K,
+        value: &[u8],
         _cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), grovedb_storage::Error> {
-        Ok(()).wrap_with_cost(Default::default())
-    }
-
-    fn put_root<K: AsRef<[u8]>>(
-        &self,
-        _key: K,
-        _value: &[u8],
-        _cost_info: Option<KeyValueStorageCost>,
-    ) -> CostResult<(), grovedb_storage::Error> {
-        Ok(()).wrap_with_cost(Default::default())
-    }
-
-    fn put_meta<K: AsRef<[u8]>>(
-        &self,
-        _key: K,
-        _value: &[u8],
-        _cost_info: Option<KeyValueStorageCost>,
-    ) -> CostResult<(), grovedb_storage::Error> {
-        Ok(()).wrap_with_cost(Default::default())
+        self.data
+            .borrow_mut()
+            .insert(key.as_ref().to_vec(), value.to_vec());
+        Ok(()).wrap_with_cost(OperationCost {
+            seek_count: 1,
+            ..Default::default()
+        })
     }
 
     fn delete<K: AsRef<[u8]>>(
@@ -202,74 +138,19 @@ impl<'db> StorageContext<'db> for MockStorageContext {
         Ok(()).wrap_with_cost(Default::default())
     }
 
-    fn delete_aux<K: AsRef<[u8]>>(
-        &self,
-        _key: K,
-        _cost_info: Option<KeyValueStorageCost>,
-    ) -> CostResult<(), grovedb_storage::Error> {
-        Ok(()).wrap_with_cost(Default::default())
-    }
-
-    fn delete_root<K: AsRef<[u8]>>(
-        &self,
-        _key: K,
-        _cost_info: Option<KeyValueStorageCost>,
-    ) -> CostResult<(), grovedb_storage::Error> {
-        Ok(()).wrap_with_cost(Default::default())
-    }
-
-    fn delete_meta<K: AsRef<[u8]>>(
-        &self,
-        _key: K,
-        _cost_info: Option<KeyValueStorageCost>,
-    ) -> CostResult<(), grovedb_storage::Error> {
-        Ok(()).wrap_with_cost(Default::default())
-    }
-
-    fn get_aux<K: AsRef<[u8]>>(
-        &self,
-        _key: K,
-    ) -> CostResult<Option<Vec<u8>>, grovedb_storage::Error> {
-        Ok(None).wrap_with_cost(Default::default())
-    }
-
-    fn get_root<K: AsRef<[u8]>>(
-        &self,
-        _key: K,
-    ) -> CostResult<Option<Vec<u8>>, grovedb_storage::Error> {
-        Ok(None).wrap_with_cost(Default::default())
-    }
-
-    fn get_meta<K: AsRef<[u8]>>(
-        &self,
-        _key: K,
-    ) -> CostResult<Option<Vec<u8>>, grovedb_storage::Error> {
-        Ok(None).wrap_with_cost(Default::default())
-    }
-
-    fn new_batch(&self) -> Self::Batch {
-        StubBatch
-    }
-
-    fn commit_batch(&self, _batch: Self::Batch) -> CostResult<(), grovedb_storage::Error> {
-        Ok(()).wrap_with_cost(Default::default())
-    }
-
-    fn raw_iter(&self) -> Self::RawIterator {
-        StubRawIterator
-    }
-
-    fn raw_iter_aux(&self) -> Self::RawIterator {
+    fn cursor(&self) -> Self::Cursor<'_> {
         StubRawIterator
     }
 }
 
-/// Mock StorageContext that returns errors for get and put.
+/// Mock FlatStore that returns errors for get and put.
 struct FailingStorageContext;
 
-impl<'db> StorageContext<'db> for FailingStorageContext {
-    type Batch = StubBatch;
-    type RawIterator = StubRawIterator;
+impl FlatStore for FailingStorageContext {
+    type Cursor<'a>
+        = StubRawIterator
+    where
+        Self: 'a;
 
     fn get<K: AsRef<[u8]>>(&self, _key: K) -> CostResult<Option<Vec<u8>>, grovedb_storage::Error> {
         Err(grovedb_storage::Error::StorageError("get failed".into()))
@@ -280,38 +161,10 @@ impl<'db> StorageContext<'db> for FailingStorageContext {
         &self,
         _key: K,
         _value: &[u8],
-        _children_sizes: ChildrenSizesWithIsSumTree,
         _cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), grovedb_storage::Error> {
         Err(grovedb_storage::Error::StorageError("put failed".into()))
             .wrap_with_cost(Default::default())
-    }
-
-    fn put_aux<K: AsRef<[u8]>>(
-        &self,
-        _k: K,
-        _v: &[u8],
-        _c: Option<KeyValueStorageCost>,
-    ) -> CostResult<(), grovedb_storage::Error> {
-        Ok(()).wrap_with_cost(Default::default())
-    }
-
-    fn put_root<K: AsRef<[u8]>>(
-        &self,
-        _k: K,
-        _v: &[u8],
-        _c: Option<KeyValueStorageCost>,
-    ) -> CostResult<(), grovedb_storage::Error> {
-        Ok(()).wrap_with_cost(Default::default())
-    }
-
-    fn put_meta<K: AsRef<[u8]>>(
-        &self,
-        _k: K,
-        _v: &[u8],
-        _c: Option<KeyValueStorageCost>,
-    ) -> CostResult<(), grovedb_storage::Error> {
-        Ok(()).wrap_with_cost(Default::default())
     }
 
     fn delete<K: AsRef<[u8]>>(
@@ -322,64 +175,7 @@ impl<'db> StorageContext<'db> for FailingStorageContext {
         Ok(()).wrap_with_cost(Default::default())
     }
 
-    fn delete_aux<K: AsRef<[u8]>>(
-        &self,
-        _k: K,
-        _c: Option<KeyValueStorageCost>,
-    ) -> CostResult<(), grovedb_storage::Error> {
-        Ok(()).wrap_with_cost(Default::default())
-    }
-
-    fn delete_root<K: AsRef<[u8]>>(
-        &self,
-        _k: K,
-        _c: Option<KeyValueStorageCost>,
-    ) -> CostResult<(), grovedb_storage::Error> {
-        Ok(()).wrap_with_cost(Default::default())
-    }
-
-    fn delete_meta<K: AsRef<[u8]>>(
-        &self,
-        _k: K,
-        _c: Option<KeyValueStorageCost>,
-    ) -> CostResult<(), grovedb_storage::Error> {
-        Ok(()).wrap_with_cost(Default::default())
-    }
-
-    fn get_aux<K: AsRef<[u8]>>(
-        &self,
-        _k: K,
-    ) -> CostResult<Option<Vec<u8>>, grovedb_storage::Error> {
-        Ok(None).wrap_with_cost(Default::default())
-    }
-
-    fn get_root<K: AsRef<[u8]>>(
-        &self,
-        _k: K,
-    ) -> CostResult<Option<Vec<u8>>, grovedb_storage::Error> {
-        Ok(None).wrap_with_cost(Default::default())
-    }
-
-    fn get_meta<K: AsRef<[u8]>>(
-        &self,
-        _k: K,
-    ) -> CostResult<Option<Vec<u8>>, grovedb_storage::Error> {
-        Ok(None).wrap_with_cost(Default::default())
-    }
-
-    fn new_batch(&self) -> Self::Batch {
-        StubBatch
-    }
-
-    fn commit_batch(&self, _batch: Self::Batch) -> CostResult<(), grovedb_storage::Error> {
-        Ok(()).wrap_with_cost(Default::default())
-    }
-
-    fn raw_iter(&self) -> Self::RawIterator {
-        StubRawIterator
-    }
-
-    fn raw_iter_aux(&self) -> Self::RawIterator {
+    fn cursor(&self) -> Self::Cursor<'_> {
         StubRawIterator
     }
 }

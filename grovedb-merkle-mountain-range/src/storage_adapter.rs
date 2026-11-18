@@ -1,7 +1,7 @@
-//! Storage adapter bridging GroveDB's `StorageContext` to MMR traits.
+//! Storage adapter bridging GroveDB's `FlatStore` to MMR traits.
 //!
 //! Provides `MmrStore`, which implements `MMRStoreReadOps` and
-//! `MMRStoreWriteOps` backed by a GroveDB storage context.
+//! `MMRStoreWriteOps` backed by a GroveDB flat keyspace.
 
 use grovedb_costs::{
     storage_cost::{
@@ -10,7 +10,7 @@ use grovedb_costs::{
     },
     CostResult, CostsExt, OperationCost,
 };
-use grovedb_storage::StorageContext;
+use grovedb_storage::FlatStore;
 use integer_encoding::VarInt;
 
 use crate::{
@@ -18,7 +18,7 @@ use crate::{
     MMRStoreReadOps, MMRStoreWriteOps, MmrNode,
 };
 
-/// Storage adapter wrapping a GroveDB `StorageContext` for MMR operations.
+/// Storage adapter wrapping a GroveDB `FlatStore` for MMR operations.
 ///
 /// Reads and writes MMR nodes to data storage keyed by position.
 /// Costs from storage operations are returned directly via `CostResult`.
@@ -150,7 +150,7 @@ impl<'a, C> MmrStore<'a, C> {
     }
 }
 
-impl<'db, C: StorageContext<'db>> MMRStoreReadOps for &MmrStore<'_, C> {
+impl<C: FlatStore> MMRStoreReadOps for &MmrStore<'_, C> {
     fn element_at_position(&self, pos: u64) -> CostResult<Option<MmrNode>, crate::Error> {
         let key = match mmr_node_key_sized(pos, self.key_size) {
             Ok(k) => k,
@@ -184,7 +184,7 @@ impl<'db, C: StorageContext<'db>> MMRStoreReadOps for &MmrStore<'_, C> {
     }
 }
 
-impl<'db, C: StorageContext<'db>> MMRStoreWriteOps for &MmrStore<'_, C> {
+impl<C: FlatStore> MMRStoreWriteOps for &MmrStore<'_, C> {
     fn append(&mut self, pos: u64, elems: Vec<MmrNode>) -> CostResult<(), crate::Error> {
         let mut cost = OperationCost::default();
         for (i, elem) in elems.into_iter().enumerate() {
@@ -204,7 +204,7 @@ impl<'db, C: StorageContext<'db>> MMRStoreWriteOps for &MmrStore<'_, C> {
                 }
             };
             let cost_info = self.write_cost_info(elem.value(), serialized.len() as u32);
-            let result = self.ctx.put(key, &serialized, None, cost_info);
+            let result = self.ctx.put(key, &serialized, cost_info);
             cost += result.cost;
             if let Err(e) = result.value {
                 return Err(crate::Error::StoreError(format!(

@@ -10,7 +10,7 @@
 //! what it was admitted under. Behaviour and cost here must not change.
 
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
-use grovedb_storage::StorageContext;
+use grovedb_storage::FlatStore;
 
 use crate::{
     tree::{cost_return_on_error, DenseFixedSizedMerkleTree, SlotWriteAccounting},
@@ -19,7 +19,7 @@ use crate::{
 
 /// Write `value` at the next position and re-derive the root from every
 /// filled position. The caller has checked the tree is not full.
-pub(super) fn insert_next<'db, S: StorageContext<'db>>(
+pub(super) fn insert_next<S: FlatStore>(
     tree: &mut DenseFixedSizedMerkleTree<S>,
     value: &[u8],
     accounting: SlotWriteAccounting,
@@ -33,7 +33,7 @@ pub(super) fn insert_next<'db, S: StorageContext<'db>>(
         Ok(root_hash) => Ok((root_hash, position)).wrap_with_cost(cost),
         // codecov:ignore — requires compute_root_hash to fail after put_value
         // succeeds, which needs a storage fault (get fails on a key that was
-        // just written). Not reachable with any StorageContext implementation.
+        // just written). Not reachable with any FlatStore implementation.
         Err(e) => {
             // Roll back count and cache so the tree state remains
             // consistent. The value remains in the store; the caller
@@ -47,7 +47,7 @@ pub(super) fn insert_next<'db, S: StorageContext<'db>>(
 
 /// Write `value` at the next position without deriving the root. The caller
 /// has checked the tree is not full.
-pub(super) fn insert_next_no_root<'db, S: StorageContext<'db>>(
+pub(super) fn insert_next_no_root<S: FlatStore>(
     tree: &mut DenseFixedSizedMerkleTree<S>,
     value: &[u8],
     accounting: SlotWriteAccounting,
@@ -60,7 +60,7 @@ pub(super) fn insert_next_no_root<'db, S: StorageContext<'db>>(
 }
 
 /// The root, walked from every filled position.
-pub(super) fn root_hash<'db, S: StorageContext<'db>>(
+pub(super) fn root_hash<S: FlatStore>(
     tree: &DenseFixedSizedMerkleTree<S>,
 ) -> CostResult<[u8; 32], DenseMerkleError> {
     tree.compute_root_hash()

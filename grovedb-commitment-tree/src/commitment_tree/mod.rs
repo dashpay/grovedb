@@ -1,4 +1,4 @@
-//! Storage adapter bridging GroveDB's `StorageContext` to the composite
+//! Storage adapter bridging GroveDB's `FlatStore` to the composite
 //! commitment tree.
 //!
 //! Provides [`CommitmentTree`], which owns both the in-memory
@@ -13,7 +13,7 @@ use std::marker::PhantomData;
 
 use grovedb_bulk_append_tree::{BulkAppendTree, RangePage};
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
-use grovedb_storage::StorageContext;
+use grovedb_storage::FlatStore;
 use grovedb_version::version::GroveVersion;
 use orchard::{
     memo::{DashMemo, MemoSize},
@@ -168,7 +168,7 @@ impl<S, M: MemoSize> std::fmt::Debug for CommitmentTree<S, M> {
     }
 }
 
-impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
+impl<S: FlatStore, M: MemoSize> CommitmentTree<S, M> {
     /// Create a new empty commitment tree.
     ///
     /// `chunk_power` is the log2 of the epoch size for the underlying
@@ -466,7 +466,7 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
     /// 2. [`save`](Self::save) to persist the Sinsemilla frontier.
     ///
     /// **Do not call [`commit_mmr`](Self::commit_mmr) between chained
-    /// `append_many_raw` calls.** A GroveDB `StorageContext::get` does not see
+    /// `append_many_raw` calls.** A deferred GroveDB `FlatStore::get` does not see
     /// writes that are sitting in its `StorageBatch` (reads go straight to the
     /// underlying transaction). Flushing the overlay mid-session would put the
     /// MMR peaks into the batch, where the *next* batch's compactions can't
@@ -641,7 +641,7 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
             .bulk_tree
             .dense_tree
             .storage
-            .put(COMMITMENT_TREE_DATA_KEY, &serialized, None, cost_info)
+            .put(COMMITMENT_TREE_DATA_KEY, &serialized, cost_info)
             .unwrap_add_cost(&mut cost);
         match result {
             Ok(()) => Ok(()).wrap_with_cost(cost),

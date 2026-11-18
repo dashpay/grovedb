@@ -14,7 +14,7 @@ use grovedb_costs::{
     storage_cost::key_value_cost::KeyValueStorageCost, CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "storage")]
-use grovedb_storage::StorageContext;
+use grovedb_storage::FlatStore;
 
 #[cfg(feature = "storage")]
 use crate::{
@@ -329,7 +329,7 @@ impl<S> DenseFixedSizedMerkleTree<S> {
 // ── Storage-dependent operations ──────────────────────────────────────
 
 #[cfg(feature = "storage")]
-impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
+impl<S: FlatStore> DenseFixedSizedMerkleTree<S> {
     /// Create a new empty tree with the given height and storage.
     ///
     /// Height must be between 1 and 16 inclusive.
@@ -532,7 +532,7 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
 
         let result = self
             .storage
-            .put(key, value, None, cost_info)
+            .put(key, value, cost_info)
             .unwrap_add_cost(&mut cost);
         match result {
             Ok(()) => {
@@ -684,7 +684,7 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
         };
         let result = self
             .storage
-            .put(record_key(position), &bytes, None, cost_info)
+            .put(record_key(position), &bytes, cost_info)
             .unwrap_add_cost(&mut cost);
         match result {
             Ok(()) => {
