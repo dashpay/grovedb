@@ -1075,7 +1075,7 @@ fn a_checkpoint_gives_back_the_sample_of_the_value_counts_it_was_written_with() 
             .collect(),
     };
     let only_a_place = CountSample {
-        place: Some(place(4, 20)),
+        place: Some(place(4, 62)),
         counts: Vec::new(),
     };
     for (sample, records) in [(&few, 1), (&many, 3), (&only_a_place, 0)] {
@@ -1116,8 +1116,8 @@ fn a_checkpoint_is_not_named_before_the_log_is_durable_up_to_its_sample() {
         .unwrap();
     for durable in [
         None,
-        Some(place(1, 20)),
-        Some(place(2, u64::MAX)),
+        Some(place(1, 45)),
+        Some(place(2, MAX_LOG_OFFSET)),
         Some(place(3, 499)),
     ] {
         let refused = db.checkpoints.install(
@@ -1159,7 +1159,7 @@ fn a_checkpoint_is_not_named_before_the_log_is_durable_up_to_its_sample() {
 
     // A sample from before every record of the log asks nothing of it, and a
     // log that is durable further than the sample's place will do.
-    for (place_of_sample, durable) in [(None, None), (Some(place(3, 500)), Some(place(4, 20)))] {
+    for (place_of_sample, durable) in [(None, None), (Some(place(3, 500)), Some(place(4, 45)))] {
         let sample = CountSample {
             place: place_of_sample,
             counts: Vec::new(),

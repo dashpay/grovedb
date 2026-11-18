@@ -10,6 +10,7 @@ use std::{path::Path, sync::Arc};
 
 use lignin_format::{
     manifest::{LastFileIds, Manifest, TableCheckpoint},
+    wal::MAX_LOG_OFFSET,
     CommitVersion, FileId, PageId, PageSize,
 };
 use lignin_io::{
@@ -27,7 +28,7 @@ use crate::segment::{
 /// for the tests that are not about the log.
 const LOG: LogDurable = LogDurable {
     version: CommitVersion::MAX,
-    place: match LogPlace::new(FileId::MAX, u64::MAX) {
+    place: match LogPlace::new(FileId::MAX, MAX_LOG_OFFSET) {
         Ok(place) => Some(place),
         Err(_) => None,
     },

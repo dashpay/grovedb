@@ -17,6 +17,7 @@ pub mod segment;
 pub mod table;
 pub mod tree_page;
 pub mod value_log;
+pub mod wal;
 
 pub use checksum::Checksum;
 pub use error::FormatError;

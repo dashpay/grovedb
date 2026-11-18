@@ -1,5 +1,5 @@
 use super::*;
-use crate::{checksum::Checksum, test_util::SplitMix64};
+use crate::{checksum::Checksum, test_util::SplitMix64, wal::MAX_LOG_OFFSET};
 
 const V1: FormatVersion = FormatVersion::V1;
 const HEADER_LEN: usize = FileHeader::ENCODED_LEN;
@@ -788,7 +788,7 @@ fn the_encoder_takes_counts_after_the_links_and_no_link_after_a_count() {
     assert_eq!(out.len(), FRAME + KIND_LEN + 2 * LINK_LEN);
     encoder.push_value_count(count(5, 2), &mut out).unwrap();
     let end = encoder
-        .finish(version(6), Some(place(1, 20)), &mut out)
+        .finish(version(6), Some(place(1, 62)), &mut out)
         .unwrap();
     assert_eq!(
         end,
@@ -796,7 +796,7 @@ fn the_encoder_takes_counts_after_the_links_and_no_link_after_a_count() {
             covers: version(6),
             reaches: Some(version(6)),
             links: 2,
-            place: Some(place(1, 20)),
+            place: Some(place(1, 62)),
             value_counts: 2,
         }
     );
@@ -973,10 +973,13 @@ fn the_end_record_must_agree_with_the_counts_and_name_a_place_in_the_log() {
         ]))
     };
     assert_eq!(with_end((0, 0), 2).unwrap().end.place, None);
-    assert_eq!(with_end((9, 20), 2).unwrap().end.place, Some(place(9, 20)));
+    assert_eq!(with_end((9, 62), 2).unwrap().end.place, Some(place(9, 62)));
     assert_eq!(
-        with_end((u32::MAX - 1, u64::MAX), 2).unwrap().end.place,
-        Some(place(u32::MAX - 1, u64::MAX))
+        with_end((u32::MAX - 1, MAX_LOG_OFFSET), 2)
+            .unwrap()
+            .end
+            .place,
+        Some(place(u32::MAX - 1, MAX_LOG_OFFSET))
     );
     for offset in [0, 20, u64::MAX] {
         assert_eq!(
@@ -985,7 +988,19 @@ fn the_end_record_must_agree_with_the_counts_and_name_a_place_in_the_log() {
         );
     }
     let invalid = table_error(TableError::InvalidLogPlace);
-    for log_end in [(0, 1), (0, 20), (0, u64::MAX), (9, 0), (9, 19)] {
+    for log_end in [
+        (0, 1),
+        (0, 62),
+        (0, u64::MAX),
+        (9, 0),
+        (9, 19),
+        (9, 20),
+        (9, 44),
+        (9, 45),
+        (9, 61),
+        (9, MAX_LOG_OFFSET + 1),
+        (9, u64::MAX),
+    ] {
         assert_eq!(with_end(log_end, 2), Err(invalid), "{log_end:?}");
     }
     for counts in [0, 1, 3, u64::MAX] {
@@ -1006,16 +1021,21 @@ fn the_end_record_must_agree_with_the_counts_and_name_a_place_in_the_log() {
         }))
     );
 
-    assert_eq!(LogPlace::new(id(3), 19), Err(invalid));
-    let made = LogPlace::new(id(3), 20).unwrap();
-    assert_eq!((made.file(), made.offset()), (id(3), 20));
-    let mut places = [place(2, 900), place(3, 20), place(1, 5000), place(2, 899)];
+    assert_eq!(FIRST_SAMPLE_OFFSET, 62);
+    let mut places = [place(2, 900), place(3, 62), place(1, 5000), place(2, 899)];
     places.sort();
     assert_eq!(
         places,
-        [place(1, 5000), place(2, 899), place(2, 900), place(3, 20)]
+        [place(1, 5000), place(2, 899), place(2, 900), place(3, 62)]
     );
-    assert!(None < Some(place(1, 20)));
+    assert!(None < Some(place(1, 62)));
+
+    // A place that is one in the log, and not where a checkpoint mark can
+    // end, is not written.
+    for offset in [45, 61] {
+        let refused = Encoder::new().finish(version(1), Some(place(1, offset)), &mut Vec::new());
+        assert_eq!(refused, Err(invalid), "{offset}");
+    }
 }
 
 #[test]
@@ -1326,7 +1346,7 @@ fn a_forged_file_decodes_only_to_what_encodes_back_to_it() {
         if round % 13 == 0 {
             counted += 1;
         }
-        let places = [(0, 0), (0, 0), (4, 20), (4, 900), (4, 19), (0, 20)];
+        let places = [(0, 0), (0, 0), (4, 62), (4, 900), (4, 61), (0, 62)];
         let log_end = places[(rng.next_u64() % places.len() as u64) as usize];
         records.push(end_record_with(3, reaches, links, log_end, counted));
         let bytes = file(&records);
@@ -1460,7 +1480,7 @@ fn errors_say_what_is_wrong() {
         ),
         (
             TableError::InvalidLogPlace,
-            "the place in the log is not one a record has",
+            "the place in the log is not one a checkpoint mark ends at",
         ),
     ];
     for (error, text) in cases {
