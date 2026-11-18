@@ -20,10 +20,12 @@
 use std::{collections::BTreeSet, thread};
 
 use grovedb::{
-    operations::proof::VerifiedPathQuery, query_result_type::PathKeyElementTrio,
+    operations::proof::{SumBudgetStop, VerifiedPathQuery},
+    query_result_type::PathKeyElementTrio,
     AxisAggregateValue, Element, GroveDb, PathQuery, PathQueryRun,
 };
 use grovedb_commitment_tree::{ciphertext_payload_size, DashMemo};
+use grovedb_merk::proofs::query::ReadMode;
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 use lignin_testkit::workload::{
     adversarial::{
@@ -109,8 +111,11 @@ fn run(
                     grove_version,
                 );
             }
-            (Op::Read(Read::PathQuery { query, proven }), Outcome::Run(answer)) => {
-                prove_path_query(name, index, db, query, *proven, answer, grove_version);
+            (Op::Read(read), Outcome::Run(answer)) => {
+                check_page(name, index, db, read, &answer, grove_version);
+                if let Read::PathQuery { query, proven } = read {
+                    prove_path_query(name, index, db, query, *proven, answer, grove_version);
+                }
             }
             (Op::FlushPendingDrops, Outcome::Reclaimed(report)) => {
                 assert_eq!(
@@ -287,7 +292,9 @@ fn prove_path_query(
             .expect("root hash"),
         "{name} on grove v{version}: proof of query {index} verifies to another root"
     );
-    let (expected, proved) = match (answer, verified) {
+    let context =
+        format!("{name} on grove v{version}: query {index} proves another answer\n{query:?}");
+    match (answer, verified) {
         (
             PathQueryRun::Elements { elements, .. },
             VerifiedPathQuery::Elements {
@@ -308,14 +315,14 @@ fn prove_path_query(
                     (path, key, Some(element))
                 })
                 .collect();
-            (format!("{expected:?}"), format!("{proved:?}"))
+            assert_eq!(proved, expected, "{context}");
         }
         (
             PathQueryRun::AggregateCount(count),
             VerifiedPathQuery::AggregateCount { count: proved, .. },
-        ) => (format!("{count}"), format!("{proved}")),
+        ) => assert_eq!(proved, count, "{context}"),
         (PathQueryRun::AggregateSum(sum), VerifiedPathQuery::AggregateSum { sum: proved, .. }) => {
-            (format!("{sum}"), format!("{proved}"))
+            assert_eq!(proved, sum, "{context}")
         }
         (
             PathQueryRun::AggregateCountAndSum { count, sum },
@@ -324,10 +331,7 @@ fn prove_path_query(
                 sum: proved_sum,
                 ..
             },
-        ) => (
-            format!("{:?}", (count, sum)),
-            format!("{:?}", (proved_count, proved_sum)),
-        ),
+        ) => assert_eq!((proved_count, proved_sum), (count, sum), "{context}"),
         (
             PathQueryRun::AggregateCountPerKey(per_key),
             VerifiedPathQuery::AggregatePerKey {
@@ -336,9 +340,9 @@ fn prove_path_query(
         ) => {
             let expected: Vec<_> = per_key
                 .into_iter()
-                .map(|(key, count)| (key, Some(count), None::<i64>))
+                .map(|(key, count)| (key, Some(count), None))
                 .collect();
-            (format!("{expected:?}"), format!("{proved:?}"))
+            assert_eq!(proved, expected, "{context}");
         }
         (
             PathQueryRun::AggregateSumPerKey(per_key),
@@ -348,9 +352,9 @@ fn prove_path_query(
         ) => {
             let expected: Vec<_> = per_key
                 .into_iter()
-                .map(|(key, sum)| (key, None::<u64>, Some(sum)))
+                .map(|(key, sum)| (key, None, Some(sum)))
                 .collect();
-            (format!("{expected:?}"), format!("{proved:?}"))
+            assert_eq!(proved, expected, "{context}");
         }
         (
             PathQueryRun::AggregateCountAndSumPerKey(per_key),
@@ -362,7 +366,7 @@ fn prove_path_query(
                 .into_iter()
                 .map(|(key, count, sum)| (key, Some(count), Some(sum)))
                 .collect();
-            (format!("{expected:?}"), format!("{proved:?}"))
+            assert_eq!(proved, expected, "{context}");
         }
         (
             PathQueryRun::AxisEntries { entries, skipped },
@@ -371,10 +375,7 @@ fn prove_path_query(
                 skipped: proved_skipped,
                 ..
             },
-        ) => (
-            format!("{:?}", (entries, skipped)),
-            format!("{:?}", (proved, proved_skipped)),
-        ),
+        ) => assert_eq!((proved, proved_skipped), (entries, skipped), "{context}"),
         (
             PathQueryRun::AxisKeys { keys, skipped },
             VerifiedPathQuery::AxisEntries {
@@ -382,18 +383,19 @@ fn prove_path_query(
                 skipped: proved_skipped,
                 ..
             },
-        ) => (
-            format!("{:?}", (keys, skipped)),
-            format!("{:?}", (proved.to_keys(), proved_skipped)),
+        ) => assert_eq!(
+            (proved.to_keys(), proved_skipped),
+            (keys, skipped),
+            "{context}"
         ),
         (
             PathQueryRun::BranchedAxisEntries(branches),
             VerifiedPathQuery::BranchedAxisEntries {
                 branches: proved, ..
             },
-        ) => (format!("{branches:?}"), format!("{proved:?}")),
+        ) => assert_eq!(proved, branches, "{context}"),
         (PathQueryRun::AxisRank(rank), VerifiedPathQuery::AxisRank { rank: proved, .. }) => {
-            (format!("{rank}"), format!("{proved}"))
+            assert_eq!(proved, rank, "{context}")
         }
         (
             PathQueryRun::AxisAggregate(value),
@@ -403,21 +405,94 @@ fn prove_path_query(
                 AxisAggregateValue::Population(population) => i128::from(population),
                 AxisAggregateValue::Total(total) => i128::from(total),
             };
-            (format!("{value}"), format!("{proved}"))
+            assert_eq!(proved, value, "{context}");
         }
-        (PathQueryRun::SumBudget(sums), VerifiedPathQuery::SumBudget { matches, .. }) => {
-            (format!("{:?}", sums.results), format!("{matches:?}"))
+        (
+            PathQueryRun::SumBudget(sums),
+            VerifiedPathQuery::SumBudget {
+                matches,
+                total,
+                stop,
+                ..
+            },
+        ) => {
+            let Some(ReadMode::SumBudget(budget)) = query.query.query.read_mode.as_deref() else {
+                panic!("{context}\nthe query has no sum budget");
+            };
+            let sum = sums
+                .results
+                .iter()
+                .fold(0i64, |sum, (_, value)| sum.saturating_add(*value));
+            let expected_stop = if sum >= budget.sum_limit as i64 {
+                SumBudgetStop::BudgetReached
+            } else if budget.match_limit.map(usize::from) == Some(sums.results.len()) {
+                SumBudgetStop::MatchLimitReached
+            } else if sums.hard_limit_reached {
+                SumBudgetStop::HardScanCapReached
+            } else {
+                SumBudgetStop::Exhausted
+            };
+            assert_eq!(
+                (matches, total, stop),
+                (sums.results, sum, expected_stop),
+                "{context}"
+            );
         }
         (answer, verified) => panic!(
             "{name} on grove v{version}: query {index} was answered as {answer:?} and proved \
              as {verified:?}"
         ),
+    }
+}
+
+/// Checks the page a query with an offset returned against the same query
+/// run without offset or limit: the rows skipped are as many as the offset
+/// asks for, or all there are, and the page is what follows them.
+fn check_page(
+    name: &str,
+    index: usize,
+    db: &GroveDb,
+    read: &Read,
+    answer: &PathQueryRun,
+    grove_version: &GroveVersion,
+) {
+    let (query, raw) = match read {
+        Read::Rows { query, raw } => (query, *raw),
+        Read::PathQuery { query, .. } => (query, true),
+        _ => return,
     };
-    assert!(
-        proved == expected,
-        "{name} on grove v{version}: query {index} proves another answer\n{query:?}\nproved: \
-         {proved}\nexpected: {expected}"
-    );
+    let (Some(offset), PathQueryRun::Elements { elements, skipped }) = (query.query.offset, answer)
+    else {
+        return;
+    };
+    let mut unpaged = (**query).clone();
+    unpaged.query.offset = None;
+    unpaged.query.limit = None;
+    let unpaged = Op::Read(Read::Rows {
+        query: Box::new(unpaged),
+        raw,
+    });
+    let Outcome::Run(PathQueryRun::Elements { elements: all, .. }) =
+        apply(db, &unpaged, None, grove_version)
+            .unwrap()
+            .expect("the query runs without its offset")
+    else {
+        panic!("{name}: a row reader returns rows");
+    };
+    let all = all.to_path_key_elements();
+    let page = elements.clone().to_path_key_elements();
+    let expected_skipped = usize::from(offset).min(all.len());
+    let context = format!("{name}: query {index} pages wrongly\n{read:?}");
+    assert_eq!(usize::from(*skipped), expected_skipped, "{context}");
+    let rest = &all[expected_skipped..];
+    assert!(page.len() <= rest.len(), "{context}");
+    assert_eq!(page, rest[..page.len()], "{context}");
+    let limit = query.query.limit.map_or(usize::MAX, usize::from);
+    if query.query.query.has_subquery() {
+        assert!(page.len() <= limit, "{context}");
+    } else {
+        assert_eq!(page.len(), rest.len().min(limit), "{context}");
+    }
 }
 
 /// Runs `body` once per grove version, each on its own thread.
@@ -900,8 +975,8 @@ const PINNED_STREAMS: &[(&str, u64, u64, &str)] = &[
     ("index-rekey", 0x4c49474e494e, 320, "59feab58060ff927842bcf09a9f1e294ed7f914a86d518c536c887f081734f1c"),
     ("expiration", 0x1, 559, "a1e894ffe395c4d42af1510481d97d983dffe314e1c57fa15c27ab485b1cba0a"),
     ("expiration", 0x4c49474e494e, 563, "e35fd0fbaa598145529309a6daeff4d73e3427f177480b245316e0c823665f31"),
-    ("index-aggregates", 0x1, 298, "7fd837a30cb26b65cf54c87651fa9ba48e3ebad25ed20ea8236071326249b582"),
-    ("index-aggregates", 0x4c49474e494e, 298, "dfd6d6ba411d2378e74654c4c90bb85615239de9e9821f7d1d456192f2f45886"),
+    ("index-aggregates", 0x1, 298, "cd048c0e6e76f57f042ed8df220f620cf96399479a7f1e239fbe134b31271731"),
+    ("index-aggregates", 0x4c49474e494e, 298, "b547d3657cfbc1e1f01f0fd2d2a367fdd3c9e8bdbc7eb6003329c3fd8a0d409a"),
     ("flat-drops", 0x1, 179, "b080d17288c227df6bd39f7db4eaaf76036ff8b4a3eafff029c66812c8a56d0b"),
     ("flat-drops", 0x4c49474e494e, 179, "4f5039b35499b9f764c9326fd63bd5a1304371bbc1ee961473cfdb4641f09336"),
     ("moves", 0x1, 251, "5b3657e5db9ab8462294685a88559e3e7555ddcd8223e264a0d82edbe1d5eaf8"),
@@ -942,11 +1017,11 @@ fn streams_are_pinned() {
 /// features, seed [`SEED`]: protocol version, operations, digest.
 #[rustfmt::skip]
 const PINNED_SUITES: &[(u32, u64, &str)] = &[
-    (1, 18681, "deeab02a96b2a034f1de20fa700e93727f4fd2d880adf2e00d40476a9ba0b05c"),
-    (2, 18681, "deeab02a96b2a034f1de20fa700e93727f4fd2d880adf2e00d40476a9ba0b05c"),
-    (3, 18681, "72bf872ce410a666a20d952eaada1e1cd43f1f549d12cf42668b6c77e38de32e"),
-    (4, 19095, "031cb7f016b1e831a304628d58b1fb4389bdbf801bd94f68beda26c48385709d"),
-    (5, 19341, "057a1b4eacf62bc2fa1ce7d697d1d3eb02e657c26ccc60589479a6223967383a"),
+    (1, 18681, "9cb765cb89b3c383e89d84c84c36f9a61222db6d4344a3469ed3a26b407e3bd2"),
+    (2, 18681, "9cb765cb89b3c383e89d84c84c36f9a61222db6d4344a3469ed3a26b407e3bd2"),
+    (3, 18681, "3b296a8f47c4fe143f09b67acb70d8a8970998de8493dd033f526dc94f31021d"),
+    (4, 19095, "c865e1840881fa86e39448c9e088c521ef9fd0ee5b31466f60f3b376e7b3e5b1"),
+    (5, 19341, "66e880ef0028738781b970b71a344f0f8a1b99dfd6810e333b185a7a184c519e"),
 ];
 
 #[test]
@@ -1130,11 +1205,15 @@ fn one_of_each_new_kind() -> Vec<Op> {
         path.clone(),
         SizedQuery::new(Query::new_range_full(), Some(12), Some(13)),
     ));
-    let mut carrier = Query::new_single_key(bytes(1));
-    carrier.set_subquery(Query::new_aggregate_count_on_range(QueryItem::RangeTo(
-        ..bytes(2),
-    )));
-    queries.push(PathQuery::new_unsized(path.clone(), carrier));
+    for aggregate in [
+        Query::new_aggregate_count_on_range,
+        Query::new_aggregate_sum_on_range,
+        Query::new_aggregate_count_and_sum_on_range,
+    ] {
+        let mut carrier = Query::new_single_key(bytes(1));
+        carrier.set_subquery(aggregate(QueryItem::RangeTo(..bytes(2))));
+        queries.push(PathQuery::new_unsized(path.clone(), carrier));
+    }
 
     let axis_queries = [
         AxisQuery::top_k(IndexAxis::Count, 3, 4, true),
@@ -1179,7 +1258,7 @@ fn one_of_each_new_kind() -> Vec<Op> {
     ops
 }
 
-const PINNED_NEW_KINDS: &str = "d6e6ba3e426867d00e177ed926a8f9ee5e004cb4a6bde9c5c709738170f1866e";
+const PINNED_NEW_KINDS: &str = "97278877b581d311033c13aa0ebdfd3e0f5c1141a7cf8a45da94b262dbcd5b49";
 
 /// The canonical encoding of the kinds the second unit added: each one
 /// differs from every other, and the bytes are pinned, so a change to the

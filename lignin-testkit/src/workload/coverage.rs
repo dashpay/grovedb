@@ -180,7 +180,9 @@ operations! {
         AggregateCount = "The count of a key range.",
         AggregateSum = "The sum of a key range.",
         AggregateCountAndSum = "The count and the sum of a key range.",
-        AggregatePerKey = "One aggregate of a key range for each selected key.",
+        AggregateCountPerKey = "The count of a key range for each selected key.",
+        AggregateSumPerKey = "The sum of a key range for each selected key.",
+        AggregateCountAndSumPerKey = "The count and the sum of a key range for each selected key.",
         SumBudget = "`GroveDb::query_aggregate_sums`: a walk that stops at a running total.",
         SumBudgetWindow = "The same walk as a query read mode, which is proven.",
         AxisRankedPage = "A page of an indexed tree in the order of an aggregate.",
@@ -218,7 +220,9 @@ impl Features {
             | Operation::AggregateCount
             | Operation::AggregateSum
             | Operation::AggregateCountAndSum
-            | Operation::AggregatePerKey
+            | Operation::AggregateCountPerKey
+            | Operation::AggregateSumPerKey
+            | Operation::AggregateCountAndSumPerKey
             | Operation::SumBudget => true,
         }
     }
@@ -437,9 +441,11 @@ fn query_operations(path_query: &PathQuery, proven: bool) -> Vec<Operation> {
             AggregateKind::Sum => Operation::AggregateSum,
             AggregateKind::CountAndSum => Operation::AggregateCountAndSum,
         }),
-        PathQueryShape::AggregateCarrier { .. } => {
-            operations.push(Operation::AggregatePerKey);
-        }
+        PathQueryShape::AggregateCarrier { kind, .. } => operations.push(match kind {
+            AggregateKind::Count => Operation::AggregateCountPerKey,
+            AggregateKind::Sum => Operation::AggregateSumPerKey,
+            AggregateKind::CountAndSum => Operation::AggregateCountAndSumPerKey,
+        }),
         PathQueryShape::AxisRead { axis } => {
             operations.push(axis_operation(&axis.traversal));
         }

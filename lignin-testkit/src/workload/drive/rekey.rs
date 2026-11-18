@@ -23,6 +23,10 @@ const DOCUMENT_TYPE: &[u8] = b"reading";
 const INDEX: &[u8] = b"height";
 const TOP_BIT: u64 = 1 << 63;
 
+/// The most distinct values [`IndexRekey`] takes. They are drawn from ten
+/// times as many, so the draw ends quickly.
+pub const MAX_INDEX_VALUES: u32 = 100_000;
+
 /// An index over an unsigned integer whose value keys are moved.
 ///
 /// Documents are indexed by an integer property: under the property's tree,
@@ -41,7 +45,8 @@ const TOP_BIT: u64 = 1 << 63;
 pub struct IndexRekey {
     /// How many documents are stored before the rewrite.
     pub documents: u64,
-    /// How many distinct values the property takes.
+    /// How many distinct values the property takes, at most
+    /// [`MAX_INDEX_VALUES`].
     pub values: u32,
     /// How many of those values also occur with the top bit set.
     pub twins: u32,
@@ -82,13 +87,16 @@ impl IndexRekey {
     /// The stream for `seed`.
     pub fn stream(&self, seed: u64) -> Stream {
         assert!(self.values > 0, "nothing to index by");
-        assert!(self.values <= 100_000, "values are drawn below a million");
+        assert!(
+            self.values <= MAX_INDEX_VALUES,
+            "more values than {MAX_INDEX_VALUES}"
+        );
         assert!(self.twins <= self.values, "more twins than values");
         assert!(self.moves_per_batch > 0, "a batch needs a move");
         let mut rng = Rng::derive(seed, DOMAIN_INDEX_REKEY, 0);
         let mut distinct = BTreeSet::new();
         while (distinct.len() as u32) < self.values {
-            distinct.insert(rng.below(1_000_000));
+            distinct.insert(rng.below(10 * u64::from(MAX_INDEX_VALUES)));
         }
         let mut values: Vec<u64> = distinct.into_iter().collect();
         let twins: Vec<u64> = values[..self.twins as usize]

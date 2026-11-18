@@ -38,18 +38,42 @@ enum Index {
     Score,
     /// A category index for each owner, counted for several owners at once.
     OwnerCategory,
+    /// An amount index for each owner, summed for several owners at once.
+    OwnerAmount,
+    /// A score index for each owner, counted and summed for several owners
+    /// at once.
+    OwnerScore,
     /// Ranked by count: an indexed tree of count trees.
     Tag,
 }
 
 impl Index {
-    const ALL: [Index; 5] = [
+    const ALL: [Index; 7] = [
         Index::Category,
         Index::Amount,
         Index::Score,
         Index::OwnerCategory,
+        Index::OwnerAmount,
+        Index::OwnerScore,
         Index::Tag,
     ];
+
+    /// The indexes kept once for each owner, under the owner's tree.
+    const PER_OWNER: [Index; 3] = [Index::OwnerCategory, Index::OwnerAmount, Index::OwnerScore];
+
+    fn per_owner(self) -> bool {
+        Index::PER_OWNER.contains(&self)
+    }
+
+    /// The key of the tree holding one tree per value.
+    fn property(self) -> &'static [u8] {
+        match self {
+            Index::Category | Index::OwnerCategory => CATEGORY,
+            Index::Amount | Index::OwnerAmount => AMOUNT,
+            Index::Score | Index::OwnerScore => SCORE,
+            Index::Tag => TAG,
+        }
+    }
 
     /// The tree holding one tree per value.
     fn property_tree(self, flags: Option<Vec<u8>>) -> Element {
@@ -57,8 +81,12 @@ impl Index {
             Index::Category | Index::OwnerCategory => {
                 Element::empty_provable_count_tree_with_flags(flags)
             }
-            Index::Amount => Element::empty_provable_sum_tree_with_flags(flags),
-            Index::Score => Element::empty_provable_count_provable_sum_tree_with_flags(flags),
+            Index::Amount | Index::OwnerAmount => {
+                Element::empty_provable_sum_tree_with_flags(flags)
+            }
+            Index::Score | Index::OwnerScore => {
+                Element::empty_provable_count_provable_sum_tree_with_flags(flags)
+            }
             Index::Tag => Element::empty_provable_count_indexed_tree_with_flags(flags),
         }
     }
@@ -70,8 +98,10 @@ impl Index {
                 Element::empty_count_tree_with_flags(flags),
                 TreeType::CountTree,
             ),
-            Index::Amount => (Element::empty_sum_tree_with_flags(flags), TreeType::SumTree),
-            Index::Score => (
+            Index::Amount | Index::OwnerAmount => {
+                (Element::empty_sum_tree_with_flags(flags), TreeType::SumTree)
+            }
+            Index::Score | Index::OwnerScore => (
                 Element::empty_count_sum_tree_with_flags(flags),
                 TreeType::CountSumTree,
             ),
@@ -92,10 +122,11 @@ struct Document {
 
 /// Documents under indexes that aggregate.
 ///
-/// A document type keeps four indexes whose trees commit a count, a sum or
-/// both into their hashes, so GroveDB can answer for a range of values
-/// without reading the documents: how many, their total, both, and a count
-/// for each of several owners. A fifth index is an indexed tree, which also
+/// A document type keeps indexes whose trees commit a count, a sum or both
+/// into their hashes, so GroveDB can answer for a range of values without
+/// reading the documents: how many, their total, or both. Each of the three
+/// is kept once for all documents and once under every owner, where one
+/// query answers for several owners at once. A last index is an indexed tree, which also
 /// orders its values by how many documents each has, for the pages, bounds,
 /// ranks and totals of a ranking. Documents are stored and deleted; the
 /// reads are those aggregate queries.
@@ -201,16 +232,20 @@ impl Generator {
 
     /// The keys from an index tree down to the value tree of `document`.
     fn value_keys(&self, index: Index, document: &Document) -> Vec<Vec<u8>> {
-        match index {
-            Index::Category => vec![vec![document.category]],
-            Index::Amount => vec![document.amount.to_be_bytes().to_vec()],
-            Index::Score => vec![vec![document.score]],
-            Index::OwnerCategory => vec![
+        let value = match index {
+            Index::Category | Index::OwnerCategory => vec![document.category],
+            Index::Amount | Index::OwnerAmount => document.amount.to_be_bytes().to_vec(),
+            Index::Score | Index::OwnerScore => vec![document.score],
+            Index::Tag => vec![document.tag],
+        };
+        if index.per_owner() {
+            vec![
                 identity_id(self.seed, document.owner).to_vec(),
-                CATEGORY.to_vec(),
-                vec![document.category],
-            ],
-            Index::Tag => vec![vec![document.tag]],
+                index.property().to_vec(),
+                value,
+            ]
+        } else {
+            vec![value]
         }
     }
 
@@ -221,10 +256,10 @@ impl Generator {
             Index::Category | Index::OwnerCategory | Index::Tag => {
                 Element::Reference(reference, Some(1), flags)
             }
-            Index::Amount => {
+            Index::Amount | Index::OwnerAmount => {
                 Element::ReferenceWithSumItem(reference, Some(1), document.amount as i64, flags)
             }
-            Index::Score => {
+            Index::Score | Index::OwnerScore => {
                 Element::ReferenceWithSumItem(reference, Some(1), i64::from(document.score), flags)
             }
         }
@@ -235,13 +270,14 @@ impl Generator {
         self.ops
             .extend(document_type_trees(ROOT, contract, DOCUMENT_TYPE, &[OWNER]));
         let mut indexes = Vec::new();
-        for index in [Index::Category, Index::Amount, Index::Score, Index::Tag] {
-            let key = self.index_path(index).pop().expect("an index has a key");
-            indexes.push(batch::insert_only(
-                &self.type_path,
-                &key,
-                index.property_tree(flags.clone()),
-            ));
+        for index in Index::ALL {
+            if !index.per_owner() {
+                indexes.push(batch::insert_only(
+                    &self.type_path,
+                    index.property(),
+                    index.property_tree(flags.clone()),
+                ));
+            }
         }
         self.ops.push(Op::Batch(indexes));
         self.ops.push(Op::Commit);
@@ -263,16 +299,19 @@ impl Generator {
             &document.id,
             Element::new_item_with_flags(self.rng.bytes(80), flags.clone()),
         )];
+        let new_owner = self.owners.insert(document.owner);
         for index in Index::ALL {
             let keys = self.value_keys(index, &document);
             let mut parent = self.index_path(index);
-            if index == Index::OwnerCategory {
-                if self.owners.insert(document.owner) {
-                    ops.push(batch::insert_only(
-                        &parent,
-                        &keys[0],
-                        Element::empty_tree_with_flags(flags.clone()),
-                    ));
+            if index.per_owner() {
+                if new_owner {
+                    if index == Index::PER_OWNER[0] {
+                        ops.push(batch::insert_only(
+                            &parent,
+                            &keys[0],
+                            Element::empty_tree_with_flags(flags.clone()),
+                        ));
+                    }
                     ops.push(batch::insert_only(
                         &child(&parent, &keys[0]),
                         &keys[1],
@@ -304,7 +343,7 @@ impl Generator {
         for index in Index::ALL {
             let keys = self.value_keys(index, &document);
             let mut parent = self.index_path(index);
-            if index == Index::OwnerCategory {
+            if index.per_owner() {
                 parent.extend_from_slice(&keys[..2]);
             }
             let value_key = keys.last().expect("an index has a value");
@@ -374,11 +413,22 @@ impl Generator {
                 for _ in 0..rng.between(1, 3) {
                     owners.insert_key(identity_id(self.seed, rng.below(self.config.owners)).into());
                 }
-                owners.set_subquery_path(vec![CATEGORY.to_vec()]);
-                owners.set_subquery(Query::new_aggregate_count_on_range(
-                    grovedb::QueryItem::RangeTo(..vec![rng.between(1, CATEGORIES) as u8]),
-                ));
-                build::sized(&index_path(Index::OwnerCategory), owners, None, None)
+                let index = Index::PER_OWNER[rng.index(Index::PER_OWNER.len())];
+                owners.set_subquery_path(vec![index.property().to_vec()]);
+                owners.set_subquery(match index {
+                    Index::OwnerAmount => {
+                        Query::new_aggregate_sum_on_range(grovedb::QueryItem::RangeFrom(
+                            (100 * rng.below(AMOUNTS)).to_be_bytes().to_vec()..,
+                        ))
+                    }
+                    Index::OwnerScore => Query::new_aggregate_count_and_sum_on_range(
+                        grovedb::QueryItem::RangeToInclusive(..=vec![rng.below(SCORES) as u8]),
+                    ),
+                    _ => Query::new_aggregate_count_on_range(grovedb::QueryItem::RangeTo(
+                        ..vec![rng.between(1, CATEGORIES) as u8],
+                    )),
+                });
+                build::sized(&index_path(index), owners, None, None)
             }
             _ if !self.config.features.read_modes => {
                 let tag = [rng.below(TAGS) as u8];
@@ -439,12 +489,10 @@ impl Generator {
 fn index_path(type_path: &[Vec<u8>], index: Index) -> Path {
     child(
         type_path,
-        match index {
-            Index::Category => CATEGORY,
-            Index::Amount => AMOUNT,
-            Index::Score => SCORE,
-            Index::OwnerCategory => OWNER,
-            Index::Tag => TAG,
+        if index.per_owner() {
+            OWNER
+        } else {
+            index.property()
         },
     )
 }

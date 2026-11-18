@@ -26,7 +26,10 @@ mod state;
 use std::collections::BTreeMap;
 
 pub use self::{
-    aggregates::IndexAggregates, expiry::Expiration, keys::IdentityKeys, rekey::IndexRekey,
+    aggregates::IndexAggregates,
+    expiry::Expiration,
+    keys::IdentityKeys,
+    rekey::{IndexRekey, MAX_INDEX_VALUES},
     state::PlatformState,
 };
 
