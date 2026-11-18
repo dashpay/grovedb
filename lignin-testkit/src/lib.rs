@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod bench;
 pub mod golden;
 pub mod layout_sim;
 pub mod workload;
