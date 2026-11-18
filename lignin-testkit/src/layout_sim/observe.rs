@@ -49,9 +49,6 @@ pub struct Observer {
     grove: Grove,
     grove_version: &'static GroveVersion,
     observations: u32,
-    /// Times the walk met a tree element inside a Merk that has no path,
-    /// and so could not follow it.
-    unfollowed: u64,
 }
 
 impl Observer {
@@ -61,7 +58,6 @@ impl Observer {
             grove: Grove::new(),
             grove_version,
             observations: 0,
-            unfollowed: 0,
         }
     }
 
@@ -70,18 +66,14 @@ impl Observer {
         &self.grove
     }
 
-    /// How many times the walk could not follow a tree element because it
-    /// sits in a Merk that is not reached by path. An element is counted
-    /// again each time it changes.
-    pub fn unfollowed(&self) -> u64 {
-        self.unfollowed
-    }
-
     /// Brings the mirror up to date with what `transaction` sees, and
     /// returns what changed since the last observation.
     ///
     /// Panics if storage does not hold what Merk's own records say it
-    /// holds, which would mean the database is damaged.
+    /// holds, which would mean the database is damaged, and if a secondary
+    /// Merk of an indexed tree holds a tree. GroveDB writes only reference
+    /// rows there, and a tree under one would have no storage prefix to be
+    /// found at.
     pub fn observe(&mut self, db: &GroveDb, transaction: &Transaction) -> ChangeSet {
         self.observations += 1;
         let root_key = db
@@ -96,16 +88,13 @@ impl Observer {
             observation: self.observations,
             changes: ChangeSet::default(),
             old_roots: Vec::new(),
-            unfollowed: 0,
         };
         walk.merk(MerkId::ROOT, root_key.as_deref());
         let Walk {
             mut changes,
             old_roots,
-            unfollowed,
             ..
         } = walk;
-        self.unfollowed += unfollowed;
         changes.finish(&mut self.grove, &old_roots);
         changes
     }
@@ -114,11 +103,24 @@ impl Observer {
     /// the prefix of every Merk the mirror knows, a raw scan must find the
     /// records of that Merk's nodes, no more and no fewer, and each record
     /// must be the one the mirror read: the same bytes, the same children
-    /// with the same hashes, the same value length.
+    /// with the same hashes, the same value length. The Merks an element
+    /// hosts must be the ones the mirror has under its node, each with the
+    /// root the element names.
+    ///
+    /// So the mirror misses no Merk: the root Merk is checked against the
+    /// root key GroveDB states, and every other Merk is reached through an
+    /// element of a Merk that was checked.
     ///
     /// This is the observer's check on itself. It reads and decodes every
     /// record, where an observation reads only the changed ones.
     pub fn verify(&self, db: &GroveDb, transaction: &Transaction) -> Result<(), String> {
+        let root_key = db
+            .root_key(Some(transaction), self.grove_version)
+            .unwrap()
+            .expect("the root Merk opens");
+        if root_key.as_deref() != self.root_key_of(MerkId::ROOT) {
+            return Err("the mirror has another root for the root Merk".into());
+        }
         let mut mirrored: HashMap<MerkId, u64> = HashMap::new();
         for (_, node) in self.grove.nodes().filter(|(_, node)| node.live) {
             *mirrored.entry(node.merk).or_default() += 1;
@@ -151,6 +153,12 @@ impl Observer {
         Ok(())
     }
 
+    /// The key of the root of `merk` in the mirror.
+    fn root_key_of(&self, merk: MerkId) -> Option<&[u8]> {
+        let root = self.grove.merk(merk).root?;
+        Some(&self.grove.node(root).key)
+    }
+
     /// Checks one stored record against the node the mirror has for it.
     fn verify_record(&self, merk: MerkId, key: &[u8], record: &[u8]) -> Result<(), String> {
         let Some(id) = self.grove.find(merk, key) else {
@@ -166,9 +174,27 @@ impl Observer {
             None::<NoValueDefinedCost>,
             self.grove_version,
         )
-        .map_err(|error| format!("its record does not decode: {error}"))?;
-        if tree.value_as_slice().len() as u32 != node.value_len {
+        .expect("the mirror decoded this record");
+        let value = tree.value_as_slice();
+        if value.len() as u32 != node.value_len {
             return Err("the mirror has another value length".into());
+        }
+        let element =
+            Element::deserialize(value, self.grove_version).expect("a Merk value is an element");
+        let roots = hosted_roots(&element);
+        let same_trees = roots.len() == node.hosted.len()
+            && roots
+                .iter()
+                .zip(&node.hosted)
+                .all(|((axis, root), hosted)| {
+                    let hosted_merk = self.grove.merk(*hosted);
+                    hosted_merk.live
+                        && hosted_merk.host == Some(id)
+                        && hosted_merk.axis == *axis
+                        && self.root_key_of(*hosted) == root.as_deref()
+                });
+        if !same_trees {
+            return Err("the mirror has other Merks under its element".into());
         }
         for (link, child) in [(tree.link(true), node.left), (tree.link(false), node.right)] {
             let same = match (link, child) {
@@ -209,7 +235,6 @@ struct Walk<'a, 'db> {
     observation: u32,
     changes: ChangeSet,
     old_roots: Vec<(MerkId, NodeId)>,
-    unfollowed: u64,
 }
 
 type Context<'db> = <RocksDbStorage as Storage<'db>>::BatchTransactionalStorageContext;
@@ -425,10 +450,12 @@ impl<'db> Walk<'_, 'db> {
             return;
         }
         if hosted.is_empty() {
-            let Some(mut path) = self.grove.merk(merk).path.clone() else {
-                self.unfollowed += 1;
-                return;
-            };
+            let mut path = self
+                .grove
+                .merk(merk)
+                .path
+                .clone()
+                .expect("a secondary Merk of an indexed tree holds no tree");
             path.push(key.to_vec());
             let primary = RocksDbStorage::build_prefix(SubtreePath::from(path.as_slice())).unwrap();
             for (axis, _) in &roots {

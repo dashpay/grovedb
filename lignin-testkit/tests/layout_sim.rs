@@ -82,7 +82,7 @@ fn run_checked(
                 check_every,
                 verify_mirror: true,
             },
-            |_, observer, _| assert_eq!(observer.unfollowed(), 0, "{name}"),
+            |_, _, _| {},
         )
     })
 }
@@ -162,25 +162,41 @@ fn the_mirror_check_finds_a_write_the_observer_did_not_see() {
     );
     assert!(!observer.observe(&db, &transaction).is_empty());
 
-    // The last record of the root Merk goes: nothing is left to compare.
-    for key in [&b"a"[..], b"tree"] {
-        let write = Write::Delete {
+    // A tree that was emptied unseen: its element names no root any more.
+    let problem = unseen(
+        &observer,
+        Write::ClearSubtree {
+            path: vec![b"tree".to_vec()],
+        },
+    );
+    assert!(
+        problem.ends_with("its record is not the one the mirror read"),
+        "{problem}"
+    );
+    assert!(!observer.observe(&db, &transaction).is_empty());
+
+    // The root Merk gets another root unseen.
+    let problem = unseen(
+        &observer,
+        Write::Delete {
             path: Vec::new(),
-            key: key.to_vec(),
-        };
-        if key == b"a" {
-            apply(&db, &Op::Write(write), Some(&transaction), grove_version)
-                .unwrap()
-                .expect("the write is accepted");
-            observer.observe(&db, &transaction);
-        } else {
-            let problem = unseen(&observer, write);
-            assert_eq!(
-                problem,
-                "the mirror of the Merk at Some([]) has 1 keys, storage has 0"
-            );
-        }
-    }
+            key: b"a".to_vec(),
+        },
+    );
+    assert!(
+        problem == "the mirror has another root for the root Merk"
+            || problem.ends_with("its record is not the one the mirror read"),
+        "{problem}"
+    );
+    assert!(!observer.observe(&db, &transaction).is_empty());
+    let problem = unseen(
+        &observer,
+        Write::Delete {
+            path: Vec::new(),
+            key: b"tree".to_vec(),
+        },
+    );
+    assert_eq!(problem, "the mirror has another root for the root Merk");
 }
 
 #[test]
@@ -238,7 +254,6 @@ fn an_emptied_merk_is_a_delete_or_a_clear_and_a_deleted_tree_one_drop() {
     });
     assert_eq!((deleted.removed.len(), deleted.dropped.len()), (1, 2));
     assert_eq!((deleted.merks_dropped, deleted.subtrees_dropped), (2, 1));
-    assert_eq!(observer.unfollowed(), 0);
     observer.verify(&db, &transaction).expect("in step");
     assert_eq!(observer.grove().live_nodes(), 0);
 }
@@ -302,6 +317,16 @@ fn the_reference_workload_meets_the_layout_targets() {
         report.nodes_per_page()
     );
     assert!(report.fill() >= 0.70, "fill {:.3}", report.fill());
+    assert_eq!(
+        report.samples.len(),
+        11,
+        "every tenth of the load and its end"
+    );
+    assert!(
+        report.lowest_fill() >= 0.70,
+        "fill {:.3} at its lowest sample",
+        report.lowest_fill()
+    );
     assert!(
         report.dirty_per_transition() <= 8.0,
         "{:.2} pages dirtied per transition",
@@ -520,6 +545,13 @@ fn sweep_adversarial() {
                 .iter()
                 .max_by_key(|sample| sample.cells)
                 .expect("a sample");
+            // What holds on every one of these workloads under the proposed
+            // layout. Fill does not: section 15 of the specification.
+            if report.config == Config::proposed() {
+                assert_eq!(report.end.stats.overfull_left, 0, "{name}");
+                assert!(report.dirty_per_transition() <= 8.0, "{name}");
+                assert!(peak.nodes_per_page() >= 15.0, "{name}");
+            }
             println!(
                 "  at its largest {} nodes in {} pages: {:.1} nodes per page, fill {:.1}%\n",
                 peak.cells,

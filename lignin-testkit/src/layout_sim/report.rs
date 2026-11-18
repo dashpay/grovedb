@@ -141,6 +141,12 @@ pub struct Stats {
     pub pages_allocated: u64,
     /// Pages emptied and given back.
     pub pages_freed: u64,
+    /// Cells of dropped Merks that the reclaimer removed, after the block
+    /// that dropped them.
+    pub reclaimed: u64,
+    /// Pages the reclaimer wrote to do so: the ones that kept other cells.
+    /// They are not among the pages a transition dirtied.
+    pub reclaim_writes: u64,
     /// Times a page stayed above its capacity because the write held no
     /// cell in it. Any value but zero means the rules are incomplete.
     pub overfull_left: u64,
@@ -178,6 +184,8 @@ impl Default for Stats {
             sandwiched: 0,
             pages_allocated: 0,
             pages_freed: 0,
+            reclaimed: 0,
+            reclaim_writes: 0,
             overfull_left: 0,
         }
     }
@@ -264,6 +272,8 @@ impl Stats {
             sandwiched: self.sandwiched - earlier.sandwiched,
             pages_allocated: self.pages_allocated - earlier.pages_allocated,
             pages_freed: self.pages_freed - earlier.pages_freed,
+            reclaimed: self.reclaimed - earlier.reclaimed,
+            reclaim_writes: self.reclaim_writes - earlier.reclaim_writes,
             overfull_left: self.overfull_left - earlier.overfull_left,
         }
     }
@@ -455,6 +465,11 @@ impl fmt::Display for Report {
             stats.inherited,
             stats.sandwiched,
             stats.overfull_left,
+        )?;
+        writeln!(
+            f,
+            "  reclaimed      {} cells of dropped Merks after their blocks, in {} page writes",
+            stats.reclaimed, stats.reclaim_writes,
         )?;
         write!(f, "  fill by tenth ")?;
         for pages in self.fill_histogram {

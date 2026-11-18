@@ -89,6 +89,9 @@ impl Config {
     /// The page size `docs/lignindb/tree-layout.md` proposes.
     pub const PROPOSED_PAGE_SIZE: u32 = 32_768;
 
+    /// The largest page image the format's 16-bit offsets allow.
+    pub const LARGEST_IMAGE: u32 = 65_535;
+
     /// The layout the specification proposes.
     pub fn proposed() -> Self {
         Self::with_page_size(Self::PROPOSED_PAGE_SIZE)
@@ -111,9 +114,11 @@ impl Config {
         }
     }
 
-    /// The bytes of a page that cells can use.
+    /// The bytes of a page that cells can use. A page image is at most
+    /// 65,535 bytes, because offsets in it are 16 bits, so a page of 64 KiB
+    /// has one byte it cannot use (`flat-page.md`, P10).
     pub fn capacity(&self) -> u32 {
-        self.page_size - self.costs.page_header
+        self.page_size.min(Self::LARGEST_IMAGE) - self.costs.page_header
     }
 
     /// The size below which a fragment belongs in its parent's page.
@@ -170,8 +175,13 @@ impl Config {
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Page {
+    /// The bytes of the cells in the page, dead ones included.
     used: u32,
+    /// How many cells the page holds, dead ones included.
     cells: u32,
+    /// The bytes of the cells of dropped Merks that the reclaimer has not
+    /// taken yet.
+    dead: u32,
     dirty_in_transition: u64,
     dirty_in_block: u64,
     /// A cell of this page that the write numbered `held_in` holds.
@@ -194,6 +204,9 @@ pub struct Model {
     cell_of: Vec<u32>,
     pages: Vec<Page>,
     free: Vec<u32>,
+    /// The cells of dropped Merks that still take room in their pages: the
+    /// page and the bytes of each.
+    dead: Vec<(u32, u32)>,
     live_pages: u64,
     used_bytes: u64,
     cells: u64,
@@ -252,6 +265,7 @@ impl Model {
             cell_of: Vec::new(),
             pages: vec![Page::default()],
             free: Vec::new(),
+            dead: Vec::new(),
             live_pages: 0,
             used_bytes: 0,
             cells: 0,
@@ -284,22 +298,25 @@ impl Model {
         &self.samples
     }
 
-    /// How many pages hold at least one cell.
+    /// How many pages hold at least one cell, the cell of a dropped Merk
+    /// that is not reclaimed yet included.
     pub fn pages(&self) -> u64 {
         self.live_pages
     }
 
-    /// How many cells the pages hold.
+    /// How many cells of nodes that exist the pages hold.
     pub fn cells(&self) -> u64 {
         self.cells
     }
 
-    /// The bytes of all cells, slot entries included.
+    /// The bytes of the cells of all nodes that exist, slot entries
+    /// included.
     pub fn used_bytes(&self) -> u64 {
         self.used_bytes
     }
 
-    /// The share of all page bytes that holds a header or a cell.
+    /// The share of all page bytes that holds a header or the cell of a node
+    /// that exists. What a dropped Merk left behind counts as empty.
     pub fn fill(&self) -> f64 {
         if self.live_pages == 0 {
             return 0.0;
@@ -323,7 +340,8 @@ impl Model {
         let mut histogram = [0; 10];
         let header = self.config.costs.page_header;
         for page in self.pages.iter().filter(|page| page.cells > 0) {
-            let tenth = u64::from(page.used + header) * 10 / u64::from(self.config.page_size);
+            let live = page.used - page.dead + header;
+            let tenth = u64::from(live) * 10 / u64::from(self.config.page_size);
             histogram[(tenth as usize).min(9)] += 1;
         }
         histogram
@@ -376,10 +394,10 @@ impl Model {
             if page != 0 && !self.shrunk.contains(&page) {
                 self.shrunk.push(page);
             }
-            self.remove_cell(*node, true);
+            self.remove_cell(*node);
         }
         for node in &changes.dropped {
-            self.remove_cell(*node, false);
+            self.retire_cell(*node);
         }
         let mut reserved: Vec<(NodeId, u32)> = Vec::new();
         for (taker, page, cause) in inherited {
@@ -478,12 +496,39 @@ impl Model {
     }
 
     /// Ends a block: the pages dirtied since the last block are flushed
-    /// once.
+    /// once, and the reclaimer then takes the cells of the Merks the block
+    /// dropped.
     pub fn end_block(&mut self) {
         self.stats.blocks += 1;
         self.stats.dirty_pages_by_block += self.dirty_block;
         self.dirty_block = 0;
         self.block += 1;
+        self.reclaim();
+    }
+
+    /// Removes the cells of dropped Merks from their pages. A page that
+    /// keeps other cells is written; one that keeps none is freed.
+    fn reclaim(&mut self) {
+        let mut dead = std::mem::take(&mut self.dead);
+        dead.sort_unstable();
+        let mut cells = dead.iter().peekable();
+        while let Some((page, bytes)) = cells.next() {
+            let entry = &mut self.pages[*page as usize];
+            entry.used -= bytes;
+            entry.dead -= bytes;
+            entry.cells -= 1;
+            self.stats.reclaimed += 1;
+            if cells.peek().is_some_and(|(next, _)| next == page) {
+                continue;
+            }
+            if entry.cells == 0 {
+                self.release(*page);
+            } else {
+                self.stats.reclaim_writes += 1;
+            }
+        }
+        dead.clear();
+        self.dead = dead;
     }
 
     /// Records where the layout stands.
@@ -510,6 +555,7 @@ impl Model {
     pub fn check(&self, grove: &Grove) -> Result<(), String> {
         let mut used = vec![0u64; self.pages.len()];
         let mut cells = vec![0u32; self.pages.len()];
+        let mut dead = vec![0u64; self.pages.len()];
         let mut live = 0u64;
         for (node, entry) in grove.nodes() {
             let index = node.index();
@@ -537,12 +583,28 @@ impl Model {
         if live != self.cells {
             return Err(format!("{live} live nodes but {} cells", self.cells));
         }
+        let bytes: u64 = used.iter().sum();
+        if bytes != self.used_bytes {
+            return Err(format!(
+                "the pages hold {bytes} bytes of cells but {} are counted",
+                self.used_bytes
+            ));
+        }
+        for (page, bytes) in &self.dead {
+            used[*page as usize] += u64::from(*bytes);
+            dead[*page as usize] += u64::from(*bytes);
+            cells[*page as usize] += 1;
+        }
         let mut pages = 0;
         for (id, page) in self.pages.iter().enumerate().skip(1) {
-            if u64::from(page.used) != used[id] || page.cells != cells[id] {
+            if u64::from(page.used) != used[id]
+                || page.cells != cells[id]
+                || u64::from(page.dead) != dead[id]
+            {
                 return Err(format!(
-                    "page {id} claims {} bytes in {} cells but holds {} in {}",
-                    page.used, page.cells, used[id], cells[id]
+                    "page {id} claims {} bytes in {} cells, {} of them dead, but holds {} in {}, \
+                     {} dead",
+                    page.used, page.cells, page.dead, used[id], cells[id], dead[id]
                 ));
             }
             if page.used > self.capacity {
@@ -557,13 +619,6 @@ impl Model {
             return Err(format!(
                 "{pages} pages in use but {} counted",
                 self.live_pages
-            ));
-        }
-        let bytes: u64 = used.iter().sum();
-        if bytes != self.used_bytes {
-            return Err(format!(
-                "the pages hold {bytes} bytes of cells but {} are counted",
-                self.used_bytes
             ));
         }
         let mut free = self.free.clone();
@@ -670,7 +725,7 @@ impl Model {
         self.queue_if_over(page);
     }
 
-    fn remove_cell(&mut self, node: NodeId, dirties: bool) {
+    fn remove_cell(&mut self, node: NodeId) {
         let page = std::mem::take(&mut self.page_of[node.index()]);
         if page == 0 {
             return;
@@ -684,15 +739,37 @@ impl Model {
         if entry.held == Some(node) {
             entry.held = None;
         }
-        if dirties {
-            self.dirty(page);
-        }
+        self.dirty(page);
         if self.pages[page as usize].cells == 0 {
-            self.pages[page as usize].held = None;
-            self.free.push(page);
-            self.live_pages -= 1;
-            self.stats.pages_freed += 1;
+            self.release(page);
         }
+    }
+
+    /// Takes the cell of a node that went with a dropped Merk out of the
+    /// layout. Its page is not written, and the cell keeps its room there
+    /// until the reclaimer comes (D2).
+    fn retire_cell(&mut self, node: NodeId) {
+        let page = std::mem::take(&mut self.page_of[node.index()]);
+        if page == 0 {
+            return;
+        }
+        let bytes = std::mem::take(&mut self.cell_of[node.index()]);
+        self.used_bytes -= u64::from(bytes);
+        self.cells -= 1;
+        self.dead.push((page, bytes));
+        let entry = &mut self.pages[page as usize];
+        entry.dead += bytes;
+        if entry.held == Some(node) {
+            entry.held = None;
+        }
+    }
+
+    /// Gives back a page that holds no cell.
+    fn release(&mut self, page: u32) {
+        self.pages[page as usize].held = None;
+        self.free.push(page);
+        self.live_pages -= 1;
+        self.stats.pages_freed += 1;
     }
 
     fn queue_if_over(&mut self, page: u32) {
@@ -709,7 +786,7 @@ impl Model {
     fn carry(&mut self, grove: &Grove, node: NodeId, to: u32, cause: Cause) {
         let bytes = self.cell_of[node.index()];
         let from = self.page_of[node.index()];
-        self.remove_cell(node, true);
+        self.remove_cell(node);
         self.insert_cell(node, to, bytes);
         match self.carry_slot[node.index()] {
             0 => {
@@ -1627,7 +1704,55 @@ mod tests {
             (1, 1),
             "the element's page and the directory entry, not the dropped Merk's pages",
         );
-        assert!(model.pages() < pages);
+        assert_eq!(model.cells(), 2);
+        assert_eq!(
+            (model.pages(), drop.reclaimed),
+            (pages, 0),
+            "the dropped cells keep their room until the block ends"
+        );
+        let fill = model.fill();
+
+        // The reclaimer comes after the block. The dropped Merk had pages
+        // of its own, so they are freed and none is written.
+        model.end_block();
+        model.check(&hand.grove).expect("consistent");
+        let reclaim = model.stats().since(&before);
+        assert_eq!((reclaim.reclaimed, reclaim.reclaim_writes), (6, 0));
+        assert_eq!(model.pages(), 1);
+        assert!(model.fill() > fill);
+    }
+
+    #[test]
+    fn the_reclaimer_writes_a_page_that_keeps_other_cells() {
+        let mut hand = Hand::new();
+        let mut model = Model::new(config());
+        let nodes = grow(&mut hand, &mut model, MerkId::ROOT, 3);
+        let hosted = hand.host(nodes[0]);
+        hand.touch_path(nodes[0]);
+        step(&mut hand, &mut model);
+        grow(&mut hand, &mut model, hosted, 2);
+        assert_eq!(model.pages(), 1, "the hosted Merk is in its host's page");
+        let used = model.pages[1].used;
+
+        hand.link(nodes[1], Side::Left, None);
+        hand.remove(nodes[0]);
+        hand.touch_path(nodes[1]);
+        step(&mut hand, &mut model);
+        model.check(&hand.grove).expect("consistent");
+        assert_eq!(model.cells(), 2);
+        let page = model.pages[1];
+        assert_eq!((page.cells, page.dead), (4, 107 + 41 + 107));
+        assert!(
+            page.used > used - 300,
+            "the dead cells still take their room"
+        );
+        assert_eq!(model.fill_histogram()[2], 1, "but do not count as filled");
+
+        model.end_block();
+        model.check(&hand.grove).expect("consistent");
+        let stats = model.stats();
+        assert_eq!((stats.reclaimed, stats.reclaim_writes), (2, 1));
+        assert_eq!((model.pages[1].cells, model.pages[1].dead), (2, 0));
     }
 
     #[test]
@@ -1778,6 +1903,7 @@ mod tests {
         damaged(&|model| model.cell_of[index] += 1, "its record needs");
         damaged(&|model| model.cells += 1, "live nodes but");
         damaged(&|model| model.pages[page].cells += 1, "claims");
+        damaged(&|model| model.pages[page].dead += 1, "claims");
         damaged(&|model| model.live_pages += 1, "pages in use but");
         damaged(&|model| model.used_bytes += 1, "bytes of cells but");
         damaged(&|model| model.free.push(1), "are free but");
@@ -1932,6 +2058,59 @@ mod tests {
     #[should_panic(expected = "a page is 1 KiB to 64 KiB")]
     fn a_page_size_out_of_range_is_refused() {
         Model::new(Config::with_page_size(512));
+    }
+
+    #[test]
+    #[should_panic(expected = "a small fragment is at most half a page")]
+    fn a_small_fragment_of_a_whole_page_is_refused() {
+        Model::new(Config {
+            small_fragment_divisor: 1,
+            ..Config::proposed()
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "a fragment is at most a page")]
+    fn a_largest_fragment_above_a_page_is_refused() {
+        Model::new(Config {
+            largest_fragment_percent: 101,
+            ..Config::proposed()
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "half of a split fragment must not count as small")]
+    fn a_largest_fragment_of_two_small_ones_is_refused() {
+        Model::new(Config {
+            small_fragment_divisor: 4,
+            ..Config::proposed()
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "a page is at most full")]
+    fn a_seed_limit_above_a_page_is_refused() {
+        Model::new(Config {
+            seed_limit_percent: 101,
+            ..Config::proposed()
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "a page that gives its fragment away must be able to take one")]
+    fn a_merge_threshold_above_the_seed_limit_is_refused() {
+        Model::new(Config {
+            merge_below_percent: 80,
+            ..Config::proposed()
+        });
+    }
+
+    #[test]
+    fn a_page_of_64_kib_keeps_one_byte_unused() {
+        let config = Config::with_page_size(65_536);
+        assert_eq!(config.capacity(), 65_535 - 32);
+        assert_eq!(Config::with_page_size(65_535).capacity(), 65_535 - 32);
+        Model::new(config);
     }
 
     #[test]
