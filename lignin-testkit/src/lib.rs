@@ -3,4 +3,5 @@
 #![forbid(unsafe_code)]
 
 pub mod golden;
+pub mod layout_sim;
 pub mod workload;
