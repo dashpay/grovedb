@@ -12,18 +12,20 @@ use std::{
 };
 
 use grovedb_costs::{CostContext, CostResult};
-use grovedb_merk::proofs::{query::QueryItem, Query};
+use grovedb_element::indexed::IndexAxis;
+use grovedb_merk::proofs::{query::QueryItem, Decoder, Op, Query};
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
     flat::{PendingPrefixDropRecord, PendingPrefixDrops, SubtreePrefix},
     Error as StorageError,
 };
-use grovedb_version::version::GroveVersion;
+use grovedb_version::version::{v4::GROVE_V4, GroveVersion};
 use tempfile::TempDir;
 
 use crate::{
     batch::QualifiedGroveDbOp,
     engine::SubtreeCursor,
+    operations::proof::{GroveDBProof, ProofBytes},
     query_result_type::QueryResultType,
     reference_path::ReferencePathType,
     tests::faultable_reads::{with_failed_parent_read, INJECTED_READ_FAILURE},
@@ -34,6 +36,7 @@ struct PinnedReads {
     engine: RocksDbEngine,
     reads_started: AtomicUsize,
     writes_started: AtomicUsize,
+    snapshots_started: AtomicUsize,
 }
 
 impl PinnedReads {
@@ -42,6 +45,7 @@ impl PinnedReads {
             engine,
             reads_started: AtomicUsize::new(0),
             writes_started: AtomicUsize::new(0),
+            snapshots_started: AtomicUsize::new(0),
         }
     }
 }
@@ -100,6 +104,7 @@ impl Engine for PinnedReads {
     }
 
     fn start_snapshot_read_transaction(&self) -> Self::Transaction<'_> {
+        self.snapshots_started.fetch_add(1, Ordering::Relaxed);
         self.engine.start_snapshot_read_transaction()
     }
 
@@ -229,6 +234,9 @@ impl Engine for PinnedReads {
 const TREE: &[u8] = b"tree";
 const INNER: &[u8] = b"inner";
 const SUMS: &[u8] = b"sums";
+const RANKED: &[u8] = b"ranked";
+const COUNTED: &[u8] = b"counted";
+const INDEX: &[u8] = b"index";
 
 fn item(value: &[u8]) -> Element {
     Element::new_item(value.to_vec())
@@ -267,17 +275,33 @@ fn database(grove_version: &GroveVersion) -> (TempDir, GroveDb<PinnedReads>) {
 }
 
 /// Runs `operation` and returns its result with the number of read
-/// transactions and of write transactions it started.
-fn started<T>(db: &GroveDb<PinnedReads>, operation: impl FnOnce() -> T) -> (T, usize, usize) {
+/// transactions, of write transactions and of snapshot read transactions it
+/// started.
+fn started_with_snapshots<T>(
+    db: &GroveDb<PinnedReads>,
+    operation: impl FnOnce() -> T,
+) -> (T, usize, usize, usize) {
     let engine = db.engine();
-    let reads = engine.reads_started.load(Ordering::Relaxed);
-    let writes = engine.writes_started.load(Ordering::Relaxed);
+    let count = |counter: &AtomicUsize| counter.load(Ordering::Relaxed);
+    let reads = count(&engine.reads_started);
+    let writes = count(&engine.writes_started);
+    let snapshots = count(&engine.snapshots_started);
     let result = operation();
     (
         result,
-        engine.reads_started.load(Ordering::Relaxed) - reads,
-        engine.writes_started.load(Ordering::Relaxed) - writes,
+        count(&engine.reads_started) - reads,
+        count(&engine.writes_started) - writes,
+        count(&engine.snapshots_started) - snapshots,
     )
+}
+
+/// Runs `operation`, which may start no snapshot read transaction, and
+/// returns its result with the number of read transactions and of write
+/// transactions it started.
+fn started<T>(db: &GroveDb<PinnedReads>, operation: impl FnOnce() -> T) -> (T, usize, usize) {
+    let (result, reads, writes, snapshots) = started_with_snapshots(db, operation);
+    assert_eq!(snapshots, 0, "snapshot read transactions started");
+    (result, reads, writes)
 }
 
 /// Every item of `tree` and, under `inner`, every item of that tree.
@@ -429,13 +453,12 @@ fn a_read_that_is_given_no_transaction_starts_one_read_transaction() {
     )
     .unwrap()
     .expect("run_path_query");
-    assert_one_read_transaction!(
-        &db,
-        "prove_query",
-        db.prove_query(&nested, None, grove_version)
-    )
-    .unwrap()
-    .expect("prove_query");
+    // A proof reads its layers through a snapshot the prover pins, and
+    // follows the reference of a row in a read transaction of its own.
+    let (proved, reads, writes, snapshots) =
+        started_with_snapshots(&db, || db.prove_query(&nested, None, grove_version));
+    proved.unwrap().expect("prove_query");
+    assert_eq!((snapshots, reads, writes), (1, 1, 0), "prove_query");
     let sums_up_to_a_limit = AggregateSumPathQuery::new_single_query_item(
         vec![SUMS.to_vec()],
         QueryItem::RangeFull(..),
@@ -587,4 +610,297 @@ fn a_transaction_the_caller_gives_is_the_only_one_an_operation_uses() {
     assert_eq!((reads, writes), (0, 0));
     // The query read through the caller's transaction: it sees the insert.
     assert!(results.0.to_elements().contains(&item(b"three")));
+}
+
+/// The indexed trees with a 128-bit sum on an engine that is not the default
+/// one: a write through their entry points starts one write transaction, and
+/// a read of the big sum axis one read transaction.
+#[test]
+fn the_big_sum_axis_is_written_and_read_in_one_transaction_each() {
+    let grove_version = GroveVersion::latest();
+    let (_dir, db) = database(grove_version);
+    let root: &[&[u8]] = &[];
+    let ranked: &[&[u8]] = &[RANKED];
+    let counted: &[&[u8]] = &[COUNTED];
+    let count_and_big_sum = Element::empty_provable_count_provable_big_sum_indexed_tree(vec![
+        (IndexAxis::Count.tag(), None),
+        (IndexAxis::BigSum.tag(), None),
+    ])
+    .expect("canonical axes");
+    for (key, tree) in [
+        (RANKED, Element::empty_provable_big_sum_indexed_tree()),
+        (COUNTED, count_and_big_sum),
+    ] {
+        db.insert(root, key, tree, None, None, grove_version)
+            .unwrap()
+            .expect("insert");
+    }
+
+    let largest = i64::MAX;
+    for (key, sum) in [(b"a", 5), (b"b", largest)] {
+        let entry = Element::new_sum_item(sum);
+        let (inserted, reads, writes) = started(&db, || {
+            db.insert_into_provable_big_sum_indexed_tree(
+                ranked,
+                key,
+                entry.clone(),
+                None,
+                grove_version,
+            )
+        });
+        inserted
+            .unwrap()
+            .expect("insert_into_provable_big_sum_indexed_tree");
+        assert_eq!((reads, writes), (0, 1), "insert into the big sum tree");
+        let (inserted, reads, writes) = started(&db, || {
+            db.insert_into_provable_count_provable_big_sum_indexed_tree(
+                counted,
+                key,
+                entry,
+                None,
+                grove_version,
+            )
+        });
+        inserted
+            .unwrap()
+            .expect("insert_into_provable_count_provable_big_sum_indexed_tree");
+        assert_eq!(
+            (reads, writes),
+            (0, 1),
+            "insert into the count and big sum tree"
+        );
+    }
+
+    // An entry whose sum is past the range of an `i64`: a tree with a
+    // 128-bit sum that holds the largest sum item twice.
+    db.insert_into_provable_big_sum_indexed_tree(
+        ranked,
+        b"c",
+        Element::empty_big_sum_tree(),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert_into_provable_big_sum_indexed_tree");
+    db.insert_into_provable_count_provable_big_sum_indexed_tree(
+        counted,
+        b"c",
+        Element::empty_count_big_sum_tree(),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert_into_provable_count_provable_big_sum_indexed_tree");
+    for tree in [RANKED, COUNTED] {
+        let entry: &[&[u8]] = &[tree, b"c"];
+        for key in [b"0", b"1"] {
+            let item = Element::new_sum_item(largest);
+            db.insert(entry, key, item, None, None, grove_version)
+                .unwrap()
+                .expect("insert");
+        }
+    }
+    let widest = largest as i128 * 2;
+
+    let highest_first = [
+        (widest, b"c".to_vec()),
+        (largest as i128, b"b".to_vec()),
+        (5, b"a".to_vec()),
+    ];
+    let lowest_first = [
+        (5, b"a".to_vec()),
+        (largest as i128, b"b".to_vec()),
+        (widest, b"c".to_vec()),
+    ];
+    let page = assert_one_read_transaction!(
+        &db,
+        "indexed_big_sum_top_k_paginated",
+        db.indexed_big_sum_top_k_paginated(ranked, 10, 0, true, None, grove_version)
+    )
+    .unwrap()
+    .expect("indexed_big_sum_top_k_paginated");
+    let ranks: Vec<_> = page.entries.into_iter().map(|e| e.key_pair()).collect();
+    assert_eq!(ranks, highest_first);
+    // An offset is skipped by count, through a cursor the read points at the
+    // secondary of the axis.
+    let page = assert_one_read_transaction!(
+        &db,
+        "indexed_big_sum_top_k_paginated after an offset",
+        db.indexed_big_sum_top_k_paginated(ranked, 10, 1, true, None, grove_version)
+    )
+    .unwrap()
+    .expect("indexed_big_sum_top_k_paginated");
+    assert_eq!(page.skipped, 1);
+    let ranks: Vec<_> = page.entries.into_iter().map(|e| e.key_pair()).collect();
+    assert_eq!(ranks, highest_first[1..]);
+    let band = assert_one_read_transaction!(
+        &db,
+        "indexed_big_sum_range",
+        db.indexed_big_sum_range(ranked, 0, i128::MAX, false, 10, None, grove_version)
+    )
+    .unwrap()
+    .expect("indexed_big_sum_range");
+    let ranks: Vec<_> = band.into_iter().map(|e| e.key_pair()).collect();
+    assert_eq!(ranks, lowest_first);
+    let population = assert_one_read_transaction!(
+        &db,
+        "indexed_big_sum_population_over_value_range",
+        db.indexed_big_sum_population_over_value_range(ranked, 6, i128::MAX, None, grove_version)
+    )
+    .unwrap()
+    .expect("indexed_big_sum_population_over_value_range");
+    assert_eq!(population, 2);
+    let keys = assert_one_read_transaction!(
+        &db,
+        "indexed_big_sum_top_k_paginated_keys",
+        db.indexed_big_sum_top_k_paginated_keys(counted, 10, 0, true, None, grove_version)
+    )
+    .unwrap()
+    .expect("indexed_big_sum_top_k_paginated_keys");
+    assert_eq!(keys.entries, highest_first);
+    let keys = assert_one_read_transaction!(
+        &db,
+        "indexed_big_sum_top_k_paginated_keys after an offset",
+        db.indexed_big_sum_top_k_paginated_keys(counted, 10, 2, true, None, grove_version)
+    )
+    .unwrap()
+    .expect("indexed_big_sum_top_k_paginated_keys");
+    assert_eq!((keys.skipped, &keys.entries[..]), (2, &highest_first[2..]));
+    let keys = assert_one_read_transaction!(
+        &db,
+        "indexed_big_sum_range_keys",
+        db.indexed_big_sum_range_keys(counted, 0, i128::MAX, false, 10, None, grove_version)
+    )
+    .unwrap()
+    .expect("indexed_big_sum_range_keys");
+    assert_eq!(keys, lowest_first);
+
+    let (deleted, reads, writes) = started(&db, || {
+        db.delete_from_provable_big_sum_indexed_tree(ranked, b"a", None, grove_version)
+    });
+    assert!(deleted
+        .unwrap()
+        .expect("delete_from_provable_big_sum_indexed_tree"));
+    assert_eq!((reads, writes), (0, 1), "delete from the big sum tree");
+    let (deleted, reads, writes) = started(&db, || {
+        db.delete_from_provable_count_provable_big_sum_indexed_tree(
+            counted,
+            b"a",
+            None,
+            grove_version,
+        )
+    });
+    assert!(deleted
+        .unwrap()
+        .expect("delete_from_provable_count_provable_big_sum_indexed_tree"));
+    assert_eq!(
+        (reads, writes),
+        (0, 1),
+        "delete from the count and big sum tree"
+    );
+}
+
+/// `index` holds six trees with one item each.
+fn insert_index<E: Engine>(db: &GroveDb<E>, grove_version: &GroveVersion) {
+    let root: &[&[u8]] = &[];
+    db.insert(
+        root,
+        INDEX,
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert");
+    for position in 0u8..6 {
+        let index: &[&[u8]] = &[INDEX];
+        db.insert(
+            index,
+            &[position],
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert");
+        let entry: &[&[u8]] = &[INDEX, &[position]];
+        db.insert(entry, b"doc", item(&[position]), None, None, grove_version)
+            .unwrap()
+            .expect("insert");
+    }
+}
+
+/// How many keys the proof of the `index` layer reveals.
+fn keys_revealed_in_the_index(proof: &[u8]) -> usize {
+    let config = bincode::config::standard()
+        .with_big_endian()
+        .with_no_limit();
+    let (proof, _): (GroveDBProof, usize) =
+        bincode::decode_from_slice(proof, config).expect("the proof decodes");
+    let GroveDBProof::V1(proof) = proof else {
+        panic!("expected a V1 proof envelope");
+    };
+    let layer = proof
+        .root_layer
+        .lower_layers
+        .get(INDEX)
+        .expect("the proof descends into the index");
+    let ProofBytes::Merk(bytes) = &layer.merk_proof else {
+        panic!("the index layer is a Merk proof");
+    };
+    Decoder::new(bytes)
+        .filter(|op| match op.as_ref().expect("the op decodes") {
+            Op::Push(node) | Op::PushInverted(node) => node.key().is_some(),
+            _ => false,
+        })
+        .count()
+}
+
+/// A layer under a per-instance cap is proven a second time, cut where the
+/// cap is spent. Both proofs of the layer read the one snapshot the prover
+/// pins, and the bytes are those the default engine proves.
+#[test]
+fn a_capped_layer_is_cut_in_the_snapshot_of_its_proof() {
+    let grove_version = GroveVersion::latest();
+    let pinned_dir = TempDir::new().expect("temporary directory");
+    let pinned = GroveDb::<PinnedReads>::open_with_engine(pinned_dir.path()).expect("open");
+    let default_dir = TempDir::new().expect("temporary directory");
+    let default = GroveDb::open(default_dir.path()).expect("open");
+    insert_index(&pinned, grove_version);
+    insert_index(&default, grove_version);
+
+    let mut rows = Query::new();
+    rows.insert_all();
+    let mut page = Query::new();
+    page.insert_all();
+    page.set_subquery(rows);
+    page.limit = Some(2);
+    let page = PathQuery::new_unsized(vec![INDEX.to_vec()], page);
+
+    let (proof, reads, writes, snapshots) =
+        started_with_snapshots(&pinned, || pinned.prove_query(&page, None, grove_version));
+    let proof = proof.unwrap().expect("prove_query");
+    assert_eq!((snapshots, reads, writes), (1, 0, 0));
+    let (root, proved) = GroveDb::verify_query(&proof, &page, grove_version).expect("verify");
+    assert_eq!(
+        root,
+        pinned.root_hash(None, grove_version).unwrap().unwrap()
+    );
+    assert_eq!(proved.len(), 2);
+
+    let on_the_default_engine = default
+        .prove_query(&page, None, grove_version)
+        .unwrap()
+        .expect("prove_query");
+    assert_eq!(proof, on_the_default_engine);
+    // The layer ends after the two keys whose rows fill the page. GROVE_V4
+    // proves it whole: every key of the index.
+    assert_eq!(keys_revealed_in_the_index(&proof), 2);
+    let whole = pinned
+        .prove_query(&page, None, &GROVE_V4)
+        .unwrap()
+        .expect("prove_query");
+    assert_eq!(keys_revealed_in_the_index(&whole), 6);
 }
