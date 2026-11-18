@@ -359,7 +359,9 @@ where {
             | Element::DenseAppendOnlyFixedSizeTree(..)
             | Element::PrivateDocumentStore(..)
             | Element::ProvableSumIndexedTree(..)
+            | Element::ProvableBigSumIndexedTree(..)
             | Element::ProvableCountProvableSumIndexedTree(..)
+            | Element::ProvableCountProvableBigSumIndexedTree(..)
             | Element::ProvableCountIndexedTree(..) => {
                 Err(Error::InvalidQuery("path_queries can not refer to trees"))
             }
@@ -544,7 +546,9 @@ where {
                         | Element::DenseAppendOnlyFixedSizeTree(..)
                         | Element::PrivateDocumentStore(..)
                         | Element::ProvableSumIndexedTree(..)
+                        | Element::ProvableBigSumIndexedTree(..)
                         | Element::ProvableCountProvableSumIndexedTree(..)
+                        | Element::ProvableCountProvableBigSumIndexedTree(..)
                         | Element::ProvableCountIndexedTree(..) => Err(Error::InvalidQuery(
                             "path_queries can only refer to items and references",
                         )),
@@ -730,6 +734,24 @@ where {
                                         Element::ProvableSumIndexedTree(_, _, sum_value, _) => {
                                             Ok(QueryItemOrSumReturnType::SumValue(sum_value))
                                         }
+                                        Element::ProvableBigSumIndexedTree(
+                                            _,
+                                            _,
+                                            big_sum_value,
+                                            _,
+                                        ) => {
+                                            Ok(QueryItemOrSumReturnType::BigSumValue(big_sum_value))
+                                        }
+                                        Element::ProvableCountProvableBigSumIndexedTree(
+                                            _,
+                                            count_value,
+                                            big_sum_value,
+                                            _,
+                                            _,
+                                        ) => Ok(QueryItemOrSumReturnType::CountBigSumValue(
+                                            count_value,
+                                            big_sum_value,
+                                        )),
                                         Element::ProvableCountProvableSumIndexedTree(
                                             _,
                                             count_value,
@@ -812,6 +834,19 @@ where {
                         Element::ProvableSumIndexedTree(_, _, sum_value, _) => {
                             Ok(QueryItemOrSumReturnType::SumValue(sum_value))
                         }
+                        Element::ProvableBigSumIndexedTree(_, _, big_sum_value, _) => {
+                            Ok(QueryItemOrSumReturnType::BigSumValue(big_sum_value))
+                        }
+                        Element::ProvableCountProvableBigSumIndexedTree(
+                            _,
+                            count_value,
+                            big_sum_value,
+                            _,
+                            _,
+                        ) => Ok(QueryItemOrSumReturnType::CountBigSumValue(
+                            count_value,
+                            big_sum_value,
+                        )),
                         Element::ProvableCountProvableSumIndexedTree(
                             _,
                             count_value,
@@ -1430,7 +1465,9 @@ where {
                         | Element::DenseAppendOnlyFixedSizeTree(..)
                         | Element::PrivateDocumentStore(..)
                         | Element::ProvableSumIndexedTree(..)
+                        | Element::ProvableBigSumIndexedTree(..)
                         | Element::ProvableCountProvableSumIndexedTree(..)
+                        | Element::ProvableCountProvableBigSumIndexedTree(..)
                         | Element::ProvableCountIndexedTree(..)
                         | Element::Item(..)
                         | Element::ItemWithBackwardsReferences(..) => Err(Error::InvalidQuery(

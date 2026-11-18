@@ -119,6 +119,14 @@ pub enum TreeType {
     /// (`KVBigSum`, `KVHashBigSum`, `KVDigestBigSum`, `KVRefValueHashBigSum`,
     /// `HashWithBigSum`).
     ProvableBigSumTree,
+    /// The primary of a `ProvableBigSumIndexedTree`: mirrors a
+    /// `ProvableBigSumTree` at the Merk-node level, with a secondary Merk
+    /// ordered by each entry's 128-bit sum.
+    ProvableBigSumIndexedTree,
+    /// The primary of a `ProvableCountProvableBigSumIndexedTree`: mirrors a
+    /// `ProvableCountProvableBigSumTree` at the Merk-node level, with one
+    /// secondary Merk per selected axis.
+    ProvableCountProvableBigSumIndexedTree,
 }
 
 impl TreeType {
@@ -141,8 +149,10 @@ impl TreeType {
             TreeType::ProvableSumTree => 11,
             TreeType::ProvableCountProvableSumTree => 12,
             TreeType::ProvableSumIndexedTree => 13,
+            TreeType::ProvableBigSumIndexedTree => 20,
             TreeType::ProvableCountIndexedTree => 14,
             TreeType::ProvableCountProvableSumIndexedTree => 15,
+            TreeType::ProvableCountProvableBigSumIndexedTree => 21,
             TreeType::PrivateDocumentStore(_) => 16,
             TreeType::ProvableCountProvableBigSumTree => 17,
             TreeType::CountBigSumTree => 18,
@@ -176,7 +186,9 @@ impl TryFrom<u8> for TreeType {
             17 => Ok(TreeType::ProvableCountProvableBigSumTree),
             18 => Ok(TreeType::CountBigSumTree),
             19 => Ok(TreeType::ProvableBigSumTree),
-            n => Err(Error::UnknownTreeType(format!("got {}, max is 19", n))),
+            20 => Ok(TreeType::ProvableBigSumIndexedTree),
+            21 => Ok(TreeType::ProvableCountProvableBigSumIndexedTree),
+            n => Err(Error::UnknownTreeType(format!("got {}, max is 21", n))),
         }
     }
 }
@@ -198,9 +210,13 @@ impl fmt::Display for TreeType {
             TreeType::ProvableSumTree => "Provable Sum Tree",
             TreeType::ProvableCountProvableSumTree => "Provable Count Provable Sum Tree",
             TreeType::ProvableSumIndexedTree => "Provable Sum Indexed Tree",
+            TreeType::ProvableBigSumIndexedTree => "Provable Big Sum Indexed Tree",
             TreeType::ProvableCountIndexedTree => "Provable Count Indexed Tree",
             TreeType::ProvableCountProvableSumIndexedTree => {
                 "Provable Count Provable Sum Indexed Tree"
+            }
+            TreeType::ProvableCountProvableBigSumIndexedTree => {
+                "Provable Count Provable Big Sum Indexed Tree"
             }
             TreeType::PrivateDocumentStore(_) => "Private Document Store",
             TreeType::ProvableCountProvableBigSumTree => "Provable Count Provable Big Sum Tree",
@@ -244,6 +260,7 @@ impl TreeType {
                 | TreeType::ProvableCountProvableBigSumTree
                 | TreeType::ProvableCountIndexedTree
                 | TreeType::ProvableCountProvableSumIndexedTree
+                | TreeType::ProvableCountProvableBigSumIndexedTree
         )
     }
 
@@ -256,8 +273,10 @@ impl TreeType {
         matches!(
             self,
             TreeType::ProvableSumIndexedTree
+                | TreeType::ProvableBigSumIndexedTree
                 | TreeType::ProvableCountIndexedTree
                 | TreeType::ProvableCountProvableSumIndexedTree
+                | TreeType::ProvableCountProvableBigSumIndexedTree
         )
     }
 
@@ -285,7 +304,9 @@ impl TreeType {
                 | TreeType::ProvableCountProvableSumTree
                 | TreeType::ProvableCountProvableBigSumTree
                 | TreeType::ProvableSumIndexedTree
+                | TreeType::ProvableBigSumIndexedTree
                 | TreeType::ProvableCountProvableSumIndexedTree
+                | TreeType::ProvableCountProvableBigSumIndexedTree
         )
     }
 
@@ -308,6 +329,7 @@ impl TreeType {
                 | TreeType::ProvableCountProvableSumTree
                 | TreeType::ProvableCountProvableBigSumTree
                 | TreeType::ProvableCountProvableSumIndexedTree
+                | TreeType::ProvableCountProvableBigSumIndexedTree
         )
     }
 
@@ -367,8 +389,10 @@ impl TreeType {
             // ProvableCountTree (no sum items); PCPS-indexed mirrors
             // ProvableCountProvableSumTree (sum items allowed).
             TreeType::ProvableSumIndexedTree => true,
+            TreeType::ProvableBigSumIndexedTree => true,
             TreeType::ProvableCountIndexedTree => false,
             TreeType::ProvableCountProvableSumIndexedTree => true,
+            TreeType::ProvableCountProvableBigSumIndexedTree => true,
             TreeType::PrivateDocumentStore(_) => false,
             TreeType::ProvableCountProvableBigSumTree => true,
             TreeType::CountBigSumTree => true,
@@ -396,12 +420,16 @@ impl TreeType {
             // The primary of a ProvableSumIndexedTree mirrors a
             // ProvableSumTree.
             TreeType::ProvableSumIndexedTree => NodeType::ProvableSumNode,
+            TreeType::ProvableBigSumIndexedTree => NodeType::ProvableBigSumNode,
             // The primary of a ProvableCountIndexedTree mirrors a
             // ProvableCountTree.
             TreeType::ProvableCountIndexedTree => NodeType::ProvableCountNode,
             // The primary of a ProvableCountProvableSumIndexedTree mirrors
             // a ProvableCountProvableSumTree.
             TreeType::ProvableCountProvableSumIndexedTree => NodeType::ProvableCountProvableSumNode,
+            TreeType::ProvableCountProvableBigSumIndexedTree => {
+                NodeType::ProvableCountProvableBigSumNode
+            }
             TreeType::PrivateDocumentStore(_) => NodeType::NormalNode,
             TreeType::ProvableCountProvableBigSumTree => NodeType::ProvableCountProvableBigSumNode,
             TreeType::CountBigSumTree => NodeType::CountBigSumNode,
@@ -430,6 +458,7 @@ impl TreeType {
             // The primary of a ProvableSumIndexedTree mirrors a
             // ProvableSumTree.
             TreeType::ProvableSumIndexedTree => TreeFeatureType::ProvableSummedMerkNode(0),
+            TreeType::ProvableBigSumIndexedTree => TreeFeatureType::ProvableBigSummedMerkNode(0),
             // The primary of a ProvableCountIndexedTree mirrors a
             // ProvableCountTree.
             TreeType::ProvableCountIndexedTree => TreeFeatureType::ProvableCountedMerkNode(0),
@@ -437,6 +466,9 @@ impl TreeType {
             // a ProvableCountProvableSumTree.
             TreeType::ProvableCountProvableSumIndexedTree => {
                 TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(0, 0)
+            }
+            TreeType::ProvableCountProvableBigSumIndexedTree => {
+                TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(0, 0)
             }
             TreeType::PrivateDocumentStore(_) => TreeFeatureType::BasicMerkNode,
             TreeType::ProvableCountProvableBigSumTree => {
@@ -473,9 +505,13 @@ impl TreeType {
                 Some(ElementType::ProvableCountProvableSumTree)
             }
             TreeType::ProvableSumIndexedTree => Some(ElementType::ProvableSumIndexedTree),
+            TreeType::ProvableBigSumIndexedTree => Some(ElementType::ProvableBigSumIndexedTree),
             TreeType::ProvableCountIndexedTree => Some(ElementType::ProvableCountIndexedTree),
             TreeType::ProvableCountProvableSumIndexedTree => {
                 Some(ElementType::ProvableCountProvableSumIndexedTree)
+            }
+            TreeType::ProvableCountProvableBigSumIndexedTree => {
+                Some(ElementType::ProvableCountProvableBigSumIndexedTree)
             }
             TreeType::PrivateDocumentStore(_) => Some(ElementType::PrivateDocumentStore),
             TreeType::ProvableCountProvableBigSumTree => {
@@ -520,7 +556,7 @@ mod tests {
 
     #[test]
     fn tree_type_try_from_invalid() {
-        assert!(TreeType::try_from(20u8).is_err());
+        assert!(TreeType::try_from(22u8).is_err());
         assert!(TreeType::try_from(255u8).is_err());
     }
 

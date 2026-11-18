@@ -482,9 +482,13 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
             | Some(Element::MmrTree(_, flags))
             | Some(Element::BulkAppendTree(.., flags))
             | Some(Element::DenseAppendOnlyFixedSizeTree(.., flags))
-            | Some(Element::ProvableSumIndexedTree(.., flags))
+            | Some(
+                Element::ProvableSumIndexedTree(.., flags)
+                | Element::ProvableBigSumIndexedTree(.., flags),
+            )
             | Some(Element::ProvableCountIndexedTree(.., flags))
             | Some(Element::ProvableCountProvableSumIndexedTree(_, _, _, _, flags))
+            | Some(Element::ProvableCountProvableBigSumIndexedTree(_, _, _, _, flags))
             | Some(Element::PrivateDocumentStore(.., flags)) => {
                 // tree_type() looks through NonCounted, so this works for both
                 // a bare tree and a NonCounted(tree).
@@ -614,8 +618,10 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
             | Element::BulkAppendTree(.., flags)
             | Element::DenseAppendOnlyFixedSizeTree(.., flags)
             | Element::ProvableSumIndexedTree(.., flags)
+            | Element::ProvableBigSumIndexedTree(.., flags)
             | Element::ProvableCountIndexedTree(.., flags)
             | Element::ProvableCountProvableSumIndexedTree(_, _, _, _, flags)
+            | Element::ProvableCountProvableBigSumIndexedTree(_, _, _, _, flags)
             | Element::PrivateDocumentStore(.., flags) => {
                 // tree_type() looks through NonCounted.
                 let tree_cost_size = element.tree_type().unwrap().cost_size();

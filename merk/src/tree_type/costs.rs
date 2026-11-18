@@ -71,6 +71,17 @@ pub const COUNT_INDEXED_TREE_COST_SIZE: u32 = COUNT_TREE_COST_SIZE + 1; // 13
 pub const PROVABLE_COUNT_PROVABLE_SUM_INDEXED_TREE_COST_SIZE: u32 =
     SUM_AND_COUNT_LAYER_COST_SIZE + 1 + 3 * 2; // 28
 
+/// The cost of a provable big-sum-indexed tree element. Same shape as
+/// `BIG_SUM_TREE_COST_SIZE` with one extra byte of overhead for the second
+/// `Option<root_key>` field (the secondary root key).
+pub const BIG_SUM_INDEXED_TREE_COST_SIZE: u32 = BIG_SUM_TREE_COST_SIZE + 1; // 20
+
+/// The cost of a provable-count + provable-big-sum indexed tree element:
+/// the count and big sum layer cost plus the axes TLV's worst case, as
+/// `PROVABLE_COUNT_PROVABLE_SUM_INDEXED_TREE_COST_SIZE` sizes it.
+pub const PROVABLE_COUNT_PROVABLE_BIG_SUM_INDEXED_TREE_COST_SIZE: u32 =
+    BIG_SUM_AND_COUNT_LAYER_COST_SIZE + 1 + 3 * 2; // 35
+
 /// Provides the serialized cost size in bytes for a tree type.
 pub trait CostSize {
     /// Returns the cost size in bytes for this value.
@@ -99,12 +110,16 @@ impl CostSize for TreeType {
             TreeType::ProvableSumIndexedTree | TreeType::ProvableCountIndexedTree => {
                 COUNT_INDEXED_TREE_COST_SIZE
             }
+            TreeType::ProvableBigSumIndexedTree => BIG_SUM_INDEXED_TREE_COST_SIZE,
             // PCPSIT carries both aggregates and a variable-length axes TLV,
             // so it gets its own worst-case constant rather than the
             // single-axis indexed cost, which was smaller than the element's
             // own minimum payload.
             TreeType::ProvableCountProvableSumIndexedTree => {
                 PROVABLE_COUNT_PROVABLE_SUM_INDEXED_TREE_COST_SIZE
+            }
+            TreeType::ProvableCountProvableBigSumIndexedTree => {
+                PROVABLE_COUNT_PROVABLE_BIG_SUM_INDEXED_TREE_COST_SIZE
             }
             TreeType::PrivateDocumentStore(_) => PRIVATE_DOCUMENT_STORE_COST_SIZE,
             TreeType::ProvableCountProvableBigSumTree => COUNT_BIG_SUM_TREE_COST_SIZE,

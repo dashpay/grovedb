@@ -423,15 +423,22 @@ impl GroveDb {
                     .to_string(),
             )),
             AxisTraversal::AggregateOverValueRange { fold, .. } => match (axis, fold) {
-                (IndexAxis::Count | IndexAxis::Sum, AggregateFold::Population) => Ok(
-                    PathQueryRun::AxisAggregate(AxisAggregateValue::Population(0)),
-                ),
+                (
+                    IndexAxis::Count | IndexAxis::Sum | IndexAxis::BigSum,
+                    AggregateFold::Population,
+                ) => Ok(PathQueryRun::AxisAggregate(AxisAggregateValue::Population(
+                    0,
+                ))),
                 (IndexAxis::Count | IndexAxis::Sum, AggregateFold::Total) => {
                     Ok(PathQueryRun::AxisAggregate(AxisAggregateValue::Total(0)))
                 }
                 // classify rejects value-range aggregates on the Avg axis.
                 (IndexAxis::Avg, _) => Err(Error::CorruptedCodeExecution(
                     "value-range aggregate on the Avg axis survived classification",
+                )),
+                // ... and the total of the BigSum axis.
+                (IndexAxis::BigSum, AggregateFold::Total) => Err(Error::CorruptedCodeExecution(
+                    "value-range total on the BigSum axis survived classification",
                 )),
             },
         }
@@ -615,9 +622,30 @@ impl GroveDb {
                     )))
                     .wrap_with_cost(cost)
                 }
+                (IndexAxis::BigSum, AggregateFold::Population) => {
+                    let value = cost_return_on_error!(
+                        &mut cost,
+                        self.indexed_big_sum_population_over_value_range(
+                            path,
+                            *lo,
+                            *hi,
+                            transaction,
+                            grove_version
+                        )
+                    );
+                    Ok(PathQueryRun::AxisAggregate(AxisAggregateValue::Population(
+                        value,
+                    )))
+                    .wrap_with_cost(cost)
+                }
                 // classify rejects value-range aggregates on the Avg axis.
                 (IndexAxis::Avg, _) => Err(Error::CorruptedCodeExecution(
                     "value-range aggregate on the Avg axis survived classification",
+                ))
+                .wrap_with_cost(cost),
+                // ... and the total of the BigSum axis.
+                (IndexAxis::BigSum, AggregateFold::Total) => Err(Error::CorruptedCodeExecution(
+                    "value-range total on the BigSum axis survived classification",
                 ))
                 .wrap_with_cost(cost),
             },
@@ -675,6 +703,18 @@ impl GroveDb {
                 )
                 .map_ok(|page| (AxisEntries::Avg(page.entries), page.skipped))
             ),
+            IndexAxis::BigSum => cost_return_on_error!(
+                &mut cost,
+                self.indexed_big_sum_top_k_paginated(
+                    path,
+                    k,
+                    offset,
+                    descending,
+                    transaction,
+                    grove_version
+                )
+                .map_ok(|page| (AxisEntries::BigSum(page.entries), page.skipped))
+            ),
         };
         Ok(page).wrap_with_cost(cost)
     }
@@ -729,6 +769,18 @@ impl GroveDb {
             IndexAxis::Avg => AxisEntries::Avg(cost_return_on_error!(
                 &mut cost,
                 self.indexed_avg_range(path, lo, hi, descending, limit, transaction, grove_version)
+            )),
+            IndexAxis::BigSum => AxisEntries::BigSum(cost_return_on_error!(
+                &mut cost,
+                self.indexed_big_sum_range(
+                    path,
+                    lo,
+                    hi,
+                    descending,
+                    limit,
+                    transaction,
+                    grove_version
+                )
             )),
         };
         Ok(entries).wrap_with_cost(cost)
@@ -788,6 +840,18 @@ impl GroveDb {
                 )
                 .map_ok(|page| (AxisKeys::Avg(page.entries), page.skipped))
             ),
+            IndexAxis::BigSum => cost_return_on_error!(
+                &mut cost,
+                self.indexed_big_sum_top_k_paginated_keys(
+                    path,
+                    k,
+                    offset,
+                    descending,
+                    transaction,
+                    grove_version
+                )
+                .map_ok(|page| (AxisKeys::BigSum(page.entries), page.skipped))
+            ),
         };
         Ok(page).wrap_with_cost(cost)
     }
@@ -840,6 +904,18 @@ impl GroveDb {
             IndexAxis::Avg => AxisKeys::Avg(cost_return_on_error!(
                 &mut cost,
                 self.indexed_avg_range_keys(
+                    path,
+                    lo,
+                    hi,
+                    descending,
+                    limit,
+                    transaction,
+                    grove_version
+                )
+            )),
+            IndexAxis::BigSum => AxisKeys::BigSum(cost_return_on_error!(
+                &mut cost,
+                self.indexed_big_sum_range_keys(
                     path,
                     lo,
                     hi,

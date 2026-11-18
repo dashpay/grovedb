@@ -947,9 +947,13 @@ impl TreeNode {
             // primaries fell through to plain `self.hash()` and produced
             // root hashes the proof verifier could not reconstruct.)
             TreeType::ProvableSumIndexedTree => self.hash_for_link(TreeType::ProvableSumTree),
+            TreeType::ProvableBigSumIndexedTree => self.hash_for_link(TreeType::ProvableBigSumTree),
             TreeType::ProvableCountIndexedTree => self.hash_for_link(TreeType::ProvableCountTree),
             TreeType::ProvableCountProvableSumIndexedTree => {
                 self.hash_for_link(TreeType::ProvableCountProvableSumTree)
+            }
+            TreeType::ProvableCountProvableBigSumIndexedTree => {
+                self.hash_for_link(TreeType::ProvableCountProvableBigSumTree)
             }
             TreeType::ProvableCountProvableSumTree => {
                 // For ProvableCountProvableSumTree, include BOTH the
@@ -1055,8 +1059,10 @@ impl TreeNode {
             | TreeType::ProvableSumTree
             | TreeType::ProvableBigSumTree
             | TreeType::ProvableSumIndexedTree
+            | TreeType::ProvableBigSumIndexedTree
             | TreeType::ProvableCountProvableSumTree
             | TreeType::ProvableCountProvableSumIndexedTree
+            | TreeType::ProvableCountProvableBigSumIndexedTree
             | TreeType::ProvableCountProvableBigSumTree => {
                 let aggregate_data = match self.aggregate_data() {
                     Ok(aggregate_data) => aggregate_data,
@@ -1087,15 +1093,16 @@ impl TreeNode {
                         sum,
                     )
                     .map(Ok),
-                    (TreeType::ProvableBigSumTree, AggregateData::ProvableBigSum(sum)) => {
-                        node_hash_with_big_sum(
-                            self.inner.kv.hash(),
-                            self.child_hash(true),
-                            self.child_hash(false),
-                            sum,
-                        )
-                        .map(Ok)
-                    }
+                    (
+                        TreeType::ProvableBigSumTree | TreeType::ProvableBigSumIndexedTree,
+                        AggregateData::ProvableBigSum(sum),
+                    ) => node_hash_with_big_sum(
+                        self.inner.kv.hash(),
+                        self.child_hash(true),
+                        self.child_hash(false),
+                        sum,
+                    )
+                    .map(Ok),
                     (
                         TreeType::ProvableCountProvableSumTree
                         | TreeType::ProvableCountProvableSumIndexedTree,
@@ -1109,7 +1116,8 @@ impl TreeNode {
                     )
                     .map(Ok),
                     (
-                        TreeType::ProvableCountProvableBigSumTree,
+                        TreeType::ProvableCountProvableBigSumTree
+                        | TreeType::ProvableCountProvableBigSumIndexedTree,
                         AggregateData::ProvableCountAndProvableBigSum(count, sum),
                     ) => node_hash_with_count_and_big_sum(
                         self.inner.kv.hash(),

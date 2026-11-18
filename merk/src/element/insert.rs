@@ -236,15 +236,18 @@ pub trait ElementInsertToStorageExtensions {
     ) -> CostResult<(), Error>;
 
     /// Insert any indexed-tree element (`ProvableSumIndexedTree`,
-    /// `ProvableCountIndexedTree`, or `ProvableCountProvableSumIndexedTree`)
-    /// directly into Merk under a key.
+    /// `ProvableCountIndexedTree`, `ProvableCountProvableSumIndexedTree`,
+    /// `ProvableBigSumIndexedTree` or
+    /// `ProvableCountProvableBigSumIndexedTree`) directly into Merk under a
+    /// key.
     ///
     /// Carries the primary Merk root hash plus a second hash that depends
     /// on the variant:
-    /// - For PSIT / PCIT (single-axis variants): the secondary Merk root
-    ///   hash.
-    /// - For PCPSIT (multi-axis variant): the `axes_digest` over the
-    ///   canonical (axis_tag, secondary_root_hash) TLV.
+    /// - For the single-axis variants (PSIT, PCIT and
+    ///   `ProvableBigSumIndexedTree`): the secondary Merk root hash.
+    /// - For the multi-axis variants (PCPSIT and
+    ///   `ProvableCountProvableBigSumIndexedTree`): the `axes_digest` over
+    ///   the canonical (axis_tag, secondary_root_hash) TLV.
     ///
     /// In both cases the resulting `combined_value_hash` is
     /// `combine_hash_three(value_hash, primary_root_hash, second_hash)`.
@@ -259,8 +262,9 @@ pub trait ElementInsertToStorageExtensions {
     ) -> CostResult<(), Error>;
 
     /// Adds a "Put" op to batch operations for any indexed-tree element
-    /// (`ProvableSumIndexedTree`, `ProvableCountIndexedTree`, or
-    /// `ProvableCountProvableSumIndexedTree`). Same hash composition
+    /// (`ProvableSumIndexedTree`, `ProvableCountIndexedTree`,
+    /// `ProvableCountProvableSumIndexedTree`, `ProvableBigSumIndexedTree` or
+    /// `ProvableCountProvableBigSumIndexedTree`). Same hash composition
     /// rules as [`insert_count_indexed_subtree`].
     fn insert_count_indexed_subtree_into_batch_operations<K: AsRef<[u8]>>(
         &self,
@@ -1041,13 +1045,16 @@ impl ElementInsertToStorageExtensions for Element {
         if !matches!(
             self.underlying(),
             Element::ProvableSumIndexedTree(..)
+                | Element::ProvableBigSumIndexedTree(..)
                 | Element::ProvableCountIndexedTree(..)
                 | Element::ProvableCountProvableSumIndexedTree(..)
+                | Element::ProvableCountProvableBigSumIndexedTree(..)
         ) {
             return Err(Error::InvalidInputError(
                 "insert_count_indexed_subtree only accepts indexed-tree elements \
-                 (ProvableSumIndexedTree, ProvableCountIndexedTree, or \
-                 ProvableCountProvableSumIndexedTree)",
+                 (ProvableSumIndexedTree, ProvableCountIndexedTree, \
+                 ProvableCountProvableSumIndexedTree, ProvableBigSumIndexedTree or \
+                 ProvableCountProvableBigSumIndexedTree)",
             ))
             .wrap_with_cost(Default::default());
         }
@@ -1135,13 +1142,16 @@ impl ElementInsertToStorageExtensions for Element {
         if !matches!(
             self.underlying(),
             Element::ProvableSumIndexedTree(..)
+                | Element::ProvableBigSumIndexedTree(..)
                 | Element::ProvableCountIndexedTree(..)
                 | Element::ProvableCountProvableSumIndexedTree(..)
+                | Element::ProvableCountProvableBigSumIndexedTree(..)
         ) {
             return Err(Error::InvalidInputError(
                 "insert_count_indexed_subtree_into_batch_operations only accepts \
                  indexed-tree elements (ProvableSumIndexedTree, ProvableCountIndexedTree, \
-                 or ProvableCountProvableSumIndexedTree)",
+                 ProvableCountProvableSumIndexedTree, ProvableBigSumIndexedTree or \
+                 ProvableCountProvableBigSumIndexedTree)",
             ))
             .wrap_with_cost(Default::default());
         }

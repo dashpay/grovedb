@@ -1649,6 +1649,7 @@ mod tests {
     #[test]
     fn element_estimates_count_the_wrapper_byte() {
         use grovedb_merk::tree_type::TreeType;
+        use grovedb_version::version::v4::GROVE_V4;
 
         use crate::batch::key_info::KeyInfo::KnownKey;
 
@@ -1695,32 +1696,35 @@ mod tests {
             }
         }
 
-        // A wrapped tree of a shipped type under a parent with a 128-bit sum
-        // is counted too. Under a shipped parent its average estimate is the
-        // one it shipped with, without the byte.
-        let average_under = |parent: TreeType, element: &Element| {
-            let estimate = GroveDb::average_case_merk_insert_element(
-                &key,
-                element,
-                parent,
-                None,
-                grove_version,
-            );
+        // A wrapped tree of a shipped type is counted too, under a parent
+        // with a 128-bit sum and under a shipped one.
+        let average_under = |parent: TreeType, element: &Element, version: &GroveVersion| {
+            let estimate =
+                GroveDb::average_case_merk_insert_element(&key, element, parent, None, version);
             estimate.value.as_ref().expect("should estimate");
             estimate.cost.storage_cost.added_bytes
         };
         let bare = Element::empty_sum_tree();
         let wrapped = Element::NotCountedOrSummed(Box::new(Element::empty_sum_tree()));
-        for (parent, wrapper_bytes) in [
-            (TreeType::CountBigSumTree, 1),
-            (TreeType::ProvableBigSumTree, 1),
-            (TreeType::ProvableCountProvableBigSumTree, 1),
-            (TreeType::CountSumTree, 0),
+        for parent in [
+            TreeType::CountBigSumTree,
+            TreeType::ProvableBigSumTree,
+            TreeType::ProvableCountProvableBigSumTree,
+            TreeType::CountSumTree,
         ] {
             assert_eq!(
-                average_under(parent, &wrapped),
-                average_under(parent, &bare) + wrapper_bytes,
+                average_under(parent, &wrapped, grove_version),
+                average_under(parent, &bare, grove_version) + 1,
                 "{parent}"
+            );
+        }
+        // The estimate is the admission bound earlier blocks are replayed
+        // against, so the value `GROVE_V4` shipped with is stated.
+        for element in [&wrapped, &bare] {
+            assert_eq!(
+                average_under(TreeType::CountSumTree, element, &GROVE_V4),
+                156,
+                "{element:?}"
             );
         }
     }
