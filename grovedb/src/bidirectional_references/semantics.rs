@@ -106,7 +106,7 @@ pub(crate) trait ChainStore {
 pub(crate) enum DerivedMutation {
     /// Write `element` at the position. For a bidirectional reference,
     /// `end_hash` carries the resolved end-of-chain hash its node commits
-    /// to; for the other family members it is `None` (their combined hash
+    /// to; for the other family members it is `None` (their value hash
     /// derives from the element bytes alone).
     Write {
         path: Vec<Vec<u8>>,

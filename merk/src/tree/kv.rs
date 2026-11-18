@@ -250,9 +250,8 @@ impl KV {
 
     /// Sets the value hash to the provided (already fully computed) hash
     /// and recomputes the kv hash. Used for backward-references elements,
-    /// whose value hash is combined grovedb-side from the STRIPPED
-    /// serialization plus the backward-references hash — neither of which
-    /// merk can derive from the stored bytes.
+    /// whose value hash is taken over the STRIPPED serialization (referrer
+    /// list emptied) rather than over the stored bytes.
     #[inline]
     pub fn update_hashes_with_provided_value_hash(
         mut self,

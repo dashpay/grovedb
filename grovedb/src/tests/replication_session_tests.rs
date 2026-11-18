@@ -3034,7 +3034,9 @@ mod tests {
     /// mapping), which the restorer must accept under the plain-reference
     /// trust model — its value hash embeds the resolved end-of-chain hash,
     /// which is not locally derivable. The item variants restore through
-    /// the recompute-checked `KVValueHashFeatureType` path.
+    /// the recompute-checked `KVValueHashFeatureType` path, and their
+    /// referrer lists, which no hash covers, through the reciprocity pass
+    /// that runs before the session commits.
     #[test]
     fn state_sync_populated_bidirectional_reference_graph_round_trip() {
         use crate::{
@@ -3090,6 +3092,197 @@ mod tests {
                 .unwrap()
                 .is_empty(),
             "the restored graph must verify, referrer lists included"
+        );
+    }
+
+    /// A source whose `TEST_LEAF` holds two backward-references items,
+    /// `value` (referred to by the bidirectional reference `r1`) and
+    /// `spare` (no referrer).
+    fn source_with_one_registered_referrer(grove_version: &GroveVersion) -> TempGroveDb {
+        use crate::reference_path::ReferencePathType;
+
+        let source = make_test_grovedb(grove_version);
+        for (key, payload) in [(b"value".as_slice(), b"hello"), (b"spare", b"world")] {
+            source
+                .insert(
+                    [TEST_LEAF].as_ref(),
+                    key,
+                    Element::new_item_allowing_bidirectional_references(payload.to_vec()),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .unwrap();
+        }
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"r1",
+                Element::new_bidirectional_reference_with_options(
+                    ReferencePathType::SiblingReference(b"value".to_vec()),
+                    None,
+                    true,
+                    None,
+                ),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+        source
+    }
+
+    /// Run a sync of [`source_with_one_registered_referrer`] in which the
+    /// stored element under `key` is replaced in flight by
+    /// `alter(element)`, with its chunk node's carried value hash left as
+    /// the source sent it.
+    fn sync_with_altered_backward_references_item(
+        key: &'static [u8],
+        alter: &dyn Fn(Element) -> Element,
+        grove_version: &GroveVersion,
+    ) -> Result<TempGroveDb, crate::Error> {
+        use crate::replication::utils::{
+            decode_vec_ops, encode_vec_ops, pack_nested_bytes, unpack_nested_bytes,
+        };
+        use grovedb_merk::proofs::{Node, Op};
+        use std::cell::Cell;
+
+        let source = source_with_one_registered_referrer(grove_version);
+        let altered = Cell::new(false);
+        let result = run_sync_with_version(
+            &source,
+            grove_version,
+            1,
+            None,
+            Some(&|_, _, payload| {
+                let chunks = unpack_nested_bytes(&payload)
+                    .unwrap()
+                    .into_iter()
+                    .map(|chunk| {
+                        let ops = decode_vec_ops(&chunk)
+                            .unwrap()
+                            .into_iter()
+                            .map(|op| match op {
+                                Op::Push(Node::KVValueHashFeatureType(
+                                    node_key,
+                                    value,
+                                    hash,
+                                    feature,
+                                )) if node_key == key => {
+                                    altered.set(true);
+                                    let element =
+                                        Element::deserialize(&value, grove_version).unwrap();
+                                    Op::Push(Node::KVValueHashFeatureType(
+                                        node_key,
+                                        alter(element).serialize(grove_version).unwrap(),
+                                        hash,
+                                        feature,
+                                    ))
+                                }
+                                other => other,
+                            })
+                            .collect();
+                        encode_vec_ops(ops).unwrap()
+                    })
+                    .collect();
+                pack_nested_bytes(chunks).unwrap()
+            }),
+            CURRENT_STATE_SYNC_VERSION,
+        );
+        assert!(altered.get(), "the chunk must carry `{key:?}`");
+        result
+    }
+
+    /// The untouched chunk of [`sync_with_altered_backward_references_item`]
+    /// restores, so the refusals below come from the alterations alone.
+    #[test]
+    fn state_sync_restores_an_unaltered_referrer_list() {
+        let grove_version = GroveVersion::latest();
+        let source = source_with_one_registered_referrer(grove_version);
+        let dest = sync_with_altered_backward_references_item(b"value", &|e| e, grove_version)
+            .expect("an unaltered chunk restores");
+        assert_eq!(
+            dest.root_hash(None, grove_version).unwrap().unwrap(),
+            source.root_hash(None, grove_version).unwrap().unwrap()
+        );
+        assert!(dest
+            .verify_grovedb(None, true, true, grove_version)
+            .unwrap()
+            .is_empty());
+    }
+
+    /// A referrer list is in no hash, so a chunk can alter one and still
+    /// reconstruct the app hash. The session checks every restored list
+    /// against the restored bidirectional references before it commits,
+    /// and refuses a list that drops a registration, names a referrer that
+    /// does not exist, or records another cascade policy than its referrer
+    /// declares.
+    #[test]
+    fn state_sync_refuses_an_altered_referrer_list() {
+        use crate::{
+            bidirectional_references::BackwardReference, reference_path::ReferencePathType,
+        };
+
+        let grove_version = GroveVersion::latest();
+        let cases: [(&str, &'static [u8], &dyn Fn(Element) -> Element); 3] = [
+            ("a dropped registration", b"value", &|mut element| {
+                element.backward_references_mut().unwrap().clear();
+                element
+            }),
+            (
+                "a referrer that does not exist",
+                b"spare",
+                &|mut element| {
+                    element
+                        .backward_references_mut()
+                        .unwrap()
+                        .push(BackwardReference {
+                            inverted_reference: ReferencePathType::SiblingReference(
+                                b"absent".to_vec(),
+                            ),
+                            cascade_on_update: true,
+                        });
+                    element
+                },
+            ),
+            ("another cascade policy", b"value", &|mut element| {
+                let entry = &mut element.backward_references_mut().unwrap()[0];
+                entry.cascade_on_update = !entry.cascade_on_update;
+                element
+            }),
+        ];
+        for (name, key, alter) in cases {
+            let error = sync_with_altered_backward_references_item(key, alter, grove_version)
+                .err()
+                .unwrap_or_else(|| panic!("{name}: the altered list must not commit"));
+            assert!(
+                format!("{error}").contains("restored backward references are not reciprocal"),
+                "{name}: {error}"
+            );
+        }
+    }
+
+    /// The payload of a backward-references item is hashed: a chunk that
+    /// alters it no longer matches the carried value hash and is refused
+    /// while it is written.
+    #[test]
+    fn state_sync_refuses_an_altered_backward_references_item_payload() {
+        let grove_version = GroveVersion::latest();
+        let error = sync_with_altered_backward_references_item(
+            b"value",
+            &|element| {
+                let entries = element.backward_references().unwrap().to_vec();
+                Element::ItemWithBackwardsReferences(b"altered".to_vec(), entries.into(), None)
+            },
+            grove_version,
+        )
+        .err()
+        .expect("the altered payload must not commit");
+        assert!(
+            format!("{error:?}").contains("do not hash to the carried value hash"),
+            "{error:?}"
         );
     }
 

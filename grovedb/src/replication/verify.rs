@@ -3,13 +3,14 @@
 //! References can point into subtrees that arrive later, so their bindings
 //! must be checked after discovery completes and before the final commit.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use grovedb_merk::{
     element::{costs::ElementCostExtensions, ElementExt},
     tree::{combine_hash, kv::ValueDefinedCostType, value_hash, TreeNode},
     Merk,
 };
+use grovedb_path::SubtreePath;
 use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageContext};
 use grovedb_version::version::GroveVersion;
 
@@ -96,6 +97,54 @@ impl GroveDb {
         Err(Error::ReferenceLimit)
     }
 
+    /// Check a restored backward-references element's referrer list
+    /// against the restored bidirectional references, in both directions.
+    fn verify_restored_backward_references(
+        &self,
+        element: &Element,
+        path: &[Vec<u8>],
+        key: &[u8],
+        transaction: &Transaction,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        let path_slices: Vec<&[u8]> = path.iter().map(|p| p.as_slice()).collect();
+        let subtree_path = SubtreePath::from(path_slices.as_slice());
+        let mut issues = HashMap::new();
+        self.verify_reciprocal_backward_references(
+            element,
+            &subtree_path,
+            key,
+            false,
+            transaction,
+            grove_version,
+            &mut issues,
+        )?;
+        if let Element::BidirectionalReference(reference, _) = element {
+            self.verify_bidirectional_reference_is_registered(
+                reference,
+                &subtree_path,
+                key,
+                false,
+                transaction,
+                None,
+                grove_version,
+                &mut issues,
+            )?;
+        }
+        if let Some(position) = issues.keys().next() {
+            return Err(Error::CorruptedData(format!(
+                "restored backward references are not reciprocal at path {:?}, key {} ({})",
+                super::utils::path_to_string(path),
+                hex::encode(key),
+                position
+                    .last()
+                    .map(|marker| String::from_utf8_lossy(marker).into_owned())
+                    .unwrap_or_default(),
+            )));
+        }
+        Ok(())
+    }
+
     pub(super) fn verify_restored_value_hashes(
         &self,
         transaction: &Transaction,
@@ -152,22 +201,11 @@ impl GroveDb {
                             combined
                         }
                     }
-                    // Backward-references family (two-layer scheme): a
-                    // bidirectional reference's node hash is
-                    // `combine(combine(inner, referrer list), end hash)` where
-                    // the end hash is the terminal's LOGICAL (referrer-list
-                    // stripped) hash; the item variants commit to
-                    // `combine(inner, referrer list)` alone.
+                    // Backward-references family: an item commits to the
+                    // hash of its bytes with the referrer list emptied; a
+                    // bidirectional reference combines that hash with the
+                    // end hash, the terminal's own stripped hash.
                     Element::BidirectionalReference(reference, _) => {
-                        let hashes = element
-                            .backward_references_hashes(grove_version)
-                            .unwrap()?
-                            .ok_or_else(|| {
-                                Error::CorruptedData(
-                                    "bidirectional reference without backward-references hashes"
-                                        .to_string(),
-                                )
-                            })?;
                         let target_path = path_from_reference_path_type(
                             reference.forward_reference_path.clone(),
                             &path,
@@ -179,21 +217,13 @@ impl GroveDb {
                             grove_version,
                         )?;
                         let end_hash = target.logical_value_hash(grove_version).unwrap()?;
-                        combine_hash(&hashes.combined, &end_hash).unwrap()
+                        let inner = element.logical_value_hash(grove_version).unwrap()?;
+                        combine_hash(&inner, &end_hash).unwrap()
                     }
                     Element::ItemWithBackwardsReferences(..)
                     | Element::SumItemWithBackwardsReferences(..)
                     | Element::ItemWithSumItemWithBackwardsReferences(..) => {
-                        element
-                            .backward_references_hashes(grove_version)
-                            .unwrap()?
-                            .ok_or_else(|| {
-                                Error::CorruptedData(
-                                    "backward-references item without backward-references hashes"
-                                        .to_string(),
-                                )
-                            })?
-                            .combined
+                        element.logical_value_hash(grove_version).unwrap()?
                     }
                     _ if element.element_type().has_simple_value_hash() => actual_value_hash,
                     _ if element.is_any_tree() => {
@@ -220,6 +250,21 @@ impl GroveDb {
                         super::utils::path_to_string(&path),
                         hex::encode(node.key()),
                     )));
+                }
+                // A referrer list is outside every hash, so the value hash
+                // check above does not reach it. Bind it to the restored
+                // bidirectional references instead, which the check above
+                // does bind: every entry must name a live reference that
+                // points back with the entry's cascade policy, and every
+                // reference must be listed by its target.
+                if element.supports_backward_references() {
+                    self.verify_restored_backward_references(
+                        &element,
+                        &path,
+                        node.key(),
+                        transaction,
+                        grove_version,
+                    )?;
                 }
                 Ok(())
             })?;

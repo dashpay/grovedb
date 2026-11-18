@@ -107,6 +107,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for callers of Merk's just-in-time apply, whose update callback now answers
   `(ElementFlagsUpdate, Option<ValueDefinedCostType>)`.
 ### Changed
+- **BREAKING**: The referrer list of a bidirectional-reference target is
+  no longer part of any node hash. An `ItemWithBackwardsReferences`,
+  `SumItemWithBackwardsReferences` or
+  `ItemWithSumItemWithBackwardsReferences` node's value hash is the hash
+  of the element serialized with its referrer list emptied (it was that
+  hash combined with a hash of the list), and a `BidirectionalReference`
+  commits to its own stripped hash and the resolved end hash (it also
+  committed to a hash of its own list). The stored bytes still hold the
+  list and the declared capacity (`max_incoming`) is still hashed.
+  Registering or removing a referrer therefore changes no hash. The
+  change has no version gate: no network has stored an element of this
+  family, so no stored value hash moves.
+  - These items are proved like the plain items they extend, in `KV` /
+    `KVCount` / `KVSum` / `KVCountSum` / `KVCountBigSum` nodes carrying the
+    stripped bytes. `Node::KVBackwardsReferencesValueHash` and
+    `ProofNodeType::KvBackwardsReferencesValueHash` are removed; proof
+    tags 0x50..=0x53 stay reserved and no longer decode.
+  - The provable aggregate trees (`ProvableCountTree`,
+    `ProvableCountSumTree`, `ProvableSumTree`,
+    `ProvableCountProvableSumTree`, `ProvableCountProvableBigSumTree`)
+    accept these elements, which they refused with "backward-references
+    elements may not live in Provable* aggregate trees". The indexed trees
+    accepted them already, and a proof of such an entry now verifies.
+  - State sync checks a restored item's bytes against the stripped hash
+    and, before a session commits, checks every restored referrer list
+    against the restored bidirectional references in both directions. A
+    list that disagrees fails the session with "restored backward
+    references are not reciprocal". `verify_grovedb` also reports a list
+    entry whose cascade policy differs from its referrer's.
+  - Removed from `grovedb-merk`: `ElementExt::backward_references_hashes`
+    and `BackwardsReferencesHashes` (use `ElementExt::logical_value_hash`,
+    which is now the item's node value hash). Removed from
+    `grovedb-element`: `serialize_backward_references` and
+    `deserialize_backward_references`, which only fed the list hash.
+  - Writes and reference resolution on these elements make fewer hash
+    calls (`hash_node_calls`): the list hash and its combine are gone, and
+    a reference that ends on such an item uses the stored value hash
+    instead of rehashing the item.
 - **BREAKING**: `Query` adds the public `offset: Option<u16>` field for
   branch-local committed-count-unit pagination. Exhaustive struct literals
   must supply the field or use a default update. Offset-bearing queries use

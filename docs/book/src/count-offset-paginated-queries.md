@@ -260,8 +260,9 @@ so that element types added later are refused by default. Before it was
 an allowlist, it refused only `Item` / `SumItem` / `ItemWithSumItem`,
 and a forged `ItemWithBackwardsReferences`, `SumItemWithBackwardsReferences`
 or `ItemWithSumItemWithBackwardsReferences` row verified under the
-genuine root. No honest proof carries these types on a directly read
-row, because Provable* count trees refuse them at insert.
+genuine root. An honest proof carries these types like any item, on
+`KVCount` / `KVCountSum` with the referrer list emptied, where the
+verifier recomputes the hash from the bytes.
 
 ## Unsupported in-range value shapes (P1 / P2)
 

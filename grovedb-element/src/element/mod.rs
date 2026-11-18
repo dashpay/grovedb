@@ -366,9 +366,9 @@ pub enum Element {
     /// Discriminant 25.
     BidirectionalReference(BidirectionalReference, Option<ElementFlags>),
     /// An ordinary value that supports being targeted by bidirectional
-    /// references: up to 32 backward references are carried ON the element
-    /// and covered by the node hash through the two-layer scheme described
-    /// in [`crate::bidirectional_reference`]. Behaves like `Item` in every
+    /// references: its backward references are carried ON the element and
+    /// stay outside the node hash, as described in
+    /// [`crate::bidirectional_reference`]. Behaves like `Item` in every
     /// other way; readers and proofs see the stripped (inner) form.
     ///
     /// May not be wrapped in the aggregation wrappers and is rejected by
@@ -397,9 +397,9 @@ pub enum Element {
     /// `ItemWithSumItem`) AND supports being targeted by bidirectional
     /// references. The sum contributes to sum-bearing parents exactly as
     /// `ItemWithSumItem`'s does; the referrer list is carried ON the
-    /// element and covered by the node hash through the two-layer scheme
-    /// described in [`crate::bidirectional_reference`]. Readers and proofs
-    /// see the stripped (inner) form.
+    /// element and stays outside the node hash, as described in
+    /// [`crate::bidirectional_reference`]. Readers and proofs see the
+    /// stripped (inner) form.
     ///
     /// May not be wrapped in the aggregation wrappers and is rejected by
     /// `apply_batch` (same reason as `BidirectionalReference`).
