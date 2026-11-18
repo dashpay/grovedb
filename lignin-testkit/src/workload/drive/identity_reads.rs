@@ -172,6 +172,10 @@ impl State {
         )
     }
 
+    fn balance(&mut self) -> Element {
+        Element::new_sum_item_with_flags(self.rng.between(1, 1_000_000) as i64, self.flags())
+    }
+
     fn create(&mut self) -> Vec<BatchOp> {
         let id = self.rng.id();
         let identity_path = path(&[ROOT_IDENTITIES, &id]);
@@ -184,11 +188,8 @@ impl State {
         for index in 0..keys {
             ops.push(self.key(&id, index));
         }
-        ops.push(batch::insert_only(
-            &path(&[ROOT_BALANCES]),
-            &id,
-            Element::new_sum_item_with_flags(self.rng.between(1, 1_000_000) as i64, self.flags()),
-        ));
+        let balance = self.balance();
+        ops.push(batch::insert_only(&path(&[ROOT_BALANCES]), &id, balance));
         self.identities.push(Identity { id, keys });
         ops
     }
@@ -201,11 +202,7 @@ impl State {
             self.identities[chosen].keys += 1;
             return vec![self.key(&id, keys)];
         }
-        vec![batch::replace(
-            &path(&[ROOT_BALANCES]),
-            &id,
-            Element::new_sum_item_with_flags(self.rng.between(1, 1_000_000) as i64, self.flags()),
-        )]
+        vec![batch::replace(&path(&[ROOT_BALANCES]), &id, self.balance())]
     }
 
     /// The fees of the block, paid into the totals and into the tree of the

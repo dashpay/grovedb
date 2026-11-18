@@ -19,8 +19,9 @@ const NONCES: &[u8] = b"nonces";
 
 /// The transaction of a block used the way Platform uses it.
 ///
-/// Each state transition moves credits between two identities and bumps the
-/// sender's nonce, in one batch. The blocks around them go through every
+/// Each state transition moves credits from one identity to another and
+/// bumps the sender's nonce, in one batch. When the two are the same
+/// identity the credits are a fee: they leave it and reach no one. The blocks around them go through every
 /// way a transaction ends and unwinds:
 ///
 /// - **A proposal being prepared.** Platform sets a savepoint before each
@@ -76,8 +77,8 @@ struct State {
 impl State {
     /// One state transition: credits move and the sender's nonce goes up.
     fn transfer(&mut self) -> Op {
-        let from = self.ids[self.rng.index(self.ids.len())];
-        let to = self.ids[self.rng.index(self.ids.len())];
+        let from = self.any();
+        let to = self.any();
         let amount = self.rng.between(1, 500) as i64;
         let (balances, nonces) = (path(&[ROOT, BALANCES]), path(&[ROOT, NONCES]));
         let mut set = |id: &[u8; 32], change: i64, used: u64, ops: &mut Vec<BatchOp>| {

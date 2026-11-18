@@ -115,7 +115,7 @@ struct Applied {
 fn run(
     name: &str,
     db: &GroveDb,
-    ops: impl Iterator<Item = Op>,
+    mut ops: impl Iterator<Item = Op>,
     grove_version: &GroveVersion,
 ) -> Applied {
     let version = grove_version.protocol_version;
@@ -125,7 +125,6 @@ fn run(
             .expect("root hash")
     };
     let mut transactions = Transactions::new(db);
-    let mut ops = ops;
     let mut ahead: VecDeque<Op> = VecDeque::new();
     let mut applied = Applied::default();
     let mut committed = true;
@@ -549,6 +548,18 @@ fn resolved(
     (path, key, element)
 }
 
+/// What a verifier proved, once it has verified the proof to `root`.
+fn verified<T>(
+    context: &str,
+    root: [u8; 32],
+    verification: Result<([u8; 32], T), grovedb::Error>,
+) -> T {
+    let (proved_root, proved) =
+        verification.unwrap_or_else(|error| panic!("{context}\nnot verified: {error:?}"));
+    assert_eq!(proved_root, root, "{context}\nverifies to another root");
+    proved
+}
+
 /// Proves a read GroveDB proves, or verifies the proof a read returned,
 /// against committed state. Returns how many branch chunks it verified
 /// against the hash a trunk chunk gave.
@@ -569,16 +580,13 @@ fn check_proof(
             .unwrap()
             .unwrap_or_else(|error| panic!("{context}\nnot provable: {error:?}"))
     };
-    let verifies = |result: Result<[u8; 32], grovedb::Error>| {
-        let proved = result.unwrap_or_else(|error| panic!("{context}\nnot verified: {error:?}"));
-        assert_eq!(proved, root, "{context}\nverifies to another root");
-    };
     match (read, outcome) {
         (Read::KeysOptional { query, .. }, Outcome::OptionalRows(returned)) => {
-            let (proved_root, mut proved) =
-                GroveDb::verify_query_with_absence_proof(&prove(query), query, grove_version)
-                    .unwrap_or_else(|error| panic!("{context}\nnot verified: {error:?}"));
-            verifies(Ok(proved_root));
+            let mut proved = verified(
+                context,
+                root,
+                GroveDb::verify_query_with_absence_proof(&prove(query), query, grove_version),
+            );
             let mut expected: Vec<_> = returned
                 .iter()
                 .cloned()
@@ -602,10 +610,11 @@ fn check_proof(
             );
         }
         (Read::BigSum { query, .. }, Outcome::BigSum { count: None, sum }) => {
-            let (proved_root, proved) =
-                GroveDb::verify_aggregate_big_sum_query(&prove(query), query, grove_version)
-                    .unwrap_or_else(|error| panic!("{context}\nnot verified: {error:?}"));
-            verifies(Ok(proved_root));
+            let proved = verified(
+                context,
+                root,
+                GroveDb::verify_aggregate_big_sum_query(&prove(query), query, grove_version),
+            );
             assert_eq!(proved, *sum, "{context}");
         }
         (
@@ -615,15 +624,14 @@ fn check_proof(
                 sum,
             },
         ) => {
-            let (proved_root, proved_count, proved_sum) =
-                GroveDb::verify_aggregate_count_and_big_sum_query(
-                    &prove(query),
-                    query,
-                    grove_version,
-                )
-                .unwrap_or_else(|error| panic!("{context}\nnot verified: {error:?}"));
-            verifies(Ok(proved_root));
-            assert_eq!((proved_count, proved_sum), (*count, *sum), "{context}");
+            let verification = GroveDb::verify_aggregate_count_and_big_sum_query(
+                &prove(query),
+                query,
+                grove_version,
+            )
+            .map(|(proved_root, count, sum)| (proved_root, (count, sum)));
+            let proved = verified(context, root, verification);
+            assert_eq!(proved, (*count, *sum), "{context}");
         }
         (
             Read::BigSum {
@@ -632,35 +640,35 @@ fn check_proof(
             Outcome::BigSumPerKey(per_key),
         ) => {
             let proof = prove(query);
-            let (proved_root, proved): (_, BigSumsPerKey) = if *with_count {
-                let (root, proved) = GroveDb::verify_aggregate_count_and_big_sum_query_per_key(
+            let proved: BigSumsPerKey = if *with_count {
+                let verification = GroveDb::verify_aggregate_count_and_big_sum_query_per_key(
                     &proof,
                     query,
                     grove_version,
-                )
-                .unwrap_or_else(|error| panic!("{context}\nnot verified: {error:?}"));
-                let proved = proved
+                );
+                verified(context, root, verification)
                     .into_iter()
-                    .map(|(key, count, sum)| (key, Some(count), sum));
-                (root, proved.collect())
+                    .map(|(key, count, sum)| (key, Some(count), sum))
+                    .collect()
             } else {
-                let (root, proved) =
-                    GroveDb::verify_aggregate_big_sum_query_per_key(&proof, query, grove_version)
-                        .unwrap_or_else(|error| panic!("{context}\nnot verified: {error:?}"));
-                let proved = proved.into_iter().map(|(key, sum)| (key, None, sum));
-                (root, proved.collect())
+                let verification =
+                    GroveDb::verify_aggregate_big_sum_query_per_key(&proof, query, grove_version);
+                verified(context, root, verification)
+                    .into_iter()
+                    .map(|(key, sum)| (key, None, sum))
+                    .collect()
             };
-            verifies(Ok(proved_root));
             assert_eq!(proved, *per_key, "{context}");
         }
         (Read::Prove(prove), Outcome::Proof(proof)) => match prove {
             Prove::Many(queries) => {
                 let merged = PathQuery::merge(queries.iter().collect(), grove_version)
                     .expect("the queries merge");
-                let (proved_root, proved) =
-                    GroveDb::verify_query_raw(proof, &merged, grove_version)
-                        .unwrap_or_else(|error| panic!("{context}\nnot verified: {error:?}"));
-                verifies(Ok(proved_root));
+                let proved = verified(
+                    context,
+                    root,
+                    GroveDb::verify_query_raw(proof, &merged, grove_version),
+                );
                 let proved: Vec<PathKeyElementTrio> = proved
                     .into_iter()
                     .map(|row| {
@@ -682,16 +690,15 @@ fn check_proof(
                 start,
                 limit,
             } => {
-                let (proved_root, proved) = GroveDb::verify_bulk_position_range_proof(
+                let verification = GroveDb::verify_bulk_position_range_proof(
                     proof,
                     path.clone(),
                     key,
                     *start,
                     *limit,
                     grove_version,
-                )
-                .unwrap_or_else(|error| panic!("{context}\nnot verified: {error:?}"));
-                verifies(Ok(proved_root));
+                );
+                let proved = verified(context, root, verification);
                 let tree = stored(db, path, key, None, grove_version).expect("the tree is stored");
                 let (start, limit) = (*start, *limit);
                 let range = match tree.underlying() {
@@ -724,10 +731,11 @@ fn check_proof(
                     max_depth: *max_depth,
                     min_depth: *min_depth,
                 };
-                let (proved_root, trunk) =
-                    GroveDb::verify_trunk_chunk_proof(proof, &query, grove_version)
-                        .unwrap_or_else(|error| panic!("{context}\nnot verified: {error:?}"));
-                verifies(Ok(proved_root));
+                let trunk = verified(
+                    context,
+                    root,
+                    GroveDb::verify_trunk_chunk_proof(proof, &query, grove_version),
+                );
                 assert!(!trunk.elements.is_empty(), "{context}\nholds no element");
                 trunks.insert(path.clone(), trunk.leaf_keys);
             }
@@ -2120,7 +2128,7 @@ fn a_malformed_query_is_no_operation() {
 /// One operation of every kind the third unit added, in an order that also
 /// produces the operations that depend on what came before.
 fn one_of_each_direct_kind() -> Vec<Op> {
-    use grovedb::{PathQuery, Query};
+    use grovedb::Query;
     use lignin_testkit::workload::{ChunkIds, IndexedTree};
 
     let path = vec![b"tree".to_vec()];
@@ -2220,8 +2228,7 @@ fn one_of_each_direct_kind() -> Vec<Op> {
             });
         }
     }
-    let range = |start, limit| (start, limit);
-    let (start, limit) = range(9, 10);
+    let (start, limit) = (9, 10);
     for read in [
         TreeRead::MmrValue(1),
         TreeRead::MmrRootHash,
@@ -2553,6 +2560,8 @@ fn typed_reads_return_what_was_appended() {
 /// chunk of something that is no tree.
 #[test]
 fn apply_refuses_what_no_stream_holds() {
+    use lignin_testkit::workload::{AppendEntry, ChunkIds};
+
     let grove_version = GroveVersion::latest();
     let (_dir, db) = open();
     let mut transactions = Transactions::new(&db);
@@ -2587,7 +2596,7 @@ fn apply_refuses_what_no_stream_holds() {
         }),
         Op::Write(Write::Append {
             path: Vec::new(),
-            entry: lignin_testkit::workload::AppendEntry::Mmr(vec![1]),
+            entry: AppendEntry::Mmr(vec![1]),
         }),
         Op::Write(Write::CommitmentInsert {
             path: Vec::new(),
@@ -2605,11 +2614,11 @@ fn apply_refuses_what_no_stream_holds() {
         }),
         Op::Read(Read::Prove(Prove::Chunk {
             path: vec![b"tree".to_vec(), b"item".to_vec()],
-            ids: lignin_testkit::workload::ChunkIds::Merk(Vec::new()),
+            ids: ChunkIds::Merk(Vec::new()),
         })),
         Op::Read(Read::Prove(Prove::Chunk {
             path: vec![b"nowhere".to_vec()],
-            ids: lignin_testkit::workload::ChunkIds::Merk(Vec::new()),
+            ids: ChunkIds::Merk(Vec::new()),
         })),
     ];
     for op in refused {

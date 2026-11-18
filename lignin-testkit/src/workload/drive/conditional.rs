@@ -171,6 +171,10 @@ impl State {
         format!("city-{:02}", self.rng.below(u64::from(self.cities))).into_bytes()
     }
 
+    fn owner(&mut self) -> Vec<u8> {
+        format!("owner-{}", self.rng.below(u64::from(self.owners))).into_bytes()
+    }
+
     fn city_documents(&self, city: &[u8]) -> Path {
         child(&child(&self.index_path, city), PRIMARY_KEY)
     }
@@ -294,7 +298,7 @@ impl State {
     }
 
     fn draft(&mut self, ops: &mut Vec<Op>) {
-        let owner = format!("owner-{}", self.rng.below(u64::from(self.owners))).into_bytes();
+        let owner = self.owner();
         let owner_path = child(&self.drafts_path, &owner);
         ops.push(in_block(read::has_raw(&self.drafts_path, &owner)));
         if !self.drafts.contains_key(&owner) {
@@ -344,7 +348,7 @@ impl State {
         }
         ops.push(Op::Read(read::is_empty_tree(&self.index_path)));
         ops.push(Op::Read(read::is_empty_tree(&self.drafts_path)));
-        let owner = format!("owner-{}", self.rng.below(u64::from(self.owners))).into_bytes();
+        let owner = self.owner();
         if self.drafts.contains_key(&owner) {
             ops.push(Op::Read(read::is_empty_tree(&child(
                 &self.drafts_path,

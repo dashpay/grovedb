@@ -264,11 +264,11 @@ fn a_classification_is_what_apply_does() {
     let mut produced_operations = BTreeSet::new();
     for (name, status) in PUBLIC_OPERATIONS {
         let method = name.strip_prefix(TRANSACTION).unwrap_or(name);
-        let called = |_: ()| called.contains(method);
+        let is_called = called.contains(method);
         match status {
             Status::Produced(operations) => {
                 assert!(
-                    called(()),
+                    is_called,
                     "{name} is listed as produced, but `workload::apply` does not call it"
                 );
                 assert!(!operations.is_empty(), "{name} is produced by no operation");
@@ -283,7 +283,7 @@ fn a_classification_is_what_apply_does() {
                     "{name} is listed as called by {caller}, which is not produced"
                 );
                 assert!(
-                    !called(()),
+                    !is_called,
                     "{name} is listed as called by {caller}, but `workload::apply` calls it \
                      itself"
                 );
@@ -291,7 +291,7 @@ fn a_classification_is_what_apply_does() {
             Status::Consumer(reason) | Status::LeftOut(reason) => {
                 assert!(reason.len() > 20, "{name} has no reason: {reason:?}");
                 assert!(
-                    !called(()),
+                    !is_called,
                     "{name} is listed as not produced, but `workload::apply` calls it"
                 );
             }
