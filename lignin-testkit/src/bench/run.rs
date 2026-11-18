@@ -394,6 +394,7 @@ fn write_phase<E: Engine>(
     let mut apply_meter = Meter::new(settings, &format!("{phase}-apply"));
     let mut commit_meter = Meter::new(settings, &format!("{phase}-commit"));
     let counters_before = engine.counters()?;
+    let anatomy_before = engine.node_anatomy();
     let written_before = process_bytes("write_bytes");
     while totals.transitions < transitions {
         let block = next_block(stream);
@@ -440,6 +441,10 @@ fn write_phase<E: Engine>(
         commit_ms.push(Unit::Millis.of(commit_time));
     }
     totals.counters = engine.counters()?.since(&counters_before);
+    totals.node_anatomy = engine
+        .node_anatomy()
+        .zip(anatomy_before)
+        .map(|(now, then)| now.since(&then));
     totals.process_write_bytes = match (written_before, process_bytes("write_bytes")) {
         (Some(before), Some(after)) => Some(after.saturating_sub(before)),
         _ => None,
@@ -565,6 +570,28 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
             &format!("{COST_SOURCE}: storage_loaded_bytes"),
         ),
     ];
+    if let Some(anatomy) = &totals.node_anatomy {
+        let whole = anatomy.total();
+        let source = format!(
+            "{engine} engine: the Merk node records in its log, decoded; share of their bytes"
+        );
+        for (id, part) in [
+            ("node_record_value_share", anatomy.value_bytes),
+            ("node_record_key_share", anatomy.key_bytes),
+            ("node_record_node_hash_share", anatomy.node_hash_bytes),
+            ("node_record_link_hash_share", anatomy.link_hash_bytes),
+            ("node_record_other_share", anatomy.other_bytes),
+        ] {
+            rows.push(count_row(
+                id,
+                phase,
+                "fraction",
+                part as f64,
+                whole,
+                &source,
+            ));
+        }
+    }
     if let Some(written) = totals.process_write_bytes {
         rows.push(count_row(
             "process_write_bytes_per_transition",

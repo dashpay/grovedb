@@ -24,6 +24,7 @@
 //! | `keyed_lookups_per_transition` | write phases | lookups | `OperationCost::seek_count` less one per record logged |
 //! | `seeks_per_transition` | write phases | seeks | `OperationCost::seek_count` |
 //! | `hashes_per_transition` | write phases | calls | `OperationCost::hash_node_calls` |
+//! | `node_record_*_share` | write phases | fraction | [`NodeAnatomy`], where the engine writes node records |
 //! | `size_on_disk` | `at-size`, `flushed` | B | file lengths in the database directory |
 //! | `point_proof_bytes`, `references_proof_bytes` | `warm` | B | proof lengths |
 //! | `wall_per_transition` | write phases | µs | apply time over transitions |
@@ -72,7 +73,7 @@ use std::path::PathBuf;
 use grovedb_version::version::GroveVersion;
 
 pub use self::{
-    engine::{Block, Counters, Engine},
+    engine::{Block, Counters, Engine, NodeAnatomy},
     machine::{ColdMethod, Machine},
     report::{compare, Agreement, Report, Row, RowKind},
     rocksdb::RocksDbEngine,

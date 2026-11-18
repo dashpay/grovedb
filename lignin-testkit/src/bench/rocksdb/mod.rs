@@ -14,6 +14,9 @@
 //!   info log (`LOG`), read by [`info_log`].
 //! - `page_reads` and `cache_hits`: not available without RocksDB's
 //!   statistics.
+//!
+//! The node anatomy decodes every default-family put in the log as a Merk
+//! node record: the key is the subtree's 32-byte prefix and the node's key.
 
 pub mod info_log;
 pub mod wal;
@@ -27,6 +30,7 @@ use std::{
 
 use grovedb::{GroveDb, PathQuery, Transaction};
 use grovedb_costs::{CostContext, OperationCost};
+use grovedb_merk::tree::{kv::ValueDefinedCostType, TreeNode};
 use grovedb_version::version::GroveVersion;
 
 use self::{
@@ -34,7 +38,7 @@ use self::{
     wal::{LogTail, WalTotals},
 };
 use super::{
-    engine::{Block, Counters, Engine},
+    engine::{Block, Counters, Engine, NodeAnatomy},
     BenchError,
 };
 use crate::workload::{apply, Op};
@@ -47,6 +51,50 @@ pub struct RocksDbEngine {
     wal: WalTotals,
     info_log: InfoLogTail,
     events: EventTotals,
+    anatomy: NodeAnatomy,
+}
+
+/// The length of a subtree prefix at the front of every node record's key.
+const PREFIX_LEN: usize = 32;
+const HASH_LEN: u64 = 32;
+
+impl NodeAnatomy {
+    /// Adds one default-family record, decoding it as a Merk node.
+    fn add_record(&mut self, key: &[u8], value: &[u8]) {
+        self.records += 1;
+        let total = (key.len() + value.len()) as u64;
+        let node = key.get(PREFIX_LEN..).and_then(|node_key| {
+            TreeNode::decode_raw(
+                value,
+                node_key.to_vec(),
+                None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                GroveVersion::latest(),
+            )
+            .ok()
+        });
+        let Some(node) = node else {
+            self.undecoded += 1;
+            self.other_bytes += total;
+            return;
+        };
+        let links: Vec<_> = [true, false]
+            .into_iter()
+            .filter_map(|left| node.link(left))
+            .collect();
+        let keys = key.len() as u64
+            + links
+                .iter()
+                .map(|link| link.key().len() as u64)
+                .sum::<u64>();
+        let values = node.value_as_slice().len() as u64;
+        let link_hashes = HASH_LEN * links.len() as u64;
+        let node_hashes = 2 * HASH_LEN;
+        self.key_bytes += keys;
+        self.value_bytes += values;
+        self.node_hash_bytes += node_hashes;
+        self.link_hash_bytes += link_hashes;
+        self.other_bytes += total.saturating_sub(keys + values + link_hashes + node_hashes);
+    }
 }
 
 impl RocksDbEngine {
@@ -88,11 +136,16 @@ impl RocksDbEngine {
         for (number, path) in files {
             let tail = self.logs.entry(number).or_default();
             let data = read_from(&path, tail.offset())?;
-            tail.read(&data, &mut self.wal)
-                .map_err(|error| BenchError::Wal {
-                    file: path.display().to_string(),
-                    error,
-                })?;
+            let anatomy = &mut self.anatomy;
+            tail.read_visiting(&data, &mut self.wal, &mut |family, key, value| {
+                if family == 0 {
+                    anatomy.add_record(key, value);
+                }
+            })
+            .map_err(|error| BenchError::Wal {
+                file: path.display().to_string(),
+                error,
+            })?;
         }
         Ok(())
     }
@@ -138,6 +191,7 @@ impl Engine for RocksDbEngine {
             wal: WalTotals::default(),
             info_log: InfoLogTail::default(),
             events: EventTotals::default(),
+            anatomy: NodeAnatomy::default(),
         };
         for (number, path) in engine.log_files()? {
             engine
@@ -208,6 +262,10 @@ impl Engine for RocksDbEngine {
             page_reads: None,
             cache_hits: None,
         })
+    }
+
+    fn node_anatomy(&self) -> Option<NodeAnatomy> {
+        Some(self.anatomy)
     }
 }
 
@@ -282,6 +340,17 @@ mod tests {
         assert!(after_block.node_record_bytes > 100);
         assert!(after_block.log_bytes > after_block.node_record_bytes);
         assert_eq!(after_block.page_reads, None);
+        let anatomy = engine.node_anatomy().unwrap();
+        assert_eq!(anatomy.records, after_block.node_records);
+        assert_eq!(anatomy.undecoded, 0);
+        assert_eq!(anatomy.total(), after_block.node_record_bytes);
+        assert!(anatomy.value_bytes > 100);
+        assert_eq!(anatomy.node_hash_bytes, 64 * anatomy.records);
+        let mut odd = NodeAnatomy::default();
+        odd.add_record(b"short", b"not a node");
+        odd.add_record(&[0; 40], b"");
+        assert_eq!((odd.records, odd.undecoded, odd.other_bytes), (2, 2, 55));
+        assert_eq!(anatomy.since(&anatomy), NodeAnatomy::default());
 
         engine
             .db

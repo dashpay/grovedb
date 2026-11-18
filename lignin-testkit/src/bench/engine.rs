@@ -21,6 +21,10 @@
 //! | `flush_bytes` | SST bytes written by flushes | bytes written by the flusher |
 //! | `compaction_bytes` | SST bytes written by compactions | bytes written by the cleaner |
 //! | `page_reads`, `cache_hits` | not available | buffer pool reads and hits |
+//!
+//! [`Engine::node_anatomy`] is RocksDB's alone: it splits the whole node
+//! records RocksDB is handed into keys, values, hashes and links, which is
+//! the rewrite LigninDB exists to remove. LigninDB leaves it `None`.
 
 use std::{path::Path, time::Duration};
 
@@ -82,6 +86,13 @@ pub trait Engine: Sized {
 
     /// The engine's running totals since it was opened.
     fn counters(&mut self) -> Result<Counters, BenchError>;
+
+    /// How the Merk node records written since the engine was opened
+    /// divide up, for an engine that writes whole node records. Read after
+    /// [`Engine::counters`].
+    fn node_anatomy(&self) -> Option<NodeAnatomy> {
+        None
+    }
 }
 
 /// The write transaction of one block.
@@ -162,4 +173,49 @@ pub(crate) fn timed<T>(work: impl FnOnce() -> T) -> (T, Duration) {
     let start = std::time::Instant::now();
     let result = work();
     (result, start.elapsed())
+}
+
+/// How the bytes of whole Merk node records divide up: the record's key,
+/// the element, the node's two hashes, its links to its children, and the
+/// rest. Shows how much of what is rewritten is unchanged data.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeAnatomy {
+    /// Records seen.
+    pub records: u64,
+    /// Records that did not decode as a Merk node; counted as other bytes.
+    pub undecoded: u64,
+    /// Key bytes: each record's key and the keys its links name.
+    pub key_bytes: u64,
+    /// Element bytes.
+    pub value_bytes: u64,
+    /// Each node's key-value hash and value hash.
+    pub node_hash_bytes: u64,
+    /// The children's hashes the links hold.
+    pub link_hash_bytes: u64,
+    /// Everything else: lengths, child heights, feature types, aggregates.
+    pub other_bytes: u64,
+}
+
+impl NodeAnatomy {
+    /// Every byte counted.
+    pub fn total(&self) -> u64 {
+        self.key_bytes
+            + self.value_bytes
+            + self.node_hash_bytes
+            + self.link_hash_bytes
+            + self.other_bytes
+    }
+
+    /// What was counted between `earlier` and `self`.
+    pub fn since(&self, earlier: &NodeAnatomy) -> NodeAnatomy {
+        NodeAnatomy {
+            records: self.records.saturating_sub(earlier.records),
+            undecoded: self.undecoded.saturating_sub(earlier.undecoded),
+            key_bytes: self.key_bytes.saturating_sub(earlier.key_bytes),
+            value_bytes: self.value_bytes.saturating_sub(earlier.value_bytes),
+            node_hash_bytes: self.node_hash_bytes.saturating_sub(earlier.node_hash_bytes),
+            link_hash_bytes: self.link_hash_bytes.saturating_sub(earlier.link_hash_bytes),
+            other_bytes: self.other_bytes.saturating_sub(earlier.other_bytes),
+        }
+    }
 }

@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    engine::{Counters, Engine},
+    engine::{Counters, Engine, NodeAnatomy},
     machine::Machine,
     BenchError,
 };
@@ -146,6 +146,9 @@ pub struct PhaseTotals {
     pub storage_replaced_bytes: u64,
     /// The engine's counters over the phase.
     pub counters: Counters,
+    /// How the node records written in the phase divide up, for an engine
+    /// that writes whole node records.
+    pub node_anatomy: Option<NodeAnatomy>,
     /// Bytes the operating system counted as written by the process
     /// (`/proc/self/io` `write_bytes`), where it counts them.
     pub process_write_bytes: Option<u64>,

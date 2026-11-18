@@ -140,7 +140,27 @@ fn a_run_measures_every_row_and_count_rows_repeat() {
     let reference_proof = engine.row("references_proof_bytes", "warm").unwrap();
     assert!(reference_proof.value > 100.0 * 400.0);
 
+    let value_share = engine.row("node_record_value_share", "load").unwrap().value;
+    let shares: f64 = [
+        "node_record_value_share",
+        "node_record_key_share",
+        "node_record_node_hash_share",
+        "node_record_link_hash_share",
+        "node_record_other_share",
+    ]
+    .iter()
+    .map(|id| engine.row(id, "load").unwrap().value)
+    .sum();
+    assert!((shares - 1.0).abs() < 1e-9, "shares sum to {shares}");
+    assert!(
+        (0.2..0.8).contains(&value_share),
+        "{value_share} of node bytes are values"
+    );
+
     let load = &engine.phases[0];
+    let anatomy = load.node_anatomy.unwrap();
+    assert_eq!(anatomy.records, load.counters.node_records);
+    assert_eq!(anatomy.undecoded, 0);
     assert_eq!(
         (load.phase.as_str(), load.transitions, load.blocks),
         ("load", 2_000, 100)

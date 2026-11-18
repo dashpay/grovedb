@@ -137,6 +137,17 @@ impl LogTail {
     /// call. A record is complete once the commit that wrote it has
     /// returned, so the caller reads after commits, never during one.
     pub fn read(&mut self, data: &[u8], totals: &mut WalTotals) -> Result<(), WalError> {
+        self.read_visiting(data, totals, &mut |_, _, _| {})
+    }
+
+    /// [`LogTail::read`], also handing every put to `visit` as its column
+    /// family, key and value.
+    pub fn read_visiting(
+        &mut self,
+        data: &[u8],
+        totals: &mut WalTotals,
+        visit: &mut dyn FnMut(u32, &[u8], &[u8]),
+    ) -> Result<(), WalError> {
         let mut position = 0usize;
         loop {
             let absolute = self.offset + position as u64;
@@ -171,7 +182,7 @@ impl LogTail {
                     if self.in_fragment {
                         return Err(WalError::Fragment(absolute));
                     }
-                    read_batch(payload, totals)?;
+                    read_batch(payload, totals, visit)?;
                 }
                 2 | 6 => {
                     if self.in_fragment {
@@ -189,7 +200,7 @@ impl LogTail {
                     if matches!(kind, 4 | 8) {
                         self.in_fragment = false;
                         let batch = std::mem::take(&mut self.fragment);
-                        read_batch(&batch, totals)?;
+                        read_batch(&batch, totals, visit)?;
                     }
                 }
                 _ => {}
@@ -203,7 +214,11 @@ impl LogTail {
 }
 
 /// Adds one write batch to `totals`.
-fn read_batch(batch: &[u8], totals: &mut WalTotals) -> Result<(), WalError> {
+fn read_batch(
+    batch: &[u8],
+    totals: &mut WalTotals,
+    visit: &mut dyn FnMut(u32, &[u8], &[u8]),
+) -> Result<(), WalError> {
     if batch.len() < BATCH_HEADER_SIZE {
         return Err(WalError::Truncated);
     }
@@ -226,12 +241,12 @@ fn read_batch(batch: &[u8], totals: &mut WalTotals) -> Result<(), WalError> {
             0x9 | 0xD | 0x12 | 0x13 => continue,
             _ => return Err(WalError::EntryTag(tag)),
         };
-        let mut bytes = 0u64;
-        for _ in 0..fields {
-            bytes += cursor.slice()?.len() as u64;
-        }
+        let key = cursor.slice()?;
+        let value = if fields == 2 { cursor.slice()? } else { &[] };
+        let bytes = (key.len() + value.len()) as u64;
         let entry = families.entry(family).or_default();
         if put {
+            visit(family, key, value);
             entry.puts += 1;
             entry.put_bytes += bytes;
         } else {
@@ -403,6 +418,27 @@ mod tests {
         }
         assert_eq!(tail.offset(), file.len() as u64);
         assert_eq!(pieces, whole);
+    }
+
+    #[test]
+    fn every_put_is_visited() {
+        let file = frame(&[batch(2, 10)]);
+        let mut puts = Vec::new();
+        LogTail::default()
+            .read_visiting(
+                &file,
+                &mut WalTotals::default(),
+                &mut |family, key, value| puts.push((family, key.to_vec(), value.len())),
+            )
+            .unwrap();
+        assert_eq!(
+            puts,
+            vec![
+                (0, b"key".to_vec(), 10),
+                (0, b"key".to_vec(), 10),
+                (2, b"root".to_vec(), 1)
+            ]
+        );
     }
 
     #[test]
