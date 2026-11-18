@@ -76,8 +76,8 @@ exactly one page. A cell holds:
 
 | Part | Bytes | |
 | --- | --- | --- |
-| key | 1 to 255 | |
-| feature type and aggregate data | as Merk encodes them | |
+| key | 0 to 255 | Merk accepts an empty key |
+| feature type and aggregate data | Merk's tag and its numbers at full width: 1, 9, 17 or 25 | [`tree-page.md`](tree-page.md), TP12 |
 | value hash | 32 | |
 | key-value hash | 32 | |
 | left link, right link | each absent or as C2 | |
@@ -95,16 +95,20 @@ the child's key.**
 | the child's address: page id and slot | 4 + 2 |
 | the child's hash | 32 |
 | the heights of the child's two subtrees | 2 |
-| the child's aggregate data | as Merk encodes it |
+| the length of the child's key | 1 |
+| the child's aggregate data | 1 for its length, then Merk's tag and its numbers at full width: 1, 9, 17 or 25 |
 
 Merk's link stores the child's key so that the child can be looked up. The
 cell address replaces that lookup ("pointers, not lookups"). The key is still
-in the child's own cell.
+in the child's own cell. Its length stays in the link: what a fetch of the
+parent is charged depends on the length of each child's key (N1 of
+[`cost-model.md`](cost-model.md)), and the parent must be charged without
+reading the child.
 
 So a link that crosses pages holds the page id and the slot of the child's
-cell, the child's hash, its two heights and its aggregate data, and nothing
-else: no key, no version, no mark of the Merk. The slot is in it because
-slot numbers are stable names (S1).
+cell, the child's hash, its two heights, the length of its key and its
+aggregate data, and nothing else: no key, no version, no mark of the Merk.
+The slot is in it because slot numbers are stable names (S1).
 
 **C3. A pointer to a hosted root is a cell address and nothing else.** Merk
 stores no hash of a hosted Merk's root beside the element: the host's value
@@ -115,9 +119,9 @@ state; T3 says when it may be behind inside a transaction.
 **C4. A link has the same form whether or not the child is in the same
 page.** Every address is a page id and a slot. So retargeting a link never
 changes the size of a cell, and a hash can be overwritten in place whatever
-the link points at. A format that wants to save the four bytes of the page id
-for a child in the same page may do so only if it keeps both properties
-(FMT-02).
+the link points at. FMT-02 kept the one form: a link always stores the full
+address, and it does not repeat the child's key, so a link has a fixed size
+but for its aggregate ([`tree-page.md`](tree-page.md), TP10).
 
 **C5. A cross-page link is one-way.** The cell that is pointed at does not
 record who points at it, and neither does its page. The only stored addresses
@@ -133,37 +137,58 @@ update, a split and a merge from touching pages below the one they work on.
 The price is rule F4: a cell can only be moved by a write that holds its
 parent.
 
-**C6. The sizes the simulation assumes.** FMT-02 fixes the real layout. Every
-number in sections 14 and 15 is computed with these, and `CellCosts` holds
-them so that the simulation can be run again when they change:
+**C6. The sizes.** FMT-02 fixed the layout ([`tree-page.md`](tree-page.md),
+section 6), and `CellCosts::tree_page()` holds its sizes:
 
-| | Bytes |
-| --- | --- |
-| page header | 32 |
-| slot directory entry, per cell | 2 |
-| cell header: flags, key length, value length | 4 |
-| cell address in a link or a hosted-root pointer | 6 |
-| value pointer, in place of an out-of-line value | 16 (value-log-format.md, section 4) |
-| header of a value-log record | 18, once for each part of a value (value-log-format.md, section 2 and V6) |
+| | Bytes | Assumed before FMT-02 |
+| --- | --- | --- |
+| page header | 22 | 32 |
+| slot directory entry, per cell | 2 | 2 |
+| cell header: flags, the lengths of the key and the feature, the number of hosted roots, the value's length | 8 | 4 |
+| cell address in a link or a hosted-root pointer | 6 | 6 |
+| the lengths of the child's key and of its aggregate, in a link | 2 | 0 |
+| value pointer, in place of an out-of-line value | 12, with the value's length in the cell header | 16 (value-log-format.md, section 4) |
+| header of a value-log record | 18, once for each part of a value (value-log-format.md, section 2 and V6) | 18 |
 
-The key, the feature type, the aggregate data and the value are counted at
-the length Merk's own record has for them. So a cell is
+The key and the value are counted at the length Merk's own record has for
+them. The feature type and the aggregate data are counted as a tree page
+stores them: Merk's tag, then each count and sum at its full width
+([`tree-page.md`](tree-page.md), TP12). In a tree with no count or sum that
+is one byte each, as in Merk's record. So a cell is
 
 ```text
-2 + 4 + key + 64 + feature type and aggregates
-  + 40 for each link + 6 for each hosted root
-  + value, or 16
+2 + 8 + key + 64 + feature type and aggregates
+  + 42 for each link + 6 for each hosted root
+  + value, or 12
 ```
 
-In the reference workload a document node with two children is 201 bytes and
-a document leaf 121, with its 440-byte value out of line. A reference node is
-about 185 to 265 bytes with its value in the cell.
+In the reference workload a document node with two children is 205 bytes and
+a document leaf 119, with its 440-byte value out of line. A reference node is
+about 190 to 275 bytes with its value in the cell.
+
+**Every number in sections 14 and 15 was computed with the sizes of the
+right-hand column**, which the simulation assumed before the format existed
+(`CellCosts::assumed()`; the cell was `2 + 4 + key + 64 + feature type and
+aggregates + 40 for each link + 6 for each hosted root + value, or 16`,
+with the feature type and the aggregates as Merk's record has them, with
+varints).
+Those tables are not recomputed. The three targets of section 14.1 were
+measured again with the real sizes, and are still met:
+
+| Target | Required | With the assumed sizes | With the sizes of FMT-02 |
+| --- | --- | --- | --- |
+| nodes per page | at least 15 | 129.0 | 126.1 (2,020,007 nodes in 16,023 pages) |
+| fill, at the end and at its lowest sample | at least 70% | 75.0%, 72.1% | 74.8%, 71.9% |
+| pages dirtied per transition, over the load and in its last tenth | at most 8 | 7.04, 7.21 | 7.29, 7.21 |
 
 **C7. A cell is smaller than half the capacity of a page.** A key is at most
 255 bytes and a value in the cell at most the inline threshold, so with the
 proposed threshold the largest cell is about 700 bytes. FMT-02's page size
 and TREE-08's threshold must keep a cell below half a page: section 6 relies
-on it (V5), as a B-tree relies on a node holding two keys.
+on it (V5), as a B-tree relies on a node holding two keys. The tree page
+format guarantees it for every key and value Merk accepts: it refuses a
+larger cell, and a cell whose value is out of line always fits
+([`tree-page.md`](tree-page.md), TP14).
 
 ## 3. Slots
 
@@ -1108,7 +1133,7 @@ records and the moves.
 | TREE-03 Fragment maintenance | Sections 5 to 8 as the rules to implement, on a change set as a whole. F4: move only what the write holds. X1: append the value again for every carried cell with a value pointer. The order in section 6. The parameters of section 12 as configuration, not constants. | In-page allocation. How the used bytes of a page beside a fragment are known without loading it (section 17, item 14). |
 | TREE-05 Subtree directory | The entry of a Merk holds the address of its root cell and is rewritten when the root is carried or another node becomes the root (S3). Under parallel scopes it is the address to use while the host's element is marked pending (T3). A drop removes one entry and leaves the nested ones to the reclaimer (D1, D2). A move that keeps the cells re-keys every entry under the moved key (D5). | The entry. |
 | TREE-06 Ordered cursor | No sibling links (C5): a cursor moves through its parent stack. Consecutive keys are in one page or in pages beside each other (V4). | The cursor. |
-| TREE-08 Out-of-line values | A value pointer is 16 bytes in the cell. The threshold is a parameter; 256 bytes was simulated, and 512 puts the reference documents into their cells and costs 1.7 more dirtied pages (section 14.4). | The threshold policy. |
+| TREE-08 Out-of-line values | A value pointer is 16 bytes (value-log-format.md, section 4). A tree cell stores 12 of them, the file id and the offset, and has the value's length in its header ([`tree-page.md`](tree-page.md), TP13). The threshold is a parameter, bounded by what fits in a cell (TP14); 256 bytes was simulated, and 512 puts the reference documents into their cells and costs 1.7 more dirtied pages (section 14.4). | The threshold policy. |
 | TREE-09 Subtree drop | D1 to D4: the drop writes one page and one directory entry; reclaiming walks the dropped Merk because its cells can share pages with others, removes the directory entries nested in it and reports the value pointers. | Keeping the root's address, and the walk. |
 | GROVE-03 Batch pipeline | D5: a moved subtree needs no cell to change its page. | Whether a move re-hosts or copies. |
 | GROVE-05 Deletes and drops | D1 for a deleted tree, D4 for a cleared one. GroveDB's pending-drop records are the same idea at the level of storage prefixes. | The mapping. |
@@ -1239,7 +1264,7 @@ owner can overrule one before FMT-02 and TREE-03 build on it.
     keys at once is counted the same way, because the records do not tell
     the two apart (section 13).
 21. **A cell must be smaller than half a page** (C7). At the proposed sizes
-    the largest cell is about 700 bytes of 32,736. The simulator refuses a
+    the largest cell is about 700 bytes of 32,746. The simulator refuses a
     run in which it does not hold.
 22. **A node is placed when its write is applied** (P5), which answers the
     point node-store.md left open (its choice 10). The unit is the

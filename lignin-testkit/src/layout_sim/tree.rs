@@ -66,6 +66,10 @@ pub struct Node {
     /// The bytes Merk's record spends on the feature type and on the
     /// aggregate data of both links.
     pub meta_len: u32,
+    /// The bytes a tree page spends on the same: Merk's tag for each, and
+    /// each count and sum at its full width
+    /// (`docs/lignindb/tree-page.md`, TP12).
+    pub meta_fixed_len: u32,
     /// The node's hash as its parent's link records it; zero for a root.
     pub(crate) node_hash: [u8; 32],
     /// A fingerprint of the stored record.
@@ -93,6 +97,7 @@ impl Node {
             hosted: Vec::new(),
             value_len: 0,
             meta_len: 0,
+            meta_fixed_len: 0,
             node_hash: [0; 32],
             record_print: 0,
             value_print: 0,
@@ -516,6 +521,7 @@ pub(crate) mod hand {
             let entry = self.grove.node_mut(node);
             entry.value_len = value_len;
             entry.meta_len = 1;
+            entry.meta_fixed_len = 1;
             self.touched.insert(
                 node,
                 Event {
@@ -545,6 +551,7 @@ pub(crate) mod hand {
                 Side::Right => entry.right = child,
             }
             entry.meta_len = 1 + u32::from(entry.left.is_some()) + u32::from(entry.right.is_some());
+            entry.meta_fixed_len = entry.meta_len;
             self.touched
                 .get_mut(&parent)
                 .expect("touched")

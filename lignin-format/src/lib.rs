@@ -14,12 +14,13 @@ pub mod ids;
 pub mod manifest;
 pub mod segment;
 pub mod table;
+pub mod tree_page;
 pub mod value_log;
 
 pub use checksum::Checksum;
 pub use error::FormatError;
 pub use header::{FileHeader, FileKind, FormatVersion, RecordHeader};
-pub use ids::{CommitVersion, FileId, PageId};
+pub use ids::{CellAddress, CommitVersion, FileId, PageId, SlotId};
 
 mod wire;
 

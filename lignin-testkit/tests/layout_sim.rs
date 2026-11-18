@@ -18,7 +18,7 @@ use std::thread;
 use grovedb::{Element, GroveDb};
 use grovedb_version::version::GroveVersion;
 use lignin_testkit::{
-    layout_sim::{simulate, ChangeSet, Config, Model, Observer, Report, Run},
+    layout_sim::{simulate, CellCosts, ChangeSet, Config, Model, Observer, Report, Run},
     workload::{
         adversarial::{DeepNesting, DeleteHeavy, LargeValues, LongKeys, Moves, TinySubtrees},
         apply::apply,
@@ -107,6 +107,69 @@ fn insert(path: &[&[u8]], key: &[u8], element: Element) -> Write {
         key: key.to_vec(),
         element,
     }
+}
+
+#[test]
+fn a_tree_page_cell_holds_counts_and_sums_at_their_full_width() {
+    let (_dir, db) = open();
+    let transaction = db.start_transaction();
+    let mut observer = Observer::new(GroveVersion::latest());
+    // The bytes of a feature or an aggregate in each tree: Merk's tag, then
+    // nothing, one sum, or a count and a sum, of eight bytes each.
+    let trees: [(&[u8], Element, u32); 3] = [
+        (b"plain", Element::empty_tree(), 1),
+        (b"sums", Element::empty_sum_tree(), 9),
+        (b"both", Element::empty_count_sum_tree(), 17),
+    ];
+    for (tree, element, _) in &trees {
+        write(
+            &db,
+            &transaction,
+            &mut observer,
+            insert(&[], tree, element.clone()),
+        );
+        for key in [b"b", b"d", b"f"] {
+            let item = match *tree == b"plain" {
+                true => Element::new_item(vec![1; 8]),
+                false => Element::new_sum_item(5),
+            };
+            write(&db, &transaction, &mut observer, insert(&[tree], key, item));
+        }
+    }
+    observer.verify(&db, &transaction).expect("in step");
+
+    let grove = observer.grove();
+    let tree_page = Config::proposed();
+    let assumed = Config {
+        costs: CellCosts::assumed(),
+        ..tree_page
+    };
+    let mut seen = [0; 3];
+    for (id, node) in grove.nodes() {
+        let host = grove
+            .merk(node.merk)
+            .host
+            .map(|host| &*grove.node(host).key);
+        let (which, width) = trees
+            .iter()
+            .position(|(tree, ..)| host == Some(*tree))
+            .map_or((0, 1), |which| (which, trees[which].2));
+        seen[which] += 1;
+        let links = grove.child_links(id);
+        assert_eq!(node.meta_fixed_len, width * (1 + links));
+        // Merk's own record has the tag and a varint for each number, which
+        // is one byte for these small ones.
+        assert_eq!(node.meta_len, (1 + width / 8) * (1 + links));
+
+        // Each layout sizes the cell by its own measure of those bytes.
+        let other_parts = |config: &Config, meta: u32| config.cell_bytes(grove, id) - meta;
+        assert_eq!(
+            other_parts(&tree_page, node.meta_fixed_len),
+            other_parts(&assumed, node.meta_len) + 4 + 2 * links
+        );
+    }
+    // The root Merk holds the three trees, and each tree three nodes.
+    assert_eq!(seen, [3 + 3, 3, 3]);
 }
 
 #[test]
