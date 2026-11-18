@@ -773,8 +773,8 @@ was written and never named leaves a mark that nothing points to.
 
 Three things about a sample follow from what the log holds. They are for
 whoever writes and installs a checkpoint (STORE-06) and whoever keeps the
-log's files (STORE-01), and `page-table.md` states only part of them
-(K13, K14):
+log's files (STORE-01). `page-table.md` states them as K14, with what
+`TableCheckpoints` checks of each:
 
 - **The sample is taken, and its mark written, before the checkpoint
   copies its first chain.** LG28 rests on it: a background change before
@@ -1000,9 +1000,12 @@ For background changes neither is enough, and LG28 and LG29 say what is:
 the pages take the background changes from the sample's place on; the
 sample comes before the first chain is copied; the log is synced after the
 last chain is copied and before the checkpoint is named; and the file the
-place names is kept. K13 now points to LG28 for background changes. The
-second and third are rules for the checkpoint's writer, and K14 is
-STORE-03's to change.
+place names is kept. K13 now points to LG28 for background changes, and
+K14 has since been changed to state the other three (the owner's decision
+D-063, item 4): `TableCheckpoints::write` refuses a sample whose mark is
+not in the log before it copies its first chain, and
+`TableCheckpoints::install` refuses a log that is durable less far than
+its end when the last chain was copied.
 
 ## 12. Choices made here that the plan left open
 
