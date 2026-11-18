@@ -469,8 +469,10 @@ impl World {
     }
 
     /// Step 7 of a commit: its page versions are installed, and the ids of
-    /// the pages it frees are retired. A commit that would free a page
-    /// another commit has freed fails with a conflict, and is rolled back.
+    /// the pages it frees are retired. A transaction that marked a page
+    /// which another commit has freed since does not commit: it is rolled
+    /// back. In the engine a commit is built over the latest version by
+    /// then, and frees only pages of that version.
     fn install(&mut self, at: usize) -> Result<(), String> {
         let txn = std::mem::take(&mut self.txns[at]);
         let live = |world: &Self, (id, born): (u32, u64)| {

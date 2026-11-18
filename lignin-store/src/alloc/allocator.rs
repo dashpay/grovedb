@@ -284,8 +284,9 @@ impl PageAllocator {
     ///
     /// The id must still name the page the caller means: the allocator
     /// cannot tell a page from a later one under the same id. A commit
-    /// knows it once its conflict check has passed, and the pages of a
-    /// dropped subtree are freed by its reclaimer alone.
+    /// frees pages of the latest version, which it is built over while it
+    /// holds the commit lock, and the pages of a dropped subtree are freed
+    /// by its reclaimer alone.
     ///
     /// The id is not handed out again before [`Self::reclaim`] finds that
     /// no reader can reach the page.

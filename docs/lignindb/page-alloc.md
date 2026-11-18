@@ -74,10 +74,19 @@ and at no version from *w* on. Whoever calls it vouches for that.
 
 The caller also vouches that the id still names the page it means. The
 allocator cannot tell a page from a later one under the same id, so a free
-that comes after someone else freed the page, and the id was used again,
-would retire the new page. A commit knows that it cannot be so once its
-conflict check has passed (CM3 step 3), and the pages of a dropped subtree
-are freed by its reclaimer alone.
+that comes after someone else freed the page, and after the id was used
+again, would retire the new page. Two callers free pages:
+
+- A commit frees pages of the version it is built over, and that is the
+  latest one. It holds the commit lock, and if another commit came first,
+  its private frames were rebuilt over the latest version before it
+  installs anything (CM3 steps 2 to 4). So no other commit has freed them.
+  The conflict rule alone does not say this: it is about record keys, not
+  pages.
+- The reclaimer of a dropped subtree frees pages that hold no cell of the
+  latest version, and it alone frees them. That a commit never frees such
+  a page too is TREE-09's to make sure of, in a page step, as PV7 does for
+  a value pointer.
 
 **A5. A call that does not fit the state of its id is refused, and changes
 nothing.** Releasing or publishing an id that is not private is
@@ -98,8 +107,10 @@ test for each.
 
 **A7. No version pin can reach the page** (ID2): the oldest pinned version,
 *H*, is *w* or later. This is the simple test of PV3, the one
-`PageTable::trim` uses. A pin between two frees does not hold back the newer
-one more than needed, but a free between two pins waits for the older pin.
+`PageTable::trim` uses. It can hold an id longer than the exact test would:
+a page that was born after the oldest pin was taken, and freed since, waits
+for that pin, though the pin cannot reach it. A pin that is held for a long
+time costs ids, never correctness (PN7).
 
 **A8. No running operation can reach the page** (ID3). An operation of a
 write transaction with an empty write set holds no version pin (PN1). It
@@ -299,7 +310,7 @@ A step is what the engine does under one lock or with one atomic write:
 | Actor | Steps |
 | --- | --- |
 | a write transaction | allocate an id; give back the id it took last; mark a committed page to be freed, or dropped, by its commit; roll back |
-| its commit | install (CM3 step 7: publish its ids, free its pages), then publish (step 8). A commit whose page another commit has freed fails with a conflict and is rolled back. Only one commit is between the two steps. |
+| its commit | install (CM3 step 7: publish its ids, free its pages), then publish (step 8). A transaction that marked a page which another commit has freed since does not commit: it is rolled back. Only one commit is between the two steps. |
 | a snapshot | pin the latest version; drop the pin |
 | an operation without a pin | take its guard; read the latest version; end |
 | a reclaim | ask for the oldest pin; start the next epoch; ask for the oldest guard; take its step in the allocator |
@@ -328,9 +339,11 @@ After every step, for every id:
 - **Nothing is lost.** On a copy of the state, once every reader is gone
   one reclaim leaves no id retired.
 
-The model's write transactions hold no version pin. What keeps one from
-freeing a page that another commit freed first is the conflict check of its
-own commit, as A4 has it.
+The model's write transactions hold no version pin and are not rebased.
+What keeps one from freeing a page that another commit freed first is that
+it is rolled back at its install step. In the engine the conflict rule and
+the rebase do that (CM3 steps 3 and 4): a commit frees only pages of the
+latest version, as A4 has it.
 
 ### 6.3 How the states are visited
 
