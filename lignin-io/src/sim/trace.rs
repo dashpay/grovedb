@@ -79,7 +79,8 @@ pub enum Outcome {
 pub enum Effect {
     /// Nothing changed.
     Nothing,
-    /// A `write_at` wrote this many bytes of its buffer before it failed.
+    /// A `write_at` wrote this many bytes of its buffer before it failed, in
+    /// whole sectors that need not be its first.
     Wrote(u64),
     /// An `append` wrote this many bytes, failed, and took them back: the
     /// file has the length it had. A crash can still bring them back.
@@ -251,8 +252,8 @@ impl fmt::Display for Fate {
 }
 
 /// A 64-bit digest of `events`: FNV-1a over a fixed encoding of them, the
-/// same on every machine. Two runs made the same schedule exactly when their
-/// traces have the same digest.
+/// same on every machine. Two runs whose traces have different digests did
+/// not make the same schedule.
 pub fn digest(events: &[Event]) -> u64 {
     let mut hasher = Fnv::new();
     for event in events {
@@ -327,6 +328,7 @@ impl Event {
                     hasher.u64(name.change.kind as u64);
                     hasher.text(&name.change.path);
                     hasher.optional_text(name.change.to.as_deref());
+                    hasher.u64(name.change.file.map_or(0, |file| file + 1));
                     hasher.u64(name.survives.into());
                 }
                 hash_changes(&record.changes, hasher);

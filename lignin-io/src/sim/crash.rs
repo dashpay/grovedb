@@ -4,22 +4,17 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
-    ffi::OsString,
     fmt,
     ops::Range,
     sync::Arc,
 };
 
 use super::{
-    rng::{Chance, SimRng},
-    state::{Cell, DirId, FileId, Node, State, ROOT},
+    rng::{stream, Chance, SimRng},
+    state::{with_what_they_build_on, Dir, DirId, FileId, NameOp, Node, State, ROOT},
     trace::{ChangeFate, CrashRecord, Event, Fate, NameFate},
     SimConfig, SimVfs,
 };
-
-const STREAM_CRASH: u64 = 4;
-const STREAM_DRAW: u64 = 5;
-const STREAM_CHILD: u64 = 6;
 
 /// How [`CrashImage::sample`] draws a crash state.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,6 +85,13 @@ pub struct FileChange {
     pub(super) data: Arc<[u8]>,
 }
 
+impl FileChange {
+    /// The bytes of a write. A change of length has none.
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+}
+
 impl fmt::Debug for FileChange {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "#{} {} {}", self.op, self.kind, self.path)
@@ -125,6 +127,9 @@ pub struct NameChange {
     pub path: String,
     /// The new name of a rename or a link.
     pub to: Option<String>,
+    /// The simulator's number for the file whose name changed, as in
+    /// [`FileChange::file`]. A change of a directory has none.
+    pub file: Option<u64>,
 }
 
 impl fmt::Display for NameChange {
@@ -254,8 +259,10 @@ impl Survivor {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CrashPlan {
     /// The changes of names that survive, as their places in
-    /// [`CrashImage::names`]. Their order here does not matter: names are
-    /// always changed in the order the changes were made.
+    /// [`CrashImage::names`]. The changes they build on survive with them,
+    /// listed or not: see [`CrashImage::names_kept`]. Their order here does
+    /// not matter: names are always changed in the order the changes were
+    /// made.
     pub names: Vec<usize>,
     /// The changes of files that survive, in the order they are applied.
     pub changes: Vec<Survivor>,
@@ -308,16 +315,48 @@ pub(super) fn sectors_of(kind: FileChangeKind, sector: u64) -> u64 {
     }
 }
 
-/// Where a write that fails part of the way stops: after any whole number of
-/// its sectors.
+/// Where an append that fails part of the way stops: after any whole number
+/// of its sectors.
 pub(super) fn cut(rng: &mut SimRng, offset: u64, len: u64, sector: u64) -> u64 {
-    if len == 0 {
-        return 0;
-    }
     match rng.below(sector_count(offset, len, sector) + 1) {
         0 => 0,
         kept => sector_end(offset, len, sector, kept - 1) - offset,
     }
+}
+
+/// The parts of a write that fails part of the way which were written, as
+/// ranges of bytes of the file: its first sectors, or any of its sectors.
+pub(super) fn failed_write(
+    rng: &mut SimRng,
+    offset: u64,
+    len: u64,
+    sector: u64,
+) -> Vec<Range<u64>> {
+    let count = sector_count(offset, len, sector);
+    let sectors = match rng.below(2) {
+        0 => Tear::run(0..rng.below(count + 1), 0).sectors,
+        _ => some_sectors(rng, count),
+    };
+    let bytes = |sectors: Range<u64>| {
+        sector_start(offset, sector, sectors.start)
+            ..sector_end(offset, len, sector, sectors.end - 1)
+    };
+    sectors.into_iter().map(bytes).collect()
+}
+
+/// Each of `count` sectors or not, as it falls.
+fn some_sectors(rng: &mut SimRng, count: u64) -> Vec<Range<u64>> {
+    let mut sectors: Vec<Range<u64>> = Vec::new();
+    for index in 0..count {
+        if rng.below(2) == 0 {
+            continue;
+        }
+        match sectors.last_mut() {
+            Some(last) if last.end == index => last.end = index + 1,
+            _ => sectors.push(index..index + 1),
+        }
+    }
+    sectors
 }
 
 pub(super) fn apply(
@@ -366,16 +405,7 @@ fn random_tear(rng: &mut SimRng, offset: u64, len: u64, sector: u64) -> Tear {
         }
         1 => Tear::run(0..rng.below(count), end),
         2 => {
-            let mut sectors: Vec<Range<u64>> = Vec::new();
-            for index in 0..count {
-                if rng.below(2) == 0 {
-                    continue;
-                }
-                match sectors.last_mut() {
-                    Some(last) if last.end == index => last.end = index + 1,
-                    _ => sectors.push(index..index + 1),
-                }
-            }
+            let sectors = some_sectors(rng, count);
             let len = match rng.below(2) {
                 0 => reach(sectors.last().map_or(0, |last| last.end)),
                 _ => end,
@@ -464,7 +494,8 @@ fn plan_of(pending: impl Iterator<Item = Pending>) -> CrashPlan {
 pub struct CrashImage {
     pub(super) config: SimConfig,
     pub(super) ops: u64,
-    pub(super) dirs: BTreeMap<DirId, BTreeMap<OsString, Cell>>,
+    pub(super) dirs: BTreeMap<DirId, Dir>,
+    pub(super) name_ops: BTreeMap<u64, NameOp>,
     pub(super) files: BTreeMap<FileId, Arc<Vec<u8>>>,
     pub(super) changes: Vec<FileChange>,
     pub(super) names: Vec<NameChange>,
@@ -507,6 +538,20 @@ impl CrashImage {
         &self.names
     }
 
+    /// The changes of names that survive under `plan`: the ones it lists and
+    /// the ones those build on, as rising places in [`names`](Self::names).
+    ///
+    /// # Panics
+    ///
+    /// If `plan` lists a place that is not in [`names`](Self::names).
+    pub fn names_kept(&self, plan: &CrashPlan) -> Vec<usize> {
+        let listed = plan.names.iter().map(|name| self.names[*name].op);
+        let kept = with_what_they_build_on(&self.dirs, &self.name_ops, listed);
+        (0..self.names.len())
+            .filter(|name| kept.contains(&self.names[*name].op))
+            .collect()
+    }
+
     /// The plan in which no unsynced change survives: the file system as it
     /// was last synced.
     pub fn lose_all(&self) -> CrashPlan {
@@ -538,8 +583,8 @@ impl CrashImage {
 
     /// A plan drawn from the seed with `odds`.
     pub fn sample_with(&self, draw: u64, odds: &CrashOdds) -> CrashPlan {
-        let at_crash = SimRng::derive(self.config.seed, STREAM_CRASH, self.ops).next_u64();
-        let mut rng = SimRng::derive(at_crash, STREAM_DRAW, draw);
+        let at_crash = SimRng::derive(self.config.seed, stream::CRASH, self.ops).next_u64();
+        let mut rng = SimRng::derive(at_crash, stream::DRAW, draw);
         let names = (0..self.names.len())
             .filter(|_| !rng.chance(odds.lose))
             .collect();
@@ -549,7 +594,9 @@ impl CrashImage {
             odds,
             self.config.sector_size,
         );
-        CrashPlan { names, changes }
+        let mut plan = CrashPlan { names, changes };
+        plan.names = self.names_kept(&plan);
+        plan
     }
 
     /// The ways the write at place `change` of [`changes`](Self::changes)
@@ -571,10 +618,8 @@ impl CrashImage {
         let mut tears = Vec::new();
         for kept in 0..count {
             if kept > 0 {
-                tears.push(Tear::run(
-                    0..kept,
-                    sector_end(offset, len, sector, kept - 1),
-                ));
+                let reach = sector_end(offset, len, sector, kept - 1);
+                tears.push(Tear::run(0..kept, reach));
             }
             tears.push(Tear::run(0..kept, offset + len));
         }
@@ -606,18 +651,23 @@ impl CrashImage {
         })
     }
 
-    /// The plans in which one unsynced change is lost and every other one
-    /// survives.
+    /// The plans in which one unsynced change is lost, with the changes of
+    /// names that build on it, and every other one survives.
     pub fn holes(&self) -> impl Iterator<Item = CrashPlan> + '_ {
         let order = self.order();
         (0..order.len()).map(move |lost| {
-            plan_of(
-                order
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, _)| *index != lost)
-                    .map(|(_, item)| *item),
-            )
+            let builds_on_lost = |item: &Pending| match (order[lost], item) {
+                (Pending::Name(lost), Pending::Name(name)) => {
+                    let alone = CrashPlan {
+                        names: vec![*name],
+                        changes: Vec::new(),
+                    };
+                    self.names_kept(&alone).contains(&lost)
+                }
+                (Pending::Change(lost), Pending::Change(change)) => lost == *change,
+                _ => false,
+            };
+            plan_of(order.iter().filter(|item| !builds_on_lost(item)).copied())
         })
     }
 
@@ -641,8 +691,76 @@ impl CrashImage {
         })
     }
 
+    /// Every plan there is, if there are at most `limit` of them: every set
+    /// of changes of names that can survive, with every choice of surviving
+    /// changes of files, in every order, each write whole or with every tear
+    /// it can have. Between them they give every state this crash can leave.
+    ///
+    /// The count grows fast: a handful of small changes already has
+    /// thousands of plans. `None` means there are more than `limit`.
+    pub fn every_plan(&self, limit: usize) -> Option<Vec<CrashPlan>> {
+        let limit = limit as u64;
+        if self.names.len() >= 32 || 1 << self.names.len() > limit {
+            return None;
+        }
+        let mut names = BTreeSet::new();
+        for mask in 0..1usize << self.names.len() {
+            let listed = (0..self.names.len()).filter(|name| mask >> name & 1 == 1);
+            names.insert(self.names_kept(&CrashPlan {
+                names: listed.collect(),
+                changes: Vec::new(),
+            }));
+        }
+
+        let mut ways = Vec::new();
+        for change in &self.changes {
+            let mut tears = vec![None];
+            if let FileChangeKind::Write { offset, len } = change.kind {
+                let end = offset + len;
+                let lens: Vec<u64> = (1..change.sectors)
+                    .map(|sectors| sector_end(offset, len, self.config.sector_size, sectors - 1))
+                    .chain([0, end])
+                    .collect();
+                if change.sectors >= 32 || (lens.len() as u64) << change.sectors > limit {
+                    return None;
+                }
+                for mask in 0..1u64 << change.sectors {
+                    let mut sectors: Vec<Range<u64>> = Vec::new();
+                    for index in (0..change.sectors).filter(|index| mask >> index & 1 == 1) {
+                        match sectors.last_mut() {
+                            Some(last) if last.end == index => last.end = index + 1,
+                            _ => sectors.push(index..index + 1),
+                        }
+                    }
+                    let torn = |len: &u64| Tear {
+                        sectors: sectors.clone(),
+                        len: *len,
+                    };
+                    tears.extend(lens.iter().map(torn).map(Some));
+                }
+            }
+            ways.push(tears);
+        }
+
+        let mut orders = Vec::new();
+        let limit = limit / names.len() as u64;
+        every_order(&ways, &mut Vec::new(), &mut orders, limit).then_some(())?;
+        let mut plans = Vec::with_capacity(names.len() * orders.len());
+        for names in names {
+            plans.extend(orders.iter().map(|changes| CrashPlan {
+                names: names.clone(),
+                changes: changes.clone(),
+            }));
+        }
+        Some(plans)
+    }
+
     /// The file system this crash leaves under `plan`, as a new [`SimVfs`]
     /// with nothing open and nothing locked.
+    ///
+    /// A change of names survives together with the changes it builds on,
+    /// whether `plan` lists them or not: see
+    /// [`names_kept`](Self::names_kept).
     ///
     /// The new file system has the configuration of the one that crashed,
     /// fault odds included, and a seed derived from that one's seed and its
@@ -651,19 +769,23 @@ impl CrashImage {
     /// crash point are not carried over.
     pub fn recover(&self, plan: &CrashPlan) -> Result<SimVfs, InvalidPlan> {
         self.check(plan)?;
-        let kept: BTreeSet<u64> = plan.names.iter().map(|name| self.names[*name].op).collect();
+        let kept: BTreeSet<u64> = self
+            .names_kept(plan)
+            .into_iter()
+            .map(|name| self.names[name].op)
+            .collect();
         let mut survivors: BTreeMap<FileId, Vec<&Survivor>> = BTreeMap::new();
         for survivor in &plan.changes {
             let file = FileId(self.changes[survivor.change].file);
             survivors.entry(file).or_default().push(survivor);
         }
 
-        let seed = SimRng::derive(self.config.seed, STREAM_CHILD, self.ops).next_u64();
+        let seed = SimRng::derive(self.config.seed, stream::CHILD, self.ops).next_u64();
         let mut state = State::new(SimConfig {
             seed,
             ..self.config.clone()
         });
-        state.trace.push(Event::Crash(self.record(plan)));
+        state.trace.push(Event::Crash(self.record(plan, &kept)));
         let mut files = BTreeMap::new();
         self.rebuild(ROOT, ROOT, &kept, &survivors, &mut state, &mut files);
         Ok(SimVfs::from_state(state))
@@ -678,14 +800,12 @@ impl CrashImage {
         state: &mut State,
         files: &mut BTreeMap<FileId, FileId>,
     ) {
-        for (name, cell) in &self.dirs[&from] {
-            let mut winner = (cell.durable_seq, cell.durable);
-            for (seq, node) in &cell.pending {
-                if *seq > winner.0 && kept.contains(seq) {
-                    winner = (*seq, *node);
-                }
-            }
-            match winner.1 {
+        for (name, cell) in &self.dirs[&from].cells {
+            let surviving = cell
+                .pending
+                .iter()
+                .take_while(|(seq, _)| kept.contains(seq));
+            match surviving.last().map_or(cell.durable, |(_, node)| *node) {
                 None => {}
                 Some(Node::File(file)) => {
                     let file = *files.entry(file).or_insert_with(|| {
@@ -694,7 +814,7 @@ impl CrashImage {
                     state.place(into, name, Node::File(file));
                 }
                 Some(Node::Dir(dir)) => {
-                    let new = state.add_dir();
+                    let new = state.add_dir(into, name);
                     state.place(into, name, Node::Dir(new));
                     self.rebuild(dir, new, kept, survivors, state, files);
                 }
@@ -721,14 +841,13 @@ impl CrashImage {
         Arc::new(content)
     }
 
-    fn record(&self, plan: &CrashPlan) -> CrashRecord {
+    fn record(&self, plan: &CrashPlan, kept: &BTreeSet<u64>) -> CrashRecord {
         let names = self
             .names
             .iter()
-            .enumerate()
-            .map(|(index, change)| NameFate {
+            .map(|change| NameFate {
                 change: change.clone(),
-                survives: plan.names.contains(&index),
+                survives: kept.contains(&change.op),
             })
             .collect();
         let changes = fates(
@@ -816,6 +935,38 @@ impl CrashImage {
             Pending::Change(change) => self.changes[change].op,
         }
     }
+}
+
+/// Adds to `orders` every choice of changes, each in one of its `ways` to
+/// survive, in every order, on top of `current`. Says whether they fit in
+/// `limit`.
+fn every_order(
+    ways: &[Vec<Option<Tear>>],
+    current: &mut Vec<Survivor>,
+    orders: &mut Vec<Vec<Survivor>>,
+    limit: u64,
+) -> bool {
+    if orders.len() as u64 >= limit {
+        return false;
+    }
+    orders.push(current.clone());
+    for (change, tears) in ways.iter().enumerate() {
+        if current.iter().any(|survivor| survivor.change == change) {
+            continue;
+        }
+        for tear in tears {
+            current.push(Survivor {
+                change,
+                tear: tear.clone(),
+            });
+            let fits = every_order(ways, current, orders, limit);
+            current.pop();
+            if !fits {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 fn overlap(early: FileChangeKind, late: FileChangeKind) -> bool {

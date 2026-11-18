@@ -203,13 +203,8 @@ fn the_plans_of_an_image_cover_the_ways_a_crash_can_go() {
     assert_eq!(tears.len(), 4);
     assert_eq!(prefixes.len(), 4 + tears.len());
     assert_eq!(prefixes[0], image.lose_all());
-    for (torn, tear) in prefixes[1..5].iter().zip(&tears) {
-        let survivor = Survivor {
-            change: 0,
-            tear: Some(tear.clone()),
-        };
-        assert_eq!(torn.names, []);
-        assert_eq!(torn.changes, [survivor]);
+    for (plan, tear) in prefixes[1..5].iter().zip(&tears) {
+        assert_eq!(*plan, torn(0, tear.clone()));
     }
     assert_eq!(
         prefixes[5..],
@@ -317,75 +312,153 @@ fn a_plan_that_does_not_fit_its_image_is_refused() {
     let (fs, _file) = three_changes(11);
     let image = fs.crash_image();
     let refused = |plan: CrashPlan| image.recover(&plan).unwrap_err().to_string();
-    let torn = |change, sectors: &[Range<u64>], len| CrashPlan {
-        names: Vec::new(),
-        changes: vec![Survivor {
-            change,
-            tear: Some(Tear {
-                sectors: sectors.to_vec(),
-                len,
-            }),
-        }],
-    };
-    let names = |names: &[usize]| CrashPlan {
-        names: names.to_vec(),
-        changes: Vec::new(),
-    };
     let prefix = "the crash plan does not fit the image: ";
 
     assert_eq!(
-        refused(names(&[1])),
+        refused(names_only(vec![1])),
         format!("{prefix}there is no change of names at place 1")
     );
     assert_eq!(
-        refused(names(&[0, 0])),
+        refused(names_only(vec![0, 0])),
         format!("{prefix}the change of names at place 0 is kept twice")
     );
-    let twice = CrashPlan {
-        names: Vec::new(),
-        changes: vec![Survivor::whole(1), Survivor::whole(1)],
-    };
     assert_eq!(
-        refused(twice),
+        refused(changes_only(&[1, 1])),
         format!("{prefix}the change of a file at place 1 is kept twice")
     );
     assert_eq!(
-        refused(torn(2, &[], 0)),
+        refused(torn(2, tear(&[], 0))),
         format!("{prefix}there is no change of a file at place 2")
     );
     assert_eq!(
-        refused(torn(1, &[], 0)),
+        refused(torn(1, tear(&[], 0))),
         format!("{prefix}the change at place 1 is not a write")
     );
     for sectors in [&[0..3][..], &[1..1], &[1..2, 0..1], &[0..2, 1..2]] {
-        let reason = refused(torn(0, sectors, 0));
+        let reason = refused(torn(0, tear(sectors, 0)));
         assert!(
             reason.contains("which are not rising ranges within its 2 sectors"),
             "{reason}"
         );
     }
-    for len in [7, 5, 3] {
-        let image = match len {
-            3 => {
-                let fs = sim_with_sectors(11, 4);
-                create_durable(&fs, "/file", b"")
-                    .write_at(b"abc", 3)
-                    .unwrap();
-                fs.crash_image()
-            }
-            _ => image.clone(),
-        };
-        let reason = image.recover(&torn(0, &[], len)).unwrap_err().to_string();
+    for len in [7, 5] {
+        let reason = refused(torn(0, tear(&[], len)));
         assert!(
             reason.contains(&format!("has length {len}, which is neither 0 nor")),
             "{reason}"
         );
     }
+    let unaligned = sim_with_sectors(11, 4);
+    create_durable(&unaligned, "/file", b"")
+        .write_at(b"abc", 3)
+        .unwrap();
+    let before_the_write = unaligned.crash_image().recover(&torn(0, tear(&[], 3)));
+    assert!(before_the_write
+        .unwrap_err()
+        .to_string()
+        .contains("has length 3"));
 
-    recover(&image, &torn(0, &[0..1, 1..2], 4));
-    recover(&image, &torn(0, &[1..2], 6));
-    let error: Box<dyn std::error::Error> = Box::new(image.recover(&names(&[9])).unwrap_err());
+    recover(&image, &torn(0, tear(&[0..1, 1..2], 4)));
+    recover(&image, &torn(0, tear(&[1..2], 6)));
+    let error: Box<dyn std::error::Error> =
+        Box::new(image.recover(&names_only(vec![9])).unwrap_err());
     assert!(error.source().is_none());
+}
+
+#[test]
+fn a_change_of_names_is_kept_and_lost_with_the_changes_built_on_it() {
+    let fs = sim(20);
+    drop(create_durable(&fs, "/file", b"F"));
+    fs.create_dir(p("/dir")).unwrap();
+    fs.rename(p("/file"), p("/dir/moved")).unwrap();
+    drop(create(&fs, "/file", b""));
+    drop(create(&fs, "/apart", b""));
+
+    let image = fs.crash_image();
+    let kinds: Vec<_> = image.names().iter().map(|name| name.kind).collect();
+    assert_eq!(
+        kinds,
+        [
+            NameChangeKind::CreateDir,
+            NameChangeKind::Rename,
+            NameChangeKind::Create,
+            NameChangeKind::Create
+        ]
+    );
+    let files: Vec<_> = image.names().iter().map(|name| name.file).collect();
+    assert_eq!(files[0], None);
+    assert!(files[1].is_some() && files[1] != files[2] && files[2] != files[3]);
+
+    let kept = |names: &[usize]| image.names_kept(&names_only(names.to_vec()));
+    assert_eq!(kept(&[]), []);
+    assert_eq!(kept(&[0]), [0]);
+    assert_eq!(kept(&[1]), [0, 1]);
+    assert_eq!(kept(&[2]), [0, 1, 2]);
+    assert_eq!(kept(&[3]), [3]);
+    assert_eq!(kept(&[3, 2]), [0, 1, 2, 3]);
+
+    let holes: Vec<Vec<usize>> = image.holes().map(|plan| plan.names).collect();
+    assert_eq!(holes, [vec![3], vec![0, 3], vec![0, 1, 3], vec![0, 1, 2]]);
+    for draw in 0..50 {
+        let plan = image.sample(draw);
+        assert_eq!(image.names_kept(&plan), plan.names);
+    }
+
+    let after = recover(&image, &names_only(vec![2]));
+    let [Event::Crash(record)] = &after.trace()[..] else {
+        panic!("{:?}", after.trace());
+    };
+    let survive: Vec<bool> = record.names.iter().map(|name| name.survives).collect();
+    assert_eq!(survive, [true, true, true, false]);
+    assert_eq!(
+        tree(&after),
+        tree_of(&[("dir", None), ("dir/moved", Some("F")), ("file", Some(""))])
+    );
+}
+
+#[test]
+fn every_plan_of_a_small_image_can_be_listed() {
+    let fs = sim_with_sectors(21, 2);
+    let file = create_durable(&fs, "/file", b"....");
+    file.write_at(b"abc", 0).unwrap();
+    file.set_len(2).unwrap();
+    drop(create(&fs, "/other", b""));
+    drop(create(&fs, "/more", b""));
+
+    let image = fs.crash_image();
+    let write_ways = 1 + 4 * 3;
+    let orders = 1 + write_ways + 1 + 2 * write_ways;
+    let plans = image.every_plan(4 * orders).unwrap();
+    assert_eq!(plans.len(), 4 * orders);
+    let distinct: BTreeSet<String> = plans.iter().map(|plan| format!("{plan:?}")).collect();
+    assert_eq!(distinct.len(), plans.len());
+    for plan in &plans {
+        recover(&image, plan);
+    }
+    for plan in image
+        .prefixes()
+        .chain(image.holes())
+        .chain(image.reorders())
+    {
+        assert!(plans.contains(&plan), "{plan:?}");
+    }
+    assert!(image.every_plan(4 * orders - 1).is_none());
+    assert!(image.every_plan(3).is_none());
+    assert!(image.every_plan(0).is_none());
+
+    let empty = sim(21).crash_image();
+    assert_eq!(empty.every_plan(1), Some(vec![CrashPlan::default()]));
+
+    let wide = sim_with_sectors(21, 1);
+    create_durable(&wide, "/file", b"")
+        .write_at(&[1; 40], 0)
+        .unwrap();
+    assert!(wide.crash_image().every_plan(usize::MAX).is_none());
+    let many = sim(21);
+    for name in 0..40 {
+        drop(create(&many, &format!("/{name}"), b""));
+    }
+    assert!(many.crash_image().every_plan(usize::MAX).is_none());
 }
 
 #[test]
@@ -401,6 +474,7 @@ fn a_recovered_file_system_starts_afresh_and_remembers_where_it_came_from() {
             lose: Chance::new(1, 3),
             ..CrashOdds::default()
         },
+        unknown: UnknownFate::Kept,
         trace_ops: false,
         seed: 12,
     };
@@ -576,7 +650,7 @@ fn a_file_stops_growing_at_the_longest_the_simulator_holds() {
         kind(file.write_at(&[2; 1], u64::MAX)),
         ErrorKind::FileTooLarge
     );
-    assert_eq!(kind(file.write_at(&[], 101)), ErrorKind::FileTooLarge);
+    file.write_at(&[], 101).unwrap();
     assert_eq!(kind(file.set_len(101)), ErrorKind::FileTooLarge);
     assert_eq!(kind(file.set_len(u64::MAX)), ErrorKind::FileTooLarge);
     file.write_at(&[2; 40], 60).unwrap();
@@ -709,4 +783,13 @@ fn handles_and_images_show_what_they_are() {
 #[should_panic(expected = "a sector has at least one byte")]
 fn a_sector_has_at_least_one_byte() {
     sim_with_sectors(19, 0);
+}
+
+#[test]
+#[should_panic(expected = "files of up to 2 GiB")]
+fn no_file_is_longer_than_a_small_machine_can_hold() {
+    SimVfs::new(SimConfig {
+        max_file_len: 1 << 31,
+        ..SimConfig::new(19)
+    });
 }

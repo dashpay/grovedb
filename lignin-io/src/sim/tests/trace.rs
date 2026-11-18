@@ -51,7 +51,7 @@ fn traced(seed: u64) -> SimVfs {
 
 #[test]
 fn a_trace_reads_as_one_line_for_each_thing_that_happened() {
-    let fs = traced(47);
+    let fs = traced(51);
     let lines: Vec<String> = fs.trace().iter().map(Event::to_string).collect();
     assert_eq!(lines, EXPECTED_LINES, "{}", lines.join("\n"));
     assert_eq!(fs.trace_digest(), digest(&fs.trace()));
@@ -80,7 +80,7 @@ const EXPECTED_LINES: [&str; 26] = [
     "#2 write_at /file offset 0 len 10: ok",
     "#3 read_at /file offset 2 len 4: ok",
     "#4 set_len /file len 12: ok",
-    "#5 write_at /file offset 2 len 8: injected ENOSPC, 2 bytes were written",
+    "#5 write_at /file offset 2 len 8: injected ENOSPC, 6 bytes were written",
     "#6 sync_data /file: injected EIO, 3 unsynced changes left unknown",
     "#7 sync_data /file: failed (Other)",
     "#8 rename /file -> /log: ok",
@@ -90,8 +90,8 @@ const EXPECTED_LINES: [&str; 26] = [
     "#12 append /log offset 12 len 4: injected EIO, 4 bytes stay appended and the handle is broken",
     "#13 len /log: injected EIO",
     "#14 the sync of /log settles what a failed sync left unknown:\n  #2 write offset 0 len 10 \
-     /file: survives whole, applied at 0\n  #4 set_len 12 /file: lost\n  #5 write offset 2 len 2 \
-     /file: survives torn (sectors 0..1, length 0), applied at 1",
+     /file: survives torn (sectors 0..2, length 10), applied at 0\n  #4 set_len 12 /file: \
+     survives whole, applied at 1\n  #5 write offset 2 len 6 /file: lost",
     "#14 sync_all /log: ok",
     "#15 hard_link /log -> /link: ok",
     "#16 create_dir /dir: ok",
@@ -106,7 +106,7 @@ const EXPECTED_LINES: [&str; 26] = [
     "power off after #24",
 ];
 const EXPECTED_CRASH: &str = "\
-crash of the file system with seed 0x000000000000002f after #24:
+crash of the file system with seed 0x0000000000000033 after #24:
   #1 create /file: survives
   #8 rename /file -> /log: lost
   #15 hard_link /log -> /link: survives
@@ -145,10 +145,7 @@ fn a_digest_tells_traces_apart() {
     let write = FileChangeKind::Write { offset: 0, len: 9 };
     let torn = |sectors: &[Range<u64>], len| Fate::Survives {
         position: 0,
-        tear: Some(Tear {
-            sectors: sectors.to_vec(),
-            len,
-        }),
+        tear: Some(tear(sectors, len)),
     };
     let whole = |position| Fate::Survives {
         position,
@@ -165,8 +162,14 @@ fn a_digest_tells_traces_apart() {
             kind,
             path: "/a".to_owned(),
             to: to.map(str::to_owned),
+            file: None,
         },
         survives,
+    };
+    let of_file = |file| {
+        let mut name = name(NameChangeKind::Create, None, true);
+        name.change.file = Some(file);
+        name
     };
     let crash = |seed, ops, names: Vec<NameFate>, changes: Vec<ChangeFate>| {
         Event::Crash(CrashRecord {
@@ -257,6 +260,8 @@ fn a_digest_tells_traces_apart() {
             vec![name(NameChangeKind::RemoveDir, None, true)],
             vec![],
         ),
+        crash(1, 7, vec![of_file(0)], vec![]),
+        crash(1, 7, vec![of_file(1)], vec![]),
     ];
     let failures = [
         ErrorKind::NotFound,
@@ -293,13 +298,7 @@ fn a_digest_tells_traces_apart() {
 
 #[test]
 fn changes_and_tears_print_what_they_are() {
-    let shown = |sectors: &[Range<u64>], len| {
-        Tear {
-            sectors: sectors.to_vec(),
-            len,
-        }
-        .to_string()
-    };
+    let shown = |sectors: &[Range<u64>], len| tear(sectors, len).to_string();
     assert_eq!(shown(&[], 0), "sectors none, length 0");
     assert_eq!(shown(&[0..2], 1_024), "sectors 0..2, length 1024");
     assert_eq!(shown(&[0..1, 3..5], 0), "sectors 0..1, 3..5, length 0");
@@ -318,6 +317,7 @@ fn changes_and_tears_print_what_they_are() {
             kind,
             path: "/a".to_owned(),
             to: to.map(str::to_owned),
+            file: Some(1),
         };
         assert_eq!(change.to_string(), expected);
     }

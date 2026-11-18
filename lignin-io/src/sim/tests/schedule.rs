@@ -159,10 +159,10 @@ fn the_same_seed_reproduces_the_same_schedule() {
 /// failing seed means, and has to say so.
 #[test]
 fn the_schedule_of_a_seed_is_the_same_everywhere() {
-    let pinned = [
-        (1, 0xE892_F724_8FCA_57AB),
-        (2, 0x1C0C_3C45_8B96_4D9F),
-        (0x00C0_FFEE, 0x9735_4C25_5856_277B),
+    let pinned: [(u64, u64); 3] = [
+        (1, 0xFDC1_CCE0_B6DD_30D0),
+        (2, 0x8D54_CAD5_C4CC_5D52),
+        (0x00C0_FFEE, 0x047F_C2ED_ED27_E667),
     ];
     let mut seen = (0, 0);
     for (seed, schedule) in pinned {
@@ -172,6 +172,9 @@ fn the_schedule_of_a_seed_is_the_same_everywhere() {
             "seed {seed:#x} gave schedule {:#018x}",
             campaign.schedule
         );
+        assert!(campaign.faults > 10, "{} faults", campaign.faults);
+        let (lost, kept) = campaign.lost_and_kept;
+        assert!(lost > 5 && kept > 5, "{lost} lost, {kept} kept");
         seen.0 += campaign.settled;
         seen.1 += campaign.power_cuts;
     }

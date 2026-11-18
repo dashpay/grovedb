@@ -44,10 +44,10 @@ fn random_operations_end_as_they_do_on_the_operating_system() {
         let mut rng = SimRng::new(seed);
         let mut handles: Vec<(Box<dyn VfsFile>, Box<dyn VfsFile>)> = Vec::new();
         let mut locks = BTreeMap::new();
+        let anything = [&FILES[..], &DIRS[..]].concat();
 
         for step in 0..400 {
             let what = format!("seed {seed}, step {step}");
-            let anything = [&FILES[..], &DIRS[..]].concat();
             let on = |path: &str| (sim_root.join(path), real_root.join(path));
             match rng.below(26) {
                 0..=4 => {

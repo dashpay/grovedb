@@ -48,11 +48,15 @@ fn kind<T: Debug>(result: io::Result<T>) -> ErrorKind {
 }
 
 #[track_caller]
-fn read(vfs: &dyn Vfs, path: impl AsRef<Path>) -> Vec<u8> {
-    let file = vfs.open(path.as_ref(), OpenMode::Read).unwrap();
+fn read_handle(file: &dyn VfsFile) -> Vec<u8> {
     let mut content = vec![0; file.len().unwrap() as usize];
     file.read_exact_at(&mut content, 0).unwrap();
     content
+}
+
+#[track_caller]
+fn read(vfs: &dyn Vfs, path: impl AsRef<Path>) -> Vec<u8> {
+    read_handle(&*vfs.open(path.as_ref(), OpenMode::Read).unwrap())
 }
 
 #[track_caller]
@@ -118,84 +122,46 @@ fn recover(image: &CrashImage, plan: &CrashPlan) -> SimVfs {
     fs
 }
 
+fn names_only(names: Vec<usize>) -> CrashPlan {
+    CrashPlan {
+        names,
+        changes: Vec::new(),
+    }
+}
+
+fn changes_only(changes: &[usize]) -> CrashPlan {
+    CrashPlan {
+        names: Vec::new(),
+        changes: changes.iter().copied().map(Survivor::whole).collect(),
+    }
+}
+
+fn tear(sectors: &[Range<u64>], len: u64) -> Tear {
+    Tear {
+        sectors: sectors.to_vec(),
+        len,
+    }
+}
+
+fn torn(change: usize, tear: Tear) -> CrashPlan {
+    CrashPlan {
+        names: Vec::new(),
+        changes: vec![Survivor {
+            change,
+            tear: Some(tear),
+        }],
+    }
+}
+
 fn name_subsets(image: &CrashImage) -> impl Iterator<Item = Vec<usize>> + '_ {
     let count = image.names().len();
     (0..1u32 << count).map(move |mask| (0..count).filter(|name| mask >> name & 1 == 1).collect())
 }
 
-fn all_tears(change: &FileChange, sector: u64) -> Vec<Tear> {
-    let FileChangeKind::Write { offset, len } = change.kind else {
-        return Vec::new();
-    };
-    let end = offset + len;
-    let lens = std::iter::once(0)
-        .chain((offset + 1..=end).filter(|at| at.is_multiple_of(sector) || *at == end));
-    let lens: Vec<u64> = lens.collect();
-    let mut tears = Vec::new();
-    for mask in 0..1u32 << change.sectors {
-        let mut sectors: Vec<Range<u64>> = Vec::new();
-        for index in (0..change.sectors).filter(|index| mask >> index & 1 == 1) {
-            match sectors.last_mut() {
-                Some(last) if last.end == index => last.end += 1,
-                _ => sectors.push(index..index + 1),
-            }
-        }
-        for len in &lens {
-            tears.push(Tear {
-                sectors: sectors.clone(),
-                len: *len,
-            });
-        }
-    }
-    tears
-}
-
-/// Every plan for the file changes of `image`: every choice of survivors, in
-/// every order, each write whole or with every tear there is.
-fn all_change_plans(image: &CrashImage) -> Vec<CrashPlan> {
-    fn extend(
-        options: &[Vec<Option<Tear>>],
-        used: &mut Vec<bool>,
-        current: &mut Vec<Survivor>,
-        plans: &mut Vec<CrashPlan>,
-    ) {
-        plans.push(CrashPlan {
-            names: Vec::new(),
-            changes: current.clone(),
-        });
-        for change in 0..options.len() {
-            if used[change] {
-                continue;
-            }
-            used[change] = true;
-            for tear in &options[change] {
-                current.push(Survivor {
-                    change,
-                    tear: tear.clone(),
-                });
-                extend(options, used, current, plans);
-                current.pop();
-            }
-            used[change] = false;
-        }
-    }
-
-    let options: Vec<Vec<Option<Tear>>> = image
-        .changes()
-        .iter()
-        .map(|change| {
-            let tears = all_tears(change, image.sector_size()).into_iter().map(Some);
-            std::iter::once(None).chain(tears).collect()
-        })
-        .collect();
-    let mut plans = Vec::new();
-    extend(
-        &options,
-        &mut vec![false; options.len()],
-        &mut Vec::new(),
-        &mut plans,
-    );
-    plans
+/// Every plan of an image small enough to have them counted.
+#[track_caller]
+fn every_plan(image: &CrashImage) -> Vec<CrashPlan> {
+    image.every_plan(2_000_000).unwrap()
 }
 
 struct CheckOnDrop(SimVfs);

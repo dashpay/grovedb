@@ -50,18 +50,39 @@
 //! | Each change lands where it was made. | A change is recorded with its offset. An append is recorded as a write at the offset it returned. |
 //! | A length can survive without the bytes below it, which then read as zeros. | A [`Tear`] keeps the length a write gave the file apart from its bytes. |
 //! | Nothing else is damaged. | A crash state is built from the durable bytes and the surviving sectors of the surviving writes, and nothing else. |
-//! | A change of names is durable once its directory is synced. | Creating, linking, removing and renaming a file, and creating and removing a directory, is one [`NameChange`]. `sync_dir` makes the changes of its directory durable, and a plan keeps any of the others. They are always applied in the order they were made. |
+//! | A change of names is durable once its directory is synced. | Creating, linking, removing and renaming a file, and creating and removing a directory, is one [`NameChange`]. `sync_dir` makes the changes of its directory durable, and a plan keeps any of the others, each with the changes it builds on (see below). They are always applied in the order they were made. |
 //! | A removed or renamed name can come back. | A plan that loses a removal or a rename leaves the old name in place, with the file's durable content. |
-//! | Syncing a file does not sync its name, nor the other way round. | Names and content are kept or lost separately. A file whose name is lost is gone with all its content, and a name can survive for a file that is empty or stale. |
+//! | Syncing a file does not sync its name, nor the other way round. | Names and content are kept or lost separately. A file whose name is lost is gone with all its content, and a name can survive for a file that is empty or stale. A directory whose own name is lost is gone with everything in it, synced or not. |
 //! | A rename is atomic, synced or not. | A rename is a single [`NameChange`]: a plan keeps it or loses it, and no state has half of it. It is durable once the directories of both names are synced. |
-//! | A failed sync cannot be made good. | When a sync fails, the file's unsynced changes are marked [unknown](FileChange::unknown). A crash keeps any of them, like other unsynced changes. A later sync that succeeds covers the changes made after the failure, and settles the unknown ones from the seed, kept, torn or lost, as an [`Event::Settled`]. Reads keep seeing them either way. |
+//! | A failed sync cannot be made good. | When a sync fails, the file's unsynced changes are marked [unknown](FileChange::unknown). A crash keeps any of them, like other unsynced changes. A later sync that succeeds covers the changes made after the failure, and settles the unknown ones as [`SimConfig::unknown`] says, by default drawn from the seed: kept, torn or lost, as an [`Event::Settled`]. Reads keep seeing them either way. |
 //!
-//! Two things follow from the model that are easy to miss. A write that
-//! overwrites the end of a file and grows it can survive as its bytes
+//! ## Changes of names that build on each other
+//!
+//! The contract lets a crash keep any subset of the unsynced changes of
+//! names. Taken alone that would break its own promise about renames. Rename
+//! `a` to `b`, then create a new `a`: a crash that kept the creation and lost
+//! the rename would leave the new file at `a` and nothing at `b`, and the
+//! renamed file under neither name. So the simulator keeps a change of names
+//! only together with the changes it builds on:
+//!
+//! - the earlier unsynced changes of the names it touches,
+//! - for the removal of a directory, the changes that emptied it,
+//! - for a rename, the creation of the directories its two names are in.
+//!
+//! [`CrashImage::names_kept`] gives what a plan keeps in all. A sync follows
+//! the same rule: a change that becomes durable makes the changes it builds
+//! on durable with it, which can be earlier than the contract promises and
+//! never later. Everything else is as loose as the contract: a file created
+//! and synced in a new directory is gone if the directory's own name was not
+//! synced, and a name can outlive the removal of another name of its file.
+//!
+//! Two more things follow from the model that are easy to miss. A write
+//! that overwrites the end of a file and grows it can survive as its bytes
 //! without its growth, so it ends where the file ended, not at a sector
 //! boundary: the sector was written whole, and the length is kept elsewhere.
-//! And a rename out of a directory needs that directory synced: if the
-//! directory is removed first, nothing can settle the rename any more.
+//! And once every directory and every file has been synced, nothing is
+//! unsynced: [`lose_all`](CrashImage::lose_all) then gives the file system
+//! as it is.
 //!
 //! # Crashing
 //!
@@ -97,6 +118,8 @@
 //!   in order leaves, with the first lost write torn at each sector boundary.
 //!   [`holes`](CrashImage::holes) loses one change at a time, and
 //!   [`reorders`](CrashImage::reorders) applies one change late.
+//! - [`every_plan`](CrashImage::every_plan) lists them all, for the small
+//!   cases where that is possible.
 //! - [`sample`](CrashImage::sample) draws a plan from the seed: each change
 //!   lost, torn or moved with the [`CrashOdds`] of the configuration.
 //!   [`SimVfs::crash`] does steps 2 and 3 with a sampled plan.
@@ -111,8 +134,9 @@
 //!
 //! A [`Fault`] is injected only into an operation that would otherwise
 //! succeed, so an injected error always stands for a call that could have
-//! worked. The error says so: [`SimError::of`] finds the simulator's part of
-//! an [`io::Error`].
+//! worked. A read, a write or an append of no bytes never fails: it asks
+//! nothing of the device. The error says what it is: [`SimError::of`] finds
+//! the simulator's part of an [`io::Error`].
 //!
 //! - **At a chosen operation.** A [`FaultRule`] fails the operations it
 //!   names: one operation by its number, the n-th sync of one file, or
@@ -125,7 +149,7 @@
 //!
 //! | Operation | After an injected fault |
 //! | --- | --- |
-//! | `write_at` | Some whole number of the write's sectors, from its start, was written, from none to all of them. |
+//! | `write_at` | Some of the write's sectors were written, each whole: its first few, or any of them, from none to all. |
 //! | `append` | Some sectors were written and taken back: the file has the length it had, and a crash can still bring the bytes back. Or, with the chance [`FaultOdds::torn_append`], they stay and the handle appends no more. |
 //! | `sync_data`, `sync_all` | The file's unsynced changes are unknown from then on, and the handle syncs no more. |
 //! | `sync_dir` | Nothing became durable. A later `sync_dir` can still make it so. |
@@ -164,14 +188,18 @@
 //! [`Event`] of a recovered file system, the [`CrashRecord`] of the plan
 //! that made it. With [`SimConfig::trace_ops`] it records every operation.
 //! Events print as one line each. [`SimVfs::trace_digest`] is a number that
-//! is equal for equal traces, on every machine.
+//! is the same for the same trace on every machine, so two runs whose
+//! digests differ did not make the same schedule.
 //!
 //! # Limits
 //!
 //! Exclusion between writers and the lock work within one [`SimVfs`]: there
 //! is no second process. Paths are taken from the root of the simulated file
 //! system, with or without a leading `/`, and must not contain `..`. There
-//! are no symbolic links, and a directory cannot be renamed.
+//! are no symbolic links, and a directory cannot be renamed. The trace and
+//! the fault rules know a path as text, so two names that differ only in
+//! bytes that are not UTF-8 look the same to them. The space on the device is
+//! not counted: it is full when a rule says so.
 
 mod crash;
 mod fault;
@@ -208,23 +236,26 @@ pub struct SimConfig {
     /// The sector size in bytes: a write tears only where the offset in the
     /// file is a multiple of it.
     pub sector_size: u64,
-    /// The longest a file may get. An operation that would grow one past it
-    /// fails with [`FileTooLarge`](io::ErrorKind::FileTooLarge), before the
-    /// simulator runs out of memory.
+    /// The longest a file may get, at most 2 GiB less one byte, which is the
+    /// most a 32-bit machine holds. An operation that would grow a file past
+    /// it fails with [`FileTooLarge`](io::ErrorKind::FileTooLarge), before
+    /// the simulator runs out of memory.
     pub max_file_len: u64,
     /// The faults injected by chance.
     pub faults: FaultOdds,
-    /// How [`CrashImage::sample`] draws a crash state, and what becomes of
-    /// the changes a failed sync left unknown.
+    /// How [`CrashImage::sample`] draws a crash state.
     pub crash: CrashOdds,
+    /// What becomes of the changes a failed sync left unknown, once a later
+    /// sync of the file succeeds.
+    pub unknown: UnknownFate,
     /// Whether the trace records every operation, not only the failed ones.
     pub trace_ops: bool,
 }
 
 impl SimConfig {
     /// The configuration with `seed`, sectors of 512 bytes, files of up to
-    /// 1 GiB, no faults, the default [`CrashOdds`] and a trace of injected
-    /// events only.
+    /// 1 GiB, no faults, the default [`CrashOdds`], unknown changes settled
+    /// by the first draw from the seed, and a trace of injected events only.
     pub fn new(seed: u64) -> Self {
         Self {
             seed,
@@ -232,9 +263,31 @@ impl SimConfig {
             max_file_len: 1 << 30,
             faults: FaultOdds::NONE,
             crash: CrashOdds::default(),
+            unknown: UnknownFate::Drawn(0),
             trace_ops: false,
         }
     }
+}
+
+/// What becomes of the changes a failed sync left unknown, once a later sync
+/// of the file succeeds.
+///
+/// Until then a crash keeps or loses them like any unsynced change, and a
+/// [`CrashPlan`] chooses. The later sync covers only what came after the
+/// failure, so from then on the unknown changes are settled one way, and the
+/// crash plans of that file system no longer choose. To see the other ways,
+/// run the same calls again with another value here: nothing else in the
+/// schedule depends on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnknownFate {
+    /// Each one is lost, torn, kept or applied out of turn, as drawn from
+    /// the seed with the [`CrashOdds`]. The number picks one of the draws
+    /// the seed gives.
+    Drawn(u64),
+    /// All of them are lost.
+    Lost,
+    /// All of them are kept, whole and in order.
+    Kept,
 }
 
 /// When the power goes off. Counts start with the file system and include
@@ -246,8 +299,8 @@ pub enum CrashPoint {
     /// After this many calls of `sync_data`, `sync_all` and `sync_dir`.
     AfterSync(u64),
     /// After this many operations that changed what a crash can leave: an
-    /// operation that made an unsynced change, or a sync that made one
-    /// durable. These are the points at which a crash is worth taking.
+    /// operation that made an unsynced change, or a sync that made at least
+    /// one durable. These are the points at which a crash is worth taking.
     AfterChange(u64),
 }
 
@@ -288,7 +341,8 @@ impl SimVfs {
     ///
     /// # Panics
     ///
-    /// If the sector size is 0.
+    /// If the sector size is 0, or the longest file is longer than 2 GiB
+    /// less one byte.
     pub fn new(config: SimConfig) -> Self {
         Self::from_state(State::new(config))
     }
@@ -348,13 +402,7 @@ impl SimVfs {
 
     /// Counts of what the file system has done.
     pub fn stats(&self) -> SimStats {
-        let state = self.shared.state();
-        SimStats {
-            ops: state.ops,
-            syncs: state.syncs,
-            changes: state.changes,
-            faults: state.faults,
-        }
+        self.shared.state().stats
     }
 
     /// The record of what was injected so far.
@@ -397,7 +445,7 @@ impl fmt::Debug for SimVfs {
         let state = self.shared.state();
         f.debug_struct("SimVfs")
             .field("seed", &state.config.seed)
-            .field("ops", &state.ops)
+            .field("ops", &state.stats.ops)
             .field("powered_off", &state.powered_off)
             .finish_non_exhaustive()
     }

@@ -215,13 +215,8 @@ fn a_full_disk_refuses_what_grows_and_works_again_when_space_returns() {
 #[test]
 fn an_operation_that_fails_anyway_gets_no_fault() {
     let fs = populated(4);
+    let read_only = fs.open(p("/file"), OpenMode::Read).unwrap();
     fs.add_rule(FaultRule::new(Fault::Eio).forever());
-    let read_only = {
-        fs.clear_rules();
-        let handle = fs.open(p("/file"), OpenMode::Read).unwrap();
-        fs.add_rule(FaultRule::new(Fault::Eio).forever());
-        handle
-    };
 
     assert_eq!(
         kind(fs.open(p("/missing"), OpenMode::Read)),
@@ -243,9 +238,10 @@ fn an_operation_that_fails_anyway_gets_no_fault() {
 }
 
 #[test]
-fn a_failed_write_leaves_whole_sectors_from_its_start() {
+fn a_failed_write_leaves_some_of_its_sectors_each_whole() {
+    let pieces = [5..8, 8..16, 16..24, 24..25];
     let mut seen = BTreeSet::new();
-    for seed in 0..60 {
+    for seed in 0..200 {
         let fs = sim_with_sectors(seed, 8);
         let file = create_durable(&fs, "/file", &[b'-'; 32]);
         fs.add_rule(FaultRule::new(Fault::Enospc).on(OpKind::Write));
@@ -254,43 +250,60 @@ fn a_failed_write_leaves_whole_sectors_from_its_start() {
         let [(OpKind::Write, Fault::Enospc, Effect::Wrote(written))] = injected(&fs)[..] else {
             panic!("{:?}", fs.trace());
         };
-        assert!([0, 3, 11, 19, 20].contains(&written), "{written}");
-        let mut expected = vec![b'-'; 32];
-        expected[5..5 + written as usize].fill(b'w');
-        assert_eq!(read(&fs, "/file"), expected);
+        let content = read(&fs, "/file");
+        assert_eq!(content.len(), 32);
+        let untouched = content[..5].iter().chain(&content[25..]);
+        assert!(untouched.eq([b'-'; 12].iter()));
+        let written_pieces: Vec<bool> = pieces
+            .iter()
+            .map(|piece| {
+                let piece = &content[piece.start..piece.end];
+                assert!(piece.iter().all(|byte| *byte == piece[0]), "seed {seed}");
+                piece[0] == b'w'
+            })
+            .collect();
+        let bytes = content.iter().filter(|byte| **byte == b'w').count();
+        assert_eq!(written, bytes as u64);
 
         let image = fs.crash_image();
-        assert_eq!(image.changes().len(), usize::from(written > 0));
+        let runs = written_pieces
+            .iter()
+            .zip([false].iter().chain(&written_pieces))
+            .filter(|(piece, before)| **piece && !**before);
+        assert_eq!(image.changes().len(), runs.count());
         assert_eq!(
             read(&recover(&image, &image.lose_all()), "/file"),
             [b'-'; 32]
         );
-        assert_eq!(read(&recover(&image, &image.keep_all()), "/file"), expected);
-        seen.insert(written);
+        assert_eq!(read(&recover(&image, &image.keep_all()), "/file"), content);
+        seen.insert(written_pieces);
     }
-    assert_eq!(seen, BTreeSet::from([0, 3, 11, 19, 20]));
+    assert_eq!(seen.len(), 16);
 }
 
 #[test]
-fn a_failed_write_of_nothing_leaves_nothing() {
+fn nothing_fails_that_asks_nothing_of_the_device() {
     let fs = sim(21);
     let file = create(&fs, "/file", b"content");
-    fs.add_rule(FaultRule::new(Fault::Eio).on(OpSet::WRITES).forever());
-    file.write_at(&[], 3).unwrap_err();
+    let always = |fault| FaultRule::new(fault).forever();
+    fs.add_rule(always(Fault::Enospc).on(OpSet::WRITES));
+    fs.add_rule(always(Fault::Eio).on(OpSet::WRITES | OpKind::Read.into()));
+
+    file.write_at(&[], 3).unwrap();
+    file.write_at(&[], u64::MAX).unwrap();
+    assert_eq!(file.read_at(&mut [], 0).unwrap(), 0);
+    file.read_exact_at(&mut [], 7).unwrap();
     drop(file);
     let log = fs
         .open(p("/file"), OpenMode::Append(Create::Never))
         .unwrap();
-    log.append(&[]).unwrap_err();
-    assert_eq!(
-        injected(&fs)
-            .iter()
-            .map(|(_, _, effect)| *effect)
-            .collect::<Vec<_>>(),
-        [Effect::Wrote(0), Effect::AppendUndone(0)]
-    );
-    assert_eq!(fs.crash_image().changes().len(), 1);
-    assert_eq!(read(&fs, "/file"), b"content");
+    assert_eq!(log.append(&[]).unwrap(), 7);
+    assert_eq!(fs.stats().faults, 0);
+
+    log.append(b"x").unwrap_err();
+    log.read_at(&mut [0], 0).unwrap_err();
+    log.set_len(7).unwrap_err();
+    assert_eq!(fs.stats().faults, 3);
 }
 
 #[test]
@@ -336,13 +349,12 @@ fn a_failed_append_is_taken_back_but_a_crash_can_bring_it_back() {
                 read(&recover(&image, &image.keep_all()), "/log"),
                 b"committed"
             );
-            let brought_back = CrashPlan {
-                names: Vec::new(),
-                changes: vec![Survivor::whole(0)],
-            };
-            let mut torn = b"committed".to_vec();
-            torn.extend(&b"0123456789"[..written as usize]);
-            assert_eq!(read(&recover(&image, &brought_back), "/log"), torn);
+            let mut brought_back = b"committed".to_vec();
+            brought_back.extend(&b"0123456789"[..written as usize]);
+            assert_eq!(
+                read(&recover(&image, &changes_only(&[0])), "/log"),
+                brought_back
+            );
         }
 
         assert_eq!(log.append(b" next").unwrap(), 9);
@@ -443,7 +455,7 @@ fn a_rule_fails_the_operations_it_names_and_no_others() {
     let fs = populated(6);
     let file = fs.open(p("/file"), OpenMode::Write(Create::Never)).unwrap();
     let other = create(&fs, "/other", b"");
-    let syncs = |file: &dyn VfsFile, count| -> Vec<bool> {
+    let lens_work = |file: &dyn VfsFile, count| -> Vec<bool> {
         (0..count).map(|_| file.len().is_ok()).collect()
     };
 
@@ -454,14 +466,14 @@ fn a_rule_fails_the_operations_it_names_and_no_others() {
             .skip(2)
             .times(2),
     );
-    assert_eq!(syncs(&*other, 3), [true; 3]);
-    assert_eq!(syncs(&*file, 6), [true, true, false, false, true, true]);
+    assert_eq!(lens_work(&*other, 3), [true; 3]);
+    assert_eq!(lens_work(&*file, 6), [true, true, false, false, true, true]);
     assert_eq!(fs.stats().faults, 2);
 
     fs.clear_rules();
     let next = fs.stats().ops + 1;
     fs.add_rule(FaultRule::new(Fault::Eio).from_op(next + 2));
-    assert_eq!(syncs(&*file, 4), [true, true, false, true]);
+    assert_eq!(lens_work(&*file, 4), [true, true, false, true]);
 
     fs.clear_rules();
     fs.add_rule(
@@ -474,7 +486,7 @@ fn a_rule_fails_the_operations_it_names_and_no_others() {
     file.set_len(0).unwrap();
     file.sync_data().unwrap();
     fs.clear_rules();
-    assert_eq!(syncs(&*file, 2), [true, true]);
+    assert_eq!(lens_work(&*file, 2), [true, true]);
 }
 
 #[test]

@@ -1,19 +1,5 @@
 use super::*;
 
-fn names_only(names: Vec<usize>) -> CrashPlan {
-    CrashPlan {
-        names,
-        changes: Vec::new(),
-    }
-}
-
-fn changes_only(changes: &[usize]) -> CrashPlan {
-    CrashPlan {
-        names: Vec::new(),
-        changes: changes.iter().copied().map(Survivor::whole).collect(),
-    }
-}
-
 #[test]
 fn a_sync_makes_content_durable_and_nothing_else_does() {
     let fs = sim(1);
@@ -186,7 +172,7 @@ fn a_rename_between_directories_is_whole_and_needs_both_synced() {
 }
 
 #[test]
-fn a_later_durable_change_of_a_name_outlives_an_unsettled_rename() {
+fn a_change_that_becomes_durable_makes_the_rename_it_builds_on_durable() {
     let fs = sim(8);
     fs.create_dir(p("/a")).unwrap();
     fs.create_dir(p("/b")).unwrap();
@@ -194,24 +180,123 @@ fn a_later_durable_change_of_a_name_outlives_an_unsettled_rename() {
     drop(create_durable(&fs, "/a/x", b"x"));
     fs.rename(p("/a/x"), p("/b/y")).unwrap();
     fs.remove_file(p("/b/y")).unwrap();
-    fs.sync_dir(p("/b")).unwrap();
-    check(&fs);
 
     let image = fs.crash_image();
-    assert_eq!(image.names().len(), 1);
-    assert_eq!(image.names()[0].kind, NameChangeKind::Rename);
-    assert_eq!(
-        tree(&recover(&image, &image.lose_all())),
-        tree_of(&[("a", None), ("a/x", Some("x")), ("b", None)])
-    );
+    let removal_alone = names_only(vec![1]);
+    assert_eq!(image.names_kept(&removal_alone), [0, 1]);
     let gone = tree_of(&[("a", None), ("b", None)]);
-    assert_eq!(tree(&recover(&image, &image.keep_all())), gone);
+    assert_eq!(tree(&recover(&image, &removal_alone)), gone);
 
-    fs.sync_dir(p("/a")).unwrap();
+    fs.sync_dir(p("/b")).unwrap();
     check(&fs);
     let image = fs.crash_image();
     assert!(image.names().is_empty());
     assert_eq!(tree(&recover(&image, &image.lose_all())), gone);
+}
+
+/// The file `F` is durable at `/d1/a` and is renamed to `/d2/b`. Whatever
+/// is done to either name afterwards, and whatever a crash keeps of it, the
+/// file is at the one name or the other, unless it was removed there.
+#[test]
+fn a_rename_is_never_left_half_done_by_a_later_change_of_its_names() {
+    let renamed = || {
+        let fs = sim(9);
+        fs.create_dir(p("/d1")).unwrap();
+        fs.create_dir(p("/d2")).unwrap();
+        fs.sync_dir(p("/")).unwrap();
+        drop(create_durable(&fs, "/d1/a", b"F"));
+        drop(create_durable(&fs, "/d1/c", b"C"));
+        fs.rename(p("/d1/a"), p("/d2/b")).unwrap();
+        fs
+    };
+    let names_of_the_file = |fs: &SimVfs| -> BTreeSet<Vec<String>> {
+        let image = fs.crash_image();
+        name_subsets(&image)
+            .map(|names| {
+                let after = tree(&recover(&image, &names_only(names)));
+                let is_the_file =
+                    |(_, content): &(&String, &Option<Vec<u8>>)| content.as_deref() == Some(b"F");
+                after
+                    .iter()
+                    .filter(is_the_file)
+                    .map(|(path, _)| path.clone())
+                    .collect()
+            })
+            .collect()
+    };
+    let either = BTreeSet::from([vec!["d1/a".to_owned()], vec!["d2/b".to_owned()]]);
+    let moved = BTreeSet::from([vec!["d2/b".to_owned()]]);
+
+    let fs = renamed();
+    assert_eq!(names_of_the_file(&fs), either);
+
+    let fs = renamed();
+    drop(create(&fs, "/d1/a", b"new"));
+    assert_eq!(names_of_the_file(&fs), either);
+    let image = fs.crash_image();
+    assert_eq!(image.names_kept(&names_only(vec![1])), [0, 1]);
+    fs.sync_dir(p("/d1")).unwrap();
+    check(&fs);
+    assert_eq!(names_of_the_file(&fs), moved);
+    assert!(fs.crash_image().names().is_empty());
+
+    let fs = renamed();
+    fs.hard_link(p("/d1/c"), p("/d1/a")).unwrap();
+    assert_eq!(names_of_the_file(&fs), either);
+
+    let fs = renamed();
+    create(&fs, "/other", b"other").sync_data().unwrap();
+    fs.rename(p("/other"), p("/d2/b")).unwrap();
+    let image = fs.crash_image();
+    let replaced = recover(&image, &image.keep_all());
+    assert_eq!(read(&replaced, "/d2/b"), b"other");
+    let without_the_replacement =
+        BTreeSet::from([vec!["d1/a".to_owned()], vec!["d2/b".to_owned()], Vec::new()]);
+    assert_eq!(names_of_the_file(&fs), without_the_replacement);
+    for names in name_subsets(&image) {
+        let after = tree(&recover(&image, &names_only(names.clone())));
+        let replaced = after.get("d2/b") == Some(&Some(b"other".to_vec()));
+        assert_eq!(
+            after.values().any(|file| file.as_deref() == Some(b"F")),
+            !replaced
+        );
+    }
+}
+
+#[test]
+fn a_file_renamed_into_a_new_directory_is_not_lost_with_it() {
+    let fs = sim(10);
+    drop(create_durable(&fs, "/file", b"F"));
+    fs.create_dir(p("/new")).unwrap();
+    fs.create_dir(p("/new/inner")).unwrap();
+    fs.rename(p("/file"), p("/new/inner/file")).unwrap();
+
+    let image = fs.crash_image();
+    assert_eq!(image.names_kept(&names_only(vec![2])), [0, 1, 2]);
+    let states: BTreeSet<Tree> = name_subsets(&image)
+        .map(|names| tree(&recover(&image, &names_only(names))))
+        .collect();
+    let (dir, file) = (None, Some("F"));
+    assert_eq!(
+        states,
+        BTreeSet::from([
+            tree_of(&[("file", file)]),
+            tree_of(&[("file", file), ("new", dir)]),
+            tree_of(&[("file", file), ("new", dir), ("new/inner", dir)]),
+            tree_of(&[("new", dir), ("new/inner", dir), ("new/inner/file", file)]),
+        ])
+    );
+
+    fs.sync_dir(p("/new/inner")).unwrap();
+    assert_eq!(fs.crash_image().names().len(), 3);
+    fs.sync_dir(p("/")).unwrap();
+    let image = fs.crash_image();
+    assert!(image.names().is_empty());
+    assert_eq!(
+        tree(&recover(&image, &image.lose_all())),
+        tree_of(&[("new", dir), ("new/inner", dir), ("new/inner/file", file)])
+    );
+    check(&fs);
 }
 
 #[test]
@@ -283,42 +368,77 @@ fn a_directory_made_and_removed_between_syncs_leaves_nothing() {
 }
 
 #[test]
-fn a_rename_out_of_a_directory_needs_that_directory_synced() {
-    let moved_then_removed = |sync_source_first: bool| {
-        let fs = sim(11);
-        fs.create_dir(p("/a")).unwrap();
-        fs.create_dir(p("/b")).unwrap();
-        fs.sync_dir(p("/")).unwrap();
-        drop(create_durable(&fs, "/a/x", b"x"));
-        fs.rename(p("/a/x"), p("/b/y")).unwrap();
-        if sync_source_first {
-            fs.sync_dir(p("/a")).unwrap();
-        }
-        fs.remove_dir(p("/a")).unwrap();
-        fs.sync_dir(p("/")).unwrap();
-        check(&fs);
-        fs.sync_dir(p("/b")).unwrap();
-        check(&fs);
-        fs.crash_image()
-    };
+fn removing_a_directory_makes_the_changes_that_emptied_it_durable() {
+    let fs = sim(11);
+    fs.create_dir(p("/a")).unwrap();
+    fs.create_dir(p("/b")).unwrap();
+    fs.sync_dir(p("/")).unwrap();
+    drop(create_durable(&fs, "/a/x", b"x"));
+    drop(create_durable(&fs, "/a/gone", b"gone"));
+    fs.rename(p("/a/x"), p("/b/y")).unwrap();
+    fs.remove_file(p("/a/gone")).unwrap();
+    fs.remove_dir(p("/a")).unwrap();
 
-    let image = moved_then_removed(true);
+    let image = fs.crash_image();
+    assert_eq!(image.names().len(), 3);
+    assert_eq!(image.names_kept(&names_only(vec![2])), [0, 1, 2]);
+    let moved = tree_of(&[("b", None), ("b/y", Some("x"))]);
+    assert_eq!(tree(&recover(&image, &names_only(vec![2]))), moved);
+    assert_eq!(
+        tree(&recover(&image, &names_only(vec![1]))),
+        tree_of(&[("a", None), ("a/x", Some("x")), ("b", None)])
+    );
+
+    fs.sync_dir(p("/")).unwrap();
+    check(&fs);
+    let image = fs.crash_image();
     assert!(image.names().is_empty());
-    assert_eq!(
-        tree(&recover(&image, &image.lose_all())),
-        tree_of(&[("b", None), ("b/y", Some("x"))])
-    );
+    assert_eq!(tree(&recover(&image, &image.lose_all())), moved);
+}
 
-    let image = moved_then_removed(false);
-    assert_eq!(image.names().len(), 1);
-    assert_eq!(
-        tree(&recover(&image, &image.lose_all())),
-        tree_of(&[("b", None)])
-    );
-    assert_eq!(
-        tree(&recover(&image, &image.keep_all())),
-        tree_of(&[("b", None), ("b/y", Some("x"))])
-    );
+#[test]
+fn once_everything_is_synced_nothing_is_unsynced() {
+    for seed in 0..if cfg!(miri) { 3 } else { 200 } {
+        let mut rng = SimRng::new(seed);
+        let fs = sim(seed);
+        let dirs = ["/d", "/e", "/d/e"];
+        let files = ["/a", "/b", "/d/a", "/d/b", "/e/a", "/d/e/a"];
+        for step in 0..40 {
+            let (file, other) = (
+                p(files[rng.below(6) as usize]),
+                p(files[rng.below(6) as usize]),
+            );
+            let dir = p(dirs[rng.below(3) as usize]);
+            let _ = match rng.below(9) {
+                0 | 1 => fs
+                    .open(file, OpenMode::Append(Create::IfMissing))
+                    .and_then(|file| file.append(&[step])),
+                2 | 3 => fs.rename(file, other).map(|()| 0),
+                4 => fs.hard_link(file, other).map(|()| 0),
+                5 => fs.remove_file(file).map(|()| 0),
+                6 | 7 => fs.create_dir(dir).map(|()| 0),
+                _ => fs.remove_dir(dir).map(|()| 0),
+            };
+            check(&fs);
+        }
+
+        for path in tree(&fs).keys() {
+            let path = Path::new("/").join(path);
+            if let Ok(file) = fs.open(&path, OpenMode::Read) {
+                file.sync_all().unwrap();
+            } else {
+                fs.sync_dir(&path).unwrap();
+            }
+        }
+        fs.sync_dir(p("/")).unwrap();
+        check(&fs);
+
+        let image = fs.crash_image();
+        assert!(image.names().is_empty(), "seed {seed}: {:?}", image.names());
+        assert!(image.changes().is_empty(), "seed {seed}");
+        let synced = recover(&image, &image.lose_all());
+        assert_eq!(synced.fingerprint(), fs.fingerprint(), "seed {seed}");
+    }
 }
 
 #[test]
@@ -365,12 +485,6 @@ fn a_file_with_no_name_left_does_not_survive() {
     assert_eq!(read_handle(&*file), b"written after");
 }
 
-fn read_handle(file: &dyn VfsFile) -> Vec<u8> {
-    let mut content = vec![0; file.len().unwrap() as usize];
-    file.read_exact_at(&mut content, 0).unwrap();
-    content
-}
-
 #[test]
 fn a_process_that_exits_loses_nothing() {
     let fs = sim(14);
@@ -410,7 +524,7 @@ fn a_write_tears_only_between_sectors_and_damages_nothing_next_to_it() {
     };
 
     let mut seen = BTreeSet::new();
-    for plan in all_change_plans(&image) {
+    for plan in every_plan(&image) {
         let content = read(&recover(&image, &plan), "/file");
         whole_pieces(&content);
         seen.insert(content);
@@ -429,10 +543,6 @@ fn a_torn_write_keeps_its_length_apart_from_its_bytes() {
 
     let image = fs.crash_image();
     let tears = image.tears(0);
-    let tear = |sectors: &[Range<u64>], len| Tear {
-        sectors: sectors.to_vec(),
-        len,
-    };
     assert_eq!(
         tears,
         [
@@ -444,16 +554,7 @@ fn a_torn_write_keeps_its_length_apart_from_its_bytes() {
     );
     let contents: Vec<Vec<u8>> = tears
         .into_iter()
-        .map(|tear| {
-            let plan = CrashPlan {
-                names: Vec::new(),
-                changes: vec![Survivor {
-                    change: 0,
-                    tear: Some(tear),
-                }],
-            };
-            read(&recover(&image, &plan), "/file")
-        })
+        .map(|tear| read(&recover(&image, &torn(0, tear)), "/file"))
         .collect();
     assert_eq!(
         contents,
@@ -594,8 +695,14 @@ fn a_failed_sync_cannot_be_made_good() {
                 assert_eq!(durable, b"UNKNOWN!");
                 kept += 1;
             }
-            Fate::Survives { .. } => {
-                assert!(durable == b"durable!" || durable == b"UNKNOWN!");
+            Fate::Survives {
+                tear: Some(tear), ..
+            } => {
+                let content = match tear.sectors.is_empty() {
+                    true => b"durable!",
+                    false => b"UNKNOWN!",
+                };
+                assert_eq!(durable, content);
             }
         }
     }
@@ -631,4 +738,50 @@ fn a_change_made_after_a_failed_sync_is_covered_by_the_next_one() {
         read(&recover(&image, &image.lose_all()), "/file"),
         b"after the failure"
     );
+}
+
+#[test]
+fn what_became_of_unknown_changes_can_be_set_without_changing_the_schedule() {
+    let run = |unknown: UnknownFate| {
+        let fs = SimVfs::new(SimConfig {
+            unknown,
+            trace_ops: true,
+            ..SimConfig::new(21)
+        });
+        let file = create_durable(&fs, "/file", b"durable");
+        let other = fs.open(p("/file"), OpenMode::Write(Create::Never)).unwrap();
+        file.write_at(b"UNKNOWN", 0).unwrap();
+        file.set_len(9).unwrap();
+        fs.add_rule(FaultRule::new(Fault::Eio).on(OpSet::SYNCS));
+        file.sync_data().unwrap_err();
+        other.write_at(b"!", 9).unwrap();
+        other.sync_data().unwrap();
+
+        let image = fs.crash_image();
+        let durable = read(&recover(&image, &image.lose_all()), "/file");
+        let operations: Vec<Event> = fs
+            .trace()
+            .into_iter()
+            .filter(|event| matches!(event, Event::Op(_)))
+            .collect();
+        (durable, digest(&operations))
+    };
+
+    let (lost, schedule) = run(UnknownFate::Lost);
+    assert_eq!(lost, b"durable\0\0!");
+    let (kept, same_schedule) = run(UnknownFate::Kept);
+    assert_eq!(kept, b"UNKNOWN\0\0!");
+    assert_eq!(schedule, same_schedule);
+
+    let drawn: BTreeSet<Vec<u8>> = (0..40)
+        .map(|draw| {
+            let (durable, same_schedule) = run(UnknownFate::Drawn(draw));
+            assert_eq!(schedule, same_schedule);
+            assert_eq!(durable.len(), 10);
+            durable
+        })
+        .collect();
+    assert!(drawn.contains(&lost) && drawn.contains(&kept));
+    assert_eq!(run(UnknownFate::Drawn(3)), run(UnknownFate::Drawn(3)));
+    assert_eq!(SimConfig::new(0).unknown, UnknownFate::Drawn(0));
 }

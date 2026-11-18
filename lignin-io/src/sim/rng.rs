@@ -9,6 +9,19 @@ use std::fmt;
 
 const GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
 
+/// The streams the simulator derives its generators from, by what they
+/// decide: whether an operation fails, what the failure leaves, what becomes
+/// of changes a failed sync left unknown, which changes a crash keeps, and
+/// the seed of the file system after the crash.
+pub(super) mod stream {
+    pub(in crate::sim) const FAULT: u64 = 1;
+    pub(in crate::sim) const DETAIL: u64 = 2;
+    pub(in crate::sim) const SETTLE: u64 = 3;
+    pub(in crate::sim) const CRASH: u64 = 4;
+    pub(in crate::sim) const DRAW: u64 = 5;
+    pub(in crate::sim) const CHILD: u64 = 6;
+}
+
 /// SplitMix64 (Steele, Lea and Flood, 2014).
 ///
 /// The `n`-th number of a generator is a function of its seed and `n` alone.

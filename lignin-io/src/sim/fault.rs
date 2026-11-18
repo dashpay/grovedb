@@ -177,13 +177,15 @@ pub enum Fault {
     /// No space left on the device. The operation fails with
     /// [`StorageFull`](io::ErrorKind::StorageFull).
     ///
-    /// Only operations that can need space get it: `write_at`, `append`, a
-    /// `set_len` that grows the file, the three syncs, `rename`, `hard_link`,
-    /// `create_dir`, and an `open` or a `lock` that would create its file.
+    /// Only operations that can need space get it: a `write_at` or an
+    /// `append` of at least one byte, a `set_len` that grows the file, the
+    /// three syncs, `rename`, `hard_link`, `create_dir`, and an `open` or a
+    /// `lock` that would create its file.
     Enospc,
     /// The device failed. The operation fails with
     /// [`Other`](io::ErrorKind::Other), a kind the contract promises nothing
-    /// about. Every operation can get it.
+    /// about. Every operation can get it, except a read, a write or an
+    /// append of no bytes.
     Eio,
 }
 
@@ -245,7 +247,8 @@ impl Default for FaultOdds {
 /// ```
 /// use lignin_io::sim::{Fault, FaultRule, OpSet};
 ///
-/// // Operation 57 fails with EIO.
+/// // Operation 57 fails with EIO, or the first one after it that would
+/// // otherwise succeed.
 /// FaultRule::new(Fault::Eio).from_op(57);
 /// // The disk is full from operation 100 on, until the rule is cleared.
 /// FaultRule::new(Fault::Enospc).from_op(100).forever();

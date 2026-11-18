@@ -2,7 +2,7 @@
 //! operation runs from start to end.
 
 use std::{
-    collections::{btree_map::Entry, BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet},
     ffi::{OsStr, OsString},
     io::{self, ErrorKind},
     path::{Component, Path},
@@ -10,19 +10,21 @@ use std::{
 };
 
 use super::{
-    crash::{self, Change, CrashImage, FileChange, FileChangeKind, NameChange, NameChangeKind},
+    crash::{
+        self, Change, CrashImage, FileChange, FileChangeKind, NameChange, NameChangeKind, Survivor,
+    },
     fault::{Fault, FaultRule, OpKind, OpSet, SimError},
-    rng::SimRng,
+    rng::{stream, SimRng},
     trace::{Effect, Event, Fnv, OpRecord, Outcome},
-    CrashPoint, SimConfig,
+    CrashPoint, SimConfig, SimStats, UnknownFate,
 };
 use crate::vfs::{Create, DirEntry, EntryKind, OpenMode};
 
-const STREAM_FAULT: u64 = 1;
-const STREAM_DETAIL: u64 = 2;
-const STREAM_SETTLE: u64 = 3;
-
 pub(super) const ROOT: DirId = DirId(0);
+
+/// The longest file a 32-bit machine can hold in memory. No file may be
+/// longer on any machine, so that the same calls end the same way on all.
+pub(super) const MAX_FILE_LEN: u64 = i32::MAX as u64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct DirId(u64);
@@ -37,28 +39,35 @@ pub(super) enum Node {
 }
 
 /// One name in one directory. `now` is what operations see. A crash sees
-/// `durable`, or the newest of the `pending` changes that it keeps and that
-/// is newer than `durable_seq`. A change is known by the number of the
-/// operation that made it.
+/// `durable`, or the last of the `pending` changes it keeps. A change is known
+/// by the number of the operation that made it, and a crash that keeps one
+/// keeps the ones before it.
 #[derive(Clone, Debug, Default)]
 pub(super) struct Cell {
     now: Option<Node>,
     pub(super) durable: Option<Node>,
-    pub(super) durable_seq: u64,
     pub(super) pending: Vec<(u64, Option<Node>)>,
 }
 
 impl Cell {
+    /// The numbers of the unsynced changes of the name, rising.
+    fn unsynced(&self) -> impl Iterator<Item = u64> + '_ {
+        self.pending.iter().map(|(seq, _)| *seq)
+    }
+
     fn nodes(&self) -> impl Iterator<Item = Node> + '_ {
         let pending = self.pending.iter().filter_map(|(_, node)| *node);
         self.now.into_iter().chain(self.durable).chain(pending)
     }
 }
 
-#[derive(Debug)]
-struct Dir {
-    cells: BTreeMap<OsString, Cell>,
+/// A directory, with the name it has in the directory above it. A directory
+/// is never renamed, so it keeps that name for as long as it exists.
+#[derive(Clone, Debug)]
+pub(super) struct Dir {
+    pub(super) cells: BTreeMap<OsString, Cell>,
     refs: u32,
+    name: Option<(DirId, OsString)>,
 }
 
 /// `content` is what operations see. A crash sees `durable` with some of the
@@ -92,14 +101,65 @@ struct Handle {
 }
 
 /// A change of names that is not durable yet. It becomes durable once every
-/// directory in `waiting` was synced.
-#[derive(Debug)]
-struct NameOp {
+/// directory in `waiting` was synced, or with a later change that builds on
+/// it.
+#[derive(Clone, Debug)]
+pub(super) struct NameOp {
     kind: NameChangeKind,
     path: Arc<str>,
     to: Option<Arc<str>>,
+    file: Option<FileId>,
+    removed: Option<DirId>,
     waiting: Vec<DirId>,
     cells: Vec<(DirId, OsString)>,
+}
+
+/// The unsynced changes of names in `kept`, with every change they build on.
+///
+/// A change builds on the earlier changes of the names it touches. The
+/// removal of a directory builds on the changes that emptied it. A rename
+/// builds on the creation of the directories its two names are in. Without
+/// the changes it builds on, a kept change would leave a rename half done: a
+/// later change of one of its names would act as if the file had moved, while
+/// the other name showed that it had not.
+pub(super) fn with_what_they_build_on(
+    dirs: &BTreeMap<DirId, Dir>,
+    ops: &BTreeMap<u64, NameOp>,
+    kept: impl IntoIterator<Item = u64>,
+) -> BTreeSet<u64> {
+    let mut closed = BTreeSet::new();
+    let mut queue: Vec<u64> = kept.into_iter().collect();
+    while let Some(seq) = queue.pop() {
+        if !closed.insert(seq) {
+            continue;
+        }
+        let op = &ops[&seq];
+        for (dir, name) in &op.cells {
+            let unsynced = dirs[dir].cells[name].unsynced();
+            queue.extend(unsynced.take_while(|earlier| *earlier < seq));
+        }
+        if let Some(removed) = op.removed {
+            queue.extend(dirs[&removed].cells.values().flat_map(Cell::unsynced));
+        }
+        if op.kind != NameChangeKind::Rename {
+            continue;
+        }
+        for (dir, _) in &op.cells {
+            let mut dir = *dir;
+            while let Some((above, name)) = &dirs[&dir].name {
+                let made = |(_, node): &&(u64, Option<Node>)| *node == Some(Node::Dir(dir));
+                queue.extend(
+                    dirs[above].cells[name]
+                        .pending
+                        .iter()
+                        .find(made)
+                        .map(|made| made.0),
+                );
+                dir = *above;
+            }
+        }
+    }
+    closed
 }
 
 #[derive(Debug)]
@@ -161,10 +221,7 @@ struct Injection {
 pub(super) struct State {
     pub(super) config: SimConfig,
     pub(super) rules: Vec<ArmedRule>,
-    pub(super) ops: u64,
-    pub(super) syncs: u64,
-    pub(super) changes: u64,
-    pub(super) faults: u64,
+    pub(super) stats: SimStats,
     pub(super) powered_off: bool,
     pub(super) crash_point: Option<CrashPoint>,
     pub(super) trace: Vec<Event>,
@@ -218,17 +275,19 @@ fn refuse(kind: ErrorKind, path: &str, problem: &str) -> io::Error {
 impl State {
     pub(super) fn new(config: SimConfig) -> Self {
         assert!(config.sector_size > 0, "a sector has at least one byte");
+        assert!(
+            config.max_file_len <= MAX_FILE_LEN,
+            "the simulator holds files of up to 2 GiB"
+        );
         let root = Dir {
             cells: BTreeMap::new(),
             refs: 1,
+            name: None,
         };
         Self {
             config,
             rules: Vec::new(),
-            ops: 0,
-            syncs: 0,
-            changes: 0,
-            faults: 0,
+            stats: SimStats::default(),
             powered_off: false,
             crash_point: None,
             trace: Vec::new(),
@@ -261,11 +320,13 @@ impl State {
         id
     }
 
-    pub(super) fn add_dir(&mut self) -> DirId {
+    /// A directory that is to be named `name` in `above`.
+    pub(super) fn add_dir(&mut self, above: DirId, name: &OsStr) -> DirId {
         let id = DirId(self.id());
         let dir = Dir {
             cells: BTreeMap::new(),
             refs: 0,
+            name: Some((above, name.to_owned())),
         };
         self.dirs.insert(id, dir);
         id
@@ -278,7 +339,6 @@ impl State {
         let cell = Cell {
             now: Some(node),
             durable: Some(node),
-            durable_seq: 0,
             pending: Vec::new(),
         };
         self.dir_mut(dir).cells.insert(name.to_owned(), cell);
@@ -317,34 +377,11 @@ impl State {
             Node::Dir(id) => {
                 let dir = self.dir_mut(id);
                 dir.refs -= 1;
-                if dir.refs > 0 {
-                    return;
-                }
-                let dir = self.dirs.remove(&id).expect("the directory was just used");
-                for (name, cell) in dir.cells {
-                    for (seq, _) in &cell.pending {
-                        self.forget_cell(*seq, id, &name);
-                    }
-                    for node in cell.nodes() {
-                        self.release(node);
-                    }
+                if dir.refs == 0 {
+                    let gone = self.dirs.remove(&id);
+                    debug_assert!(gone.is_some_and(|dir| dir.cells.is_empty()));
                 }
             }
-        }
-    }
-
-    /// A directory that nothing can bring back takes its names with it. A
-    /// change that also has a name elsewhere stays, and can no longer be
-    /// settled.
-    fn forget_cell(&mut self, seq: u64, dir: DirId, name: &OsStr) {
-        let Entry::Occupied(mut op) = self.name_ops.entry(seq) else {
-            unreachable!("a pending change of names is on record");
-        };
-        op.get_mut()
-            .cells
-            .retain(|(cell_dir, cell_name)| *cell_dir != dir || cell_name != name);
-        if op.get().cells.is_empty() {
-            op.remove();
         }
     }
 
@@ -396,13 +433,28 @@ impl State {
         }
     }
 
-    fn name_op(&mut self, op: &mut Op, kind: NameChangeKind, cells: Vec<(DirId, OsString)>) {
+    /// Puts a change of names on record. `named` is the file or the
+    /// directory whose name it changed.
+    fn name_op(
+        &mut self,
+        op: &mut Op,
+        kind: NameChangeKind,
+        named: Node,
+        cells: Vec<(DirId, OsString)>,
+    ) {
         let mut waiting: Vec<DirId> = cells.iter().map(|(dir, _)| *dir).collect();
         waiting.dedup();
+        let (file, removed) = match named {
+            Node::File(file) => (Some(file), None),
+            Node::Dir(dir) if kind == NameChangeKind::RemoveDir => (None, Some(dir)),
+            Node::Dir(_) => (None, None),
+        };
         let name_op = NameOp {
             kind,
             path: op.path.clone(),
             to: op.to.clone(),
+            file,
+            removed,
             waiting,
             cells,
         };
@@ -410,58 +462,70 @@ impl State {
         op.changed = true;
     }
 
-    fn create_file(&mut self, dir: DirId, name: &OsStr, op: &mut Op) -> FileId {
+    /// The file to open or to lock: the one that is there, or a new one. Only
+    /// a new one needs space.
+    fn file_or_create(
+        &mut self,
+        existing: Option<FileId>,
+        dir: DirId,
+        name: OsString,
+        op: &mut Op,
+    ) -> io::Result<FileId> {
+        self.fail_point(op, existing.is_none())?;
+        if let Some(file) = existing {
+            return Ok(file);
+        }
         let file = self.add_file(Arc::default());
-        self.bind(dir, name, Some(Node::File(file)), op.number);
-        self.name_op(op, NameChangeKind::Create, vec![(dir, name.to_owned())]);
-        file
+        self.bind(dir, &name, Some(Node::File(file)), op.number);
+        self.name_op(
+            op,
+            NameChangeKind::Create,
+            Node::File(file),
+            vec![(dir, name)],
+        );
+        Ok(file)
     }
 
+    /// Makes the changes of names in `dir` durable, with the ones they build
+    /// on. A rename waits for the directories of both its names.
     fn settle_dir(&mut self, dir: DirId) -> bool {
         let cells = self.dirs[&dir].cells.values();
-        let seqs: BTreeSet<u64> = cells
-            .flat_map(|cell| cell.pending.iter().map(|(seq, _)| *seq))
-            .collect();
-        let mut changed = false;
-        for seq in seqs {
-            let Entry::Occupied(mut op) = self.name_ops.entry(seq) else {
-                unreachable!("a pending change of names is on record");
-            };
-            let waiting = &mut op.get_mut().waiting;
-            let before = waiting.len();
+        let unsynced: BTreeSet<u64> = cells.flat_map(Cell::unsynced).collect();
+        let mut synced = Vec::new();
+        for seq in unsynced {
+            let waiting = &mut self.name_op_mut(seq).waiting;
             waiting.retain(|waited| *waited != dir);
-            changed |= waiting.len() < before;
-            if !waiting.is_empty() {
-                continue;
-            }
-            for (cell_dir, name) in op.remove().cells {
-                self.settle_cell(cell_dir, &name, seq);
+            if waiting.is_empty() {
+                synced.push(seq);
             }
         }
-        changed
+        let settled = with_what_they_build_on(&self.dirs, &self.name_ops, synced);
+        for seq in &settled {
+            let op = self.name_ops.remove(seq).expect("the change is on record");
+            for (cell_dir, name) in op.cells {
+                self.settle_cell(cell_dir, &name);
+            }
+        }
+        !settled.is_empty()
     }
 
-    fn settle_cell(&mut self, dir: DirId, name: &OsStr, seq: u64) {
+    fn name_op_mut(&mut self, seq: u64) -> &mut NameOp {
+        self.name_ops
+            .get_mut(&seq)
+            .expect("an unsynced change of names is on record")
+    }
+
+    /// Makes the oldest unsynced change of a name durable.
+    fn settle_cell(&mut self, dir: DirId, name: &OsStr) {
         let cells = &mut self.dir_mut(dir).cells;
-        let Entry::Occupied(mut entry) = cells.entry(name.to_owned()) else {
-            unreachable!("a pending change of names has its name");
-        };
-        let cell = entry.get_mut();
-        let at = cell.pending.iter().position(|(pending, _)| *pending == seq);
-        let (_, node) = cell
-            .pending
-            .remove(at.expect("the change is pending on its name"));
-        let dropped = if seq > cell.durable_seq {
-            cell.durable_seq = seq;
-            std::mem::replace(&mut cell.durable, node)
-        } else {
-            node
-        };
+        let cell = cells.get_mut(name).expect("a changed name is on record");
+        let (_, node) = cell.pending.remove(0);
+        let old = std::mem::replace(&mut cell.durable, node);
         if cell.now.is_none() && cell.durable.is_none() && cell.pending.is_empty() {
-            entry.remove();
+            cells.remove(name);
         }
-        if let Some(node) = dropped {
-            self.release(node);
+        if let Some(old) = old {
+            self.release(old);
         }
     }
 
@@ -475,12 +539,12 @@ impl State {
         if self.powered_off {
             return Err(SimError::PowerLoss.into());
         }
-        self.ops += 1;
+        self.stats.ops += 1;
         if OpSet::SYNCS.contains(kind) {
-            self.syncs += 1;
+            self.stats.syncs += 1;
         }
         let mut op = Op {
-            number: self.ops,
+            number: self.stats.ops,
             kind,
             path,
             to,
@@ -491,7 +555,7 @@ impl State {
         };
         let result = body(self, &mut op);
         if op.changed {
-            self.changes += 1;
+            self.stats.changes += 1;
         }
         let outcome = match (&result, op.injected) {
             (_, Some((fault, effect))) => Outcome::Injected { fault, effect },
@@ -516,9 +580,9 @@ impl State {
     pub(super) fn check_crash_point(&mut self) {
         let reached = match self.crash_point {
             None => false,
-            Some(CrashPoint::AfterOp(count)) => self.ops >= count,
-            Some(CrashPoint::AfterSync(count)) => self.syncs >= count,
-            Some(CrashPoint::AfterChange(count)) => self.changes >= count,
+            Some(CrashPoint::AfterOp(count)) => self.stats.ops >= count,
+            Some(CrashPoint::AfterSync(count)) => self.stats.syncs >= count,
+            Some(CrashPoint::AfterChange(count)) => self.stats.changes >= count,
         };
         if reached {
             self.power_off();
@@ -529,7 +593,8 @@ impl State {
         if !self.powered_off {
             self.powered_off = true;
             self.crash_point = None;
-            self.trace.push(Event::PowerOff { after_op: self.ops });
+            let after_op = self.stats.ops;
+            self.trace.push(Event::PowerOff { after_op });
         }
     }
 
@@ -553,7 +618,7 @@ impl State {
         }
         if hit.is_none() {
             let odds = &self.config.faults;
-            let mut rng = SimRng::derive(self.config.seed, STREAM_FAULT, op.number);
+            let mut rng = SimRng::derive(self.config.seed, stream::FAULT, op.number);
             let can_be_full = needs_space && odds.enospc_ops.contains(op.kind);
             if odds.eio_ops.contains(op.kind) && rng.chance(odds.eio) {
                 hit = Some((Fault::Eio, None));
@@ -562,11 +627,11 @@ impl State {
             }
         }
         let (fault, torn_append) = hit?;
-        self.faults += 1;
+        self.stats.faults += 1;
         op.injected = Some((fault, Effect::Nothing));
         Some(Injection {
             fault,
-            rng: SimRng::derive(self.config.seed, STREAM_DETAIL, op.number),
+            rng: SimRng::derive(self.config.seed, stream::DETAIL, op.number),
             torn_append,
         })
     }
@@ -615,11 +680,7 @@ impl State {
                 }
                 None => None,
             };
-            state.fail_point(op, existing.is_none())?;
-            let file = match existing {
-                Some(file) => file,
-                None => state.create_file(dir, &name, op),
-            };
+            let file = state.file_or_create(existing, dir, name, op)?;
             let handle = state.id();
             let open = state.file_mut(file);
             open.refs += 1;
@@ -675,7 +736,7 @@ impl State {
             state.bind(to_dir, &to_name, Some(Node::File(file)), op.number);
             state.bind(from_dir, &from_name, None, op.number);
             let cells = vec![(to_dir, to_name), (from_dir, from_name)];
-            state.name_op(op, NameChangeKind::Rename, cells);
+            state.name_op(op, NameChangeKind::Rename, Node::File(file), cells);
             Ok(())
         })
     }
@@ -702,7 +763,8 @@ impl State {
             }
             state.fail_point(op, true)?;
             state.bind(link_dir, &link_name, Some(Node::File(file)), op.number);
-            state.name_op(op, NameChangeKind::Link, vec![(link_dir, link_name)]);
+            let cells = vec![(link_dir, link_name)];
+            state.name_op(op, NameChangeKind::Link, Node::File(file), cells);
             Ok(())
         })
     }
@@ -711,16 +773,17 @@ impl State {
         let paths = (canonical(path), None);
         self.run(OpKind::RemoveFile, paths, (0, 0), |state, op| {
             let (dir, name) = state.parent(path, &op.path, ErrorKind::IsADirectory)?;
-            match state.now(dir, &name) {
-                Some(Node::File(_)) => {}
+            let file = match state.now(dir, &name) {
+                Some(Node::File(file)) => file,
                 Some(Node::Dir(_)) => {
                     return Err(refuse(ErrorKind::IsADirectory, &op.path, "is a directory"));
                 }
                 None => return Err(refuse(ErrorKind::NotFound, &op.path, "does not exist")),
-            }
+            };
             state.fail_point(op, false)?;
             state.bind(dir, &name, None, op.number);
-            state.name_op(op, NameChangeKind::Remove, vec![(dir, name)]);
+            let cells = vec![(dir, name)];
+            state.name_op(op, NameChangeKind::Remove, Node::File(file), cells);
             Ok(())
         })
     }
@@ -733,9 +796,9 @@ impl State {
                 return Err(refuse(ErrorKind::AlreadyExists, &op.path, "already exists"));
             }
             state.fail_point(op, true)?;
-            let created = state.add_dir();
-            state.bind(dir, &name, Some(Node::Dir(created)), op.number);
-            state.name_op(op, NameChangeKind::CreateDir, vec![(dir, name)]);
+            let created = Node::Dir(state.add_dir(dir, &name));
+            state.bind(dir, &name, Some(created), op.number);
+            state.name_op(op, NameChangeKind::CreateDir, created, vec![(dir, name)]);
             Ok(())
         })
     }
@@ -765,7 +828,8 @@ impl State {
             }
             state.fail_point(op, false)?;
             state.bind(dir, &name, None, op.number);
-            state.name_op(op, NameChangeKind::RemoveDir, vec![(dir, name)]);
+            let cells = vec![(dir, name)];
+            state.name_op(op, NameChangeKind::RemoveDir, Node::Dir(removed), cells);
             Ok(())
         })
     }
@@ -813,11 +877,7 @@ impl State {
                 Some(Node::File(file)) => Some(file),
                 None => None,
             };
-            state.fail_point(op, existing.is_none())?;
-            let file = match existing {
-                Some(file) => file,
-                None => state.create_file(dir, &name, op),
-            };
+            let file = state.file_or_create(existing, dir, name, op)?;
             state.locks.insert(file);
             Ok(file)
         })
@@ -833,7 +893,7 @@ impl State {
     }
 
     fn check_len(&self, offset: u64, len: usize, shown: &str) -> io::Result<()> {
-        let fits = |end: &u64| *end <= self.config.max_file_len && usize::try_from(*end).is_ok();
+        let fits = |end: &u64| *end <= self.config.max_file_len;
         match offset.checked_add(len as u64).filter(fits) {
             Some(_) => Ok(()),
             None => Err(refuse(
@@ -844,27 +904,25 @@ impl State {
         }
     }
 
-    fn write(&mut self, file: FileId, offset: u64, data: &[u8], op: &mut Op) {
-        if data.is_empty() {
-            return;
-        }
-        let (start, end) = (offset as usize, offset as usize + data.len());
+    /// Makes a change to a file and puts it on record as unsynced.
+    fn change(&mut self, file: FileId, kind: FileChangeKind, data: &[u8], op: &mut Op) {
+        let sector = self.config.sector_size;
         let open = self.file_mut(file);
-        let content = Arc::make_mut(&mut open.content);
-        if content.len() < end {
-            content.resize(end, 0);
-        }
-        content[start..end].copy_from_slice(data);
+        crash::apply(Arc::make_mut(&mut open.content), kind, data, None, sector);
         open.pending.push(Change {
             op: op.number,
             path: op.path.clone(),
-            kind: FileChangeKind::Write {
-                offset,
-                len: data.len() as u64,
-            },
+            kind,
             data: data.into(),
         });
         op.changed = true;
+    }
+
+    fn write(&mut self, file: FileId, offset: u64, data: &[u8], op: &mut Op) {
+        if !data.is_empty() {
+            let len = data.len() as u64;
+            self.change(file, FileChangeKind::Write { offset, len }, data, op);
+        }
     }
 
     pub(super) fn read_at(
@@ -876,6 +934,9 @@ impl State {
         let (file, _, paths) = self.handle(handle);
         let extent = (offset, buf.len() as u64);
         self.run(OpKind::Read, paths, extent, |state, op| {
+            if buf.is_empty() {
+                return Ok(0);
+            }
             state.fail_point(op, false)?;
             let content = &state.files[&file].content;
             let from = usize::try_from(offset).ok();
@@ -899,15 +960,22 @@ impl State {
                     "was not opened with OpenMode::Write, which write_at needs",
                 ));
             }
-            state.check_len(offset, buf.len(), &op.path)?;
-            if let Some(mut injection) = state.fault(op, true) {
-                let sector = state.config.sector_size;
-                let written = crash::cut(&mut injection.rng, offset, buf.len() as u64, sector);
-                state.write(file, offset, &buf[..written as usize], op);
-                return Err(op.failure_with(injection.fault, Effect::Wrote(written)));
+            if buf.is_empty() {
+                return Ok(());
             }
-            state.write(file, offset, buf, op);
-            Ok(())
+            state.check_len(offset, buf.len(), &op.path)?;
+            let Some(mut injection) = state.fault(op, true) else {
+                state.write(file, offset, buf, op);
+                return Ok(());
+            };
+            let sector = state.config.sector_size;
+            let mut written = 0;
+            for part in crash::failed_write(&mut injection.rng, offset, buf.len() as u64, sector) {
+                let within = (part.start - offset) as usize..(part.end - offset) as usize;
+                state.write(file, part.start, &buf[within], op);
+                written += part.end - part.start;
+            }
+            Err(op.failure_with(injection.fault, Effect::Wrote(written)))
         })
     }
 
@@ -931,6 +999,9 @@ impl State {
             }
             let offset = state.files[&file].content.len() as u64;
             op.offset = offset;
+            if buf.is_empty() {
+                return Ok(offset);
+            }
             state.check_len(offset, buf.len(), &op.path)?;
             let Some(mut injection) = state.fault(op, true) else {
                 state.write(file, offset, buf, op);
@@ -948,22 +1019,10 @@ impl State {
                 return Err(op.failure_with(injection.fault, Effect::AppendTorn(written)));
             }
             if written > 0 {
-                state.resize(file, offset, op);
+                state.change(file, FileChangeKind::SetLen { len: offset }, &[], op);
             }
             Err(op.failure_with(injection.fault, Effect::AppendUndone(written)))
         })
-    }
-
-    fn resize(&mut self, file: FileId, len: u64, op: &mut Op) {
-        let open = self.file_mut(file);
-        Arc::make_mut(&mut open.content).resize(len as usize, 0);
-        open.pending.push(Change {
-            op: op.number,
-            path: op.path.clone(),
-            kind: FileChangeKind::SetLen { len },
-            data: Arc::default(),
-        });
-        op.changed = true;
     }
 
     pub(super) fn set_len(&mut self, handle: u64, len: u64) -> io::Result<()> {
@@ -980,7 +1039,7 @@ impl State {
             let current = state.files[&file].content.len() as u64;
             state.fail_point(op, len > current)?;
             if len != current {
-                state.resize(file, len, op);
+                state.change(file, FileChangeKind::SetLen { len }, &[], op);
             }
             Ok(())
         })
@@ -1017,8 +1076,9 @@ impl State {
     }
 
     /// Makes the file durable. The changes made since the last failed sync
-    /// are covered. What became of the ones before it is drawn from the seed
-    /// now: nothing later can tell when the system dropped or wrote them.
+    /// are covered. What became of the ones before it is settled now, as the
+    /// configuration says: nothing later can tell when the system dropped or
+    /// wrote them.
     fn settle_file(&mut self, file: FileId, op: &mut Op) {
         let sector = self.config.sector_size;
         let open = self.files.get_mut(&file).expect("a file in use exists");
@@ -1028,9 +1088,16 @@ impl State {
         let durable = Arc::make_mut(&mut open.durable);
         let (unknown, covered) = open.pending.split_at(open.unknown);
         if !unknown.is_empty() {
-            let mut rng = SimRng::derive(self.config.seed, STREAM_SETTLE, op.number);
             let kinds = unknown.iter().map(|change| change.kind);
-            let survivors = crash::sample_changes(&mut rng, kinds, &self.config.crash, sector);
+            let survivors = match self.config.unknown {
+                UnknownFate::Lost => Vec::new(),
+                UnknownFate::Kept => (0..unknown.len()).map(Survivor::whole).collect(),
+                UnknownFate::Drawn(draw) => {
+                    let mut at_sync = SimRng::derive(self.config.seed, stream::SETTLE, op.number);
+                    let mut rng = SimRng::derive(at_sync.next_u64(), stream::DRAW, draw);
+                    crash::sample_changes(&mut rng, kinds, &self.config.crash, sector)
+                }
+            };
             for survivor in &survivors {
                 let change = &unknown[survivor.change];
                 let tear = survivor.tear.as_ref();
@@ -1054,16 +1121,14 @@ impl State {
     }
 
     pub(super) fn image(&self) -> CrashImage {
-        let mut named = BTreeSet::new();
-        let mut dirs = BTreeMap::new();
-        for (id, dir) in &self.dirs {
-            for node in dir.cells.values().flat_map(Cell::nodes) {
-                if let Node::File(file) = node {
-                    named.insert(file);
-                }
-            }
-            dirs.insert(*id, dir.cells.clone());
-        }
+        let cells = self.dirs.values().flat_map(|dir| dir.cells.values());
+        let named: BTreeSet<FileId> = cells
+            .flat_map(Cell::nodes)
+            .filter_map(|node| match node {
+                Node::File(file) => Some(file),
+                Node::Dir(_) => None,
+            })
+            .collect();
         let mut files = BTreeMap::new();
         let mut changes = Vec::new();
         for id in named {
@@ -1087,14 +1152,16 @@ impl State {
             kind: name.kind,
             path: name.path.to_string(),
             to: name.to.as_deref().map(str::to_owned),
+            file: name.file.map(|file| file.0),
         });
         CrashImage {
             config: self.config.clone(),
-            ops: self.ops,
-            dirs,
+            ops: self.stats.ops,
+            names: names.collect(),
+            dirs: self.dirs.clone(),
+            name_ops: self.name_ops.clone(),
             files,
             changes,
-            names: names.collect(),
         }
     }
 
@@ -1109,7 +1176,8 @@ impl State {
             let Some(node) = cell.now else {
                 continue;
             };
-            hasher.text(&name.to_string_lossy());
+            hasher.u64(name.len() as u64);
+            hasher.bytes(name.as_encoded_bytes());
             match node {
                 Node::Dir(dir) => {
                     hasher.u64(1);
@@ -1162,15 +1230,9 @@ impl State {
                         Node::Dir(dir) => *dir_refs.entry(dir).or_default() += 1,
                     }
                 }
-                let newest = cell.pending.iter().map(|(seq, _)| *seq).max();
-                let expected = match newest {
-                    Some(seq) if seq > cell.durable_seq => {
-                        let last = cell.pending.iter().rfind(|(pending, _)| *pending == seq);
-                        last.unwrap().1
-                    }
-                    _ => cell.durable,
-                };
+                let expected = cell.pending.last().map_or(cell.durable, |last| last.1);
                 assert_eq!(cell.now, expected, "a name shows its newest change");
+                assert!(cell.pending.is_sorted_by_key(|(seq, _)| *seq));
                 for (seq, _) in &cell.pending {
                     let cells = &self.name_ops[seq].cells;
                     assert!(cells.contains(&(*id, name.clone())));
@@ -1178,11 +1240,17 @@ impl State {
             }
         }
         for (seq, op) in &self.name_ops {
-            assert!(!op.cells.is_empty() && !op.waiting.is_empty());
+            assert!(
+                !op.waiting.is_empty(),
+                "a synced change of names is durable"
+            );
+            assert!(op.waiting.iter().all(|dir| self.dirs.contains_key(dir)));
             for (dir, name) in &op.cells {
                 let pending = &self.dirs[dir].cells[name].pending;
                 assert!(pending.iter().any(|(pending, _)| pending == seq));
             }
+            let kept = with_what_they_build_on(&self.dirs, &self.name_ops, [*seq]);
+            assert!(kept.iter().all(|built_on| built_on <= seq));
         }
         for handle in self.handles.values() {
             *file_refs.entry(handle.file).or_default() += 1;
