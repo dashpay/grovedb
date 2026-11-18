@@ -355,7 +355,9 @@ do: FMT-03's hash-only delta (48 bytes in total) and FMT-06's block (8 bytes
 of overhead on an incompressible block, which the default frame already uses
 up before the block says how it is compressed). Such a record defines its own
 header under R1 to R7. A block whose length comes from its pointer (R3), for
-example, needs no length field at all.
+example, needs no length field at all. In the end the two are one: a delta
+is stored in a block, and the block's frame is its only one
+([`page-delta.md`](page-delta.md), PD4).
 
 Example: the payload `lignin` (6 bytes) is the 14 bytes
 
@@ -532,7 +534,7 @@ changes and U6 applies without exception.
 | Task | Takes from here | Still its own to define |
 | --- | --- | --- |
 | FMT-02 Tree page codec | `PageId` for cross-page pointers, with 0 for "none". A page image has no version of its own (R5). It lies in a record with a checksum (R1, R4): the segment block that holds it, so it carries none itself ([`tree-page.md`](tree-page.md), TP3). | The cell layout, the page header, and how a cell stores the value pointer. `SlotId` and `CellAddress` (3.4) were added by this task. The pointer's fields and its 16-byte encoding are FMT-07's. |
-| FMT-03 Page delta records | The record rules R1 to R7 and the checksum. | Its own compact header, to meet the 48-byte hash delta. |
+| FMT-03 Page delta records | The record rules R1 to R7 and the checksum. A run of page deltas lies in a record with a checksum (R1, R4): the segment block or the log group that holds it, so it carries none itself ([`page-delta.md`](page-delta.md), PD4). | The records and the run. A changed hash is 35 bytes, and 47 as a block. |
 | FMT-04 Flat page codec | As FMT-02: a flat page image lies in the record that holds it and carries no checksum itself ([`flat-page.md`](flat-page.md), P12). | Everything inside the page. |
 | FMT-05 Log record format | `CommitVersion` for a commit group; consecutive groups differ by one (3.2). The default frame. A group above 128 MiB is several records (C5). | Group layout, record kinds, and what a failed record means for the tail (R7). |
 | FMT-06 Segment, manifest format | The file header and kind codes. The manifest's header version is the database format version (V3). `FileId` for naming live files. | Block headers, the footer index, the manifest body, the meaning of the manifest's sequence field (H3). The manifest body also records the store's page size, which no page image holds ([`segment-manifest.md`](segment-manifest.md), M17). |

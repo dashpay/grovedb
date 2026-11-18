@@ -144,6 +144,14 @@ impl Chain {
                     assert_eq!(run.apply(&mut self.replica, self.size, V1), Err(error));
                     assert!(self.replica == replica);
                 }
+                // And by the same page with its cells laid out another
+                // way, as its image has them: a page takes or refuses a
+                // change by its content.
+                let image = image_of(&self.writer);
+                let mut compact = vec![0xC3; self.size.get()];
+                compact[..image.len()].copy_from_slice(&image);
+                assert_eq!(run.apply(&mut compact, self.size, V1), Err(error));
+                assert_eq!(image_of(&compact), image);
                 self.refused += 1;
             }
         }
