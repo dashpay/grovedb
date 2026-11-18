@@ -273,6 +273,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Error::InvalidInput("path segment length must be at most 255 bytes")`,
   as the same call with a key query item and every other path-building call
   already did (#680). Not version-gated, since the call used to panic.
+- From `GROVE_V5`, a batch that creates a tree and writes into it is held to
+  the checks the same insert meets without the writes. Upward propagation
+  replaces the insert of such a tree with the root state the level below it
+  computed, so the insert was never applied as an insert and the checks made
+  there on the caller's element were not reached. V1..V4 therefore take, when
+  the batch also fills the tree, an insert they refuse alone: a
+  `ProvableCountProvableSumIndexedTree` whose axes are not canonical (they
+  are committed in the order given, and a proof of the tree does not
+  verify); an indexed tree that claims root keys, a count or a sum; a tree
+  wrapped in `NonCounted`, `NotSummed` or `NotCountedOrSummed` under a parent
+  that does not take the wrapper; and an entry of a
+  `ProvableCountIndexedTree`, `ProvableSumIndexedTree` or
+  `ProvableCountProvableSumIndexedTree` that its child rule refuses. Now
+  every element a batch is handed is checked where it enters the batch (an
+  indexed tree is empty and has canonical axes, a `PrivateDocumentStore` is
+  empty with a valid config), and a tree written from propagated root state
+  is checked against its parent where it is applied (the wrapper rules, and
+  the child rule of an indexed parent). The batch is refused with the error
+  the insert alone gives, and nothing is written. Partial batches and their
+  add-on operations follow the same rule. Gated by the new
+  `apply_batch.filled_tree_insert_checks` slot (0 in V1..V4, which keep
+  their outcome, 1 in V5; **BREAKING** for code building
+  `GroveDBApplyBatchVersions` by hand), because it flips an accepted/rejected
+  outcome. No tracked cost and no root hash changes for a batch both values
+  accept. Because the element is checked on entry, from `GROVE_V5` a batch
+  cost estimate is refused too for an indexed tree or a
+  `PrivateDocumentStore` that fails those checks, as is a batch whose
+  consistency check is disabled and which carries such an element under an
+  operation a later one replaces. Not part of the slot: the checks on what
+  the key already holds (`validate_insertion_does_not_override`,
+  `validate_insertion_does_not_override_tree`, `InsertIfNotExists`). A
+  filled tree is written without reading its key on every version, so they
+  do not refuse it (#779 covers what a tree written over a stored one
+  leaves behind).
 - From `GROVE_V5`, a batch that inserts a sum or count tree and leaves the
   level below it empty stores that tree. The batch carries operations at the
   tree's own path and none leaves a key there, for example a delete of a key

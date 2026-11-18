@@ -16,7 +16,10 @@ use grovedb_version::version::GroveVersion;
 
 use super::{read_entry_aggregates, MaybeEntryState};
 use crate::{
-    batch::{merk_tree_from_aggregate, GroveOp, KeyInfo},
+    batch::{
+        filled_tree_insert_checks::holds_filled_trees_to_insert_checks, merk_tree_from_aggregate,
+        GroveOp, KeyInfo,
+    },
     operations::indexed_tree::{validate_indexed_child_for_variant, MAX_CIDX_ITEM_KEY_LEN},
     Element, Error,
 };
@@ -84,11 +87,9 @@ fn validate_indexed_child_ops(
     primary_tree_type: grovedb_merk::TreeType,
     grove_version: &GroveVersion,
 ) -> Result<(), Error> {
-    let wide_primary = matches!(
-        primary_tree_type,
-        grovedb_merk::TreeType::ProvableBigSumIndexedTree
-            | grovedb_merk::TreeType::ProvableCountProvableBigSumIndexedTree
-    );
+    // V1..V4 leave an entry the batch created and filled out of the rules
+    // below; V5 holds it to them.
+    let holds_propagated_entries = holds_filled_trees_to_insert_checks(grove_version)?;
     for op in ops_at_path_by_key.values() {
         // EXHAUSTIVE on purpose — no `_` arm. An earlier revision used a
         // catch-all and silently skipped `GroveOp::Patch`, which carries an
@@ -111,10 +112,10 @@ fn validate_indexed_child_ops(
             // internally derived rather than caller-claimed.
             // A tree inserted and filled by the same batch arrives as its
             // computed root state, with the caller's element gone: the type
-            // it had is the one the aggregate names. The indexed trees with a
-            // 128-bit sum hold it to their child rule here, where a plain
-            // tree would otherwise pass as an entry with a sum of zero. Their
-            // 64-bit counterparts keep the behaviour they shipped with.
+            // it had is the one the aggregate names. From V5 it is held to
+            // the child rule here, where a plain tree would otherwise pass
+            // as an entry with a sum of zero. V1..V4 keep the behaviour they
+            // shipped with.
             GroveOp::InsertTreeWithRootHash {
                 aggregate_data,
                 non_counted,
@@ -122,7 +123,7 @@ fn validate_indexed_child_ops(
                 not_counted_or_summed,
                 ..
             } => {
-                if wide_primary {
+                if holds_propagated_entries {
                     let tree = merk_tree_from_aggregate(None, None, *aggregate_data);
                     let tree = if *non_counted {
                         Element::NonCounted(Box::new(tree))
@@ -140,7 +141,7 @@ fn validate_indexed_child_ops(
             // An indexed tree created and filled by the same batch keeps the
             // caller's element in the op, and is held to the same rule.
             GroveOp::InsertAggregateIndexedTreeRootKeys { element, .. } => {
-                if wide_primary {
+                if holds_propagated_entries {
                     validate_propagated_entry(element, primary_tree_type, grove_version)?;
                 }
                 continue;

@@ -370,6 +370,32 @@ pub struct GroveDBApplyBatchVersions {
     /// an accepted/rejected outcome for the two wrapped forms.
     pub tree_insert_above_emptied_level: FeatureVersion,
 
+    /// Which checks hold for a tree a batch both creates and writes into.
+    ///
+    /// Upward propagation replaces the insert of such a tree with the root
+    /// state the level below it computed, so the insert is never applied as
+    /// an insert, and the checks made there on the caller's element are not
+    /// reached.
+    ///
+    /// - `0` (V1..V4): those checks are made only for a tree the batch
+    ///   leaves untouched. A tree it also fills is written with axes that
+    ///   are not canonical, with root keys or aggregates claimed for an
+    ///   indexed tree, wrapped in `NonCounted`, `NotSummed` or
+    ///   `NotCountedOrSummed` under a parent that does not take the wrapper,
+    ///   or as an entry its indexed parent's child rule refuses. Frozen: it
+    ///   is what GroveDB 6.1.1 does.
+    /// - `1` (V5+): every element a batch is handed is checked where it
+    ///   enters the batch (an indexed tree is empty and has canonical axes,
+    ///   a `PrivateDocumentStore` is empty with a valid config), and a tree
+    ///   written from propagated root state is checked against its parent
+    ///   where it is applied (the wrapper rules, and the child rule of an
+    ///   indexed parent). The batch is refused with the error the same
+    ///   insert gives without operations under it.
+    ///
+    /// The slot gates an accepted/rejected outcome. No tracked cost changes
+    /// for a batch both values accept.
+    pub filled_tree_insert_checks: FeatureVersion,
+
     /// How the indexed-tree mirror reads an entry of the primary, before
     /// the level's apply (the old state) and after it (the new state).
     ///

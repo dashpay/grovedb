@@ -21,6 +21,7 @@ pub mod estimated_costs;
 pub mod key_info;
 
 mod conditional_insert_target;
+mod filled_tree_insert_checks;
 mod mode;
 mod move_element;
 #[cfg(test)]
@@ -3669,6 +3670,13 @@ where
             .map(|(key, _)| key.get_key_clone())
             .collect();
         let mut batch_operations: Vec<(Vec<u8>, Op)> = vec![];
+        // From V5 a tree the batch created and filled, which reaches this
+        // level as its propagated root state, is held to the parent's rules
+        // an insert of it meets.
+        let holds_filled_trees_to_insert_checks = cost_return_on_error_no_add!(
+            cost,
+            filled_tree_insert_checks::holds_filled_trees_to_insert_checks(grove_version)
+        );
         // Keys whose op is a `DontCheckForBackwardsReferences` twin: their declaration about the
         // value they displace, consulted by the old-value observer below.
         let dont_check_for_backwards_references_keys: HashSet<Vec<u8>> = ops_at_path_by_key
@@ -3870,37 +3878,28 @@ where
                         ))
                         .wrap_with_cost(cost);
                     }
-                    if element.is_non_counted() && !in_tree_type.accepts_non_counted_children() {
-                        return Err(Error::InvalidBatchOperation(
-                            "non-counted elements may only be inserted into non-provable \
-                             count-bearing trees (CountTree or CountSumTree); Provable* count \
-                             trees commit the count cryptographically and cannot host \
-                             NonCounted children",
-                        ))
-                        .wrap_with_cost(cost);
-                    }
-                    if element.is_not_summed() && !in_tree_type.is_sum_bearing() {
-                        return Err(Error::InvalidBatchOperation(
-                            "not-summed elements may only be inserted into sum-bearing trees",
-                        ))
-                        .wrap_with_cost(cost);
-                    }
-                    if element.is_not_counted_or_summed()
-                        && !in_tree_type.accepts_not_counted_or_summed_children()
-                    {
-                        return Err(Error::InvalidBatchOperation(
-                            "not-counted-or-summed elements may only be inserted into \
-                             CountSumTree; ProvableCountSumTree commits the count \
-                             cryptographically and cannot host NotCountedOrSummed children",
-                        ))
-                        .wrap_with_cost(cost);
-                    }
+                    cost_return_on_error_no_add!(
+                        cost,
+                        filled_tree_insert_checks::check_wrapper_against_parent(
+                            &element,
+                            in_tree_type,
+                        )
+                    );
                     // A grove version that predates a tree with a 128-bit
                     // provable or counted sum refuses to create one, as the
                     // direct path does.
                     cost_return_on_error_no_add!(
                         cost,
                         check_wide_sum_tree_creation(&element, "batch insert", grove_version,)
+                    );
+                    // What an indexed tree or a private document store must
+                    // look like to be created by a batch.
+                    cost_return_on_error_no_add!(
+                        cost,
+                        filled_tree_insert_checks::check_inserted_tree_element(
+                            &element,
+                            grove_version,
+                        )
                     );
                     // Look through NonCounted; methods called on `element`
                     // (serialize, get_feature_type, insert_*_into_batch_operations,
@@ -4006,16 +4005,7 @@ where
                         // `delete_from_count_indexed_tree` APIs because
                         // the batch propagation pass does not yet cascade
                         // through the secondary.
-                        Element::ProvableCountIndexedTree(primary, secondary, count_value, _) => {
-                            if primary.is_some() || secondary.is_some() || *count_value != 0 {
-                                return Err(Error::InvalidBatchOperation(
-                                    "a CountIndexedTree must be empty at the moment of batch \
-                                     insertion (both primary_root_key and secondary_root_key \
-                                     must be None and count = 0); item-level mutations require \
-                                     the dedicated insert_into_count_indexed_tree API",
-                                ))
-                                .wrap_with_cost(cost);
-                            }
+                        Element::ProvableCountIndexedTree(..) => {
                             // Check existence for InsertIfNotExists.
                             if is_insert_if_not_exists
                                 || batch_apply_options.validate_insertion_does_not_override
@@ -4068,17 +4058,7 @@ where
                         // via insert_count_indexed_subtree_into_batch_operations
                         // (the merk-side helper now accepts all three
                         // indexed-tree variants).
-                        Element::ProvableSumIndexedTree(primary, secondary, sum_value, _) => {
-                            if primary.is_some() || secondary.is_some() || *sum_value != 0 {
-                                return Err(Error::InvalidBatchOperation(
-                                    "a ProvableSumIndexedTree must be empty at the moment of \
-                                     batch insertion (both primary_root_key and \
-                                     secondary_root_key must be None and sum = 0); item-level \
-                                     mutations require the dedicated insert_into_indexed_tree \
-                                     API",
-                                ))
-                                .wrap_with_cost(cost);
-                            }
+                        Element::ProvableSumIndexedTree(..) => {
                             if is_insert_if_not_exists
                                 || batch_apply_options.validate_insertion_does_not_override
                             {
@@ -4123,17 +4103,7 @@ where
                                 )
                             );
                         }
-                        Element::ProvableBigSumIndexedTree(primary, secondary, sum_value, _) => {
-                            if primary.is_some() || secondary.is_some() || *sum_value != 0 {
-                                return Err(Error::InvalidBatchOperation(
-                                    "a ProvableBigSumIndexedTree must be empty at the moment of \
-                                     batch insertion (both primary_root_key and \
-                                     secondary_root_key must be None and sum = 0); item-level \
-                                     mutations require the dedicated insert_into_indexed_tree \
-                                     API",
-                                ))
-                                .wrap_with_cost(cost);
-                            }
+                        Element::ProvableBigSumIndexedTree(..) => {
                             if is_insert_if_not_exists
                                 || batch_apply_options.validate_insertion_does_not_override
                             {
@@ -4184,46 +4154,7 @@ where
                         // None (the axes list carries the configured
                         // schema and is non-empty). Each axis slot
                         // contributes NULL_HASH to the axes_digest.
-                        Element::ProvableCountProvableSumIndexedTree(
-                            primary,
-                            count_value,
-                            sum_value,
-                            axes,
-                            _,
-                        ) => {
-                            let axes_all_empty = axes.iter().all(|(_, sk)| sk.is_none());
-                            if primary.is_some()
-                                || *count_value != 0
-                                || *sum_value != 0
-                                || !axes_all_empty
-                            {
-                                return Err(Error::InvalidBatchOperation(
-                                    "a ProvableCountProvableSumIndexedTree must be empty at the \
-                                     moment of batch insertion (primary_root_key = None, count \
-                                     = 0, sum = 0, every axis secondary_root_key = None); \
-                                     item-level mutations require the dedicated \
-                                     insert_into_indexed_tree API",
-                                ))
-                                .wrap_with_cost(cost);
-                            }
-                            // Full canonical-axes validation (1..=3 entries,
-                            // sorted ascending by tag, no duplicates, known
-                            // tags) — reuses the same check the Element
-                            // constructors run. Without this, a batch caller
-                            // could persist an empty PCPSIT whose axes are
-                            // unsorted / duplicated / out-of-range (the
-                            // axes_digest is computed over whatever TLV is
-                            // supplied; it does not validate).
-                            cost_return_on_error_no_add!(
-                                cost,
-                                Element::validate_pcpsit_axes(axes).map_err(|_| {
-                                    Error::InvalidBatchOperation(
-                                        "a ProvableCountProvableSumIndexedTree must have \
-                                         canonical axes (1..=3 entries, sorted ascending by \
-                                         tag, no duplicates, tags in 0..=2)",
-                                    )
-                                })
-                            );
+                        Element::ProvableCountProvableSumIndexedTree(.., axes, _) => {
                             if is_insert_if_not_exists
                                 || batch_apply_options.validate_insertion_does_not_override
                             {
@@ -4277,47 +4208,7 @@ where
                                 )
                             );
                         }
-                        Element::ProvableCountProvableBigSumIndexedTree(
-                            primary,
-                            count_value,
-                            sum_value,
-                            axes,
-                            _,
-                        ) => {
-                            let axes_all_empty = axes.iter().all(|(_, sk)| sk.is_none());
-                            if primary.is_some()
-                                || *count_value != 0
-                                || *sum_value != 0
-                                || !axes_all_empty
-                            {
-                                return Err(Error::InvalidBatchOperation(
-                                    "a ProvableCountProvableBigSumIndexedTree must be empty at the \
-                                     moment of batch insertion (primary_root_key = None, count \
-                                     = 0, sum = 0, every axis secondary_root_key = None); \
-                                     item-level mutations require the dedicated \
-                                     insert_into_indexed_tree API",
-                                ))
-                                .wrap_with_cost(cost);
-                            }
-                            // Full canonical-axes validation (1..=3 entries,
-                            // sorted ascending by tag, no duplicates, known
-                            // tags) — reuses the same check the Element
-                            // constructors run. Without this, a batch caller
-                            // could persist an empty PCPSIT whose axes are
-                            // unsorted / duplicated / out-of-range (the
-                            // axes_digest is computed over whatever TLV is
-                            // supplied; it does not validate).
-                            cost_return_on_error_no_add!(
-                                cost,
-                                Element::validate_pcpbsit_axes(axes).map_err(|_| {
-                                    Error::InvalidBatchOperation(
-                                        "a ProvableCountProvableBigSumIndexedTree must have \
-                                         canonical axes (1..=3 entries, sorted ascending by \
-                                         tag, no duplicates, each of the count, avg and big \
-                                         sum axes)",
-                                    )
-                                })
-                            );
+                        Element::ProvableCountProvableBigSumIndexedTree(.., axes, _) => {
                             if is_insert_if_not_exists
                                 || batch_apply_options.validate_insertion_does_not_override
                             {
@@ -4449,46 +4340,7 @@ where
                                 )
                             );
                         }
-                        Element::PrivateDocumentStore(total_count, entry_size, chunk_power, _) => {
-                            // Fail closed on protocol versions that predate
-                            // the element type.
-                            cost_return_on_error_no_add!(
-                                cost,
-                                crate::operations::private_document_store::check_pds_enabled(
-                                    "batch insert Element::PrivateDocumentStore",
-                                    grove_version
-                                        .grovedb_versions
-                                        .operations
-                                        .private_document_store
-                                        .element_creation,
-                                )
-                            );
-                            // Only empty-creation is allowed: the child hash
-                            // written below is the empty state root for this
-                            // config, and entries can only be added through
-                            // the typed append path.
-                            if *total_count != 0 {
-                                return Err(Error::InvalidBatchOperation(
-                                    "a PrivateDocumentStore must be empty at the moment of batch \
-                                     insertion (total_count = 0); entries are appended via the \
-                                     PrivateDocumentStoreInsert operation",
-                                ))
-                                .wrap_with_cost(cost);
-                            }
-                            // Same config validation the element constructors
-                            // enforce — a caller-built element must not bypass
-                            // it, since the config is committed into the state
-                            // root.
-                            if *entry_size == 0
-                                || *entry_size > u16::MAX as u32
-                                || !(1..=16).contains(chunk_power)
-                            {
-                                return Err(Error::InvalidBatchOperation(
-                                    "a PrivateDocumentStore requires entry_size in 1..=65535 and \
-                                     chunk_power in 1..=16",
-                                ))
-                                .wrap_with_cost(cost);
-                            }
+                        Element::PrivateDocumentStore(_, entry_size, chunk_power, _) => {
                             // A private document store is write-once, so
                             // creating one over an existing element is
                             // ALWAYS rejected — not just under
@@ -5104,20 +4956,15 @@ where
                     let element = cost_return_on_error_no_add!(cost, element);
                     // A tree the batch created and filled never reached the
                     // insert arm, where the parent's rules for a wrapper are
-                    // checked. The trees with a 128-bit sum are held to them
-                    // here; the trees that shipped before them keep the
-                    // behaviour they shipped with.
-                    if matches!(
-                        element.underlying(),
-                        Element::CountBigSumTree(..)
-                            | Element::ProvableBigSumTree(..)
-                            | Element::ProvableCountProvableBigSumTree(..)
-                    ) {
+                    // checked. From V5 it is held to them here; V1..V4 keep
+                    // the behaviour they shipped with.
+                    if holds_filled_trees_to_insert_checks {
                         cost_return_on_error_no_add!(
                             cost,
-                            element
-                                .validate_insertable_into(in_tree_type)
-                                .map_err(Error::MerkError)
+                            filled_tree_insert_checks::check_wrapper_against_parent(
+                                &element,
+                                in_tree_type,
+                            )
                         );
                     }
                     let merk_feature_type = cost_return_on_error_into_no_add!(
@@ -5160,6 +5007,16 @@ where
                     } else {
                         element
                     };
+                    // As for a Merk tree above.
+                    if holds_filled_trees_to_insert_checks {
+                        cost_return_on_error_no_add!(
+                            cost,
+                            filled_tree_insert_checks::check_wrapper_against_parent(
+                                &element,
+                                in_tree_type,
+                            )
+                        );
+                    }
                     let merk_feature_type = cost_return_on_error_into_no_add!(
                         cost,
                         element.get_feature_type(in_tree_type)
