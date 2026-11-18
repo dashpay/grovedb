@@ -22,7 +22,13 @@ all reported.
                        associated types, variants and fields, and for imports
                        of free functions
     ## macro-expanded  call sites whose primary span lies in a macro body
+    ## default-probe-unchecked
+                       compile units the Default probe could not check
+                       because a crate they depend on failed in it
     ## uncompiled      .rs files of the scanned packages no target compiled
+`<Type>::default` call sites come from a third step: the `Default` impls of
+storage types are removed and each resulting compile error is one call (a
+trait impl item cannot be marked deprecated).
 <count> is the number of distinct uses (columns) of the item on the line. A
 site is "lib" when the `--lib --bins` pass reports it, "test" when only the
 `--all-targets` pass does.
@@ -284,14 +290,8 @@ def short_item(path):
 DEPRECATED_MSG = re.compile(r"use of deprecated (.+?) `([^`]+)`: " + MARKER)
 
 
-def check_pass(src, target, packages, target_args):
-    """Run one cargo check and collect the marked uses outside storage/.
-
-    Returns (calls, types, macro_sites). calls and types map
-    (path:line, item, enclosing function) to the number of distinct uses
-    (columns) on that line. A file compiled into several targets reports each
-    use once per target; keying on the column counts it once.
-    """
+def cargo_check(src, target, packages, target_args):
+    """Run cargo check with JSON output. Returns (success, messages, built units)."""
     cmd = ["cargo", "check", "--message-format=json", "--all-features"] + target_args
     for name, _ in packages:
         cmd += ["-p", name]
@@ -300,17 +300,42 @@ def check_pass(src, target, packages, target_args):
     env["RUSTFLAGS"] = (env.get("RUSTFLAGS", "") + " --force-warn deprecated").strip()
     env.setdefault("CARGO_BUILD_JOBS", "8")
     proc = subprocess.run(cmd, cwd=src, env=env, stdout=subprocess.PIPE)
-    if proc.returncode != 0:
-        sys.stderr.write(proc.stdout.decode(errors="replace")[-20000:])
-        sys.exit("cargo check failed")
-    uses = {}
-    macro_sites = set()
-    stack_cache = {}
+    messages, units = [], set()
     for line in proc.stdout.decode().splitlines():
         try:
             msg = json.loads(line)
         except ValueError:
             continue
+        messages.append(msg)
+        if msg.get("reason") == "compiler-artifact" and msg["package_id"].startswith("path+"):
+            units.add(unit_name(msg) + (" (test)" if msg["profile"]["test"] else ""))
+    return proc.returncode == 0, messages, units
+
+
+def unit_name(msg):
+    t = msg["target"]
+    return "%s %s %s" % (msg["package_id"].split("#")[0].rsplit("/", 1)[-1],
+                         "/".join(t["kind"]), t["name"])
+
+
+def check_pass(src, target, packages, target_args):
+    """Run one cargo check and collect the marked uses outside storage/.
+
+    Returns (calls, types, macro_sites, units). calls and types map
+    (path:line, item, enclosing function) to the number of distinct uses
+    (columns) on that line. A file compiled into several targets reports each
+    use once per target; keying on the column counts it once.
+    """
+    ok, messages, units = cargo_check(src, target, packages, target_args)
+    if not ok:
+        sys.stderr.write("\n".join(m["message"]["rendered"] for m in messages
+                                    if m.get("reason") == "compiler-message"
+                                    and m["message"]["level"] == "error"))
+        sys.exit("cargo check failed")
+    uses = {}
+    macro_sites = set()
+    stack_cache = {}
+    for msg in messages:
         if msg.get("reason") != "compiler-message":
             continue
         m = msg["message"]
@@ -343,7 +368,67 @@ def check_pass(src, target, packages, target_args):
     calls, types = Counter(), Counter()
     for (loc, _col, item, func), is_call in uses.items():
         (calls if is_call else types)[(loc, item, func)] += 1
-    return calls, types, macro_sites
+    return calls, types, macro_sites, units
+
+
+DEFAULT_IMPL = re.compile(r"^impl Default for (\w+) \{\n(?:    .*\n|\n)*?\}\n", re.M)
+UNSATISFIED_DEFAULT = re.compile(r"the trait bound `(?:[\w:]+::)?(\w+): (?:std::default::)?Default` is not satisfied")
+NO_DEFAULT_FN = re.compile(r"no function or associated item named `default` found for struct `(\w+)`")
+
+
+def default_probe(src, target, packages):
+    """Find calls of the `Default` impls of storage types.
+
+    A trait impl item cannot carry `#[deprecated]`, so `Default::default()`
+    building a storage type is invisible to the main passes. This removes
+    every `impl Default for <Type>` from storage/src and collects the
+    resulting errors. Each error is one call of `<Type>::default`. Returns
+    (calls, units) per pass as for check_pass; targets that depend on a crate
+    which fails to compile are not checked and are reported by the caller.
+    """
+    removed = []
+    for dirpath, _, files in os.walk(os.path.join(src, "storage", "src")):
+        for name in files:
+            if not name.endswith(".rs"):
+                continue
+            path = os.path.join(dirpath, name)
+            with open(path) as f:
+                text = f.read()
+            new_text = DEFAULT_IMPL.sub(lambda m: removed.append(m.group(1)) or "", text)
+            if new_text != text:
+                with open(path, "w") as f:
+                    f.write(new_text)
+    results = []
+    failed = set()
+    stack_cache = {}
+    for target_args in (["--lib", "--bins"], ["--all-targets"]):
+        _ok, messages, units = cargo_check(src, target, packages, ["--keep-going"] + target_args)
+        uses = set()
+        for msg in messages:
+            if msg.get("reason") != "compiler-message" or msg["message"]["level"] != "error":
+                continue
+            failed.add(unit_name(msg))
+            m = msg["message"]
+            hit = UNSATISFIED_DEFAULT.search(m["message"]) or NO_DEFAULT_FN.search(m["message"])
+            if not hit or hit.group(1) not in removed:
+                sys.exit("unexpected error in the Default probe: %s" % m["rendered"])
+            for span in m["spans"]:
+                if not span["is_primary"]:
+                    continue
+                fname = os.path.relpath(os.path.join(src, span["file_name"]), src)
+                ln = span["line_start"]
+                if fname not in stack_cache:
+                    with open(os.path.join(src, fname)) as f:
+                        stack_cache[fname] = block_stacks(f.read())
+                stacks = stack_cache[fname]
+                func = enclosing_function(stacks[ln] if ln < len(stacks) else ())
+                uses.add(("%s:%d" % (fname, ln), span["column_start"],
+                          "%s::default" % hit.group(1), func))
+        calls = Counter()
+        for loc, _col, item, func in uses:
+            calls[(loc, item, func)] += 1
+        results.append((calls, units))
+    return removed, failed, results
 
 
 def run(args):
@@ -362,8 +447,14 @@ def run(args):
     packages = storage_dependents(src)
     print("# rev %s, %d storage items marked, packages: %s"
           % (rev, added, " ".join(p for p, _ in packages)), file=sys.stderr)
-    lib_calls, lib_types, _ = check_pass(src, target, packages, ["--lib", "--bins"])
-    calls, types, macro_sites = check_pass(src, target, packages, ["--all-targets"])
+    lib_calls, lib_types, _, _ = check_pass(src, target, packages, ["--lib", "--bins"])
+    calls, types, macro_sites, all_units = check_pass(src, target, packages, ["--all-targets"])
+    removed, failed, ((lib_defaults, _), (defaults, probe_units)) = default_probe(
+        src, target, packages)
+    if set(lib_defaults) - set(defaults):
+        sys.exit("Default probe: lib sites missing from the all-targets pass")
+    lib_calls.update(lib_defaults)
+    calls.update(defaults)
     for lib, all_ in ((lib_calls, calls), (lib_types, types)):
         missing = set(lib) - set(all_)
         if missing:
@@ -396,6 +487,11 @@ def run(args):
     print("## macro-expanded")
     for site in sorted(macro_sites):
         print("\t".join(site))
+    print("## default-probe-unchecked")
+    print("# Default impls removed: %s" % " ".join(sorted(removed)))
+    for unit in sorted(all_units - probe_units):
+        if unit.replace(" (test)", "") not in failed:
+            print(unit)
     print("## uncompiled")
     for _name, pdir in packages:
         for dirpath, _, files in os.walk(pdir):

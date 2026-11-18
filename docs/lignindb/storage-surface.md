@@ -6,7 +6,7 @@ This document lists every call from Merk, GroveDB and the append-only tree crate
 
 **Pinned commit:** `f69acc954a111a0f58a425b74e9f495715301cfd` (`feat/LigninDB`, "chore: scaffold the LigninDB workspace crates"). Every `path:line` below is at that commit. Each site also names its enclosing function, so it can be found again after lines move.
 
-**Result:** 938 call sites, 940 calls (465 sites / 465 calls in library code, 473 sites / 475 calls only in test targets); 1249 type, trait and import references.
+**Result:** 942 call sites, 944 calls (469 sites / 469 calls in library code, 473 sites / 475 calls only in test targets); 1249 type, trait and import references.
 
 ## How the list was produced
 
@@ -18,6 +18,7 @@ The list comes from the compiler, not from a text search. A text search cannot t
 2. It marks `#[deprecated]` every public function, inherent method, trait, trait method, associated type, struct, enum and type alias in `storage/src` (103 items).
 3. It runs `cargo check --all-features --message-format=json` with `RUSTFLAGS=--force-warn deprecated` on every workspace package whose manifest depends on `grovedb-storage` (found with `cargo metadata`). There are two passes: `--lib --bins`, then `--all-targets`.
 4. It records one use for every deprecation warning whose primary span lies outside `storage/`.
+5. A trait impl item cannot carry `#[deprecated]`, so a `StorageBatch` or `TempStorage` built through `Default::default()` is invisible to steps 2 to 4. A third pair of passes (the `Default` probe) removes every `impl Default for <Type>` from `storage/src` and runs `cargo check --keep-going`. It records each resulting error as a call of `<Type>::default`. It found four library sites, all `StorageBatch::default` in GroveDB.
 
 What this catches:
 
@@ -47,6 +48,8 @@ What the search does not cover:
 
 - Code behind a `cfg` that `--all-features` on a debug build leaves off. In the scanned crates those are `cfg(not(feature = "minimal"))` stubs in two benches, `cfg(not(feature = "server"))` in one bench, `cfg(not(feature = "grovedbg"))` in `build.rs`, and two `target_os` branches in one test. None of them touch storage.
 - Doc-test code. It is never compiled by `cargo check`.
+- Targets the `Default` probe cannot compile, because the GroveDB library they depend on fails in it. These are GroveDB's 8 integration tests and 5 benches; the output lists them under `## default-probe-unchecked`. The main passes do cover them. Only `grovedb/tests/state_sync_serving_tree_type.rs` uses storage there, and it names neither `StorageBatch` nor `TempStorage`. `grep -nE 'default\(\)' grovedb/tests/*.rs grovedb/benches/*.rs` finds only struct-update `..Default::default()` on option structs and `StorageRemovalPerEpochByIdentifier::default()`. So no unlisted `Default` call exists there.
+- Other trait impls on storage types: `Debug` formatting, `Deref` from `TempStorage` to `RocksDbStorage`, and the `Display`, `Error` and `From` impls of `grovedb_storage::Error`. These are not storage operations and are not counted. A method reached through the `Deref` is a marked `RocksDbStorage` method and is counted.
 - Direct use of the `rocksdb` crate, which is not `grovedb-storage`. It is listed separately [below](#outside-the-grovedb-storage-api).
 
 ## The API and what each call charges
@@ -132,12 +135,12 @@ Library code, calls per class and crate (`grovedb-private-document-store` makes 
 | immediate context |  |  |  |  |  |  | 10 | 10 |
 | range delete |  |  |  |  |  |  | 14 | 14 |
 | escape hatch |  |  |  |  |  |  | 28 | 28 |
-| batch | 14 |  |  |  |  |  | 54 | 68 |
+| batch | 14 |  |  |  |  |  | 58 | 72 |
 | transaction | 4 |  |  |  |  |  | 6 | 10 |
 | lifecycle | 1 |  |  |  |  |  | 4 | 5 |
 | prefix |  |  |  |  |  |  | 30 | 30 |
 | estimate |  |  |  |  |  |  | 51 | 51 |
-| **total** | 71 | 30 | 2 | 3 | 4 | 2 | 353 | **465** |
+| **total** | 71 | 30 | 2 | 3 | 4 | 2 | 357 | **469** |
 
 Library code, per seam:
 
@@ -145,7 +148,7 @@ Library code, per seam:
 | --- | --- | --- |
 | NodeStore | 146 | tree-node access 17, roots 5, iterator 95, escape hatch 19, batch 10 |
 | FlatStore | 42 | flat key-value 16, aux 9, meta 7, range delete 6, escape hatch 2, prefix 2 |
-| Engine | 226 | path open 82, by-prefix open 18, immediate context 10, range delete 8, escape hatch 7, batch 58, transaction 10, lifecycle 5, prefix 28 |
+| Engine | 230 | path open 82, by-prefix open 18, immediate context 10, range delete 8, escape hatch 7, batch 62, transaction 10, lifecycle 5, prefix 28 |
 | Estimates | 51 | estimate 51 |
 
 Test-only code (test, bench and example targets, and `#[cfg(test)]` items):
@@ -525,11 +528,14 @@ Columns:
 | `grovedb/src/lib.rs:3697` | `GroveDb::compute_non_merk_state_root` | `Storage::get_transactional_storage_context` | 1 | path open | Engine | P-path | cost dropped by the caller (`.unwrap()` / `.value`) |
 | `grovedb/src/lib.rs:3716` | `GroveDb::compute_non_merk_state_root` | `Storage::get_transactional_storage_context` | 1 | path open | Engine | P-path | cost dropped by the caller (`.unwrap()` / `.value`) |
 | `grovedb/src/lib.rs:3747` | `GroveDb::compute_non_merk_state_root` | `Storage::get_transactional_storage_context` | 1 | path open | Engine | P-path | cost dropped by the caller (`.unwrap()` / `.value`) |
+| `grovedb/src/merk_cache.rs:66` | `MerkCache::new` | `StorageBatch::default` | 1 | batch | Engine | zero | `batch: Default::default()`, found by the `Default` probe |
 | `grovedb/src/merk_cache.rs:157` | `MerkCache::try_open_merk_using_cached_parent` | `Storage::get_transactional_storage_context` | 1 | path open | Engine | P-path | `MerkCache` opens each Merk once per batch |
 | `grovedb/src/merk_cache.rs:453` | `MerkHandle::for_merk` | `StorageBatch::next_operation` | 1 | batch | Engine | zero | marks an operation boundary in the shared `StorageBatch` |
+| `grovedb/src/operations/auxiliary.rs:59` | `GroveDb::put_aux` | `StorageBatch::default` | 1 | batch | Engine | zero | `Default::default()`, found by the `Default` probe |
 | `grovedb/src/operations/auxiliary.rs:63` | `GroveDb::put_aux` | `Storage::get_transactional_storage_context` | 1 | path open | Engine | P-path | root-path context used for aux |
 | `grovedb/src/operations/auxiliary.rs:69` | `GroveDb::put_aux` | `StorageContext::put_aux` | 1 | aux | FlatStore | W-tx |  |
 | `grovedb/src/operations/auxiliary.rs:76` | `GroveDb::put_aux` | `Storage::commit_multi_context_batch` | 1 | batch | Engine | B-commit |  |
+| `grovedb/src/operations/auxiliary.rs:92` | `GroveDb::delete_aux` | `StorageBatch::default` | 1 | batch | Engine | zero | `Default::default()`, found by the `Default` probe |
 | `grovedb/src/operations/auxiliary.rs:96` | `GroveDb::delete_aux` | `Storage::get_transactional_storage_context` | 1 | path open | Engine | P-path | root-path context used for aux |
 | `grovedb/src/operations/auxiliary.rs:102` | `GroveDb::delete_aux` | `StorageContext::delete_aux` | 1 | aux | FlatStore | W-tx |  |
 | `grovedb/src/operations/auxiliary.rs:109` | `GroveDb::delete_aux` | `Storage::commit_multi_context_batch` | 1 | batch | Engine | B-commit |  |
@@ -718,6 +724,7 @@ Columns:
 | `grovedb/src/util.rs:31` | `TxRef::commit_local` | `Tx::commit` | 1 | transaction | Engine | zero | commits a transaction the call opened itself |
 | `grovedb/src/util/compat.rs:45` | `open_merk` | `Storage::get_transactional_storage_context` | 1 | path open | Engine | P-path | generic Merk open |
 | `grovedb/src/util/compat.rs:49` | `open_merk` | `Storage::get_transactional_storage_context` | 1 | path open | Engine | P-path |  |
+| `grovedb/src/util/visitor.rs:58` | `GroveVisitor::new` | `StorageBatch::default` | 1 | batch | Engine | zero | `batch: Default::default()`, found by the `Default` probe |
 | `grovedb/src/util/visitor.rs:78` | `GroveVisitor::walk_from` | `Storage::get_transactional_storage_context` | 1 | path open | Engine | P-path |  |
 | `grovedb/src/util/visitor.rs:93` | `GroveVisitor::walk_from` | `StorageContext::raw_iter` | 1 | iterator | NodeStore | zero |  |
 | `grovedb/src/visualize.rs:35` | `GroveDb::draw_subtree` | `Storage::get_transactional_storage_context` | 1 | path open | Engine | P-path | cost dropped by the caller (`.unwrap()` / `.value`) |
