@@ -40,20 +40,24 @@ impl GroveDb {
             });
             let tree_cost_size = tree_type.cost_size();
             // A wrapper adds its discriminant byte to what is written. It is
-            // counted for the trees with a 128-bit sum, as the worst-case
-            // estimate counts it; the trees that shipped before them keep
-            // the estimate they shipped with.
-            let wrapper_overhead = if value.is_wrapped()
-                && matches!(
+            // counted when the tree or its parent is one of the trees with a
+            // 128-bit sum, as the worst-case estimate counts it; pairings of
+            // the trees that shipped before them keep the estimate they
+            // shipped with.
+            let has_wide_sum = |tree_type: TreeType| {
+                matches!(
                     tree_type,
                     TreeType::CountBigSumTree
                         | TreeType::ProvableBigSumTree
                         | TreeType::ProvableCountProvableBigSumTree
-                ) {
-                1
-            } else {
-                0
+                )
             };
+            let wrapper_overhead =
+                if value.is_wrapped() && (has_wide_sum(tree_type) || has_wide_sum(in_tree_type)) {
+                    1
+                } else {
+                    0
+                };
             let value_len = tree_cost_size + flags_len + wrapper_overhead;
             add_cost_case_merk_insert_layered(&mut cost, key_len, value_len, in_tree_type)
         } else {

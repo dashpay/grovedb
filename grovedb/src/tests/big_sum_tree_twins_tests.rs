@@ -1694,6 +1694,35 @@ mod tests {
                 );
             }
         }
+
+        // A wrapped tree of a shipped type under a parent with a 128-bit sum
+        // is counted too. Under a shipped parent its average estimate is the
+        // one it shipped with, without the byte.
+        let average_under = |parent: TreeType, element: &Element| {
+            let estimate = GroveDb::average_case_merk_insert_element(
+                &key,
+                element,
+                parent,
+                None,
+                grove_version,
+            );
+            estimate.value.as_ref().expect("should estimate");
+            estimate.cost.storage_cost.added_bytes
+        };
+        let bare = Element::empty_sum_tree();
+        let wrapped = Element::NotCountedOrSummed(Box::new(Element::empty_sum_tree()));
+        for (parent, wrapper_bytes) in [
+            (TreeType::CountBigSumTree, 1),
+            (TreeType::ProvableBigSumTree, 1),
+            (TreeType::ProvableCountProvableBigSumTree, 1),
+            (TreeType::CountSumTree, 0),
+        ] {
+            assert_eq!(
+                average_under(parent, &wrapped),
+                average_under(parent, &bare) + wrapper_bytes,
+                "{parent}"
+            );
+        }
     }
 
     /// A wrapped tree that a batch creates and fills is held to its parent's
@@ -1776,6 +1805,11 @@ mod tests {
             )
             .unwrap()
             .expect("a wrapper the parent permits");
+            // The batch wrote the tree's contents, not only the tree.
+            assert_eq!(
+                get(&db, &[b"p", key], b"k", grove_version),
+                Element::new_sum_item(5)
+            );
         }
         // The non-counted tree still adds its sum; the other adds nothing.
         assert_eq!(count_big_sum(&db, &[], b"p", grove_version), (0, 5));
