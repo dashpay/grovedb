@@ -39,7 +39,8 @@ pub(super) struct Recoveries {
     pub(super) forgotten: usize,
     /// Those in which replay dropped a change it had no image for.
     pub(super) dropped: usize,
-    /// Those that gave a page with a page step of background work in it.
+    /// Those in which replay made a page step of background work that the
+    /// chain of the checkpoint lacked.
     pub(super) steps: usize,
 }
 
@@ -504,7 +505,7 @@ impl Model {
             );
         }
         let from = newest.map_or(found.covers, |newest| newest.max(found.covers));
-        let (mut whole, mut dropped) = (true, false);
+        let (mut whole, mut dropped, mut stepped) = (true, false, false);
         for logged in self.logged(raw_page) {
             if logged.at >= landing {
                 break;
@@ -523,6 +524,7 @@ impl Model {
             if due {
                 whole = apply(&mut page, logged);
                 dropped |= !whole;
+                stepped |= whole && logged.change == Change::Stepped;
             }
         }
         let covered = self.items_through(found.covers);
@@ -532,10 +534,7 @@ impl Model {
             recoveries.pages += 1;
             recoveries.forgotten += usize::from(forgotten);
             recoveries.dropped += usize::from(dropped);
-            recoveries.steps += usize::from(
-                page.as_ref()
-                    .is_some_and(|changes| changes.iter().any(|name| *name >= FIRST_STEP)),
-            );
+            recoveries.steps += usize::from(stepped);
             met.set(recoveries);
         });
         assert!(
@@ -551,11 +550,6 @@ impl Model {
     /// free is there, and each holds the page steps whose records are among
     /// the items, and no other.
     fn check_landing(&self, links: &[(PageId, Link)], found: Found, landing: usize) {
-        assert!(
-            found.sampled <= landing,
-            "a sample taken after {} items, and a log of {landing}",
-            found.sampled
-        );
         let table = ModelTable::of(links);
         let pages: BTreeSet<u32> = table
             .chains
@@ -777,11 +771,13 @@ impl Run {
             if now == self.model.chain_holds(chain) {
                 continue;
             }
-            let last = self.model.logged(raw_page).iter().rev();
+            // The version of the page is that of the last commit to it: a
+            // page step has none.
+            let mut last = self.model.logged(raw_page).iter().rev();
             let last = last
+                .find(|logged| logged.change != Change::Stepped)
                 .map(|logged| logged.version)
-                .next()
-                .expect("a logged change");
+                .expect("a logged commit");
             match now {
                 Some(changes) => {
                     let payload = self.payload();

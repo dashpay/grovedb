@@ -375,7 +375,8 @@ impl TableCheckpoints {
     /// - Before the first chain is copied. The sample must have been taken,
     ///   and its mark written, by then: a sample whose place is after the
     ///   log's end is refused ([`PageTableError::SampleAhead`]), and nothing
-    ///   is written.
+    ///   is written. Only the two places are compared: that the record
+    ///   which ends at the sample's place is its mark is not checked here.
     /// - After the last chain is copied. The checkpoint is installed only
     ///   once the log is durable up to that place
     ///   ([`CheckpointInfo::log_place_needed`]).

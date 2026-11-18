@@ -197,7 +197,9 @@
 //!   sample's place on, so every chain must be copied after every change
 //!   before that place. The sample is an argument of `write`, and `write`
 //!   asks for the end of the log before it copies anything: a sample whose
-//!   place is after it is refused ([`PageTableError::SampleAhead`]).
+//!   place is after it is refused ([`PageTableError::SampleAhead`]). That
+//!   compares two places. Whether the record that ends at the sample's
+//!   place is its mark is for the recovery to check.
 //! - **The log is synced after the copy.** A chain can hold a change that
 //!   was made after the sample. Were its record lost in a crash, the
 //!   checkpoint would hold a value pointer that no count includes. So
@@ -214,7 +216,7 @@
 //!
 //! | Step | What happens |
 //! | --- | --- |
-//! | Write | [`TableCheckpoints::write`] checks that the sample's mark is in the log, creates `table/<id>.pt` under an id above every id used before, appends the links, notes where the log ends, appends the counts of the sample and the end record, and syncs the file. |
+//! | Write | [`TableCheckpoints::write`] checks that the log has reached the place of the sample, creates `table/<id>.pt` under an id above every id used before, appends the links, notes where the log ends, appends the counts of the sample and the end record, and syncs the file. |
 //! | Install | [`TableCheckpoints::install`] checks that the log is durable through all the checkpoint needs ([`CheckpointInfo::log_needed`], [`CheckpointInfo::log_place_needed`]), syncs the segments, replaces the manifest with one that names the checkpoint and the segments as they are then, and deletes the checkpoint that was named before. |
 //!
 //! Between the two the caller makes the log durable (see below). A
@@ -268,8 +270,9 @@
 //!   record of a background change that one of its chains holds.
 //! - It takes the sample of the value counts for a checkpoint after the
 //!   sample of every checkpoint before it, and writes the sample's mark to
-//!   the log, before it calls `write`. By then it has written back every
-//!   page that background work changed before the sample's place.
+//!   the log, before it calls `write`. A page that background work changed
+//!   before the sample's place is written back before its chain is copied:
+//!   writing them all back before the call makes sure of it.
 //! - It gives `write` a function that says where the log ends when it is
 //!   called: after the record of every change that is in a block.
 //! - It keeps the log from the place of the checkpoint in force on, and of

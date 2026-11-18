@@ -842,7 +842,15 @@ fn a_checkpoint_written_while_chains_are_consolidated_and_trimmed_holds_whole_pa
         // Every chain is consolidated in the third round, so the first
         // checkpoint is written after it.
         while rounds.load(Ordering::Acquire) < 3 {
-            assert!(!done.load(Ordering::Acquire), "the other thread stopped");
+            // The other thread may have ended since the rounds were read:
+            // then it has made them all, or it failed.
+            if done.load(Ordering::Acquire) {
+                assert!(
+                    rounds.load(Ordering::Acquire) >= 3,
+                    "the other thread stopped"
+                );
+                break;
+            }
             thread::yield_now();
         }
         for _ in 0..6 {
