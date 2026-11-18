@@ -614,18 +614,17 @@ Each of these is a decision the plan did not make. They are listed so the
 owner can overrule one while version 1 is still open (U10).
 
 1. **A page holds its own id** (TP2). Four bytes a page.
-2. **The page size is not in the image and not in any file yet** (TP4). A
-   store must record it, because a page in a buffer may grow to it and C7 is
-   measured against it: opening a store with a smaller page size than it was
-   written with must be refused. `format.md` and the manifest have no field
-   for it. The manifest body (FMT-06) is the natural place, as one more
-   fixed field of version 1. Settled: the manifest records it, and the
-   store refuses another size (M17 and M18 of `segment-manifest.md`).
-3. **No checksum inside the image** (TP3). Flat pages have one (4 bytes, and
-   a pass over the page on each load). They could drop it for the same
-   reason; nothing here depends on whether they do. What a checksum inside
-   the image adds is a check after decompression, of the decompressor.
-   Settled: flat pages carry none either (P12 of `flat-page.md`).
+2. **The page size is not in the image** (TP4). A store must record it,
+   because a page in a buffer may grow to it and C7 is measured against it:
+   opening a store with a smaller page size than it was written with must
+   be refused. When this format was written no file had a field for it.
+   The manifest body now does, as a fixed field of version 1, and the store
+   refuses another size (M17 and M18 of `segment-manifest.md`).
+3. **No checksum inside the image** (TP3). What a checksum inside the image
+   adds is a check after decompression, of the decompressor. Flat pages had
+   one when this format was written (4 bytes, and a pass over the page on
+   each load) and have since dropped it for the same reason (P12 of
+   `flat-page.md`).
 4. **Slot numbers start at 1 and 0 is "no slot"** (TP5), as page ids and
    file ids do, so B6 holds without an exception and a zero-filled address
    is "no cell". `SlotId` and `CellAddress` are in `lignin-format::ids`.
@@ -669,8 +668,8 @@ owner can overrule one while version 1 is still open (U10).
     value.** It should: FMT-07 fixed the pointer at 16 bytes after FMT-04
     was written, so a flat leaf entry that is marked out of line and is not
     a valid `ValuePointer` is damage, and `FlatPage::decode` can say so with
-    `ValuePointer::decode`. That is a change to `flat_page`, not made here.
-    Settled: it does (P5 of `flat-page.md`).
+    `ValuePointer::decode`. That was a change to `flat_page`, not made by
+    this task; `FlatPage::decode` checks it now (P5 of `flat-page.md`).
 13. **A cell is replaced only by a cell with the same key** (W1). The
     plan's "cell update" needs no more, and it makes "a slot names one node
     between two departures" a property of the writer instead of a rule for
