@@ -8,7 +8,7 @@ use std::{
 };
 
 use lignin_format::{FileHeader, FileId, FileKind, FormatVersion};
-use lignin_io::{Create, OpenMode, Vfs, VfsFile};
+use lignin_io::{Create, DirEntry, OpenMode, Vfs, VfsFile};
 
 use super::error::SegmentStoreError;
 
@@ -86,13 +86,42 @@ impl FileNames {
     }
 }
 
+/// Lists the directory that holds the files of the kind `names` in the
+/// database directory `db`, and makes the directory's own name durable. The
+/// directory is created if it is missing.
+///
+/// The database directory is synced whether or not this call created the
+/// directory. An earlier call may have created it and failed before the
+/// sync, and a manifest must not name a file in a directory that a crash can
+/// take away with everything in it.
+pub fn list_or_create_dir(
+    vfs: &dyn Vfs,
+    db: &Path,
+    names: &FileNames,
+) -> Result<Vec<DirEntry>, SegmentStoreError> {
+    let dir = names.dir(db);
+    let entries = match vfs.read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            vfs.create_dir(&dir)
+                .map_err(SegmentStoreError::io("create the directory", &dir))?;
+            Vec::new()
+        }
+        Err(error) => return Err(SegmentStoreError::io("list", &dir)(error)),
+    };
+    vfs.sync_dir(db)
+        .map_err(SegmentStoreError::io("sync the directory", db))?;
+    Ok(entries)
+}
+
 /// Creates file `id` of the kind `names` in the database directory `db`,
 /// with its file header, and returns it open for appending.
 ///
 /// When this returns, the header and the file's name are durable, so a
 /// manifest may name the file with a valid length of
-/// [`FileHeader::ENCODED_LEN`]. The directory of the kind must exist. If any
-/// step fails the file is removed again.
+/// [`FileHeader::ENCODED_LEN`]. The directory of the kind must exist and
+/// have a durable name ([`list_or_create_dir`]). If any step fails the file
+/// is removed again.
 pub fn create_file(
     vfs: &dyn Vfs,
     db: &Path,

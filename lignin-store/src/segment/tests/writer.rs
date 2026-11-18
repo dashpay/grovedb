@@ -333,6 +333,44 @@ fn a_sync_through_the_store_goes_on_past_a_segment_that_fails() {
 }
 
 #[test]
+fn a_walk_begun_before_a_failed_sync_ends_where_the_segment_is_cut() {
+    let mut db = Db::new();
+    let mut writer = db.writer();
+    let synced = append_blocks(&mut writer, 3, 1);
+    let durable = writer.sync().unwrap();
+    let in_limbo = append_blocks(&mut writer, 3, 30);
+
+    let mut behind = db.segments.walk(id(1), MAX).unwrap();
+    let mut ahead = db.segments.walk(id(1), MAX).unwrap();
+    let mut passed = Vec::new();
+    while passed.len() < 4 {
+        passed.push(ahead.next_block().unwrap().unwrap().0);
+    }
+    let (first, _) = behind.next_block().unwrap().unwrap();
+    assert_eq!(first, synced[0].location);
+    assert_eq!(passed[3], in_limbo[0].location);
+
+    db.vfs.fail(Op::SyncData, SEGMENT);
+    assert_io(&writer.sync().unwrap_err(), "sync", SEGMENT);
+    let (second, _) = behind.next_block().unwrap().unwrap();
+    assert_eq!(second, synced[1].location);
+    assert_eq!(
+        ahead.next_block().unwrap().unwrap().0,
+        in_limbo[1].location,
+        "the segment is whole while its writer lives"
+    );
+
+    drop(writer);
+    assert_out_of_bounds(&db, &in_limbo, durable);
+    let (third, _) = behind.next_block().unwrap().unwrap();
+    assert_eq!(third, synced[2].location);
+    assert!(behind.next_block().unwrap().is_none());
+    assert_eq!(behind.offset(), durable);
+    assert!(ahead.next_block().unwrap().is_none());
+    assert_eq!(ahead.offset(), in_limbo[2].location.offset);
+}
+
+#[test]
 fn a_seal_whose_sync_fails_leaves_the_footer_out() {
     let mut db = Db::new();
     let mut writer = db.writer();

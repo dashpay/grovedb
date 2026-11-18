@@ -117,6 +117,45 @@ fn no_other_spelling_names_a_file() {
 }
 
 #[test]
+fn a_directory_is_listed_made_if_missing_and_synced_either_way() {
+    for names in ALL {
+        let dir = tempfile::tempdir().unwrap();
+        let vfs = faulty_std();
+        let kind_dir = dir_name(&names.dir(dir.path()));
+        let synced = (Op::SyncDir, dir_name(dir.path()));
+
+        assert_eq!(list_or_create_dir(&vfs, dir.path(), &names).unwrap(), []);
+        assert_eq!(
+            vfs.take_calls(),
+            [
+                (Op::ReadDir, kind_dir.clone()),
+                (Op::CreateDir, kind_dir.clone()),
+                synced.clone(),
+            ]
+        );
+
+        create_file(&vfs, dir.path(), &names, id(3)).unwrap();
+        vfs.take_calls();
+        let listed = list_or_create_dir(&vfs, dir.path(), &names).unwrap();
+        assert_eq!(names.parse(&listed[0].name), Some(id(3)));
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            vfs.take_calls(),
+            [(Op::ReadDir, kind_dir.clone()), synced.clone()]
+        );
+
+        for (op, on, expected_op) in [
+            (Op::ReadDir, &kind_dir, "list"),
+            (Op::SyncDir, &synced.1, "sync the directory"),
+        ] {
+            vfs.fail(op, on);
+            let error = list_or_create_dir(&vfs, dir.path(), &names).unwrap_err();
+            assert_io(&error, expected_op, on);
+        }
+    }
+}
+
+#[test]
 fn a_created_file_holds_its_header_and_is_durable_before_it_is_returned() {
     let dir = tempfile::tempdir().unwrap();
     let vfs = faulty_std();

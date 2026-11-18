@@ -158,7 +158,7 @@ mod writer;
 mod tests;
 
 pub use error::{ManifestChange, SegmentStoreError};
-pub use files::{create_file, FileNames};
+pub use files::{create_file, list_or_create_dir, FileNames};
 pub use manifest::{read_manifest, ManifestStore};
 pub use store::{BlockLocation, BlockWalk, SegmentStore};
 pub use writer::SegmentWriter;

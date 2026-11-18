@@ -20,7 +20,7 @@ use lignin_io::{DirEntry, EntryKind, OpenMode, Vfs, VfsFile};
 
 use super::{
     error::SegmentStoreError,
-    files::{create_file, remove_if_present, FileNames},
+    files::{create_file, list_or_create_dir, remove_if_present, FileNames},
     manifest::ManifestStore,
     writer::SegmentWriter,
 };
@@ -389,14 +389,12 @@ impl SegmentStore {
     /// [`SegmentStoreError::UnnamedSegmentHoldsBlocks`] and removes nothing.
     /// Other entries of `seg/` are left alone.
     ///
-    /// `seg/` is created if it is missing. Its name is made durable whether
-    /// or not this call created it: an earlier open may have created it and
-    /// failed before it could sync the database directory, and a manifest
-    /// must not name a segment in a directory that a crash can take away.
+    /// `seg/` is created if it is missing, and its name is made durable
+    /// either way ([`list_or_create_dir`]).
     pub fn open(manifest: &ManifestStore) -> Result<Self, SegmentStoreError> {
         let current = manifest.manifest()?;
         let store = Self::load(manifest.vfs().clone(), manifest.dir(), current, false)?;
-        let entries = store.list_or_create_dir()?;
+        let entries = list_or_create_dir(&*store.vfs, &store.dir, &FileNames::SEGMENT)?;
         store.remove_unnamed(&entries, current)?;
         Ok(store)
     }
@@ -434,24 +432,6 @@ impl SegmentStore {
             read_only,
             segments: RwLock::new(segments),
         })
-    }
-
-    fn list_or_create_dir(&self) -> Result<Vec<DirEntry>, SegmentStoreError> {
-        let seg_dir = FileNames::SEGMENT.dir(&self.dir);
-        let entries = match self.vfs.read_dir(&seg_dir) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                self.vfs
-                    .create_dir(&seg_dir)
-                    .map_err(SegmentStoreError::io("create the directory", &seg_dir))?;
-                Vec::new()
-            }
-            Err(error) => return Err(SegmentStoreError::io("list", &seg_dir)(error)),
-        };
-        self.vfs
-            .sync_dir(&self.dir)
-            .map_err(SegmentStoreError::io("sync the directory", &self.dir))?;
-        Ok(entries)
     }
 
     fn remove_unnamed(
@@ -588,10 +568,16 @@ impl SegmentStore {
     }
 
     /// Takes the segment `file` out of the store. It is no longer read, and
-    /// [`Self::describe`] no longer lists it.
+    /// [`Self::describe`] no longer lists it. A walk that has begun goes on
+    /// to its end.
     ///
     /// Its file is deleted by [`Self::manifest_replaced`], once the durable
     /// manifest does not name it. The segment must not have a writer.
+    ///
+    /// A manifest that was described before this call and installed after it
+    /// still names the segment. That is the same as the replacement coming
+    /// first: the file stays, a session that opens that manifest has the
+    /// segment again, and the next replacement here leaves it out.
     pub fn drop_segment(&self, file: FileId) -> Result<(), SegmentStoreError> {
         self.check_writable()?;
         if self.segment(file)?.has_writer() {
@@ -727,7 +713,10 @@ impl SegmentStore {
     }
 
     /// Starts a walk over the blocks of the segment `file`, from its first
-    /// block to the end of its blocks as it is now.
+    /// block to the end of its blocks as it is now. Blocks appended later
+    /// are not part of it. If the segment is cut short while the walk is
+    /// under way, because a sync of it failed, the walk ends where the
+    /// segment then ends.
     ///
     /// This is how a segment with no footer is read without pointers.
     /// `max_payload_len` is the longest payload the caller accepts.
@@ -773,6 +762,7 @@ impl BlockWalk {
     /// Reads the next block, with its checksum verified, or `None` after the
     /// last one.
     pub fn next_block(&mut self) -> Result<Option<(BlockLocation, Block<'_>)>, SegmentStoreError> {
+        self.end = self.end.min(self.segment.end.load(Ordering::Acquire));
         if self.at >= self.end {
             return Ok(None);
         }

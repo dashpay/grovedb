@@ -1095,6 +1095,49 @@ fn a_walk_that_cannot_read_can_be_asked_again() {
 }
 
 #[test]
+fn a_segment_dropped_while_a_manifest_is_installed_stays_until_the_next_one() {
+    let mut db = Db::new();
+    let mut first = db.writer();
+    let blocks = append_blocks(&mut first, 4, 1);
+    let sealed_len = first.seal().unwrap();
+    drop(first);
+    let _second = db.segments.create().unwrap();
+
+    let Db {
+        manifest, segments, ..
+    } = &mut db;
+    manifest
+        .update(|current| {
+            let described = segments.describe(current)?;
+            segments.drop_segment(id(1))?;
+            Ok::<_, SegmentStoreError>(described)
+        })
+        .unwrap();
+    segments.manifest_replaced(manifest).unwrap();
+
+    let both = [segment(1, SEALED, sealed_len), segment(2, OPEN, 20)];
+    assert_eq!(db.on_disk().files(), both);
+    assert_eq!(db.segments.segments_named().unwrap(), both[1..]);
+    assert!(db.seg_path(1).exists());
+    assert!(matches!(
+        db.read(blocks[0].location).unwrap_err(),
+        SegmentStoreError::UnknownSegment { .. }
+    ));
+
+    let mut db = db.reopen();
+    assert_eq!(
+        db.segments.segments_named().unwrap(),
+        [segment(1, SEALED, sealed_len), segment(2, CLOSED, 20)]
+    );
+    db.assert_readable(&blocks);
+
+    db.segments.drop_segment(id(1)).unwrap();
+    db.commit();
+    assert_eq!(db.on_disk().files(), [segment(2, CLOSED, 20)]);
+    assert!(!db.seg_path(1).exists());
+}
+
+#[test]
 fn a_dropped_segment_is_deleted_once_a_durable_manifest_does_not_name_it() {
     let mut db = Db::new();
     let mut first = db.writer();
