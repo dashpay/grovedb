@@ -157,8 +157,9 @@ The empty page 1 is the 22 bytes
 
 **TP1. The first byte is the page kind, and a tree page is kind 3.** Flat
 pages took 1 (leaf) and 2 (branch) in `flat-page.md`. So any page is
-identified by its first byte, and the length of any page image is the `u16`
-at offset 2. Kind 0 is invalid (B6), so zero-filled bytes are not a page.
+identified by its first byte, the length of any page image is the `u16`
+at offset 2, and its own page id is the `u32` at offset 4 (TP2; P14 of
+`flat-page.md`). Kind 0 is invalid (B6), so zero-filled bytes are not a page.
 
 **TP2. A page holds its own id.** A segment block does not name its page
 (S14 of `segment-manifest.md`). With the id in the header:
@@ -606,7 +607,7 @@ against 1.626 and 0.803 (368 bytes).
 | MERK-05 Iteration | A cursor's value is a node record in Merk's encoding, which repeats each child's key. Those keys come from the children's cells, by the addresses in the links. | Whether records are built, or callers move to node views (PERF-05). |
 | FMT-08 Decoder fuzzing | The decoders: `TreePage::decode`, `TreePage::from_validated` with every accessor, `TreePage::check`, `TreePage::check_fragments`, `TreeCell::decode`. `TreePageMut` is fuzzed from valid pages only (W5). The golden bytes of section 2.5. | The targets. |
 | VER-07 Physical invariant checker | `TreePage::check_fragments` for F3 and C5 inside a page, and for the key length a link states for a child in the same page. `TreePage::check` for a page in a buffer. | Links that cross pages: the address, and the key length. The heights and the aggregate in a link, which are Merk's to check: the page does not interpret them. |
-| FMT-04 Flat page codec | It followed two things after this task (section 8, items 3 and 12): its image has no checksum, and its decoder checks an out-of-line value. | |
+| FMT-04 Flat page codec | It followed three things after this task (section 8, items 3 and 12, and TP2): its image has no checksum, its decoder checks an out-of-line value, and it holds its own page id at the offset a tree page does. | |
 
 ## 8. Choices made here that the plan left open
 

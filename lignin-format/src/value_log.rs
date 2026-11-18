@@ -1746,7 +1746,7 @@ mod tests {
         let pointer = ValuePointer::new(file_id(3), 20, 9).expect("valid");
         let other = ValuePointer::new(file_id(3), 47, 9).expect("valid");
         let leaf_of = |entries: &[(&[u8], FlatValue<'_>)]| {
-            let mut builder = FlatLeafBuilder::new(b"k", 4096).expect("a builder");
+            let mut builder = FlatLeafBuilder::new(PageId::MAX, b"k", 4096).expect("a builder");
             for (key, value) in entries {
                 builder.push(key, *value).expect("fits");
             }
@@ -1878,7 +1878,8 @@ mod tests {
                 self.pages.remove(&id);
             } else if Self::is_flat(id) {
                 cells.sort_by_key(|cell| cell.key);
-                let mut builder = FlatLeafBuilder::new(b"", FlatPage::MAX_LEN).expect("a builder");
+                let mut builder =
+                    FlatLeafBuilder::new(id, b"", FlatPage::MAX_LEN).expect("a builder");
                 for cell in cells {
                     let value = cell.pointer.encode();
                     builder

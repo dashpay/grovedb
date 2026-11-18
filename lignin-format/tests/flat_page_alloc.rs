@@ -61,13 +61,14 @@ const PREFIX: [u8; 32] = [0xA5; 32];
 const ENTRIES: u64 = 400;
 const VALUE_LEN: usize = 24;
 const CAPACITY: usize = 16_384;
+const PAGE: PageId = PageId::MAX;
 
 fn key(index: u64) -> Vec<u8> {
     [PREFIX.as_slice(), &(index * 2).to_be_bytes()].concat()
 }
 
 fn leaf_image() -> Vec<u8> {
-    let mut builder = FlatLeafBuilder::new(&PREFIX, CAPACITY).expect("fits");
+    let mut builder = FlatLeafBuilder::new(PAGE, &PREFIX, CAPACITY).expect("fits");
     for index in 0..ENTRIES {
         let value = [index as u8; VALUE_LEN];
         let pointer = ValuePointer::new(FileId::MIN, 20 + index, VALUE_LEN as u32)
@@ -85,7 +86,8 @@ fn leaf_image() -> Vec<u8> {
 
 fn branch_image() -> Vec<u8> {
     let first_child = PageId::new(1).expect("non-zero");
-    let mut builder = FlatBranchBuilder::new(&PREFIX, CAPACITY, 1, first_child).expect("fits");
+    let mut builder =
+        FlatBranchBuilder::new(PAGE, &PREFIX, CAPACITY, 1, first_child).expect("fits");
     for index in 0..ENTRIES {
         let child = PageId::new(index as u32 + 2).expect("non-zero");
         builder.push(&key(index), child).expect("fits");

@@ -439,10 +439,10 @@ owner can overrule one before STORE-02 and FMT-08 build on it.
 3. **A block does not carry its page id** (S14). There is no room for it
    within 8 bytes next to a length. A sealed segment has it in the footer. For
    an unsealed segment it has to come from the page table, or from the
-   payload: a flat page image does not hold its own page id, a delta names its
-   page (FMT-03), and FMT-02 decides for tree pages. If FMT-02 puts the page
-   id in the tree page header, a store can list the tree pages of an unsealed
-   segment by walking it.
+   payload: a delta names its page (FMT-03), a tree page image holds its
+   own page id (TP2 of `tree-page.md`), and a flat page image does too
+   since D-050 (P14 of `flat-page.md`). So a store can list every page of an
+   unsealed segment by walking its blocks.
 4. **No page image has a checksum of its own** (S8). The block's checksum
    covers the compressed bytes and delta runs, so it cannot be dropped, and
    a second one inside the image would be paid on every load. FMT-04 first

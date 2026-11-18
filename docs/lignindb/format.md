@@ -118,6 +118,10 @@ table (STORE-03).
   needs.
 - **One id space.** Tree pages, flat pages and any later page kind share it.
   The id says nothing about what the page holds.
+- **In the image.** Every page image holds its own id, the `u32` at offset
+  4 (TP2 of [`tree-page.md`](tree-page.md), P14 of
+  [`flat-page.md`](flat-page.md)). A reader that asked for a page compares
+  the two.
 - **Dense.** Ids are small numbers handed out from 1 upward, so the table is a
   directly indexed array with no hashing. Allocation, freeing and deferred
   reuse are STORE-10's.
@@ -555,7 +559,7 @@ changes and U6 applies without exception.
 | --- | --- | --- |
 | FMT-02 Tree page codec | `PageId` for cross-page pointers, with 0 for "none". A page image has no version of its own (R5). It lies in a record with a checksum (R1, R4): the segment block that holds it, so it carries none itself ([`tree-page.md`](tree-page.md), TP3). | The cell layout, the page header, and how a cell stores the value pointer. `SlotId` and `CellAddress` (3.4) were added by this task. The pointer's fields and its 16-byte encoding are FMT-07's. |
 | FMT-03 Page delta records | The record rules R1 to R7 and the checksum. A run of page deltas lies in a record with a checksum (R1, R4): the segment block or the log group that holds it, so it carries none itself ([`page-delta.md`](page-delta.md), PD4). | The records and the run. A changed hash is 35 bytes, and 47 as a block. |
-| FMT-04 Flat page codec | As FMT-02: a flat page image lies in the record that holds it and carries no checksum itself ([`flat-page.md`](flat-page.md), P12). | Everything inside the page. |
+| FMT-04 Flat page codec | As FMT-02: a flat page image lies in the record that holds it and carries no checksum itself ([`flat-page.md`](flat-page.md), P12). `PageId` for the page's own id, which every page image holds at offset 4 (P14; TP2 of [`tree-page.md`](tree-page.md)). | Everything inside the page. |
 | FMT-05 Log record format | `CommitVersion` for a commit group; consecutive groups differ by one (3.2). The default frame. A group above 128 MiB is several records (C5). | Group layout, record kinds, and what a failed record means for the tail (R7). |
 | FMT-06 Segment, manifest format | The file header and kind codes. The manifest's header version is the database format version (V3). `FileId` for naming live files. | Block headers, the footer index, the manifest body, the meaning of the manifest's sequence field (H3). The manifest body also records the store's page size, which no page image holds ([`segment-manifest.md`](segment-manifest.md), M17). |
 | FMT-07 Value log format | The default frame. A value above 128 MiB is several records (C5). `PageId` for the back pointer and `FileId` for the value pointer. | The record layout, the value pointer, and the rules that make the back pointer enough to find the owning cell ([`value-log-format.md`](value-log-format.md)). |
