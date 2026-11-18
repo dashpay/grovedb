@@ -145,12 +145,36 @@ fn main() {
         db.prove_query(&everything, None, version)
     });
     let tx = db.start_transaction();
-    row("delete the tree with its seven committed items", || {
-        let options = DeleteOptions {
+    let with_its_items = || {
+        Some(DeleteOptions {
             allow_deleting_non_empty_trees: true,
             deleting_non_empty_trees_returns_error: false,
             ..Default::default()
-        };
-        db.delete(root, TREE, Some(options), Some(&tx), version)
+        })
+    };
+    row("delete the tree with its seven committed items", || {
+        db.delete(root, TREE, with_its_items(), Some(&tx), version)
     });
+    let fresh: &[&[u8]] = &[b"tree3"];
+    db.insert(
+        root,
+        b"tree3",
+        Element::empty_tree(),
+        None,
+        Some(&tx),
+        version,
+    )
+    .value
+    .expect("an insert");
+    for key in [
+        b"key1", b"key2", b"key3", b"key4", b"key5", b"key6", b"key7",
+    ] {
+        db.insert(fresh, key, item(7, 100), None, Some(&tx), version)
+            .value
+            .expect("an insert");
+    }
+    row(
+        "delete a tree with seven items the same transaction wrote",
+        || db.delete(root, b"tree3", with_its_items(), Some(&tx), version),
+    );
 }
