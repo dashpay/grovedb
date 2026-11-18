@@ -7,8 +7,8 @@
 //! - the `OperationCost` of each operation;
 //! - the root hash after each write, batch and commit;
 //! - the result of each read;
-//! - for each query, the proof bytes, the cost of proving and whether the
-//!   proof verifies.
+//! - for each read GroveDB proves, the proof bytes, the cost of proving and
+//!   whether the proof verifies.
 //!
 //! A replay runs the same operations again and compares. It is green when
 //! every one of those values is the same, on any engine and at any commit.
@@ -60,11 +60,18 @@
 //! compiler stops at them when the type grows:
 //!
 //! - [`Runner`](run::Runner)'s `value` turns what `apply` returned, an
-//!   [`Outcome`](crate::workload::Outcome), into the bytes that are
-//!   compared. A new outcome needs its encoding.
+//!   [`Outcome`](crate::workload::Outcome), into the value that is
+//!   compared, and its `run` does the same for each shape of answer
+//!   `GroveDb::run_path_query` has. A new outcome or shape is one more
+//!   [`Value::Record`](step::Value::Record): a name and its fields. The
+//!   encoding and the long form of a record are written once.
 //! - [`run::provable`] says which [`Read`](crate::workload::Read) is proved
 //!   and with what. A new kind of read that GroveDB can prove has to be
 //!   proved, or its proof bytes are compared by nothing.
+//!
+//! A value that is already recorded keeps its encoding: change one and
+//! every trace holding it has to be recorded again, the reference scale
+//! included.
 //!
 //! Another engine is opened in one place, `record`'s `fresh_database`.
 

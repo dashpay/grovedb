@@ -9,20 +9,25 @@
 //! - the `OperationCost` and the result of the operation, or its error;
 //! - after everything but a read, the root hash, inside the open
 //!   transaction, and after a commit the root hash of the committed state;
-//! - for a query, the proof `GroveDb::prove_query` builds from committed
-//!   state, the cost of building it, and what the verifier makes of it.
+//! - for a read GroveDB proves ([`provable`]), the proof
+//!   `GroveDb::prove_query` builds from committed state, the cost of
+//!   building it, and what the verifier makes of it.
 //!
 //! Nothing here requires an operation to succeed or a proof to verify: what
 //! the engine returns is what is recorded.
 
 use std::fmt::Debug;
 
-use grovedb::{GroveDb, Transaction};
+use grovedb::{
+    operations::proof::indexed_axis::AxisEntries, query_result_type::QueryResultElements,
+    AggregateSumQueryResult, AxisAggregateValue, AxisKeys, Element, GroveDb, IndexedAxisEntry,
+    PathQuery, PathQueryRun, Transaction,
+};
 use grovedb_costs::CostContext;
 use grovedb_version::version::GroveVersion;
 
 use super::{
-    step::{Outcome, Proof, Proved, Row, Step, Value, Verification},
+    step::{Field, Outcome, Proof, Proved, Row, Step, Value, Verification},
     Error,
 };
 use crate::workload::{apply, Op, Outcome as Applied, Query, Read};
@@ -85,7 +90,7 @@ impl<'db> Runner<'db> {
                     Err(error) => failed(&error, "commit failed", &mut remarks),
                 }
             }
-            Ok(applied) => Outcome::Returned(self.value(applied)?),
+            Ok(applied) => Outcome::Returned(self.value(applied, &mut remarks)?),
             Err(error) => failed(&error, "failed", &mut remarks),
         };
         let (root_hash, proof) = match op {
@@ -111,43 +116,230 @@ impl<'db> Runner<'db> {
     }
 
     /// What an applied operation returned, in the form that is compared.
-    fn value(&self, applied: Applied) -> Result<Value, Error> {
-        let serialize = |element: &grovedb::Element| {
-            element
-                .serialize(self.grove_version)
-                .map_err(|error| Error::engine("serializing a returned element", &error))
-        };
+    ///
+    /// Every outcome is named here and none falls through, so an outcome
+    /// added to the workloads does not compile until it is recorded.
+    fn value(&self, applied: Applied, remarks: &mut Vec<String>) -> Result<Value, Error> {
         Ok(match applied {
             Applied::Written | Applied::EndOfBlock => Value::Nothing,
-            Applied::Element(element) => Value::Element(serialize(&element)?),
-            Applied::Rows(rows) => {
-                let mut encoded = Vec::new();
-                for (path, key, element) in rows.to_path_key_elements() {
-                    let element = serialize(&element)?;
-                    encoded.push(Row { path, key, element });
+            Applied::Element(element) => Value::Element(self.serialized(&element)?),
+            Applied::Rows(rows) => Value::Rows(self.rows(rows)?),
+            Applied::WrittenInSegments { first_segment } => Value::Record(
+                "written-in-segments",
+                vec![("first-segment", Field::Cost(first_segment))],
+            ),
+            Applied::Reclaimed(report) => {
+                if let Some(error) = report.first_unresolved_error {
+                    remarks.push(format!("first unresolved: {error}"));
                 }
-                Value::Rows(encoded)
+                Value::Record(
+                    "reclaimed",
+                    vec![
+                        ("reclaimed", number(report.reclaimed_records)),
+                        ("skipped-live", number(report.skipped_live)),
+                        ("unresolved", number(report.unresolved_records)),
+                    ],
+                )
             }
+            Applied::Run(run) => self.run(run)?,
+            Applied::Sums(sums) => Value::Record("sums", sums_fields(sums)),
+            Applied::Aux(value) => Value::Record(
+                "aux",
+                vec![("value", value.map_or(Field::Absent, Field::Bytes))],
+            ),
+            Applied::AuxEntries(entries) => Value::Record(
+                "aux-entries",
+                vec![(
+                    "entries",
+                    list(entries, |(key, value)| {
+                        vec![Field::Bytes(key), Field::Bytes(value)]
+                    }),
+                )],
+            ),
         })
     }
 
+    /// What `GroveDb::run_path_query` returned, one kind of record for each
+    /// shape of answer.
+    fn run(&self, run: PathQueryRun) -> Result<Value, Error> {
+        let per_key = |name, keys| Value::Record(name, vec![("keys", keys)]);
+        Ok(match run {
+            PathQueryRun::Elements { elements, skipped } => Value::Record(
+                "elements",
+                vec![
+                    ("rows", Field::Rows(self.rows(elements)?)),
+                    ("skipped", number(skipped)),
+                ],
+            ),
+            PathQueryRun::AggregateCount(count) => {
+                Value::Record("aggregate-count", vec![("count", number(count))])
+            }
+            PathQueryRun::AggregateSum(sum) => {
+                Value::Record("aggregate-sum", vec![("sum", number(sum))])
+            }
+            PathQueryRun::AggregateCountAndSum { count, sum } => Value::Record(
+                "aggregate-count-and-sum",
+                vec![("count", number(count)), ("sum", number(sum))],
+            ),
+            PathQueryRun::AggregateCountPerKey(keys) => per_key(
+                "aggregate-count-per-key",
+                list(keys, |(key, count)| vec![Field::Bytes(key), number(count)]),
+            ),
+            PathQueryRun::AggregateSumPerKey(keys) => per_key(
+                "aggregate-sum-per-key",
+                list(keys, |(key, sum)| vec![Field::Bytes(key), number(sum)]),
+            ),
+            PathQueryRun::AggregateCountAndSumPerKey(keys) => per_key(
+                "aggregate-count-and-sum-per-key",
+                list(keys, |(key, count, sum)| {
+                    vec![Field::Bytes(key), number(count), number(sum)]
+                }),
+            ),
+            PathQueryRun::AxisEntries { entries, skipped } => {
+                let (axis, entries) = self.axis_entries(entries)?;
+                Value::Record(
+                    "axis-entries",
+                    vec![
+                        ("axis", axis),
+                        ("entries", entries),
+                        ("skipped", skipped.map_or(Field::Absent, number)),
+                    ],
+                )
+            }
+            PathQueryRun::BranchedAxisEntries(branches) => {
+                let mut items = Vec::new();
+                for (key, entries) in branches {
+                    let mut item = vec![Field::Bytes(key)];
+                    match entries {
+                        Some(entries) => {
+                            let (axis, entries) = self.axis_entries(entries)?;
+                            item.extend([axis, entries]);
+                        }
+                        None => item.push(Field::Absent),
+                    }
+                    items.push(item);
+                }
+                Value::Record(
+                    "branched-axis-entries",
+                    vec![("branches", Field::List(items))],
+                )
+            }
+            PathQueryRun::AxisKeys { keys, skipped } => {
+                let (axis, keys) = axis_keys(keys);
+                Value::Record(
+                    "axis-keys",
+                    vec![
+                        ("axis", axis),
+                        ("keys", keys),
+                        ("skipped", skipped.map_or(Field::Absent, number)),
+                    ],
+                )
+            }
+            PathQueryRun::BranchedAxisKeys(branches) => Value::Record(
+                "branched-axis-keys",
+                vec![(
+                    "branches",
+                    list(branches, |(key, keys)| {
+                        let mut item = vec![Field::Bytes(key)];
+                        match keys {
+                            Some(keys) => {
+                                let (axis, keys) = axis_keys(keys);
+                                item.extend([axis, keys]);
+                            }
+                            None => item.push(Field::Absent),
+                        }
+                        item
+                    }),
+                )],
+            ),
+            PathQueryRun::AxisRank(rank) => {
+                Value::Record("axis-rank", vec![("rank", number(rank))])
+            }
+            PathQueryRun::AxisAggregate(aggregate) => {
+                let (metric, value) = match aggregate {
+                    AxisAggregateValue::Population(population) => {
+                        ("population", number(population))
+                    }
+                    AxisAggregateValue::Total(total) => ("total", number(total)),
+                };
+                Value::Record(
+                    "axis-aggregate",
+                    vec![("metric", Field::Word(metric)), ("value", value)],
+                )
+            }
+            PathQueryRun::SumBudget(sums) => Value::Record("sum-budget", sums_fields(sums)),
+        })
+    }
+
+    /// The entries of an axis read: the axis, and for each entry the value
+    /// it is ordered by, its key and its element.
+    fn axis_entries(&self, entries: AxisEntries) -> Result<(Field, Field), Error> {
+        fn items<T: Into<i128>>(
+            runner: &Runner,
+            entries: Vec<IndexedAxisEntry<T>>,
+        ) -> Result<Field, Error> {
+            let mut items = Vec::new();
+            for entry in entries {
+                items.push(vec![
+                    number(entry.ordering_value),
+                    Field::Bytes(entry.primary_key),
+                    Field::Bytes(runner.serialized(&entry.value)?),
+                ]);
+            }
+            Ok(Field::List(items))
+        }
+        Ok(match entries {
+            AxisEntries::Count(entries) => (Field::Word("count"), items(self, entries)?),
+            AxisEntries::Sum(entries) => (Field::Word("sum"), items(self, entries)?),
+            AxisEntries::Avg(entries) => (Field::Word("avg"), items(self, entries)?),
+        })
+    }
+
+    fn rows(&self, rows: QueryResultElements) -> Result<Vec<Row>, Error> {
+        let mut encoded = Vec::new();
+        for (path, key, element) in rows.to_path_key_elements() {
+            let element = self.serialized(&element)?;
+            encoded.push(Row { path, key, element });
+        }
+        Ok(encoded)
+    }
+
+    fn serialized(&self, element: &Element) -> Result<Vec<u8>, Error> {
+        element
+            .serialize(self.grove_version)
+            .map_err(|error| Error::engine("serializing a returned element", &error))
+    }
+
     /// Proves a read against committed state and verifies the proof. `None`
-    /// for a read GroveDB has no proof for.
+    /// for a read that is not proved.
     fn prove(&self, read: &Read, remarks: &mut Vec<String>) -> Result<Option<Proof>, Error> {
-        let Some(query) = provable(read) else {
+        let Some(provable) = provable(read) else {
             return Ok(None);
         };
-        let path_query = query.to_path_query();
-        let CostContext { value, cost } =
-            self.db.prove_query(&path_query, None, self.grove_version);
+        let converted;
+        let path_query = match provable {
+            Provable::Rows(query) => {
+                converted = query.to_path_query();
+                &converted
+            }
+            Provable::Answer(path_query) => path_query,
+        };
+        let CostContext { value, cost } = self.db.prove_query(path_query, None, self.grove_version);
         let proved = match value {
             Ok(bytes) => {
-                let verified = if query.raw {
-                    GroveDb::verify_query_raw(&bytes, &path_query, self.grove_version)
-                        .map(|(root, _)| root)
-                } else {
-                    GroveDb::verify_query(&bytes, &path_query, self.grove_version)
-                        .map(|(root, _)| root)
+                let verified = match provable {
+                    Provable::Rows(query) if query.raw => {
+                        GroveDb::verify_query_raw(&bytes, path_query, self.grove_version)
+                            .map(|(root, _)| root)
+                    }
+                    Provable::Rows(_) => {
+                        GroveDb::verify_query(&bytes, path_query, self.grove_version)
+                            .map(|(root, _)| root)
+                    }
+                    Provable::Answer(_) => {
+                        GroveDb::verify_path_query(&bytes, path_query, self.grove_version)
+                            .map(|verified| *verified.root_hash())
+                    }
                 };
                 Proved::Bytes(bytes, verification(verified, &self.committed_root, remarks))
             }
@@ -160,17 +352,81 @@ impl<'db> Runner<'db> {
     }
 }
 
-/// The query a read is proved with, for a read GroveDB can prove.
+/// How a read is proved: always with `GroveDb::prove_query`, and verified by
+/// the verifier of its kind of answer.
+#[derive(Clone, Copy, Debug)]
+pub enum Provable<'read> {
+    /// A query that returns rows, verified by `GroveDb::verify_query`, or by
+    /// `GroveDb::verify_query_raw` when it returns elements as stored.
+    Rows(&'read Query),
+    /// A path query in GroveDB's whole grammar, verified by
+    /// `GroveDb::verify_path_query`.
+    Answer(&'read PathQuery),
+}
+
+/// How a read is proved, for a read that is.
 ///
 /// Every kind of read is named here and none falls through, so a kind added
 /// to the workloads does not compile until it is said whether, and how, it
 /// is proved. A read that is recorded without its proof is a read whose
 /// proof bytes no replay compares.
-pub fn provable(read: &Read) -> Option<&Query> {
+///
+/// A [`Read::PathQuery`] is proved when its stream marks it as proven. The
+/// ones it does not mark are the queries GroveDB refuses to prove on the
+/// grove version the stream was generated for. The readers that return
+/// rows, the sum-budget walk and the auxiliary keyspace have no proof.
+pub fn provable(read: &Read) -> Option<Provable<'_>> {
     match read {
-        Read::Get { .. } => None,
-        Read::Query(query) => Some(query),
+        Read::Query(query) => Some(Provable::Rows(query)),
+        Read::PathQuery {
+            query,
+            proven: true,
+        } => Some(Provable::Answer(query)),
+        Read::PathQuery { proven: false, .. }
+        | Read::Get { .. }
+        | Read::Rows { .. }
+        | Read::SumBudget { .. }
+        | Read::GetAux { .. }
+        | Read::AuxByPrefix { .. } => None,
     }
+}
+
+fn number(value: impl Into<i128>) -> Field {
+    Field::Number(value.into())
+}
+
+fn list<T>(items: Vec<T>, fields: impl FnMut(T) -> Vec<Field>) -> Field {
+    Field::List(items.into_iter().map(fields).collect())
+}
+
+/// The keys of an axis read: the axis, and for each key the value it is
+/// ordered by.
+fn axis_keys(keys: AxisKeys) -> (Field, Field) {
+    fn items<T: Into<i128>>(keys: Vec<(T, Vec<u8>)>) -> Field {
+        list(keys, |(ordering_value, key)| {
+            vec![number(ordering_value), Field::Bytes(key)]
+        })
+    }
+    match keys {
+        AxisKeys::Count(keys) => (Field::Word("count"), items(keys)),
+        AxisKeys::Sum(keys) => (Field::Word("sum"), items(keys)),
+        AxisKeys::Avg(keys) => (Field::Word("avg"), items(keys)),
+    }
+}
+
+/// What a walk over sum items returned: each key with its sum, whether the
+/// walk stopped at GroveDB's hard limit, and how many elements it met.
+fn sums_fields(sums: AggregateSumQueryResult) -> Vec<(&'static str, Field)> {
+    vec![
+        (
+            "sums",
+            list(sums.results, |(key, sum)| {
+                vec![Field::Bytes(key), number(sum)]
+            }),
+        ),
+        ("hard-limit-reached", Field::Flag(sums.hard_limit_reached)),
+        ("scanned", number(sums.elements_scanned)),
+    ]
 }
 
 /// What the verifier made of a proof, given the root hash it verified to.
@@ -392,6 +648,516 @@ mod tests {
             assert_eq!(rows.step.root_hash, None);
             assert!(rows.remarks.is_empty());
         }
+    }
+
+    fn whole_tree(path: &[&[u8]]) -> Box<PathQuery> {
+        Box::new(PathQuery::new_unsized(
+            path.iter().map(|segment| segment.to_vec()).collect(),
+            grovedb::Query::new_range_full(),
+        ))
+    }
+
+    fn sum_walk(path: &[&[u8]], sum_limit: u64) -> Read {
+        Read::SumBudget {
+            query: Box::new(grovedb::AggregateSumPathQuery::new(
+                path.iter().map(|segment| segment.to_vec()).collect(),
+                grovedb_merk::proofs::query::AggregateSumQuery {
+                    items: vec![grovedb::QueryItem::RangeFull(..)],
+                    left_to_right: true,
+                    sum_limit,
+                    limit_of_items_to_check: None,
+                },
+            )),
+            skip_non_sum_items: true,
+            ignore_references: false,
+        }
+    }
+
+    #[test]
+    fn it_is_said_of_every_read_whether_it_is_proved() {
+        let Op::Read(rows) = query(&[], false) else {
+            unreachable!("a query is a read")
+        };
+        assert!(matches!(provable(&rows), Some(Provable::Rows(_))));
+        assert!(matches!(
+            provable(&Read::PathQuery {
+                query: whole_tree(&[]),
+                proven: true,
+            }),
+            Some(Provable::Answer(_))
+        ));
+        for read in [
+            Read::PathQuery {
+                query: whole_tree(&[]),
+                proven: false,
+            },
+            Read::Get {
+                path: Vec::new(),
+                key: b"key".to_vec(),
+            },
+            Read::Rows {
+                query: whole_tree(&[]),
+                raw: true,
+            },
+            sum_walk(&[], 1),
+            Read::GetAux {
+                key: b"key".to_vec(),
+            },
+            Read::AuxByPrefix { prefix: Vec::new() },
+        ] {
+            assert!(provable(&read).is_none(), "{read:?}");
+        }
+    }
+
+    #[test]
+    fn every_shape_of_answer_is_a_record_of_its_own() {
+        use grovedb::query_result_type::QueryResultElement;
+
+        let grove_version = GroveVersion::latest();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = GroveDb::open(dir.path()).expect("open");
+        let runner = Runner::new(&db, grove_version).expect("runner");
+        let element = Element::new_item(b"one".to_vec());
+        let serialized = element.serialize(grove_version).expect("serialize");
+        let key = || b"k".to_vec();
+        fn entry<T>(ordering_value: T, element: &Element) -> IndexedAxisEntry<T> {
+            IndexedAxisEntry {
+                ordering_value,
+                primary_key: b"k".to_vec(),
+                value: element.clone(),
+            }
+        }
+        let entries = |ordering_value: i128| {
+            Field::List(vec![vec![
+                Field::Number(ordering_value),
+                Field::Bytes(key()),
+                Field::Bytes(serialized.clone()),
+            ]])
+        };
+        let keys = |ordering_value: i128| {
+            Field::List(vec![vec![
+                Field::Number(ordering_value),
+                Field::Bytes(key()),
+            ]])
+        };
+        let per_key =
+            |kind, item: Vec<Field>| Value::Record(kind, vec![("keys", Field::List(vec![item]))]);
+        let axis = |kind, list, axis, items, skipped| {
+            Value::Record(
+                kind,
+                vec![
+                    ("axis", Field::Word(axis)),
+                    (list, items),
+                    ("skipped", skipped),
+                ],
+            )
+        };
+        let sums = |kind| {
+            Value::Record(
+                kind,
+                vec![
+                    (
+                        "sums",
+                        Field::List(vec![vec![Field::Bytes(key()), Field::Number(5)]]),
+                    ),
+                    ("hard-limit-reached", Field::Flag(true)),
+                    ("scanned", Field::Number(6)),
+                ],
+            )
+        };
+        let walked = || AggregateSumQueryResult {
+            results: vec![(key(), 5)],
+            hard_limit_reached: true,
+            elements_scanned: 6,
+        };
+        let answers: Vec<(PathQueryRun, Value)> = vec![
+            (
+                PathQueryRun::Elements {
+                    elements: QueryResultElements::from_elements(vec![
+                        QueryResultElement::PathKeyElementTrioResultItem((
+                            vec![b"p".to_vec()],
+                            key(),
+                            element.clone(),
+                        )),
+                    ]),
+                    skipped: 3,
+                },
+                Value::Record(
+                    "elements",
+                    vec![
+                        (
+                            "rows",
+                            Field::Rows(vec![Row {
+                                path: vec![b"p".to_vec()],
+                                key: key(),
+                                element: serialized.clone(),
+                            }]),
+                        ),
+                        ("skipped", Field::Number(3)),
+                    ],
+                ),
+            ),
+            (
+                PathQueryRun::AggregateCount(4),
+                Value::Record("aggregate-count", vec![("count", Field::Number(4))]),
+            ),
+            (
+                PathQueryRun::AggregateSum(-4),
+                Value::Record("aggregate-sum", vec![("sum", Field::Number(-4))]),
+            ),
+            (
+                PathQueryRun::AggregateCountAndSum { count: 2, sum: -9 },
+                Value::Record(
+                    "aggregate-count-and-sum",
+                    vec![("count", Field::Number(2)), ("sum", Field::Number(-9))],
+                ),
+            ),
+            (
+                PathQueryRun::AggregateCountPerKey(vec![(key(), 1)]),
+                per_key(
+                    "aggregate-count-per-key",
+                    vec![Field::Bytes(key()), Field::Number(1)],
+                ),
+            ),
+            (
+                PathQueryRun::AggregateSumPerKey(vec![(key(), -1)]),
+                per_key(
+                    "aggregate-sum-per-key",
+                    vec![Field::Bytes(key()), Field::Number(-1)],
+                ),
+            ),
+            (
+                PathQueryRun::AggregateCountAndSumPerKey(vec![(key(), 1, -1)]),
+                per_key(
+                    "aggregate-count-and-sum-per-key",
+                    vec![Field::Bytes(key()), Field::Number(1), Field::Number(-1)],
+                ),
+            ),
+            (
+                PathQueryRun::AxisEntries {
+                    entries: AxisEntries::Count(vec![entry(5, &element)]),
+                    skipped: Some(2),
+                },
+                axis(
+                    "axis-entries",
+                    "entries",
+                    "count",
+                    entries(5),
+                    Field::Number(2),
+                ),
+            ),
+            (
+                PathQueryRun::AxisEntries {
+                    entries: AxisEntries::Sum(vec![entry(-5, &element)]),
+                    skipped: None,
+                },
+                axis("axis-entries", "entries", "sum", entries(-5), Field::Absent),
+            ),
+            (
+                PathQueryRun::AxisEntries {
+                    entries: AxisEntries::Avg(vec![entry(-6, &element)]),
+                    skipped: None,
+                },
+                axis("axis-entries", "entries", "avg", entries(-6), Field::Absent),
+            ),
+            (
+                PathQueryRun::BranchedAxisEntries(vec![
+                    (
+                        b"b".to_vec(),
+                        Some(AxisEntries::Count(vec![entry(5, &element)])),
+                    ),
+                    (b"c".to_vec(), None),
+                ]),
+                Value::Record(
+                    "branched-axis-entries",
+                    vec![(
+                        "branches",
+                        Field::List(vec![
+                            vec![
+                                Field::Bytes(b"b".to_vec()),
+                                Field::Word("count"),
+                                entries(5),
+                            ],
+                            vec![Field::Bytes(b"c".to_vec()), Field::Absent],
+                        ]),
+                    )],
+                ),
+            ),
+            (
+                PathQueryRun::AxisKeys {
+                    keys: AxisKeys::Count(vec![(7, key())]),
+                    skipped: Some(0),
+                },
+                axis("axis-keys", "keys", "count", keys(7), Field::Number(0)),
+            ),
+            (
+                PathQueryRun::AxisKeys {
+                    keys: AxisKeys::Sum(vec![(-7, key())]),
+                    skipped: None,
+                },
+                axis("axis-keys", "keys", "sum", keys(-7), Field::Absent),
+            ),
+            (
+                PathQueryRun::AxisKeys {
+                    keys: AxisKeys::Avg(vec![(-8, key())]),
+                    skipped: None,
+                },
+                axis("axis-keys", "keys", "avg", keys(-8), Field::Absent),
+            ),
+            (
+                PathQueryRun::BranchedAxisKeys(vec![
+                    (b"b".to_vec(), Some(AxisKeys::Sum(vec![(-7, key())]))),
+                    (b"c".to_vec(), None),
+                ]),
+                Value::Record(
+                    "branched-axis-keys",
+                    vec![(
+                        "branches",
+                        Field::List(vec![
+                            vec![Field::Bytes(b"b".to_vec()), Field::Word("sum"), keys(-7)],
+                            vec![Field::Bytes(b"c".to_vec()), Field::Absent],
+                        ]),
+                    )],
+                ),
+            ),
+            (
+                PathQueryRun::AxisRank(9),
+                Value::Record("axis-rank", vec![("rank", Field::Number(9))]),
+            ),
+            (
+                PathQueryRun::AxisAggregate(AxisAggregateValue::Population(3)),
+                Value::Record(
+                    "axis-aggregate",
+                    vec![
+                        ("metric", Field::Word("population")),
+                        ("value", Field::Number(3)),
+                    ],
+                ),
+            ),
+            (
+                PathQueryRun::AxisAggregate(AxisAggregateValue::Total(-3)),
+                Value::Record(
+                    "axis-aggregate",
+                    vec![
+                        ("metric", Field::Word("total")),
+                        ("value", Field::Number(-3)),
+                    ],
+                ),
+            ),
+            (PathQueryRun::SumBudget(walked()), sums("sum-budget")),
+        ];
+        for (answer, expected) in answers {
+            assert_eq!(runner.run(answer).expect("a record"), expected);
+        }
+        let mut remarks = Vec::new();
+        assert_eq!(
+            runner
+                .value(Applied::Sums(walked()), &mut remarks)
+                .expect("a record"),
+            sums("sums")
+        );
+        assert_eq!(
+            runner
+                .value(
+                    Applied::Reclaimed(grovedb::PendingPrefixDropsReport {
+                        reclaimed_records: 1,
+                        skipped_live: 2,
+                        unresolved_records: 3,
+                        first_unresolved_error: Some("a storage fault".to_string()),
+                    }),
+                    &mut remarks
+                )
+                .expect("a record"),
+            Value::Record(
+                "reclaimed",
+                vec![
+                    ("reclaimed", Field::Number(1)),
+                    ("skipped-live", Field::Number(2)),
+                    ("unresolved", Field::Number(3)),
+                ],
+            )
+        );
+        assert_eq!(remarks, ["first unresolved: a storage fault"]);
+    }
+
+    #[test]
+    fn the_operations_of_the_later_workloads_are_observed() {
+        let grove_version = GroveVersion::latest();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = GroveDb::open(dir.path()).expect("open");
+        let mut runner = Runner::new(&db, grove_version).expect("runner");
+        let empty_root = runner.committed_root;
+        let returned = |observed: Observed| match observed.step.outcome {
+            Outcome::Returned(value) => value,
+            Outcome::Failed(error) => panic!("failed: {error} {:?}", observed.remarks),
+        };
+
+        let put = runner
+            .step(&Op::Write(Write::PutAux {
+                key: b"aux-a".to_vec(),
+                value: b"one".to_vec(),
+            }))
+            .expect("step");
+        assert_eq!(
+            put.step.root_hash,
+            Some(empty_root),
+            "no tree commits to it"
+        );
+        assert_eq!(returned(put), Value::Nothing);
+        runner.step(&Op::Commit).expect("step");
+        let aux = |key: &[u8]| Op::Read(Read::GetAux { key: key.to_vec() });
+        let stored = runner.step(&aux(b"aux-a")).expect("step");
+        assert_eq!((stored.step.root_hash, &stored.step.proof), (None, &None));
+        assert_eq!(
+            returned(stored),
+            Value::Record("aux", vec![("value", Field::Bytes(b"one".to_vec()))])
+        );
+        assert_eq!(
+            returned(runner.step(&aux(b"missing")).expect("step")),
+            Value::Record("aux", vec![("value", Field::Absent)])
+        );
+        assert_eq!(
+            returned(
+                runner
+                    .step(&Op::Read(Read::AuxByPrefix {
+                        prefix: b"aux-".to_vec()
+                    }))
+                    .expect("step")
+            ),
+            Value::Record(
+                "aux-entries",
+                vec![(
+                    "entries",
+                    Field::List(vec![vec![
+                        Field::Bytes(b"aux-a".to_vec()),
+                        Field::Bytes(b"one".to_vec())
+                    ]])
+                )]
+            )
+        );
+
+        for op in [
+            insert(&[], b"tree", Element::empty_tree()),
+            insert(&[b"tree"], b"sums", Element::empty_sum_tree()),
+            insert(&[b"tree", b"sums"], b"a", Element::new_sum_item(5)),
+            Op::Commit,
+        ] {
+            runner.step(&op).expect("step");
+        }
+        let before = runner.committed_root;
+        let partial = runner
+            .step(&Op::PartialBatch(crate::workload::PartialBatch {
+                ops: vec![BatchOp::InsertOnly {
+                    path: vec![b"tree".to_vec(), b"sums".to_vec()],
+                    key: b"b".to_vec(),
+                    element: Element::new_sum_item(7),
+                }],
+                add_on: vec![BatchOp::InsertOnly {
+                    path: vec![b"tree".to_vec()],
+                    key: b"note".to_vec(),
+                    element: Element::new_item(b"added once the first segment paused".to_vec()),
+                }],
+                pause_height: None,
+            }))
+            .expect("step");
+        assert_ne!(partial.step.root_hash, Some(before));
+        let whole = partial.step.cost.clone();
+        let Value::Record("written-in-segments", fields) = returned(partial) else {
+            panic!("a partial batch returns the cost of its first segment");
+        };
+        let [("first-segment", Field::Cost(first_segment))] = fields.as_slice() else {
+            panic!("{fields:?}");
+        };
+        assert!(first_segment.seek_count > 0);
+        assert!(first_segment.seek_count < whole.seek_count);
+        runner.step(&Op::Commit).expect("step");
+
+        let in_sums: &[&[u8]] = &[b"tree", b"sums"];
+        let walk = runner
+            .step(&Op::Read(sum_walk(in_sums, 100)))
+            .expect("step");
+        assert_eq!(walk.step.proof, None);
+        assert_eq!(
+            returned(walk),
+            Value::Record(
+                "sums",
+                vec![
+                    (
+                        "sums",
+                        Field::List(vec![
+                            vec![Field::Bytes(b"a".to_vec()), Field::Number(5)],
+                            vec![Field::Bytes(b"b".to_vec()), Field::Number(7)],
+                        ])
+                    ),
+                    ("hard-limit-reached", Field::Flag(false)),
+                    ("scanned", Field::Number(2)),
+                ]
+            )
+        );
+        let reads = [
+            Read::Rows {
+                query: whole_tree(in_sums),
+                raw: true,
+            },
+            Read::PathQuery {
+                query: whole_tree(in_sums),
+                proven: false,
+            },
+            Read::PathQuery {
+                query: whole_tree(in_sums),
+                proven: true,
+            },
+        ];
+        for (read, proved) in reads.into_iter().zip([false, false, true]) {
+            let rows = runner.step(&Op::Read(read)).expect("step");
+            assert_eq!(rows.step.root_hash, None);
+            match &rows.step.proof {
+                Some(proof) => {
+                    assert!(proved);
+                    assert!(matches!(
+                        proof.proved,
+                        Proved::Bytes(_, Verification::Verified)
+                    ));
+                }
+                None => assert!(!proved),
+            }
+            let Value::Record("elements", fields) = returned(rows) else {
+                panic!("a path query that selects keys returns elements");
+            };
+            let [("rows", Field::Rows(rows)), ("skipped", Field::Number(0))] = fields.as_slice()
+            else {
+                panic!("{fields:?}");
+            };
+            assert_eq!(rows.len(), 2);
+        }
+
+        runner
+            .step(&Op::Write(Write::DropFlat {
+                path: vec![b"tree".to_vec()],
+                key: b"sums".to_vec(),
+            }))
+            .expect("step");
+        runner.step(&Op::Commit).expect("step");
+        let committed = runner.committed_root;
+        let flush = runner.step(&Op::FlushPendingDrops).expect("step");
+        assert_eq!(flush.step.root_hash, Some(committed));
+        assert_eq!(flush.step.proof, None);
+        assert_eq!(
+            returned(flush),
+            Value::Record(
+                "reclaimed",
+                vec![
+                    ("reclaimed", Field::Number(1)),
+                    ("skipped-live", Field::Number(0)),
+                    ("unresolved", Field::Number(0)),
+                ]
+            )
+        );
+        let gone = runner.step(&query(&[b"tree"], true)).expect("step");
+        let Value::Rows(rows) = returned(gone) else {
+            panic!("a query returns rows");
+        };
+        assert_eq!(rows.len(), 1, "the note stays and the dropped tree is gone");
     }
 
     #[test]

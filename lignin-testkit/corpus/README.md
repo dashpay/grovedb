@@ -7,8 +7,8 @@ engine returned, step by step, for every workload on every grove version:
 - the `OperationCost` of each operation;
 - the root hash after each write, batch and commit;
 - the result of each read;
-- for each query, the proof bytes, the cost of proving it and whether the
-  proof verifies.
+- for each read GroveDB proves, the proof bytes, the cost of proving it and
+  whether the proof verifies.
 
 A replay runs the same operations again and compares every one of those
 values. The code is `lignin-testkit::golden`; its module documentation
@@ -24,8 +24,7 @@ count offsets on a ProvableCountProvableBigSumTree"). The workspace manifest
 is not part of that: LigninDB adds its crates to it. `Cargo.lock` is not
 committed in this repository, so the commit pins GroveDB's own code and not
 the versions of its dependencies. `record` refuses to run when an engine
-crate has uncommitted changes, unless it is given the commit to write down
-(`--engine`).
+crate has uncommitted changes.
 
 ## Using it
 
@@ -77,9 +76,10 @@ cargo run --release -p lignin-testkit --bin lignin-golden -- record \
 
 `3551b707` is the commit of `feat/LigninDB` this corpus was recorded on. Its
 engine crates are those of `22f163c2`, so the traces come out naming
-`22f163c2`. Then replay on
-the branch itself: what was recorded from the pinned engine has to come out
-the same there.
+`22f163c2`. A trace whose operations and recorded values did not change
+comes out byte for byte as it was, so `git status` shows what the new
+workloads added. Then replay on the branch itself: what was recorded from
+the pinned engine has to come out the same there.
 
 ## What is recorded
 
@@ -96,10 +96,33 @@ A workload is generated for the features of the grove version
 another grove version. Each segment of a trace closes with the number of
 operations and the digest of its stream, the one BASE-01's tests pin.
 
-The standard scale is 130 traces and 164,051 steps in 2.6 MB. On the
-machine it was recorded on (28 cores, shared), recording it takes about 25
-seconds in a release build and the replay test about 35 seconds in a debug
-build, eight traces at a time.
+What a step holds depends on its operation:
+
+| Operation | Result | Root hash | Proof |
+| --- | --- | --- | --- |
+| a write, a batch | none | after it, inside the open transaction | |
+| a batch in two segments (`PartialBatch`) | the cost GroveDB handed its caller when the first segment paused | after it | |
+| `Commit` | none; the cost is that of committing the transaction | of the committed state | |
+| `FlushPendingDrops` | the records reclaimed, skipped as live again, and left unresolved | after it | |
+| `Get` | the element | | |
+| `Query` | the rows | | always |
+| `PathQuery` (`GroveDb::run_path_query`) | the answer in the form of its shape: rows and how many the offset skipped, a count, a sum, both, one per key, axis entries or keys, a rank, an aggregate over an axis, a sum-budget window | | when the stream marks the read as proven |
+| `Rows` (`GroveDb::query`, `GroveDb::query_raw`) | the rows and how many the offset skipped | | |
+| `SumBudget`, `GetAux`, `AuxByPrefix` | the sums and where the walk stopped; the record; the records | | |
+
+A stream marks a path query as proven when GroveDB proves it on the grove
+version the stream was generated for. Such a proof is verified with
+`GroveDb::verify_path_query`, the proof of a `Query` with
+`GroveDb::verify_query` or `GroveDb::verify_query_raw`.
+`every_proven_read_is_recorded_with_its_proof` checks the committed files
+against the streams: a step has a proof exactly when its read is one of
+these.
+
+The standard scale is 260 traces and 191,851 steps in 3.9 MB: for each
+grove version the 19 workloads of the suite, `suite` and 32 hand-written
+cases. On the machine it was recorded on (28 cores, shared), recording it
+takes under a minute in a release build and the replay test about a minute
+in a debug build, eight traces at a time.
 
 A consumer that computes with the steps, as a cost model checked against
 every recorded `OperationCost` does, takes them as values from
@@ -124,6 +147,8 @@ blind where `apply` or GroveDB's public interface is:
   committed state, for the queries the workloads make. Verification is
   recorded as its outcome (verified, refused, or verified to another root),
   not as the rows the verifier returns.
+- `FlushPendingDrops` records the three counts of its report. The text of
+  the first unresolved error is a remark and is not compared.
 
 ## File format
 
@@ -139,7 +164,10 @@ a `stream` line closes them.
   part of which step differs.
 - A step written out in full follows its line as an indented block: its
   number in the trace, the operation and any error message as `#` remarks
-  (not compared), then every value.
+  (not compared), then every value. A result that is neither one element
+  nor plain rows is a `result <kind>` line and a line for each of its
+  fields; a list is its length and an `item` line for each entry, bytes
+  written as `0x` and hex.
 - `tally` counts the operations that failed, the queries that could not be
   proved and the proofs that do not verify. All three are zero for every
   generated workload.
@@ -152,13 +180,14 @@ digest` checkpoints in their place.
 
 ## Older grove versions: the hand-written cases
 
-BASE-01's generators steer around three behaviours of older grove versions
-so that every stream applies and every query proves. A node on such a
-version may have done exactly these things, so the corpus records them, as
-the engine returns them, on every grove version. Each case is a few
-operations on an empty database (`lignin-testkit::golden::legacy`), recorded
-in full. The numbers are the tally of the trace: queries that could not be
-proved / proofs that do not verify.
+BASE-01's generators steer around nine behaviours of older grove versions
+so that every stream applies and every read marked as proven proves. A node
+on such a version may have done exactly these things, so the corpus records
+them, as the engine returns them, on every grove version. Each case is a
+few operations on an empty database (`lignin-testkit::golden::legacy`),
+recorded in full. The numbers are the tally of the trace: operations that
+failed / reads that could not be proved / proofs that do not verify. A case
+the tables do not give numbers for records none of the three.
 
 **1. `GroveDb::delete` of a populated tree when the tree or its parent
 commits an aggregate into its node hashes.** Grove versions 1 to 3 reopen
@@ -167,26 +196,34 @@ the delete, after it, and after the next write to the parent.
 
 | Case | v1, v2 | v3 | v4, v5 |
 | --- | --- | --- | --- |
-| `delete-tree-under-provable-count-tree` | 0 / 1 | 0 / 2 | 0 / 0 |
-| `delete-sum-tree-under-provable-count-sum-tree` | 0 / 1 | 0 / 2 | 0 / 0 |
-| `delete-count-tree-under-provable-sum-tree` | 0 / 1 | 0 / 2 | 0 / 0 |
-| `delete-mmr-tree-under-provable-count-tree` | 0 / 1 | 0 / 2 | 0 / 0 |
-| `delete-tree-under-provable-count-provable-sum-tree` | 3 / 0 | 0 / 2 | 0 / 0 |
-| `delete-provable-count-tree-under-provable-count-tree` | 0 / 0 | 0 / 0 | 0 / 0 |
-| `delete-provable-count-indexed-tree-under-provable-count-tree` | 0 / 0 | 0 / 0 | 0 / 0 |
-| `delete-only-provable-count-tree-under-tree` | 0 / 0 | 0 / 0 | 0 / 0 |
-| `delete-only-provable-sum-indexed-tree-under-tree` | 0 / 0 | 0 / 0 | 0 / 0 |
-| `delete-only-tree-under-provable-count-tree` | 0 / 0 | 0 / 0 | 0 / 0 |
+| `delete-tree-under-provable-count-tree` | 0 / 0 / 1 | 0 / 0 / 2 | 0 / 0 / 0 |
+| `delete-sum-tree-under-provable-count-sum-tree` | 0 / 0 / 1 | 0 / 0 / 2 | 0 / 0 / 0 |
+| `delete-count-tree-under-provable-sum-tree` | 0 / 0 / 1 | 0 / 0 / 2 | 0 / 0 / 0 |
+| `delete-mmr-tree-under-provable-count-tree` | 0 / 0 / 1 | 0 / 0 / 2 | 0 / 0 / 0 |
+| `delete-tree-under-provable-count-provable-sum-tree` | 0 / 3 / 0 | 0 / 0 / 2 | 0 / 0 / 0 |
+| `delete-provable-count-provable-sum-tree-under-provable-count-provable-sum-tree` | 0 / 3 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| `delete-provable-count-provable-sum-indexed-tree-under-provable-count-provable-sum-tree` | 0 / 3 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+
+Recording none of the three: `delete-provable-count-tree-under-provable-count-tree`,
+`delete-provable-count-indexed-tree-under-provable-count-tree`,
+`delete-provable-count-sum-tree-under-provable-count-sum-tree`,
+`delete-provable-sum-tree-under-provable-sum-tree`,
+`delete-provable-sum-indexed-tree-under-provable-sum-tree`,
+`delete-only-provable-count-tree-under-tree`,
+`delete-only-provable-sum-indexed-tree-under-tree` and
+`delete-only-tree-under-provable-count-tree`.
 
 In the first five the delete commits a link hash for the parent that leaves
 its aggregate out, so the root hash after the delete differs from the one
 grove versions 4 and 5 give. The proof of a query in the parent is then
 refused by the verifier. On grove version 3 the proof of the parent's own
 element is refused as well. The next write to the parent recomputes the
-hash and the proofs verify again. In the last five the reopened parent
-hashes as it should (the child is of a type that hashes what the parent's
-does, or the parent is left empty); what differs between grove versions
-there is the cost of the delete.
+hash and the proofs verify again. In the others the reopened parent hashes
+as it should: the child is of a type that hashes what the parent's does
+(all seven such pairs are cases), or the parent is left empty. What differs
+between grove versions there is the cost of the delete. The two under a
+`ProvableCountProvableSumTree` cannot be proved on grove versions 1 and 2
+for the reason of the next group.
 
 **2. A query hosted by a `ProvableCountProvableSumTree` or an indexed
 tree.** Grove versions 1 and 2 refuse to prove it (`NotSupported`): it needs
@@ -194,23 +231,70 @@ the proof envelope of grove version 3.
 
 | Case | v1, v2 | v3, v4, v5 |
 | --- | --- | --- |
-| `query-in-provable-count-provable-sum-tree` | 3 / 0 | 0 / 0 |
-| `query-in-provable-sum-indexed-tree` | 3 / 0 | 0 / 0 |
-| `query-in-provable-count-indexed-tree` | 3 / 0 | 0 / 0 |
-| `query-in-provable-count-provable-sum-indexed-tree` | 3 / 0 | 0 / 0 |
+| `query-in-provable-count-provable-sum-tree` | 0 / 3 / 0 | 0 / 0 / 0 |
+| `query-in-provable-sum-indexed-tree` | 0 / 3 / 0 | 0 / 0 / 0 |
+| `query-in-provable-count-indexed-tree` | 0 / 3 / 0 | 0 / 0 / 0 |
+| `query-in-provable-count-provable-sum-indexed-tree` | 0 / 3 / 0 | 0 / 0 / 0 |
 
 **3. A reference stored in a `ProvableCountSumTree`.** On grove versions 1
 and 2 its proof does not verify (`InvalidProof`).
 
 | Case | v1, v2 | v3, v4, v5 |
 | --- | --- | --- |
-| `reference-in-provable-count-sum-tree` | 0 / 4 | 0 / 0 |
+| `reference-in-provable-count-sum-tree` | 0 / 0 / 4 | 0 / 0 / 0 |
+
+**4 to 9. Operations and forms of query an older grove version lacks.** In
+these cases every path query asks for a proof, where a generated stream
+marks as not proven the ones its grove version refuses to prove.
+
+| Case | What it asks for | v1, v2 | v3 | v4 | v5 |
+| --- | --- | --- | --- | --- | --- |
+| `move-in-batch` | 4. a batch `Move` of an item, then of a tree | 2 / 0 / 0 | 2 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| `drop-flat` | 5. `GroveDb::drop_flat_subtree`, then the flush | 1 / 0 / 0 | 1 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| `drop-flat-in-batch` | 5. a batch `DeleteTree` that drops flat, then the flush | 1 / 0 / 0 | 1 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| `aggregate-on-range` | 6. a count, a sum, and both over a range of keys | 0 / 3 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| `aggregate-per-key` | 6. a count for each of three keys, one of them absent | 0 / 1 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| `count-offset-page` | 7. two pages of a `ProvableCountTree`, skipped to by count | 0 / 2 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| `axis-read` | 8. six reads of an indexed tree in the order of its counts | 6 / 6 / 0 | 6 / 6 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| `sum-budget-window` | 8. a walk over sums up to a total, as a read mode | 2 / 2 / 0 | 2 / 2 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| `subquery-limit` | 9. a limit of its own for each subquery | 1 / 1 / 0 | 1 / 1 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| `subquery-offset` | 9. an offset of its own for each subquery | 1 / 1 / 0 | 1 / 1 / 0 | 1 / 1 / 0 | 0 / 0 / 0 |
+
+- A refused `Move` and a refused flat drop fail with
+  `VersionError::UnknownVersionMismatch` and leave the root hash as it was.
+  The flush that follows a refused drop reclaims nothing.
+- Grove versions 1 and 2 answer an aggregate and a count-offset page and
+  refuse only the proof (`NotSupported` for the aggregate, `InvalidQuery`
+  for the page).
+- A read mode and a limit or offset of a subquery's own are refused both
+  as a read and as a proof (`NotSupported`). `sum-budget-window` also walks
+  the same sums through `GroveDb::query_aggregate_sums_with_options`, which
+  every grove version serves.
+
+**What every grove version refuses.** Two more cases hold what the
+generators never ask for on any grove version, so that another engine has
+the refusals to compare with:
+
+| Case | What it asks for | v1 to v5 |
+| --- | --- | --- |
+| `offset-without-count` | a page of a plain tree, and an offset next to a subquery | 1 / 2 / 0 |
+| `aggregate-per-key-over-every-key` | a count for each key of a full range | 1 / 1 / 0 |
+
+`GroveDb::run_path_query` answers the page of a plain tree and no proof is
+built for it: the rows an offset skips there are read, not counted. It
+refuses an offset next to a subquery (`InvalidQuery`), which
+`GroveDb::query` and `GroveDb::query_raw` take; the case records all three.
+What those two return is not the same on every grove version: for a limit
+of three after an offset of two, over groups of two, three and four rows,
+grove versions 1 to 3 return two rows and grove versions 4 and 5 three.
+A count for each key is refused when the keys are given as the full range
+(`InvalidQuery`).
 
 `golden::legacy`'s tests run every case on every grove version and check
 these numbers, and `tests/golden.rs` checks that no other trace of the
 corpus has a failed operation or a proof that does not verify.
 
-A fourth behaviour stays in the generated streams: on grove versions 1 to 4,
+One more behaviour stays in the generated streams: on grove versions 1 to 4,
 deleting from a count-indexed tree leaves orphan rows that `verify_grovedb`
 reports. The corpus records the costs, root hashes, results and proofs of
 those streams as they are. It does not record what `verify_grovedb` reports.

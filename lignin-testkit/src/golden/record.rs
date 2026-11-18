@@ -16,7 +16,7 @@ use grovedb_version::version::GroveVersion;
 
 use super::{
     run::{Observed, Runner},
-    step::TraceDigest,
+    step::{Outcome, Step, TraceDigest, Value},
     trace::{shortened, Detail, Entry, Segment, Tally, Trace},
     Error,
 };
@@ -59,7 +59,8 @@ pub enum Source {
 }
 
 impl Source {
-    fn ops(&self, seed: u64) -> Box<dyn Iterator<Item = Op> + '_> {
+    /// The operations, for the seed of the trace.
+    pub fn ops(&self, seed: u64) -> Box<dyn Iterator<Item = Op> + '_> {
         match self {
             Source::Workload(workload) => Box::new(workload.stream(seed)),
             Source::Ops(ops) => Box::new(ops.iter().cloned()),
@@ -196,7 +197,7 @@ pub fn record(
                     Sample::Nothing => false,
                     Sample::Everything => true,
                     Sample::FirstOfEachKind { max_payload } => {
-                        let kind = Kind::of(&op);
+                        let kind = Kind::of(&op, &observed.step);
                         let new = !sampled_kinds.contains(&kind)
                             && observed.step.payload_len() <= max_payload;
                         if new {
@@ -249,7 +250,9 @@ fn quoted(op: &Op) -> String {
     shortened(&format!("{op:?}"), REMARK_CHARS)
 }
 
-/// The kind of an operation, as far as sampling tells kinds apart. An
+/// The kind of a step, as far as sampling tells kinds apart: the kind of
+/// its operation and, where the operation returns a record, the kind of
+/// record, so a trace shows each shape of answer a path query has. An
 /// operation of a kind this module has never heard of is still a kind of
 /// its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -257,11 +260,16 @@ struct Kind {
     op: Discriminant<Op>,
     write: Option<Discriminant<Write>>,
     read: Option<Discriminant<Read>>,
+    record: Option<&'static str>,
 }
 
 impl Kind {
-    fn of(op: &Op) -> Self {
+    fn of(op: &Op, step: &Step) -> Self {
         Kind {
+            record: match &step.outcome {
+                Outcome::Returned(Value::Record(kind, _)) => Some(kind),
+                _ => None,
+            },
             op: discriminant(op),
             write: match op {
                 Op::Write(write) => Some(discriminant(write)),
@@ -543,6 +551,77 @@ mod tests {
             detailed,
             [0, 1, 2, 4],
             "the query of twenty rows is too large"
+        );
+    }
+
+    /// A path query has many shapes of answer under one kind of read, so
+    /// the first step of each shape is sampled.
+    #[test]
+    fn the_first_answer_of_each_shape_is_sampled() {
+        use grovedb::{PathQuery, QueryItem as Item};
+
+        let tree = || vec![b"tree".to_vec()];
+        let read = |query: PathQuery| {
+            Op::Read(Read::PathQuery {
+                query: Box::new(query),
+                proven: true,
+            })
+        };
+        let rows = || {
+            read(PathQuery::new_unsized(
+                tree(),
+                grovedb::Query::new_range_full(),
+            ))
+        };
+        let count = || {
+            read(PathQuery::new_aggregate_count_on_range(
+                tree(),
+                Item::RangeFrom(b"a".to_vec()..),
+            ))
+        };
+        let ops = vec![
+            Op::Write(Write::Insert {
+                path: Vec::new(),
+                key: b"tree".to_vec(),
+                element: Element::empty_provable_count_tree(),
+            }),
+            Op::Write(Write::Insert {
+                path: tree(),
+                key: b"row".to_vec(),
+                element: Element::new_item(b"value".to_vec()),
+            }),
+            Op::Commit,
+            rows(),
+            count(),
+            rows(),
+            count(),
+        ];
+        let spec = TraceSpec {
+            name: "sampling".to_string(),
+            seed: 0,
+            grove_version: GroveVersion::latest(),
+            segments: vec![SegmentSpec {
+                workload: "by-hand".to_string(),
+                source: Source::Ops(ops),
+                checkpoint_every: None,
+                sample: Sample::FirstOfEachKind { max_payload: 1000 },
+            }],
+        };
+        let trace = run(&spec, Detailing::Sampled);
+        assert!(trace.tally.is_clean(), "{}", trace.render());
+        let detailed: Vec<(u64, &str)> = trace
+            .details()
+            .map(|detail| (detail.step, detail.lines[1].as_str()))
+            .collect();
+        assert_eq!(
+            detailed[1..],
+            [
+                (2, detailed[1].1),
+                (3, "result elements"),
+                (4, "result aggregate-count"),
+            ],
+            "{}",
+            trace.render()
         );
     }
 

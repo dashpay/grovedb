@@ -11,6 +11,8 @@
 //!   `the_named_proofs_are_in_the_corpus`.
 //! - The corpus holds the hand-written cases for older grove versions, as
 //!   the engine returns them: `only_the_hand_written_cases_record_a_failure`.
+//! - Every read GroveDB proves is recorded with its proof:
+//!   `every_proven_read_is_recorded_with_its_proof`.
 
 use std::{collections::BTreeSet, fs, path::PathBuf};
 
@@ -24,9 +26,10 @@ use lignin_testkit::{
             self, Scale, HAND_WRITTEN_SEED, NAMED_PROOFS, REFERENCE_DOCUMENT, REFERENCE_OWNER,
             REFERENCE_OWNER_LIMIT, SEED, SUITE_SEED,
         },
-        trace::{Detail, Tally, Trace},
+        run::provable,
+        trace::{Detail, Entry, Tally, Trace},
     },
-    workload::drive::Documents,
+    workload::{drive::Documents, Op},
 };
 
 fn recorded(file: &str) -> Trace {
@@ -176,16 +179,75 @@ fn only_the_hand_written_cases_record_a_failure() {
             &[1, 2, 3],
         ),
         case("delete-mmr-tree-under-provable-count-tree", &[1, 2, 3]),
+        case(
+            "delete-provable-count-provable-sum-tree-under-provable-count-provable-sum-tree",
+            &[1, 2],
+        ),
+        case(
+            "delete-provable-count-provable-sum-indexed-tree-under-provable-count-provable-sum-tree",
+            &[1, 2],
+        ),
         case("query-in-provable-count-provable-sum-tree", &[1, 2]),
         case("query-in-provable-sum-indexed-tree", &[1, 2]),
         case("query-in-provable-count-indexed-tree", &[1, 2]),
         case("query-in-provable-count-provable-sum-indexed-tree", &[1, 2]),
         case("reference-in-provable-count-sum-tree", &[1, 2]),
+        case("move-in-batch", &[1, 2, 3]),
+        case("drop-flat", &[1, 2, 3]),
+        case("drop-flat-in-batch", &[1, 2, 3]),
+        case("aggregate-on-range", &[1, 2]),
+        case("aggregate-per-key", &[1, 2]),
+        case("count-offset-page", &[1, 2]),
+        case("axis-read", &[1, 2, 3]),
+        case("sum-budget-window", &[1, 2, 3]),
+        case("subquery-limit", &[1, 2, 3]),
+        case("subquery-offset", &[1, 2, 3, 4]),
+        case("offset-without-count", &[1, 2, 3, 4, 5]),
+        case("aggregate-per-key-over-every-key", &[1, 2, 3, 4, 5]),
     ]
     .into_iter()
     .flatten()
     .collect();
     assert_eq!(unclean, expected);
+}
+
+/// A step holds a proof exactly when its operation is a read GroveDB
+/// proves, and a root hash exactly when it is not a read. The letters of a
+/// step line that stand for a proof and for a root hash are no hex digits,
+/// so they are found by looking for them.
+#[test]
+fn every_proven_read_is_recorded_with_its_proof() {
+    let (mut proofs, mut lines) = (0u64, 0u64);
+    for planned in plan::plan(Scale::Standard) {
+        let trace = recorded(&planned.file);
+        assert_eq!(trace.segments.len(), planned.spec.segments.len());
+        for (segment, spec) in trace.segments.iter().zip(&planned.spec.segments) {
+            let mut ops = spec.source.ops(planned.spec.seed);
+            for entry in &segment.entries {
+                let Entry::Step(line) = entry else { continue };
+                let op = ops.next().expect("a step for every operation");
+                let proven = matches!(&op, Op::Read(read) if provable(read).is_some());
+                let context = || format!("{}: `{line}` for {op:?}", planned.file);
+                assert_eq!(line.contains('p'), proven, "{}", context());
+                assert_eq!(line.contains('q'), proven, "{}", context());
+                assert_eq!(
+                    line.contains('r'),
+                    !matches!(op, Op::Read(_)),
+                    "{}",
+                    context()
+                );
+                proofs += u64::from(proven);
+                lines += 1;
+            }
+            assert!(
+                ops.next().is_none(),
+                "{}: an operation without a step",
+                planned.file
+            );
+        }
+    }
+    assert!(proofs > 0 && lines > proofs);
+    println!("{proofs} of {lines} steps hold a proof");
 }
 
 /// The value of the line of `detail` that starts with `key`.

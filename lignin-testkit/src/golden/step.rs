@@ -44,6 +44,30 @@ pub enum Value {
     Element(Vec<u8>),
     /// The rows of a query, in the order returned.
     Rows(Vec<Row>),
+    /// A result of any other shape: what it is, and its fields in order,
+    /// each under the name the long form gives it.
+    Record(&'static str, Vec<(&'static str, Field)>),
+}
+
+/// One field of a [`Value::Record`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Field {
+    /// A count, a sum or an average.
+    Number(i128),
+    /// A key or a stored value.
+    Bytes(Vec<u8>),
+    /// A yes or a no.
+    Flag(bool),
+    /// A value the engine may return and did not.
+    Absent,
+    /// One of a fixed set of names, such as the axis of an indexed tree.
+    Word(&'static str),
+    /// A cost the engine reported besides the cost of the operation.
+    Cost(OperationCost),
+    /// Rows, in the order returned.
+    Rows(Vec<Row>),
+    /// A list, in the order returned: the fields of each of its items.
+    List(Vec<Vec<Field>>),
 }
 
 /// One row of a query result.
@@ -67,14 +91,14 @@ impl Value {
             }
             Value::Rows(rows) => {
                 out.push(2);
-                put_len(out, rows.len());
-                for row in rows {
-                    put_len(out, row.path.len());
-                    for segment in &row.path {
-                        put_bytes(out, segment);
-                    }
-                    put_bytes(out, &row.key);
-                    put_bytes(out, &row.element);
+                put_rows(out, rows);
+            }
+            Value::Record(kind, fields) => {
+                out.push(3);
+                put_bytes(out, kind.as_bytes());
+                put_len(out, fields.len());
+                for (_name, field) in fields {
+                    field.encode(out);
                 }
             }
         }
@@ -84,24 +108,18 @@ impl Value {
         match self {
             Value::Nothing => {}
             Value::Element(element) => lines.push(format!("element {}", hex::encode(element))),
-            Value::Rows(rows) => {
-                lines.push(format!("rows {}", rows.len()));
-                for row in rows {
-                    let path: Vec<String> = row
-                        .path
-                        .iter()
-                        .map(|segment| hex_or_dash(segment))
-                        .collect();
-                    lines.push(format!(
-                        "row {} {} {}",
-                        if path.is_empty() {
-                            "-".to_string()
-                        } else {
-                            path.join("/")
-                        },
-                        hex_or_dash(&row.key),
-                        hex::encode(&row.element)
-                    ));
+            Value::Rows(rows) => rows_detail("rows", rows, lines),
+            Value::Record(kind, fields) => {
+                lines.push(format!("result {kind}"));
+                for (name, field) in fields {
+                    match field {
+                        Field::Rows(rows) => rows_detail(name, rows, lines),
+                        Field::List(items) => {
+                            lines.push(format!("{name} {}", items.len()));
+                            lines.extend(items.iter().map(|item| format!("item {}", tuple(item))));
+                        }
+                        field => lines.push(format!("{name} {}", field.text())),
+                    }
                 }
             }
         }
@@ -111,13 +129,132 @@ impl Value {
         match self {
             Value::Nothing => 0,
             Value::Element(element) => element.len(),
-            Value::Rows(rows) => rows
-                .iter()
-                .map(|row| {
-                    row.path.iter().map(Vec::len).sum::<usize>() + row.key.len() + row.element.len()
-                })
-                .sum(),
+            Value::Rows(rows) => rows_len(rows),
+            Value::Record(_, fields) => fields.iter().map(|(_, field)| field.payload_len()).sum(),
         }
+    }
+}
+
+impl Field {
+    /// The bytes of the field: a tag, then the value in the conventions of
+    /// [`Step::encode`]. A number is 16 bytes, whatever width the engine
+    /// returned it in.
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Field::Number(number) => {
+                out.push(0);
+                out.extend_from_slice(&number.to_le_bytes());
+            }
+            Field::Bytes(bytes) => {
+                out.push(1);
+                put_bytes(out, bytes);
+            }
+            Field::Flag(flag) => {
+                out.push(2);
+                out.push(u8::from(*flag));
+            }
+            Field::Absent => out.push(3),
+            Field::Word(word) => {
+                out.push(4);
+                put_bytes(out, word.as_bytes());
+            }
+            Field::Cost(cost) => {
+                out.push(5);
+                put_cost(out, cost);
+            }
+            Field::Rows(rows) => {
+                out.push(6);
+                put_rows(out, rows);
+            }
+            Field::List(items) => {
+                out.push(7);
+                put_len(out, items.len());
+                for item in items {
+                    put_len(out, item.len());
+                    for field in item {
+                        field.encode(out);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The field on one line. Bytes are `0x` and hex, so they are never
+    /// taken for a number, and a list is its items between brackets.
+    fn text(&self) -> String {
+        match self {
+            Field::Number(number) => number.to_string(),
+            Field::Bytes(bytes) => format!("0x{}", hex::encode(bytes)),
+            Field::Flag(flag) => flag.to_string(),
+            Field::Absent => "none".to_string(),
+            Field::Word(word) => (*word).to_string(),
+            Field::Cost(cost) => cost_text(cost),
+            Field::Rows(rows) => bracketed(rows.iter().map(row_text)),
+            Field::List(items) => bracketed(items.iter().map(|item| tuple(item))),
+        }
+    }
+
+    fn payload_len(&self) -> usize {
+        match self {
+            Field::Number(_) => size_of::<u64>(),
+            Field::Bytes(bytes) => bytes.len(),
+            Field::Flag(_) | Field::Absent | Field::Word(_) | Field::Cost(_) => 0,
+            Field::Rows(rows) => rows_len(rows),
+            Field::List(items) => items.iter().flatten().map(Field::payload_len).sum(),
+        }
+    }
+}
+
+/// The fields of one item of a list, on one line.
+fn tuple(item: &[Field]) -> String {
+    let fields: Vec<String> = item.iter().map(Field::text).collect();
+    fields.join(" ")
+}
+
+fn bracketed(items: impl Iterator<Item = String>) -> String {
+    let items: Vec<String> = items.collect();
+    format!("[{}]", items.join("; "))
+}
+
+/// Rows in the long form: how many under `name`, then one line each.
+fn rows_detail(name: &str, rows: &[Row], lines: &mut Vec<String>) {
+    lines.push(format!("{name} {}", rows.len()));
+    lines.extend(rows.iter().map(|row| format!("row {}", row_text(row))));
+}
+
+fn row_text(row: &Row) -> String {
+    let path: Vec<String> = row
+        .path
+        .iter()
+        .map(|segment| hex_or_dash(segment))
+        .collect();
+    format!(
+        "{} {} {}",
+        if path.is_empty() {
+            "-".to_string()
+        } else {
+            path.join("/")
+        },
+        hex_or_dash(&row.key),
+        hex::encode(&row.element)
+    )
+}
+
+fn rows_len(rows: &[Row]) -> usize {
+    rows.iter()
+        .map(|row| row.path.iter().map(Vec::len).sum::<usize>() + row.key.len() + row.element.len())
+        .sum()
+}
+
+fn put_rows(out: &mut Vec<u8>, rows: &[Row]) {
+    put_len(out, rows.len());
+    for row in rows {
+        put_len(out, row.path.len());
+        for segment in &row.path {
+            put_bytes(out, segment);
+        }
+        put_bytes(out, &row.key);
+        put_bytes(out, &row.element);
     }
 }
 
@@ -837,6 +974,146 @@ mod tests {
         assert_eq!(step.detail()[1], "rows 0");
         let tags: String = step.line().chars().step_by(5).collect();
         assert_eq!(tags, "cvr");
+    }
+
+    fn record_step(kind: &'static str, fields: Vec<(&'static str, Field)>) -> Step {
+        let mut step = write_step();
+        step.outcome = Outcome::Returned(Value::Record(kind, fields));
+        step
+    }
+
+    #[test]
+    fn every_field_of_a_record_changes_its_encoding() {
+        let none = StorageRemovedBytes::NoStorageRemoval;
+        let one = |field: Field| vec![("a", field)];
+        let list = |items: Vec<Vec<Field>>| one(Field::List(items));
+        let records: Vec<Vec<(&'static str, Field)>> = vec![
+            Vec::new(),
+            one(Field::Number(0)),
+            one(Field::Number(1)),
+            one(Field::Number(-1)),
+            one(Field::Number(i128::MAX)),
+            one(Field::Bytes(Vec::new())),
+            one(Field::Bytes(vec![0])),
+            one(Field::Flag(false)),
+            one(Field::Flag(true)),
+            one(Field::Absent),
+            one(Field::Word("count")),
+            one(Field::Word("sum")),
+            one(Field::Cost(cost(1, none.clone()))),
+            one(Field::Cost(cost(2, none))),
+            one(Field::Rows(Vec::new())),
+            one(Field::Rows(vec![row(&[b"a"], b"k", &[1])])),
+            list(Vec::new()),
+            list(vec![Vec::new()]),
+            list(vec![Vec::new(), Vec::new()]),
+            list(vec![vec![Field::Number(1)], Vec::new()]),
+            list(vec![Vec::new(), vec![Field::Number(1)]]),
+            list(vec![vec![Field::Number(1), Field::Absent]]),
+            list(vec![vec![Field::Absent, Field::Number(1)]]),
+            list(vec![vec![Field::List(vec![vec![Field::Number(1)]])]]),
+            vec![("a", Field::Number(1)), ("b", Field::Number(2))],
+            vec![("a", Field::Number(2)), ("b", Field::Number(1))],
+        ];
+        let base = write_step();
+        let mut steps: Vec<Step> = records
+            .into_iter()
+            .map(|fields| record_step("kind", fields))
+            .collect();
+        steps.push(record_step("other-kind", Vec::new()));
+        for value in [Value::Element(Vec::new()), Value::Rows(Vec::new())] {
+            let mut step = base.clone();
+            step.outcome = Outcome::Returned(value);
+            steps.push(step);
+        }
+        let mut encodings = std::collections::BTreeSet::new();
+        encodings.insert(encoded(&base));
+        for step in &steps {
+            assert!(
+                encodings.insert(encoded(step)),
+                "{step:?} shares an encoding"
+            );
+            assert_eq!(
+                differing_parts(&base.line(), &step.line()),
+                Some(vec![Part::Result]),
+                "{step:?}"
+            );
+        }
+        let named = record_step("kind", vec![("a", Field::Number(1))]);
+        let renamed = record_step("kind", vec![("b", Field::Number(1))]);
+        assert_eq!(
+            encoded(&named),
+            encoded(&renamed),
+            "the name of a field is for the reader"
+        );
+    }
+
+    #[test]
+    fn a_record_is_written_field_by_field() {
+        let step = record_step(
+            "kind",
+            vec![
+                ("count", Field::Number(-7)),
+                ("key", Field::Bytes(vec![0xAB])),
+                ("empty", Field::Bytes(Vec::new())),
+                ("more", Field::Flag(true)),
+                ("skipped", Field::Absent),
+                ("axis", Field::Word("avg")),
+                (
+                    "first-segment",
+                    Field::Cost(cost(1, StorageRemovedBytes::NoStorageRemoval)),
+                ),
+                ("rows", Field::Rows(vec![row(&[b"\x0a"], b"\xff", &[2, 3])])),
+                (
+                    "branches",
+                    Field::List(vec![
+                        vec![Field::Bytes(vec![1]), Field::Absent],
+                        vec![
+                            Field::Bytes(vec![2]),
+                            Field::Word("count"),
+                            Field::List(vec![
+                                vec![Field::Number(3), Field::Bytes(vec![4])],
+                                vec![Field::Number(5), Field::Bytes(vec![6])],
+                            ]),
+                        ],
+                        vec![
+                            Field::Rows(vec![row(&[], b"k", &[7]), row(&[b"p"], b"", &[8])]),
+                            Field::Flag(false),
+                        ],
+                    ]),
+                ),
+                ("nothing", Field::List(Vec::new())),
+            ],
+        );
+        assert_eq!(
+            step.detail()[1..],
+            [
+                "result kind",
+                "count -7",
+                "key 0xab",
+                "empty 0x",
+                "more true",
+                "skipped none",
+                "axis avg",
+                "first-segment seeks=1 loaded=33 added=11 replaced=22 removed=- hashes=44 \
+                 sinsemilla=55",
+                "rows 1",
+                "row 0a ff 0203",
+                "branches 3",
+                "item 0x01 none",
+                "item 0x02 count [3 0x04; 5 0x06]",
+                "item [- 6b 07; 70 - 08] false",
+                "nothing 0",
+                &format!("root {}", "09".repeat(32)),
+            ]
+        );
+        let numbers = 3 * size_of::<u64>();
+        let bytes = 1 + 1 + 1 + 1 + 1;
+        let rows = (1 + 1 + 2) + (1 + 1) + (1 + 1);
+        assert_eq!(step.payload_len(), numbers + bytes + rows);
+        let tags: String = step.line().chars().step_by(5).collect();
+        assert_eq!(tags, "cvr");
+        assert_eq!(record_step("kind", Vec::new()).detail()[1], "result kind");
     }
 
     #[test]

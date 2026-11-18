@@ -1,13 +1,11 @@
 //! Hand-written cases for what older grove versions do and the workload
 //! generators steer around.
 //!
-//! The generators leave three behaviours out of their streams so that every
-//! stream applies and every query proves on every grove version (see
-//! [`Features::deletes_tree_directly`](crate::workload::Features::deletes_tree_directly)
-//! and [`Features::proves_queries_in`](crate::workload::Features::proves_queries_in)).
-//! A node on an old version may have done exactly these things, so the
-//! corpus records them here, as the engine returns them, on every grove
-//! version:
+//! The generators leave these behaviours out of their streams so that every
+//! stream applies and every query marked as proven proves on every grove
+//! version (see [`Features`](crate::workload::Features)). A node on an old
+//! version may have done exactly these things, so the corpus records them
+//! here, as the engine returns them, on every grove version:
 //!
 //! 1. **`GroveDb::delete` of a populated tree** when the tree or its parent
 //!    commits an aggregate into its node hashes. Grove versions 1 to 3
@@ -23,12 +21,36 @@
 //! 3. **A reference stored in a `ProvableCountSumTree`**, whose proof does
 //!    not verify on grove versions 1 and 2
 //!    (`reference-in-provable-count-sum-tree`).
+//! 4. **A batch `Move`**, which grove versions 1 to 3 refuse
+//!    (`move-in-batch`).
+//! 5. **A flat drop**, by `GroveDb::drop_flat_subtree` or by a batch, which
+//!    grove versions 1 to 3 refuse (`drop-flat`, `drop-flat-in-batch`).
+//! 6. **An aggregate over a range of keys**, for one tree or for each of
+//!    several, which grove versions 1 and 2 answer and refuse to prove
+//!    (`aggregate-on-range`, `aggregate-per-key`).
+//! 7. **A page of a tree that commits its count**, which grove versions 1
+//!    and 2 answer and refuse to prove (`count-offset-page`).
+//! 8. **The read modes of a query**, the axis reads of an indexed tree and
+//!    the sum-budget window, which grove versions 1 to 3 refuse
+//!    (`axis-read`, `sum-budget-window`).
+//! 9. **A limit or an offset of a subquery's own**: grove versions 1 to 3
+//!    refuse the limit and grove versions 1 to 4 the offset
+//!    (`subquery-limit`, `subquery-offset`).
 //!
-//! Every case is recorded with every step in full.
+//! Two more cases hold what every grove version refuses and the generators
+//! therefore never ask for: an offset where no count commits the rows it
+//! skips (`offset-without-count`) and an aggregate for each key of a full
+//! range (`aggregate-per-key-over-every-key`).
+//!
+//! In the cases from 4 on every path query asks for a proof, where a
+//! generated stream marks as not proven the ones its grove version refuses
+//! to prove. Every case is recorded with every step in full.
 
 use grovedb::{element::reference_path::ReferencePathType, Element};
 
 use crate::workload::{AppendEntry, BatchOp, Op, Query, QueryItem, Read, Write};
+
+mod refusals;
 
 /// A hand-written case: the operations applied to an empty database.
 #[derive(Clone, Debug)]
@@ -493,6 +515,7 @@ pub fn cases() -> Vec<Case> {
         .map(query_case),
     );
     cases.push(reference_case());
+    cases.extend(refusals::cases());
     cases
 }
 
@@ -538,6 +561,7 @@ mod tests {
     use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 
     use super::*;
+    use crate::golden::run::provable;
     use crate::{
         golden::{
             corpus::in_parallel,
@@ -607,14 +631,14 @@ mod tests {
             );
             let mut committed = false;
             for op in &case.ops {
-                match op {
-                    Op::Commit => committed = true,
-                    Op::Read(_) => assert!(committed, "{} reads an open block", case.name),
-                    _ => committed = false,
+                if op.follows_a_commit() {
+                    assert!(committed, "{} reads an open block", case.name);
+                } else {
+                    committed = matches!(op, Op::Commit);
                 }
             }
         }
-        assert_eq!(cases().len(), 20);
+        assert_eq!(cases().len(), 20 + REFUSALS.len());
         assert_eq!(excluded().len(), 4 * 8 + 3 * 8);
     }
 
@@ -673,7 +697,34 @@ mod tests {
             assert!(!oldest.proves_queries_in(tree_type(&host)), "{}", host.name);
             assert!(third.proves_queries_in(tree_type(&host)), "{}", host.name);
         }
+
+        let second = Features::for_grove_version(&GROVE_VERSIONS[1]);
+        let fifth = Features::for_grove_version(&GROVE_VERSIONS[4]);
+        assert!(!second.v1_proofs && third.v1_proofs);
+        assert!(!third.move_element && fourth.move_element);
+        assert!(!third.flat_drop && fourth.flat_drop);
+        assert!(!third.read_modes && fourth.read_modes);
+        assert!(!third.instance_limits && fourth.instance_limits);
+        assert!(!fourth.instance_offsets && fifth.instance_offsets);
     }
+
+    /// What the cases for refused operations and forms of query tally on
+    /// grove versions 1 to 5: the operations refused, then the proofs
+    /// refused.
+    const REFUSALS: [(&str, [usize; 5], [usize; 5]); 12] = [
+        ("move-in-batch", [2, 2, 2, 0, 0], [0; 5]),
+        ("drop-flat", [1, 1, 1, 0, 0], [0; 5]),
+        ("drop-flat-in-batch", [1, 1, 1, 0, 0], [0; 5]),
+        ("aggregate-on-range", [0; 5], [3, 3, 0, 0, 0]),
+        ("aggregate-per-key", [0; 5], [1, 1, 0, 0, 0]),
+        ("count-offset-page", [0; 5], [2, 2, 0, 0, 0]),
+        ("axis-read", [6, 6, 6, 0, 0], [6, 6, 6, 0, 0]),
+        ("sum-budget-window", [2, 2, 2, 0, 0], [2, 2, 2, 0, 0]),
+        ("subquery-limit", [1, 1, 1, 0, 0], [1, 1, 1, 0, 0]),
+        ("subquery-offset", [1, 1, 1, 1, 0], [1, 1, 1, 1, 0]),
+        ("offset-without-count", [1; 5], [2; 5]),
+        ("aggregate-per-key-over-every-key", [1; 5], [1; 5]),
+    ];
 
     /// Keeps the panics this module expects out of the test output. Any
     /// other panic is reported as before.
@@ -769,8 +820,10 @@ mod tests {
     fn the_cases_show_what_the_older_grove_versions_do() {
         let after_delete = "Write(Delete";
         for case in cases() {
+            let mut failed = Vec::new();
             let mut refused = Vec::new();
             let mut unproved = Vec::new();
+            let mut not_supported = Vec::new();
             let mut roots_after_delete = Vec::new();
             let versions: Vec<&'static GroveVersion> = GROVE_VERSIONS.iter().collect();
             let texts = in_parallel(&versions, 5, |grove_version| {
@@ -778,15 +831,13 @@ mod tests {
             });
             for text in texts {
                 let text = text.unwrap_or_else(|panic| panic!("{} panics: {panic}", case.name));
-                assert!(
-                    !text.contains("\n  failed "),
-                    "{}: an operation failed",
-                    case.name
-                );
+                failed.push(text.matches("\n  failed ").count());
                 refused.push(text.matches("  verification refused InvalidProof").count());
-                unproved.push(text.matches("  prove-failed NotSupported").count());
+                unproved.push(text.matches("\n  prove-failed ").count());
+                not_supported.push(text.matches("\n  prove-failed NotSupported\n").count());
                 let tally = format!(
-                    "\ntally failed=0 unproved={} unverified={}\n",
+                    "\ntally failed={} unproved={} unverified={}\n",
+                    failed.last().expect("just pushed"),
                     unproved.last().expect("just pushed"),
                     refused.last().expect("just pushed")
                 );
@@ -800,7 +851,7 @@ mod tests {
                         + text.matches("  prove-failed ").count(),
                     case.ops
                         .iter()
-                        .filter(|op| matches!(op, Op::Read(Read::Query(_))))
+                        .filter(|op| matches!(op, Op::Read(read) if provable(read).is_some()))
                         .count(),
                     "{}: every query is proved or refused",
                     case.name
@@ -813,6 +864,19 @@ mod tests {
                 roots_after_delete.push(root);
             }
             let name = case.name.as_str();
+            if let Some((_, operations, proofs)) =
+                REFUSALS.iter().find(|(refusal, ..)| *refusal == name)
+            {
+                assert_eq!(failed, operations, "{name}");
+                assert_eq!(unproved, proofs, "{name}");
+                assert_eq!(refused, [0; 5], "{name}");
+                continue;
+            }
+            assert_eq!(failed, [0; 5], "{name}: an operation failed");
+            assert_eq!(
+                unproved, not_supported,
+                "{name}: a proof is refused for another reason"
+            );
             let wrong_link = [
                 "delete-tree-under-provable-count-tree",
                 "delete-sum-tree-under-provable-count-sum-tree",
