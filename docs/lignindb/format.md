@@ -369,7 +369,7 @@ merely newer than it understands.
 | 2 | `Wal` | `wal/<n>.log` | FMT-05 |
 | 3 | `Segment` | `seg/<n>.seg` | FMT-06 |
 | 4 | `ValueLog` | `val/<n>.val` | FMT-07 |
-| 5 | `PageTable` | `table/<n>.pt` | STORE-03, [`page-table.md`](page-table.md) |
+| 5 | `PageTable` | `table/<n>.pt` | STORE-03, [`page-table.md`](page-table.md): the page table's links and a sample of the value log's counts |
 
 The codes are registered here so that tasks working in parallel do not choose
 the same one. A new kind is a format change (U6).
@@ -557,7 +557,9 @@ owner can overrule one before formats are built on it.
 11. **The page-table checkpoint file has a kind code but no format task.**
     `table/<n>.pt` is in the plan's file list, so it is registered in H2. No
     FMT task defines its layout; this document assumes STORE-03 does, under
-    the rules here.
+    the rules here. It does, in [`page-table.md`](page-table.md), section 3:
+    links records, counts records for the value log's counts of live
+    values, and an end record.
 
 ## 10. Code and tests
 
