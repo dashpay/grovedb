@@ -2,10 +2,12 @@
 //! and on its cursors, and passes each call on to the context it wraps. It
 //! can be told to fail one kind of call on the context itself.
 //!
-//! Every call it answers costs one hash node call more than the wrapped
-//! context charged, and a call it fails costs [`failed_call`]. No storage
-//! call charges a hash node call of its own, so a cost that an adapter drops
-//! or counts twice shows in the total.
+//! Every call that returns a cost returns one hash node call more than the
+//! wrapped context charged, and a call that was told to fail returns
+//! [`failed_call`]. No storage call charges a hash node call of its own, so a
+//! cost that an adapter drops or counts twice shows in the total. The tape
+//! adds up what was returned ([`Tape::take_cost`]). A put or a delete on a
+//! batch returns no cost.
 
 use std::{
     cell::{Cell, RefCell},
@@ -109,8 +111,27 @@ pub(crate) fn failed_call() -> OperationCost {
 #[derive(Clone, Default)]
 pub(crate) struct Tape {
     calls: Rc<RefCell<Vec<Call>>>,
+    cost: Rc<RefCell<OperationCost>>,
     failing: Rc<Cell<Option<&'static str>>>,
 }
+
+/// The calls [`Tape::fail`] can make fail: those of the context that return
+/// a result.
+const CAN_FAIL: [&str; 13] = [
+    "put",
+    "put_aux",
+    "put_root",
+    "put_meta",
+    "delete",
+    "delete_aux",
+    "delete_root",
+    "delete_meta",
+    "get",
+    "get_aux",
+    "get_root",
+    "get_meta",
+    "commit_batch",
+];
 
 impl Tape {
     /// Wraps `inner` in a context that records on this tape.
@@ -132,13 +153,28 @@ impl Tape {
         self.take().iter().map(Call::brief).collect()
     }
 
+    /// The costs the recorded calls returned since the last time they were
+    /// taken, added up.
+    pub(crate) fn take_cost(&self) -> OperationCost {
+        self.cost.take()
+    }
+
     /// Makes every later call of this name fail, or none.
     pub(crate) fn fail(&self, name: Option<&'static str>) {
+        assert!(
+            name.is_none_or(|name| CAN_FAIL.contains(&name)),
+            "{name:?} cannot be made to fail"
+        );
         self.failing.set(name);
     }
 
     fn record(&self, call: Call) {
         self.calls.borrow_mut().push(call);
+    }
+
+    fn returned<T>(&self, returned: CostContext<T>) -> CostContext<T> {
+        *self.cost.borrow_mut() += returned.cost.clone();
+        returned
     }
 }
 
@@ -155,11 +191,12 @@ impl<S> Recording<S> {
     ) -> CostResult<T, Error> {
         let name = call.name;
         self.tape.record(call);
-        if self.tape.failing.get() == Some(name) {
-            return Err(Error::StorageError(format!("{name} failed")))
-                .wrap_with_cost(failed_call());
-        }
-        pass_on(&self.inner).add_cost(one_call())
+        self.tape
+            .returned(if self.tape.failing.get() == Some(name) {
+                Err(Error::StorageError(format!("{name} failed"))).wrap_with_cost(failed_call())
+            } else {
+                pass_on(&self.inner).add_cost(one_call())
+            })
     }
 }
 
@@ -320,8 +357,7 @@ impl<B: Batch> Batch for RecordingBatch<B> {
     recorded_batch_deletes!("batch." delete delete_aux delete_root);
 }
 
-/// The cursor of a [`Recording`] context. It charges what the wrapped cursor
-/// charges.
+/// The cursor of a [`Recording`] context.
 pub(crate) struct RecordingCursor<I> {
     inner: I,
     tape: Tape,
@@ -331,7 +367,7 @@ macro_rules! recorded_moves {
     ($prefix:literal $($name:ident)*) => {$(
         fn $name(&mut self) -> CostContext<()> {
             self.tape.record(call(concat!($prefix, stringify!($name)), b"", b""));
-            self.inner.$name()
+            self.tape.returned(self.inner.$name().add_cost(one_call()))
         }
     )*};
 }
@@ -340,7 +376,7 @@ macro_rules! recorded_seeks {
     ($prefix:literal $($name:ident)*) => {$(
         fn $name<K: AsRef<[u8]>>(&mut self, key: K) -> CostContext<()> {
             self.tape.record(call(concat!($prefix, stringify!($name)), key.as_ref(), b""));
-            self.inner.$name(key)
+            self.tape.returned(self.inner.$name(key).add_cost(one_call()))
         }
     )*};
 }
@@ -352,20 +388,21 @@ impl<I: RawIterator> RawIterator for RecordingCursor<I> {
 
     fn value(&self) -> CostContext<Option<&[u8]>> {
         self.tape.record(call("cursor.value", b"", b""));
-        self.inner.value()
+        self.tape.returned(self.inner.value().add_cost(one_call()))
     }
 
     fn key(&self) -> CostContext<Option<&[u8]>> {
         self.tape.record(call("cursor.key", b"", b""));
-        self.inner.key()
+        self.tape.returned(self.inner.key().add_cost(one_call()))
     }
 
     fn valid(&self) -> CostContext<bool> {
         self.tape.record(call("cursor.valid", b"", b""));
-        self.inner.valid()
+        self.tape.returned(self.inner.valid().add_cost(one_call()))
     }
 
     fn status(&self) -> Result<(), Error> {
+        self.tape.record(call("cursor.status", b"", b""));
         self.inner.status()
     }
 }
