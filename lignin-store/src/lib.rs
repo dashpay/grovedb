@@ -8,3 +8,4 @@ pub mod load;
 pub mod segment;
 pub mod table;
 pub mod values;
+pub mod wal;
