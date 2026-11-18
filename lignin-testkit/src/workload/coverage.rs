@@ -277,6 +277,7 @@ operations! {
         SumValues = "`GroveDb::query_sums`.",
         ManyRaw = "`GroveDb::query_many_raw`.",
         ProveMany = "`GroveDb::prove_query_many`.",
+        ProvedPathQuery = "`GroveDb::get_proved_path_query`.",
         BigSum = "`GroveDb::query_aggregate_big_sum`.",
         CountAndBigSum = "`GroveDb::query_aggregate_count_and_big_sum`.",
         BigSumPerKey = "`GroveDb::query_aggregate_big_sum_per_key`.",
@@ -400,6 +401,7 @@ impl Features {
             | Operation::SumValues
             | Operation::ManyRaw
             | Operation::ProveMany
+            | Operation::ProvedPathQuery
             | Operation::Rollback
             | Operation::Abandon
             | Operation::Savepoint
@@ -728,6 +730,7 @@ fn read_operations(read: &Read) -> Vec<Operation> {
             (true, true) => Operation::CountAndBigSumPerKey,
         }],
         Read::Prove(prove) => vec![match prove {
+            Prove::PathQuery(_) => Operation::ProvedPathQuery,
             Prove::Many(_) => Operation::ProveMany,
             Prove::BulkPositionRange { .. } => Operation::BulkPositionRangeProof,
             Prove::TrunkChunk { .. } => Operation::TrunkChunk,

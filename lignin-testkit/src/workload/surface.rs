@@ -332,10 +332,7 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
     ("get_caching_optional", produced(&[Operation::GetUncached])),
     (
         "get_proved_path_query",
-        Status::LeftOut(
-            "is `prove_query`, which the consumer of a stream calls, behind a check that \
-             refuses a transaction; a proof is built from committed state only",
-        ),
+        produced(&[Operation::ProvedPathQuery]),
     ),
     (
         "get_raw",

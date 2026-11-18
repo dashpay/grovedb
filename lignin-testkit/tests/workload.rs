@@ -715,6 +715,27 @@ fn check_proof(
             assert_eq!(proved, *per_key, "{context}");
         }
         (Read::Prove(prove), Outcome::Proof(proof)) => match prove {
+            Prove::PathQuery(query) => {
+                let proved = verified(
+                    context,
+                    root,
+                    GroveDb::verify_query_raw(proof, query, grove_version),
+                );
+                let proved: Vec<PathKeyElementTrio> = proved
+                    .into_iter()
+                    .map(|row| {
+                        let element = Element::deserialize(&row.value, grove_version)
+                            .expect("a proved value is an element");
+                        (row.path, row.key, element)
+                    })
+                    .collect();
+                let (rows, _) = rows(db, query, true, None, grove_version);
+                let expected: Vec<_> = rows
+                    .into_iter()
+                    .map(|row| resolved(db, row, grove_version))
+                    .collect();
+                assert_eq!(proved, expected, "{context}");
+            }
             Prove::Many(queries) => {
                 let merged = PathQuery::merge(queries.iter().collect(), grove_version)
                     .expect("the queries merge");
@@ -1748,8 +1769,8 @@ const PINNED_STREAMS: &[(&str, u64, u64, &str)] = &[
     ("indexed-writes", 0x4c49474e494e, 206, "e452f11f12ac6e55d4b3cd1f9cf93a43d3190a27e15239c1d817377a5e08a24a"),
     ("typed-reads", 0x1, 289, "f915af2ee469465ef4b826d4bfbe2dc453a13077642eca9f817f9996eada82e6"),
     ("typed-reads", 0x4c49474e494e, 309, "ff49b183beed5f3bc5150102b56064f46e1d8af88f29f728b9402f8a137de1d8"),
-    ("identity-reads", 0x1, 180, "8d0bcba5a7ef510d27cb4a61bfe1f96a8023974cc8200497d009633941e3028b"),
-    ("identity-reads", 0x4c49474e494e, 180, "7ac1e426b8ea750863c4439fdee37b73ab6afe80c83424f6f24b23fabd5a2664"),
+    ("identity-reads", 0x1, 188, "9c7d4ac1552df91c50b967263e42b795b6c0db32f61b4c95635813b26cc3de38"),
+    ("identity-reads", 0x4c49474e494e, 188, "186123bc3e879f82a40d47d86bffc63d07a7be6b174c02c6964e7b80505b6058"),
     ("chunk-proofs", 0x1, 262, "f341f5745226be883674d89660944dd66b7294ec7da07d658743a24d325df0a6"),
     ("chunk-proofs", 0x4c49474e494e, 267, "4bdd019fd5874626982eb8e99692ad40fcdb14062bd1631bd3b3a0d9700442a9"),
     ("block-execution", 0x1, 684, "d7b09d7424f2cfab718032e4933e9bd1af731e2c0d142df2c367217faf1f2235"),
@@ -1786,11 +1807,11 @@ fn streams_are_pinned() {
 /// features, seed [`SEED`]: protocol version, operations, digest.
 #[rustfmt::skip]
 const PINNED_SUITES: &[(u32, u64, &str)] = &[
-    (1, 21039, "6815859bff4dd2cac910d946579317a46e2560801101565ace1165acebf64688"),
-    (2, 21039, "6815859bff4dd2cac910d946579317a46e2560801101565ace1165acebf64688"),
-    (3, 21063, "4a450b692bcb79e2940958d6bf2a3e0400892344c1fb37647ea0adf366cbc09f"),
-    (4, 21545, "f39ff946552ae57e023ee671fe47c94ec10b5e1a42e26df8fa1b6e6aa95363a3"),
-    (5, 21851, "6424ec412bdc91b888f2390001960c626b98db9704a127d64a0aefabf0952aaa"),
+    (1, 21047, "ab7f420c7b749a8546d626fa8c4ce99f917fce2d0d1a3f0593910b34186255c4"),
+    (2, 21047, "ab7f420c7b749a8546d626fa8c4ce99f917fce2d0d1a3f0593910b34186255c4"),
+    (3, 21071, "4c5229459ac41d6283af0a6c864a46ef408ada5b21e478f14cfe99f7a80dfaae"),
+    (4, 21553, "b7bf261910d1d601280a6ba19ee48cf781272ee6012f770b7e6d83a8d1f2adbb"),
+    (5, 21859, "9d214c7a5bd5dc92f4103a61847c0ec14aa6b1946b8def5b61578478094a5e74"),
 ];
 
 #[test]
@@ -2351,6 +2372,7 @@ fn one_of_each_direct_kind() -> Vec<Op> {
     });
     let merk = |ids: &[&[u8]]| ChunkIds::Merk(ids.iter().map(|id| id.to_vec()).collect());
     for prove in [
+        Prove::PathQuery(query()),
         Prove::Many(vec![*query()]),
         Prove::BulkPositionRange {
             path: path.clone(),
@@ -2405,7 +2427,7 @@ fn one_of_each_direct_kind() -> Vec<Op> {
 }
 
 const PINNED_DIRECT_KINDS: &str =
-    "9ec1194632b23b4f47c40feeafc6d72429385ed44e2bd1da9280f820be64cd41";
+    "b86aca0a9bef3f126e7a4e60c55e6aeafd32d2e7133c7c7e2ad4bcbd0dcc411c";
 
 /// The canonical encoding of the kinds the third unit added: each one
 /// differs from every other, and the bytes are pinned. Together they are
@@ -2699,19 +2721,24 @@ fn apply_refuses_what_no_stream_holds() {
     // The free function is given the transaction by its caller, and
     // refuses the one it cannot use.
     let block = db.start_transaction();
+    let snapshot = db.start_snapshot_read_transaction();
     for (op, transaction) in [
         (TransactionOp::SetSavepoint, None),
         (TransactionOp::Rollback, None),
         (TransactionOp::RollbackToSavepoint, None),
         (TransactionOp::SnapshotRead(is_empty.clone()), Some(&block)),
         (TransactionOp::SnapshotRead(is_empty.clone()), None),
+        (TransactionOp::BlockRead(is_empty.clone()), None),
+        (TransactionOp::BlockRead(is_empty.clone()), Some(&snapshot)),
+        (TransactionOp::SetSavepoint, Some(&snapshot)),
+        (TransactionOp::Rollback, Some(&snapshot)),
+        (TransactionOp::RollbackToSavepoint, Some(&snapshot)),
     ] {
         let op = Op::Transaction(op);
         apply(&db, &op, transaction, grove_version)
             .unwrap()
             .expect_err("the transaction is not the one the step needs");
     }
-    let snapshot = db.start_snapshot_read_transaction();
     let read = Op::Transaction(TransactionOp::SnapshotRead(is_empty));
     let empty = apply(&db, &read, Some(&snapshot), grove_version)
         .unwrap()

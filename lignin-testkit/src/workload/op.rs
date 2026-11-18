@@ -637,6 +637,10 @@ pub enum TreeRead {
 /// A proof built through an entry point of its own.
 #[derive(Clone, Debug)]
 pub enum Prove {
+    /// `GroveDb::get_proved_path_query`, the method Drive proves every
+    /// query through: `GroveDb::prove_query` for a caller that has a
+    /// transaction to hand it, which it refuses. It is given none.
+    PathQuery(Box<PathQuery>),
     /// `GroveDb::prove_query_many`: one proof for several path queries.
     Many(Vec<PathQuery>),
     /// `GroveDb::prove_bulk_position_range`: a page of the values of a
@@ -1339,6 +1343,10 @@ impl Prove {
                 put_path(out, path);
                 put_bytes(out, key);
                 out.push(*depth);
+            }
+            Prove::PathQuery(query) => {
+                out.push(5);
+                put_path_query(out, query);
             }
             Prove::Chunk { path, ids } => {
                 out.push(4);

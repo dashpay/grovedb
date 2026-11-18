@@ -39,7 +39,9 @@ const LARGE_CREDITS: i64 = i64::MAX / 2;
 /// - **Keys by id.** Drive asks for specific keys of an identity and gets
 ///   an answer for each, empty where the identity has no such key:
 ///   `query_keys_optional` and `query_raw_keys_optional`. The same query is
-///   proven, and the proof shows that the missing keys are missing.
+///   proven, and the proof shows that the missing keys are missing. All
+///   the keys of the identity are proven through `get_proved_path_query`,
+///   the method Drive builds every proof with.
 /// - **Values.** `query_item_value` returns the keys of an identity as
 ///   bytes, a page of them at an offset. `query_item_value_or_sum` returns
 ///   balances as numbers and keys as bytes. `query_sums` returns balances.
@@ -249,6 +251,11 @@ impl State {
                 raw,
             }));
         }
+        // The proof Drive answers a request for an identity's keys with.
+        ops.push(prove(Prove::PathQuery(Box::new(PathQuery::new_unsized(
+            keys_path(&id),
+            Query::new_range_full(),
+        )))));
 
         let page = PathQuery::new(
             keys_path(&id),

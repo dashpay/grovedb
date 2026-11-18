@@ -19,7 +19,8 @@
 //!
 //! A [`TransactionOp::SnapshotRead`] is the one operation applied with the
 //! snapshot as its transaction, and [`apply`] refuses it any other. Every
-//! other operation is applied with the block's transaction.
+//! other operation is applied with the block's transaction, and a step on
+//! that transaction or a read inside the block is refused the snapshot.
 //! [`Transactions`] does all of this for a caller that has no reason to do
 //! it itself.
 
@@ -212,24 +213,26 @@ pub const BATCH_OPTIONS: BatchApplyOptions = BatchApplyOptions {
 };
 
 /// How a [`Write::DeleteUpTree`] is applied, with its stop height: the key
-/// may hold a tree only if the tree is empty.
+/// may hold a tree only if the tree is empty, and as in Drive nothing it
+/// deletes takes part in a backward reference.
 pub const DELETE_UP_TREE_OPTIONS: DeleteUpTreeOptions = DeleteUpTreeOptions {
     allow_deleting_non_empty_trees: false,
     deleting_non_empty_trees_returns_error: true,
     base_root_storage_is_free: true,
     validate_tree_at_path_exists: false,
     stop_path_height: None,
-    backwards_references: BackwardsReferences::Check,
+    backwards_references: BackwardsReferences::DontCheck,
 };
 
 /// How a [`Write::DeleteBuilt`] builds its delete: the key may hold a tree
-/// only if the tree is empty.
+/// only if the tree is empty, and as in Drive it takes part in no backward
+/// reference.
 pub const DELETE_BUILT_OPTIONS: DeleteOptions = DeleteOptions {
     allow_deleting_non_empty_trees: false,
     deleting_non_empty_trees_returns_error: true,
     base_root_storage_is_free: true,
     validate_tree_at_path_exists: false,
-    backwards_references: BackwardsReferences::Check,
+    backwards_references: BackwardsReferences::DontCheck,
 };
 
 /// How a [`Read::Prove`] is proven.
@@ -291,9 +294,13 @@ fn apply_transaction_op(
     transaction: TransactionArg,
     grove_version: &GroveVersion,
 ) -> CostResult<Outcome, Error> {
-    let open = transaction.ok_or(Error::InvalidInput(
-        "a step on the transaction needs the transaction",
-    ));
+    // A snapshot read transaction is no block's transaction: it holds no
+    // write to roll back and reads an older state.
+    let open = transaction
+        .filter(|transaction| !transaction.is_snapshot_read())
+        .ok_or(Error::InvalidInput(
+            "a step on the block's transaction needs that transaction",
+        ));
     match step {
         TransactionOp::Rollback => free(
             open.and_then(|transaction| db.rollback_transaction(transaction))
@@ -317,7 +324,10 @@ fn apply_transaction_op(
                 refused("a snapshot read runs in a snapshot read transaction")
             }
         }
-        TransactionOp::BlockRead(read) => apply_read(db, read, transaction, grove_version),
+        TransactionOp::BlockRead(read) => match open {
+            Ok(block) => apply_read(db, read, Some(block), grove_version),
+            Err(error) => free(Err(error)),
+        },
     }
 }
 
@@ -728,6 +738,9 @@ fn apply_prove(
     grove_version: &GroveVersion,
 ) -> CostResult<Vec<u8>, Error> {
     match prove {
+        Prove::PathQuery(query) => {
+            db.get_proved_path_query(query, Some(PROVE_OPTIONS), None, grove_version)
+        }
         Prove::Many(queries) => {
             db.prove_query_many(queries.iter().collect(), Some(PROVE_OPTIONS), grove_version)
         }
