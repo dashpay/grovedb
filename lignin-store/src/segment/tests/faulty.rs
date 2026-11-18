@@ -7,7 +7,7 @@ use std::{
 use lignin_io::{DirEntry, OpenMode, Vfs, VfsFile, VfsLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Op {
+pub(crate) enum Op {
     Open,
     Rename,
     HardLink,
@@ -43,12 +43,12 @@ struct Script {
 /// Passes every call on to another file layer, records it, and fails the
 /// calls it was told to fail without making them.
 #[derive(Debug, Clone)]
-pub(super) struct FaultyVfs {
+pub(crate) struct FaultyVfs {
     inner: Arc<dyn Vfs>,
     script: Arc<Mutex<Script>>,
 }
 
-pub(super) const INJECTED: ErrorKind = ErrorKind::PermissionDenied;
+pub(crate) const INJECTED: ErrorKind = ErrorKind::PermissionDenied;
 
 fn name_of(path: &Path) -> String {
     path.file_name()
@@ -79,7 +79,7 @@ fn enter(script: &Mutex<Script>, op: Op, name: &str) -> io::Result<bool> {
 }
 
 impl FaultyVfs {
-    pub(super) fn new(inner: Arc<dyn Vfs>) -> Self {
+    pub(crate) fn new(inner: Arc<dyn Vfs>) -> Self {
         Self {
             inner,
             script: Arc::default(),
@@ -89,19 +89,19 @@ impl FaultyVfs {
     /// As [`Self::new`], and no sync reaches the file layer below. A test
     /// in which nothing crashes loses nothing by that, and does not wait for
     /// a disk.
-    pub(super) fn without_syncs(inner: Arc<dyn Vfs>) -> Self {
+    pub(crate) fn without_syncs(inner: Arc<dyn Vfs>) -> Self {
         let vfs = Self::new(inner);
         vfs.script.lock().unwrap().skip_syncs = true;
         vfs
     }
 
     /// Fails the next `op` on the file or directory called `name`.
-    pub(super) fn fail(&self, op: Op, name: &str) {
+    pub(crate) fn fail(&self, op: Op, name: &str) {
         self.fail_after(0, op, name);
     }
 
     /// Fails the `op` on `name` that follows `skip` more of them.
-    pub(super) fn fail_after(&self, skip: usize, op: Op, name: &str) {
+    pub(crate) fn fail_after(&self, skip: usize, op: Op, name: &str) {
         self.script.lock().unwrap().faults.push(Fault {
             op,
             name: name.to_owned(),
@@ -110,11 +110,11 @@ impl FaultyVfs {
     }
 
     /// The calls made since the last time this was asked.
-    pub(super) fn take_calls(&self) -> Vec<(Op, String)> {
+    pub(crate) fn take_calls(&self) -> Vec<(Op, String)> {
         std::mem::take(&mut self.script.lock().unwrap().calls)
     }
 
-    pub(super) fn pending_faults(&self) -> usize {
+    pub(crate) fn pending_faults(&self) -> usize {
         self.script.lock().unwrap().faults.len()
     }
 

@@ -3,14 +3,8 @@ mod counts;
 mod crash;
 mod disk_faults;
 mod errors;
-#[allow(dead_code)]
-#[path = "../../segment/tests/faulty.rs"]
-mod faulty;
 mod pages;
 mod run;
-#[allow(dead_code)]
-#[path = "../../segment/tests/sim.rs"]
-mod sim;
 mod store;
 
 use std::{path::Path, sync::Arc};
@@ -22,7 +16,11 @@ use lignin_format::{
 use lignin_io::Vfs;
 
 use super::*;
-use crate::segment::{read_manifest, FileNames, ManifestStore, SegmentStoreError};
+use crate::segment::{
+    read_manifest,
+    tests::{faulty, sim},
+    FileNames, ManifestStore, SegmentStoreError,
+};
 
 fn file_id(raw: u32) -> FileId {
     FileId::new(raw).expect("not zero")
