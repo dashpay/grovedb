@@ -23,10 +23,22 @@ use crate::vfs::{Create, DirEntry, EntryKind, OpenMode, Vfs, VfsFile};
 /// Makes a test of every conformance case. `$setup` is evaluated once per
 /// test and gives `(vfs, root, cleanup)`: the backend, an empty directory in
 /// it, and a value kept alive until the test ends.
+///
+/// A backend over the operating system's files adds `no_hard_links_under_miri`
+/// after `$setup`: Miri has no hard links, and the cases that need them are
+/// then ignored under it.
 macro_rules! conformance_tests {
     ($setup:expr) => {
+        $crate::conformance::conformance_tests!(@all $setup; []);
+    };
+    ($setup:expr, no_hard_links_under_miri) => {
+        $crate::conformance::conformance_tests!(
+            @all $setup; [#[cfg_attr(miri, ignore = "Miri has no hard links")]]
+        );
+    };
+    (@all $setup:expr; $hard_links:tt) => {
         $crate::conformance::conformance_tests! {
-            @cases $setup;
+            @cases $setup; [];
             open_of_a_missing_file_is_not_found,
             open_of_a_directory_is_refused,
             create_new_refuses_an_existing_file,
@@ -49,14 +61,6 @@ macro_rules! conformance_tests {
             rename_moves_a_file,
             rename_replaces_the_destination,
             rename_of_a_missing_file_is_not_found,
-            #[cfg_attr(miri, ignore = "Miri has no hard links")]
-            rename_between_names_of_one_file_changes_nothing,
-            #[cfg_attr(miri, ignore = "Miri has no hard links")]
-            hard_link_is_another_name_for_the_same_file,
-            #[cfg_attr(miri, ignore = "Miri has no hard links")]
-            hard_link_refuses_a_taken_name_and_a_missing_file,
-            #[cfg_attr(miri, ignore = "Miri has no hard links")]
-            hard_link_outlives_the_original_name,
             remove_file_removes_the_name_only,
             create_dir_needs_its_parent_and_a_free_name,
             remove_dir_needs_an_empty_directory,
@@ -67,19 +71,28 @@ macro_rules! conformance_tests {
             locks_on_different_files_are_independent,
             one_thread_wins_a_contended_lock,
             a_file_is_replaced_by_write_sync_rename_sync_dir,
-            #[cfg_attr(miri, ignore = "Miri has no hard links")]
+        }
+        $crate::conformance::conformance_tests! {
+            @cases $setup; $hard_links;
+            rename_between_names_of_one_file_changes_nothing,
+            hard_link_is_another_name_for_the_same_file,
+            hard_link_refuses_a_taken_name_and_a_missing_file,
+            hard_link_outlives_the_original_name,
             a_checkpoint_is_a_directory_of_hard_links,
         }
     };
-    (@cases $setup:expr; $($(#[$attribute:meta])* $case:ident),* $(,)?) => {
+    (@cases $setup:expr; $attributes:tt; $($case:ident),* $(,)?) => {
         $(
-            #[test]
-            $(#[$attribute])*
-            fn $case() {
-                let (vfs, root, _cleanup) = $setup;
-                $crate::conformance::$case(&vfs, &root);
-            }
+            $crate::conformance::conformance_tests!(@case $setup; $attributes; $case);
         )*
+    };
+    (@case $setup:expr; [$(#[$attribute:meta])*]; $case:ident) => {
+        #[test]
+        $(#[$attribute])*
+        fn $case() {
+            let (vfs, root, _cleanup) = $setup;
+            $crate::conformance::$case(&vfs, &root);
+        }
     };
 }
 pub(crate) use conformance_tests;

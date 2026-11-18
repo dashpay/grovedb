@@ -18,7 +18,7 @@ fn setup() -> (StdVfs, PathBuf, TempDir) {
 mod conformance {
     use super::setup;
 
-    crate::conformance::conformance_tests!(setup());
+    crate::conformance::conformance_tests!(setup(), no_hard_links_under_miri);
 }
 
 fn append_file(path: &Path) -> StdFile {
