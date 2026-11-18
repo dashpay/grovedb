@@ -796,6 +796,14 @@ fn a_block_is_read_only_through_its_exact_location() {
         db.read(location(2, 20, 8)).unwrap_err(),
         SegmentStoreError::UnknownSegment { file } if file == id(2)
     ));
+    assert_eq!(
+        db.segments.format_version(id(1)).unwrap(),
+        lignin_format::FormatVersion::CURRENT
+    );
+    assert!(matches!(
+        db.segments.format_version(id(2)).unwrap_err(),
+        SegmentStoreError::UnknownSegment { file } if file == id(2)
+    ));
 
     let wrong_length = [
         (

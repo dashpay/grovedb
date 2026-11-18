@@ -736,6 +736,13 @@ impl SegmentStore {
             .block(location, max_payload_len, buf)
     }
 
+    /// The format version the segment `file` was written in, from its file
+    /// header: the version a payload read from one of its blocks is decoded
+    /// under.
+    pub fn format_version(&self, file: FileId) -> Result<FormatVersion, SegmentStoreError> {
+        Ok(self.segment(file)?.version)
+    }
+
     /// Reads the footer of the sealed segment `file` into `buf` and returns
     /// its index, checked against the segment's valid length.
     pub fn index<'a>(

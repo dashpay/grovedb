@@ -4,6 +4,7 @@
 
 pub mod alloc;
 pub mod cache;
+pub mod load;
 pub mod segment;
 pub mod table;
 pub mod values;
