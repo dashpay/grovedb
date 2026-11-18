@@ -2414,18 +2414,19 @@ impl GroveDb {
                 issues.insert(marker, (hashes.combined, [0; 32], hashes.combined));
                 continue;
             };
-            let referrer_path_slices: Vec<&[u8]> =
-                referrer_path.iter().map(|p| p.as_slice()).collect();
-            let occupant = self
-                .get_raw_optional(
-                    referrer_path_slices.as_slice().into(),
-                    referrer_key,
-                    Some(transaction),
-                    grove_version,
-                )
-                .unwrap();
+            // A read that failed in storage proves nothing about the edge,
+            // so it ends the audit instead of being reported as a missing
+            // one.
+            let occupant = self.stored_element_for_reciprocity_audit(
+                referrer_path,
+                referrer_key,
+                allow_cache,
+                transaction,
+                None,
+                grove_version,
+            )?;
             let reciprocal = match occupant {
-                Ok(Some(Element::BidirectionalReference(ref referrer, _))) => {
+                Some(Element::BidirectionalReference(ref referrer, _)) => {
                     path_from_reference_path_type(
                         referrer.forward_reference_path.clone(),
                         referrer_path,
@@ -2434,8 +2435,7 @@ impl GroveDb {
                     .map(|forward| forward == expected_forward)
                     .unwrap_or(false)
                 }
-                Ok(_) => false,
-                Err(_) => false,
+                _ => false,
             };
             if !reciprocal {
                 // A marker component keeps this reciprocity diagnostic from
@@ -2447,8 +2447,54 @@ impl GroveDb {
                 issues.insert(marker, (hashes.combined, [0; 32], hashes.combined));
             }
         }
-        let _ = allow_cache;
         Ok(())
+    }
+
+    /// The element at `path` / `key` as the reciprocity audit of
+    /// bidirectional references reads it: a Merk-level read, because public
+    /// reads strip the referrer list one direction of the audit inspects.
+    /// `None` when nothing resolves there. A read that failed in storage,
+    /// opening the subtree or fetching the element, is returned as the error
+    /// it is: it proves nothing about the edge.
+    fn stored_element_for_reciprocity_audit<'a>(
+        &'a self,
+        path: &[Vec<u8>],
+        key: &[u8],
+        allow_cache: bool,
+        transaction: &'a Transaction,
+        batch: Option<&'a StorageBatch>,
+        grove_version: &GroveVersion,
+    ) -> Result<Option<Element>, Error> {
+        let path_slices: Vec<&[u8]> = path.iter().map(|p| p.as_slice()).collect();
+        let merk = match self
+            .open_transactional_merk_at_path(
+                path_slices.as_slice().into(),
+                transaction,
+                batch,
+                grove_version,
+            )
+            .unwrap()
+        {
+            Ok(merk) => merk,
+            Err(e @ Error::StorageError(_)) => return Err(e),
+            Err(_) => return Ok(None),
+        };
+        Self::element_for_reciprocity_audit(&merk, key, allow_cache, grove_version)
+    }
+
+    /// The element under `key` in an opened Merk, for
+    /// [`Self::stored_element_for_reciprocity_audit`].
+    fn element_for_reciprocity_audit<'db, S: StorageContext<'db>>(
+        merk: &Merk<S>,
+        key: &[u8],
+        allow_cache: bool,
+        grove_version: &GroveVersion,
+    ) -> Result<Option<Element>, Error> {
+        match Element::get_optional(merk, key, allow_cache, grove_version).unwrap() {
+            Ok(element) => Ok(element),
+            Err(e @ grovedb_merk::Error::StorageError(_)) => Err(MerkError(e)),
+            Err(_) => Ok(None),
+        }
     }
 
     fn verify_merk_and_submerks_in_transaction<'db, B: AsRef<[u8]>, S: StorageContext<'db>>(
@@ -3003,31 +3049,15 @@ impl GroveDb {
                             let registered = match (target_qualified.split_last(), expected_inverse)
                             {
                                 (Some((target_key, target_path)), Some(inverse)) => {
-                                    // Merk-level read: public reads STRIP
-                                    // referrer lists, and the list is
-                                    // exactly what this audit inspects.
-                                    let target_path_slices: Vec<&[u8]> =
-                                        target_path.iter().map(|p| p.as_slice()).collect();
                                     let target_element = self
-                                        .open_transactional_merk_at_path(
-                                            target_path_slices.as_slice().into(),
+                                        .stored_element_for_reciprocity_audit(
+                                            target_path,
+                                            target_key,
+                                            allow_cache,
                                             transaction,
                                             batch,
                                             grove_version,
-                                        )
-                                        .unwrap()
-                                        .ok()
-                                        .and_then(|target_merk| {
-                                            Element::get_optional(
-                                                &target_merk,
-                                                target_key,
-                                                allow_cache,
-                                                grove_version,
-                                            )
-                                            .unwrap()
-                                            .ok()
-                                            .flatten()
-                                        });
+                                        )?;
                                     match target_element {
                                         Some(target) => target
                                             .backward_references()
