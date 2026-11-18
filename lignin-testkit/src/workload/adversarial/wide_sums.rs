@@ -2,13 +2,14 @@
 
 use grovedb::{
     element::reference_path::ReferencePathType, Element, ElementFlags, PathQuery, Query, QueryItem,
-    SizedQuery, TreeType,
+    SizedQuery,
 };
+use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
 
 use super::DOMAIN_WIDE_SUMS;
 use crate::workload::{
     build::{self, batch, batch::insert_or_queue, child, path, storage_flags},
-    op::{self, BatchOp, Op, Path, Read},
+    op::{self, BatchOp, Op, Path, Prove, Read},
     rng::Rng,
     Features, Prepared, Stream,
 };
@@ -31,7 +32,7 @@ pub const MIN_WIDE_SUM_ENTRIES: u32 = 4;
 /// and a `ProvableBigSumTree`, which commits its sum into every node hash
 /// and so proves the sum of a range of keys. Where the grove version
 /// creates them, the ledgers are these two trees and the amounts are close
-/// to the largest an `i64` holds, so every total outgrows 64 bits. On an
+/// to the largest an `i64` holds, so the totals outgrow 64 bits. On an
 /// older grove version the ledgers are the trees with an `i64` total those
 /// two are the wide forms of, a `CountSumTree` and a `ProvableSumTree`, and
 /// the amounts are small.
@@ -39,22 +40,24 @@ pub const MIN_WIDE_SUM_ENTRIES: u32 = 4;
 /// Each ledger holds amounts under ascending keys, a tree of its own kind,
 /// an item and a reference to its first amount. The first ledger is
 /// created by an insert and the second by a batch. A round adds amounts to
-/// both, half by inserts and half in one batch, replaces two, deletes one,
-/// and creates another tree of the second kind, filled in the batch that
-/// creates it. The last round deletes two trees with what they hold: the
-/// tree inside the first ledger and the oldest of the trees created since.
-/// After each block the totals are read back:
+/// both, by inserts and in one batch in turn, and creates another tree of
+/// the second kind, a group, filled in the batch that creates it. From the
+/// second round on it also replaces two amounts of each ledger, deletes
+/// one, and adds one to the tree inside each ledger and to an older group.
+/// The last of several rounds deletes two trees with what they hold: the
+/// tree inside the first ledger and the oldest group. After each block the
+/// totals are read back:
 ///
-/// - as the elements of the trees, by a get, by a proven query for all the
-///   root tree holds, and as the numbers `query_item_value_or_sum`
-///   returns for a tree;
+/// - as the elements of the trees, by a get, by proven queries for all the
+///   root tree and the tree of groups hold, and as the numbers
+///   `query_item_value_or_sum` returns for a tree;
 /// - through proven queries inside each ledger, which carry the amounts,
-///   the reference and the nested tree, and a query for keys the second
-///   ledger does and does not hold;
+///   the reference and the nested tree, the proof Drive builds for all the
+///   second ledger holds, a query for keys that ledger does and does not
+///   hold, and the amounts of the first ledger as numbers;
 /// - as the sum of a range of keys of the second ledger, and of the same
-///   range in each of the trees created since: by the 128-bit readers
-///   where the trees are wide, by aggregate path queries where they are
-///   not.
+///   range in each group: by the 128-bit readers where the trees are wide,
+///   by aggregate path queries where they are not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WideSums {
     /// How many rounds to run.
@@ -199,15 +202,21 @@ impl Generator {
         Element::new_sum_item_with_flags(amount, self.flags())
     }
 
+    fn entry(&mut self) -> (Vec<u8>, Element) {
+        (self.key(), self.amount())
+    }
+
     /// The root tree, the first ledger by an insert, the second and the
     /// tree of groups by a batch.
     fn create(&mut self) {
         let root = self.root.clone();
         self.ops
             .push(build::insert(&[], ROOT, Element::empty_tree()));
-        let counted = self.tree(Ledger::Counted);
-        self.ops
-            .push(build::insert(&root, Ledger::Counted.key(), counted));
+        self.ops.push(build::insert(
+            &root,
+            Ledger::Counted.key(),
+            self.tree(Ledger::Counted),
+        ));
         self.ops.push(Op::Batch(vec![
             batch::insert_only(&root, Ledger::Proven.key(), self.tree(Ledger::Proven)),
             batch::insert_only(&root, GROUPS, Element::empty_tree()),
@@ -225,7 +234,7 @@ impl Generator {
                 self.rewrite(index, &tree, &mut pending);
             }
             for entry in 0..self.entries {
-                let (key, amount) = (self.key(), self.amount());
+                let (key, amount) = self.entry();
                 insert_or_queue(
                     entry % 2 == 1,
                     &mut self.ops,
@@ -244,7 +253,7 @@ impl Generator {
             if round == 0 {
                 pending.push(batch::insert_only(&tree, NESTED, self.tree(ledger)));
                 for _ in 0..2 {
-                    let (key, amount) = (self.key(), self.amount());
+                    let (key, amount) = self.entry();
                     pending.push(batch::insert_only(&nested, &key, amount));
                 }
                 let note = Element::new_item_with_flags(self.rng.bytes(24), self.flags());
@@ -255,7 +264,7 @@ impl Generator {
                 );
                 pending.push(batch::insert_only(&tree, POINTER, pointer));
             } else {
-                let (key, amount) = (self.key(), self.amount());
+                let (key, amount) = self.entry();
                 self.ops.push(build::insert(&nested, &key, amount));
             }
         }
@@ -271,10 +280,8 @@ impl Generator {
     /// Deletes one amount of the ledger and replaces two: one of each by an
     /// operation of its own, the other in the batch of the round.
     fn rewrite(&mut self, index: usize, tree: &Path, pending: &mut Vec<BatchOp>) {
-        let deleted = {
-            let chosen = self.rng.index(self.held[index].len());
-            self.held[index].swap_remove(chosen)
-        };
+        let chosen = self.rng.index(self.held[index].len());
+        let deleted = self.held[index].swap_remove(chosen);
         let first = self.rng.index(self.held[index].len());
         let second = (first + 1) % self.held[index].len();
         let (replaced, overwritten) = (
@@ -298,7 +305,7 @@ impl Generator {
         let groups = child(&self.root, GROUPS);
         if !self.groups.is_empty() {
             let older = self.groups[self.rng.index(self.groups.len())].clone();
-            let (key, amount) = (self.key(), self.amount());
+            let (key, amount) = self.entry();
             self.ops
                 .push(build::insert(&child(&groups, &older), &key, amount));
         }
@@ -309,7 +316,7 @@ impl Generator {
             self.tree(Ledger::Proven),
         ));
         for _ in 0..self.entries {
-            let (key, amount) = (self.key(), self.amount());
+            let (key, amount) = self.entry();
             pending.push(batch::insert_only(&child(&groups, &group), &key, amount));
         }
         self.groups.push(group);
@@ -320,11 +327,10 @@ impl Generator {
     fn delete_trees(&mut self, pending: &mut Vec<BatchOp>) {
         let counted = child(&self.root, Ledger::Counted.key());
         self.ops.push(build::delete(&counted, NESTED));
-        let tree_type = if self.wide {
-            TreeType::ProvableBigSumTree
-        } else {
-            TreeType::ProvableSumTree
-        };
+        let tree_type = self
+            .tree(Ledger::Proven)
+            .tree_type()
+            .expect("a ledger is a tree");
         let oldest = self.groups.remove(0);
         pending.push(batch::delete_tree(
             &child(&self.root, GROUPS),
@@ -338,11 +344,13 @@ impl Generator {
         for ledger in Ledger::BOTH {
             self.ops.push(build::get(&root, ledger.key()));
         }
-        self.ops.push(build::query(build::select_raw(
-            &root,
-            vec![op::QueryItem::RangeFull],
-            None,
-        )));
+        for tree in [root.clone(), child(&root, GROUPS)] {
+            self.ops.push(build::query(build::select_raw(
+                &tree,
+                vec![op::QueryItem::RangeFull],
+                None,
+            )));
+        }
         self.ops.push(Op::Read(Read::ItemValues {
             query: Box::new(PathQuery::new_unsized(
                 root.clone(),
@@ -363,21 +371,42 @@ impl Generator {
                 .push(build::proven(build::sized(&tree, page, Some(limit), None)));
         }
 
-        // Keys of the second ledger: its first amount, one that is another
-        // tree's or deleted or held, and two no tree holds.
         let proven = child(&root, Ledger::Proven.key());
+        self.ops.push(build::prove(Prove::PathQuery(Box::new(
+            PathQuery::new_unsized(proven.clone(), Query::new_range_full()),
+        ))));
+
+        // Keys of the second ledger: its first amount, the reference to
+        // it, one that is another tree's or deleted or held, and two no
+        // tree holds.
         let wanted = [
             self.anchors[1].clone(),
+            POINTER.to_vec(),
             entry_key(self.rng.below(self.next)),
             entry_key(self.next),
             b"absent".to_vec(),
         ];
-        self.ops.push(Op::Read(Read::KeysOptional {
-            query: Box::new(PathQuery::new(
-                proven.clone(),
-                SizedQuery::new(keys(wanted.clone()), Some(wanted.len() as u16), None),
+        let by_key = PathQuery::new(
+            proven.clone(),
+            SizedQuery::new(keys(wanted.clone()), Some(wanted.len() as u16), None),
+        );
+        for raw in [false, true] {
+            self.ops.push(Op::Read(Read::KeysOptional {
+                query: Box::new(by_key.clone()),
+                raw,
+            }));
+        }
+
+        // The oldest amounts of the first ledger, as numbers.
+        let oldest = QueryItem::RangeTo(..entry_key(self.rng.between(1, self.next)));
+        let limit = self.rng.between(1, 5) as u16;
+        self.ops.push(Op::Read(Read::SumValues {
+            query: Box::new(build::sized(
+                &child(&root, Ledger::Counted.key()),
+                Query::new_single_query_item(oldest),
+                Some(limit),
+                None,
             )),
-            raw: false,
         }));
 
         let range = self.range();

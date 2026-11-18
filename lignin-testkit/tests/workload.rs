@@ -2418,8 +2418,8 @@ const PINNED_STREAMS: &[(&str, u64, u64, &str)] = &[
     ("flag-epochs", 0x4c49474e494e, 149, "8b20523f2db8cd5765367eed3452262f595c6ee763baa1ab3d43f2f9f61c1a18"),
     ("tree-deletes", 0x1, 96, "b85e2cebee162a67848b7f9e51001329a58a24612782efd7ecd94ef926ea2a07"),
     ("tree-deletes", 0x4c49474e494e, 96, "1473dddd7a7f218f5a36e7ef7c0b54fa32333e6ebf739d85a1a3be882c1dfc76"),
-    ("wide-sums", 0x1, 149, "3d8885399924bfebf11cee4e76193c4599bff2572e3d324068441b86ad694134"),
-    ("wide-sums", 0x4c49474e494e, 149, "ff00c125b4ac7841eb0304a11cf53ac3295aa9987d814438f742aa34bf411052"),
+    ("wide-sums", 0x1, 173, "1e9465d289505ade8553142670b7c74710d77ee55c054a9d9cb7a9e3b98b59ef"),
+    ("wide-sums", 0x4c49474e494e, 173, "c479a33b1ddada62a541ecda8be350404d4d22e25b2b0c8b48a371fa0a75e659"),
 ];
 
 #[test]
@@ -2452,11 +2452,11 @@ fn streams_are_pinned() {
 /// features, seed [`SEED`]: protocol version, operations, digest.
 #[rustfmt::skip]
 const PINNED_SUITES: &[(u32, u64, &str)] = &[
-    (1, 21865, "fc9abcf730f389fae42d884675e040ab2d532b76d1e8b1e7ce98c0cd3367596d"),
-    (2, 21865, "fc9abcf730f389fae42d884675e040ab2d532b76d1e8b1e7ce98c0cd3367596d"),
-    (3, 21889, "d0c46af96ef9755ecfeaeb6a12bf7aac5cba6c60ca834b9af166d0c4d6b17661"),
-    (4, 22377, "a8ccc5a338992593ac69837f79cf795819ac6fdcdcc1508759544f2caa361be1"),
-    (5, 22692, "1176786c28add902c69b691379a7efd78721e011cdafb8b9e18fc36b2deacffe"),
+    (1, 21889, "15c13f26bdda98faf0478d1c4e84bc052bb1c9a020d660e5a8f26b8d22ed3ad3"),
+    (2, 21889, "15c13f26bdda98faf0478d1c4e84bc052bb1c9a020d660e5a8f26b8d22ed3ad3"),
+    (3, 21913, "f08e647af002721e870fc775b609f1527cb935ceb3d998fd705096d00ea35ff3"),
+    (4, 22401, "7597b7bf528d5230e9f3a63941febedc05c40986cad5c4071f5c4d4ab04c21f8"),
+    (5, 22716, "d55699e7e926ce1f7a7871d6b91cc0322953f24fc5ef868e826826f8796635c8"),
 ];
 
 #[test]
@@ -4298,9 +4298,34 @@ impl Ledgers {
         })
     }
 
+    /// The element a reader that does not follow references returns for
+    /// `key`: a reference to a key next to it comes with the path spelled
+    /// out.
+    fn returned(&self, path: &[Vec<u8>], key: &[u8]) -> Option<Element> {
+        Some(match self.stored(path, key)? {
+            Element::Reference(ReferencePathType::SiblingReference(sibling), hops, flags) => {
+                Element::Reference(
+                    ReferencePathType::AbsolutePathReference(below(path, &sibling)),
+                    hops,
+                    flags,
+                )
+            }
+            other => other,
+        })
+    }
+
+    /// The element a reader that follows references returns for `key`.
+    fn resolved(&self, path: &[Vec<u8>], key: &[u8]) -> Option<Element> {
+        match self.stored(path, key)? {
+            Element::Reference(ReferencePathType::SiblingReference(sibling), ..) => {
+                self.stored(path, &sibling)
+            }
+            other => Some(other),
+        }
+    }
+
     /// The rows `query` selects, in the order of their keys. The queries of
-    /// the workload have no subquery and no offset. A query returns a
-    /// reference to a key next to it with the path spelled out.
+    /// the workload have no subquery and no offset.
     fn rows(&self, query: &PathQuery) -> Vec<PathKeyElementTrio> {
         let selects = &query.query.query;
         assert!(!selects.has_subquery() && query.query.offset.is_none());
@@ -4311,21 +4336,7 @@ impl Ledgers {
             .filter(|(key, _)| selects.items.iter().any(|item| item.contains(key)))
             .take(query.query.limit.map_or(usize::MAX, usize::from))
             .map(|(key, _)| {
-                let element = match self.stored(&query.path, key).expect("a held key") {
-                    Element::Reference(
-                        ReferencePathType::SiblingReference(sibling),
-                        hops,
-                        flags,
-                    ) => {
-                        let absolute = below(&query.path, &sibling);
-                        Element::Reference(
-                            ReferencePathType::AbsolutePathReference(absolute),
-                            hops,
-                            flags,
-                        )
-                    }
-                    other => other,
-                };
+                let element = self.returned(&query.path, key).expect("a held key");
                 (query.path.clone(), key.clone(), element)
             })
             .collect()
@@ -4368,6 +4379,8 @@ struct LedgersChecked {
     rows: u64,
     values_or_sums: u64,
     optional_keys: u64,
+    sums: u64,
+    proofs: u64,
     range_sums: u64,
     range_sums_per_tree: u64,
     /// How many trees were read with a total no `i64` holds.
@@ -4529,8 +4542,8 @@ fn the_ledgers_add_up_to_what_was_written() {
                         assert_eq!(values, expected, "{context}");
                         checked.values_or_sums += 1;
                     }
-                    (Read::KeysOptional { query, .. }, Outcome::OptionalRows(mut rows)) => {
-                        let mut expected: Vec<_> = query
+                    (Read::KeysOptional { query, raw }, Outcome::OptionalRows(mut rows)) => {
+                        let expected: Vec<_> = query
                             .query
                             .query
                             .items
@@ -4539,17 +4552,56 @@ fn the_ledgers_add_up_to_what_was_written() {
                                 let grovedb::QueryItem::Key(key) = item else {
                                     panic!("{context}\n{item:?} is not a key");
                                 };
-                                (
-                                    query.path.clone(),
-                                    key.clone(),
-                                    ledgers.stored(&query.path, key),
-                                )
+                                let element = if *raw {
+                                    ledgers.returned(&query.path, key)
+                                } else {
+                                    ledgers.resolved(&query.path, key)
+                                };
+                                (query.path.clone(), key.clone(), element)
                             })
                             .collect();
                         rows.sort_by(|a, b| a.1.cmp(&b.1));
-                        expected.sort_by(|a, b| a.1.cmp(&b.1));
                         assert_eq!(rows, expected, "{context}");
                         checked.optional_keys += 1;
+                    }
+                    (Read::SumValues { query }, Outcome::SumValues { sums, .. }) => {
+                        let expected: Vec<i64> = ledgers
+                            .rows(query)
+                            .into_iter()
+                            .map(|(_, _, element)| match element {
+                                Element::SumItem(amount, _) => amount,
+                                other => panic!("{context}\nreads {other:?} as a sum"),
+                            })
+                            .collect();
+                        assert!(!expected.is_empty(), "{context}\nselects nothing");
+                        assert_eq!(sums, expected, "{context}");
+                        checked.sums += 1;
+                    }
+                    (Read::Prove(Prove::PathQuery(query)), Outcome::Proof(proof)) => {
+                        let (root, proved) =
+                            GroveDb::verify_query_raw(&proof, query, grove_version).unwrap_or_else(
+                                |error| panic!("{context}\nnot verified: {error:?}"),
+                            );
+                        let committed = db.root_hash(None, grove_version).unwrap();
+                        assert_eq!(root, committed.expect("root hash"), "{context}");
+                        let proved: Vec<PathKeyElementTrio> = proved
+                            .into_iter()
+                            .map(|row| {
+                                let element = Element::deserialize(&row.value, grove_version)
+                                    .expect("a proved value is an element");
+                                (row.path, row.key, element)
+                            })
+                            .collect();
+                        let expected = ledgers
+                            .rows(query)
+                            .into_iter()
+                            .map(|(path, key, _)| {
+                                let element = ledgers.resolved(&path, &key).expect("a held key");
+                                (path, key, element)
+                            })
+                            .collect();
+                        compare_rows(&context, proved, expected);
+                        checked.proofs += 1;
                     }
                     (read, outcome) => panic!("{context}\n{read:?} returned {outcome:?}"),
                 }
@@ -4559,9 +4611,11 @@ fn the_ledgers_add_up_to_what_was_written() {
                 checked,
                 LedgersChecked {
                     elements: 2 * rounds,
-                    rows: 5 * rounds,
+                    rows: 6 * rounds,
                     values_or_sums: rounds,
-                    optional_keys: rounds,
+                    optional_keys: 2 * rounds,
+                    sums: rounds,
+                    proofs: rounds,
                     range_sums: rounds,
                     range_sums_per_tree: rounds,
                     past_an_i64: checked.past_an_i64,

@@ -604,10 +604,10 @@ pub enum Read {
         queries: Vec<PathQuery>,
     },
     /// The sum of a key range as 128 bits, which a
-    /// `ProvableCountProvableBigSumTree` answers:
-    /// `GroveDb::query_aggregate_big_sum`, with the count
-    /// `GroveDb::query_aggregate_count_and_big_sum`, and the forms of both
-    /// that answer for each selected key.
+    /// `ProvableCountProvableBigSumTree` and a `ProvableBigSumTree` answer:
+    /// `GroveDb::query_aggregate_big_sum`, with the count, which the first
+    /// of the two keeps, `GroveDb::query_aggregate_count_and_big_sum`, and
+    /// the forms of both that answer for each selected key.
     ///
     /// A grove version that stores such a tree proves the query:
     /// `GroveDb::prove_query`, verified by the verifier named after the
