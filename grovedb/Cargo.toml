@@ -159,6 +159,11 @@ grovedbg = [
 # caller-provided hash matches the underlying state.
 unsafe-dump-load = ["grovedb-storage/unsafe-dump-load"]
 
+# `lignin_cost_model` is set where `lignin-testkit/cost-model-storage/check.sh`
+# builds GroveDB on a storage crate that has no RocksDB.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(lignin_cost_model)'] }
+
 [build-dependencies]
 hex-literal = { version = "1.1.0", optional = true }
 reqwest = { version = "0.13", features = ["blocking"], optional = true }

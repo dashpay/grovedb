@@ -24,6 +24,10 @@ At the reference scale a trace has a digest every 1,000 steps, so a difference i
 
 `check.sh test -p grovedb-storage ...` also runs the model's own unit tests, which the stand-in crate includes; `-- --skip cost_model::` leaves them out. GroveDB's suite passes on the model but for `test_checkpoint_wal_under_threshold_is_preserved`, which looks for RocksDB's WAL files.
 
+`check.sh` builds with the cfg `lignin_cost_model`. GroveDB compiles one test only without it: the test of the `Engine` seam that looks at the error RocksDB itself returns for a commit that loses, which the model never returns.
+
+`src/error.rs` is the error enum of the real crate with the model's stand-in where that one holds a RocksDB error. The commit outcomes and the write scope errors are written out there a second time, so a change to them in `storage/src/error.rs` has to be made in both.
+
 When the corpus grows, run `check.sh` again: it replays whatever `lignin-testkit/corpus` holds.
 
 ## What the model does not do

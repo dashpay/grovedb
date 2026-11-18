@@ -470,6 +470,7 @@ fn savepoints_form_a_stack() {
     assert_eq!(committed(&engine, A, b"2"), None);
 }
 
+#[cfg(not(lignin_cost_model))]
 #[test]
 fn a_commit_that_loses_is_the_error_rocksdb_returned_and_is_classed_as_a_conflict() {
     let (_dir, engine) = open_engine();
