@@ -457,12 +457,11 @@ Whatever the store keeps about cells changes at the change point, as one
 unit with the cell change, and not before. That holds for the live-value
 counts of the value log (`value-log-format.md` O6, O7).
 
-`value-log-format.md` words this, in O7 and O9, as "the same commit as the
-cell change" and "the commit that changes the cell". For a value that
-background work moves there is no commit. "Commit" there is to be read as
-the change point. The count is still that of the latest version, as O7 has
-it: a background move changes how that version is stored and counted, and
-changes no version. That document does not yet say so (section 17 item 23).
+`value-log-format.md` O7 and O9 say the same from the value log's side: a
+cell change a transaction makes changes the count in that transaction's
+commit, and a value the cleaner moves takes no commit version. The count is
+still that of the latest version, as O7 has it: a background move changes
+how that version is stored and counted, and changes no version.
 
 **PV7. A value pointer is rewritten only in the current page version, and
 never under a private copy.** Of the changes PV4 allows, only a value
@@ -1832,14 +1831,14 @@ are listed so the owner can overrule one before code depends on it.
     fsync included, is in one step before anything is installed (CM3, CM7).
     This adds two commit outcomes, `NotDurable` and unsettled (CM5). And
     **`flush()` covers the commits published before it read *L*** (DU1a).
-23. **A background change takes no version** (PV6). `value-log-format.md`
-    O7 and O9 speak of "the commit that changes the cell" also for a value
-    the cleaner moves. Making such a move a commit would rebase open write
-    transactions and end kept locations during normal work, so it is not
-    one, and PV6 says how O7 and O9 read. That document needs the same
-    sentence, which only the owner can rule in. **A value pointer is
-    rewritten only in the current page version and never under a private
-    copy** (PV7): background work abandons the move and tries later. The
-    other way, rebuilding the private copy, would put background work on the
-    writer's path. **The write set is self-contained** (WT3), and **bytes
-    written ahead of a commit are held for their transaction** (FL1).
+23. **A background change takes no version** (PV6), a value the cleaner
+    moves included. Making such a move a commit would rebase open write
+    transactions and end kept locations during normal work. The owner ruled
+    the same wording into `value-log-format.md` O7 and O9 with this task,
+    which had spoken of "the commit that changes the cell". **A value
+    pointer is rewritten only in the current page version and never under a
+    private copy** (PV7): background work abandons the move and tries later.
+    The other way, rebuilding the private copy, would put background work on
+    the writer's path. **The write set is self-contained** (WT3), and
+    **bytes written ahead of a commit are held for their transaction**
+    (FL1).
