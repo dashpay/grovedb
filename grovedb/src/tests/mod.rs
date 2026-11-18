@@ -1,6 +1,7 @@
 //! Tests
 
 pub mod common;
+pub(crate) mod faultable_reads;
 
 mod query_tests;
 

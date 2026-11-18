@@ -14,10 +14,9 @@ use grovedb_storage::{
 use grovedb_version::version::GroveVersion;
 
 use super::validate_path_segment_lengths;
-use crate::{Element, Error, Transaction};
-
 #[cfg(test)]
-pub(crate) mod test_hooks;
+use crate::tests::faultable_reads::FaultableReads;
+use crate::{Element, Error, Transaction};
 
 pub(crate) trait OpenMerkErrorsCompat {
     /// The error for a parent element that could not be found or decoded. A
@@ -55,7 +54,7 @@ where
             .get_transactional_storage_context(parent_path.clone(), batch, tx)
             .unwrap_add_cost(&mut cost);
         #[cfg(test)]
-        let parent_storage = test_hooks::FaultableReads(parent_storage);
+        let parent_storage = FaultableReads(parent_storage);
         let element = cost_return_on_error!(
             &mut cost,
             Element::get_from_storage(&parent_storage, parent_key, grove_version).map_err(|e| {

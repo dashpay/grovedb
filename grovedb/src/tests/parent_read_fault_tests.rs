@@ -12,8 +12,11 @@ use grovedb_version::version::{v4::GROVE_V4, GroveVersion, GROVE_VERSIONS};
 
 use crate::{
     query_result_type::QueryResultType,
-    tests::{common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, TempGroveDb, TEST_LEAF},
-    util::compat::test_hooks::{with_failed_parent_read, INJECTED_READ_FAILURE},
+    tests::{
+        common::EMPTY_PATH,
+        faultable_reads::{with_failed_parent_read, INJECTED_READ_FAILURE},
+        make_empty_grovedb, make_test_grovedb, TempGroveDb, TEST_LEAF,
+    },
     BackwardsReferences, Element, Error, PathQuery, Query,
 };
 
