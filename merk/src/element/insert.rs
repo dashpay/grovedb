@@ -1192,13 +1192,17 @@ impl ElementInsertToStorageExtensions for Element {
         }
 
         // The batch builder has the parent's feature type instead of its
-        // TreeType. Only the non-provable CountTree/CountSumTree feature
-        // variants accept NonCounted children; the Provable* variants commit
-        // their count and must reject the wrapper just like the direct path.
+        // TreeType. Only the non-provable CountTree/CountSumTree/
+        // CountBigSumTree feature variants accept NonCounted children (the
+        // ones `TreeType::accepts_non_counted_children` names); the Provable*
+        // variants commit their count and must reject the wrapper just like
+        // the direct path.
         if self.is_non_counted()
             && !matches!(
                 feature_type,
-                TreeFeatureType::CountedMerkNode(_) | TreeFeatureType::CountedSummedMerkNode(..)
+                TreeFeatureType::CountedMerkNode(_)
+                    | TreeFeatureType::CountedSummedMerkNode(..)
+                    | TreeFeatureType::CountedBigSummedMerkNode(..)
             )
         {
             return Err(Error::InvalidInputError(

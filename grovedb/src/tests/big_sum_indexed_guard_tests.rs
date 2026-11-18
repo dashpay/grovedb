@@ -986,4 +986,225 @@ mod tests {
             .expect("read through the references");
         assert_eq!(results, expected);
     }
+
+    // ---------------------------------------------------------------
+    // A tree created and filled by one batch.
+    // ---------------------------------------------------------------
+
+    fn insert_op(path: &[&[u8]], key: &[u8], element: Element) -> QualifiedGroveDbOp {
+        QualifiedGroveDbOp::insert_or_replace_op(
+            path.iter().map(|segment| segment.to_vec()).collect(),
+            key.to_vec(),
+            element,
+        )
+    }
+
+    /// A batch that creates a tree and writes into it replaces the insert
+    /// with the tree's computed root before the insert is applied. The
+    /// creation gate holds on that path too: a version that refuses the
+    /// tree alone refuses it with contents, and writes nothing.
+    #[test]
+    fn the_creation_gate_holds_when_the_batch_also_fills_the_tree() {
+        let v4 = &GROVE_V4;
+        let trees: [(Element, Element); 5] = [
+            (
+                Element::empty_count_big_sum_tree(),
+                Element::new_sum_item(5),
+            ),
+            (
+                Element::empty_provable_big_sum_tree(),
+                Element::new_sum_item(5),
+            ),
+            (
+                Element::empty_provable_count_provable_big_sum_tree(),
+                Element::new_sum_item(5),
+            ),
+            (
+                Element::empty_provable_big_sum_indexed_tree(),
+                Element::new_sum_item(5),
+            ),
+            (
+                Element::empty_provable_count_provable_big_sum_indexed_tree(vec![(
+                    IndexAxis::Count.tag(),
+                    None,
+                )])
+                .expect("canonical axes"),
+                Element::new_sum_item(5),
+            ),
+        ];
+        for (tree, child) in trees {
+            let db = make_test_grovedb(v4);
+            let before = db.root_hash(None, v4).unwrap().expect("root");
+            for ops in [
+                vec![insert_op(&[TEST_LEAF], b"w", tree.clone())],
+                vec![
+                    insert_op(&[TEST_LEAF], b"w", tree.clone()),
+                    insert_op(&[TEST_LEAF, b"w"], b"k", child.clone()),
+                ],
+                // Deeper still: the tree is an ancestor of what is written.
+                vec![
+                    insert_op(&[TEST_LEAF], b"outer", Element::empty_tree()),
+                    insert_op(&[TEST_LEAF, b"outer"], b"w", tree.clone()),
+                    insert_op(&[TEST_LEAF, b"outer", b"w"], b"k", child.clone()),
+                ],
+            ] {
+                match db.apply_batch(ops, None, None, v4).unwrap() {
+                    Err(Error::VersionError(_)) => {}
+                    other => panic!("expected a version error for {tree:?}, got {other:?}"),
+                }
+            }
+            assert_eq!(db.root_hash(None, v4).unwrap().expect("root"), before);
+
+            // The version that introduces the trees takes the same batch.
+            let v5 = GroveVersion::latest();
+            let db = make_test_grovedb(v5);
+            db.apply_batch(
+                vec![
+                    insert_op(&[TEST_LEAF], b"w", tree.clone()),
+                    insert_op(&[TEST_LEAF, b"w"], b"k", child.clone()),
+                ],
+                None,
+                None,
+                v5,
+            )
+            .unwrap()
+            .expect("create and fill at the latest version");
+            assert_verifies(&db, v5);
+        }
+    }
+
+    /// An entry that is a tree, created and filled by the same batch, is
+    /// held to the child rule of the indexed tree it enters, as it is when
+    /// it is inserted empty.
+    #[test]
+    fn a_filled_tree_entry_is_held_to_the_child_rule() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        populate_pbsit(&db, b"sum", v);
+        populate_pcpbsit(&db, b"count_sum", v);
+        let before = db.root_hash(None, v).unwrap().expect("root");
+        let fill = |tree_key: &[u8], entry: Element, child: Element| {
+            db.apply_batch(
+                vec![
+                    insert_op(&[TEST_LEAF, tree_key], b"t", entry),
+                    insert_op(&[TEST_LEAF, tree_key, b"t"], b"k", child),
+                ],
+                None,
+                None,
+                v,
+            )
+            .unwrap()
+        };
+
+        // Entries that give the tree no sum, or no count.
+        assert_invalid_input(
+            fill(
+                b"sum",
+                Element::empty_tree(),
+                Element::new_item(b"x".to_vec()),
+            ),
+            "ProvableBigSumIndexedTree only accepts sum-bearing children",
+        );
+        assert_invalid_input(
+            fill(
+                b"sum",
+                Element::empty_count_tree(),
+                Element::new_item(b"x".to_vec()),
+            ),
+            "ProvableBigSumIndexedTree only accepts sum-bearing children",
+        );
+        for entry in [
+            Element::empty_tree(),
+            Element::empty_sum_tree(),
+            Element::empty_big_sum_tree(),
+        ] {
+            assert_invalid_input(
+                fill(b"count_sum", entry, Element::new_sum_item(5)),
+                "only accepts children that contribute both count and sum",
+            );
+        }
+        assert_eq!(db.root_hash(None, v).unwrap().expect("root"), before);
+
+        // Entries that do are taken, and ranked by what the batch put in them.
+        fill(
+            b"sum",
+            Element::empty_big_sum_tree(),
+            Element::new_sum_item(40),
+        )
+        .expect("a big sum tree entry");
+        fill(
+            b"count_sum",
+            Element::empty_count_big_sum_tree(),
+            Element::new_sum_item(40),
+        )
+        .expect("a count and big sum tree entry");
+        for tree_key in [b"sum".as_slice(), b"count_sum"] {
+            let ranked = PathQuery::new_axis_top_k(
+                vec![TEST_LEAF.to_vec(), tree_key.to_vec()],
+                IndexAxis::BigSum,
+                1,
+                0,
+                true,
+            );
+            let PathQueryRun::AxisEntries {
+                entries: AxisEntries::BigSum(entries),
+                ..
+            } = db
+                .run_path_query(
+                    &ranked,
+                    true,
+                    true,
+                    true,
+                    QueryResultType::QueryKeyElementPairResultType,
+                    None,
+                    v,
+                )
+                .unwrap()
+                .expect("read")
+            else {
+                panic!("expected big sum entries");
+            };
+            assert_eq!(entries[0].ordering_value, 40);
+            assert_eq!(entries[0].primary_key, b"t".to_vec());
+        }
+        assert_verifies(&db, v);
+    }
+
+    /// A count and big sum tree takes an indexed tree that is left out of
+    /// its count, by a batch as by a direct insert.
+    #[test]
+    fn a_count_big_sum_tree_takes_a_non_counted_indexed_tree_in_a_batch() {
+        let v = GroveVersion::latest();
+        let child =
+            || Element::NonCounted(Box::new(Element::empty_provable_big_sum_indexed_tree()));
+
+        let direct = make_test_grovedb(v);
+        create(&direct, b"p", Element::empty_count_big_sum_tree(), v);
+        direct
+            .insert([TEST_LEAF, b"p"].as_ref(), b"w", child(), None, None, v)
+            .unwrap()
+            .expect("direct insert");
+
+        let batched = make_test_grovedb(v);
+        create(&batched, b"p", Element::empty_count_big_sum_tree(), v);
+        batched
+            .apply_batch(
+                vec![insert_op(&[TEST_LEAF, b"p"], b"w", child())],
+                None,
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("batch insert");
+
+        assert_eq!(
+            batched.root_hash(None, v).unwrap().expect("root"),
+            direct.root_hash(None, v).unwrap().expect("root"),
+        );
+        let Element::CountBigSumTree(_, count, _, _) = stored(&batched, b"p", v) else {
+            panic!("expected a CountBigSumTree");
+        };
+        assert_eq!(count, 0, "the indexed tree is left out of the count");
+        assert_verifies(&batched, v);
+    }
 }

@@ -5066,80 +5066,7 @@ where
                     not_counted_or_summed,
                 } => {
                     // Standard Merk trees — infer element from aggregate_data
-                    let element = match aggregate_data {
-                        AggregateData::NoAggregateData => {
-                            Element::new_tree_with_flags(root_key, flags)
-                        }
-                        AggregateData::Sum(sum_value) => {
-                            Element::new_sum_tree_with_flags_and_sum_value(
-                                root_key, sum_value, flags,
-                            )
-                        }
-                        AggregateData::BigSum(sum_value) => {
-                            Element::new_big_sum_tree_with_flags_and_sum_value(
-                                root_key, sum_value, flags,
-                            )
-                        }
-                        AggregateData::Count(count_value) => {
-                            Element::new_count_tree_with_flags_and_count_value(
-                                root_key,
-                                count_value,
-                                flags,
-                            )
-                        }
-                        AggregateData::CountAndSum(count_value, sum_value) => {
-                            Element::new_count_sum_tree_with_flags_and_sum_and_count_value(
-                                root_key,
-                                count_value,
-                                sum_value,
-                                flags,
-                            )
-                        }
-                        AggregateData::ProvableCount(count_value) => {
-                            Element::new_provable_count_tree_with_flags_and_count_value(
-                                root_key,
-                                count_value,
-                                flags,
-                            )
-                        }
-                        AggregateData::ProvableCountAndSum(count_value, sum_value) => {
-                            Element::ProvableCountSumTree(root_key, count_value, sum_value, flags)
-                        }
-                        AggregateData::ProvableSum(sum_value) => {
-                            Element::new_provable_sum_tree_with_flags_and_sum_value(
-                                root_key, sum_value, flags,
-                            )
-                        }
-                        AggregateData::ProvableCountAndProvableSum(count_value, sum_value) => {
-                            Element::new_provable_count_provable_sum_tree_with_flags_and_sum_and_count_value(
-                                root_key,
-                                count_value,
-                                sum_value,
-                                flags,
-                            )
-                        }
-                        AggregateData::ProvableCountAndProvableBigSum(count_value, sum_value) => {
-                            Element::new_provable_count_provable_big_sum_tree_with_flags_and_sum_and_count_value(
-                                root_key,
-                                count_value,
-                                sum_value,
-                                flags,
-                            )
-                        }
-                        AggregateData::CountAndBigSum(count_value, sum_value) => {
-                            Element::new_count_big_sum_tree_with_flags_and_sum_and_count_value(
-                                root_key,
-                                count_value,
-                                sum_value,
-                                flags,
-                            )
-                        }
-                        AggregateData::ProvableBigSum(sum_value) => {
-                            Element::new_provable_big_sum_tree_with_flags_and_sum_value(
-                                root_key, sum_value, flags,
-                            )
-                        }
-                    };
+                    let element = merk_tree_from_aggregate(root_key, flags, aggregate_data);
                     // Re-wrap if the original element was wrapped, so the
                     // on-disk bytes preserve the wrapper and the parent's
                     // aggregate excludes this subtree from the right
@@ -5717,6 +5644,77 @@ where
 
     fn get_batch_run_mode(&self) -> BatchRunMode {
         BatchRunMode::Execute
+    }
+}
+
+/// The Merk tree element an [`GroveOp::InsertTreeWithRootHash`] writes: its
+/// type is the one `aggregate_data` names, since the op carries no element.
+/// The wrappers the op records are applied by the caller.
+#[cfg(feature = "minimal")]
+pub(in crate::batch) fn merk_tree_from_aggregate(
+    root_key: Option<Vec<u8>>,
+    flags: Option<ElementFlags>,
+    aggregate_data: AggregateData,
+) -> Element {
+    match aggregate_data {
+        AggregateData::NoAggregateData => Element::new_tree_with_flags(root_key, flags),
+        AggregateData::Sum(sum_value) => {
+            Element::new_sum_tree_with_flags_and_sum_value(root_key, sum_value, flags)
+        }
+        AggregateData::BigSum(sum_value) => {
+            Element::new_big_sum_tree_with_flags_and_sum_value(root_key, sum_value, flags)
+        }
+        AggregateData::Count(count_value) => {
+            Element::new_count_tree_with_flags_and_count_value(root_key, count_value, flags)
+        }
+        AggregateData::CountAndSum(count_value, sum_value) => {
+            Element::new_count_sum_tree_with_flags_and_sum_and_count_value(
+                root_key,
+                count_value,
+                sum_value,
+                flags,
+            )
+        }
+        AggregateData::ProvableCount(count_value) => {
+            Element::new_provable_count_tree_with_flags_and_count_value(
+                root_key,
+                count_value,
+                flags,
+            )
+        }
+        AggregateData::ProvableCountAndSum(count_value, sum_value) => {
+            Element::ProvableCountSumTree(root_key, count_value, sum_value, flags)
+        }
+        AggregateData::ProvableSum(sum_value) => {
+            Element::new_provable_sum_tree_with_flags_and_sum_value(root_key, sum_value, flags)
+        }
+        AggregateData::ProvableCountAndProvableSum(count_value, sum_value) => {
+            Element::new_provable_count_provable_sum_tree_with_flags_and_sum_and_count_value(
+                root_key,
+                count_value,
+                sum_value,
+                flags,
+            )
+        }
+        AggregateData::ProvableCountAndProvableBigSum(count_value, sum_value) => {
+            Element::new_provable_count_provable_big_sum_tree_with_flags_and_sum_and_count_value(
+                root_key,
+                count_value,
+                sum_value,
+                flags,
+            )
+        }
+        AggregateData::CountAndBigSum(count_value, sum_value) => {
+            Element::new_count_big_sum_tree_with_flags_and_sum_and_count_value(
+                root_key,
+                count_value,
+                sum_value,
+                flags,
+            )
+        }
+        AggregateData::ProvableBigSum(sum_value) => {
+            Element::new_provable_big_sum_tree_with_flags_and_sum_value(root_key, sum_value, flags)
+        }
     }
 }
 

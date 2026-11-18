@@ -163,11 +163,25 @@ pub fn compute_big_avg_fixed_point(sum: i128, count: u64) -> i128 {
     // `rem_euclid` is in `0..count`, so it and its product with the scale
     // fit a `u128`.
     let remainder = sum.rem_euclid(count_i128) as u128;
-    let fraction = (remainder * AVG_FIXED_POINT_SCALE as u128) / count as u128;
-    quotient
+    // Below the scale, since `remainder < count`.
+    let fraction = ((remainder * AVG_FIXED_POINT_SCALE as u128) / count as u128) as i128;
+    if let Some(average) = quotient
         .checked_mul(AVG_FIXED_POINT_SCALE)
-        .and_then(|whole| whole.checked_add(fraction as i128))
-        .unwrap_or(if quotient < 0 { i128::MIN } else { i128::MAX })
+        .and_then(|whole| whole.checked_add(fraction))
+    {
+        return average;
+    }
+    if quotient > 0 {
+        return i128::MAX;
+    }
+    // A negative quotient times the scale can pass `i128::MIN` while the
+    // average, the fraction added, does not. Form it one whole unit higher:
+    // `(q + 1) * SCALE + (fraction - SCALE)` is the same value, and its
+    // first term lies above the average.
+    (quotient + 1)
+        .checked_mul(AVG_FIXED_POINT_SCALE)
+        .and_then(|whole| whole.checked_add(fraction - AVG_FIXED_POINT_SCALE))
+        .unwrap_or(i128::MIN)
 }
 
 #[cfg(test)]
@@ -405,6 +419,35 @@ mod tests {
 
     /// Past the `i64` range the wide average is exact while it fits an
     /// `i128`, keeps the order of the averages, and saturates beyond.
+    /// A negative average just inside the `i128` range: its whole part
+    /// times the scale lies below `i128::MIN`, and the fraction brings it
+    /// back in. It is exact, not saturated.
+    #[test]
+    fn big_avg_is_exact_up_to_the_negative_edge() {
+        let sum: i128 = -170_141_183_460_469_231_731;
+        // sum / 10 at 19 fractional digits is sum * 10^18, which fits.
+        let exact = sum * 10i128.pow(18);
+        assert!(sum
+            .div_euclid(10)
+            .checked_mul(AVG_FIXED_POINT_SCALE)
+            .is_none());
+        assert_eq!(compute_big_avg_fixed_point(sum, 10), exact);
+        assert!(exact > i128::MIN);
+
+        // One step lower the average itself is out of range and saturates,
+        // and the order of the three is kept.
+        assert_eq!(compute_big_avg_fixed_point(sum - 10, 10), i128::MIN);
+        assert!(compute_big_avg_fixed_point(sum + 10, 10) > compute_big_avg_fixed_point(sum, 10));
+
+        // The last representable average and the first that is not.
+        let floor = i128::MIN / AVG_FIXED_POINT_SCALE;
+        assert_eq!(
+            compute_big_avg_fixed_point(floor, 1),
+            floor * AVG_FIXED_POINT_SCALE
+        );
+        assert_eq!(compute_big_avg_fixed_point(floor - 1, 1), i128::MIN);
+    }
+
     #[test]
     fn big_avg_is_exact_while_it_fits_and_saturates_beyond() {
         // Three entries at i64::MAX: the sum does not fit an i64, the
