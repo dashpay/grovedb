@@ -38,7 +38,7 @@
 //! use lignin_format::{
 //!     CommitVersion, FileId, FileKind,
 //!     manifest::{FileState, LastFileIds, LiveFile, Manifest, TableCheckpoint},
-//!     tree_page::TreePageSize,
+//!     PageSize,
 //! };
 //!
 //! # fn main() -> Result<(), lignin_format::FormatError> {
@@ -56,7 +56,7 @@
 //!     LiveFile::new(FileKind::Segment, id(309), FileState::Sealed, 67_108_864)?,
 //!     LiveFile::new(FileKind::Wal, id(45), FileState::Open, 20)?,
 //! ];
-//! let manifest = Manifest::new(TreePageSize::DEFAULT, last_file_ids, Some(table), files)?;
+//! let manifest = Manifest::new(PageSize::DEFAULT, last_file_ids, Some(table), files)?;
 //! assert_eq!(manifest.page_size().get(), 32_768);
 //!
 //! // The bytes of the whole `MANIFEST` file, and back.
@@ -74,8 +74,8 @@ use crate::{
     header::{read_record, write_record, FileHeader, FileKind, FormatVersion},
     ids::{CommitVersion, FileId},
     segment::{SegmentTrailer, FRAME_LEN},
-    tree_page::TreePageSize,
     wire::take,
+    PageSize,
 };
 
 /// Why a byte string is not a manifest, or why a manifest cannot be built.
@@ -132,8 +132,8 @@ impl fmt::Display for ManifestError {
             Self::InvalidPageSize { found } => write!(
                 f,
                 "page size {found} is outside {} to {}",
-                TreePageSize::MIN.get(),
-                TreePageSize::MAX.get()
+                PageSize::MIN.get(),
+                PageSize::MAX.get()
             ),
             Self::UnknownFileState { code } => write!(f, "unknown file state code {code}"),
             Self::InvalidEntry => write!(f, "entry breaks a rule for its file kind or state"),
@@ -346,7 +346,7 @@ impl LastFileIds {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Manifest {
     version: FormatVersion,
-    page_size: TreePageSize,
+    page_size: PageSize,
     last_file_ids: LastFileIds,
     table_checkpoint: Option<TableCheckpoint>,
     files: Vec<LiveFile>,
@@ -366,7 +366,7 @@ impl Manifest {
     /// a checkpoint whose id is above the last id of its kind
     /// ([`ManifestError::InvalidEntry`]).
     pub fn new(
-        page_size: TreePageSize,
+        page_size: PageSize,
         last_file_ids: LastFileIds,
         table_checkpoint: Option<TableCheckpoint>,
         mut files: Vec<LiveFile>,
@@ -383,7 +383,7 @@ impl Manifest {
 
     fn checked(
         version: FormatVersion,
-        page_size: TreePageSize,
+        page_size: PageSize,
         last_file_ids: LastFileIds,
         table_checkpoint: Option<TableCheckpoint>,
         files: Vec<LiveFile>,
@@ -424,7 +424,7 @@ impl Manifest {
     /// The size of the store's pages, tree pages and flat pages alike. It is
     /// set when the store is created and is the same in every manifest of
     /// the store.
-    pub const fn page_size(&self) -> TreePageSize {
+    pub const fn page_size(&self) -> PageSize {
         self.page_size
     }
 
@@ -523,7 +523,7 @@ impl Manifest {
 
         let mut fields = fixed.as_slice();
         let page_size = u32::from_le_bytes(take(&mut fields).ok_or(short)?);
-        let page_size = TreePageSize::new(page_size as usize).map_err(|_| {
+        let page_size = PageSize::new(page_size as usize).map_err(|_| {
             FormatError::Manifest(ManifestError::InvalidPageSize { found: page_size })
         })?;
         let last_file_ids = LastFileIds {
@@ -594,7 +594,7 @@ mod tests {
         040002000c00000000f2052a01000000";
 
     const NO_VERSION: u64 = u64::MAX;
-    const PAGE_SIZE: TreePageSize = TreePageSize::MAX;
+    const PAGE_SIZE: PageSize = PageSize::MAX;
     const LAST: [u32; 4] = [45, 310, 12, 122];
     const TABLE: (u32, u64, u64) = (122, 4116, 9000);
     const NO_TABLE: (u32, u64, u64) = (0, 0, NO_VERSION);
@@ -714,13 +714,8 @@ mod tests {
 
     #[test]
     fn manifests_match_the_golden_bytes() {
-        let empty = Manifest::new(
-            TreePageSize::DEFAULT,
-            LastFileIds::default(),
-            None,
-            Vec::new(),
-        )
-        .expect("valid");
+        let empty = Manifest::new(PageSize::DEFAULT, LastFileIds::default(), None, Vec::new())
+            .expect("valid");
         assert_eq!(hex(&empty.encode().expect("fits")), GOLDEN_EMPTY);
         assert_eq!(Manifest::decode(&unhex(GOLDEN_EMPTY)), Ok(empty));
         assert_eq!(
@@ -910,9 +905,9 @@ mod tests {
             });
 
             let page_size = match rng.next_u64() % 4 {
-                0 => TreePageSize::MIN,
-                1 => TreePageSize::MAX,
-                _ => TreePageSize::new(8_192 + (rng.next_u64() % 57_345) as usize).expect("valid"),
+                0 => PageSize::MIN,
+                1 => PageSize::MAX,
+                _ => PageSize::new(8_192 + (rng.next_u64() % 57_345) as usize).expect("valid"),
             };
 
             let manifest =
@@ -1149,7 +1144,7 @@ mod tests {
             assert_eq!(Manifest::decode(&forge(&no_ids)), Err(invalid));
         }
         for bytes in [8_192, 8_193, 11_111, 32_768, 65_535, 65_536] {
-            let page_size = TreePageSize::new(bytes).expect("in range");
+            let page_size = PageSize::new(bytes).expect("in range");
             let manifest = decode(bytes as u32, &ENTRIES).expect("valid manifest");
             assert_eq!(manifest.page_size(), page_size);
             let same = Manifest::new(
@@ -1164,10 +1159,7 @@ mod tests {
             assert_eq!(encoded[28..32], (bytes as u32).to_le_bytes());
             assert_eq!(Manifest::decode(&encoded), Ok(manifest));
         }
-        assert_eq!(
-            (TreePageSize::MIN.get(), TreePageSize::MAX.get()),
-            (8_192, 65_536)
-        );
+        assert_eq!((PageSize::MIN.get(), PageSize::MAX.get()), (8_192, 65_536));
     }
 
     #[test]

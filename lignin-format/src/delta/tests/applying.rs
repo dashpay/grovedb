@@ -4,7 +4,7 @@
 use super::*;
 
 /// A small page with cells in slots 1 to 6, in a frame, with its image.
-fn small_page(id: u32, size: TreePageSize) -> (Vec<u8>, ModelPage) {
+fn small_page(id: u32, size: PageSize) -> (Vec<u8>, ModelPage) {
     let mut rng = Rng::new(0xA991 + u64::from(id));
     let mut model = ModelPage::new(id, 4);
     for raw in 1..=6 {
@@ -15,7 +15,7 @@ fn small_page(id: u32, size: TreePageSize) -> (Vec<u8>, ModelPage) {
 
 #[test]
 fn a_run_is_applied_to_the_page_it_names() {
-    let size = TreePageSize::MIN;
+    let size = PageSize::MIN;
     let (mut frame, model) = small_page(7, size);
     let base = model.assemble();
     let hash = Op::Hash(1, HashField::Value, [9; 32]);
@@ -91,7 +91,7 @@ fn a_run_is_applied_to_the_page_it_names() {
 
 #[test]
 fn a_run_that_creates_its_page_needs_no_page() {
-    let size = TreePageSize::MIN;
+    let size = PageSize::MIN;
     let cell = ModelCell::leaf(b"key", b"value");
     let bytes = run_of(page_id(9), Some(77), &[Op::Insert(2, cell.clone())]);
     let run = decode(&bytes);
@@ -150,7 +150,7 @@ fn a_run_that_creates_its_page_needs_no_page() {
 
 #[test]
 fn a_refused_change_keeps_the_changes_before_it_and_makes_none_after_it() {
-    let size = TreePageSize::MIN;
+    let size = PageSize::MIN;
     let (mut frame, mut model) = small_page(7, size);
     let first = Op::Hash(1, HashField::Value, [9; 32]);
     let refused = Op::Remove(40);
@@ -195,7 +195,7 @@ fn a_refused_change_keeps_the_changes_before_it_and_makes_none_after_it() {
 
 #[test]
 fn a_chain_with_no_base_must_create_its_page() {
-    let size = TreePageSize::MIN;
+    let size = PageSize::MIN;
     let hash = run_of(
         page_id(9),
         None,
@@ -254,7 +254,7 @@ fn a_chain_with_no_base_must_create_its_page() {
 
 #[test]
 fn consolidation_takes_an_image_and_nothing_else() {
-    let size = TreePageSize::MIN;
+    let size = PageSize::MIN;
     let (mut frame, model) = small_page(7, size);
     let run = run_of(
         model.id,
@@ -295,7 +295,7 @@ fn consolidation_takes_an_image_and_nothing_else() {
     );
 
     // An image that is longer than the store's pages.
-    let (_, large) = full_page(0xB16, TreePageSize::DEFAULT);
+    let (_, large) = full_page(0xB16, PageSize::DEFAULT);
     let large_image = large.assemble();
     let large_run = run_of(large.id, None, &[Op::FragmentRoot(1, true)]);
     let mut large_out = Vec::new();
@@ -402,7 +402,7 @@ fn hosted_roots_are_the_same_list_given_or_read() {
     assert_ne!(read, RootList::from(other.as_slice()));
 
     // Both give a cell the same pointers.
-    let size = TreePageSize::MIN;
+    let size = PageSize::MIN;
     let (frame, _) = small_page(7, size);
     let (mut as_given, mut as_read) = (frame.clone(), frame);
     Delta::HostedRoots {
@@ -425,9 +425,9 @@ fn hosted_roots_are_the_same_list_given_or_read() {
     // The longest list a cell takes, read from a record.
     let most = vec![Some(address(2, 2)); TreeCell::MAX_HOSTED_ROOTS];
     let bytes = run_of(page_id(7), None, &[Op::HostedRoots(1, most.clone())]);
-    let (mut frame, _) = small_page(7, TreePageSize::DEFAULT);
+    let (mut frame, _) = small_page(7, PageSize::DEFAULT);
     decode(&bytes)
-        .apply(&mut frame, TreePageSize::DEFAULT, V1)
+        .apply(&mut frame, PageSize::DEFAULT, V1)
         .expect("applies");
     let page = view(&frame);
     let cell = page.cell(slot(1)).expect("a cell");
@@ -438,7 +438,7 @@ fn hosted_roots_are_the_same_list_given_or_read() {
 /// one, is refused by the page as its writer's call would be.
 #[test]
 fn a_change_too_long_for_a_record_is_refused_by_the_page_too() {
-    let size = TreePageSize::MIN;
+    let size = PageSize::MIN;
     let (mut frame, _) = small_page(7, size);
     let before = frame.clone();
     let mut page = open(&mut frame, size);
@@ -501,7 +501,7 @@ fn a_change_too_long_for_a_record_is_refused_by_the_page_too() {
 /// names no file a store has, and the value itself in the cell.
 #[test]
 fn a_carried_cell_is_a_remove_in_one_page_and_an_insert_in_another() {
-    let size = TreePageSize::MIN;
+    let size = PageSize::MIN;
     let old_place = pointer(12, 20, 300);
     let new_place = pointer(13, 64, 300);
     let pending = [

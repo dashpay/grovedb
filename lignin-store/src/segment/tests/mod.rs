@@ -18,8 +18,7 @@ use std::{
 use lignin_format::{
     manifest::{FileState, LastFileIds, LiveFile, Manifest, TableCheckpoint},
     segment::{BlockContent, Compression},
-    tree_page::TreePageSize,
-    CommitVersion, FileHeader, FileId, FileKind, FormatError, FormatVersion, PageId,
+    CommitVersion, FileHeader, FileId, FileKind, FormatError, FormatVersion, PageId, PageSize,
 };
 use lignin_io::{StdVfs, Vfs};
 use tempfile::TempDir;
@@ -61,7 +60,7 @@ fn table(raw_id: u32, valid_len: u64, covers: u64) -> TableCheckpoint {
 }
 
 fn manifest_of(last: [u32; 4], table: Option<TableCheckpoint>, files: Vec<LiveFile>) -> Manifest {
-    Manifest::new(TreePageSize::DEFAULT, last_ids(last), table, files).expect("valid manifest")
+    Manifest::new(PageSize::DEFAULT, last_ids(last), table, files).expect("valid manifest")
 }
 
 fn replace(store: &mut ManifestStore, next: Manifest) -> Result<(), SegmentStoreError> {

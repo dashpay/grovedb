@@ -40,7 +40,7 @@ maps each rule to its code and its tests.
 - **Page in a buffer**: the same layout in a buffer of the store's page size,
   where the page is changed. It may have unused bytes among its cells.
 - **Page size**: the size of a store's tree pages, 32,768 bytes unless the
-  store is told otherwise (`TreePageSize`).
+  store is told otherwise (`PageSize`).
 - **Capacity**: the bytes of a page that cells and their slots can use: the
   page size, at most 65,535, less the 22 bytes of the page header.
 
@@ -180,7 +180,7 @@ true. So `TreePage::decode` checks structure, not integrity, and must be
 given bytes from a record that was verified.
 
 **TP4. The page size is a parameter, from 8 KiB to 64 KiB**
-(`TreePageSize`). An image is as long as its content and at most the page
+(`PageSize`). An image is as long as its content and at most the page
 size, and at most 65,535 bytes, because offsets in a page are 16 bits: a
 page of 64 KiB leaves its last byte unused, as a flat page does (P10 of
 `flat-page.md`). The image does not record the page size. A reader passes
@@ -350,7 +350,7 @@ value is the one that holds the pointer to it, and
 (C7), for every key and value Merk accepts today. This is how:
 
 - `TreePageMut` refuses a cell that is longer than
-  `TreePageSize::max_cell_len` (`CellTooLarge`), and `decode` refuses a page
+  `PageSize::max_cell_len` (`CellTooLarge`), and `decode` refuses a page
   that holds one. For a page of 32,768 bytes the longest cell is 16,370
   bytes.
 - Everything in a cell but its value has a length field of one byte: the
@@ -368,7 +368,7 @@ value is the one that holds the pointer to it, and
 - A value has any length up to 2^32 − 1 bytes, which is the value log's
   limit (V9 of `value-log-format.md`) and the width of every value length in
   Merk's cost rules. A value that does not fit in its cell goes out of line.
-  `TreePageSize::max_inline_value_len` gives the longest value that still
+  `PageSize::max_inline_value_len` gives the longest value that still
   fits in a cell with given other parts, so the threshold policy of TREE-08
   can be "inline up to my threshold, and never above this".
 
@@ -594,14 +594,14 @@ against 1.626 and 0.803 (368 bytes).
 | Task | Takes from here | Still its own to define |
 | --- | --- | --- |
 | FMT-03 Page delta records | A delta names a cell by page id and slot, and a part of it by `HashField`, `Side` or a hosted-root position; offsets inside a page are not stable and are never logged. A hash update is 32 bytes and writes no other byte (TP9). A link of the same aggregate length is overwritten where it is (TP10). A cell travels as its own bytes (TP8): `TreeCell::decode`, `insert_encoded`, `replace_encoded`. Applying a chain is calling `TreePageMut`; a base image is `TreePage::write_image`, which has one form (TP16), so a base image plus a chain can be compared with the consolidated image byte for byte. `remove` is the one change that counts a departure, so a carried cell is a remove and an insert. | The records ([`page-delta.md`](page-delta.md)). Whether a carry is logged as one record: it is not (its section 8.1). |
-| STORE-04 Buffer pool | A frame is `TreePageSize::get()` bytes. An image is copied or decompressed to the start of a frame and is then a page in a buffer (TP17). `TreePage::from_validated` borrows it for readers in constant time with no allocation. The first byte of a frame tells a tree page from a flat page (TP1). | Frames, pins, latches. |
+| STORE-04 Buffer pool | A frame is `PageSize::get()` bytes. An image is copied or decompressed to the start of a frame and is then a page in a buffer (TP17). `TreePage::from_validated` borrows it for readers in constant time with no allocation. The first byte of a frame tells a tree page from a flat page (TP1). | Frames, pins, latches. |
 | STORE-05 Page materialisation | `TreePage::decode` with the store's page size, on a block whose checksum was verified (TP3). The page id in the header is compared with the id that was asked for (TP2). | The load path. |
 | STORE-06 Delta write-back | A base image is `write_image` of the frame, at its exact length (`used_bytes`). A hash-only change writes 32 bytes of the frame and no value byte. | Thresholds. |
 | STORE-09 Value log | `TreePage::find_value_pointer` finds the owner of a value in the page its back pointer names. Moving a value is `set_value` with the new pointer, 12 bytes written where the old ones were. | The cleaner. |
 | TREE-02 Node handles | `TreeCell` is the borrowed view of a node: no allocation, the value's length without the value, the child's key length without the child. `TreePageMut` has the operations of `NodeMut`. A handle is a cell address with the page's `departures` when it was read: while the count is the same, the slot names the same cell (TP7). | The handle, and what it does when the count has moved. Whether a page that is created anew for a reused page id continues a count (section 8, item 9). |
-| TREE-03 Fragment maintenance | `lowest_free_slot` for S4. `free_bytes`, `used_bytes` and `TreeCell::len_of` to plan what fits. `fragment_roots`, `set_fragment_root`, and `check_fragments` in tests. `insert_encoded` to carry a cell, then `set_child` in its parent. `TreePageSize::max_cell_len` is C7. | Placement. |
+| TREE-03 Fragment maintenance | `lowest_free_slot` for S4. `free_bytes`, `used_bytes` and `TreeCell::len_of` to plan what fits. `fragment_roots`, `set_fragment_root`, and `check_fragments` in tests. `insert_encoded` to carry a cell, then `set_child` in its parent. `PageSize::max_cell_len` is C7. | Placement. |
 | TREE-05 Subtree directory | `CellAddress`, six bytes, with all zero for "no cell". | The entry. |
-| TREE-08 Out-of-line values | `TreePageSize::max_inline_value_len` bounds the threshold (TP14). A cell stores a `ValuePointer` as 12 bytes and its length. | The threshold. |
+| TREE-08 Out-of-line values | `PageSize::max_inline_value_len` bounds the threshold (TP14). A cell stores a `ValuePointer` as 12 bytes and its length. | The threshold. |
 | MERK-01 LigninNodeStore | The link gives the child's key length, so `record_len` and Merk's link sizes are computed from the parent's cell alone. The key of a link is in the child's cell. The feature and the aggregates are written by the rule of TP12: Merk's tag, then each count and sum at its full width. `record_len` needs the varint lengths of those numbers, which Merk computes from the numbers. | The functions that write and read those bytes for each variant, and one more arm when Merk gains a variant. |
 | MERK-05 Iteration | A cursor's value is a node record in Merk's encoding, which repeats each child's key. Those keys come from the children's cells, by the addresses in the links. | Whether records are built, or callers move to node views (PERF-05). |
 | FMT-08 Decoder fuzzing | The decoders: `TreePage::decode`, `TreePage::from_validated` with every accessor, `TreePage::check`, `TreePage::check_fragments`, `TreeCell::decode`. `TreePageMut` is fuzzed from valid pages only (W5). The golden bytes of section 2.5. | The targets. |
@@ -703,7 +703,7 @@ All of this is in `lignin-format::tree_page`. Run the tests with
 | TP12: features and aggregates | `TreeLink`, `TreePageMut::{set_link, set_feature}` | `every_aggregate_fits_a_link_and_is_rewritten_where_it_is`: a feature and two aggregates of each width Merk has (1, 9, 17, 25 bytes), of a wider one and of 255 bytes are stored, and rewritten with other numbers where they are. |
 | TP11: fragment roots | `TreePage::fragment_roots`, `TreePage::check_fragments` | `the_fragment_roots_are_the_cells_no_cell_of_the_page_points_at`, `the_fragment_check_agrees_with_the_model_on_random_pages` (3,000 pages). |
 | TP13: values | `CellValue`, `TreeCell::value_len`, `TreePage::find_value_pointer` | `the_cell_that_holds_a_value_pointer_is_found_by_the_pointer`, and the pointer errors in `each_check_of_a_cell_has_its_error`. |
-| TP4, TP14: sizes | `TreePageSize`, `TreeCell::MAX_OUT_OF_LINE_LEN`, `TreeCell::len_of` | `a_page_size_is_8_to_64_kib`. `a_cell_is_smaller_than_half_a_page_whatever_its_key_and_value`: the largest cell with its value out of line fits three times in the smallest page; every key length from 0 to 255 fits; a value one byte above the longest inline value is refused and fits out of line. `a_cell_too_large_for_a_smaller_page_size_is_refused_on_reading`. A compile-time assertion ties the smallest page to the largest out-of-line cell. |
+| TP4, TP14: sizes | `PageSize`, `TreeCell::MAX_OUT_OF_LINE_LEN`, `TreeCell::len_of` | `a_page_size_is_8_to_64_kib`. `a_cell_is_smaller_than_half_a_page_whatever_its_key_and_value`: the largest cell with its value out of line fits three times in the smallest page; every key length from 0 to 255 fits; a value one byte above the longest inline value is refused and fits out of line. `a_cell_too_large_for_a_smaller_page_size_is_refused_on_reading`. A compile-time assertion ties the smallest page to the largest out-of-line cell. |
 | Section 4 | `TreePage::decode`, `TreePage::check`, `TreeCell::decode`, `TreePageError` | Each step is rejected with its error, and in order (`each_check_of_the_header_has_its_error`, `each_check_of_the_slots_has_its_error`, `each_check_of_a_cell_has_its_error`, `the_checks_run_in_their_documented_order`, `each_check_of_a_page_in_a_buffer_has_its_error`); every shorter input; zero-filled bytes; a page longer than its store's pages. |
 | B10 | every reader | `arbitrary_bytes_are_an_error_or_a_page_and_never_a_panic`: 60,000 byte strings, a third arbitrary, a third arbitrary behind a header that passes and with slots that share an offset, a third valid images with bytes changed, through every accessor. `a_page_whose_slots_share_a_cell_is_written_out_within_a_page`. |
 | Section 5 | `TreePageMut` | `a_full_page_refuses_a_write_and_takes_it_once_there_is_room`, `the_directory_grows_past_the_cells_in_its_way`, `the_directory_grows_in_a_page_with_no_room_at_its_end`, `gathering_the_unused_bytes_gives_the_image`, `a_write_to_a_free_slot_or_a_missing_part_is_refused`, `a_page_is_opened_in_a_buffer_of_its_page_size`. In the random test every refused write is compared with what the model expects, and must leave every byte of the buffer as it was. `a_damaged_page_is_refused_where_the_damage_is_met` shows W5: a slot that leads nowhere is `InvalidSlot` to whatever touches it. |

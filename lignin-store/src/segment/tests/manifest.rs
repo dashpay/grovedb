@@ -648,7 +648,7 @@ fn a_replacement_that_breaks_the_life_of_a_file_is_refused_and_writes_nothing() 
 
 fn with_page_size(manifest: &Manifest, bytes: usize) -> Manifest {
     Manifest::new(
-        TreePageSize::new(bytes).unwrap(),
+        PageSize::new(bytes).unwrap(),
         manifest.last_file_ids(),
         manifest.table_checkpoint(),
         manifest.files().to_vec(),
@@ -669,8 +669,8 @@ fn the_page_size_of_the_first_manifest_is_the_stores_for_good() {
             }
             for next in [&generations()[0], &generations()[1], &full()] {
                 let change = ManifestChange::PageSizeChanged {
-                    from: TreePageSize::new(created).unwrap(),
-                    to: TreePageSize::new(offered).unwrap(),
+                    from: PageSize::new(created).unwrap(),
+                    to: PageSize::new(offered).unwrap(),
                 };
                 match replace(&mut store, with_page_size(next, offered)) {
                     Err(SegmentStoreError::ManifestChange(refused)) => {
@@ -698,13 +698,13 @@ fn the_page_size_of_the_first_manifest_is_the_stores_for_good() {
 fn a_store_opened_with_another_page_size_is_refused() {
     for created in [8_192, 32_768, 65_536] {
         let (vfs, mut store, dir) = new_store(with_page_size(&full(), created));
-        let created = TreePageSize::new(created).unwrap();
+        let created = PageSize::new(created).unwrap();
         let reopened = open_store(&vfs, dir.path()).unwrap();
         vfs.take_calls();
         for store in [&store, &reopened] {
             store.check_page_size(created).unwrap();
             for requested in [8_192, 8_193, 16_384, 32_768, 65_535, 65_536] {
-                let requested = TreePageSize::new(requested).unwrap();
+                let requested = PageSize::new(requested).unwrap();
                 if requested == created {
                     continue;
                 }

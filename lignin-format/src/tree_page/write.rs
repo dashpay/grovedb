@@ -3,8 +3,8 @@
 use super::{
     cell::{self, patch},
     page::{directory_end, invalid_slot, last_slot_is_free, set_slot_offset, slot_offset, Header},
-    CellContent, CellValue, Hash, HashField, Side, TreeCell, TreeLink, TreePage, TreePageError,
-    TreePageSize,
+    CellContent, CellValue, Hash, HashField, PageSize, Side, TreeCell, TreeLink, TreePage,
+    TreePageError,
 };
 use crate::{
     error::FormatError,
@@ -27,7 +27,7 @@ const SLOT_LEN: usize = TreePage::SLOT_LEN;
 #[derive(Debug)]
 pub struct TreePageMut<'a> {
     buffer: &'a mut [u8],
-    size: TreePageSize,
+    size: PageSize,
     header: Header,
     version: FormatVersion,
 }
@@ -40,7 +40,7 @@ impl<'a> TreePageMut<'a> {
     /// is 0 unless the caller continues the count of an earlier page.
     pub fn init(
         buffer: &'a mut [u8],
-        size: TreePageSize,
+        size: PageSize,
         page: PageId,
         departures: u64,
     ) -> Result<Self, FormatError> {
@@ -60,7 +60,7 @@ impl<'a> TreePageMut<'a> {
     /// page that was changed there before.
     pub fn open(
         buffer: &'a mut [u8],
-        size: TreePageSize,
+        size: PageSize,
         version: FormatVersion,
     ) -> Result<Self, FormatError> {
         Self::check_buffer(buffer, size)?;
@@ -74,7 +74,7 @@ impl<'a> TreePageMut<'a> {
         })
     }
 
-    fn check_buffer(buffer: &[u8], size: TreePageSize) -> Result<(), FormatError> {
+    fn check_buffer(buffer: &[u8], size: PageSize) -> Result<(), FormatError> {
         let needed = size.image_capacity();
         if buffer.len() < needed {
             return Err(TreePageError::BufferTooSmall {

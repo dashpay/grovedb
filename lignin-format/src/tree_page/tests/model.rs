@@ -386,7 +386,7 @@ impl ModelPage {
         22 + 2 * self.slot_count() + self.cells.values().map(ModelCell::len).sum::<usize>()
     }
 
-    pub(crate) fn free_bytes(&self, size: TreePageSize) -> usize {
+    pub(crate) fn free_bytes(&self, size: PageSize) -> usize {
         size.image_capacity() - self.image_len()
     }
 
@@ -436,7 +436,7 @@ impl ModelPage {
 
     /// Checks every accessor of `page` against this page, and that its image
     /// is this page's and reads back.
-    pub(crate) fn assert_is(&self, page: TreePage<'_>, size: TreePageSize) {
+    pub(crate) fn assert_is(&self, page: TreePage<'_>, size: PageSize) {
         page.check(size).expect("a valid page");
         assert_eq!(page.version(), V1);
         assert_eq!(page.id(), self.id);

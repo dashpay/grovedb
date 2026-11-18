@@ -51,8 +51,8 @@ fn every_error_says_what_went_wrong() {
         (
             SegmentStoreError::PageSizeMismatch {
                 dir: dir(),
-                stored: TreePageSize::DEFAULT,
-                requested: TreePageSize::MIN,
+                stored: PageSize::DEFAULT,
+                requested: PageSize::MIN,
             },
             "db has pages of 32768 bytes and was opened with pages of 8192",
         ),
@@ -151,8 +151,8 @@ fn every_refused_manifest_change_says_what_changed() {
     let cases = [
         (
             ManifestChange::PageSizeChanged {
-                from: TreePageSize::DEFAULT,
-                to: TreePageSize::MAX,
+                from: PageSize::DEFAULT,
+                to: PageSize::MAX,
             },
             "the page size is 65536, and the store was created with 32768",
         ),

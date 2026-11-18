@@ -6,12 +6,12 @@ use super::*;
 struct Harness {
     frame: Vec<u8>,
     model: ModelPage,
-    size: TreePageSize,
+    size: PageSize,
     rng: Rng,
 }
 
 impl Harness {
-    fn new(seed: u64, size: TreePageSize) -> Self {
+    fn new(seed: u64, size: PageSize) -> Self {
         let model = ModelPage::new(17, 5);
         Self {
             frame: frame_of(&model, size),
@@ -280,16 +280,11 @@ impl Harness {
 #[test]
 fn random_changes_keep_every_cell_under_its_slot() {
     for (seed, size, steps, check_every) in [
-        (0x7EE1, TreePageSize::MIN, 12_000, 1),
-        (0x7EE2, TreePageSize::MIN, 12_000, 1),
-        (
-            0x7EE3,
-            TreePageSize::new(11_111).expect("in range"),
-            6_000,
-            3,
-        ),
-        (0x7EE4, TreePageSize::DEFAULT, 9_000, 7),
-        (0x7EE5, TreePageSize::MAX, 9_000, 11),
+        (0x7EE1, PageSize::MIN, 12_000, 1),
+        (0x7EE2, PageSize::MIN, 12_000, 1),
+        (0x7EE3, PageSize::new(11_111).expect("in range"), 6_000, 3),
+        (0x7EE4, PageSize::DEFAULT, 9_000, 7),
+        (0x7EE5, PageSize::MAX, 9_000, 11),
     ] {
         let mut harness = Harness::new(seed, size);
         let (mut most_cells, mut fullest) = (0, usize::MAX);
@@ -310,7 +305,7 @@ fn random_changes_keep_every_cell_under_its_slot() {
 }
 
 /// A full page of random cells in a frame, with its model.
-fn full_page(seed: u64, size: TreePageSize) -> Harness {
+fn full_page(seed: u64, size: PageSize) -> Harness {
     let mut harness = Harness::new(seed, size);
     for _ in 0..600 {
         harness.insert();
@@ -393,7 +388,7 @@ fn any_stored_hash_can_be_read_or_overwritten_without_touching_the_value_bytes()
 
 #[test]
 fn a_change_of_the_same_size_is_made_where_the_cell_is() {
-    let size = TreePageSize::DEFAULT;
+    let size = PageSize::DEFAULT;
     let mut model = ModelPage::new(9, 0);
     let mut cell = Rng::new(1).cell(page_id(9), 100);
     cell.feature = vec![1, 2, 3];
@@ -535,7 +530,7 @@ fn a_change_of_the_same_size_is_made_where_the_cell_is() {
 fn a_cell_is_smaller_than_half_a_page_whatever_its_key_and_value() {
     for size in SIZES
         .into_iter()
-        .chain([TreePageSize::new(8_193).expect("in range")])
+        .chain([PageSize::new(8_193).expect("in range")])
     {
         let max = size.max_cell_len();
 
@@ -635,11 +630,11 @@ fn a_cell_too_large_for_a_smaller_page_size_is_refused_on_reading() {
     model
         .cells
         .insert(2, ModelCell::leaf(b"large", &vec![0x33; 20_000]));
-    let frame = frame_of(&model, TreePageSize::MAX);
+    let frame = frame_of(&model, PageSize::MAX);
     let image = view(&frame).to_image();
     model.assert_is(
-        TreePage::decode(&image, V1, TreePageSize::MAX).expect("valid"),
-        TreePageSize::MAX,
+        TreePage::decode(&image, V1, PageSize::MAX).expect("valid"),
+        PageSize::MAX,
     );
     let too_large: FormatError = TreePageError::CellTooLarge {
         len: 72 + 5 + 20_000,
@@ -647,37 +642,37 @@ fn a_cell_too_large_for_a_smaller_page_size_is_refused_on_reading() {
     }
     .into();
     assert_eq!(
-        TreePage::decode(&image, V1, TreePageSize::DEFAULT).expect_err("too large"),
+        TreePage::decode(&image, V1, PageSize::DEFAULT).expect_err("too large"),
         too_large
     );
     assert_eq!(
         view(&image)
-            .check(TreePageSize::DEFAULT)
+            .check(PageSize::DEFAULT)
             .expect_err("too large"),
         too_large
     );
     let mut target = ModelPage::new(4, 0);
-    let mut small = frame_of(&target, TreePageSize::DEFAULT);
+    let mut small = frame_of(&target, PageSize::DEFAULT);
     let before = small.clone();
     let cell = view(&image).cell(slot(2)).expect("a cell");
-    let mut page = open(&mut small, TreePageSize::DEFAULT);
+    let mut page = open(&mut small, PageSize::DEFAULT);
     assert_eq!(page.insert_encoded(slot(1), cell), Err(too_large));
     assert!(small == before);
 
-    let mut page = open(&mut small, TreePageSize::DEFAULT);
+    let mut page = open(&mut small, PageSize::DEFAULT);
     page.insert_encoded(slot(1), view(&image).cell(slot(1)).expect("a cell"))
         .expect("fits");
     let before = small.clone();
-    let mut page = open(&mut small, TreePageSize::DEFAULT);
+    let mut page = open(&mut small, PageSize::DEFAULT);
     assert_eq!(page.replace_encoded(slot(1), cell), Err(too_large));
     assert!(small == before);
     target.cells.insert(1, model.cells[&1].clone());
-    target.assert_is(view(&small), TreePageSize::DEFAULT);
+    target.assert_is(view(&small), PageSize::DEFAULT);
 }
 
 #[test]
 fn a_full_page_refuses_a_write_and_takes_it_once_there_is_room() {
-    let size = TreePageSize::MIN;
+    let size = PageSize::MIN;
     let mut harness = Harness::new(0xF011, size);
     let cell = ModelCell::leaf(b"key", &[0x44; 925]);
     assert_eq!(cell.len(), 1_000);
@@ -731,7 +726,7 @@ fn a_full_page_refuses_a_write_and_takes_it_once_there_is_room() {
 
 #[test]
 fn slot_numbers_stay_and_the_lowest_free_one_is_taken_next() {
-    let size = TreePageSize::DEFAULT;
+    let size = PageSize::DEFAULT;
     let mut harness = Harness::new(0x5107, size);
     for raw in 1..=10 {
         let cell = ModelCell::leaf(&[raw as u8; 9], &[raw as u8; 30]);
@@ -781,7 +776,7 @@ fn slot_numbers_stay_and_the_lowest_free_one_is_taken_next() {
 
 #[test]
 fn the_count_of_departures_wraps_and_never_stops() {
-    let size = TreePageSize::MIN;
+    let size = PageSize::MIN;
     let mut frame = vec![0; size.get()];
     let mut page = TreePageMut::init(&mut frame, size, page_id(1), u64::MAX).expect("fits");
     let cell = ModelCell::leaf(b"k", b"v");
@@ -793,7 +788,7 @@ fn the_count_of_departures_wraps_and_never_stops() {
 
 #[test]
 fn the_directory_grows_past_the_cells_in_its_way() {
-    let size = TreePageSize::MIN;
+    let size = PageSize::MIN;
     let mut harness = Harness::new(0xD1, size);
     for raw in 1..=5 {
         let cell = ModelCell::leaf(&[raw as u8], &[raw as u8; 1_100]);
@@ -844,7 +839,7 @@ fn the_directory_grows_past_the_cells_in_its_way() {
 
 #[test]
 fn the_directory_grows_in_a_page_with_no_room_at_its_end() {
-    let size = TreePageSize::MIN;
+    let size = PageSize::MIN;
     let mut harness = Harness::new(0xD2, size);
     let cell = ModelCell::leaf(b"key", &[0x44; 925]);
     for raw in 1..=8 {
@@ -871,7 +866,7 @@ fn the_directory_grows_in_a_page_with_no_room_at_its_end() {
 
 #[test]
 fn a_cell_is_carried_to_another_page_as_its_bytes() {
-    let size = TreePageSize::DEFAULT;
+    let size = PageSize::DEFAULT;
     let mut rng = Rng::new(0xCA44);
     let mut from = Harness::new(1, size);
     let mut to = Harness::new(2, size);
@@ -919,7 +914,7 @@ fn a_cell_that_would_not_decode_is_not_taken() {
     let damaged = view(&image).cell(slot(1)).expect("a cell by its lengths");
     assert_eq!(damaged.hosted_roots().collect::<Vec<_>>(), [None]);
 
-    let size = TreePageSize::DEFAULT;
+    let size = PageSize::DEFAULT;
     let mut frame = frame_of(&example(), size);
     let before = frame.clone();
     let mut page = open(&mut frame, size);
@@ -936,7 +931,7 @@ fn a_cell_that_would_not_decode_is_not_taken() {
 
 #[test]
 fn a_write_to_a_free_slot_or_a_missing_part_is_refused() {
-    let size = TreePageSize::DEFAULT;
+    let size = PageSize::DEFAULT;
     let mut frame = frame_of(&example(), size);
     let before = frame.clone();
     let mut page = open(&mut frame, size);
@@ -1045,7 +1040,7 @@ fn a_page_is_opened_in_a_buffer_of_its_page_size() {
 
 #[test]
 fn gathering_the_unused_bytes_gives_the_image() {
-    let mut harness = full_page(0xC0A7, TreePageSize::DEFAULT);
+    let mut harness = full_page(0xC0A7, PageSize::DEFAULT);
     for _ in 0..40 {
         harness.remove();
     }
@@ -1071,7 +1066,7 @@ fn gathering_the_unused_bytes_gives_the_image() {
 fn a_damaged_page_is_refused_where_the_damage_is_met() {
     // `TreePageMut` needs a valid page. On one whose slot leads nowhere it
     // refuses what touches that slot, and what has to move its cell.
-    let size = TreePageSize::MIN;
+    let size = PageSize::MIN;
     let mut model = ModelPage::new(3, 0);
     for raw in 1..=7 {
         model
@@ -1115,7 +1110,7 @@ fn a_damaged_page_is_refused_where_the_damage_is_met() {
 
 #[test]
 fn a_cell_is_replaced_only_by_a_cell_of_the_same_node() {
-    let size = TreePageSize::DEFAULT;
+    let size = PageSize::DEFAULT;
     let mut frame = frame_of(&example(), size);
     let before = frame.clone();
     let mut page = open(&mut frame, size);
@@ -1153,7 +1148,7 @@ fn every_aggregate_fits_a_link_and_is_rewritten_where_it_is() {
     // 128-bit sum or two of 8 bytes, and a count with a 128-bit sum, which is
     // the widest Merk has. Then a wider one that Merk does not have yet, and
     // the widest the format takes.
-    let size = TreePageSize::DEFAULT;
+    let size = PageSize::DEFAULT;
     for width in [1, 9, 17, 25, 41, 255] {
         let link = |seed: u8| ModelLink {
             child: address(9, 2),

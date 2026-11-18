@@ -450,7 +450,7 @@ fn every_prefix_of_a_run_is_a_shorter_run_or_an_error() {
 /// what was written, and what was read writes the same bytes.
 #[test]
 fn what_was_written_reads_back_and_what_was_read_is_written_the_same() {
-    let size = TreePageSize::DEFAULT;
+    let size = PageSize::DEFAULT;
     let mut rng = Rng::new(0xB8);
     let mut kinds = [0; Op::KINDS];
     for round in 0..3_000 {
@@ -514,7 +514,7 @@ fn every_single_bit_flip_is_rejected_or_reads_as_what_it_says() {
 
 #[test]
 fn arbitrary_bytes_are_an_error_or_a_run_and_never_a_panic() {
-    let size = TreePageSize::MIN;
+    let size = PageSize::MIN;
     let mut rng = Rng::new(0xF022);
     let (golden, _) = golden();
     let (page, model) = full_page(0xF023, size);
@@ -590,7 +590,7 @@ fn arbitrary_bytes_are_an_error_or_a_run_and_never_a_panic() {
 
 #[test]
 fn a_change_that_would_not_read_back_is_not_written() {
-    let size = TreePageSize::MAX;
+    let size = PageSize::MAX;
     let mut out = vec![0xA5; 3];
     let mut refuse = |delta: Delta<'_>, expected: FormatError| {
         assert_eq!(delta.encode_into(&mut out), Err(expected));

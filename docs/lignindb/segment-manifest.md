@@ -278,7 +278,7 @@ size, for tree pages and flat pages alike, and no page image holds it (TP4
 of `tree-page.md`, P10 of `flat-page.md`). It is what bounds how long a page
 may grow in a buffer and how large one cell may be, so pages written under
 one size cannot be served under a smaller one. The field is the size in
-bytes, and the valid values are those of `TreePageSize`: 8,192 to 65,536,
+bytes, and the valid values are those of `PageSize`: 8,192 to 65,536,
 every value in between included. A reader rejects any other
 (`ManifestError::InvalidPageSize`), so a manifest that decodes always has a
 page size a store can have.
@@ -499,16 +499,15 @@ owner can overrule one before STORE-02 and FMT-08 build on it.
     manifest to the next.
 21. **The manifest's decoder checks the page size's range**, and the store
     checks that it does not change. The range is a property of one manifest,
-    and with it checked a `Manifest` holds a `TreePageSize`, not a number
+    and with it checked a `Manifest` holds a `PageSize`, not a number
     that every user would have to check again. The decoder takes the range
-    from `TreePageSize` and has no bounds of its own, so the two cannot
+    from `PageSize` and has no bounds of its own, so the two cannot
     disagree.
-22. **`TreePageSize` is used as it is, from `lignin-format::tree_page`.** It
-    is now the page size of the store, not only of tree pages, so the name
-    and the place are too narrow: it belongs in `lignin-format::ids` as
-    `PageSize`, with the limits that are about cells left in `tree_page`.
-    That move is not made here, because FMT-03 is writing next to
-    `tree_page` now. It changes no byte.
+22. **The page size type is `lignin-format::ids::PageSize`.** It is the
+    page size of the store, not only of tree pages. When the field was
+    added the type was `tree_page::TreePageSize`; it was renamed and moved
+    with no change to a byte (D-050). The limits that are about cells stay
+    in `tree_page`.
 
 ## 6. Code and tests
 

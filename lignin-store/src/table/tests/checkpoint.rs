@@ -10,9 +10,7 @@ use std::{
 use lignin_format::{
     manifest::{FileState, LiveFile},
     segment::{BlockContent, Compression},
-    table as format,
-    tree_page::TreePageSize,
-    FileKind, FormatError,
+    table as format, FileKind, FormatError, PageSize,
 };
 use lignin_io::{sim::SimConfig, Create, OpenMode};
 
@@ -124,8 +122,7 @@ fn manifest_naming(named: TableCheckpoint, segments: &[(u32, u64)]) -> Manifest 
         page_table: Some(named.file()),
         ..LastFileIds::default()
     };
-    Manifest::new(TreePageSize::DEFAULT, last_file_ids, Some(named), files)
-        .expect("a valid manifest")
+    Manifest::new(PageSize::DEFAULT, last_file_ids, Some(named), files).expect("a valid manifest")
 }
 
 fn load_under(fs: &SimVfs, manifest: &Manifest) -> Result<PageTable, PageTableError> {
@@ -1322,7 +1319,7 @@ fn checkpoint_ids_run_out() {
         page_table: Some(id(u32::MAX - 1)),
         ..LastFileIds::default()
     };
-    let manifest = Manifest::new(TreePageSize::DEFAULT, last_file_ids, None, Vec::new()).unwrap();
+    let manifest = Manifest::new(PageSize::DEFAULT, last_file_ids, None, Vec::new()).unwrap();
     let manifest = ManifestStore::create(arc(&fs), db_dir(), manifest).unwrap();
     let mut db = Db::with(manifest).unwrap();
     let table = PageTable::new();

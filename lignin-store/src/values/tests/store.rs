@@ -3,9 +3,8 @@
 use std::io::ErrorKind;
 
 use lignin_format::{
-    tree_page::TreePageSize,
     value_log::{extent_len, ValueLogError, ValuePointer, MAX_PART_LEN, RECORD_HEADER_LEN},
-    CommitVersion, FileHeader, FormatError,
+    CommitVersion, FileHeader, FormatError, PageSize,
 };
 use lignin_io::{
     sim::{Event, OpKind, OpRecord, SimVfs},
@@ -772,7 +771,7 @@ fn file_ids_go_up_and_are_never_given_twice() {
 
     let fs = sim_fs(traced(1, 512));
     let last = Manifest::new(
-        TreePageSize::DEFAULT,
+        PageSize::DEFAULT,
         lignin_format::manifest::LastFileIds {
             value_log: Some(FileId::MAX),
             ..Default::default()
@@ -798,7 +797,7 @@ fn the_manifest_keeps_what_the_value_log_does_not_own() {
         wal: Some(file_id(2)),
         ..Default::default()
     };
-    let with_segment = Manifest::new(TreePageSize::DEFAULT, last, None, vec![segment]).unwrap();
+    let with_segment = Manifest::new(PageSize::DEFAULT, last, None, vec![segment]).unwrap();
     store
         .manifest
         .update(|_| Ok::<_, ValueStoreError>(with_segment))
@@ -944,7 +943,7 @@ fn a_walk_rejects_a_file_that_ends_inside_a_value() {
         content.truncate(whole as usize + cut);
         write_file(&fs, &val.join("00000001.val"), &content);
         let named = Manifest::new(
-            TreePageSize::DEFAULT,
+            PageSize::DEFAULT,
             lignin_format::manifest::LastFileIds {
                 value_log: Some(file_id(1)),
                 ..Default::default()
@@ -979,7 +978,7 @@ fn a_walk_rejects_bytes_that_are_no_value() {
     content.extend_from_slice(&[0; 64]);
     write_file(&fs, &val.join("00000001.val"), &content);
     let named = Manifest::new(
-        TreePageSize::DEFAULT,
+        PageSize::DEFAULT,
         lignin_format::manifest::LastFileIds {
             value_log: Some(file_id(1)),
             ..Default::default()

@@ -7,7 +7,7 @@ use std::{
     num::{NonZeroU16, NonZeroU32},
 };
 
-use crate::error::FormatError;
+use crate::{error::FormatError, tree_page::TreePageError};
 
 macro_rules! nonzero_id {
     ($(#[$doc:meta])* $name:ident, $prefix:literal, $raw:ty, $nonzero:ty, $max:literal) => {
@@ -188,6 +188,53 @@ impl fmt::Debug for CellAddress {
 impl fmt::Display for CellAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}/{}", self.page, self.slot)
+    }
+}
+
+/// The size of a store's pages, which every page of the store is read and
+/// written under. A store has one, and its manifest records it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PageSize(usize);
+
+impl PageSize {
+    /// The smallest page size, 8 KiB.
+    pub const MIN: Self = Self(8_192);
+    /// The largest page size, 64 KiB.
+    pub const MAX: Self = Self(65_536);
+    /// The page size a store uses unless it is told otherwise, 32 KiB.
+    pub const DEFAULT: Self = Self(32_768);
+
+    const MAX_IMAGE_LEN: usize = u16::MAX as usize;
+
+    /// Pages of `bytes` bytes.
+    pub const fn new(bytes: usize) -> Result<Self, FormatError> {
+        if bytes < Self::MIN.0 || bytes > Self::MAX.0 {
+            return Err(FormatError::TreePage(TreePageError::PageSizeOutOfRange {
+                page_size: bytes,
+            }));
+        }
+        Ok(Self(bytes))
+    }
+
+    /// The page size in bytes.
+    pub const fn get(self) -> usize {
+        self.0
+    }
+
+    /// The longest a page of this size may be. Offsets inside a page are 16
+    /// bits, so a page of 64 KiB leaves its last byte unused.
+    pub const fn image_capacity(self) -> usize {
+        if self.0 < Self::MAX_IMAGE_LEN {
+            self.0
+        } else {
+            Self::MAX_IMAGE_LEN
+        }
+    }
+}
+
+impl Default for PageSize {
+    fn default() -> Self {
+        Self::DEFAULT
     }
 }
 

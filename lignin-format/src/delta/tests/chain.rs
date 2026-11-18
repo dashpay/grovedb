@@ -11,7 +11,7 @@ use super::*;
 ///   read back, at once.
 /// - The chain is what a store keeps: a base image and the runs since.
 struct Chain {
-    size: TreePageSize,
+    size: PageSize,
     rng: Rng,
     model: ModelPage,
     writer: Vec<u8>,
@@ -31,7 +31,7 @@ struct Chain {
 impl Chain {
     /// A chain for a page that exists, with a base image, or for one that
     /// its first run creates.
-    fn new(seed: u64, size: TreePageSize, with_base: bool) -> Self {
+    fn new(seed: u64, size: PageSize, with_base: bool) -> Self {
         let mut rng = Rng::new(seed);
         let mut model = ModelPage::new(17, 5);
         if with_base {
@@ -256,16 +256,16 @@ impl Chain {
 #[test]
 fn a_base_image_plus_any_delta_chain_is_the_consolidated_image() {
     for (seed, size, with_base, steps) in [
-        (0xDE17A1, TreePageSize::MIN, true, 9_000),
-        (0xDE17A2, TreePageSize::MIN, false, 9_000),
+        (0xDE17A1, PageSize::MIN, true, 9_000),
+        (0xDE17A2, PageSize::MIN, false, 9_000),
         (
             0xDE17A3,
-            TreePageSize::new(11_111).expect("in range"),
+            PageSize::new(11_111).expect("in range"),
             true,
             6_000,
         ),
-        (0xDE17A4, TreePageSize::DEFAULT, false, 9_000),
-        (0xDE17A5, TreePageSize::MAX, true, 9_000),
+        (0xDE17A4, PageSize::DEFAULT, false, 9_000),
+        (0xDE17A5, PageSize::MAX, true, 9_000),
     ] {
         let mut chain = Chain::new(seed, size, with_base);
         // The page is freed and created again five times in the first part
@@ -307,7 +307,7 @@ fn a_base_image_plus_any_delta_chain_is_the_consolidated_image() {
 /// runs or of the bytes the writer's frame happened to have.
 #[test]
 fn the_same_changes_give_the_same_image_however_they_are_cut() {
-    let size = TreePageSize::MIN;
+    let size = PageSize::MIN;
     let mut rng = Rng::new(0xC075);
     let mut model = ModelPage::new(3, 0);
     for raw in 1..=8 {

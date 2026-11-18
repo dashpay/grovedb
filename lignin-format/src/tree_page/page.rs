@@ -2,7 +2,7 @@
 
 use std::{iter::FusedIterator, ops::Range};
 
-use super::{Side, TreeCell, TreePageError, TreePageSize};
+use super::{PageSize, Side, TreeCell, TreePageError};
 use crate::{
     error::FormatError,
     header::FormatVersion,
@@ -136,7 +136,7 @@ impl Header {
         directory_end(self.slot_count)
     }
 
-    pub(super) fn check_len(&self, size: TreePageSize) -> Result<(), FormatError> {
+    pub(super) fn check_len(&self, size: PageSize) -> Result<(), FormatError> {
         let capacity = size.image_capacity();
         if self.len > capacity {
             return Err(TreePageError::PageTooLong {
@@ -196,7 +196,7 @@ impl<'a> TreePage<'a> {
     pub fn decode(
         bytes: &'a [u8],
         version: FormatVersion,
-        size: TreePageSize,
+        size: PageSize,
     ) -> Result<Self, FormatError> {
         let page = Self::from_validated(bytes, version)?;
         page.header.check_len(size)?;
@@ -259,7 +259,7 @@ impl<'a> TreePage<'a> {
     /// header's counts are the page's.
     ///
     /// Unlike the accessors, this allocates.
-    pub fn check(&self, size: TreePageSize) -> Result<(), FormatError> {
+    pub fn check(&self, size: PageSize) -> Result<(), FormatError> {
         self.header.check_len(size)?;
         let cells_at = self.header.cells_at();
         let mut extents = Vec::with_capacity(self.header.cell_count);
@@ -303,7 +303,7 @@ impl<'a> TreePage<'a> {
         &self,
         index: usize,
         offset: usize,
-        size: TreePageSize,
+        size: PageSize,
     ) -> Result<TreeCell<'a>, FormatError> {
         let bytes = self.bytes.get(offset..).unwrap_or_default();
         let cell = TreeCell::at_start(bytes, self.version).map_err(|error| match error {
@@ -384,7 +384,7 @@ impl<'a> TreePage<'a> {
 
     /// The bytes a page of `size` still has for cells and their slots, once
     /// its unused bytes are gathered.
-    pub const fn free_bytes(&self, size: TreePageSize) -> usize {
+    pub const fn free_bytes(&self, size: PageSize) -> usize {
         size.image_capacity()
             .saturating_sub(self.header.len)
             .saturating_add(self.header.unused)

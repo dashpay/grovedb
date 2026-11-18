@@ -9,8 +9,7 @@ use std::{
 
 use lignin_format::{
     manifest::{FileState, LiveFile, Manifest},
-    tree_page::TreePageSize,
-    FileKind,
+    FileKind, PageSize,
 };
 use lignin_io::{Create, OpenMode, Vfs};
 
@@ -149,7 +148,7 @@ impl ManifestStore {
     /// [`SegmentStoreError::PageSizeMismatch`] if the manifest records
     /// another size. A caller with no size of its own takes the store's
     /// from [`Manifest::page_size`].
-    pub fn check_page_size(&self, page_size: TreePageSize) -> Result<(), SegmentStoreError> {
+    pub fn check_page_size(&self, page_size: PageSize) -> Result<(), SegmentStoreError> {
         let stored = self.manifest()?.page_size();
         if stored == page_size {
             Ok(())

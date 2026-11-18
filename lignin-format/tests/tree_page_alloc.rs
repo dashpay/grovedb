@@ -11,11 +11,9 @@ use std::{
 };
 
 use lignin_format::{
-    tree_page::{
-        CellContent, CellValue, HashField, Side, TreeLink, TreePage, TreePageMut, TreePageSize,
-    },
+    tree_page::{CellContent, CellValue, HashField, Side, TreeLink, TreePage, TreePageMut},
     value_log::ValuePointer,
-    CellAddress, FileId, FormatVersion, PageId, SlotId,
+    CellAddress, FileId, FormatVersion, PageId, PageSize, SlotId,
 };
 
 thread_local! {
@@ -61,7 +59,7 @@ fn allocations_during<T>(work: impl FnOnce() -> T) -> (T, u64) {
 }
 
 const VERSION: FormatVersion = FormatVersion::CURRENT;
-const SIZE: TreePageSize = TreePageSize::DEFAULT;
+const SIZE: PageSize = PageSize::DEFAULT;
 const PAGE: PageId = PageId::MIN;
 const CELLS: u16 = 120;
 const AGGREGATE: [u8; 9] = [3, 0, 0, 0, 0, 0, 0, 0, 7];

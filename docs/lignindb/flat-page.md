@@ -178,7 +178,7 @@ image is exactly as long as its content. That largest length comes from the
 store's page size, which tree pages and flat pages share and the manifest
 records (M17 of `segment-manifest.md`): it is the page size, except that a
 store with 64 KiB pages gives flat pages 65,535 of the 65,536 bytes
-(`TreePageSize::image_capacity`).
+(`PageSize::image_capacity`).
 
 **P11. One encoding per content** (B8). The content of a page is its kind,
 level, prefix, first child and entries. The layout leaves no freedom: cells

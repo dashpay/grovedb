@@ -17,7 +17,7 @@ fn put16(bytes: &mut [u8], at: usize, value: u16) {
 }
 
 fn decode(bytes: &[u8]) -> Result<TreePage<'_>, FormatError> {
-    TreePage::decode(bytes, V1, TreePageSize::DEFAULT)
+    TreePage::decode(bytes, V1, PageSize::DEFAULT)
 }
 
 fn decode_error(bytes: &[u8]) -> FormatError {
@@ -39,7 +39,7 @@ fn random_model(rng: &mut Rng, id: u32, cells: usize) -> ModelPage {
 
 /// Calls every accessor. Nothing here may panic, whatever the bytes are.
 fn exercise(bytes: &[u8]) {
-    for size in [TreePageSize::MIN, TreePageSize::MAX] {
+    for size in [PageSize::MIN, PageSize::MAX] {
         if let Ok(page) = TreePage::decode(bytes, V1, size) {
             assert_eq!(page.to_image(), page.as_bytes());
             page.check(size).expect("an image is a valid page");
@@ -48,7 +48,7 @@ fn exercise(bytes: &[u8]) {
     let Ok(page) = TreePage::from_validated(bytes, V1) else {
         return;
     };
-    let _ = page.check(TreePageSize::MAX);
+    let _ = page.check(PageSize::MAX);
     let _ = page.check_fragments();
     assert!(page.to_image().len() <= TreePage::MAX_LEN);
     let _ = page.lowest_free_slot();
@@ -60,7 +60,7 @@ fn exercise(bytes: &[u8]) {
         page.cell_count(),
         page.is_empty(),
     );
-    let _ = (page.free_bytes(TreePageSize::MIN), page.used_bytes());
+    let _ = (page.free_bytes(PageSize::MIN), page.used_bytes());
     let mut seen = 0;
     for (slot, cell) in page.cells().chain(page.cells().rev()) {
         seen += 1;
@@ -91,8 +91,8 @@ fn an_image_reads_back_and_later_bytes_are_ignored() {
     for bytes in [&image, &frame] {
         let page = decode(bytes).expect("valid");
         assert_eq!(page.as_bytes(), image);
-        example().assert_is(page, TreePageSize::DEFAULT);
-        example().assert_is(view(bytes), TreePageSize::DEFAULT);
+        example().assert_is(page, PageSize::DEFAULT);
+        example().assert_is(view(bytes), PageSize::DEFAULT);
     }
 }
 
@@ -190,25 +190,25 @@ fn a_page_longer_than_its_store_s_pages_is_refused() {
     let mut rng = Rng::new(0x10F6);
     let model = random_model(&mut rng, 5, 60);
     let image = model.assemble();
-    assert!(image.len() > TreePageSize::MIN.get());
-    model.assert_is(decode(&image).expect("valid"), TreePageSize::DEFAULT);
+    assert!(image.len() > PageSize::MIN.get());
+    model.assert_is(decode(&image).expect("valid"), PageSize::DEFAULT);
     let too_long: FormatError = TreePageError::PageTooLong {
         len: image.len(),
         capacity: 8_192,
     }
     .into();
     assert_eq!(
-        TreePage::decode(&image, V1, TreePageSize::MIN).expect_err("too long"),
+        TreePage::decode(&image, V1, PageSize::MIN).expect_err("too long"),
         too_long
     );
     assert_eq!(
-        view(&image).check(TreePageSize::MIN).expect_err("too long"),
+        view(&image).check(PageSize::MIN).expect_err("too long"),
         too_long
     );
     let mut frame = image.clone();
-    frame.resize(TreePageSize::DEFAULT.get(), 0);
+    frame.resize(PageSize::DEFAULT.get(), 0);
     assert_eq!(
-        TreePageMut::open(&mut frame, TreePageSize::MIN, V1).expect_err("too long"),
+        TreePageMut::open(&mut frame, PageSize::MIN, V1).expect_err("too long"),
         too_long
     );
 }
@@ -266,7 +266,7 @@ fn each_check_of_the_slots_has_its_error() {
     assert_eq!(decode_error(&bytes), TreePageError::TrailingFreeSlot.into());
     assert_eq!(
         view(&bytes)
-            .check(TreePageSize::DEFAULT)
+            .check(PageSize::DEFAULT)
             .expect_err("a free last slot"),
         TreePageError::TrailingFreeSlot.into()
     );
@@ -321,7 +321,7 @@ fn each_check_of_a_cell_has_its_error() {
         assert_eq!(decode_error(&bytes), error, "{changes:?}");
         assert_eq!(
             view(&bytes)
-                .check(TreePageSize::DEFAULT)
+                .check(PageSize::DEFAULT)
                 .expect_err("a damaged cell"),
             error
         );
@@ -486,7 +486,7 @@ fn a_part_longer_than_its_length_field_is_refused() {
             too_long(CellField::HostedRoots),
         ),
     ];
-    let size = TreePageSize::DEFAULT;
+    let size = PageSize::DEFAULT;
     let mut frame = frame_of(&example(), size);
     let before = frame.clone();
     for (content, error) in cases {
@@ -570,7 +570,7 @@ fn every_single_bit_flip_is_rejected_or_reads_as_what_it_says() {
                 // One encoding per content: what was read is exactly what
                 // these bytes say, and it encodes back to them.
                 assert_eq!(page.to_image(), flipped);
-                page.check(TreePageSize::DEFAULT).expect("valid");
+                page.check(PageSize::DEFAULT).expect("valid");
                 accepted += 1;
             }
         }
@@ -659,16 +659,16 @@ fn a_page_whose_slots_share_a_cell_is_written_out_within_a_page() {
         for index in 0..slots {
             put16(&mut bytes, 22 + 2 * index, cells_at as u16);
         }
-        TreePage::decode(&bytes, V1, TreePageSize::MAX).expect_err("not an image");
+        TreePage::decode(&bytes, V1, PageSize::MAX).expect_err("not an image");
         let page = view(&bytes);
-        page.check(TreePageSize::MAX).expect_err("not a valid page");
+        page.check(PageSize::MAX).expect_err("not a valid page");
         if slots == 100 {
             assert_eq!(
                 decode_error(&bytes),
                 TreePageError::CellsOutOfOrder { slot: slot(2) }.into()
             );
             assert_eq!(
-                page.check(TreePageSize::MAX),
+                page.check(PageSize::MAX),
                 Err(TreePageError::OverlappingCells { slot: slot(2) }.into())
             );
         }
@@ -690,7 +690,7 @@ fn a_page_with_unused_bytes_is_valid_but_is_not_an_image() {
     put16(&mut bytes, DIRECTORY_AT + 4, SLOT_3_AT as u16 + 4);
     put16(&mut bytes, 12, 4);
     let page = view(&bytes);
-    example().assert_is(page, TreePageSize::DEFAULT);
+    example().assert_is(page, PageSize::DEFAULT);
     assert_eq!(page.unused_bytes(), 4);
     assert_eq!(page.encoded_len(), 251);
     assert_eq!(page.to_image(), image);
@@ -706,7 +706,7 @@ fn a_page_with_unused_bytes_is_valid_but_is_not_an_image() {
     );
     assert_eq!(
         view(&bytes)
-            .check(TreePageSize::DEFAULT)
+            .check(PageSize::DEFAULT)
             .expect_err("a wrong count"),
         TreePageError::UnusedBytesMismatch {
             stated: 0,
@@ -720,7 +720,7 @@ fn a_page_with_unused_bytes_is_valid_but_is_not_an_image() {
 fn each_check_of_a_page_in_a_buffer_has_its_error() {
     let check = |bytes: &[u8]| {
         view(bytes)
-            .check(TreePageSize::DEFAULT)
+            .check(PageSize::DEFAULT)
             .expect_err("not a valid page")
     };
 

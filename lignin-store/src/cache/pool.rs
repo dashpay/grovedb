@@ -3,7 +3,7 @@
 
 use std::{collections::BTreeMap, fmt};
 
-use lignin_format::{tree_page::TreePageSize, CommitVersion, PageId};
+use lignin_format::{CommitVersion, PageId, PageSize};
 
 use super::{
     error::CacheError,
@@ -17,7 +17,7 @@ use crate::alloc::Epoch;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PoolConfig {
     /// The store's page size. A frame holds one page of it.
-    pub page_size: TreePageSize,
+    pub page_size: PageSize,
     /// The memory the pool may use for what it caches, in bytes. It is
     /// allocated when the pool is made, and it includes each frame's header
     /// and the pool's table.
