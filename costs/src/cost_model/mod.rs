@@ -269,7 +269,9 @@ pub struct BatchCharge {
 impl BatchCharge {
     /// W2 to W4: a put. `value_len` is the length of the record, and
     /// `children_sizes` what a Merk gave with a node. They are used in the
-    /// data keyspace only.
+    /// data keyspace only. `cost_info` is the writer's cost as it was
+    /// staged: for the data keyspace, after
+    /// [`StorageCostModel::complete_new_key_cost`].
     ///
     /// A cost the writer gave that does not match the record refuses the
     /// batch (K3). The seek of the refused put stays charged.
@@ -358,8 +360,9 @@ pub struct ImmediateBatchCharge {
 }
 
 impl ImmediateBatchCharge {
-    /// A put: [`BatchCharge::put`] with both parts charged at once. A put
-    /// into the data keyspace has its cost completed first
+    /// A put: [`BatchCharge::put`] with both parts charged at once. The
+    /// caller completes the cost of a put into the data keyspace first, as
+    /// for a put that is staged
     /// ([`StorageCostModel::complete_new_key_cost`]).
     pub fn put(
         &mut self,

@@ -3,9 +3,10 @@
 //! What the storage layer charges is defined by the functions of
 //! [`grovedb_costs::cost_model`], which are re-exported here. Each takes
 //! logical sizes and returns an `OperationCost`. A store that keeps Merk's
-//! nodes charges through them and works out no charge of its own: the
-//! storage contexts under [`store::kv`](crate::store::kv) do, and so does
-//! every other [`NodeStore`](crate::store::NodeStore).
+//! nodes for an engine charges through them and works out no charge of its
+//! own. The storage contexts under [`store::kv`](crate::store::kv) do so
+//! today, and the [`NodeStore`](crate::store::NodeStore) of another engine
+//! has to.
 //!
 //! This module adds what only Merk knows: which version of those rules a
 //! grove version charges by, and the sizes of a node as the rules take
