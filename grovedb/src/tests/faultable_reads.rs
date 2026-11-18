@@ -20,17 +20,18 @@ thread_local! {
 /// Runs `body` with every `open_merk` read of a parent element stored under
 /// `parent_key` failing with a storage error.
 pub(crate) fn with_failed_parent_read<T>(parent_key: &[u8], body: impl FnOnce() -> T) -> T {
-    /// Disarms the seam even when `body` panics.
-    struct Disarm;
+    /// Puts back the key that was armed before, even when `body` panics, so
+    /// a scope nested in another leaves the outer one armed.
+    struct Disarm(Option<Vec<u8>>);
 
     impl Drop for Disarm {
         fn drop(&mut self) {
-            FAILED_PARENT_READ.with(|failed| failed.borrow_mut().take());
+            FAILED_PARENT_READ.with(|failed| failed.replace(self.0.take()));
         }
     }
 
-    FAILED_PARENT_READ.with(|failed| failed.replace(Some(parent_key.to_vec())));
-    let _disarm = Disarm;
+    let _disarm =
+        Disarm(FAILED_PARENT_READ.with(|failed| failed.replace(Some(parent_key.to_vec()))));
     body()
 }
 

@@ -173,8 +173,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Element::get_optional_from_storage`) had already turned it into
   `CorruptedData`. They now return `grovedb_merk::Error::StorageError`, and
   the open returns it as `Error::StorageError`, so those readers, and
-  `get_raw`, `get` and every other caller that opens a subtree by path, fail
-  with the storage error where the parent could not be read. A parent key
+  `get_raw`, `get` and the other reads and direct writes that pass that
+  open's error on, fail with the storage error where the parent could not be
+  read. A batch opening an existing subtree and state sync read the parent
+  element themselves; they already failed on such a read and keep the errors
+  they returned. A parent key
   that is not there and stored bytes that do not decode are reported as
   before: the second is what a path below a non-Merk tree legitimately reads,
   and telling it from a corrupt parent element is left to a later,

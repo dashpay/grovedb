@@ -17,7 +17,7 @@ use crate::{
         faultable_reads::{with_failed_parent_read, INJECTED_READ_FAILURE},
         make_empty_grovedb, make_test_grovedb, TempGroveDb, TEST_LEAF,
     },
-    BackwardsReferences, Element, Error, PathQuery, Query,
+    BackwardsReferences, Element, Error, PathQuery, PendingPrefixDropsReport, Query,
 };
 
 const PARENT: &[u8] = b"parent";
@@ -342,4 +342,63 @@ fn should_not_reclaim_a_dropped_path_whose_liveness_read_fails() {
         ),
         (0, 1, 0)
     );
+}
+
+#[test]
+fn should_reclaim_a_dropped_path_once_its_liveness_read_succeeds_again() {
+    let grove_version = GroveVersion::latest();
+    let db = db_with_item(grove_version);
+
+    // The ordinary drop: the path stays absent and its record is pending.
+    let tx = db.start_transaction();
+    db.drop_flat_subtree(
+        [TEST_LEAF].as_ref(),
+        PARENT,
+        BackwardsReferences::DontCheck,
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap()
+    .expect("drop in a transaction");
+    db.commit_transaction(tx).unwrap().expect("commit");
+
+    let flush = || db.flush_pending_prefix_drops(grove_version).expect("flush");
+    let counts = |report: &PendingPrefixDropsReport| {
+        (
+            report.reclaimed_records,
+            report.skipped_live,
+            report.unresolved_records,
+        )
+    };
+
+    // While the read fails the record waits.
+    let report = with_failed_parent_read(TEST_LEAF, flush);
+    assert_eq!(counts(&report), (0, 0, 1));
+
+    // The fault was transient: the next pass reclaims the record, and the
+    // one after has nothing left to do.
+    assert_eq!(counts(&flush()), (1, 0, 0));
+    assert_eq!(flush(), PendingPrefixDropsReport::default());
+}
+
+#[test]
+fn should_keep_the_outer_read_failing_after_a_nested_scope_ends() {
+    let grove_version = GroveVersion::latest();
+    let db = db_with_item(grove_version);
+    let path = [TEST_LEAF, PARENT];
+    let read = || {
+        db.get_raw_optional(path.as_ref().into(), KEY, None, grove_version)
+            .unwrap()
+    };
+
+    with_failed_parent_read(PARENT, || {
+        with_failed_parent_read(b"another key", || {
+            assert_eq!(
+                read().expect("the inner scope arms another key"),
+                Some(item())
+            );
+        });
+        assert_injected_failure(read(), "after the nested scope");
+    });
+    assert_eq!(read().expect("disarmed"), Some(item()));
 }
