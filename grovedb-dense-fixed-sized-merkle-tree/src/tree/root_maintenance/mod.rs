@@ -33,7 +33,7 @@ mod v1;
 pub use v1::{v1_insert_model_cost, V1InsertModel};
 
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
-use grovedb_storage::StorageContext;
+use grovedb_storage::FlatStore;
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
 use super::{DenseFixedSizedMerkleTree, SlotWriteAccounting};
@@ -70,7 +70,7 @@ pub(crate) fn root_maintenance(
     }
 }
 
-impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
+impl<S: FlatStore> DenseFixedSizedMerkleTree<S> {
     /// Insert a value at the next available position.
     ///
     /// Returns `(root_hash, position)` where position is the 0-based index

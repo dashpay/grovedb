@@ -21,7 +21,7 @@ use grovedb_merk::{
 };
 use grovedb_merkle_mountain_range::MmrTreeProof;
 use grovedb_path::SubtreePath;
-use grovedb_storage::{Storage, StorageContext};
+use grovedb_storage::{FlatStore, Storage, StorageContext};
 use grovedb_version::{
     check_grovedb_v0_or_v1_with_cost, check_grovedb_v0_with_cost, version::GroveVersion,
 };
@@ -4502,7 +4502,7 @@ impl GroveDb {
             .get_transactional_storage_context(storage_path, None, tx)
             .unwrap_add_cost(&mut cost);
 
-        let sinsemilla_root = match storage_ctx.get(COMMITMENT_TREE_DATA_KEY).value {
+        let sinsemilla_root = match FlatStore::get(&storage_ctx, COMMITMENT_TREE_DATA_KEY).value {
             Ok(Some(frontier_bytes)) => {
                 match grovedb_commitment_tree::CommitmentFrontier::deserialize(
                     frontier_bytes.as_ref(),

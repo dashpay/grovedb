@@ -18,7 +18,7 @@ use grovedb_dense_fixed_sized_merkle_tree::{position_key, DenseFixedSizedMerkleT
 use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
-    rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch, StorageContext,
+    rocksdb_storage::PrefixedRocksDbTransactionContext, FlatStore, Storage, StorageBatch,
 };
 use grovedb_version::version::GroveVersion;
 

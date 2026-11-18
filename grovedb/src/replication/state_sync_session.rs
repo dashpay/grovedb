@@ -15,7 +15,7 @@ use grovedb_merk::{
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
     rocksdb_storage::{PrefixedRocksDbImmediateStorageContext, RocksDbStorage},
-    Storage, StorageContext,
+    FlatStore, Storage, StorageContext,
 };
 use grovedb_version::version::GroveVersion;
 
@@ -888,9 +888,11 @@ impl<'db> MultiStateSyncSession<'db> {
             .get_immediate_storage_context(SubtreePath::empty(), &self.transaction)
             .unwrap();
         let result = if present {
-            storage.put_aux(INCOMPLETE_RESTORE_AUX_KEY, &self.app_hash, None)
+            storage
+                .aux()
+                .put(INCOMPLETE_RESTORE_AUX_KEY, &self.app_hash, None)
         } else {
-            storage.delete_aux(INCOMPLETE_RESTORE_AUX_KEY, None)
+            storage.aux().delete(INCOMPLETE_RESTORE_AUX_KEY, None)
         };
         result
             .unwrap()

@@ -66,7 +66,7 @@ use grovedb_merkle_mountain_range::{
 };
 use grovedb_path::SubtreePath;
 use grovedb_private_document_store::PrivateDocumentStore;
-use grovedb_storage::{Storage, StorageContext};
+use grovedb_storage::{FlatStore, Storage};
 use grovedb_version::version::GroveVersion;
 
 use crate::{
@@ -673,7 +673,7 @@ impl NonMerkRestorer {
                 .db
                 .get_immediate_storage_context(subtree_path.clone(), tx)
                 .unwrap();
-            ctx.put(COMMITMENT_TREE_DATA_KEY, frontier, None, None)
+            ctx.put(COMMITMENT_TREE_DATA_KEY, frontier, None)
                 .unwrap()
                 .map_err(|e| {
                     Error::CorruptedData(format!("cannot write commitment tree frontier: {e}"))

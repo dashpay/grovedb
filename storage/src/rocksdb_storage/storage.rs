@@ -55,6 +55,7 @@ use super::{PrefixedRocksDbImmediateStorageContext, PrefixedRocksDbTransactionCo
 use crate::{
     error,
     error::Error::{CostError, RocksDBError},
+    flat::{pending_prefix_drops_namespace, PendingPrefixDropRecord, PendingPrefixDrops},
     storage::AbstractBatchOperation,
     worst_case_costs::WorstKeyLength,
     Storage, StorageBatch,
@@ -1005,126 +1006,20 @@ impl RocksDbStorage {
     }
 }
 
-/// The reserved 32-byte namespace under which pending-prefix-drop redo
-/// records live in the meta column family. Records are keyed
-/// `namespace ‖ primary_prefix`.
-///
-/// The value is `Blake3("grovedb_pending_prefix_drops_v0")`. It cannot
-/// collide with any path-derived prefix (`build_prefix`), axis-derived
-/// secondary prefix (`secondary_prefix_for`), or the root prefix
-/// (`[0u8; 32]`) without a Blake3 preimage/collision, and the meta column
-/// family carries no production data outside this namespace.
-pub fn pending_prefix_drops_namespace() -> &'static SubtreePrefix {
-    static NAMESPACE: std::sync::OnceLock<SubtreePrefix> = std::sync::OnceLock::new();
-    NAMESPACE.get_or_init(|| *blake3::hash(b"grovedb_pending_prefix_drops_v0").as_bytes())
-}
-
-/// A durable redo record for one flat-subtree drop: the storage prefixes
-/// that became unreachable when the subtree's element was deleted from its
-/// parent Merk, plus the subtree's full path for the drain-time liveness
-/// guard.
-///
-/// The record is written in the same atomic commit as the parent-Merk
-/// delete and erased once every doomed prefix has been range-tombstoned,
-/// making reclamation crash-safe and idempotent.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingPrefixDropRecord {
-    /// The dropped subtree's own path-derived prefix; also the record's key
-    /// suffix within the namespace.
-    pub primary_prefix: SubtreePrefix,
-    /// Full path of the dropped subtree (parent path segments plus its key
-    /// as the last segment). Used by the drain to verify the path does not
-    /// resolve to a live element before tombstoning.
-    pub path: Vec<Vec<u8>>,
-    /// Every prefix to range-delete: the primary prefix plus, for indexed
-    /// primaries, the per-axis secondary prefixes.
-    pub doomed_prefixes: Vec<SubtreePrefix>,
-}
-
-impl PendingPrefixDropRecord {
-    /// Wire version byte of the record value encoding.
-    const ENCODING_VERSION: u8 = 0;
-
-    /// Encode the record value:
-    /// `[version(1)] [doomed_count(1)] [doomed_count × 32] [segment_count(1)]
-    /// ([segment_len(1)] [segment_bytes])*`.
-    ///
-    /// Both counts and every segment length must fit in a `u8`; path
-    /// segments are already capped at 255 bytes by `build_prefix`, and the
-    /// doomed set is at most 1 + one prefix per index axis.
-    pub fn encode(&self) -> Result<Vec<u8>, Error> {
-        let doomed_count: u8 = self.doomed_prefixes.len().try_into().map_err(|_| {
-            Error::StorageError("pending-prefix-drop record: too many doomed prefixes".to_string())
-        })?;
-        let segment_count: u8 = self.path.len().try_into().map_err(|_| {
-            Error::StorageError("pending-prefix-drop record: path too deep".to_string())
-        })?;
-        let mut out = Vec::with_capacity(
-            3 + 32 * self.doomed_prefixes.len()
-                + self.path.iter().map(|s| 1 + s.len()).sum::<usize>(),
-        );
-        out.push(Self::ENCODING_VERSION);
-        out.push(doomed_count);
-        for prefix in &self.doomed_prefixes {
-            out.extend_from_slice(prefix);
-        }
-        out.push(segment_count);
-        for segment in &self.path {
-            let len: u8 = segment.len().try_into().map_err(|_| {
-                Error::StorageError(
-                    "pending-prefix-drop record: path segment over 255 bytes".to_string(),
-                )
-            })?;
-            out.push(len);
-            out.extend_from_slice(segment);
-        }
-        Ok(out)
+impl PendingPrefixDrops for RocksDbStorage {
+    fn pending_prefix_drop_records(&self) -> Result<Vec<PendingPrefixDropRecord>, Error> {
+        RocksDbStorage::pending_prefix_drop_records(self)
     }
 
-    /// Decode a record from its key suffix (the primary prefix) and value.
-    pub fn decode(key_suffix: &[u8], value: &[u8]) -> Result<Self, Error> {
-        let corrupt =
-            |what: &str| Error::StorageError(format!("corrupt pending-prefix-drop record: {what}"));
-        let primary_prefix: SubtreePrefix = key_suffix
-            .try_into()
-            .map_err(|_| corrupt("key suffix is not 32 bytes"))?;
-        fn take<'v>(rest: &mut &'v [u8], n: usize, what: &str) -> Result<&'v [u8], Error> {
-            if rest.len() < n {
-                return Err(Error::StorageError(format!(
-                    "corrupt pending-prefix-drop record: {what}"
-                )));
-            }
-            let (head, tail) = rest.split_at(n);
-            *rest = tail;
-            Ok(head)
-        }
-        let mut rest = value;
-        let version = take(&mut rest, 1, "missing version byte")?[0];
-        if version != Self::ENCODING_VERSION {
-            return Err(corrupt("unknown encoding version"));
-        }
-        let doomed_count = take(&mut rest, 1, "missing doomed count")?[0] as usize;
-        let mut doomed_prefixes = Vec::with_capacity(doomed_count);
-        for _ in 0..doomed_count {
-            let prefix: SubtreePrefix = take(&mut rest, 32, "truncated doomed prefix")?
-                .try_into()
-                .expect("split_at returned exactly 32 bytes");
-            doomed_prefixes.push(prefix);
-        }
-        let segment_count = take(&mut rest, 1, "missing segment count")?[0] as usize;
-        let mut path = Vec::with_capacity(segment_count);
-        for _ in 0..segment_count {
-            let len = take(&mut rest, 1, "missing segment length")?[0] as usize;
-            path.push(take(&mut rest, len, "truncated path segment")?.to_vec());
-        }
-        if !rest.is_empty() {
-            return Err(corrupt("trailing bytes"));
-        }
-        Ok(Self {
-            primary_prefix,
-            path,
-            doomed_prefixes,
-        })
+    fn delete_prefix_ranges(&self, prefixes: &[SubtreePrefix]) -> Result<(), Error> {
+        RocksDbStorage::delete_prefix_ranges(self, prefixes)
+    }
+
+    fn remove_pending_prefix_drop_record(
+        &self,
+        primary_prefix: &SubtreePrefix,
+    ) -> Result<(), Error> {
+        RocksDbStorage::remove_pending_prefix_drop_record(self, primary_prefix)
     }
 }
 

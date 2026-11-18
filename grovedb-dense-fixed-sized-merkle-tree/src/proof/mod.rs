@@ -14,7 +14,7 @@ use bincode::{Decode, DecodeUntrusted, Encode};
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_query::{Query, QueryItem};
 #[cfg(feature = "storage")]
-use grovedb_storage::StorageContext;
+use grovedb_storage::FlatStore;
 
 #[cfg(feature = "storage")]
 use crate::tree::DenseFixedSizedMerkleTree;
@@ -193,7 +193,7 @@ impl DenseTreeProof {
     ///
     /// Positions must be < count. Duplicates are deduplicated.
     #[cfg(feature = "storage")]
-    pub fn generate<'db, S: StorageContext<'db>>(
+    pub fn generate<S: FlatStore>(
         tree: &DenseFixedSizedMerkleTree<S>,
         positions: &[u16],
     ) -> CostResult<Self, DenseMerkleError> {
@@ -297,7 +297,7 @@ impl DenseTreeProof {
     /// encoded as big-endian `u16` bytes (1-byte or 2-byte). Unbounded range
     /// ends are clamped to `0` or `count`.
     #[cfg(feature = "storage")]
-    pub fn generate_for_query<'db, S: StorageContext<'db>>(
+    pub fn generate_for_query<S: FlatStore>(
         tree: &DenseFixedSizedMerkleTree<S>,
         query: &Query,
     ) -> CostResult<Self, DenseMerkleError> {

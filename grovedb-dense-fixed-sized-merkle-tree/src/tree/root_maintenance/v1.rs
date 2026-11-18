@@ -76,7 +76,7 @@
 //! [`last_filled_in_subtree`]: crate::tree::last_filled_in_subtree
 
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
-use grovedb_storage::StorageContext;
+use grovedb_storage::FlatStore;
 
 use crate::{
     hash::node_hash,
@@ -152,7 +152,7 @@ pub fn v1_insert_model_cost(height: u8) -> OperationCost {
 /// the new root and the position. The caller has checked the tree is not
 /// full. The returned cost is the fixed model for the tree's height plus
 /// whatever the storage context charged for the two puts.
-pub(super) fn insert_next<'db, S: StorageContext<'db>>(
+pub(super) fn insert_next<S: FlatStore>(
     tree: &mut DenseFixedSizedMerkleTree<S>,
     value: &[u8],
     accounting: SlotWriteAccounting,
@@ -193,7 +193,7 @@ pub(super) fn insert_next<'db, S: StorageContext<'db>>(
 /// context charged for the record put (the rest of the returned cost is the
 /// real work, which the caller discards in favour of the model).
 /// `tree.count()` already includes `position`.
-fn maintain_path<'db, S: StorageContext<'db>>(
+fn maintain_path<S: FlatStore>(
     tree: &mut DenseFixedSizedMerkleTree<S>,
     position: u16,
     value: &[u8],
@@ -264,7 +264,7 @@ fn maintain_path<'db, S: StorageContext<'db>>(
 /// without records, under version 0), the subtree is walked from its values
 /// — read-only: nothing is written outside the inserting position's own
 /// record, so what an insert writes never depends on the buffer's history.
-fn subtree_hash<'db, S: StorageContext<'db>>(
+fn subtree_hash<S: FlatStore>(
     tree: &mut DenseFixedSizedMerkleTree<S>,
     s: u16,
 ) -> CostResult<[u8; 32], DenseMerkleError> {
@@ -281,7 +281,7 @@ fn subtree_hash<'db, S: StorageContext<'db>>(
 /// The value hash of ancestor `a` (on the insert path): from `a`'s own path
 /// record; otherwise (`a` was inserted without a record, under version 0)
 /// `a`'s value is read and hashed — read-only, see [`subtree_hash`].
-fn parent_value_hash<'db, S: StorageContext<'db>>(
+fn parent_value_hash<S: FlatStore>(
     tree: &mut DenseFixedSizedMerkleTree<S>,
     a: u16,
 ) -> CostResult<[u8; 32], DenseMerkleError> {
@@ -309,7 +309,7 @@ fn parent_value_hash<'db, S: StorageContext<'db>>(
 /// empty tree has root `[0; 32]` and costs nothing.
 ///
 /// A walk here is not recorded (this is a read); the next insert records it.
-pub(super) fn root_hash<'db, S: StorageContext<'db>>(
+pub(super) fn root_hash<S: FlatStore>(
     tree: &DenseFixedSizedMerkleTree<S>,
 ) -> CostResult<[u8; 32], DenseMerkleError> {
     let mut cost = OperationCost::default();

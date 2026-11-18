@@ -92,11 +92,9 @@ use grovedb_merk::{
 };
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
-    rocksdb_storage::{
-        pending_prefix_drops_namespace, PendingPrefixDropRecord, PrefixedRocksDbTransactionContext,
-        RocksDbStorage,
-    },
-    Storage, StorageBatch, StorageContext,
+    flat::{pending_prefix_drops_namespace, stage_pending_prefix_drop, PendingPrefixDropRecord},
+    rocksdb_storage::{PrefixedRocksDbTransactionContext, RocksDbStorage},
+    Storage, StorageBatch,
 };
 use grovedb_version::version::{FeatureVersion, GroveVersion};
 use grovedb_visualize::DebugByteVectors;
@@ -305,8 +303,6 @@ impl GroveDb {
             },
             doomed_prefixes,
         };
-        let record_value =
-            cost_return_on_error_no_add!(cost, record.encode().map_err(Error::StorageError));
         let namespace_ctx = self
             .db
             .get_transactional_storage_context_by_subtree_prefix(
@@ -317,9 +313,7 @@ impl GroveDb {
             .unwrap_add_cost(&mut cost);
         cost_return_on_error!(
             &mut cost,
-            namespace_ctx
-                .put_meta(record.primary_prefix, &record_value, None)
-                .map_err(Error::StorageError)
+            stage_pending_prefix_drop(&namespace_ctx.meta(), &record).map_err(Error::StorageError)
         );
 
         // The O(1) detach: an ordinary layered delete from the parent Merk.

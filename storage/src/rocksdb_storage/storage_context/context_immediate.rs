@@ -62,6 +62,15 @@ impl<'db> PrefixedRocksDbImmediateStorageContext<'db> {
             prefix,
         }
     }
+
+    /// Get raw iterator over metadata storage, scoped to this context's
+    /// prefix like [`StorageContext::raw_iter`].
+    pub fn raw_iter_meta(&self) -> <Self as StorageContext<'db>>::RawIterator {
+        PrefixedRocksDbRawIterator {
+            prefix: self.prefix,
+            raw_iterator: self.transaction.raw_iterator_cf(self.cf_meta()),
+        }
+    }
 }
 
 impl<'db> PrefixedRocksDbImmediateStorageContext<'db> {
