@@ -160,6 +160,13 @@ version a checkpoint covers (K1), and holds no log file back for them
 (FL6): what a version pin still needs of them is in the buffer pool, and no
 pin survives a crash (DU3).
 
+This is a rule for changes that have no link. What is already written back
+of a freed page can still be consolidated (T9) and relocated (T10) while its
+links are in the chain: a base image that is added below the free link holds
+what its chain gave, and the table takes it. The table does not stop a
+caller from consolidating a chain that no reader will ask for again; that is
+wasted work, not an error.
+
 ### 2.3 Lookup
 
 **T14. Lookup is one indexed read.** The newest link of page *p* is slot
@@ -756,7 +763,10 @@ STORE-10 build on it.
     log. The pair is what the registered file kind `wal/<n>.log` gives, and
     its order is the log's as long as log file ids go up, which the
     manifest's rule on ids makes sure of (M7). If FMT-05 defines a place of
-    its own, this field takes it.
+    its own, this field takes it. Until it does, the format can check only
+    that an offset is not inside the header of its file. That it is the
+    boundary of a record is for FMT-05 to define, and for whoever takes the
+    sample to keep.
 21. **Installing a checkpoint checks the place of its sample against the
     log** (K14), so `TableCheckpoints::install` is told how far the log is
     durable as a version and as a place (`LogDurable`). The value log asks
