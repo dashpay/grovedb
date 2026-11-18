@@ -531,6 +531,60 @@ fn sweep_adversarial() {
     }
 }
 
+/// What the moves of the rekey workload cost an engine that copies a moved
+/// subtree, as RocksDB does: the workload up to the end of its moves, less
+/// the same workload without them.
+#[test]
+#[ignore = "isolates the moves of the rekey workload"]
+fn sweep_moves() {
+    let features = Features::for_grove_version(GroveVersion::latest());
+    let workload = |move_element| IndexRekey {
+        documents: 20_000,
+        values: 400,
+        twins: 40,
+        moves_per_batch: 8,
+        documents_after: 0,
+        features: Features {
+            move_element,
+            ..features
+        },
+    };
+    for config in configs_from_env() {
+        let run = |move_element| {
+            let ops = workload(move_element).stream(SEED);
+            run_big("index-rekey", ops, &[config], 100_000).remove(0)
+        };
+        let (moved, unmoved) = (run(true), run(false));
+        let moves = moved.end.stats.since(&unmoved.end.stats);
+        let batches = moves.transitions as f64;
+        println!(
+            "page {}: {} batches of moves on {} nodes in {} pages (fill {:.1}%)",
+            config.page_size,
+            moves.transitions,
+            unmoved.end.cells,
+            unmoved.end.pages,
+            unmoved.end.fill * 100.0,
+        );
+        println!(
+            "  per batch: {:.1} Merk records, {:.1} cells dropped, {:.1} created, {:.2} tree \
+             pages dirtied and {:.2} directory entries, at most {} together",
+            moves.records as f64 / batches,
+            moves.dropped as f64 / batches,
+            moves.created as f64 / batches,
+            moves.dirty_pages as f64 / batches,
+            moves.directory_writes as f64 / batches,
+            moves.max_dirty,
+        );
+        println!(
+            "  afterwards {} nodes in {} pages (fill {:.1}%), {} cells carried",
+            moved.end.cells,
+            moved.end.pages,
+            moved.end.fill * 100.0,
+            moves.moved().cells,
+        );
+    }
+}
+
 /// One tree of `keys` random keys, then `rounds` rounds that each delete a
 /// random key and insert a new one: a tree that stays the same size while
 /// Merk keeps rotating it.
