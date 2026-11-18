@@ -18,11 +18,12 @@ use crate::{
     value_log::{PendingValue, ValuePointer},
 };
 
-pub(super) const PART_FIELDS_LEN: usize = 1 + 1 + CommitVersion::ENCODED_LEN + 4;
+pub(super) const PART_FIELDS_LEN: usize = 1 + 1 + CommitVersion::ENCODED_LEN + 4 + 4;
 pub(super) const RUN_ENTRY_LEN: usize = 1 + 4;
 
 const PART_HEADER_LEN: usize = RecordHeader::ENCODED_LEN + PART_FIELDS_LEN;
 const FLAGS_AT: usize = RecordHeader::ENCODED_LEN + 1;
+const ENTRIES_LEN_AT: usize = PART_HEADER_LEN - 4;
 const LAST: u8 = 1;
 
 const TREE: u8 = 1;
@@ -238,7 +239,15 @@ impl<'a> GroupPart<'a> {
             return Err(WalError::NotACommit.into());
         }
         let part = fields.u32()?;
+        let entries_len = fields.u32()? as usize;
         let entries = fields.rest();
+        if entries.len() != entries_len {
+            return Err(WalError::RecordLength {
+                kind: PART,
+                len: payload_len,
+            }
+            .into());
+        }
         let mut walk = Fields::new(entries, PART_HEADER_LEN);
         let mut first = None;
         let mut last_key = None;
@@ -378,8 +387,10 @@ impl FusedIterator for GroupValues<'_> {}
 /// Writes one commit group to the end of a byte string: first the values,
 /// then the entries.
 ///
-/// Until [`Self::finish`] returns, the byte string ends with an unfinished
-/// group, which no reader takes.
+/// The group is in the byte string once [`Self::finish`] has returned. A
+/// writer that is dropped before that takes its bytes off the byte string
+/// again, so that a group that was given up leaves no value behind for the
+/// group that is written next.
 #[derive(Debug)]
 pub struct GroupWriter<'o> {
     out: &'o mut Vec<u8>,
@@ -390,6 +401,15 @@ pub struct GroupWriter<'o> {
     part_at: Option<usize>,
     part: u32,
     last_key: Option<OrderKey>,
+    finished: bool,
+}
+
+impl Drop for GroupWriter<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.out.truncate(self.start);
+        }
+    }
 }
 
 impl<'o> GroupWriter<'o> {
@@ -424,6 +444,7 @@ impl<'o> GroupWriter<'o> {
             part_at: None,
             part: 0,
             last_key: None,
+            finished: false,
         })
     }
 
@@ -472,12 +493,16 @@ impl<'o> GroupWriter<'o> {
         self.out.push(0);
         self.out.extend_from_slice(&self.version.encode());
         self.out.extend_from_slice(&self.part.to_le_bytes());
+        self.out.extend_from_slice(&[0; 4]);
         self.part_at = Some(at);
         at
     }
 
     fn close_part(&mut self, at: usize, last: bool) {
         self.out[at + FLAGS_AT] = if last { LAST } else { 0 };
+        let entries_len = (self.out.len() - at - PART_HEADER_LEN) as u32;
+        self.out[at + ENTRIES_LEN_AT..at + PART_HEADER_LEN]
+            .copy_from_slice(&entries_len.to_le_bytes());
         let payload = &self.out[at + RecordHeader::ENCODED_LEN..];
         let payload_len = (payload.len() as u32).to_le_bytes();
         let checksum = Checksum::of(&[&payload_len, payload]).encode();
@@ -654,11 +679,11 @@ impl<'o> GroupWriter<'o> {
             None => self.open_part(),
         };
         self.close_part(at, true);
+        self.finished = true;
         self.encoded_len()
     }
 
-    /// Gives the group up: takes its bytes off the byte string again.
-    pub fn abandon(self) {
-        self.out.truncate(self.start);
-    }
+    /// Gives the group up: takes its bytes off the byte string again, as
+    /// dropping the writer does.
+    pub fn abandon(self) {}
 }

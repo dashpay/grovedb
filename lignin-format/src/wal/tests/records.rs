@@ -278,8 +278,18 @@ fn each_check_of_a_value_record_and_of_a_carried_value_has_its_error() {
 
 #[test]
 fn each_check_of_a_part_has_its_error() {
+    let stating = |flags: u8, raw_version: u64, number: u32, len: u32, entries: &[u8]| {
+        [
+            &[4, flags][..],
+            &le64(raw_version),
+            &le32(number),
+            &le32(len),
+            entries,
+        ]
+        .concat()
+    };
     let part = |flags: u8, raw_version: u64, number: u32, entries: &[u8]| {
-        [&[4, flags][..], &le64(raw_version), &le32(number), entries].concat()
+        stating(flags, raw_version, number, entries.len() as u32, entries)
     };
     let record = framed(&part(1, 5, 0, &freed_entry(9)));
     let (Record::Part(read), len) = decode(&record).unwrap() else {
@@ -292,9 +302,18 @@ fn each_check_of_a_part_has_its_error() {
     );
     assert_eq!(read.entries().collect::<Vec<_>>(), [Entry::Freed(page(9))]);
 
-    for len in 1..14 {
+    for len in 1..18 {
         assert_eq!(error_of(&part(1, 5, 0, &[])[..len]), record_length(4, len));
     }
+    // A part says how long its entries are, and they are that long.
+    let two = [freed_entry(8), freed_entry(9)].concat();
+    for stated in [0, 5, 9, 11, 15, u32::MAX] {
+        assert_eq!(
+            error_of(&stating(1, 5, 0, stated, &two)),
+            record_length(4, 18 + two.len())
+        );
+    }
+    assert_eq!(error_of(&stating(1, 5, 0, 1, &[])), record_length(4, 18));
     for flags in [2, 3, 0x80, 0xFF] {
         assert_eq!(
             error_of(&part(flags, 5, 0, &[])),
@@ -539,6 +558,9 @@ fn each_check_of_a_change_has_its_error() {
             released
                 .iter()
                 .for_each(|pointer| fields.extend_from_slice(&pointer.encode()));
+            if flags & 6 != 0 {
+                fields.extend_from_slice(&le32(run.len() as u32));
+            }
             fields.extend_from_slice(run);
             change(3, &fields)
         };
@@ -664,6 +686,26 @@ fn each_check_of_a_change_has_its_error() {
         }
     }
     assert!(refused[0] > 50 && refused[1] > 50, "{refused:?}");
+    // A run is as long as the record says, and nothing follows it.
+    let whole = reclaim(2, 7, None, &[low], &removes);
+    let run_len_at = whole.len() - removes.len() - 4;
+    let mut longer = whole.clone();
+    longer[run_len_at..run_len_at + 4].copy_from_slice(&le32(removes.len() as u32 + 1));
+    assert!(matches!(
+        error_of(&longer),
+        FormatError::Truncated { needed, available } if needed == available + 1
+    ));
+    let mut shorter = whole.clone();
+    shorter[run_len_at..run_len_at + 4].copy_from_slice(&le32(removes.len() as u32 - 3));
+    assert_eq!(error_of(&shorter), record_length(5, whole.len()));
+    assert_eq!(
+        error_of(&[&whole[..], &[0]].concat()),
+        record_length(5, whole.len() + 1)
+    );
+    assert!(matches!(
+        error_of(&whole[..run_len_at + 3]),
+        FormatError::Truncated { .. }
+    ));
     assert_eq!(
         error_of(&reclaim(2, 7, None, &[], &removes[..4])),
         FormatError::Delta(crate::delta::DeltaError::EmptyRun)

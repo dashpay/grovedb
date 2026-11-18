@@ -146,7 +146,7 @@ fn the_parts_of_a_value_come_whole_in_order_and_from_one_value() {
         Err(wal_error(WalError::NotAValue { kind: 6 }))
     );
     assert_eq!(
-        read(&[part_record(1, 1, 0, &[])]),
+        read_logged_value(&part_record(1, 1, 0, &[]), V1).map(|(_, len)| len),
         Err(wal_error(WalError::NotAValue { kind: 4 }))
     );
     assert_eq!(

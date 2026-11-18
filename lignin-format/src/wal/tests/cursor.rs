@@ -35,14 +35,7 @@ fn place_step() -> Vec<u8> {
 
 fn freeing(raw_version: u64) -> Vec<u8> {
     let mut out = Vec::new();
-    write_reclaim(
-        page(4),
-        None,
-        Some(version(raw_version)),
-        [].into_iter(),
-        &mut out,
-    )
-    .unwrap();
+    write_reclaim(page(4), None, Some(version(raw_version)), [], &mut out).unwrap();
     out
 }
 
@@ -253,8 +246,8 @@ fn a_group_is_its_values_and_then_its_parts_with_nothing_between() {
 
 #[test]
 fn the_parts_of_a_group_are_numbered_full_and_in_one_order() {
-    // Parts whose payload holds five freed pages at most: 14 + 5 * 5.
-    let limits = Limits { max_payload: 40 };
+    // Parts whose payload holds five freed pages at most: 18 + 5 * 5.
+    let limits = Limits { max_payload: 44 };
     let pages = |raw_pages: &[u32]| {
         raw_pages
             .iter()
@@ -331,7 +324,7 @@ fn the_parts_of_a_group_are_numbered_full_and_in_one_order() {
     // A part that is too long for a record of this log is not one.
     assert!(matches!(
         refused(&[part_record(1, 1, 0, &pages(&[1, 2, 3, 4, 5, 6]))]),
-        Some(FormatError::RecordTooLong { len: 44, max: 40 })
+        Some(FormatError::RecordTooLong { len: 48, max: 44 })
     ));
 }
 

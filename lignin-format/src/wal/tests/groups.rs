@@ -156,6 +156,50 @@ fn a_group_that_is_given_up_leaves_nothing() {
 }
 
 #[test]
+fn a_group_whose_writer_is_dropped_leaves_no_value_for_the_next_group() {
+    // A commit that fails after it wrote a value, and returns.
+    fn failing(log: &mut Vec<u8>) -> Result<usize, FormatError> {
+        let mut group = GroupWriter::new(version(1), address(45), log)?;
+        group.value(page(7), b"of the commit that failed")?;
+        group.freed(page(2))?;
+        group.freed(page(1))?;
+        Ok(group.finish())
+    }
+    let mut log = new_log(1, &LogStart::FIRST);
+    assert_eq!(
+        failing(&mut log),
+        Err(wal_error(WalError::EntriesOutOfOrder))
+    );
+    assert_eq!(log, new_log(1, &LogStart::FIRST));
+
+    // The commit that is written next has its own values and no other.
+    push_group(&mut log, &LogStart::FIRST, Limits::FORMAT, 1, |group| {
+        group.value(page(7), b"kept").unwrap();
+    });
+    let (items, tail) = items(&log);
+    assert_eq!(tail.failure(), None);
+    let [LogItem::Commit(group)] = items[..] else {
+        panic!("one group, not {items:?}");
+    };
+    let values: Vec<_> = group
+        .values()
+        .map(|(_, value)| value.bytes().map(|bytes| bytes.to_vec()))
+        .collect();
+    assert_eq!(values, [Some(b"kept".to_vec())]);
+
+    // A writer that is dropped in the middle of a part, and one that
+    // wrote several parts.
+    let mut out = b"before".to_vec();
+    let mut group = GroupWriter::with_limits(version(1), address(45), SMALL, &mut out).unwrap();
+    for raw_page in 1..=80 {
+        group.freed(page(raw_page)).unwrap();
+    }
+    assert!(group.encoded_len() > 2 * SMALL.max_payload);
+    drop(group);
+    assert_eq!(out, b"before");
+}
+
+#[test]
 fn a_group_too_long_for_one_record_is_cut_between_entries_in_one_way() {
     let mut rng = SplitMix64::new(0x5917);
     let mut several = 0;
@@ -173,7 +217,7 @@ fn a_group_too_long_for_one_record_is_cut_between_entries_in_one_way() {
             }
             let mut run = Vec::new();
             let mut writer = DeltaRunWriter::new(page(raw_page), None, &mut run);
-            for raw_slot in 1..=1 + (rng.next_u64() % 58) as u16 {
+            for raw_slot in 1..=1 + (rng.next_u64() % 57) as u16 {
                 writer
                     .push(&Delta::Remove {
                         slot: slot(raw_slot),
@@ -214,7 +258,7 @@ fn a_group_too_long_for_one_record_is_cut_between_entries_in_one_way() {
             let held = part.entries().count();
             assert_eq!(part.is_empty(), held == 0);
             assert!(held > 0 || parts.len() == 1);
-            let payload: usize = 14
+            let payload: usize = 18
                 + written[entry..entry + held]
                     .iter()
                     .map(Vec::len)
@@ -248,12 +292,14 @@ fn a_group_too_long_for_one_record_is_cut_between_entries_in_one_way() {
 
 #[test]
 fn an_entry_too_long_for_a_record_is_refused() {
+    // A part whose entries are 186 bytes at most.
+    let limits = Limits { max_payload: 204 };
     let mut out = Vec::new();
-    let mut group = GroupWriter::with_limits(version(1), address(45), SMALL, &mut out).unwrap();
+    let mut group = GroupWriter::with_limits(version(1), address(45), limits, &mut out).unwrap();
     group.freed(page(1)).unwrap();
     let before = group.encoded_len();
 
-    let max = SMALL.max_payload - 14 - 5;
+    let max = limits.max_payload - 18 - 5;
     assert_eq!(max, 181);
     let run_of = |records: usize| {
         let mut run = Vec::new();
@@ -283,25 +329,25 @@ fn an_entry_too_long_for_a_record_is_refused() {
     group.finish();
 
     // The longest run is a part of its own.
-    let (Record::Part(first), len) = Record::decode_with(&out, V1, SMALL).unwrap() else {
+    let (Record::Part(first), len) = Record::decode_with(&out, V1, limits).unwrap() else {
         panic!("a part");
     };
     assert_eq!(first.entries().collect::<Vec<_>>(), [Entry::Freed(page(1))]);
-    let (Record::Part(second), second_len) = Record::decode_with(&out[len..], V1, SMALL).unwrap()
+    let (Record::Part(second), second_len) = Record::decode_with(&out[len..], V1, limits).unwrap()
     else {
         panic!("a part");
     };
-    assert_eq!(second_len, 8 + SMALL.max_payload);
+    assert_eq!(second_len, 8 + limits.max_payload);
     assert!(second.is_last());
 
-    assert_eq!(MAX_RUN_LEN, MAX_RECORD_PAYLOAD_LEN - 14 - 5);
-    assert_eq!(MAX_RUN_LEN, (1 << 27) - 23);
+    assert_eq!(MAX_RUN_LEN, MAX_RECORD_PAYLOAD_LEN - 18 - 5);
+    assert_eq!(MAX_RUN_LEN, (1 << 27) - 27);
 
     // Entries that fill a part to its last byte are one part, and the
     // next entry begins another: 3 freed pages and a run of 166 bytes are
     // the 186 bytes a part holds.
     let mut out = Vec::new();
-    let mut group = GroupWriter::with_limits(version(1), address(45), SMALL, &mut out).unwrap();
+    let mut group = GroupWriter::with_limits(version(1), address(45), limits, &mut out).unwrap();
     for raw_page in 1..=3 {
         group.freed(page(raw_page)).unwrap();
     }
@@ -311,19 +357,19 @@ fn an_entry_too_long_for_a_record_is_refused() {
     group
         .tree_run(&DeltaRun::decode(&filling, V1).unwrap())
         .unwrap();
-    assert_eq!(group.encoded_len(), 8 + SMALL.max_payload);
+    assert_eq!(group.encoded_len(), 8 + limits.max_payload);
     group.freed(page(5)).unwrap();
-    assert_eq!(group.finish(), 8 + SMALL.max_payload + PART_HEADER_LEN + 5);
-    let (Record::Part(full), len) = Record::decode_with(&out, V1, SMALL).unwrap() else {
+    assert_eq!(group.finish(), 8 + limits.max_payload + PART_HEADER_LEN + 5);
+    let (Record::Part(full), len) = Record::decode_with(&out, V1, limits).unwrap() else {
         panic!("a part");
     };
     assert_eq!(
         (len, full.is_last(), full.entries().count()),
-        (208, false, 4)
+        (212, false, 4)
     );
     let mut log = new_log(1, &LogStart::FIRST);
     log.extend_from_slice(&out);
-    assert_eq!(items_with(&log, SMALL).1.failure(), None);
+    assert_eq!(items_with(&log, limits).1.failure(), None);
 
     // The same entries with the cut one entry earlier are not the group.
     let entries = [
@@ -339,7 +385,7 @@ fn an_entry_too_long_for_a_record_is_refused() {
     ]
     .concat();
     assert_eq!(
-        tail_after(&LogStart::FIRST, SMALL, &early)
+        tail_after(&LogStart::FIRST, limits, &early)
             .failure()
             .map(|failure| failure.error),
         Some(wal_error(WalError::PartNotFull))

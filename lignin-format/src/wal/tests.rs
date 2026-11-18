@@ -101,9 +101,22 @@ fn value_record(owner: u32, part: u16, value_len: u32, data: &[u8]) -> Vec<u8> {
 
 /// A part of a group, written field by field around `entries`.
 fn part_record(flags: u8, raw_version: u64, number: u32, entries: &[u8]) -> Vec<u8> {
+    part_stating(flags, raw_version, number, entries.len() as u32, entries)
+}
+
+/// A part of a group that states `entries_len` as the length of its
+/// entries, whatever their length is.
+fn part_stating(
+    flags: u8,
+    raw_version: u64,
+    number: u32,
+    entries_len: u32,
+    entries: &[u8],
+) -> Vec<u8> {
     let mut payload = vec![4, flags];
     payload.extend_from_slice(&raw_version.to_le_bytes());
     payload.extend_from_slice(&number.to_le_bytes());
+    payload.extend_from_slice(&entries_len.to_le_bytes());
     payload.extend_from_slice(entries);
     framed(&payload)
 }
@@ -227,6 +240,8 @@ struct Built {
     ends: Vec<u64>,
     /// The offset at which each record ends, in order.
     record_ends: Vec<u64>,
+    /// The version of the last group at or before each item, in order.
+    versions: Vec<u64>,
 }
 
 impl Built {
@@ -273,6 +288,10 @@ impl Built {
         assert_eq!(scan.next(), None, "nothing after offset {at}");
         let tail = scan.tail();
         assert_eq!(tail.valid_len(), at);
+        let latest = whole
+            .checked_sub(1)
+            .map_or(self.start.after(), |item| version(self.versions[item]));
+        assert_eq!(tail.latest(), latest);
         tail
     }
 }
@@ -502,7 +521,7 @@ fn random_change(rng: &mut SplitMix64, latest: u64, out: &mut Vec<u8>) {
                     .expect("a mark");
             }
             let released = sorted_pointers(rng, 3);
-            write_reclaim(page, removed, freed, released.into_iter(), out)
+            write_reclaim(page, removed, freed, released, out)
         }
     }
     .expect("a change");
@@ -516,7 +535,7 @@ fn random_log(seed: u64, limits: Limits, count: usize) -> Built {
     let start = LogStart::new(rng.next_u64() % 1_000_000, version(after)).expect("a start");
     let mut log = new_log(1 + (rng.next_u64() % 9) as u32, &start);
     let mut latest = after;
-    let mut ends = Vec::new();
+    let (mut ends, mut versions) = (Vec::new(), Vec::new());
     for _ in 0..count {
         match rng.next_u64() % 5 {
             0 => random_change(&mut rng, latest, &mut log),
@@ -531,6 +550,7 @@ fn random_log(seed: u64, limits: Limits, count: usize) -> Built {
             }
         }
         ends.push(log.len() as u64);
+        versions.push(latest);
     }
     let mut record_ends = Vec::new();
     let mut at = FIRST_ITEM_OFFSET as usize;
@@ -546,5 +566,6 @@ fn random_log(seed: u64, limits: Limits, count: usize) -> Built {
         limits,
         ends,
         record_ends,
+        versions,
     }
 }

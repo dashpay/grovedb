@@ -364,16 +364,19 @@ impl<'a> Reclaim<'a> {
                 .iter()
                 .map(|pointer| ValuePointer::decode(*pointer)),
         )?;
-        let removed = if flags & TREE_RUN != 0 {
-            Some(Removed::Tree(DeltaRun::decode(
-                fields.take_rest(),
-                version,
-            )?))
-        } else if flags & FLAT_RUN != 0 {
-            Some(Removed::Flat(FlatRun::decode(fields.take_rest(), version)?))
+        let run = if flags & (TREE_RUN | FLAT_RUN) != 0 {
+            let len = fields.u32()? as usize;
+            Some(fields.take(len)?)
         } else {
-            fields.expect_len(CHANGE, 0)?;
             None
+        };
+        fields.expect_len(CHANGE, 0)?;
+        let removed = match run {
+            Some(run) if flags & TREE_RUN != 0 => {
+                Some(Removed::Tree(DeltaRun::decode(run, version)?))
+            }
+            Some(run) => Some(Removed::Flat(FlatRun::decode(run, version)?)),
+            None => None,
         };
         check_step(page, removed.as_ref(), freed)?;
         Ok(Self {
@@ -426,13 +429,20 @@ fn check_released(
 ) -> Result<(), FormatError> {
     let mut before = None;
     for pointer in pointers {
-        let key = OrderKey::pointer(false, &pointer?);
-        if before.is_some_and(|before| key <= before) {
-            return Err(WalError::EntriesOutOfOrder.into());
-        }
-        before = Some(key);
+        before = Some(next_released(before, &pointer?)?);
     }
     Ok(())
+}
+
+fn next_released(
+    before: Option<OrderKey>,
+    pointer: &ValuePointer,
+) -> Result<OrderKey, FormatError> {
+    let key = OrderKey::pointer(false, pointer);
+    if before.is_some_and(|before| key <= before) {
+        return Err(WalError::EntriesOutOfOrder.into());
+    }
+    Ok(key)
 }
 
 /// Appends to `out` the record of the page step that removes what a
@@ -444,22 +454,22 @@ fn check_released(
 ///   frees it: the version of the drop, or a later one that a commit
 ///   before the record has.
 /// - `released` are the value pointers the removed cells held, in
-///   ascending order of file and offset, each once.
+///   ascending order of file and offset, each once, and at most 65,535.
+///   They are read once, and the record holds what was read.
 ///
-/// A step removes something or frees its page.
+/// A step removes something or frees its page. On an error `out` is
+/// unchanged.
 pub fn write_reclaim(
     page: PageId,
     removed: Option<Removed<'_>>,
     freed: Option<CommitVersion>,
-    released: impl ExactSizeIterator<Item = ValuePointer> + Clone,
+    released: impl IntoIterator<Item = ValuePointer>,
     out: &mut Vec<u8>,
 ) -> Result<(), FormatError> {
     check_step(page, removed.as_ref(), freed)?;
     if freed == Some(CommitVersion::EMPTY) {
         return Err(WalError::NotACommit.into());
     }
-    check_released(released.clone().map(Ok))?;
-    let count = u16::try_from(released.len()).map_err(|_| WalError::InvalidChange)?;
     let flags = match removed {
         Some(Removed::Tree(_)) => TREE_RUN,
         Some(Removed::Flat(_)) => FLAT_RUN,
@@ -471,10 +481,20 @@ pub fn write_reclaim(
     if let Some(version) = freed {
         payload.extend_from_slice(&version.encode());
     }
-    payload.extend_from_slice(&count.to_le_bytes());
-    released.for_each(|pointer| payload.extend_from_slice(&pointer.encode()));
+    let count_at = payload.len();
+    payload.extend_from_slice(&[0; 2]);
+    let (mut count, mut before) = (0u16, None);
+    for pointer in released {
+        before = Some(next_released(before, &pointer)?);
+        count = count.checked_add(1).ok_or(WalError::InvalidChange)?;
+        payload.extend_from_slice(&pointer.encode());
+    }
+    payload[count_at..count_at + 2].copy_from_slice(&count.to_le_bytes());
     if let Some(removed) = &removed {
-        payload.extend_from_slice(removed.as_bytes());
+        let run = removed.as_bytes();
+        let len = u32::try_from(run.len()).unwrap_or(u32::MAX);
+        payload.extend_from_slice(&len.to_le_bytes());
+        payload.extend_from_slice(run);
     }
     write_record(&payload, out)
 }

@@ -464,6 +464,26 @@ fn a_change_that_does_not_fit_its_page_is_refused() {
         FormatError::FlatPage(FlatPageError::PageFull { .. })
     ));
 
+    // The prefix and the room are asked of the image the run leaves, not
+    // of what the page would be between two of its records.
+    let between = run_of(
+        5,
+        &[
+            FlatChange::SetPrefix { prefix: b"z" },
+            FlatChange::Insert {
+                key: b"pz",
+                value: FlatValue::Inline(&big),
+            },
+            FlatChange::Remove { key: b"pz" },
+            FlatChange::SetPrefix { prefix: b"p" },
+        ],
+    );
+    assert_eq!(applied(&between, Some(&leaf)), Ok(leaf.clone()));
+    for cut in 1..=3 {
+        let changes: Vec<_> = read(&between).changes().take(cut).collect();
+        assert!(applied(&run_of(5, &changes), Some(&leaf)).is_err(), "{cut}");
+    }
+
     // A run that starts from no image needs a page, the page is one, and
     // it is the page the run names.
     let run = run_of(5, &[FlatChange::Remove { key: b"pa" }]);

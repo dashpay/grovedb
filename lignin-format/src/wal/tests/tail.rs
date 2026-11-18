@@ -2,6 +2,7 @@
 //! to the longest valid prefix of whole groups.
 
 use super::*;
+use crate::Checksum;
 
 /// Logs of random items. Half of them are written with records of at most
 /// 200 bytes, so that their values and groups take several records each.
@@ -138,6 +139,52 @@ fn a_truncated_or_bit_flipped_log_decodes_to_the_longest_valid_prefix_of_whole_g
         split_groups > 5 && split_values > 5,
         "{split_groups} {split_values}"
     );
+}
+
+/// A length that damage changed is not taken for the record's length even
+/// when the checksum fits it: every record says by its own fields how long
+/// it is. Each record of each log gets each bit of its length flipped,
+/// with the checksum that the new length and the bytes it then covers
+/// have.
+#[test]
+fn a_changed_length_is_refused_whatever_the_checksum_says() {
+    let (mut fitted, mut by_fields) = (0u64, 0u64);
+    for built in logs() {
+        let mut bytes = built.log.clone();
+        let mut at = FIRST_ITEM_OFFSET as usize;
+        for &end in &built.record_ends {
+            let end = end as usize;
+            let len = (end - at - RecordHeader::ENCODED_LEN) as u32;
+            for bit in 0..32 {
+                let changed = len ^ (1 << bit);
+                bytes[at..at + 4].copy_from_slice(&changed.to_le_bytes());
+                let covered = built
+                    .log
+                    .get(at + RecordHeader::ENCODED_LEN..)
+                    .and_then(|rest| rest.get(..changed as usize));
+                if let Some(payload) = covered {
+                    let checksum = Checksum::of(&[&changed.to_le_bytes(), payload]).encode();
+                    bytes[at + 4..at + 8].copy_from_slice(&checksum);
+                    fitted += 1;
+                }
+                let tail = built.check_prefix(&bytes, at as u64);
+                let failure = tail.failure().expect("the record is refused");
+                assert_eq!(failure.offset, at as u64, "bit {bit} of the length at {at}");
+                if covered.is_some() {
+                    assert!(
+                        !matches!(failure.error, FormatError::ChecksumMismatch { .. }),
+                        "bit {bit} of the length at {at}: {failure:?}"
+                    );
+                    by_fields += u64::from(!is_damage(failure.error));
+                }
+                bytes[at..at + 8].copy_from_slice(&built.log[at..at + 8]);
+            }
+            at = end;
+        }
+        assert_eq!(bytes, built.log);
+    }
+    println!("{fitted} lengths with a checksum that fits, {by_fields} refused by the fields");
+    assert!(fitted > 1_500 && by_fields > 1_000, "{fitted} {by_fields}");
 }
 
 #[test]

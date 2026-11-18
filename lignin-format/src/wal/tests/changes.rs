@@ -247,6 +247,18 @@ fn a_reclaiming_step_removes_or_frees_and_names_what_it_released() {
             Err(wal_error(WalError::EntriesOutOfOrder))
         );
     }
+    // The pointers are read once, and the record holds what was read.
+    let mut left = [low, high].into_iter();
+    let mut once = Vec::new();
+    write_reclaim(
+        page(7),
+        None,
+        Some(version(3)),
+        std::iter::from_fn(|| left.next()),
+        &mut once,
+    )
+    .unwrap();
+    assert_eq!(Ok(once), written(None, Some(3), &[low, high]));
     let many: Vec<_> = (0..65_536).map(|at| pointer(3, 20 + at, 4)).collect();
     assert_eq!(written(None, Some(3), &many), invalid);
     assert!(written(None, Some(3), &many[..65_535]).is_ok());

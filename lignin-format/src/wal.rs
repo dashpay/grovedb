@@ -11,7 +11,8 @@
 //!    1  start             base (8), after (8)
 //!    2  value             owner (4), part (2), value length (4), data
 //!    3  carried value     owner (4), source owner (4), source (16)
-//!    4  group part        flags (1), version (8), part (4), entries
+//!    4  group part        flags (1), version (8), part (4), length of
+//!                         the entries (4), entries
 //!    5  change            what (1), then the fields of that change
 //!    6  checkpoint mark   covers (8)
 //! ```
@@ -37,8 +38,13 @@
 //!    2  value of a flat entry    page (4), from (16), to (16)
 //!    3  reclaim                  flags (1), page (4), version (8) if the
 //!                                page is freed, count (2), that many
-//!                                released pointers (16 each), a run
+//!                                released pointers (16 each), and if it
+//!                                has a run: length (4), the run
 //! ```
+//!
+//! The payload of every record says how long it is: by its kind, by the
+//! length of its value, or by a length it states. A record whose frame
+//! gives another length is refused whatever its checksum says.
 //!
 //! A record of a flat run is one byte, its kind, and then:
 //!
