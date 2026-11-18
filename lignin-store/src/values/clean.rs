@@ -415,9 +415,11 @@ impl ValueStore {
     /// The manifest is needed for step 2 alone. A caller that must not keep
     /// it from others for the length of a pass makes the three steps itself.
     ///
-    /// The manifest this writes may stop naming a file that
-    /// [`Self::drop_empty`] took out. That file is deleted by the next
-    /// [`Self::manifest_replaced`], not here.
+    /// This replaces the manifest and tells the store what the new one
+    /// names and covers, and it deletes nothing. The manifest it writes may
+    /// stop naming a file that [`Self::drop_empty`] took out: call
+    /// [`Self::manifest_replaced`] afterwards, as after any replacement, to
+    /// have that file deleted.
     pub fn clean<O: ValueOwners + ?Sized>(
         &self,
         file: FileId,

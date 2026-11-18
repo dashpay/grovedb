@@ -162,13 +162,19 @@
 //! page it copied may already hold a change whose record is after the
 //! sample's place. Recovery skips that change for the page, which has it,
 //! and still gives it to [`ValueRecovery::apply`]: what the counts include
-//! is decided by the place alone. Three things are asked of whoever stores
+//! is decided by the place alone. Four things are asked of whoever stores
 //! a sample:
 //!
-//! - The place is at or before the record from which the pages are
-//!   replayed, and the log is kept from the place on.
-//! - The sample is put in force (named by a manifest, or written to the
-//!   log itself) only once the log is durable through its place.
+//! - Recovery uses one sample, and applies the changes after that sample's
+//!   place and no others. The sample is stored in the checkpoint of the
+//!   pages it was taken for, or names it, and recovery takes the sample of
+//!   the checkpoint the recovered manifest names. A sample whose checkpoint
+//!   was written and never put in force is not used.
+//! - The log is kept from the place on. If the pages are replayed from an
+//!   earlier record, the changes between that record and the place are
+//!   replayed for the pages and not for the counts.
+//! - The sample is put in force only once it is durable and the log is
+//!   durable through its place.
 //! - The replay of a pointer rewrite is skipped for a page whose cell no
 //!   longer holds the old pointer. A pointer is never given to a second
 //!   cell, so this tells a page that has the rewrite from one that lacks it,
@@ -255,8 +261,12 @@
 //! [`ValueOwners::rewrite`], and [`PointerRewrite::install`] counts the
 //! rewrite with the lock it came with. In LT7's order the lock on the
 //! counts comes after the frame latches of level 4 and before level 5.
-//! While the store holds it for itself, it takes no other lock, touches no
-//! file and calls nothing, and no reader ever takes it. What can wait for it
+//! While the store holds it for itself, it touches no file and calls
+//! nothing, and no reader ever takes it. The store's own locks come in the
+//! order counts, file set, file map, and nothing that holds the file set
+//! waits for the counts, so a holder of a [`CountStep`] can call any method
+//! that does not read or change the counts ([`CountStep`] lists the ones
+//! that do). What can wait for it
 //! is another change point, and the calls that read every count
 //! ([`ValueStore::counts`], [`ValueStore::cleanable`],
 //! [`ValueStore::retire`], [`ValueStore::drop_empty`]), never a holder of a
@@ -346,9 +356,10 @@
 //!   have the path are the caller's to keep apart.
 //! - After every [`ManifestStore::update`] that returns `Ok`, it calls
 //!   [`ValueStore::manifest_replaced`]. [`ValueStore::commit`] does both.
-//!   [`ValueStore::commit`] and [`ValueStore::clean`] change only how the
-//!   manifest names value-log files, so no other store has to be told of
-//!   the manifests they write.
+//!   [`ValueStore::clean`] replaces the manifest and deletes nothing, so
+//!   the call is made after it as well. [`ValueStore::commit`] and
+//!   [`ValueStore::clean`] change only how the manifest names value-log
+//!   files, so no other store has to be told of the manifests they write.
 //! - It stores a [`ValuePointer`] where a later session will find it only
 //!   under a manifest that covers the value. Before it writes a change to
 //!   the log, it checks [`ValueStore::covers`] for every pointer the change
@@ -380,7 +391,8 @@
 //!   is: a log that a killed process left reads back whole and can still be
 //!   cut short by a loss of power.
 //! - It takes [`ValueStore::hold_files`] for a checkpoint, from its sampling
-//!   step until the files are linked.
+//!   step until the files are linked. The hold and a sample of the counts
+//!   can be taken in either order, and one inside the other.
 //!
 //! [`SegmentStore::describe`]: crate::segment::SegmentStore::describe
 //! [`ManifestStore`]: crate::segment::ManifestStore

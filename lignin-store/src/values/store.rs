@@ -294,8 +294,11 @@ struct Counted {
     account: Account,
 }
 
-/// The counts. Nothing else is locked, and nothing is called, while this is,
-/// but the one page step it was taken for.
+/// The counts. The store's locks are taken in the order: the lock of
+/// [`ValueStore::create`], counts, file set, file map. A file's own locks
+/// are taken with none of those held. While the store holds this one for
+/// itself it touches no file and calls nothing, and only
+/// [`ValueStore::drop_empty`] takes another lock under it.
 #[derive(Debug)]
 struct Counts {
     accounts: BTreeMap<FileId, Counted>,
@@ -364,7 +367,14 @@ impl Counts {
 ///   and none after it.
 ///
 /// While it is held, call no method of the store that reads or changes the
-/// counts: it would wait for this step.
+/// counts: it would wait for this step. Those are [`ValueStore::apply`],
+/// [`ValueStore::step`], [`ValueStore::applied`],
+/// [`ValueStore::mark_durable`], [`ValueStore::counts`],
+/// [`ValueStore::count`], [`ValueStore::cleanable`], [`ValueStore::retire`],
+/// [`ValueStore::drop_empty`], [`ValueStore::create`], which gives the new
+/// file its count, and the cleaning calls. Every other method can be
+/// called, [`ValueStore::hold_files`] among them, so a checkpoint may take
+/// its hold on the files and its sample of the counts in either order.
 #[derive(Debug)]
 pub struct CountStep<'a> {
     counts: MutexGuard<'a, Counts>,
@@ -967,9 +977,9 @@ impl ValueStore {
     pub fn drop_empty(&self, retired: Retired) -> Result<Vec<FileId>, ValueStoreError> {
         self.check_writable()?;
         self.check_own(retired.session)?;
+        let mut counts = self.counts_mut();
         let mut set = self.set_mut();
         let unreachable: Vec<Arc<ValueFile>> = {
-            let mut counts = self.counts_mut();
             let through = counts.durable.min(retired.change);
             let ids: Vec<FileId> = counts
                 .accounts
@@ -988,6 +998,7 @@ impl ValueStore {
                 .map(|counted| counted.file)
                 .collect()
         };
+        drop(counts);
         for file in &unreachable {
             self.live_mut().remove(&file.id());
             set.dropped.insert(file.id(), file.clone());

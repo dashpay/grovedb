@@ -919,3 +919,40 @@ fn a_step_holds_the_counts_still_for_a_sample_or_for_a_change() {
         assert_eq!(was_read.recv().unwrap(), [count(1, &pointers)]);
     });
 }
+
+#[test]
+fn a_checkpoint_takes_its_hold_inside_a_step_while_a_deletion_waits_for_the_step() {
+    let (store, pointers) = one_closed_file(&[40]);
+    store.apply(&acquired(&pointers), 1);
+    store.apply(&released(&pointers), 2);
+    store.all_durable();
+    let Store {
+        manifest, values, ..
+    } = store;
+    let values = std::sync::Arc::new(values);
+    let retired = values.retire(version(2));
+
+    let step = values.step().unwrap();
+    let dropping = {
+        let values = values.clone();
+        std::thread::spawn(move || values.drop_empty(retired))
+    };
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let (held, was_held) = std::sync::mpsc::channel();
+    {
+        let values = values.clone();
+        std::thread::spawn(move || held.send(values.hold_files()))
+    };
+    let hold = was_held
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the hold does not wait for a deletion that waits for the step");
+    assert!(step.counts().is_empty());
+    drop(step);
+
+    let dropped = dropping.join().expect("the deletion ran").unwrap();
+    assert!(dropped.is_empty(), "the checkpoint held the file first");
+    drop(hold);
+    let retired = values.retire(version(2));
+    assert_eq!(values.drop_empty(retired).unwrap(), [file_id(1)]);
+    drop(manifest);
+}
