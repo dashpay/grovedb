@@ -169,10 +169,11 @@ pub enum Element {
     ///   a `NotCountedOrSummed`, or any non-tree element.
     NotSummed(Box<Element>),
     /// Not-counted-or-summed wrapper: contains a sum-bearing tree variant
-    /// (`SumTree`, `BigSumTree`, `CountSumTree`, `ProvableCountSumTree`,
-    /// `ProvableSumTree`, `ProvableCountProvableSumTree`) and behaves
-    /// identically to it for storage, hashing, and its own internal
-    /// aggregates, but contributes 0 to BOTH its parent's running sum AND
+    /// (`SumTree`, `BigSumTree`, `CountSumTree`, `CountBigSumTree`,
+    /// `ProvableCountSumTree`, `ProvableSumTree`, `ProvableBigSumTree`,
+    /// `ProvableCountProvableSumTree`, `ProvableCountProvableBigSumTree`)
+    /// and behaves identically to it for storage, hashing, and its own
+    /// internal aggregates, but contributes 0 to BOTH its parent's running sum AND
     /// the parent's count when inserted.
     ///
     /// May only be inserted into `CountSumTree` or `CountBigSumTree`, the
@@ -221,7 +222,7 @@ pub enum Element {
     /// Wrapper compatibility:
     /// - **May** be wrapped in `NonCounted` to opt out of count propagation.
     /// - **May NOT** be wrapped in `NotSummed` or `NotCountedOrSummed` —
-    ///   those whitelists accept only the four sum-tree variants, not
+    ///   those whitelists accept only the sum-bearing tree variants, not
     ///   item-like or reference-like base variants.
     ReferenceWithSumItem(
         ReferencePathType,

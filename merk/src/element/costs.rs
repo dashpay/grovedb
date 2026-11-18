@@ -373,10 +373,11 @@ impl ElementCostExtensions for Element {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
-                // PCPSIT carries both aggregates plus a variable-length axes
-                // TLV, so the single-axis indexed constant is below its own
-                // minimum payload rather than a conservative bound. Use the
-                // same worst-case constant as the other two PCPSIT cost sites.
+                // A `ProvableCountProvableBigSumIndexedTree` carries a count,
+                // a 128-bit sum and a variable-length axes TLV, so it has
+                // its own worst-case constant
+                // (`PROVABLE_COUNT_PROVABLE_BIG_SUM_INDEXED_TREE_COST_SIZE`),
+                // wider than the one of its 64-bit counterpart.
                 let value_len = PROVABLE_COUNT_PROVABLE_BIG_SUM_INDEXED_TREE_COST_SIZE
                     + flags_len
                     + wrapper_overhead;

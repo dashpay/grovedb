@@ -3592,6 +3592,57 @@ mod tests {
         ]
     }
 
+    /// The big sum axis of the tree at `[TEST_LEAF, tree]` ranks the entries
+    /// of [`wide_indexed_entries`] by the sums written out here, lowest
+    /// first. The expected sums are literals, so the check does not lean on
+    /// the code that derives the secondary keys.
+    fn assert_big_sum_ranking_of_wide_entries(
+        db: &GroveDb,
+        tree: &[u8],
+        grove_version: &GroveVersion,
+    ) {
+        use grovedb_element::indexed::IndexAxis;
+        use grovedb_merk::proofs::query::AxisQuery;
+
+        use crate::{
+            operations::get::PathQueryRun,
+            query_result_type::{AxisKeys, QueryResultType},
+            PathQuery,
+        };
+
+        let query = PathQuery::new_axis(
+            vec![TEST_LEAF.to_vec(), tree.to_vec()],
+            AxisQuery::top_k(IndexAxis::BigSum, 10, 0, false).keys_only(),
+        );
+        let PathQueryRun::AxisKeys {
+            keys: AxisKeys::BigSum(ranked),
+            ..
+        } = db
+            .run_path_query(
+                &query,
+                true,
+                true,
+                true,
+                QueryResultType::QueryKeyElementPairResultType,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("read the big sum axis")
+        else {
+            panic!("expected the keys of the big sum axis");
+        };
+        assert_eq!(
+            ranked,
+            vec![
+                (2 * (i64::MIN as i128), b"d".to_vec()),
+                (5, b"c".to_vec()),
+                (2 * (i64::MAX as i128), b"a".to_vec()),
+                (3 * (i64::MAX as i128), b"b".to_vec()),
+            ]
+        );
+    }
+
     /// Full round trip for a populated `ProvableBigSumIndexedTree`, whose
     /// one secondary is on the big sum axis.
     #[test]
@@ -3646,6 +3697,7 @@ mod tests {
         )
         .expect("sync of a populated PBSIT should succeed");
 
+        assert_big_sum_ranking_of_wide_entries(&dest, b"pbsit", grove_version);
         assert_indexed_round_trip(&source, &dest, grove_version, |db| {
             db.insert_into_provable_big_sum_indexed_tree(
                 [TEST_LEAF, b"pbsit"].as_ref(),
@@ -3718,6 +3770,7 @@ mod tests {
             .unwrap_or_else(|e| {
                 panic!("sync of a 3-axis PCPBSIT (batch {batch_size}) failed: {e:?}")
             });
+            assert_big_sum_ranking_of_wide_entries(&dest, b"pcpbsit", grove_version);
             assert_indexed_round_trip(&source, &dest, grove_version, |_| {});
         }
 

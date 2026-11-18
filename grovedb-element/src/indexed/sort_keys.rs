@@ -141,16 +141,18 @@ pub fn decode_big_sum_sort_key(bytes: &[u8; 16]) -> i128 {
 /// as an `i128`, saturating at the ends of the `i128` range.
 ///
 /// For a sum that fits an `i64` this is [`compute_avg_fixed_point`] exactly.
-/// A wider sum times the scale does not fit an `i128`, so the product is
+/// A wider sum times the scale can pass the `i128` range, so the product is
 /// never formed: with `sum = q * count + r` (`0 <= r < count`), the average
 /// is `q * SCALE + floor(r * SCALE / count)`, and `r * SCALE` fits a `u128`
 /// since both factors are below `2^64`. The result is exact whenever it fits
-/// an `i128`, which covers every average inside the `i64` range (the
-/// compile-time bound next to [`AVG_FIXED_POINT_SCALE`]). An average beyond
-/// that, which takes entries that are themselves trees with 128-bit sums,
-/// saturates to `i128::MIN` or `i128::MAX`: such entries keep their relative
-/// order with every entry inside the range and tie among themselves, where
-/// the secondary key's item-key suffix orders them.
+/// an `i128`: every average inside the `i64` range (the compile-time bound
+/// next to [`AVG_FIXED_POINT_SCALE`]) and those past it up to a magnitude of
+/// `i128::MAX / SCALE`, about 1.7 × 10^19. Only an average whose fixed-point
+/// form is outside the `i128` range, which takes entries that are themselves
+/// trees with 128-bit sums, saturates to `i128::MIN` or `i128::MAX`: such
+/// entries keep their relative order with every entry inside the range and
+/// tie among themselves, where the secondary key's item-key suffix orders
+/// them.
 ///
 /// `0 / 0` is `0`, as for the narrow average.
 #[inline]

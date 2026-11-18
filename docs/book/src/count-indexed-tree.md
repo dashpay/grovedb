@@ -764,11 +764,16 @@ width of the sum:
   names the axis the tree has. Bounds on the big sum axis take every `i128`.
 - **The avg axis** orders by the 128-bit sum over the count, in the same
   16-byte fixed-point key. For a sum that fits an `i64` the key is the one
-  the 64-bit tree writes; past that it saturates at the `i128` range.
+  the 64-bit tree writes. A larger average is exact while its fixed-point
+  form fits an `i128` (a magnitude up to about 1.7 × 10^19) and saturates
+  at the ends of the `i128` range past that.
 - **A row carries no sum.** A secondary row is a `ReferenceWithSumItem`,
   whose sum is an `i64`. Under a 128-bit primary the big sum and avg rows
-  carry 0 (the count axis still carries the count), and the entry's sum
-  lives in the row's key. Ranking, paging, bounded ranges, rank of a key and
+  carry 0 (the count axis still carries the count). A big sum row's key
+  holds the entry's exact sum. An avg row's key holds the fixed-point
+  average only, and the sum cannot be recovered from it (a sum of 10 over
+  a count of 1 and a sum of 20 over a count of 2 share a key prefix): read
+  the entry for its sum. Ranking, paging, bounded ranges, rank of a key and
   the population of a value band all read the key or the count, so they
   work as on the sum axis; the total of a value band is not offered on the
   big sum axis, and `AxisQuery::validate` refuses it.

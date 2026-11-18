@@ -112,11 +112,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the whole `i128` range), ranks a key and counts the population of a
   value band, read and proved, and returns `AxisEntries::BigSum` or
   `AxisKeys::BigSum`. It has no value-range total: a secondary row carries
-  an `i64`, so under a 128-bit sum the big sum and avg rows carry 0 and
-  the sum lives in the key. The avg axis of a 128-bit tree orders by the
-  128-bit sum over the count (`compute_big_avg_fixed_point`, equal to
-  `compute_avg_fixed_point` for every `i64` sum, saturating at the `i128`
-  range). The big sum axis keeps its rows in the storage namespace of the
+  an `i64`, so under a 128-bit sum the big sum and avg rows carry 0. A
+  big sum row's key holds the entry's exact sum; an avg row's key holds
+  the fixed-point average only, so the sum is read from the entry. The
+  avg axis of a 128-bit tree orders by the 128-bit sum over the count
+  (`compute_big_avg_fixed_point`, equal to `compute_avg_fixed_point` for
+  every `i64` sum, exact while the fixed-point average fits an `i128`
+  and saturating at the ends of that range past it). The big sum axis keeps its rows in the storage namespace of the
   sum axis, so removing a tree sweeps the namespaces it always swept. The
   primaries reuse the node hashes and proof nodes of `ProvableBigSumTree`
   and `ProvableCountProvableBigSumTree`. New entry points:

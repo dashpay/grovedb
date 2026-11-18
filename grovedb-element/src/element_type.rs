@@ -530,7 +530,7 @@ impl ElementType {
             // ItemWithBackwardsReferences / SumItemWithBackwardsReferences),
             // which the aggregation wrappers deliberately reject (fail
             // closed — their interaction with count/sum suppression is
-            // undefined); 30..=127 are unallocated; 128..=157 are the
+            // undefined); 34..=127 are unallocated; 128..=157 are the
             // synthetic NonCountedXxx twins which never appear on disk.
             // Without this check, the bitwise OR below would collapse
             // `0x80 | inner_byte` into `inner_byte` and a payload like
@@ -545,7 +545,7 @@ impl ElementType {
             ) {
                 return Err(ElementError::CorruptedData(format!(
                     "NonCounted inner discriminant must be a base type \
-                     (0..=14, 18, 19, 20, 21, 22, 23, 24, or 29), got {}",
+                     (0..=14, 18..=24, or 29..=33), got {}",
                     inner_byte
                 )));
             }

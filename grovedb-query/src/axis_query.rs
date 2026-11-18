@@ -243,11 +243,13 @@ pub enum AxisTraversal {
     },
     /// `[lo, hi]` selects the entries by their own axis value; `fold`
     /// says which aggregate over exactly those entries is the answer.
-    /// Count and Sum axes only — the Avg axis has no meaningful
-    /// aggregate-of-averages.
+    /// Rejected on the Avg axis, which has no meaningful
+    /// aggregate-of-averages. On the BigSum axis only
+    /// [`AggregateFold::Population`] is accepted: its rows do not carry the
+    /// 128-bit sum, so there is no total to fold.
     ///
     /// The fold is explicit because both readings are meaningful on
-    /// both axes and the "obvious" one flips per axis. Over counts
+    /// the Count and Sum axes and the "obvious" one flips per axis. Over counts
     /// `[3, 1, 5]`, the band `[2, 10]` selects the `3` and the `5`:
     ///
     /// * [`AggregateFold::Population`] answers **2** — how many entries

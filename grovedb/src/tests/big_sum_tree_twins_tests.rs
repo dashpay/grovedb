@@ -1697,9 +1697,7 @@ mod tests {
         }
 
         // A wrapped tree of a shipped type is counted too, under a parent
-        // with a 128-bit sum and under a shipped one. `GROVE_V4` keeps the
-        // average estimate it shipped with for a shipped pairing, without
-        // the byte.
+        // with a 128-bit sum and under a shipped one.
         let average_under = |parent: TreeType, element: &Element, version: &GroveVersion| {
             let estimate =
                 GroveDb::average_case_merk_insert_element(&key, element, parent, None, version);
@@ -1720,10 +1718,15 @@ mod tests {
                 "{parent}"
             );
         }
-        assert_eq!(
-            average_under(TreeType::CountSumTree, &wrapped, &GROVE_V4),
-            average_under(TreeType::CountSumTree, &bare, &GROVE_V4),
-        );
+        // The estimate is the admission bound earlier blocks are replayed
+        // against, so the value `GROVE_V4` shipped with is stated.
+        for element in [&wrapped, &bare] {
+            assert_eq!(
+                average_under(TreeType::CountSumTree, element, &GROVE_V4),
+                156,
+                "{element:?}"
+            );
+        }
     }
 
     /// A wrapped tree that a batch creates and fills is held to its parent's

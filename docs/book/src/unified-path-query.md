@@ -56,7 +56,7 @@ pub enum AxisTraversal {
     RankedPage { k: u16, offset: u64 },         // tag 0 (top-k / bottom-k)
     Bounded { lo: i128, hi: i128, limit: u16 }, // tag 1
     RankOfKey { key: Vec<u8> },                 // tag 2
-    AggregateOverValueRange {                   // tag 3 (Count/Sum only)
+    AggregateOverValueRange {                   // tag 3 (Count/Sum; BigSum: Population only)
         lo: i128,
         hi: i128,
         fold: AggregateFold,                    // Population = 0 | Total = 1
@@ -81,8 +81,8 @@ the prover and verifier treat a `Keys` query exactly as `Entries`.
 read.
 
 `AggregateOverValueRange` makes the caller SAY which scalar they mean,
-because both readings are meaningful on both axes and the "obvious"
-one flips per axis. `[lo, hi]` selects entries by their own axis
+because both readings are meaningful on the Count and Sum axes and the
+"obvious" one flips per axis. `[lo, hi]` selects entries by their own axis
 value; the fold picks the aggregate over exactly those entries:
 
 | over counts `[3, 1, 5]`, band `[2, 10]` | answer |

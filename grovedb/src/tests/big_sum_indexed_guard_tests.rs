@@ -19,7 +19,7 @@ mod tests {
         batch::QualifiedGroveDbOp,
         bidirectional_references::BackwardsReferences,
         operations::{
-            get::{PathQueryRun, QueryItemOrSumReturnType},
+            get::{AxisAggregateValue, PathQueryRun, QueryItemOrSumReturnType},
             insert::InsertOptions,
             proof::{indexed_axis::AxisEntries, VerifiedPathQuery},
         },
@@ -56,22 +56,34 @@ mod tests {
             .expect("create the tree");
     }
 
-    /// Write `element` over the tree at `[TEST_LEAF, key]`.
+    /// Write `element` over the tree at `[TEST_LEAF, key]`. A refused write
+    /// is checked here to have left the root as it was.
+    #[track_caller]
     fn overwrite(
         db: &TempGroveDb,
         key: &[u8],
         element: Element,
         v: &GroveVersion,
     ) -> Result<(), Error> {
-        db.insert(
-            [TEST_LEAF].as_ref(),
-            key,
-            element,
-            Some(override_tree()),
-            None,
-            v,
-        )
-        .unwrap()
+        let before = db.root_hash(None, v).unwrap().expect("root");
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                key,
+                element,
+                Some(override_tree()),
+                None,
+                v,
+            )
+            .unwrap();
+        if result.is_err() {
+            assert_eq!(
+                db.root_hash(None, v).unwrap().expect("root"),
+                before,
+                "a refused overwrite moved the root"
+            );
+        }
+        result
     }
 
     #[track_caller]
@@ -204,7 +216,6 @@ mod tests {
         let v = GroveVersion::latest();
         let db = make_test_grovedb(v);
         let (primary, secondary, sum) = populate_pbsit(&db, b"wide", v);
-        let before = db.root_hash(None, v).unwrap().expect("root");
         let tree = |primary, secondary, sum| {
             Element::ProvableBigSumIndexedTree(primary, secondary, sum, None)
         };
@@ -310,7 +321,9 @@ mod tests {
 
         // None of the refusals wrote anything to the tree, and the claim
         // that matches what is stored is accepted and changes nothing.
+        let before = db.root_hash(None, v).unwrap().expect("root");
         overwrite(&db, b"wide", tree(primary, secondary, sum), v).expect("the honest claim");
+        assert_eq!(db.root_hash(None, v).unwrap().expect("root"), before);
         let ranked = PathQuery::new_axis_top_k(
             vec![TEST_LEAF.to_vec(), b"wide".to_vec()],
             IndexAxis::BigSum,
@@ -343,7 +356,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![11, 7, 5]
         );
-        assert_ne!(db.root_hash(None, v).unwrap().expect("root"), before);
         assert_verifies(&db, v);
     }
 
@@ -496,8 +508,11 @@ mod tests {
             Element::ProvableCountProvableBigSumTree(..)
         ));
 
-        // The claim that matches what is stored is accepted.
+        // The claim that matches what is stored is accepted and changes
+        // nothing.
+        let before = db.root_hash(None, v).unwrap().expect("root");
         overwrite(&db, b"wide", tree(primary, count, sum, axes), v).expect("the honest claim");
+        assert_eq!(db.root_hash(None, v).unwrap().expect("root"), before);
         assert_verifies(&db, v);
     }
 
@@ -681,19 +696,52 @@ mod tests {
         }
 
         // The other axes are served there as before, and the big sum axis
-        // is served as they are from the version that introduces it.
+        // is served as they are from the version that introduces it. Each
+        // query gets the answer an absent path has: an empty page, no
+        // rank, a population of zero.
+        #[track_caller]
+        fn assert_answers_an_absent_path(
+            query: usize,
+            axis: IndexAxis,
+            result: Result<PathQueryRun, Error>,
+        ) {
+            match (query, result) {
+                (
+                    0,
+                    Ok(PathQueryRun::AxisEntries {
+                        entries,
+                        skipped: Some(0),
+                    }),
+                )
+                | (
+                    1,
+                    Ok(PathQueryRun::AxisEntries {
+                        entries,
+                        skipped: None,
+                    }),
+                ) => assert_eq!(entries, AxisEntries::empty_for_axis(axis)),
+                (2, Err(Error::PathKeyNotFound(_))) => {}
+                (3, Ok(PathQueryRun::AxisAggregate(AxisAggregateValue::Population(0)))) => {}
+                (
+                    4,
+                    Ok(PathQueryRun::AxisKeys {
+                        keys,
+                        skipped: Some(0),
+                    }),
+                ) => assert_eq!(keys, AxisKeys::empty_for_axis(axis)),
+                (query, other) => panic!("query {query} on {axis:?}: {other:?}"),
+            }
+        }
         let v5 = GroveVersion::latest();
         let latest = make_test_grovedb(v5);
-        for (old, new) in queries(IndexAxis::Count)
+        for (index, (old, new)) in queries(IndexAxis::Count)
             .iter()
             .zip(queries(IndexAxis::BigSum).iter())
+            .enumerate()
         {
-            let served = format!("{:?}", read(&db, old, v4).map(|_| ()));
-            assert!(!served.contains("big sum axis"), "{served}");
-            assert_eq!(
-                format!("{:?}", read(&latest, new, v5).map(|_| ())),
-                format!("{:?}", read(&latest, old, v5).map(|_| ())),
-            );
+            assert_answers_an_absent_path(index, IndexAxis::Count, read(&db, old, v4));
+            assert_answers_an_absent_path(index, IndexAxis::Count, read(&latest, old, v5));
+            assert_answers_an_absent_path(index, IndexAxis::BigSum, read(&latest, new, v5));
         }
     }
 
