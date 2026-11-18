@@ -108,6 +108,9 @@ impl std::fmt::Display for WalError {
     }
 }
 
+/// Receives each put as its column family, key and value.
+type Visit<'a> = dyn FnMut(u32, &[u8], &[u8]) + 'a;
+
 /// How far one log file has been read.
 #[derive(Clone, Debug, Default)]
 pub struct LogTail {
@@ -146,7 +149,7 @@ impl LogTail {
         &mut self,
         data: &[u8],
         totals: &mut WalTotals,
-        visit: &mut dyn FnMut(u32, &[u8], &[u8]),
+        visit: &mut Visit,
     ) -> Result<(), WalError> {
         let mut position = 0usize;
         loop {
@@ -214,11 +217,7 @@ impl LogTail {
 }
 
 /// Adds one write batch to `totals`.
-fn read_batch(
-    batch: &[u8],
-    totals: &mut WalTotals,
-    visit: &mut dyn FnMut(u32, &[u8], &[u8]),
-) -> Result<(), WalError> {
+fn read_batch(batch: &[u8], totals: &mut WalTotals, visit: &mut Visit) -> Result<(), WalError> {
     if batch.len() < BATCH_HEADER_SIZE {
         return Err(WalError::Truncated);
     }

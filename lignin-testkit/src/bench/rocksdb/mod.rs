@@ -117,14 +117,13 @@ impl RocksDbEngine {
             let entry =
                 entry.map_err(|error| BenchError::io("listing the database directory", error))?;
             let path = entry.path();
-            if path.extension().is_some_and(|extension| extension == "log") {
-                if let Some(number) = path
+            if path.extension().is_some_and(|extension| extension == "log")
+                && let Some(number) = path
                     .file_stem()
                     .and_then(|stem| stem.to_str())
                     .and_then(|stem| stem.parse::<u64>().ok())
-                {
-                    files.insert(number, path);
-                }
+            {
+                files.insert(number, path);
             }
         }
         Ok(files)
@@ -420,7 +419,7 @@ mod tests {
     fn an_unreadable_log_is_reported() {
         let dir = tempfile::tempdir().unwrap();
         let mut engine = RocksDbEngine::open(dir.path()).unwrap();
-        let (number, _) = engine.log_files().unwrap().into_iter().last().unwrap();
+        let (number, _) = engine.log_files().unwrap().into_iter().next_back().unwrap();
         let fake = dir.path().join(format!("{:06}.log", number + 1000));
         std::fs::write(&fake, [1, 2, 3, 4, 5, 0, 9, 0, 0]).unwrap();
         let error = engine.settle().unwrap_err();

@@ -84,7 +84,7 @@ pub use self::{
 #[derive(Debug)]
 pub enum BenchError {
     /// GroveDB refused an operation.
-    Grove(grovedb::Error),
+    Grove(Box<grovedb::Error>),
     /// A file operation failed.
     Io {
         /// What the harness was doing.
@@ -127,7 +127,7 @@ impl std::error::Error for BenchError {}
 
 impl From<grovedb::Error> for BenchError {
     fn from(error: grovedb::Error) -> Self {
-        BenchError::Grove(error)
+        BenchError::Grove(Box::new(error))
     }
 }
 

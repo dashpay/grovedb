@@ -271,13 +271,22 @@ pub struct Recorded {
     pub text: String,
 }
 
+/// A row id, its phase, the recorded value, its range and the plan's words.
+pub type RecordedEntry = (
+    &'static str,
+    &'static str,
+    f64,
+    Option<[f64; 2]>,
+    &'static str,
+);
+
 /// The values the plan's sections "Why" and "Performance targets" recorded
 /// on RocksDB (Apple M5 Ultra; one million 400-byte documents plus index
 /// references, one document and one reference per state transition, 20
 /// per block), and the BASE-02 brief's two proof sizes. Keyed by row id
 /// and phase. Times were measured on a machine the project does not have,
 /// so their ratio is information, not a test.
-pub const RECORDED: &[(&str, &str, f64, Option<[f64; 2]>, &str)] = &[
+pub const RECORDED: &[RecordedEntry] = &[
     (
         "logical_bytes_per_transition",
         "load",

@@ -196,6 +196,14 @@ impl Meter {
         }
     }
 
+    fn idle() -> Meter {
+        Meter {
+            perf: None,
+            perf_failed: false,
+            cpu_ns: None,
+        }
+    }
+
     fn start(&mut self) -> Mark {
         if let Some(perf) = &mut self.perf {
             self.perf_failed |= !perf.enable();
@@ -639,13 +647,10 @@ pub fn disk_usage(dir: &Path) -> Result<DiskUsage, BenchError> {
         allocated_bytes: Some(0),
         ..Default::default()
     };
-    let entries =
-        std::fs::read_dir(dir).map_err(|error| BenchError::io("measuring the database", error))?;
-    for entry in entries {
-        let entry = entry.map_err(|error| BenchError::io("measuring the database", error))?;
-        let metadata = entry
-            .metadata()
-            .map_err(|error| BenchError::io("measuring the database", error))?;
+    let io = |error| BenchError::io("measuring the database", error);
+    for entry in std::fs::read_dir(dir).map_err(io)? {
+        let entry = entry.map_err(io)?;
+        let metadata = entry.metadata().map_err(io)?;
         if !metadata.is_file() {
             continue;
         }
@@ -757,6 +762,12 @@ fn check_proof(
     Ok(())
 }
 
+/// A read prepared outside the timed region.
+enum Request {
+    Get(Op),
+    Prove(PathQuery),
+}
+
 /// What kind of read a cold sample makes.
 #[derive(Clone, Copy)]
 enum ReadKind {
@@ -783,22 +794,21 @@ impl ReadKind {
         grove_version: &GroveVersion,
         meter: &mut Meter,
     ) -> Result<(Duration, Option<usize>), BenchError> {
-        let (op, query) = match self {
-            ReadKind::Get => (Some(reads.get(loaded)), None),
-            ReadKind::PointProof => (None, Some(reads.point_query(loaded))),
-            ReadKind::ReferencesProof => (None, Some(reads.references_query())),
+        let request = match self {
+            ReadKind::Get => Request::Get(reads.get(loaded)),
+            ReadKind::PointProof => Request::Prove(reads.point_query(loaded)),
+            ReadKind::ReferencesProof => Request::Prove(reads.references_query()),
         };
         let mark = meter.start();
-        let (result, elapsed) = match (&op, &query) {
-            (Some(op), _) => {
+        let (result, elapsed) = match &request {
+            Request::Get(op) => {
                 let (result, elapsed) = timed(|| engine.read(op, grove_version));
                 (result.map(|_| None), elapsed)
             }
-            (None, Some(query)) => {
+            Request::Prove(query) => {
                 let (result, elapsed) = timed(|| engine.prove(query, grove_version));
                 (result.map(|(proof, _)| Some(proof.len())), elapsed)
             }
-            (None, None) => unreachable!("every read kind makes an op or a query"),
         };
         meter.stop(mark);
         Ok((elapsed, result?))
@@ -846,14 +856,12 @@ fn rewarm<E: Engine>(
     settings: &Settings,
     grove_version: &GroveVersion,
 ) -> Result<(), BenchError> {
-    let entries = std::fs::read_dir(engine.dir())
-        .map_err(|error| BenchError::io("warming the database", error))?;
+    let io = |error| BenchError::io("warming the database", error);
+    let entries = std::fs::read_dir(engine.dir()).map_err(io)?;
     for entry in entries.flatten() {
         if entry.file_type().is_ok_and(|kind| kind.is_file()) {
-            let mut file = std::fs::File::open(entry.path())
-                .map_err(|error| BenchError::io("warming the database", error))?;
-            std::io::copy(&mut file, &mut std::io::sink())
-                .map_err(|error| BenchError::io("warming the database", error))?;
+            let mut file = std::fs::File::open(entry.path()).map_err(io)?;
+            std::io::copy(&mut file, &mut std::io::sink()).map_err(io)?;
         }
     }
     warm_up(engine, reads, settings, grove_version)
@@ -866,11 +874,7 @@ fn warm_up<E: Engine>(
     settings: &Settings,
     grove_version: &GroveVersion,
 ) -> Result<(), BenchError> {
-    let mut idle = Meter {
-        perf: None,
-        perf_failed: false,
-        cpu_ns: None,
-    };
+    let mut idle = Meter::idle();
     let kinds = [
         ReadKind::Get,
         ReadKind::PointProof,
