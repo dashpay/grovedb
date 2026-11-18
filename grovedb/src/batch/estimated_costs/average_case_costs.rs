@@ -885,8 +885,12 @@ fn indexed_axes_for_tree_type(tree_type: TreeType) -> Vec<grovedb_element::index
     use grovedb_element::indexed::IndexAxis;
     match tree_type {
         TreeType::ProvableSumIndexedTree => vec![IndexAxis::Sum],
+        TreeType::ProvableBigSumIndexedTree => vec![IndexAxis::BigSum],
         TreeType::ProvableCountProvableSumIndexedTree => {
             vec![IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg]
+        }
+        TreeType::ProvableCountProvableBigSumIndexedTree => {
+            vec![IndexAxis::Count, IndexAxis::Avg, IndexAxis::BigSum]
         }
         _ => vec![IndexAxis::Count],
     }
@@ -1845,6 +1849,8 @@ mod tests {
                         provable_count_sum_trees_weight: 0,
                         provable_count_provable_sum_trees_weight: 0,
                         provable_count_provable_big_sum_trees_weight: 0,
+                        count_big_sum_trees_weight: 0,
+                        provable_big_sum_trees_weight: 0,
                     },
                     None,
                 ),

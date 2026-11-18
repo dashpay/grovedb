@@ -36,6 +36,15 @@ fn replacement_indexed_emptiness(new_element: &Element) -> Option<bool> {
                 && *sum == 0
                 && axes.iter().all(|(_, root_key)| root_key.is_none()),
         ),
+        Element::ProvableBigSumIndexedTree(p, s, sum, _) => {
+            Some(p.is_none() && s.is_none() && *sum == 0)
+        }
+        Element::ProvableCountProvableBigSumIndexedTree(p, c, sum, axes, _) => Some(
+            p.is_none()
+                && *c == 0
+                && *sum == 0
+                && axes.iter().all(|(_, root_key)| root_key.is_none()),
+        ),
         _ => None,
     }
 }

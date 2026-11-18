@@ -420,3 +420,108 @@ fn provable_count_indexed_tree_not_sum_bearing() {
     assert!(!pcit.is_sum_bearing_child());
     assert!(!pcit.is_count_and_sum_bearing_child());
 }
+
+/// Each sum width has its own sum axis: the 64-bit tree takes the count, sum
+/// and avg axes, the 128-bit tree the count, avg and big sum axes, and each
+/// refuses the other's sum axis as an unknown tag.
+#[test]
+fn each_sum_width_validates_its_own_axes() {
+    use crate::indexed::IndexAxis;
+
+    let axes = |tags: &[IndexAxis]| -> Vec<(u8, Option<Vec<u8>>)> {
+        tags.iter().map(|axis| (axis.tag(), None)).collect()
+    };
+
+    let wide = [IndexAxis::Count, IndexAxis::Avg, IndexAxis::BigSum];
+    assert!(Element::validate_pcpbsit_axes(&axes(&wide)).is_ok());
+    for one in wide {
+        assert!(Element::validate_pcpbsit_axes(&axes(&[one])).is_ok());
+    }
+    assert!(Element::validate_pcpbsit_axes(&axes(&[IndexAxis::Sum])).is_err());
+    assert!(Element::validate_pcpbsit_axes(&axes(&[IndexAxis::Count, IndexAxis::Sum])).is_err());
+    assert!(Element::validate_pcpbsit_axes(&[]).is_err());
+    assert!(
+        Element::validate_pcpbsit_axes(&axes(&[IndexAxis::BigSum, IndexAxis::Count])).is_err(),
+        "unsorted"
+    );
+    assert!(
+        Element::validate_pcpbsit_axes(&axes(&[IndexAxis::BigSum, IndexAxis::BigSum])).is_err(),
+        "duplicated"
+    );
+    assert!(Element::validate_pcpbsit_axes(&[(4, None)]).is_err());
+
+    let narrow = [IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg];
+    assert!(Element::validate_pcpsit_axes(&axes(&narrow)).is_ok());
+    assert!(Element::validate_pcpsit_axes(&axes(&[IndexAxis::BigSum])).is_err());
+    assert!(Element::validate_pcpsit_axes(&axes(&[IndexAxis::Count, IndexAxis::BigSum])).is_err());
+
+    // The constructors go through the validator of their width.
+    assert!(Element::empty_provable_count_provable_big_sum_indexed_tree(axes(&wide)).is_ok());
+    assert!(Element::empty_provable_count_provable_big_sum_indexed_tree(axes(&narrow)).is_err());
+    assert!(
+        Element::empty_provable_count_provable_big_sum_indexed_tree_with_flags(axes(&narrow), None)
+            .is_err()
+    );
+    assert!(Element::new_provable_count_provable_big_sum_indexed_tree(
+        None,
+        0,
+        0,
+        axes(&narrow),
+        None
+    )
+    .is_err());
+    assert!(Element::empty_provable_count_provable_sum_indexed_tree(axes(&wide)).is_err());
+}
+
+/// What an indexed tree with a 128-bit sum accepts as an entry: everything
+/// its 64-bit counterpart accepts, and the big sum trees besides.
+#[test]
+fn big_sum_bearing_children() {
+    let sum_only = [
+        Element::new_sum_item(1),
+        Element::empty_sum_tree(),
+        Element::empty_big_sum_tree(),
+        Element::empty_provable_big_sum_tree(),
+        Element::empty_provable_big_sum_indexed_tree(),
+    ];
+    let count_and_sum = [
+        Element::new_item_with_sum_item(b"v".to_vec(), 1),
+        Element::empty_count_sum_tree(),
+        Element::empty_count_big_sum_tree(),
+        Element::empty_provable_count_provable_big_sum_tree(),
+        Element::empty_provable_count_provable_big_sum_indexed_tree(vec![(3, None)])
+            .expect("canonical axes"),
+    ];
+    for child in sum_only.iter().chain(&count_and_sum) {
+        assert!(child.is_big_sum_bearing_child(), "{child}");
+    }
+    for child in &count_and_sum {
+        assert!(child.is_count_and_big_sum_bearing_child(), "{child}");
+    }
+    for child in &sum_only {
+        assert!(!child.is_count_and_big_sum_bearing_child(), "{child}");
+    }
+
+    for child in [
+        Element::new_item(b"v".to_vec()),
+        Element::empty_tree(),
+        Element::empty_count_tree(),
+    ] {
+        assert!(!child.is_big_sum_bearing_child(), "{child}");
+        assert!(!child.is_count_and_big_sum_bearing_child(), "{child}");
+    }
+
+    // A wrapper that withholds the sum or the count withholds the entry.
+    let not_summed =
+        Element::new_not_summed(Element::empty_count_big_sum_tree()).expect("wraps a tree");
+    assert!(!not_summed.is_big_sum_bearing_child());
+    assert!(!not_summed.is_count_and_big_sum_bearing_child());
+    let non_counted =
+        Element::new_non_counted(Element::empty_count_big_sum_tree()).expect("wraps a tree");
+    assert!(non_counted.is_big_sum_bearing_child());
+    assert!(!non_counted.is_count_and_big_sum_bearing_child());
+
+    // The 64-bit predicates are unchanged by the wider trees.
+    assert!(!Element::empty_count_big_sum_tree().is_count_and_sum_bearing_child());
+    assert!(!Element::empty_provable_big_sum_tree().is_sum_bearing_child());
+}

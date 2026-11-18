@@ -254,6 +254,7 @@ current derivation. The **secondary** prefix is derived from the primary:
 primary_prefix(path)   = Blake3(path_body)
 secondary_prefix(path, axis) = Blake3(primary_prefix ‖ axis_tag)
 // axis_tag: 0x00 = count, 0x01 = sum, 0x02 = avg
+// (the big sum axis shares 0x01: see "Indexed trees with a 128-bit sum")
 ```
 
 This has three useful properties:
@@ -735,6 +736,56 @@ Verifier obligations:
 Both root hashes must be made available to the verifier — when a query
 touches only one of the two trees, the proof carries the *other* tree's
 root hash as a 32-byte attestation (it is hashed but not traversed).
+
+## Indexed trees with a 128-bit sum
+
+`ProvableSumIndexedTree` and `ProvableCountProvableSumIndexedTree` hold
+their sum in an `i64`, and a write that would take the sum past that range
+is refused. Each has a counterpart whose sum is an `i128`:
+
+| 64-bit sum | 128-bit sum | Axes |
+|---|---|---|
+| `ProvableSumIndexedTree` | `ProvableBigSumIndexedTree` | big sum |
+| `ProvableCountProvableSumIndexedTree` | `ProvableCountProvableBigSumIndexedTree` | 1..=3 of count, avg, big sum |
+
+The counterparts are the same trees in every other respect: the same two
+kinds of Merk under one element, the same hash composition, the same
+mirror on every write, the same proofs. What changes follows from the
+width of the sum:
+
+- **The primary** is a `ProvableBigSumTree` or a
+  `ProvableCountProvableBigSumTree` in shape, so its nodes commit a 128-bit
+  sum. An entry contributes an `i64`, or an `i128` when the entry is itself
+  a big sum tree, which is how one entry's sum passes the `i64` range.
+- **The sum axis is a different axis.** `IndexAxis::BigSum` (tag `0x03`)
+  keys its secondary by `sum_sortable_be(16) ‖ item_key`, the sign-flipped
+  big-endian `i128`, where `IndexAxis::Sum` uses 8 bytes. A tree has one or
+  the other by its width; the axes validators refuse the other, and a query
+  names the axis the tree has. Bounds on the big sum axis take every `i128`.
+- **The avg axis** orders by the 128-bit sum over the count, in the same
+  16-byte fixed-point key. For a sum that fits an `i64` the key is the one
+  the 64-bit tree writes; past that it saturates at the `i128` range.
+- **A row carries no sum.** A secondary row is a `ReferenceWithSumItem`,
+  whose sum is an `i64`. Under a 128-bit primary the big sum and avg rows
+  carry 0 (the count axis still carries the count), and the entry's sum
+  lives in the row's key. Ranking, paging, bounded ranges, rank of a key and
+  the population of a value band all read the key or the count, so they
+  work as on the sum axis; the total of a value band is not offered on the
+  big sum axis, and `AxisQuery::validate` refuses it.
+- **Storage.** The big sum axis keeps its secondary in the namespace of the
+  sum axis (`Blake3(primary_prefix ‖ 0x01)`). The two axes never meet under
+  one primary, and removing a tree sweeps the three namespaces it always
+  swept, at the cost it always had.
+- **Item keys** are capped at 239 bytes when the big sum axis is indexed,
+  as for the avg axis, since the sort key is 16 bytes.
+
+Entries are written with `insert_into_provable_big_sum_indexed_tree` and
+`insert_into_provable_count_provable_big_sum_indexed_tree` (or the batch),
+removed with the matching `delete_from_…`, and accepted by the same rule as
+under the 64-bit trees with the big sum trees added: a sum-bearing child of
+either width for the first, a child that carries a count and a sum of
+either width, or a `SumItem`, for the second. Both trees can be created
+from `GROVE_V5`.
 
 ## When to use which element type
 

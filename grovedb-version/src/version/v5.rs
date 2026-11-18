@@ -91,6 +91,13 @@
 //!   range. V1..V4 refuse the creation, as 6.1.1 does not know the element.
 //!   Gated because it flips an accepted/rejected outcome.
 //!
+//! - `operations.insert.big_sum_tree_twins_creation: 1`: an
+//!   `Element::CountBigSumTree` (a count and a 128-bit sum kept in the
+//!   element) and an `Element::ProvableBigSumTree` (a 128-bit sum in every
+//!   node hash) can be created, by a direct or a batch insert. V1..V4 refuse
+//!   the creation, as 6.1.1 does not know the elements. Gated because it
+//!   flips an accepted/rejected outcome.
+//!
 //! It exists so that changes made after GroveDB 6.1.1 have somewhere to
 //! land. GROVE_V4 as 6.1.1 shipped it is what Dash Platform 5.0 (protocol
 //! version 14) runs, so a change that alters an accepted/rejected outcome, a
@@ -150,6 +157,8 @@ pub const GROVE_V5: GroveVersion = GroveVersion {
             insert: GroveDBOperationsInsertVersions {
                 // changed: the wide count and sum tree can be created
                 provable_count_provable_big_sum_tree_creation: 1,
+                // changed: so can the other trees with a 128-bit sum
+                big_sum_tree_twins_creation: 1,
                 ..GROVE_V4.grovedb_versions.operations.insert
             },
             private_document_store: GroveDBOperationsPrivateDocumentStoreVersions {

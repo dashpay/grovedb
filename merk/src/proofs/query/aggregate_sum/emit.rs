@@ -130,6 +130,29 @@ where
             };
             return Ok(in_range_contribution).wrap_with_cost(cost);
         }
+        // A `ProvableBigSumTree` host: its nodes hash their 128-bit sum.
+        if let AggregateData::ProvableBigSum(subtree_sum) = aggregate {
+            ops.push_back(Op::Push(Node::HashWithBigSum(
+                *walker.tree().kv_hash(),
+                walker
+                    .tree()
+                    .link(true)
+                    .map(|l| *l.hash())
+                    .unwrap_or(NULL_HASH),
+                walker
+                    .tree()
+                    .link(false)
+                    .map(|l| *l.hash())
+                    .unwrap_or(NULL_HASH),
+                subtree_sum,
+            )));
+            let in_range_contribution: i128 = match class {
+                SubtreeClassification::Contained => subtree_sum,
+                SubtreeClassification::Disjoint => 0,
+                SubtreeClassification::Boundary => unreachable!(),
+            };
+            return Ok(in_range_contribution).wrap_with_cost(cost);
+        }
         let subtree_sum = match provable_sum_from_aggregate(aggregate) {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(cost),
@@ -287,6 +310,12 @@ where
             node_key.clone(),
             node_value_hash,
             node_count,
+            node_sum,
+        )));
+    } else if let AggregateData::ProvableBigSum(node_sum) = node_aggregate {
+        ops.push_back(Op::Push(Node::KVDigestBigSum(
+            node_key.clone(),
+            node_value_hash,
             node_sum,
         )));
     } else if binds_count_into_hash(tree_type) {

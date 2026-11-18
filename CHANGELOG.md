@@ -52,6 +52,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its proofs, and the `i128` ones refuse a tree with an `i64` sum, so no
   call narrows or widens a sum silently. `run_path_query` keeps returning
   `i64` sums and refuses the wide tree for the two sum queries.
+- Four more trees with a 128-bit sum, next to `BigSumTree` and
+  `ProvableCountProvableBigSumTree`. Each is the counterpart of a
+  tree whose sum is an `i64`, behaves as that tree does, and holds a total
+  that can pass the `i64` range (a child still contributes an `i64`, or an
+  `i128` when it is itself a big sum tree):
+  - `Element::CountBigSumTree` (discriminant 30, tree type 18), the
+    counterpart of `CountSumTree`: a count and a big sum, neither in the
+    node hash. Feature type `CountedBigSummedMerkNode` and link aggregate
+    `CountAndBigSum` (tag 10); wrapper twins 158, 182 and 198.
+  - `Element::ProvableBigSumTree` (discriminant 31, tree type 19), the
+    counterpart of `ProvableSumTree`: a big sum committed into every node
+    hash through the new `node_hash_with_big_sum`, whose preimage ends in a
+    domain tag so it cannot equal the preimage of a count and `i64` sum
+    node. Feature type `ProvableBigSummedMerkNode` and link aggregate
+    `ProvableBigSum` (tag 11); proof nodes `KVBigSum`, `KVHashBigSum`,
+    `KVRefValueHashBigSum`, `KVDigestBigSum` and `HashWithBigSum` (tags
+    0x6E..=0x7B); wrapper twins 159, 184 and 200. `AggregateSumOnRange` on
+    it returns an `i128` through the `big_sum` entry points, as on a
+    `ProvableCountProvableBigSumTree`.
+  - `Element::ProvableBigSumIndexedTree` (discriminant 32, tree type 20,
+    `NonCounted` twin 160), the counterpart of `ProvableSumIndexedTree`: a
+    `ProvableBigSumTree`-shaped primary with one secondary that ranks its
+    entries by their 128-bit sum.
+  - `Element::ProvableCountProvableBigSumIndexedTree` (discriminant 33,
+    tree type 21, `NonCounted` twin 161), the counterpart of
+    `ProvableCountProvableSumIndexedTree`: a
+    `ProvableCountProvableBigSumTree`-shaped primary with one to three
+    secondaries, on the count, avg and big sum axes.
+
+  The two indexed trees rank on a new axis, `IndexAxis::BigSum` (tag 3),
+  whose secondary keys hold the sum in 16 bytes where the sum axis holds it
+  in 8. A tree has the sum axis or the big sum axis by the width of its
+  sum, and each refuses the other (`Element::validate_pcpsit_axes` for the
+  64-bit tree, the new `Element::validate_pcpbsit_axes` for the 128-bit
+  one). A query names the axis: `AxisQuery` on `IndexAxis::BigSum` pages,
+  bounds (over the whole `i128` range), ranks a key and counts the
+  population of a value band, read and proved, and returns
+  `AxisEntries::BigSum` or `AxisKeys::BigSum`. It has no value-range total:
+  a secondary row carries an `i64`, so under a 128-bit sum the big sum and
+  avg rows carry 0 and the sum lives in the key. The avg axis of a 128-bit
+  tree orders by the 128-bit sum over the count
+  (`compute_big_avg_fixed_point`, equal to `compute_avg_fixed_point` for
+  every `i64` sum, saturating at the `i128` range). The big sum axis keeps
+  its rows in the storage namespace of the sum axis, so removing a tree
+  sweeps the namespaces it always swept. New entry points:
+  `insert_into_provable_big_sum_indexed_tree`,
+  `delete_from_provable_big_sum_indexed_tree`,
+  `insert_into_provable_count_provable_big_sum_indexed_tree` and
+  `delete_from_provable_count_provable_big_sum_indexed_tree`; new
+  constructors and accessors on `Element` for each tree; and
+  `Element::is_big_sum_bearing_child` and
+  `is_count_and_big_sum_bearing_child`, the child rules of the two indexed
+  trees.
+
+  Creating any of the four is gated by the new
+  `operations.insert.big_sum_tree_twins_creation` slot (0 in V1..V4, which
+  refuse them; 1 in V5; **BREAKING** for code building
+  `GroveDBOperationsInsertVersions` by hand). A V0 proof refuses a
+  `ProvableBigSumTree` host and a descent into either indexed tree, as it
+  does for their 64-bit counterparts.
+  **BREAKING** for exhaustive matches: the new variants of `Element`,
+  `ElementType`, `TreeType`, `TreeFeatureType`, `NodeType`,
+  `AggregateData`, `Node`, `ProofNodeType`, `EstimatedSumTrees`
+  (`AllCountBigSumTrees`, `AllProvableBigSumTrees`), `IndexAxis`
+  (`BigSum`), `AxisEntries` and `AxisKeys` (`BigSum`). `EstimatedSumTrees::SomeSumTrees` gains the
+  `count_big_sum_trees_weight` and `provable_big_sum_trees_weight` fields
+  (**BREAKING** for code building or destructuring it), weighed by the
+  mixed-layer size estimate of `GROVE_V3` and later; a weight of 0 leaves
+  the estimate as it was. `IndexAxis::try_from_tag(3)` now succeeds, and an
+  encoded `AxisQuery` may carry tag 3.
 - `GROVE_V5` (`protocol_version` 5). `GROVE_V4` as 6.1.1 shipped it is what
   Dash Platform 5.0 (protocol version 14) runs, so behaviour changes from
   here on are gated in `GROVE_V5` and leave V1..V4 as they are. V5 is V4

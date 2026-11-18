@@ -60,8 +60,10 @@ impl Element {
                 Element::SumTree(..)
                 | Element::BigSumTree(..)
                 | Element::CountSumTree(..)
+                | Element::CountBigSumTree(..)
                 | Element::ProvableCountSumTree(..)
                 | Element::ProvableSumTree(..)
+                | Element::ProvableBigSumTree(..)
                 | Element::ProvableCountProvableSumTree(..)
                 | Element::ProvableCountProvableBigSumTree(..) => {}
                 _ => {
@@ -76,8 +78,10 @@ impl Element {
                 Element::SumTree(..)
                 | Element::BigSumTree(..)
                 | Element::CountSumTree(..)
+                | Element::CountBigSumTree(..)
                 | Element::ProvableCountSumTree(..)
                 | Element::ProvableSumTree(..)
+                | Element::ProvableBigSumTree(..)
                 | Element::ProvableCountProvableSumTree(..)
                 | Element::ProvableCountProvableBigSumTree(..) => {}
                 _ => {
@@ -172,8 +176,10 @@ impl Element {
                 Element::SumTree(..)
                 | Element::BigSumTree(..)
                 | Element::CountSumTree(..)
+                | Element::CountBigSumTree(..)
                 | Element::ProvableCountSumTree(..)
                 | Element::ProvableSumTree(..)
+                | Element::ProvableBigSumTree(..)
                 | Element::ProvableCountProvableSumTree(..)
                 | Element::ProvableCountProvableBigSumTree(..) => {}
                 _ => {
@@ -188,8 +194,10 @@ impl Element {
                 Element::SumTree(..)
                 | Element::BigSumTree(..)
                 | Element::CountSumTree(..)
+                | Element::CountBigSumTree(..)
                 | Element::ProvableCountSumTree(..)
                 | Element::ProvableSumTree(..)
+                | Element::ProvableBigSumTree(..)
                 | Element::ProvableCountProvableSumTree(..)
                 | Element::ProvableCountProvableBigSumTree(..) => {}
                 _ => {

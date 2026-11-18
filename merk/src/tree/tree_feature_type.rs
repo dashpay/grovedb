@@ -52,6 +52,13 @@ pub enum AggregateData {
     /// counterpart of `ProvableCountAndProvableSum`, carried by a
     /// `ProvableCountProvableBigSumTree`.
     ProvableCountAndProvableBigSum(u64, i128),
+    /// A count and a 128-bit sum, neither baked into the node hash. The
+    /// wide counterpart of `CountAndSum`, carried by a `CountBigSumTree`.
+    CountAndBigSum(u64, i128),
+    /// A provable 128-bit sum, baked into the node hash via
+    /// `node_hash_with_big_sum`. The wide counterpart of `ProvableSum`,
+    /// carried by a `ProvableBigSumTree`.
+    ProvableBigSum(i128),
 }
 
 #[cfg(feature = "minimal")]
@@ -73,6 +80,8 @@ impl AggregateData {
             AggregateData::ProvableCountAndProvableBigSum(..) => {
                 TreeType::ProvableCountProvableBigSumTree
             }
+            AggregateData::CountAndBigSum(..) => TreeType::CountBigSumTree,
+            AggregateData::ProvableBigSum(_) => TreeType::ProvableBigSumTree,
         }
     }
 
@@ -99,6 +108,10 @@ impl AggregateData {
         match self {
             AggregateData::ProvableCount(_) => Some(TreeType::ProvableCountIndexedTree),
             AggregateData::ProvableSum(_) => Some(TreeType::ProvableSumIndexedTree),
+            AggregateData::ProvableBigSum(_) => Some(TreeType::ProvableBigSumIndexedTree),
+            AggregateData::ProvableCountAndProvableBigSum(..) => {
+                Some(TreeType::ProvableCountProvableBigSumIndexedTree)
+            }
             AggregateData::ProvableCountAndProvableSum(..) => {
                 Some(TreeType::ProvableCountProvableSumIndexedTree)
             }
@@ -111,7 +124,10 @@ impl AggregateData {
         match self {
             AggregateData::NoAggregateData => 0,
             AggregateData::Sum(s) => *s,
-            AggregateData::BigSum(i) | AggregateData::ProvableCountAndProvableBigSum(_, i) => {
+            AggregateData::BigSum(i)
+            | AggregateData::ProvableBigSum(i)
+            | AggregateData::ProvableCountAndProvableBigSum(_, i)
+            | AggregateData::CountAndBigSum(_, i) => {
                 if *i > i64::MAX as i128 {
                     i64::MAX
                 } else if *i < i64::MIN as i128 {
@@ -142,6 +158,8 @@ impl AggregateData {
             AggregateData::ProvableSum(_) => 0,
             AggregateData::ProvableCountAndProvableSum(c, _) => *c,
             AggregateData::ProvableCountAndProvableBigSum(c, _) => *c,
+            AggregateData::CountAndBigSum(c, _) => *c,
+            AggregateData::ProvableBigSum(_) => 0,
         }
     }
 
@@ -158,6 +176,8 @@ impl AggregateData {
             AggregateData::ProvableSum(s) => *s as i128,
             AggregateData::ProvableCountAndProvableSum(_, s) => *s as i128,
             AggregateData::ProvableCountAndProvableBigSum(_, s) => *s,
+            AggregateData::CountAndBigSum(_, s) => *s,
+            AggregateData::ProvableBigSum(s) => *s,
         }
     }
 }
@@ -192,6 +212,10 @@ impl From<TreeFeatureType> for AggregateData {
             TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(count, sum) => {
                 AggregateData::ProvableCountAndProvableBigSum(count, sum)
             }
+            TreeFeatureType::CountedBigSummedMerkNode(count, sum) => {
+                AggregateData::CountAndBigSum(count, sum)
+            }
+            TreeFeatureType::ProvableBigSummedMerkNode(sum) => AggregateData::ProvableBigSum(sum),
         }
     }
 }
@@ -215,6 +239,8 @@ mod tests {
             AggregateData::ProvableCount(3),
             AggregateData::ProvableSum(7),
             AggregateData::ProvableCountAndProvableSum(1, 2),
+            AggregateData::ProvableBigSum(7),
+            AggregateData::ProvableCountAndProvableBigSum(1, 2),
         ] {
             let indexed = agg
                 .indexed_parent_tree_type()
@@ -438,7 +464,10 @@ mod tests {
             agg.parent_tree_type(),
             TreeType::ProvableCountProvableBigSumTree
         );
-        assert_eq!(agg.indexed_parent_tree_type(), None);
+        assert_eq!(
+            agg.indexed_parent_tree_type(),
+            Some(TreeType::ProvableCountProvableBigSumIndexedTree)
+        );
         assert_eq!(agg.as_count_u64(), 7);
         assert_eq!(agg.as_summed_i128(), past_i64);
         assert_eq!(agg.as_sum_i64(), i64::MAX);

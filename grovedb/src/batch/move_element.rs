@@ -54,7 +54,7 @@ use integer_encoding::VarInt;
 use super::{GroveOp, KeyInfoPath, QualifiedGroveDbOp};
 use crate::{
     element::MaxReferenceHop,
-    operations::indexed_tree::indexed_element_axes,
+    operations::indexed_tree::{axis_storage_tag, indexed_element_axes},
     util::{check_v1_slot_enabled, subtree_path_with_key, MAX_KEY_LENGTH},
     Element, Error, GroveDb, Transaction,
 };
@@ -319,9 +319,11 @@ fn carried(element: &Element) -> Carried<'_> {
         | Element::BigSumTree(..)
         | Element::CountTree(..)
         | Element::CountSumTree(..)
+        | Element::CountBigSumTree(..)
         | Element::ProvableCountTree(..)
         | Element::ProvableCountSumTree(..)
         | Element::ProvableSumTree(..)
+        | Element::ProvableBigSumTree(..)
         | Element::ProvableCountProvableSumTree(..)
         | Element::ProvableCountProvableBigSumTree(..)
         | Element::CommitmentTree(..)
@@ -329,8 +331,10 @@ fn carried(element: &Element) -> Carried<'_> {
         | Element::BulkAppendTree(..)
         | Element::DenseAppendOnlyFixedSizeTree(..)
         | Element::ProvableSumIndexedTree(..)
+        | Element::ProvableBigSumIndexedTree(..)
         | Element::ProvableCountIndexedTree(..)
         | Element::ProvableCountProvableSumIndexedTree(..)
+        | Element::ProvableCountProvableBigSumIndexedTree(..)
         | Element::PrivateDocumentStore(..) => Carried::Tree,
         Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => Carried::Value,
     }
@@ -882,10 +886,12 @@ impl GroveDb {
         let to_prefix =
             RocksDbStorage::build_prefix(SubtreePath::from(to)).unwrap_add_cost(&mut cost);
         for axis in secondary_axes {
-            let from_secondary = RocksDbStorage::secondary_prefix_for(&from_prefix, axis.tag())
-                .unwrap_add_cost(&mut cost);
-            let to_secondary = RocksDbStorage::secondary_prefix_for(&to_prefix, axis.tag())
-                .unwrap_add_cost(&mut cost);
+            let from_secondary =
+                RocksDbStorage::secondary_prefix_for(&from_prefix, axis_storage_tag(axis))
+                    .unwrap_add_cost(&mut cost);
+            let to_secondary =
+                RocksDbStorage::secondary_prefix_for(&to_prefix, axis_storage_tag(axis))
+                    .unwrap_add_cost(&mut cost);
             cost_return_on_error!(
                 &mut cost,
                 self.move_namespace(from_secondary, to_secondary, transaction, batch)

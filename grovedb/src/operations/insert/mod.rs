@@ -14,29 +14,46 @@ use crate::{
     Element, Error, GroveDb, TransactionArg,
 };
 
-/// Refuse creating a `ProvableCountProvableBigSumTree`, bare or wrapped,
-/// under a grove version that predates the element. Every other element
-/// passes.
+/// Refuse creating a tree element that a grove version predates, bare or
+/// wrapped: a `ProvableCountProvableBigSumTree`, a `CountBigSumTree`, a
+/// `ProvableBigSumTree`, a `ProvableBigSumIndexedTree` or a
+/// `ProvableCountProvableBigSumIndexedTree`. Every other element passes.
+///
+/// `verb` names the caller in the error ("insert", "batch insert").
 ///
 /// Shared by the direct insert path (every `add_element_on_transaction`
 /// version) and the batch insert arm, so the two cannot disagree on which
-/// versions know the element.
-pub(crate) fn check_provable_count_provable_big_sum_tree_creation(
+/// versions know an element.
+pub(crate) fn check_wide_sum_tree_creation(
     element: &Element,
-    method: &str,
+    verb: &str,
     grove_version: &GroveVersion,
 ) -> Result<(), Error> {
-    if !element.is_provable_count_provable_big_sum_tree() {
-        return Ok(());
-    }
-    check_v1_slot_enabled(
-        method,
-        grove_version
-            .grovedb_versions
-            .operations
-            .insert
-            .provable_count_provable_big_sum_tree_creation,
-    )
+    let insert_versions = &grove_version.grovedb_versions.operations.insert;
+    let (name, slot) = match element.underlying() {
+        Element::ProvableCountProvableBigSumTree(..) => (
+            "ProvableCountProvableBigSumTree",
+            insert_versions.provable_count_provable_big_sum_tree_creation,
+        ),
+        Element::CountBigSumTree(..) => (
+            "CountBigSumTree",
+            insert_versions.big_sum_tree_twins_creation,
+        ),
+        Element::ProvableBigSumTree(..) => (
+            "ProvableBigSumTree",
+            insert_versions.big_sum_tree_twins_creation,
+        ),
+        Element::ProvableBigSumIndexedTree(..) => (
+            "ProvableBigSumIndexedTree",
+            insert_versions.big_sum_tree_twins_creation,
+        ),
+        Element::ProvableCountProvableBigSumIndexedTree(..) => (
+            "ProvableCountProvableBigSumIndexedTree",
+            insert_versions.big_sum_tree_twins_creation,
+        ),
+        _ => return Ok(()),
+    };
+    check_v1_slot_enabled(&format!("{verb} Element::{name}"), slot)
 }
 
 /// Versioned dispatch for `add_element_on_transaction` (the non-batch insert

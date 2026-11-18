@@ -201,6 +201,20 @@ pub enum ProofNodeType {
     ///
     /// Used for: Reference (inside ProvableCountProvableBigSumTree)
     KvRefValueHashCountBigSum,
+    /// Use `Node::KVBigSum` - the wide counterpart of `KvSum`. The verifier
+    /// recomputes `value_hash = H(value)` and includes the i128 sum in the
+    /// node hash via `node_hash_with_big_sum`.
+    ///
+    /// Used for: Item, SumItem, ItemWithSumItem (inside ProvableBigSumTree)
+    KvBigSum,
+    /// Use `Node::KVRefValueHashBigSum` - the wide counterpart of
+    /// `KvRefValueHashSum`. At the merk layer, this generates
+    /// `KVValueHashFeatureType` (since merk doesn't know about
+    /// references). GroveDB post-processes these nodes to
+    /// `Node::KVRefValueHashBigSum` with the dereferenced value.
+    ///
+    /// Used for: Reference (inside ProvableBigSumTree)
+    KvRefValueHashBigSum,
 }
 
 /// Element type discriminants.
@@ -346,6 +360,21 @@ pub enum ElementType {
     /// and an i128 sum are baked into node hashes, for sums that can pass
     /// the i64 range.
     ProvableCountProvableBigSumTree = 29,
+    /// Count + big sum tree - discriminant 30. The wide counterpart of
+    /// `CountSumTree`: the u64 count and an i128 sum are kept in the
+    /// element, not in node hashes, so it accepts children that contribute
+    /// nothing to either.
+    CountBigSumTree = 30,
+    /// Provable big sum tree - discriminant 31. The wide counterpart of
+    /// `ProvableSumTree`: an i128 sum is baked into node hashes, and no
+    /// count is kept.
+    ProvableBigSumTree = 31,
+    /// Provable big-sum-indexed tree - discriminant 32. The wide
+    /// counterpart of `ProvableSumIndexedTree`.
+    ProvableBigSumIndexedTree = 32,
+    /// Provable count + provable big sum indexed tree - discriminant 33.
+    /// The wide counterpart of `ProvableCountProvableSumIndexedTree`.
+    ProvableCountProvableBigSumIndexedTree = 33,
     /// Non-counted wrapper around `Item` - discriminant 128
     NonCountedItem = 128,
     /// Non-counted wrapper around `Reference` - discriminant 129
@@ -398,6 +427,18 @@ pub enum ElementType {
     /// Non-counted wrapper around `ProvableCountProvableBigSumTree` -
     /// discriminant 157 (`0x80 | 29`)
     NonCountedProvableCountProvableBigSumTree = 157,
+    /// Non-counted wrapper around `CountBigSumTree` - discriminant 158
+    /// (`0x80 | 30`)
+    NonCountedCountBigSumTree = 158,
+    /// Non-counted wrapper around `ProvableBigSumTree` - discriminant 159
+    /// (`0x80 | 31`)
+    NonCountedProvableBigSumTree = 159,
+    /// Non-counted wrapper around `ProvableBigSumIndexedTree` - discriminant
+    /// 160 (`0x80 | 32`)
+    NonCountedProvableBigSumIndexedTree = 160,
+    /// Non-counted wrapper around `ProvableCountProvableBigSumIndexedTree` -
+    /// discriminant 161 (`0x80 | 33`)
+    NonCountedProvableCountProvableBigSumIndexedTree = 161,
     /// Not-summed wrapper around `SumTree` - discriminant 180 (`0xB4`)
     NotSummedSumTree = 180,
     /// Not-summed wrapper around `BigSumTree` - discriminant 181 (`0xB5`)
@@ -420,6 +461,14 @@ pub enum ElementType {
     /// `0xB0..=0xBF` family range like the two before it (base 29 overflows
     /// the low nibble).
     NotSummedProvableCountProvableBigSumTree = 179,
+    /// Not-summed wrapper around `CountBigSumTree` - discriminant 182
+    /// (`0xB6`), assigned explicitly out of the `0xB0..=0xBF` family range
+    /// (base 30 overflows the low nibble).
+    NotSummedCountBigSumTree = 182,
+    /// Not-summed wrapper around `ProvableBigSumTree` - discriminant 184
+    /// (`0xB8`), assigned explicitly out of the `0xB0..=0xBF` family range
+    /// (base 31 overflows the low nibble).
+    NotSummedProvableBigSumTree = 184,
     /// Not-counted-or-summed wrapper around `SumTree` - discriminant 196 (`0xc0 | 4`)
     NotCountedOrSummedSumTree = 196,
     /// Not-counted-or-summed wrapper around `BigSumTree` - discriminant 197 (`0xc0 | 5`)
@@ -444,6 +493,14 @@ pub enum ElementType {
     /// hand-assigned out of the `0xC0..=0xCF` family range like the two
     /// before it (base 29 overflows the low nibble).
     NotCountedOrSummedProvableCountProvableBigSumTree = 195,
+    /// Not-counted-or-summed wrapper around `CountBigSumTree` -
+    /// discriminant 198 (`0xC6`), hand-assigned out of the `0xC0..=0xCF`
+    /// family range (base 30 overflows the low nibble).
+    NotCountedOrSummedCountBigSumTree = 198,
+    /// Not-counted-or-summed wrapper around `ProvableBigSumTree` -
+    /// discriminant 200 (`0xC8`), hand-assigned out of the `0xC0..=0xCF`
+    /// family range (base 31 overflows the low nibble).
+    NotCountedOrSummedProvableBigSumTree = 200,
 }
 
 impl ElementType {
@@ -494,7 +551,10 @@ impl ElementType {
             // Use an explicit allowlist so the next base-variant addition
             // is a one-line edit here and the check stays robust to new
             // variants landing without updating the guard.
-            if !matches!(inner_byte, 0..=14 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 29) {
+            if !matches!(
+                inner_byte,
+                0..=14 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 29 | 30 | 31 | 32 | 33
+            ) {
                 return Err(ElementError::CorruptedData(format!(
                     "NonCounted inner discriminant must be a base type \
                      (0..=14, 18, 19, 20, 21, 22, 23, 24, or 29), got {}",
@@ -522,6 +582,8 @@ impl ElementType {
                 19 => Ok(ElementType::NotSummedProvableSumTree),
                 20 => Ok(ElementType::NotSummedProvableCountProvableSumTree),
                 29 => Ok(ElementType::NotSummedProvableCountProvableBigSumTree),
+                30 => Ok(ElementType::NotSummedCountBigSumTree),
+                31 => Ok(ElementType::NotSummedProvableBigSumTree),
                 _ => Err(ElementError::CorruptedData(format!(
                     "NotSummed inner discriminant must be a sum-bearing tree base type \
                      (4=SumTree, 5=BigSumTree, 7=CountSumTree, 10=ProvableCountSumTree, \
@@ -551,6 +613,8 @@ impl ElementType {
                 19 => Ok(ElementType::NotCountedOrSummedProvableSumTree),
                 20 => Ok(ElementType::NotCountedOrSummedProvableCountProvableSumTree),
                 29 => Ok(ElementType::NotCountedOrSummedProvableCountProvableBigSumTree),
+                30 => Ok(ElementType::NotCountedOrSummedCountBigSumTree),
+                31 => Ok(ElementType::NotCountedOrSummedProvableBigSumTree),
                 _ => Err(ElementError::CorruptedData(format!(
                     "NotCountedOrSummed inner discriminant must be a sum-bearing tree base \
                      type (4=SumTree, 5=BigSumTree, 7=CountSumTree, \
@@ -633,6 +697,8 @@ impl ElementType {
                 ElementType::NotSummedProvableCountProvableBigSumTree => {
                     ElementType::ProvableCountProvableBigSumTree
                 }
+                ElementType::NotSummedCountBigSumTree => ElementType::CountBigSumTree,
+                ElementType::NotSummedProvableBigSumTree => ElementType::ProvableBigSumTree,
                 ElementType::NotCountedOrSummedSumTree => ElementType::SumTree,
                 ElementType::NotCountedOrSummedBigSumTree => ElementType::BigSumTree,
                 ElementType::NotCountedOrSummedCountSumTree => ElementType::CountSumTree,
@@ -645,6 +711,10 @@ impl ElementType {
                 }
                 ElementType::NotCountedOrSummedProvableCountProvableBigSumTree => {
                     ElementType::ProvableCountProvableBigSumTree
+                }
+                ElementType::NotCountedOrSummedCountBigSumTree => ElementType::CountBigSumTree,
+                ElementType::NotCountedOrSummedProvableBigSumTree => {
+                    ElementType::ProvableBigSumTree
                 }
                 other => other,
             }
@@ -728,6 +798,7 @@ impl ElementType {
         //   - sum-only: ProvableSumTree
         //   - count-AND-sum: ProvableCountProvableSumTree
         //   - count-AND-big-sum: ProvableCountProvableBigSumTree
+        //   - big-sum-only: ProvableBigSumTree
         //
         // Item / Reference proof variants diverge across families
         // (`KvCount`/`KvSum`/`KvCountSum` and `KvRefValueHash*` analogues).
@@ -757,11 +828,17 @@ impl ElementType {
         let is_provable_count_and_provable_big_sum_tree = matches!(
             parent_base,
             Some(ElementType::ProvableCountProvableBigSumTree)
+                | Some(ElementType::ProvableCountProvableBigSumIndexedTree)
+        );
+        let is_provable_big_sum_only_tree = matches!(
+            parent_base,
+            Some(ElementType::ProvableBigSumTree) | Some(ElementType::ProvableBigSumIndexedTree)
         );
         let is_provable_aggregate_tree = is_provable_count_only_tree
             || is_provable_sum_only_tree
             || is_provable_count_and_provable_sum_tree
-            || is_provable_count_and_provable_big_sum_tree;
+            || is_provable_count_and_provable_big_sum_tree
+            || is_provable_big_sum_only_tree;
 
         let base = self.base();
         if matches!(
@@ -778,6 +855,8 @@ impl ElementType {
             // Items (Item, SumItem, ItemWithSumItem)
             if is_provable_count_and_provable_big_sum_tree {
                 ProofNodeType::KvCountBigSum
+            } else if is_provable_big_sum_only_tree {
+                ProofNodeType::KvBigSum
             } else if is_provable_count_and_provable_sum_tree {
                 ProofNodeType::KvCountSum
             } else if is_provable_count_only_tree {
@@ -795,6 +874,8 @@ impl ElementType {
             // KVRefValueHashSum / KVRefValueHashCountSum.
             if is_provable_count_and_provable_big_sum_tree {
                 ProofNodeType::KvRefValueHashCountBigSum
+            } else if is_provable_big_sum_only_tree {
+                ProofNodeType::KvRefValueHashBigSum
             } else if is_provable_count_and_provable_sum_tree {
                 ProofNodeType::KvRefValueHashCountSum
             } else if is_provable_count_only_tree {
@@ -856,9 +937,11 @@ impl ElementType {
                 | ElementType::BigSumTree
                 | ElementType::CountTree
                 | ElementType::CountSumTree
+                | ElementType::CountBigSumTree
                 | ElementType::ProvableCountTree
                 | ElementType::ProvableCountSumTree
                 | ElementType::ProvableSumTree
+                | ElementType::ProvableBigSumTree
                 | ElementType::ProvableCountProvableSumTree
                 | ElementType::ProvableCountProvableBigSumTree
                 | ElementType::CommitmentTree
@@ -866,8 +949,10 @@ impl ElementType {
                 | ElementType::BulkAppendTree
                 | ElementType::DenseAppendOnlyFixedSizeTree
                 | ElementType::ProvableSumIndexedTree
+                | ElementType::ProvableBigSumIndexedTree
                 | ElementType::ProvableCountIndexedTree
                 | ElementType::ProvableCountProvableSumIndexedTree
+                | ElementType::ProvableCountProvableBigSumIndexedTree
                 | ElementType::PrivateDocumentStore
         )
     }
@@ -892,8 +977,10 @@ impl ElementType {
         matches!(
             self.base(),
             ElementType::ProvableSumIndexedTree
+                | ElementType::ProvableBigSumIndexedTree
                 | ElementType::ProvableCountIndexedTree
                 | ElementType::ProvableCountProvableSumIndexedTree
+                | ElementType::ProvableCountProvableBigSumIndexedTree
         )
     }
 
@@ -961,6 +1048,12 @@ impl ElementType {
                 "item with sum item with backwards references"
             }
             ElementType::ProvableCountProvableBigSumTree => "provable count provable big sum tree",
+            ElementType::CountBigSumTree => "count big sum tree",
+            ElementType::ProvableBigSumTree => "provable big sum tree",
+            ElementType::ProvableBigSumIndexedTree => "provable big sum indexed tree",
+            ElementType::ProvableCountProvableBigSumIndexedTree => {
+                "provable count provable big sum indexed tree"
+            }
             ElementType::NonCountedItem => "non_counted item",
             ElementType::NonCountedReference => "non_counted reference",
             ElementType::NonCountedTree => "non_counted tree",
@@ -994,6 +1087,14 @@ impl ElementType {
             ElementType::NonCountedProvableCountProvableBigSumTree => {
                 "non_counted provable count provable big sum tree"
             }
+            ElementType::NonCountedCountBigSumTree => "non_counted count big sum tree",
+            ElementType::NonCountedProvableBigSumTree => "non_counted provable big sum tree",
+            ElementType::NonCountedProvableBigSumIndexedTree => {
+                "non_counted provable big sum indexed tree"
+            }
+            ElementType::NonCountedProvableCountProvableBigSumIndexedTree => {
+                "non_counted provable count provable big sum indexed tree"
+            }
             ElementType::NotSummedSumTree => "not_summed sum tree",
             ElementType::NotSummedBigSumTree => "not_summed big sum tree",
             ElementType::NotSummedCountSumTree => "not_summed count sum tree",
@@ -1005,6 +1106,8 @@ impl ElementType {
             ElementType::NotSummedProvableCountProvableBigSumTree => {
                 "not_summed provable count provable big sum tree"
             }
+            ElementType::NotSummedCountBigSumTree => "not_summed count big sum tree",
+            ElementType::NotSummedProvableBigSumTree => "not_summed provable big sum tree",
             ElementType::NotCountedOrSummedSumTree => "not_counted_or_summed sum tree",
             ElementType::NotCountedOrSummedBigSumTree => "not_counted_or_summed big sum tree",
             ElementType::NotCountedOrSummedCountSumTree => "not_counted_or_summed count sum tree",
@@ -1019,6 +1122,12 @@ impl ElementType {
             }
             ElementType::NotCountedOrSummedProvableCountProvableBigSumTree => {
                 "not_counted_or_summed provable count provable big sum tree"
+            }
+            ElementType::NotCountedOrSummedCountBigSumTree => {
+                "not_counted_or_summed count big sum tree"
+            }
+            ElementType::NotCountedOrSummedProvableBigSumTree => {
+                "not_counted_or_summed provable big sum tree"
             }
         }
     }
@@ -1065,6 +1174,10 @@ impl TryFrom<u8> for ElementType {
             27 => Ok(ElementType::SumItemWithBackwardsReferences),
             28 => Ok(ElementType::ItemWithSumItemWithBackwardsReferences),
             29 => Ok(ElementType::ProvableCountProvableBigSumTree),
+            30 => Ok(ElementType::CountBigSumTree),
+            31 => Ok(ElementType::ProvableBigSumTree),
+            32 => Ok(ElementType::ProvableBigSumIndexedTree),
+            33 => Ok(ElementType::ProvableCountProvableBigSumIndexedTree),
             128 => Ok(ElementType::NonCountedItem),
             129 => Ok(ElementType::NonCountedReference),
             130 => Ok(ElementType::NonCountedTree),
@@ -1088,6 +1201,10 @@ impl TryFrom<u8> for ElementType {
             151 => Ok(ElementType::NonCountedProvableCountProvableSumIndexedTree),
             152 => Ok(ElementType::NonCountedPrivateDocumentStore),
             157 => Ok(ElementType::NonCountedProvableCountProvableBigSumTree),
+            158 => Ok(ElementType::NonCountedCountBigSumTree),
+            159 => Ok(ElementType::NonCountedProvableBigSumTree),
+            160 => Ok(ElementType::NonCountedProvableBigSumIndexedTree),
+            161 => Ok(ElementType::NonCountedProvableCountProvableBigSumIndexedTree),
             // NotSummed twins occupy the 0xB0..=0xBF family range; slots
             // are assigned explicitly per variant.
             177 => Ok(ElementType::NotSummedProvableSumTree),
@@ -1095,7 +1212,9 @@ impl TryFrom<u8> for ElementType {
             179 => Ok(ElementType::NotSummedProvableCountProvableBigSumTree),
             180 => Ok(ElementType::NotSummedSumTree),
             181 => Ok(ElementType::NotSummedBigSumTree),
+            182 => Ok(ElementType::NotSummedCountBigSumTree),
             183 => Ok(ElementType::NotSummedCountSumTree),
+            184 => Ok(ElementType::NotSummedProvableBigSumTree),
             186 => Ok(ElementType::NotSummedProvableCountSumTree),
             // NotCountedOrSummed twins occupy the 0xC0..=0xCF family range.
             // Bases 4/5/7/10 use the bitwise `0xC0 | base` formula; bases 19
@@ -1108,7 +1227,9 @@ impl TryFrom<u8> for ElementType {
             195 => Ok(ElementType::NotCountedOrSummedProvableCountProvableBigSumTree),
             196 => Ok(ElementType::NotCountedOrSummedSumTree),
             197 => Ok(ElementType::NotCountedOrSummedBigSumTree),
+            198 => Ok(ElementType::NotCountedOrSummedCountBigSumTree),
             199 => Ok(ElementType::NotCountedOrSummedCountSumTree),
+            200 => Ok(ElementType::NotCountedOrSummedProvableBigSumTree),
             202 => Ok(ElementType::NotCountedOrSummedProvableCountSumTree),
             _ => Err(ElementError::CorruptedData(format!(
                 "Unknown element type discriminant: {}",
@@ -1224,8 +1345,24 @@ mod tests {
             ElementType::try_from(29).unwrap(),
             ElementType::ProvableCountProvableBigSumTree
         );
-        // 30..=127 are unallocated and invalid.
-        assert!(ElementType::try_from(30).is_err());
+        assert_eq!(
+            ElementType::try_from(30).unwrap(),
+            ElementType::CountBigSumTree
+        );
+        assert_eq!(
+            ElementType::try_from(31).unwrap(),
+            ElementType::ProvableBigSumTree
+        );
+        assert_eq!(
+            ElementType::try_from(32).unwrap(),
+            ElementType::ProvableBigSumIndexedTree
+        );
+        assert_eq!(
+            ElementType::try_from(33).unwrap(),
+            ElementType::ProvableCountProvableBigSumIndexedTree
+        );
+        // 34..=127 are unallocated and invalid.
+        assert!(ElementType::try_from(34).is_err());
         assert!(ElementType::try_from(100).is_err());
 
         // NonCounted twins (0x80 | base): 128..142, plus 146 (= 0x80|18 =
@@ -1279,7 +1416,27 @@ mod tests {
             ElementType::NonCountedProvableCountProvableBigSumTree
         );
         assert!(ElementType::try_from(156).is_err());
-        assert!(ElementType::try_from(158).is_err());
+        // 158 (= 0x80|30) and 159 (= 0x80|31): the CountBigSumTree and
+        // ProvableBigSumTree twins.
+        assert_eq!(
+            ElementType::try_from(158).unwrap(),
+            ElementType::NonCountedCountBigSumTree
+        );
+        assert_eq!(
+            ElementType::try_from(159).unwrap(),
+            ElementType::NonCountedProvableBigSumTree
+        );
+        // 160 (= 0x80|32) and 161 (= 0x80|33): the ProvableBigSumIndexedTree
+        // and ProvableCountProvableBigSumIndexedTree twins.
+        assert_eq!(
+            ElementType::try_from(160).unwrap(),
+            ElementType::NonCountedProvableBigSumIndexedTree
+        );
+        assert_eq!(
+            ElementType::try_from(161).unwrap(),
+            ElementType::NonCountedProvableCountProvableBigSumIndexedTree
+        );
+        assert!(ElementType::try_from(162).is_err());
         // Bytes between the base and NonCounted-twin ranges are invalid.
         assert!(ElementType::try_from(127).is_err());
         // 143 (= 0x80|15), 144 (= 0x80|16), 145 (= 0x80|17): wrapper bytes
@@ -1288,7 +1445,7 @@ mod tests {
         assert!(ElementType::try_from(144).is_err());
         assert!(ElementType::try_from(145).is_err());
         // 153..=176 (between NonCounted-twin and NotSummed-twin ranges) are
-        // invalid, apart from 157 above (177 = NotSummedProvableSumTree,
+        // invalid, apart from 157..=161 above (177 = NotSummedProvableSumTree,
         // 178 = NotSummedProvableCountProvableSumTree and
         // 179 = NotSummedProvableCountProvableBigSumTree follow).
         assert!(ElementType::try_from(153).is_err());
@@ -1331,10 +1488,19 @@ mod tests {
             ElementType::try_from(179).unwrap(),
             ElementType::NotSummedProvableCountProvableBigSumTree
         );
+        // CountBigSumTree -> 182 (0xB6), ProvableBigSumTree -> 184 (0xB8).
+        assert_eq!(
+            ElementType::try_from(182).unwrap(),
+            ElementType::NotSummedCountBigSumTree
+        );
+        assert_eq!(
+            ElementType::try_from(184).unwrap(),
+            ElementType::NotSummedProvableBigSumTree
+        );
         // All unallocated slots in 0xB0..=0xBF are invalid.
         for bad in [
             0xb0u8, // wrapper byte 16, never a twin
-            0xb6, 0xb8, 0xb9, 0xbb, 0xbc, 0xbd, 0xbe, 0xbf,
+            0xb9, 0xbb, 0xbc, 0xbd, 0xbe, 0xbf,
         ] {
             assert!(
                 ElementType::try_from(bad).is_err(),
@@ -1382,8 +1548,17 @@ mod tests {
             ElementType::try_from(195).unwrap(),
             ElementType::NotCountedOrSummedProvableCountProvableBigSumTree
         );
+        // CountBigSumTree -> 198 (0xC6), ProvableBigSumTree -> 200 (0xC8).
+        assert_eq!(
+            ElementType::try_from(198).unwrap(),
+            ElementType::NotCountedOrSummedCountBigSumTree
+        );
+        assert_eq!(
+            ElementType::try_from(200).unwrap(),
+            ElementType::NotCountedOrSummedProvableBigSumTree
+        );
         // Other bytes in 0xc0..=0xcf (non-sum-bearing-tree bases) are invalid.
-        for bad in [0xc0u8, 0xc6, 0xc8, 0xc9, 0xcb, 0xcc, 0xcd, 0xce, 0xcf] {
+        for bad in [0xc0u8, 0xc9, 0xcb, 0xcc, 0xcd, 0xce, 0xcf] {
             assert!(
                 ElementType::try_from(bad).is_err(),
                 "{:#x} should be rejected",
@@ -2224,16 +2399,28 @@ mod tests {
                 ElementType::ProvableCountProvableBigSumTree,
                 "ProvableCountProvableBigSumTree",
             ),
+            // discriminant 30
+            (
+                Element::CountBigSumTree(None, 0, 0, None),
+                ElementType::CountBigSumTree,
+                "CountBigSumTree",
+            ),
+            // discriminant 31
+            (
+                Element::ProvableBigSumTree(None, 0, None),
+                ElementType::ProvableBigSumTree,
+                "ProvableBigSumTree",
+            ),
         ];
 
-        // Verify we're testing all 23 base discriminants: 0..=14, 18, 19,
-        // 20, 21, 22, 23, 24, 29. (15 = NonCounted wrapper byte, 16 = NotSummed
+        // Verify we're testing all 25 base discriminants: 0..=14, 18, 19,
+        // 20, 21, 22, 23, 24, 29, 30, 31. (15 = NonCounted wrapper byte, 16 = NotSummed
         // wrapper byte, 17 = NotCountedOrSummed wrapper byte — none has
         // a base ElementType variant.)
         assert_eq!(
             test_cases.len(),
-            23,
-            "Expected 23 base Element variants in test, got {}",
+            25,
+            "Expected 25 base Element variants in test, got {}",
             test_cases.len()
         );
 
@@ -2677,6 +2864,97 @@ mod tests {
         // The tree itself, under a parent that commits no aggregate.
         assert_eq!(
             base.proof_node_type(Some(ElementType::Tree)),
+            ProofNodeType::KvValueHash
+        );
+    }
+
+    /// The two other trees with a 128-bit sum take base discriminants 30 and
+    /// 31, a twin in each wrapper family, and `ProvableBigSumTree` has its
+    /// own proof-node kinds for the children of a tree of its type.
+    #[test]
+    fn count_big_sum_tree_and_provable_big_sum_tree_types_and_twins() {
+        for (base, byte, name, non_counted, not_summed, not_counted_or_summed) in [
+            (
+                ElementType::CountBigSumTree,
+                30u8,
+                "count big sum tree",
+                (ElementType::NonCountedCountBigSumTree, 158u8),
+                (ElementType::NotSummedCountBigSumTree, 182u8),
+                (ElementType::NotCountedOrSummedCountBigSumTree, 198u8),
+            ),
+            (
+                ElementType::ProvableBigSumTree,
+                31,
+                "provable big sum tree",
+                (ElementType::NonCountedProvableBigSumTree, 159),
+                (ElementType::NotSummedProvableBigSumTree, 184),
+                (ElementType::NotCountedOrSummedProvableBigSumTree, 200),
+            ),
+        ] {
+            assert_eq!(base as u8, byte);
+            assert!(base.is_tree());
+            assert!(!base.is_indexed_tree());
+            assert!(base.has_combined_value_hash());
+            assert_eq!(base.base(), base);
+            assert_eq!(base.as_str(), name);
+            assert_eq!(ElementType::from_serialized_value(&[byte]).unwrap(), base);
+
+            for (wrapper_byte, (twin, twin_byte)) in [
+                (15u8, non_counted),
+                (16, not_summed),
+                (17, not_counted_or_summed),
+            ] {
+                assert_eq!(
+                    ElementType::from_serialized_value(&[wrapper_byte, byte]).unwrap(),
+                    twin
+                );
+                assert_eq!(twin as u8, twin_byte);
+                assert_eq!(twin.base(), base);
+                assert!(twin.is_tree());
+                assert_eq!(ElementType::try_from(twin_byte).unwrap(), twin);
+            }
+            assert!(non_counted.0.is_non_counted());
+            assert!(not_summed.0.is_not_summed());
+            assert!(not_counted_or_summed.0.is_not_counted_or_summed());
+        }
+
+        // Children of a `ProvableBigSumTree`: values recompute their hash and
+        // carry the big sum, references carry it beside the referenced value,
+        // and subtrees carry their feature type.
+        let parent = Some(ElementType::ProvableBigSumTree);
+        for item in [
+            ElementType::Item,
+            ElementType::SumItem,
+            ElementType::ItemWithSumItem,
+        ] {
+            assert_eq!(item.proof_node_type(parent), ProofNodeType::KvBigSum);
+        }
+        for reference in [ElementType::Reference, ElementType::ReferenceWithSumItem] {
+            assert_eq!(
+                reference.proof_node_type(parent),
+                ProofNodeType::KvRefValueHashBigSum
+            );
+        }
+        for subtree in [
+            ElementType::Tree,
+            ElementType::SumTree,
+            ElementType::ProvableBigSumTree,
+        ] {
+            assert_eq!(
+                subtree.proof_node_type(parent),
+                ProofNodeType::KvValueHashFeatureType
+            );
+        }
+        // A `CountBigSumTree` commits no aggregate, so its children are
+        // proved as the children of a plain tree are.
+        let parent = Some(ElementType::CountBigSumTree);
+        assert_eq!(ElementType::Item.proof_node_type(parent), ProofNodeType::Kv);
+        assert_eq!(
+            ElementType::Reference.proof_node_type(parent),
+            ProofNodeType::KvRefValueHash
+        );
+        assert_eq!(
+            ElementType::Tree.proof_node_type(parent),
             ProofNodeType::KvValueHash
         );
     }

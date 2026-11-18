@@ -119,6 +119,57 @@ pub fn decode_avg_sort_key(bytes: &[u8; 16]) -> i128 {
     unsigned as i128
 }
 
+/// `i128` big-endian with the sign bit flipped: the sort key of the sum axis
+/// of a tree whose sums are 128 bits wide (`ProvableBigSumIndexedTree`,
+/// `ProvableCountProvableBigSumIndexedTree`). Lexicographic order on the
+/// bytes equals signed numeric order on the source `i128`.
+///
+/// The same encoding as [`encode_avg_sort_key`], under the name of what it
+/// orders here.
+#[inline]
+pub fn encode_big_sum_sort_key(sum: i128) -> [u8; 16] {
+    encode_avg_sort_key(sum)
+}
+
+/// Inverse of [`encode_big_sum_sort_key`].
+#[inline]
+pub fn decode_big_sum_sort_key(bytes: &[u8; 16]) -> i128 {
+    decode_avg_sort_key(bytes)
+}
+
+/// The fixed-point average `floor(sum * SCALE / count)` of a 128-bit sum,
+/// as an `i128`, saturating at the ends of the `i128` range.
+///
+/// For a sum that fits an `i64` this is [`compute_avg_fixed_point`] exactly.
+/// A wider sum times the scale does not fit an `i128`, so the product is
+/// never formed: with `sum = q * count + r` (`0 <= r < count`), the average
+/// is `q * SCALE + floor(r * SCALE / count)`, and `r * SCALE` fits a `u128`
+/// since both factors are below `2^64`. The result is exact whenever it fits
+/// an `i128`, which covers every average inside the `i64` range (the
+/// compile-time bound next to [`AVG_FIXED_POINT_SCALE`]). An average beyond
+/// that, which takes entries that are themselves trees with 128-bit sums,
+/// saturates to `i128::MIN` or `i128::MAX`: such entries keep their relative
+/// order with every entry inside the range and tie among themselves, where
+/// the secondary key's item-key suffix orders them.
+///
+/// `0 / 0` is `0`, as for the narrow average.
+#[inline]
+pub fn compute_big_avg_fixed_point(sum: i128, count: u64) -> i128 {
+    if count == 0 {
+        return 0;
+    }
+    let count_i128 = count as i128;
+    let quotient = sum.div_euclid(count_i128);
+    // `rem_euclid` is in `0..count`, so it and its product with the scale
+    // fit a `u128`.
+    let remainder = sum.rem_euclid(count_i128) as u128;
+    let fraction = (remainder * AVG_FIXED_POINT_SCALE as u128) / count as u128;
+    quotient
+        .checked_mul(AVG_FIXED_POINT_SCALE)
+        .and_then(|whole| whole.checked_add(fraction as i128))
+        .unwrap_or(if quotient < 0 { i128::MIN } else { i128::MAX })
+}
+
 #[cfg(test)]
 mod tests {
     use core::cmp::Ordering;
@@ -322,5 +373,101 @@ mod tests {
             encode_avg_sort_key(expected_floor),
             "negative fractional averages must remain in the mathematical floor bucket"
         );
+    }
+
+    /// The wide average equals the narrow one for every sum that fits an
+    /// `i64`, including negative sums that round toward negative infinity.
+    #[test]
+    fn big_avg_matches_the_narrow_avg_inside_the_i64_range() {
+        for sum in [
+            0i64,
+            1,
+            -1,
+            7,
+            -7,
+            1_000_003,
+            -1_000_003,
+            i64::MAX,
+            i64::MIN,
+            i64::MAX - 1,
+            i64::MIN + 1,
+        ] {
+            for count in [1u64, 2, 3, 7, 1_000, u32::MAX as u64, u64::MAX] {
+                assert_eq!(
+                    compute_big_avg_fixed_point(sum as i128, count),
+                    compute_avg_fixed_point(sum, count),
+                    "sum {sum} count {count}"
+                );
+            }
+        }
+        assert_eq!(compute_big_avg_fixed_point(i128::MAX, 0), 0);
+    }
+
+    /// Past the `i64` range the wide average is exact while it fits an
+    /// `i128`, keeps the order of the averages, and saturates beyond.
+    #[test]
+    fn big_avg_is_exact_while_it_fits_and_saturates_beyond() {
+        // Three entries at i64::MAX: the sum does not fit an i64, the
+        // average is i64::MAX exactly.
+        let sum = 3 * (i64::MAX as i128);
+        assert_eq!(
+            compute_big_avg_fixed_point(sum, 3),
+            (i64::MAX as i128) * AVG_FIXED_POINT_SCALE
+        );
+        // A fractional average: (3 * MAX + 1) / 3 = MAX + 1/3.
+        assert_eq!(
+            compute_big_avg_fixed_point(sum + 1, 3),
+            (i64::MAX as i128) * AVG_FIXED_POINT_SCALE + AVG_FIXED_POINT_SCALE / 3
+        );
+        // Negative: floor toward negative infinity.
+        assert_eq!(
+            compute_big_avg_fixed_point(-sum - 1, 3),
+            -(i64::MAX as i128) * AVG_FIXED_POINT_SCALE - AVG_FIXED_POINT_SCALE / 3 - 1
+        );
+        // Order is kept across the ends of the range.
+        let ascending = [
+            compute_big_avg_fixed_point(i128::MIN, 1),
+            compute_big_avg_fixed_point(-sum, 3),
+            compute_big_avg_fixed_point(-1, 2),
+            compute_big_avg_fixed_point(0, 5),
+            compute_big_avg_fixed_point(1, 2),
+            compute_big_avg_fixed_point(sum, 3),
+            compute_big_avg_fixed_point(i128::MAX, 1),
+        ];
+        for pair in ascending.windows(2) {
+            assert!(pair[0] <= pair[1], "{} then {}", pair[0], pair[1]);
+        }
+        // An average beyond what the fixed point can hold saturates.
+        assert_eq!(compute_big_avg_fixed_point(i128::MAX, 1), i128::MAX);
+        assert_eq!(compute_big_avg_fixed_point(i128::MIN, 1), i128::MIN);
+        assert_eq!(compute_big_avg_fixed_point(i128::MAX, 2), i128::MAX);
+        // The largest count with the largest remainder does not overflow.
+        let near = (u64::MAX as i128) - 1;
+        assert_eq!(
+            compute_big_avg_fixed_point(near, u64::MAX),
+            ((near as u128 * AVG_FIXED_POINT_SCALE as u128) / u64::MAX as u128) as i128
+        );
+    }
+
+    /// The wide sum key orders as the sums do, across the `i64` range.
+    #[test]
+    fn big_sum_sort_key_orders_as_the_sums_do() {
+        let sums = [
+            i128::MIN,
+            3 * (i64::MIN as i128),
+            i64::MIN as i128,
+            -1,
+            0,
+            1,
+            i64::MAX as i128,
+            3 * (i64::MAX as i128),
+            i128::MAX,
+        ];
+        for pair in sums.windows(2) {
+            assert!(encode_big_sum_sort_key(pair[0]) < encode_big_sum_sort_key(pair[1]));
+        }
+        for sum in sums {
+            assert_eq!(decode_big_sum_sort_key(&encode_big_sum_sort_key(sum)), sum);
+        }
     }
 }

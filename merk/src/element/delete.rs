@@ -54,35 +54,43 @@ fn delete_op_v0(in_tree_type: TreeType, is_layered: bool) -> Op {
         (TreeType::SumTree, true)
         | (TreeType::BigSumTree, true)
         | (TreeType::CountTree, true)
-        | (TreeType::CountSumTree, true)
+        | (TreeType::CountSumTree | TreeType::CountBigSumTree, true)
         | (TreeType::ProvableCountTree, true)
         | (TreeType::ProvableCountSumTree, true)
-        | (TreeType::ProvableSumTree, true)
+        | (TreeType::ProvableSumTree | TreeType::ProvableBigSumTree, true)
         | (TreeType::ProvableCountProvableSumTree, true)
         | (TreeType::ProvableCountProvableBigSumTree, true)
         | (TreeType::CommitmentTree(_), true)
         | (TreeType::MmrTree, true)
         | (TreeType::BulkAppendTree(_), true)
         | (TreeType::DenseAppendOnlyFixedSizeTree(_), true)
-        | (TreeType::ProvableSumIndexedTree, true)
-        | (TreeType::ProvableCountProvableSumIndexedTree, true)
+        | (TreeType::ProvableSumIndexedTree | TreeType::ProvableBigSumIndexedTree, true)
+        | (
+            TreeType::ProvableCountProvableSumIndexedTree
+            | TreeType::ProvableCountProvableBigSumIndexedTree,
+            true,
+        )
         | (TreeType::PrivateDocumentStore(_), true)
         | (TreeType::ProvableCountIndexedTree, true) => Op::DeleteLayeredMaybeSpecialized,
         (TreeType::SumTree, false)
         | (TreeType::BigSumTree, false)
         | (TreeType::CountTree, false)
-        | (TreeType::CountSumTree, false)
+        | (TreeType::CountSumTree | TreeType::CountBigSumTree, false)
         | (TreeType::ProvableCountTree, false)
         | (TreeType::ProvableCountSumTree, false)
-        | (TreeType::ProvableSumTree, false)
+        | (TreeType::ProvableSumTree | TreeType::ProvableBigSumTree, false)
         | (TreeType::ProvableCountProvableSumTree, false)
         | (TreeType::ProvableCountProvableBigSumTree, false)
         | (TreeType::CommitmentTree(_), false)
         | (TreeType::MmrTree, false)
         | (TreeType::BulkAppendTree(_), false)
         | (TreeType::DenseAppendOnlyFixedSizeTree(_), false)
-        | (TreeType::ProvableSumIndexedTree, false)
-        | (TreeType::ProvableCountProvableSumIndexedTree, false)
+        | (TreeType::ProvableSumIndexedTree | TreeType::ProvableBigSumIndexedTree, false)
+        | (
+            TreeType::ProvableCountProvableSumIndexedTree
+            | TreeType::ProvableCountProvableBigSumIndexedTree,
+            false,
+        )
         | (TreeType::PrivateDocumentStore(_), false)
         | (TreeType::ProvableCountIndexedTree, false) => Op::DeleteMaybeSpecialized,
     }

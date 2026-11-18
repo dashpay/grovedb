@@ -65,8 +65,8 @@ enum NonMerkLowerLayer {
 }
 
 /// The count and sum that the host of a reference row commits into its node
-/// hash, when the host commits both: the reference's proof node has to carry
-/// them for the verifier to rebuild that hash.
+/// hash, when the host commits both or commits a 128-bit sum: the reference's
+/// proof node has to carry them for the verifier to rebuild that hash.
 #[derive(Clone, Copy)]
 enum CountSumForRef {
     /// A `ProvableCountProvableSumTree` host: the row becomes a
@@ -75,6 +75,9 @@ enum CountSumForRef {
     /// A `ProvableCountProvableBigSumTree` host: the row becomes a
     /// `KVRefValueHashCountBigSum`.
     BigSum(u64, i128),
+    /// A `ProvableBigSumTree` host, which commits a 128-bit sum and no
+    /// count: the row becomes a `KVRefValueHashBigSum`.
+    BigSumOnly(i128),
 }
 
 impl GroveDb {
@@ -863,6 +866,18 @@ impl GroveDb {
             ))
             .wrap_with_cost(cost);
         }
+        // And for a `ProvableBigSumTree`, for the same reason.
+        if matches!(
+            subtree.tree_type,
+            grovedb_merk::TreeType::ProvableBigSumTree
+        ) {
+            return Err(Error::NotSupported(
+                "ProvableBigSumTree hosts require V1 proof envelopes; upgrade the grove \
+                 version producing the proof to v3 or later"
+                    .to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
 
         let limit = if path.len() < path_query.path.len() {
             // There is no need for a limit because we are only asking for a single item
@@ -1163,10 +1178,15 @@ impl GroveDb {
                             // `PathQuery`'s axis constructors) for cidx
                             // queries.
                             Ok(Element::ProvableCountIndexedTree(..))
-                            | Ok(Element::ProvableSumIndexedTree(..))
-                            | Ok(Element::ProvableCountProvableSumIndexedTree(..))
-                                if !done_with_results
-                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                            | Ok(
+                                Element::ProvableSumIndexedTree(..)
+                                | Element::ProvableBigSumIndexedTree(..),
+                            )
+                            | Ok(
+                                Element::ProvableCountProvableSumIndexedTree(..)
+                                | Element::ProvableCountProvableBigSumIndexedTree(..),
+                            ) if !done_with_results
+                                && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
                                 return Err(Error::NotSupported(
                                     "V0 proofs do not support subqueries into \
@@ -1181,10 +1201,16 @@ impl GroveDb {
                             | Ok(Element::SumTree(Some(_), ..))
                             | Ok(Element::BigSumTree(Some(_), ..))
                             | Ok(Element::CountTree(Some(_), ..))
-                            | Ok(Element::CountSumTree(Some(_), ..))
+                            | Ok(
+                                Element::CountSumTree(Some(_), ..)
+                                | Element::CountBigSumTree(Some(_), ..),
+                            )
                             | Ok(Element::ProvableCountTree(Some(_), ..))
                             | Ok(Element::ProvableCountSumTree(Some(_), ..))
-                            | Ok(Element::ProvableSumTree(Some(_), ..))
+                            | Ok(
+                                Element::ProvableSumTree(Some(_), ..)
+                                | Element::ProvableBigSumTree(Some(_), ..),
+                            )
                             | Ok(Element::ProvableCountProvableSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountProvableBigSumTree(Some(_), ..))
                             | Ok(Element::CommitmentTree(..))
@@ -1256,18 +1282,24 @@ impl GroveDb {
                             | Ok(Element::BigSumTree(..))
                             | Ok(Element::CountTree(..))
                             | Ok(Element::ProvableCountTree(..))
-                            | Ok(Element::CountSumTree(..))
+                            | Ok(Element::CountSumTree(..) | Element::CountBigSumTree(..))
                             | Ok(Element::ProvableCountSumTree(..))
-                            | Ok(Element::ProvableSumTree(..))
+                            | Ok(Element::ProvableSumTree(..) | Element::ProvableBigSumTree(..))
                             | Ok(Element::ProvableCountProvableSumTree(..))
                             | Ok(Element::ProvableCountProvableBigSumTree(..))
                             | Ok(Element::CommitmentTree(..))
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
                             | Ok(Element::DenseAppendOnlyFixedSizeTree(..))
-                            | Ok(Element::ProvableSumIndexedTree(..))
+                            | Ok(
+                                Element::ProvableSumIndexedTree(..)
+                                | Element::ProvableBigSumIndexedTree(..),
+                            )
                             | Ok(Element::ProvableCountIndexedTree(..))
-                            | Ok(Element::ProvableCountProvableSumIndexedTree(..))
+                            | Ok(
+                                Element::ProvableCountProvableSumIndexedTree(..)
+                                | Element::ProvableCountProvableBigSumIndexedTree(..),
+                            )
                             | Ok(Element::PrivateDocumentStore(..))
                                 if !done_with_results =>
                             {
@@ -1316,19 +1348,25 @@ impl GroveDb {
                             | Ok(Element::SumTree(..))
                             | Ok(Element::BigSumTree(..))
                             | Ok(Element::CountTree(..))
-                            | Ok(Element::CountSumTree(..))
+                            | Ok(Element::CountSumTree(..) | Element::CountBigSumTree(..))
                             | Ok(Element::ProvableCountTree(..))
                             | Ok(Element::ProvableCountSumTree(..))
-                            | Ok(Element::ProvableSumTree(..))
+                            | Ok(Element::ProvableSumTree(..) | Element::ProvableBigSumTree(..))
                             | Ok(Element::ProvableCountProvableSumTree(..))
                             | Ok(Element::ProvableCountProvableBigSumTree(..))
                             | Ok(Element::CommitmentTree(..))
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
                             | Ok(Element::DenseAppendOnlyFixedSizeTree(..))
-                            | Ok(Element::ProvableSumIndexedTree(..))
+                            | Ok(
+                                Element::ProvableSumIndexedTree(..)
+                                | Element::ProvableBigSumIndexedTree(..),
+                            )
                             | Ok(Element::ProvableCountIndexedTree(..))
-                            | Ok(Element::ProvableCountProvableSumIndexedTree(..))
+                            | Ok(
+                                Element::ProvableCountProvableSumIndexedTree(..)
+                                | Element::ProvableCountProvableBigSumIndexedTree(..),
+                            )
                             | Ok(Element::PrivateDocumentStore(..)) => continue,
                             // NonCounted is unwrapped above via into_underlying().
                             Ok(Element::NonCounted(_))
@@ -1957,6 +1995,10 @@ impl GroveDb {
             Element::ProvableSumIndexedTree(_, secondary, ..) => {
                 Some((grovedb_element::indexed::IndexAxis::Sum, secondary.clone()))
             }
+            Element::ProvableBigSumIndexedTree(_, secondary, ..) => Some((
+                grovedb_element::indexed::IndexAxis::BigSum,
+                secondary.clone(),
+            )),
             _ => None,
         };
 
@@ -1981,7 +2023,9 @@ impl GroveDb {
             return Ok(secondary_root).wrap_with_cost(cost);
         }
 
-        let Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) = element else {
+        let (Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _)
+        | Element::ProvableCountProvableBigSumIndexedTree(_, _, _, axes, _)) = element
+        else {
             return Err(Error::CorruptedCodeExecution(
                 "indexed_secondary_attestation called with a non-indexed element",
             ))
@@ -2135,13 +2179,16 @@ impl GroveDb {
                     ops
                 }
                 // The same query runs on a tree of either sum width: a
-                // `ProvableCountProvableBigSumTree` is proved by the wide
-                // primitive, with its own proof nodes, and every other tree
-                // by the narrow one, which refuses the tree types it cannot
-                // serve.
+                // `ProvableCountProvableBigSumTree` or a `ProvableBigSumTree`
+                // is proved by the wide primitive, with its own proof nodes,
+                // and every other tree by the narrow one, which refuses the
+                // tree types it cannot serve.
                 AggregateKind::Sum
-                    if subtree.tree_type
-                        == grovedb_merk::TreeType::ProvableCountProvableBigSumTree =>
+                    if matches!(
+                        subtree.tree_type,
+                        grovedb_merk::TreeType::ProvableCountProvableBigSumTree
+                            | grovedb_merk::TreeType::ProvableBigSumTree
+                    ) =>
                 {
                     let (ops, _) = cost_return_on_error!(
                         &mut cost,
@@ -2303,6 +2350,8 @@ impl GroveDb {
                     | Op::PushInverted(Node::KVCount(..))
                     | Op::Push(Node::KVSum(..))
                     | Op::PushInverted(Node::KVSum(..))
+                    | Op::Push(Node::KVBigSum(..))
+                    | Op::PushInverted(Node::KVBigSum(..))
                     | Op::Push(Node::KVCountSum(..))
                     | Op::PushInverted(Node::KVCountSum(..))
                     | Op::Push(Node::KVCountBigSum(..))
@@ -2344,6 +2393,9 @@ impl GroveDb {
                     TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(count, sum) => {
                         Some(CountSumForRef::BigSum(*count, *sum))
                     }
+                    TreeFeatureType::ProvableBigSummedMerkNode(sum) => {
+                        Some(CountSumForRef::BigSumOnly(*sum))
+                    }
                     _ => None,
                 },
                 _ => None,
@@ -2371,6 +2423,7 @@ impl GroveDb {
                     | Node::KVValueHash(key, value, ..)
                     | Node::KVCount(key, value, _)
                     | Node::KVSum(key, value, _)
+                    | Node::KVBigSum(key, value, _)
                     | Node::KVCountBigSum(key, value, ..)
                     | Node::KVCountSum(key, value, ..)
                     | Node::KVValueHashFeatureType(key, value, ..)
@@ -2399,6 +2452,7 @@ impl GroveDb {
                     | Node::KVBackwardsReferencesValueHash(key, value, ..)
                     | Node::KVCount(key, value, _)
                     | Node::KVSum(key, value, _)
+                    | Node::KVBigSum(key, value, _)
                     | Node::KVCountBigSum(key, value, ..)
                     | Node::KVCountSum(key, value, ..)
                     | Node::KVValueHashFeatureType(key, value, ..)
@@ -2741,8 +2795,8 @@ impl GroveDb {
                             // empty primaries too (the payload commits
                             // NULL_HASH roots naturally).
                             Ok(Element::ProvableCountIndexedTree(..))
-                            | Ok(Element::ProvableSumIndexedTree(..))
-                            | Ok(Element::ProvableCountProvableSumIndexedTree(..))
+                            | Ok(Element::ProvableSumIndexedTree(..) | Element::ProvableBigSumIndexedTree(..))
+                            | Ok(Element::ProvableCountProvableSumIndexedTree(..) | Element::ProvableCountProvableBigSumIndexedTree(..))
                                 if !done_with_results && {
                                     let mut lower_path = path.clone();
                                     lower_path.push(key.as_slice());
@@ -2945,7 +2999,7 @@ impl GroveDb {
                             // by the empty-tree arm below (decrement limit, no
                             // recursion, matching the empty-cidx terminal path in
                             // the verifier).
-                            Ok(ref sidx_elem @ Element::ProvableSumIndexedTree(Some(_), ..))
+                            Ok(ref sidx_elem @ (Element::ProvableSumIndexedTree(Some(_), ..) | Element::ProvableBigSumIndexedTree(Some(_), ..)))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
@@ -2995,8 +3049,13 @@ impl GroveDb {
                                 // Capture the PSIT's current Sum-axis secondary
                                 // root hash for the verifier's combine_hash_three
                                 // attestation.
-                                let secondary_root_key = match sidx_elem {
-                                    Element::ProvableSumIndexedTree(_, s, ..) => s.clone(),
+                                let (sum_axis, secondary_root_key) = match sidx_elem {
+                                    Element::ProvableSumIndexedTree(_, s, ..) => {
+                                        (grovedb_element::indexed::IndexAxis::Sum, s.clone())
+                                    }
+                                    Element::ProvableBigSumIndexedTree(_, s, ..) => {
+                                        (grovedb_element::indexed::IndexAxis::BigSum, s.clone())
+                                    }
                                     _ => unreachable!(),
                                 };
                                 let lower_path_owned: Vec<Vec<u8>> =
@@ -3009,7 +3068,7 @@ impl GroveDb {
                                     &mut cost,
                                     self.open_indexed_secondary_at_path(
                                         sidx_subtree_path,
-                                        grovedb_element::indexed::IndexAxis::Sum,
+                                        sum_axis,
                                         secondary_root_key,
                                         transaction,
                                         None,
@@ -3060,10 +3119,14 @@ impl GroveDb {
                             // axes_digest), mirroring the insert commit path.
                             // Only NON-EMPTY primaries (Some(_)) descend.
                             Ok(
-                                ref pcpsit_elem @ Element::ProvableCountProvableSumIndexedTree(
+                                ref pcpsit_elem @ (Element::ProvableCountProvableSumIndexedTree(
                                     Some(_),
                                     ..,
-                                ),
+                                )
+                                | Element::ProvableCountProvableBigSumIndexedTree(
+                                    Some(_),
+                                    ..,
+                                )),
                             ) if !done_with_results
                                 && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
@@ -3107,7 +3170,7 @@ impl GroveDb {
                                 // secondary root hash (NULL_HASH when empty),
                                 // exactly as the insert commit path does.
                                 let axes = match pcpsit_elem {
-                                    Element::ProvableCountProvableSumIndexedTree(_, _, _, a, _) => {
+                                    Element::ProvableCountProvableSumIndexedTree(_, _, _, a, _) | Element::ProvableCountProvableBigSumIndexedTree(_, _, _, a, _) => {
                                         a.clone()
                                     }
                                     _ => unreachable!(),
@@ -3182,10 +3245,10 @@ impl GroveDb {
                             | Ok(Element::SumTree(Some(_), ..))
                             | Ok(Element::BigSumTree(Some(_), ..))
                             | Ok(Element::CountTree(Some(_), ..))
-                            | Ok(Element::CountSumTree(Some(_), ..))
+                            | Ok(Element::CountSumTree(Some(_), ..) | Element::CountBigSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountTree(Some(_), ..))
                             | Ok(Element::ProvableCountSumTree(Some(_), ..))
-                            | Ok(Element::ProvableSumTree(Some(_), ..))
+                            | Ok(Element::ProvableSumTree(Some(_), ..) | Element::ProvableBigSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountProvableSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountProvableBigSumTree(Some(_), ..))
                                 if !done_with_results
@@ -3272,9 +3335,9 @@ impl GroveDb {
                             | Ok(Element::BigSumTree(Some(_), ..))
                             | Ok(Element::CountTree(Some(_), ..))
                             | Ok(Element::ProvableCountTree(Some(_), ..))
-                            | Ok(Element::CountSumTree(Some(_), ..))
+                            | Ok(Element::CountSumTree(Some(_), ..) | Element::CountBigSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountSumTree(Some(_), ..))
-                            | Ok(Element::ProvableSumTree(Some(_), ..))
+                            | Ok(Element::ProvableSumTree(Some(_), ..) | Element::ProvableBigSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountProvableSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountProvableBigSumTree(Some(_), ..))
                                 if !done_with_results =>
@@ -3337,11 +3400,16 @@ impl GroveDb {
                             // populated indexed tree was rejected.
                             Ok(ref indexed_elem @ Element::ProvableCountIndexedTree(Some(_), ..))
                             | Ok(ref indexed_elem @ Element::ProvableSumIndexedTree(Some(_), ..))
+                            | Ok(ref indexed_elem @ Element::ProvableBigSumIndexedTree(Some(_), ..))
                             | Ok(
                                 ref indexed_elem @ Element::ProvableCountProvableSumIndexedTree(
                                     Some(_),
                                     ..,
                                 ),
+                            )
+                            | Ok(
+                                ref indexed_elem
+                                @ Element::ProvableCountProvableBigSumIndexedTree(Some(_), ..),
                             ) if !done_with_results => {
                                 let mut indexed_path = path.clone();
                                 indexed_path.push(key.as_slice());
@@ -3448,6 +3516,7 @@ impl GroveDb {
                             // emits an empty sum proof (verifier reads
                             // it as sum = 0).
                             Ok(Element::ProvableSumTree(None, ..))
+                            | Ok(Element::ProvableBigSumTree(None, ..))
                             | Ok(Element::ProvableCountProvableSumTree(None, ..))
                             | Ok(Element::ProvableCountProvableBigSumTree(None, ..))
                                 if !done_with_results
@@ -3534,18 +3603,18 @@ impl GroveDb {
                             | Ok(Element::BigSumTree(None, ..))
                             | Ok(Element::CountTree(None, ..))
                             | Ok(Element::ProvableCountTree(None, ..))
-                            | Ok(Element::CountSumTree(None, ..))
+                            | Ok(Element::CountSumTree(None, ..) | Element::CountBigSumTree(None, ..))
                             | Ok(Element::ProvableCountSumTree(None, ..))
-                            | Ok(Element::ProvableSumTree(None, ..))
+                            | Ok(Element::ProvableSumTree(None, ..) | Element::ProvableBigSumTree(None, ..))
                             | Ok(Element::ProvableCountProvableSumTree(None, ..))
                             | Ok(Element::ProvableCountProvableBigSumTree(None, ..))
-                            | Ok(Element::ProvableSumIndexedTree(None, ..))
+                            | Ok(Element::ProvableSumIndexedTree(None, ..) | Element::ProvableBigSumIndexedTree(None, ..))
                             | Ok(Element::ProvableCountIndexedTree(None, ..))
                             // PCPSIT empty form: primary root key is None AND the axes TLV is
                             // empty of secondary keys. We still treat any None-primary PCPSIT
                             // as "empty" for the purposes of the limit decrement — even if
                             // some axes have populated secondaries, we don't recurse here.
-                            | Ok(Element::ProvableCountProvableSumIndexedTree(None, ..))
+                            | Ok(Element::ProvableCountProvableSumIndexedTree(None, ..) | Element::ProvableCountProvableBigSumIndexedTree(None, ..))
                             | Ok(Element::CommitmentTree(..))
                                 if !done_with_results =>
                             {
@@ -3589,19 +3658,19 @@ impl GroveDb {
                             | Ok(Element::SumTree(..))
                             | Ok(Element::BigSumTree(..))
                             | Ok(Element::CountTree(..))
-                            | Ok(Element::CountSumTree(..))
+                            | Ok(Element::CountSumTree(..) | Element::CountBigSumTree(..))
                             | Ok(Element::ProvableCountTree(..))
                             | Ok(Element::ProvableCountSumTree(..))
-                            | Ok(Element::ProvableSumTree(..))
+                            | Ok(Element::ProvableSumTree(..) | Element::ProvableBigSumTree(..))
                             | Ok(Element::ProvableCountProvableSumTree(..))
                             | Ok(Element::ProvableCountProvableBigSumTree(..))
                             | Ok(Element::CommitmentTree(..))
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
                             | Ok(Element::DenseAppendOnlyFixedSizeTree(..))
-                            | Ok(Element::ProvableSumIndexedTree(..))
+                            | Ok(Element::ProvableSumIndexedTree(..) | Element::ProvableBigSumIndexedTree(..))
                             | Ok(Element::ProvableCountIndexedTree(..))
-                            | Ok(Element::ProvableCountProvableSumIndexedTree(..))
+                            | Ok(Element::ProvableCountProvableSumIndexedTree(..) | Element::ProvableCountProvableBigSumIndexedTree(..))
                             | Ok(Element::PrivateDocumentStore(..)) => continue,
                             // NonCounted is unwrapped above via into_underlying().
                             Ok(Element::NonCounted(_))
@@ -3965,6 +4034,12 @@ impl GroveDb {
                     serialized_referenced_elem,
                     reference_element_hash,
                     count,
+                    sum,
+                ),
+                CountSumForRef::BigSumOnly(sum) => Node::KVRefValueHashBigSum(
+                    key.to_owned(),
+                    serialized_referenced_elem,
+                    reference_element_hash,
                     sum,
                 ),
             }

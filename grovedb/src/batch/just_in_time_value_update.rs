@@ -210,9 +210,11 @@ where
                     | Element::BigSumTree(..)
                     | Element::CountTree(..)
                     | Element::CountSumTree(..)
+                    | Element::CountBigSumTree(..)
                     | Element::ProvableCountTree(..)
                     | Element::ProvableCountSumTree(..)
                     | Element::ProvableSumTree(..)
+                    | Element::ProvableBigSumTree(..)
                     | Element::ProvableCountProvableSumTree(..)
                     | Element::ProvableCountProvableBigSumTree(..)
                     | Element::CommitmentTree(..)
@@ -220,8 +222,10 @@ where
                     | Element::BulkAppendTree(..)
                     | Element::DenseAppendOnlyFixedSizeTree(..)
                     | Element::ProvableSumIndexedTree(..)
+                    | Element::ProvableBigSumIndexedTree(..)
                     | Element::ProvableCountIndexedTree(..)
                     | Element::ProvableCountProvableSumIndexedTree(..)
+                    | Element::ProvableCountProvableBigSumIndexedTree(..)
                     | Element::PrivateDocumentStore(..) => {
                         let tree_type = new_element
                             .tree_type()

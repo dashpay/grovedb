@@ -814,6 +814,127 @@ impl Encode for Op {
                 sum.encode_into(dest)?;
             }
 
+            // ProvableBigSumTree proof variants. Tag bytes 0x6E..=0x7B mirror
+            // the ProvableSumTree layout, carrying an i128 sum immediately
+            // after the value-bearing fields.
+
+            // Push: ProvableBigSumTree variants
+            Op::Push(Node::KVBigSum(key, value, sum)) => {
+                let key_len = key_len_u8(key)?;
+                if value.len() < 65536 {
+                    dest.write_all(&[0x6e, key_len])?;
+                    dest.write_all(key)?;
+                    (value.len() as u16).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    sum.encode_into(dest)?;
+                } else {
+                    dest.write_all(&[0x6f, key_len])?;
+                    dest.write_all(key)?;
+                    (value.len() as u32).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    sum.encode_into(dest)?;
+                }
+            }
+            Op::Push(Node::KVHashBigSum(kv_hash, sum)) => {
+                dest.write_all(&[0x70])?;
+                dest.write_all(kv_hash)?;
+                sum.encode_into(dest)?;
+            }
+            Op::Push(Node::KVRefValueHashBigSum(key, value, value_hash, sum)) => {
+                let key_len = key_len_u8(key)?;
+                if value.len() < 65536 {
+                    dest.write_all(&[0x71, key_len])?;
+                    dest.write_all(key)?;
+                    (value.len() as u16).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                    sum.encode_into(dest)?;
+                } else {
+                    dest.write_all(&[0x72, key_len])?;
+                    dest.write_all(key)?;
+                    (value.len() as u32).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                    sum.encode_into(dest)?;
+                }
+            }
+            Op::Push(Node::KVDigestBigSum(key, value_hash, sum)) => {
+                let key_len = key_len_u8(key)?;
+
+                dest.write_all(&[0x73, key_len])?;
+                dest.write_all(key)?;
+                dest.write_all(value_hash)?;
+                sum.encode_into(dest)?;
+            }
+            Op::Push(Node::HashWithBigSum(kv_hash, left_child_hash, right_child_hash, sum)) => {
+                dest.write_all(&[0x74])?;
+                dest.write_all(kv_hash)?;
+                dest.write_all(left_child_hash)?;
+                dest.write_all(right_child_hash)?;
+                sum.encode_into(dest)?;
+            }
+
+            // PushInverted: ProvableBigSumTree variants
+            Op::PushInverted(Node::KVBigSum(key, value, sum)) => {
+                let key_len = key_len_u8(key)?;
+                if value.len() < 65536 {
+                    dest.write_all(&[0x75, key_len])?;
+                    dest.write_all(key)?;
+                    (value.len() as u16).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    sum.encode_into(dest)?;
+                } else {
+                    dest.write_all(&[0x76, key_len])?;
+                    dest.write_all(key)?;
+                    (value.len() as u32).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    sum.encode_into(dest)?;
+                }
+            }
+            Op::PushInverted(Node::KVHashBigSum(kv_hash, sum)) => {
+                dest.write_all(&[0x77])?;
+                dest.write_all(kv_hash)?;
+                sum.encode_into(dest)?;
+            }
+            Op::PushInverted(Node::KVRefValueHashBigSum(key, value, value_hash, sum)) => {
+                let key_len = key_len_u8(key)?;
+                if value.len() < 65536 {
+                    dest.write_all(&[0x78, key_len])?;
+                    dest.write_all(key)?;
+                    (value.len() as u16).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                    sum.encode_into(dest)?;
+                } else {
+                    dest.write_all(&[0x79, key_len])?;
+                    dest.write_all(key)?;
+                    (value.len() as u32).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                    sum.encode_into(dest)?;
+                }
+            }
+            Op::PushInverted(Node::KVDigestBigSum(key, value_hash, sum)) => {
+                let key_len = key_len_u8(key)?;
+
+                dest.write_all(&[0x7a, key_len])?;
+                dest.write_all(key)?;
+                dest.write_all(value_hash)?;
+                sum.encode_into(dest)?;
+            }
+            Op::PushInverted(Node::HashWithBigSum(
+                kv_hash,
+                left_child_hash,
+                right_child_hash,
+                sum,
+            )) => {
+                dest.write_all(&[0x7b])?;
+                dest.write_all(kv_hash)?;
+                dest.write_all(left_child_hash)?;
+                dest.write_all(right_child_hash)?;
+                sum.encode_into(dest)?;
+            }
+
             Op::Parent => dest.write_all(&[0x10])?,
             Op::Child => dest.write_all(&[0x11])?,
             Op::ParentInverted => dest.write_all(&[0x12])?,
@@ -1062,6 +1183,40 @@ impl Encode for Op {
             }
             Op::PushInverted(Node::HashWithCountAndBigSum(_, _, _, count, sum)) => {
                 1 + 3 * HASH_LENGTH + count.encoding_length()? + sum.encoding_length()?
+            }
+            // ProvableBigSumTree variants: Push
+            Op::Push(Node::KVBigSum(key, value, sum)) => {
+                let header = if value.len() < 65536 { 4 } else { 6 };
+                header + key.len() + value.len() + sum.encoding_length()?
+            }
+            Op::Push(Node::KVHashBigSum(_, sum)) => 1 + HASH_LENGTH + sum.encoding_length()?,
+            Op::Push(Node::KVRefValueHashBigSum(key, value, _, sum)) => {
+                let header = if value.len() < 65536 { 4 } else { 6 };
+                header + key.len() + value.len() + HASH_LENGTH + sum.encoding_length()?
+            }
+            Op::Push(Node::KVDigestBigSum(key, _, sum)) => {
+                2 + key.len() + HASH_LENGTH + sum.encoding_length()?
+            }
+            Op::Push(Node::HashWithBigSum(_, _, _, sum)) => {
+                1 + 3 * HASH_LENGTH + sum.encoding_length()?
+            }
+            // ProvableBigSumTree variants: PushInverted
+            Op::PushInverted(Node::KVBigSum(key, value, sum)) => {
+                let header = if value.len() < 65536 { 4 } else { 6 };
+                header + key.len() + value.len() + sum.encoding_length()?
+            }
+            Op::PushInverted(Node::KVHashBigSum(_, sum)) => {
+                1 + HASH_LENGTH + sum.encoding_length()?
+            }
+            Op::PushInverted(Node::KVRefValueHashBigSum(key, value, _, sum)) => {
+                let header = if value.len() < 65536 { 4 } else { 6 };
+                header + key.len() + value.len() + HASH_LENGTH + sum.encoding_length()?
+            }
+            Op::PushInverted(Node::KVDigestBigSum(key, _, sum)) => {
+                2 + key.len() + HASH_LENGTH + sum.encoding_length()?
+            }
+            Op::PushInverted(Node::HashWithBigSum(_, _, _, sum)) => {
+                1 + 3 * HASH_LENGTH + sum.encoding_length()?
             }
             Op::Parent => 1,
             Op::Child => 1,
@@ -2366,6 +2521,201 @@ impl Decode for Op {
                     left_child_hash,
                     right_child_hash,
                     count,
+                    sum,
+                ))
+            }
+
+            // ProvableBigSumTree decoder arms. Mirror the ProvableSumTree
+            // family's layouts; each variant carries the i128 sum.
+            0x6e => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u16 = Decode::decode(&mut input)?;
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let sum: i128 = Decode::decode(&mut input)?;
+
+                Self::Push(Node::KVBigSum(key, value, sum))
+            }
+            0x6f => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u32 = Decode::decode(&mut input)?;
+                if value_len > MAX_VALUE_LEN {
+                    return Err(ed::Error::UnexpectedByte(0x6f));
+                }
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let sum: i128 = Decode::decode(&mut input)?;
+
+                Self::Push(Node::KVBigSum(key, value, sum))
+            }
+            0x70 => {
+                let mut kv_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut kv_hash)?;
+                let sum: i128 = Decode::decode(&mut input)?;
+
+                Self::Push(Node::KVHashBigSum(kv_hash, sum))
+            }
+            0x71 => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u16 = Decode::decode(&mut input)?;
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                let sum: i128 = Decode::decode(&mut input)?;
+                Self::Push(Node::KVRefValueHashBigSum(key, value, value_hash, sum))
+            }
+            0x72 => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u32 = Decode::decode(&mut input)?;
+                if value_len > MAX_VALUE_LEN {
+                    return Err(ed::Error::UnexpectedByte(0x72));
+                }
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                let sum: i128 = Decode::decode(&mut input)?;
+                Self::Push(Node::KVRefValueHashBigSum(key, value, value_hash, sum))
+            }
+            0x73 => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                let sum: i128 = Decode::decode(&mut input)?;
+                Self::Push(Node::KVDigestBigSum(key, value_hash, sum))
+            }
+            0x74 => {
+                let mut kv_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut kv_hash)?;
+                let mut left_child_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut left_child_hash)?;
+                let mut right_child_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut right_child_hash)?;
+                let sum: i128 = Decode::decode(&mut input)?;
+
+                Self::Push(Node::HashWithBigSum(
+                    kv_hash,
+                    left_child_hash,
+                    right_child_hash,
+                    sum,
+                ))
+            }
+            0x75 => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u16 = Decode::decode(&mut input)?;
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let sum: i128 = Decode::decode(&mut input)?;
+
+                Self::PushInverted(Node::KVBigSum(key, value, sum))
+            }
+            0x76 => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u32 = Decode::decode(&mut input)?;
+                if value_len > MAX_VALUE_LEN {
+                    return Err(ed::Error::UnexpectedByte(0x76));
+                }
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let sum: i128 = Decode::decode(&mut input)?;
+
+                Self::PushInverted(Node::KVBigSum(key, value, sum))
+            }
+            0x77 => {
+                let mut kv_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut kv_hash)?;
+                let sum: i128 = Decode::decode(&mut input)?;
+
+                Self::PushInverted(Node::KVHashBigSum(kv_hash, sum))
+            }
+            0x78 => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u16 = Decode::decode(&mut input)?;
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                let sum: i128 = Decode::decode(&mut input)?;
+                Self::PushInverted(Node::KVRefValueHashBigSum(key, value, value_hash, sum))
+            }
+            0x79 => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u32 = Decode::decode(&mut input)?;
+                if value_len > MAX_VALUE_LEN {
+                    return Err(ed::Error::UnexpectedByte(0x79));
+                }
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                let sum: i128 = Decode::decode(&mut input)?;
+                Self::PushInverted(Node::KVRefValueHashBigSum(key, value, value_hash, sum))
+            }
+            0x7a => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                let sum: i128 = Decode::decode(&mut input)?;
+                Self::PushInverted(Node::KVDigestBigSum(key, value_hash, sum))
+            }
+            0x7b => {
+                let mut kv_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut kv_hash)?;
+                let mut left_child_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut left_child_hash)?;
+                let mut right_child_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut right_child_hash)?;
+                let sum: i128 = Decode::decode(&mut input)?;
+
+                Self::PushInverted(Node::HashWithBigSum(
+                    kv_hash,
+                    left_child_hash,
+                    right_child_hash,
                     sum,
                 ))
             }

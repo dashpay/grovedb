@@ -226,6 +226,10 @@ mod tests {
                 Node::KVHashSum(..) | Node::HashWithSum(..) => vec![],
                 Node::KVHashCountSum(..) | Node::HashWithCountAndSum(..) => vec![],
                 Node::KVHashCountBigSum(..) | Node::HashWithCountAndBigSum(..) => vec![],
+                Node::KVBigSum(k, ..) => k.clone(),
+                Node::KVDigestBigSum(k, ..) => k.clone(),
+                Node::KVRefValueHashBigSum(k, ..) => k.clone(),
+                Node::KVHashBigSum(..) | Node::HashWithBigSum(..) => vec![],
             };
             results.push((key, count));
         }

@@ -6,7 +6,9 @@
 //! from a hash it has already verified, layer by layer, until the
 //! reconstructed GroveDB root hash is returned for the caller to compare.
 
-use grovedb_element::indexed::{encode_count_sort_key, encode_sum_sort_key, IndexAxis};
+use grovedb_element::indexed::{
+    encode_big_sum_sort_key, encode_count_sort_key, encode_sum_sort_key, IndexAxis,
+};
 use grovedb_merk::{
     proofs::query::QueryItem as MerkQueryItemForRange,
     tree::{axes_digest, CryptoHash},
@@ -137,7 +139,7 @@ fn verify_deepest_layer(
     other_axes_root_hashes: &[(u8, [u8; 32])],
     target_is_pcpsit: bool,
     err_label: &'static str,
-) -> Result<CryptoHash, Error> {
+) -> Result<(CryptoHash, bool), Error> {
     let last_idx = layer_proofs.len() - 1;
     let cidx_key = path[last_idx];
     let (cidx_value_bytes, layer_root, cidx_value_hash_recorded) =
@@ -164,7 +166,10 @@ fn verify_deepest_layer(
             hex::encode(combined)
         )));
     }
-    Ok(layer_root)
+    // The width of the proved tree's sum, off the bytes the comparison
+    // above just bound.
+    let wide_primary = super::canonical_row::is_wide_indexed_element_bytes(&cidx_value_bytes)?;
+    Ok((layer_root, wide_primary))
 }
 
 /// The attestation-binding core shared by the standalone envelopes and
@@ -214,12 +219,34 @@ pub(crate) fn recompute_axis_binding_digest(
                     ))
                 })?
                 .base();
-        let expected_family = if target_is_pcpsit {
-            grovedb_element::ElementType::ProvableCountProvableSumIndexedTree
+        // The count and avg axes exist at both sum widths; the sum axis
+        // only on the 64-bit trees and the big sum axis only on the
+        // 128-bit ones. `expected_family` is the family named in the
+        // refusal; a multi-axis target at the other width is accepted for
+        // the two axes both widths have.
+        let (expected_family, also_accepted) = if target_is_pcpsit {
+            match axis {
+                IndexAxis::Count | IndexAxis::Avg => (
+                    grovedb_element::ElementType::ProvableCountProvableSumIndexedTree,
+                    Some(grovedb_element::ElementType::ProvableCountProvableBigSumIndexedTree),
+                ),
+                IndexAxis::Sum => (
+                    grovedb_element::ElementType::ProvableCountProvableSumIndexedTree,
+                    None,
+                ),
+                IndexAxis::BigSum => (
+                    grovedb_element::ElementType::ProvableCountProvableBigSumIndexedTree,
+                    None,
+                ),
+            }
         } else {
             match axis {
-                IndexAxis::Count => grovedb_element::ElementType::ProvableCountIndexedTree,
-                IndexAxis::Sum => grovedb_element::ElementType::ProvableSumIndexedTree,
+                IndexAxis::Count => (grovedb_element::ElementType::ProvableCountIndexedTree, None),
+                IndexAxis::Sum => (grovedb_element::ElementType::ProvableSumIndexedTree, None),
+                IndexAxis::BigSum => (
+                    grovedb_element::ElementType::ProvableBigSumIndexedTree,
+                    None,
+                ),
                 IndexAxis::Avg => {
                     return Err(Error::CorruptedData(format!(
                         "{err_label}: Avg axis is only valid on a \
@@ -229,7 +256,7 @@ pub(crate) fn recompute_axis_binding_digest(
                 }
             }
         };
-        if proved_family != expected_family {
+        if proved_family != expected_family && Some(proved_family) != also_accepted {
             return Err(Error::CorruptedData(format!(
                 "{err_label}: proved element family {proved_family:?} does not match the \
                  requested axis {axis:?} (expected {expected_family:?}); possible \
@@ -672,7 +699,7 @@ fn verify_indexed_axis_range_inner(
     // rebound envelope, but the chain check names the actual defect
     // ("this proof is not for the axis you asked about") where a row
     // check would only report the downstream symptom.
-    let initial_root = verify_deepest_layer(
+    let (initial_root, wide_primary) = verify_deepest_layer(
         &envelope.layer_proofs,
         path,
         &envelope.primary_root_hash,
@@ -693,6 +720,7 @@ fn verify_indexed_axis_range_inner(
 
     let entries = decode_axis_entries_from_result_set(
         axis,
+        wide_primary,
         &sec_result.result_set,
         &envelope.target_chains,
         grove_version,
@@ -742,7 +770,7 @@ fn verify_indexed_axis_paginated_inner(
         ))
     })?;
     let secondary_root_hash = count_offset_result.root_hash;
-    let initial_root = verify_deepest_layer(
+    let (initial_root, wide_primary) = verify_deepest_layer(
         &envelope.layer_proofs,
         path,
         &envelope.primary_root_hash,
@@ -767,6 +795,7 @@ fn verify_indexed_axis_paginated_inner(
     // folding one target chain per row for an envelope that fails anyway.
     let entries = decode_axis_entries_from_count_offset_items(
         axis,
+        wide_primary,
         &count_offset_result.returned_items,
         &envelope.target_chains,
         grove_version,
@@ -807,6 +836,14 @@ fn verify_indexed_axis_aggregate_inner(
     let inner_range = match axis {
         IndexAxis::Count => count_aggregate_inner_range(envelope.lo, envelope.hi),
         IndexAxis::Sum => sum_aggregate_inner_range(envelope.lo, envelope.hi),
+        IndexAxis::BigSum => match fold {
+            AggregateFold::Population => big_sum_aggregate_inner_range(envelope.lo, envelope.hi),
+            AggregateFold::Total => {
+                return Err(Error::NotSupported(
+                    "indexed-axis aggregate proofs have no total for the BigSum axis".to_string(),
+                ));
+            }
+        },
         IndexAxis::Avg => {
             return Err(Error::NotSupported(
                 "indexed-axis aggregate proofs are not defined for the Avg axis".to_string(),
@@ -840,7 +877,7 @@ fn verify_indexed_axis_aggregate_inner(
         }
     };
 
-    let initial_root = verify_deepest_layer(
+    let (initial_root, _) = verify_deepest_layer(
         &envelope.layer_proofs,
         path,
         &envelope.primary_root_hash,
@@ -890,6 +927,7 @@ fn verify_indexed_axis_aggregate_inner(
 /// through its immediate node.
 fn authenticate_axis_row(
     axis: IndexAxis,
+    wide_primary: bool,
     secondary_key: &[u8],
     row_bytes: &[u8],
     row_recorded_value_hash: CryptoHash,
@@ -902,7 +940,8 @@ fn authenticate_axis_row(
     // `minimal`-gated write path: a light client rebuilds the row a proof
     // claims without ever opening a Merk.
     use super::canonical_row::{
-        axis_payload_sum, axis_row_reference, axis_sort_key_len, make_axis_secondary_key,
+        axis_payload_sum, axis_row_reference, axis_sort_key_len, entry_count_and_sum,
+        make_axis_secondary_key,
     };
 
     let sort_len = axis_sort_key_len(axis);
@@ -916,7 +955,8 @@ fn authenticate_axis_row(
 
     let (immediate, immediate_commitment, terminal) =
         super::target_chain::authenticate_target_chain(chain, grove_version)?;
-    let (count, sum) = immediate.count_sum_value_or_default();
+    // At the width of the proved tree's sum, as the mirror read it.
+    let (count, sum) = entry_count_and_sum(&immediate, wide_primary);
 
     let expected_secondary_key = make_axis_secondary_key(axis, count, sum, &primary_key);
     if expected_secondary_key != secondary_key {
@@ -960,12 +1000,13 @@ fn authenticate_axis_row(
 /// recorded_value_hash)` triples plus their positionally-matched chains.
 fn axis_entries_from_rows(
     axis: IndexAxis,
+    wide_primary: bool,
     rows: Vec<(Vec<u8>, Vec<u8>, CryptoHash)>,
     chains: &[IndexedTargetChain],
     grove_version: &GroveVersion,
 ) -> Result<AxisEntries, Error> {
     use grovedb_element::indexed::sort_keys::{
-        decode_avg_sort_key, decode_count_sort_key, decode_sum_sort_key,
+        decode_avg_sort_key, decode_big_sum_sort_key, decode_count_sort_key, decode_sum_sort_key,
     };
 
     if rows.len() != chains.len() {
@@ -979,10 +1020,12 @@ fn axis_entries_from_rows(
     let mut count_entries = Vec::new();
     let mut sum_entries = Vec::new();
     let mut avg_entries = Vec::new();
+    let mut big_sum_entries = Vec::new();
 
     for ((secondary_key, row_bytes, recorded_value_hash), chain) in rows.into_iter().zip(chains) {
         let (primary_key, value) = authenticate_axis_row(
             axis,
+            wide_primary,
             &secondary_key,
             &row_bytes,
             recorded_value_hash,
@@ -1017,6 +1060,15 @@ fn axis_entries_from_rows(
                     value,
                 });
             }
+            IndexAxis::BigSum => {
+                let mut b = [0u8; 16];
+                b.copy_from_slice(&secondary_key[..16]);
+                big_sum_entries.push(IndexedAxisEntry {
+                    ordering_value: decode_big_sum_sort_key(&b),
+                    primary_key,
+                    value,
+                });
+            }
         }
     }
 
@@ -1024,6 +1076,7 @@ fn axis_entries_from_rows(
         IndexAxis::Count => AxisEntries::Count(count_entries),
         IndexAxis::Sum => AxisEntries::Sum(sum_entries),
         IndexAxis::Avg => AxisEntries::Avg(avg_entries),
+        IndexAxis::BigSum => AxisEntries::BigSum(big_sum_entries),
     })
 }
 
@@ -1031,6 +1084,7 @@ fn axis_entries_from_rows(
 /// range proof.
 pub(crate) fn decode_axis_entries_from_result_set(
     axis: IndexAxis,
+    wide_primary: bool,
     result_set: &[grovedb_merk::proofs::query::ProvedKeyOptionalValue],
     chains: &[IndexedTargetChain],
     grove_version: &GroveVersion,
@@ -1047,12 +1101,13 @@ pub(crate) fn decode_axis_entries_from_result_set(
             Ok((proved.key.clone(), value, proved.proof))
         })
         .collect::<Result<Vec<_>, Error>>()?;
-    axis_entries_from_rows(axis, rows, chains, grove_version)
+    axis_entries_from_rows(axis, wide_primary, rows, chains, grove_version)
 }
 
 /// Decode + authenticate the rows of a count-offset paginated axis proof.
 pub(crate) fn decode_axis_entries_from_count_offset_items(
     axis: IndexAxis,
+    wide_primary: bool,
     items: &[grovedb_merk::proofs::query::CountOffsetReturnedItem],
     chains: &[IndexedTargetChain],
     grove_version: &GroveVersion,
@@ -1061,7 +1116,7 @@ pub(crate) fn decode_axis_entries_from_count_offset_items(
         .iter()
         .map(|it| (it.key.clone(), it.value.clone(), it.value_hash))
         .collect::<Vec<_>>();
-    axis_entries_from_rows(axis, rows, chains, grove_version)
+    axis_entries_from_rows(axis, wide_primary, rows, chains, grove_version)
 }
 
 pub(crate) fn count_aggregate_inner_range(lo: i128, hi: i128) -> MerkQueryItemForRange {
@@ -1111,6 +1166,24 @@ pub(crate) fn sum_aggregate_inner_range(lo: i128, hi: i128) -> MerkQueryItemForR
         MerkQueryItemForRange::RangeFrom(lo_bytes..)
     } else {
         let upper_bytes = encode_sum_sort_key(hi_i + 1).to_vec();
+        MerkQueryItemForRange::Range(lo_bytes..upper_bytes)
+    }
+}
+
+/// The big sum axis's byte range for the inclusive band `[lo, hi]`, as the
+/// prover and the verifier both build it. Every `i128` is in the axis's
+/// domain, so there is no out-of-domain shape; the band's population is the
+/// only aggregate the axis has.
+pub(crate) fn big_sum_aggregate_inner_range(lo: i128, hi: i128) -> MerkQueryItemForRange {
+    if lo > hi {
+        let bytes = encode_big_sum_sort_key(hi.saturating_add(1)).to_vec();
+        return MerkQueryItemForRange::Range(bytes.clone()..bytes);
+    }
+    let lo_bytes = encode_big_sum_sort_key(lo).to_vec();
+    if hi == i128::MAX {
+        MerkQueryItemForRange::RangeFrom(lo_bytes..)
+    } else {
+        let upper_bytes = encode_big_sum_sort_key(hi + 1).to_vec();
         MerkQueryItemForRange::Range(lo_bytes..upper_bytes)
     }
 }

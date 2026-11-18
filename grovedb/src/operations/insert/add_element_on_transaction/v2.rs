@@ -64,7 +64,7 @@ use grovedb_path::SubtreePath;
 use grovedb_storage::{rocksdb_storage::PrefixedRocksDbTransactionContext, StorageBatch};
 use grovedb_version::version::GroveVersion;
 
-use super::super::{check_provable_count_provable_big_sum_tree_creation, InsertOptions};
+use super::super::{check_wide_sum_tree_creation, InsertOptions};
 use crate::{Element, Error, GroveDb, Transaction};
 
 impl GroveDb {
@@ -160,15 +160,11 @@ impl GroveDb {
             }
         }
 
-        // A grove version that predates the wide count and sum tree refuses
-        // to create one.
+        // A grove version that predates a tree with a 128-bit provable or
+        // counted sum refuses to create one.
         cost_return_on_error_no_add!(
             cost,
-            check_provable_count_provable_big_sum_tree_creation(
-                &element,
-                "insert Element::ProvableCountProvableBigSumTree",
-                grove_version,
-            )
+            check_wide_sum_tree_creation(&element, "insert", grove_version,)
         );
 
         // Dispatch via the underlying element so a NonCounted wrapper takes
@@ -252,9 +248,11 @@ impl GroveDb {
             | Element::BigSumTree(value, ..)
             | Element::CountTree(value, ..)
             | Element::CountSumTree(value, ..)
+            | Element::CountBigSumTree(value, ..)
             | Element::ProvableCountTree(value, ..)
             | Element::ProvableCountSumTree(value, ..)
             | Element::ProvableSumTree(value, ..)
+            | Element::ProvableBigSumTree(value, ..)
             | Element::ProvableCountProvableSumTree(value, ..)
             | Element::ProvableCountProvableBigSumTree(value, ..) => {
                 if value.is_some() {
@@ -751,6 +749,160 @@ impl GroveDb {
                     )
                 );
             }
+            Element::ProvableBigSumIndexedTree(primary, secondary, sum_value, _) => {
+                let (primary_root_hash, secondary_root_hash) =
+                    if primary.is_none() && secondary.is_none() && *sum_value == 0 {
+                        (NULL_HASH, NULL_HASH)
+                    } else {
+                        if primary.is_none() || secondary.is_none() {
+                            return Err(Error::InvalidInput(
+                                "ProvableBigSumIndexedTree direct insertion: non-empty PSIT must \
+                                 have BOTH primary_root_key and secondary_root_key set to \
+                                 Some(_); partial state is not permitted",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        let child_path_owned = path.derive_owned_with_child(key.to_vec());
+                        let child_path = SubtreePath::from(&child_path_owned);
+                        let primary_merk = cost_return_on_error!(
+                            &mut cost,
+                            self.open_transactional_merk_at_path(
+                                child_path.clone(),
+                                transaction,
+                                Some(batch),
+                                grove_version,
+                            )
+                        );
+                        let (p_hash, p_root_key, p_aggregate) = cost_return_on_error!(
+                            &mut cost,
+                            primary_merk
+                                .root_hash_key_and_aggregate_data()
+                                .map_err(Error::MerkError)
+                        );
+                        if &p_root_key != primary {
+                            return Err(Error::InvalidInput(
+                                "ProvableBigSumIndexedTree direct insertion: provided \
+                                 primary_root_key does not match the existing primary Merk's \
+                                 root key",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        // Bind the claimed sum_value to the primary's actual
+                        // aggregate so a forged sum cannot be hash-committed
+                        // and propagated into ancestor aggregates.
+                        if p_aggregate.parent_tree_type() != TreeType::ProvableBigSumTree {
+                            return Err(Error::InvalidInput(
+                                "ProvableBigSumIndexedTree direct insertion: the \
+                                 existing primary Merk is not a provable-big-sum \
+                                 tree; the element variant does not match the \
+                                 stored subtree",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        // Fetch the STORED element once — it serves two guards.
+                        //
+                        // In-place conversion guard: a DIFFERENT tree element
+                        // already stored at this key can pass every check above
+                        // (a plain ProvableBigSumTree's subtree is byte-compatible
+                        // with this variant's primary, so the claimed roots and
+                        // aggregates all match), but the per-axis secondaries
+                        // would start EMPTY over a populated primary — the same
+                        // no-reindex hazard as an axes schema change. Refuse
+                        // the conversion.
+                        //
+                        // Canonical secondary binding (issue #897): the claimed
+                        // secondary_root_key must equal the STORED element's —
+                        // the secondary Merk below is opened WITH the incoming
+                        // key, so comparing the returned root key against that
+                        // same input is circular (any row node key of the
+                        // secondary opens successfully as a "root"). See the
+                        // PCIT arm above for the full rationale.
+                        let stored_underlying = cost_return_on_error!(
+                            &mut cost,
+                            Element::get_optional(subtree_to_insert_into, key, true, grove_version)
+                                .map_err(Error::MerkError)
+                        )
+                        .map(|existing| existing.into_underlying());
+                        match stored_underlying {
+                            Some(Element::ProvableBigSumIndexedTree(_, stored_secondary, _, _)) => {
+                                if &stored_secondary != secondary {
+                                    return Err(Error::InvalidInput(
+                                        "ProvableBigSumIndexedTree direct insertion: provided \
+                                     secondary_root_key does not match the stored element's \
+                                     canonical secondary root key",
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+                            }
+                            Some(other) if other.is_any_tree() => {
+                                return Err(Error::InvalidInput(
+                                "ProvableBigSumIndexedTree direct insertion: an existing tree of a \
+                                 different type is stored at this key; converting it in place \
+                                 would leave the secondary index empty over a populated \
+                                 primary (no reindex path)",
+                            ))
+                            .wrap_with_cost(cost);
+                            }
+                            // No stored element / stored non-tree cannot occur:
+                            // `open_transactional_merk_at_path` above only
+                            // succeeds when a stored TREE element exists at this
+                            // key. Fail closed anyway.
+                            _ => {
+                                return Err(Error::InvalidInput(
+                                    "ProvableBigSumIndexedTree direct insertion: a non-empty claim \
+                                 requires an existing stored indexed element to validate the \
+                                 secondary root key against",
+                                ))
+                                .wrap_with_cost(cost);
+                            }
+                        }
+                        if p_aggregate.as_summed_i128() != *sum_value {
+                            return Err(Error::InvalidInput(
+                                "ProvableBigSumIndexedTree direct insertion: provided \
+                                 sum_value does not match the existing primary Merk's \
+                                 aggregate sum",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        let secondary_merk = cost_return_on_error!(
+                            &mut cost,
+                            self.open_indexed_secondary_at_path(
+                                child_path,
+                                grovedb_element::indexed::IndexAxis::BigSum,
+                                secondary.clone(),
+                                transaction,
+                                Some(batch),
+                                grove_version,
+                            )
+                        );
+                        let (s_hash, s_root_key, _) = cost_return_on_error!(
+                            &mut cost,
+                            secondary_merk
+                                .root_hash_key_and_aggregate_data()
+                                .map_err(Error::MerkError)
+                        );
+                        if &s_root_key != secondary {
+                            return Err(Error::InvalidInput(
+                                "ProvableBigSumIndexedTree direct insertion: provided \
+                                 secondary_root_key does not match the existing secondary \
+                                 Merk's root key",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        (p_hash, s_hash)
+                    };
+                cost_return_on_error_into!(
+                    &mut cost,
+                    element.insert_count_indexed_subtree(
+                        subtree_to_insert_into,
+                        key,
+                        primary_root_hash,
+                        secondary_root_hash,
+                        Some(options.as_merk_options()),
+                        grove_version,
+                    )
+                );
+            }
             Element::ProvableCountProvableSumIndexedTree(
                 primary,
                 count_value,
@@ -962,6 +1114,240 @@ impl GroveDb {
                         if &s_root_key != sec_root_key {
                             return Err(Error::InvalidInput(
                                 "ProvableCountProvableSumIndexedTree direct insertion: provided \
+                                 axis secondary_root_key does not match the existing secondary \
+                                 Merk's root key",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        axis_hashes.push((*tag, s_hash));
+                    }
+                    let digest =
+                        grovedb_merk::tree::axes_digest(&axis_hashes).unwrap_add_cost(&mut cost);
+                    (p_hash, digest)
+                };
+                cost_return_on_error_into!(
+                    &mut cost,
+                    element.insert_count_indexed_subtree(
+                        subtree_to_insert_into,
+                        key,
+                        primary_root_hash,
+                        second_hash,
+                        Some(options.as_merk_options()),
+                        grove_version,
+                    )
+                );
+            }
+            Element::ProvableCountProvableBigSumIndexedTree(
+                primary,
+                count_value,
+                sum_value,
+                axes,
+                _,
+            ) => {
+                // Validate the axes TLV is canonical (sorted by tag, no
+                // duplicates, 1..=3 entries, known tags) for BOTH the
+                // empty and non-empty cases. The `Element` enum is public
+                // and `axes_digest` does not validate, so without this an
+                // empty PCPSIT with invalid/duplicate/unsorted axes could
+                // be persisted (its digest would be computed over the
+                // malformed TLV). Reuses the same check the constructors
+                // run.
+                cost_return_on_error_no_add!(
+                    cost,
+                    Element::validate_pcpbsit_axes(axes).map_err(|_| Error::InvalidInput(
+                        "ProvableCountProvableBigSumIndexedTree direct insertion: axes must be \
+                         canonical (1..=3 entries, sorted ascending by tag, no duplicates, \
+                         tags in 0..=2)"
+                    ))
+                );
+                let axes_all_empty = axes.iter().all(|(_, sk)| sk.is_none());
+                let (primary_root_hash, second_hash) = if primary.is_none()
+                    && axes_all_empty
+                    && *count_value == 0
+                    && *sum_value == 0
+                {
+                    // Every axis slot is NULL_HASH for the empty case.
+                    let zero_axes: Vec<(u8, grovedb_merk::CryptoHash)> =
+                        axes.iter().map(|(t, _)| (*t, NULL_HASH)).collect();
+                    let digest =
+                        grovedb_merk::tree::axes_digest(&zero_axes).unwrap_add_cost(&mut cost);
+                    (NULL_HASH, digest)
+                } else {
+                    if primary.is_none() {
+                        return Err(Error::InvalidInput(
+                            "ProvableCountProvableBigSumIndexedTree direct insertion: non-empty \
+                             PCPSIT must have primary_root_key = Some(_); partial state is not \
+                             permitted",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                    // (Axes canonical form already validated above.)
+                    let child_path_owned = path.derive_owned_with_child(key.to_vec());
+                    let child_path = SubtreePath::from(&child_path_owned);
+                    let primary_merk = cost_return_on_error!(
+                        &mut cost,
+                        self.open_transactional_merk_at_path(
+                            child_path.clone(),
+                            transaction,
+                            Some(batch),
+                            grove_version,
+                        )
+                    );
+                    let (p_hash, p_root_key, p_aggregate) = cost_return_on_error!(
+                        &mut cost,
+                        primary_merk
+                            .root_hash_key_and_aggregate_data()
+                            .map_err(Error::MerkError)
+                    );
+                    if &p_root_key != primary {
+                        return Err(Error::InvalidInput(
+                            "ProvableCountProvableBigSumIndexedTree direct insertion: provided \
+                             primary_root_key does not match the existing primary Merk's root \
+                             key",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                    // Bind BOTH the claimed count_value and sum_value to the
+                    // primary's actual aggregate so forged count/sum cannot be
+                    // hash-committed and propagated into ancestor aggregates.
+                    if p_aggregate.parent_tree_type() != TreeType::ProvableCountProvableBigSumTree {
+                        return Err(Error::InvalidInput(
+                            "ProvableCountProvableBigSumIndexedTree direct insertion: the existing \
+                             primary Merk is not a provable-count-provable-sum tree; the element \
+                             variant does not match the stored subtree",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                    if p_aggregate.as_count_u64() != *count_value {
+                        return Err(Error::InvalidInput(
+                            "ProvableCountProvableBigSumIndexedTree direct insertion: provided \
+                             count_value does not match the existing primary Merk's aggregate \
+                             count",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                    if p_aggregate.as_summed_i128() != *sum_value {
+                        return Err(Error::InvalidInput(
+                            "ProvableCountProvableBigSumIndexedTree direct insertion: provided \
+                             sum_value does not match the existing primary Merk's aggregate \
+                             sum",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                    // The axes SCHEMA must match what is already stored.
+                    // `axes_digest` is recomputed from the element's own
+                    // claimed axes, so adding an axis to a populated PCPSIT
+                    // was accepted and produced a consistent-looking element
+                    // whose new axis indexes NONE of the existing rows
+                    // (`indexed_avg_top_k` then returns an empty set for a
+                    // populated tree, and `verify_grovedb` reports nothing
+                    // because it re-derives the digest from the same claimed
+                    // axes). Dropping an axis likewise orphans a populated
+                    // secondary Merk. There is no backfill/reindex API, so
+                    // the only safe answer is to refuse the schema change.
+                    // Canonical axis-root binding (issue #897) rides the same
+                    // stored-element fetch: each claimed per-axis
+                    // secondary_root_key must equal the STORED element's —
+                    // the per-axis Merks below are opened WITH the incoming
+                    // keys, so comparing the returned root key against that
+                    // same input is circular (any row node key of an axis
+                    // secondary opens successfully as a "root"). See the
+                    // PCIT arm above for the full rationale.
+                    let stored_underlying = cost_return_on_error!(
+                        &mut cost,
+                        Element::get_optional(subtree_to_insert_into, key, true, grove_version)
+                            .map_err(Error::MerkError)
+                    )
+                    .map(|existing| existing.into_underlying());
+                    match stored_underlying {
+                        Some(Element::ProvableCountProvableBigSumIndexedTree(
+                            _,
+                            _,
+                            _,
+                            stored_axes,
+                            _,
+                        )) => {
+                            let stored_tags: Vec<u8> =
+                                stored_axes.iter().map(|(t, _)| *t).collect();
+                            let incoming_tags: Vec<u8> = axes.iter().map(|(t, _)| *t).collect();
+                            if stored_tags != incoming_tags {
+                                return Err(Error::InvalidInput(
+                                    "ProvableCountProvableBigSumIndexedTree direct insertion: the \
+                                     axes schema does not match the stored element; axes cannot \
+                                     be added or removed on an existing indexed tree (no reindex \
+                                     path exists)",
+                                ))
+                                .wrap_with_cost(cost);
+                            }
+                            if &stored_axes != axes {
+                                return Err(Error::InvalidInput(
+                                    "ProvableCountProvableBigSumIndexedTree direct insertion: a \
+                                     provided axis secondary_root_key does not match the stored \
+                                     element's canonical axis root key",
+                                ))
+                                .wrap_with_cost(cost);
+                            }
+                        }
+                        // In-place conversion guard: a stored tree of a
+                        // DIFFERENT type (e.g. a plain
+                        // ProvableCountProvableBigSumTree, whose subtree is
+                        // byte-compatible with a PCPSIT primary) would pass the
+                        // aggregate checks above while the axis secondaries
+                        // start EMPTY over a populated primary — the same
+                        // no-reindex hazard as an axes schema change. Refuse
+                        // the conversion.
+                        Some(other) if other.is_any_tree() => {
+                            return Err(Error::InvalidInput(
+                                "ProvableCountProvableBigSumIndexedTree direct insertion: an \
+                                 existing tree of a different type is stored at this key; \
+                                 converting it in place would leave the axis secondaries empty \
+                                 over a populated primary (no reindex path)",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        // No stored element / stored non-tree cannot occur:
+                        // `open_transactional_merk_at_path` above only
+                        // succeeds when a stored TREE element exists at this
+                        // key. Fail closed anyway.
+                        _ => {
+                            return Err(Error::InvalidInput(
+                                "ProvableCountProvableBigSumIndexedTree direct insertion: a \
+                                 non-empty claim requires an existing stored indexed element to \
+                                 validate the axis secondary root keys against",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                    }
+                    // For each axis, open + verify and collect its root hash.
+                    let mut axis_hashes: Vec<(u8, grovedb_merk::CryptoHash)> =
+                        Vec::with_capacity(axes.len());
+                    for (tag, sec_root_key) in axes.iter() {
+                        let axis = cost_return_on_error_no_add!(
+                            cost,
+                            grovedb_element::indexed::IndexAxis::try_from_tag(*tag).map_err(|e| {
+                                Error::CorruptedData(format!("invalid axis tag in PCPSIT: {e}"))
+                            })
+                        );
+                        let secondary_merk = cost_return_on_error!(
+                            &mut cost,
+                            self.open_indexed_secondary_at_path(
+                                child_path.clone(),
+                                axis,
+                                sec_root_key.clone(),
+                                transaction,
+                                Some(batch),
+                                grove_version,
+                            )
+                        );
+                        let (s_hash, s_root_key, _) = cost_return_on_error!(
+                            &mut cost,
+                            secondary_merk
+                                .root_hash_key_and_aggregate_data()
+                                .map_err(Error::MerkError)
+                        );
+                        if &s_root_key != sec_root_key {
+                            return Err(Error::InvalidInput(
+                                "ProvableCountProvableBigSumIndexedTree direct insertion: provided \
                                  axis secondary_root_key does not match the existing secondary \
                                  Merk's root key",
                             ))
