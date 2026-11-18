@@ -65,12 +65,18 @@ impl GroveDb {
     ///   the tree: it adds nothing to a 64-bit sum and its whole sum to a
     ///   128-bit one, so the tree's sum would change. Every child must add
     ///   what it adds today.
-    /// - An indexed tree holds an entry its counterpart does not accept, or
-    ///   its axes are not canonical. A tree written as the supported paths
-    ///   write it has neither.
-    /// - An indexed tree holds a key longer than 239 bytes and has no average
-    ///   axis. The big sum axis ranks keys of at most 239 bytes, like the
-    ///   average axis, where the sum axis ranks keys of up to 247.
+    /// - The tree holds a child its counterpart does not accept, or, for an
+    ///   indexed tree, axes that are not canonical. A tree written as the
+    ///   supported paths write it has neither.
+    /// - The tree's element does not record the root key, count and sum its
+    ///   tree has, as a tree inserted with a sum and no children does not.
+    ///   The conversion neither carries the difference over nor repairs it.
+    /// - An indexed tree whose sum axis becomes the big sum axis holds a key
+    ///   longer than 239 bytes: a `ProvableSumIndexedTree`, or a
+    ///   `ProvableCountProvableSumIndexedTree` with a sum axis and no average
+    ///   axis. The sum axis ranks keys of up to 247 bytes and the big sum
+    ///   axis, like the average axis, keys of at most 239. A tree that ranks
+    ///   by count alone gains no big sum axis and keeps its 247.
     ///
     /// # Cost
     ///
@@ -238,7 +244,7 @@ impl GroveDb {
 
         let tree_path = path.derive_owned_with_child(key);
         let tree_path_ref: SubtreePath<B> = (&tree_path).into();
-        let mut tree_merk = cost_return_on_error!(
+        let tree_merk = cost_return_on_error!(
             &mut cost,
             self.open_transactional_merk_at_path(
                 tree_path_ref.clone(),
@@ -257,13 +263,39 @@ impl GroveDb {
                      has none"
                 ))
         );
-        cost_return_on_error_into!(
+
+        // The converted element is written from what the tree holds, so the
+        // stored one must already say the same: a tree inserted with a sum
+        // and no children would otherwise come out with another sum.
+        let (_, stored_root_key, stored_aggregate) =
+            cost_return_on_error_into!(&mut cost, tree_merk.root_hash_key_and_aggregate_data());
+        let element_of_the_tree = match narrow_element.underlying() {
+            Element::ProvableSumIndexedTree(_, secondary_root_key, ..) => narrow_element
+                .reconstruct_with_two_root_keys(
+                    stored_root_key,
+                    secondary_root_key.clone(),
+                    stored_aggregate,
+                ),
+            Element::ProvableCountProvableSumIndexedTree(.., axes, _) => narrow_element
+                .reconstruct_with_axes(stored_root_key, stored_aggregate, axes.clone()),
+            _ => narrow_element.reconstruct_with_root_key(stored_root_key, stored_aggregate),
+        };
+        if element_of_the_tree.as_ref() != Some(&narrow_element) {
+            return Err(Error::InvalidInput(
+                "the tree's element does not record the root key, count and sum its tree has: \
+                 the conversion would change them",
+            ))
+            .wrap_with_cost(cost);
+        }
+
+        let tree_merk = cost_return_on_error_into!(
             &mut cost,
             tree_merk.convert_to_big_sum_tree(
                 // Each child must be one the converted tree accepts, adding
                 // to it what it adds to the tree today.
                 &|_key, value, widened_feature_type| {
                     let child = Element::deserialize(value, grove_version)?;
+                    child.validate_insertable_into(wide_tree_type)?;
                     if child.get_feature_type(wide_tree_type)? != widened_feature_type {
                         return Err(MerkError::InvalidInputError(
                             "the tree holds a child that would add a different count or sum \

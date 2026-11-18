@@ -228,8 +228,14 @@ These are refused, and a refused call leaves the tree as it was:
   nothing to a 64-bit sum and its whole sum to a 128-bit one, so the
   conversion would change the tree's sum. Every child must add what it
   adds today.
-- An indexed tree with an entry its counterpart does not accept, with axes
-  that are not canonical, or with a key the big sum axis cannot rank (see
+- A tree holding a child its counterpart does not accept, or an indexed
+  tree with axes that are not canonical. The supported paths write
+  neither.
+- A tree whose element does not record the root key, count and sum the
+  tree has, as a tree inserted with a sum and no children does not. The
+  conversion neither carries the difference over nor repairs it.
+- An indexed tree whose sum axis becomes the big sum axis, with a key that
+  axis cannot rank (see
   [Indexed trees with a 128-bit sum](count-indexed-tree.md#indexed-trees-with-a-128-bit-sum)).
 
 Only the tree named is converted. A sum tree inside it keeps its type and

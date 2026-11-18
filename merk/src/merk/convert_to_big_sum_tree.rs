@@ -47,8 +47,8 @@ where
 {
     /// Rewrites this tree, which keeps a 64-bit sum, as the tree type that
     /// holds the same nodes with the sum in 128 bits
-    /// ([`TreeType::big_sum_counterpart`]), and sets [`Merk::tree_type`] to
-    /// it.
+    /// ([`TreeType::big_sum_counterpart`]), and returns it with
+    /// [`Merk::tree_type`] set to that type.
     ///
     /// A node records its own contribution and each child link records the
     /// child's aggregate, both at the width of the tree's sum, so every node
@@ -62,10 +62,10 @@ where
     /// they mean is the caller's:
     ///
     /// - `check_node` is called with each node's key, its value and the
-    ///   feature type the node is about to take, before anything changes,
-    ///   and an error from it refuses the conversion. A caller whose values
-    ///   decide what a node contributes checks here that the value agrees
-    ///   with the widened feature type under the wide tree type.
+    ///   feature type the node is about to take, and an error from it
+    ///   refuses the conversion. A caller whose values decide what a node
+    ///   contributes checks here that the value agrees with the widened
+    ///   feature type under the wide tree type.
     /// - `old_specialized_cost` gives the storage cost of a node as it is
     ///   stored, under the tree type the Merk has now, from its key and
     ///   value: what [`Merk::apply_with_specialized_costs`] takes. Each node
@@ -73,9 +73,11 @@ where
     ///   storage, so the cost reports the growth as added bytes.
     /// - `value_defined_cost_fn` is the one the Merk was opened with.
     ///
-    /// The whole tree is loaded and checked before any node changes: a
-    /// refusal or a failed read leaves the Merk as it was. The tree is held
-    /// in memory until the write.
+    /// Nothing is written until every node is checked and widened, and the
+    /// whole tree is held in memory until then. The Merk is taken by value
+    /// and handed back only once the write is made: after a refusal or a
+    /// failure there is no handle left to go on with, and storage is as it
+    /// was.
     ///
     /// Available where
     /// `operations.insert.convert_to_big_sum_tree` is enabled.
@@ -83,12 +85,12 @@ where
     /// The caller owns what lies outside this Merk: the element that
     /// describes the tree in its parent, and an indexed tree's secondaries.
     pub fn convert_to_big_sum_tree<V>(
-        &mut self,
+        mut self,
         check_node: &impl Fn(&[u8], &[u8], TreeFeatureType) -> Result<(), Error>,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         value_defined_cost_fn: Option<&V>,
         grove_version: &GroveVersion,
-    ) -> CostResult<(), Error>
+    ) -> CostResult<Self, Error>
     where
         V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
     {
@@ -119,30 +121,23 @@ where
             .wrap_with_cost(cost);
         };
 
-        // Load and check everything first, so that a refusal changes nothing.
-        let source = self.source();
-        cost_return_on_error!(
-            &mut cost,
-            self.use_tree_mut(|maybe_root| match maybe_root {
-                Some(root) => load_and_check(
-                    root,
-                    &source,
-                    narrow_tree_type,
-                    check_node,
-                    value_defined_cost_fn,
-                    grove_version,
-                ),
-                None => Ok(()).wrap_with_cost(OperationCost::default()),
-            })
-        );
-
-        cost_return_on_error_no_add!(
-            cost,
-            self.use_tree_mut(|maybe_root| match maybe_root {
-                Some(root) => widen_loaded(root),
-                None => Ok(()),
-            })
-        );
+        {
+            let source = self.source();
+            cost_return_on_error!(
+                &mut cost,
+                self.use_tree_mut(|maybe_root| match maybe_root {
+                    Some(root) => widen_node(
+                        root,
+                        &source,
+                        narrow_tree_type,
+                        check_node,
+                        value_defined_cost_fn,
+                        grove_version,
+                    ),
+                    None => Ok(()).wrap_with_cost(OperationCost::default()),
+                })
+            );
+        }
         self.tree_type = wide_tree_type;
 
         // No key is added, removed or moved, so the root key stays and only
@@ -150,16 +145,22 @@ where
         let key_updates =
             KeyUpdates::new(BTreeSet::new(), BTreeSet::new(), LinkedList::new(), None);
         let aux: &AuxMerkBatch<Vec<u8>> = &[];
-        self.commit(key_updates, aux, None, old_specialized_cost, grove_version)
-            .add_cost(cost)
+        cost_return_on_error!(
+            &mut cost,
+            self.commit(key_updates, aux, None, old_specialized_cost, grove_version)
+        );
+        Ok(self).wrap_with_cost(cost)
     }
 }
 
-/// Loads `node`'s whole subtree into memory and checks each node: it must
-/// carry the feature type of the tree it is in, and the caller's check must
-/// accept the feature type it is about to take. Changes nothing but which
-/// nodes are in memory.
-fn load_and_check<S: Fetch, V>(
+/// Checks `node` and every node under it, gives each its widened feature
+/// type, loads the nodes that are not in memory and marks each link as
+/// modified so that the commit writes the node and computes its aggregate
+/// and hash again.
+///
+/// A node must carry the feature type of the tree it is in, and the caller's
+/// check must accept the feature type it is about to take.
+fn widen_node<S: Fetch, V>(
     node: &mut TreeNode,
     source: &S,
     narrow_tree_type: TreeType,
@@ -191,54 +192,34 @@ where
                 node.load(left, source, value_defined_cost_fn, grove_version)
             );
         }
-        if let Some(child) = node.child_mut(left) {
-            cost_return_on_error!(
-                &mut cost,
-                load_and_check(
-                    child,
-                    source,
-                    narrow_tree_type,
-                    check_node,
-                    value_defined_cost_fn,
-                    grove_version,
-                )
-            );
-        }
-    }
-
-    Ok(()).wrap_with_cost(cost)
-}
-
-/// Gives `node` and every node under it its widened feature type, and marks
-/// each link as modified so that the commit writes the node and computes its
-/// aggregate and hash again. The subtree is in memory and checked
-/// ([`load_and_check`]), so nothing here reads storage.
-fn widen_loaded(node: &mut TreeNode) -> Result<(), Error> {
-    for left in [true, false] {
         let Some(link) = node.slot_mut(left).take() else {
             continue;
         };
-        match link {
+        let mut child = match link {
             Link::Loaded { tree, .. }
             | Link::Modified { tree, .. }
-            | Link::Uncommitted { tree, .. } => {
-                let mut child = tree;
-                let widened = widen_loaded(&mut child);
-                *node.slot_mut(left) = Link::maybe_from_modified_tree(Some(child));
-                widened?;
-            }
-            reference @ Link::Reference { .. } => {
-                *node.slot_mut(left) = Some(reference);
+            | Link::Uncommitted { tree, .. } => tree,
+            Link::Reference { .. } => {
                 return Err(Error::CorruptedState(
-                    "a child link is a reference after its subtree was loaded",
-                ));
+                    "a child link is still a reference after it was loaded",
+                ))
+                .wrap_with_cost(cost);
             }
-        }
+        };
+        cost_return_on_error!(
+            &mut cost,
+            widen_node(
+                &mut child,
+                source,
+                narrow_tree_type,
+                check_node,
+                value_defined_cost_fn,
+                grove_version,
+            )
+        );
+        *node.slot_mut(left) = Link::maybe_from_modified_tree(Some(child));
     }
 
-    let widened = widened_feature_type(node.feature_type()).ok_or(Error::CorruptedState(
-        "a node lost the feature type it was checked with",
-    ))?;
     // The commit bills a node against its old value. A node this handle
     // wrote itself has none, or the one it replaced: what is stored is the
     // value it holds now, which the conversion keeps.
@@ -247,13 +228,12 @@ fn widen_loaded(node: &mut TreeNode) -> Result<(), Error> {
     }
     node.known_storage_cost = None;
     node.set_feature_type(widened);
-    Ok(())
+
+    Ok(()).wrap_with_cost(cost)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::ops::Deref;
-
     use grovedb_costs::OperationCost;
     use grovedb_element::Element;
     use grovedb_path::SubtreePath;
@@ -261,7 +241,7 @@ mod tests {
         rocksdb_storage::{
             test_utils::TempStorage, PrefixedRocksDbImmediateStorageContext, RocksDbStorage,
         },
-        Storage, StorageContext,
+        Storage,
     };
     use grovedb_version::version::{v4::GROVE_V4, GroveVersion};
 
@@ -270,11 +250,15 @@ mod tests {
             costs::ElementCostExtensions, insert::ElementInsertToStorageExtensions,
             tree_type::ElementTreeTypeExtensions,
         },
-        test_utils::TempMerk,
         tree::{kv::ValueDefinedCostType, AggregateData},
         tree_type::TreeType,
-        Error, Merk, Op, TreeFeatureType,
+        CryptoHash, Error, Merk, Op, TreeFeatureType,
     };
+
+    type Transaction<'a> = <RocksDbStorage as Storage<'a>>::Transaction;
+    /// A Merk that writes as it commits, so that the cost of a call is the
+    /// cost the call returns.
+    type ImmediateMerk<'a> = Merk<PrefixedRocksDbImmediateStorageContext<'a>>;
 
     const PAIRS: [(TreeType, TreeType); 6] = [
         (TreeType::SumTree, TreeType::BigSumTree),
@@ -294,13 +278,31 @@ mod tests {
         ),
     ];
 
+    fn open<'a>(
+        storage: &'a TempStorage,
+        tx: &'a Transaction<'a>,
+        tree_type: TreeType,
+        grove_version: &GroveVersion,
+    ) -> ImmediateMerk<'a> {
+        Merk::open_base(
+            storage
+                .get_immediate_storage_context(SubtreePath::empty(), tx)
+                .unwrap(),
+            tree_type,
+            Some(&Element::value_defined_cost_for_serialized_value),
+            grove_version,
+        )
+        .unwrap()
+        .expect("open")
+    }
+
     /// Converts a Merk whose values are elements, as GroveDB does: a node's
     /// element must contribute under the wide tree type what the node
     /// contributes now.
-    fn convert<'db, S: StorageContext<'db>>(
-        merk: &mut Merk<S>,
+    fn convert<'a>(
+        merk: ImmediateMerk<'a>,
         grove_version: &GroveVersion,
-    ) -> (Result<(), Error>, OperationCost) {
+    ) -> (Result<ImmediateMerk<'a>, Error>, OperationCost) {
         let narrow = merk.tree_type;
         let wide = narrow.big_sum_counterpart();
         let converted = merk.convert_to_big_sum_tree(
@@ -330,68 +332,81 @@ mod tests {
         (converted.value, converted.cost)
     }
 
-    /// A Merk of `tree_type` holding sum items of both signs, an item and a
-    /// sum tree element, in an order that takes the tree several levels
-    /// deep.
-    fn filled(tree_type: TreeType, grove_version: &GroveVersion) -> TempMerk {
-        let mut merk = TempMerk::new_with_tree_type(grove_version, tree_type);
+    /// Sum items of both signs, an item and a sum tree element, in an order
+    /// that takes the tree several levels deep.
+    fn fill(merk: &mut ImmediateMerk<'_>, grove_version: &GroveVersion) {
         for i in 0..40u8 {
             let key = [i.wrapping_mul(37)];
             Element::new_sum_item(i64::from(i) - 10)
-                .insert(&mut merk, key, None, grove_version)
+                .insert(merk, key, None, grove_version)
                 .unwrap()
                 .expect("insert a sum item");
         }
         Element::new_item(vec![1, 2, 3])
-            .insert(&mut merk, [1, 1], None, grove_version)
+            .insert(merk, [1, 1], None, grove_version)
             .unwrap()
             .expect("insert an item");
         Element::SumTree(None, 1_000, None)
-            .insert_subtree(&mut merk, [2, 2], [7; 32], None, grove_version)
+            .insert_subtree(merk, [2, 2], [7; 32], None, grove_version)
             .unwrap()
             .expect("insert a sum tree");
-        merk
+    }
+
+    /// The root hash and aggregate a tree of `tree_type` has when it is
+    /// written with [`fill`].
+    fn built(tree_type: TreeType, grove_version: &GroveVersion) -> (CryptoHash, AggregateData) {
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let mut merk = open(&storage, &tx, tree_type, grove_version);
+        fill(&mut merk, grove_version);
+        (
+            merk.root_hash().unwrap(),
+            merk.aggregate_data().expect("aggregate"),
+        )
     }
 
     #[test]
     fn a_converted_merk_is_the_merk_built_wide() {
         let grove_version = GroveVersion::latest();
         for (narrow, wide) in PAIRS {
-            let mut converted = filled(narrow, grove_version);
-            let narrow_root = converted.root_hash().unwrap();
-            convert(&mut converted, grove_version).0.expect("convert");
-            let built_wide = filled(wide, grove_version);
+            let storage = TempStorage::new();
+            let tx = storage.start_transaction();
+            let mut merk = open(&storage, &tx, narrow, grove_version);
+            fill(&mut merk, grove_version);
+            let narrow_root = merk.root_hash().unwrap();
 
-            assert_eq!(converted.deref().tree_type, wide, "{narrow}");
+            let converted = convert(merk, grove_version).0.expect("convert");
+
+            let (wide_root, wide_aggregate) = built(wide, grove_version);
+            assert_eq!(converted.tree_type, wide, "{narrow}");
             assert_eq!(
                 converted.aggregate_data().expect("aggregate"),
-                built_wide.aggregate_data().expect("aggregate"),
+                wide_aggregate,
                 "{narrow}"
             );
-            assert_eq!(
-                converted.root_hash().unwrap(),
-                built_wide.root_hash().unwrap(),
-                "{narrow}"
-            );
+            assert_eq!(converted.root_hash().unwrap(), wide_root, "{narrow}");
             // A sum in the node hashes moves the root, a sum beside them
             // does not.
             let sum_is_hashed = !matches!(narrow, TreeType::SumTree | TreeType::CountSumTree);
-            assert_eq!(
-                converted.root_hash().unwrap() != narrow_root,
-                sum_is_hashed,
-                "{narrow}"
-            );
+            assert_eq!(wide_root != narrow_root, sum_is_hashed, "{narrow}");
+
+            // What was written is what the handle holds.
+            drop(converted);
+            let reopened = open(&storage, &tx, wide, grove_version);
+            assert_eq!(reopened.root_hash().unwrap(), wide_root, "{narrow}");
         }
     }
 
     #[test]
     fn an_empty_merk_only_changes_its_type() {
         let grove_version = GroveVersion::latest();
-        let mut merk = TempMerk::new_with_tree_type(grove_version, TreeType::SumTree);
-        convert(&mut merk, grove_version).0.expect("convert");
-        assert_eq!(merk.deref().tree_type, TreeType::BigSumTree);
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let merk = open(&storage, &tx, TreeType::SumTree, grove_version);
+        let converted = convert(merk, grove_version).0.expect("convert");
+        assert_eq!(converted.tree_type, TreeType::BigSumTree);
         assert_eq!(
-            merk.aggregate_data().expect("aggregate"),
+            converted.aggregate_data().expect("aggregate"),
             AggregateData::NoAggregateData
         );
     }
@@ -405,13 +420,15 @@ mod tests {
             TreeType::CountTree,
             TreeType::ProvableCountSumTree,
         ] {
-            let mut merk = TempMerk::new_with_tree_type(grove_version, tree_type);
-            let result = convert(&mut merk, grove_version).0;
+            let storage = TempStorage::new();
+            let tx = storage.start_transaction();
+            let merk = open(&storage, &tx, tree_type, grove_version);
+            let result = convert(merk, grove_version).0;
             assert!(
                 matches!(result, Err(Error::InvalidOperation(_))),
-                "{tree_type}: {result:?}"
+                "{tree_type}: {:?}",
+                result.err()
             );
-            assert_eq!(merk.deref().tree_type, tree_type);
         }
     }
 
@@ -421,7 +438,9 @@ mod tests {
     #[test]
     fn a_node_keeps_the_contribution_it_was_stored_with() {
         let grove_version = GroveVersion::latest();
-        let mut merk = TempMerk::new_with_tree_type(grove_version, TreeType::CountSumTree);
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let mut merk = open(&storage, &tx, TreeType::CountSumTree, grove_version);
         let batch: Vec<(Vec<u8>, Op)> = (0u8..9)
             .map(|i| {
                 (
@@ -441,28 +460,32 @@ mod tests {
             AggregateData::CountAndSum(18, 9)
         );
 
-        merk.convert_to_big_sum_tree(
-            &|_, _, _| Ok(()),
-            &|_, _| Ok(0),
-            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-            grove_version,
-        )
-        .unwrap()
-        .expect("convert");
+        let converted = merk
+            .convert_to_big_sum_tree(
+                &|_, _, _| Ok(()),
+                &|_, _| Ok(0),
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
+            .unwrap()
+            .expect("convert");
 
-        assert_eq!(merk.deref().tree_type, TreeType::CountBigSumTree);
+        assert_eq!(converted.tree_type, TreeType::CountBigSumTree);
         assert_eq!(
-            merk.aggregate_data().expect("aggregate"),
+            converted.aggregate_data().expect("aggregate"),
             AggregateData::CountAndBigSum(18, 9)
         );
     }
 
-    /// A refusal by the caller's check comes before any node changes, so the
-    /// Merk is the one it was and takes further writes.
+    /// A refusal takes the handle and writes nothing: the tree read back
+    /// from storage is the one that was there, and it takes further writes.
     #[test]
-    fn a_refused_conversion_leaves_the_merk_as_it_was() {
+    fn a_refused_conversion_writes_nothing() {
         let grove_version = GroveVersion::latest();
-        let mut merk = filled(TreeType::ProvableSumTree, grove_version);
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let mut merk = open(&storage, &tx, TreeType::ProvableSumTree, grove_version);
+        fill(&mut merk, grove_version);
         // Under a tree with a 64-bit sum a big sum tree adds nothing, and
         // under one with a 128-bit sum it adds its sum.
         Element::BigSumTree(None, 5, None)
@@ -472,39 +495,45 @@ mod tests {
         let root = merk.root_hash().unwrap();
         let aggregate = merk.aggregate_data().expect("aggregate");
 
-        let result = convert(&mut merk, grove_version).0;
+        let result = convert(merk, grove_version).0;
         assert!(
             matches!(result, Err(Error::InvalidInputError(_))),
-            "got {result:?}"
+            "got {:?}",
+            result.err()
         );
-        assert_eq!(merk.deref().tree_type, TreeType::ProvableSumTree);
-        assert_eq!(merk.root_hash().unwrap(), root);
-        assert_eq!(merk.aggregate_data().expect("aggregate"), aggregate);
 
+        let mut reopened = open(&storage, &tx, TreeType::ProvableSumTree, grove_version);
+        assert_eq!(reopened.root_hash().unwrap(), root);
+        assert_eq!(reopened.aggregate_data().expect("aggregate"), aggregate);
         Element::new_sum_item(4)
-            .insert(&mut merk, [4, 4], None, grove_version)
+            .insert(&mut reopened, [4, 4], None, grove_version)
             .unwrap()
-            .expect("the Merk still takes writes");
+            .expect("the tree still takes writes");
         assert_eq!(
-            merk.aggregate_data().expect("aggregate"),
+            reopened.aggregate_data().expect("aggregate"),
             AggregateData::ProvableSum(aggregate.as_sum_i64() + 4)
         );
     }
 
     #[test]
     fn the_conversion_is_gated_to_the_version_that_introduces_it() {
-        let mut merk = filled(TreeType::CountSumTree, &GROVE_V4);
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let mut merk = open(&storage, &tx, TreeType::CountSumTree, &GROVE_V4);
+        fill(&mut merk, &GROVE_V4);
         let root = merk.root_hash().unwrap();
 
-        let result = convert(&mut merk, &GROVE_V4).0;
+        let result = convert(merk, &GROVE_V4).0;
         assert!(
             matches!(result, Err(Error::VersionError(_))),
-            "got {result:?}"
+            "got {:?}",
+            result.err()
         );
-        assert_eq!(merk.deref().tree_type, TreeType::CountSumTree);
-        assert_eq!(merk.root_hash().unwrap(), root);
+
+        let reopened = open(&storage, &tx, TreeType::CountSumTree, &GROVE_V4);
+        assert_eq!(reopened.root_hash().unwrap(), root);
         assert!(matches!(
-            merk.aggregate_data().expect("aggregate"),
+            reopened.aggregate_data().expect("aggregate"),
             AggregateData::CountAndSum(..)
         ));
     }
@@ -514,21 +543,7 @@ mod tests {
     #[test]
     fn a_handle_that_wrote_the_nodes_is_billed_as_one_that_read_them() {
         let grove_version = GroveVersion::latest();
-        let open =
-            |storage: &'static TempStorage,
-             tx: &'static <RocksDbStorage as Storage<'static>>::Transaction| {
-                Merk::open_base(
-                    storage
-                        .get_immediate_storage_context(SubtreePath::empty(), tx)
-                        .unwrap(),
-                    TreeType::SumTree,
-                    Some(&Element::value_defined_cost_for_serialized_value),
-                    grove_version,
-                )
-                .unwrap()
-                .expect("open")
-            };
-        let fill = |merk: &mut Merk<PrefixedRocksDbImmediateStorageContext<'static>>| {
+        let write = |merk: &mut ImmediateMerk<'_>| {
             for i in 0..12u8 {
                 Element::new_sum_item(i64::from(i))
                     .insert(merk, [i.wrapping_mul(29)], None, grove_version)
@@ -536,27 +551,28 @@ mod tests {
                     .expect("insert a sum item");
             }
         };
-        // An immediate context writes as the Merk commits, so the cost of
-        // the conversion is the cost its call returns.
-        let leak = || {
-            let storage: &'static TempStorage = Box::leak(Box::new(TempStorage::new()));
-            let tx: &'static _ = Box::leak(Box::new(storage.start_transaction()));
-            (storage, tx)
-        };
 
-        let (storage, tx) = leak();
-        let mut retained = open(storage, tx);
-        fill(&mut retained);
-        let (result, retained_cost) = convert(&mut retained, grove_version);
-        result.expect("convert the handle that wrote the nodes");
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let mut retained = open(&storage, &tx, TreeType::SumTree, grove_version);
+        write(&mut retained);
+        let (result, retained_cost) = convert(retained, grove_version);
+        let retained_root = result
+            .expect("convert the handle that wrote the nodes")
+            .root_hash()
+            .unwrap();
 
-        let (storage, tx) = leak();
-        let mut writer = open(storage, tx);
-        fill(&mut writer);
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let mut writer = open(&storage, &tx, TreeType::SumTree, grove_version);
+        write(&mut writer);
         drop(writer);
-        let mut reopened = open(storage, tx);
-        let (result, reopened_cost) = convert(&mut reopened, grove_version);
-        result.expect("convert a reopened handle");
+        let reopened = open(&storage, &tx, TreeType::SumTree, grove_version);
+        let (result, reopened_cost) = convert(reopened, grove_version);
+        let reopened_root = result
+            .expect("convert a reopened handle")
+            .root_hash()
+            .unwrap();
 
         assert_eq!(
             retained_cost.storage_cost, reopened_cost.storage_cost,
@@ -565,6 +581,6 @@ mod tests {
         // 8 bytes in each node and 8 in the link to it, and nothing billed
         // as new.
         assert_eq!(retained_cost.storage_cost.added_bytes, 12 * 16);
-        assert_eq!(retained.root_hash().unwrap(), reopened.root_hash().unwrap());
+        assert_eq!(retained_root, reopened_root);
     }
 }

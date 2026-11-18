@@ -1042,6 +1042,64 @@ mod tests {
         .unwrap()
         .expect("GROVE_V4 takes a plain tree as an entry");
         refused_unchanged(&db, "an entry that carries no sum");
+
+        // A third is the wrapper a parent takes: a tree with its count in
+        // its node hashes holds no child left out of the count.
+        let db = make_test_grovedb(&GROVE_V4);
+        insert(
+            &db,
+            &[TEST_LEAF],
+            TREE,
+            Element::empty_provable_count_provable_sum_tree(),
+            &GROVE_V4,
+        );
+        db.apply_batch(
+            vec![
+                insert_op(
+                    &[TEST_LEAF, TREE],
+                    b"k",
+                    Element::new_non_counted(Element::empty_count_sum_tree()).expect("wrap"),
+                ),
+                insert_op(&[TEST_LEAF, TREE, b"k"], b"x", Element::new_sum_item(5)),
+            ],
+            None,
+            None,
+            &GROVE_V4,
+        )
+        .unwrap()
+        .expect("GROVE_V4 takes a child left out of a provable count");
+        refused_unchanged(&db, "a child left out of a provable count");
+    }
+
+    #[test]
+    fn a_tree_whose_element_disagrees_with_it_is_refused() {
+        let v = GroveVersion::latest();
+        // An insert takes a tree element with a sum and no children as it
+        // is. The tree holds nothing, so its element says 9 and it sums 0:
+        // converted from the tree it would come out with 0, and from the
+        // element with 9.
+        for (name, claiming) in [
+            ("SumTree", Element::SumTree(None, 9, None)),
+            ("CountSumTree", Element::CountSumTree(None, 2, 9, None)),
+        ] {
+            let db = make_test_grovedb(v);
+            insert(&db, &[TEST_LEAF], TREE, claiming.clone(), v);
+            let before = root(&db, v);
+
+            let result = convert(&db, &[TEST_LEAF], TREE, v);
+            assert!(
+                matches!(result, Err(Error::InvalidInput(_))),
+                "{name}: {result:?}"
+            );
+            assert_eq!(root(&db, v), before, "{name}");
+            assert_eq!(stored(&db, &[TEST_LEAF], TREE, v), claiming, "{name}");
+
+            // Once a write has brought the element in line with the tree,
+            // it converts.
+            insert(&db, &[TEST_LEAF, TREE], b"a", Element::new_sum_item(4), v);
+            convert(&db, &[TEST_LEAF], TREE, v).expect(name);
+            assert_eq!(sum_of(&stored(&db, &[TEST_LEAF], TREE, v)), 4, "{name}");
+        }
     }
 
     #[test]

@@ -119,6 +119,24 @@ pub struct GroveDBOperationsIndexedAxisVersions {
     /// - `1` (GROVE_V5+): the axis is served on the indexed trees with a
     ///   128-bit sum.
     pub big_sum_axis: FeatureVersion,
+    /// How `reconcile_indexed_tree_secondaries` writes its repair.
+    ///
+    /// - `0` (GROVE_V1..=V4): each row is removed or written by a Merk
+    ///   commit of its own, all in one operation of the storage batch, and
+    ///   the repaired element is propagated as any changed element is. A
+    ///   storage batch keeps a put over a later delete of the same key
+    ///   within one operation, so a row whose node an earlier removal
+    ///   rewrote stays in storage when it is removed next: gone from the
+    ///   secondary's Merk and still read by the ranking reads, which iterate
+    ///   storage. A row already in that state cannot be removed. And when
+    ///   the repaired tree is an entry of another indexed tree, that tree's
+    ///   row for it keeps binding the element's previous hash. Preserved as
+    ///   released.
+    /// - `1` (GROVE_V5+): each row write is its own operation of the storage
+    ///   batch, a stray row its secondary does not link is removed from
+    ///   storage directly, and the propagation refreshes the enclosing
+    ///   tree's row.
+    pub reconcile_secondaries: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

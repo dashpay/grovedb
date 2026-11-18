@@ -62,7 +62,7 @@ use grovedb_merk::{
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
     rocksdb_storage::{PrefixedRocksDbTransactionContext, RocksDbStorage},
-    RawIterator, Storage, StorageBatch, StorageContext,
+    Batch, RawIterator, Storage, StorageBatch, StorageContext,
 };
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
@@ -940,6 +940,23 @@ impl GroveDb {
     /// the repair compares row content, not just row keys: a row sitting
     /// at the right sort key with a damaged payload is rewritten.
     ///
+    /// **What reaches storage** depends on
+    /// `operations.indexed_axis.reconcile_secondaries`. Rows are removed and
+    /// written one Merk commit at a time, and the ranking reads iterate
+    /// storage, not the Merk.
+    ///
+    /// - From `GROVE_V5` each row write is its own operation of the storage
+    ///   batch, so every removal reaches storage; a stray row that is in
+    ///   storage and in no Merk is removed too; and when the repaired tree
+    ///   is an entry of another indexed tree, that tree's row for it is
+    ///   refreshed, since it binds the element's value hash.
+    /// - On `GROVE_V1`..`GROVE_V4`, as released: a repair that removes a row
+    ///   and then a row whose node that removal rewrote leaves the second in
+    ///   storage, gone from the Merk and still read by the ranking reads; a
+    ///   row already in that state stays; and an enclosing indexed tree
+    ///   keeps binding the repaired element's previous hash until it is
+    ///   repaired in turn.
+    ///
     /// **Cost:** `O(n · axes)` where `n` is the number of entries in the
     /// primary. Intended for occasional use (migration, repair). For
     /// maintaining the secondaries in real time, use the dedicated
@@ -1020,6 +1037,27 @@ impl GroveDb {
             .wrap_with_cost(cost);
         }
 
+        // How the repair is written is a matter of version: see
+        // `operations.indexed_axis.reconcile_secondaries`.
+        let (row_writes, refreshes_enclosing_row) = match grove_version
+            .grovedb_versions
+            .operations
+            .indexed_axis
+            .reconcile_secondaries
+        {
+            0 => (SecondaryRowWrites::OneByOneAsReleased, false),
+            1 => (SecondaryRowWrites::OneByOne, true),
+            received => {
+                return Err(GroveVersionError::UnknownVersionMismatch {
+                    method: "reconcile_indexed_tree_secondaries".to_string(),
+                    known_versions: vec![0, 1],
+                    received,
+                }
+                .into())
+                .wrap_with_cost(cost);
+            }
+        };
+
         // 2. Read the parent element FIRST: its variant determines which
         //    axes exist, and each axis's stored root key is needed to open
         //    that (possibly damaged) secondary.
@@ -1058,12 +1096,28 @@ impl GroveDb {
                         key_len, max_item_key_len
                     ))
                 },
-                SecondaryRowWrites::OneByOne,
+                row_writes,
                 transaction,
                 batch,
                 grove_version,
             )
         );
+        // When the repaired tree is an entry of another indexed tree, that
+        // tree's row binds the element's value hash, which a repair that
+        // changed a secondary changes.
+        let old_indexed_state = if refreshes_enclosing_row {
+            cost_return_on_error!(
+                &mut cost,
+                GroveDb::capture_indexed_entry_state(
+                    &parent_merk,
+                    indexed_key,
+                    &indexed_element,
+                    grove_version
+                )
+            )
+        } else {
+            None
+        };
         cost_return_on_error!(
             &mut cost,
             reconstructed
@@ -1084,16 +1138,31 @@ impl GroveDb {
             Merk<PrefixedRocksDbTransactionContext>,
         > = std::collections::HashMap::default();
         merk_cache.insert(parent_path.clone(), parent_merk);
-        cost_return_on_error!(
-            &mut cost,
-            self.propagate_changes_with_transaction(
-                merk_cache,
-                parent_path,
-                transaction,
-                batch,
-                grove_version,
-            )
-        );
+        if refreshes_enclosing_row {
+            cost_return_on_error!(
+                &mut cost,
+                self.propagate_changes_with_transaction_refreshing_indexed_row(
+                    merk_cache,
+                    parent_path,
+                    indexed_key,
+                    old_indexed_state,
+                    transaction,
+                    batch,
+                    grove_version,
+                )
+            );
+        } else {
+            cost_return_on_error!(
+                &mut cost,
+                self.propagate_changes_with_transaction(
+                    merk_cache,
+                    parent_path,
+                    transaction,
+                    batch,
+                    grove_version,
+                )
+            );
+        }
 
         Ok(()).wrap_with_cost(cost)
     }
@@ -1271,6 +1340,27 @@ impl GroveDb {
             }
             cost_return_on_error_no_add!(cost, sec_iter.status().map_err(Error::StorageError));
 
+            if row_writes != SecondaryRowWrites::OneByOneAsReleased {
+                // A stored row the secondary's Merk does not link cannot be
+                // removed through the Merk, which has no node for it, and a
+                // read by key finds it in storage all the same, so the two
+                // cannot be told apart here. Every row that should not
+                // exist is named to storage first, as an operation of its
+                // own: the Merk's removal of a row it links comes later and
+                // takes its place, with the cost the Merk gives it, and the
+                // removal of a row it does not link stands.
+                cost_return_on_error!(
+                    &mut cost,
+                    remove_secondary_rows_from_storage(
+                        &secondary_merk,
+                        existing_keys
+                            .iter()
+                            .filter(|key| !desired.contains_key(*key)),
+                    )
+                );
+                batch.next_operation();
+            }
+
             match row_writes {
                 SecondaryRowWrites::Together => {
                     cost_return_on_error!(
@@ -1283,10 +1373,15 @@ impl GroveDb {
                         )
                     );
                 }
-                SecondaryRowWrites::OneByOne => {
+                SecondaryRowWrites::OneByOneAsReleased | SecondaryRowWrites::OneByOne => {
+                    let as_released = row_writes == SecondaryRowWrites::OneByOneAsReleased;
+
                     // Delete rows that should not exist.
                     for key in &existing_keys {
                         if !desired.contains_key(key) {
+                            if !as_released {
+                                batch.next_operation();
+                            }
                             cost_return_on_error!(
                                 &mut cost,
                                 Element::delete(
@@ -1316,6 +1411,9 @@ impl GroveDb {
                             )
                         );
                         if needs_write {
+                            if !as_released {
+                                batch.next_operation();
+                            }
                             let entry = cost_return_on_error_no_add!(
                                 cost,
                                 Element::deserialize(desired_row_bytes.as_slice(), grove_version)
@@ -3421,18 +3519,50 @@ impl GroveDb {
 
 /// How a rebuild writes the rows of one secondary
 /// ([`GroveDb::rebuild_indexed_tree_secondaries`]).
+///
+/// Every mode removes the stored rows the primary does not call for and
+/// writes the ones that are missing or differ. A stored row is one the scan
+/// of the secondary's storage finds, whether or not the secondary's Merk
+/// still links it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SecondaryRowWrites {
-    /// One Merk commit per row: the rows that should not exist are removed
-    /// first, then the missing and damaged ones are written, each in key
-    /// order. What the repair does in the released versions, kept as it is.
+    /// One Merk commit per row, removals first, each in key order, all in
+    /// one operation of the storage batch: the repair as released
+    /// (`reconcile_secondaries: 0`), kept as it is. A storage batch keeps a
+    /// put over a later delete of the same key within one operation, so the
+    /// removal of a row whose node an earlier removal rewrote does not
+    /// reach storage, and a row the Merk does not link is not removed.
+    OneByOneAsReleased,
+    /// The same commits in the same order, each its own operation of the
+    /// storage batch ([`StorageBatch::next_operation`]), so every removal
+    /// reaches storage, after the rows that should not exist are named to
+    /// storage directly, which removes the ones the Merk does not link. The
+    /// secondary takes the shape the released repair gives it.
     OneByOne,
     /// One Merk commit for everything an axis needs: its removals and its
     /// writes together. Only the aggregates of the finished secondary are
     /// computed, so a rebuild that changes every row cannot fail on a sum
     /// the rows pass through halfway, and each key is written once and
-    /// billed against what it held before.
+    /// billed against what it held before. Rows the Merk does not link are
+    /// removed from storage first, as in [`Self::OneByOne`].
     Together,
+}
+
+/// Names rows to a secondary's storage for removal, directly: the only way
+/// to remove a row its Merk does not link. Storage bills each by what it
+/// holds.
+fn remove_secondary_rows_from_storage<'a, 'db, S: StorageContext<'db>>(
+    secondary_merk: &Merk<S>,
+    keys: impl Iterator<Item = &'a Vec<u8>>,
+) -> CostResult<(), Error> {
+    let mut removals = secondary_merk.storage.new_batch();
+    for key in keys {
+        removals.delete(key, None);
+    }
+    secondary_merk
+        .storage
+        .commit_batch(removals)
+        .map_err(Error::StorageError)
 }
 
 /// Whether the row a secondary should hold at `desired_key` has to be
@@ -3560,25 +3690,29 @@ fn write_secondary_rows_together<'db, S: StorageContext<'db>>(
     // A removed key is never a desired one, so the keys are unique.
     operations.sort_by(|a, b| a.0.cmp(&b.0));
 
-    secondary_merk
-        .apply_with_specialized_costs::<_, Vec<u8>>(
-            &operations,
-            &[],
-            None,
-            &|key, value| {
-                Element::specialized_costs_for_key_value(
-                    key,
-                    value,
-                    secondary_tree_type.inner_node_type(),
-                    grove_version,
-                )
-                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
-            },
-            Some(&Element::value_defined_cost_for_serialized_value),
-            grove_version,
-        )
-        .map_err(Error::MerkError)
-        .add_cost(cost)
+    cost_return_on_error!(
+        &mut cost,
+        secondary_merk
+            .apply_with_specialized_costs::<_, Vec<u8>>(
+                &operations,
+                &[],
+                None,
+                &|key, value| {
+                    Element::specialized_costs_for_key_value(
+                        key,
+                        value,
+                        secondary_tree_type.inner_node_type(),
+                        grove_version,
+                    )
+                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+                },
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            )
+            .map_err(Error::MerkError)
+    );
+
+    Ok(()).wrap_with_cost(cost)
 }
 
 /// Apply an axis secondary mirror covering insert, update, and delete via

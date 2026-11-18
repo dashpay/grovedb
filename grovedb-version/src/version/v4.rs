@@ -623,6 +623,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 prove_single_path: 0,
                 verify_single_path: 0,
                 big_sum_axis: 0,
+                reconcile_secondaries: 0,
             },
             proof: GroveDBOperationsProofVersions {
                 prove_query: 0,

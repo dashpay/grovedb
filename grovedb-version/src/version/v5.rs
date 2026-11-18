@@ -174,6 +174,16 @@
 //!   6.1.1 cannot decode the query. Gated because it flips an
 //!   accepted/rejected outcome.
 //!
+//! - `operations.indexed_axis.reconcile_secondaries: 1`:
+//!   `reconcile_indexed_tree_secondaries` writes each row as its own
+//!   operation of the storage batch, removes from storage a stray row its
+//!   secondary no longer links, and refreshes the row an enclosing indexed
+//!   tree holds for the repaired one. On V1..V4 a repair that removes more
+//!   than one row can leave a removed row in storage, where the ranking
+//!   reads still see it, cannot remove a row left there, and leaves an
+//!   enclosing index bound to the repaired tree's previous hash. Gated
+//!   because it changes the writes a repair makes and the cost it reports.
+//!
 //! It exists so that changes made after GroveDB 6.1.1 have somewhere to
 //! land. GROVE_V4 as 6.1.1 shipped it is what Dash Platform 5.0 (protocol
 //! version 14) runs, so a change that alters an accepted/rejected outcome, a
@@ -244,6 +254,9 @@ pub const GROVE_V5: GroveVersion = GroveVersion {
             },
             indexed_axis: GroveDBOperationsIndexedAxisVersions {
                 big_sum_axis: 1, // changed: the big sum axis is served
+                // changed: a repair's removals reach storage, and the
+                // enclosing index follows a repaired nested one
+                reconcile_secondaries: 1,
                 ..GROVE_V4.grovedb_versions.operations.indexed_axis
             },
             private_document_store: GroveDBOperationsPrivateDocumentStoreVersions {
