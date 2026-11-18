@@ -155,19 +155,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is the tree built with a 128-bit sum from the start: the same element
   and, for the four trees without a ranking, the same root hash. Every node
   of the tree is rewritten (a node and the link to it record sums at the
-  tree's width), and an indexed tree's sum rows are replaced by big sum
-  rows and its avg rows rewritten, so the call is `O(n)` in the tree's
-  children and holds the tree in memory until the write. Refused for any
-  other element (a `ProvableCountSumTree` has no counterpart), for a tree
-  that adds its sum to a parent keeping a 64-bit sum (convert the parent
-  first), and for an indexed tree holding a key longer than the 239 bytes
-  the big sum axis ranks. Only the named tree is converted: a tree inside
-  it keeps its type. Gated by the new
-  `operations.insert.convert_to_big_sum_tree` slot (0 in V1..V4, which
-  refuse the call; 1 in V5; **BREAKING** for code building
+  tree's width): one visit per child, with the tree in memory until the
+  write, and 16 added bytes per child (one more where a node's length
+  prefix grows) and 7 for the element. An indexed tree's sum rows are
+  replaced by big sum rows and its avg rows rewritten, all the rows of an
+  axis as one change to its secondary, so only the sums of the finished
+  secondary are computed: `O(n log n)` per such axis, with the rows' own
+  storage cost. Refused, leaving the tree as it was:
+  - for any other element (a `ProvableCountSumTree` has no counterpart);
+  - for a tree that adds its sum to a parent keeping a 64-bit sum (convert
+    the parent first);
+  - for a tree holding a child that would add a different count or sum to
+    it once converted, which is a tree with a 128-bit sum inside it (it
+    adds nothing to a 64-bit sum and its whole sum to a 128-bit one);
+  - for an indexed tree holding an entry its counterpart does not accept,
+    axes that are not canonical, or a key longer than the 239 bytes the big
+    sum axis ranks.
+
+  Only the named tree is converted: a tree inside it keeps its type. Gated
+  by the new `operations.insert.convert_to_big_sum_tree` slot (0 in V1..V4,
+  which refuse the call; 1 in V5; **BREAKING** for code building
   `GroveDBOperationsInsertVersions` by hand). With it:
-  `Merk::convert_to_big_sum_tree` (the rewrite of one Merk),
-  `TreeType::big_sum_counterpart` and `Element::big_sum_counterpart`.
+  - `Merk::convert_to_big_sum_tree(check_node, old_specialized_cost,
+    value_defined_cost_fn, grove_version)`: the rewrite of one Merk, under
+    the same slot. It widens the contribution each node records and does
+    not read the values: `check_node` is the caller's say on each node
+    before anything changes, and the two cost functions are the ones
+    `apply_with_specialized_costs` takes. A refusal leaves the Merk as it
+    was.
+  - `TreeType::big_sum_counterpart` and `Element::big_sum_counterpart`.
+  - `KVIterator::status`: whether a scan ended on a storage error rather
+    than at the end of its records, which `next_kv` reports alike.
+    `reconcile_indexed_tree_secondaries` and the conversion check it after
+    the scans they rebuild from, and return the storage error where they
+    took a scan cut short for a complete one.
 - `GROVE_V5` (`protocol_version` 5). `GROVE_V4` as 6.1.1 shipped it is what
   Dash Platform 5.0 (protocol version 14) runs, so behaviour changes from
   here on are gated in `GROVE_V5` and leave V1..V4 as they are. V5 is V4

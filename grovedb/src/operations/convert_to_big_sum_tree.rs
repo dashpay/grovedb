@@ -9,10 +9,12 @@ use grovedb_costs::{
 };
 use grovedb_merk::{
     element::{
-        get::ElementFetchFromStorageExtensions, insert::ElementInsertToStorageExtensions,
-        reconstruct::ElementReconstructExtensions, tree_type::ElementTreeTypeExtensions,
+        costs::ElementCostExtensions, get::ElementFetchFromStorageExtensions,
+        insert::ElementInsertToStorageExtensions, reconstruct::ElementReconstructExtensions,
+        tree_type::ElementTreeTypeExtensions,
     },
     merk::NodeType,
+    Error as MerkError,
 };
 use grovedb_path::SubtreePath;
 use grovedb_storage::{Storage, StorageBatch};
@@ -20,7 +22,8 @@ use grovedb_version::version::GroveVersion;
 
 use crate::{
     operations::{
-        indexed_tree::validate_indexed_child_for_variant, insert::check_wide_sum_tree_creation,
+        indexed_tree::{validate_indexed_child_for_variant, SecondaryRowWrites},
+        insert::check_wide_sum_tree_creation,
     },
     util::{check_v1_slot_enabled, validate_path_segment_lengths, TxRef, MAX_KEY_LENGTH},
     Element, Error, GroveDb, TransactionArg,
@@ -57,6 +60,14 @@ impl GroveDb {
     ///   would stop following it: convert the parent first. A tree wrapped in
     ///   `NotSummed` or `NotCountedOrSummed` adds nothing either way and is
     ///   converted.
+    /// - The tree holds a child that would add a different count or sum to
+    ///   it once it is converted. That is a tree with a 128-bit sum inside
+    ///   the tree: it adds nothing to a 64-bit sum and its whole sum to a
+    ///   128-bit one, so the tree's sum would change. Every child must add
+    ///   what it adds today.
+    /// - An indexed tree holds an entry its counterpart does not accept, or
+    ///   its axes are not canonical. A tree written as the supported paths
+    ///   write it has neither.
     /// - An indexed tree holds a key longer than 239 bytes and has no average
     ///   axis. The big sum axis ranks keys of at most 239 bytes, like the
     ///   average axis, where the sum axis ranks keys of up to 247.
@@ -65,13 +76,19 @@ impl GroveDb {
     ///
     /// Every node of the tree records sums at the tree's width, so every
     /// node is read and written again, and the whole tree is held in memory
-    /// until the write: `O(n)` in the number of children. An indexed tree's
-    /// sum secondary is ordered by the 8-byte encoding of each entry's sum
-    /// and the big sum secondary by the 16-byte one, so each of its rows is
-    /// removed and written again, and so is each row of its average
-    /// secondary, which carries the entry's sum for the 64-bit tree only.
-    /// The storage cost reports the growth as added bytes: 8 for a child, 8
-    /// for the link to it, and 7 for the tree's own element.
+    /// until the write: one visit per child. The storage cost reports the
+    /// growth as added bytes: 8 in each child's node and 8 in the link to
+    /// it, one more where that takes the node's length past a size its
+    /// length prefix can hold, and 7 for the tree's own element.
+    ///
+    /// An indexed tree costs more. Its sum secondary is ordered by the 8-byte
+    /// encoding of each entry's sum and its big sum secondary by the 16-byte
+    /// one, so each of its rows is removed and written again (8 bytes longer
+    /// in the key), and so is each row of its average secondary, which
+    /// carries the entry's sum under a 64-bit tree only. The rows of an axis
+    /// are sorted and applied as one change to its secondary: `O(n log n)`
+    /// work for each of those axes, with their own storage cost beside the
+    /// primary's. The count rows stay as they are.
     ///
     /// A tree whose sum is in its node hashes gets a new root hash. The
     /// other two keep theirs, and only the element that describes the tree
@@ -139,12 +156,31 @@ impl GroveDb {
             .wrap_with_cost(cost);
         };
 
-        // The converted tree must be one this version can create, and one
-        // its parent accepts.
+        // The converted tree must be one this version can create, with the
+        // axes its type requires, and one its parent accepts.
         cost_return_on_error_no_add!(
             cost,
             check_wide_sum_tree_creation(&wide_element, "convert to", grove_version)
         );
+        // A tree written before its axes were checked on every path can hold
+        // them out of order or twice: neither side of the conversion may.
+        let axes_are_canonical = match (narrow_element.underlying(), wide_element.underlying()) {
+            (
+                Element::ProvableCountProvableSumIndexedTree(.., narrow_axes, _),
+                Element::ProvableCountProvableBigSumIndexedTree(.., wide_axes, _),
+            ) => {
+                Element::validate_pcpsit_axes(narrow_axes).is_ok()
+                    && Element::validate_pcpbsit_axes(wide_axes).is_ok()
+            }
+            _ => true,
+        };
+        if !axes_are_canonical {
+            return Err(Error::InvalidInput(
+                "the indexed tree's axes are not canonical (1..=3 entries, sorted ascending by \
+                 tag, no duplicates): it cannot be converted",
+            ))
+            .wrap_with_cost(cost);
+        }
         cost_return_on_error_no_add!(
             cost,
             wide_element
@@ -211,7 +247,58 @@ impl GroveDb {
                 grove_version,
             )
         );
-        cost_return_on_error_into!(&mut cost, tree_merk.convert_to_big_sum_tree(grove_version));
+        let narrow_tree_type = tree_merk.tree_type;
+        let wide_tree_type = cost_return_on_error_no_add!(
+            cost,
+            narrow_tree_type
+                .big_sum_counterpart()
+                .ok_or(Error::CorruptedCodeExecution(
+                    "a tree element has a counterpart with a 128-bit sum and its tree type \
+                     has none"
+                ))
+        );
+        cost_return_on_error_into!(
+            &mut cost,
+            tree_merk.convert_to_big_sum_tree(
+                // Each child must be one the converted tree accepts, adding
+                // to it what it adds to the tree today.
+                &|_key, value, widened_feature_type| {
+                    let child = Element::deserialize(value, grove_version)?;
+                    if child.get_feature_type(wide_tree_type)? != widened_feature_type {
+                        return Err(MerkError::InvalidInputError(
+                            "the tree holds a child that would add a different count or sum \
+                             to it with a 128-bit sum, as a tree with a 128-bit sum does: the \
+                             conversion would change the tree's sum",
+                        ));
+                    }
+                    if wide_tree_type.is_indexed_primary() {
+                        match validate_indexed_child_for_variant(
+                            &child,
+                            wide_tree_type,
+                            grove_version,
+                        ) {
+                            Ok(()) => {}
+                            Err(Error::InvalidInput(message)) => {
+                                return Err(MerkError::InvalidInputError(message));
+                            }
+                            Err(e) => return Err(MerkError::CorruptedData(e.to_string())),
+                        }
+                    }
+                    Ok(())
+                },
+                &|key, value| {
+                    Element::specialized_costs_for_key_value(
+                        key,
+                        value,
+                        narrow_tree_type.inner_node_type(),
+                        grove_version,
+                    )
+                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+                },
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            )
+        );
 
         // What the parent must hold once the tree is converted: the element
         // with its new root state, and the hashes it is committed with.
@@ -220,9 +307,10 @@ impl GroveDb {
             .is_indexed_primary()
         {
             // The rows of the sum axis live where the big sum axis keeps
-            // its rows, under shorter keys: the rebuild removes each as
-            // a row the tree no longer has and writes the row that
-            // replaces it.
+            // its rows, under shorter keys: the rebuild removes each as a
+            // row the tree no longer has and writes the row that replaces
+            // it, all the rows of an axis in one change, so that only the
+            // sums of the finished secondary are computed.
             let (wide_element, primary_root_hash, second_hash) = cost_return_on_error!(
                 &mut cost,
                 self.rebuild_indexed_tree_secondaries(
@@ -236,7 +324,7 @@ impl GroveDb {
                                  {max_item_key_len} bytes"
                         ))
                     },
-                    true,
+                    SecondaryRowWrites::Together,
                     tx.as_ref(),
                     &batch,
                     grove_version,

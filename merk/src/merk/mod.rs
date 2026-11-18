@@ -230,6 +230,14 @@ impl<I: RawIterator> KVIterator<'_, I> {
             None.wrap_with_cost(cost)
         }
     }
+
+    /// Whether the underlying iterator stopped on a storage error rather
+    /// than at the end of its records. [`Self::next_kv`] returns `None` for
+    /// both, so a caller that acts on a scan having been complete checks
+    /// this once the scan ends.
+    pub fn status(&self) -> Result<(), grovedb_storage::Error> {
+        self.raw_iter.status()
+    }
 }
 
 #[derive(PartialEq, Eq)]

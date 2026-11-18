@@ -800,7 +800,10 @@ The primary is rewritten node by node. The sum axis becomes the big sum
 axis: its rows sit in the same namespace under 8-byte sort keys, so each is
 removed and the row with the 16-byte key written. The avg rows are
 rewritten too, since they carry the entry's sum under a 64-bit primary and
-0 under a 128-bit one. The count rows stay as they are. Each ranking reads
+0 under a 128-bit one. The rows of an axis are applied as one change to its
+secondary, so only the sums of the finished secondary are computed, and
+rows of both signs cannot overflow halfway. The count rows stay as they
+are. Each ranking reads
 as it did before, on the big sum axis where it was the sum axis. A tree
 with no avg axis may hold keys of up to 247 bytes, which the big sum axis
 cannot rank: the conversion is refused while one is longer than 239.

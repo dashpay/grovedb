@@ -807,6 +807,244 @@ mod tests {
     }
 
     #[test]
+    fn a_tree_holding_a_child_it_would_sum_differently_is_refused() {
+        let v = GroveVersion::latest();
+        // A tree with a 128-bit sum adds nothing to a tree with a 64-bit
+        // sum and its whole sum to one with a 128-bit sum.
+        for (name, narrow, _) in plain_trees() {
+            for (child_name, child) in [
+                ("BigSumTree", Element::empty_big_sum_tree()),
+                ("CountBigSumTree", Element::empty_count_big_sum_tree()),
+            ] {
+                let db = make_test_grovedb(v);
+                insert(&db, &[TEST_LEAF], TREE, narrow.clone(), v);
+                insert(&db, &[TEST_LEAF, TREE], b"a", Element::new_sum_item(4), v);
+                insert(&db, &[TEST_LEAF, TREE], b"wide", child, v);
+                for i in 0..3u8 {
+                    insert(
+                        &db,
+                        &[TEST_LEAF, TREE, b"wide"],
+                        &[i],
+                        Element::new_sum_item(i64::MAX),
+                        v,
+                    );
+                }
+                let element = stored(&db, &[TEST_LEAF], TREE, v);
+                assert_eq!(
+                    element.sum_value_or_default(),
+                    4,
+                    "{name} holding a {child_name}"
+                );
+                let before = root(&db, v);
+
+                let result = convert(&db, &[TEST_LEAF], TREE, v);
+                assert!(
+                    matches!(result, Err(Error::InvalidInput(_))),
+                    "{name} holding a {child_name}: {result:?}"
+                );
+                assert_eq!(root(&db, v), before);
+                assert_eq!(stored(&db, &[TEST_LEAF], TREE, v), element);
+            }
+        }
+    }
+
+    #[test]
+    fn rows_of_both_signs_are_rebuilt_without_passing_through_a_sum_that_overflows() {
+        let v = GroveVersion::latest();
+        const BIG: i64 = 1 << 61;
+
+        // Sum axis: without the most negative row the others total 2^63,
+        // which no i64 holds.
+        let db = make_test_grovedb(v);
+        insert(
+            &db,
+            &[TEST_LEAF],
+            TREE,
+            Element::empty_provable_sum_indexed_tree(),
+            v,
+        );
+        for (key, sum) in [
+            (b"e", -2 * BIG),
+            (b"a", BIG),
+            (b"b", BIG),
+            (b"c", BIG),
+            (b"d", BIG),
+        ] {
+            db.insert_into_provable_sum_indexed_tree(
+                [TEST_LEAF, TREE].as_ref(),
+                key,
+                Element::new_sum_item(sum),
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("insert an entry");
+        }
+        let ranked = top(&db, IndexAxis::Sum, v);
+        convert(&db, &[TEST_LEAF], TREE, v).expect("convert the sum indexed tree");
+        assert_eq!(top(&db, IndexAxis::BigSum, v), ranked);
+        assert_eq!(
+            sum_of(&stored(&db, &[TEST_LEAF], TREE, v)),
+            2 * i128::from(BIG)
+        );
+        assert_rows_are_canonical(&db, v);
+
+        // Avg axis: its rows carry the entry's sum until the conversion and
+        // 0 after it, and with the -1 gone first the rest pass i64::MAX.
+        let db = make_test_grovedb(v);
+        insert(
+            &db,
+            &[TEST_LEAF],
+            TREE,
+            narrow_axes(&[IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg]),
+            v,
+        );
+        for (key, sum) in [(b"n", -1), (b"p", 1), (b"x", i64::MAX)] {
+            db.insert_into_provable_count_provable_sum_indexed_tree(
+                [TEST_LEAF, TREE].as_ref(),
+                key,
+                Element::new_sum_item(sum),
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("insert an entry");
+        }
+        let ranked_by_sum = top(&db, IndexAxis::Sum, v);
+        let ranked_by_avg = top(&db, IndexAxis::Avg, v);
+        convert(&db, &[TEST_LEAF], TREE, v).expect("convert the count and sum indexed tree");
+        assert_eq!(top(&db, IndexAxis::BigSum, v), ranked_by_sum);
+        assert_eq!(top(&db, IndexAxis::Avg, v), ranked_by_avg);
+        assert_eq!(sum_of(&stored(&db, &[TEST_LEAF], TREE, v)), MAX);
+        assert_rows_are_canonical(&db, v);
+    }
+
+    #[test]
+    fn the_cost_of_an_indexed_tree_reports_its_rows_once_each() {
+        let v = GroveVersion::latest();
+        // `(what each entry's sum is a multiple of, the bytes the five rows
+        // lose with the sum they carried)`: a row of the sum axis carries
+        // its entry's sum and a row of the big sum axis carries 0, which
+        // takes one byte, as the sums 0..=4 do. The sums 0, 100, 200, 300
+        // and 400 take 1, 1, 3, 3 and 3.
+        for (scale, bytes_of_the_sums_dropped) in [(1, 0), (100, 6)] {
+            let db = make_test_grovedb(v);
+            insert(
+                &db,
+                &[TEST_LEAF],
+                TREE,
+                Element::empty_provable_sum_indexed_tree(),
+                v,
+            );
+            for i in 0..5u8 {
+                db.insert_into_provable_sum_indexed_tree(
+                    [TEST_LEAF, TREE].as_ref(),
+                    &[i],
+                    Element::new_sum_item(i64::from(i) * scale),
+                    None,
+                    v,
+                )
+                .unwrap()
+                .expect("insert an entry");
+            }
+
+            let conversion = db.convert_to_big_sum_tree([TEST_LEAF].as_ref(), TREE, None, v);
+            conversion.value.expect("convert");
+            let storage = conversion.cost.storage_cost;
+            let net = i64::from(storage.added_bytes)
+                - i64::from(storage.removed_bytes.total_removed_bytes());
+
+            // The primary grows as any tree does: 8 bytes in each entry's
+            // node, 8 in the link to it, 7 in the tree's element. Each of
+            // the five rows is removed and written once, 8 bytes longer in
+            // its key, which a row pays for in its node and in the link to
+            // it.
+            assert_eq!(
+                net,
+                5 * 16 + 7 + 5 * 16 - bytes_of_the_sums_dropped,
+                "sums that are multiples of {scale}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tree_written_past_the_checks_of_a_released_version_is_refused() {
+        use grovedb_version::version::v4::GROVE_V4;
+
+        use crate::batch::QualifiedGroveDbOp;
+
+        let latest = GroveVersion::latest();
+        let insert_op = |path: &[&[u8]], key: &[u8], element: Element| {
+            QualifiedGroveDbOp::insert_or_replace_op(
+                path.iter().map(|segment| segment.to_vec()).collect(),
+                key.to_vec(),
+                element,
+            )
+        };
+        let refused_unchanged = |db: &GroveDb, name: &str| {
+            let before = root(db, latest);
+            let element = stored(db, &[TEST_LEAF], TREE, latest);
+            let result = convert(db, &[TEST_LEAF], TREE, latest);
+            assert!(
+                matches!(result, Err(Error::InvalidInput(_))),
+                "{name}: {result:?}"
+            );
+            assert_eq!(root(db, latest), before, "{name}");
+            assert_eq!(stored(db, &[TEST_LEAF], TREE, latest), element, "{name}");
+        };
+
+        // On GROVE_V4 a batch that creates a tree and fills it skips the
+        // checks the tree's insert makes alone. One is that an indexed
+        // tree's axes are canonical.
+        let db = make_test_grovedb(&GROVE_V4);
+        let axis_twice = Element::ProvableCountProvableSumIndexedTree(
+            None,
+            0,
+            0,
+            vec![
+                (IndexAxis::Count.tag(), None),
+                (IndexAxis::Count.tag(), None),
+            ],
+            None,
+        );
+        db.apply_batch(
+            vec![
+                insert_op(&[TEST_LEAF], TREE, axis_twice),
+                insert_op(&[TEST_LEAF, TREE], b"k", Element::new_sum_item(5)),
+            ],
+            None,
+            None,
+            &GROVE_V4,
+        )
+        .unwrap()
+        .expect("GROVE_V4 takes a tree with an axis twice");
+        refused_unchanged(&db, "an axis twice");
+
+        // Another is what an indexed tree accepts as an entry: a plain tree
+        // carries no sum.
+        let db = make_test_grovedb(&GROVE_V4);
+        insert(
+            &db,
+            &[TEST_LEAF],
+            TREE,
+            Element::empty_provable_sum_indexed_tree(),
+            &GROVE_V4,
+        );
+        db.apply_batch(
+            vec![
+                insert_op(&[TEST_LEAF, TREE], b"k", Element::empty_tree()),
+                insert_op(&[TEST_LEAF, TREE, b"k"], b"x", Element::new_item(vec![1])),
+            ],
+            None,
+            None,
+            &GROVE_V4,
+        )
+        .unwrap()
+        .expect("GROVE_V4 takes a plain tree as an entry");
+        refused_unchanged(&db, "an entry that carries no sum");
+    }
+
+    #[test]
     fn an_indexed_tree_with_a_key_the_big_sum_axis_cannot_rank_is_refused() {
         let v = GroveVersion::latest();
         let db = make_test_grovedb(v);

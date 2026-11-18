@@ -207,11 +207,14 @@ It is not a relabeling of the element. Each node stores its own
 contribution, and each link the aggregate of the child under it, at the
 width of the tree's sum, so every node of the tree is read and written
 again, and the trees with the sum in their node hashes are rehashed from
-the leaves up. The cost is `O(n)` in the tree's children, the whole tree is
-in memory until the write, and the storage cost reports 16 added bytes per
-child (8 in the node, 8 in the link to it).
+the leaves up. That is one visit per child, with the whole tree in memory
+until the write. The storage cost reports 16 added bytes per child (8 in
+the node, 8 in the link to it, and one more where the node's length prefix
+grows) and 7 for the tree's element. An indexed tree also rewrites the rows
+of its sum and avg axes, sorted and applied as one change per axis:
+`O(n log n)` work for each, with the rows' own storage cost.
 
-Three things are refused:
+These are refused, and a refused call leaves the tree as it was:
 
 - An element that is not one of the six trees. `ProvableCountSumTree` has
   no counterpart with a 128-bit sum.
@@ -220,7 +223,13 @@ Three things are refused:
   stop following it. Convert the parent first, then its children. A child
   wrapped in `NotSummed` or `NotCountedOrSummed` adds nothing either way
   and is converted where it is.
-- An indexed tree with a key the big sum axis cannot rank (see
+- A tree holding a child that would add a different count or sum to it
+  once converted. That is a tree with a 128-bit sum inside it: it adds
+  nothing to a 64-bit sum and its whole sum to a 128-bit one, so the
+  conversion would change the tree's sum. Every child must add what it
+  adds today.
+- An indexed tree with an entry its counterpart does not accept, with axes
+  that are not canonical, or with a key the big sum axis cannot rank (see
   [Indexed trees with a 128-bit sum](count-indexed-tree.md#indexed-trees-with-a-128-bit-sum)).
 
 Only the tree named is converted. A sum tree inside it keeps its type and

@@ -57,7 +57,7 @@ use grovedb_merk::{
     merk::KVIterator,
     proofs::Query,
     tree::{kv::ValueDefinedCostType, AggregateData, TreeNode},
-    Merk, TreeType,
+    CryptoHash, Error as MerkError, Merk, Op, TreeType,
 };
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
@@ -1058,7 +1058,7 @@ impl GroveDb {
                         key_len, max_item_key_len
                     ))
                 },
-                false,
+                SecondaryRowWrites::OneByOne,
                 transaction,
                 batch,
                 grove_version,
@@ -1117,15 +1117,13 @@ impl GroveDb {
     /// be ranked on one of the element's axes, from the key's length and the
     /// ceiling.
     ///
-    /// Each row is removed or written by a Merk commit of its own, all into
-    /// `batch`. A storage batch keeps a put over a later delete of the same
-    /// key unless the two are marked as separate operations
-    /// ([`StorageBatch::next_operation`]), and removing one row rewrites the
-    /// nodes around it, which can be rows removed next. With
-    /// `separate_row_writes` each commit is marked, so every removal reaches
-    /// storage. A caller that removes a whole secondary's rows sets it. The
-    /// repair does not, and keeps the writes and the cost it reports in the
-    /// released versions.
+    /// `row_writes` says how each secondary's rows are written
+    /// ([`SecondaryRowWrites`]).
+    ///
+    /// Both scans this acts on, of the primary's entries and of each
+    /// secondary's rows, must have reached their end: a scan a storage
+    /// error cut short is an error here, since it would otherwise read as
+    /// entries or rows that are not there.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn rebuild_indexed_tree_secondaries<'db, 'b, B: AsRef<[u8]>>(
         &'db self,
@@ -1133,7 +1131,7 @@ impl GroveDb {
         primary_merk: &Merk<PrefixedRocksDbTransactionContext<'db>>,
         indexed_element: &Element,
         oversize_key_error: impl Fn(usize, usize) -> Error,
-        separate_row_writes: bool,
+        row_writes: SecondaryRowWrites,
         transaction: &'db Transaction,
         batch: &'db StorageBatch,
         grove_version: &GroveVersion,
@@ -1209,6 +1207,7 @@ impl GroveDb {
                 },
             ));
         }
+        cost_return_on_error_no_add!(cost, iter.status().map_err(Error::StorageError));
 
         // 4. Rebuild each axis's secondary and capture its post-repair
         //    state in the element's canonical axis order.
@@ -1270,98 +1269,76 @@ impl GroveDb {
             while let Some((key, _node_bytes)) = sec_iter.next_kv().unwrap_add_cost(&mut cost) {
                 existing_keys.insert(key);
             }
+            cost_return_on_error_no_add!(cost, sec_iter.status().map_err(Error::StorageError));
 
-            // Delete rows that should not exist.
-            for key in &existing_keys {
-                if !desired.contains_key(key) {
-                    if separate_row_writes {
-                        batch.next_operation();
-                    }
+            match row_writes {
+                SecondaryRowWrites::Together => {
                     cost_return_on_error!(
                         &mut cost,
-                        Element::delete(
+                        write_secondary_rows_together(
                             &mut secondary_merk,
-                            key.as_slice(),
-                            None,
-                            false,
-                            secondary_tree_type,
+                            &existing_keys,
+                            &desired,
                             grove_version,
                         )
-                        .map_err(Error::MerkError)
                     );
                 }
-            }
-
-            // Insert missing rows and rewrite damaged ones. Key-presence
-            // alone does not imply row-correctness on any axis: the row
-            // carries a reference path and a payload sum the key does not
-            // encode, and its COMMITMENT can be stale even when every byte
-            // of the row is right. Compare all three.
-            for (desired_key, (desired_row_bytes, desired_target_hash)) in &desired {
-                let needs_write = if existing_keys.contains(desired_key) {
-                    let stored = cost_return_on_error!(
-                        &mut cost,
-                        secondary_merk
-                            .get(
-                                desired_key.as_slice(),
-                                true,
-                                Some(&Element::value_defined_cost_for_serialized_value),
-                                grove_version,
-                            )
-                            .map_err(|e| Error::CorruptedData(format!(
-                                "reading secondary row for compare: {e}"
-                            )))
-                    );
-                    let stored_value_hash = cost_return_on_error!(
-                        &mut cost,
-                        secondary_merk
-                            .get_value_hash(
-                                desired_key.as_slice(),
-                                true,
-                                Some(&Element::value_defined_cost_for_serialized_value),
-                                grove_version,
-                            )
-                            .map_err(|e| Error::CorruptedData(format!(
-                                "reading secondary row commitment for compare: {e}"
-                            )))
-                    );
-                    let want_committed = grovedb_merk::tree::combine_hash(
-                        &grovedb_merk::tree::value_hash(desired_row_bytes)
-                            .unwrap_add_cost(&mut cost),
-                        desired_target_hash,
-                    )
-                    .unwrap_add_cost(&mut cost);
-                    stored.as_deref() != Some(desired_row_bytes.as_slice())
-                        || stored_value_hash != Some(want_committed)
-                } else {
-                    true
-                };
-                if needs_write {
-                    if separate_row_writes {
-                        batch.next_operation();
+                SecondaryRowWrites::OneByOne => {
+                    // Delete rows that should not exist.
+                    for key in &existing_keys {
+                        if !desired.contains_key(key) {
+                            cost_return_on_error!(
+                                &mut cost,
+                                Element::delete(
+                                    &mut secondary_merk,
+                                    key.as_slice(),
+                                    None,
+                                    false,
+                                    secondary_tree_type,
+                                    grove_version,
+                                )
+                                .map_err(Error::MerkError)
+                            );
+                        }
                     }
-                    let entry = cost_return_on_error_no_add!(
-                        cost,
-                        Element::deserialize(desired_row_bytes.as_slice(), grove_version).map_err(
-                            |e| {
-                                Error::CorruptedData(format!(
-                                    "failed to round-trip desired secondary row: {e}"
-                                ))
-                            }
-                        )
-                    );
-                    cost_return_on_error!(
-                        &mut cost,
-                        entry
-                            .insert_reference(
-                                &mut secondary_merk,
-                                desired_key.as_slice(),
-                                *desired_target_hash,
-                                None,
+
+                    // Insert missing rows and rewrite damaged ones.
+                    for (desired_key, (desired_row_bytes, desired_target_hash)) in &desired {
+                        let needs_write = cost_return_on_error!(
+                            &mut cost,
+                            secondary_row_needs_write(
+                                &secondary_merk,
+                                &existing_keys,
+                                desired_key,
+                                desired_row_bytes,
+                                desired_target_hash,
                                 grove_version,
                             )
-                            .map_err(Error::MerkError)
-                    );
+                        );
+                        if needs_write {
+                            let entry = cost_return_on_error_no_add!(
+                                cost,
+                                Element::deserialize(desired_row_bytes.as_slice(), grove_version)
+                                    .map_err(|e| {
+                                        Error::CorruptedData(format!(
+                                            "failed to round-trip desired secondary row: {e}"
+                                        ))
+                                    })
+                            );
+                            cost_return_on_error!(
+                                &mut cost,
+                                entry
+                                    .insert_reference(
+                                        &mut secondary_merk,
+                                        desired_key.as_slice(),
+                                        *desired_target_hash,
+                                        None,
+                                        grove_version,
+                                    )
+                                    .map_err(Error::MerkError)
+                            );
+                        }
+                    }
                 }
             }
 
@@ -3440,6 +3417,168 @@ impl GroveDb {
             grove_version,
         )
     }
+}
+
+/// How a rebuild writes the rows of one secondary
+/// ([`GroveDb::rebuild_indexed_tree_secondaries`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SecondaryRowWrites {
+    /// One Merk commit per row: the rows that should not exist are removed
+    /// first, then the missing and damaged ones are written, each in key
+    /// order. What the repair does in the released versions, kept as it is.
+    OneByOne,
+    /// One Merk commit for everything an axis needs: its removals and its
+    /// writes together. Only the aggregates of the finished secondary are
+    /// computed, so a rebuild that changes every row cannot fail on a sum
+    /// the rows pass through halfway, and each key is written once and
+    /// billed against what it held before.
+    Together,
+}
+
+/// Whether the row a secondary should hold at `desired_key` has to be
+/// written: it is missing, or it differs from the stored one.
+///
+/// Key-presence alone does not imply row-correctness on any axis: the row
+/// carries a reference path and a payload sum the key does not encode, and
+/// its COMMITMENT can be stale even when every byte of the row is right.
+/// All three are compared.
+fn secondary_row_needs_write<'db, S: StorageContext<'db>>(
+    secondary_merk: &Merk<S>,
+    existing_keys: &std::collections::BTreeSet<Vec<u8>>,
+    desired_key: &[u8],
+    desired_row_bytes: &[u8],
+    desired_target_hash: &CryptoHash,
+    grove_version: &GroveVersion,
+) -> CostResult<bool, Error> {
+    let mut cost = OperationCost::default();
+    if !existing_keys.contains(desired_key) {
+        return Ok(true).wrap_with_cost(cost);
+    }
+    let stored = cost_return_on_error!(
+        &mut cost,
+        secondary_merk
+            .get(
+                desired_key,
+                true,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            )
+            .map_err(|e| Error::CorruptedData(format!("reading secondary row for compare: {e}")))
+    );
+    let stored_value_hash = cost_return_on_error!(
+        &mut cost,
+        secondary_merk
+            .get_value_hash(
+                desired_key,
+                true,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            )
+            .map_err(|e| Error::CorruptedData(format!(
+                "reading secondary row commitment for compare: {e}"
+            )))
+    );
+    let want_committed = grovedb_merk::tree::combine_hash(
+        &grovedb_merk::tree::value_hash(desired_row_bytes).unwrap_add_cost(&mut cost),
+        desired_target_hash,
+    )
+    .unwrap_add_cost(&mut cost);
+    Ok(stored.as_deref() != Some(desired_row_bytes) || stored_value_hash != Some(want_committed))
+        .wrap_with_cost(cost)
+}
+
+/// Brings one secondary in line with `desired` in a single Merk commit
+/// ([`SecondaryRowWrites::Together`]): every stored row `desired` does not
+/// name is removed, and every row of it that is missing or differs is
+/// written.
+fn write_secondary_rows_together<'db, S: StorageContext<'db>>(
+    secondary_merk: &mut Merk<S>,
+    existing_keys: &std::collections::BTreeSet<Vec<u8>>,
+    desired: &std::collections::BTreeMap<Vec<u8>, (Vec<u8>, CryptoHash)>,
+    grove_version: &GroveVersion,
+) -> CostResult<(), Error> {
+    let mut cost = OperationCost::default();
+    let secondary_tree_type = secondary_merk.tree_type;
+
+    let mut operations: Vec<(Vec<u8>, Op)> = Vec::new();
+    for key in existing_keys {
+        if !desired.contains_key(key) {
+            cost_return_on_error!(
+                &mut cost,
+                Element::delete_into_batch_operations(
+                    key.clone(),
+                    false,
+                    secondary_tree_type,
+                    &mut operations,
+                    grove_version,
+                )
+                .map_err(Error::MerkError)
+            );
+        }
+    }
+    for (desired_key, (desired_row_bytes, desired_target_hash)) in desired {
+        let needs_write = cost_return_on_error!(
+            &mut cost,
+            secondary_row_needs_write(
+                secondary_merk,
+                existing_keys,
+                desired_key,
+                desired_row_bytes,
+                desired_target_hash,
+                grove_version,
+            )
+        );
+        if !needs_write {
+            continue;
+        }
+        let row = cost_return_on_error_no_add!(
+            cost,
+            Element::deserialize(desired_row_bytes.as_slice(), grove_version).map_err(|e| {
+                Error::CorruptedData(format!("failed to round-trip desired secondary row: {e}"))
+            })
+        );
+        let feature_type = cost_return_on_error_no_add!(
+            cost,
+            row.get_feature_type(secondary_tree_type)
+                .map_err(Error::MerkError)
+        );
+        cost_return_on_error!(
+            &mut cost,
+            row.insert_reference_into_batch_operations(
+                desired_key.clone(),
+                *desired_target_hash,
+                &mut operations,
+                feature_type,
+                grove_version,
+            )
+            .map_err(Error::MerkError)
+        );
+    }
+    if operations.is_empty() {
+        return Ok(()).wrap_with_cost(cost);
+    }
+    // A removed key is never a desired one, so the keys are unique.
+    operations.sort_by(|a, b| a.0.cmp(&b.0));
+
+    secondary_merk
+        .apply_with_specialized_costs::<_, Vec<u8>>(
+            &operations,
+            &[],
+            None,
+            &|key, value| {
+                Element::specialized_costs_for_key_value(
+                    key,
+                    value,
+                    secondary_tree_type.inner_node_type(),
+                    grove_version,
+                )
+                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+            },
+            Some(&Element::value_defined_cost_for_serialized_value),
+            grove_version,
+        )
+        .map_err(Error::MerkError)
+        .add_cost(cost)
 }
 
 /// Apply an axis secondary mirror covering insert, update, and delete via
