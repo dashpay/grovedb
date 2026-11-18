@@ -177,7 +177,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   open's error on, fail with the storage error where the parent could not be
   read. A batch opening an existing subtree and state sync read the parent
   element themselves; they already failed on such a read and keep the errors
-  they returned. A parent key
+  they returned. `verify_grovedb`'s reciprocity audit of bidirectional
+  references returns the storage error as well, where it reported the
+  reference as broken (`?missing-registration`,
+  `?no-reciprocal-forward-edge`). A parent key
   that is not there and stored bytes that do not decode are reported as
   before: the second is what a path below a non-Merk tree legitimately reads,
   and telling it from a corrupt parent element is left to a later,

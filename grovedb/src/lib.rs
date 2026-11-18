@@ -2435,6 +2435,9 @@ impl GroveDb {
                     .unwrap_or(false)
                 }
                 Ok(_) => false,
+                // A read that failed in storage proves nothing about the
+                // edge, so it is not reported as a missing one.
+                Err(e @ Error::StorageError(_)) => return Err(e),
                 Err(_) => false,
             };
             if !reciprocal {
@@ -2449,6 +2452,43 @@ impl GroveDb {
         }
         let _ = allow_cache;
         Ok(())
+    }
+
+    /// The element a bidirectional reference points at, with its referrer
+    /// list: a Merk-level read, because public reads strip the list and the
+    /// list is what the reciprocity audit inspects. `None` when the target
+    /// does not resolve to an element. A read of the target's parent that
+    /// failed in storage is returned as the error it is: it proves nothing
+    /// about the registration.
+    fn stored_reference_target<'a>(
+        &'a self,
+        target_path: &[Vec<u8>],
+        target_key: &[u8],
+        allow_cache: bool,
+        transaction: &'a Transaction,
+        batch: Option<&'a StorageBatch>,
+        grove_version: &GroveVersion,
+    ) -> Result<Option<Element>, Error> {
+        let target_path_slices: Vec<&[u8]> = target_path.iter().map(|p| p.as_slice()).collect();
+        let target_merk = match self
+            .open_transactional_merk_at_path(
+                target_path_slices.as_slice().into(),
+                transaction,
+                batch,
+                grove_version,
+            )
+            .unwrap()
+        {
+            Ok(target_merk) => target_merk,
+            Err(e @ Error::StorageError(_)) => return Err(e),
+            Err(_) => return Ok(None),
+        };
+        Ok(
+            Element::get_optional(&target_merk, target_key, allow_cache, grove_version)
+                .unwrap()
+                .ok()
+                .flatten(),
+        )
     }
 
     fn verify_merk_and_submerks_in_transaction<'db, B: AsRef<[u8]>, S: StorageContext<'db>>(
@@ -3003,31 +3043,14 @@ impl GroveDb {
                             let registered = match (target_qualified.split_last(), expected_inverse)
                             {
                                 (Some((target_key, target_path)), Some(inverse)) => {
-                                    // Merk-level read: public reads STRIP
-                                    // referrer lists, and the list is
-                                    // exactly what this audit inspects.
-                                    let target_path_slices: Vec<&[u8]> =
-                                        target_path.iter().map(|p| p.as_slice()).collect();
-                                    let target_element = self
-                                        .open_transactional_merk_at_path(
-                                            target_path_slices.as_slice().into(),
-                                            transaction,
-                                            batch,
-                                            grove_version,
-                                        )
-                                        .unwrap()
-                                        .ok()
-                                        .and_then(|target_merk| {
-                                            Element::get_optional(
-                                                &target_merk,
-                                                target_key,
-                                                allow_cache,
-                                                grove_version,
-                                            )
-                                            .unwrap()
-                                            .ok()
-                                            .flatten()
-                                        });
+                                    let target_element = self.stored_reference_target(
+                                        target_path,
+                                        target_key,
+                                        allow_cache,
+                                        transaction,
+                                        batch,
+                                        grove_version,
+                                    )?;
                                     match target_element {
                                         Some(target) => target
                                             .backward_references()

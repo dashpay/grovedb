@@ -11,7 +11,10 @@ use grovedb_storage::{RawIterator, Storage, StorageContext};
 use grovedb_version::version::{v4::GROVE_V4, GroveVersion, GROVE_VERSIONS};
 
 use crate::{
+    bidirectional_references::BidirectionalReference,
+    operations::insert::InsertOptions,
     query_result_type::QueryResultType,
+    reference_path::ReferencePathType,
     tests::{
         common::EMPTY_PATH,
         faultable_reads::{with_failed_parent_read, INJECTED_READ_FAILURE},
@@ -126,9 +129,16 @@ fn should_return_the_storage_error_when_the_parent_read_fails_on_a_single_read()
 fn should_return_the_storage_error_when_the_parent_read_fails_in_a_path_query() {
     for grove_version in GROVE_VERSIONS {
         let db = db_with_item(grove_version);
+        // The range branch filters absence on its own.
+        let mut range_hop = Query::new_range_full();
+        range_hop.set_subquery_path(vec![KEY.to_vec()]);
         let queries = [
             ("key item", key_query(&[TEST_LEAF, PARENT], KEY)),
             ("subquery hop", hop_query()),
+            (
+                "range subquery hop",
+                PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], range_hop),
+            ),
         ];
         for (name, path_query) in &queries {
             for error_if_intermediate_path_tree_not_present in [false, true] {
@@ -401,4 +411,107 @@ fn should_keep_the_outer_read_failing_after_a_nested_scope_ends() {
         assert_injected_failure(read(), "after the nested scope");
     });
     assert_eq!(read().expect("disarmed"), Some(item()));
+}
+
+/// `TEST_LEAF / target` is an item and `TEST_LEAF / referrer` a bidirectional
+/// reference to it, registered in the item's referrer list.
+fn db_with_bidirectional_reference(grove_version: &GroveVersion) -> TempGroveDb {
+    let db = make_test_grovedb(grove_version);
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"target",
+        Element::new_item_allowing_bidirectional_references(b"value".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert target");
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"referrer",
+        Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(b"target".to_vec()),
+                backward_references: Vec::new(),
+                cascade_on_update: false,
+                max_hop: None,
+            },
+            None,
+        ),
+        Some(InsertOptions {
+            backwards_references: BackwardsReferences::Check,
+            ..Default::default()
+        }),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert referrer");
+    db
+}
+
+#[test]
+fn should_return_the_storage_error_from_the_reference_reciprocity_audit() {
+    let grove_version = GroveVersion::latest();
+    let db = db_with_bidirectional_reference(grove_version);
+    let tx = db.start_transaction();
+    let leaf = [TEST_LEAF.to_vec()];
+
+    // Forward direction: the referrer's target is read with its referrer
+    // list.
+    let target = db
+        .stored_reference_target(&leaf, b"target", true, &tx, None, grove_version)
+        .expect("healthy read")
+        .expect("the target");
+    assert!(target
+        .backward_references()
+        .is_some_and(|referrers| !referrers.is_empty()));
+    // A target that does not resolve is still "no element".
+    let unresolved = db
+        .stored_reference_target(
+            &[b"missing".to_vec()],
+            b"target",
+            true,
+            &tx,
+            None,
+            grove_version,
+        )
+        .expect("absence, not an error");
+    assert!(unresolved.is_none());
+    with_failed_parent_read(TEST_LEAF, || {
+        assert_injected_failure(
+            db.stored_reference_target(&leaf, b"target", true, &tx, None, grove_version),
+            "forward audit",
+        );
+    });
+
+    // Backward direction: each referrer listed on the target is read back.
+    let audit = || {
+        let mut issues = Default::default();
+        db.verify_reciprocal_backward_references(
+            &target,
+            &[TEST_LEAF].as_ref().into(),
+            b"target",
+            true,
+            &tx,
+            grove_version,
+            &mut issues,
+        )
+        .map(|()| issues)
+    };
+    assert!(audit().expect("healthy audit").is_empty());
+    assert_injected_failure(with_failed_parent_read(TEST_LEAF, audit), "backward audit");
+
+    // The whole verification reports the failed read, not broken references.
+    assert!(db
+        .verify_grovedb(Some(&tx), true, true, grove_version)
+        .expect("healthy verification")
+        .is_empty());
+    assert_injected_failure(
+        with_failed_parent_read(TEST_LEAF, || {
+            db.verify_grovedb(Some(&tx), true, true, grove_version)
+        }),
+        "verify_grovedb",
+    );
 }
