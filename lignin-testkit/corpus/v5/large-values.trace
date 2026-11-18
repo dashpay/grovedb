@@ -93,59 +93,62 @@ c3a10v421cq9fa7pb019
 cb7ddr3322
 c8747vf159qf5fep393e
 c7abcr67d7
-c6e9drbfd5
+c6e9dv5e99rbfd5
   step 65
   # Write(Append { path: [[108, 97, 114, 103, 101], [109, 109, 114]], entry: Mmr([65]) })
   cost seeks=10 loaded=577 added=80 replaced=164 removed=- hashes=12 sinsemilla=0
+  result appended
+  root 0xc5d3c44eb273ca8d15c2bab9402da3a048a640f9b08329b8e49c2a2548f08dc0
+  position 0
   root 187cb8a2abe619a1f6b4512d75ca2684f3e40bfde9d421503762f8015770da74
 c8856rc1b4
 cba95rbd54
-c0cd8r4000
+c0cd8vdf62r4000
 c8856r5307
 c4b9brf6a0
-c33e3rc69a
+c33e3v28c2rc69a
 cf955r0405
 c73e9rc482
-c94cer7d6b
+c94cevf5a7r7d6b
 cfa07r4b11
 cb58br9c69
-c20adr17ac
+c20advb5d3r17ac
 c6787r1ef8
 c02ffrc218
-c545cr9d29
+c545cv5133r9d29
 ce35cr5e8c
 c117ar9bff
-c28f6r09cc
+c28f6v3afar09cc
 c061erca1b
 c67f3r5a29
-cfd62rc517
+cfd62v954erc517
 c6695r9487
 c12b2r3308
-c8af9r5766
+c8af9v5aebr5766
 c5b20rf8dd
 c4916rb060
-ccb41r90f4
+ccb41v6443r90f4
 c8e11r3aa5
 cab69r25dc
-c6610rbf5a
+c6610v7e59rbf5a
 c0430r858e
 c0c13r8b6c
-c47b1r69fb
+c47b1v31bfr69fb
 cd05erdec5
 c3a10r6fd7
-c97dfr80e0
+c97dfvdd8ar80e0
 ceb6dr5a10
 ce349r9053
-cd97br0099
+cd97bv65b1r0099
 cb9a2rf60d
 c97f0r999d
-cc3b8rf705
+cc3b8v384arf705
 c6bebr07af
 c5f53r918c
-c7e5cr9462
+c7e5cvd923r9462
 ce6ear5d50
 c617dra16e
-ccf4drc2a3
+ccf4dve3d9rc2a3
 c2f9er9eb2
 c1d9er42c2
 c3ffbrd97e
@@ -162,7 +165,7 @@ ce678r17bf
 c391dre1e4
 c1e10rcad1
 cb1b9rf60b
-cc332rfbc0
+cc332vf092rfbc0
 c17fcr7c83
 cb7ddr7c83
 c6e51v5a99
@@ -230,4 +233,4 @@ cb7ddr041f
 ce08bv25a2qe3f5p2f1f
 stream 192 1a72c05021d10874a99ca486d54a78d6e7319289088065d2ccfbc7b4d33cf483
 tally failed=0 unproved=0 unverified=0
-end 192 db321cebf26215c73ddc968b7e60873e2e288329d5ccef7eb6ccdabed8b0635f
+end 192 fcc0702affa174ce3059d06cd94e92d1dfbccca9d79cd347ed9604b09780e916

@@ -1,0 +1,994 @@
+lignin-golden-trace 1
+name conditional-writes
+seed 0x1
+grove-version 5
+engine 22f163c2b82d9bc5c985a77034529a32ef9a7c04
+workload conditional-writes
+ccd39rf5ea
+  step 0
+  # Write(Insert { path: [], key: [72], element: tree: None })
+  cost seeks=3 loaded=0 added=109 replaced=0 removed=- hashes=3 sinsemilla=0
+  root cf348c325b7635a8bdf70e9ce480344dae0ff1b150982352c036ab0ab8067336
+c2d43r320f
+cd6edre41f
+c1eeerb3e2
+c83e0rae94
+c4c53rc631
+c8187rc60f
+c132fr18e2
+cb7ddr18e2
+  step 8
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 05fd774ce671cd379bd67ebf432bb45d9bb8a7642a36d572358bd1ba52e25e64
+ccc1fvcf63r18e2
+  step 9
+  # Transaction(BlockRead(HasRaw { path: [[72], [170, 53, 7, 152, 48, 77, 21, 147, 194, 81, 66, 71, 176, 21, 43, 71, 108, 112, 246, 39, 65, 178, 231, 158, 252, 254, 156, 245, 84, 225, 18, 213], [1], [112, 114, 111, 102, 105, 108, 101], [0]], key: [93, 180, 139, 104, 193, 104, 56, 243, 45, 77, 231, 139, 43, 188, 98, 40, 93, 109, 98, 111, 86, 101, 95, 205, 140, 154, 245, 117, 104, 50, 235, 227] }))
+  cost seeks=1 loaded=0 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result flag
+  flag false
+  root 05fd774ce671cd379bd67ebf432bb45d9bb8a7642a36d572358bd1ba52e25e64
+ccc1fvcf63r18e2
+c349crb62d
+  step 11
+  # Batch([InsertOnly { path: [[72], [170, 53, 7, 152, 48, 77, 21, 147, 194, 81, 66, 71, 176, 21, 43, 71, 108, 112, 246, 39, 65, 178, 231, 158, 252, 254, 156, 245, 84, 225, 18, 213], [1], [112, 114, 111, 102, 105, 108, 101], [0]], key: [93, 180, 139, 104, 193, 104, 56, 243, 45, 77, 231, 139, 43, 188, 98, 40, 93, 109, 98, 111, 86, 101, 95, 205, 140, 154, 245, 117, 104, 50, 235, 227], element: item: [he… (1575 characters)
+  cost seeks=25 loaded=1152 added=753 replaced=510 removed=- hashes=70 sinsemilla=0
+  root 8753326d525ab8648ce3d352430422df41435c0e0f2fb19c3b9a6294b38a2e3e
+cdd7fv1a73rfa0b
+  step 12
+  # Write(InsertIfNotExists { path: [[72], [170, 53, 7, 152, 48, 77, 21, 147, 194, 81, 66, 71, 176, 21, 43, 71, 108, 112, 246, 39, 65, 178, 231, 158, 252, 254, 156, 245, 84, 225, 18, 213], [1], [112, 114, 111, 102, 105, 108, 101], [104, 97, 110, 100, 108, 101]], key: [104, 97, 110, 100, 108, 101, 45, 48, 50], element: item: [hex: 5db48b68..6832ebe3][hex: 000000, str: \u{0}\u{0}\u{0}], return_existing:… (409 characters)
+  cost seeks=21 loaded=1167 added=192 replaced=515 removed=- hashes=40 sinsemilla=0
+  result flag
+  flag true
+  root ffea38c01d1be453d1625e1ea3b917d0ea234dfd03fb584fda5c13f96035b240
+c49c0v1a73r4251
+  step 13
+  # Write(DeleteBuilt { path: [[72], [170, 53, 7, 152, 48, 77, 21, 147, 194, 81, 66, 71, 176, 21, 43, 71, 108, 112, 246, 39, 65, 178, 231, 158, 252, 254, 156, 245, 84, 225, 18, 213], [1], [112, 114, 111, 102, 105, 108, 101], [0]], key: [93, 180, 139, 104, 193, 104, 56, 243, 45, 77, 231, 139, 43, 188, 98, 40, 93, 109, 98, 111, 86, 101, 95, 205, 140, 154, 245, 117, 104, 50, 235, 227] })
+  cost seeks=24 loaded=1499 added=0 replaced=510 removed=271 hashes=39 sinsemilla=0
+  result flag
+  flag true
+  root 7c6a89f2c75d4e1732eae749d73555d179c4e015060895e0393cea305d821e25
+c430av0325r345c
+  step 14
+  # Write(DeleteUpTree { path: [[72], [170, 53, 7, 152, 48, 77, 21, 147, 194, 81, 66, 71, 176, 21, 43, 71, 108, 112, 246, 39, 65, 178, 231, 158, 252, 254, 156, 245, 84, 225, 18, 213], [1], [112, 114, 111, 102, 105, 108, 101], [99, 105, 116, 121], [99, 105, 116, 121, 45, 48, 53], [0]], key: [93, 180, 139, 104, 193, 104, 56, 243, 45, 77, 231, 139, 43, 188, 98, 40, 93, 109, 98, 111, 86, 101, 95, 205, 140… (478 characters)
+  cost seeks=39 loaded=2989 added=0 replaced=431 removed=482 hashes=58 sinsemilla=0
+  result deleted
+  deleted 3
+  root 4ec91ad8d402b825a07e1157306b04b65c1f42ca54cd77d37dea9bdeca6862f1
+c7f17r18e2
+  step 15
+  # Write(Delete { path: [[72], [170, 53, 7, 152, 48, 77, 21, 147, 194, 81, 66, 71, 176, 21, 43, 71, 108, 112, 246, 39, 65, 178, 231, 158, 252, 254, 156, 245, 84, 225, 18, 213], [1], [112, 114, 111, 102, 105, 108, 101], [104, 97, 110, 100, 108, 101]], key: [104, 97, 110, 100, 108, 101, 45, 48, 50] })
+  cost seeks=21 loaded=1285 added=0 replaced=515 removed=192 hashes=35 sinsemilla=0
+  root 05fd774ce671cd379bd67ebf432bb45d9bb8a7642a36d572358bd1ba52e25e64
+ccc1fvcf63r18e2
+ccc1fvcf63r18e2
+ce996r70a3
+cdd7fv1a73rd1e9
+c0ed3v1a73r40ac
+c430av0325rde40
+c7f17r18e2
+ccc1fvcf63r18e2
+ccc1fvcf63r18e2
+c646dr90a3
+cdd7fv1a73rde57
+ccc1fvcf63rde57
+ccc1fvcf63rde57
+c25a8r8157
+cceffv1b72r72b3
+  step 30
+  # Write(InsertIfNotExists { path: [[72], [170, 53, 7, 152, 48, 77, 21, 147, 194, 81, 66, 71, 176, 21, 43, 71, 108, 112, 246, 39, 65, 178, 231, 158, 252, 254, 156, 245, 84, 225, 18, 213], [1], [112, 114, 111, 102, 105, 108, 101], [104, 97, 110, 100, 108, 101]], key: [104, 97, 110, 100, 108, 101, 45, 50, 52], element: item: [hex: 6c3e677d..47ebe6e8][hex: 000000, str: \u{0}\u{0}\u{0}], return_existing:… (408 characters)
+  cost seeks=24 loaded=1483 added=192 replaced=665 removed=- hashes=43 sinsemilla=0
+  result existing
+  element none
+  root 0af187dcacf4761e4b5f38f288da45d976ba1892e6accaa519adad84a615a751
+ccc1fvcf63r72b3
+cb0b5v1a73r72b3
+c2e27rabf5
+ced6dv1a73r6016
+cd018vf530r6016
+  step 35
+  # Transaction(BlockRead(Fetch { path: [[72], [170, 53, 7, 152, 48, 77, 21, 147, 194, 81, 66, 71, 176, 21, 43, 71, 108, 112, 246, 39, 65, 178, 231, 158, 252, 254, 156, 245, 84, 225, 18, 213], [1], [112, 114, 111, 102, 105, 108, 101], [0]], key: [207, 82, 133, 73, 140, 0, 221, 66, 182, 186, 182, 151, 66, 129, 230, 142, 178, 145, 131, 218, 114, 192, 226, 160, 178, 66, 72, 153, 0, 29, 197, 12], fetch: R… (427 characters)
+  cost seeks=3 loaded=521 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  result existing
+  element 0x006e881c66a1ae33b0becc0695093713e8f4e34488bf2349d2bc4aa946f3457d5ae90d3f4e4da5c8f5aed0008d800d3e0878ddb5b638169cf74625395fc1eec42a574d71504ef22aec8e0c65bc1b1c5262bcaadfeb59a1132252f4a18e3ec6f468238b4d464edd312bb4241b2d1594d10103000000
+  root 18326ccc5856efe3c3bcf840d03cdc2ac4dd96e0752a53db4ae61fdeb6acdca8
+c1462rf47c
+cb7ddrf47c
+c8e2bv1a73
+  step 38
+  # Read(HasRaw { path: [[72], [170, 53, 7, 152, 48, 77, 21, 147, 194, 81, 66, 71, 176, 21, 43, 71, 108, 112, 246, 39, 65, 178, 231, 158, 252, 254, 156, 245, 84, 225, 18, 213], [1], [112, 114, 111, 102, 105, 108, 101], [99, 105, 116, 121]], key: [99, 105, 116, 121, 45, 48, 48] })
+  cost seeks=1 loaded=76 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result flag
+  flag true
+c9e58vcf63
+  step 39
+  # Read(IsEmptyTree { path: [[72], [170, 53, 7, 152, 48, 77, 21, 147, 194, 81, 66, 71, 176, 21, 43, 71, 108, 112, 246, 39, 65, 178, 231, 158, 252, 254, 156, 245, 84, 225, 18, 213], [1], [112, 114, 111, 102, 105, 108, 101], [99, 105, 116, 121], [99, 105, 116, 121, 45, 48, 48], [0]] })
+  cost seeks=7 loaded=639 added=0 replaced=0 removed=- hashes=10 sinsemilla=0
+  result flag
+  flag false
+c2613v60bdq9b8ap21b7
+  step 40
+  # Read(Query(Query { path: [[72], [170, 53, 7, 152, 48, 77, 21, 147, 194, 81, 66, 71, 176, 21, 43, 71, 108, 112, 246, 39, 65, 178, 231, 158, 252, 254, 156, 245, 84, 225, 18, 213], [1], [112, 114, 111, 102, 105, 108, 101], [99, 105, 116, 121], [99, 105, 116, 121, 45, 48, 48], [0]], items: [RangeFull], subquery_path: None, subquery_all: false, limit: Some(4), left_to_right: true, raw: false }))
+  cost seeks=5 loaded=993 added=0 replaced=0 removed=- hashes=4 sinsemilla=0
+  rows 1
+  row 48/aa350798304d1593c2514247b0152b476c70f62741b2e79efcfe9cf554e112d5/01/70726f66696c65/63697479/636974792d3030/00 6c3e677dcb7c15b24448c68ec40c58ed23d35a9c0f47c6f5181012c447ebe6e8 003034633cab2ce830c3119c23f36afa8946bb20ffff92f823155a1d6890558d95cc9a521a0181b0ff5962d4d380216e87650103000000
+  prove-cost seeks=19 loaded=1848 added=0 replaced=0 removed=- hashes=19 sinsemilla=0
+  proof 751 0100490401480024020120aa350798304d1593c2514247b0152b476c70f62741b2e79efcfe9cf554e112d500dd9b18f2e6f0d2c1f201db94fb22854e461c6058a5dc5d6715b41a38b8ff9994010148004d0420aa350798304d1593c2514247b0152b476c70f62741b2e79efcfe9cf554e112d50009020101010103000000c139cde591513a703c81fe73529302c07d7c6e61f183450a8ffada67c58ac1010120aa350798304d1593c2514247b0152b476c70f62741b2e79efcfe9cf554e112d50034040101000f02010770726f66696c65010300000079987c074dbca19b9aa76a158904e26cfb221e7f89e03fc314185040ee97d9080101010037040770726f66696c65000c020104636974790103000000dd46fcf0155e7ffd1ab18f57131ba544150c58effe9aa614702c27110faa70ab010770726f66696c65007b0122d5277373ccec4d0fba0fb05ef535770bc07a4696845c42dc124d204e3be830040463697479000f020107636974792d303401030000009e4af83dd210c4077fbbc4d2308abc19d07b62cc7fc77949fc2cb19442edf84b100183c3ee3cf9cfe6fa81fd1d29763180d4832f531b754acc9df684a3204ad0279b1101046369747900560407636974792d30300009020101000103000000a09c70bbeb93b2cfc381dda73bd644a4f535083955c22ecef01a646687b409f002d732dfbd32007e93d03ce8d171e875303620f823c721d7835b8ff5a8ef89e52b100107636974792d3030004d04010000280201206c3e677dcb7c15b24448c68ec40c58ed23d35a9c0f47c6f5181012c447ebe6e80103000000bb174889526f4bec7742d8a6e787194330a956ac1bf701da0d9e0b99479c9696010100007b06206c3e677dcb7c15b24448c68ec40c58ed23d35a9c0f47c6f5181012c447ebe6e80037003034633cab2ce830c3119c23f36afa8946bb20ffff92f823155a1d6890558d95cc9a521a0181b0ff5962d4d380216e87650103000000694c7f4f0d218eec61a80bca797d3bfd266cf7a638859a84443c934578282fa100
+  verification verified
+c5423vcf63
+c2ce5v1a73
+ccc1fvcf63
+c9952v1b72
+  step 44
+  # Read(Fetch { path: [[72], [170, 53, 7, 152, 48, 77, 21, 147, 194, 81, 66, 71, 176, 21, 43, 71, 108, 112, 246, 39, 65, 178, 231, 158, 252, 254, 156, 245, 84, 225, 18, 213], [1], [112, 114, 111, 102, 105, 108, 101], [0]], key: [221, 87, 185, 192, 177, 76, 23, 127, 68, 238, 213, 20, 189, 167, 157, 28, 53, 186, 232, 64, 252, 24, 47, 143, 26, 194, 248, 247, 200, 232, 222, 149], fetch: RawOptional, cach… (410 characters)
+  cost seeks=3 loaded=337 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  result existing
+  element none
+c9952v1b72
+c8e50v1b72
+c7b5fv1a73
+cecf1vbeae
+  step 48
+  # Read(Fetch { path: [[72], [170, 53, 7, 152, 48, 77, 21, 147, 194, 81, 66, 71, 176, 21, 43, 71, 108, 112, 246, 39, 65, 178, 231, 158, 252, 254, 156, 245, 84, 225, 18, 213], [1], [112, 114, 111, 102, 105, 108, 101], [99, 105, 116, 121], [99, 105, 116, 121, 45, 48, 52], [0]], key: [207, 82, 133, 73, 140, 0, 221, 66, 182, 186, 182, 151, 66, 129, 230, 142, 178, 145, 131, 218, 114, 192, 226, 160, 178, 6… (460 characters)
+  cost seeks=6 loaded=872 added=0 replaced=0 removed=- hashes=6 sinsemilla=0
+  element 005aff8fac2e454a9523947277bb926a3fba070b31ba3d85db962b7f8af0b35d4d10a6be1403a94e444240d7f2d6bc3398f417095873a4cb487dc43a81bf623932998b74b5ec53984d78463bd86fbd184fa17e61a9980dee8c8e6a280103000000
+c9609vbeae
+c7b9fv0739
+c9609vbeae
+c7b9fv7c55
+c9609v9d46
+ce056v90bf
+  step 54
+  # Read(Get { path: [[72], [170, 53, 7, 152, 48, 77, 21, 147, 194, 81, 66, 71, 176, 21, 43, 71, 108, 112, 246, 39, 65, 178, 231, 158, 252, 254, 156, 245, 84, 225, 18, 213], [1], [112, 114, 111, 102, 105, 108, 101], [104, 97, 110, 100, 108, 101]], key: [104, 97, 110, 100, 108, 101, 45, 52, 48] })
+  cost seeks=2 loaded=280 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  element 0020cf5285498c00dd42b6bab6974281e68eb29183da72c0e2a0b2424899001dc50c0103000000
+ccc1fvcf63rf47c
+ccc1fvcf63rf47c
+c06b3r05b6
+cf336v1a73rdfec
+ccc1fvcf63rdfec
+ccc1fvcf63rdfec
+c2ffbr2ad4
+c52a8v1b72r77bc
+ccc1fvcf63r77bc
+ccc1fvcf63r77bc
+c0d1erc38f
+ca6d2v1a73r8c7c
+ccc1fvcf63r8c7c
+c8e2bv1a73r8c7c
+ceb8dr664a
+caa8dv1b72rb1de
+ccc1fvcf63rb1de
+c8e2bv1a73rb1de
+c21acr87c3
+ce46bv1a73r6a88
+ccc1fvcf63r6a88
+cb0b5v1a73r6a88
+ccfc9rd386
+cab33v1b72rbf6e
+ccc1fvcf63rbf6e
+cb0b5v1a73rbf6e
+c0395reb72
+c7dc9v1a73r9aa7
+ccc1fvcf63r9aa7
+c8e2bv1a73r9aa7
+cd6c0r1174
+c34c2v1b72r9825
+cb7ddr9825
+c8e2bv1a73
+c997cvcf63
+cf750v0afeq2341p7a6e
+c47ebvcf63
+c2ce5v1a73
+ccc1fvcf63
+c9952v1b72
+c9952v1b72
+c8e50v1b72
+c859ev1a73
+c6c6cv095e
+cadd6v095e
+ca77av0a56
+cadd6v095e
+c9e06v4c45
+cadd6v7e12
+c6bb9vdb1e
+ccc1fvcf63r9825
+cd657rcb8c
+c7129r91b5
+c0177vcf63r91b5
+  step 108
+  # Write(DeleteIfEmptyTree { path: [[72], [170, 53, 7, 152, 48, 77, 21, 147, 194, 81, 66, 71, 176, 21, 43, 71, 108, 112, 246, 39, 65, 178, 231, 158, 252, 254, 156, 245, 84, 225, 18, 213], [1], [112, 114, 111, 102, 105, 108, 101], [100, 114, 97, 102, 116, 115]], key: [111, 119, 110, 101, 114, 45, 49] })
+  cost seeks=7 loaded=858 added=0 replaced=0 removed=- hashes=7 sinsemilla=0
+  result flag
+  flag false
+  root 9142bb890bdd5c78e4e4ab40984b9f7daa9c14ebba91940b52bbbc2fd314a759
+ccc1fvcf63r91b5
+c8e2bv1a73r91b5
+ce7e1r83c7
+c6bb9vec50r83c7
+c744av1158r83c7
+  step 113
+  # Write(InsertIfChanged { path: [[72], [170, 53, 7, 152, 48, 77, 21, 147, 194, 81, 66, 71, 176, 21, 43, 71, 108, 112, 246, 39, 65, 178, 231, 158, 252, 254, 156, 245, 84, 225, 18, 213], [1], [112, 114, 111, 102, 105, 108, 101], [0]], key: [0, 104, 254, 112, 7, 111, 13, 118, 107, 181, 0, 196, 166, 73, 222, 14, 6, 75, 226, 60, 166, 232, 235, 218, 177, 123, 147, 58, 232, 97, 199, 46], element: item: [he… (460 characters)
+  cost seeks=3 loaded=508 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  result changed
+  changed false
+  previous none
+  root 5eabe1aaec241e85a67ebb16463261497fecced56eeb9f961b567d44ffe25cd7
+ca6a7v1a73rc5cc
+cf23fv1608r59d3
+cee2cr51df
+ccc1fvcf63r51df
+c8e2bv1a73r51df
+c6f83re06b
+ce46bv1a73r6b50
+ccc1fvcf63r6b50
+c8e2bv1a73r6b50
+c337erdcdf
+c9ddev1b72r2685
+ccc1fvcf63r2685
+c99d5r66ba
+cbcc0r247f
+c712bvcf63r247f
+cb3c5v1a73r6c84
+cbe87v0325rf1c2
+c3ee1r193c
+cb7ddr193c
+ccc1fvcf63
+c47ebvcf63
+c2cd2vcf63
+c5487vcf63
+ccc1fvcf63
+c9952v1b72
+c9952v1b72
+c8e50v1b72
+c9a3cv1a73
+c140fvb199
+cb571vb199
+c7b9fv3908
+cb571vb199
+c7b9fv2518
+cb571vdf28
+c4208v0edb
+cdb5cv1a73rba07
+c6d93v1608re1b4
+cee2crc62b
+c2814v1a73r4c74
+c3235v1608r4adc
+cffa3r7f53
+cfbc6v1a73r405e
+c45fdv1608r8225
+cf881rc050
+ccc1fvcf63rc050
+ccc1fvcf63rc050
+ce710r9322
+c6bb9v61b0r9322
+c3a17v1a73r8736
+c0a1fv1608rd9f6
+cf881r15b5
+ccc1fvcf63r15b5
+c989fv1a73r15b5
+cc392rfd34
+c7af2v1b72r31f2
+ccc1fvcf63r31f2
+ccc1fvcf63r31f2
+c8274r21da
+cae34vcf63r21da
+c4e84vf960r21da
+c17f4r33f0
+cb7ddr33f0
+c989fv1a73
+cf98cvcf63
+ccd4cvb060q81dbp7700
+c47ebvcf63
+c2cd2vcf63
+cf81fvcf63
+ccc1fvcf63
+ce9ccv1b72
+ce9ccv1b72
+c8e50v1b72
+c5c99v1a73
+cfb84v20a2
+cd0eev20a2
+c9e06v6bdb
+cd0eev20a2
+c9e06v0558
+cd0eev840c
+c6bb9v00b0
+ccc1fvcf63r33f0
+c8e2bv1a73r33f0
+ce42br4e23
+ce46bv1a73r32db
+c592cv1a73r7f9a
+c9381v1608rc4d5
+c2745r40ef
+ccc1fvcf63r40ef
+cd42br0946
+c6390r39aa
+cfebbvcf63r39aa
+ccc1fvcf63r39aa
+c8e2bv1a73r39aa
+c04b9r2bf4
+c2becv2babr2bf4
+ccc1fvcf63r2bf4
+c8e2bv1a73r2bf4
+cba2fr5def
+ca91dv1a73ra671
+c0e87vdf28ra671
+c2c6br1f6a
+ccc1fvcf63r1f6a
+c989fv1a73r1f6a
+c53f4rd503
+cb17cv1a73r8ea5
+cda2cv9d46r8ea5
+c68a8r7a55
+cb7ddr7a55
+c989fv1a73
+cf98cvcf63
+cc98bv81d0q3e7bpc989
+c47ebvcf63
+c38d5vcf63
+cbc61vcf63
+ccc1fvcf63
+cdc6dv1b72
+cdc6dv1b72
+c8e50v1b72
+c0043v1a73
+ca8c7v095e
+cda44v095e
+c92d1v0a56
+cda44v095e
+c80fbv4c45
+cda44v7e12
+c2becvdb1e
+ca1f3v1a73recf2
+cee36v1608r2949
+cee2cr694a
+c14c3vac5fr694a
+c86a1r38e3
+ccc1fvcf63r38e3
+c8e2bv1a73r38e3
+c6be3r8a8a
+cf06bvcf63r8a8a
+ccc1fvcf63r8a8a
+cb0b5v1a73r8a8a
+c1cc7r831d
+c9ddev1b72r8205
+ccc1fvcf63r8205
+c8e2bv1a73r8205
+cf697r4069
+ce46bv1a73r27e0
+c4fdav1a73r27e0
+c382ar0df5
+c2358v1a73rf89c
+c0abcv1a73rf148
+ce26ev1608r6d7e
+ce66bv20aar6d7e
+cb7ddr6d7e
+c8e2bv1a73
+c997cvcf63
+cb720v7f7aq0a37p1577
+c47ebvcf63
+c2cd2vcf63
+c1732vcf63
+ccc1fvcf63
+c63b7v1b72
+c63b7v1b72
+c8e50v1b72
+cb0acv1a73
+ca691vcc8c
+cbedevcc8c
+ca77av3908
+cbedevcc8c
+c9e06v2518
+cbedevd522
+c4208v0edb
+ccc1fvcf63r6d7e
+c8e2bv1a73r6d7e
+c0001rbf95
+cae34vcf63rbf95
+c2604v1a73rbf95
+ca1aar152a
+c969cvcf63r152a
+cc6e2vb629ra9e5
+caa35rcc2c
+c660bv0a10rcc2c
+c20e7rfcbb
+ce4eev1a73rc4db
+ca21cv1608rdfed
+cee2cr2a24
+ccc1fvcf63r2a24
+c8e2bv1a73r2a24
+c1326r4e8a
+ce056v61b0r4e8a
+ccc1fvcf63r4e8a
+cd42bra255
+ccbc5rd97f
+c1027vcf63rd97f
+ce66bv20aard97f
+cfc5br6059
+cb7ddr6059
+c989fv1a73
+c997cvcf63
+cf193v80eaq7c2cpd423
+c47ebvcf63
+c38d5vcf63
+ccc1fvcf63
+c63b7v1b72
+c63b7v1b72
+c8e50v1b72
+c52cbv1a73
+c7d58vd448
+ca938vd448
+c7b9fv7e86
+ca938vd448
+c7b9fva2a4
+ca938v9515
+c6bb9vfd16
+ccc1fvcf63r6059
+c8e2bv1a73r6059
+c94d1r2060
+ce46bv1a73r8945
+cb860v1a73r45d3
+c4cafv1608rd5a7
+cc713v1a73r6244
+cc147v1608r2fa0
+ccc1fvcf63r2fa0
+c989fv1a73r2fa0
+ca95ar8986
+cab33v1b72r0b92
+ccc1fvcf63r0b92
+c8e2bv1a73r0b92
+cc49erb421
+cae34vcf63rb421
+ccc1fvcf63rb421
+c989fv1a73rb421
+c9e63ra49a
+c6bb9v18e2ra49a
+c2604v1a73ra49a
+c8919r61a4
+cd999vcf63r61a4
+ccc1fvcf63r61a4
+c989fv1a73r61a4
+cec22rf38a
+caf49v1b72r132c
+cb7ddr132c
+c8e2bv1a73
+c997cvcf63
+c1571v6383qcf35pbc3e
+c47ebvcf63
+c38d5vcf63
+c1288vcf63
+ccc1fvcf63
+c63b7v1b72
+c63b7v1b72
+c8e50v1b72
+ce121v1a73
+ced62vae65
+c41b8vae65
+c9e06v1519
+c41b8vae65
+c9e06vd85d
+c41b8v3ad2
+c6bb9v9062
+c2923v1158r132c
+ccc1fvcf63r132c
+c989fv1a73r132c
+c29aerd26b
+c6bb9v18e2rd26b
+ccc1fvcf63rd26b
+c8e2bv1a73rd26b
+cb4c9r7ac7
+c40f3v1a73r2ddc
+ccc1fvcf63r2ddc
+c8e2bv1a73r2ddc
+c8b92rf778
+c9ddev1b72r0f1a
+c6398v1a73r49ed
+cf953v1608r3dbe
+cf881rcc7f
+cacd1v101ercc7f
+c10e9rb365
+c3b90v1a73r4840
+c56c9v1608rbe23
+cffa3rb279
+c1bd5v701frb279
+cb7ddrb279
+cb0b5v1a73
+c997cvcf63
+c26f9v06b6q6c75pd5e5
+c47ebvcf63
+c38d5vcf63
+c1288vcf63
+ccc1fvcf63
+c63b7v1b72
+c63b7v1b72
+c8e50v1b72
+c859ev1a73
+cc86dv095e
+c2923v095e
+c92d1v0a56
+c2923v095e
+c80fbv4c45
+c2923v7e12
+c2becvdb1e
+ccc1fvcf63rb279
+cc628r9121
+c9ad9ra9fb
+ca7f2vcf63ra9fb
+c4fdav1a73ra9fb
+cd266r802b
+c4f24vcf63r802b
+cb405v1a73r6f3b
+cee36v1608r37f4
+ccc1fvcf63r37f4
+c8e2bv1a73r37f4
+c9e35rd0a7
+c9ddev1b72r53f3
+c2604v1a73r53f3
+c67b6r0bb1
+cd2f5vcf63r0bb1
+ccc1fvcf63r0bb1
+c989fv1a73r0bb1
+cd4d6r12e9
+c9ddev1b72r85ce
+ce8aavc308r84af
+c009crb299
+cf064v7e12rb299
+c2332r383b
+cb7ddr383b
+c8e2bv1a73
+c997cvcf63
+c2863v73f2q1f03p8c81
+c47ebvcf63
+c38d5vcf63
+c84davcf63
+ccc1fvcf63
+cf4f8v1b72
+cf4f8v1b72
+c8e50v1b72
+c34d4v1a73
+c2a8bv3029
+ccb77v3029
+c9e06v1519
+ccb77v3029
+c9e06vd85d
+ccb77vee66
+c4208v9062
+ccc1fvcf63r383b
+c8e2bv1a73r383b
+cb78crdcd1
+c9850vcf63rdcd1
+ccc1fvcf63rdcd1
+c8e2bv1a73rdcd1
+cd251r0649
+cddc4v1b72r27a2
+ccc1fvcf63r27a2
+cb0b5v1a73r27a2
+c2a00r9fdd
+ccbb0v1a73rfea2
+ccc1fvcf63rfea2
+c989fv1a73rfea2
+cd46dre85e
+ce056v61b0re85e
+c2604v1a73re85e
+c2299r8d50
+ca01av1a73rbb23
+ccc1fvcf63rbb23
+c8e2bv1a73rbb23
+ce26fr281e
+c9ddev1b72rd60d
+ccc1fvcf63rd60d
+cb0b5v1a73rd60d
+c0b65rcb8c
+cf06bvcf63rcb8c
+ccc1fvcf63rcb8c
+c8e2bv1a73rcb8c
+c5dccr6faa
+c9ddev1b72r6fed
+cb7ddr6fed
+c8e2bv1a73
+c997cvcf63
+c2863v73f2q1f03pa033
+c47ebvcf63
+c38d5vcf63
+c3ecbvcf63
+ccc1fvcf63
+cf4f8v1b72
+cf4f8v1b72
+c8e50v1b72
+c6e5av1a73
+c87b3vfdb7
+c861fvfdb7
+c92d1v8214
+c861fvfdb7
+c92d1vd491
+c861fv9cf9
+ccc1fvcf63r6fed
+cb0b5v1a73r6fed
+c26d3r2627
+c40f3v1a73re668
+cda80v1a73r0bfd
+c0c7bv1608r2317
+ccc1fvcf63r2317
+c989fv1a73r2317
+c6a68r7fb6
+cf06bvcf63r7fb6
+ccc1fvcf63r7fb6
+c989fv1a73r7fb6
+c6e0erd5e0
+c2becvaf05rd5e0
+ccc1fvcf63rd5e0
+c8e2bv1a73rd5e0
+c3efarfac7
+c01afv1a73r28fb
+ccc1fvcf63r28fb
+c8e2bv1a73r28fb
+c391ar2f1d
+c2becvf387r2f1d
+c0c74v1a73r4586
+cf953v1608r3399
+cf881r3d85
+c10e1v1a73rd4ca
+cbfb8v1608re710
+cb69erf6fe
+cb7ddrf6fe
+c8e2bv1a73
+cf98cvcf63
+cff92vdf68q0fe7pc29e
+c47ebvcf63
+c38d5vcf63
+c3ecbvcf63
+ccc1fvcf63
+cf4f8v1b72
+cf4f8v1b72
+c8e50v1b72
+c6131v1a73
+cce40v5328
+c0a53v5328
+c9e06v4474
+c0a53v5328
+c9e06v358d
+c0a53vdb32
+c4510v1a73ree5b
+c56c9v1608r8510
+ccc1fvcf63r8510
+c989fv1a73r8510
+c9243r39d7
+c2becv1d96r39d7
+cea78v1158r39d7
+ccc1fvcf63r39d7
+c8e2bv1a73r39d7
+cac5cr4ed7
+cddc4v1b72r0ff4
+ccc1fvcf63r0ff4
+cc628r41e5
+cd70ar8a87
+c817evcf63r8a87
+ccc1fvcf63r8a87
+cb0b5v1a73r8a87
+c6bd0rac9e
+c9ddev1b72rf59e
+c16d1v1a73rc657
+ce26ev1608r6d56
+cc25ev9515r6d56
+cb7ddr6d56
+c8e2bv1a73
+cf98cvcf63
+cea00v1593q34fdp2aed
+c47ebvcf63
+c38d5vcf63
+c1288vcf63
+ccc1fvcf63
+cf4f8v1b72
+cf4f8v1b72
+c8e50v1b72
+ca3edv1a73
+cd8bbv3029
+cea78v3029
+c9e06v1519
+cea78v3029
+c9e06vd85d
+cea78vee66
+c2becv9062
+cbe87v1a73r5c24
+c0fbav1608r4e7f
+c2d88r27dd
+c2604v1a73r27dd
+c8257r8d33
+cd7ccv1a73r224c
+ccc1fvcf63r224c
+c989fv1a73r224c
+c5719r3c4b
+cf06bvcf63r3c4b
+c2604v1a73r3c4b
+ce7cdr13e4
+c466cv1a73r0361
+ccc1fvcf63r0361
+c8e2bv1a73r0361
+cc02dr4614
+cf06bvcf63r4614
+c212cv1a73ra35d
+cbfe8v1608rd57b
+cb69er2b96
+cedc0v1a73r7f35
+cdb28v1608r783e
+cb69er1188
+ccc1fvcf63r1188
+cb0b5v1a73r1188
+cd138r88d1
+c2becv82fbr88d1
+cb7ddr88d1
+c989fv1a73
+cf98cvcf63
+ca31avfa90qa7bapf307
+c47ebvcf63
+c2cd2vcf63
+ccc1fvcf63
+cf4f8v1b72
+cf4f8v1b72
+c8e50v1b72
+c6131v1a73
+cce40v5328
+c0a53v5328
+c9e06v4474
+c0a53v5328
+c9e06v358d
+c0a53vdb32
+c7362v1158r88d1
+ccc1fvcf63r88d1
+c8e2bv1a73r88d1
+c61carc0a0
+c6bb9va727rc0a0
+c8abevab4dr99a9
+c29e0r2e45
+cabe2v1a73r59c9
+cf085v1608rb9df
+c03c1r666f
+cbc10v1a73rcf21
+c1a84v1608r9d32
+c2d88rad9f
+ccc1fvcf63rad9f
+c989fv1a73rad9f
+c2407r2a60
+c6bb9v7da8r2a60
+ccc1fvcf63r2a60
+c989fv1a73r2a60
+c26b2r370c
+c7dc9v1a73r1460
+ceb76vf554r1460
+cb7ddr1460
+c8e2bv1a73
+cf98cvcf63
+c1d45vdf68q73fcp7672
+c47ebvcf63
+c2cd2vcf63
+ccc1fvcf63
+cf4f8v1b72
+cf4f8v1b72
+c8e50v1b72
+c1117v1a73
+c6b9ev8b5c
+cc25ev8b5c
+c9e06v7495
+cc25ev8b5c
+c9e06v57b0
+cc25ev84c9
+ccc1fvcf63r1460
+c8e2bv1a73r1460
+c6ba6rd6b5
+ca91dv1a73rb955
+ccc1fvcf63rb955
+c83d6r6fd4
+c6390re088
+cfebbvcf63re088
+c0a3dve166r26de
+c0a48rb696
+ccc1fvcf63rb696
+c8e2bv1a73rb696
+cd236r3764
+c6bb9v4ec7r3764
+c2604v1a73r3764
+cc98br3346
+c466cv1a73r81be
+ccc1fvcf63r81be
+c989fv1a73r81be
+c3181r4c0b
+ce056v61b0r4c0b
+cdd99veafar7c0a
+c9730r33e6
+c73f1v1a73r33e6
+cc99er975b
+cdc58v1a73re3f5
+cb7ddre3f5
+c989fv1a73
+cf98cvcf63
+cb87dvccf8q2f87p93a8
+c47ebvcf63
+c67f5vcf63
+cc190vcf63
+ccc1fvcf63
+cf4f8v1b72
+cf4f8v1b72
+c8e50v1b72
+cd6f2v1a73
+c7605v3ddb
+c66b2v3ddb
+c77e5vb96f
+c66b2v3ddb
+c77e5vc8c5
+c66b2v9632
+c6bb9v9175
+ccc1fvcf63re3f5
+c8e2bv1a73re3f5
+c6a9br621f
+c7dc9v1a73rf5ea
+ccc1fvcf63rf5ea
+c99d5r36a4
+cbda3r1c51
+cbbb9vcf63r1c51
+ccc1fvcf63r1c51
+c989fv1a73r1c51
+ce9c9r45db
+c7dc9v1a73rcb7a
+cebdev240arcb7a
+c7f49ra796
+ccc1fvcf63ra796
+c8e2bv1a73ra796
+c37c5re969
+c9850vcf63re969
+cbbe0v0aeere969
+c73f1v1a73re969
+c9d36r9f0d
+c6897vcf63r9f0d
+c73f1v1a73r9f0d
+c1942rf03d
+cd7a8vcf63rf03d
+cb7ddrf03d
+c8e2bv1a73
+cf98cvcf63
+cdfb5vdf68qbddap8091
+c47ebvcf63
+c2cd2vcf63
+ccc1fvcf63
+cf4f8v1b72
+cf4f8v1b72
+c8e50v1b72
+c1737v1a73
+cc3adv9bbb
+cd018v9bbb
+c9e06vc954
+cd018v9bbb
+c9e06va154
+cd018vccc9
+c7b06v879br0653
+c68b7r1a04
+ce66bva501r1a04
+cfe96re854
+ccc1fvcf63re854
+c8e2bv1a73re854
+cb1fbr61ae
+cf06bvcf63r61ae
+c5b19vd522r61ae
+cb979r6bc1
+c73f1v1a73r6bc1
+c55b6re7a4
+c7225vcf63re7a4
+ccc1fvcf63re7a4
+cd42brd4ba
+c3b97rac3a
+caba4vcf63rac3a
+ccc1fvcf63rac3a
+c8e2bv1a73rac3a
+c0b7ar8ed0
+cae34vcf63r8ed0
+ccc1fvcf63r8ed0
+c8e2bv1a73r8ed0
+c5810r5078
+c2becv40e4r5078
+cb7ddr5078
+c8e2bv1a73
+cf98cvcf63
+c7c7dva566qe813p8806
+c47ebvcf63
+c38d5vcf63
+c6480vcf63
+ccc1fvcf63
+cf4f8v1b72
+cf4f8v1b72
+c8e50v1b72
+c29fcv1a73
+c1cecvd802
+cd887vd802
+c9e06vf7d6
+cd887vd802
+c9e06v3f13
+cd887v9b09
+c6bb9v92a0
+cce88v1a73ra026
+c7a80v1608r3c39
+cf881rd023
+ccb77vee66rd023
+c4f84rd131
+c04e9v1a73rdc07
+c5024v1608rd40c
+ccc1fvcf63rd40c
+c989fv1a73rd40c
+c808erd9cc
+c34c2v1b72r48fe
+ccc1fvcf63r48fe
+c8e2bv1a73r48fe
+c13d0r8a3a
+cf06bvcf63r8a3a
+ccc1fvcf63r8a3a
+c989fv1a73r8a3a
+cc32dr09f0
+c2becvd9cfr09f0
+ccc1fvcf63r09f0
+c989fv1a73r09f0
+cfab3r6c96
+c5e11v1a73rfeea
+ccc1fvcf63rfeea
+c8e2bv1a73rfeea
+c8bafrd2f9
+ca9b4v1b72r2689
+cb7ddr2689
+c989fv1a73
+cf98cvcf63
+cf212vb8ecq121fpc56b
+c47ebvcf63
+c38d5vcf63
+ccc1fvcf63
+cf4f8v1b72
+cf4f8v1b72
+c8e50v1b72
+c9716v1a73
+cb662v7fb1
+c7c68v7fb1
+c9e06vbd45
+c7c68v7fb1
+c9e06v39a5
+c7c68v7421
+c2604v1a73r2689
+c8311rb816
+cc5b0vcf63rb816
+ccc1fvcf63rb816
+c989fv1a73rb816
+cde21re295
+cddc4v1b72rd8a0
+c3b0ev1a73ra30a
+c64fdv1608r6388
+cb69er03ad
+c2604v1a73r03ad
+cec51r4dcd
+c8e7fvcf63r4dcd
+c6674v1a73r4c7b
+ce394v1608r0826
+c9ca4v6b48r0826
+ccc1fvcf63r0826
+c8e2bv1a73r0826
+cd03cr14f3
+c7dc9v1a73rc701
+cfb66v1a73rf6f9
+cafddv1608r46fa
+cf881rd4c5
+cb7ddrd4c5
+c989fv1a73
+cf98cvcf63
+ce497vb8ecq3836p18c6
+c47ebvcf63
+c38d5vcf63
+c9ed1vcf63
+ccc1fvcf63
+cf4f8v1b72
+cf4f8v1b72
+c8e50v1b72
+c1117v1a73
+c9984v8b5c
+cc25ev8b5c
+c92d1v7495
+cc25ev8b5c
+c92d1v57b0
+cc25ev84c9
+stream 889 b79858ee32ef03eab31b71fdb88919f58bc1cd7b429def8188fc07821966de15
+tally failed=0 unproved=0 unverified=0
+end 889 f8d334389dba6e01be91f904c98c535fe326a06d3111bd2e6c5ab9421ffb8c85

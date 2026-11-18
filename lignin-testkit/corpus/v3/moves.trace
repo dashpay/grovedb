@@ -46,28 +46,31 @@ cfdb3r4868
 c01c5r3c82
 cbc68rfa35
 c7233r06a4
-c7610r1486
+c7610v2c1ar1486
   step 30
   # Write(Append { path: [[109, 111, 118, 101, 115], [116, 114, 101, 101, 115], [97, 58, 109, 109, 114]], entry: Mmr([215, 196, 87, 178, 195, 60, 2, 53, 239, 174, 6, 101, 110, 75, 151, 49, 61, 33, 137, 158, 111, 254, 120, 91]) })
   cost seeks=18 loaded=1166 added=103 replaced=412 removed=- hashes=24 sinsemilla=0
+  result appended
+  root 0x2b9225cc762ee2242c823c33244c9e8d08817d23a3c3d84416b7ad9f106d2214
+  position 0
   root 92ae8cd83e55e82b71e6fc18d8d8e8b512e195d369a05d399f65085ef40b29f9
-c4f3ar7451
-c201fr0183
-c6c2drcb6b
-c16afrb249
-cfcf7r62d5
-c8418r2312
-c46fare5b2
-cb6a4r730f
+c4f3avdffer7451
+c201fv3eder0183
+c6c2dvf5afrcb6b
+c16afv63dfrb249
+cfcf7vacd2r62d5
+c8418v1264r2312
+c46favd518re5b2
+cb6a4v07a0r730f
 c6607r5f72
 c8308r3b66
 c2fc9ree50
 cb7ddree50
 cecb6r44b0
 cb7ddr44b0
-c15b1r5ae4
-ca614r216e
-c5edfrc5f3
+c15b1v803er5ae4
+ca614v8638r216e
+c5edfv28d6rc5f3
 cb7ddrc5f3
 cb7ddrc5f3
 c1762vca43
@@ -215,4 +218,4 @@ c26cdv8cb9
 ca91av7af7
 stream 179 5c79cd763a7c41f855bec0359cb5769e84711953e1419e795a36311ed2cb4c7d
 tally failed=0 unproved=0 unverified=0
-end 179 1b13b4b567d5ff8386b695116b132f91bf3988c14aa77c04e8afe66aa9878f07
+end 179 faeb11075a9dd64e0eefc5266c207b5020867465d90510923f92ad6751c834a9

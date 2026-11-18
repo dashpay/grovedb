@@ -109,6 +109,15 @@ What a step holds depends on its operation:
 | `PathQuery` (`GroveDb::run_path_query`) | the answer in the form of its shape: rows and how many the offset skipped, a count, a sum, both, one per key, axis entries or keys, a rank, an aggregate over an axis, a sum-budget window | | when the stream marks the read as proven |
 | `Rows` (`GroveDb::query`, `GroveDb::query_raw`) | the rows and how many the offset skipped | | |
 | `SumBudget`, `GetAux`, `AuxByPrefix` | the sums and where the walk stopped; the record; the records | | |
+| an append through a typed method (`Append` but for a commitment, `CommitmentInsert`) | the root of the tree and the position of the value | after it | |
+| a conditional write (`InsertIfNotExists`, `InsertIfChanged`, `DeleteIfEmptyTree`, `DeleteUpTree`, `DeleteBuilt`, `IndexedDelete`) | whether it wrote, the element it found or replaced, or how many keys it deleted | after it | |
+| a step on the transaction (`Rollback`, `Abandon`, `SetSavepoint`, `RollbackToSavepoint`, `OpenSnapshot`, `CloseSnapshot`) | none | after it, inside the open transaction | |
+| a read inside the block or through the snapshot (`BlockRead`, `SnapshotRead`) | the result of the read | inside the open transaction, which the read leaves as it is | |
+| `HasRaw`, `IsEmptyTree`, `Fetch`, `Tree` | a flag, the element if there is one, the value, page, count or hash | | |
+| `KeysOptional` | a row for each key asked for, empty where nothing is stored | | always, verified with `GroveDb::verify_query_with_absence_proof` |
+| `ItemValues`, `SumValues`, `Many` | the values or sums and how many the offset skipped; the rows | | |
+| `BigSum` | the sum and the count if asked for, for the range or for each key | | always, verified with the verifier of its form |
+| `Prove` (`GroveDb::get_proved_path_query`, `prove_query_many`, `prove_bulk_position_range`, `prove_trunk_chunk`, `prove_branch_chunk`, `fetch_chunk`) | the proof or chunk bytes | | |
 
 A stream marks a path query as proven when GroveDB proves it on the grove
 version the stream was generated for. Such a proof is verified with
@@ -118,8 +127,8 @@ version the stream was generated for. Such a proof is verified with
 against the streams: a step has a proof exactly when its read is one of
 these.
 
-The standard scale is 260 traces and 191,851 steps in 3.9 MB: for each
-grove version the 19 workloads of the suite, `suite` and 32 hand-written
+The standard scale is 290 traces and 216,069 steps in 4.5 MB: for each
+grove version the 25 workloads of the suite, `suite` and 32 hand-written
 cases. On the machine it was recorded on (28 cores, shared), recording it
 takes under a minute in a release build and the replay test about a minute
 in a debug build, eight traces at a time.
@@ -135,10 +144,13 @@ blind where `apply` or GroveDB's public interface is:
 
 - `GroveDb::clear_subtree` returns no cost, so a `ClearSubtree` step records
   a cost of zero. Its root hash is recorded.
-- `apply` drops what the typed append methods return (the new root and
-  position of an `MmrTree`, `BulkAppendTree` and dense tree, the outcome of
-  a `PrivateDocumentStore` insert). The root hash after the append covers
-  the state they describe.
+- A `Prove` read returns the bytes of its proof or chunk as its result.
+  They are compared as the result; no verification of them is recorded.
+- `GroveDb::fetch_chunk` returns no cost. A chunk step records the cost of
+  the reads that name the chunk: the root hash, the root key or the element
+  of the tree.
+- A step on the transaction returns nothing. What a rollback restored
+  shows in the root hash of its step and in the reads after it.
 - An error is recorded by the name of its variant, and for a variant that
   wraps the error of a lower layer, that error's variant as well
   (`MerkError::…`). Its message is written next to it as a remark and is not

@@ -24,10 +24,13 @@ cf75br1e9b
   # Write(Insert { path: [[116, 111, 112], [112, 97, 114, 101, 110, 116]], key: [99, 104, 105, 108, 100], element: mmr_tree: mmr_size: 0 })
   cost seeks=10 loaded=401 added=141 replaced=299 removed=- hashes=18 sinsemilla=0
   root c48df2c1f711282434b5c6d44ec0395a475d8896a7cf981d498572cb7e83e70f
-c35acrcff8
+c35acv11dbrcff8
   step 4
   # Write(Append { path: [[116, 111, 112], [112, 97, 114, 101, 110, 116], [99, 104, 105, 108, 100]], entry: Mmr([108, 101, 97, 102]) })
   cost seeks=16 loaded=833 added=83 replaced=402 removed=- hashes=22 sinsemilla=0
+  result appended
+  root 0xcaf744d0c481577c6df65486181bd66cc5e1ff47a5d41ad18cf6313a41ba9a2d
+  position 0
   root 509138a5f507f85f45cd1b72190212e8e8555ce817b9791ec68c6c1ca7abfe4a
 cb7ddrcff8
   step 5
@@ -100,4 +103,4 @@ c910cv4e19qe454pa2a2
   verification verified
 stream 15 e951ab1c1322acbda35368c6c3cb16e4bd7f711fb11f35ed4e87907239ab6dac
 tally failed=0 unproved=0 unverified=1
-end 15 52d5501137c5e400aed70acda494d42ea5fef669e036fe636ddb2a204e0bbc42
+end 15 87e070f11076f7e36242fa1c42a54ab7e8a404884f2e792b28676ac308be397a
