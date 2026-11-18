@@ -925,6 +925,7 @@ fn measure<E: Engine>(
     let mut reads = Reads::new(settings)?;
     let mut stream = settings.workload().stream(settings.seed);
     let mut engine = E::open(dir)?;
+    engine.settle()?;
     let mut rows = Vec::new();
     let mut phases = Vec::new();
 
@@ -1090,6 +1091,7 @@ fn measure<E: Engine>(
         let (opened, elapsed) = timed(|| E::open(dir));
         reopen_meter.stop(mark);
         engine = opened?;
+        engine.settle()?;
         reopen_ms.push(Unit::Millis.of(elapsed));
     }
     rows.push(time_row(
@@ -1123,6 +1125,7 @@ fn measure<E: Engine>(
             let (opened, elapsed) = timed(|| E::open(dir));
             cold_open_meter.stop(mark);
             engine = opened?;
+            engine.settle()?;
             cold_open_ms.push(Unit::Millis.of(elapsed));
             let before = machine::process_io("read_bytes");
             let (elapsed, _) = kind.read(&engine, &mut reads, loaded, grove_version, &mut meter)?;

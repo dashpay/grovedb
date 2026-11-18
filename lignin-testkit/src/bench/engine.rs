@@ -58,8 +58,9 @@ pub trait Engine: Sized {
     /// Starts the write transaction of a block.
     fn begin_block(&self) -> Self::Block<'_>;
 
-    /// Called after every committed block, outside any timed region, so the
-    /// engine can collect counters that would be gone by the next window.
+    /// Called after opening and after every committed block, outside any
+    /// timed region, so the engine can collect counters that would be gone
+    /// by the next window. Nothing written before the first call counts.
     fn settle(&mut self) -> Result<(), BenchError>;
 
     /// Applies a read outside any transaction, through

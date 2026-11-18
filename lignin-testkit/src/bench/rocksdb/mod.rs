@@ -6,7 +6,8 @@
 //!
 //! - `log_bytes`, `log_groups`, `node_records`, `node_record_bytes`,
 //!   `other_records` and `other_record_bytes`: the write-ahead log files
-//!   (`*.log`), read after every commit by [`wal`]. Every commit is one
+//!   (`*.log`), read after every commit by [`wal`]. What the logs held
+//!   when the engine was opened is skipped at the first `settle`. Every commit is one
 //!   write batch. Merk nodes are the puts to the default column family
 //!   (id 0); the other families are aux (1), roots (2) and meta (3), in the
 //!   order GroveDB creates them. RocksDB deletes a log only once a later
@@ -56,6 +57,8 @@ pub struct RocksDbEngine {
     info_log: InfoLogTail,
     events: EventTotals,
     anatomy: NodeAnatomy,
+    /// Whether the logs that existed at open have been read past.
+    positioned: bool,
 }
 
 /// How long [`Engine::wait_for_background`] waits at most.
@@ -140,12 +143,47 @@ impl RocksDbEngine {
         Ok(files)
     }
 
+    /// Skips what the logs held when the engine was opened: each log is read
+    /// to its last record and nothing it held is counted. The sequence
+    /// number the last batch read leads to is kept, so a batch missed after
+    /// the open is still a gap.
+    fn position_logs(&mut self) -> Result<(), BenchError> {
+        let mut skipped = WalTotals::default();
+        for (number, path) in self.log_files()? {
+            let mut tail = LogTail::default();
+            tail.read(&read_from(&path, 0)?, &mut skipped)
+                .map_err(|error| BenchError::Wal {
+                    file: path.display().to_string(),
+                    error,
+                })?;
+            self.logs.insert(number, tail);
+        }
+        self.wal.next_sequence = skipped.next_sequence;
+        self.positioned = true;
+        Ok(())
+    }
+
     fn read_logs(&mut self) -> Result<(), BenchError> {
+        if !self.positioned {
+            return self.position_logs();
+        }
         let files = self.log_files()?;
         self.logs.retain(|number, _| files.contains_key(number));
         for (number, path) in files {
+            // RocksDB deletes a log it no longer needs at any time, also
+            // between the listing and this read.
+            let length = match std::fs::metadata(&path) {
+                Ok(metadata) => metadata.len(),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    self.logs.remove(&number);
+                    continue;
+                }
+                Err(error) => {
+                    return Err(BenchError::io(format!("reading {}", path.display()), error));
+                }
+            };
             let tail = self.logs.entry(number).or_default();
-            if file_len(&path) < tail.offset() {
+            if length < tail.offset() {
                 return Err(BenchError::Check(format!(
                     "write-ahead log {} is shorter than what was read of it",
                     path.display()
@@ -189,10 +227,6 @@ fn read_from(path: &Path, offset: u64) -> Result<Vec<u8>, BenchError> {
     Ok(data)
 }
 
-fn file_len(path: &Path) -> u64 {
-    std::fs::metadata(path).map_or(0, |metadata| metadata.len())
-}
-
 impl Engine for RocksDbEngine {
     type Block<'a> = RocksDbBlock<'a>;
 
@@ -208,12 +242,8 @@ impl Engine for RocksDbEngine {
             info_log: InfoLogTail::default(),
             events: EventTotals::default(),
             anatomy: NodeAnatomy::default(),
+            positioned: false,
         };
-        for (number, path) in engine.log_files()? {
-            engine
-                .logs
-                .insert(number, LogTail::starting_at(file_len(&path)));
-        }
         engine.read_info_log()?;
         engine.events = EventTotals::default();
         Ok(engine)
@@ -413,7 +443,6 @@ mod tests {
             flushed.log_bytes + flushed.flush_bytes
         );
 
-        let root_hash = engine.root_hash(grove_version).unwrap();
         let checkpoint = dir.path().join("..").join(format!(
             "{}-checkpoint",
             dir.path().file_name().unwrap().to_str().unwrap()
@@ -422,11 +451,30 @@ mod tests {
         assert!(engine.checkpoint(&checkpoint).is_err());
         std::fs::remove_dir_all(&checkpoint).unwrap();
         assert_eq!(engine.dir(), dir.path());
+        let mut block = engine.begin_block();
+        block
+            .apply(
+                &insert(
+                    vec![b"tree".to_vec()],
+                    b"unflushed",
+                    Element::new_item(vec![2; 10]),
+                ),
+                grove_version,
+            )
+            .unwrap();
+        block.commit().unwrap();
+        engine.settle().unwrap();
+        let root_hash = engine.root_hash(grove_version).unwrap();
+        let sequence_before_reopen = engine.wal_totals().next_sequence;
+        assert!(sequence_before_reopen.is_some());
         drop(engine);
 
         let mut reopened = RocksDbEngine::open(dir.path()).unwrap();
-        assert_eq!(reopened.root_hash(grove_version).unwrap(), root_hash);
         assert_eq!(reopened.counters().unwrap().log_bytes, 0);
+        assert_eq!(reopened.root_hash(grove_version).unwrap(), root_hash);
+        if let Some(carried) = reopened.wal_totals().next_sequence {
+            assert_eq!(Some(carried), sequence_before_reopen);
+        }
         let get = Op::Read(crate::workload::Read::Get {
             path: vec![b"tree".to_vec()],
             key: b"key".to_vec(),
@@ -445,6 +493,23 @@ mod tests {
         let (proved, rows) = GroveDb::verify_query(&proof, &path_query, grove_version).unwrap();
         assert_eq!((proved, rows.len()), (root_hash, 1));
 
+        let mut block = reopened.begin_block();
+        block
+            .apply(
+                &insert(
+                    vec![b"tree".to_vec()],
+                    b"after",
+                    Element::new_item(vec![1; 10]),
+                ),
+                grove_version,
+            )
+            .unwrap();
+        block.commit().unwrap();
+        reopened.settle().unwrap();
+        let counted = reopened.counters().unwrap();
+        assert_eq!(counted.log_groups, 1, "only the block after the reopen");
+        assert!(counted.node_records >= 2);
+
         let mut refused = reopened.begin_block();
         assert!(refused
             .apply(
@@ -452,6 +517,37 @@ mod tests {
                 grove_version
             )
             .is_err());
+    }
+
+    #[test]
+    fn a_log_shorter_than_what_was_read_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let grove_version = GroveVersion::latest();
+        let mut engine = RocksDbEngine::open(dir.path()).unwrap();
+        engine.settle().unwrap();
+        let mut block = engine.begin_block();
+        block
+            .apply(
+                &insert(vec![], b"tree", Element::empty_tree()),
+                grove_version,
+            )
+            .unwrap();
+        block.commit().unwrap();
+        engine.settle().unwrap();
+        let (_, live) = engine.log_files().unwrap().into_iter().next_back().unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&live)
+            .unwrap()
+            .set_len(0)
+            .unwrap();
+        assert_eq!(
+            engine.settle().unwrap_err().to_string(),
+            format!(
+                "write-ahead log {} is shorter than what was read of it",
+                live.display()
+            )
+        );
     }
 
     #[test]

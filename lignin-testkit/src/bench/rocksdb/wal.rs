@@ -171,11 +171,17 @@ impl LogTail {
             let absolute = self.offset + position as u64;
             let left_in_block = (BLOCK_SIZE - absolute % BLOCK_SIZE) as usize;
             if left_in_block < HEADER_SIZE {
-                if data.len() - position < left_in_block {
-                    break;
+                // The writer pads a block's tail when it writes the record
+                // that follows, so the tail is passed only once that record
+                // is there; the offset never runs ahead of what is written.
+                let next = position + left_in_block;
+                match data.get(next..next + HEADER_SIZE) {
+                    Some(header) if header[6] != 0 => {
+                        position = next;
+                        continue;
+                    }
+                    _ => break,
                 }
-                position += left_in_block;
-                continue;
             }
             let Some(header) = data.get(position..position + HEADER_SIZE) else {
                 break;
@@ -507,6 +513,30 @@ mod tests {
         tail.read(&file, &mut totals).unwrap();
         assert_eq!(tail.offset(), end);
         assert_eq!(totals.batches, 1);
+    }
+
+    #[test]
+    fn a_block_tail_is_skipped_only_once_a_record_follows() {
+        let filling = (0..4_000)
+            .map(|value_len| batch(1, value_len + 30_000))
+            .find(|record| record.len() + HEADER_SIZE == BLOCK_SIZE as usize - 3)
+            .expect("a batch that leaves three bytes of its block");
+        let one = frame(std::slice::from_ref(&filling));
+        assert_eq!(one.len(), BLOCK_SIZE as usize - 3);
+
+        let mut grown = one.clone();
+        grown.extend(std::iter::repeat_n(0u8, 4_096));
+        let mut totals = WalTotals::default();
+        let mut tail = LogTail::default();
+        tail.read(&grown, &mut totals).unwrap();
+        assert_eq!(tail.offset(), one.len() as u64, "stops before the tail");
+
+        let two = frame(&[filling, batch(2, 10)]);
+        assert_eq!(two[one.len()..BLOCK_SIZE as usize], [0, 0, 0]);
+        tail.read(&two[tail.offset() as usize..], &mut totals)
+            .unwrap();
+        assert_eq!(tail.offset(), two.len() as u64);
+        assert_eq!(totals.batches, 2);
     }
 
     #[test]
