@@ -46,18 +46,38 @@
 //!   some of the later changes applied: any subset of them, in any order, and
 //!   a write possibly only in part, torn at any byte. Each lands where it was
 //!   made, an append at the offset it returned. Where a length survives
-//!   without the bytes written below it, those bytes read as zeros.
+//!   without the bytes written below it, those bytes read as zeros. And the
+//!   bytes of a write that grew the file can survive without the growth: the
+//!   write then ends where the file ended before it.
 //! - **Nothing else is damaged.** A byte that no unsynced change touched keeps
 //!   its value. This assumes storage that writes a sector whole or not at
 //!   all, which is what lets a log be appended to behind bytes that are
 //!   already durable.
 //! - **Names.** A name that was created, renamed, linked or removed, and a
 //!   directory that was created or removed, is durable once [`Vfs::sync_dir`]
-//!   returns `Ok` for the directory that holds the name. Of the changes of
-//!   names not yet synced a crash may keep any subset, so it can bring back a
-//!   name that was removed or renamed away, such as a temporary file. Syncing
-//!   a file does not make its name durable, and syncing a directory does not
-//!   make a file's content durable.
+//!   returns `Ok` for the directory that holds the name. Syncing a file does
+//!   not make its name durable. Syncing a directory does not make a file's
+//!   content durable, nor the directory's own name: a file created and synced
+//!   in a new directory is gone after a crash, with the directory, unless the
+//!   directory that holds the new one was synced as well.
+//! - **Unsynced changes of names.** Of the changes of names not yet synced a
+//!   crash may keep any subset in which each change comes with the earlier
+//!   changes it builds on. A change builds on the earlier unsynced changes of
+//!   the names it touches. The removal of a directory also builds on the
+//!   changes that emptied it, and a rename on the creation of the directories
+//!   its two names are in and of every directory above them. So a crash can
+//!   bring back a name that was removed or renamed away, such as a temporary
+//!   file, but it cannot keep a file created under a name and lose the rename
+//!   that freed that name. Two things follow. A file whose name is durable,
+//!   and that is only renamed after that, never removed or replaced, has a
+//!   name after every crash. And when every directory and every file has been
+//!   synced since its last change, and no sync of them failed, nothing is
+//!   unsynced: a crash then loses nothing. A sync may make an earlier change
+//!   durable sooner than promised here, when a change it makes durable builds
+//!   on it, and never later. This rule, like the atomic rename, assumes a
+//!   filesystem that journals its directories. A hard link and the removal of
+//!   the old name are two changes, not a rename: a crash that keeps the
+//!   removal and loses the link loses the file.
 //! - **Rename is atomic, synced or not.** A crash keeps a rename whole or not
 //!   at all. The destination name then refers to what it referred to before
 //!   the rename or to the renamed file: never to a mix of the two, and never
@@ -197,6 +217,11 @@ pub trait Vfs: fmt::Debug + Send + Sync {
     /// Fails with [`AlreadyExists`](io::ErrorKind::AlreadyExists) if `link` is
     /// taken, and with [`CrossesDevices`](io::ErrorKind::CrossesDevices) if the
     /// two paths are on different filesystems.
+    ///
+    /// The new name is not durable until [`sync_dir`](Self::sync_dir) on its
+    /// directory. Linking a file under a new name and removing the old one is
+    /// not a [`rename`](Self::rename): a crash may keep the removal and lose
+    /// the link, and with it the file.
     fn hard_link(&self, original: &Path, link: &Path) -> io::Result<()>;
 
     /// Removes the name `path`. Other names and open handles of the file keep
@@ -204,6 +229,10 @@ pub trait Vfs: fmt::Debug + Send + Sync {
     fn remove_file(&self, path: &Path) -> io::Result<()>;
 
     /// Creates the directory `path`. Its parent must exist.
+    ///
+    /// Until [`sync_dir`](Self::sync_dir) on the parent, a crash may lose the
+    /// new directory with everything in it, whether or not the new directory
+    /// itself was synced.
     fn create_dir(&self, path: &Path) -> io::Result<()>;
 
     /// Removes the directory `path`, which must be empty.

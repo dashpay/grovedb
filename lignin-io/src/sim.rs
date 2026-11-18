@@ -52,38 +52,42 @@
 //! | Nothing else is damaged. | A crash state is built from the durable bytes and the surviving sectors of the surviving writes, and nothing else. |
 //! | A change of names is durable once its directory is synced. | Creating, linking, removing and renaming a file, and creating and removing a directory, is one [`NameChange`]. `sync_dir` makes the changes of its directory durable, and a plan keeps any of the others, each with the changes it builds on (see below). They are always applied in the order they were made. |
 //! | A removed or renamed name can come back. | A plan that loses a removal or a rename leaves the old name in place, with the file's durable content. |
+//! | A crash keeps a change of names only with the earlier changes it builds on. | A plan keeps the changes its own build on, listed or not: [`CrashImage::names_kept`] says which. A sync makes them durable together with the change that builds on them. |
 //! | Syncing a file does not sync its name, nor the other way round. | Names and content are kept or lost separately. A file whose name is lost is gone with all its content, and a name can survive for a file that is empty or stale. A directory whose own name is lost is gone with everything in it, synced or not. |
 //! | A rename is atomic, synced or not. | A rename is a single [`NameChange`]: a plan keeps it or loses it, and no state has half of it. It is durable once the directories of both names are synced. |
 //! | A failed sync cannot be made good. | When a sync fails, the file's unsynced changes are marked [unknown](FileChange::unknown). A crash keeps any of them, like other unsynced changes. A later sync that succeeds covers the changes made after the failure, and settles the unknown ones as [`SimConfig::unknown`] says, by default drawn from the seed: kept, torn or lost, as an [`Event::Settled`]. Reads keep seeing them either way. |
 //!
 //! ## Changes of names that build on each other
 //!
-//! The contract lets a crash keep any subset of the unsynced changes of
-//! names. Taken alone that would break its own promise about renames. Rename
-//! `a` to `b`, then create a new `a`: a crash that kept the creation and lost
-//! the rename would leave the new file at `a` and nothing at `b`, and the
-//! renamed file under neither name. So the simulator keeps a change of names
-//! only together with the changes it builds on:
+//! The contract lets a crash keep a subset of the unsynced changes of names
+//! only if each change in it comes with the earlier changes it builds on.
+//! Without that, a rename could be left half done. Rename `a` to `b`, then
+//! create a new `a`: a crash that kept the creation and lost the rename would
+//! leave the new file at `a` and nothing at `b`, and the renamed file under
+//! neither name. So a plan keeps a change of names together with what the
+//! contract says it builds on:
 //!
 //! - the earlier unsynced changes of the names it touches,
 //! - for the removal of a directory, the changes that emptied it,
-//! - for a rename, the creation of the directories its two names are in.
+//! - for a rename, the creation of the directories its two names are in and
+//!   of every directory above them.
 //!
 //! [`CrashImage::names_kept`] gives what a plan keeps in all. A sync follows
 //! the same rule: a change that becomes durable makes the changes it builds
-//! on durable with it, which can be earlier than the contract promises and
-//! never later. Everything else is as loose as the contract: a file created
-//! and synced in a new directory is gone if the directory's own name was not
-//! synced, and a file is lost if a crash keeps the removal of one of its
-//! names and loses the hard link that gave it another.
+//! on durable with it. That can be sooner than their own directories were
+//! synced, which the contract allows, and it is never later. Everything else
+//! is as loose as the contract: a file created and synced in a new directory
+//! is gone if the directory's own name was not synced, and a file is lost if
+//! a crash keeps the removal of one of its names and loses the hard link
+//! that gave it another.
 //!
 //! Two more things follow from the model that are easy to miss. A write
 //! that overwrites the end of a file and grows it can survive as its bytes
 //! without its growth, so it ends where the file ended, not at a sector
 //! boundary: the sector was written whole, and the length is kept elsewhere.
-//! And once every directory and every file has been synced, nothing is
-//! unsynced: [`lose_all`](CrashImage::lose_all) then gives the file system
-//! as it is.
+//! And once every directory and every file has been synced, with no sync
+//! failing, nothing is unsynced: [`lose_all`](CrashImage::lose_all) then
+//! gives the file system as it is.
 //!
 //! # Crashing
 //!
