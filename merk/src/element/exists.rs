@@ -3,16 +3,16 @@
 
 use grovedb_costs::CostResult;
 use grovedb_element::Element;
-use grovedb_storage::StorageContext;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
+use crate::store::NodeStore;
 use crate::{element::costs::ElementCostExtensions, Error, Merk};
 
 /// Extension trait for checking element existence in Merk storage.
 pub trait ElementExistsInStorageExtensions {
     /// Helper function that returns whether an element at the key for the
     /// element already exists.
-    fn element_at_key_already_exists<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn element_at_key_already_exists<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: K,
@@ -23,7 +23,7 @@ pub trait ElementExistsInStorageExtensions {
 impl ElementExistsInStorageExtensions for Element {
     /// Helper function that returns whether an element at the key for the
     /// element already exists.
-    fn element_at_key_already_exists<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn element_at_key_already_exists<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: K,

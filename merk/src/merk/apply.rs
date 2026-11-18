@@ -8,9 +8,9 @@ use grovedb_costs::{
     },
     CostResult, CostsExt,
 };
-use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
+use crate::store::NodeStore;
 use crate::{
     merk::NodeType,
     tree::{
@@ -24,7 +24,7 @@ const MAX_KEY_LENGTH: usize = u8::MAX as usize;
 
 impl<'db, S> Merk<S>
 where
-    S: StorageContext<'db>,
+    S: NodeStore<'db>,
 {
     /// Applies a batch of operations (puts and deletes) to the tree.
     ///

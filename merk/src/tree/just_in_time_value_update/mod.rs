@@ -120,6 +120,7 @@ impl TreeNode {
         kv.feature_type = feature_type;
         let mut node = TreeNode {
             inner: Box::new(TreeNodeInner {
+                marks: Default::default(),
                 left: None,
                 right: None,
                 kv,
@@ -415,6 +416,7 @@ mod tests {
                 BasicMerkNode,
             );
             let mut node = TreeNode::new_with_tree_inner(TreeNodeInner {
+                marks: Default::default(),
                 left: None,
                 right: None,
                 kv,
@@ -504,6 +506,7 @@ mod tests {
                 BasicMerkNode,
             );
             let mut node = TreeNode::new_with_tree_inner(TreeNodeInner {
+                marks: Default::default(),
                 left: None,
                 right: None,
                 kv,
@@ -575,6 +578,7 @@ mod tests {
             let old = item(b"old", 1);
             let kv = KV::from_fields(key, old, NULL_HASH, NULL_HASH, BasicMerkNode);
             let mut node = TreeNode::new_with_tree_inner(TreeNodeInner {
+                marks: Default::default(),
                 left: None,
                 right: None,
                 kv,
@@ -634,6 +638,7 @@ mod tests {
                 BasicMerkNode,
             );
             let mut node = TreeNode::new_with_tree_inner(TreeNodeInner {
+                marks: Default::default(),
                 left: None,
                 right: None,
                 kv,

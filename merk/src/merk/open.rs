@@ -1,9 +1,9 @@
 use std::cell::Cell;
 
 use grovedb_costs::CostResult;
-use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
+use crate::store::NodeStore;
 use crate::{
     tree::kv::ValueDefinedCostType,
     tree_type::TreeType,
@@ -13,7 +13,7 @@ use crate::{
 
 impl<'db, S> Merk<S>
 where
-    S: StorageContext<'db>,
+    S: NodeStore<'db>,
 {
     /// Open empty tree
     pub fn open_empty(storage: S, merk_type: MerkType, tree_type: TreeType) -> Self {
