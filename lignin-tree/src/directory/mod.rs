@@ -232,6 +232,52 @@
 //! The calls here are writes of a flat keyspace. A reclaimer that takes a
 //! record out in a page step (`transactions.md` CL6) takes the same keys.
 //!
+//! # The flat records of a subtree are its entry's
+//!
+//! A subtree has records outside its Merk: in the aux, meta and roots
+//! columns, and its data where a tree keeps that flat. They are kept by
+//! its prefix, and the entry here says whose they are
+//! (`tree-layout.md` D6):
+//!
+//! > **In every column, at every version, the records under a prefix are
+//! > those of the entry that the directory stores under that prefix at
+//! > that version**, an entry in use or a left-over one. Where the
+//! > directory stores no entry, no column has a record.
+//!
+//! So **a reader of flat records opens the prefix first**, at the version
+//! it reads ([`Directory::open`]). Where that opens no Merk, no record is
+//! there for it, whatever a column holds: the records of a left-over entry
+//! are shown to nobody, as the entry is. A handle that is kept across
+//! writes is asked again ([`Directory::is_live`]).
+//!
+//! Three writers keep the rule, and all three are in
+//! [`drop`](crate::drop):
+//!
+//! 1. the drop takes the dropped Merk's own records out of every column
+//!    ([`drop::unlink`](crate::drop::unlink));
+//! 2. the enter takes out what a left-over entry under the prefix has, in
+//!    the operation that adds the new entry
+//!    ([`drop::enter`](crate::drop::enter));
+//! 3. the reclaimer takes the records of a Merk that was below a dropped
+//!    one out before its entry, and only while the entry stored under the
+//!    prefix is that Merk's.
+//!
+//! **A write transaction therefore enters a Merk with
+//! [`drop::enter`](crate::drop::enter) and drops or clears one with
+//! [`drop::unlink`](crate::drop::unlink)**, which call [`Directory::add`],
+//! [`Directory::unlink`] and [`Directory::clear`] for it. A caller that
+//! uses these three by themselves keeps the directory right and breaks the
+//! rule of the flat records.
+//!
+//! The rule asks two things of other code:
+//!
+//! - **a move takes the flat records along**: the operation that calls
+//!   [`Directory::rekey`] writes the flat records of every Merk it re-keys
+//!   under the new prefix, and removes them under the old one (GROVE-03);
+//! - **a clear keeps the cleared Merk's own flat records** and drops those
+//!   of the Merks below it. An operation that empties the columns of the
+//!   cleared Merk as well removes them itself (GROVE-05).
+//!
 //! # What the callers do
 //!
 //! - **Every subtree that a node hosts is entered**, a Merk with no node

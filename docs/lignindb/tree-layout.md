@@ -699,6 +699,31 @@ As built, the directory's part is four records: the entry, the record of
 the root and the record of the host go, and a record of the dropped Merk
 takes their place (`lignin-tree::directory`).
 
+A second exception, as built (D6, `lignin-tree::drop`): **the dropped
+Merk's own flat records go with the drop.** The record that a drop leaves
+has the Merk's id and its root and no prefix, and the prefix can be entered
+again in the next operation, so nothing could take them out later. The
+transaction takes the Merk's range out of every flat column by a lazy range
+delete (`FlatDrops::unlink_prefix`): it reads one path of each column, and
+writes the leaf at each end of the range, the branches above them, and one
+record of the pages between, which leave their branches unread and are
+freed after the commit. That does not grow with what the range holds.
+Measured on 8 KiB pages, with the Merk's records between those of two other
+Merks in a column of its own, and a fiftieth as many in a second column:
+
+| Flat records of the dropped Merk | Flat pages read | Flat pages written |
+|---|---|---|
+| none | 4: 3 of the columns, 1 of the directory | 1, of the directory; none of a column |
+| 8 | 4: 3 of the columns, 1 of the directory | 3: 2 of the columns, 1 of the directory |
+| 400 | 7: 5 of the columns, 1 of the directory, 1 of the unlinked pages | 6: 4 of the columns, 1 of the directory, 1 of the unlinked pages |
+| 4,000 | 7, the same | 6, the same |
+
+The tree pages are one read and one written in each case (the host's).
+`a_drop_reads_and_writes_the_two_ends_of_its_flat_records` measures it.
+
+The flat records of the Merks nested in the dropped one are not read and
+not written by the drop, like their entries.
+
 **D2. The dropped cells are removed later.** Because of P2 a page can hold
 cells of a dropped Merk beside cells that live on. So reclaiming is not only
 freeing whole pages: the reclaimer walks the dropped Merk from its root by
@@ -710,9 +735,10 @@ the drop.
 
 As built (`lignin-tree::drop`): the address is in the record that the
 directory leaves under the dropped Merk's id. The steps come in this order:
-the directory records of the Merks nested in the subtree, the innermost
-first; the record of the dropped Merk; then the cells from the root down,
-the cells of one fragment in one step. A cell goes after the cell that
+for each Merk nested in the subtree, the innermost first, its flat records
+in every column (D6) and then its directory records; the record of the
+dropped Merk; then the cells from the root down, the cells of one fragment
+in one step. A cell goes after the cell that
 names it, because a freed slot is given to the next cell that arrives (S4)
 and nothing in a page tells that cell from the one before: no address of a
 cell that is gone may be left in a cell that stays, and no walk may begin a
@@ -761,6 +787,63 @@ entry for each Merk under the moved key. node-store.md already names the
 move as an operation of the engine, "a change in the subtree directory, not
 a copy", with the copy as RocksDB's way of doing it. The simulation observes
 RocksDB, so it measures the copy (section 15, and section 17, item 19).
+
+**D6. The flat records under a prefix are those of the entry the directory
+stores there.** A subtree has records outside its Merk: in the aux, meta
+and roots columns, and its data where a tree keeps that flat. They are kept
+by the subtree's prefix, each under `lead ++ prefix ++ key` in its column.
+The rule (decision D-084):
+
+> In every flat column, at every version, the records under a prefix belong
+> to the entry that the directory stores under that prefix at that version,
+> an entry in use or a left-over one. Where the directory stores no entry,
+> no column has a record.
+
+A reader therefore finds flat records through the directory. It opens the
+prefix at the version it reads (`Directory::open`), and where that opens no
+Merk there is no record for it in any column, whatever the pages hold. A
+handle that is kept across writes is asked again (`Directory::is_live`). So
+the records of a Merk below a dropped one stay in their pages, like its
+entry, and are shown to nobody from the drop on (`transactions.md` CV9 and
+T-CL1 hold for every column of every nested subtree, D-083).
+
+Three writers keep the rule, all in `lignin-tree::drop`:
+
+1. **The drop** takes the dropped Merk's own range out of every column, in
+   the transaction (`drop::unlink`; the second exception in D1).
+2. **The enter** takes out what a left-over entry under the prefix has, in
+   the operation that puts the new entry there (`drop::enter`). A Merk that
+   is entered under a prefix starts with no flat record, whether the
+   reclaimer has come or not.
+3. **The reclaimer** takes the flat records of a Merk that was below a
+   dropped one out before that Merk's entry, a leaf in a page step, and only
+   while the entry that the directory stores under the prefix is that
+   Merk's (D2). It reads the entry and the leaf at one version and makes
+   the step only if that version of the leaf is still the current one, so
+   it takes no record of a Merk that was entered again under the prefix.
+
+A write transaction that enters every Merk through `drop::enter` and drops
+and clears through `drop::unlink` keeps the rule with nothing else to
+remember. Both take the same thing of it: every flat column with what
+stands before a prefix in its keys, the keyspace of the unlinked pages, and
+the version it reads at (`drop::Flats`).
+
+The rule asks two things of the tasks that build on this:
+
+- **A move re-keys the flat records with the entry** (GROVE-03). The
+  operation that gives a Merk another prefix (`Directory::rekey`, D5) writes
+  its flat records under the new prefix and removes them under the old one,
+  for every Merk it re-keys. D5's "moves no cell" stands; a moved subtree's
+  flat records are not cells.
+- **A clear keeps the cleared Merk's own flat records** and drops those of
+  the Merks nested in it (GROVE-05, D4). `drop::unlink` does that. An
+  operation that means to empty the columns of the cleared Merk too removes
+  those records itself.
+
+Reclaiming flat records does not merge either (D3): a leaf that held only
+records of a reclaimed Merk stays in its tree with no entry, and a bucket
+of long keys stays with an empty tree, until a write merges the leaf or a
+range delete covers it.
 
 ## 12. Parameters
 
@@ -1167,9 +1250,9 @@ records and the moves.
 | TREE-05 Subtree directory | The entry of a Merk holds the address of its root cell and is rewritten when the root is carried or another node becomes the root (S3). Under parallel scopes it is the address to use while the host's element is marked pending (T3). A drop removes one entry and leaves the nested ones to the reclaimer (D1, D2). A move that keeps the cells re-keys every entry under the moved key (D5). | The entry. |
 | TREE-06 Ordered cursor | No sibling links (C5): a cursor moves through its parent stack. Consecutive keys are in one page or in pages beside each other (V4). | The cursor. |
 | TREE-08 Out-of-line values | A value pointer is 16 bytes (value-log-format.md, section 4). A tree cell stores 12 of them, the file id and the offset, and has the value's length in its header ([`tree-page.md`](tree-page.md), TP13). The threshold is a parameter, bounded by what fits in a cell (TP14); 256 bytes was simulated, and 512 puts the reference documents into their cells and costs 1.7 more dirtied pages (section 14.4). | The threshold policy. |
-| TREE-09 Subtree drop | D1 to D4: the drop writes one page and one directory entry; reclaiming walks the dropped Merk because its cells can share pages with others, removes the directory entries nested in it and reports the value pointers. | Keeping the root's address, and the walk. |
-| GROVE-03 Batch pipeline | D5: a moved subtree needs no cell to change its page. | Whether a move re-hosts or copies. |
-| GROVE-05 Deletes and drops | D1 for a deleted tree, D4 for a cleared one. GroveDB's pending-drop records are the same idea at the level of storage prefixes. | The mapping. |
+| TREE-09 Subtree drop | D1 to D4: the drop writes one page and one directory entry; reclaiming walks the dropped Merk because its cells can share pages with others, removes the directory entries nested in it and reports the value pointers. D6, as built: the drop unlinks the Merk's own flat records, and the reclaimer removes those of the nested Merks. | Keeping the root's address, and the walk. |
+| GROVE-03 Batch pipeline | D5: a moved subtree needs no cell to change its page. D6: a move re-keys the flat records of every Merk it re-keys, in the same operation. | Whether a move re-hosts or copies. |
+| GROVE-05 Deletes and drops | D1 for a deleted tree, D4 for a cleared one. D6: a Merk is entered through `drop::enter` and dropped or cleared through `drop::unlink`, with every flat column; a clear keeps the cleared Merk's own flat records. GroveDB's pending-drop records are the same idea at the level of storage prefixes. | The mapping. |
 | TREE-10 Bulk loader | F5: any placement is valid, so a loader may fill pages to 90% with fragments of its choice. To leave a tree that later writes treat well, a loaded page should hold whole fragments of at most the largest size, and the roots above them should be together in the pages above. | The loader. |
 | MERK-01 LigninNodeStore | A node is placed when its write is applied, not at `prepare_node` or `put_node` (P5), and the write is all change sets of the operation. The address of a written node comes back from there. The location in a `Link` is a page id and a slot, a hint that is checked before use (S6). | The mapping from `Link` to cell addresses, and how the addresses come back (P5). |
 | PERF-03 Pointer write path | A write changes the address of the cells it creates and carries, and of no other (P5). Taking the tree layer's report of them keeps every kept link exact, so no link is followed by key. | The path cache. |
@@ -1278,7 +1361,8 @@ owner can overrule one before FMT-02 and TREE-03 build on it.
     asks the caller to write such hosts first, at least one page each
     beyond D1 (`Write::dropped`). As built in `lignin-tree::drop`: the
     cells go from the root down, after every directory record of the
-    subtree, and a crash during that walk leaves the cells it had not
+    subtree, each nested Merk's flat records before its directory records
+    (D6), and a crash during that walk leaves the cells it had not
     reached unreachable (D2). Closing that needs a background step that
     changes two pages as one, or a durable place for where a walk stands,
     and the store has neither.
