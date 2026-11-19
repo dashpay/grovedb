@@ -237,7 +237,11 @@ commit. Reclaiming afterwards changes no record and takes no version (CL6).
 The RocksDB engine removes those records later, in separate steps (14.5).
 
 What the drop writes to pages is small (`tree-layout.md` D1): the cell of
-the host, and the directory entry of the dropped Merk. The cells of the
+the host, and the directory entry of the dropped Merk. One exception, from
+iteration two: a host inside the dropped Merk whose pointer is behind (SC9)
+is written first, so that the walk of CL6 can follow every pointer. That is
+bounded by what the transaction wrote. On existing GroveVersions no host is
+behind. The cells of the
 dropped Merk, and the cells and directory entries of every Merk nested in
 it, stay in their pages until they are reclaimed (`tree-layout.md` D2). They
 are storage, not state. Let *w* be the version of the drop's commit.
@@ -1584,6 +1588,24 @@ last cell is gone.
   reused under ID2 and ID3.
 - **It does not merge.** A page that reclaiming leaves nearly empty stays so
   until a write touches it (`tree-layout.md` D3).
+
+As built (`lignin-tree::drop`):
+
+- **The order.** The directory records of the nested Merks go first, the
+  innermost first, then the record of the dropped Merk, then the cells from
+  the root down. Until the record of the dropped Merk is gone, no cell is,
+  so a reclaimer that begins again finds every pointer exact.
+- **A crash while the cells go leaves the rest of them.** From the step
+  that takes the Merk's record out, only the reclaimer's memory knows the
+  cells that are left. They are in no state and no read returns them, and
+  the value pointers they hold stay counted (`tree-layout.md` D2).
+- **A page is freed with the latest version**, since nothing keeps the
+  drop's. A page whose current version the latest commit bore waits for the
+  next commit.
+- **A write copies a tree page before it is planned on it** (WT11, PV7).
+  A step takes cells out of a page that has no private copy, and a write
+  that had read the page before would change another page than it planned
+  on.
 
 **CL7. The cleaner is never in a reader's or the committer's way** beyond
 one page step, and for the committer the hold of the counts lock that goes

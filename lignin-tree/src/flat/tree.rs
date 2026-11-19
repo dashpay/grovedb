@@ -39,13 +39,28 @@ enum Merge {
 /// A child that a range delete reaches, with the bounds of its key range.
 type Reached = (PageId, Option<Vec<u8>>, Option<Vec<u8>>);
 
+/// A page that a range delete took out of its tree without reading it
+/// ([`FlatTree::unlink_range`]): no page of the tree names it any more, and
+/// it is still a page, with every page below it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Unlinked {
+    /// The page.
+    pub page: PageId,
+    /// The level of the branch that named the page, or `None` for the root
+    /// of the tree of a bucket of long keys.
+    pub above: Option<u8>,
+}
+
 /// What a range delete did to the pages of one tree.
 #[derive(Debug, Default)]
-struct Pruned {
+struct Pruned<'u> {
     /// The leaves that lost entries and are still there.
     leaves: Vec<PageId>,
-    /// Whether a page was freed.
+    /// Whether a page left the tree.
     freed: bool,
+    /// Where the pages that leave whole are put, with all that is below
+    /// them, in place of being read and freed.
+    unlinked: Option<&'u mut Vec<Unlinked>>,
 }
 
 /// A bucket that a write went through: the tree that holds it, its stored
@@ -193,6 +208,38 @@ impl FlatTree {
         start: &[u8],
         end: Option<&[u8]>,
     ) -> Result<(), FlatError> {
+        self.remove_range(pages, start, end, None)
+    }
+
+    /// Removes every record whose key is at or after `start` and before
+    /// `end`, as [`Self::delete_range`] does, and reads no page whose whole
+    /// key range lies inside the range: such a page is taken out of its
+    /// branch and returned, with every page below it still in place. So is
+    /// the tree of a bucket of long keys whose every key is in the range.
+    ///
+    /// The leaf at each end of the range is read and loses its entries as
+    /// in a range delete, and nothing else of the range is read. What is
+    /// returned is the caller's to keep and to free later, page by page:
+    /// each leaf below holds entries, with values out of line and with
+    /// buckets, that nothing has released (`lignin_tree::drop`).
+    pub fn unlink_range<P: FlatPagesMut + ?Sized>(
+        &self,
+        pages: &mut P,
+        start: &[u8],
+        end: Option<&[u8]>,
+    ) -> Result<Vec<Unlinked>, FlatError> {
+        let mut unlinked = Vec::new();
+        self.remove_range(pages, start, end, Some(&mut unlinked))?;
+        Ok(unlinked)
+    }
+
+    fn remove_range<P: FlatPagesMut + ?Sized>(
+        &self,
+        pages: &mut P,
+        start: &[u8],
+        end: Option<&[u8]>,
+        mut unlinked: Option<&mut Vec<Unlinked>>,
+    ) -> Result<(), FlatError> {
         let mut ranges = vec![(*self, start, end)];
         let (mut passed, mut way) = (Vec::new(), Way::default());
         let mut changed = BTreeSet::new();
@@ -237,7 +284,7 @@ impl FlatTree {
                     bucket
                 }
             };
-            if tree.delete_range_stored(pages, &from, to.as_deref())? {
+            if tree.delete_range_stored(pages, &from, to.as_deref(), unlinked.as_deref_mut())? {
                 changed.insert(tree.root);
             }
         }
@@ -826,11 +873,15 @@ impl FlatTree {
         pages: &mut P,
         start: &[u8],
         end: Option<&[u8]>,
+        unlinked: Option<&mut Vec<Unlinked>>,
     ) -> Result<bool, FlatError> {
         if end.is_some_and(|end| end <= start) {
             return Ok(false);
         }
-        let mut pruned = Pruned::default();
+        let mut pruned = Pruned {
+            unlinked,
+            ..Pruned::default()
+        };
         self.prune(
             pages,
             self.root,
@@ -875,14 +926,14 @@ impl FlatTree {
         above: Option<u8>,
         bounds: (Option<&[u8]>, Option<&[u8]>),
         range: (&[u8], Option<&[u8]>),
-        pruned: &mut Pruned,
+        pruned: &mut Pruned<'_>,
     ) -> Result<bool, FlatError> {
         let capacity = self.config.capacity();
         let ((lower, upper), (start, end)) = (bounds, range);
         let covered = lower.map_or(start.is_empty(), |lower| lower >= start)
             && end.is_none_or(|end| upper.is_some_and(|upper| upper <= end));
         if covered && page != self.root {
-            self.free_all(pages, page, above)?;
+            self.leave(pages, page, above, pruned)?;
             pruned.freed = true;
             return Ok(true);
         }
@@ -929,7 +980,7 @@ impl FlatTree {
             let (from, to) = Self::span(&leaf, start, end);
             let mut entries = leaf_entries(&leaf);
             for entry in entries.drain(from..to) {
-                self.release(pages, page, &entry)?;
+                self.release(pages, page, &entry, pruned)?;
             }
             if from < to {
                 write_leaf(pages, capacity, page, &entries)?;
@@ -979,13 +1030,33 @@ impl FlatTree {
         Ok(false)
     }
 
+    /// The page `page`, which is below a branch of the level `above`,
+    /// leaves the tree with every page below it: they are freed, or handed
+    /// on unread by a range delete that unlinks.
+    fn leave<P: FlatPagesMut + ?Sized>(
+        &self,
+        pages: &mut P,
+        page: PageId,
+        above: Option<u8>,
+        pruned: &mut Pruned<'_>,
+    ) -> Result<(), FlatError> {
+        match pruned.unlinked.as_deref_mut() {
+            Some(unlinked) => {
+                unlinked.push(Unlinked { page, above });
+                Ok(())
+            }
+            None => self.free_all(pages, page, above),
+        }
+    }
+
     /// An entry of the leaf `page` leaves the tree: its value out of line
-    /// is dropped, and the tree of a bucket is freed.
+    /// is dropped, and the tree of a bucket leaves with it.
     fn release<P: FlatPagesMut + ?Sized>(
         &self,
         pages: &mut P,
         page: PageId,
         entry: &LeafEntry<'_>,
+        pruned: &mut Pruned<'_>,
     ) -> Result<(), FlatError> {
         if !self.config.is_bucket(entry.key.len()) {
             return drop_held(pages, page, entry.value);
@@ -994,7 +1065,7 @@ impl FlatTree {
             ValueRef::Inline(root) => FlatValue::Inline(root),
             ValueRef::Held { place, .. } | ValueRef::New(place) => FlatValue::OutOfLine(place),
         };
-        self.free_all(pages, bucket_root(page, root)?, None)
+        self.leave(pages, bucket_root(page, root)?, None, pruned)
     }
 
     /// Frees `page`, which is below a branch of the level `above`, and

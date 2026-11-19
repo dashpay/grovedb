@@ -432,4 +432,4 @@ pub use error::FlatError;
 pub use owners::{FlatOwners, StepLog};
 pub use pages::{FlatConfig, FlatPages, FlatPagesMut, Revision};
 pub use store::{Committed, PageIds, Parts, Private, PrivatePage};
-pub use tree::FlatTree;
+pub use tree::{FlatTree, Unlinked};
