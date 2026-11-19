@@ -24,6 +24,10 @@
 //! | `LIGNIN_TXN06_DOCUMENTS` | how many documents, 1,000,000 unless set |
 //! | `LIGNIN_TXN06_CHECKPOINTS` | how many checkpoints are made, 15 unless set |
 //! | `LIGNIN_TXN06_OPENS` | how many of them are opened, all unless set |
+//! | `LIGNIN_TXN06_BLOCKS` | how many blocks are committed after the warm ones, a checkpoint after each of the first; as many as there are checkpoints unless set |
+//! | `LIGNIN_TXN06_WARM` | how many blocks are committed, with write-back between them, before the first checkpoint: 200 unless set. They are what the log holds when it is made. |
+//! | `LIGNIN_TXN06_LOG_FILE` | the length in bytes at which the log turns to its next file, the log's own unless set |
+//! | `LIGNIN_TXN06_FRAMES` | how many pages the buffer pool of the store, and of each checkpoint that is opened, has room for: 16,384 unless set, which is 128 MiB. A pool is made empty and whole by an open, so its size is in the time of one. |
 //! | `LIGNIN_TXN06_NO_LIMITS` | the times are printed and not held to the limits: on a disk whose syncs take seconds they measure the disk |
 
 use std::{
@@ -65,7 +69,7 @@ const BLOCK: u64 = 20;
 /// The transitions of one commit while the store is filled.
 const LOAD_BLOCK: u64 = 5_000;
 /// The blocks that are committed, with write-back between them, before
-/// the first checkpoint is made.
+/// the first checkpoint is made, unless `LIGNIN_TXN06_WARM` says how many.
 const WARM_BLOCKS: u64 = 200;
 
 type Key = [u8; 16];
@@ -496,10 +500,35 @@ fn number(variable: &str, unless_set: u64) -> u64 {
     }
 }
 
+/// How long this thread has run on a processor, where the system says.
+/// On a machine that is busy with other work it is what a call cost, and
+/// the time on the clock is that and the wait for a processor. The system
+/// counts it in steps of about a millisecond, so of a call that takes less
+/// only the mean over many says anything.
+fn on_cpu() -> Option<Duration> {
+    let stat = std::fs::read_to_string("/proc/thread-self/schedstat").ok()?;
+    let nanos = stat.split_whitespace().next()?.parse().ok()?;
+    Some(Duration::from_nanos(nanos))
+}
+
+/// What `call` returns, with the time it took on the clock and on a
+/// processor.
+fn timed<T>(call: impl FnOnce() -> T) -> (T, Duration, Option<Duration>) {
+    let (began, ran) = (Instant::now(), on_cpu());
+    let returned = call();
+    let took = began.elapsed();
+    let on_cpu = on_cpu().zip(ran).map(|(now, then)| now - then);
+    (returned, took, on_cpu)
+}
+
 fn median(samples: &[Duration]) -> Duration {
     let mut sorted = samples.to_vec();
     sorted.sort_unstable();
     sorted[sorted.len() / 2]
+}
+
+fn mean(samples: &[Duration]) -> Duration {
+    samples.iter().sum::<Duration>() / samples.len() as u32
 }
 
 fn millis(samples: &[Duration]) -> String {
@@ -527,9 +556,18 @@ fn the_reference_database_is_checkpointed_and_opened_in_time() {
     let documents = number("LIGNIN_TXN06_DOCUMENTS", 1_000_000);
     let checkpoints = number("LIGNIN_TXN06_CHECKPOINTS", 15);
     let opens = number("LIGNIN_TXN06_OPENS", checkpoints).min(checkpoints);
+    let blocks = number("LIGNIN_TXN06_BLOCKS", checkpoints).max(checkpoints);
+    let warm = number("LIGNIN_TXN06_WARM", WARM_BLOCKS);
     let limits = std::env::var_os("LIGNIN_TXN06_NO_LIMITS").is_none();
-    let frames = 16_384;
-    let (options, flush) = (LogOptions::default(), FlushConfig::new(SIZE));
+    let frames = number("LIGNIN_TXN06_FRAMES", 16_384) as usize;
+    let options = LogOptions {
+        target_file_len: number(
+            "LIGNIN_TXN06_LOG_FILE",
+            LogOptions::default().target_file_len,
+        ),
+        ..LogOptions::default()
+    };
+    let flush = FlushConfig::new(SIZE);
 
     let kept = std::env::var_os("LIGNIN_TXN06_DIR").map(PathBuf::from);
     let temporary = kept.is_none().then(memory_dir);
@@ -556,10 +594,6 @@ fn the_reference_database_is_checkpointed_and_opened_in_time() {
             grove.block(&db, &versions, count, false);
             turn(&db, &versions);
             loaded += count;
-        }
-        for _ in 0..WARM_BLOCKS {
-            grove.block(&db, &versions, BLOCK, true);
-            turn(&db, &versions);
         }
         (db, versions)
     } else {
@@ -602,19 +636,28 @@ fn the_reference_database_is_checkpointed_and_opened_in_time() {
         root_hash(&db, &versions, versions.latest()),
         Some(grove.root.root_hash())
     );
+    for _ in 0..warm {
+        grove.block(&db, &versions, BLOCK, true);
+        turn(&db, &versions);
+    }
 
     // A checkpoint right after each block, and write-back after it.
     let targets = checkpoints_in(&db);
     let mut made = Vec::new();
-    let mut taken = Vec::new();
-    for index in 0..checkpoints {
-        let target = targets.join(format!("{}-{index}", versions.latest()));
+    let (mut taken, mut taken_on_cpu) = (Vec::new(), Vec::new());
+    for index in 0..blocks {
         grove.block(&db, &versions, BLOCK, true);
+        if index >= checkpoints {
+            turn(&db, &versions);
+            continue;
+        }
+        let target = targets.join(format!("{}-{index}", versions.latest()));
         let held = db.write_back(&versions).log_held();
         let before = counts.read();
-        let began = Instant::now();
-        let created = (checkpointer(&db, &versions).create(&target)).expect("a checkpoint");
-        taken.push(began.elapsed());
+        let (created, took, on_cpu) = timed(|| checkpointer(&db, &versions).create(&target));
+        let created = created.expect("a checkpoint");
+        taken.push(took);
+        taken_on_cpu.extend(on_cpu);
         let after = counts.read();
         let [links, syncs, dir_syncs, file_opens] = [0, 1, 2, 3].map(|at| after[at] - before[at]);
         println!(
@@ -635,16 +678,21 @@ fn the_reference_database_is_checkpointed_and_opened_in_time() {
     }
 
     let (like, _) = Db::new(16);
-    let mut opened_in = Vec::new();
+    let (mut opened_in, mut opened_on_cpu) = (Vec::new(), Vec::new());
     for (target, version, hash, transitions) in made.iter().take(opens as usize) {
-        let began = Instant::now();
-        let (checkpoint, its_versions, report) =
-            Db::open(vfs.clone(), target, frames, options, flush, &like)
-                .expect("the checkpoint opens");
-        opened_in.push(began.elapsed());
+        let (opened, took, on_cpu) =
+            timed(|| Db::open(vfs.clone(), target, frames, options, flush, &like));
+        let (checkpoint, its_versions, report) = opened.expect("the checkpoint opens");
+        opened_in.push(took);
+        opened_on_cpu.extend(on_cpu);
         println!(
-            "opened version {}: {} commits and {} bytes of log replayed, {} pages rebuilt",
-            report.landed, report.commits, report.log_bytes, report.pages_rebuilt
+            "opened version {} in {:.2} ms: {} bytes of log read, {} commits replayed, \
+             {} pages rebuilt",
+            report.landed,
+            took.as_secs_f64() * 1e3,
+            report.log_bytes,
+            report.commits,
+            report.pages_rebuilt
         );
         assert_eq!(its_versions.latest(), *version);
         assert_eq!(
@@ -666,19 +714,20 @@ fn the_reference_database_is_checkpointed_and_opened_in_time() {
             assert_eq!(found, expected, "document {serial} at version {version}");
         }
     }
-    if !made.is_empty() {
-        println!(
-            "checkpoint (ms): median {:.2}; {}",
-            median(&taken).as_secs_f64() * 1e3,
-            millis(&taken)
-        );
-    }
-    if !opened_in.is_empty() {
-        println!(
-            "open of a checkpoint (ms): median {:.2}; {}",
-            median(&opened_in).as_secs_f64() * 1e3,
-            millis(&opened_in)
-        );
+    for (what, samples) in [
+        ("checkpoint", &taken),
+        ("checkpoint, on a processor", &taken_on_cpu),
+        ("open of a checkpoint", &opened_in),
+        ("open of a checkpoint, on a processor", &opened_on_cpu),
+    ] {
+        if !samples.is_empty() {
+            println!(
+                "{what} (ms): median {:.2}, mean {:.2}; {}",
+                median(samples).as_secs_f64() * 1e3,
+                mean(samples).as_secs_f64() * 1e3,
+                millis(samples)
+            );
+        }
     }
     println!(
         "{:.0} MiB on disk in {} files",
