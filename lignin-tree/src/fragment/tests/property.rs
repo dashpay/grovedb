@@ -212,7 +212,7 @@ fn any_sequence_of_reorganisations_leaves_the_logical_tree_unchanged() {
 #[test]
 fn writes_that_stop_below_a_host_are_put_right_when_the_host_is_written() {
     let (mut stopped, mut finalized, mut checked) = (0, 0, 0);
-    let (mut carried_behind, mut refused) = (0, 0);
+    let (mut carried_behind, mut refused, mut renamed) = (0, 0, 0);
     for seed in 1..=4 {
         let size = [PageSize::MIN, PageSize::new(16_384).expect("a page size")][seed as usize % 2];
         let mut run = Run::new(size, 70 + seed);
@@ -220,7 +220,8 @@ fn writes_that_stop_below_a_host_are_put_right_when_the_host_is_written() {
         for step in 0..2400 {
             let dice = run.grove.rng.below(100);
             let merk = Some(run.merk()).filter(|merk| *merk != 0);
-            let key = run.key().filter(|(merk, _)| *merk != 0);
+            let any = run.key();
+            let key = any.clone().filter(|(merk, _)| *merk != 0);
             match (dice, merk, key) {
                 (0..22, Some(merk), _) => {
                     run.next_key += 1;
@@ -242,6 +243,16 @@ fn writes_that_stop_below_a_host_are_put_right_when_the_host_is_written() {
                 (42..44, Some(merk), _) => {
                     run.grove.clear_stopped(merk);
                     stopped += 1;
+                }
+                (56..59, ..) => {
+                    // A node moves to another key with the Merks it hosts.
+                    if let Some((merk, key)) = any {
+                        run.next_key += 1;
+                        let new = [&[8][..], &run.next_key.to_be_bytes()].concat();
+                        run.grove.rename(merk, &key, &new);
+                        run.keys.push((merk, new));
+                        renamed += 1;
+                    }
                 }
                 (44..56, ..) => {
                     let behind = run.grove.behind();
@@ -272,9 +283,11 @@ fn writes_that_stop_below_a_host_are_put_right_when_the_host_is_written() {
     }
     println!(
         "{stopped} writes stopped below a host, {refused} of them refused for room and made \
-         again with the host, {finalized} hosts written after them, {carried_behind} cells of \
-         hosts that were behind carried, {checked} full checks"
+         again with the host, {finalized} hosts written after them, {renamed} nodes moved to \
+         another key, {carried_behind} cells of hosts that were behind carried, {checked} full \
+         checks"
     );
+    assert!(renamed > 100, "nodes were moved to other keys: {renamed}");
     assert!(stopped > 1500 && finalized > 400 && checked > 400);
     assert!(carried_behind > 20, "hosts that were behind were carried");
 }

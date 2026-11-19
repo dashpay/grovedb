@@ -1248,7 +1248,11 @@ owner can overrule one before FMT-02 and TREE-03 build on it.
     and the page that is chosen is read before anything goes to it.
 15. **Reclaiming a dropped subtree is a walk, not a list of pages** (D2),
     because of P2. TREE-09's "all its pages are reclaimed" becomes "all its
-    cells are removed, and a page is freed when it is empty".
+    cells are removed, and a page is freed when it is empty". As built: the
+    walk can follow every pointer it finds only if no host inside a dropped
+    Merk was marked pending when it was dropped (T3). `lignin-tree::fragment`
+    asks the caller to write such hosts first, one page each beyond D1
+    (`Write::dropped`).
 16. **A directory entry holds the address of the root cell** and is counted
     as a page when it is written. It is 0.14 of the 7.04, in peaks: one
     split in the owner index rewrites the entries of every co-located

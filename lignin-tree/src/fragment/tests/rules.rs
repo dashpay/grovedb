@@ -627,15 +627,27 @@ enum Stop {
 
 #[test]
 fn a_pointer_that_is_behind_is_not_followed() {
-    // The root nodes and the cells of a cleared Merk in one page, and a
-    // second Merk under `c` with one node, in the same page.
-    for stop in [Stop::Deleted, Stop::Cleared, Stop::Kept] {
+    // The root nodes and the cells of a cleared Merk in one page, and two
+    // more Merks under `c`, with one node each, in the same page. The write
+    // that names the roots again writes the host, or moves it to the key
+    // `d` (D5).
+    let cases = [
+        (Stop::Deleted, false),
+        (Stop::Cleared, false),
+        (Stop::Kept, false),
+        (Stop::Kept, true),
+        (Stop::Deleted, true),
+    ];
+    for (stop, renamed) in cases {
         let mut grove = crowded();
+        let beside = grove.host(0, b"c", false);
+        grove.put(beside, &[7], b"seven");
         let hosted = grove.host(0, b"c", false);
         grove.put(hosted, &[1], b"one");
         let host = grove.node(0, b"c").at.expect("placed");
         let root = grove.node(hosted, &[1]).at.expect("placed");
-        assert_eq!(root.page(), host.page());
+        let other = grove.node(beside, &[7]).at.expect("placed");
+        assert_eq!((root.page(), other.page()), (host.page(), host.page()));
         let ghosts = grove.ghosts;
 
         let report = match stop {
@@ -645,36 +657,47 @@ fn a_pointer_that_is_behind_is_not_followed() {
         };
         let lives = stop == Stop::Kept;
         assert_eq!(report.roots, [lives.then_some(root)]);
-        let stored = |grove: &Grove| {
-            let at = grove.node(0, b"c").at.expect("placed");
+        let stored = |grove: &Grove, key: &[u8]| {
+            let at = grove.node(0, key).at.expect("placed");
             let view = grove.mem.view(at.page());
             let cell = view.node(at.slot()).expect("the host");
-            cell.hosted_roots().next_back().flatten()
+            let mut roots = cell.hosted_roots();
+            let last = roots.next_back().flatten();
+            (roots.next_back().flatten(), last)
         };
-        let marked = |grove: &Grove| {
-            let view = grove.mem.view(root.page());
-            view.node(root.slot()).map(|cell| cell.is_fragment_root())
+        let marked = |grove: &Grove, at: CellAddress| {
+            let view = grove.mem.view(at.page());
+            view.node(at.slot()).map(|cell| cell.is_fragment_root())
         };
-        assert_eq!(stored(&grove), Some(root), "the host is behind");
+        let behind = (Some(other), Some(root));
+        assert_eq!(stored(&grove, b"c"), behind, "the host is behind");
 
         // A write that holds the host and does not rewrite its element
-        // keeps the pointer as it is.
+        // keeps the pointers as they are.
         grove.touch(0, b"c");
         assert_eq!(grove.node(0, b"c").at, Some(host));
-        assert_eq!(stored(&grove), Some(root), "the pointer keeps its bytes");
+        assert_eq!(
+            stored(&grove, b"c"),
+            behind,
+            "the pointers keep their bytes"
+        );
 
         // Before the host is written with its roots, another write fills
-        // the page and carries the host with the root of the grove. The
-        // pointer that is behind is not followed: nothing is read through
-        // it, and what it names stays where it is.
+        // the page and carries the host with the root of the grove. No
+        // pointer of a host that is behind is followed: nothing is read
+        // through one, and what the two name stays where it is.
         let mut len = 400;
         while grove.mem.frames.len() == 1 {
             grove.put(0, b"x", &value(len, 6));
             len += 400;
         }
         assert_eq!(grove.page_of(0, b"c"), page(2));
-        assert_eq!(stored(&grove), Some(root), "the pointer keeps its bytes");
-        let stayed = grove.ghosts + usize::from(lives);
+        assert_eq!(
+            stored(&grove, b"c"),
+            behind,
+            "the pointers keep their bytes"
+        );
+        let stayed = grove.ghosts + 1 + usize::from(lives);
         assert_eq!(grove.mem.view(page(1)).len(), stayed);
         assert_eq!(grove.ghosts, ghosts + usize::from(stop == Stop::Cleared));
         let expected = match stop {
@@ -683,26 +706,39 @@ fn a_pointer_that_is_behind_is_not_followed() {
             // The mark is behind as the pointer is: the host left the page.
             Stop::Kept => Some(false),
         };
-        assert_eq!(marked(&grove), expected);
+        assert_eq!(marked(&grove, root), expected);
+        assert_eq!(marked(&grove, other), Some(false));
 
-        // The write that names the root again puts the mark right, in a
-        // page it changes for nothing else.
+        // The write that names the roots again puts the marks right, in a
+        // page it changes for nothing else: in the host, or in the new
+        // cell that takes its Merks over.
         let from = grove.mem.shadow.records.len();
-        grove.finalize(hosted);
-        assert_eq!(stored(&grove), lives.then_some(root));
+        let said = grove.mem.said_behind;
+        let key: &[u8] = match renamed {
+            true => {
+                grove.rename(0, b"c", b"d");
+                assert!(grove.mem.said_behind > said, "the old host was behind");
+                assert_eq!(grove.page_of(0, b"d"), page(2));
+                b"d"
+            }
+            false => {
+                grove.finalize(hosted);
+                b"c"
+            }
+        };
+        assert_eq!(stored(&grove, key), (Some(other), lives.then_some(root)));
         let records = &grove.mem.shadow.records[from..];
         let first: Vec<Rec> = records
             .iter()
             .filter(|(id, _)| *id == page(1))
             .map(|(_, rec)| *rec)
             .collect();
-        match stop {
-            Stop::Kept => {
-                assert_eq!(first, [Rec::Mark]);
-                assert_eq!(marked(&grove), Some(true));
-            }
-            _ => assert_eq!(first, []),
+        assert_eq!(first, vec![Rec::Mark; 1 + usize::from(lives)]);
+        assert_eq!(marked(&grove, other), Some(true));
+        if lives {
+            assert_eq!(marked(&grove, root), Some(true));
         }
+        assert!(grove.behind().is_empty());
         grove.check();
     }
 }
@@ -753,6 +789,97 @@ fn a_pointer_that_is_behind_gives_no_node_the_page_of_a_deleted_one() {
     let carries = grove.fragments.counters().carries;
     assert_eq!(carries[Cause::Delete].cells, 0);
     grove.check();
+}
+
+#[test]
+fn a_node_that_becomes_the_root_below_a_host_that_is_behind_stays_where_it_is() {
+    // The host `h`, the root `b` of its Merk and the left child `a` of `b`
+    // in the first page, and `c`, the right child of `b`, in the second.
+    for behind in [false, true] {
+        let mut grove = grove(params(100, 64, 75, 35));
+        grove.inline_max = 5000;
+        grove.plain_names = true;
+        grove.put(0, b"h", &value(400, 0));
+        let hosted = grove.host(0, b"h", false);
+        grove.put(hosted, b"b", &value(3900, 1));
+        grove.put(hosted, b"c", &value(3900, 2));
+        grove.put(hosted, b"a", b"small");
+        let at = |grove: &Grove, key: &[u8]| grove.node(hosted, key).at.expect("placed");
+        let (b, c) = (at(&grove, b"b"), at(&grove, b"c"));
+        assert_eq!(
+            (b.page(), c.page(), at(&grove, b"a").page()),
+            (page(1), page(2), page(1))
+        );
+        if behind {
+            let report = grove.put_stopped(hosted, b"b", &value(3900, 3));
+            assert_eq!(report.roots, [Some(b)]);
+        }
+
+        // `b` is deleted, and `c` is the root. A host that is not behind
+        // shows that `c` takes the place of `b`, and `c` takes its page
+        // (R2). A host that is behind shows nothing: `c` stays where it is,
+        // as it would in a write that stops below the host.
+        let report = grove.delete(hosted, b"b");
+        assert_eq!(grove.merks[hosted].root, grove.find(hosted, b"c"));
+        let moves: Vec<_> = report.carried.iter().map(|cell| cell.cause).collect();
+        match behind {
+            false => {
+                assert_eq!(moves, [Cause::Delete]);
+                assert_eq!(at(&grove, b"c").page(), page(1));
+            }
+            true => {
+                assert_eq!(moves, []);
+                assert_eq!(at(&grove, b"c"), c);
+            }
+        }
+        assert!(grove.behind().is_empty());
+        grove.check();
+    }
+}
+
+#[test]
+fn a_merk_is_dropped_after_the_hosts_inside_it_that_are_behind_are_written() {
+    // A Merk under `c` with three nodes, each the host of a Merk with one
+    // node. A write stops below each of the three hosts: one deletes the
+    // node, one clears the Merk and one puts a second node.
+    let build = || {
+        let mut grove = grove(LayoutParams::PROPOSED);
+        for key in [b"m", b"c", b"x"] {
+            grove.put(0, key, b"root");
+        }
+        let inner = grove.host(0, b"c", false);
+        let mut nested = Vec::new();
+        for index in 0..3 {
+            grove.put(inner, &key(index), b"host");
+            nested.push(grove.host(inner, &key(index), false));
+            grove.put(nested[index as usize], &[1], b"one");
+        }
+        grove.delete_stopped(nested[0], &[1]);
+        grove.clear_stopped(nested[1]);
+        grove.put_stopped(nested[2], &[2], b"two");
+        assert_eq!(grove.behind(), nested);
+        (grove, inner)
+    };
+
+    // The three hosts are written with their roots, a write each, and then
+    // the Merk is dropped: one write more than D1 counts for each host.
+    let (mut grove, inner) = build();
+    let writes = grove.fragments.counters().writes;
+    grove.clear(inner);
+    assert_eq!(grove.fragments.counters().writes, writes + 4);
+    assert!(grove.behind().is_empty());
+    grove.check();
+
+    // Dropped as it is, the Merk keeps pointers that are behind in cells
+    // that nothing writes again, and their page fails the check that every
+    // committed page passes.
+    let (mut grove, inner) = build();
+    grove.unsettled = true;
+    let writes = grove.fragments.counters().writes;
+    grove.clear(inner);
+    assert_eq!(grove.fragments.counters().writes, writes + 1);
+    let mut pages = grove.mem.frames.keys();
+    assert!(pages.any(|id| grove.mem.view(*id).tree_page().check_fragments().is_err()));
 }
 
 /// Two pages: the root `b` in the first and its left child `a` in the

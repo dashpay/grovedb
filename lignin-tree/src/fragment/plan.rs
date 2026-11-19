@@ -158,7 +158,6 @@ struct Stored {
     /// has none (T3): what its pointers name stays in the page, and no
     /// rule sees it.
     roots: Vec<Option<CellAddress>>,
-    behind: bool,
     value_len: usize,
     same_key: bool,
 }
@@ -215,8 +214,11 @@ struct Planner<'p, 'w, P> {
     queue: Vec<usize>,
     /// The fragment roots that no rule can take a cell from.
     stuck: Vec<usize>,
-    /// The roots that a host which was behind names again.
+    /// The roots that the hosts of the write name by position
+    /// ([`HostedWrite::Set`]).
     stated: Vec<usize>,
+    /// Whether the write met a host that is behind (T3).
+    met_behind: bool,
 }
 
 /// Plans `write` on the pages as they are.
@@ -247,6 +249,7 @@ pub(super) fn plan<'w, P: Pages>(
         queue: Vec::new(),
         stuck: Vec::new(),
         stated: Vec::new(),
+        met_behind: false,
     };
     let (order, lens, takes, let_go) = planner.build()?;
     planner.place(&order, &lens, takes)?;
@@ -387,7 +390,6 @@ impl<P: Pages> Planner<'_, '_, P> {
                     }
                 }
                 HostedWrite::Set(roots) => {
-                    let behind = old.is_some_and(|old| old.behind);
                     for (position, root) in roots.iter().enumerate() {
                         let via = Via::Hosted(position as u8);
                         let kept = old.and_then(|old| old.child(via));
@@ -397,9 +399,7 @@ impl<P: Pages> Planner<'_, '_, P> {
                         };
                         if let Some(kid) = kid {
                             self.adopt(cell, kid, via)?;
-                            if behind {
-                                self.stated.push(kid);
-                            }
+                            self.stated.push(kid);
                         }
                     }
                 }
@@ -527,13 +527,20 @@ impl<P: Pages> Planner<'_, '_, P> {
         Ok(marked.ok_or(WriteError::NoNode { address })?)
     }
 
-    /// The roots that a host which was behind names again (T3). The mark of
-    /// such a root can be behind as the pointer was: the host may have left
-    /// the root's page, or stopped naming the root, in a write that did not
-    /// follow the pointer. A root that the write leaves in another page than
-    /// its host has its mark read here. The mark of any other is the plan's
-    /// to give, in a page the write changes.
+    /// The roots that hosts name in a write that met a host that is behind
+    /// (T3). The mark of such a root can be behind as the pointer was: the
+    /// host may have left the root's page in a write that did not follow
+    /// the pointer. The host that names the root now is that host, or a new
+    /// cell that took its Merks over (D5), so every root that is named by
+    /// position is looked at. One that the write leaves in another page
+    /// than its host has its mark read here. The mark of any other is the
+    /// plan's to give, in a page the write changes.
+    ///
+    /// No host is behind on existing GroveVersions, and nothing is read.
     fn restate(&mut self) -> Result<(), FragmentError> {
+        if !self.met_behind {
+            return Ok(());
+        }
         for cell in std::mem::take(&mut self.stated) {
             let entry = &self.plan.cells[cell];
             let host = entry.parent.expect("a root that is named has its host");
@@ -661,14 +668,13 @@ impl<P: Pages> Planner<'_, '_, P> {
                 links: Side::BOTH.map(|side| node.link(side).map(|link| link.child)),
                 hosted: node.hosted_roots().len(),
                 roots: node.hosted_roots().collect(),
-                behind: false,
                 value_len: node.value().stored_len(),
                 same_key: key.is_none_or(|key| key == node.key()),
             })
         })?;
         let mut stored = stored.ok_or(WriteError::NoNode { address })?;
         if stored.hosted > 0 && self.pages.host_is_behind(address) {
-            stored.behind = true;
+            self.met_behind = true;
             stored.roots.clear();
         }
         Ok(stored)

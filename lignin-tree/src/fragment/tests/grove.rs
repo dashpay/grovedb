@@ -83,6 +83,12 @@ pub(super) struct Grove {
     pub carried_behind: usize,
     /// How many writes that stopped below a host were refused for room.
     pub refused: usize,
+    /// Drops a Merk without writing the hosts inside it that are behind,
+    /// which no caller may do.
+    pub unsettled: bool,
+    /// The cell of a host that is behind and that the next write moves to
+    /// another key.
+    moved_from: Option<CellAddress>,
     by_address: HashMap<CellAddress, usize>,
     dirty: BTreeSet<usize>,
     removed: Vec<usize>,
@@ -164,6 +170,8 @@ impl Grove {
             stating: BTreeSet::new(),
             carried_behind: 0,
             refused: 0,
+            unsettled: false,
+            moved_from: None,
             by_address: HashMap::new(),
             dirty: BTreeSet::new(),
             removed: Vec::new(),
@@ -357,7 +365,7 @@ impl Grove {
             for hosted in self.nodes[node].hosted.clone() {
                 self.merks[hosted].alive = false;
                 assert!(
-                    !self.entries.contains_key(&hosted),
+                    self.unsettled || !self.entries.contains_key(&hosted),
                     "no host inside a dropped Merk is behind"
                 );
                 if let Some(root) = self.merks[hosted].root.take() {
@@ -437,6 +445,27 @@ impl Grove {
     pub fn delete(&mut self, merk: usize, key: &[u8]) -> Report {
         self.settle_below(merk, key);
         self.merks[merk].root = self.delete_at(self.merks[merk].root, key);
+        self.flush(merk)
+    }
+
+    /// Moves the node under `old` to the key `new`, with the Merks it hosts
+    /// (`tree-layout.md` D5): the cell at the old key is deleted, and a new
+    /// cell at the new key names their roots.
+    pub fn rename(&mut self, merk: usize, old: &[u8], new: &[u8]) -> Report {
+        let node = self.find(merk, old).expect("the key is in the Merk");
+        let hosted = std::mem::take(&mut self.nodes[node].hosted);
+        let behind = hosted.iter().any(|merk| self.entries.contains_key(merk));
+        self.moved_from = self.nodes[node].at.filter(|_| behind);
+        let value = self.nodes[node].value.clone();
+        self.merks[merk].root = self.delete_at(self.merks[merk].root, old);
+        let root = self.insert_at(self.merks[merk].root, merk, new, &value);
+        self.merks[merk].root = Some(root);
+        let moved = self.find(merk, new).expect("the node was put");
+        for hosted in &hosted {
+            self.merks[*hosted].host = Some(moved);
+        }
+        self.nodes[moved].hosted = hosted;
+        self.stating.insert(moved);
         self.flush(merk)
     }
 
@@ -583,6 +612,9 @@ impl Grove {
     /// dropped while a host inside it is behind: the pointer would stay
     /// behind for good, in a cell that the reclaimer reads.
     fn settle_inside(&mut self, merk: usize) {
+        if self.unsettled {
+            return;
+        }
         for pending in self.behind() {
             let mut at = pending;
             while let Some(host) = self.merks[at].host {
@@ -785,6 +817,7 @@ impl Grove {
             .keys()
             .filter_map(|merk| self.merks[*merk].host);
         self.mem.behind = hosts.filter_map(|host| nodes[host].at).collect();
+        self.mem.behind.extend(self.moved_from.take());
         let from = self.mem.shadow.records.len();
         let pages_before = self.mem.frames.len();
         let report = match self.fragments.apply(&mut self.mem, &mut self.log, &write) {
@@ -877,7 +910,7 @@ impl Grove {
         }
         let merks = &self.merks;
         self.entries.retain(|merk, _| merks[*merk].alive);
-        self.stale = self.stopped.is_some() || !self.entries.is_empty();
+        self.stale = self.unsettled || self.stopped.is_some() || !self.entries.is_empty();
         if let Some(named) = report.roots.first().filter(|_| self.stopped.is_none()) {
             self.root_at = *named;
         }
@@ -1012,10 +1045,15 @@ impl Grove {
         }
         let roots: Vec<Option<CellAddress>> = cell.hosted_roots().collect();
         assert_eq!(roots.len(), node.hosted.len());
+        // No pointer of a host that is behind is followed: the element is
+        // marked, not one of its Merks.
+        let behind = node
+            .hosted
+            .iter()
+            .any(|merk| self.entries.contains_key(merk));
         for (root, merk) in roots.into_iter().zip(&node.hosted) {
-            // A pointer that is behind is not followed.
-            if self.entries.contains_key(merk) {
-                continue;
+            if behind {
+                break;
             }
             match (root, self.merks[*merk].root) {
                 (None, None) => {}

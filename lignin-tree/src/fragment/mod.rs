@@ -126,19 +126,35 @@
 //! - Nothing is read through them, nothing is taken for a part of the
 //!   host's fragment and nothing is carried with the host.
 //! - Nothing is taken to have been pointed at by them: no node takes the
-//!   page of a deleted node that such a pointer named (R2).
+//!   page of a deleted node that such a pointer named (R2). That holds
+//!   where the pointer was exact as well, which the plan cannot know: a
+//!   node that becomes the root of a Merk whose host is behind stays where
+//!   it is, as it does in a write that stops below the host (T3).
 //! - They keep their bytes: in a host that is carried, and in a host that
 //!   is written and keeps them ([`HostedWrite::Keep`], [`Target::Kept`]).
 //!
 //! The fragment-root mark of the root can be behind with the pointer, in
 //! the same bounds: the host may leave the root's page, in a write that
-//! does not follow the pointer. The write that names the roots of the host
-//! again, each by its address or by its place in the write
-//! ([`HostedWrite::Set`]), puts both right. It reads the mark of a root
-//! that stays in another page than the host, and sets it where it is not
-//! set, in a page it may change for nothing else. A root that is dropped
-//! while its host is behind is marked in the same way, by the write that
-//! drops it.
+//! does not follow the pointer. The write that names the roots again, each
+//! by its address or by its place in the write ([`HostedWrite::Set`]), puts
+//! both right: in the host itself, or in the new cell that takes its Merks
+//! over when the host moves to another key (D5). A write that meets a host
+//! that is behind reads the mark of every root that one of its hosts names
+//! so and that stays in another page than that host. It sets the mark where
+//! it is not set, in a page it may change for nothing else. A root that is
+//! dropped while its host is behind is marked in the same way, by the write
+//! that drops it.
+//!
+//! **A drop comes after the hosts inside it.** A Merk that is dropped
+//! while a host inside it is behind would keep that host's pointer as it
+//! is for good: the cell is not written again, the reclaimer walks it
+//! (D2), and its page would not pass the check of its fragment roots in a
+//! committed state. So the caller writes every such host with its roots
+//! before the write that drops the Merk. This is an exception to "a drop
+//! writes the page of the host and one directory entry" (D1, D4,
+//! `transactions.md` CV9): the transaction that drops the Merk also writes
+//! one page for each host inside it that is behind. Nothing here can see
+//! that it was left out.
 //!
 //! On existing GroveVersions every write holds the whole path up to the
 //! root of the grove, and the root is named by a root pointer, so no node
