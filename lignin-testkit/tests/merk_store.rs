@@ -31,11 +31,14 @@
 //!    a record, with RocksDB's. Equal records from the root down are an
 //!    equal tree shape, and the root hash is a function of the root's
 //!    record.
-//! 6. The hashes of the committed pages are then made again by Merk's hash
-//!    rules (`hashes`, MERK-02): checked as they are stored, and made by
-//!    one evaluation of the engine after every one of them was overwritten
-//!    and marked stale. The hash the rules make of the grove's root is the
-//!    root hash GroveDB gives on RocksDB.
+//! 6. Write-back then puts every page version of the commit into a
+//!    segment, and the pages are loaded from there by a buffer pool that
+//!    has never held them. The hashes of the pages that were loaded again
+//!    are the ones the pool of the store has, and Merk's hash rules make
+//!    them again (`hashes`, MERK-02): checked as they are stored, and made
+//!    by one evaluation of the engine after every one of them was
+//!    overwritten and marked stale. The hash the rules make of the grove's
+//!    root is the root hash GroveDB gives on RocksDB.
 //!
 //! The Merk logic itself runs on RocksDB here. That it gives the same tree
 //! on a `LigninNodeStore` is held by the tests of `merk::store::lignin`,
@@ -213,6 +216,7 @@ impl Tally {
         self.hashed.inserted_plain += other.hashed.inserted_plain;
         self.hashed.with_secondary += other.hashed.with_secondary;
         self.hashed.with_axes += other.hashed.with_axes;
+        self.hashed.reloaded += other.hashed.reloaded;
     }
 }
 
@@ -976,6 +980,17 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
         replay.compare_all(&committed, &reader, block, grove);
         let compared = replay.tally.compared - before;
 
+        // Write-back puts every page version of the commit into a
+        // segment, and the hashes are read from there.
+        let write_back = lignin.write_back(&versions);
+        loop {
+            let pass = write_back.pass().expect("a pass of write-back");
+            if pass.waiting == 0 {
+                break;
+            }
+            assert!(pass.progressed(), "write-back stands still: {pass:?}");
+        }
+
         // The hashes of the committed pages are the ones Merk's hash
         // rules make, and the root hash they make is GroveDB's.
         let root_hash = db.root_hash(Some(block), spec.grove_version).unwrap();
@@ -1119,6 +1134,10 @@ fn the_corpus_gives_the_same_trees_on_the_lignindb_node_store() {
         );
         assert!(
             hashed.stated > 10_000 && hashed.inserted_plain > 0,
+            "{tally:?}"
+        );
+        assert!(
+            hashed.with_axes > 0 && hashed.reloaded > 10_000,
             "{tally:?}"
         );
     }

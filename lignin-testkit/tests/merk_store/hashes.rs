@@ -3,8 +3,16 @@
 //!
 //! The replay writes every node with the hashes Merk made on RocksDB, and
 //! compares each committed node with RocksDB's record. Here the rules make
-//! the same hashes again, from the committed pages alone:
+//! the same hashes again, from the committed pages alone, **after a
+//! reload**: write-back has put every page version of the commit into a
+//! segment, and the pages are read from there by a buffer pool of this
+//! check's own, which has never held one of them. So every hash below went
+//! to a file as a part of a page image or as a hash record of its own, and
+//! came back through the materialisation of its page.
 //!
+//! 0. Every cell that is read from the segments stores the hashes that the
+//!    same cell has in the pool of the store, which are the ones the replay
+//!    compared with RocksDB's.
 //! 1. Every cell of every Merk is checked with [`hash::check`]: each hash
 //!    the cell stores is what the rules make of what it is made from, as
 //!    that is stored. A value hash that only its writer can make is taken
@@ -29,7 +37,10 @@ use lignin_format::{
     value_log::ValuePlace,
     CellAddress, CommitVersion, PageId,
 };
-use lignin_store::load::{LoadBuffers, PageLoader};
+use lignin_store::{
+    cache::{BufferPool, PoolConfig},
+    load::{LoadBuffers, PageLoader},
+};
 use lignin_tree::{
     fragment::{FragmentError, PageMut, Pages},
     hash::{self, Hashes, Stale, ValueReader},
@@ -62,7 +73,13 @@ pub struct Made {
     /// hosted roots is in the value hash.
     pub with_secondary: u64,
     pub with_axes: u64,
+    /// The pages that were loaded from the segments for the check.
+    pub reloaded: u64,
 }
+
+/// The frames of the pool the pages are loaded into again: a few, since
+/// the check holds one page at a time.
+const RELOAD_FRAMES: usize = 32;
 
 /// The committed tree pages at one version, with the pages that were
 /// changed since kept in memory.
@@ -141,6 +158,9 @@ fn stored(pages: &mut Frames<'_>, at: CellAddress) -> [Option<Hash>; 4] {
 /// rules: as they are stored, and made again by an evaluation. `top` is the
 /// first Merk of the grove, and `root_hash` the grove's root hash on
 /// RocksDB.
+///
+/// The pages are read from the segments, so write-back has written every
+/// page version of `at` before this is called.
 pub fn check(
     db: &Db,
     versions: &Versions,
@@ -151,14 +171,28 @@ pub fn check(
     grove_version: &GroveVersion,
 ) -> Made {
     let _guard = versions.guard();
+    let pool = BufferPool::new(PoolConfig {
+        page_size: SIZE,
+        capacity: RELOAD_FRAMES * (SIZE.get() + 512),
+    });
+    let pool = pool.expect("a pool");
+    let reloader = PageLoader::new(&pool, &db.table, &db.segments, SIZE).expect("a loader");
     let mut pages = Frames {
+        loader: reloader,
+        at,
+        buffers: LoadBuffers::new(),
+        lease: Lease::take(),
+        changed: HashMap::new(),
+    };
+    // The same pages as the pool of the store has them.
+    let mut pooled = Frames {
         loader: db.loader(),
         at,
         buffers: LoadBuffers::new(),
         lease: Lease::take(),
         changed: HashMap::new(),
     };
-    let source = ValueSource::new(&db.values, db.loader(), at);
+    let source = ValueSource::new(&db.values, reloader, at);
     let no_values = TreeValues::new(InlinePolicy::DEFAULT);
     let mut values = no_values.reader(&source);
 
@@ -197,6 +231,18 @@ pub fn check(
         }
         hosted_roots.extend(hosted.into_iter().flatten());
         cells.push(cell);
+    }
+
+    // 0. As the pool of the store has them.
+    let mut reloaded_pages = HashSet::new();
+    for cell in &cells {
+        reloaded_pages.insert(cell.at.page());
+        assert_eq!(
+            cell.hashes,
+            stored(&mut pooled, cell.at),
+            "the hashes of {} after a reload",
+            cell.at
+        );
     }
 
     // 1. As they are stored.
@@ -290,6 +336,15 @@ pub fn check(
     assert!(
         hosted_roots.iter().all(|hosted| roots.contains(hosted)),
         "a cell hosts a root that is the root of no Merk"
+    );
+
+    // Every page of a cell was loaded from the segments, at least once.
+    made.reloaded = pool.stats().misses;
+    assert!(
+        made.reloaded >= reloaded_pages.len() as u64,
+        "{} pages and {} loads",
+        reloaded_pages.len(),
+        made.reloaded
     );
     made
 }
