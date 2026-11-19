@@ -633,7 +633,7 @@ fn a_pointer_that_is_behind_is_not_followed() {
             let at = grove.node(0, b"c").at.expect("placed");
             let view = grove.mem.view(at.page());
             let cell = view.node(at.slot()).expect("the host");
-            cell.hosted_roots().last().flatten()
+            cell.hosted_roots().next_back().flatten()
         };
         assert_eq!(stored(&grove), Some(root), "the host is behind");
 
