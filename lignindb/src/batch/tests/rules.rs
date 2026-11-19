@@ -668,6 +668,61 @@ fn a_leave_above_does_not_take_a_refusal_with_it() {
         subtree: subtree(C),
     };
     assert_eq!(batch.resolve().map(|_| ()), Err(not_entered));
+
+    // Nor a refusal of a call of its own operation.
+    type Call = fn(&StagedBatch);
+    let again: [(Call, Call, BatchError); 3] = [
+        (
+            |batch| batch.drop_subtree(subtree(C)),
+            |batch| batch.drop_subtree(subtree(C)),
+            not_entered,
+        ),
+        (
+            |batch| batch.drop_subtree(subtree(C)),
+            |batch| batch.clear(subtree(C)),
+            not_entered,
+        ),
+        (
+            |_| (),
+            |batch| {
+                batch.clear(subtree(C));
+                batch.enter(subtree(C), b"t");
+            },
+            entered,
+        ),
+    ];
+    for (before, with, refused) in again {
+        for above_first in [true, false] {
+            let batch = StagedBatch::new();
+            batch.host(subtree(A), b"h", &[subtree(C)]);
+            before(&batch);
+            batch.next_operation();
+            if above_first {
+                batch.drop_subtree(subtree(A));
+            }
+            with(&batch);
+            if !above_first {
+                batch.drop_subtree(subtree(A));
+            }
+            assert!(!batch.is_empty());
+            assert_eq!(batch.resolve().map(|_| ()), Err(refused), "{above_first}");
+        }
+    }
+
+    // An enter of the operation below the drop is of a new subtree.
+    let batch = StagedBatch::<()>::new();
+    batch.host(subtree(A), b"h", &[subtree(C)]);
+    batch.next_operation();
+    batch.drop_subtree(subtree(C));
+    batch.enter(subtree(C), b"t");
+    batch.drop_subtree(subtree(A));
+    batch.enter(subtree(A), b"t");
+    // The operation says what the element of the new subtree hosts.
+    batch.host(subtree(A), b"h", &[subtree(C)]);
+    assert_eq!(
+        resolved(batch).subtrees,
+        ["drop 1", "enter 1 as t", "enter 3 as t at 0 of 1/h"]
+    );
 }
 
 #[test]

@@ -84,7 +84,7 @@
 //!
 //! - **A node that keeps its value**
 //!   ([`ValuePut::Keep`](crate::txn::ValuePut::Keep)) keeps the value the
-//!   node has in the batch before its operation: the value of the node the
+//!   node has in the batch when the put is made: the value of the node the
 //!   batch holds under the key, and with none the value the transaction
 //!   has when the batch is applied. So a Merk that stays open across
 //!   operations writes a value once and then only hashes, and the value is
@@ -153,8 +153,10 @@
 //!   what the operation itself says hangs there
 //!   ([`StagedBatch::host`]), and a subtree that an earlier operation
 //!   dropped or cleared where it hung then, whatever became of its host
-//!   since: the transaction has it there. So the operation that drops a
-//!   subtree, or writes in one, says what the element that hosts it hosts.
+//!   since: the transaction has it there. A subtree hangs in one place,
+//!   as its name is made of its path: one that is entered again is taken
+//!   to hang where it hung. So the operation that drops a subtree, or
+//!   writes in one, says what the element that hosts it hosts.
 //!   A write below that the batch was not told of stays, and so does a
 //!   drop below, and the transaction refuses the batch
 //!   ([`BatchError::NotEntered`]).

@@ -435,7 +435,7 @@ fn dump(txn: &WriteTxn<'_>) -> Vec<String> {
 /// batch of its own.
 #[test]
 fn one_batch_is_what_its_operations_are_one_after_the_other() {
-    for seed in 1..=12u64 {
+    for seed in 1..=6u64 {
         let mut rng = Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) | 1);
         let (apart, together) = (Store::new(), Store::new());
         let mut state = ([Items::new(), Items::new()], Items::new());

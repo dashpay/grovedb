@@ -228,7 +228,7 @@ impl<C> Staged<C> {
             // What earlier operations said of a subtree below one that
             // leaves goes with it.
             true if state.at < generation => state.outcome(*subtree).is_ok(),
-            true => state.entering.is_none(),
+            true => state.outcome(*subtree).is_ok() && state.entering.is_none(),
             false => matches!(state.outcome(*subtree), Ok((None, Entered::No))),
         };
         self.refused.is_none() && self.len() == 0 && self.subtrees.iter().all(blank)
@@ -465,28 +465,32 @@ impl<C> Staged<C> {
         let parents: Vec<_> = (leaving.iter())
             .map(|(subtree, _)| (*subtree, self.hangs_in(*subtree)))
             .collect();
-        for below in below {
-            self.cut(below, &ORDER);
+        for below in &below {
+            self.cut(*below, &ORDER);
             // A subtree below goes with the one that leaves, and is not
-            // named beside it: what earlier operations said of it is
-            // taken together a last time, for what it refuses.
-            if let Some(state) = self.subtrees.get_mut(&below) {
-                if state.at < generation
-                    && let Err(refusal) = state.fold(below)
-                {
+            // named beside it: not by an earlier operation, and not by a
+            // leave of this one. What was said of it is taken together a
+            // last time, for what it refuses. An enter of this operation
+            // is of a new subtree, and stays.
+            if let Some(state) = self.subtrees.get_mut(below) {
+                let said = match state.at < generation {
+                    true => state.fold(*below),
+                    false => state.outcome(*below).map(|_| ()),
+                };
+                if let Err(refusal) = said {
                     self.refused.get_or_insert(refusal);
                 }
                 (state.leave, state.enter, state.parent) = (None, None, None);
-                // A leave of this operation goes too: the one above takes
-                // the subtree. An enter of this operation is of a new one.
                 state.leaving = None;
                 if state.is_blank() {
-                    self.subtrees.remove(&below);
+                    self.subtrees.remove(below);
                 }
             }
         }
         for (subtree, parent) in parents {
-            if let Some(state) = self.subtrees.get_mut(&subtree) {
+            if let Some(state) = self.subtrees.get_mut(&subtree)
+                && !below.contains(&subtree)
+            {
                 state.parent = state.parent.or(parent);
             }
         }

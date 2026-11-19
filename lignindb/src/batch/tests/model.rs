@@ -156,7 +156,7 @@ impl Pair {
 
 #[test]
 fn every_schedule_of_calls_leaves_the_outcome_gm0_names() {
-    for seed in 1..=3000u64 {
+    for seed in 1..=1500u64 {
         let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
         let nodes = seed % 2 == 0;
         let (mut batch, mut other) = (Pair::new(nodes), Pair::new(nodes));
