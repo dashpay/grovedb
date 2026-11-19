@@ -228,7 +228,7 @@ impl<C> Staged<C> {
             // What earlier operations said of a subtree below one that
             // leaves goes with it.
             true if state.at < generation => state.outcome(*subtree).is_ok(),
-            true => state.leaving.is_none() && state.entering.is_none(),
+            true => state.entering.is_none(),
             false => matches!(state.outcome(*subtree), Ok((None, Entered::No))),
         };
         self.refused.is_none() && self.len() == 0 && self.subtrees.iter().all(blank)
@@ -477,6 +477,9 @@ impl<C> Staged<C> {
                     self.refused.get_or_insert(refusal);
                 }
                 (state.leave, state.enter, state.parent) = (None, None, None);
+                // A leave of this operation goes too: the one above takes
+                // the subtree. An enter of this operation is of a new one.
+                state.leaving = None;
                 if state.is_blank() {
                     self.subtrees.remove(&below);
                 }

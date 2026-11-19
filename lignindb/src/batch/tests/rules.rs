@@ -616,6 +616,22 @@ fn a_subtree_that_an_earlier_operation_dropped_goes_with_a_later_leave_above_it(
     group.drop_subtree(subtree(A));
     assert_eq!(resolved(group).subtrees, ["drop 1"]);
 
+    // One operation drops both, in either order: the one above is named.
+    for below_first in [true, false] {
+        let batch = StagedBatch::<()>::new();
+        batch.host(subtree(A), b"h", &[subtree(C)]);
+        batch.next_operation();
+        if below_first {
+            batch.clear(subtree(C));
+        }
+        batch.drop_subtree(subtree(A));
+        if !below_first {
+            batch.clear(subtree(C));
+        }
+        assert!(!batch.is_empty());
+        assert_eq!(resolved(batch).subtrees, ["drop 1"], "{below_first}");
+    }
+
     // A batch that was never told where the subtree hung names both.
     let batch = StagedBatch::<()>::new();
     batch.drop_subtree(subtree(C));

@@ -147,8 +147,9 @@
 //!   and is applied after it, as a put wins over a delete inside one
 //!   operation.
 //! - **It takes what earlier operations staged below the subtree too**, in
-//!   every column, with their enters, drops and clears: a drop names the
-//!   outermost subtree. Below is what hung there before the operation and
+//!   every column, with their enters, drops and clears, and a drop or a
+//!   clear that its own operation makes below: a drop names the outermost
+//!   subtree. Below is what hung there before the operation and
 //!   what the operation itself says hangs there
 //!   ([`StagedBatch::host`]), and a subtree that an earlier operation
 //!   dropped or cleared where it hung then, whatever became of its host
