@@ -291,7 +291,7 @@ pub use self::{
     reclaim::{ReclaimStats, Round},
 };
 use crate::{
-    commit::{CommitError, CommitStats, Committed, NoStaleHashes, Published},
+    commit::{CommitError, CommitStats, Committed, Committer, NoStaleHashes, Published},
     options::Options,
     snapshot::{LatestLease, Operation, Snapshot},
     txn::{Batch, KeySet, Keyspaces, Subtree, SubtreeWrite, TxnError, WriteTxn},
@@ -470,23 +470,16 @@ impl Db {
         let opened = open::open_dir(dir, options)?;
         let (shared, directory) = open::open_store(dir, options, opened.manifest)?;
         // What earlier sessions dropped and did not reclaim.
-        if let Err(error) = shared.adopt_drops(&directory) {
-            return Err(OpenError::catalog("what earlier drops left")(error));
-        }
+        shared
+            .adopt_drops(&directory)
+            .map_err(OpenError::catalog("what earlier drops left"))?;
         let shared = Arc::new(shared);
-        let spawn = |name: &str, work: Box<dyn FnOnce() + Send>| {
-            let builder = thread::Builder::new().name(name.to_owned());
-            builder.spawn(work).map_err(OpenError::Thread)
-        };
         let writer = shared.clone();
-        let write_back = spawn("lignindb-write-back", Box::new(move || write_back(&writer)))?;
+        let write_back = spawn("lignindb-write-back", move || write_back(&writer))?;
         // A thread that is never to sleep would spin.
         let idle = options.idle.max(Duration::from_millis(1));
         let reclaimer = shared.clone();
-        let reclaim = spawn(
-            "lignindb-reclaim",
-            Box::new(move || reclaimer.reclaim_loop(idle)),
-        );
+        let reclaim = spawn("lignindb-reclaim", move || reclaimer.reclaim_loop(idle));
         let reclaim = match reclaim {
             Ok(reclaim) => reclaim,
             Err(error) => {
@@ -594,11 +587,7 @@ impl Db {
         txn: &WriteTxn<'_>,
         rules: &mut R,
     ) -> Result<Committed, WriteError> {
-        self.refused()?;
-        let mut rules = Counted { rules, calls: 0 };
-        let committed = self.shared.committer().commit(txn, &mut rules);
-        self.shared.store.stats.count_hashes(rules.calls);
-        self.settle(committed)
+        self.counted(rules, |committer, rules| committer.commit(txn, rules))
     }
 
     /// Rolls `txn` back (WT9): its writes, its private copies, its page
@@ -617,11 +606,7 @@ impl Db {
         batch: &Batch<'_>,
         rules: &mut R,
     ) -> Result<Committed, WriteError> {
-        self.refused()?;
-        let mut rules = Counted { rules, calls: 0 };
-        let committed = self.shared.committer().write(batch, &mut rules);
-        self.shared.store.stats.count_hashes(rules.calls);
-        self.settle(committed)
+        self.counted(rules, |committer, rules| committer.write(batch, rules))
     }
 
     /// A snapshot of the latest version (RD1): every read through it is of
@@ -738,7 +723,7 @@ impl Db {
             commits: store.committing.stats(),
             recovery: store.recovery.clone(),
             reclaimed: *lock(&store.reclaimed),
-            ids_released: shared.count_released(),
+            ids_released: store.ids_released.load(Ordering::Relaxed),
             pins: shared.versions.pins_held(),
             guards: shared.versions.guards_held(),
             directories: store.directories.len(),
@@ -771,6 +756,21 @@ impl Db {
     /// leave alone (P-03).
     pub fn foreign_entries(&self) -> std::io::Result<Vec<OsString>> {
         open::foreign_entries(&*self.shared.store.vfs, &self.shared.store.dir)
+    }
+
+    /// A commit through the facade: refused in a session that takes no
+    /// write, made with the calls of `rules` counted as hashes of the
+    /// store, and settled.
+    fn counted<R: HashRules>(
+        &self,
+        rules: &mut R,
+        commit: impl FnOnce(&Committer<'_>, &mut Counted<'_, R>) -> Result<Committed, CommitError>,
+    ) -> Result<Committed, WriteError> {
+        self.refused()?;
+        let mut rules = Counted { rules, calls: 0 };
+        let committed = commit(&self.shared.committer(), &mut rules);
+        self.shared.store.stats.count_hashes(rules.calls);
+        self.settle(committed)
     }
 
     fn refused(&self) -> Result<(), WriteError> {
@@ -818,6 +818,12 @@ impl Drop for Db {
     }
 }
 
+/// Starts a thread of a database's background work.
+fn spawn(name: &str, work: impl FnOnce() + Send + 'static) -> Result<JoinHandle<()>, OpenError> {
+    let builder = thread::Builder::new().name(name.to_owned());
+    builder.spawn(work).map_err(OpenError::Thread)
+}
+
 /// The background loop of write-back, for as long as the session lives
 /// (`lignin_store::flush`). Its view of the store has the tree layer's
 /// word on the values of a page: their scan order, and the regrouping
@@ -842,7 +848,3 @@ fn write_back(shared: &Shared) {
     let write_back = WriteBack::new(stores, &store.flush, store.page_size).unwrap_or(plain);
     write_back.run(|error| store.troubles.write_back_failed(&error));
 }
-
-/// How long the reclaiming thread sleeps when nothing wakes it, unless
-/// [`Options::idle`] says another.
-pub const DEFAULT_IDLE: Duration = Options::DEFAULT_IDLE;

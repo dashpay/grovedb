@@ -24,9 +24,9 @@ use lignin_store::{
     wal::LogStore,
 };
 use lignin_tree::{
-    directory::Dropped,
+    directory::{Directory, DirectoryError, Dropped},
     drop::FlatDrops,
-    flat::{Committed, FlatConfig, FlatTree, StepLog},
+    flat::{Committed, FlatConfig, FlatPages, FlatTree, StepLog},
     fragment::Layout,
     value::InlinePolicy,
 };
@@ -55,6 +55,16 @@ pub(super) struct Catalog {
     pub(super) directory: FlatTree,
     /// The keyspace of the pages that drops unlinked.
     pub(super) flat_drops: FlatDrops,
+}
+
+impl Catalog {
+    /// Loads the handle on the subtree directory as `pages` have it.
+    pub(super) fn load_directory<P: FlatPages + ?Sized>(
+        &self,
+        pages: &P,
+    ) -> Result<Directory, DirectoryError> {
+        Directory::load(pages, self.directory.root(), self.directory.config())
+    }
 }
 
 /// What wakes the thread that reclaims, and tells it to end.

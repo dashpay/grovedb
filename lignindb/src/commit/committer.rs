@@ -247,7 +247,7 @@ impl<'s> Committer<'s> {
         }
         self.look_at_log(true)?;
         let mut untold = None;
-        let committed = self.commit_locked(txn, &path, rules, also, &mut untold);
+        let committed = self.commit_locked(txn, &path, rules, also, |_| Ok(()), &mut untold);
         // No lock is held here: whoever is told may call the store.
         if let Some(error) = untold {
             self.state.write_back_failed(&error);
@@ -265,12 +265,18 @@ impl<'s> Committer<'s> {
     /// on every way out. `untold` is given what write-back answered when
     /// it could not take the group in, for the caller to tell once the
     /// locks are given back.
+    ///
+    /// `write` is run on the transaction once the lock is held and the
+    /// log was looked at, before the transaction is taken: a commit that
+    /// nothing is committed beside writes there
+    /// ([`Self::commit_alone`]), and every other commit writes nothing.
     fn commit_locked<'t, R: HashRules>(
         &self,
         txn: &WriteTxn<'t>,
         path: &WritePath<'t>,
         rules: &mut R,
         also: Option<&KeySet>,
+        write: impl FnOnce(&WriteTxn<'t>) -> Result<(), TxnError>,
         untold: &mut Option<FlushError>,
     ) -> Result<Committed, CommitError> {
         let lock = self.state.lock();
@@ -282,6 +288,7 @@ impl<'s> Committer<'s> {
         // refused. An append that fails from here until the commit has
         // the lock on the counts ends the commit instead.
         self.look_at_log(false)?;
+        write(txn).map_err(CommitError::Refused)?;
         let parts = match txn.seal() {
             Ok(Sealed::Ready(parts)) => *parts,
             Ok(Sealed::Empty) => return Ok(self.empty()),
@@ -422,10 +429,9 @@ impl<'s> Committer<'s> {
             return Err(CommitError::Stopped(stopped));
         }
         self.look_at_log(true)?;
-        let path = self.path;
-        let txn = path.begin();
+        let txn = self.path.begin();
         let mut untold = None;
-        let committed = self.write_locked(&txn, &path, rules, also, write, &mut untold);
+        let committed = self.commit_locked(&txn, &self.path, rules, also, write, &mut untold);
         if let Some(error) = untold {
             self.state.write_back_failed(&error);
         }
@@ -433,40 +439,6 @@ impl<'s> Committer<'s> {
         drop(txn);
         self.after();
         committed
-    }
-
-    /// [`Self::commit_alone`] from the commit lock on: the lock is taken
-    /// here, held while `write` writes `txn`, and given back by the commit
-    /// or on the way out.
-    fn write_locked<R: HashRules>(
-        &self,
-        txn: &WriteTxn<'s>,
-        path: &WritePath<'s>,
-        rules: &mut R,
-        also: Option<&KeySet>,
-        write: impl FnOnce(&WriteTxn<'s>) -> Result<(), TxnError>,
-        untold: &mut Option<FlushError>,
-    ) -> Result<Committed, CommitError> {
-        let lock = self.state.lock();
-        if let Some(stopped) = self.state.stopped() {
-            return Err(CommitError::Stopped(stopped));
-        }
-        self.look_at_log(false)?;
-        write(txn).map_err(CommitError::Refused)?;
-        let parts = match txn.seal() {
-            Ok(Sealed::Ready(parts)) => *parts,
-            Ok(Sealed::Empty) => return Ok(self.empty()),
-            // No commit was published since the transaction first wrote:
-            // the lock was held. A conflict is reported all the same.
-            Ok(Sealed::Conflict) => {
-                self.state.count(Counted::Conflict);
-                return Err(CommitError::Conflict);
-            }
-            Err(TxnError::ScopeOpen) => return Err(CommitError::ScopesOpen),
-            Err(TxnError::NotFinalized) => return Err(CommitError::NotFinalized),
-            Err(error) => return Err(CommitError::Refused(error)),
-        };
-        self.make(lock, path, parts, rules, also, untold)
     }
 
     /// Rolls `txn` back (`transactions.md` WT9): its write set, its

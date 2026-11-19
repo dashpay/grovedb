@@ -402,7 +402,7 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
     /// one ([`LinkError::AlreadyFree`]). The table then has nothing to say
     /// of the page that the earlier link does not say, and the step goes
     /// on: the pool and the id are told, once, as a commit that frees such
-    /// a page tells them. Returns whether the free link was pushed.
+    /// a page tells them. Returns whether the page was given no free link.
     ///
     /// Every other refusal leaves the store other than its log has it
     /// ([`DropError::Broken`]), and none of them is one a store that keeps
@@ -413,9 +413,9 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
     /// id that names no committed page.
     fn free(&self, page: PageId, version: CommitVersion) -> Result<bool, DropError> {
         let broken = broken(page);
-        let linked = match self.table.push(page, Link::free(version)) {
-            Ok(()) => true,
-            Err(LinkError::AlreadyFree) => false,
+        let never_linked = match self.table.push(page, Link::free(version)) {
+            Ok(()) => false,
+            Err(LinkError::AlreadyFree) => true,
             Err(error) => return Err(broken(error.into())),
         };
         self.pool
@@ -424,7 +424,7 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
         self.ids
             .free(page, version)
             .map_err(|error| broken(error.into()))?;
-        Ok(linked)
+        Ok(never_linked)
     }
 
     /// Takes `released` off the counts of live values, at the end of a step
@@ -490,9 +490,9 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
                 replaced.map_err(|refusal| broken(page)(refusal.into()))?;
             }
             drop(step);
-            let linked = match freed {
+            let never_linked = match freed {
                 Some(version) => self.free(page, version)?,
-                None => true,
+                None => false,
             };
             let miscount = self.count(counts, &found.released);
             return Ok(Step::Made(CellsRemoved {
@@ -502,7 +502,7 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
                 released: found.released,
                 pending: found.pending.len() as u64,
                 freed: empties,
-                never_linked: !linked,
+                never_linked,
                 miscount,
             }));
         }
@@ -673,7 +673,7 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
         write_reclaim(page, None, Some(latest), listed, &mut record)?;
         self.log.append(&record).map_err(DropError::Store)?;
         drop(step);
-        let never_linked = !self.free(page, latest)?;
+        let never_linked = self.free(page, latest)?;
         Ok(Some(Step::Made(PageFreed {
             never_linked,
             miscount: self.count(counts, released),

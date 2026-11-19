@@ -10,10 +10,7 @@ use std::{
 use lignin_format::{CommitVersion, PageSize};
 use lignin_store::{flush::FlushError, recovery::RecoveryError, segment::SegmentStoreError};
 
-use crate::{
-    commit::{CommitError, Failure, Published, Stopped},
-    txn::TxnError,
-};
+use crate::commit::{CommitError, Failure, Published, Stopped};
 
 /// Why a database was not opened ([`Db::open`](super::Db::open)).
 ///
@@ -21,6 +18,7 @@ use crate::{
 /// each of them is found before anything is written: the directory is
 /// byte for byte as it was.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum OpenError {
     /// The directory holds no database, and
     /// [`Options::create_if_missing`](crate::Options::create_if_missing) is
@@ -371,17 +369,13 @@ impl From<CommitError> for WriteError {
     }
 }
 
-/// Why a call of the facade that is no write failed: a flush, a close, a
-/// turn of the background work that a caller made itself.
+/// Why a call of the facade that is no write failed: a flush, and a close.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum DbError {
     /// Write-back failed: a sync of the log, a table checkpoint, the
     /// closing of the session's files.
     Flush(FlushError),
-    /// A transaction refused, or a page of the store could not be read.
-    Txn(TxnError),
-    /// What a drop left could not be reclaimed.
-    Reclaim(String),
     /// A thread of the background work panicked. Its work is not done, and
     /// what it held is as a crash would leave it: the next open recovers.
     Panicked(&'static str),
@@ -391,8 +385,6 @@ impl fmt::Display for DbError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Flush(source) => write!(f, "write-back: {source}"),
-            Self::Txn(source) => write!(f, "{source}"),
-            Self::Reclaim(reason) => write!(f, "reclaiming what a drop left: {reason}"),
             Self::Panicked(thread) => write!(f, "the {thread} thread panicked"),
         }
     }
@@ -402,8 +394,7 @@ impl Error for DbError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Flush(source) => Some(source),
-            Self::Txn(source) => Some(source),
-            Self::Reclaim(_) | Self::Panicked(_) => None,
+            Self::Panicked(_) => None,
         }
     }
 }
@@ -411,11 +402,5 @@ impl Error for DbError {
 impl From<FlushError> for DbError {
     fn from(error: FlushError) -> Self {
         Self::Flush(error)
-    }
-}
-
-impl From<TxnError> for DbError {
-    fn from(error: TxnError) -> Self {
-        Self::Txn(error)
     }
 }

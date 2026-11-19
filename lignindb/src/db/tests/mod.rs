@@ -274,7 +274,7 @@ pub(super) fn plant(db: &Db, subtree: Subtree, merk: Merk) -> Box<Published> {
 
 /// How many nodes the Merk whose root cell is at `root` has, as
 /// `operation` reads it.
-pub(super) fn nodes(operation: &Operation<'_>, root: Option<CellAddress>) -> usize {
+fn nodes(operation: &Operation<'_>, root: Option<CellAddress>) -> usize {
     let reader = operation.nodes();
     let mut buffers = LoadBuffers::new();
     let mut count = 0;
@@ -328,8 +328,11 @@ pub(super) fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
 /// is and what the store holds if that takes more than a minute.
 pub(super) fn reclaimed(db: &Db, what: &str, done: impl Fn(&ReclaimStats) -> bool) {
     let began = Instant::now();
-    while !done(&db.stats().reclaimed) {
+    loop {
         let stats = db.stats();
+        if done(&stats.reclaimed) {
+            return;
+        }
         assert!(
             began.elapsed() < Duration::from_secs(60),
             "{what}: {:?}\n{stats}",

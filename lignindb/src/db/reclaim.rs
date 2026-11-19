@@ -2,7 +2,7 @@
 //! the directory records and the flat pages of dropped subtrees out of the
 //! store (`transactions.md` CL6, `lignin_tree::drop`).
 
-use std::{collections::HashSet, sync::atomic::Ordering, thread};
+use std::{collections::HashSet, thread};
 
 use lignin_format::CommitVersion;
 use lignin_tree::{
@@ -10,7 +10,7 @@ use lignin_tree::{
     drop::{Busy, DropError, FlatDrop, FlatReclaimed, Progress, Reclaim, Reclaimer, Wait},
 };
 
-use super::store::{lock, Shared, Steps};
+use super::store::{lock, Shared, Steps, Troubles};
 
 /// How many page steps one call of the reclaimer may make before it
 /// returns, so that a round can be ended between two calls.
@@ -142,6 +142,55 @@ pub struct Round {
     pub more: bool,
 }
 
+/// What a round does after one call of the reclaimer.
+enum Next {
+    /// The reclaiming is done.
+    Done,
+    /// The call made its steps, and more are left: the next call follows.
+    More,
+    /// Nothing more is made of it in this round. It is kept for a later
+    /// one, or given up.
+    Later(bool),
+}
+
+impl Round {
+    /// Counts what one call of the reclaimer answered, for a dropped Merk
+    /// and for a range delete alike, and says what the round does next.
+    fn took(
+        &mut self,
+        made: Result<Progress, DropError>,
+        done: &mut ReclaimStats,
+        troubles: &Troubles,
+    ) -> Next {
+        match made {
+            Ok(Progress::Done) => {
+                self.finished += 1;
+                Next::Done
+            }
+            Ok(Progress::More) => Next::More,
+            // A page that the latest commit wrote is freed after the next
+            // one, and a copy goes with its transaction: both are for a
+            // later round.
+            Ok(Progress::Blocked(busy)) => {
+                done.blocked(busy);
+                self.held_back += 1;
+                Next::Later(true)
+            }
+            Err(error @ (DropError::Broken { .. } | DropError::GivenUp)) => {
+                troubles.reclaim_failed(&error);
+                done.given_up += 1;
+                Next::Later(false)
+            }
+            // The step changed nothing, and is made again.
+            Err(error) => {
+                troubles.reclaim_failed(&error);
+                self.held_back += 1;
+                Next::Later(true)
+            }
+        }
+    }
+}
+
 impl Shared {
     fn reclaimer(&self) -> Reclaimer<'_, Steps<'_>> {
         let store = &*self.store;
@@ -225,8 +274,9 @@ impl Shared {
                         .reclaim_failed(&"no handle is kept for the latest version");
                     return true;
                 };
-                match reclaimer.reclaim(&mut job.reclaim, &directory, &columns, &guard, STEPS) {
-                    Ok(Progress::Done) => {
+                let made = reclaimer.reclaim(&mut job.reclaim, &directory, &columns, &guard, STEPS);
+                match round.took(made, &mut work.done, &store.troubles) {
+                    Next::Done => {
                         let taken = job.reclaim.reclaimed();
                         let done = &mut work.done;
                         done.merks += 1;
@@ -237,28 +287,10 @@ impl Shared {
                         done.pages_freed += taken.pages_freed;
                         done.pages_never_linked += taken.pages_never_linked;
                         done.value_bytes += taken.value_bytes;
-                        round.finished += 1;
                         return false;
                     }
-                    Ok(Progress::More) => {}
-                    Ok(Progress::Blocked(busy)) => {
-                        // A page that the latest commit wrote is freed
-                        // after the next one, and a copy goes with its
-                        // transaction: both are for a later round.
-                        work.done.blocked(busy);
-                        round.held_back += 1;
-                        return true;
-                    }
-                    Err(error @ (DropError::Broken { .. } | DropError::GivenUp)) => {
-                        store.troubles.reclaim_failed(&error);
-                        work.done.given_up += 1;
-                        return false;
-                    }
-                    Err(error) => {
-                        store.troubles.reclaim_failed(&error);
-                        round.held_back += 1;
-                        return true;
-                    }
+                    Next::More => {}
+                    Next::Later(keep) => return keep,
                 }
             }
             round.more = true;
@@ -273,42 +305,29 @@ impl Shared {
                     return true;
                 }
                 let mut taken = FlatReclaimed::default();
-                let (mut keep, mut ended) = (true, false);
-                for _ in 0..CALLS {
-                    let guard = self.versions.guard();
-                    let made = reclaimer.reclaim_flat(
-                        &catalog.flat_drops,
-                        &job.drop,
-                        &guard,
-                        STEPS,
-                        &mut taken,
-                    );
-                    match made {
-                        Ok(Progress::Done) => {
-                            work.done.range_deletes += 1;
-                            work.known_flats.remove(&job.drop.id);
-                            round.finished += 1;
-                            keep = false;
-                        }
-                        Ok(Progress::More) => continue,
-                        Ok(Progress::Blocked(busy)) => {
-                            work.done.blocked(busy);
-                            round.held_back += 1;
-                        }
-                        Err(error @ (DropError::Broken { .. } | DropError::GivenUp)) => {
-                            store.troubles.reclaim_failed(&error);
-                            work.done.given_up += 1;
-                            keep = false;
-                        }
-                        Err(error) => {
-                            store.troubles.reclaim_failed(&error);
-                            round.held_back += 1;
+                let keep = 'calls: {
+                    for _ in 0..CALLS {
+                        let guard = self.versions.guard();
+                        let made = reclaimer.reclaim_flat(
+                            &catalog.flat_drops,
+                            &job.drop,
+                            &guard,
+                            STEPS,
+                            &mut taken,
+                        );
+                        match round.took(made, &mut work.done, &store.troubles) {
+                            Next::Done => {
+                                work.done.range_deletes += 1;
+                                work.known_flats.remove(&job.drop.id);
+                                break 'calls false;
+                            }
+                            Next::More => {}
+                            Next::Later(keep) => break 'calls keep,
                         }
                     }
-                    ended = true;
-                    break;
-                }
-                round.more |= !ended;
+                    round.more = true;
+                    true
+                };
                 work.done.pages_freed += taken.pages_freed;
                 work.done.pages_never_linked += taken.pages_never_linked;
                 work.done.value_bytes += taken.value_bytes;
@@ -368,8 +387,7 @@ impl Shared {
         let guard = self.versions.guard();
         let latest = guard.latest();
         let pages = store.committed(&guard, latest);
-        let (root, config) = (catalog.directory.root(), catalog.directory.config());
-        match Directory::load(&pages, root, config) {
+        match catalog.load_directory(&pages) {
             Ok(directory) => {
                 store.directories.set(latest, directory);
                 true
@@ -408,16 +426,12 @@ impl Shared {
     /// What is done for the reclaiming when a session ends: a reclaiming
     /// that holds cells goes on until it is done or held back, because
     /// what it has left is known to nothing on disk.
-    pub(super) fn finish_reclaiming(&self) {
+    fn finish_reclaiming(&self) {
         loop {
             let round = self.reclaim_round(true);
             if !round.holds_cells || round.held_back > 0 || !round.more {
                 return;
             }
         }
-    }
-
-    pub(super) fn count_released(&self) -> u64 {
-        self.store.ids_released.load(Ordering::Relaxed)
     }
 }

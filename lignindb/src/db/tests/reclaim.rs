@@ -328,7 +328,9 @@ fn the_reclaimer_runs_beside_a_writer_and_readers_on_threads() {
         "{:?}",
         stats.background
     );
-    assert_eq!((stats.pins, stats.guards), (0, 0));
+    assert_eq!(stats.pins, 0);
+    // The background work takes a guard for each turn it has.
+    wait_for("no guard is left behind", || db.stats().guards == 0);
     let last = |db: &Db| {
         let snapshot = db.snapshot();
         let operation = snapshot.operation();

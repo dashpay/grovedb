@@ -33,10 +33,9 @@ fn a_new_database_is_made_and_opened_again() {
     assert!(format!("{db:?}").contains("version"));
     let keyspaces = db.keyspaces();
     let stats = db.stats();
-    assert_eq!(
-        (stats.version, stats.pins, stats.guards),
-        (version(1), 0, 0)
-    );
+    assert_eq!((stats.version, stats.pins), (version(1), 0));
+    // The background work takes a guard for each turn it has.
+    wait_for("no guard is left behind", || db.stats().guards == 0);
     assert_eq!(stats.directories, 1);
     assert!(stats.reopen.is_none() && db.reopen().is_none());
 
@@ -552,23 +551,11 @@ fn every_error_has_its_text_and_its_source() {
         assert_eq!(error.source().is_some(), caused, "{text}");
         assert!(!error.left_untouched() && format!("{error:?}").len() > 8);
     }
-    let errors = [
-        (
-            DbError::Reclaim("a page is not what a drop leaves".into()),
-            "reclaiming what a drop left: a page is not what a drop leaves",
-            false,
-        ),
-        (
-            DbError::Panicked("reclaim"),
-            "the reclaim thread panicked",
-            false,
-        ),
-        (
-            DbError::from(crate::txn::TxnError::ScopeOpen),
-            "a scope of the transaction is open",
-            true,
-        ),
-    ];
+    let errors = [(
+        DbError::Panicked("reclaim"),
+        "the reclaim thread panicked",
+        false,
+    )];
     for (error, text, caused) in errors {
         assert!(error.to_string().contains(text), "{error}");
         assert_eq!(error.source().is_some(), caused, "{text}");

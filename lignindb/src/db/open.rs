@@ -20,7 +20,7 @@ use lignin_store::{
 use lignin_tree::{
     directory::Directory,
     drop::FlatDrops,
-    flat::{FlatPages, FlatTree, Private},
+    flat::{FlatTree, Private},
 };
 
 use super::{
@@ -441,15 +441,12 @@ fn read_catalog(shared: &Shared, landed: CommitVersion) -> Result<Directory, Ope
         directory: FlatTree::open(root(key::DIRECTORY)?, config),
         flat_drops: FlatDrops::open(root(key::FLAT_DROPS)?, config),
     };
-    let directory = load_directory(&pages, &named)?;
+    let directory = named
+        .load_directory(&pages)
+        .map_err(OpenError::catalog("the subtree directory"))?;
     store.directories.set(landed, directory.clone());
     let _ = store.catalog.set(named);
     Ok(directory)
-}
-
-fn load_directory<P: FlatPages>(pages: &P, catalog: &Catalog) -> Result<Directory, OpenError> {
-    let (root, config) = (catalog.directory.root(), catalog.directory.config());
-    Directory::load(pages, root, config).map_err(OpenError::catalog("the subtree directory"))
 }
 
 /// The entries of `dir` that are not the engine's, by name: what an open,

@@ -426,12 +426,11 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
                 None => continue,
                 Some(Step::Refused(busy)) => return Ok(Met::Refused(busy)),
                 Some(Step::Made(freed)) => {
-                    let miscount = freed.miscount;
                     done.pages_freed += 1;
                     done.pages_never_linked += u64::from(freed.never_linked);
                     done.values += released.len() as u64;
                     done.value_bytes += value_bytes(&released);
-                    done.miscounted(miscount);
+                    done.miscounted(freed.miscount);
                     return Ok(Met::Freed);
                 }
             }
