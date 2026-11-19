@@ -412,8 +412,9 @@ struct Staged {
 /// Merk stands is the rule of the batch across subtrees (TXN-08), and until
 /// that exists a second one is refused. For a record that is no node the
 /// batch holds one outcome, by the rule of a storage batch inside one
-/// operation: a put stands against a delete of the same key, and otherwise
-/// the later write stands.
+/// operation: a put stands against whatever came before it, and a delete
+/// only where nothing is staged for its key. So of two puts the later
+/// stands, of two deletes the first, and a put against a delete.
 #[derive(Default)]
 pub struct LigninBatch {
     staged: Mutex<Staged>,
@@ -516,12 +517,11 @@ impl LigninBatch {
                 change.subtree,
                 change.key.clone(),
             );
-            // As in a storage batch, a put stands against a delete of the
-            // same key, in whichever order they came, and of two puts or
-            // two deletes the later stands.
-            let put_stands = change.value.is_none()
-                && (staged.records.get(&at)).is_some_and(|staged| staged.change.value.is_some());
-            if !put_stands {
+            // As in a storage batch within one operation, a put replaces
+            // what is staged for its key and a delete replaces nothing: the
+            // cost that is charged is the one given with the write that
+            // stands.
+            if change.value.is_some() || !staged.records.contains_key(&at) {
                 staged.records.insert(at, record);
             }
         }

@@ -384,28 +384,17 @@ fn write_as_a_client<'db, S: NodeStore<'db>>(
     let mut calls = Vec::new();
     let mut batch = ops.clone();
     if let Some(moved) = moved {
-        let mut element_at = |key: &[u8]| {
-            let observed = merk.observe_value_and_value_hash(key, cost_fn, grove_version);
-            let element = (observed.value.as_ref().ok().cloned().flatten())
+        let mut move_element = |from: &[u8], to: &[u8], feature: TreeFeatureType| {
+            let observed = merk.observe_value_and_value_hash(from, cost_fn, grove_version);
+            let (value, value_hash) = (observed.value.as_ref().ok().cloned().flatten())
                 .expect("the element that moves is held");
             calls.push(told(observed));
-            element
+            let put = Op::PutMoved(value, value_hash, from.len() as u32, feature);
+            batch.insert(to.to_vec(), put);
         };
-        let (value, value_hash) = element_at(&moved.from);
-        let from_len = moved.from.len() as u32;
-        batch.insert(
-            moved.to.clone(),
-            Op::PutMoved(value, value_hash, from_len, moved.feature),
-        );
+        move_element(&moved.from, &moved.to, moved.feature);
         match moved.swapped_with {
-            Some(feature) => {
-                let (value, value_hash) = element_at(&moved.to);
-                let to_len = moved.to.len() as u32;
-                batch.insert(
-                    moved.from.clone(),
-                    Op::PutMoved(value, value_hash, to_len, feature),
-                );
-            }
+            Some(feature) => move_element(&moved.to, &moved.from, feature),
             None => {
                 let mut taken = None;
                 let held = merk.observe_old_value(
@@ -884,7 +873,9 @@ fn a_merk_on_lignindb_costs_what_it_costs_on_rocksdb_on_every_grove_version() {
                 1 => Opened::Layered,
                 _ => Opened::Standalone,
             };
-            for (immediate, rounds) in [(false, 18), (true, 12)] {
+            // On deferred handles each read of the tree is the first read
+            // of a Merk in one round.
+            for (immediate, rounds) in [(false, TREE_READS), (true, 12)] {
                 a_merk_costs_the_same(
                     grove_version,
                     tree_type,
@@ -1458,6 +1449,26 @@ fn history() -> Vec<Part> {
         step(15, Step::PutMeta(b"put before".to_vec(), vec![6; 6])),
         step(15, Step::DeleteMeta(b"put before".to_vec())),
         step(15, Step::DeleteMeta(b"never there".to_vec())),
+    ]);
+    // Of two removals of a record in one batch the first stands, and its
+    // cost is the one charged: given in one change set, and in two.
+    let costed = freeing(key_freed, Freed::Plain(9));
+    second.extend([
+        step(
+            13,
+            Step::Commit(vec![
+                Change::DeleteAux(b"costed first".to_vec(), costed.clone()),
+                Change::DeleteAux(b"costed first".to_vec(), None),
+            ]),
+        ),
+        step(
+            13,
+            Step::Commit(vec![Change::DeleteAux(b"costed last".to_vec(), None)]),
+        ),
+        step(
+            13,
+            Step::Commit(vec![Change::DeleteAux(b"costed last".to_vec(), costed)]),
+        ),
     ]);
 
     // Removals, with the writer's cost and with none. One with none is
