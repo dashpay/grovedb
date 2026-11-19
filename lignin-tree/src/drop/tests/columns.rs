@@ -553,65 +553,83 @@ fn a_flat_record_under_a_key_of_any_length_is_taken_out() {
     assert!(after.pages.len() + 4 > before.pages.len());
 }
 
-/// A bucket of long keys whose value names a page that the reclaimer
-/// passed on its way to it is damage: its "tree" would be the tree it is
-/// in, with the records of every other Merk. Nothing is taken out of it.
+/// A bucket of long keys whose value names a page of the tree it is in is
+/// damage: its "tree" would hold the records of other Merks. The root, which
+/// the reclaimer passed on its way, and a leaf that it has still to come
+/// to are both told, and nothing is taken out of the leaf that holds the
+/// bucket or of the page it names.
 #[test]
-fn a_bucket_that_names_a_page_on_its_way_is_refused() {
-    let Built {
-        db,
-        mut grove,
-        outer,
-        inner,
-        ..
-    } = build(40);
-    let column = grove.columns[0];
-    let stored = grove.stored_key(inner, 0, &long(&db, 0));
-    let mut bucket = stored[..db.config.key_limit()].to_vec();
-    bucket.push(0);
-    let leaf = leaf_with(&db, &column.tree, &bucket);
-    // Where the bucket keeps the root of its tree, in the image of its
-    // leaf.
-    let at = {
-        let frame = db.reader().page(leaf).expect("a page");
-        let FlatPage::Leaf(view) = FlatPage::from_validated(&frame, FRAME_FORMAT).expect("a page")
-        else {
-            panic!("a leaf");
+fn a_bucket_that_names_a_page_of_its_own_tree_is_refused() {
+    for names_the_root in [true, false] {
+        let Built {
+            db,
+            mut grove,
+            outer,
+            inner,
+            ..
+        } = build(300);
+        let column = grove.columns[0];
+        let inner_prefix = grove.merks[inner].prefix;
+        let stored = grove.stored_key(inner, 0, &long(&db, 0));
+        let mut bucket = stored[..db.config.key_limit()].to_vec();
+        bucket.push(0);
+        let leaf = leaf_with(&db, &column.tree, &bucket);
+        // A leaf further on in the range of the Merk, which holds records
+        // of it and nothing of the bucket.
+        let further = grove.stored_key(inner, 0, &record(250));
+        let later = leaf_with(&db, &column.tree, &further);
+        assert_ne!(later, leaf);
+        let named = match names_the_root {
+            true => column.tree.root(),
+            false => later,
         };
-        let Some(FlatValue::Inline(root)) = view.get(&bucket) else {
-            panic!("a bucket");
+        // Where the bucket keeps the root of its tree, in the image of its
+        // leaf.
+        let at = {
+            let frame = db.reader().page(leaf).expect("a page");
+            let view = FlatPage::from_validated(&frame, FRAME_FORMAT).expect("a page");
+            let FlatPage::Leaf(view) = view else {
+                panic!("a leaf");
+            };
+            let Some(FlatValue::Inline(root)) = view.get(&bucket) else {
+                panic!("a bucket");
+            };
+            root.as_ptr() as usize - frame.as_ptr() as usize
         };
-        root.as_ptr() as usize - frame.as_ptr() as usize
-    };
-    let mut txn = db.begin();
-    let mut image = txn.flat.take(leaf).expect("a copy");
-    image[at..at + 4].copy_from_slice(&column.tree.root().encode());
-    txn.flat.write(leaf, &image).expect("spoiled");
-    grove.drop_merks(&mut txn, &[outer], false);
-    db.commit(txn);
-    db.tick();
+        let mut txn = db.begin();
+        let mut image = txn.flat.take(leaf).expect("a copy");
+        image[at..at + 4].copy_from_slice(&named.encode());
+        txn.flat.write(leaf, &image).expect("spoiled");
+        grove.drop_merks(&mut txn, &[outer], false);
+        db.commit(txn);
+        db.tick();
 
-    let directory = grove.directory(&db);
-    let [dropped] = drops(&db, &directory)[..] else {
-        panic!("one Merk was dropped");
-    };
-    let all = flat_records(&db, &grove.columns[1].tree).len();
-    let reclaimer = db.reclaimer();
-    let mut reclaim = Reclaim::new(dropped);
-    for _ in 0..3 {
-        let refused =
-            reclaimer.reclaim(&mut reclaim, &directory, &db.columns(), &GUARD, usize::MAX);
-        let Err(DropError::Damaged { page, what }) = refused else {
-            panic!("{refused:?}");
+        let directory = grove.directory(&db);
+        let [dropped] = drops(&db, &directory)[..] else {
+            panic!("one Merk was dropped");
         };
-        assert_eq!(page, column.tree.root());
-        assert!(what.contains("whose tree is a tree it is in"), "{what}");
+        let image_of = |page| db.reader().page(page).expect("a page").to_vec();
+        let had = [image_of(leaf), image_of(named)];
+        let reclaimer = db.reclaimer();
+        let mut reclaim = Reclaim::new(dropped);
+        for _ in 0..3 {
+            let columns = db.columns();
+            let refused = reclaimer.reclaim(&mut reclaim, &directory, &columns, &GUARD, usize::MAX);
+            let Err(DropError::Damaged { page, what }) = refused else {
+                panic!("{refused:?}");
+            };
+            assert_eq!(page, named);
+            assert!(what.contains("of the tree it is in"), "{what}");
+        }
+        // The deepest Merk went first. Of the inner one nothing went: the
+        // leaf of the bucket is as it was, and so is the page it names.
+        assert!(reclaim.reclaimed().flat_records > 0);
+        let step_on = |page| db.reclaims().iter().any(|step| step.0 == page);
+        assert!(!step_on(leaf) && !step_on(named));
+        assert!([image_of(leaf), image_of(named)] == had);
+        let stored = directory.stored(&db.reader(), &inner_prefix);
+        assert!(stored.expect("a lookup").is_some());
     }
-    // The other column is as it was but for the deepest Merk, which went
-    // first, and the Merk keeps its entry: its records are still its own.
-    assert!(flat_records(&db, &grove.columns[1].tree).len() + 24 >= all);
-    let stored = directory.stored(&db.reader(), &grove.merks[inner].prefix);
-    assert!(stored.expect("a lookup").is_some());
 }
 
 /// A cleared Merk keeps its own flat records, as it keeps its entry. Those

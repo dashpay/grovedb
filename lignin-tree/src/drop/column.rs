@@ -119,6 +119,18 @@ pub fn enter<F: FlatPagesMut + ?Sized>(
     Ok(id)
 }
 
+const NAMED_TWICE: &str = "a page that the pages of a flat tree name twice";
+const NOT_ITS_OWN: &str = "a bucket of long keys whose tree begins at a page of the tree it is in";
+
+/// Notes that a sweep was told of `page`, by a branch or by a bucket. A
+/// page it was told of before is damage of the kind `what`.
+fn know(known: &mut HashSet<PageId>, page: PageId, what: &'static str) -> Result<(), DropError> {
+    match known.insert(page) {
+        true => Ok(()),
+        false => Err(damaged(page, what)),
+    }
+}
+
 /// How far the reclaimer has come with the flat records of one subtree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Sweep {
@@ -234,15 +246,15 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
         swept: &mut Swept,
     ) -> Result<Ended, DropError> {
         let config = tree.config();
-        // Every page that was looked at: the tree of a bucket begins at
+        // Every page that the walk was told of, one it has looked at or one
+        // it will: each is named once, and the tree of a bucket begins at
         // none of them.
-        let mut passed = HashSet::new();
+        let mut known = HashSet::from([tree.root()]);
         // The pages to look at, the lowest keys last, each with the level
         // of the branch that names it. A page is one level below its
         // branch, so the walk of a tree ends.
         let mut walk = vec![(tree.root(), None::<u8>)];
         while let Some((page, above)) = walk.pop() {
-            passed.insert(page);
             let frame = self
                 .at(page, at)?
                 .ok_or(damaged(page, "a flat tree that names no page"))?;
@@ -266,12 +278,15 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
                         }
                         let child = branch.child(index);
                         let child = child.ok_or(damaged(page, "a branch that names no child"))?;
+                        know(&mut known, child, NAMED_TWICE)?;
                         walk.push((child, above));
                     }
                     continue;
                 }
                 FlatPage::Leaf(leaf) => leaf,
             };
+            // What the leaf holds is read whole before anything is taken
+            // out of it: a bucket that is damage leaves it as it is.
             let mut keys = Vec::new();
             let mut buckets = Vec::new();
             let mut ended = false;
@@ -286,6 +301,7 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
                 }
                 if key.len() > config.key_limit() {
                     let root = bucket_root(page, value)?;
+                    know(&mut known, root, NOT_ITS_OWN)?;
                     buckets.push((key, root));
                 } else {
                     keys.push(key);
@@ -297,7 +313,7 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
             // The trees of the buckets among them are emptied, each from
             // its start: a bucket holds the keys of one head, and few.
             for (key, root) in buckets {
-                match self.empty(root, &config, at, swept, &mut passed)? {
+                match self.empty(root, &config, at, swept, &mut known)? {
                     Ended::Done => {}
                     other => return Ok(other),
                 }
@@ -323,9 +339,17 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
     ///
     /// A long key is as many trees deep as it has eighths of a page, and no
     /// key is too long ([`flat`](crate::flat)), so the trees are not
-    /// counted. What ends the walk is that no tree begins at a page that
-    /// was `passed`: a bucket that names such a page is damage, and would
-    /// make the entries of another tree those of the bucket.
+    /// counted. What ends the walk is that every page is named once.
+    /// `known` holds every page the sweep was told of, `root` among them:
+    /// the pages it has looked at and the pages it has still to come to.
+    /// A bucket that names one of them is damage, and so is a branch that
+    /// does: the entries of another tree would be taken for the bucket's.
+    /// The leaf that holds such a bucket is not changed.
+    ///
+    /// That is what a walk can know, and no more than the flat tree knows
+    /// of the buckets it writes through. A bucket that names a page of
+    /// another tree which the sweep was not told of, a leaf below a branch
+    /// it has not read or a page of another keyspace, is read as its tree.
     ///
     /// A call that could not go on begins again at the root: a leaf that
     /// was emptied has no entry to take out, and costs a read.
@@ -335,16 +359,12 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
         config: &FlatConfig,
         at: CommitVersion,
         swept: &mut Swept,
-        passed: &mut HashSet<PageId>,
+        known: &mut HashSet<PageId>,
     ) -> Result<Ended, DropError> {
         let mut trees = vec![root];
         while let Some(root) = trees.pop() {
             let mut walk = vec![(root, None::<u8>)];
             while let Some((page, above)) = walk.pop() {
-                if !passed.insert(page) {
-                    let what = "a bucket of long keys whose tree is a tree it is in";
-                    return Err(damaged(page, what));
-                }
                 let frame = self
                     .at(page, at)?
                     .ok_or(damaged(page, "a flat tree that names no page"))?;
@@ -354,7 +374,9 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
                         for index in 0..=branch.len() {
                             let child = branch.child(index);
                             let what = "a branch that names no child";
-                            walk.push((child.ok_or(damaged(page, what))?, above));
+                            let child = child.ok_or(damaged(page, what))?;
+                            know(known, child, NAMED_TWICE)?;
+                            walk.push((child, above));
                         }
                         continue;
                     }
@@ -363,7 +385,9 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
                 let mut keys = Vec::new();
                 for (key, value) in leaf.iter() {
                     if key.len() > config.key_limit() {
-                        trees.push(bucket_root(page, value)?);
+                        let inner = bucket_root(page, value)?;
+                        know(known, inner, NOT_ITS_OWN)?;
+                        trees.push(inner);
                     } else {
                         keys.push(key.to_vec());
                     }
