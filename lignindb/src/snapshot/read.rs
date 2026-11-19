@@ -1,18 +1,27 @@
 //! The handles a reader holds: a snapshot, and one operation of a reader.
 
-use std::{fmt, sync::OnceLock};
+use std::{
+    fmt,
+    sync::{Arc, OnceLock},
+};
 
 use lignin_format::{CommitVersion, PageId};
 use lignin_store::{
     cache::PageRef,
     load::{LoadBuffers, LoadError, PageLoader},
+    values::ValueStore,
 };
-use lignin_tree::node::{Lease, NodeReader};
+use lignin_tree::{
+    flat::FlatTree,
+    node::{Lease, NodeReader},
+};
 
 use super::{
     error::SnapshotError,
+    records::{Handle, Loaded, Records},
     versions::{OperationGuard, VersionPin, Versions},
 };
+use crate::txn::Keyspaces;
 
 /// The read path of one database: its versions, and its pages.
 ///
@@ -25,6 +34,9 @@ use super::{
 pub struct ReadPath<'s> {
     versions: &'s Versions,
     pages: PageLoader<'s>,
+    /// Where the records of the store are, for the readers that open
+    /// subtrees ([`Operation::open`]).
+    records: Option<Records<'s>>,
 }
 
 impl<'s> ReadPath<'s> {
@@ -36,7 +48,37 @@ impl<'s> ReadPath<'s> {
         expect(dead_code, reason = "the engine's open (TXN-07) is its one caller")
     )]
     pub(crate) fn new(versions: &'s Versions, pages: PageLoader<'s>) -> Self {
-        Self { versions, pages }
+        Self {
+            versions,
+            pages,
+            records: None,
+        }
+    }
+
+    /// The same read path, with where the records of the store are: its
+    /// value log, the flat keyspace of each column, and the keyspace of its
+    /// subtree directory. Its readers open subtrees and read their records
+    /// ([`Operation::open`]). The caller vouches that they are of the same
+    /// store as the pages.
+    #[cfg_attr(
+        any(not(any(test, feature = "testing")), loom),
+        expect(dead_code, reason = "the engine's open (TXN-07) is its one caller")
+    )]
+    pub(crate) fn with_records(
+        self,
+        values: &'s ValueStore,
+        keyspaces: Keyspaces,
+        directory: FlatTree,
+    ) -> Self {
+        let records = Records {
+            values,
+            keyspaces,
+            directory,
+        };
+        Self {
+            records: Some(records),
+            ..self
+        }
     }
 
     /// The versions of the database.
@@ -46,11 +88,37 @@ impl<'s> ReadPath<'s> {
 
     /// A snapshot of the latest version (RD1). A read with no transaction
     /// is one of these, held for one caller operation (RD2).
+    ///
+    /// Where the read path names the records of the store, the subtree
+    /// directory of the snapshot's version is loaded here, and the version
+    /// is chosen again if it was not the latest any more when the load
+    /// ended: a handle is good for a reader's life only if it was loaded
+    /// while the reader's version was the latest (see
+    /// [the module](super#the-records-of-a-subtree)).
     pub fn snapshot(&self) -> Snapshot<'s> {
+        let (pin, directory) = self.pin();
         Snapshot {
-            pin: self.versions.pin(),
+            pin,
             pages: self.pages,
             lease: OnceLock::new(),
+            records: self.records,
+            directory,
+        }
+    }
+
+    /// A pin on the latest version, with the subtree directory of that
+    /// version, loaded while it was the latest.
+    fn pin(&self) -> (VersionPin<'s>, Option<Loaded>) {
+        let Some(records) = &self.records else {
+            return (self.versions.pin(), None);
+        };
+        loop {
+            let pin = self.versions.pin();
+            let guard = self.versions.guard();
+            let loaded = records.load(self.pages, &guard, pin.version());
+            if guard.latest() == pin.version() {
+                return (pin, Some(loaded.map_err(Arc::new)));
+            }
         }
     }
 
@@ -70,6 +138,9 @@ impl<'s> ReadPath<'s> {
             at,
             pages: self.pages,
             lease: Leased::Own(lease.at(self.versions.id(), at)),
+            database: self.versions.id(),
+            records: self.records,
+            directory: Handle::Own(OnceLock::new()),
         }
     }
 }
@@ -142,6 +213,11 @@ pub struct Snapshot<'s> {
     pin: VersionPin<'s>,
     pages: PageLoader<'s>,
     lease: OnceLock<Lease>,
+    records: Option<Records<'s>>,
+    /// The subtree directory of the snapshot's version, loaded when the
+    /// snapshot was taken, while that version was the latest. It is good
+    /// for the snapshot's life.
+    directory: Option<Loaded>,
 }
 
 impl<'s> Snapshot<'s> {
@@ -169,6 +245,9 @@ impl<'s> Snapshot<'s> {
             at: self.version(),
             pages: self.pages,
             lease: Leased::Snapshot(&self.lease),
+            database: self.pin.versions().id(),
+            records: self.records,
+            directory: Handle::Snapshot(self.directory.as_ref()),
         }
     }
 
@@ -203,8 +282,12 @@ enum Leased<'o> {
 pub struct Operation<'o> {
     guard: OperationGuard<'o>,
     at: CommitVersion,
-    pages: PageLoader<'o>,
+    pub(super) pages: PageLoader<'o>,
     lease: Leased<'o>,
+    /// The database the operation reads ([`Versions::id`]).
+    pub(super) database: u64,
+    pub(super) records: Option<Records<'o>>,
+    pub(super) directory: Handle<'o>,
 }
 
 impl<'o> Operation<'o> {

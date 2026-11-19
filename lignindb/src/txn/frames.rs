@@ -10,6 +10,7 @@ use lignin_format::{
 use lignin_store::alloc::PageAllocator;
 use lignin_tree::{
     directory::{Directory, DirectoryError, Dropped, Entry, Host, MerkId, Root, RootChange},
+    drop::{self, DropError, Flats, Leaving as Left},
     flat::Private,
     fragment::{
         FragmentError, Fragments, HostedWrite, LinkWrite, NodeWrite, Report, RootWrite, Target,
@@ -56,6 +57,44 @@ impl Refused {
             dirty: true,
         }
     }
+
+    /// A failure of a drop or of an enter (`lignin_tree::drop`), after the
+    /// pages may have changed.
+    fn dropping(error: DropError) -> Self {
+        Self::dirty(match error {
+            DropError::Directory(error) => TxnError::Directory(error),
+            DropError::Flat(error) => TxnError::Flat(error),
+            DropError::Fragment(error) => TxnError::Fragment(error),
+            DropError::Format(error) => TxnError::Format(error),
+            DropError::Load(error) => TxnError::Load(error),
+            DropError::Values(error) => TxnError::Values(error),
+            DropError::Damaged { what, .. } | DropError::Record(what) => TxnError::Damaged(what),
+            // The numbers of the records of unlinked pages ran out, which
+            // is no damage: it is said as the directory says it of the ids
+            // it gives out.
+            DropError::IdsExhausted => TxnError::Directory(DirectoryError::IdsExhausted),
+            // A Merk that is named with one it is below is refused by the
+            // frames before the drop is asked.
+            DropError::Below { prefix } => {
+                let subtree = Subtree::new(prefix);
+                TxnError::Batch(BatchError::NotEntered { subtree })
+            }
+            // The others are of reclaiming, which no write makes.
+            DropError::Store(_) | DropError::Broken { .. } | DropError::GivenUp => {
+                TxnError::Damaged("an error of reclaiming, where nothing is reclaimed")
+            }
+        })
+    }
+}
+
+/// Whether `error` is a refusal of the directory, which changes no page:
+/// every error but a failed or a damaged flat keyspace
+/// ([`DirectoryError`]).
+fn refuses(error: &DirectoryError) -> bool {
+    !matches!(
+        error,
+        DirectoryError::Flat(_) | DirectoryError::Damaged { .. }
+    )
 }
 
 /// What the tests arm and count in the write of an operation, on their own
@@ -74,7 +113,8 @@ pub(crate) mod probe {
     }
 
     /// The next write panics once the tree pages have taken its batch,
-    /// before the subtree directory is told.
+    /// and a drop of the batch is made, before the subtrees of the batch
+    /// are entered and the directory is told the roots.
     pub(crate) fn panic_next() {
         PANIC.set(true);
     }
@@ -565,9 +605,11 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 dropped,
             });
         }
-        // A drop takes the Merks below with it: none of them is named.
+        // A drop takes the Merks below with it: none of them is named,
+        // also below a Merk that has no node.
         for left in &view.leaving {
-            if view.below_leaving(&left.entry) {
+            let above = |id: MerkId| view.leaving.iter().any(|left| left.entry.id() == id);
+            if left.entry.lineage().any(above) {
                 let subtree = left.subtree;
                 return Err(BatchError::NotEntered { subtree }.into());
             }
@@ -673,23 +715,18 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 return Err(Refused::clean(BatchError::NotFlat { unit }));
             }
         }
-        let applied = self.apply_merks(batch, &view, made)?;
-        // The flat records under a subtree that left: every column of a
-        // dropped one, and the data of a cleared one. This reads every leaf
-        // it frees; the lazy form is TREE-09's
-        // (`lignin_tree::drop::FlatDrops::unlink_range`), and takes this
-        // call's place.
-        for left in &view.leaving {
-            let columns: &[Column] = match left.dropped {
-                true => &Column::ALL,
-                false => &[Column::Data],
-            };
-            let end = subtree_end(&left.subtree);
-            for column in columns {
-                let tree = path.keyspaces.of(*column);
-                tree.delete_range(&mut *self.flat, left.subtree.as_bytes(), end.as_deref())
-                    .map_err(Refused::dirty)?;
-            }
+        let applied = self.apply_merks(path, batch, &view, made)?;
+        // The flat records of a dropped subtree went with its drop, in
+        // every column. A cleared one keeps its own (`tree-layout.md` D6)
+        // but for its data, which a clear takes: the same lazy range
+        // delete, which reads and writes the two ends of the range and
+        // leaves the pages between to the reclaimer.
+        for left in view.leaving.iter().filter(|left| !left.dropped) {
+            let data = path.keyspaces.of(Column::Data);
+            let prefix = left.subtree.as_bytes();
+            (path.flat_drops)
+                .unlink_prefix(&mut *self.flat, &data, prefix, self.base)
+                .map_err(Refused::dropping)?;
         }
         for record in batch.records {
             let tree = path.keyspaces.of(record.unit().column);
@@ -723,6 +760,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
 
     fn apply_merks(
         &mut self,
+        path: &WritePath<'s>,
         batch: &Batch<'_>,
         view: &Subtrees,
         made: Option<&[bool]>,
@@ -806,17 +844,24 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             })
             .collect();
         let roots: Vec<RootWrite> = root_writes.iter().flatten().copied().collect();
-        // The roots of the Merks that leave are named as dropped: their
-        // cells stay in their pages for the reclaimer, and nothing of them
-        // is read (`tree-layout.md` D1, D4). This write and the calls to
-        // the directory below are what `lignin_tree::drop::unlink` does
-        // (TREE-09), which takes their place.
-        let dropped: Vec<CellAddress> = view.leaving.iter().filter_map(|left| left.root).collect();
         let write = Write {
             nodes: &node_writes,
             removed: &removed,
-            dropped: &dropped,
+            dropped: &[],
             roots: &roots,
+        };
+        // The flat side of a drop and of an enter: every column, the
+        // keyspace of the pages that are unlinked, and the version the
+        // frames are built over. Frames that are made again over another
+        // base make these calls again with that base, because a record of
+        // unlinked pages says which version its writer read at
+        // (`lignin_tree::drop`, "What the callers do").
+        let columns = path.keyspaces.columns();
+        let mut flats = Flats {
+            pages: &mut *self.flat,
+            columns: &columns,
+            drops: &path.flat_drops,
+            at: self.base,
         };
         // A Merk that leaves keeps its cells in their pages, so a handle
         // into them would still be followed. Every handle that was read
@@ -826,18 +871,48 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         if !view.leaving.is_empty() {
             self.tree.set_lease(Lease::take());
         }
-        let report = match merks.is_empty() && dropped.is_empty() {
-            true => Ok(Report::default()),
-            false => (self.fragments).apply(&mut self.tree, &mut self.values, &write),
+        let report = match (merks.is_empty(), view.leaving.is_empty()) {
+            (true, true) => Ok(Report::default()),
+            (false, true) => (self.fragments)
+                .apply(&mut self.tree, &mut self.values, &write)
+                .map_err(DropError::Fragment),
+            // The drop: the one write to the tree pages, in which the root
+            // of each Merk that leaves is named as dropped, the Merk's
+            // records in the directory, and the flat records of each
+            // dropped Merk in every column. Nothing of the Merks is read
+            // but their entries (`tree-layout.md` D1, D4).
+            (_, false) => {
+                let leaving: Vec<Left<'_>> = (view.leaving.iter())
+                    .map(|left| match left.dropped {
+                        true => Left::Dropped(left.subtree.as_bytes()),
+                        false => Left::Cleared(left.subtree.as_bytes()),
+                    })
+                    .collect();
+                drop::unlink(
+                    &mut self.fragments,
+                    &mut self.tree,
+                    &mut self.values,
+                    &mut self.directory,
+                    &mut flats,
+                    &write,
+                    &leaving,
+                )
+                .map(|unlinked| {
+                    self.dropped.extend(unlinked.left);
+                    unlinked.report
+                })
+            }
         };
         let report = match report {
             Ok(report) => report,
-            Err(error @ (FragmentError::Write(_) | FragmentError::NoRoom { .. })) => {
+            Err(DropError::Fragment(
+                error @ (FragmentError::Write(_) | FragmentError::NoRoom { .. }),
+            )) => {
                 self.forget(&held);
                 self.tree.set_lease(lease);
                 return Err(Refused::clean(error));
             }
-            Err(error) => return Err(Refused::dirty(error)),
+            Err(error) => return Err(Refused::dropping(error)),
         };
         self.values.check().map_err(Refused::dirty)?;
         // The marks follow the cells the write moved. Then each node of
@@ -870,16 +945,12 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         #[cfg(all(test, not(loom)))]
         probe::strike();
 
-        // The directory: the Merks that leave, the Merks that are entered,
-        // and then every root the write changed.
-        for left in &view.leaving {
-            let prefix = left.subtree.as_bytes();
-            let gone = match left.dropped {
-                true => (self.directory.unlink(&mut *self.flat, prefix)).map(Some),
-                false => self.directory.clear(&mut *self.flat, prefix),
-            };
-            self.dropped.extend(gone.map_err(Refused::dirty)?);
-        }
+        // The directory: the Merks that are entered, each so that it starts
+        // with no flat record, and then every root the write changed. A
+        // subtree that the directory refuses has changed no page: where
+        // nothing of the batch was written before it, the frames are as
+        // they were.
+        let mut untouched = merks.is_empty() && view.leaving.is_empty();
         for write in batch.subtrees {
             let SubtreeWrite::Enter {
                 subtree,
@@ -894,9 +965,14 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 key: host.key,
                 position: host.position,
             });
-            (self.directory)
-                .add(&mut *self.flat, subtree.as_bytes(), tree_type, host)
-                .map_err(Refused::dirty)?;
+            let prefix = subtree.as_bytes();
+            match drop::enter(&self.directory, &mut flats, prefix, tree_type, host) {
+                Ok(_) => untouched = false,
+                Err(DropError::Directory(error)) if untouched && refuses(&error) => {
+                    return Err(Refused::clean(error));
+                }
+                Err(error) => return Err(Refused::dropping(error)),
+            }
         }
         let moved: HashMap<CellAddress, CellAddress> = (report.carried.iter())
             .map(|carried| (carried.from, carried.to.address()))

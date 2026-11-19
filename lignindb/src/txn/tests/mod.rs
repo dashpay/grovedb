@@ -5,10 +5,12 @@ pub(crate) mod store;
 pub(crate) use super::testing as store;
 
 mod acceptance;
+mod drops;
 mod errors;
 mod handles;
 mod hashes;
 pub(crate) mod random;
+mod readers;
 mod reads;
 
 mod rebase;
@@ -27,7 +29,7 @@ use std::{
 use lignin_format::CommitVersion;
 
 use self::{
-    model::{Committed, OwnedBatch, OwnedMerk, OwnedSubtree, TxnModel, Val, Write},
+    model::{Committed, OwnedBatch, OwnedMerk, TxnModel, Val, Write},
     store::{version, Db, Outcome},
 };
 use super::*;
@@ -39,9 +41,6 @@ pub(crate) struct World<'s> {
     pub(crate) versions: &'s Versions,
     pub(crate) path: WritePath<'s>,
     pub(crate) model: Committed,
-    /// Every subtree that was entered with a host, with the subtree of
-    /// its host: what the model knows of which subtree is below which.
-    pub(crate) hosts: RefCell<Vec<(Subtree, Subtree)>>,
 }
 
 /// A write transaction with its model.
@@ -62,13 +61,13 @@ impl<'s> World<'s> {
         let model = Committed {
             records: BTreeMap::new(),
             version: versions.latest().get(),
+            ..Committed::default()
         };
         Self {
             db,
             versions,
             path: db.path(versions),
             model,
-            hosts: RefCell::default(),
         }
     }
 
@@ -126,11 +125,14 @@ impl<'s> World<'s> {
     /// with the first-write version `first_write`.
     fn note(&self, tx: &Tx<'s>, batch: &OwnedBatch, first_write: u64) {
         let mut model = tx.model.borrow_mut();
+        // Which subtree is below which before the batch: its drops come
+        // before its enters.
+        let hosts = model.hosts(&self.model.hosts);
         for mut write in batch.writes() {
             if let Write::Leave(left) = &mut write {
                 // A drop names one subtree: what is below it goes too, and
                 // what the transaction had written there is covered.
-                left.below = self.below(left.subtree);
+                left.below = model::below(&hosts, left.subtree);
                 let written = |subtree: &Subtree| {
                     let units = Column::ALL.map(|column| Unit::new(column, *subtree));
                     (model.writes.iter())
@@ -140,27 +142,6 @@ impl<'s> World<'s> {
             }
             model.writes.push((write, first_write, false));
         }
-        for subtree in &batch.subtrees {
-            if let OwnedSubtree::Enter(subtree, Some((host, ..))) = subtree {
-                self.hosts.borrow_mut().push((*subtree, *host));
-            }
-        }
-    }
-
-    /// Every subtree that was entered below `subtree`, at any depth.
-    pub(crate) fn below(&self, subtree: Subtree) -> Vec<Subtree> {
-        let hosts = self.hosts.borrow();
-        let mut below = vec![subtree];
-        let mut at = 0;
-        while at < below.len() {
-            for (child, host) in hosts.iter() {
-                if *host == below[at] && !below.contains(child) {
-                    below.push(*child);
-                }
-            }
-            at += 1;
-        }
-        below.split_off(1)
     }
 
     /// Applies one change of one Merk.

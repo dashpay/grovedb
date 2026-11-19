@@ -156,13 +156,27 @@
 //! - **A drop ends every handle that was read before it** (PN8): the
 //!   cells of the Merk stay in their pages, and a handle into them would
 //!   still be followed.
-//! - **What a drop writes** is the root of the Merk named as dropped in
-//!   the write of the tree pages
-//!   ([`Write::dropped`](lignin_tree::fragment::Write::dropped)), the
-//!   Merk's records in the directory, and a range delete of each flat
-//!   keyspace under its prefix. No node of it is read. Reclaiming what it
-//!   left is TREE-09's; the commit is handed what was left
-//!   (`Parts::dropped`).
+//! - **A drop, a clear and an enter are the tree layer's**
+//!   ([`lignin_tree::drop`]). A batch that drops or clears is one
+//!   [`drop::unlink`](lignin_tree::drop::unlink): the write to the tree
+//!   pages with the root of each Merk named as dropped, the Merk's records
+//!   in the directory, and the range of each dropped Merk in every flat
+//!   column, by the lazy range delete. No node of the Merk is read, and no
+//!   flat page between the two ends of a range: those pages are named in a
+//!   record of a keyspace of their own, which the write path names as it
+//!   names the directory's, and the reclaimer frees them. A subtree is
+//!   entered through [`drop::enter`](lignin_tree::drop::enter), which
+//!   takes out what an entry that a drop left under the prefix has, so a
+//!   subtree starts with no flat record whatever was under its prefix
+//!   before. A clear keeps the cleared Merk's own aux, roots and meta
+//!   records, and takes its data.
+//! - **A drop is given every column** ([`Keyspaces::columns`]) and the
+//!   version the frames are built over. A record of unlinked pages says
+//!   which version its writer read at, so frames that are made again over
+//!   another base make the drop and the enter again with that base: they
+//!   are made from the write set, by the same calls.
+//! - **What was left is handed to the commit** (`Parts::dropped`).
+//!   Reclaiming it is background work, which the engine starts (TXN-07).
 //!
 //! Three things a batch may not say, beside what it names that is not
 //! there:
@@ -315,20 +329,9 @@
 //!   shows the node ([`MerkCursor::node`]): the transaction's own, or the
 //!   one that the ordered cursor of the tree layer
 //!   ([`lignin_tree::cursor`]) stands on at the cursor's version.
-//! - **Reclaiming what a dropped Merk left** (CL6), and the lazy forms of
-//!   the drop: TREE-09's `drop::unlink` does what the frames do for a Merk
-//!   that leaves, and its `FlatDrops::unlink_range` unlinks the flat pages
-//!   of a range unread where the range delete here reads every leaf it
-//!   frees. Both take the place of the calls in `frames.rs` that name
-//!   them.
-//! - **A subtree that is entered again under the prefix of one that was
-//!   below a dropped subtree** starts with the flat records of before,
-//!   once it is committed and until the reclaimer has come: the drop reads
-//!   nothing below the Merk it drops, and so deletes nothing there. An
-//!   enter over a left-over entry has to unlink that prefix in every flat
-//!   column (TREE-09's `drop::enter`). Inside the transaction that enters
-//!   it, they are not read. The subtree that was dropped itself starts
-//!   empty: its prefix is deleted with the drop.
+//! - **Starting a reclaimer** (CL6): what a drop left is reclaimed by
+//!   `lignin_tree::drop::Reclaimer`, which the tests run beside a writing
+//!   transaction. The engine owes it the log of its page steps (TXN-07).
 //! - **While the transaction serves its records by key**, a batch is not
 //!   checked against the directory: what it says of subtrees is checked
 //!   when the frames are made, and its commit is refused then.

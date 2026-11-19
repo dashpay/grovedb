@@ -30,12 +30,13 @@ use lignin_store::{
     segment::{ManifestStore, SegmentStore},
     stats::Stats,
     table::{PageTable, TableCheckpoints},
-    values::ValueStore,
+    values::{OwnersError, ValueStore},
     wal::{LogOptions, LogReader, LogStore},
 };
 use lignin_tree::{
     directory::Directory,
-    flat::{Committed, FlatConfig, FlatPages, FlatTree, Private},
+    drop::{self, Busy, FlatDrop, FlatDrops, FlatReclaimed, Progress, Reclaimed, Reclaimer, Wait},
+    flat::{Committed, FlatConfig, FlatPages, FlatTree, Private, StepLog},
     fragment::Layout,
     hash::{HashRules, Refusal},
     node::{Lease, NodePage, NodeRef},
@@ -148,6 +149,9 @@ pub struct Counts {
     /// those among them that no write had changed.
     pub tree_copies: AtomicU64,
     pub tree_copies_unchanged: AtomicU64,
+    /// The page steps of the reclaimers of this store whose records the
+    /// log took.
+    pub steps: AtomicU64,
     /// The Merks in use, the entries below a dropped Merk, and the dropped
     /// Merks, as the last check of the tree pages found them.
     pub census: Mutex<(u64, u64, u64)>,
@@ -192,8 +196,48 @@ pub struct Db {
     pub dir: PathBuf,
     keyspaces: OnceLock<Keyspaces>,
     directory: OnceLock<FlatTree>,
+    flat_drops: OnceLock<FlatDrops>,
     used: Mutex<BTreeSet<PageId>>,
     _dir: Option<tempfile::TempDir>,
+}
+
+/// What a reclaimer of this store asks for the latest version, and what
+/// takes the records of its page steps: they are appended to the log
+/// through write-back. The engine's part of `lignin_tree::drop` is
+/// TXN-07's to build.
+pub struct Steps<'s> {
+    db: &'s Db,
+    versions: &'s Versions,
+}
+
+impl StepLog for Steps<'_> {
+    fn latest(&self) -> CommitVersion {
+        self.versions.latest()
+    }
+
+    fn append(&self, record: &[u8]) -> Result<(), OwnersError> {
+        // Through write-back, as the engine's reclaimer will (TXN-07): the
+        // record goes to the log, and write-back knows of the step.
+        self.db.write_back(self.versions).append_change(record)?;
+        self.db.counts.steps.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+/// What a sweep of everything the committed drops left took out.
+#[derive(Debug, Default)]
+pub struct Swept {
+    /// What was reclaimed of each dropped or cleared Merk.
+    pub merks: Vec<Reclaimed>,
+    /// The records of unlinked flat pages that were taken out, and what
+    /// freeing their pages did.
+    pub flat_drops: Vec<FlatDrop>,
+    pub flat: FlatReclaimed,
+    /// Why something is left, if something is.
+    pub blocked: Option<Busy>,
+    /// Whether nothing was begun, because a reader from before a drop is
+    /// still there.
+    pub waiting: bool,
 }
 
 struct Hook(Arc<Db>);
@@ -282,6 +326,7 @@ impl Db {
             dir: dir.to_path_buf(),
             keyspaces: OnceLock::new(),
             directory: OnceLock::new(),
+            flat_drops: OnceLock::new(),
             used: Mutex::new(BTreeSet::new()),
             _dir: keep,
         });
@@ -342,6 +387,10 @@ impl Db {
         }
         self.keyspaces.set(keyspaces).expect("made once");
         self.directory.set(*directory.tree()).expect("made once");
+        // The keyspace of the pages that drops unlink, made last: the
+        // pages before it have the ids they had.
+        let drops = FlatDrops::create(&mut pages, self.config()).expect("a keyspace");
+        self.flat_drops.set(drops).expect("made once");
 
         let lock = self.committing.lock();
         let counts = self.values.step().expect("the counts");
@@ -381,6 +430,108 @@ impl Db {
         *self.directory.get().expect("made with the store")
     }
 
+    /// The keyspace of the pages that drops unlinked and that wait to be
+    /// freed.
+    pub fn flat_drops(&self) -> FlatDrops {
+        *self.flat_drops.get().expect("made with the store")
+    }
+
+    /// A reclaimer of what the drops of this store left.
+    pub fn reclaimer<'s>(&'s self, versions: &'s Versions) -> Reclaimer<'s, Steps<'s>> {
+        let steps = Steps { db: self, versions };
+        Reclaimer::new(
+            self.loader(),
+            &self.pool,
+            &self.table,
+            &self.ids,
+            &self.values,
+            SIZE,
+            steps,
+        )
+    }
+
+    /// What the drops and the clears that are committed left and that is
+    /// not reclaimed, and the records of unlinked flat pages, as the latest
+    /// version has them, with the wait for them.
+    pub fn left(&self, versions: &Versions) -> (Vec<drop::Reclaim>, Vec<FlatDrop>, Wait) {
+        let reclaimer = self.reclaimer(versions);
+        let guard = versions.guard();
+        let latest = guard.latest();
+        let pages = self.committed(&guard, latest);
+        let mut merks = Vec::new();
+        let mut drops = self.directory_at(&pages).drops();
+        while let Some(dropped) = drops.next(&pages).expect("a dropped Merk") {
+            merks.push(drop::Reclaim::new(dropped));
+        }
+        let flat = reclaimer.flat_drops(&self.flat_drops(), &guard);
+        (
+            merks,
+            flat.expect("the records are read"),
+            Wait::new(latest),
+        )
+    }
+
+    /// Takes the reclaiming of `reclaim` on by at most `steps` page steps,
+    /// in an operation of its own, with the directory of the latest
+    /// version.
+    pub fn reclaim(
+        &self,
+        versions: &Versions,
+        reclaim: &mut drop::Reclaim,
+        steps: usize,
+    ) -> Progress {
+        let reclaimer = self.reclaimer(versions);
+        let guard = versions.guard();
+        let directory = self.directory_at(&self.committed(&guard, guard.latest()));
+        let columns = self.keyspaces().columns();
+        (reclaimer.reclaim(reclaim, &directory, &columns, &guard, steps)).expect("a step")
+    }
+
+    /// Reclaims everything the committed drops left, as background work
+    /// does: it reads the records at the latest version, waits until no
+    /// reader of before can reach what they name, and then takes it out in
+    /// page steps. What a step is refused for is left, and said.
+    pub fn sweep(&self, versions: &Versions) -> Swept {
+        let (merks, flat_drops, mut wait) = self.left(versions);
+        let mut swept = Swept::default();
+        if !wait.poll(versions) {
+            swept.waiting = true;
+            return swept;
+        }
+        for mut reclaim in merks {
+            loop {
+                match self.reclaim(versions, &mut reclaim, 64) {
+                    Progress::Done => break,
+                    Progress::More => {}
+                    Progress::Blocked(busy) => {
+                        swept.blocked = Some(busy);
+                        break;
+                    }
+                }
+            }
+            swept.merks.push(reclaim.reclaimed().clone());
+        }
+        let (reclaimer, drops) = (self.reclaimer(versions), self.flat_drops());
+        for drop in flat_drops {
+            loop {
+                let guard = versions.guard();
+                let made = reclaimer.reclaim_flat(&drops, &drop, &guard, 256, &mut swept.flat);
+                match made.expect("a step") {
+                    Progress::Done => {
+                        swept.flat_drops.push(drop);
+                        break;
+                    }
+                    Progress::More => {}
+                    Progress::Blocked(busy) => {
+                        swept.blocked = Some(busy);
+                        break;
+                    }
+                }
+            }
+        }
+        swept
+    }
+
     /// The subtree directory as the committed version `at` has it.
     pub fn directory_at<P: FlatPages>(&self, pages: &P) -> Directory {
         let tree = self.directory();
@@ -414,6 +565,7 @@ impl Db {
             commits: &self.commits,
             stats: &self.stats,
             directory: self.directory(),
+            flat_drops: self.flat_drops(),
         };
         WritePath::new(
             store,
@@ -425,7 +577,8 @@ impl Db {
 
     /// The read path of this store under its `versions`.
     pub fn reads<'s>(&'s self, versions: &'s Versions) -> ReadPath<'s> {
-        ReadPath::new(versions, self.loader())
+        let (keyspaces, directory) = (self.keyspaces(), self.directory());
+        ReadPath::new(versions, self.loader()).with_records(&self.values, keyspaces, directory)
     }
 
     /// The committed flat pages at `at`, for the operation that holds

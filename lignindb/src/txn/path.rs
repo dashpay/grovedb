@@ -15,6 +15,7 @@ use lignin_store::{
 };
 use lignin_tree::{
     directory::{Directory, DirectoryError},
+    drop::{self, FlatDrops},
     flat::{Committed, FlatPages, FlatTree, Private},
     fragment::Layout,
     node::Lease,
@@ -65,6 +66,21 @@ pub struct Keyspaces {
 }
 
 impl Keyspaces {
+    /// Every keyspace, as a drop and an enter are given them
+    /// ([`Flats`](lignin_tree::drop::Flats)): one for each column, in the
+    /// order of [`Column::ALL`]. A record of a subtree is under the
+    /// subtree's 32 bytes and its key, with nothing before them.
+    ///
+    /// A column that is left out here keeps the records of a dropped
+    /// subtree, and shows them to one that is entered again under its
+    /// prefix.
+    pub fn columns(&self) -> [drop::Column<'static>; Column::ALL.len()] {
+        Column::ALL.map(|column| drop::Column {
+            tree: self.of(column),
+            lead: &[],
+        })
+    }
+
     /// The tree of `column`.
     pub const fn of(&self, column: Column) -> FlatTree {
         match column {
@@ -98,6 +114,9 @@ pub struct WritePath<'s> {
     pub(crate) stats: &'s Stats,
     /// The keyspace of the subtree directory (`lignin_tree::directory`).
     pub(crate) directory: FlatTree,
+    /// The keyspace of the pages that drops unlinked and that wait to be
+    /// freed (`lignin_tree::drop`).
+    pub(crate) flat_drops: FlatDrops,
     pub(crate) keyspaces: Keyspaces,
     pub(crate) layout: Layout,
     pub(crate) inline: InlinePolicy,
@@ -120,6 +139,11 @@ pub(crate) struct Store<'s> {
     /// The keyspace of the store's subtree directory: its root page, which
     /// is the same for good, and the configuration of its pages.
     pub(crate) directory: FlatTree,
+    /// The keyspace of the pages that the drops of the store unlinked and
+    /// that wait to be freed: its root page, which is the same for good,
+    /// and the configuration of its pages. Its records are entries of the
+    /// flat pages of the transaction that drops, so they commit with it.
+    pub(crate) flat_drops: FlatDrops,
 }
 
 impl<'s> WritePath<'s> {
@@ -146,6 +170,7 @@ impl<'s> WritePath<'s> {
             commits: store.commits,
             stats: store.stats,
             directory: store.directory,
+            flat_drops: store.flat_drops,
             keyspaces,
             layout,
             inline,
@@ -186,6 +211,13 @@ impl<'s> WritePath<'s> {
     /// The keyspace of the subtree directory.
     pub const fn directory(&self) -> FlatTree {
         self.directory
+    }
+
+    /// The keyspace of the pages that drops unlinked and that wait to be
+    /// freed: what a reclaimer is given
+    /// ([`Reclaimer::flat_drops`](lignin_tree::drop::Reclaimer::flat_drops)).
+    pub const fn flat_drops(&self) -> FlatDrops {
+        self.flat_drops
     }
 
     /// The subtree directory as `pages` have it: the committed pages of

@@ -64,17 +64,20 @@ fn a_snapshot_reads_its_version_while_pages_are_superseded_freed_and_reused() {
     let done = AtomicBool::new(false);
     let longest = AtomicU64::new(0);
     let reads = AtomicU64::new(0);
+    // How many snapshots or operations each reader has begun.
+    let begun: [AtomicU64; 6] = Default::default();
     thread::scope(|scope| {
         // Whatever fails, on whichever thread, ends the others.
         let _ends = EndOnDrop(&done);
         for reader in 0..4u64 {
             let (store, versions, done) = (&store, &versions, &done);
-            let (longest, reads) = (&longest, &reads);
+            let (longest, reads, begun) = (&longest, &reads, &begun[reader as usize]);
             scope.spawn(move || {
                 let _ends = EndOnPanic(done);
                 let mut rng = Rng::new(reader);
                 let mut buffers = LoadBuffers::new();
                 while !done.load(Ordering::Relaxed) {
+                    begun.fetch_add(1, Ordering::SeqCst);
                     let snapshot = reads_of.snapshot();
                     let pages = store.pages_at(snapshot.version());
                     let rounds = if rng.below(20) == 0 {
@@ -92,13 +95,14 @@ fn a_snapshot_reads_its_version_while_pages_are_superseded_freed_and_reused() {
                 }
             });
         }
-        for _ in 0..2 {
+        for begun in &begun[4..] {
             let (store, done, reads) = (&store, &done, &reads);
             scope.spawn(move || {
                 let _ends = EndOnPanic(done);
                 let mut lease = LatestLease::new();
                 let mut buffers = LoadBuffers::new();
                 while !done.load(Ordering::Relaxed) {
+                    begun.fetch_add(1, Ordering::SeqCst);
                     let operation = reads_of.operation(&mut lease);
                     let pages = store.pages_at(operation.at());
                     check_pages(&operation, &pages, &mut buffers);
@@ -129,6 +133,35 @@ fn a_snapshot_reads_its_version_while_pages_are_superseded_freed_and_reused() {
         );
         let held = reads_of.snapshot();
         let held_pages = store.pages_at(held.version());
+        // An id that was freed with the snapshot's version is free again
+        // when no reader can reach its page (PN6): one reclaim has to find
+        // no pin on an older version, and a later one that the operations
+        // which were running then have ended. A reader keeps its pin or
+        // its guard, or announces a version or an epoch it read before,
+        // for as long as it is not scheduled, so the commits below do not
+        // count on the readers' pace. The writer lets every reader begin
+        // anew before each of the two reclaims: whatever a reader held or
+        // was about to announce when the writer began to wait, it has let
+        // go, and what it takes afterwards is of the version and the epoch
+        // of then or later. The ids are free after the second reclaim,
+        // with the snapshot held, which is of the version they were freed
+        // at and keeps none of them back; that the commits use them again
+        // follows from the order of these steps.
+        //
+        // The waits end when every reader goes on, as the one for the
+        // reads at the end does.
+        let readers_begin_anew = || {
+            let before = begun.each_ref().map(|begun| begun.load(Ordering::SeqCst));
+            let waits =
+                |(begun, before): (&AtomicU64, &u64)| begun.load(Ordering::SeqCst) == *before;
+            while begun.iter().zip(&before).any(waits) && !done.load(Ordering::Relaxed) {
+                thread::yield_now();
+            }
+        };
+        readers_begin_anew();
+        versions.reclaim();
+        readers_begin_anew();
+        versions.reclaim();
         let reused_before = store.counts.ids_reused.load(Ordering::Relaxed);
         for round in 1..COMMITS / 2 {
             let mut changes = draw(&mut rng, &store, &versions, round);

@@ -460,6 +460,76 @@ fn an_operation_that_fails_half_way_adds_nothing() {
     assert_eq!(db.counts.census.lock().expect("a census").0, 202);
 }
 
+/// A subtree that the directory refuses has changed no page. A batch of
+/// which nothing was written before it leaves the frames as they are, and
+/// a handle from before is still followed; one that entered a subtree
+/// before it has changed pages, and the frames are made again.
+#[test]
+fn an_enter_that_is_refused_with_nothing_written_keeps_the_frames() {
+    let (db, versions) = Db::new(64);
+    let mut world = World::new(&db, &versions);
+    let tx = world.begin();
+    world.edit(&tx, 1, |items| {
+        drop(items.insert(b"first".to_vec(), b"1".to_vec()))
+    });
+    let enter = |name: u8, position: u8| {
+        let host = (model::subtree(1), b"first".to_vec(), position);
+        OwnedSubtree::Enter(model::subtree(name), Some(host))
+    };
+    let entering = |subtrees: Vec<OwnedSubtree>| OwnedBatch {
+        subtrees,
+        ..OwnedBatch::default()
+    };
+    (world.apply(&tx, &entering(vec![enter(200, 0)]))).expect("the subtree is entered");
+    let handle = |view: Option<NodeView<'_>>| view.and_then(|view| view.handle());
+    let kept = (tx.txn.node(model::subtree(1), b"first", handle)).expect("a read");
+    let kept = kept.expect("a cell");
+    let taken = |error: &TxnError| {
+        let taken = lignin_tree::directory::DirectoryError::HostTaken {
+            parent: *model::subtree(1).as_bytes(),
+            position: 0,
+        };
+        matches!(error, TxnError::Directory(error) if error.to_string() == taken.to_string())
+    };
+    let pages = |stats: &TxnStats| (stats.writes, stats.tree_pages, stats.flat_pages);
+    let read = |view: Option<NodeView<'_>>| view.is_some();
+
+    // Nothing but the subtree that is refused.
+    let before = tx.txn.stats();
+    let error = (world.apply(&tx, &entering(vec![enter(201, 0)]))).expect_err("the host is taken");
+    assert!(taken(&error), "{error}");
+    let after = tx.txn.stats();
+    assert_eq!(after.rebuilds, before.rebuilds, "no page was changed");
+    assert_eq!(pages(&after), pages(&before));
+    assert!((tx.txn.follow(model::subtree(1), kept, b"first", read)).expect("a read"));
+    assert_eq!(
+        tx.txn.stats().handles_followed,
+        before.handles_followed + 1,
+        "the handle is as good as before"
+    );
+    world.check(&tx);
+
+    // A subtree that is entered, and then the one that is refused.
+    let before = tx.txn.stats();
+    let both = entering(vec![enter(202, 1), enter(201, 0)]);
+    let error = world.apply(&tx, &both).expect_err("the host is taken");
+    assert!(taken(&error), "{error}");
+    let after = tx.txn.stats();
+    assert_eq!(
+        after.rebuilds,
+        before.rebuilds + 1,
+        "the frames were made again"
+    );
+    assert_eq!(pages(&after), pages(&before));
+    world.check(&tx);
+
+    (world.apply(&tx, &entering(vec![enter(201, 1)]))).expect("the place is free");
+    world.check(&tx);
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+    world.check_committed();
+    assert_eq!(db.private_ids(), 0);
+}
+
 /// The data column of a subtree holds the nodes of a Merk or flat records,
 /// and a write of the other kind is refused: against the batch, against
 /// what the transaction has written, and against what it reads (ST1).

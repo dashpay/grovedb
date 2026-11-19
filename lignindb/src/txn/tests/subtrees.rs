@@ -20,8 +20,8 @@ use crate::txn::frames::{probe, root_changes};
 
 /// A subtree that no store of the tests has entered, and one that its node
 /// `host` hosts.
-const OUTER: u8 = ENTERED + 10;
-const INNER: u8 = ENTERED + 11;
+pub(super) const OUTER: u8 = ENTERED + 10;
+pub(super) const INNER: u8 = ENTERED + 11;
 
 /// The keys and values of one Merk.
 type Items = BTreeMap<Vec<u8>, Vec<u8>>;
@@ -65,7 +65,7 @@ fn node_count(tx: &Tx<'_>, name: u8, keys: &[&[u8]]) -> usize {
 /// A batch that enters `OUTER` with three nodes and flat records beside
 /// them, and `INNER` under its node `host`, with two nodes and flat
 /// records of its own.
-fn planted<'s>(world: &World<'s>, tx: &Tx<'s>) {
+pub(super) fn planted<'s>(world: &World<'s>, tx: &Tx<'s>) {
     let mut outer = world.merk(tx, OUTER, |items| {
         items.insert(b"host".to_vec(), b"tree".to_vec());
         items.insert(b"left".to_vec(), vec![1; 40]);
@@ -92,7 +92,7 @@ fn planted<'s>(world: &World<'s>, tx: &Tx<'s>) {
 
 /// Drops `OUTER` through `tx`. The drop names that subtree alone: the
 /// model works out what is below it, as the transaction has to.
-fn drop_outer<'s>(world: &World<'s>, tx: &Tx<'s>) {
+pub(super) fn drop_outer<'s>(world: &World<'s>, tx: &Tx<'s>) {
     let batch = subtrees(vec![OwnedSubtree::Drop(model::subtree(OUTER))]);
     world.apply(tx, &batch).expect("the subtree is dropped");
 }
@@ -115,7 +115,7 @@ fn inner_batch<'s>(world: &World<'s>, tx: &Tx<'s>, edit: impl FnOnce(&mut Items)
 }
 
 /// The flat records that [`planted`] puts under `OUTER` and `INNER`.
-fn planted_records() -> [(Unit, &'static [u8]); 5] {
+pub(super) fn planted_records() -> [(Unit, &'static [u8]); 5] {
     [
         (aux(OUTER), b"a"),
         (model::unit(Column::Meta, OUTER), b"m"),
@@ -408,15 +408,13 @@ fn a_dropped_subtree_is_gone_from_the_drop_on_and_for_the_others_from_its_commit
     assert_eq!(db.private_ids(), 0);
 }
 
-/// Open, and owed by the unit that wires TREE-09's `drop::enter` into the
-/// transaction (D-084): a subtree that is entered again under the prefix of
-/// one that was below a dropped subtree starts empty in every column also
-/// before the reclaimer has come (`transactions.md` CV9, T-CL1). Today its
-/// flat records of before are read once the new subtree is committed: the
-/// drop reads nothing below the Merk it drops, and so deletes nothing
-/// there.
+/// `tree-layout.md` D6, `transactions.md` CV9, T-CL1: a subtree that is
+/// entered again under the prefix of one that was below a dropped subtree
+/// starts empty in every column, also before the reclaimer has come. The
+/// drop reads nothing below the Merk it drops, so the flat records of
+/// before are still in their pages: the enter takes them out
+/// (`lignin_tree::drop::enter`).
 #[test]
-#[ignore = "owed: an enter over a left-over entry unlinks its prefix in every flat column (TREE-09)"]
 fn a_subtree_entered_again_below_a_dropped_one_starts_empty() {
     let (db, versions) = Db::new(128);
     let mut world = World::new(&db, &versions);
@@ -450,8 +448,7 @@ fn a_subtree_entered_again_below_a_dropped_one_starts_empty() {
     assert!(!tx.txn.get(aux(INNER), b"ia", &mut out).expect("a read"));
     assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
     world.check_committed();
-    // None of them is to be read under the new subtree. Today the two
-    // that were under the nested prefix are, and this fails.
+    // And none of them is read under the new subtree once it is committed.
     assert_eq!(planted_read(&world), 0, "none of the records of before");
 }
 
@@ -965,6 +962,53 @@ fn a_cursor_reads_no_committed_record_of_a_subtree_that_went_with_a_drop() {
     assert_eq!(cursor.key(), None);
     drop(cursor);
     world.check(&tx);
+    assert_eq!(db.private_ids(), 0);
+}
+
+/// An enter that is taken back leaves the subtree below nothing: entered
+/// again as a subtree that stands alone, it stays when what would have
+/// hosted it is dropped.
+#[test]
+fn an_enter_that_was_taken_back_puts_the_subtree_below_nothing() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    let tx = world.begin();
+    let outer = world.merk(&tx, OUTER, |items| {
+        drop(items.insert(b"host".to_vec(), b"tree".to_vec()))
+    });
+    let batch = OwnedBatch {
+        merks: vec![outer],
+        subtrees: vec![enter(OUTER)],
+        ..OwnedBatch::default()
+    };
+    world.apply(&tx, &batch).expect("the subtree is entered");
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+
+    let tx = world.begin();
+    let (mark, writes) = (tx.txn.mark(), tx.model.borrow().writes.len());
+    let below = OwnedBatch {
+        records: vec![put(aux(INNER), b"below", b"1")],
+        subtrees: vec![hosted(INNER, OUTER, b"host")],
+        ..OwnedBatch::default()
+    };
+    world.apply(&tx, &below).expect("it is entered below");
+    assert!(tx.txn.rewind(mark));
+    tx.model.borrow_mut().writes.truncate(writes);
+    world.check(&tx);
+    // It is entered again, with no host, and what was to host it goes.
+    let alone = OwnedBatch {
+        records: vec![put(aux(INNER), b"alone", b"2")],
+        subtrees: vec![enter(INNER)],
+        ..OwnedBatch::default()
+    };
+    world.apply(&tx, &alone).expect("it is entered alone");
+    drop_outer(&world, &tx);
+    world.check(&tx);
+    let mut out = Vec::new();
+    assert!(tx.txn.get(aux(INNER), b"alone", &mut out).expect("a read"));
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+    world.check_committed();
+    assert_eq!(census(&db), (u64::from(ENTERED) + 1, 0, 1));
     assert_eq!(db.private_ids(), 0);
 }
 

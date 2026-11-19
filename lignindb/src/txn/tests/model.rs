@@ -152,6 +152,47 @@ pub enum Write {
     /// A drop of a subtree, or a clear, which keeps the subtree and every
     /// column of it but the data: one write (CV9, CF5).
     Leave(Left),
+    /// A subtree that is entered, with the subtree of the element that
+    /// hosts it. It writes no record and is no write of the write set: it
+    /// stands among the writes so that it is taken back with them, and
+    /// says which subtree is below which.
+    Enter(Subtree, Option<Subtree>),
+}
+
+/// Which subtree each hosted subtree is below: the subtree of its host.
+pub type Hosts = BTreeMap<Subtree, Subtree>;
+
+/// Takes `write` into `hosts`: a subtree that is entered is below its
+/// host, and one that leaves takes those below it out.
+pub fn hosted(hosts: &mut Hosts, write: &Write) {
+    match write {
+        Write::Enter(subtree, Some(host)) => drop(hosts.insert(*subtree, *host)),
+        Write::Enter(subtree, None) => drop(hosts.remove(subtree)),
+        Write::Leave(left) => {
+            for below in &left.below {
+                hosts.remove(below);
+            }
+            if !left.cleared {
+                hosts.remove(&left.subtree);
+            }
+        }
+        Write::Put(..) | Write::Delete(..) | Write::Range(..) => {}
+    }
+}
+
+/// Every subtree that is below `subtree`, at any depth.
+pub fn below(hosts: &Hosts, subtree: Subtree) -> Vec<Subtree> {
+    let mut below = vec![subtree];
+    let mut at = 0;
+    while at < below.len() {
+        for (child, host) in hosts {
+            if *host == below[at] && !below.contains(child) {
+                below.push(*child);
+            }
+        }
+        at += 1;
+    }
+    below.split_off(1)
 }
 
 /// What a drop or a clear takes.
@@ -196,6 +237,7 @@ impl Write {
         match self {
             Self::Put(unit, ..) | Self::Delete(unit, _) | Self::Range(unit, ..) => *unit,
             Self::Leave(left) => Unit::data(left.subtree),
+            Self::Enter(subtree, _) => Unit::data(*subtree),
         }
     }
 
@@ -203,6 +245,7 @@ impl Write {
     pub fn touches(&self, unit: Unit) -> bool {
         match self {
             Self::Leave(left) => left.takes(unit),
+            Self::Enter(..) => false,
             _ => self.unit() == unit,
         }
     }
@@ -214,12 +257,14 @@ impl Write {
                 *own == unit && key >= &start[..] && end.as_ref().is_none_or(|end| key < &end[..])
             }
             Self::Leave(left) => left.takes(unit),
+            Self::Enter(..) => false,
         }
     }
 
     /// Whether the two writes write a key in common (CF2).
     pub fn meets(&self, other: &Self) -> bool {
         match (self, other) {
+            (Self::Enter(..), _) | (_, Self::Enter(..)) => false,
             (Self::Leave(left), Self::Leave(other)) => {
                 let units = |left: &Left| {
                     let own = left.subtree;
@@ -263,6 +308,7 @@ fn apply(records: &mut Records, write: &Write) {
         Write::Range(..) | Write::Leave(_) => {
             records.retain(|(unit, key), _| !write.covers(*unit, key));
         }
+        Write::Enter(..) => {}
     }
 }
 
@@ -284,7 +330,7 @@ impl TxnModel {
             .find(|(write, ..)| write.covers(unit, key))?;
         Some(match &newest.0 {
             Write::Put(_, _, value) => Some(value),
-            Write::Delete(..) | Write::Range(..) | Write::Leave(_) => None,
+            Write::Delete(..) | Write::Range(..) | Write::Leave(_) | Write::Enter(..) => None,
         })
     }
 
@@ -314,6 +360,16 @@ impl TxnModel {
             .collect()
     }
 
+    /// Which subtree is below which in the transaction's view: what is
+    /// committed, with what its writes that are left entered and took out.
+    pub fn hosts(&self, committed: &Hosts) -> Hosts {
+        let mut hosts = committed.clone();
+        for (write, ..) in &self.writes {
+            hosted(&mut hosts, write);
+        }
+        hosts
+    }
+
     /// Whether the conflict rule fails the transaction's commit (CF2).
     pub fn conflicts(&self) -> bool {
         self.writes.iter().any(|(.., met)| *met)
@@ -339,6 +395,8 @@ impl TxnModel {
 pub struct Committed {
     pub records: Records,
     pub version: u64,
+    /// Which committed subtree is below which.
+    pub hosts: Hosts,
 }
 
 impl Committed {
@@ -346,6 +404,7 @@ impl Committed {
     pub fn commit(&mut self, writes: &[Write]) -> u64 {
         for write in writes {
             apply(&mut self.records, write);
+            hosted(&mut self.hosts, write);
         }
         self.version += 1;
         self.version
@@ -461,8 +520,15 @@ impl OwnedBatch {
                 cut: Vec::new(),
             }))
         });
+        let entered = self.subtrees.iter().filter_map(|subtree| match subtree {
+            OwnedSubtree::Enter(subtree, host) => {
+                let host = host.as_ref().map(|(host, ..)| *host);
+                Some(Write::Enter(*subtree, host))
+            }
+            _ => None,
+        });
         let merks = self.merks.iter().flat_map(OwnedMerk::writes);
-        (leaving.chain(merks))
+        (leaving.chain(entered).chain(merks))
             .chain(self.records.iter().cloned())
             .collect()
     }
@@ -530,7 +596,7 @@ impl OwnedBatch {
                     value,
                 },
                 Write::Put(..) => panic!("a node is written in a change set"),
-                Write::Leave(_) => panic!("a subtree leaves as a whole"),
+                Write::Leave(_) | Write::Enter(..) => panic!("a subtree is written as a whole"),
                 Write::Delete(unit, key) => RecordWrite::Delete { unit: *unit, key },
                 Write::Range(unit, start, end) => RecordWrite::DeleteRange {
                     unit: *unit,

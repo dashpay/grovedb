@@ -12,6 +12,7 @@ use lignin_tree::hash::Stale;
 use super::{
     model::{self, value, OwnedBatch, UNMADE},
     store::{Db, Outcome, Rng},
+    trees::{child, element, hosted_batch, PARENT},
     *,
 };
 
@@ -95,8 +96,9 @@ fn stale_hashes_follow_their_cells_and_are_made_by_the_commit() {
     assert_eq!(shown(&tx, &[b'a', 3]).0, Stale::NONE);
     assert_eq!(tx.txn.stats().stale_nodes, new.len());
 
-    // Later writes cut the pages, so cells are carried, and write some of
-    // those nodes again with every hash made: those are stale no more.
+    // A later write adds nodes around them, and writes some of those nodes
+    // again with every hash made: those are stale no more. (It carries no
+    // cell: the test below is of marks that follow carried cells.)
     let mark = tx.txn.mark();
     let writes = tx.model.borrow().writes.len();
     let later = world.merk(&tx, 1, |items| {
@@ -183,5 +185,103 @@ fn stale_hashes_follow_their_cells_and_are_made_by_the_commit() {
     assert_eq!(shown(&tx, b"late"), (stale, UNMADE));
     assert!(tx.txn.stats().overlapped > 0 && tx.txn.stats().stale_nodes == 0);
     assert_eq!(world.commit(tx, &[]), Outcome::Conflict);
+    assert_eq!(db.private_ids(), 0);
+}
+
+/// A mark follows its cell (`lignin_tree::hash`): a cell with a stale hash
+/// that a later write carries to another page, and does not write, has its
+/// mark under the address it has afterwards, and the commit makes its
+/// hash there.
+///
+/// The cells that are carried here are those of small Merks that the
+/// elements of another Merk host. The other Merk grows until its pages are
+/// cut, and a host that goes to another page takes its Merk along. No
+/// batch that makes it grow names one of the small Merks.
+#[test]
+fn a_mark_follows_a_cell_that_is_carried_and_not_written() {
+    let (db, versions) = Db::new(128);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(64);
+    let rule_calls = || db.counts.rule_calls.load(Ordering::Relaxed);
+    let stale = Stale::of(HashField::Value).with(HashField::KeyValue);
+
+    // Thirty small Merks, each with its host, and every node of them with
+    // a value hash and a key-value hash that its writer did not make.
+    let tx = world.begin();
+    let all: Vec<usize> = (0..30).collect();
+    let mut batch = hosted_batch(
+        &world,
+        &tx,
+        &all,
+        &mut |index, items| {
+            for node in 0..1 + index % 3 {
+                items.insert(vec![b'n', node as u8], value(&mut rng, 40));
+            }
+        },
+        &mut |_| {},
+    );
+    let mut marked = Vec::new();
+    for merk in batch
+        .merks
+        .iter_mut()
+        .filter(|merk| merk.subtree != model::subtree(PARENT))
+    {
+        for (key, ..) in &merk.nodes {
+            merk.stale.insert(key.clone(), stale);
+            marked.push((merk.subtree, key.clone()));
+        }
+    }
+    world.apply(&tx, &batch).expect("the Merks are made");
+    assert!(marked.len() >= 30);
+    let seen = |tx: &Tx<'_>, (subtree, key): &(Subtree, Vec<u8>)| {
+        let read = |view: Option<NodeView<'_>>| {
+            let view = view.expect("a node");
+            let page = view.handle().expect("a cell").page();
+            (view.stale(), *view.value_hash(), page)
+        };
+        (tx.txn.node(*subtree, key, read)).expect("a read")
+    };
+    let before: Vec<_> = marked.iter().map(|node| seen(&tx, node).2).collect();
+    assert_eq!(tx.txn.stats().stale_nodes, marked.len());
+
+    // The parent grows, and its pages are cut.
+    let mut carried = 0;
+    for round in 0..6 {
+        let batch = hosted_batch(&world, &tx, &[], &mut |_, _| {}, &mut |items| {
+            for index in 0..40 {
+                let mut key = element(rng.below(30));
+                key.extend_from_slice(format!("-{round}-{index}").as_bytes());
+                items.insert(key, value(&mut rng, 150));
+            }
+        });
+        assert_eq!(batch.merks.len(), 1, "the parent alone is written");
+        let applied = world.apply(&tx, &batch).expect("the parent grows");
+        carried += applied.carried.len();
+    }
+    // Cells with marks went to other pages, and every mark is where its
+    // cell is.
+    let after: Vec<_> = marked.iter().map(|node| seen(&tx, node)).collect();
+    let moved = (before.iter().zip(&after)).filter(|(before, after)| **before != after.2);
+    let moved = moved.count();
+    assert!(
+        moved > 0 && carried >= moved,
+        "{moved} of {carried} carried cells had marks"
+    );
+    for (node, shown) in marked.iter().zip(&after) {
+        assert_eq!((shown.0, shown.1), (stale, UNMADE), "{node:?}");
+    }
+    assert_eq!(tx.txn.stats().stale_nodes, marked.len());
+    assert_eq!(child(0), 100, "the small Merks are not the parent");
+
+    // The commit makes each of them once, where it is now.
+    assert_eq!(rule_calls(), 0);
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+    assert_eq!(rule_calls(), 2 * marked.len() as u64);
+    world.check_committed();
+    let reader = world.begin();
+    for node in &marked {
+        let (stale, value_hash, _) = seen(&reader, node);
+        assert!(stale.is_empty() && value_hash != UNMADE, "{node:?}");
+    }
     assert_eq!(db.private_ids(), 0);
 }

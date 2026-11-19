@@ -163,6 +163,51 @@
 //!   it is inside this crate. Its [`Reclaim`] runs the store's reclaimers, and its
 //!   [`Reclaim::wake`] lets background work know.
 //!
+//! # The records of a subtree
+//!
+//! A reader finds the records of a subtree through the subtree directory
+//! of the version it reads ([`Operation::open`], `tree-layout.md` D6): in
+//! every column, the records under a prefix are those of the entry that
+//! the directory has under it, and where it has no entry in use there is
+//! no record to read. So a subtree that was dropped, and every subtree
+//! that was below it, is gone for every reader from the drop's version on,
+//! in every column, while what it left waits in the pages to be reclaimed;
+//! and a snapshot from before the drop reads all of it for as long as it
+//! is held (`transactions.md` CV9, T-CL1).
+//!
+//! [`Opened`] is a subtree that was opened, and the flat records of the
+//! subtree are read through it alone: by key, and under a cursor
+//! ([`RecordCursor`]). The root of its Merk is in its entry, and the nodes
+//! are read from there ([`Operation::nodes`]).
+//!
+//! A handle on the directory is of the pages it was loaded from, and
+//! **a reader's handle is loaded while the reader's version is the latest
+//! one.** What a drop left is taken out of the pages one step at a time,
+//! the record of the dropped subtree last, and each step is on the page
+//! versions that are current then. A reader of an older version can
+//! still have the entry of a subtree that was below the dropped one in a
+//! page version of its own, while the record of the drop is gone from a
+//! page it shares with the latest version: a handle that is loaded then
+//! does not know of the drop, and would open that subtree. A handle that
+//! was loaded while the version was the latest either has the drop or
+//! reads pages from which those entries are gone, and whatever is taken
+//! out afterwards it hides.
+//!
+//! - **A snapshot loads its handle when it is taken**
+//!   ([`ReadPath::snapshot`]), and takes its version again if a commit was
+//!   published before the load ended. It keeps the handle for its life.
+//!   That is one walk of the records of what waits to be reclaimed for
+//!   each snapshot of a read path that names its records, which finds
+//!   nothing in a store where nothing waits, and it is made whether or
+//!   not the snapshot opens a subtree. A load that fails is answered by
+//!   every open of the snapshot ([`ReadError::Unloaded`]).
+//! - **An operation that pins no version** loads its handle when it first
+//!   opens a subtree, and opens nothing if the latest version has moved
+//!   by then ([`ReadError::Moved`]): its caller begins another operation.
+//! - An engine that keeps the handle of the latest version, as the
+//!   directory expects of it, gives each reader a copy with its version in
+//!   the place of the load (TXN-07).
+//!
 //! # Models and tests
 //!
 //! - `tests/loom.rs`: the race of PN4, the same for a guard, a pin that
@@ -179,6 +224,7 @@
 
 mod error;
 mod read;
+mod records;
 mod slots;
 mod sync;
 mod versions;
@@ -188,4 +234,5 @@ mod tests;
 
 pub use error::{PublishError, SnapshotError};
 pub use read::{LatestLease, Operation, ReadPath, Snapshot};
+pub use records::{Kept, Opened, ReadError, RecordCursor};
 pub use versions::{OperationGuard, Reclaim, VersionPin, Versions};
