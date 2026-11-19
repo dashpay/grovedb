@@ -23,6 +23,10 @@ concurrency:
 #   the self-hosted Rust runners, [self-hosted, Linux, rust-ci].
 # - Detect Changes runs on the light runner pool, which the organisation
 #   variable DASH_LIGHT_RUNNER names.
+# - The LigninDB crates' tests on Linux aarch64 and macOS aarch64 run on the
+#   GitHub-hosted runners of those platforms (ubuntu-24.04-arm, macos-15),
+#   and Miri on ubuntu-latest, because it installs a nightly toolchain.
+#   docs/lignindb/ci.md lists the LigninDB jobs and the platforms of each.
 #
 # Those runners are persistent, so they never run a pull request from a fork:
 # such a pull request runs on GitHub-hosted runners instead. The steps below
@@ -54,19 +58,30 @@ jobs:
         with:
           # A change to this workflow or to the action it uses runs every job,
           # so the change is exercised before it merges.
+          #
+          # The golden corpus, the cost model's script and the golden files of
+          # the format are test data: a change to them runs the tests.
           filters: |
             any-code:
               - '**/*.rs'
               - '**/Cargo.toml'
               - 'Cargo.lock'
+              - 'rust-toolchain.toml'
               - '**/test-engines.txt'
+              - 'lignin-testkit/corpus/**'
+              - 'lignin-testkit/cost-model-storage/**'
+              - 'lignin-format/fuzz/**'
               - '.github/workflows/grovedb.yml'
               - '.github/actions/**'
               - '.github/scripts/**'
             build-files:
               - '**/Cargo.toml'
               - 'Cargo.lock'
+              - 'rust-toolchain.toml'
               - '**/test-engines.txt'
+              - 'lignin-testkit/corpus/**'
+              - 'lignin-testkit/cost-model-storage/**'
+              - 'lignin-format/fuzz/**'
               - '.github/workflows/grovedb.yml'
               - '.github/actions/**'
               - '.github/scripts/**'
@@ -254,7 +269,7 @@ jobs:
         if: runner.environment == 'self-hosted'
         uses: ./.github/actions/persistent-runner
         with:
-          tools: clang cmake
+          tools: clang cmake jq
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -292,26 +307,144 @@ jobs:
           SCCACHE_GHA_ENABLED: "true"
           RUSTC_WRAPPER: ${{ runner.environment == 'github-hosted' && 'sccache' || '' }}
         run: cargo build --no-default-features --features verify -p grovedb
-      # GroveDB with no storage engine compiled in: everything that is
-      # written for any `Engine`, and the estimated costs, whose tests open
-      # no database. RocksDB must not be among the crates of that build.
-      - name: Check the build with no storage engine
+      # The feature sets that must build apart: GroveDB with no engine (no
+      # RocksDB and no LigninDB among its crates, no gate that says
+      # `minimal`, and its tests that open no database), Merk on each engine
+      # alone, and the LigninDB crates with and without their features.
+      - name: Check the feature sets
         env:
           SCCACHE_GHA_ENABLED: "true"
           RUSTC_WRAPPER: ${{ runner.environment == 'github-hosted' && 'sccache' || '' }}
+        run: .github/scripts/lignin-ci.sh features
+      # Only for the LigninDB crates: the older crates have documentation
+      # warnings (grovedb-merk had 33 when this step was added).
+      - name: Build the LigninDB documentation with warnings denied
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: ${{ runner.environment == 'github-hosted' && 'sccache' || '' }}
+        run: .github/scripts/lignin-ci.sh docs
+      # The order release-crates.yml publishes in, against the workspace: a
+      # new dependency between crates is caught here, not halfway through a
+      # release.
+      - name: Check the order of the crates a release publishes
+        run: .github/scripts/release-crates.sh check
+
+  # The LigninDB crates' tests on the platforms of DEC-06 that the test shards
+  # do not run on. The shards run them on Linux x86_64.
+  lignin-platforms:
+    name: LigninDB on ${{ matrix.platform }}
+    needs: detect-changes
+    if: needs.detect-changes.outputs.needs-tests == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Linux aarch64
+            runner: ubuntu-24.04-arm
+          - platform: macOS aarch64
+            runner: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      # The RocksDB build of the test kit's dependencies needs libclang.
+      - name: Install clang
+        if: runner.os == 'Linux'
         run: |
-          crates=$(cargo tree -p grovedb --no-default-features --features estimated_costs -e normal,build,dev --prefix none)
-          if grep -i rocksdb <<<"$crates"; then
-            echo "RocksDB is among the crates of grovedb with no storage engine" >&2
-            exit 1
+          if ! command -v clang >/dev/null || ! ls /usr/lib/llvm-*/lib/libclang*.so* >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y clang libclang-dev
           fi
-          if grep -rn 'feature = "minimal"' grovedb/src grovedb/benches grovedb/tests; then
-            echo "a gate in grovedb says minimal: it is engine_generic or rocksdb_storage (docs/lignindb/engine.md)" >&2
-            exit 1
-          fi
-          cargo check -p grovedb --no-default-features --features engine_generic
-          cargo test -p grovedb --no-default-features --features estimated_costs --lib --tests
-          cargo test -p grovedb-merk --no-default-features --features minimal --lib
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "false"
+      - name: Run the LigninDB crates' tests
+        run: .github/scripts/lignin-ci.sh test
+
+  # The loom models of the buffer pool, the snapshots and the write scopes.
+  lignin-loom:
+    name: LigninDB loom models
+    needs: detect-changes
+    if: needs.detect-changes.outputs.needs-tests == 'true'
+    runs-on: >-
+      ${{ fromJSON((github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository)
+      && '["self-hosted","Linux","rust-ci"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+      - name: Prepare a persistent runner
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/persistent-runner
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+        with:
+          cache-on-failure: "false"
+          workspaces: ". -> target/loom"
+      - name: Run the loom models
+        run: .github/scripts/lignin-ci.sh loom
+
+  # Miri over the unsafe code of the file layer and the buffer pool, and the
+  # software path of the checksum; and a build of the fuzz targets of
+  # lignin-format, which are not a workspace member. Both need a nightly
+  # toolchain, which a job installs, so this job stays hosted.
+  lignin-miri:
+    name: LigninDB Miri and fuzz targets
+    needs: detect-changes
+    if: needs.detect-changes.outputs.needs-tests == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      LIGNIN_NIGHTLY: nightly-2026-02-24
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.LIGNIN_NIGHTLY }}
+          components: miri, rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "false"
+          workspaces: |
+            .
+            lignin-format/fuzz
+      - name: Run Miri
+        run: .github/scripts/lignin-ci.sh miri
+      - name: Build the fuzz targets of lignin-format
+        run: .github/scripts/lignin-ci.sh fuzz-targets
+
+  # The golden corpus replayed on the cost model of docs/lignindb/cost-model.md,
+  # a stand-in for the storage crate that keeps no node record.
+  cost-model:
+    name: Cost model replay
+    needs: detect-changes
+    if: needs.detect-changes.outputs.needs-tests == 'true'
+    runs-on: >-
+      ${{ fromJSON((github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository)
+      && '["self-hosted","Linux","rust-ci"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+      - name: Prepare a persistent runner
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/persistent-runner
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+        with:
+          cache-on-failure: "false"
+          workspaces: ". -> target/cost-model/target"
+      - name: Replay the golden corpus on the cost model
+        run: .github/scripts/lignin-ci.sh cost-model
 
   formatting:
     name: Formatting
