@@ -260,7 +260,7 @@ mod tests {
         // What both have taken is dropped.
         assert_eq!(commits.kept(), 1);
         assert_eq!(taken(&mut second, 3), [3]);
-        assert_eq!(format!("{first:?}"), "Watch(3)");
+        assert_eq!(format!("{first:?}"), format!("Watch({:?})", version(3)));
     }
 
     #[test]
