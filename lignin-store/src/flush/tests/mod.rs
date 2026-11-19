@@ -252,6 +252,9 @@ pub(super) struct Txn<'d> {
     db: &'d Db,
     owner: OwnerId,
     copies: BTreeMap<PageId, (PrivateRef<'d>, bool)>,
+    /// Whether the bytes of the values the commit writes out of line are
+    /// left off the frames, so that only the log has them.
+    pub(super) values_in_log_only: bool,
 }
 
 /// A store in a directory.
@@ -401,10 +404,16 @@ impl Db {
                         let value = self.values.read(pointer, id, &mut buf);
                         value.expect("the value is in the value log").to_vec()
                     }
-                    CellValue::Pending(pending) => attached
-                        .and_then(|frame| frame.attached(pending.id()))
-                        .expect("the bytes of a pending value are with its frame")
-                        .to_vec(),
+                    CellValue::Pending(pending) => {
+                        match attached.and_then(|frame| frame.attached(pending.id())) {
+                            Some(bytes) => bytes.to_vec(),
+                            None => {
+                                let logged = self.log.read_pending(&pending, id, &mut buf);
+                                let bytes = logged.expect("the value is in the log").bytes();
+                                bytes.expect("the value's bytes").to_vec()
+                            }
+                        }
+                    }
                 };
                 assert_eq!(value.len(), cell.value_len() as usize);
                 Cell {
@@ -438,6 +447,7 @@ impl Db {
             db: self,
             owner: OwnerId::new(self.owners.fetch_add(1, Ordering::SeqCst) + 1),
             copies: BTreeMap::new(),
+            values_in_log_only: false,
         }
     }
 
@@ -543,6 +553,14 @@ impl<'d> Txn<'d> {
         created
     }
 
+    /// Attaches `bytes` to the copy of `id` under a name that no cell of
+    /// the page holds.
+    pub(super) fn attach_stray(&mut self, id: PageId, name: [u8; 8], bytes: &[u8]) {
+        self.copy(id);
+        let mut latch = self.copies[&id].0.write().expect("private");
+        latch.attach(name, Arc::from(bytes));
+    }
+
     /// Gives the copies up: nothing of the transaction is left.
     pub(super) fn roll_back(self) {
         for (copy, _) in self.copies.into_values() {
@@ -641,8 +659,10 @@ impl<'d> Txn<'d> {
                 Ok(())
             });
             run.expect("a run");
-            for (id, bytes) in attach {
-                latch.attach(id, bytes);
+            if !self.values_in_log_only {
+                for (id, bytes) in attach {
+                    latch.attach(id, bytes);
+                }
             }
         }
         released.sort_by_key(|pointer| (pointer.file(), pointer.offset()));

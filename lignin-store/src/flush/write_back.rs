@@ -376,6 +376,8 @@ impl<'s> WriteBack<'s> {
                 continue;
             }
             let is_current = current && index + 1 == frames.len();
+            let stripped;
+            let mut frame = frame;
             let pending = match page::pending_cells(frame) {
                 Ok(cells) => !cells.is_empty(),
                 Err(source) => {
@@ -389,8 +391,17 @@ impl<'s> WriteBack<'s> {
                     break;
                 }
                 if attached {
-                    result = self.strip(page, frame);
-                    break;
+                    match self.strip(page, frame) {
+                        Ok(Some(without)) => {
+                            stripped = without;
+                            frame = &stripped;
+                        }
+                        Ok(None) => break,
+                        Err(error) => {
+                            result = Err(error);
+                            break;
+                        }
+                    }
                 }
             } else {
                 let successor = frames.get(index + 1).map(PageRef::born);
@@ -439,12 +450,15 @@ impl<'s> WriteBack<'s> {
     /// Puts a frame without its attached values in place of `frame`, the
     /// current version of `page`, which has no pending value left that they
     /// could belong to. What the page says does not change, so the step has
-    /// no record (`transactions.md` PV4).
-    fn strip(&self, page: PageId, frame: &PageRef<'s>) -> Result<(), FlushError> {
+    /// no record (`transactions.md` PV4). Returns the new frame, or `None`
+    /// if the step has to wait for a write transaction that holds a private
+    /// copy of the page.
+    fn strip(&self, page: PageId, frame: &PageRef<'s>) -> Result<Option<PageRef<'s>>, FlushError> {
         let pool = self.stores.pool;
         let step = pool.page_step(page);
         if !step.is_current(frame) || step.private_copies() > 0 {
-            return Ok(());
+            count(&self.state.counters.steps_put_off, 1);
+            return Ok(None);
         }
         let mut blank = pool.blank();
         blank.copy_from(frame);
@@ -453,7 +467,7 @@ impl<'s> WriteBack<'s> {
             blank.detach(id);
         }
         step.replace(frame, blank)
-            .map(drop)
+            .map(Some)
             .map_err(|source| FlushError::StepRefused { page, source })
     }
 
