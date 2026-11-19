@@ -6,6 +6,7 @@ pub mod cursor;
 pub mod flat;
 pub mod fragment;
 mod guard;
+pub mod hash;
 pub mod node;
 pub mod value;
 
