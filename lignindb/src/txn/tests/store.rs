@@ -439,13 +439,12 @@ impl Db {
     /// A reclaimer of what the drops of this store left.
     pub fn reclaimer<'s>(&'s self, versions: &'s Versions) -> Reclaimer<'s, Steps<'s>> {
         let steps = Steps { db: self, versions };
-        let (loader, values) = (self.loader(), &self.values);
         Reclaimer::new(
-            loader,
+            self.loader(),
             &self.pool,
             &self.table,
             &self.ids,
-            values,
+            &self.values,
             SIZE,
             steps,
         )
@@ -512,11 +511,10 @@ impl Db {
             }
             swept.merks.push(reclaim.reclaimed().clone());
         }
-        let reclaimer = self.reclaimer(versions);
+        let (reclaimer, drops) = (self.reclaimer(versions), self.flat_drops());
         for drop in flat_drops {
             loop {
                 let guard = versions.guard();
-                let drops = self.flat_drops();
                 let made = reclaimer.reclaim_flat(&drops, &drop, &guard, 256, &mut swept.flat);
                 match made.expect("a step") {
                     Progress::Done => {

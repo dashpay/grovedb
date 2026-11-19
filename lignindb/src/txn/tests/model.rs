@@ -241,12 +241,6 @@ impl Write {
         }
     }
 
-    /// Whether this is a write of the write set: one that puts or deletes
-    /// a record. A subtree that is entered is none.
-    pub fn is_write(&self) -> bool {
-        !matches!(self, Self::Enter(..))
-    }
-
     /// Whether the write is one of `unit`.
     pub fn touches(&self, unit: Unit) -> bool {
         match self {
