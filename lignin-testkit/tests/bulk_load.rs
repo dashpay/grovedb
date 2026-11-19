@@ -9,6 +9,9 @@
 //!   the values out of line to a value log, each for the page that owns it
 //! - what was written is read back through the store, node by node, against
 //!   the records of GroveDB
+//! - the store passes the physical invariant checker (`lignindb::verify`),
+//!   which recomputes every stored hash by the same rules; the run prints
+//!   how long that took
 //!
 //! `the_reference_workload_loads_within_the_time_and_fill` is the task's
 //! "done when": one million documents and their references. The time is
@@ -76,6 +79,7 @@ use lignin_tree::{
     },
     value::InlinePolicy,
 };
+use lignindb::verify::{self, Grove, Options, Scope};
 
 const SEED: u64 = 1;
 const SIZE: PageSize = PageSize::DEFAULT;
@@ -158,6 +162,36 @@ impl HashRules for MerkRules {
     fn node_hash(&mut self, node: NodeRef<'_>) -> Result<Hash, Refusal> {
         let child = |side| node.link(side).map_or(&NULL_HASH, |link| link.hash);
         Ok(node_hash(node.kv_hash(), child(Side::Left), child(Side::Right)).unwrap())
+    }
+}
+
+/// The rules by which the invariant checker recomputes the hashes of the
+/// loaded store: Merk's, and for the value hash of a reference the hash
+/// that is stored. That hash is made from the value the reference names,
+/// which no rule is given, so its writer states it and the rules answer for
+/// it as it is (`lignin_tree::hash`).
+struct CheckRules<'v>(&'v GroveVersion);
+
+impl HashRules for CheckRules<'_> {
+    fn value_hash(
+        &mut self,
+        node: NodeRef<'_>,
+        value: &[u8],
+        hosted: &[Option<Hash>],
+    ) -> Result<Hash, Refusal> {
+        let element = Element::deserialize(value, self.0).map_err(|error| error.to_string())?;
+        match element.is_reference() {
+            true => Ok(*node.value_hash()),
+            false => MerkRules.value_hash(node, value, hosted),
+        }
+    }
+
+    fn kv_hash(&mut self, key: &[u8], value_hash: &Hash) -> Result<Hash, Refusal> {
+        MerkRules.kv_hash(key, value_hash)
+    }
+
+    fn node_hash(&mut self, node: NodeRef<'_>) -> Result<Hash, Refusal> {
+        MerkRules.node_hash(node)
     }
 }
 
@@ -912,6 +946,36 @@ fn load(dir: &Path, workload: Documents) -> Outcome {
         check.nodes,
         started.elapsed().as_secs_f64()
     );
+
+    // The store has no directory, no flat keyspace and no allocator: the
+    // grove is walked from its root through every hosted root, and every
+    // page the page table names is read.
+    let roots = [root.address];
+    let store = verify::Store {
+        loader,
+        table: &disk.table,
+        segments: &disk.segments,
+        values: &disk.values,
+        page_size: SIZE,
+        ids: None,
+        grove: Grove::Roots(&roots),
+        flat_drops: None,
+        flat: &[],
+        // The load appended its values beside the counts of live values.
+        values_counted: false,
+    };
+    let options = Options::new(at, Scope::Still);
+    let report = verify::check(&store, &Guard, options, Some(&mut CheckRules(version)));
+    println!("the physical invariant checker: {report}");
+    assert!(report.is_sound(), "the loaded store is not sound");
+    assert!(report.unreached.is_empty(), "a cell that nothing reaches");
+    assert_eq!(report.census.live_cells, walk.nodes);
+    assert_eq!(report.census.hashed_cells, walk.nodes);
+    assert_eq!(report.census.cells, walk.nodes);
+    assert_eq!(report.census.tree_pages, counters.pages);
+    assert_eq!(report.census.placed_values, counters.values);
+    assert_eq!(report.census.hosted_roots, walk.hosted.len() as u64);
+    assert_eq!(report.census.links, counters.pages);
     outcome(sink.shape)
 }
 
