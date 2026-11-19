@@ -179,6 +179,11 @@ fn a_way_that_is_longer_than_any_tree_is_refused() {
                 arrived(&cursor, moved).expect("a node").0,
                 numbered_key(nodes as u32 - 2)
             );
+            // The deepest node a tree can have is reached by its key.
+            let deepest = numbered_key(nodes as u32 - 1);
+            let moved = cursor.seek(&reader, &mut buffers, &deepest);
+            assert_eq!(arrived(&cursor, moved).expect("a node").0, deepest);
+            assert_eq!(cursor.depth(), Some(Cursor::MAX_DEPTH - 1));
         } else {
             let error = moved.expect_err("too long a way");
             assert!(matches!(
@@ -189,10 +194,23 @@ fn a_way_that_is_longer_than_any_tree_is_refused() {
                 }
             ));
             assert!(!cursor.valid());
+            // The node past the limit is not reached by its own key
+            // either, in a seek or in a step from the node above it.
+            let deepest = numbered_key(nodes as u32 - 1);
+            for moved in [
+                cursor.seek(&reader, &mut buffers, &deepest),
+                cursor.seek_for_prev(&reader, &mut buffers, &deepest),
+            ] {
+                let error = moved.expect_err("too long a way");
+                assert!(matches!(error, CursorError::TooDeep { .. }));
+            }
             // The nodes that are not that deep are reached.
-            let key = numbered_key(99);
+            let key = numbered_key(nodes as u32 - 2);
             let moved = cursor.seek(&reader, &mut buffers, &key);
             assert_eq!(arrived(&cursor, moved).expect("a node").0, key);
+            assert_eq!(cursor.depth(), Some(Cursor::MAX_DEPTH - 1));
+            let error = cursor.next(&reader, &mut buffers).expect_err("too long");
+            assert!(matches!(error, CursorError::TooDeep { .. }));
         }
     }
 

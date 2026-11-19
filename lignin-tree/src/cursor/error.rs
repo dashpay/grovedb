@@ -28,7 +28,8 @@ pub enum CursorError {
     /// tree whose heights a link can hold: the links of the tree lead back
     /// into it.
     TooDeep {
-        /// The node at which the way was given up.
+        /// The node the way did not go on to: the first one past the
+        /// limit.
         at: CellAddress,
         /// The most nodes on one way down.
         limit: usize,

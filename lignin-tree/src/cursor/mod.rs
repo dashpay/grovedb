@@ -12,7 +12,8 @@
 //! remembers the way it came: the nodes above the one it stands on, from
 //! the root down, each with the side on which the way went on. A step goes
 //! down through the links of the node it stands on, which are exact
-//! addresses, or up through that way. It never starts again at the root.
+//! addresses, or up through that way. It starts again at the root in one
+//! case only: a handle on its way has ended (see below).
 //!
 //! # Opening a cursor, and what it is given
 //!
@@ -234,10 +235,10 @@ pub struct Cursor {
 }
 
 impl Cursor {
-    /// The most nodes on one way down. A link holds the heights of the
-    /// child's two subtrees in one byte each (`tree-page.md`), so a child is
-    /// at most 256 nodes high and the node above it 257: no way from a root
-    /// to a node is longer.
+    /// The most nodes on one way down, the node it ends at among them. A
+    /// link holds the heights of the child's two subtrees in one byte each
+    /// (`tree-page.md`), so a child is at most 256 nodes high and the node
+    /// above it 257: no way from a root to a node is longer.
     pub const MAX_DEPTH: usize = u8::MAX as usize + 2;
 
     /// A cursor over the Merk whose root is at `root`, at the version of
@@ -551,7 +552,10 @@ impl<'r, G: OperationGuard + ?Sized> Walk<'_, 'r, G> {
         let below = node.node().link(to).map(|link| link.child);
         let mut held = node.into_page();
         if let Some(below) = below {
-            self.remember(here, to)?;
+            self.cursor.way.push(Above {
+                node: here,
+                side: to,
+            });
             held = self.descend(Some(held), below, None, from)?.held;
         }
         self.ascend(held, from, true)
@@ -569,6 +573,12 @@ impl<'r, G: OperationGuard + ?Sized> Walk<'_, 'r, G> {
         edge: Side,
     ) -> Result<Down<'r>, CursorError> {
         loop {
+            if self.cursor.way.len() >= Cursor::MAX_DEPTH {
+                return Err(CursorError::TooDeep {
+                    at: from,
+                    limit: Cursor::MAX_DEPTH,
+                });
+            }
             let page = self.page(held.take(), from.page())?;
             let node = page
                 .view()
@@ -587,7 +597,7 @@ impl<'r, G: OperationGuard + ?Sized> Walk<'_, 'r, G> {
                 None => edge,
             };
             let below = node.link(side).map(|link| link.child);
-            self.remember(handle, side)?;
+            self.cursor.way.push(Above { node: handle, side });
             let Some(below) = below else {
                 return Ok(Down {
                     held: page,
@@ -639,18 +649,6 @@ impl<'r, G: OperationGuard + ?Sized> Walk<'_, 'r, G> {
         self.cursor.key.clear();
         self.cursor.key.extend_from_slice(view.key());
         Moved::To(node)
-    }
-
-    /// Remembers that the way leaves `node` on `side`.
-    fn remember(&mut self, node: NodeHandle, side: Side) -> Result<(), CursorError> {
-        if self.cursor.way.len() >= Cursor::MAX_DEPTH {
-            return Err(CursorError::TooDeep {
-                at: node.address(),
-                limit: Cursor::MAX_DEPTH,
-            });
-        }
-        self.cursor.way.push(Above { node, side });
-        Ok(())
     }
 
     /// The page `page`, pinned: `held` if that is the page, and otherwise
