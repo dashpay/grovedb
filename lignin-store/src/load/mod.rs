@@ -137,7 +137,7 @@
 //! | The image is of the page asked for (`tree-page.md` TP2, `flat-page.md` P14). | the page id in its header | [`LoadError::Payload`] with `DeltaError::WrongPage` |
 //! | A run is well formed and of the page asked for (`page-delta.md` PD3, A2). | `DeltaRun::decode`, `apply_chain` | [`LoadError::Payload`] |
 //! | Every record of a run applies to the page beneath it (A3). | `apply_chain` | [`LoadError::Payload`] |
-//! | A run is no longer than the store allows: its payload is at most one page size ([`max_run_len`](crate::flush::max_run_len)), which is the longest run write-back writes. A block that is longer than such a run can be stored as is refused before it is read, and a run that states a longer payload before memory is taken for it. | the block's location, the payload's stated length | [`LoadError::RunTooLong`] |
+//! | A run is no longer than the store allows: its payload is at most one page size ([`max_run_len`]), which is the longest run write-back writes. A block that is longer than such a run can be stored as is refused before it is read, and a run that states a longer payload before memory is taken for it. | the block's location, the payload's stated length | [`LoadError::RunTooLong`] |
 //! | A run in a segment does not create its page (PD11), and a flat page has no run (PD13). | the run, the image's kind | [`LoadError::CreatedInSegment`], [`LoadError::FlatPageDelta`] |
 //! | No value is pending in a base image, or in the page as the last record of a run leaves it (PD16, P15). A value may be pending between two records of one run. | `has_pending_value` | [`LoadError::PendingValue`] |
 //!

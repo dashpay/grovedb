@@ -69,7 +69,10 @@ fn options(size: PageSize) -> RecoveryOptions {
     }
 }
 
-/// A database directory, in memory where there is such a place.
+/// A database directory: in the directory that the environment variable
+/// `LIGNIN_STORE_TEST_DIR` names, if it is set, which is how the
+/// acceptance measurement is put on a disk, and otherwise in memory where
+/// there is such a place.
 struct Dir {
     _tmp: TempDir,
     vfs: Arc<dyn Vfs>,
@@ -86,9 +89,10 @@ impl Dir {
 
     fn of(size: PageSize) -> Self {
         let memory = Path::new("/dev/shm");
-        let tmp = match memory.is_dir() {
-            true => tempfile::tempdir_in(memory),
-            false => tempfile::tempdir(),
+        let tmp = match std::env::var_os("LIGNIN_STORE_TEST_DIR") {
+            Some(named) => tempfile::tempdir_in(named),
+            None if memory.is_dir() => tempfile::tempdir_in(memory),
+            None => tempfile::tempdir(),
         }
         .expect("a directory");
         let vfs: Arc<dyn Vfs> = Arc::new(StdVfs);

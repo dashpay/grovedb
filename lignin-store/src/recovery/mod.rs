@@ -1,4 +1,296 @@
 //! Recovery: how a store is opened (STORE-07).
+//!
+//! [`recover`] takes the manifest of a database directory and returns the
+//! store that the directory holds, open, as of one committed version
+//! ([`Recovered`]). It is how every session begins, whatever ended the one
+//! before: a store that was closed, one whose process was killed, one that
+//! lost power, a new store that is its first manifest and nothing else,
+//! and a checkpoint that shares its files with a live database.
+//!
+//! - It loads the page-table checkpoint the manifest names.
+//! - It replays the log on it, up to the last commit whose group the log
+//!   holds whole, and so brings forward the pages, the counts of the value
+//!   log and the page ids.
+//! - It names every file of the earlier sessions closed, and turns the log
+//!   to a file of the new session.
+//!
+//! `docs/lignindb/transactions.md` has the rules it keeps (DU2 to DU5,
+//! FL4, FL7, ID4), `page-table.md` those of a checkpoint (K1 to K15) and
+//! `log-format.md` those of the log's items (LG13 to LG32). The other
+//! modules of this crate each say what they ask of whoever recovers, and
+//! this one is who that is. It knows no tree, key or hash: a page is what
+//! the page codecs make of a logged run.
+//!
+//! ```
+//! use std::sync::Arc;
+//!
+//! use lignin_format::{
+//!     delta::Delta,
+//!     manifest::Manifest,
+//!     tree_page::{CellContent, CellValue, TreeCell, TreePage},
+//!     wal::GroupWriter,
+//!     CommitVersion, FormatVersion, PageId, PageSize, SlotId,
+//! };
+//! use lignin_io::{StdVfs, Vfs};
+//! use lignin_store::{
+//!     load::{LoadBuffers, PageLoader, FRAME_FORMAT},
+//!     recovery::{recover, RecoveryOptions},
+//!     segment::ManifestStore,
+//! };
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let dir = tempfile::tempdir()?;
+//! let vfs: Arc<dyn Vfs> = Arc::new(StdVfs);
+//! let size = PageSize::DEFAULT;
+//! let options = RecoveryOptions {
+//!     pool_capacity: 8 << 20,
+//!     ..RecoveryOptions::default()
+//! };
+//!
+//! // A new store is its first manifest, and is opened like any other.
+//! let empty = Manifest::new(size, Default::default(), None, Vec::new())?;
+//! let manifest = ManifestStore::create(vfs.clone(), dir.path(), empty)?;
+//! let store = recover(manifest, &options)?;
+//! assert_eq!(store.landed(), CommitVersion::EMPTY);
+//!
+//! // The session's first commit makes a page with one cell. Its group
+//! // reaches the log, and then the process is killed: nothing was synced,
+//! // and nothing was written back.
+//! let page = PageId::new(7).expect("not zero");
+//! let at = store.log.next_group()?;
+//! let mut group = Vec::new();
+//! let mut writer = GroupWriter::new(at.version(), at.address(), &mut group)?;
+//! writer.tree_run_with(page, Some(0), |run| {
+//!     let cell = CellContent {
+//!         key: b"key",
+//!         feature: &[],
+//!         value_hash: &[1; 32],
+//!         kv_hash: &[2; 32],
+//!         left: None,
+//!         right: None,
+//!         hosted_roots: &[],
+//!         value: CellValue::Inline(b"value"),
+//!         fragment_root: true,
+//!     }
+//!     .encode()?;
+//!     run.push(&Delta::Insert {
+//!         slot: SlotId::MIN,
+//!         cell: TreeCell::decode(&cell, FormatVersion::CURRENT)?,
+//!     })
+//! })?;
+//! writer.finish();
+//! store.log.append_group(&at, &group)?;
+//! drop(store);
+//!
+//! // The next session replays the group. The store is at commit 1, and
+//! // the page is in the pool, for readers and for write-back.
+//! let store = recover(ManifestStore::open(vfs, dir.path())?, &options)?;
+//! assert_eq!(store.landed(), at.version());
+//! assert_eq!((store.report.commits, store.report.pages_rebuilt), (1, 1));
+//! let loader = PageLoader::new(&store.pool, &store.table, &store.segments, size)?;
+//! let frame = loader.get(page, store.landed(), &mut LoadBuffers::new())?;
+//! let tree = TreePage::from_validated(&frame, FRAME_FORMAT)?;
+//! assert_eq!(tree.cell(SlotId::MIN).expect("the cell").key(), b"key");
+//! assert_eq!(store.pool.oldest_unwritten(), Some(at.version()));
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # What a recovery does
+//!
+//! | Step | What happens | By |
+//! | --- | --- | --- |
+//! | 1 | The table checkpoint the manifest names is loaded: the chains, the version *C* it covers, and the sample of the value log's counts with its place in the log. A manifest that names none gives an empty table, no sample and *C* = 0. | [`PageTable::load`] |
+//! | 2 | The segments, the value log and the table checkpoints are opened. Each adopts the files of the earlier sessions closed and read-only, and removes the files in its directory that the manifest does not name. | [`SegmentStore::open`], [`ValueStore::recover`], [`TableCheckpoints::open`] |
+//! | 3 | The log files the manifest names are read from the first, item by item, to the first item that is not whole, and each item is replayed (below). | [`LogReader`] |
+//! | 4 | What the end of the log says is checked against the checkpoint (below, "What is refused"). The version recovery **lands on**, *Lr*, is that of the last group. | |
+//! | 5 | The log is opened where it was found to end, and held from the place of the checkpoint's sample. | [`LogStore::open`] |
+//! | 6 | The pages that replay rebuilt and still keeps go into the buffer pool, each as the current version of its page, with the bytes of its pending values. | [`BufferPool::install`] |
+//! | 7 | The counts of the value log and the page ids of *Lr* are made. | [`ValueRecovery::finish`], [`alloc::Recovery::finish`] |
+//! | 8 | The manifest is replaced: it names every segment and value-log file of the earlier sessions closed. | [`SegmentStore::commit`], [`ValueStore::commit`] |
+//! | 9 | The log is made durable to its end and turned to the first file of this session, under a manifest that names every earlier log file closed where its last whole item ends. From here no later recovery reads a byte behind that end (DU3), and the counts that were recovered are durable. | [`LogStore::roll`], [`ValueStore::mark_durable`] |
+//!
+//! **It lands on one committed version** (DU2): *Lr* is at or after the
+//! last commit that was durable and at or before the last one whose group
+//! reached the log. Every page, count and page id is as that commit left
+//! it, with every background change whose record the log holds.
+//!
+//! **It never appends to a file of an earlier session, and never cuts
+//! one** (M16, B11). What it writes goes to files of its own: a segment,
+//! if replay had more pages than it keeps, and the session's log file. A
+//! log file whose end the manifest did not vouch for is written again
+//! under its name by the log, as a new file, so whoever holds the old one
+//! as a hard link keeps it byte for byte. That is what lets a checkpoint
+//! share files with the live database, and a checkpoint's manifest names
+//! its log files closed, so nothing behind their valid length is read.
+//!
+//! # What replay does with an item
+//!
+//! | The item | For its pages | For the counts of the value log | For the page ids |
+//! | --- | --- | --- | --- |
+//! | The group of a commit at or before *C* | Nothing: every chain holds what it did (K1). | Its released and acquired pointers, if the group is after the place of the sample. | Nothing. |
+//! | The group of a commit after *C* | Each run is applied to its page, unless the page's newest link is of that version or a later one: then the page has it (K3). A run that makes its page needs no page. A freed page gets its free link. | The same. | Every page with a run was written, and every freed page freed (LG15). |
+//! | The record of a background change before the place of the sample | Nothing: the chain that the checkpoint copied holds it, and the sample counts it (K13, K14). | Nothing. | Nothing. |
+//! | The record of a background change after that place | It is skipped for a page whose newest link is of a later version than the last group before the record. Otherwise it is made exactly when the page still has what the record says it had: the cell holds the place the value is moved from, the cells a reclaiming step takes out are there, or the page it frees is not freed (LG28). | What it releases and acquires, whatever became of its change to the page (DU5). | A page that a reclaiming step freed is freed. |
+//! | A checkpoint mark | The one that ends at the place of the sample must cover *C* (LG29). | | |
+//!
+//! With no checkpoint named, every group is after *C* and every record is
+//! after the place.
+//!
+//! **A change with no image is dropped** (K11). The checkpoint can lack a
+//! page that was freed and trimmed away, while the log still holds what
+//! commits after *C* did to it before it was freed. Such a change has
+//! nothing to apply to. It is dropped, and replay goes on to the commit
+//! that frees the page or makes it again. A page that is left with a
+//! dropped change when the log ends is damage.
+//!
+//! # The pages replay rebuilds
+//!
+//! A page that replay changes is kept in memory, read once from its chain
+//! and changed in place by every later item. When the log ends, each such
+//! page is one page version in the pool: born at the newest replayed
+//! commit that changed it, unwritten, and current.
+//!
+//! **A pending value has its bytes with its frame** (FL7). A cell whose
+//! value no page step has placed holds the log address of the value.
+//! Recovery reads the bytes from the log and attaches them to the frame,
+//! because a reader is answered from the frame and never from the log.
+//! The log files that hold them stay: their commits are not covered.
+//!
+//! **Replay keeps a bounded number of pages**
+//! ([`RecoveryOptions::max_replay_pages`]), so that a recovery needs no
+//! more memory than the session before it had. When more are rebuilt,
+//! those without a pending value are written to a segment of this
+//! recovery as base images. Each goes the way a commit and write-back
+//! take it: installed in the pool, appended, linked in the page table,
+//! and marked written, so the pool and the table agree at every moment
+//! and the pool can evict the page. A page that is changed again later is
+//! read back through its new link. A page with a pending value cannot be
+//! written to a segment (PD16) and stays, so what replay holds at any
+//! moment is at most the pages that had a pending value when it last
+//! wrote, and as many again as it keeps. It tries again once it has
+//! replayed as many items as it holds pages, since the steps that place
+//! those values are in the log behind them.
+//!
+//! Such a link is in the page table of this session and in no checkpoint.
+//! If the recovery is cut short, the next one starts from the same
+//! checkpoint and the blocks are dead space.
+//!
+//! # What the session is given
+//!
+//! [`Recovered`] is every part of the store. What a caller has to know of
+//! each:
+//!
+//! - **The log** has turned to this session's first file. The first
+//!   commit takes the version after [`Recovered::landed`]: a commit that
+//!   the crash took gives its version back (DU3).
+//! - **Write-back's state** ([`Recovered::flush`]) is made here, so that
+//!   nothing can be appended before it is right. It holds the log from the
+//!   place of the checkpoint's sample ([`WriteBack::adopt`] need not be
+//!   called). It knows where the group of each replayed commit begins and
+//!   how much log no checkpoint covers, so backpressure and the dropping
+//!   of log files work from the first moment. And it knows, for each
+//!   rebuilt page, the oldest replayed commit whose change the page
+//!   holds: **no table checkpoint covers one of those commits before a
+//!   block holds the page**, although the pool lists the page under the
+//!   newest of them. Write-back is told nothing of the records, so a
+//!   rebuilt page is written as a base image.
+//! - **The buffer pool** is made here, of the manifest's page size. It
+//!   holds the rebuilt pages, which it cannot evict until write-back has
+//!   written them, and whatever replay read from segments.
+//! - **Segments and value-log files** of this session are created by
+//!   write-back when it first needs one.
+//! - **Counts start with the session.** The log's counts
+//!   ([`LogStore::appended`]) and write-back's are zero. What was replayed
+//!   is in [`RecoveryReport`]. What recovery left for write-back to do
+//!   shows where an operator looks for it: the replayed log that no
+//!   checkpoint covers is in `log_held`, and the rebuilt pages are among
+//!   the unwritten ones. The pool's counts of misses include the pages
+//!   replay read.
+//!
+//! # Twice
+//!
+//! **Replaying twice gives the same state.** A recovery changes nothing
+//! that the next one starts from: the manifest names the same table
+//! checkpoint, and the log files it names hold the same items. What it
+//! adds is the closing of the earlier files, a log file with no item, and
+//! perhaps a segment that no checkpoint points into. So a recovery that is
+//! killed at any point, or that fails, is followed by one that lands on
+//! the same version with the same pages, counts and page ids, and so is a
+//! recovery that completed and whose session committed nothing.
+//!
+//! # What is refused
+//!
+//! A directory that is not what a session of this store leaves, whatever
+//! the crash, is reported and not repaired ([`RecoveryError::is_damage`]):
+//!
+//! | What recovery finds | Error | Rule |
+//! | --- | --- | --- |
+//! | The log ends before the commit the checkpoint covers. | [`RecoveryError::LogBehindCheckpoint`] | K4 |
+//! | The log goes on from a later commit than the one after *C*. | [`RecoveryError::CommitsMissing`] | K1 |
+//! | The checkpoint holds a link of a later version than *Lr*. Nothing is discarded by its version: the log goes first, and what such a link replaced may be gone. | [`RecoveryError::LinksAfterLanding`] | K4, FL4 |
+//! | No mark ends at the place of the sample, or the mark there covers another version. | [`RecoveryError::MarkMissing`], [`RecoveryError::WrongMark`] | LG29 |
+//! | A page with a dropped change was not freed or made again by a later commit. | [`RecoveryError::ChangesWithoutPage`] | K11 |
+//! | A logged change does not apply to its page. | [`RecoveryError::Change`] | |
+//! | A cell is given a pointer to a value that the value log does not have. | [`RecoveryError::ValueNotThere`] | FL7 |
+//! | A pending value is named by the log and not carried in it. No session of this version writes one, because nothing keeps the file the name leads to (LG24). | [`RecoveryError::NamedValue`] | LG23 |
+//!
+//! A release of a value pointer that no count included is not refused: the
+//! value log keeps the file for good, which is its own answer to a count
+//! that is wrong, and [`RecoveryReport::miscounts`] says how many there
+//! were.
+//!
+//! Everything else that fails is the error of the part that failed, with
+//! the part named: a file that is gone or damaged, or the file layer.
+//!
+//! # What the caller does
+//!
+//! - It holds the directory's lock, and opens the manifest with
+//!   [`ManifestStore::open`], which is where it can look at the format
+//!   version and the page size before anything is changed. A new store is
+//!   made with [`ManifestStore::create`] and recovered like any other.
+//! - It runs nothing else on the directory while [`recover`] runs (DU4).
+//! - It puts the manifest behind a lock, builds write-back's view of the
+//!   stores with [`Recovered::flush`] as its state, and runs the
+//!   background loop ([`WriteBack::run`]). What publishes commits starts
+//!   at [`Recovered::landed`], with no pin and no guard.
+//! - It may call [`WriteBack::consolidate_long_chains`] once, and calls
+//!   the reclaims of the page ids and of the pool as after any commit:
+//!   the ids of the pages that replayed commits freed are free at the
+//!   first one.
+//!
+//! # What it does not do
+//!
+//! - It deletes no segment and trims no chain. The blocks that the
+//!   session before wrote after its last table checkpoint are in no
+//!   chain, and neither are the blocks of a recovery that was cut short:
+//!   they are dead space for whoever cleans segments (STORE-08).
+//! - It takes no table checkpoint. The first one of the session covers
+//!   what was replayed, once write-back has written the rebuilt pages.
+//! - It restores no hold on a value-log file for a value that the log
+//!   names (LG24), and refuses such a log.
+//!
+//! [`BufferPool::install`]: crate::cache::BufferPool::install
+//! [`alloc::Recovery::finish`]: crate::alloc::Recovery::finish
+//! [`ValueRecovery::finish`]: crate::values::ValueRecovery::finish
+//! [`ValueStore::recover`]: crate::values::ValueStore::recover
+//! [`ValueStore::commit`]: crate::values::ValueStore::commit
+//! [`ValueStore::mark_durable`]: crate::values::ValueStore::mark_durable
+//! [`SegmentStore::open`]: crate::segment::SegmentStore::open
+//! [`SegmentStore::commit`]: crate::segment::SegmentStore::commit
+//! [`TableCheckpoints::open`]: crate::table::TableCheckpoints::open
+//! [`PageTable::load`]: crate::table::PageTable::load
+//! [`LogStore::open`]: crate::wal::LogStore::open
+//! [`LogStore::roll`]: crate::wal::LogStore::roll
+//! [`LogStore::appended`]: crate::wal::LogStore::appended
+//! [`ManifestStore::open`]: crate::segment::ManifestStore::open
+//! [`ManifestStore::create`]: crate::segment::ManifestStore::create
+//! [`WriteBack::adopt`]: crate::flush::WriteBack::adopt
+//! [`WriteBack::run`]: crate::flush::WriteBack::run
+//! [`WriteBack::consolidate_long_chains`]: crate::flush::WriteBack::consolidate_long_chains
+//! [`PoolConfig::capacity`]: crate::cache::PoolConfig::capacity
+//! [`FlushConfig::max_unwritten`]: crate::flush::FlushConfig::max_unwritten
+//! [`alloc`]: crate::alloc
 
 mod error;
 mod replay;
@@ -164,7 +456,16 @@ impl Recovered {
     }
 }
 
-/// Recovers the store whose manifest `manifest` is.
+/// Recovers the store whose manifest `manifest` is, and returns it open,
+/// as of the last commit whose group its log holds whole. See the [module
+/// documentation](self) for the steps, for what the session is given and
+/// for what the caller does.
+///
+/// The caller holds the directory's lock, and nothing else works on the
+/// directory until this has returned (DU4).
+///
+/// If it fails, nothing was made durable that the next recovery cannot
+/// start from, and it can be called again with the manifest opened anew.
 pub fn recover(
     mut manifest: ManifestStore,
     options: &RecoveryOptions,
