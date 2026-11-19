@@ -9,7 +9,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, MutexGuard, OnceLock, PoisonError,
     },
 };
@@ -64,6 +64,8 @@ pub struct Roots {
     /// How many more writes of an entry succeed before one fails;
     /// `u64::MAX` for all of them.
     pub writes_left: AtomicU64,
+    /// Whether the next write of an entry panics.
+    pub panics: AtomicBool,
 }
 
 impl Default for Roots {
@@ -73,6 +75,7 @@ impl Default for Roots {
             writes: AtomicU64::new(0),
             moves: AtomicU64::new(0),
             writes_left: AtomicU64::new(u64::MAX),
+            panics: AtomicBool::new(false),
         }
     }
 }
@@ -142,6 +145,10 @@ impl Directory for Roots {
         root: Option<CellAddress>,
     ) -> Result<(), DirectoryError> {
         self.writes.fetch_add(1, Ordering::Relaxed);
+        assert!(
+            !self.panics.swap(false, Ordering::Relaxed),
+            "the directory was told to panic"
+        );
         match self.writes_left.load(Ordering::Relaxed) {
             u64::MAX => {}
             0 => {

@@ -224,6 +224,13 @@ impl<'s> WriteTxn<'s> {
             state.frames = None;
             state.stuck = None;
             state.renew_lease();
+            if state.set.is_empty() {
+                // The operation that panicked may have been a first write,
+                // which pins a version and starts to watch the commits
+                // before it adds anything. Nothing was added, so nothing
+                // is held (PN1).
+                state.release();
+            }
             self.state.clear_poison();
             state
         })

@@ -612,6 +612,44 @@ fn an_operation_that_panics_leaves_the_transaction_usable() {
     assert_eq!(db.private_ids(), 0);
 }
 
+/// A first write pins a version and starts to watch the commits before it
+/// adds anything. If it panics, the write set is still empty, and the
+/// transaction holds nothing (PN1).
+#[test]
+fn a_first_write_that_panics_leaves_nothing_held() {
+    let (db, versions) = Db::new(48);
+    let mut world = World::new(&db, &versions);
+    let tx = world.begin();
+    let made = world.merk(&tx, 5, |items| {
+        drop(items.insert(b"n".to_vec(), b"v".to_vec()))
+    });
+    let batch = OwnedBatch {
+        merks: vec![made],
+        records: Vec::new(),
+    };
+    // The directory panics when the Merk's entry is written, after the
+    // tree pages were changed.
+    db.roots.panics.store(true, Ordering::Relaxed);
+    let write = std::panic::AssertUnwindSafe(|| world.apply(&tx, &batch));
+    assert!(std::panic::catch_unwind(write).is_err());
+
+    assert_eq!(tx.txn.stats(), TxnStats::default());
+    assert_eq!(versions.pins_held(), 0, "no version is pinned");
+    assert_eq!((db.private_ids(), db.pool.census().private), (0, 0));
+    // Nothing watches the commits: only the newest key set is kept.
+    for round in 0..3u8 {
+        world.write_outside(&records_of(vec![put(aux(), &[round], b"v")]), &[]);
+    }
+    assert_eq!(db.commits.kept(), 1);
+
+    // The same batch goes through afterwards.
+    world.apply(&tx, &batch).expect("the directory works again");
+    world.check(&tx);
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+    world.check_committed();
+    assert_eq!(db.private_ids(), 0);
+}
+
 #[test]
 fn a_transaction_has_one_scope_at_a_time() {
     let (db, versions) = Db::new(32);
