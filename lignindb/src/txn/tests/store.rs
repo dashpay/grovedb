@@ -35,6 +35,7 @@ use lignin_store::{
 };
 use lignin_tree::{
     directory::Directory,
+    drop::FlatDrops,
     flat::{Committed, FlatConfig, FlatPages, FlatTree, Private},
     fragment::Layout,
     hash::{HashRules, Refusal},
@@ -192,6 +193,7 @@ pub struct Db {
     pub dir: PathBuf,
     keyspaces: OnceLock<Keyspaces>,
     directory: OnceLock<FlatTree>,
+    flat_drops: OnceLock<FlatDrops>,
     used: Mutex<BTreeSet<PageId>>,
     _dir: Option<tempfile::TempDir>,
 }
@@ -282,6 +284,7 @@ impl Db {
             dir: dir.to_path_buf(),
             keyspaces: OnceLock::new(),
             directory: OnceLock::new(),
+            flat_drops: OnceLock::new(),
             used: Mutex::new(BTreeSet::new()),
             _dir: keep,
         });
@@ -342,6 +345,10 @@ impl Db {
         }
         self.keyspaces.set(keyspaces).expect("made once");
         self.directory.set(*directory.tree()).expect("made once");
+        // The keyspace of the pages that drops unlink, made last: the
+        // pages before it have the ids they had.
+        let drops = FlatDrops::create(&mut pages, self.config()).expect("a keyspace");
+        self.flat_drops.set(drops).expect("made once");
 
         let lock = self.committing.lock();
         let counts = self.values.step().expect("the counts");
@@ -381,6 +388,12 @@ impl Db {
         *self.directory.get().expect("made with the store")
     }
 
+    /// The keyspace of the pages that drops unlinked and that wait to be
+    /// freed.
+    pub fn flat_drops(&self) -> FlatDrops {
+        *self.flat_drops.get().expect("made with the store")
+    }
+
     /// The subtree directory as the committed version `at` has it.
     pub fn directory_at<P: FlatPages>(&self, pages: &P) -> Directory {
         let tree = self.directory();
@@ -414,6 +427,7 @@ impl Db {
             commits: &self.commits,
             stats: &self.stats,
             directory: self.directory(),
+            flat_drops: self.flat_drops(),
         };
         WritePath::new(
             store,

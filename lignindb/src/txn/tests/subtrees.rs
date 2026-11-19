@@ -408,15 +408,13 @@ fn a_dropped_subtree_is_gone_from_the_drop_on_and_for_the_others_from_its_commit
     assert_eq!(db.private_ids(), 0);
 }
 
-/// Open, and owed by the unit that wires TREE-09's `drop::enter` into the
-/// transaction (D-084): a subtree that is entered again under the prefix of
-/// one that was below a dropped subtree starts empty in every column also
-/// before the reclaimer has come (`transactions.md` CV9, T-CL1). Today its
-/// flat records of before are read once the new subtree is committed: the
-/// drop reads nothing below the Merk it drops, and so deletes nothing
-/// there.
+/// `tree-layout.md` D6, `transactions.md` CV9, T-CL1: a subtree that is
+/// entered again under the prefix of one that was below a dropped subtree
+/// starts empty in every column, also before the reclaimer has come. The
+/// drop reads nothing below the Merk it drops, so the flat records of
+/// before are still in their pages: the enter takes them out
+/// (`lignin_tree::drop::enter`).
 #[test]
-#[ignore = "owed: an enter over a left-over entry unlinks its prefix in every flat column (TREE-09)"]
 fn a_subtree_entered_again_below_a_dropped_one_starts_empty() {
     let (db, versions) = Db::new(128);
     let mut world = World::new(&db, &versions);
@@ -450,8 +448,7 @@ fn a_subtree_entered_again_below_a_dropped_one_starts_empty() {
     assert!(!tx.txn.get(aux(INNER), b"ia", &mut out).expect("a read"));
     assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
     world.check_committed();
-    // None of them is to be read under the new subtree. Today the two
-    // that were under the nested prefix are, and this fails.
+    // And none of them is read under the new subtree once it is committed.
     assert_eq!(planted_read(&world), 0, "none of the records of before");
 }
 
