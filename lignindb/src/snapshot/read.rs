@@ -61,7 +61,7 @@ impl<'s> ReadPath<'s> {
     /// ([`Operation::open`]). The caller vouches that they are of the same
     /// store as the pages.
     #[cfg_attr(
-        any(not(test), loom),
+        any(not(any(test, feature = "testing")), loom),
         expect(dead_code, reason = "the engine's open (TXN-07) is its one caller")
     )]
     pub(crate) fn with_records(
