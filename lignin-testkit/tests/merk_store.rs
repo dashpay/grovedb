@@ -55,7 +55,8 @@
 //! 7. Every node that is read back, after a write and after a commit, is
 //!    read on both engines, and the two reads must cost the same: a seek
 //!    and the length of RocksDB's record, which LigninDB works out from the
-//!    cell.
+//!    cell. A lookup of a written node that reads no value costs the same
+//!    again.
 //!
 //! The costs a writer gives are made up here. What Merk itself gives with
 //! a node, on every grove version, is held by the tests of
@@ -601,9 +602,14 @@ impl Replay<'_> {
             }
             let root = grove.merk(change.merk).root;
             change_set.state_root(root.map(|root| &*grove.node(root).key));
-            (store.commit(change_set).unwrap()).expect("the change set is staged");
-            (NodeStore::commit(&mirrored, mirror_set).unwrap())
-                .expect("the change set is staged on the mirror");
+            let staged = store.commit(change_set);
+            let mirror_staged = NodeStore::commit(&mirrored, mirror_set);
+            assert_eq!(
+                staged.cost, mirror_staged.cost,
+                "what staging a change set is charged"
+            );
+            (staged.value).expect("the change set is staged");
+            (mirror_staged.value).expect("the change set is staged on the mirror");
         }
         let expected = self
             .mirror
@@ -648,9 +654,16 @@ impl Replay<'_> {
                     "the node under {key:?} of the Merk {path:?}, write {}",
                     self.tally.writes
                 );
+                // A lookup that reads no value costs what the fetch costs.
+                let held = store.has_node(key);
+                assert_eq!(
+                    held.cost, found.1,
+                    "what the lookup of the node under {key:?} is charged"
+                );
+                assert!(held.value.expect("the node is looked up"));
                 self.tally.compared += 1;
-                self.tally.reads_charged += 1;
-                self.tally.bytes_loaded += found.1.storage_loaded_bytes;
+                self.tally.reads_charged += 2;
+                self.tally.bytes_loaded += 2 * found.1.storage_loaded_bytes;
             }
             for key in &change.removed {
                 let held = store.has_node(key);

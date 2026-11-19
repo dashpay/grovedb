@@ -796,11 +796,7 @@ fn deferred_on_rocks(rocks: &TempStorage, transaction: &Tx<'_>, script: &Script)
     };
     let steps = run_script(open, script);
     let applied = rocks.commit_multi_context_batch(batch, Some(transaction));
-    let ended = match applied.value {
-        Ok(()) => Ended::Done,
-        Err(StorageError::CostError(_)) => Ended::Failed("cost"),
-        Err(_) => Ended::Failed("storage"),
-    };
+    let ended = outcome(applied.value.map_err(Error::StorageError), |()| Ended::Done);
     (steps, Some((applied.cost, ended)))
 }
 
@@ -1555,11 +1551,9 @@ fn the_nodes_of_a_merk_removed_with_no_cost_are_charged_as_committed() {
     assert_eq!(cost.seek_count as usize, 2 * held.len());
     assert_eq!(cost.storage_loaded_bytes as usize, committed);
     assert_ne!(committed, in_the_transaction);
-    let created = held.len()
-        - held
-            .iter()
-            .filter(|(key, _)| committed_lens.contains_key(key))
-            .count();
+    let created = (held.iter())
+        .filter(|(key, _)| !committed_lens.contains_key(key))
+        .count();
     assert!(
         created > 3 && created < held.len(),
         "{created} of {}",
