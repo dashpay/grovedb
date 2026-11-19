@@ -927,7 +927,7 @@ Three things the run showed:
 
 - The last two faults change no number the store reports, so no comparison with RocksDB sees them. The ledger does.
 - The first run of the faults found two holes in the replay, which then passed with a seek charged for a staged commit and with `has_node` measured without the value. The replay compares both now.
-- Charging from the transaction's view in D2 is found, which the corpus cannot do for the engine as a whole (section 12.3): the replay removes nodes that its own transaction wrote, with no cost, and compares what the removal is charged.
+- Charging from the transaction's view in D2 is found by the replay as well as by the tests of the store: on `delete-heavy` it removes, with no cost, nodes that its own transaction wrote, and compares what each batch is charged.
 
 ### 15.7 For later tasks
 
