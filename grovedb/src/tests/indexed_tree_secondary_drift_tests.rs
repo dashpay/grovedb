@@ -2060,7 +2060,6 @@ mod tests {
     /// on the commit this work started from (`2a79d035`), so the released
     /// repair is the one it was. A repair on the current version then
     /// finishes it.
-    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn the_repair_on_grove_v4_is_what_it_was() {
         use grovedb_costs::{

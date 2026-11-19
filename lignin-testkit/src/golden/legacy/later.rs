@@ -17,6 +17,7 @@ const OTHER: &[u8] = b"other";
 const FILLED: &[u8] = b"filled";
 const RANKED: &[u8] = b"ranked";
 const BATCHED: &[u8] = b"batched";
+const WIDE: &[u8] = b"wide";
 
 fn key(tag: u8, number: u8) -> Vec<u8> {
     vec![tag, b'0' + number]
@@ -411,14 +412,19 @@ fn full_handover_case() -> Case {
 /// entry is read back by key. `k2` is removed from one through the method
 /// of the tree and from the other in a batch, and each tree is then
 /// repaired.
+///
+/// A third tree is filled with sixteen keys in order and loses the fourth,
+/// the eighth and the twelfth, each of which leaves its row behind in the
+/// same way. It is repaired twice, and its ranking read after each.
 fn ranking_drift_case() -> Case {
     let ranked: &[&[u8]] = &[TOP, RANKED];
     let batched: &[&[u8]] = &[TOP, BATCHED];
+    let wide: &[&[u8]] = &[TOP, WIDE];
     let ranking = |tree: &[&[u8]]| {
         proven(PathQuery::new_axis_top_k(
             path(tree),
             IndexAxis::Count,
-            10,
+            if tree == wide { 20 } else { 10 },
             0,
             false,
         ))
@@ -464,7 +470,35 @@ fn ranking_drift_case() -> Case {
         }),
         Op::Commit,
         ranking(batched),
+        insert(&[TOP], WIDE, Element::empty_provable_count_indexed_tree()),
     ]);
+    for number in 0..16 {
+        ops.push(Op::Write(Write::IndexedInsert {
+            path: path(wide),
+            key: key(b'k', number),
+            element: item(&[b'v', number]),
+            tree: IndexedTree::Count,
+        }));
+    }
+    ops.push(Op::Commit);
+    for number in [3, 7, 11] {
+        ops.extend([
+            Op::Write(Write::IndexedDelete {
+                path: path(wide),
+                key: key(b'k', number),
+                tree: IndexedTree::Count,
+            }),
+            Op::Commit,
+        ]);
+    }
+    ops.extend([everything(wide), ranking(wide)]);
+    for _ in 0..2 {
+        ops.extend([
+            Op::Write(Write::ReconcileIndexed { path: path(wide) }),
+            Op::Commit,
+            ranking(wide),
+        ]);
+    }
     case(
         "ranking-drift",
         "The entry at the root of a tree ranked by count is removed, through the method of \
@@ -474,7 +508,11 @@ fn ranking_drift_case() -> Case {
          in the ranking: on grove version 4 the ranking is then neither read nor proven, \
          and the repair removes the row. Grove version 5 walks the tree and removes the \
          row with the entry, and its repair changes nothing. Grove versions 1 to 3 refuse \
-         to read a ranking.",
+         to read a ranking. A third tree loses three entries, each of which leaves its row \
+         on grove versions 1 to 4. Their repair takes the three rows out of the tree of \
+         the ranking and only one of them out of storage, where the rows of a ranking are \
+         read from: on grove version 4 the ranking is then proven and not read, and a \
+         second repair changes nothing.",
         ops,
     )
 }

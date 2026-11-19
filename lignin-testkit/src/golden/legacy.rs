@@ -57,7 +57,9 @@
 //!     4 refuse (`full-handover`).
 //! 13. **A ranking left out of step with its tree**: on grove versions 1
 //!     to 4 the removal of an entry can leave its row in the rankings of
-//!     an indexed tree, until a repair removes it (`ranking-drift`).
+//!     an indexed tree, and the repair of those versions can take such a
+//!     row out of the ranking's tree and leave it in storage, where the
+//!     ranking is read from (`ranking-drift`).
 //!
 //! Two more cases hold what every grove version refuses and the generators
 //! therefore never ask for: an offset where no count commits the rows it
@@ -797,7 +799,7 @@ mod tests {
         ),
         ("flags-of-another-length", [2, 2, 2, 0, 0], [0; 5]),
         ("full-handover", [1, 1, 1, 1, 0], [0; 5]),
-        ("ranking-drift", [4, 4, 4, 2, 0], [4, 4, 4, 2, 0]),
+        ("ranking-drift", [7, 7, 7, 5, 0], [7, 7, 7, 3, 0]),
     ];
 
     /// The proofs of those cases that do not verify, on grove versions 1 to
