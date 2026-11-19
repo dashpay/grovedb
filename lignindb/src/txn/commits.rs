@@ -20,9 +20,9 @@ use super::key::KeySet;
 ///   publishes the version. So whoever reads a latest version finds the key
 ///   set of every commit up to it here.
 /// - **A write transaction** that has a write set watches from the moment
-///   before its first write ([`Self::watch`]) and takes the key sets of the
+///   before its first write (`watch`) and takes the key sets of the
 ///   commits it has not seen at the start of each of its operations
-///   ([`Watch::take`]). A transaction with no write has nothing a commit
+///   (`Watch::take`). A transaction with no write has nothing a commit
 ///   could meet, and watches nothing.
 ///
 /// A key set is kept until every watching transaction has taken it. The
