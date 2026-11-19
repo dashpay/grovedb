@@ -58,8 +58,10 @@
 //! from a root that is not named.
 //!
 //! A refused hash stays marked, and its evaluation stops
-//! ([`HashRefusal`]). So the writer of such a value states its hash and
-//! never marks it, which is what the store does for every value hash.
+//! ([`HashRefusal`]). A commit whose evaluation stops has failed, and its
+//! transaction is ended (`transactions.md` CM6). So the writer of such a
+//! value states its hash and never marks it, which is what the store does
+//! for every value hash.
 //!
 //! The rules are those of a Merk whose values are elements of GroveDB. A
 //! Merk that holds other bytes makes its own hashes: asked for the value

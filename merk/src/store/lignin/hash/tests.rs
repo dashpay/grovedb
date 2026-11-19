@@ -14,11 +14,9 @@ use lignin_tree::{
     node::{Lease, NodePage, NodePageMut, NodeRef},
 };
 use lignindb::{
+    commit::{Committed, NoStaleHashes},
     snapshot::Versions,
-    txn::{
-        testing::{Db, Outcome},
-        Subtree, WritePath,
-    },
+    txn::{testing::Db, Subtree, WritePath, WriteTxn},
 };
 
 use super::{
@@ -831,8 +829,7 @@ fn a_modified_link_is_handed_over_with_the_aggregate_a_commit_would_give_it() {
     ));
 }
 
-/// A LigninDB store on disk with the stand-in commit of the engine's own
-/// tests, whose hash rules are not Merk's.
+/// A LigninDB store on disk, committed with the hash rules a test gives.
 struct Lignin {
     db: Arc<Db>,
     versions: Versions,
@@ -850,13 +847,14 @@ impl Lignin {
         self.db.path(&self.versions)
     }
 
-    fn rule_calls(&self) -> (u64, u64) {
-        use std::sync::atomic::Ordering::Relaxed;
-        let counts = &self.db.counts;
-        (
-            counts.stale_nodes.load(Relaxed),
-            counts.rule_calls.load(Relaxed),
-        )
+    /// Commits `transaction` with `rules` and returns how many nodes had a
+    /// stale hash that the commit evaluated.
+    fn commit(&self, transaction: &WriteTxn<'_>, rules: &mut impl HashRules) -> usize {
+        let committer = self.db.committer(&self.versions);
+        match committer.commit(transaction, rules).expect("the commit") {
+            Committed::Published(published) => published.evaluated,
+            Committed::Empty => panic!("the transaction wrote nothing"),
+        }
     }
 }
 
@@ -999,14 +997,141 @@ fn a_node_with_a_modified_link_leaves_that_hash_to_the_engine() {
     assert_eq!(stale, Stale::NONE);
     assert_eq!(links, [Some(*rehashed.child_hash(true)), None]);
 
-    // The commit makes what is left, with the rules it is given.
     writer.into_scope().merge();
-    assert_eq!(lignin.rule_calls(), (0, 0));
-    let outcome = lignin.db.commit(&lignin.versions, &transaction).unwrap();
-    assert!(matches!(outcome, Outcome::Committed(_)));
-    let (stale_nodes, rule_calls) = lignin.rule_calls();
-    assert_eq!(stale_nodes, 1);
-    assert!(rule_calls >= 1);
+
+    // The commit makes what is left with Merk's rules: one node hash, of
+    // the node under the stale link, which is the hash a commit of Merk
+    // gives that link.
+    let mut rules = MerkHashRules::new(version());
+    assert_eq!(lignin.commit(&transaction, &mut rules), 1);
+    assert_eq!(rules.cost().hash_node_calls, 2);
+    let reader = path.begin();
+    let committed = LigninNodeStore::read_only(&reader, LigninSubtree::alone(SUBTREE));
+    let read = committed.get_node(root.key(), None::<fn(&[u8], &GroveVersion) -> _>, version());
+    let read = read.unwrap().unwrap().expect("the root is committed");
+    for left in [true, false] {
+        assert_eq!(
+            held(read.link(left).unwrap()),
+            held(expected.link(left).unwrap())
+        );
+    }
+}
+
+/// Writes `node` and everything below it into `change_set`, children
+/// before parents, as Merk holds them: with no hash for a modified link.
+/// Returns how many of the nodes have a child.
+fn put_below(change_set: &mut impl NodeChangeSet, node: &TreeNode) -> usize {
+    let mut with_children = 0;
+    for left in [true, false] {
+        if let Some(child) = node.child(left) {
+            with_children += put_below(change_set, child);
+        }
+    }
+    let prepared = change_set.prepare_node(node, NodeChange::ValueWritten);
+    change_set.put_node(node.key(), prepared, None).unwrap();
+    with_children + usize::from(node.link(true).is_some() || node.link(false).is_some())
+}
+
+/// Compares the tree under the key of `expected` in `store` with
+/// `expected`, node by node and hash by hash.
+fn same_hashes(store: &LigninNodeStore<'_>, expected: &TreeNode, at: &str) -> usize {
+    let no_cost = None::<fn(&[u8], &GroveVersion) -> _>;
+    let read = store.get_node(expected.key(), no_cost, version()).unwrap();
+    let read = read.unwrap().expect("the node is committed");
+    assert_eq!(read.value_hash(), expected.value_hash(), "{at}");
+    assert_eq!(read.kv_hash(), expected.kv_hash(), "{at}");
+    assert_eq!(read.feature_type(), expected.feature_type(), "{at}");
+    let mut nodes = 1;
+    for left in [true, false] {
+        let (Some(link), Some(below)) = (read.link(left), expected.link(left)) else {
+            assert!(read.link(left).is_none() && expected.link(left).is_none());
+            continue;
+        };
+        assert_eq!(
+            held(link),
+            held(below),
+            "a link under {:?}, {at}",
+            read.key()
+        );
+        nodes += same_hashes(store, below.tree().unwrap(), at);
+    }
+    nodes
+}
+
+#[test]
+fn a_commit_whose_rules_refuse_a_stale_hash_fails_and_ends_the_transaction() {
+    let lignin = Lignin::new();
+    let path = lignin.path();
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let fresh = modified(0..3, TreeType::NormalTree).unwrap();
+    let handle = store(&writer);
+    let mut change_set = handle.change_set();
+    change_set.state_root(Some(fresh.key()));
+    assert_eq!(put_below(&mut change_set, &fresh), 1);
+    handle.commit(change_set).unwrap().expect("the write");
+    drop(handle);
+    writer.into_scope().merge();
+
+    // The rules of a writer that makes every hash itself, which are those
+    // of a commit on existing GroveVersions, make none.
+    let committer = lignin.db.committer(&lignin.versions);
+    let failed = committer.commit(&transaction, &mut NoStaleHashes);
+    let failed = failed.expect_err("a hash is stale");
+    assert!(!failed.leaves_transaction_open(), "{failed}");
+    assert!(failed.to_string().contains("a hash is stale"), "{failed}");
+    assert_eq!(transaction.stats().stale_nodes, 0);
+    let again = committer.commit(&transaction, &mut MerkHashRules::new(version()));
+    assert!(matches!(again, Ok(Committed::Empty)), "{again:?}");
+}
+
+#[test]
+fn a_commit_makes_the_hashes_merk_left_out_as_merk_would_have() {
+    for tree_type in TREE_TYPES {
+        let at = format!("{tree_type:?}");
+        let lignin = Lignin::new();
+        let path = lignin.path();
+        let transaction = path.begin();
+        let writer = LigninWriter::new(transaction.scope().unwrap());
+
+        // A Merk that no commit of Merk has hashed: every link is
+        // modified, so the hash of every child is left to the engine.
+        let fresh = modified(0..150, tree_type).unwrap();
+        let handle = store(&writer);
+        let mut change_set = handle.change_set();
+        change_set.state_root(Some(fresh.key()));
+        let with_children = put_below(&mut change_set, &fresh);
+        handle.commit(change_set).unwrap().expect("the write");
+        drop(handle);
+        assert_eq!(transaction.stats().stale_nodes, with_children, "{at}");
+
+        writer.into_scope().merge();
+        let mut rules = MerkHashRules::new(version());
+        assert_eq!(lignin.commit(&transaction, &mut rules), with_children);
+        // One node hash for each link, of two calls of the hash function.
+        assert_eq!(rules.cost().hash_node_calls, 149 * 2, "{at}");
+
+        // Every committed hash, heights and aggregate is the one a commit
+        // of Merk gives the same tree, and so is the root hash.
+        let expected = hashed(fresh);
+        let reader = path.begin();
+        let committed = LigninNodeStore::read_only(&reader, LigninSubtree::alone(SUBTREE));
+        assert_eq!(same_hashes(&committed, &expected, &at), 150);
+        let no_cost = None::<fn(&[u8], &GroveVersion) -> _>;
+        let merk = Merk::open_layered_with_root_key(
+            committed,
+            Some(expected.key().to_vec()),
+            tree_type,
+            no_cost,
+            version(),
+        );
+        let merk = merk.unwrap().expect("the Merk opens");
+        assert_eq!(
+            merk.root_hash().unwrap(),
+            expected.hash_for_link(tree_type).unwrap(),
+            "{at}"
+        );
+    }
 }
 
 #[test]
@@ -1127,13 +1252,8 @@ fn a_merk_makes_every_hash_itself_and_the_rules_make_the_same() {
         }
         assert!(live.len() > 20, "{at}");
         drop(merk);
+        // No rule runs at the commit: one that is asked refuses.
         writer.into_scope().merge();
-        let outcome = lignin.db.commit(&lignin.versions, &transaction).unwrap();
-        assert!(matches!(outcome, Outcome::Committed(_)));
-        assert_eq!(
-            lignin.rule_calls(),
-            (0, 0),
-            "no rule runs at the commit, {at}"
-        );
+        assert_eq!(lignin.commit(&transaction, &mut NoStaleHashes), 0, "{at}");
     }
 }
