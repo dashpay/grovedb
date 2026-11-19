@@ -6,12 +6,13 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use lignin_format::{
     delta::{Delta, DeltaRun},
     flat_page::{FlatPage, FlatPageKind},
-    segment::{BlockContent, MAX_BODY_LEN},
+    segment::{BlockContent, FRAME_LEN, MAX_BODY_LEN},
     tree_page::{CellValue, TreePage, TreePageMut},
     FormatVersion, PageId,
 };
 use lignin_store::{
     alloc::PageState,
+    flush::max_run_len,
     segment::BlockLocation,
     table::{Link, LinkKind},
 };
@@ -312,9 +313,27 @@ impl Run<'_, '_, '_> {
     ) -> Built {
         let place = Place::Block(location);
         let size = self.store.page_size;
+        let refused = |run: &mut Self, error: String| {
+            run.add(Rule::Block, place, || error);
+            Built::Broken
+        };
+        // A run is at most one page size, and the loader refuses a longer
+        // one (`lignin_store::load`, `LoadError::RunTooLong`): a block that
+        // is longer than such a run can be stored as before it is read, and
+        // a run that states a longer payload.
+        let max = max_run_len(size);
+        let too_long = |len: usize| {
+            format!(
+                "a run of {len} bytes for page {page}, and a run of this store has at most {max}"
+            )
+        };
+        let stored_len = location.len as usize;
+        if stored_len > FRAME_LEN + max {
+            return refused(self, too_long(stored_len - FRAME_LEN));
+        }
         payload.clear();
         payload.resize(
-            MAX_BODY_LEN.min((location.len as usize).saturating_mul(LZ4_MAX_EXPANSION)),
+            MAX_BODY_LEN.min(stored_len.saturating_mul(LZ4_MAX_EXPANSION)),
             0,
         );
         let Some((len, run_version)) =
@@ -322,10 +341,9 @@ impl Run<'_, '_, '_> {
         else {
             return Built::Broken;
         };
-        let refused = |run: &mut Self, error: String| {
-            run.add(Rule::Block, place, || error);
-            Built::Broken
-        };
+        if len > max {
+            return refused(self, too_long(len));
+        }
         let run = match DeltaRun::decode(&payload[..len], run_version) {
             Ok(run) => run,
             Err(error) => return refused(self, error.to_string()),

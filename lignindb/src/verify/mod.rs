@@ -49,7 +49,7 @@
 //! | --- | --- | --- |
 //! | The live page ids are exactly the pages of the latest version. | `page-alloc.md` | [`Rule::IdNotLive`], [`Rule::IdWithoutPage`] |
 //! | The counts of live values are the pointers the pages hold. | `value-log-format.md` O6 | [`Rule::ValueCount`] |
-//! | Every link of the page table leads to its block, a chain keeps the rules of chains, and no block is named twice. | `page-table.md` | [`Rule::Chain`], [`Rule::Block`], [`Rule::BlockNamedTwice`] |
+//! | Every link of the page table leads to its block, a chain keeps the rules of chains, a run of deltas is no longer than a page, and no block is named twice. | `page-table.md`, `lignin_store::load` | [`Rule::Chain`], [`Rule::Block`], [`Rule::BlockNamedTwice`] |
 //! | No page version that a segment makes durable holds a pending value: no base image, and no page after a run. | `page-delta.md` PD16 | [`Rule::PendingInSegment`] |
 //! | Where a record placed a value, the pointer has the pending value's length. | `page-delta.md`, record 21 | [`Rule::PlacedLength`] |
 //!

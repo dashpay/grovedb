@@ -11,7 +11,7 @@
 use lignin_format::{
     delta::{Delta, DeltaRunWriter},
     flat_page::{common_prefix_len, FlatBranchBuilder, FlatLeafBuilder, FlatPage, FlatValue},
-    segment::{BlockContent, Compression},
+    segment::{BlockContent, Compression, FRAME_LEN},
     tree_page::{CellValue, HashField, Side, TreeCell, TreeLink, TreePage, TreePageMut},
     value_log::{PendingValue, ValuePointer},
     CellAddress, PageId, SlotId,
@@ -284,10 +284,21 @@ impl Planted {
     /// A segment of this session that takes blocks, with one block that
     /// holds `payload` as `content` of `page`.
     fn block(&self, page: PageId, content: BlockContent, payload: &[u8]) -> BlockLocation {
+        self.block_as(page, content, Compression::Raw, payload)
+    }
+
+    /// As [`Self::block`], with the block stored as `compression` says.
+    fn block_as(
+        &self,
+        page: PageId,
+        content: BlockContent,
+        compression: Compression,
+        payload: &[u8],
+    ) -> BlockLocation {
         let mut writer = self.db.segments.create().expect("a segment");
         let mut manifest = self.db.manifest.lock().expect("the manifest");
         self.db.segments.commit(&mut manifest).expect("it is named");
-        let location = (writer.append(page, content, Compression::Raw, payload)).expect("a block");
+        let location = (writer.append(page, content, compression, payload)).expect("a block");
         writer.sync().expect("it is durable");
         location
     }
@@ -308,6 +319,21 @@ impl Planted {
             .for_each(|delta| writer.push(delta).expect("a record"));
         writer.finish().expect("a run");
         run
+    }
+
+    /// Gives a tree page a run of deltas whose payload is longer than a
+    /// page, in a block stored as `compression` says, and returns the
+    /// length of the block's body.
+    fn long_run(&self, compression: Compression) -> usize {
+        let page = self.tree_pages()[0];
+        let records: Vec<Delta<'_>> = (0..SIZE.get())
+            .map(|_| Delta::Remove { slot: slot(1) })
+            .collect();
+        let run = self.run(page, &records);
+        assert!(run.len() > SIZE.get());
+        let block = self.block_as(page, BlockContent::Delta, compression, &run);
+        (self.db.table.push(page, Link::delta(self.latest(), block))).expect("a link");
+        block.len as usize - FRAME_LEN
     }
 
     /// The newest link of the page `page` in the page table.
@@ -970,6 +996,9 @@ const BESIDE_THE_PAGES: &[Injection] = &[
             .push(flat, Link::delta(store.latest(), block)))
         .expect("a link");
     }),
+    injection("a run of deltas longer than a page", Rule::Block, |store| {
+        store.long_run(Compression::Raw);
+    }),
     injection(
         "a link says an image and its block holds a run",
         Rule::Block,
@@ -1295,6 +1324,23 @@ fn a_directory_in_a_keyspace_with_a_page_that_is_not_read_is_not_read() {
     assert!(report.unreached.uncertain, "{report}");
 }
 
+/// A run that is longer than a page is refused for its length, as the
+/// loader refuses it: by the length of its block where that alone says so,
+/// and by the length its payload states where the block is compressed.
+#[test]
+fn a_run_longer_than_a_page_is_refused_for_its_length() {
+    for compression in [Compression::Raw, Compression::Lz4] {
+        let store = plant();
+        store.db.unchecked();
+        let stored = store.long_run(compression);
+        assert_eq!(stored > SIZE.get(), compression == Compression::Raw);
+        let report = store.check();
+        assert_eq!(report.rules(), [Rule::Block], "{report}");
+        let words = format!("and a run of this store has at most {}", SIZE.get());
+        assert!(said(&report, &words), "{report}");
+    }
+}
+
 /// Whether a finding of `report` says `words`.
 fn said(report: &Report, words: &str) -> bool {
     (report.findings.iter()).any(|finding| finding.detail.contains(words))
@@ -1404,5 +1450,5 @@ fn the_lists_cover_the_rules() {
         );
     }
     let total: usize = lists.iter().map(|list| list.len()).sum();
-    assert_eq!(total, 58, "the list in the report names each");
+    assert_eq!(total, 59, "the list in the report names each");
 }
