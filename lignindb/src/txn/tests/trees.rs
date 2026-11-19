@@ -11,6 +11,9 @@ use super::{
 
 const PARENT: u8 = 10;
 
+/// The keys and values of one Merk.
+type Items = BTreeMap<Vec<u8>, Vec<u8>>;
+
 fn element(index: usize) -> Vec<u8> {
     format!("element-{index:03}").into_bytes()
 }
@@ -26,8 +29,8 @@ fn hosted_batch<'s>(
     world: &World<'s>,
     tx: &Tx<'s>,
     changed: &[usize],
-    edit: &mut dyn FnMut(usize, &mut BTreeMap<Vec<u8>, Vec<u8>>),
-    more: &mut dyn FnMut(&mut BTreeMap<Vec<u8>, Vec<u8>>),
+    edit: &mut dyn FnMut(usize, &mut Items),
+    more: &mut dyn FnMut(&mut Items),
 ) -> OwnedBatch {
     let mut merks: Vec<OwnedMerk> = Vec::new();
     for index in changed {

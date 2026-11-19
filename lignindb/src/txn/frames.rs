@@ -220,7 +220,7 @@ impl<'s> Frames<'s> {
                 owner,
                 path.ids,
             ))),
-            fragments: Fragments::new(path.layout.clone()),
+            fragments: Fragments::new(path.layout),
             key: Vec::new(),
             empty: Vec::new(),
             base: at,

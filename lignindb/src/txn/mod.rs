@@ -15,7 +15,7 @@ mod view;
 mod write;
 mod write_set;
 
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 mod tests;
 
 pub use commits::Commits;

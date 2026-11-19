@@ -128,6 +128,10 @@ pub(crate) struct TreeCopy<'s> {
 
 impl TreeCopy<'_> {
     /// Whether the copy is as the page was: its run has no record.
+    #[cfg_attr(
+        any(not(test), loom),
+        expect(dead_code, reason = "the commit (TXN-05) is its one caller")
+    )]
     pub(crate) fn is_unchanged(&self) -> bool {
         self.run.len() <= DeltaRun::HEADER_LEN
     }
@@ -284,6 +288,10 @@ impl<'s> TreePages<'s> {
     }
 
     /// Ends the pages and hands what they hold to the commit.
+    #[cfg_attr(
+        any(not(test), loom),
+        expect(dead_code, reason = "the commit (TXN-05) is its one caller")
+    )]
     pub(crate) fn into_parts(mut self) -> TreeParts<'s> {
         TreeParts {
             written: std::mem::take(&mut self.copies).into_iter().collect(),
@@ -305,6 +313,10 @@ impl Drop for TreePages<'_> {
 /// What the tree pages of a transaction leave for its commit
 /// (`transactions.md` CM3 step 7).
 #[derive(Debug)]
+#[cfg_attr(
+    any(not(test), loom),
+    expect(dead_code, reason = "the commit (TXN-05) is its one reader")
+)]
 pub(crate) struct TreeParts<'s> {
     /// The copies of the pages the transaction changed or made, in
     /// ascending order of page id. One that is as the page was is
@@ -496,6 +508,10 @@ impl<'s> TreeValues<'s> {
 
     /// The value pointers that cells stopped holding, in ascending order of
     /// file and offset: what the commit releases.
+    #[cfg_attr(
+        any(not(test), loom),
+        expect(dead_code, reason = "the commit (TXN-05) is its one caller")
+    )]
     pub(crate) fn released(&mut self) -> &[ValuePointer] {
         self.released
             .sort_unstable_by_key(|pointer| (pointer.file(), pointer.offset()));
@@ -504,6 +520,10 @@ impl<'s> TreeValues<'s> {
 
     /// The cells that were carried with a pending value of an earlier
     /// commit.
+    #[cfg_attr(
+        any(not(test), loom),
+        expect(dead_code, reason = "the commit (TXN-05) is its one caller")
+    )]
     pub(crate) fn carried(&self) -> &[CarriedPending] {
         &self.carried
     }

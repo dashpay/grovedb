@@ -156,6 +156,7 @@ pub fn records(
 
 /// What a record key holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Val {
     Flat(Vec<u8>),
     Node(NodeRec),
@@ -163,6 +164,7 @@ pub enum Val {
 
 /// One write of a transaction (ST5).
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum Write {
     Put(Unit, Vec<u8>, Val),
     Delete(Unit, Vec<u8>),

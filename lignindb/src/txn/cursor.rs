@@ -131,8 +131,10 @@ enum Way {
 ///   defined (`flat-store.md`, rule 7), and so is every other write under
 ///   an open cursor.
 ///
-/// Each call is one operation of the transaction, and holds its lock for
-/// the length of the call.
+/// Each call is one operation of the transaction. It holds an operation
+/// guard for its length, beside the cursor's pin (PN5): background work
+/// can give a pinned page version another place without a commit. The
+/// transaction's lock is held only while its write set is looked at.
 pub struct Cursor<'t, 's, C = FlatSide<'s>> {
     txn: &'t WriteTxn<'s>,
     scoped: bool,
@@ -208,6 +210,7 @@ impl<'t, 's, C: CommittedSide> Cursor<'t, 's, C> {
         let Some(key) = &self.key else {
             return Ok(false);
         };
+        let _guard = self.txn.path().versions().guard();
         let unit = self.unit;
         let own = self
             .txn
@@ -228,34 +231,40 @@ impl<'t, 's, C: CommittedSide> Cursor<'t, 's, C> {
 
     /// Goes to the first key at or after `key`.
     pub fn seek(&mut self, key: &[u8]) -> Result<(), TxnError> {
+        let _guard = self.txn.path().versions().guard();
         self.side.seek(key)?;
         self.settle(Bound::Included(key.to_vec()), Way::Forward)
     }
 
     /// Goes to the last key at or before `key`.
     pub fn seek_for_prev(&mut self, key: &[u8]) -> Result<(), TxnError> {
+        let _guard = self.txn.path().versions().guard();
         self.side.seek_for_prev(key)?;
         self.settle(Bound::Included(key.to_vec()), Way::Back)
     }
 
     /// Goes to the first key.
     pub fn seek_to_first(&mut self) -> Result<(), TxnError> {
+        let _guard = self.txn.path().versions().guard();
         self.side.seek_to_first()?;
         self.settle(Bound::Unbounded, Way::Forward)
     }
 
     /// Goes to the last key.
     pub fn seek_to_last(&mut self) -> Result<(), TxnError> {
+        let _guard = self.txn.path().versions().guard();
         self.side.seek_to_last()?;
         self.settle(Bound::Unbounded, Way::Back)
     }
 
     /// Goes to the next key. Past the last key, and from no key, the
     /// cursor stands on none.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<(), TxnError> {
         let Some(key) = self.key.take() else {
             return Ok(());
         };
+        let _guard = self.txn.path().versions().guard();
         // The committed side goes to the first committed key after `key`.
         if self.way != Way::Forward {
             self.side.seek(&key)?;
@@ -272,6 +281,7 @@ impl<'t, 's, C: CommittedSide> Cursor<'t, 's, C> {
         let Some(key) = self.key.take() else {
             return Ok(());
         };
+        let _guard = self.txn.path().versions().guard();
         if self.way != Way::Back {
             self.side.seek_for_prev(&key)?;
         }

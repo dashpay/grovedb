@@ -419,7 +419,7 @@ fn a_kept_value_is_the_transactions_own_after_a_commit_outside_overwrote_it() {
     world.edit_outside(
         1,
         |items| {
-            for (_, value) in items.iter_mut() {
+            for value in items.values_mut() {
                 *value = b"overwritten outside".to_vec();
             }
         },

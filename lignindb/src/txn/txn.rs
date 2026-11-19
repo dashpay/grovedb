@@ -264,6 +264,10 @@ impl<'s> WriteTxn<'s> {
 
     /// The place after the transaction's last write: what a savepoint and a
     /// scope remember (WT8, SC6).
+    #[cfg_attr(
+        any(not(test), loom),
+        expect(dead_code, reason = "savepoints (TXN-04) are its callers")
+    )]
     pub(crate) fn mark(&self) -> Mark {
         self.lock().set.mark()
     }
@@ -272,6 +276,10 @@ impl<'s> WriteTxn<'s> {
     /// first-write version and its place in the overlap set (WT8, CF4). The
     /// frames are made again from what is left, and every node handle read
     /// through the transaction ends (PN8).
+    #[cfg_attr(
+        any(not(test), loom),
+        expect(dead_code, reason = "savepoints (TXN-04) are its callers")
+    )]
     pub(crate) fn rewind(&self, mark: Mark) {
         self.lock().rewind(mark);
     }

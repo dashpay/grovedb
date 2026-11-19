@@ -195,6 +195,9 @@ pub struct Counts {
     /// The pointers to hosted roots that the last check of the tree pages
     /// followed.
     pub hosted: AtomicU64,
+    /// Cells that a commit carried with a pending value of an earlier
+    /// commit.
+    pub carried_pending: AtomicU64,
 }
 
 /// How a commit of the test store ended.
@@ -354,6 +357,15 @@ impl Db {
         let mut freed = Vec::new();
         let mut unused = Vec::new();
 
+        // The values of tree cells: nothing of these stores is in the
+        // value log, so no pointer is released, and a cell that was carried
+        // with a pending value went to another page.
+        let mut values = parts.values;
+        assert!(values.released().is_empty(), "a pointer of no value log");
+        for carried in values.carried() {
+            assert_ne!(carried.from, carried.to, "{:?}", carried.value);
+            self.counts.carried_pending.fetch_add(1, Ordering::Relaxed);
+        }
         let tree = parts.tree.into_parts();
         for (page, copy) in tree.written {
             if copy.is_unchanged() {

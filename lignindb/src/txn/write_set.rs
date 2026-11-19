@@ -472,12 +472,10 @@ impl WriteSet {
             .filter_map(|entry| match entry.kind {
                 Kind::Node(node) => Some(match node.hosted {
                     HostedEntry::Keep => Vec::new(),
-                    HostedEntry::Set(span) => self
-                        .arena
-                        .get(span)
-                        .chunks_exact(Subtree::LEN)
-                        .map(|bytes| Subtree::new(bytes.try_into().expect("32 bytes")))
-                        .collect(),
+                    HostedEntry::Set(span) => {
+                        let (subtrees, _) = self.arena.get(span).as_chunks::<{ Subtree::LEN }>();
+                        subtrees.iter().copied().map(Subtree::new).collect()
+                    }
                 }),
                 _ => None,
             })
@@ -1000,7 +998,7 @@ mod tests {
                         keys.last().map(|key| &key[..])
                     );
                     let from = (Bound::Excluded(&b"f"[..]), Bound::Unbounded);
-                    let next = keys.iter().find(|key| &key[..] > &b"f"[..]);
+                    let next = keys.iter().find(|key| key[..] > b"f"[..]);
                     assert_eq!(set.written_key(unit, from, false), next.map(|key| &key[..]));
                     let none = (Bound::Excluded(&b"f"[..]), Bound::Excluded(&b"f"[..]));
                     assert_eq!(set.written_key(unit, none, false), None);

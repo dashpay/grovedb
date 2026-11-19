@@ -112,11 +112,15 @@ pub(crate) fn ranges_meet(a: (&[u8], Option<&[u8]>), b: (&[u8], Option<&[u8]>)) 
     below(a.0, a.1) && below(b.0, b.1) && below(a.0, b.1) && below(b.0, a.1)
 }
 
+/// An interval of keys: from the first, to before the second or to the end
+/// of the unit.
+pub(crate) type KeyRange = (Box<[u8]>, Option<Box<[u8]>>);
+
 /// The keys and intervals one commit wrote in one unit.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct UnitKeys {
     pub(crate) keys: BTreeSet<Box<[u8]>>,
-    pub(crate) ranges: Vec<(Box<[u8]>, Option<Box<[u8]>>)>,
+    pub(crate) ranges: Vec<KeyRange>,
 }
 
 impl UnitKeys {

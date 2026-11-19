@@ -46,10 +46,6 @@ pub(crate) struct Arena {
 }
 
 impl Arena {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
     /// Puts `bytes` in, and returns where they are.
     ///
     /// # Panics
@@ -126,7 +122,7 @@ mod tests {
 
     #[test]
     fn pieces_stay_where_they_are_put() {
-        let mut arena = Arena::new();
+        let mut arena = Arena::default();
         let empty = arena.put(b"");
         assert_eq!((empty, arena.get(empty)), (Span::EMPTY, &b""[..]));
         let first = arena.put(b"first");
@@ -140,7 +136,7 @@ mod tests {
 
     #[test]
     fn what_was_put_in_after_a_mark_is_taken_out() {
-        let mut arena = Arena::new();
+        let mut arena = Arena::default();
         let start = arena.mark();
         let kept = arena.put(b"kept");
         let mark = arena.mark();
