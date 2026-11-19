@@ -26,6 +26,7 @@ use lignin_store::{
 
 use super::{
     block, checkpointer, checkpoints_in, open_on, sim, store_files, History, NoLinks, DIR,
+    NO_CATCH_UP,
 };
 use crate::{
     checkpoint::{CheckpointError, CheckpointOptions},
@@ -34,10 +35,6 @@ use crate::{
         store::{Db, Rng, SIZE},
         World,
     },
-};
-
-const NO_CATCH_UP: CheckpointOptions = CheckpointOptions {
-    catch_up_above: None,
 };
 
 /// How the files of a checkpoint come into its directory.

@@ -4,16 +4,14 @@
 
 use std::{collections::BTreeSet, path::Path, sync::Arc};
 
-use lignin_format::{manifest::FileState, wal::GroupWriter, FileKind};
+use lignin_format::{manifest::FileState, wal::GroupWriter};
 use lignin_io::{StdVfs, Vfs};
-use lignin_store::{
-    flush::Checkpointed,
-    segment::{read_manifest, FileNames},
-};
+use lignin_store::{flush::Checkpointed, segment::read_manifest};
 
 use super::{
-    block, bytes_of, checkpointer, checkpoints_in, open, open_on, remove_block, root_hash, sim,
-    store_files, store_on, store_with_log, turn, write_documents, History, DIR,
+    block, bytes_of, checkpointer, checkpoints_in, names_of, open, open_on, remove_block,
+    root_hash, sim, store_files, store_on, store_with_log, turn, write_documents, History, DIR,
+    NO_CATCH_UP,
 };
 use crate::{
     checkpoint::{CheckpointError, CheckpointOptions, DEFAULT_CATCH_UP_ABOVE},
@@ -399,11 +397,7 @@ fn a_checkpoint_is_durable_when_it_is_made_and_so_is_its_version() {
     );
     for file in manifest.files() {
         assert_ne!(file.state(), FileState::Open, "{file:?}");
-        let names = match file.kind() {
-            FileKind::Wal => FileNames::WAL,
-            FileKind::Segment => FileNames::SEGMENT,
-            _ => FileNames::VALUE_LOG,
-        };
+        let names = names_of(file.kind());
         let len = bytes_of(&fs, &names.path(&target, file.id())).len() as u64;
         assert!(len >= file.valid_len(), "{file:?} has {len} bytes");
     }
@@ -552,9 +546,7 @@ fn a_manifest_in_doubt_is_not_sampled() {
     fs.clear_rules();
 
     let target = checkpoints_in(&db).join("1");
-    let maker = checkpointer(&db, &versions).with_options(CheckpointOptions {
-        catch_up_above: None,
-    });
+    let maker = checkpointer(&db, &versions).with_options(NO_CATCH_UP);
     let refused = maker.create(&target);
     assert!(
         matches!(

@@ -16,7 +16,7 @@ use lignin_store::{flush::Checkpointed, segment::FileNames};
 
 use super::{
     block, checkpointer, checkpoints_in, open, remove_block, store_files, store_with_log, turn,
-    History,
+    History, NO_CATCH_UP,
 };
 use crate::{
     checkpoint::{create::Step, CheckpointOptions},
@@ -26,10 +26,6 @@ use crate::{
         store::{Outcome, Rng},
         World,
     },
-};
-
-const NO_CATCH_UP: CheckpointOptions = CheckpointOptions {
-    catch_up_above: None,
 };
 
 /// T-CK3, first half: "the cleaner running during creation deletes no file

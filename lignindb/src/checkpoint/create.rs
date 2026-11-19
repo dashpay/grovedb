@@ -427,9 +427,7 @@ impl<'s> Checkpointer<'s> {
         #[cfg(test)]
         self.reached(Step::Secured);
 
-        if target.has_waiting() {
-            target.copy_waiting()?;
-        }
+        target.copy_waiting()?;
         // Every name in the target is durable before the target's own name
         // is, and that before the manifest is written: the name of a
         // database directory is durable before its first manifest

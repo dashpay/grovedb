@@ -9,7 +9,7 @@ use std::{
     sync::Arc,
 };
 
-use lignin_format::{manifest::Manifest, FileKind};
+use lignin_format::manifest::Manifest;
 use lignin_io::{StdVfs, Vfs};
 use lignin_store::{
     flush::FlushConfig,
@@ -17,7 +17,10 @@ use lignin_store::{
     wal::LogOptions,
 };
 
-use super::{block, checkpointer, checkpoints_in, open, sim, store_files, store_on, turn, NoLinks};
+use super::{
+    block, checkpointer, checkpoints_in, memory_dir, names_of, open, sim, store_files, store_on,
+    store_with_log, turn, NoLinks,
+};
 use crate::{
     checkpoint::{self, create::Step, CheckpointError, CheckpointOptions},
     snapshot::Versions,
@@ -30,11 +33,7 @@ use crate::{
 /// A store in a directory of its own in memory, on a file layer that makes
 /// no hard link into the directory of its checkpoints.
 fn store_without_links(kind: ErrorKind) -> (Arc<Db>, Versions) {
-    let dir = tempfile::tempdir_in(match Path::new("/dev/shm").is_dir() {
-        true => PathBuf::from("/dev/shm"),
-        false => std::env::temp_dir(),
-    })
-    .expect("a directory");
+    let dir = memory_dir();
     let path = dir.path().to_path_buf();
     let vfs = NoLinks {
         inner: Arc::new(StdVfs),
@@ -59,14 +58,10 @@ fn store_without_links(kind: ErrorKind) -> (Arc<Db>, Versions) {
 /// database directory and the length the manifest gives it.
 fn named(manifest: &Manifest) -> Vec<(PathBuf, u64)> {
     let dir = Path::new("");
-    let files = manifest.files().iter().map(|file| {
-        let names = match file.kind() {
-            FileKind::Wal => FileNames::WAL,
-            FileKind::Segment => FileNames::SEGMENT,
-            _ => FileNames::VALUE_LOG,
-        };
-        (names.path(dir, file.id()), file.valid_len())
-    });
+    let files = manifest
+        .files()
+        .iter()
+        .map(|file| (names_of(file.kind()).path(dir, file.id()), file.valid_len()));
     let table = manifest.table_checkpoint().map(|table| {
         (
             FileNames::PAGE_TABLE.path(dir, table.file()),
@@ -292,7 +287,7 @@ fn a_checkpoint_carries_the_files_the_engine_names() {
 /// checkpoint that a handle has open.
 #[test]
 fn deleting_a_checkpoint_removes_its_directory() {
-    let (db, versions) = store_with_links();
+    let (db, versions) = store_with_log(24 << 10, 128);
     let mut world = World::new(&db, &versions);
     let mut rng = Rng::new(66);
     for round in 0..4 {
@@ -357,10 +352,6 @@ fn deleting_a_checkpoint_removes_its_directory() {
         std::fs::read(not_one.join("kept")).expect("the file"),
         b"as it was"
     );
-}
-
-fn store_with_links() -> (Arc<Db>, Versions) {
-    super::store_with_log(24 << 10, 128)
 }
 
 /// A deletion is durable when it returns, and one that is cut short can be

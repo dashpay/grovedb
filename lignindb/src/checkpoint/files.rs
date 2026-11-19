@@ -229,11 +229,6 @@ impl Target {
         }
     }
 
-    /// Whether a file waits to be copied.
-    pub(super) fn has_waiting(&self) -> bool {
-        !self.waiting.is_empty()
-    }
-
     /// Copies every file that could not be linked, and makes each copy
     /// durable.
     pub(super) fn copy_waiting(&mut self) -> Result<(), CheckpointError> {

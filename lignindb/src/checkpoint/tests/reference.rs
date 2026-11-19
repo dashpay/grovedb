@@ -42,7 +42,7 @@ use lignin_io::{DirEntry, OpenMode, StdVfs, Vfs, VfsFile, VfsLock};
 use lignin_store::{flush::FlushConfig, segment::read_manifest, wal::LogOptions};
 use lignin_tree::hash::Stale;
 
-use super::{checkpointer, checkpoints_in, root_hash, store_files, ROOT};
+use super::{checkpointer, checkpoints_in, memory_dir, root_hash, store_files, ROOT};
 use crate::{
     snapshot::Versions,
     txn::{
@@ -532,16 +532,7 @@ fn the_reference_database_is_checkpointed_and_opened_in_time() {
     let (options, flush) = (LogOptions::default(), FlushConfig::new(SIZE));
 
     let kept = std::env::var_os("LIGNIN_TXN06_DIR").map(PathBuf::from);
-    let temporary = match &kept {
-        Some(_) => None,
-        None => Some(
-            match Path::new("/dev/shm").is_dir() {
-                true => tempfile::tempdir_in("/dev/shm"),
-                false => tempfile::tempdir(),
-            }
-            .expect("a directory"),
-        ),
-    };
+    let temporary = kept.is_none().then(memory_dir);
     let dir = match (&kept, &temporary) {
         (Some(kept), _) => kept.clone(),
         (None, Some(temporary)) => temporary.path().to_path_buf(),

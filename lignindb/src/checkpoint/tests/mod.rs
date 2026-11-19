@@ -19,7 +19,7 @@ use lignin_format::{
     flat_page::{FlatPage, FlatValue},
     tree_page::{Hash, Side},
     value_log::ValuePlace,
-    CommitVersion, PageId,
+    CommitVersion, FileKind, PageId,
 };
 use lignin_io::{
     sim::{SimConfig, SimVfs},
@@ -30,11 +30,12 @@ use lignin_store::{
     flush::FlushConfig,
     load::{LoadBuffers, FRAME_FORMAT},
     recovery::{RecoveryError, RecoveryReport},
+    segment::FileNames,
     wal::LogOptions,
 };
 use lignin_tree::node::{Lease, NodePage};
 
-use super::Checkpointer;
+use super::{CheckpointOptions, Checkpointer};
 use crate::{
     snapshot::Versions,
     txn::{
@@ -188,6 +189,11 @@ pub(super) fn remove_block<'s>(world: &mut World<'s>, first: u64, count: u64) ->
         outcome => panic!("a block was not committed: {outcome:?}"),
     }
 }
+
+/// Options that never wait for write-back.
+pub(super) const NO_CATCH_UP: CheckpointOptions = CheckpointOptions {
+    catch_up_above: None,
+};
 
 /// What makes checkpoints of `db`, with its defaults.
 pub(super) fn checkpointer<'s>(db: &'s Db, versions: &'s Versions) -> Checkpointer<'s> {
@@ -358,15 +364,20 @@ impl History {
     }
 }
 
-/// An empty store in a directory of its own, in memory where there is such
-/// a place, whose log turns to another file every `log_file_len` bytes.
-pub(super) fn store_with_log(log_file_len: u64, frames: usize) -> (Arc<Db>, Versions) {
+/// A temporary directory, in memory where there is such a place.
+pub(super) fn memory_dir() -> tempfile::TempDir {
     let memory = Path::new("/dev/shm");
-    let dir = match memory.is_dir() {
+    match memory.is_dir() {
         true => tempfile::tempdir_in(memory),
         false => tempfile::tempdir(),
     }
-    .expect("a directory");
+    .expect("a directory")
+}
+
+/// An empty store in a directory of its own, in memory where there is such
+/// a place, whose log turns to another file every `log_file_len` bytes.
+pub(super) fn store_with_log(log_file_len: u64, frames: usize) -> (Arc<Db>, Versions) {
+    let dir = memory_dir();
     let path = dir.path().to_path_buf();
     let options = LogOptions {
         target_file_len: log_file_len,
@@ -423,6 +434,15 @@ pub(super) fn store_files(vfs: &dyn Vfs, dir: &Path) -> BTreeSet<PathBuf> {
         );
     }
     files
+}
+
+/// The names of the numbered files of `kind` that a manifest lists.
+pub(super) fn names_of(kind: FileKind) -> FileNames {
+    match kind {
+        FileKind::Wal => FileNames::WAL,
+        FileKind::Segment => FileNames::SEGMENT,
+        _ => FileNames::VALUE_LOG,
+    }
 }
 
 /// The bytes of the file `path` of `vfs`.
