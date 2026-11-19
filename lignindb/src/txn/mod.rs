@@ -376,7 +376,7 @@ mod write_set;
 pub mod testing;
 
 #[cfg(all(test, not(loom)))]
-mod tests;
+pub(crate) mod tests;
 
 pub use commits::Commits;
 pub use cursor::{CommittedSide, Cursor, FlatSide, MerkCursor, MerkSide};
