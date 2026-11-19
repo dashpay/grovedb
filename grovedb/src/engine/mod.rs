@@ -4,7 +4,9 @@
 //! engine: opening a database, transactions, snapshot read transactions,
 //! savepoints, write scopes, handles to subtrees, the batch of writes that
 //! spans subtrees, checkpoints, flush and wipe. `GroveDb<E>` is generic over
-//! it, and [`RocksDbEngine`] is the engine it uses unless another is named.
+//! it, and `RocksDbEngine` is the engine it uses unless another is named.
+//! `RocksDbEngine` is compiled with the `rocksdb_storage` feature. Without
+//! it, `GroveDb` with no engine named is on `NoEngine`, which is none.
 //!
 //! A subtree handle is a [`SubtreeHandle`]: the `NodeStore` a Merk runs on,
 //! the `FlatStore` of the subtree's data keyspace, and the handles of its aux
@@ -12,8 +14,9 @@
 //!
 //! The contract is written out in `docs/lignindb/engine.md`.
 
+#[cfg(feature = "rocksdb_storage")]
 pub mod rocksdb;
-#[cfg(test)]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod tests;
 
 use std::path::Path;
@@ -30,7 +33,20 @@ use grovedb_storage::{
     Error, FlatStore,
 };
 
+#[cfg(feature = "rocksdb_storage")]
 pub use self::rocksdb::RocksDbEngine;
+
+/// What `GroveDb` with no engine named is on where no engine is compiled in.
+///
+/// It is not an [`Engine`] and has no value, so there is no database of
+/// it. `GroveDb<NoEngine>` is the type that has the functions of `GroveDb`
+/// that take no database: the proof verifiers and the estimated costs.
+///
+/// Write `GroveDb`, not `GroveDb<NoEngine>`: this type is gone as soon as
+/// any crate of a build turns an engine on, and `GroveDb` is then on that
+/// engine.
+#[cfg(not(feature = "rocksdb_storage"))]
+pub enum NoEngine {}
 
 /// The error of a node store call that GroveDB makes itself, where it used to
 /// call the storage context: an error of the storage stays

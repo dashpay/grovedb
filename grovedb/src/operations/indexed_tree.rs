@@ -61,7 +61,10 @@ use grovedb_merk::{
     Merk, TreeType,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator};
+use grovedb_storage::{
+    prefix::{build_prefix, secondary_prefix_for},
+    RawIterator,
+};
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
 use crate::{
@@ -469,10 +472,9 @@ impl<E: Engine> GroveDb<E> {
         B: AsRef<[u8]> + 'b,
     {
         let mut cost = OperationCost::default();
-        let primary_prefix = RocksDbStorage::build_prefix(path).unwrap_add_cost(&mut cost);
-        let secondary_prefix =
-            RocksDbStorage::secondary_prefix_for(&primary_prefix, axis_storage_tag(axis))
-                .unwrap_add_cost(&mut cost);
+        let primary_prefix = build_prefix(path).unwrap_add_cost(&mut cost);
+        let secondary_prefix = secondary_prefix_for(&primary_prefix, axis_storage_tag(axis))
+            .unwrap_add_cost(&mut cost);
         let storage = self
             .db
             .subtree_by_prefix(secondary_prefix, batch, tx)
@@ -1557,12 +1559,10 @@ impl<E: Engine> GroveDb<E> {
             ))
             .wrap_with_cost(cost);
         };
-        let parent_prefix =
-            RocksDbStorage::build_prefix(parent_path.clone()).unwrap_add_cost(&mut cost);
-        let primary_prefix = RocksDbStorage::build_prefix(path).unwrap_add_cost(&mut cost);
-        let secondary_prefix =
-            RocksDbStorage::secondary_prefix_for(&primary_prefix, axis_storage_tag(axis))
-                .unwrap_add_cost(&mut cost);
+        let parent_prefix = build_prefix(parent_path.clone()).unwrap_add_cost(&mut cost);
+        let primary_prefix = build_prefix(path).unwrap_add_cost(&mut cost);
+        let secondary_prefix = secondary_prefix_for(&primary_prefix, axis_storage_tag(axis))
+            .unwrap_add_cost(&mut cost);
         let parent_ctx = self
             .db
             .subtree_by_prefix(parent_prefix, None, tx_ref)
@@ -4692,7 +4692,7 @@ mod secondary_key_codec_tests {
         }
     }
 }
-#[cfg(test)]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod direct_axis_mirror_tests {
     //! Direct-drive tests for `mirror_indexed_axis_to_secondary`.
     //!

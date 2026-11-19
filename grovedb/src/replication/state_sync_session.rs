@@ -14,7 +14,10 @@ use grovedb_merk::{
     CryptoHash, Merk, Restorer,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::{rocksdb_storage::RocksDbStorage, FlatStore};
+use grovedb_storage::{
+    prefix::{build_prefix, secondary_prefix_for},
+    FlatStore,
+};
 use grovedb_version::version::GroveVersion;
 
 use super::{
@@ -240,7 +243,11 @@ impl<'tx, E: Engine> SubtreeStateSyncInfo<'tx, E> {
 }
 
 /// Struct governing the state synchronization process.
-pub struct MultiStateSyncSession<'db, E: Engine = crate::RocksDbEngine> {
+pub struct MultiStateSyncSession<
+    'db,
+    #[cfg(feature = "rocksdb_storage")] E: Engine = crate::RocksDbEngine,
+    #[cfg(not(feature = "rocksdb_storage"))] E: Engine,
+> {
     /// GroveDb instance to apply changes to
     db: &'db GroveDb<E>,
 
@@ -985,8 +992,7 @@ impl<'db, E: Engine> MultiStateSyncSession<'db, E> {
         let mut request_axes = Vec::with_capacity(axes_pairs.len());
         for (axis, secondary_root_key) in axes_pairs {
             let secondary_prefix =
-                RocksDbStorage::secondary_prefix_for(&chunk_prefix, axis_storage_tag(axis))
-                    .unwrap();
+                secondary_prefix_for(&chunk_prefix, axis_storage_tag(axis)).unwrap();
             axes.push((axis.tag(), secondary_prefix, secondary_root_key.clone()));
             request_axes.push((axis.tag(), secondary_root_key));
         }
@@ -1717,7 +1723,7 @@ impl<'db, E: Engine> MultiStateSyncSession<'db, E> {
 
             let subtree_path: Vec<&[u8]> = new_path.iter().map(|vec| vec.as_slice()).collect();
             let path: &[&[u8]] = &subtree_path;
-            let prefix = RocksDbStorage::build_prefix(path.as_ref().into()).unwrap();
+            let prefix = build_prefix(path.as_ref().into()).unwrap();
 
             let entry = if element.is_indexed_tree() {
                 SubtreeMetadata::IndexedPrimary {

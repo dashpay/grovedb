@@ -3,18 +3,18 @@
 //!
 //! Each wrapper pins the [`IndexAxis`] and forwards; no logic lives here.
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::Engine;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_costs::CostResult;
 use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::proofs::Query as MerkQuery;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_path::SubtreePath;
 use grovedb_query::AggregateFold;
 use grovedb_version::version::GroveVersion;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::TransactionArg;
 use crate::{Error, GroveDb};
 
@@ -228,13 +228,13 @@ impl GroveDb {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl<E: Engine> GroveDb<E> {
     // ---------- count axis ----------
 
     /// Prove the top-`k` entries of the count axis. Thin wrapper over
     /// [`Self::prove_indexed_axis_top_k`] with `axis = Count`.
-    #[cfg(feature = "minimal")]
+    #[cfg(feature = "engine_generic")]
     pub(crate) fn prove_indexed_count_top_k<'db, 'b, B, P>(
         &'db self,
         path: P,
@@ -258,7 +258,7 @@ impl<E: Engine> GroveDb<E> {
     }
 
     /// Prove an offset-paginated top-`k` window on the count axis.
-    #[cfg(feature = "minimal")]
+    #[cfg(feature = "engine_generic")]
     pub(crate) fn prove_indexed_count_top_k_paginated<'db, 'b, B, P>(
         &'db self,
         path: P,
@@ -284,7 +284,7 @@ impl<E: Engine> GroveDb<E> {
     }
 
     /// Prove an arbitrary query against the count-axis secondary.
-    #[cfg(feature = "minimal")]
+    #[cfg(feature = "engine_generic")]
     pub(crate) fn prove_indexed_count_query<'db, 'b, B, P>(
         &'db self,
         path: P,
@@ -309,7 +309,7 @@ impl<E: Engine> GroveDb<E> {
 
     /// Prove the aggregate count of entries whose `count_value` is in
     /// `[lo_count, hi_count]`.
-    #[cfg(feature = "minimal")]
+    #[cfg(feature = "engine_generic")]
     pub(crate) fn prove_indexed_count_aggregate_over_value_range<'db, 'b, B, P>(
         &'db self,
         path: P,
@@ -336,7 +336,7 @@ impl<E: Engine> GroveDb<E> {
     // ---------- sum axis ----------
 
     /// Prove the top-`k` entries of the sum axis.
-    #[cfg(feature = "minimal")]
+    #[cfg(feature = "engine_generic")]
     pub(crate) fn prove_indexed_sum_top_k<'db, 'b, B, P>(
         &'db self,
         path: P,
@@ -363,7 +363,7 @@ impl<E: Engine> GroveDb<E> {
     /// secondary is a `ProvableCountProvableSumTree`, so the skipped
     /// prefix is attested by counted subtree commitments and the proof
     /// size is O(log n + k) regardless of `offset`.
-    #[cfg(feature = "minimal")]
+    #[cfg(feature = "engine_generic")]
     pub(crate) fn prove_indexed_sum_top_k_paginated<'db, 'b, B, P>(
         &'db self,
         path: P,
@@ -389,7 +389,7 @@ impl<E: Engine> GroveDb<E> {
     }
 
     /// Prove an arbitrary query against the sum-axis secondary.
-    #[cfg(feature = "minimal")]
+    #[cfg(feature = "engine_generic")]
     pub(crate) fn prove_indexed_sum_query<'db, 'b, B, P>(
         &'db self,
         path: P,
@@ -414,7 +414,7 @@ impl<E: Engine> GroveDb<E> {
 
     /// Prove the aggregate sum of entries whose `sum_value` is in
     /// `[lo_sum, hi_sum]`.
-    #[cfg(feature = "minimal")]
+    #[cfg(feature = "engine_generic")]
     pub(crate) fn prove_indexed_sum_aggregate_over_value_range<'db, 'b, B, P>(
         &'db self,
         path: P,
@@ -443,7 +443,7 @@ impl<E: Engine> GroveDb<E> {
     /// Prove the top-`k` entries of the avg axis. PCPSIT-only. No
     /// aggregate variant exists — averaging an average over a range is
     /// not closed-form.
-    #[cfg(feature = "minimal")]
+    #[cfg(feature = "engine_generic")]
     pub(crate) fn prove_indexed_avg_top_k<'db, 'b, B, P>(
         &'db self,
         path: P,
@@ -467,7 +467,7 @@ impl<E: Engine> GroveDb<E> {
     }
 
     /// Prove an offset-paginated top-`k` window on the avg axis.
-    #[cfg(feature = "minimal")]
+    #[cfg(feature = "engine_generic")]
     pub(crate) fn prove_indexed_avg_top_k_paginated<'db, 'b, B, P>(
         &'db self,
         path: P,
@@ -493,7 +493,7 @@ impl<E: Engine> GroveDb<E> {
     }
 
     /// Prove an arbitrary query against the avg-axis secondary.
-    #[cfg(feature = "minimal")]
+    #[cfg(feature = "engine_generic")]
     pub(crate) fn prove_indexed_avg_query<'db, 'b, B, P>(
         &'db self,
         path: P,

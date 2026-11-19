@@ -9,7 +9,6 @@ use grovedb_merk::{
     },
     tree_type::TreeType,
 };
-use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::GroveVersion;
 use intmap::IntMap;
 
@@ -40,7 +39,7 @@ fn test_average_case_delete_no_validate() {
     let path = KeyInfoPath::from_vec(vec![KnownKey(b"root".to_vec())]);
     let key = KnownKey(b"item_key".to_vec());
 
-    let result = GroveDb::average_case_delete_operation_for_delete::<RocksDbStorage>(
+    let result = GroveDb::average_case_delete_operation_for_delete_engine_free(
         &path,
         &key,
         TreeType::NormalTree,
@@ -84,16 +83,15 @@ fn test_average_case_delete_up_tree_multi_level() {
     estimated_layer_info.insert(1u16, normal_layer_info());
     estimated_layer_info.insert(2u16, normal_layer_info());
 
-    let result =
-        GroveDb::average_case_delete_operations_for_delete_up_tree_while_empty::<RocksDbStorage>(
-            &path,
-            &key,
-            Some(0),
-            true,
-            estimated_layer_info,
-            BackwardsReferences::Check,
-            grove_version,
-        );
+    let result = GroveDb::average_case_delete_operations_for_delete_up_tree_while_empty_engine_free(
+        &path,
+        &key,
+        Some(0),
+        true,
+        estimated_layer_info,
+        BackwardsReferences::Check,
+        grove_version,
+    );
 
     let ops = result.value.expect("should return ops");
     assert_eq!(ops.len(), 3, "3-level path should produce 3 ops");
@@ -111,16 +109,15 @@ fn test_average_case_delete_up_tree_path_too_short_error() {
     let path = KeyInfoPath::from_vec(vec![KnownKey(b"short".to_vec())]);
     let key = KnownKey(b"leaf".to_vec());
 
-    let result =
-        GroveDb::average_case_delete_operations_for_delete_up_tree_while_empty::<RocksDbStorage>(
-            &path,
-            &key,
-            Some(5),
-            true,
-            IntMap::new(),
-            BackwardsReferences::Check,
-            grove_version,
-        );
+    let result = GroveDb::average_case_delete_operations_for_delete_up_tree_while_empty_engine_free(
+        &path,
+        &key,
+        Some(5),
+        true,
+        IntMap::new(),
+        BackwardsReferences::Check,
+        grove_version,
+    );
 
     assert!(result.value.is_err(), "should fail when path < stop height");
 }
@@ -137,16 +134,15 @@ fn test_average_case_delete_up_tree_missing_intermediate_info_error() {
     estimated_layer_info.insert(1u16, normal_layer_info());
     // height 0 deliberately missing
 
-    let result =
-        GroveDb::average_case_delete_operations_for_delete_up_tree_while_empty::<RocksDbStorage>(
-            &path,
-            &key,
-            Some(0),
-            true,
-            estimated_layer_info,
-            BackwardsReferences::Check,
-            grove_version,
-        );
+    let result = GroveDb::average_case_delete_operations_for_delete_up_tree_while_empty_engine_free(
+        &path,
+        &key,
+        Some(0),
+        true,
+        estimated_layer_info,
+        BackwardsReferences::Check,
+        grove_version,
+    );
 
     assert!(
         result.value.is_err(),
@@ -163,16 +159,15 @@ fn test_average_case_delete_up_tree_missing_leaf_info_error() {
     let path = KeyInfoPath::from_vec(vec![KnownKey(b"a".to_vec())]);
     let key = KnownKey(b"leaf".to_vec());
 
-    let result =
-        GroveDb::average_case_delete_operations_for_delete_up_tree_while_empty::<RocksDbStorage>(
-            &path,
-            &key,
-            Some(0),
-            true,
-            IntMap::new(), // no layer info at all
-            BackwardsReferences::Check,
-            grove_version,
-        );
+    let result = GroveDb::average_case_delete_operations_for_delete_up_tree_while_empty_engine_free(
+        &path,
+        &key,
+        Some(0),
+        true,
+        IntMap::new(), // no layer info at all
+        BackwardsReferences::Check,
+        grove_version,
+    );
 
     assert!(
         result.value.is_err(),
@@ -194,7 +189,7 @@ fn test_worst_case_delete_with_validate() {
     let path = KeyInfoPath::from_vec(vec![KnownKey(b"root".to_vec())]);
     let key = KnownKey(b"item_key".to_vec());
 
-    let result = GroveDb::worst_case_delete_operation_for_delete::<RocksDbStorage>(
+    let result = GroveDb::worst_case_delete_operation_for_delete_engine_free(
         &path,
         &key,
         TreeType::NormalTree,
@@ -223,7 +218,7 @@ fn test_worst_case_delete_no_validate() {
     let path = KeyInfoPath::from_vec(vec![KnownKey(b"root".to_vec())]);
     let key = KnownKey(b"item_key".to_vec());
 
-    let result = GroveDb::worst_case_delete_operation_for_delete::<RocksDbStorage>(
+    let result = GroveDb::worst_case_delete_operation_for_delete_engine_free(
         &path,
         &key,
         TreeType::NormalTree,
@@ -266,17 +261,16 @@ fn test_worst_case_delete_up_tree_multi_level() {
     intermediate_tree_info.insert(1u64, (TreeType::NormalTree, 0u32));
     intermediate_tree_info.insert(2u64, (TreeType::NormalTree, 0u32));
 
-    let result =
-        GroveDb::worst_case_delete_operations_for_delete_up_tree_while_empty::<RocksDbStorage>(
-            &path,
-            &key,
-            Some(0),
-            true,
-            intermediate_tree_info,
-            256,
-            BackwardsReferences::Check,
-            grove_version,
-        );
+    let result = GroveDb::worst_case_delete_operations_for_delete_up_tree_while_empty_engine_free(
+        &path,
+        &key,
+        Some(0),
+        true,
+        intermediate_tree_info,
+        256,
+        BackwardsReferences::Check,
+        grove_version,
+    );
 
     let ops = result.value.expect("should return ops");
     assert_eq!(ops.len(), 3, "3-level path should produce 3 ops");
@@ -296,17 +290,16 @@ fn test_worst_case_delete_up_tree_path_too_short_error() {
     let path = KeyInfoPath::from_vec(vec![KnownKey(b"short".to_vec())]);
     let key = KnownKey(b"leaf".to_vec());
 
-    let result =
-        GroveDb::worst_case_delete_operations_for_delete_up_tree_while_empty::<RocksDbStorage>(
-            &path,
-            &key,
-            Some(5),
-            true,
-            IntMap::new(),
-            256,
-            BackwardsReferences::Check,
-            grove_version,
-        );
+    let result = GroveDb::worst_case_delete_operations_for_delete_up_tree_while_empty_engine_free(
+        &path,
+        &key,
+        Some(5),
+        true,
+        IntMap::new(),
+        256,
+        BackwardsReferences::Check,
+        grove_version,
+    );
 
     assert!(result.value.is_err(), "should fail when path < stop height");
 }
@@ -322,17 +315,16 @@ fn test_worst_case_delete_up_tree_missing_tree_info_error() {
     let mut intermediate_tree_info = IntMap::new();
     intermediate_tree_info.insert(1u64, (TreeType::NormalTree, 0u32));
 
-    let result =
-        GroveDb::worst_case_delete_operations_for_delete_up_tree_while_empty::<RocksDbStorage>(
-            &path,
-            &key,
-            Some(0),
-            true,
-            intermediate_tree_info,
-            256,
-            BackwardsReferences::Check,
-            grove_version,
-        );
+    let result = GroveDb::worst_case_delete_operations_for_delete_up_tree_while_empty_engine_free(
+        &path,
+        &key,
+        Some(0),
+        true,
+        intermediate_tree_info,
+        256,
+        BackwardsReferences::Check,
+        grove_version,
+    );
 
     assert!(
         result.value.is_err(),

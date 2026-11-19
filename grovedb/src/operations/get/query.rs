@@ -1,8 +1,8 @@
 //! Query operations
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::element::SumValue;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::Engine;
 use crate::{
     element::{
@@ -17,7 +17,7 @@ use crate::{
     query_result_type::PathKeyOptionalElementTrio,
     AggregateSumPathQuery,
 };
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::{
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
     reference_path::ReferencePathType,
@@ -25,17 +25,17 @@ use crate::{
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
 use grovedb_costs::cost_return_on_error_default;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_path::SubtreePath;
 use grovedb_version::{check_grovedb_v0, check_grovedb_v0_with_cost, version::GroveVersion};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use integer_encoding::VarInt;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 #[derive(Debug, Eq, PartialEq, Clone)]
 /// A return type for query_item_value_or_sum
 pub enum QueryItemOrSumReturnType {
@@ -55,7 +55,7 @@ pub enum QueryItemOrSumReturnType {
     ItemDataWithSumValue(Vec<u8>, SumValue),
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl<E: Engine> GroveDb<E> {
     /// Encoded query for multiple path queries
     #[deprecated]
@@ -1710,8 +1710,8 @@ where {
     }
 }
 
-#[cfg(feature = "minimal")]
-#[cfg(test)]
+#[cfg(feature = "engine_generic")]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod tests {
     use std::collections::HashMap;
 

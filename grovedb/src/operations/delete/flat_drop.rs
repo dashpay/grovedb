@@ -94,7 +94,7 @@ use grovedb_merk::{
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
     flat::{pending_prefix_drops_namespace, stage_pending_prefix_drop, PendingPrefixDropRecord},
-    rocksdb_storage::RocksDbStorage,
+    prefix::{build_prefix, secondary_prefix_for},
 };
 use grovedb_version::version::{FeatureVersion, GroveVersion};
 use grovedb_visualize::DebugByteVectors;
@@ -121,15 +121,12 @@ pub(crate) fn doomed_prefixes_for_drop<B: AsRef<[u8]>>(
     is_indexed_primary: bool,
     cost: &mut OperationCost,
 ) -> Vec<[u8; 32]> {
-    let primary_prefix = RocksDbStorage::build_prefix(subtree_path).unwrap_add_cost(cost);
+    let primary_prefix = build_prefix(subtree_path).unwrap_add_cost(cost);
     let mut doomed = Vec::with_capacity(if is_indexed_primary { 4 } else { 1 });
     doomed.push(primary_prefix);
     if is_indexed_primary {
         for axis in [IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg] {
-            doomed.push(
-                RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag())
-                    .unwrap_add_cost(cost),
-            );
+            doomed.push(secondary_prefix_for(&primary_prefix, axis.tag()).unwrap_add_cost(cost));
         }
     }
     doomed

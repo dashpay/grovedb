@@ -17,7 +17,7 @@ use crate::{
     ElementFlags, Engine, Error, GroveDb, TransactionArg,
 };
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 #[derive(Clone)]
 /// Delete up tree options
 pub struct DeleteUpTreeOptions {
@@ -37,7 +37,7 @@ pub struct DeleteUpTreeOptions {
     pub backwards_references: BackwardsReferences,
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl Default for DeleteUpTreeOptions {
     fn default() -> Self {
         DeleteUpTreeOptions {
@@ -51,7 +51,7 @@ impl Default for DeleteUpTreeOptions {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl DeleteUpTreeOptions {
     fn to_delete_options(&self) -> DeleteOptions {
         DeleteOptions {
@@ -64,7 +64,7 @@ impl DeleteUpTreeOptions {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl<E: Engine> GroveDb<E> {
     /// Delete up tree while empty will delete nodes while they are empty up a
     /// tree.

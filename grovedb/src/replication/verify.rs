@@ -12,7 +12,10 @@ use grovedb_merk::{
     Merk,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator};
+use grovedb_storage::{
+    prefix::{build_prefix, secondary_prefix_for},
+    RawIterator,
+};
 use grovedb_version::version::GroveVersion;
 
 use crate::{
@@ -282,11 +285,9 @@ impl<E: Engine> GroveDb<E> {
             let Some(element) = indexed_element else {
                 continue;
             };
-            let primary_prefix = RocksDbStorage::build_prefix(path.as_slice().into()).unwrap();
+            let primary_prefix = build_prefix(path.as_slice().into()).unwrap();
             for (axis, root_key) in indexed_element_axes(&element)? {
-                let prefix =
-                    RocksDbStorage::secondary_prefix_for(&primary_prefix, axis_storage_tag(axis))
-                        .unwrap();
+                let prefix = secondary_prefix_for(&primary_prefix, axis_storage_tag(axis)).unwrap();
                 let storage = self
                     .db
                     .immediate_subtree_by_prefix(prefix, transaction)

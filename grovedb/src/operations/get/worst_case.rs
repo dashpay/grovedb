@@ -1,21 +1,20 @@
 //! Worst case get costs
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_costs::OperationCost;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::tree_type::TreeType;
-#[cfg(feature = "minimal")]
-use grovedb_storage::rocksdb_storage::RocksDbStorage;
+#[cfg(feature = "engine_generic")]
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
 use crate::Error;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
     GroveDb,
 };
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl GroveDb {
     /// Worst case cost for has raw
     pub fn worst_case_for_has_raw(
@@ -34,7 +33,7 @@ impl GroveDb {
                 .worst_case_for_has_raw
         );
         let mut cost = OperationCost::default();
-        GroveDb::add_worst_case_has_raw_cost::<RocksDbStorage>(
+        GroveDb::add_worst_case_has_raw_cost_engine_free(
             &mut cost,
             path,
             key,
@@ -62,7 +61,7 @@ impl GroveDb {
                 .worst_case_for_get_raw
         );
         let mut cost = OperationCost::default();
-        GroveDb::add_worst_case_get_raw_cost::<RocksDbStorage>(
+        GroveDb::add_worst_case_get_raw_cost_engine_free(
             &mut cost,
             path,
             key,
@@ -91,7 +90,7 @@ impl GroveDb {
                 .worst_case_for_get
         );
         let mut cost = OperationCost::default();
-        GroveDb::add_worst_case_get_cost::<RocksDbStorage>(
+        GroveDb::add_worst_case_get_cost_engine_free(
             &mut cost,
             path,
             key,

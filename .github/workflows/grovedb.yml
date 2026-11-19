@@ -234,6 +234,25 @@ jobs:
           SCCACHE_GHA_ENABLED: "true"
           RUSTC_WRAPPER: ${{ runner.environment == 'github-hosted' && 'sccache' || '' }}
         run: cargo build --no-default-features --features verify -p grovedb
+      # GroveDB with no storage engine compiled in: everything that is
+      # written for any `Engine`, and the estimated costs, whose tests open
+      # no database. RocksDB must not be among the crates of that build.
+      - name: Check the build with no storage engine
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: ${{ runner.environment == 'github-hosted' && 'sccache' || '' }}
+        run: |
+          crates=$(cargo tree -p grovedb --no-default-features --features estimated_costs -e normal,build,dev --prefix none)
+          if grep -i rocksdb <<<"$crates"; then
+            echo "RocksDB is among the crates of grovedb with no storage engine" >&2
+            exit 1
+          fi
+          if grep -rn 'feature = "minimal"' grovedb/src grovedb/benches grovedb/tests; then
+            echo "a gate in grovedb says minimal: it is engine_generic or rocksdb_storage (docs/lignindb/engine.md)" >&2
+            exit 1
+          fi
+          cargo check -p grovedb --no-default-features --features engine_generic
+          cargo test -p grovedb --no-default-features --features estimated_costs --lib --tests
 
   formatting:
     name: Formatting

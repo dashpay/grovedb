@@ -32,10 +32,7 @@ use grovedb_costs::{CostContext, CostsExt};
 use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 
 use super::make_prefixed_key;
-use crate::{
-    rocksdb_storage::storage::{SubtreePrefix, COST_MODEL},
-    Error, RawIterator,
-};
+use crate::{rocksdb_storage::storage::SubtreePrefix, Error, RawIterator, COST_MODEL};
 
 /// Raw iterator over prefixed storage_cost.
 pub struct PrefixedRocksDbRawIterator<I> {

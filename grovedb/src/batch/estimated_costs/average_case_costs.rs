@@ -1,21 +1,21 @@
 //! Average case costs
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt,
 };
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::estimated_costs::average_case_costs::{
     add_average_case_get_merk_node, add_average_case_merk_has_value, average_case_merk_propagate,
     EstimatedLayerInformation,
 };
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::estimated_costs::{
     add_cost_case_merk_replace_layered, add_cost_case_merk_replace_same_size,
 };
@@ -23,17 +23,15 @@ use grovedb_merk::{
     element::tree_type::ElementTreeTypeExtensions, tree::AggregateData, tree_type::TreeType,
     RootHashKeyAndAggregateData,
 };
-#[cfg(feature = "minimal")]
-use grovedb_storage::rocksdb_storage::RocksDbStorage;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_storage::worst_case_costs::WorstKeyLength;
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use integer_encoding::VarInt;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use itertools::Itertools;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::{
     batch::{
         key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveOp, KeyInfoPath,
@@ -43,7 +41,7 @@ use crate::{
 };
 use crate::{BackwardsReferences, Element};
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl GroveOp {
     /// Get the estimated average case cost of the op. Calls a lower level
     /// function to calculate the estimate based on the type of op. Returns
@@ -806,7 +804,7 @@ impl GroveOp {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// Charge the derived backward-references fan-out (see the model in
 /// `super`): each rewrite is a node load plus a same-size node rewrite
 /// with the family's hash calls, each resolution a node load, and each
@@ -875,7 +873,7 @@ fn add_average_case_backward_references_fan_out(
     Ok(())
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// Axes whose secondary Merks an indexed primary maintains.
 ///
 /// A PCPSIT's configured axes are a 1..=3 subset carried by the element, which
@@ -896,7 +894,7 @@ fn indexed_axes_for_tree_type(tree_type: TreeType) -> Vec<grovedb_element::index
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// Primary node fetches reserved for the mirror's pre- and post-state reads
 /// of one touched entry in a primary of `levels` estimated levels.
 ///
@@ -925,7 +923,7 @@ fn indexed_mirror_entry_read_node_fetches(
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// Version 0 (V1..V4): each read fetches the key directly, a `Merk::get`
 /// and a `Merk::get_value_hash`, before and after the primary's apply. Four
 /// fetches, whatever the tree's height. Frozen: shipped estimates come from
@@ -934,7 +932,7 @@ fn indexed_mirror_entry_read_node_fetches_v0() -> u32 {
     4
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// Version 1 (V5+): each read walks the tree from its root. The pre-state
 /// walk loads the path to the key. The post-state walk of a removed key runs
 /// on to a missing edge, through nodes the removal did not load, so a
@@ -948,7 +946,7 @@ fn indexed_mirror_entry_read_node_fetches_v1(levels: u32) -> u32 {
         .max(indexed_mirror_entry_read_node_fetches_v0())
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// Cache for subtree paths for average case scenario costs.
 #[derive(Default)]
 pub(in crate::batch) struct AverageCaseTreeCacheKnownPaths {
@@ -962,7 +960,7 @@ pub(in crate::batch) struct AverageCaseTreeCacheKnownPaths {
     pending_cidx_axes: HashMap<Vec<Vec<u8>>, Vec<grovedb_element::indexed::IndexAxis>>,
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl AverageCaseTreeCacheKnownPaths {
     /// Updates the cache to the default setting with the given subtree paths
     pub(in crate::batch) fn new_with_estimated_layer_information(
@@ -977,14 +975,14 @@ impl AverageCaseTreeCacheKnownPaths {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl fmt::Debug for AverageCaseTreeCacheKnownPaths {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TreeCacheKnownPaths").finish()
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
     /// Report a secondary mirror for layers that are indexed primaries, so the
     /// bubble-up emits `ReplaceAggregateIndexedTreeRootKeys` — the op a real
@@ -1084,7 +1082,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
             );
             cost_return_on_error_no_add!(
                 cost,
-                GroveDb::add_average_case_get_merk_at_path::<RocksDbStorage>(
+                GroveDb::add_average_case_get_merk_at_path_engine_free(
                     &mut cost,
                     path,
                     layer_should_be_empty,
@@ -1351,7 +1349,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
             // Then we have to get the tree
             cost_return_on_error_no_add!(
                 cost,
-                GroveDb::add_average_case_get_merk_at_path::<RocksDbStorage>(
+                GroveDb::add_average_case_get_merk_at_path_engine_free(
                     &mut cost,
                     &base_path,
                     estimated_layer_info
@@ -1368,7 +1366,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 #[cfg(test)]
 mod tests {
     /// The estimator charges the displaced-participant fan-out only for ops
@@ -1403,16 +1401,18 @@ mod tests {
     use grovedb_merk::tree::AggregateData;
 
     use super::indexed_mirror_entry_read_node_fetches;
+    #[cfg(feature = "rocksdb_storage")]
+    use crate::tests::{common::EMPTY_PATH, make_empty_grovedb};
     use crate::{
         batch::{
             estimated_costs::EstimatedCostsType::AverageCaseCostsType, key_info::KeyInfo, GroveOp,
             KeyInfoPath, NonMerkTreeMeta, QualifiedGroveDbOp, SubelementsDeletionBehavior,
         },
         reference_path::ReferencePathType,
-        tests::{common::EMPTY_PATH, make_empty_grovedb},
         Element, Error, GroveDb,
     };
 
+    #[cfg(feature = "rocksdb_storage")]
     #[test]
     fn test_batch_root_one_tree_insert_op_average_case_costs() {
         let grove_version = GroveVersion::latest();
@@ -1483,6 +1483,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     #[test]
     fn test_batch_root_one_tree_with_flags_insert_op_average_case_costs() {
         let grove_version = GroveVersion::latest();
@@ -1551,6 +1552,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     #[test]
     fn test_batch_root_one_item_insert_op_average_case_costs() {
         let grove_version = GroveVersion::latest();
@@ -1614,6 +1616,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     #[test]
     fn test_batch_root_one_tree_insert_op_under_element_average_case_costs() {
         let grove_version = GroveVersion::latest();
@@ -1701,6 +1704,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     #[test]
     fn test_batch_root_one_tree_insert_op_in_sub_tree_average_case_costs() {
         let grove_version = GroveVersion::latest();
@@ -1883,6 +1887,7 @@ mod tests {
         average_case_cost
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     #[test]
     fn test_batch_average_case_costs() {
         let grove_version = GroveVersion::latest();
@@ -1944,6 +1949,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     #[test]
     fn test_batch_root_one_dense_tree_insert_op_average_case_costs() {
         let grove_version = GroveVersion::latest();
@@ -2966,6 +2972,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     /// The estimator must not UNDER-report an indexed-tree batch.
     ///
     /// The per-axis secondary Merk work (open + delete-old + insert-new +
@@ -3057,6 +3064,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     /// The spec's intentional write amplification, measured: a VALUE-ONLY
     /// update — same count, same sum, different bytes — still rewrites the
     /// canonical row, because the row binds the primary node's commitment
@@ -3178,6 +3186,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     /// The multi-axis form of the value-only fixture above: a PCPSIT
     /// rewrites the row on EVERY configured axis when the entry's
     /// commitment moves, so the amplification is per-axis and the estimate
@@ -3292,6 +3301,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     /// The mirror charge must scale with the number of keys a batch mutates
     /// in an indexed primary, not be a flat per-level constant.
     ///
@@ -3375,6 +3385,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     /// The ≥-actual contract must hold for the MULTI-axis variant, not just
     /// PCIT. The sum and avg axes' secondary rows (`SumItem`,
     /// `ItemWithSumItem`) are larger than the count axis's empty `Item`;
@@ -3489,6 +3500,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     /// The ≥-actual contract must also hold for the FRESH path: a batch that
     /// CREATES the indexed primary and populates it in one go exercises
     /// `InsertAggregateIndexedTreeRootKeys` (the insert-side bubble-up arm)
@@ -3759,6 +3771,7 @@ mod tests {
         ]
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     /// A sum, count or count-sum tree inserted in the same batch as its
     /// contents is written as `InsertTreeWithRootHash`, which the estimator
     /// sizes by the aggregate the tree's level reports. From V4 every level
@@ -3912,6 +3925,7 @@ mod tests {
         .expect("expected to get average case costs")
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     /// The average-case and applied costs of one batch creating an
     /// aggregating tree `agg` together with its only child `k1`, on an empty
     /// db.
@@ -3934,6 +3948,7 @@ mod tests {
         (estimated, applied)
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     /// The average-case and applied costs of a batch replacing `child`, the
     /// only child `k1` of an aggregating tree `agg`, with itself.
     fn child_replaced_costs(
@@ -3970,6 +3985,7 @@ mod tests {
         (estimated, applied)
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     /// The apply writes a sum-bearing item with its specialized cost, which
     /// charges the sum value at its fixed 9-byte width. From V4 the estimate
     /// sizes it the same way, so the estimate's added bytes are the applied
@@ -3987,6 +4003,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     /// A replace estimate over-counts its propagation, so only the replaced
     /// element's own share can be compared with the apply: replacing a
     /// sum-bearing item rather than a plain one must raise the estimate's
@@ -4018,6 +4035,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     /// Replay guarantee: before V4 a sum-bearing item is sized by its
     /// serialized size on insert, and an `ItemWithSumItem` on replace, as
     /// historical admission bounds were computed. Pinned to the figures from
@@ -4167,6 +4185,7 @@ mod tests {
         ]
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     /// The apply charges a wrapped tree the byte of its wrapper
     /// (`NonCounted`, `NotSummed` or `NotCountedOrSummed`) on top of the
     /// tree's own size. From V5 the element estimate sizes it the same way,
@@ -4200,6 +4219,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     /// Replay guarantee: `GROVE_V4` is live, and its element estimate sizes a
     /// wrapped tree without its wrapper's byte, one below what the apply
     /// charges. Pinned to the figures from before the byte was added.
@@ -4238,6 +4258,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     /// Estimate and actual cost of removing each entry, one at a time, from
     /// a full indexed primary of `2^height - 1` large items. Returns the
     /// estimate (the same for every key) and the costliest removal seen in
@@ -4327,6 +4348,7 @@ mod tests {
         (estimate, costliest)
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     /// From `GROVE_V5` the mirror reads an entry by walking the primary, and
     /// the walk that finds a removed key gone runs through nodes the removal
     /// did not load. How many depends on the tree's height, so the fixtures
@@ -4365,6 +4387,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     /// `GROVE_V4` reads the key directly, so its estimate keeps the four
     /// fetches it has always reserved: the figures a shipped version
     /// produces do not move.

@@ -12,7 +12,7 @@
 //! byte for byte as GroveDB 6.1.1 does. [`super::v1`] truncates the layer
 //! from `GROVE_V5`.
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_merk::proofs::query::ProofLimitMode;
 
@@ -20,7 +20,7 @@ use crate::{Error, GroveDb};
 
 impl GroveDb {
     /// `truncate_instance_capped_layer` v0: the layer stays whole.
-    #[cfg(feature = "minimal")]
+    #[cfg(feature = "engine_generic")]
     pub(super) fn truncate_instance_capped_layer_v0() -> CostResult<(), Error> {
         Ok(()).wrap_with_cost(OperationCost::default())
     }

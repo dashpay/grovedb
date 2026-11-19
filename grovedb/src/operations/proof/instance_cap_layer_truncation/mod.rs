@@ -71,14 +71,14 @@
 mod v0;
 mod v1;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_merk::proofs::query::ProofLimitMode;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::{proofs::query::QueryItem, store::NodeStore, Merk, ProofWithoutEncodingResult};
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::Engine;
 use crate::{Error, GroveDb, PathQuery};
 
@@ -90,7 +90,7 @@ fn unknown_version(received: u16) -> Error {
     })
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl<E: Engine> GroveDb<E> {
     /// Prover side. Called once the walk of a layer with subquery branches
     /// under a per-instance cap has run its descents.

@@ -37,7 +37,7 @@
 //!
 //! # Feature split
 //!
-//! BUILDING a chain reads storage, so it needs `minimal`. AUTHENTICATING
+//! BUILDING a chain reads storage, so it needs `engine_generic`. AUTHENTICATING
 //! one is pure arithmetic over bytes the proof already carries, so it
 //! compiles in a verify-only build — which is the whole point: a light
 //! client with no Merk must still be able to check a chain.
@@ -51,7 +51,7 @@ use grovedb_version::version::GroveVersion;
 use super::{IndexedTargetChain, IndexedTargetCommitment, IndexedTargetNode};
 use crate::{Element, Error};
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod build {
     use crate::Engine;
     use grovedb_costs::{
@@ -373,7 +373,7 @@ mod build {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(crate) use build::build_target_chain;
 
 /// The commitment a node's own shape implies, for every shape except

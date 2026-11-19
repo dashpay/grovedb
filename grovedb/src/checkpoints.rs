@@ -39,6 +39,7 @@ impl<E: Engine> GroveDb<E> {
     }
 }
 
+#[cfg(feature = "rocksdb_storage")]
 impl GroveDb {
     /// Opens a checkpoint
     pub fn open_checkpoint<P: AsRef<Path>>(path: P) -> Result<Self, Error> {

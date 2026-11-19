@@ -475,7 +475,7 @@ impl<'db, E: Engine> MerkHandle<'db, '_, E> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod tests {
     use grovedb_costs::{storage_cost::removal::StorageRemovedBytes, CostsExt};
     use grovedb_merk::{

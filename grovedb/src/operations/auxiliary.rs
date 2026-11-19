@@ -38,7 +38,10 @@ use grovedb_costs::{
 };
 use grovedb_element::indexed::IndexAxis;
 use grovedb_path::SubtreePath;
-use grovedb_storage::{rocksdb_storage::RocksDbStorage, FlatStore, RawIterator};
+use grovedb_storage::{
+    prefix::{build_prefix, secondary_prefix_for},
+    FlatStore, RawIterator,
+};
 use grovedb_version::version::GroveVersion;
 
 use crate::{
@@ -267,11 +270,10 @@ impl<E: Engine> GroveDb<E> {
             if !sweep_secondary_namespaces {
                 continue;
             }
-            let primary_prefix = RocksDbStorage::build_prefix(p).unwrap_add_cost(&mut cost);
+            let primary_prefix = build_prefix(p).unwrap_add_cost(&mut cost);
             for axis in [IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg] {
                 let secondary_prefix =
-                    RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag())
-                        .unwrap_add_cost(&mut cost);
+                    secondary_prefix_for(&primary_prefix, axis.tag()).unwrap_add_cost(&mut cost);
                 let secondary_storage = self
                     .db
                     .subtree_by_prefix(secondary_prefix, Some(batch), transaction)
@@ -291,7 +293,7 @@ impl<E: Engine> GroveDb<E> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod tests {
     use crate::{tests::make_empty_grovedb, GroveDb, TransactionArg};
 

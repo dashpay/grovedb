@@ -11,7 +11,7 @@
 //! These tests verify that the consistency check is now applied to add-on
 //! operations as well.
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod tests {
     use grovedb_merk::tree::AggregateData;
     use grovedb_version::version::GroveVersion;

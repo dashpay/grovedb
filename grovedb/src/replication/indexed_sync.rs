@@ -57,7 +57,7 @@ use grovedb_merk::{
     tree_type::TreeType,
     ChunkProducer,
 };
-use grovedb_storage::rocksdb_storage::RocksDbStorage;
+use grovedb_storage::prefix::secondary_prefix_for;
 
 use crate::{
     operations::indexed_tree::{axis_secondary_tree_type, axis_storage_tag},
@@ -305,8 +305,7 @@ impl<E: Engine> GroveDb<E> {
                 Error::CorruptedData(format!("invalid axis tag in indexed header request: {e}"))
             })?;
             let secondary_prefix =
-                RocksDbStorage::secondary_prefix_for(&chunk_prefix, axis_storage_tag(axis))
-                    .unwrap();
+                secondary_prefix_for(&chunk_prefix, axis_storage_tag(axis)).unwrap();
             let secondary_merk = self
                 .open_transactional_merk_by_prefix(
                     secondary_prefix,

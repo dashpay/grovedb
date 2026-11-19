@@ -19,6 +19,7 @@ pub mod cost_model;
 pub mod error;
 #[path = "../../../storage/src/flat.rs"]
 pub mod flat;
+pub mod prefix;
 #[cfg(feature = "rocksdb_storage")]
 pub mod rocksdb_storage;
 #[path = "../../../storage/src/storage.rs"]

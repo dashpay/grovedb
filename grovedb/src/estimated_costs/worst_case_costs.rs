@@ -35,8 +35,20 @@ mod merk_replace_element;
 pub const WORST_CASE_FLAGS_LEN: u32 = 16386; // 2 bytes to represent this number for varint
 
 impl GroveDb {
-    /// Add worst case for getting a merk tree
+    /// The estimate of [`Self::add_worst_case_get_merk_at_path_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
     pub fn add_worst_case_get_merk_at_path<'db, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        path: &KeyInfoPath,
+        tree_type: TreeType,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        Self::add_worst_case_get_merk_at_path_engine_free(cost, path, tree_type, grove_version)
+    }
+
+    /// Add worst case for getting a merk tree
+    pub fn add_worst_case_get_merk_at_path_engine_free(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         tree_type: TreeType,
@@ -254,8 +266,29 @@ impl GroveDb {
         .wrap_with_cost(cost)
     }
 
-    /// Add worst case cost for "has raw" into merk
+    /// The estimate of [`Self::add_worst_case_has_raw_cost_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
     pub fn add_worst_case_has_raw_cost<'db, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        max_element_size: u32,
+        in_parent_tree_type: TreeType,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        Self::add_worst_case_has_raw_cost_engine_free(
+            cost,
+            path,
+            key,
+            max_element_size,
+            in_parent_tree_type,
+            grove_version,
+        )
+    }
+
+    /// Add worst case cost for "has raw" into merk
+    pub fn add_worst_case_has_raw_cost_engine_free(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         key: &KeyInfo,
@@ -283,8 +316,29 @@ impl GroveDb {
         Ok(())
     }
 
-    /// Add worst case cost for get raw tree into merk
+    /// The estimate of [`Self::add_worst_case_get_raw_tree_cost_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
     pub fn add_worst_case_get_raw_tree_cost<'db, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        tree_type: TreeType,
+        in_parent_tree_type: TreeType,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        Self::add_worst_case_get_raw_tree_cost_engine_free(
+            cost,
+            path,
+            key,
+            tree_type,
+            in_parent_tree_type,
+            grove_version,
+        )
+    }
+
+    /// Add worst case cost for get raw tree into merk
+    pub fn add_worst_case_get_raw_tree_cost_engine_free(
         cost: &mut OperationCost,
         _path: &KeyInfoPath,
         key: &KeyInfo,
@@ -312,8 +366,29 @@ impl GroveDb {
         .map_err(Error::MerkError)
     }
 
-    /// Add worst case cost for get raw into merk
+    /// The estimate of [`Self::add_worst_case_get_raw_cost_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
     pub fn add_worst_case_get_raw_cost<'db, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        max_element_size: u32,
+        in_parent_tree_type: TreeType,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        Self::add_worst_case_get_raw_cost_engine_free(
+            cost,
+            path,
+            key,
+            max_element_size,
+            in_parent_tree_type,
+            grove_version,
+        )
+    }
+
+    /// Add worst case cost for get raw into merk
+    pub fn add_worst_case_get_raw_cost_engine_free(
         cost: &mut OperationCost,
         _path: &KeyInfoPath,
         key: &KeyInfo,
@@ -340,8 +415,31 @@ impl GroveDb {
         .map_err(Error::MerkError)
     }
 
-    /// Add worst case cost for get into merk
+    /// The estimate of [`Self::add_worst_case_get_cost_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
     pub fn add_worst_case_get_cost<'db, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        max_element_size: u32,
+        in_parent_tree_type: TreeType,
+        max_references_sizes: Vec<u32>,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        Self::add_worst_case_get_cost_engine_free(
+            cost,
+            path,
+            key,
+            max_element_size,
+            in_parent_tree_type,
+            max_references_sizes,
+            grove_version,
+        )
+    }
+
+    /// Add worst case cost for get into merk
+    pub fn add_worst_case_get_cost_engine_free(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         key: &KeyInfo,
@@ -373,7 +471,7 @@ impl GroveDb {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "full"))]
 mod test {
     use std::option::Option::None;
 

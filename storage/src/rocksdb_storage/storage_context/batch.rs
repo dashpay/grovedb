@@ -8,10 +8,7 @@ use grovedb_costs::{
 use rocksdb::{ColumnFamily, WriteBatchWithTransaction};
 
 use super::make_prefixed_key;
-use crate::{
-    rocksdb_storage::storage::{SubtreePrefix, COST_MODEL},
-    Batch, StorageBatch,
-};
+use crate::{rocksdb_storage::storage::SubtreePrefix, Batch, StorageBatch, COST_MODEL};
 
 /// Wrapper to RocksDB batch.
 /// All calls go to RocksDB batch, but wrapper handles prefixes and column

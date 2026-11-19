@@ -33,7 +33,9 @@ pub mod test_utils;
 #[cfg(test)]
 mod tests;
 
-pub use rocksdb::{Error, WriteBatchWithTransaction};
+pub use rocksdb::{Error, ErrorKind, WriteBatchWithTransaction};
+#[cfg(feature = "unsafe-dump-load")]
+pub use rocksdb::{Options, SstFileWriter};
 pub use storage_context::{
     AuxKeyspace, MetaKeyspace, PrefixedRocksDbBatch, PrefixedRocksDbImmediateStorageContext,
     PrefixedRocksDbRawIterator, PrefixedRocksDbTransactionContext,

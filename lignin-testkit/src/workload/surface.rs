@@ -145,11 +145,17 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
         ),
     ),
     ("add_average_case_get_cost", ESTIMATE),
+    ("add_average_case_get_cost_engine_free", ESTIMATE),
     ("add_average_case_get_merk_at_path", ESTIMATE),
+    ("add_average_case_get_merk_at_path_engine_free", ESTIMATE),
     ("add_average_case_get_raw_cost", ESTIMATE),
+    ("add_average_case_get_raw_cost_engine_free", ESTIMATE),
     ("add_average_case_get_raw_tree_cost", ESTIMATE),
+    ("add_average_case_get_raw_tree_cost_engine_free", ESTIMATE),
     ("add_average_case_has_raw_cost", ESTIMATE),
+    ("add_average_case_has_raw_cost_engine_free", ESTIMATE),
     ("add_average_case_has_raw_tree_cost", ESTIMATE),
+    ("add_average_case_has_raw_tree_cost_engine_free", ESTIMATE),
     (
         "add_delete_operations_for_delete_up_tree_while_empty",
         inside_but(
@@ -158,10 +164,15 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
         ),
     ),
     ("add_worst_case_get_cost", ESTIMATE),
+    ("add_worst_case_get_cost_engine_free", ESTIMATE),
     ("add_worst_case_get_merk_at_path", ESTIMATE),
+    ("add_worst_case_get_merk_at_path_engine_free", ESTIMATE),
     ("add_worst_case_get_raw_cost", ESTIMATE),
+    ("add_worst_case_get_raw_cost_engine_free", ESTIMATE),
     ("add_worst_case_get_raw_tree_cost", ESTIMATE),
+    ("add_worst_case_get_raw_tree_cost_engine_free", ESTIMATE),
     ("add_worst_case_has_raw_cost", ESTIMATE),
+    ("add_worst_case_has_raw_cost_engine_free", ESTIMATE),
     (
         "apply_batch",
         produced(&[
@@ -211,7 +222,15 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
     ),
     ("average_case_delete_operation_for_delete", ESTIMATE),
     (
+        "average_case_delete_operation_for_delete_engine_free",
+        ESTIMATE,
+    ),
+    (
         "average_case_delete_operations_for_delete_up_tree_while_empty",
+        ESTIMATE,
+    ),
+    (
+        "average_case_delete_operations_for_delete_up_tree_while_empty_engine_free",
         ESTIMATE,
     ),
     ("average_case_for_get", ESTIMATE),
@@ -721,7 +740,15 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
     ),
     ("worst_case_delete_operation_for_delete", ESTIMATE),
     (
+        "worst_case_delete_operation_for_delete_engine_free",
+        ESTIMATE,
+    ),
+    (
         "worst_case_delete_operations_for_delete_up_tree_while_empty",
+        ESTIMATE,
+    ),
+    (
+        "worst_case_delete_operations_for_delete_up_tree_while_empty_engine_free",
         ESTIMATE,
     ),
     ("worst_case_for_get", ESTIMATE),

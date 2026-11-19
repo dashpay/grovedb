@@ -12,7 +12,7 @@ use grovedb_element::indexed::{
     compute_avg_fixed_point, compute_big_avg_fixed_point, encode_avg_sort_key,
     encode_big_sum_sort_key, encode_count_sort_key, encode_sum_sort_key, IndexAxis,
 };
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::TreeType;
 
 use crate::{Element, Error};
@@ -67,7 +67,7 @@ impl From<i64> for EntrySum {
 
 /// Whether `primary_tree_type` is an indexed primary whose sum is 128 bits
 /// wide.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 #[inline]
 pub(crate) fn is_wide_indexed_primary(primary_tree_type: TreeType) -> bool {
     matches!(
@@ -230,7 +230,7 @@ pub(crate) fn axis_row_reference(
 /// plain `Reference` (which would fold to `(1, 0)`), a non-sibling
 /// reference type, and a wrong hop budget. `describe` labels the caller
 /// in the error so a corruption report says where it was caught.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(crate) fn decode_axis_row_reference<'a>(
     row: &'a Element,
     describe: &str,

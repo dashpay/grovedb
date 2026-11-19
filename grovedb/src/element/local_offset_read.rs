@@ -17,7 +17,7 @@ use grovedb_merk::{
     tree_type::TreeType,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::rocksdb_storage::RocksDbStorage;
+use grovedb_storage::prefix::build_prefix;
 use grovedb_version::version::GroveVersion;
 
 use super::{
@@ -66,7 +66,7 @@ fn walk_offset_path<E: Engine>(
 ) -> CostResult<bool, Error> {
     let mut cost = Default::default();
     for depth in from..path.len() {
-        let prefix = RocksDbStorage::build_prefix(path[..depth].into()).unwrap_add_cost(&mut cost);
+        let prefix = build_prefix(path[..depth].into()).unwrap_add_cost(&mut cost);
         view = E::retarget_cursor(view, prefix);
         let value = cost_return_on_error!(
             &mut cost,
@@ -185,7 +185,7 @@ pub(super) fn read_local_count_page<'db, E: Engine>(
     if let Some(hook) = test_hooks::AFTER_HOST_ELEMENT.with(|hook| hook.borrow_mut().take()) {
         hook();
     }
-    let host_prefix = RocksDbStorage::build_prefix(subtree_path).unwrap_add_cost(&mut cost);
+    let host_prefix = build_prefix(subtree_path).unwrap_add_cost(&mut cost);
     let rows = cost_return_on_error!(
         &mut cost,
         local_count_offset_page_from_view(
@@ -247,7 +247,7 @@ pub(super) fn read_local_count_page<'db, E: Engine>(
     .wrap_with_cost(cost)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod tests {
     use super::*;
     use crate::{element::query::ElementQueryExtensions, Query};

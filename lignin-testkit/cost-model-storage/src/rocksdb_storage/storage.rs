@@ -319,41 +319,22 @@ impl RocksDbStorage {
             .ok_or_else(|| refused(path, "no database of this process"))
     }
 
-    /// The prefix of the subtree at `path`: the Blake3 hash of its
-    /// segments from the last to the first, their number as a machine word,
-    /// and the length of each as a byte. Charged by rule P1.
+    /// The prefix of the subtree at `path`. It is
+    /// [`crate::prefix::build_prefix`].
     pub fn build_prefix<B>(path: SubtreePath<B>) -> CostContext<SubtreePrefix>
     where
         B: AsRef<[u8]>,
     {
-        let mut body = Vec::new();
-        let mut lengths = Vec::new();
-        for segment in path.into_reverse_iter() {
-            body.extend_from_slice(segment);
-            lengths.push(u8::try_from(segment.len()).expect(
-                "path segment length must not exceed 255 bytes; this is enforced at insert time \
-                 via validate_key_length",
-            ));
-        }
-        let cost = rules::open_by_path(lengths.iter().map(|len| usize::from(*len)));
-        if lengths.is_empty() {
-            return SubtreePrefix::default().wrap_with_cost(cost);
-        }
-        body.extend(lengths.len().to_ne_bytes());
-        body.extend(lengths);
-        SubtreePrefix::from(blake3::hash(&body)).wrap_with_cost(cost)
+        crate::prefix::build_prefix(path)
     }
 
-    /// The prefix of the secondary of an indexed tree: the Blake3 hash of
-    /// the primary prefix and the axis tag. Charged by rule P3.
+    /// The prefix of the secondary of an indexed tree. It is
+    /// [`crate::prefix::secondary_prefix_for`].
     pub fn secondary_prefix_for(
         primary_prefix: &SubtreePrefix,
         axis_tag: u8,
     ) -> CostContext<SubtreePrefix> {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(primary_prefix);
-        hasher.update(&[axis_tag]);
-        SubtreePrefix::from(hasher.finalize()).wrap_with_cost(rules::secondary_prefix())
+        crate::prefix::secondary_prefix_for(primary_prefix, axis_tag)
     }
 
     /// Charges a batch and returns its writes with the cost that is owed
