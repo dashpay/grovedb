@@ -1,8 +1,8 @@
 mod model;
 #[cfg(not(feature = "testing"))]
-mod store;
+pub(crate) mod store;
 #[cfg(feature = "testing")]
-use super::testing as store;
+pub(crate) use super::testing as store;
 
 mod acceptance;
 mod errors;
