@@ -114,6 +114,7 @@ use lignindb::{
         testing::{Db, Outcome},
         Subtree, WriteTxn,
     },
+    verify::Scope,
 };
 
 type ValueDefinedCost = fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>;
@@ -1073,5 +1074,6 @@ fn the_corpus_gives_the_same_trees_on_the_lignindb_node_store() {
             tally.reads_charged > tally.nodes && tally.bytes_loaded > 100_000_000,
             "{tally:?}"
         );
+        assert!(tally.checked > 10_000, "{tally:?}");
     }
 }
