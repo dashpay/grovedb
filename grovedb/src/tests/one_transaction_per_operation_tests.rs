@@ -598,6 +598,152 @@ fn the_big_sum_axis_is_written_and_read_in_one_transaction_each() {
     );
 }
 
+/// A conversion to a 128-bit sum reads every node of the tree and writes it
+/// again, and for an indexed tree rebuilds the rows of its axes. A repair
+/// rebuilds them too, here of a ranking that has a row to lose. On an engine
+/// that is not the default one each starts one write transaction, and none
+/// when the caller gives one.
+#[test]
+fn a_conversion_and_a_repair_are_one_write_transaction_each() {
+    let grove_version = GroveVersion::latest();
+    let (_dir, db) = database(grove_version);
+    let root: &[&[u8]] = &[];
+    let ranked: &[&[u8]] = &[RANKED];
+    let sums: &[&[u8]] = &[SUMS];
+    db.insert(
+        root,
+        RANKED,
+        Element::empty_provable_sum_indexed_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert");
+    for (key, sum) in [(b"a", 5), (b"b", -3), (b"c", 40)] {
+        db.insert_into_provable_sum_indexed_tree(
+            ranked,
+            key,
+            Element::new_sum_item(sum),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert_into_provable_sum_indexed_tree");
+    }
+
+    // A ranking that holds the row of an entry that is gone, as the removal
+    // of the entry at the root of this tree leaves it on grove version 4:
+    // the repair has a row to remove.
+    let drifted: &[&[u8]] = &[INDEX];
+    db.insert(
+        root,
+        INDEX,
+        Element::empty_provable_count_indexed_tree(),
+        None,
+        None,
+        &GROVE_V4,
+    )
+    .unwrap()
+    .expect("insert");
+    for key in [b"k0", b"k2", b"k3", b"k4", b"k1"] {
+        db.insert_into_count_indexed_tree(drifted, key, item(b"v"), None, &GROVE_V4)
+            .unwrap()
+            .expect("insert_into_count_indexed_tree");
+    }
+    db.delete_from_count_indexed_tree(drifted, b"k2", None, &GROVE_V4)
+        .unwrap()
+        .expect("delete_from_count_indexed_tree");
+    let ranking = || db.indexed_count_top_k_paginated(drifted, 10, 0, true, None, grove_version);
+    assert!(
+        matches!(ranking().unwrap(), Err(Error::CorruptedData(_))),
+        "the ranking names an entry that is gone"
+    );
+
+    let (repaired, reads, writes) = started(&db, || {
+        db.reconcile_indexed_tree_secondaries(drifted, None, grove_version)
+    });
+    repaired.unwrap().expect("reconcile");
+    assert_eq!((reads, writes), (0, 1), "a repair that removes a row");
+    let (page, reads, writes) = started(&db, ranking);
+    assert_eq!((reads, writes), (1, 0), "the ranking of the repaired tree");
+    assert_eq!(page.unwrap().expect("the ranking reads").entries.len(), 4);
+
+    let (converted, reads, writes) = started(&db, || {
+        db.convert_to_big_sum_tree(root, SUMS, None, grove_version)
+    });
+    converted.unwrap().expect("convert a sum tree");
+    assert_eq!((reads, writes), (0, 1), "a sum tree");
+    assert!(matches!(
+        db.get(root, SUMS, None, grove_version)
+            .unwrap()
+            .expect("get"),
+        Element::BigSumTree(_, 12, _)
+    ));
+    db.insert(
+        sums,
+        b"s3",
+        Element::new_sum_item(i64::MAX),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("the converted tree takes a sum past an i64");
+
+    let (converted, reads, writes) = started(&db, || {
+        db.convert_to_big_sum_tree(root, RANKED, None, grove_version)
+    });
+    converted.unwrap().expect("convert an indexed tree");
+    assert_eq!((reads, writes), (0, 1), "an indexed tree");
+    let (page, reads, writes) = started(&db, || {
+        db.indexed_big_sum_top_k_paginated(ranked, 10, 0, true, None, grove_version)
+    });
+    let page = page.unwrap().expect("indexed_big_sum_top_k_paginated");
+    assert_eq!((reads, writes), (1, 0), "the ranking of the converted tree");
+    let keys: Vec<&[u8]> = page
+        .entries
+        .iter()
+        .map(|entry| entry.primary_key.as_slice())
+        .collect();
+    assert_eq!(keys, [b"c".as_slice(), b"a", b"b"]);
+
+    db.insert(
+        root,
+        COUNTED,
+        Element::empty_count_sum_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert");
+    let transaction = db.start_transaction();
+    let (converted, reads, writes) = started(&db, || {
+        db.convert_to_big_sum_tree(root, COUNTED, Some(&transaction), grove_version)
+    });
+    converted.unwrap().expect("convert in a transaction");
+    assert_eq!((reads, writes), (0, 0), "in the caller's transaction");
+    let (repaired, reads, writes) = started(&db, || {
+        db.reconcile_indexed_tree_secondaries(ranked, Some(&transaction), grove_version)
+    });
+    repaired.unwrap().expect("reconcile in a transaction");
+    assert_eq!((reads, writes), (0, 0), "in the caller's transaction");
+    assert!(matches!(
+        db.get(root, COUNTED, None, grove_version)
+            .unwrap()
+            .expect("get"),
+        Element::CountSumTree(..)
+    ));
+    db.commit_transaction(transaction).unwrap().expect("commit");
+    assert!(matches!(
+        db.get(root, COUNTED, None, grove_version)
+            .unwrap()
+            .expect("get"),
+        Element::CountBigSumTree(..)
+    ));
+}
+
 /// `index` holds six trees with one item each.
 fn insert_index<E: Engine>(db: &GroveDb<E>, grove_version: &GroveVersion) {
     let root: &[&[u8]] = &[];
