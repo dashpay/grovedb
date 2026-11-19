@@ -94,7 +94,17 @@ A cursor shows the state the handle's reads show. How long it stays stable under
 
 `status()` reads nothing and is charged nothing, so no cost changes. On RocksDB all of these behave as before unless its iterator reports an error.
 
-**What is still owed, by the callers.** `KVIterator::next_kv` has no error to return, so a caller that concludes something from the end of a scan has to ask `KVIterator::status()`. Of GroveDB's ten scans, two ask: the two walks of the indexed-tree reconciliation (`grovedb/src/operations/indexed_tree.rs`, since #1063). The other eight do not yet: `clear_subtree` (v0 and v1) looks for subtrees among a Merk's elements before it clears it, three walks in `grovedb/src/lib.rs` read a Merk's records for `verify_grovedb` and the indexed-tree checks, and three more in `indexed_tree.rs` walk a secondary. On RocksDB nothing changes for them. On LigninDB a scan that a scope's claim refuses would end early there, so GROVE-05 and GROVE-06 make them ask. The same holds for the cursor loops of `grovedb-query` and `Element::iterator`.
+**What is still owed, by the callers.** `KVIterator::next_kv` has no error to return, so a caller that concludes something from the end of a scan has to ask `KVIterator::status()`. GroveDB's scans, by the function that makes them:
+
+| Scan | Asks `status()` |
+| --- | --- |
+| `rebuild_indexed_tree_secondaries` (`grovedb/src/operations/indexed_tree.rs`): its walk of the primary and its walk of each secondary | yes, since #1063 |
+| `clear_subtree_with_costs_v0` and `clear_subtree_with_costs_v1` (`grovedb/src/operations/delete/clear_subtree/`): the walk that deletes the subtrees nested in a Merk before the Merk is cleared | no |
+| `verify_merk_and_submerks_in_transaction` (`grovedb/src/lib.rs`) | no |
+| `verify_indexed_axis_content` (`grovedb/src/lib.rs`): its walk of the primary and its walk of the secondary | no |
+| `indexed_axis_range_rows_generic` and `collect_top_k_via_iterator` (`indexed_tree.rs`): walks of a secondary | no |
+
+A further scan in `indexed_tree.rs` is compiled for tests only (`legacy_linear_indexed_count_top_k_paginated`). On RocksDB nothing changes for them. On LigninDB a scan that a scope's claim refuses would end early there, so GROVE-05 and GROVE-06 make them ask. The same holds for the cursor loops of `grovedb-query` and `Element::iterator`.
 
 ### Change sets
 
