@@ -1133,6 +1133,41 @@ fn a_value_in_a_flat_leaf_that_nothing_reaches_is_read() {
     assert!(unread, "{report}");
 }
 
+/// A directory whose entries are not read to their end says nothing of the
+/// prefixes behind the one that is not read: the entry is reported, and no
+/// flat record and no host is blamed for an entry that is there.
+#[test]
+fn a_directory_that_is_not_read_to_its_end_blames_no_record() {
+    let store = plant();
+    store.db.unchecked();
+    // The entry of a subtree before the one with the flat records is made
+    // bytes that are no entry.
+    assert!(prefix(2) < prefix(FLAT) && prefix(FLAT) < prefix(OUTER));
+    store.write_flat(|pages| {
+        let key = record::entry_key(&prefix(2));
+        (store.db.directory().put(pages, &key, b"no entry")).expect("a put");
+    });
+    let report = store.check();
+    assert!(report.has(Rule::Directory), "{report}");
+    let said = "its records are not read to their end";
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.detail.contains(said)));
+    for rule in [
+        Rule::FlatRecordWithoutEntry,
+        Rule::HostedUnentered,
+        Rule::HostUnnamed,
+        Rule::EntryHost,
+    ] {
+        assert!(!report.has(rule), "{rule:?}:\n{report}");
+    }
+    // No Merk is walked from a part of the entries: every cell is counted
+    // as reached by nothing.
+    assert_eq!(report.census.live_cells, 0);
+    assert_eq!(report.unreached.cells, report.census.cells);
+}
+
 #[test]
 fn every_corruption_of_the_cells_is_found() {
     each_is_found(CELLS);

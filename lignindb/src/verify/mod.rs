@@ -296,7 +296,10 @@ impl Options {
 ///
 /// The run returns its findings and never fails: a page that cannot be
 /// read is a finding, and what could only be reached through it is not
-/// looked at.
+/// looked at. So with a directory whose keyspace is no tree, or whose
+/// records are not all read, no Merk is walked and no flat record is
+/// compared with its entries: the cells are then counted as reached by
+/// nothing, beside the finding that says why.
 pub fn check<G: OperationGuard + ?Sized>(
     store: &Store<'_, '_>,
     guard: &G,

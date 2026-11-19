@@ -135,7 +135,8 @@ impl Run<'_, '_, '_> {
     }
 
     /// Reads the directory in `tree`, whose pages are a tree: its own
-    /// check, and every entry.
+    /// check, and every entry. With an entry or a record of a drop that is
+    /// not read there are none.
     fn read_directory<G: OperationGuard + ?Sized>(
         &mut self,
         tree: &FlatTree,
@@ -174,10 +175,7 @@ impl Run<'_, '_, '_> {
                     });
                 }
                 Ok(None) => break,
-                Err(error) => {
-                    self.add(Rule::Directory, place, || error.to_string());
-                    break;
-                }
+                Err(error) => return self.not_read_whole(place, &error),
             }
         }
         let mut walk = directory.drops();
@@ -185,13 +183,23 @@ impl Run<'_, '_, '_> {
             match walk.next(&pages) {
                 Ok(Some(dropped)) => entries.drops.push(dropped),
                 Ok(None) => break,
-                Err(error) => {
-                    self.add(Rule::Directory, place, || error.to_string());
-                    break;
-                }
+                Err(error) => return self.not_read_whole(place, &error),
             }
         }
         Some(entries)
+    }
+
+    /// Reports a walk of the directory's records that `error` ended before
+    /// the last of them, and gives no entries: a part of them says nothing
+    /// of the prefixes and the roots that were not read, so nothing is
+    /// compared with it and no Merk is walked from it.
+    fn not_read_whole(&mut self, place: Place, error: &dyn std::error::Error) -> Option<Entries> {
+        self.add(Rule::Directory, place, || {
+            format!(
+                "its records are not read to their end, and nothing is compared with them: {error}"
+            )
+        });
+        None
     }
 
     /// Walks the pages that the lazy range deletes left and that are not
