@@ -1,0 +1,65 @@
+[package]
+name = "lignin-format-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+lignin-format = { path = ".." }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "frame"
+path = "fuzz_targets/frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "manifest"
+path = "fuzz_targets/manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "segment"
+path = "fuzz_targets/segment.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "table"
+path = "fuzz_targets/table.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "value_log"
+path = "fuzz_targets/value_log.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "flat_page"
+path = "fuzz_targets/flat_page.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tree_page"
+path = "fuzz_targets/tree_page.rs"
+test = false
+doc = false
+bench = false
