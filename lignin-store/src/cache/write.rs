@@ -102,8 +102,8 @@ impl BufferPool {
     ///
     /// That the owner has no copy is found in the page step that makes the
     /// copy. So of any number of callers that ask this way for one owner
-    /// and page at the same moment, one is given the copy and every other
-    /// one is refused: an owner whose pages have one writer each, all of
+    /// and page at the same moment, the one whose step makes the copy is
+    /// given it and every other one is refused: an owner whose pages have one writer each, all of
     /// which ask this way, needs no check of its own. A caller of
     /// [`Self::make_private`] is given the copy all the same.
     ///
@@ -126,7 +126,7 @@ impl BufferPool {
 
     /// The private copy of `page` that this call made for `owner`, or, as
     /// the inner error, the one the owner had.
-    fn copy_for(
+    pub(super) fn copy_for(
         &self,
         owner: OwnerId,
         page: PageId,

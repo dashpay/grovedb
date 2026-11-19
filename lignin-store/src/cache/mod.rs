@@ -126,10 +126,10 @@
 //! - [`BufferPool::make_private`] copies the page version the owner reads.
 //!   It makes one copy for an owner, whatever number of its operations ask
 //!   at once (LT5), and gives each of them that copy.
-//!   [`BufferPool::make_private_once`] makes the copy for the one caller
-//!   that asked first and refuses every other: it is for an owner whose
-//!   pages have one writer each, which then holds a copy only if it made
-//!   it. [`BufferPool::new_private`] is for a page the transaction
+//!   [`BufferPool::make_private_once`] gives the copy to the caller that
+//!   makes it and refuses every other caller that asks this way: it is
+//!   for an owner whose pages have one writer each, which then holds a
+//!   copy only if it made it. [`BufferPool::new_private`] is for a page the transaction
 //!   created, and refuses a second copy in the same way.
 //! - The copy's bytes are behind its latch (LT3): [`PrivateRef::write`] for
 //!   one physical step that changes them, [`PrivateRef::read`] to read them
