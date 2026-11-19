@@ -40,9 +40,9 @@ use crate::{
     error,
     error::Error::RocksDBError,
     rocksdb_storage::storage::{
-        Db, RawTx, SubtreePrefix, Tx, AUX_CF_NAME, COST_MODEL, META_CF_NAME, ROOTS_CF_NAME,
+        Db, RawTx, SubtreePrefix, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME,
     },
-    StorageContext,
+    StorageContext, COST_MODEL,
 };
 
 /// Storage context with a prefix applied to be used in a subtree to be used in

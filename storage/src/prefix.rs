@@ -114,24 +114,6 @@ mod tests {
     }
 
     #[test]
-    fn paths_that_split_the_same_bytes_differently_have_different_prefixes() {
-        let split_early: &[&[u8]] = &[b"a", b"bc"];
-        let split_late: &[&[u8]] = &[b"ab", b"c"];
-        assert_ne!(
-            build_prefix(split_early.into()).value,
-            build_prefix(split_late.into()).value
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "path segment length must not exceed 255 bytes")]
-    fn a_segment_longer_than_255_bytes_is_refused() {
-        let oversized = vec![0xAB; 256];
-        let path: &[&[u8]] = &[&oversized];
-        let _ = build_prefix(path.into());
-    }
-
-    #[test]
     fn a_secondary_prefix_is_the_hash_of_the_primary_and_the_axis_tag() {
         let path: &[&[u8]] = &[b"indexed"];
         let primary = build_prefix(path.into()).value;
@@ -143,5 +125,102 @@ mod tests {
         assert_eq!(secondary.cost, COST_MODEL.secondary_prefix());
         assert_ne!(secondary.value, secondary_prefix_for(&primary, 1).value);
         assert_ne!(secondary.value, primary);
+    }
+
+    #[test]
+    fn test_build_prefix() {
+        let path_a = [b"aa".as_ref(), b"b"];
+        let path_b = [b"a".as_ref(), b"ab"];
+        assert_ne!(
+            build_prefix(path_a.as_ref().into()),
+            build_prefix(path_b.as_ref().into()),
+        );
+        assert_eq!(
+            build_prefix(path_a.as_ref().into()),
+            build_prefix(path_a.as_ref().into()),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "path segment length must not exceed 255 bytes")]
+    fn test_build_prefix_rejects_oversized_segment() {
+        let oversized_key = vec![0xABu8; 256];
+        let path: &[&[u8]] = &[&oversized_key];
+        // Previously this would silently truncate the length to 0 (256 as u8 == 0),
+        // causing different paths to hash to the same prefix (collision).
+        let _ = build_prefix(path.as_ref().into());
+    }
+
+    #[test]
+    fn secondary_prefix_for_is_deterministic_and_distinct_from_primary() {
+        let primary = build_prefix([b"foo".as_ref(), b"bar"].as_ref().into()).unwrap();
+
+        let s1 = secondary_prefix_for(&primary, 0).unwrap();
+        let s2 = secondary_prefix_for(&primary, 0).unwrap();
+        assert_eq!(s1, s2, "secondary prefix derivation must be deterministic");
+        assert_ne!(primary, s1, "secondary prefix must differ from its primary");
+    }
+
+    #[test]
+    fn secondary_prefix_for_distinguishes_different_primaries() {
+        let primary_a = build_prefix([b"foo".as_ref(), b"bar"].as_ref().into()).unwrap();
+        let primary_b = build_prefix([b"foo".as_ref(), b"baz"].as_ref().into()).unwrap();
+
+        let s_a = secondary_prefix_for(&primary_a, 0).unwrap();
+        let s_b = secondary_prefix_for(&primary_b, 0).unwrap();
+        assert_ne!(
+            s_a, s_b,
+            "different primaries must produce different secondaries"
+        );
+    }
+
+    #[test]
+    fn secondary_prefix_for_handles_empty_path_root_prefix() {
+        // A root-level indexed tree has primary_prefix = all-zero default.
+        // The derivation must still yield a well-defined 32-byte hash.
+        let primary = SubtreePrefix::default();
+        let secondary = secondary_prefix_for(&primary, 0).unwrap();
+        assert_ne!(secondary, SubtreePrefix::default());
+        // And the derivation is stable.
+        let secondary_again = secondary_prefix_for(&primary, 0).unwrap();
+        assert_eq!(secondary, secondary_again);
+    }
+
+    #[test]
+    fn secondary_prefix_for_distinguishes_different_axes() {
+        // The axis tag byte enters the Blake3 input — different axes for
+        // the SAME primary must produce different secondary prefixes so
+        // PCPSIT's count / sum / avg secondaries do not collide.
+        let primary = build_prefix([b"foo".as_ref(), b"bar"].as_ref().into()).unwrap();
+        let s_count = secondary_prefix_for(&primary, 0).unwrap();
+        let s_sum = secondary_prefix_for(&primary, 1).unwrap();
+        let s_avg = secondary_prefix_for(&primary, 2).unwrap();
+        assert_ne!(s_count, s_sum, "count and sum axes must be distinct");
+        assert_ne!(s_count, s_avg, "count and avg axes must be distinct");
+        assert_ne!(s_sum, s_avg, "sum and avg axes must be distinct");
+    }
+
+    #[test]
+    fn secondary_prefix_for_does_not_collide_with_path_derived_prefix() {
+        // The secondary's Blake3 input is `primary || axis_tag` (33 bytes).
+        // Path-derived prefixes hash a variable-length `path_body` that
+        // always ends with per-segment-length bytes followed by a single
+        // segment-count word — never a single tag byte after a 32-byte
+        // block. So a collision would require Blake3 output collision
+        // (infeasible) AND is structurally impossible to construct via
+        // build_prefix. This test sanity-checks that a few path-derived
+        // prefixes do not happen to collide with secondaries.
+        let primary = build_prefix([b"a".as_ref(), b"b"].as_ref().into()).unwrap();
+        let secondary = secondary_prefix_for(&primary, 0).unwrap();
+
+        for path in [
+            [b"a".as_ref(), b"b"].as_ref(),
+            [b"x".as_ref(), b"y"].as_ref(),
+            [b"foo".as_ref(), b"bar", b"baz"].as_ref(),
+            [].as_ref(),
+        ] {
+            let p = build_prefix(path.into()).unwrap();
+            assert_ne!(p, secondary);
+        }
     }
 }

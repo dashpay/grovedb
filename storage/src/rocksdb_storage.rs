@@ -34,7 +34,6 @@ pub mod test_utils;
 mod tests;
 
 pub use rocksdb::{Error, ErrorKind, WriteBatchWithTransaction};
-/// What writes the file [`RocksDbStorage::ingest_subtree_sst`] takes.
 #[cfg(feature = "unsafe-dump-load")]
 pub use rocksdb::{Options, SstFileWriter};
 pub use storage_context::{
