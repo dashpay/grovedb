@@ -1001,6 +1001,10 @@ impl Access for Failing<'_> {
         self.under.committed_record(keyspace, subtree, key)
     }
 
+    fn subtree(&self, subtree: &Prefix) -> Result<Option<LigninEntry>, Error> {
+        self.under.subtree(subtree)
+    }
+
     fn apply(&self, write: &Write) -> Result<Written, Error> {
         self.under.apply(write)
     }
