@@ -538,21 +538,6 @@ impl OwnedFrame {
     }
 }
 
-/// What giving a pin back leaves for the caller to do.
-#[must_use]
-#[derive(Debug)]
-pub(super) enum Unpinned {
-    /// Nothing.
-    Done,
-    /// The frame was a retired one beside the arena, and this was its last
-    /// pin: the caller owns it.
-    Owned(OwnedFrame),
-    /// The frame is an arena frame that was retired, and this may have been
-    /// its last pin: the caller takes what the arena's dead frames give
-    /// ([`Arena::take_dead`]).
-    Dead,
-}
-
 /// One pin on a frame, taken from an arena that lives for `'a`: a count on
 /// the frame, or an announcement of it (A6). While it lives, the frame is
 /// neither freed nor given to anyone else (A2).
@@ -595,41 +580,27 @@ impl<'a> Pinned<'a> {
         }
     }
 
-    /// Gives the pin back.
+    /// Gives back a pin on an arena frame. `true` says that the frame is
+    /// dead and may have lost its last pin: the caller then takes what the
+    /// arena's dead frames give ([`Arena::take_dead`]).
     ///
-    /// The caller does not use this for an overflow frame that is not
-    /// retired: such a frame is unpinned under its bucket's lock
-    /// ([`ChainWrite::unpin_linked`]), so that it can be taken out in the
-    /// same step.
-    pub(super) fn unpin(self) -> Unpinned {
-        let pointer = self.frame;
+    /// A pin on a frame beside the arena is given back under the frame's
+    /// bucket's lock instead ([`ChainWrite::unpin_linked`]), so that the
+    /// frame can be taken out in the same step.
+    pub(super) fn unpin(self) -> bool {
+        // SAFETY: the pin is held (A1) until it is given back below, and
+        // from then on only the header of an arena frame is read, which
+        // anyone may read (A1): an announced frame is an arena frame (A6),
+        // and a counted pin on any other frame is refused first.
+        let frame = unsafe { self.frame.frame() };
         match self.announced {
-            Some(announcement) => {
-                // SAFETY: only an arena frame is announced (A6), and the
-                // header of an arena frame may be read by anyone (A1).
-                let frame = unsafe { pointer.frame() };
-                if frame.is_dead_after(announcement) {
-                    Unpinned::Dead
-                } else {
-                    Unpinned::Done
-                }
-            }
+            Some(announcement) => frame.is_dead_after(announcement),
             None => {
-                // SAFETY: the pin is held until `Frame::unpin` returns (A1).
-                // If that says the frame was retired and this was its last
-                // pin, an overflow frame is owned by this thread from then
-                // on (A3), and the header of an arena frame may be read by
-                // anyone (A1).
-                let frame = unsafe { pointer.frame() };
-                if !frame.unpin() {
-                    Unpinned::Done
-                } else if frame.is_overflow() {
-                    // By A3: retired, which unlinked it, with its last pin
-                    // gone, and never announced.
-                    Unpinned::Owned(OwnedFrame(pointer))
-                } else {
-                    Unpinned::Dead
-                }
+                assert!(
+                    !frame.is_overflow(),
+                    "a frame beside the arena is unpinned under its bucket's lock"
+                );
+                frame.unpin()
             }
         }
     }
@@ -1475,7 +1446,7 @@ impl Arena {
     /// list: the caller owns it. `None` if every dead frame has a pin.
     ///
     /// It is asked whenever a pin on a dead frame was given back
-    /// ([`Unpinned::Dead`], [`Unlocked::Dead`]), until it gives nothing.
+    /// ([`Pinned::unpin`], [`Unlocked::Dead`]), until it gives nothing.
     pub(super) fn take_dead(&self) -> Option<OwnedFrame> {
         let mut dead = sync::lock(&self.dead);
         let mut before: Option<FramePtr> = None;

@@ -9,7 +9,7 @@ use super::{
     error::CacheError,
     frame::{
         flag, kind, Arena, Chain, Entry, Frame, Links, Moment, OwnedFrame, Pinned, Unlocked,
-        Unpinned, NO_VERSION,
+        NO_VERSION,
     },
     guard::{Blank, PageRef},
     lanes::Lanes,
@@ -702,10 +702,8 @@ impl BufferPool {
             }
             return;
         }
-        match pin.unpin() {
-            Unpinned::Done => {}
-            Unpinned::Owned(frame) => self.release(frame),
-            Unpinned::Dead => self.release_dead(),
+        if pin.unpin() {
+            self.release_dead();
         }
     }
 }
