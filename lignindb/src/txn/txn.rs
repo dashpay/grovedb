@@ -22,7 +22,7 @@ use super::{
     check::check,
     commits::Watch,
     error::{BatchError, TxnError},
-    frames::{stored_key, Frames},
+    frames::{stored_key, Awake, Frames, Parked, Woken},
     key::{Column, Subtree, Unit},
     pages::{find, follow, CommittedPages, NodePages},
     path::WritePath,
@@ -76,7 +76,8 @@ struct State<'s> {
     /// another version, or until the transaction has its own copy of every
     /// committed byte its write set refers to.
     base: Option<VersionPin<'s>>,
-    frames: Option<Frames<'s>>,
+    /// The private frames, as they are kept between two operations.
+    frames: Option<Parked<'s>>,
     watch: Option<Watch<'s>>,
     /// The lease committed pages are read under where the transaction has
     /// no frames, and the version it is for (PN8).
@@ -144,7 +145,7 @@ impl State<'_> {
 /// One operation of a transaction: its guard, and the one version it reads
 /// committed records at (RD4).
 struct Op<'s> {
-    _guard: OperationGuard<'s>,
+    guard: OperationGuard<'s>,
     at: CommitVersion,
 }
 
@@ -260,12 +261,10 @@ impl<'s> WriteTxn<'s> {
             writes: state.set.len(),
             write_set_bytes: state.set.bytes(),
             overlapped: state.set.met(),
-            base: frames.map(Frames::base),
+            base: frames.map(|frames| frames.base()),
             pinned: state.base.as_ref().map(VersionPin::version),
             tree_pages: frames.map_or(0, |frames| frames.tree.copies()),
-            flat_pages: frames.map_or(0, |frames| {
-                frames.flat.written().count() + frames.flat.freed().count()
-            }),
+            flat_pages: frames.map_or(0, |frames| frames.flat.copies()),
             held_values: frames.map_or((0, 0), |frames| frames.values.held_bytes()),
             rebuilds: state.rebuilds,
             handles_followed: state.followed,
@@ -327,7 +326,12 @@ impl<'s> WriteTxn<'s> {
     /// Brings the transaction to the commits that were published up to
     /// `at` (WT7): the entries they meet go into the overlap set, and
     /// frames that are built over another version go.
-    fn observe(&self, state: &mut State<'s>, at: CommitVersion) -> Result<(), TxnError> {
+    fn observe(
+        &self,
+        state: &mut State<'s>,
+        guard: &OperationGuard<'s>,
+        at: CommitVersion,
+    ) -> Result<(), TxnError> {
         Self::take_in(state, at);
         if state.set.met() > 0 {
             // Before it gives up the version it read them at, the
@@ -335,7 +339,7 @@ impl<'s> WriteTxn<'s> {
             // write set refers to (WT3, WT7). From here on it serves its
             // records by key, and pins nothing.
             if let Some(base) = state.base.as_ref().map(VersionPin::version) {
-                self.keep_values(state, base)?;
+                self.keep_values(state, guard, base)?;
                 state.base = None;
             }
             state.frames = None;
@@ -348,14 +352,19 @@ impl<'s> WriteTxn<'s> {
     }
 
     /// Gives every written node that keeps a committed value the
-    /// transaction's own copy of it, read at `version`.
-    fn keep_values(&self, state: &mut State<'s>, version: CommitVersion) -> Result<(), TxnError> {
+    /// transaction's own copy of it, read at `version` under `guard`.
+    fn keep_values(
+        &self,
+        state: &mut State<'s>,
+        guard: &OperationGuard<'s>,
+        version: CommitVersion,
+    ) -> Result<(), TxnError> {
         let keeping = state.set.keeping();
         if keeping.is_empty() {
             return Ok(());
         }
         let path = &self.path;
-        let committed = path.committed(version);
+        let committed = path.committed(guard, version);
         let lease = Lease::take();
         for id in keeping {
             let subtree = state.set.entry(id).unit.subtree;
@@ -392,7 +401,7 @@ impl<'s> WriteTxn<'s> {
         }
         let mut at = guard.latest();
         loop {
-            self.observe(state, at)?;
+            self.observe(state, &guard, at)?;
             let framed = state.frames.is_some();
             let by_key = state.set.met() > 0 || state.stuck == Some((at, state.set.ops()));
             if framed || by_key || (state.set.is_empty() && !writing) {
@@ -406,7 +415,7 @@ impl<'s> WriteTxn<'s> {
                 at = pin.version();
                 continue;
             }
-            match Frames::build(path, at, &state.set) {
+            match Frames::build(path, &guard, at, &state.set) {
                 Ok(frames) => {
                     if !state.set.is_empty() {
                         state.rebuilds += 1;
@@ -415,7 +424,7 @@ impl<'s> WriteTxn<'s> {
                     state.base = Some(pin);
                 }
                 Err(error) if is_refusal(&error) => {
-                    self.keep_values(state, at)?;
+                    self.keep_values(state, &guard, at)?;
                     state.base = None;
                     state.stuck = Some((at, state.set.ops()));
                 }
@@ -427,7 +436,7 @@ impl<'s> WriteTxn<'s> {
             state.lease = Lease::take();
             state.lease_at = Some(at);
         }
-        Ok(Op { _guard: guard, at })
+        Ok(Op { guard, at })
     }
 
     fn apply_in(&self, batch: &Batch<'_>) -> Result<Applied, TxnError> {
@@ -454,7 +463,7 @@ impl<'s> WriteTxn<'s> {
     ) -> Result<Applied, TxnError> {
         let path = &self.path;
         state.set.admits(batch)?;
-        let Some(frames) = &mut state.frames else {
+        let Some(mut frames) = Woken::wake(&mut state.frames, &op.guard) else {
             return self.write_by_key(state, op, batch);
         };
         match frames.apply(path, batch, None) {
@@ -466,9 +475,9 @@ impl<'s> WriteTxn<'s> {
                 if refused.dirty {
                     // The frames hold a part of the batch. They are made
                     // again from the write set, which does not (WT10).
-                    state.frames = None;
+                    frames.discard();
                     state.renew_lease();
-                    if let Ok(frames) = Frames::build(path, op.at, &state.set) {
+                    if let Ok(frames) = Frames::build(path, &op.guard, op.at, &state.set) {
                         state.frames = Some(frames);
                         state.rebuilds += 1;
                     }
@@ -487,7 +496,7 @@ impl<'s> WriteTxn<'s> {
         batch: &Batch<'_>,
     ) -> Result<Applied, TxnError> {
         let path = &self.path;
-        let committed = path.committed(op.at);
+        let committed = path.committed(&op.guard, op.at);
         let committed_root = |subtree: &Subtree| {
             (path.directory.committed_root(&committed, subtree)).map_err(TxnError::Directory)
         };
@@ -605,7 +614,7 @@ impl<'s> WriteTxn<'s> {
         let path = &self.path;
         stored_key(&mut state.key, &unit.subtree, key);
         let tree = path.keyspaces.of(unit.column);
-        Ok(tree.get(&path.committed(op.at), &state.key, out)?)
+        Ok(tree.get(&path.committed(&op.guard, op.at), &state.key, out)?)
     }
 
     fn committed_get_in(
@@ -629,10 +638,8 @@ impl<'s> WriteTxn<'s> {
         subtree: &Subtree,
     ) -> Result<Option<CellAddress>, TxnError> {
         let path = &self.path;
-        (path
-            .directory
-            .committed_root(&path.committed(op.at), subtree))
-        .map_err(TxnError::Directory)
+        let committed = path.committed(&op.guard, op.at);
+        (path.directory.committed_root(&committed, subtree)).map_err(TxnError::Directory)
     }
 
     fn node_in<R>(
@@ -647,7 +654,7 @@ impl<'s> WriteTxn<'s> {
         let state = &mut *state;
         let op = self.begin(state, false)?;
         let path = &self.path;
-        if let Some(frames) = &mut state.frames {
+        if let Some(mut frames) = Woken::wake(&mut state.frames, &op.guard) {
             // The frames show the transaction's view (WT3): the node is
             // where a good handle says, or where its key leads to.
             let followed = hint.and_then(|handle| frames.follow(handle, key));
@@ -662,7 +669,7 @@ impl<'s> WriteTxn<'s> {
                     find(&mut frames.tree, root, key)?
                 }
             };
-            return show_framed(frames, at, read);
+            return show_framed(&mut frames, at, read);
         }
         let own = state.set.own(Unit::data(subtree), key);
         if own != Own::Unwritten {
@@ -725,7 +732,7 @@ impl<'s> WriteTxn<'s> {
         let mut state = self.enter(scoped)?;
         let state = &mut *state;
         let op = self.begin(state, false)?;
-        if let Some(frames) = &mut state.frames {
+        if let Some(mut frames) = Woken::wake(&mut state.frames, &op.guard) {
             if parent.lease() != frames.lease() {
                 return Ok(None);
             }
@@ -737,7 +744,7 @@ impl<'s> WriteTxn<'s> {
                 return Ok(None);
             };
             state.followed += 1;
-            return show_framed(frames, child, read).map(Some);
+            return show_framed(&mut frames, child, read).map(Some);
         }
         if parent.lease() != state.lease {
             return Ok(None);
@@ -840,10 +847,12 @@ impl<'s> WriteTxn<'s> {
                 return Ok(Sealed::Conflict);
             }
             // The write set names what the committed state does not hold.
-            return Err(match Frames::build(&self.path, op.at, &state.set) {
-                Err(error) => error,
-                Ok(_) => TxnError::Damaged("frames that could not be made are made"),
-            });
+            return Err(
+                match Frames::build(&self.path, &op.guard, op.at, &state.set) {
+                    Err(error) => error,
+                    Ok(_) => TxnError::Damaged("frames that could not be made are made"),
+                },
+            );
         };
         let keys = state.set.key_set();
         let pin = state.base.take();
@@ -905,15 +914,16 @@ pub(crate) struct Parts<'s> {
     /// logs, and the pointers it releases.
     pub(crate) values: super::pages::TreeValues<'s>,
     /// The flat pages (`lignin_tree::flat`, "What a commit writes"). The
-    /// commit takes the writer out when it installs them.
-    pub(crate) flat: super::frames::FlatFrames<'s>,
+    /// commit takes the writer out, under its own guard, when it installs
+    /// them.
+    pub(crate) flat: super::frames::FlatFrames<'s, 's, super::path::Idle>,
     /// The key set of the commit (CF1).
     pub(crate) keys: super::key::KeySet,
 }
 
 /// Shows the cell at `at` in the frames, or no node.
 fn show_framed<R>(
-    frames: &mut Frames<'_>,
+    frames: &mut Awake<'_, '_>,
     at: Option<CellAddress>,
     read: impl FnOnce(Option<NodeView<'_>>) -> R,
 ) -> Result<R, TxnError> {

@@ -104,6 +104,7 @@ fn a_transaction_is_written_from_several_threads_through_its_scope() {
 /// The value of the flat record `key` of `unit` at the version `at`.
 fn committed_value(
     db: &Db,
+    versions: &Versions,
     tree: FlatTree,
     at: CommitVersion,
     unit: Unit,
@@ -112,8 +113,9 @@ fn committed_value(
     let mut stored = unit.subtree.as_bytes().to_vec();
     stored.extend_from_slice(key);
     let mut out = Vec::new();
+    let guard = versions.guard();
     let found = tree
-        .get(&db.committed(at), &stored, &mut out)
+        .get(&db.committed(&guard, at), &stored, &mut out)
         .expect("a read");
     found.then_some(out)
 }
@@ -200,9 +202,9 @@ fn transactions_on_several_threads_commit_past_each_other() {
                     // seen without the rest, and nothing uncommitted.
                     let snapshot = reads.snapshot();
                     let at = snapshot.version();
-                    let keys = db.check_trees(at);
+                    let keys = db.check_trees(versions, at);
                     for writer in 0..WRITERS {
-                        let counter = committed_value(db, aux_tree, at, aux(), &[writer]);
+                        let counter = committed_value(db, versions, aux_tree, at, aux(), &[writer]);
                         let rounds = counter.map_or(0, |bytes| {
                             u32::from_be_bytes(bytes.try_into().expect("four bytes"))
                         });
@@ -229,7 +231,7 @@ fn transactions_on_several_threads_commit_past_each_other() {
         rebuilds.load(Ordering::Relaxed) > 0 || cfg!(miri),
         "no transaction was rebased"
     );
-    let keys = db.check_trees(versions.latest());
+    let keys = db.check_trees(&versions, versions.latest());
     for writer in 0..WRITERS {
         assert_eq!(keys[&model::subtree(10 + writer)].len(), ROUNDS as usize);
     }

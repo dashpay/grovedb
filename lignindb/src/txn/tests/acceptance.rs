@@ -91,7 +91,7 @@ fn uncommitted_changes_are_invisible_to_every_other_handle() {
     world.check(&tx);
     assert_eq!(world.latest(), before, "nothing was committed");
     assert_eq!(snapshot.version(), before);
-    let keys = db.check_trees(snapshot.version());
+    let keys = db.check_trees(&versions, snapshot.version());
     assert_eq!(keys[&model::subtree(1)].len(), 70);
     assert!(!keys.contains_key(&model::subtree(3)));
 
@@ -121,8 +121,11 @@ fn uncommitted_changes_are_invisible_to_every_other_handle() {
     world.check_committed();
     // The snapshot from before still reads its version.
     assert_eq!(
-        db.check_trees(snapshot.version())[&model::subtree(1)].len(),
+        db.check_trees(&versions, snapshot.version())[&model::subtree(1)].len(),
         70
     );
-    assert_eq!(db.check_trees(world.latest())[&model::subtree(1)].len(), 70);
+    assert_eq!(
+        db.check_trees(&versions, world.latest())[&model::subtree(1)].len(),
+        70
+    );
 }

@@ -37,6 +37,11 @@
 //!
 //! Each call is one operation (RD4): it takes an operation guard, reads the
 //! latest version once, and reads every committed record at that version.
+//! The flat pages it reads borrow that guard (PN5,
+//! [`FlatReader`], [`FlatWriter`]). What outlives the operation is bound to
+//! no guard between two of them and reads nothing then: the frames of the
+//! transaction, whose base pin keeps their version, and the committed side
+//! of a cursor, which the cursor's pin keeps.
 //! Between two calls a commit can land, and the next call sees it for every
 //! key the transaction has not written. Nobody else reads the
 //! transaction's writes: they are in its own memory and in private copies
@@ -171,6 +176,11 @@
 //!   own.
 //! - **Private copies** of the pages it changed, made or freed. The pool
 //!   cannot evict them, and no page step changes a page under one (PV7).
+//!   A copy of a tree page is asked for with
+//!   [`make_private`](lignin_store::cache::BufferPool::make_private), and
+//!   the flat keyspaces' writer asks for its own with
+//!   [`make_private_once`](lignin_store::cache::BufferPool::make_private_once):
+//!   one form for each kind of page.
 //!   Their number is reported ([`TxnStats`]) and not bounded: nothing is
 //!   spilled to a file (WT4 allows it, and does not ask for it).
 //! - **Page ids** of the pages it made, until its commit publishes them or
@@ -214,9 +224,11 @@
 //!    the Merk (GM3). The rule for iteration two is GROVE-11's.
 //! 9. **A value out of line that an earlier commit logged and that no
 //!    value-log file holds yet is not read in bytes here**
-//!    ([`NodeValue::Pending`], [`TxnError::PendingValue`]). Where its bytes
-//!    are attached to the frame of its page is the commit's and TREE-08's
-//!    to say. Until then a transaction that kept such a value and is then
+//!    ([`NodeValue::Pending`], [`TxnError::PendingValue`]). The commit
+//!    that logs it attaches its bytes to the frame of its page, under the
+//!    value's name ([`ValueId`](lignin_store::cache::ValueId)), and
+//!    reading them there is the read path of TREE-08: neither is here
+//!    yet. Until then a transaction that kept such a value and is then
 //!    overlapped has no copy of it to serve: its operations fail with that
 //!    error until it is rolled back, or its commit reports the conflict.
 //!
@@ -254,7 +266,7 @@ pub use commits::Commits;
 pub use cursor::{CommittedSide, Cursor, FlatSide};
 pub use error::{BatchError, TxnError};
 pub use key::{Column, KeySet, Subtree, Unit};
-pub use path::{Directory, DirectoryError, FlatWriter, Keyspaces, WritePath};
+pub use path::{Directory, DirectoryError, FlatReader, FlatWriter, Keyspaces, WritePath};
 pub use txn::{Scope, TxnStats, WriteTxn};
 pub use view::{LinkView, NodeValue, NodeView};
 pub use write::{

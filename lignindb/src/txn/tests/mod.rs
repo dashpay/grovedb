@@ -279,7 +279,7 @@ impl<'s> World<'s> {
     fn check_committed(&self) {
         let reader = self.begin();
         self.check(&reader);
-        let keys = self.db.check_trees(self.latest());
+        let keys = self.db.check_trees(self.versions, self.latest());
         let mut expected: BTreeMap<Subtree, Vec<Vec<u8>>> = BTreeMap::new();
         for ((unit, key), value) in &self.model.records {
             if matches!(value, Val::Node(_)) {

@@ -25,11 +25,32 @@ use super::{
     pages::CommittedPages,
     txn::WriteTxn,
 };
-use crate::snapshot::Versions;
+use crate::snapshot::{OperationGuard, Versions};
 
-/// The flat pages of one write transaction: private copies in the buffer
-/// pool, over the committed pages of the version it reads.
-pub type FlatWriter<'s> = Private<'s, &'s PageAllocator>;
+/// The committed flat pages of one version, as one operation reads them:
+/// they borrow the operation's guard, and so does every page they hand out
+/// (`transactions.md` PN5).
+pub type FlatReader<'s, 'g> = Committed<'s, 'g, OperationGuard<'s>>;
+
+/// The flat pages of one write transaction in one of its operations:
+/// private copies in the buffer pool, over the committed pages of the
+/// version it reads under the operation's guard.
+pub type FlatWriter<'s, 'g> = Private<'s, 'g, OperationGuard<'s>, &'s PageAllocator>;
+
+/// What the flat pages of a transaction or of a cursor are bound to between
+/// two operations, in place of a guard: nothing is read under it.
+///
+/// A reader or a writer is taken to its next operation with `under`, which
+/// is sound at a version that stays pinned from one operation to the next
+/// (`lignin_tree::flat`, "A writer's copies outlive its operation"). The
+/// base pin of a transaction and the pin of a cursor are those pins.
+#[derive(Debug)]
+pub(crate) struct Idle;
+
+impl lignin_tree::OperationGuard for Idle {}
+
+/// The one [`Idle`].
+pub(crate) static IDLE: Idle = Idle;
 
 /// An error of the subtree directory.
 pub type DirectoryError = Box<dyn Error + Send + Sync>;
@@ -51,14 +72,14 @@ pub trait Directory: Send + Sync {
     /// there.
     fn committed_root(
         &self,
-        pages: &Committed<'_>,
+        pages: &FlatReader<'_, '_>,
         subtree: &Subtree,
     ) -> Result<Option<CellAddress>, DirectoryError>;
 
     /// As [`Self::committed_root`], as a write transaction sees it.
     fn root(
         &self,
-        pages: &FlatWriter<'_>,
+        pages: &FlatWriter<'_, '_>,
         subtree: &Subtree,
     ) -> Result<Option<CellAddress>, DirectoryError>;
 
@@ -66,7 +87,7 @@ pub trait Directory: Send + Sync {
     /// has no node.
     fn set_root(
         &self,
-        pages: &mut FlatWriter<'_>,
+        pages: &mut FlatWriter<'_, '_>,
         subtree: &Subtree,
         root: Option<CellAddress>,
     ) -> Result<(), DirectoryError>;
@@ -77,7 +98,7 @@ pub trait Directory: Send + Sync {
     /// changes nothing.
     fn moved(
         &self,
-        pages: &mut FlatWriter<'_>,
+        pages: &mut FlatWriter<'_, '_>,
         from: CellAddress,
         to: CellAddress,
     ) -> Result<(), DirectoryError>;
@@ -196,9 +217,15 @@ impl<'s> WritePath<'s> {
         WriteTxn::new(*self)
     }
 
-    /// The committed flat pages at `version`.
-    pub(crate) fn committed(&self, version: CommitVersion) -> Committed<'s> {
-        Committed::new(self.loader, self.values, version)
+    /// The committed flat pages at `version`, for the operation that holds
+    /// `guard`. The version is pinned, or it is the latest version, read
+    /// after the guard was taken.
+    pub(crate) fn committed<'g>(
+        &self,
+        guard: &'g OperationGuard<'s>,
+        version: CommitVersion,
+    ) -> FlatReader<'s, 'g> {
+        Committed::new(self.loader, self.values, guard, version)
     }
 
     /// The committed tree pages at `version`, read under `lease`.

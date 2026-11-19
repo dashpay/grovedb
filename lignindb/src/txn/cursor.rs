@@ -3,16 +3,18 @@
 
 use std::{cmp::Ordering, fmt, ops::Bound};
 
+use lignin_format::CommitVersion;
 use lignin_tree::flat::{self, Committed};
 
 use super::{
     error::TxnError,
     frames::stored_key,
     key::Unit,
+    path::{FlatReader, Idle, WritePath, IDLE},
     txn::WriteTxn,
     write_set::{Own, WriteSet},
 };
-use crate::snapshot::VersionPin;
+use crate::snapshot::{OperationGuard, VersionPin};
 
 /// The committed side of a cursor of a write transaction
 /// (`transactions.md` RD6): an ordered cursor over the records of one unit
@@ -20,24 +22,28 @@ use crate::snapshot::VersionPin;
 ///
 /// [`FlatSide`] is the one for flat records. The one for the nodes of a
 /// Merk is the ordered cursor of the tree layer (TREE-06, MERK-05).
-pub trait CommittedSide {
+///
+/// Every call that reads a page is given the guard of the operation it is
+/// made in (PN5). The version is the cursor's, which keeps it pinned from
+/// one call to the next.
+pub trait CommittedSide<'s> {
     /// Goes to the first key at or after `key`.
-    fn seek(&mut self, key: &[u8]) -> Result<(), TxnError>;
+    fn seek(&mut self, guard: &OperationGuard<'s>, key: &[u8]) -> Result<(), TxnError>;
 
     /// Goes to the last key at or before `key`.
-    fn seek_for_prev(&mut self, key: &[u8]) -> Result<(), TxnError>;
+    fn seek_for_prev(&mut self, guard: &OperationGuard<'s>, key: &[u8]) -> Result<(), TxnError>;
 
     /// Goes to the first key.
-    fn seek_to_first(&mut self) -> Result<(), TxnError>;
+    fn seek_to_first(&mut self, guard: &OperationGuard<'s>) -> Result<(), TxnError>;
 
     /// Goes to the last key.
-    fn seek_to_last(&mut self) -> Result<(), TxnError>;
+    fn seek_to_last(&mut self, guard: &OperationGuard<'s>) -> Result<(), TxnError>;
 
     /// Goes to the next key. Past the last one the side has no key.
-    fn next(&mut self) -> Result<(), TxnError>;
+    fn next(&mut self, guard: &OperationGuard<'s>) -> Result<(), TxnError>;
 
     /// Goes to the key before. Before the first one the side has no key.
-    fn prev(&mut self) -> Result<(), TxnError>;
+    fn prev(&mut self, guard: &OperationGuard<'s>) -> Result<(), TxnError>;
 
     /// The key the side stands on, if it stands on one.
     fn key(&self) -> Option<&[u8]>;
@@ -45,12 +51,21 @@ pub trait CommittedSide {
     /// Appends the value of the record under `key` to `out`, and says
     /// whether the committed version has one. `key` is mostly the key the
     /// side stands on.
-    fn value(&mut self, key: &[u8], out: &mut Vec<u8>) -> Result<bool, TxnError>;
+    fn value(
+        &mut self,
+        guard: &OperationGuard<'s>,
+        key: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<bool, TxnError>;
 }
 
 /// The committed flat records of one unit at one version.
 pub struct FlatSide<'s> {
-    pages: Committed<'s>,
+    path: WritePath<'s>,
+    at: CommitVersion,
+    /// The pages between two calls, bound to no operation, once a call has
+    /// read through them.
+    pages: Option<Committed<'s, 's, Idle>>,
     tree: flat::FlatTree,
     cursor: flat::Cursor,
     unit: Unit,
@@ -61,46 +76,71 @@ impl fmt::Debug for FlatSide<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FlatSide")
             .field("unit", &self.unit)
-            .field("at", &self.pages.at())
+            .field("at", &self.at)
             .finish_non_exhaustive()
     }
 }
 
-impl CommittedSide for FlatSide<'_> {
-    fn seek(&mut self, key: &[u8]) -> Result<(), TxnError> {
-        Ok(self.cursor.seek(&self.pages, key)?)
+impl<'s> FlatSide<'s> {
+    /// Runs one call with the committed pages under `guard`, the guard of
+    /// the operation the call is made in.
+    fn read<'g, R>(
+        &mut self,
+        guard: &'g OperationGuard<'s>,
+        run: impl FnOnce(&mut Self, &FlatReader<'s, 'g>) -> R,
+    ) -> R {
+        let pages = match self.pages.take() {
+            Some(pages) => pages.under(guard),
+            None => self.path.committed(guard, self.at),
+        };
+        let result = run(self, &pages);
+        self.pages = Some(pages.under(&IDLE));
+        result
+    }
+}
+
+impl<'s> CommittedSide<'s> for FlatSide<'s> {
+    fn seek(&mut self, guard: &OperationGuard<'s>, key: &[u8]) -> Result<(), TxnError> {
+        Ok(self.read(guard, |side, pages| side.cursor.seek(pages, key))?)
     }
 
-    fn seek_for_prev(&mut self, key: &[u8]) -> Result<(), TxnError> {
-        Ok(self.cursor.seek_for_prev(&self.pages, key)?)
+    fn seek_for_prev(&mut self, guard: &OperationGuard<'s>, key: &[u8]) -> Result<(), TxnError> {
+        Ok(self.read(guard, |side, pages| side.cursor.seek_for_prev(pages, key))?)
     }
 
-    fn seek_to_first(&mut self) -> Result<(), TxnError> {
-        Ok(self.cursor.seek_to_first(&self.pages)?)
+    fn seek_to_first(&mut self, guard: &OperationGuard<'s>) -> Result<(), TxnError> {
+        Ok(self.read(guard, |side, pages| side.cursor.seek_to_first(pages))?)
     }
 
-    fn seek_to_last(&mut self) -> Result<(), TxnError> {
-        Ok(self.cursor.seek_to_last(&self.pages)?)
+    fn seek_to_last(&mut self, guard: &OperationGuard<'s>) -> Result<(), TxnError> {
+        Ok(self.read(guard, |side, pages| side.cursor.seek_to_last(pages))?)
     }
 
-    fn next(&mut self) -> Result<(), TxnError> {
-        Ok(self.cursor.next(&self.pages)?)
+    fn next(&mut self, guard: &OperationGuard<'s>) -> Result<(), TxnError> {
+        Ok(self.read(guard, |side, pages| side.cursor.next(pages))?)
     }
 
-    fn prev(&mut self) -> Result<(), TxnError> {
-        Ok(self.cursor.prev(&self.pages)?)
+    fn prev(&mut self, guard: &OperationGuard<'s>) -> Result<(), TxnError> {
+        Ok(self.read(guard, |side, pages| side.cursor.prev(pages))?)
     }
 
     fn key(&self) -> Option<&[u8]> {
         self.cursor.key()
     }
 
-    fn value(&mut self, key: &[u8], out: &mut Vec<u8>) -> Result<bool, TxnError> {
-        if self.cursor.key() == Some(key) {
-            return Ok(self.cursor.value(&self.pages, out)?);
-        }
-        stored_key(&mut self.key, &self.unit.subtree, key);
-        Ok(self.tree.get(&self.pages, &self.key, out)?)
+    fn value(
+        &mut self,
+        guard: &OperationGuard<'s>,
+        key: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<bool, TxnError> {
+        Ok(self.read(guard, |side, pages| {
+            if side.cursor.key() == Some(key) {
+                return side.cursor.value(pages, out);
+            }
+            stored_key(&mut side.key, &side.unit.subtree, key);
+            side.tree.get(pages, &side.key, out)
+        })?)
     }
 }
 
@@ -147,25 +187,26 @@ pub struct Cursor<'t, 's, C = FlatSide<'s>> {
 
 impl<'t, 's> Cursor<'t, 's> {
     pub(crate) fn flat(txn: &'t WriteTxn<'s>, scoped: bool, unit: Unit) -> Self {
-        let path = txn.path();
-        // The guard is held while the version is pinned and its pages are
-        // first named (PN5); the pin keeps them from then on.
-        let guard = path.versions().guard();
+        let path = *txn.path();
+        // The version is pinned here, and its pages are read from the
+        // cursor's first step on, each under the guard of its operation
+        // (PN5).
         let pin = path.versions().pin();
         let tree = path.keyspaces().of(unit.column);
         let side = FlatSide {
-            pages: path.committed(pin.version()),
+            path,
+            at: pin.version(),
+            pages: None,
             cursor: tree.cursor_within(unit.subtree.as_bytes()),
             tree,
             unit,
             key: Vec::new(),
         };
-        drop(guard);
         Self::over(txn, scoped, unit, pin, side)
     }
 }
 
-impl<'t, 's, C: CommittedSide> Cursor<'t, 's, C> {
+impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
     /// A cursor whose committed side is `side`, which reads the version
     /// `pin` holds.
     pub(crate) fn over(
@@ -188,7 +229,7 @@ impl<'t, 's, C: CommittedSide> Cursor<'t, 's, C> {
 
     /// The committed version the cursor reads beside the transaction's
     /// writes.
-    pub fn version(&self) -> lignin_format::CommitVersion {
+    pub fn version(&self) -> CommitVersion {
         self.pin.version()
     }
 
@@ -210,7 +251,7 @@ impl<'t, 's, C: CommittedSide> Cursor<'t, 's, C> {
         let Some(key) = &self.key else {
             return Ok(false);
         };
-        let _guard = self.txn.path().versions().guard();
+        let guard = self.txn.path().versions().guard();
         let unit = self.unit;
         let own = self
             .txn
@@ -225,36 +266,36 @@ impl<'t, 's, C: CommittedSide> Cursor<'t, 's, C> {
             })??;
         match own {
             Some(found) => Ok(found),
-            None => self.side.value(key, out),
+            None => self.side.value(&guard, key, out),
         }
     }
 
     /// Goes to the first key at or after `key`.
     pub fn seek(&mut self, key: &[u8]) -> Result<(), TxnError> {
-        let _guard = self.txn.path().versions().guard();
-        self.side.seek(key)?;
-        self.settle(Bound::Included(key.to_vec()), Way::Forward)
+        let guard = self.txn.path().versions().guard();
+        self.side.seek(&guard, key)?;
+        self.settle(&guard, Bound::Included(key.to_vec()), Way::Forward)
     }
 
     /// Goes to the last key at or before `key`.
     pub fn seek_for_prev(&mut self, key: &[u8]) -> Result<(), TxnError> {
-        let _guard = self.txn.path().versions().guard();
-        self.side.seek_for_prev(key)?;
-        self.settle(Bound::Included(key.to_vec()), Way::Back)
+        let guard = self.txn.path().versions().guard();
+        self.side.seek_for_prev(&guard, key)?;
+        self.settle(&guard, Bound::Included(key.to_vec()), Way::Back)
     }
 
     /// Goes to the first key.
     pub fn seek_to_first(&mut self) -> Result<(), TxnError> {
-        let _guard = self.txn.path().versions().guard();
-        self.side.seek_to_first()?;
-        self.settle(Bound::Unbounded, Way::Forward)
+        let guard = self.txn.path().versions().guard();
+        self.side.seek_to_first(&guard)?;
+        self.settle(&guard, Bound::Unbounded, Way::Forward)
     }
 
     /// Goes to the last key.
     pub fn seek_to_last(&mut self) -> Result<(), TxnError> {
-        let _guard = self.txn.path().versions().guard();
-        self.side.seek_to_last()?;
-        self.settle(Bound::Unbounded, Way::Back)
+        let guard = self.txn.path().versions().guard();
+        self.side.seek_to_last(&guard)?;
+        self.settle(&guard, Bound::Unbounded, Way::Back)
     }
 
     /// Goes to the next key. Past the last key, and from no key, the
@@ -264,15 +305,15 @@ impl<'t, 's, C: CommittedSide> Cursor<'t, 's, C> {
         let Some(key) = self.key.take() else {
             return Ok(());
         };
-        let _guard = self.txn.path().versions().guard();
+        let guard = self.txn.path().versions().guard();
         // The committed side goes to the first committed key after `key`.
         if self.way != Way::Forward {
-            self.side.seek(&key)?;
+            self.side.seek(&guard, &key)?;
         }
         if self.side.key() == Some(&key[..]) {
-            self.side.next()?;
+            self.side.next(&guard)?;
         }
-        self.settle(Bound::Excluded(key), Way::Forward)
+        self.settle(&guard, Bound::Excluded(key), Way::Forward)
     }
 
     /// Goes to the key before. Before the first key, and from no key, the
@@ -281,20 +322,25 @@ impl<'t, 's, C: CommittedSide> Cursor<'t, 's, C> {
         let Some(key) = self.key.take() else {
             return Ok(());
         };
-        let _guard = self.txn.path().versions().guard();
+        let guard = self.txn.path().versions().guard();
         if self.way != Way::Back {
-            self.side.seek_for_prev(&key)?;
+            self.side.seek_for_prev(&guard, &key)?;
         }
         if self.side.key() == Some(&key[..]) {
-            self.side.prev()?;
+            self.side.prev(&guard)?;
         }
-        self.settle(Bound::Excluded(key), Way::Back)
+        self.settle(&guard, Bound::Excluded(key), Way::Back)
     }
 
     /// Finds the first key within `bound`, going `way`, that has a record
     /// in the transaction's view, and stands on it. The committed side
     /// stands at its first key within the bound.
-    fn settle(&mut self, mut bound: Bound<Vec<u8>>, way: Way) -> Result<(), TxnError> {
+    fn settle(
+        &mut self,
+        guard: &OperationGuard<'s>,
+        mut bound: Bound<Vec<u8>>,
+        way: Way,
+    ) -> Result<(), TxnError> {
         self.way = way;
         self.key = None;
         let back = way == Way::Back;
@@ -326,8 +372,8 @@ impl<'t, 's, C: CommittedSide> Cursor<'t, 's, C> {
             // behind it.
             if self.side.key() == Some(&key[..]) {
                 match way {
-                    Way::Forward => self.side.next()?,
-                    Way::Back => self.side.prev()?,
+                    Way::Forward => self.side.next(guard)?,
+                    Way::Back => self.side.prev(guard)?,
                 }
             }
             bound = Bound::Excluded(key);

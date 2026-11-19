@@ -35,8 +35,10 @@ use lignin_tree::{
 use crate::{
     snapshot::{ReadPath, Reclaim, Versions},
     txn::{
-        path::Store, txn::Sealed, Commits, Directory, DirectoryError, FlatWriter, Keyspaces,
-        Subtree, TxnError, WritePath, WriteTxn,
+        path::{FlatReader, Store},
+        txn::Sealed,
+        Commits, Directory, DirectoryError, FlatWriter, Keyspaces, Subtree, TxnError, WritePath,
+        WriteTxn,
     },
 };
 
@@ -99,7 +101,7 @@ impl Roots {
 
     /// Every Merk that has a root at the version `pages` reads, with its
     /// root.
-    pub fn all(&self, pages: &Committed<'_>) -> Vec<(Subtree, CellAddress)> {
+    pub fn all<P: FlatPages>(&self, pages: &P) -> Vec<(Subtree, CellAddress)> {
         let mut found = Vec::new();
         let mut cursor = self.tree().cursor();
         cursor.seek_to_first(pages).expect("the directory is read");
@@ -119,7 +121,7 @@ impl Roots {
 impl Directory for Roots {
     fn committed_root(
         &self,
-        pages: &Committed<'_>,
+        pages: &FlatReader<'_, '_>,
         subtree: &Subtree,
     ) -> Result<Option<CellAddress>, DirectoryError> {
         self.read(pages, subtree)
@@ -127,7 +129,7 @@ impl Directory for Roots {
 
     fn root(
         &self,
-        pages: &FlatWriter<'_>,
+        pages: &FlatWriter<'_, '_>,
         subtree: &Subtree,
     ) -> Result<Option<CellAddress>, DirectoryError> {
         self.read(pages, subtree)
@@ -135,7 +137,7 @@ impl Directory for Roots {
 
     fn set_root(
         &self,
-        pages: &mut FlatWriter<'_>,
+        pages: &mut FlatWriter<'_, '_>,
         subtree: &Subtree,
         root: Option<CellAddress>,
     ) -> Result<(), DirectoryError> {
@@ -159,7 +161,7 @@ impl Directory for Roots {
 
     fn moved(
         &self,
-        pages: &mut FlatWriter<'_>,
+        pages: &mut FlatWriter<'_, '_>,
         from: CellAddress,
         to: CellAddress,
     ) -> Result<(), DirectoryError> {
@@ -287,7 +289,8 @@ impl Db {
 
     /// The first commit: five empty flat trees.
     fn make_keyspaces(&self, versions: &Versions) {
-        let base = Committed::new(self.loader(), &self.values, CommitVersion::EMPTY);
+        let guard = versions.guard();
+        let base = self.committed(&guard, CommitVersion::EMPTY);
         let mut pages = Private::new(base, &self.pool, OwnerId::new(u64::MAX), &self.ids);
         let mut make = || FlatTree::create(&mut pages, self.config()).expect("a tree");
         let keyspaces = Keyspaces {
@@ -334,9 +337,14 @@ impl Db {
         ReadPath::new(versions, self.loader())
     }
 
-    /// The committed flat pages at `at`.
-    pub fn committed(&self, at: CommitVersion) -> Committed<'_> {
-        Committed::new(self.loader(), &self.values, at)
+    /// The committed flat pages at `at`, for the operation that holds
+    /// `guard`.
+    pub fn committed<'r, G: lignin_tree::OperationGuard>(
+        &'r self,
+        guard: &'r G,
+        at: CommitVersion,
+    ) -> Committed<'r, 'r, G> {
+        Committed::new(self.loader(), &self.values, guard, at)
     }
 
     /// Commits `txn`: the conflict rule, the rebase, the install and the
@@ -383,7 +391,9 @@ impl Db {
         }
         unused.extend(tree.unused);
 
-        let flat = parts.flat.into_writer().into_parts();
+        let guard = versions.guard();
+        let flat = parts.flat.into_writer(&guard).into_parts();
+        drop(guard);
         for (copy, made) in flat.written {
             let page = copy.page();
             drop(self.pool.install(&copy, commit).expect("it installs"));
@@ -467,8 +477,13 @@ impl Db {
     /// the fragment-root marks are what the pointers imply, and no page
     /// holds a cell that nothing reaches. Returns the keys of every Merk, in
     /// order.
-    pub fn check_trees(&self, at: CommitVersion) -> BTreeMap<Subtree, Vec<Vec<u8>>> {
-        let pages = self.committed(at);
+    pub fn check_trees(
+        &self,
+        versions: &Versions,
+        at: CommitVersion,
+    ) -> BTreeMap<Subtree, Vec<Vec<u8>>> {
+        let guard = versions.guard();
+        let pages = self.committed(&guard, at);
         let loader = self.loader();
         let lease = Lease::take();
         let mut buffers = LoadBuffers::new();

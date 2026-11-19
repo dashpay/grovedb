@@ -7,7 +7,9 @@ use std::{
 };
 
 use lignin_format::{CellAddress, CommitVersion};
+use lignin_store::alloc::PageAllocator;
 use lignin_tree::{
+    flat::Private,
     fragment::{
         FragmentError, Fragments, HostedWrite, LinkWrite, NodeWrite, RootWrite, Target, ValueWrite,
         Write,
@@ -19,10 +21,11 @@ use super::{
     error::{BatchError, TxnError},
     key::{Column, Subtree},
     pages::{find, follow, NodePages, TreePages, TreeValues},
-    path::{FlatWriter, WritePath},
+    path::{FlatWriter, Idle, WritePath, IDLE},
     write::{Applied, Batch, Hosted, LinkPut, MerkWrite, RecordWrite, RootPut, ValuePut},
     write_set::WriteSet,
 };
+use crate::snapshot::OperationGuard;
 
 /// Why a batch was not applied to the frames.
 #[derive(Debug)]
@@ -85,11 +88,16 @@ pub(crate) fn subtree_end(subtree: &Subtree) -> Option<Vec<u8>> {
 /// Nothing is kept here that the write set does not say, so they can be
 /// given up and made again at any time: for a rebase, a rollback to a
 /// mark, or after an operation that failed half way.
-pub(crate) struct Frames<'s> {
+///
+/// They are bound to the guard of the operation that reads through them
+/// (PN5): [`Awake`] in an operation, and [`Parked`] between two, where
+/// nothing is read. The base pin keeps the version from one operation to
+/// the next, which is what taking the flat pages along asks for.
+pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
     base: CommitVersion,
     pub(crate) tree: TreePages<'s>,
     pub(crate) values: TreeValues<'s>,
-    pub(crate) flat: FlatFrames<'s>,
+    pub(crate) flat: FlatFrames<'s, 'g, G>,
     fragments: Fragments,
     key: Vec<u8>,
     /// For each Merk of the batch that was applied last, whether it had no
@@ -97,35 +105,63 @@ pub(crate) struct Frames<'s> {
     empty: Vec<bool>,
 }
 
+/// The frames of a transaction between two of its operations.
+pub(crate) type Parked<'s> = Frames<'s, 's, Idle>;
+
+/// The frames of a transaction in the operation that holds the guard.
+pub(crate) type Awake<'s, 'g> = Frames<'s, 'g, OperationGuard<'s>>;
+
 /// The flat pages of the frames. When they are dropped, their copies are
 /// given up.
-pub(crate) struct FlatFrames<'s>(Option<FlatWriter<'s>>);
+pub(crate) struct FlatFrames<'s: 'g, 'g, G: lignin_tree::OperationGuard>(
+    Option<Private<'s, 'g, G, &'s PageAllocator>>,
+);
 
-impl<'s> FlatFrames<'s> {
+impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> FlatFrames<'s, 'g, G> {
+    /// The same pages, with all they hold, bound to `guard`.
+    fn under<'q, H>(mut self, guard: &'q H) -> FlatFrames<'s, 'q, H>
+    where
+        's: 'q,
+        H: lignin_tree::OperationGuard,
+    {
+        FlatFrames(self.0.take().map(|writer| writer.under(guard)))
+    }
+
+    /// How many private copies of flat pages the transaction holds: of the
+    /// pages it changed or made, and of those it freed.
+    pub(crate) fn copies(&self) -> usize {
+        (self.0.as_ref()).map_or(0, |writer| {
+            writer.written().count() + writer.freed().count()
+        })
+    }
+}
+
+impl<'s> FlatFrames<'s, 's, Idle> {
     /// Ends the flat pages and hands the writer to the commit, which
-    /// installs them.
+    /// installs them in the operation that holds `guard`.
     #[cfg_attr(
         any(not(test), loom),
         expect(dead_code, reason = "the commit (TXN-05) is its one caller")
     )]
-    pub(crate) fn into_writer(mut self) -> FlatWriter<'s> {
-        self.0
-            .take()
+    pub(crate) fn into_writer<'g>(mut self, guard: &'g OperationGuard<'s>) -> FlatWriter<'s, 'g> {
+        let writer = self.0.take();
+        writer
             .expect("the writer is there until it is taken")
+            .under(guard)
     }
 }
 
-impl<'s> std::ops::Deref for FlatFrames<'s> {
-    type Target = FlatWriter<'s>;
+impl<'s: 'g, 'g> std::ops::Deref for FlatFrames<'s, 'g, OperationGuard<'s>> {
+    type Target = FlatWriter<'s, 'g>;
 
-    fn deref(&self) -> &FlatWriter<'s> {
+    fn deref(&self) -> &Self::Target {
         self.0
             .as_ref()
             .expect("the writer is there until it is taken")
     }
 }
 
-impl std::ops::DerefMut for FlatFrames<'_> {
+impl<'s: 'g, 'g> std::ops::DerefMut for FlatFrames<'s, 'g, OperationGuard<'s>> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.0
             .as_mut()
@@ -133,13 +169,61 @@ impl std::ops::DerefMut for FlatFrames<'_> {
     }
 }
 
-impl Drop for FlatFrames<'_> {
+impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> Drop for FlatFrames<'s, 'g, G> {
     fn drop(&mut self) {
         if let Some(writer) = &mut self.0 {
             // What the pool will not let go of now cannot be given up
             // later either: nothing is left that could.
             let _ = writer.roll_back();
         }
+    }
+}
+
+/// The frames of a transaction, awake for one of its operations. When this
+/// is dropped they are parked again where the transaction keeps them, on
+/// every way out of the operation.
+pub(crate) struct Woken<'a, 's: 'g, 'g> {
+    home: &'a mut Option<Parked<'s>>,
+    frames: Option<Awake<'s, 'g>>,
+}
+
+impl<'a, 's: 'g, 'g> Woken<'a, 's, 'g> {
+    /// Takes the frames that `home` keeps, if it keeps any, for the
+    /// operation that holds `guard`.
+    pub(crate) fn wake(
+        home: &'a mut Option<Parked<'s>>,
+        guard: &'g OperationGuard<'s>,
+    ) -> Option<Self> {
+        let frames = home.take()?.under(guard);
+        Some(Self {
+            home,
+            frames: Some(frames),
+        })
+    }
+
+    /// Gives the frames up: they hold a part of a batch.
+    pub(crate) fn discard(mut self) {
+        self.frames = None;
+    }
+}
+
+impl<'s: 'g, 'g> std::ops::Deref for Woken<'_, 's, 'g> {
+    type Target = Awake<'s, 'g>;
+
+    fn deref(&self) -> &Self::Target {
+        (self.frames.as_ref()).expect("the frames are there until they are parked")
+    }
+}
+
+impl<'s: 'g, 'g> std::ops::DerefMut for Woken<'_, 's, 'g> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        (self.frames.as_mut()).expect("the frames are there until they are parked")
+    }
+}
+
+impl<'a, 's: 'g, 'g> Drop for Woken<'a, 's, 'g> {
+    fn drop(&mut self) {
+        *self.home = self.frames.take().map(Frames::park);
     }
 }
 
@@ -218,10 +302,38 @@ struct ResolvedBatch<'a> {
     root_targets: Vec<Option<Target>>,
 }
 
-impl<'s> Frames<'s> {
+impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> Frames<'s, 'g, G> {
+    /// The version the frames are built over: *B(T)*.
+    pub(crate) fn base(&self) -> CommitVersion {
+        self.base
+    }
+
+    /// The same frames, with all they hold, bound to `guard`.
+    fn under<'q, H>(self, guard: &'q H) -> Frames<'s, 'q, H>
+    where
+        's: 'q,
+        H: lignin_tree::OperationGuard,
+    {
+        Frames {
+            base: self.base,
+            tree: self.tree,
+            values: self.values,
+            flat: self.flat.under(guard),
+            fragments: self.fragments,
+            key: self.key,
+            empty: self.empty,
+        }
+    }
+}
+
+impl<'s: 'g, 'g> Awake<'s, 'g> {
     /// Frames with no copy, over the committed pages of the version `at`,
     /// which the transaction keeps pinned for as long as it has them.
-    pub(crate) fn new(path: &WritePath<'s>, at: CommitVersion) -> Self {
+    pub(crate) fn new(
+        path: &WritePath<'s>,
+        guard: &'g OperationGuard<'s>,
+        at: CommitVersion,
+    ) -> Self {
         let owner = WritePath::next_owner();
         let lease = Lease::take();
         let size = path.layout.page_size();
@@ -229,7 +341,7 @@ impl<'s> Frames<'s> {
             tree: TreePages::new(path.loader, path.pool, path.ids, owner, at, lease, size),
             values: TreeValues::new(path.values),
             flat: FlatFrames(Some(FlatWriter::new(
-                path.committed(at),
+                path.committed(guard, at),
                 path.pool,
                 owner,
                 path.ids,
@@ -241,16 +353,25 @@ impl<'s> Frames<'s> {
         }
     }
 
+    /// The frames as the transaction keeps them until its next operation.
+    pub(crate) fn park(self) -> Parked<'s> {
+        self.under(&IDLE)
+    }
+
     /// Frames that show the write set `set` applied, in order, to the
     /// committed state of the version `at` (WT3): every operation is
     /// applied again through the tree layer, which finds every cell by its
     /// key (WT7, LT4).
+    ///
+    /// They are read and written under `guard`, the guard of the operation
+    /// that makes them, and are returned as the transaction keeps them.
     pub(crate) fn build(
         path: &WritePath<'s>,
+        guard: &'g OperationGuard<'s>,
         at: CommitVersion,
         set: &WriteSet,
-    ) -> Result<Self, TxnError> {
-        let mut frames = Self::new(path, at);
+    ) -> Result<Parked<'s>, TxnError> {
+        let mut frames = Self::new(path, guard, at);
         for op in 0..set.ops() {
             let hosted = set.hosted_lists(op);
             let batch = set.batch(op, &hosted);
@@ -263,12 +384,7 @@ impl<'s> Frames<'s> {
                 .apply(path, &batch, Some(&set.made(op)))
                 .map_err(|refused| refused.error)?;
         }
-        Ok(frames)
-    }
-
-    /// The version the frames are built over: *B(T)*.
-    pub(crate) fn base(&self) -> CommitVersion {
-        self.base
+        Ok(frames.park())
     }
 
     /// For each Merk of the batch that was applied last, whether it had no
