@@ -37,6 +37,8 @@ use crate::segment::{
 };
 
 const HEADER: u64 = FileHeader::ENCODED_LEN as u64;
+/// How often the roll of a test goes round before it gives up.
+const ROLL_ROUNDS: usize = 6;
 const FIRST: u64 = FIRST_ITEM_OFFSET;
 
 struct Rng(u64);
@@ -281,8 +283,33 @@ impl Db {
         })
     }
 
+    /// Keeps the log's files going as a caller does that keeps commits
+    /// out of the log: [`LogStore::roll`], and then the turn away from a
+    /// file that is full, which `roll` leaves to such a caller, with a
+    /// file made ready behind it. Returns whether the log turned.
     fn roll(&mut self) -> Result<bool, LogError> {
-        self.log.roll(&mut self.manifest)
+        let mut turned = false;
+        for _ in 0..ROLL_ROUNDS {
+            turned |= self.log.roll(&mut self.manifest)?;
+            if !self.log.is_due() {
+                return Ok(turned);
+            }
+            turned |= self.log.rotate()?;
+            match self.log.create() {
+                Ok(_) | Err(LogError::SpareExists { .. }) => {}
+                Err(error) => return Err(error),
+            }
+            self.log.commit(&mut self.manifest)?;
+            if !self.log.is_due() {
+                return Ok(turned);
+            }
+            // The log turned to a file that takes nothing: the next
+            // round's roll turns it again.
+        }
+        // A turn is due after every round: what stands in the way of the
+        // next one is the error.
+        self.log.rotate()?;
+        Err(LogError::NoSpare)
     }
 
     /// Commits a drawn group: asks for its place, writes it and appends it.

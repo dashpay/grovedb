@@ -857,11 +857,19 @@ impl LogStore {
     /// not turned ([`LogError::NotAppended`]), and the file it would have
     /// turned to is given up: create another one.
     pub fn rotate(&self) -> Result<bool, LogError> {
+        self.turn(true)
+    }
+
+    /// Turns the log to its next file if a turn is due. A file that still
+    /// takes items is turned away from, when it is full, only if
+    /// `from_a_file_that_takes_items` says so: that turn moves an end of
+    /// the log at which a commit may have asked for the place of its group.
+    fn turn(&self, from_a_file_that_takes_items: bool) -> Result<bool, LogError> {
         let mut tail = self.tail();
         tail.check_settled()?;
         let due = match &tail.active {
             Some((file, cursor)) if !file.is_finished() => {
-                cursor.offset() >= self.options.target_file_len
+                from_a_file_that_takes_items && cursor.offset() >= self.options.target_file_len
             }
             Some((file, _)) if file.is_uncut() => {
                 return Err(LogError::CutNotDurable {
@@ -939,11 +947,11 @@ impl LogStore {
         Ok(true)
     }
 
-    /// Makes the log durable, turns it to its next file if a turn is due,
-    /// and sees to it that it then has a file to turn to which a durable
-    /// manifest names. Returns whether it turned.
+    /// Makes the log durable, gives it a file that takes items if it has
+    /// none, and sees to it that it then has a file to turn to which a
+    /// durable manifest names. Returns whether it turned.
     ///
-    /// It is [`Self::sync`], then [`Self::rotate`], [`Self::create`] and
+    /// It is [`Self::sync`], then a turn, [`Self::create`] and
     /// [`Self::commit`] as far as each is needed. A session calls it once
     /// before its first append: the first manifest it writes then names
     /// every file of the earlier sessions closed where the log was found
@@ -952,20 +960,33 @@ impl LogStore {
     /// to time and when [`Self::is_due`], and by nobody that is inside a
     /// commit or a page step.
     ///
+    /// **It turns the log only while the log has no file that takes
+    /// items**: before the session's first turn, and after an append that
+    /// failed. No commit can have asked for the place of its group at such
+    /// an end of the log and still append there
+    /// ([`LogError::NoActiveFile`]), so this turn takes no commit's place,
+    /// whoever calls it and under whatever lock. A file that is full and
+    /// still takes items is left to [`Self::rotate`], which is made where
+    /// no commit is between asking for its place and appending its group:
+    /// by the committer whose file is full, or under the lock that keeps
+    /// commits out of the log ([the locks](super#locks)). So when this
+    /// returns `Ok`, a named file is ready, the log takes items, and
+    /// [`Self::is_due`] may still say that the file it ends in is full.
+    ///
     /// Because it leaves a file ready, the log can be turned with
     /// [`Self::rotate`] alone the next time, which syncs nothing and
-    /// replaces no manifest: by a committer whose file is full.
+    /// replaces no manifest.
     ///
     /// After an append that failed it replaces the manifest before it
     /// turns, with the file named closed where its last whole item ends:
     /// the cut of CM9, which is made before the next commit and not by
     /// one.
     ///
-    /// When it returns `Ok`, no turn is due and a named file is ready, as
-    /// far as that can be said while others append. If an append or a turn
-    /// fails while it runs, it goes round again, and after a few rounds it
-    /// ends with what stands in the way, such as
-    /// [`LogError::CutNotDurable`] or [`LogError::NoSpare`].
+    /// If an append or a turn fails while it runs, it goes round again,
+    /// and after a few rounds it ends with what stands in the way, such as
+    /// [`LogError::CutNotDurable`] or [`LogError::NoSpare`]. Commits that
+    /// fill the files as fast as they are made do not make it go round:
+    /// it does not turn their files.
     ///
     /// If it fails, it can be called again.
     pub fn roll(&self, manifest: &mut ManifestStore) -> Result<bool, LogError> {
@@ -973,16 +994,17 @@ impl LogStore {
         self.sync()?;
         let mut turned = false;
         for _ in 0..ROLL_ROUNDS {
-            turned |= self.rotate_if_ready()?;
-            let (spare, uncut) = {
+            turned |= self.turn_if_ready()?;
+            let (spare, uncut, takes_items) = {
                 let tail = self.tail();
                 let uncut = matches!(&tail.active, Some((file, _)) if file.is_uncut());
-                (tail.spare.as_ref().map(|(_, named)| *named), uncut)
+                let spare = tail.spare.as_ref().map(|(_, named)| *named);
+                (spare, uncut, tail.active().is_ok())
             };
             match spare {
-                Some(true) if !uncut && !self.is_due() => return Ok(turned),
-                // A turn is due again: the file the log turned to takes
-                // nothing, or filled at once.
+                Some(true) if takes_items => return Ok(turned),
+                // The log has a file to turn to and none that takes items:
+                // the next round turns to it, or says why it cannot.
                 Some(true) if !uncut => continue,
                 Some(_) => {}
                 None => {
@@ -998,13 +1020,14 @@ impl LogStore {
         }
         // Something failed in every round. What still stands in the way
         // is the error, and the log has no file ready to turn to.
-        self.rotate()?;
+        self.turn(false)?;
         Err(LogError::NoSpare)
     }
 
-    /// Turns the log if a turn is due and it has a file to turn to.
-    fn rotate_if_ready(&self) -> Result<bool, LogError> {
-        match self.rotate() {
+    /// Turns the log if it has no file that takes items and has a file to
+    /// turn to.
+    fn turn_if_ready(&self) -> Result<bool, LogError> {
+        match self.turn(false) {
             Err(
                 LogError::NoSpare | LogError::SpareNotNamed { .. } | LogError::CutNotDurable { .. },
             ) => Ok(false),
