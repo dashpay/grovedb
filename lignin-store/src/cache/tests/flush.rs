@@ -122,7 +122,7 @@ fn a_superseded_version_can_be_held_for_its_readers_instead() {
     {
         let mut latch = copy.write().expect("private");
         content(1, 1, 0).write(&mut latch);
-        latch.attach(7, value(b"pending"));
+        latch.attach(name(7), value(b"pending"));
     }
     let first = pool.install(&copy, version(1)).expect("a commit");
     drop(copy);
@@ -154,7 +154,7 @@ fn a_superseded_version_can_be_held_for_its_readers_instead() {
     // nothing takes it while that reader can ask.
     assert_eq!(pool.reclaim(&pins), 0);
     let seen = pool.get(page(1), version(1)).expect("held");
-    assert_eq!(seen.attached(7), Some(&b"pending"[..]));
+    assert_eq!(seen.attached(name(7)), Some(&b"pending"[..]));
     drop(seen);
 
     pins.set_oldest(2);

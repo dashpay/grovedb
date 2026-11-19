@@ -43,6 +43,11 @@ fn value(bytes: &[u8]) -> Arc<[u8]> {
     Arc::from(bytes)
 }
 
+/// The name of an attached value: the eight bytes of a pending value.
+fn name(raw: u64) -> ValueId {
+    raw.to_le_bytes()
+}
+
 /// A pool of `frames` small frames whose table has one part, so that every
 /// page meets every other in it.
 fn pool(frames: usize) -> BufferPool {

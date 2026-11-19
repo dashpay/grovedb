@@ -120,7 +120,11 @@ fn the_read_path_allocates_nothing() {
             let found = pool.get(page(raw), version(1)).expect("in the pool");
             let again = found.clone();
             black_box(found[0]);
-            black_box((again.page(), again.born(), again.attached(1)));
+            black_box((
+                again.page(),
+                again.born(),
+                again.attached(1_u64.to_le_bytes()),
+            ));
             drop(found);
             black_box(again[PAGE_SIZE - 1]);
         }

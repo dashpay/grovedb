@@ -14,7 +14,7 @@ use lignin_format::{
 use lignin_io::{StdVfs, Vfs};
 use lignin_store::{
     alloc::{AllocError, PageAllocator, PageState},
-    cache::{BufferPool, CacheError, OwnerId, PageRef, PoolConfig},
+    cache::{BufferPool, CacheError, OwnerId, PageRef, PoolConfig, ValueId},
     load::{LoadError, PageLoader, FRAME_FORMAT},
     segment::{ManifestStore, SegmentStore, SegmentWriter},
     table::{Link, PageTable},
@@ -28,8 +28,16 @@ use super::{
     super::{Committed, FlatOwners, PageIds, Private, StepLog},
     *,
 };
+use crate::OperationGuard;
 
-type Writer<'s> = Private<'s, &'s PageAllocator>;
+/// The guard of a reader's operation, which keeps nothing here: nothing is
+/// reclaimed in these tests while a reader reads.
+struct Guard;
+
+impl OperationGuard for Guard {}
+
+type Reader<'s> = Committed<'s, 's, Guard>;
+type Writer<'s> = Private<'s, 's, Guard, &'s PageAllocator>;
 
 fn version(raw: u64) -> CommitVersion {
     CommitVersion::new(raw).expect("a version")
@@ -130,11 +138,11 @@ impl Db {
     }
 
     /// The committed pages at `at`.
-    fn reader_at(&self, at: CommitVersion) -> Committed<'_> {
-        Committed::new(self.loader(), &self.values, at)
+    fn reader_at(&self, at: CommitVersion) -> Reader<'_> {
+        Committed::new(self.loader(), &self.values, &Guard, at)
     }
 
-    fn reader(&self) -> Committed<'_> {
+    fn reader(&self) -> Reader<'_> {
         self.reader_at(self.latest())
     }
 
@@ -150,14 +158,19 @@ impl Db {
 
     /// The committed pages at `at`, read through an empty buffer pool: each
     /// page comes from its segment.
-    fn cold<R>(&self, at: CommitVersion, read: impl FnOnce(&Committed<'_>) -> R) -> R {
+    fn cold<R>(&self, at: CommitVersion, read: impl FnOnce(&Reader<'_>) -> R) -> R {
         let pool = BufferPool::new(PoolConfig {
             page_size: self.size,
             capacity: 4 << 20,
         })
         .expect("a pool");
         let loader = PageLoader::new(&pool, &self.table, &self.segments, self.size);
-        read(&Committed::new(loader.expect("a loader"), &self.values, at))
+        read(&Committed::new(
+            loader.expect("a loader"),
+            &self.values,
+            &Guard,
+            at,
+        ))
     }
 
     /// Commits `writer`: one group in the log, with the values, the runs of
@@ -261,8 +274,8 @@ impl Db {
             if !self.pool.page_step(page).is_current(&frame) {
                 continue;
             }
-            for (slot, pending) in pending_of(&frame) {
-                let bytes = frame.attached(slot as u32).expect("the value's bytes");
+            for (_, pending) in pending_of(&frame) {
+                let bytes = frame.attached(pending.id()).expect("the value's bytes");
                 let pointer = state.value_writer.append(&mut hold, page, bytes);
                 placed.push((page, pending, pointer.expect("appended")));
             }
@@ -279,11 +292,7 @@ impl Db {
             let counts = self.values.step().expect("the counts");
             let step = self.pool.page_step(page);
             let old = step.current().expect("the page");
-            let slot = pending_of(&old)
-                .into_iter()
-                .find(|&(_, held)| held == pending)
-                .expect("the entry")
-                .0;
+            assert!(pending_of(&old).iter().any(|&(_, held)| held == pending));
             let change = ValueMove::in_flat_leaf(page, ValuePlace::Pending(pending), pointer)
                 .expect("a step");
             change.write(&mut state.log).expect("a record");
@@ -294,7 +303,7 @@ impl Db {
             let mut blank = self.pool.blank();
             blank.copy_from(&old);
             blank[..image.len()].copy_from_slice(&image);
-            blank.detach(slot as u32).expect("attached");
+            blank.detach(pending.id()).expect("attached");
             step.replace(&old, blank).expect("replaced");
             drop(step);
             let mut acquired = ValueChange::new();
@@ -956,7 +965,7 @@ fn a_writer_copies_a_page_that_the_pool_does_not_hold() {
     })
     .expect("a pool");
     let loader = PageLoader::new(&pool, &db.table, &db.segments, db.size).expect("a loader");
-    let base = Committed::new(loader, &db.values, first);
+    let base = Committed::new(loader, &db.values, &Guard, first);
     let mut writer = Private::new(base, &pool, OwnerId::new(1), &db.ids);
     assert_eq!(pool.stats().misses, 0);
     for n in (0..60).step_by(2) {
@@ -1138,12 +1147,12 @@ fn a_writer_owns_the_copies_it_made_and_no_others() {
         {
             let step = db.pool.page_step(root);
             let old = step.current().expect("the page");
-            let (slot, _) = pending_of(&old)[0];
+            let name = pending_of(&old)[0].1.id();
             let mut blank = db.pool.blank();
             blank.copy_from(&old);
-            blank.detach(slot as u32).expect("attached");
+            blank.detach(name).expect("attached");
             if let Some(bytes) = bytes {
-                blank.attach(slot as u32, bytes);
+                blank.attach(name, bytes);
             }
             step.replace(&old, blank).expect("replaced");
         }
@@ -1156,8 +1165,9 @@ fn a_writer_owns_the_copies_it_made_and_no_others() {
     }
 }
 
-/// Two entries of a leaf that hold one pending value, each with bytes of
-/// its own length with the page: the writer takes neither for the other.
+/// Two entries of a leaf that hold one pending value, of two lengths: the
+/// bytes with the page are the value of the entry whose length they have,
+/// and the writer takes them for neither.
 #[test]
 fn a_writer_refuses_a_leaf_whose_entries_share_a_pending_value() {
     let db = Db::new();
@@ -1184,13 +1194,14 @@ fn a_writer_refuses_a_leaf_whose_entries_share_a_pending_value() {
         blank.copy_from(&old);
         blank.fill(0);
         blank[..image.len()].copy_from_slice(&image);
-        blank.attach(0, Arc::from(vec![1; 2_000]));
-        blank.attach(1, Arc::from(vec![2; 3_000]));
+        blank.attach([9; 8], Arc::from(vec![1; 2_000]));
         step.replace(&old, blank).expect("replaced");
     }
-    // A reader reads each by its entry.
+    // A reader reads the bytes for the entry that says their length.
     assert_eq!(get(&db.reader(), &tree, b"a"), Some(vec![1; 2_000]));
-    assert_eq!(get(&db.reader(), &tree, b"b"), Some(vec![2; 3_000]));
+    let mut out = Vec::new();
+    let other = tree.get(&db.reader(), b"b", &mut out);
+    assert!(matches!(other, Err(FlatError::NoValue { page }) if page == root));
     let mut writer = db.writer();
     let shared = tree.put(&mut writer, b"c", b"more");
     assert!(matches!(
@@ -1389,4 +1400,203 @@ fn a_group_that_is_written_again_holds_the_values_of_its_writer_again() {
     db.write_back();
     assert!(db.cold(split, |pages| (0..6)
         .all(|n| get(pages, &tree, &key(n)) == Some(big(n)))));
+}
+
+/// The bytes that are with the frame `frame`, by their names, beside the
+/// names of the pending values its leaf holds.
+fn attached_and_held(frame: &[u8], attached: Vec<(ValueId, usize)>) -> [Vec<(ValueId, usize)>; 2] {
+    let mut held: Vec<(ValueId, usize)> = pending_of(frame)
+        .into_iter()
+        .map(|(_, pending)| (pending.id(), pending.value_len() as usize))
+        .collect();
+    let mut attached = attached;
+    held.sort_unstable();
+    attached.sort_unstable();
+    [attached, held]
+}
+
+/// The bytes of a pending value are with the frame of its page under the
+/// 8 bytes its entry holds: under the writer's name before the commit,
+/// under the value's place in the log from the commit on, wherever the
+/// entry stands in its leaf, and under nothing once the value is placed.
+#[test]
+fn the_bytes_of_a_pending_value_are_with_its_page_under_its_name() {
+    let db = Db::new();
+    let big = |n: u8| vec![n; db.config.max_inline() + 1 + n as usize];
+    let key = |n: u8| vec![b'k', n];
+    let mut writer = db.writer();
+    let owner = OwnerId::new(db.state.borrow().owners);
+    let tree = FlatTree::create(&mut writer, db.config).expect("a keyspace");
+    let root = tree.root();
+    for n in [4, 2, 6] {
+        tree.put(&mut writer, &key(n), &big(n)).expect("a put");
+    }
+    let names_of = |attachments: Vec<(ValueId, usize)>, frame: &[u8]| {
+        let [attached, held] = attached_and_held(frame, attachments);
+        assert_eq!(attached, held);
+        attached
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>()
+    };
+    let of_copy = |owner| {
+        let copy = db.pool.private(owner, root).expect("the writer's copy");
+        let latch = copy.read();
+        let attached = latch.attachments().map(|(name, bytes)| (name, bytes.len()));
+        names_of(attached.collect(), &latch)
+    };
+    let of_page = || {
+        let frame = db.reader().page(root).expect("the root");
+        let attached = frame.attachments().map(|(name, bytes)| (name, bytes.len()));
+        names_of(attached.collect(), &frame)
+    };
+
+    // The writer's names are no places in a log.
+    let own = of_copy(owner);
+    assert_eq!(own.len(), 3);
+    assert!(own.iter().all(|name| name[7] & 0x80 != 0));
+
+    // The commit gives each value its place, and the bytes go with it.
+    db.commit(writer);
+    let logged = of_page();
+    assert_eq!(logged.len(), 3);
+    assert!(logged.iter().all(|name| !own.contains(name)));
+    for n in [2, 4, 6] {
+        assert_eq!(get(&db.reader(), &tree, &key(n)), Some(big(n)));
+    }
+
+    // Entries come before and between them, and one leaves: the values
+    // that stay keep their names, in other positions.
+    let mut writer = db.writer();
+    let owner = OwnerId::new(db.state.borrow().owners);
+    let before = pending_of(&db.reader().page(root).expect("the root"));
+    tree.put(&mut writer, &key(1), &big(1)).expect("a put");
+    tree.put(&mut writer, &key(3), b"small").expect("a put");
+    assert!(tree.delete(&mut writer, &key(4)).expect("a delete"));
+    let moved = of_copy(owner);
+    assert_eq!(moved.len(), 3);
+    assert_eq!(moved.iter().filter(|name| logged.contains(name)).count(), 2);
+    for n in [1, 2, 6] {
+        assert_eq!(get(&writer, &tree, &key(n)), Some(big(n)));
+    }
+    db.commit(writer);
+    let after = pending_of(&db.reader().page(root).expect("the root"));
+    let kept: Vec<_> = before
+        .iter()
+        .filter_map(|&(slot, pending)| {
+            let now = after.iter().find(|&&(_, held)| held == pending)?.0;
+            Some((slot, now))
+        })
+        .collect();
+    assert_eq!(kept, [(0, 1), (2, 3)]);
+    assert_eq!(of_page().len(), 3);
+    for n in [1, 2, 6] {
+        assert_eq!(get(&db.reader(), &tree, &key(n)), Some(big(n)));
+    }
+
+    // Write-back places the values, and nothing is with the page.
+    db.write_back();
+    assert!(of_page().is_empty());
+    for n in [1, 2, 6] {
+        assert_eq!(get(&db.reader(), &tree, &key(n)), Some(big(n)));
+    }
+}
+
+/// A writer goes on in the next operation of its transaction, under that
+/// operation's guard, with the copies and the values it holds.
+#[test]
+fn a_writer_goes_on_under_the_guard_of_its_next_operation() {
+    let db = Db::new();
+    let big = |n: u8| vec![n; db.config.max_inline() + 1];
+    let mut writer = db.writer();
+    let tree = FlatTree::create(&mut writer, db.config).expect("a keyspace");
+    tree.put(&mut writer, b"a", &big(1)).expect("a put");
+    db.commit(writer);
+    let at = db.latest();
+
+    let (first, second) = (Guard, Guard);
+    let base = Committed::new(db.loader(), &db.values, &first, at);
+    assert!(std::ptr::eq(base.guard(), &first));
+    let owner = OwnerId::new(77);
+    let mut writer = Private::new(base, &db.pool, owner, &db.ids);
+    tree.put(&mut writer, b"b", &big(2)).expect("a put");
+    let revision = writer.revision();
+
+    let mut writer = writer.under(&second);
+    assert!(std::ptr::eq(writer.base().guard(), &second));
+    assert_eq!(writer.base().at(), at);
+    assert_eq!(writer.revision(), revision);
+    assert_eq!(writer.written().collect::<Vec<_>>(), [tree.root()]);
+    assert_eq!(get(&writer, &tree, b"a"), Some(big(1)));
+    assert_eq!(get(&writer, &tree, b"b"), Some(big(2)));
+    tree.put(&mut writer, b"c", &big(3)).expect("a put");
+    db.commit(writer);
+    for (key, n) in [(b"a", 1), (b"b", 2), (b"c", 3)] {
+        assert_eq!(get(&db.reader(), &tree, key), Some(big(n)));
+    }
+
+    // A reader goes on the same way.
+    let reader = Committed::new(db.loader(), &db.values, &first, at).under(&second);
+    assert!(std::ptr::eq(reader.guard(), &second));
+    assert_eq!(get(&reader, &tree, b"c"), None);
+    assert_eq!(
+        format!("{reader:?}"),
+        format!("Committed {{ at: {at:?}, .. }}")
+    );
+}
+
+/// Two writers under one owner id take one page at the same moment, each
+/// the only writer for all it knows: the pool gives one of them the copy
+/// and refuses the other, so no copy has two writers.
+#[test]
+fn of_two_writers_under_one_owner_one_is_refused_its_page() {
+    let db = Db::new();
+    let mut writer = db.writer();
+    let tree = FlatTree::create(&mut writer, db.config).expect("a keyspace");
+    tree.put(&mut writer, b"a", b"committed").expect("a put");
+    db.commit(writer);
+    let (root, at) = (tree.root(), db.latest());
+    let owner = OwnerId::new(1_000);
+    let (pool, table, segments) = (&db.pool, &db.table, &db.segments);
+    let (values, ids, size) = (&db.values, &db.ids, db.size);
+
+    let rounds = if cfg!(miri) { 2 } else { 200 };
+    for round in 0..rounds {
+        let start = std::sync::Barrier::new(2);
+        let put = |value: &'static [u8]| {
+            let start = &start;
+            move || {
+                let loader = PageLoader::new(pool, table, segments, size).expect("a loader");
+                let base = Committed::new(loader, values, &Guard, at);
+                let mut writer = Private::new(base, pool, owner, ids);
+                start.wait();
+                let put = tree.put(&mut writer, b"b", value);
+                // The writer that was given the copy changed it, alone.
+                let read = put.is_ok().then(|| get(&writer, &tree, b"b"));
+                start.wait();
+                writer.roll_back().expect("rolled back");
+                (put, read, value)
+            }
+        };
+        let results = std::thread::scope(|scope| {
+            let threads = [scope.spawn(put(b"one")), scope.spawn(put(b"other"))];
+            threads.map(|thread| thread.join().expect("the thread ends"))
+        });
+        let mut given = 0;
+        for (put, read, value) in results {
+            match put {
+                Ok(()) => {
+                    given += 1;
+                    assert_eq!(read, Some(Some(value.to_vec())), "round {round}");
+                }
+                Err(FlatError::Cache(CacheError::AlreadyPrivate { page, owner: of })) => {
+                    assert_eq!((page, of), (root, owner), "round {round}");
+                }
+                Err(other) => panic!("round {round}: {other}"),
+            }
+        }
+        assert_eq!(given, 1, "round {round}");
+        assert_eq!(pool.page_step(root).private_copies(), 0);
+    }
+    assert_eq!(get(&db.reader(), &tree, b"b"), None);
 }

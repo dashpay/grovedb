@@ -62,6 +62,87 @@ fn a_page_is_made_private_once_for_an_owner() {
     check(&pool, 0);
 }
 
+/// The copy that only its maker is given: a second one for the owner is
+/// refused, whoever made the first and however, until the first is gone.
+#[test]
+fn a_copy_that_is_made_once_is_refused_while_the_owner_has_one() {
+    let pool = pool(4);
+    // The page is held, so that it is there to copy whatever else takes
+    // a frame.
+    let _held = seed(&pool, content(1, 3, 0), None);
+    let made = |owner_raw| pool.make_private_once(owner(owner_raw), page(1), version(3));
+    let first = made(1).expect("in the pool, and no copy yet");
+    assert_eq!(first.owner(), owner(1));
+    assert_eq!(first.base(), Some(version(3)));
+    content(1, 4, 0).write(&mut first.write().expect("private"));
+
+    assert_eq!(made(1).expect_err("a copy"), NotMade::AlreadyPrivate);
+    assert_eq!(pool.page_step(page(1)).private_copies(), 1);
+    assert_eq!(Content::read(&first.read()), content(1, 4, 0));
+    assert_eq!(lock(&pool.free).len(), 2, "the spare frames came back");
+
+    // Another owner's copy is no reason to refuse, and the copy that the
+    // sharing call made is one.
+    let other = made(2).expect("another owner");
+    assert_eq!(Content::read(&other.read()), content(1, 3, 0));
+    let shared = pool
+        .make_private(owner(3), page(1), version(3))
+        .expect("in the pool");
+    assert_eq!(made(3).expect_err("a copy"), NotMade::AlreadyPrivate);
+    assert_eq!(pool.page_step(page(1)).private_copies(), 3);
+    for copy in [&other, &shared] {
+        pool.discard(copy).expect("a private copy");
+    }
+
+    // So is a copy of a page the owner created, and one it was handed.
+    let created = pool.new_private(owner(1), page(2)).expect("a new page");
+    let refused = pool.make_private_once(owner(1), page(2), version(3));
+    assert_eq!(refused.expect_err("a copy"), NotMade::AlreadyPrivate);
+    pool.discard(&created).expect("a private copy");
+    let scope = made(4).expect("a scope's copy");
+    pool.transfer(&scope, owner(5)).expect("merged");
+    assert_eq!(made(5).expect_err("a copy"), NotMade::AlreadyPrivate);
+    drop(made(4).expect("the scope has none now"));
+
+    // A copy that was discarded or installed is none.
+    pool.discard(&first).expect("a private copy");
+    let again = made(1).expect("no copy now");
+    assert_eq!(Content::read(&again.read()), content(1, 3, 0));
+    drop(pool.install(&again, version(4)).expect("a commit"));
+    let third = pool
+        .make_private_once(owner(1), page(1), version(4))
+        .expect("no copy now");
+    assert_eq!(third.base(), Some(version(4)));
+}
+
+/// A copy that exists is found before the page to copy is looked for: an
+/// owner that has a copy is refused, and one that has none is told to load
+/// the page, whether or not the page is in the pool.
+#[test]
+fn a_copy_that_is_made_once_is_refused_before_its_page_is_missed() {
+    let pool = pool(2);
+    let mut disk = Disk::default();
+    disk.write(content(1, 3, 0));
+    let once = |owner_raw| pool.make_private_once(owner(owner_raw), page(1), version(5));
+    let NotMade::Miss(miss) = once(1).expect_err("not in the pool") else {
+        panic!("the owner has no copy");
+    };
+    assert_eq!((miss.page(), miss.at()), (page(1), version(5)));
+    assert_eq!(lock(&pool.free).len(), 2, "the spare frame came back");
+    let loaded = load(&pool, &disk, miss).expect("on disk");
+    let copy = once(1).expect("loaded");
+    assert_eq!(Content::read(&copy.read()), content(1, 3, 0));
+    drop(loaded);
+
+    // The page leaves the pool: the copy's owner is still refused, and
+    // an owner with no copy is told to load the page.
+    drop(seed(&pool, content(2, 1, 0), None));
+    assert!(pool.get(page(1), version(5)).is_err(), "evicted");
+    assert_eq!(once(1).expect_err("a copy"), NotMade::AlreadyPrivate);
+    assert!(matches!(once(2), Err(NotMade::Miss(_))));
+    pool.discard(&copy).expect("a private copy");
+}
+
 #[test]
 fn a_page_that_is_not_in_the_pool_is_loaded_before_it_is_made_private() {
     let pool = pool(2);
@@ -383,6 +464,36 @@ fn a_scope_hands_its_copy_to_its_transaction() {
     check(&pool, 0);
 }
 
+/// A value is attached under all eight bytes of its name: two names that
+/// agree in any seven of them are the names of two values.
+#[test]
+fn values_whose_names_differ_in_one_byte_are_two_values() {
+    let pool = pool(2);
+    let copy = pool.new_private(owner(1), page(1)).expect("a new page");
+    let base = 0x0102_0304_0506_0708_u64;
+    let names: Vec<ValueId> = std::iter::once(base)
+        .chain((0..8).map(|byte| base ^ (0x80 << (8 * byte))))
+        .map(name)
+        .collect();
+    let mut latch = copy.write().expect("private");
+    for (at, &id) in names.iter().enumerate() {
+        assert!(latch.attach(id, value(&[at as u8; 3])).is_none(), "{id:?}");
+    }
+    assert_eq!(latch.attachments().count(), 9);
+    for (at, &id) in names.iter().enumerate() {
+        assert_eq!(latch.attached(id), Some(&[at as u8; 3][..]));
+    }
+    assert_eq!(latch.detach(names[8]).as_deref(), Some(&[8; 3][..]));
+    assert_eq!(latch.attached(names[8]), None);
+    assert_eq!(latch.attached(names[0]), Some(&[0; 3][..]));
+    assert_eq!(latch.attachments().count(), 8);
+    drop(latch);
+    assert_eq!(pool.attached_bytes(), 24);
+    pool.discard(&copy).expect("a private copy");
+    drop(copy);
+    check(&pool, 0);
+}
+
 #[test]
 fn attached_values_travel_with_the_copy_and_the_commit() {
     let pool = pool(4);
@@ -390,28 +501,28 @@ fn attached_values_travel_with_the_copy_and_the_commit() {
     {
         let mut latch = copy.write().expect("private");
         content(1, 1, 0).write(&mut latch);
-        assert!(latch.attach(4, value(b"four")).is_none());
-        assert!(latch.attach(5, value(b"fives")).is_none());
+        assert!(latch.attach(name(4), value(b"four")).is_none());
+        assert!(latch.attach(name(5), value(b"fives")).is_none());
         assert_eq!(
-            latch.attach(4, value(b"FOUR!!")).as_deref(),
+            latch.attach(name(4), value(b"FOUR!!")).as_deref(),
             Some(&b"four"[..])
         );
-        assert_eq!(latch.attached(4), Some(&b"FOUR!!"[..]));
-        assert_eq!(latch.attached(6), None);
+        assert_eq!(latch.attached(name(4)), Some(&b"FOUR!!"[..]));
+        assert_eq!(latch.attached(name(6)), None);
         assert_eq!(latch.attachments().count(), 2);
-        assert!(latch.detach(6).is_none());
+        assert!(latch.detach(name(6)).is_none());
     }
     assert_eq!(pool.attached_bytes(), 11);
-    assert_eq!(copy.read().attached(5), Some(&b"fives"[..]));
+    assert_eq!(copy.read().attached(name(5)), Some(&b"fives"[..]));
     assert_eq!(copy.read().attachments().count(), 2);
 
     let committed = pool.install(&copy, version(1)).expect("a commit");
-    assert_eq!(committed.attached(4), Some(&b"FOUR!!"[..]));
-    assert_eq!(committed.attached(5), Some(&b"fives"[..]));
-    assert_eq!(committed.attached(6), None);
-    let mut tags: Vec<u32> = committed.attachments().map(|(tag, _)| tag).collect();
-    tags.sort_unstable();
-    assert_eq!(tags, [4, 5]);
+    assert_eq!(committed.attached(name(4)), Some(&b"FOUR!!"[..]));
+    assert_eq!(committed.attached(name(5)), Some(&b"fives"[..]));
+    assert_eq!(committed.attached(name(6)), None);
+    let mut names: Vec<ValueId> = committed.attachments().map(|(id, _)| id).collect();
+    names.sort_unstable();
+    assert_eq!(names, [name(4), name(5)]);
 
     // The next transaction's copy shares the values, and can drop them.
     let next = pool
@@ -420,15 +531,15 @@ fn attached_values_travel_with_the_copy_and_the_commit() {
     assert_eq!(pool.attached_bytes(), 22, "counted once for each frame");
     {
         let mut latch = next.write().expect("private");
-        assert_eq!(latch.detach(4).as_deref(), Some(&b"FOUR!!"[..]));
-        assert_eq!(latch.detach(5).as_deref(), Some(&b"fives"[..]));
+        assert_eq!(latch.detach(name(4)).as_deref(), Some(&b"FOUR!!"[..]));
+        assert_eq!(latch.detach(name(5)).as_deref(), Some(&b"fives"[..]));
         assert_eq!(latch.attachments().count(), 0);
     }
     assert_eq!(pool.attached_bytes(), 11);
     let second = pool.install(&next, version(2)).expect("a commit");
     assert_eq!(second.attachments().count(), 0);
     assert_eq!(
-        committed.attached(5),
+        committed.attached(name(5)),
         Some(&b"fives"[..]),
         "the old version"
     );
@@ -438,7 +549,10 @@ fn attached_values_travel_with_the_copy_and_the_commit() {
     let third = pool
         .make_private(owner(3), page(1), version(2))
         .expect("in the pool");
-    third.write().expect("private").attach(1, value(&[0; 40]));
+    third
+        .write()
+        .expect("private")
+        .attach(name(1), value(&[0; 40]));
     assert_eq!(pool.attached_bytes(), 51);
     pool.discard(&third).expect("a private copy");
     assert_eq!(pool.attached_bytes(), 51, "until the last handle goes");
