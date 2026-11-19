@@ -113,29 +113,53 @@ replay that differs for any other reason is a bug in the change under test.
 
 **Recording from the pinned engine.** A recording comes from the engine
 crates of the checkout it runs in, and `feat/LigninDB` changes those crates.
-To add to the corpus without moving the pin, record in a worktree of the
-pinned commit, with the workspace manifest and the LigninDB crates taken
-from the branch that has the new workloads, and write into that branch's
-corpus:
+To add to the corpus without moving the pin, record with
+`lignin-testkit/corpus/record-at-pin.sh` on the branch that has the new
+workloads, into that branch's corpus:
 
 ```text
-git worktree add --detach <scratch>/pinned 2cfc1ce1
-git -C <scratch>/pinned checkout <branch> -- Cargo.toml lignin-format lignin-io \
-    lignin-store lignin-tree lignindb lignin-tools lignin-testkit
-cp <checkout of the branch>/Cargo.lock <scratch>/pinned/
-cd <scratch>/pinned
-cargo run --release -p lignin-testkit --bin lignin-golden -- record \
-    --corpus <checkout of the branch>/lignin-testkit/corpus
+lignin-testkit/corpus/record-at-pin.sh lignin-testkit/corpus              the standard scale
+lignin-testkit/corpus/record-at-pin.sh lignin-testkit/corpus --reference  the reference scale
 ```
 
-`2cfc1ce1` is a commit of `develop`, so it has no LigninDB crate: the
-checkout brings the branch's, with the manifest that lists them, and the
-copied `Cargo.lock` gives the build the branch's versions of the
-dependencies. None of these is an engine crate, so the traces come out
-naming `2cfc1ce1`. A trace whose operations and recorded values did not change
-comes out byte for byte as it was, so `git status` shows what the new
-workloads added. Then replay on the branch itself: what was recorded from
-the pinned engine has to come out the same there.
+The directory to record into comes first; any argument of `record` may
+follow it. The script makes a detached worktree of the commit the traces
+name (`LIGNIN_PIN=<commit>` names another) under `target/record-at-pin`,
+records there and removes the worktree; the build stays for the next run.
+One run at a time uses that directory, and a second is turned away.
+
+`2cfc1ce1` is a commit of `develop`, so it has no LigninDB crate: the script
+takes the workspace manifest and every member whose name begins with
+`lignin` from the checkout it is run from, as they are committed, and
+copies that checkout's `Cargo.lock`, which gives the build the branch's
+versions of the dependencies. None of these is an engine crate, so the
+traces come out naming `2cfc1ce1`. A trace whose operations and recorded
+values did not change comes out byte for byte as it was, so `git status`
+shows what the new workloads added. Then replay on the branch itself: what
+was recorded from the pinned engine has to come out the same there.
+
+The script takes one line out of the worktree's copy of
+`lignin-testkit/Cargo.toml`: the dev-dependency that asks `grovedb-merk` for
+the feature `lignin_storage`, which the replay through the LigninDB node
+store (`tests/merk_store.rs`) needs. Merk at the pin has no such feature and
+Cargo resolves a member's dev-dependencies whatever is built, so with the
+line in place no Cargo command runs there; a recording builds no test and
+loses nothing. The script stops when the line is not there as it expects
+it, and when the workspace does not resolve without it: then with Cargo's
+words and the name of the dependency.
+
+The crate builds against either engine with no switch to set. Its build
+script looks for the `Engine` seam next to it (`grovedb/src/engine/mod.rs`).
+Where the seam is, `workload::apply` and the runner of the corpus are
+generic over the engine, and the differential fuzzer (`lignin-testkit::diff`)
+is compiled. Against the pinned engine, whose `GroveDb` names RocksDB, they
+are on the one engine there is and the fuzzer is left out. `workload/pinned.rs`
+holds the two forms. `LIGNIN_TESTKIT_PINNED_FORM=1 cargo check -p
+lignin-testkit --lib --bins` builds the second form on the branch: a quick
+check that a change to the crate's code left it building in that form. It
+shows the pinned form of the code, not whether the manifest resolves at the
+pin, because the branch's Merk has every feature the manifest asks for. Only
+the script shows that.
 
 ## What is recorded
 
