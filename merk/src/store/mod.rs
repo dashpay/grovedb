@@ -4,11 +4,15 @@
 //! through it: it fetches nodes, reads the root key, walks the nodes in key
 //! order, and commits a [`NodeChangeSet`]. Which engine is underneath is known
 //! only below this module: [`kv`] implements the seam over the storage contexts
-//! of `grovedb-storage`, one whole node record per key.
+//! of `grovedb-storage`, one whole node record per key, and `lignin` (with
+//! the feature `lignin_storage`) over a write transaction of LigninDB, one
+//! cell per node.
 //!
 //! The contract is written out in `docs/lignindb/node-store.md`.
 
 pub mod kv;
+#[cfg(feature = "lignin_storage")]
+pub mod lignin;
 #[cfg(test)]
 pub(crate) mod mem;
 #[cfg(all(test, feature = "rocksdb_storage"))]
@@ -122,6 +126,18 @@ pub trait NodeChangeSet {
     /// Removes the node under `key`. Without `cost` the store works out what
     /// the removal frees.
     fn delete_node(&mut self, key: &[u8], cost: Option<KeyValueStorageCost>);
+
+    /// States the key of the Merk's root node as this change set leaves it,
+    /// or `None` for a Merk it leaves empty. `Merk::commit` states it in
+    /// every change set, whether or not the root is another node than
+    /// before.
+    ///
+    /// It is not a write and is charged nothing. A store that finds every
+    /// node by its key has no use for it, which is the default. A store
+    /// that keeps the links of the tree has to know where a walk begins.
+    /// The record of the root key that a Merk with no parent element keeps
+    /// is [`Self::put_root_key`].
+    fn state_root(&mut self, _root_key: Option<&[u8]>) {}
 
     /// Records `root_key` as the key of the subtree's root node.
     fn put_root_key(

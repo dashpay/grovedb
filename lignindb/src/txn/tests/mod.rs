@@ -1,5 +1,8 @@
 mod model;
+#[cfg(not(feature = "testing"))]
 mod store;
+#[cfg(feature = "testing")]
+use super::testing as store;
 
 mod acceptance;
 mod errors;

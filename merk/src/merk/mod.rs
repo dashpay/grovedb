@@ -407,6 +407,7 @@ where
                 let to_batch = committer.batch;
 
                 let tree_key = tree.key();
+                change_set.state_root(Some(tree_key));
                 // if they are a base merk we should update the root key
                 if self.merk_type.requires_root_storage_update() {
                     // there are two situation where we want to put the root key
@@ -440,6 +441,7 @@ where
 
                 Ok(to_batch)
             } else {
+                change_set.state_root(None);
                 if self.merk_type.requires_root_storage_update() {
                     // empty tree, delete pointer to root
                     let cost = if options.base_root_storage_is_free {

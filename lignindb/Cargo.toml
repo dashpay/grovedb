@@ -12,6 +12,16 @@ publish = false
 lignin-format = { version = "6.1.1", path = "../lignin-format" }
 lignin-store = { version = "6.1.1", path = "../lignin-store" }
 lignin-tree = { version = "6.1.1", path = "../lignin-tree" }
+lignin-io = { version = "6.1.1", path = "../lignin-io", optional = true }
+tempfile = { workspace = true, optional = true }
+
+[features]
+# A test fixture, and no API: the store on disk of this crate's own tests
+# (`txn::testing`), for the tests of crates that build on a write transaction
+# before the engine can be opened. It is switched on from `[dev-dependencies]`
+# only, and no other feature turns it on. The engine facade (TXN-07) replaces
+# it.
+testing = ["dep:lignin-io", "dep:tempfile"]
 
 [target.'cfg(loom)'.dependencies]
 loom = "0.7.2"

@@ -23,6 +23,9 @@ grovedb-version = { version = "6.1.1", path = "../grovedb-version" }
 grovedb-visualize = { version = "6.1.1", path = "../visualize" }
 grovedb-element = { version = "6.1.1", path = "../grovedb-element" }
 grovedb-query = { version = "6.1.1", path = "../grovedb-query" }
+lignindb = { version = "6.1.1", path = "../lignindb", optional = true }
+lignin-format = { version = "6.1.1", path = "../lignin-format", optional = true }
+lignin-tree = { version = "6.1.1", path = "../lignin-tree", optional = true }
 
 bincode = { workspace = true }
 bincode_derive = { workspace = true }
@@ -54,6 +57,8 @@ minimal = [
         "grovedb-query/blockchain",
 ]
 rocksdb_storage = ["minimal", "grovedb-storage/rocksdb_storage"]
+# `store::lignin`: the node store of a Merk on a LigninDB write transaction.
+lignin_storage = ["minimal", "dep:lignindb", "dep:lignin-format", "dep:lignin-tree"]
 full = ["minimal", "rocksdb_storage", "test_utils", "colored_debug"]
 # The engines of `test_utils` (`merk/test-engines.txt`) are on RocksDB.
 test_utils = ["rand", "tempfile", "rocksdb_storage"]
@@ -64,6 +69,7 @@ grovedbg = ["full"]
 [dev-dependencies]
 # For `test_utils` in a test build that has the feature off.
 rand = { workspace = true }
+lignindb = { version = "6.1.1", path = "../lignindb", features = ["testing"] }
 tempfile = { workspace = true }
 criterion = { workspace = true }
 assert_matches = { workspace = true }
