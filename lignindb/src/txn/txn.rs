@@ -962,7 +962,7 @@ impl<'s> WriteTxn<'s> {
     /// cannot be laid out over the committed state. The transaction is
     /// then as it was.
     #[cfg_attr(
-        any(not(test), loom),
+        any(not(any(test, feature = "testing")), loom),
         expect(dead_code, reason = "the commit (TXN-05) is its one caller")
     )]
     pub(crate) fn seal(&self) -> Result<Sealed<'s>, TxnError> {
@@ -1034,7 +1034,7 @@ impl fmt::Debug for WriteTxn<'_> {
 
 /// What a write transaction is when it is handed to its commit.
 #[cfg_attr(
-    any(not(test), loom),
+    any(not(any(test, feature = "testing")), loom),
     expect(dead_code, reason = "the commit (TXN-05) is its one reader")
 )]
 pub(crate) enum Sealed<'s> {
@@ -1053,7 +1053,7 @@ pub(crate) enum Sealed<'s> {
 /// Parts that are dropped and not installed give up their private copies
 /// and the page ids they took, as a rollback does (CM5).
 #[cfg_attr(
-    any(not(test), loom),
+    any(not(any(test, feature = "testing")), loom),
     expect(dead_code, reason = "the commit (TXN-05) is its one reader")
 )]
 pub(crate) struct Parts<'s> {

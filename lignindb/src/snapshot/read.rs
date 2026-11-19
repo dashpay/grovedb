@@ -32,7 +32,7 @@ impl<'s> ReadPath<'s> {
     /// whose pages `pages` loads. The caller vouches that the two are of
     /// one store: a pin on other versions keeps nothing of these pages.
     #[cfg_attr(
-        any(not(test), loom),
+        any(not(any(test, feature = "testing")), loom),
         expect(dead_code, reason = "the engine's open (TXN-07) is its one caller")
     )]
     pub(crate) fn new(versions: &'s Versions, pages: PageLoader<'s>) -> Self {

@@ -207,7 +207,7 @@ impl<'s> FlatFrames<'s, 's, Idle> {
     /// Ends the flat pages and hands the writer to the commit, which
     /// installs them in the operation that holds `guard`.
     #[cfg_attr(
-        any(not(test), loom),
+        any(not(any(test, feature = "testing")), loom),
         expect(dead_code, reason = "the commit (TXN-05) is its one caller")
     )]
     pub(crate) fn into_writer<'g>(mut self, guard: &'g OperationGuard<'s>) -> FlatWriter<'s, 'g> {

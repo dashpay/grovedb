@@ -101,7 +101,7 @@ pub struct WritePath<'s> {
 
 /// The parts of a store that a [`WritePath`] is made of.
 #[cfg_attr(
-    any(not(test), loom),
+    any(not(any(test, feature = "testing")), loom),
     expect(dead_code, reason = "the engine's open (TXN-07) is its one caller")
 )]
 pub(crate) struct Store<'s> {
@@ -122,7 +122,7 @@ impl<'s> WritePath<'s> {
     /// the values of its nodes in their cells up to the threshold of
     /// `inline`. The caller vouches that all of them are of one store.
     #[cfg_attr(
-        any(not(test), loom),
+        any(not(any(test, feature = "testing")), loom),
         expect(dead_code, reason = "the engine's open (TXN-07) is its one caller")
     )]
     pub(crate) fn new(

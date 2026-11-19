@@ -160,7 +160,7 @@ pub(crate) struct TreeCopy<'s> {
 impl TreeCopy<'_> {
     /// Whether the copy is as the page was: its run has no record.
     #[cfg_attr(
-        any(not(test), loom),
+        any(not(any(test, feature = "testing")), loom),
         expect(dead_code, reason = "the commit (TXN-05) is its one caller")
     )]
     pub(crate) fn is_unchanged(&self) -> bool {
@@ -326,7 +326,7 @@ impl<'s> TreePages<'s> {
 
     /// Ends the pages and hands what they hold to the commit.
     #[cfg_attr(
-        any(not(test), loom),
+        any(not(any(test, feature = "testing")), loom),
         expect(dead_code, reason = "the commit (TXN-05) is its one caller")
     )]
     pub(crate) fn into_parts(mut self) -> TreeParts<'s> {
@@ -351,7 +351,7 @@ impl Drop for TreePages<'_> {
 /// (`transactions.md` CM3 step 7).
 #[derive(Debug)]
 #[cfg_attr(
-    any(not(test), loom),
+    any(not(any(test, feature = "testing")), loom),
     expect(dead_code, reason = "the commit (TXN-05) is its one reader")
 )]
 pub(crate) struct TreeParts<'s> {

@@ -358,6 +358,23 @@ mod view;
 mod write;
 mod write_set;
 
+/// A page store on disk with the parts of a commit that install a
+/// transaction's frames and publish its version: the store of this module's
+/// own tests.
+///
+/// It is for the tests of crates that build on a write transaction before
+/// the engine can be opened (TXN-07) and before the commit exists (TXN-05):
+/// [`testing::Db::new`] makes a store, [`testing::Db::path`] its write path,
+/// and [`testing::Db::commit`] commits a transaction. It writes no log, and
+/// it panics where a database would return an error.
+#[cfg(all(feature = "testing", not(loom)))]
+#[path = "tests/store.rs"]
+#[expect(
+    clippy::should_implement_trait,
+    reason = "the generator of the tests has a `next` and is no iterator"
+)]
+pub mod testing;
+
 #[cfg(all(test, not(loom)))]
 mod tests;
 
