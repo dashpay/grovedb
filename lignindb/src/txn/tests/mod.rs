@@ -417,6 +417,8 @@ fn check_under(cursor: &mut MerkCursor<'_, '_>, key: &[u8], expected: &model::No
         let child = expected.link(side).map(|link| &link.key[..]);
         let read = child.filter(|_| !is_record).unwrap_or_default();
         assert_eq!(children.key(side), read, "a child of {key:?}");
+        assert_eq!(children.take(side), read);
+        assert!(children.key(side).is_empty(), "the key was taken");
     }
 }
 

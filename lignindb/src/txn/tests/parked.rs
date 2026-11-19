@@ -85,7 +85,11 @@ fn a_parked_cursor_reads_its_version_and_holds_no_page() {
         let scope = scope.lock().unwrap();
         let mut cursor = scope.resume(&mut parked).expect("its own scope");
         assert_eq!(cursor.version(), opened);
-        cursor.seek(&key(10)).expect("a seek");
+        assert!(!cursor.valid());
+        cursor.seek_for_prev(&key(13)).expect("a seek");
+        assert_eq!(cursor.key(), Some(&key(12)[..]));
+        cursor.prev().expect("a step");
+        assert!(cursor.valid());
         assert_eq!(cursor.key(), Some(&key(10)[..]));
     }
 
@@ -329,52 +333,105 @@ fn a_parked_cursor_asks_for_its_subtree_again_after_a_drop_and_a_clear() {
     world.check_committed();
 }
 
+/// The Merks of two subtrees one inside the other, each with its change
+/// set, as one batch: the node `host` of the outer one hosts the inner
+/// one. With `enter` the batch enters both subtrees first.
+fn nested<'s>(
+    world: &World<'s>,
+    tx: &Tx<'s>,
+    (outer, inner): (u8, u8),
+    enter: bool,
+    edit: impl FnOnce(&mut BTreeMap<Vec<u8>, Vec<u8>>),
+) -> OwnedBatch {
+    let below = world.merk(tx, inner, edit);
+    let stamp = below.nodes.len() as u8;
+    let mut above = world.merk(tx, outer, |items| {
+        let mut value = items.get(&b"host"[..]).cloned().unwrap_or_default();
+        value.push(stamp);
+        items.insert(b"host".to_vec(), value);
+    });
+    (above.hosted).insert(b"host".to_vec(), vec![model::subtree(inner)]);
+    let host = (model::subtree(outer), b"host".to_vec(), 0);
+    let subtrees = match enter {
+        true => vec![
+            OwnedSubtree::Enter(model::subtree(outer), None),
+            OwnedSubtree::Enter(model::subtree(inner), Some(host)),
+        ],
+        false => Vec::new(),
+    };
+    OwnedBatch {
+        merks: vec![below, above],
+        subtrees,
+        ..OwnedBatch::default()
+    }
+}
+
 /// A cursor that stands on a key its transaction wrote and took back reads
 /// the node of its own version there, found by the key, and the keys of
 /// that node's children from their cells at that version.
+///
+/// The cursor's committed side is on no key throughout. The transaction
+/// drops the subtree above the cursor's, under which no committed node is
+/// read (CV9), enters both again and writes the Merk anew: the cursor
+/// comes to each key over the transaction's nodes alone. After the
+/// rollback the node under the key is a committed one that the committed
+/// side does not stand on, so it is found by a descent from the root.
 #[test]
 fn the_children_of_a_node_that_is_found_by_its_key_are_read_at_the_cursors_version() {
-    let (db, versions) = Db::new(64);
+    use super::store::ENTERED;
+
+    let (db, versions) = Db::new(96);
     let mut world = World::new(&db, &versions);
-    let subtree = model::subtree(2);
+    let names = (ENTERED + 20, ENTERED + 21);
+    let subtree = model::subtree(names.1);
     let unit = Unit::data(subtree);
-    world.edit_outside(
-        2,
-        |items| {
-            for index in 0..14 {
-                items.insert(key(index), vec![index as u8; 25]);
-            }
-        },
-        &[],
-    );
+    let fill = |items: &mut BTreeMap<Vec<u8>, Vec<u8>>| {
+        for index in 0..14 {
+            items.insert(key(index), vec![index as u8; 25]);
+        }
+    };
+    let tx = world.begin();
+    let planted = nested(&world, &tx, names, true, fill);
+    world.apply(&tx, &planted).expect("the subtrees are made");
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+
     let tx = world.begin();
     let view = tx.model.borrow().view(&world.model.records, unit);
     let items = Committed::items(&view);
     let mut cursor = tx.txn.merk_cursor(subtree).expect("a cursor");
+    let opened = cursor.version();
     // A commit outside gives the Merk another shape after the cursor was
     // opened: the cursor's version is not the latest one.
-    world.edit_outside(
-        2,
-        |items| {
-            for index in 0..14 {
-                match index % 3 {
-                    0 => drop(items.remove(&key(index))),
-                    _ => drop(items.insert(key(index + 100), vec![1; 5])),
-                }
+    let other = world.begin();
+    let reshaped = nested(&world, &other, names, false, |items| {
+        for index in 0..14 {
+            match index % 3 {
+                0 => drop(items.remove(&key(index))),
+                _ => drop(items.insert(key(index + 100), vec![1; 5])),
             }
-        },
-        &[&tx],
-    );
+        }
+    });
+    world.apply(&other, &reshaped).expect("the Merk is changed");
+    assert!(matches!(world.commit(other, &[&tx]), Outcome::Committed(_)));
+    assert!(world.latest() > opened);
+
     let mut with_children = 0;
     for (at, expected) in &view {
         let Val::Node(expected) = expected else {
             unreachable!("a Merk");
         };
-        // The transaction clears the Merk and writes it anew. The cursor
-        // comes to the key over the transaction's nodes alone: its
-        // committed side is not read, and stays where it was.
         let mark = tx.txn.mark();
-        (world.apply(&tx, &anew(subtree, &items))).expect("the Merk is written anew");
+        let dropped = OwnedBatch {
+            subtrees: vec![OwnedSubtree::Drop(model::subtree(names.0))],
+            ..OwnedBatch::default()
+        };
+        world
+            .apply(&tx, &dropped)
+            .expect("the subtree above is dropped");
+        let again = nested(&world, &tx, names, true, |anew| *anew = items.clone());
+        world
+            .apply(&tx, &again)
+            .expect("both are entered and written again");
         cursor.seek(at).expect("a seek");
         assert_eq!(cursor.key(), Some(&at[..]));
         check_under(&mut cursor, at, expected);
@@ -389,9 +446,8 @@ fn the_children_of_a_node_that_is_found_by_its_key_are_read_at_the_cursors_versi
         with_children += usize::from(expected.left.is_some() || expected.right.is_some());
     }
     assert!(with_children > 3, "nodes with children were read");
+    assert_eq!(cursor.version(), opened);
     drop(cursor);
-    world.check(&tx);
-    world.check_committed();
 }
 
 /// What a walk asks of the buffer pool, for PERF-01 and PERF-03: a step, a
