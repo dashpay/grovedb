@@ -428,7 +428,8 @@ and which has no version (PV6 of `transactions.md`), is vouched for by its
 place in the log: every background change whose record is before the place
 of the checkpoint's sample is in a block that a link points to when the
 chain of its page is copied, with the same exception (DU5 of
-`transactions.md`). Replay looks at none of them (K13). Writing them all
+`transactions.md`). Replay looks at none of them, but for a page of that
+exception whose chain the checkpoint has lost (K11, K13). Writing them all
 back before the first chain is copied makes sure of that, and is more than
 recovery needs: a page that is written back while the checkpoint copies
 other chains, and before its own, is as good. For the commits up to *C*
@@ -532,9 +533,10 @@ Let a checkpoint cover *C* and lack a page that was freed at *w* (K10), with
 *C* below *w*. If commits between *C* and *w* changed the page, replay
 (K3) finds their changes in the log and no image to apply them to. Such a
 change is dropped: the page version it belongs to is not rebuilt, and none
-is needed, because the log is durable through *w* and replay goes on to the
-commit that frees the page. Recovery can check it: when replay ends, every
-page that had a change dropped has been freed, or made again, by a later
+is needed, because the log is durable through *w* and replay goes on to
+what frees the page. Recovery can check it: when replay ends, every page
+that had a change dropped has been freed, by a later commit that was
+replayed or by the record of a page step (below), or made again by a later
 commit that was replayed. If one has not, the checkpoint or the log is
 damaged. The change that makes a page is not such a change: it needs no
 image.
@@ -542,6 +544,52 @@ image.
 In the two other cases K3 already makes replay skip the old page: when its
 free link is still in the checkpoint, and when a link of a new page under
 the same id is.
+
+**A page step can be what freed the page.** The reclaimer of a dropped
+subtree frees a page in a page step, with the latest version
+(`page-alloc.md` A4; CL6 of `transactions.md`). No commit lists that page
+as freed. The version *w* of K10 is then that of a commit which did not
+free the page, and to land at or above it does not make the page free. The
+record of the step does, and recovery has it. In the session of the step,
+the record is appended before the free link is pushed, so it is before the
+end of the copy of a checkpoint that lacks the chain, and the log is
+durable up to there before the checkpoint is named (K14, 2). In a later
+session it is in the log that the session's recovery read, which is made
+durable to the end recovery found before the session's first commit. So
+**a page with a dropped change is freed by the record of the step that
+freed it**, with the version the record gives, wherever the record stands:
+before the place of the checkpoint's sample (K13) or after it.
+
+**A commit between *C* and *w* can have made the page.** Its change needs
+no image, so replay rebuilds the page from the log and makes every later
+change of a commit to it. The page steps that the session made to the page
+are then needed as well, and no copied chain holds them. A reclaiming step
+took a cell out, and a later commit put another into its slot: that
+commit's change applies only to a page without the cell. So **a background
+change is made to a page that holds the change of a replayed commit**, by
+the test of LG28 (`log-format.md`), also where its record is before the
+place of the sample (K13). The page then ends as K10 says: freed by a
+commit that replay takes or by a step's record, or made again.
+
+The counts of the value log take nothing from a record before the place,
+whatever it does to its page: the sample includes it (K13, DU5).
+
+Two schedules reach this:
+
+- **In one session.** A reader's pin holds back the trim of a page that
+  write-back has written, the reclaimer's step frees the page meanwhile,
+  and when the pin goes the trim takes the whole chain; a page that
+  write-back cannot write yet keeps the version the next checkpoint covers
+  below *w*.
+- **Across two sessions.** A recovery replays a commit that made the page
+  and the step that freed it, so the table of its session never has a link
+  of the page; the first checkpoint of that session, which a page that
+  write-back cannot write yet keeps below *w*, has its sample after both
+  records.
+
+STORE-07 found both parts. Without them a recovery refuses the store for
+the dropped change, brings the page back in use, or fails on the later
+commit's change (the owner's decision D-108, item 2).
 
 ### 4.2 The sample of the value counts
 
@@ -573,10 +621,28 @@ place alone. So a recovery reads the log from two points, the group of
 earlier one on. A background change has no version, so K3 does not tell
 whether a page has it: from the place on, replay takes every background
 change for its page too, by the rule of [`log-format.md`](log-format.md),
-LG28, wherever the group of *C* + 1 stands. It takes none from before the
-place: each of those is in the chain that was copied (K1, K14). What the
-writer of a checkpoint owes the log for that is K14, which is LG29 of the
-same document as the table sees it.
+LG28, wherever the group of *C* + 1 stands. Of a page whose chain was
+copied it takes none from before the place: each of those is in that chain
+(K1, K14). What the writer of a checkpoint owes the log for that is K14,
+which is LG29 of the same document as the table sees it.
+
+**A page that the checkpoint has lost has no chain that was copied** (K10,
+K11). What replay has of such a page it has from the log alone, so it takes
+the background changes of the page from before the place as well, for the
+page and never for the counts:
+
+- A page that holds the change of a replayed commit takes each background
+  change whose record follows, by the test of LG28.
+- A page with a dropped change is freed by the record of the page step
+  that freed it.
+
+Replay needs no list of the lost pages. A page whose chain was copied
+never holds the change of a replayed commit when replay meets a record of
+it from before the place: the block that holds that background change
+holds the commit before it too, under a link of the commit's version or a
+later one, and K3 has skipped the commit. Nor has such a page a dropped
+change. So the two cases are exactly what a lost page is to replay, and a
+record before the place of any other page is passed over as before.
 
 **K14. What the sample and the copy of a checkpoint ask of the log.** K4
 speaks of versions, and a background change has none: a page step places a
@@ -775,7 +841,7 @@ named.
 | --- | --- |
 | STORE-01 Write-ahead log | Says where the log ends: the place after its last record, which never goes back, and is after the record of every change that has reached a block. Says how far the log is durable after a sync, as the version of the last group and as a place. Keeps the log file that `CheckpointInfo::log_kept_from` names, and every file after it, for each checkpoint K14 lists: also a file that ends with the mark and holds only covered commits. Keeps the log from the group of *C* + 1 as well (K1). |
 | STORE-06 Delta write-back | 1. Takes the sample under the counts lock and appends its mark there; the end of the mark is the place (LG29), and it is not before the place of the sample before it (K15). 2. Has written back the commits up to *C* when it begins step 3 (K1). Writes back every page that a page step changed before that place, before the chain of that page is copied; all such pages before step 3 is the simple way (K1). 3. Calls `write(&table, C, &sample, log_end)`, where `log_end` reads the end of the log from STORE-01 each time it is called: `SampleAhead` if the log had not reached the place of the sample. 4. Syncs the log, after `write` has returned, through `log_needed` and up to `log_place_needed`. 5. Calls `install` with what that sync made durable: `LogBehind`, `LogBehindCopy`. 6. Tells STORE-01 the place the log is kept from, when a checkpoint is written and when one is in force or discarded (K14, 3). It writes back nothing older than a free link (T18). |
-| STORE-07 Recovery | Loads the checkpoint the manifest names. Reads the log file of `log_kept_from` from its start, and the item that ends at the place must be a mark that covers what the checkpoint covers (LG29). From the place on: every count change, and every background change for its page by LG28. From the group of *C* + 1 on: the commits, with K3 and K11. Deletes no log file from the file of the place on while that checkpoint is in force. With no checkpoint named: the whole log, from empty counts. |
+| STORE-07 Recovery | Loads the checkpoint the manifest names. Reads the log file of `log_kept_from` from its start, and the item that ends at the place must be a mark that covers what the checkpoint covers (LG29). From the place on: every count change, and every background change for its page by LG28. Before the place: the background changes of a page the checkpoint has lost, for the page alone (K11, K13). From the group of *C* + 1 on: the commits, with K3 and K11. Deletes no log file from the file of the place on while that checkpoint is in force. With no checkpoint named: the whole log, from empty counts. |
 
 ## 5. Sizes
 
@@ -984,6 +1050,18 @@ STORE-10 build on it.
     that is finished has changed the page in the buffer pool. It is in the
     checkpoint only once a block holds it. To write all such pages back
     before the first chain is copied is enough and is not required.
+30. **A page that the checkpoint has lost takes its page steps from the
+    log, wherever their records stand** (K11, K13; STORE-07's finding, the
+    owner's decision D-108 item 2). K11 spoke of the commit that frees a
+    page, and K13 took no background change from before the place. A page
+    step also takes cells out and frees a page (LG27 of `log-format.md`,
+    TREE-09), and for a page the checkpoint has lost that left replay
+    without the step that freed it and without the removals that a later
+    commit's change builds on. The rule is on replay alone: the bytes of
+    the checkpoint and of the log are as they were, and the writer of a
+    checkpoint owes nothing new, because K14, 2 already makes the records
+    durable. Had a checkpoint to cover the free link of every page it lost,
+    replay would meet none of this; item 17 says why that was not taken.
 
 ## 7. Code and tests
 
@@ -1011,12 +1089,12 @@ Run the tests with `cargo test -p lignin-format table` and
 | K5 | `TableCheckpoints::write` | Checkpoints written while another thread pushes: each loaded chain is a chain the page once had. Checkpoints written while another thread pushes, consolidates, trims, frees and reuses: each loaded chain gives a whole page version, a base image and every delta after it, no older than the page had when the write began. |
 | K4 | `TableCheckpoints::install` | A checkpoint whose page was trimmed to an image newer than the version it covers is refused until the log is durable through that image's version; so is one that covers more than the log has. |
 | K10 | `TableCheckpoints::{write, install}`, `CheckpointInfo::{trimmed_free, log_needed}` | The case STORE-10 found: base image at 1, free link at 2, trim at 2, a checkpoint that covers 1 is refused with the log durable through 1, the checkpoint in force still gives the page at 1, and it is named once the log is durable through 2. What a checkpoint needs of the log when it covers, reaches or lost the newest version, and when the id is used again. What a loaded checkpoint and table say. Checkpoints written while another thread frees pages and trims them away, from the last page down: a checkpoint that lacks a page asks for the log through the commit that freed it, also when that came after the write began. |
-| K11 | none: a rule for STORE-07 | The model of 4.4 replays the log on what each crash leaves, drops a change it has no image for, and fails if a page is left that way. |
+| K11 | none in the table: `lignin-store::recovery` (`Replay::drop_change`, `Replay::reclaim`, `Replay::beyond_the_copy`) | The model of 4.4 replays the log on what each crash leaves, drops a change it has no image for, and fails if a page is left that way. In `lignin-store::recovery` (`recovery/tests/rules.rs`): `a_change_with_no_image_is_dropped_when_a_later_commit_frees_the_page_or_makes_it_again`; `a_reclaiming_step_frees_a_page_that_the_checkpoint_has_no_image_of`, with the step's record after the place; `a_page_that_a_step_freed_before_the_sample_is_free_where_the_checkpoint_lost_it`, with the record before it, a dropped change and a page that a replayed commit made, and the id used again; `a_cell_that_a_step_took_out_before_the_sample_is_out_of_a_page_replay_made`. `a_history_with_pages_the_checkpoint_lost_recovers_the_same_wherever_it_is_killed` has every one of these in one session, with a page that the table really trimmed (K10: the checkpoint is refused until the log is durable through the version that freed it), is killed after each of its 26 acts, and holds each of the 54 recoveries to a model that knows nothing of checkpoints. |
 | K12, K13 | `TableCheckpoints::write`, `PageTable::load`, `CheckpointInfo::sample` | A checkpoint gives back the sample it was written with: none, a few counts, 8195 counts in three records, a place and no count. A sample whose counts are out of order is not written, and its file is removed. In the crash tests of 4.4 every checkpoint is written with a drawn sample, and the sample of the checkpoint each crash leaves in force is the one written with it. |
 | K14, 1 | `TableCheckpoints::write`, `PageTableError::SampleAhead` | A check of position only. A sample whose place is after the end of the log, in a log with no record, in an earlier file and at an earlier offset, is refused: no file is written and no id taken. So is one whose mark comes into the log while the chains are copied: the end of the log is asked for before anything is copied. A mark that is the last record of the log is in it. |
 | K14, 2 | `TableCheckpoints::{write, install}`, `CheckpointInfo::log_place_needed`, `LogDurable`, `PageTableError::LogBehindCopy` | The case FMT-05 found: a sample at a place, a page step's record behind it, the block with its change linked before the copy. The checkpoint is refused while the log is durable to no place, to an earlier file, to the place of the sample or one byte short of the copy's end, and named at that end; the version is asked for first; a loaded checkpoint says the place of its sample. The end of the log is asked for when every record of links is in the file and nothing after them is; an end that is reported earlier the second time is not taken; a log with no record asks nothing, and a sample from before every record still waits for the copy's end. |
 | K14, 3 | `CheckpointInfo::log_kept_from`; the rule is for STORE-01 and STORE-07 | A checkpoint that was written and one that was loaded give the place of their sample, also with no count, and none where the sample has none. No test has log files: that they are kept is for STORE-01 to test. |
-| K1, K13: background changes | none: rules for STORE-06 and STORE-07 | The model of 4.4 has page steps of background work: a record of no commit, and a block with the change. It replays them as LG28 says, from the place of the sample on and none before it, and for every log a crash can leave each page must hold exactly the steps whose records are left. Two of the script's steps are on a page that a checkpoint then holds whose sample was taken before them, with the log not durable through their records. In 2,801 of the script's recoveries replay makes a page step that the chain of the checkpoint lacks. |
+| K1, K13: background changes | none: rules for STORE-06 and STORE-07 | The model of 4.4 has page steps of background work: a record of no commit, and a block with the change. It replays them as LG28 says, from the place of the sample on and none before it, and for every log a crash can leave each page must hold exactly the steps whose records are left. Two of the script's steps are on a page that a checkpoint then holds whose sample was taken before them, with the log not durable through their records. In 2,801 of the script's recoveries replay makes a page step that the chain of the checkpoint lacks. The model's page steps place or move a value: none takes a cell out or frees a page, so what holds for a page the checkpoint has lost is tested with recovery (the row of K11). |
 | K6, K7 | `TableCheckpoints::install`, `PageTable::load` | A link past a segment's end and one into no segment are not installed; a manifest with a shorter or a missing segment does not load; a checkpoint that covers less is refused. |
 | K8, K9 | `TableCheckpoints::{open, discard, manifest_replaced}` | Ids across sessions; an older checkpoint does not replace a newer one; what opening removes and leaves. |
 | 4.4 | the whole module | A crash after every operation that can leave something new, in a script of 47 steps: all 210 crash points, every state of each (401,874 plans, 3,330 distinct states); again with writes torn at 16 bytes; three drawn workloads; a database that goes on through 100 crashes, 50 of which lose commits. Each state is opened as a session opens it and checked against a model: the checkpoint is the old one or the new one, it loads, every block it points to reads back with the bytes appended, `table/` holds no other checkpoint, and a new checkpoint can be installed. The model keeps the log, item by item, how many of its items are durable and the changes each block holds, and for every number of items the crash can leave it works out what the checkpoint and the replayed log give of each page: that must be the page as those items left it, for a page in use and for a free one, with the page steps whose records are left and no other. The script frees pages and trims them away while the log is behind, one with a change that was never written back and one whose id is used again, and takes checkpoints that cover no more than the log has, with a sample from where the durable log ends: 864 of its recoveries are from a checkpoint that has no link of a page which was in use at the version it covers, and replay drops a change in each. |

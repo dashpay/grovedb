@@ -726,24 +726,59 @@ What the record does to the counts is applied by its place alone, whatever
 became of its change to the page (DU2, DU5).
 
 **Which background changes replay looks at: every one from the place of
-the checkpoint's sample on, for its page and for the counts, and none
-before it.** A background change has no version, so where the group of
+the checkpoint's sample on, for its page and for the counts; before it,
+those of a page the checkpoint has lost, for the page alone, and no
+other.** A background change has no version, so where the group of
 *C* + 1 stands says nothing about it: a change that stands between the
 sample's place and that group is looked at like any other.
 
-- *A change before the place is in the checkpoint.* The sample is taken
-  before the checkpoint copies its first chain (LG29), and a page step
-  holds the counts lock from its record to its count. So a step whose
-  record is before the place was finished before the sample, and every
-  chain was copied after it. The sample counts it too.
+- *A change before the place is in the checkpoint, if the chain of its
+  page was copied.* The sample is taken before the checkpoint copies its
+  first chain (LG29), and a page step holds the counts lock from its record
+  to its count. So a step whose record is before the place was finished
+  before the sample, and every chain was copied after it. The sample
+  counts it too.
 - *A change after the place is in the chain that was copied, or is not.*
   The test above tells which, and its counts are applied by its place.
+- *A page that the checkpoint has lost has no chain to be in.* The page
+  was freed, and the table trimmed its chain away before the copy
+  (`page-table.md` K10). Where the checkpoint covers a version below the
+  one the page was freed with, the log still holds what commits did to the
+  page, and replay has nothing of the page but the log (K11). Then:
+  - **A background change is made to a page that holds the change of a
+    replayed commit**, by the two steps above, also where its record is
+    before the place. A replayed commit made the page, the copied chains
+    have none of the steps that followed, and a later commit's change
+    builds on them: it puts a cell into the slot that a reclaiming step
+    emptied.
+  - **A page with a dropped change is freed by the record of the step that
+    freed it**, before the place or after it. A reclaiming step frees its
+    page with the version of a commit that did not free it (LG27), so no
+    group says that the page is gone, and K11 would find the dropped
+    change unsettled when the log ends.
+  - **The counts take nothing** from a record before the place: the
+    sample includes it.
+
+  Replay tells such a page by what it holds, with no list of them. A page
+  whose chain was copied never holds the change of a replayed commit when
+  replay meets a record of it from before the place, because the block
+  with that background change holds the commit before it under a link of
+  the commit's version or a later one (K3), and it has no dropped change.
+  Two schedules reach a lost page: in one session, a reader's pin holds
+  back the trim of a page until a reclaiming step has freed it, and a page
+  that cannot be written back yet keeps the next checkpoint below the
+  freeing version; across two sessions, a recovery replays the commit that
+  made a page and the step that freed it, so the table of its session
+  never has a link of the page, and that session's first checkpoint, kept
+  below the freeing version in the same way, has its sample after both
+  records (`page-table.md` K11 and K13; found by STORE-07, the owner's
+  decision D-108 item 2).
 
 Were a sample taken after a chain had been copied, the checkpoint could
 hold a page without a change that its sample counts, with the record before
-the place, where no replay looks: the page would hold a pointer that the
-counts have given up. With no checkpoint in force, replay looks at every
-background change of the log.
+the place, which replay passes over for a page it takes from its chain: the
+page would hold a pointer that the counts have given up. With no checkpoint
+in force, replay looks at every background change of the log.
 
 ## 8. Table-checkpoint marks
 
@@ -982,7 +1017,7 @@ block change is in the group once. PERF-04 measures the whole.
 | --- | --- | --- |
 | STORE-01 Write-ahead log | The file: header, start record, items (section 2). `write_file_start` for a new file, with `LogStart::next` of the file before it. One item is one append. A commit is told the address its group will begin at, and nothing else is appended before the group (LG22, with the two ways to keep it). A background change and a mark are appended with nothing but their bytes (LG25, D-059). `LogCursor` with `record_len` is the recovery iterator: it stops at the first incomplete group, and `valid_len` is where an open file is cut, never below the manifest's valid length (LG30, LG32). The file that the place of a checkpoint's sample names is kept while the checkpoint is in force (LG29). `LogStart::check_next` across files (LG9). | Rotation, sync policies, the locks, which files it reads, the cut after a failed append. |
 | STORE-06 Delta write-back | A commit's values come out of its group as `Group::values`, each with its address. The placing of a value is `ValueMove` with `from` the pending value, written in the page step (LG25, LG26). The mark when it takes a sample, before it copies the first chain, and a sync of the log after it copied the last, before the checkpoint is named (LG29). **To name carried values it keeps LG24:** a hold on the file a carried value names, until the end of the pending value is durable. Until it does, groups repeat. | Thresholds, the page step. The sample is taken, and the mark written, before `TableCheckpoints::write` copies the chains: see below the table, and K14 of `page-table.md`. |
-| STORE-07 Recovery | `scan` or `LogCursor` for each file, in order, with LG9 between them. For a group: runs by page, with K3; `Entry::Freed` and the pages of the runs for `alloc::Recovery` (LG15); `Entry::Released` and `Entry::Acquired` for the counts, by the place (DU5). For a change: every one from the sample's place on, wherever the group of *C* + 1 stands; LG28 for the page, and its counts by the place. A tail below a file's valid length in the manifest is damage (LG32). The item that ends at the sample's place is a mark that covers what the checkpoint covers (LG29). With named values, the holds of LG24, put back at the end of replay. | Replay. |
+| STORE-07 Recovery | `scan` or `LogCursor` for each file, in order, with LG9 between them. For a group: runs by page, with K3; `Entry::Freed` and the pages of the runs for `alloc::Recovery` (LG15); `Entry::Released` and `Entry::Acquired` for the counts, by the place (DU5). For a change: every one from the sample's place on, wherever the group of *C* + 1 stands; LG28 for the page, and its counts by the place. Before the place: only a change of a page the checkpoint has lost, for the page and not for the counts (LG28). A tail below a file's valid length in the manifest is damage (LG32). The item that ends at the sample's place is a mark that covers what the checkpoint covers (LG29). With named values, the holds of LG24, put back at the end of replay. | Replay. |
 | STORE-03 Page table | `LogPlace` is now `lignin_format::wal::LogPlace`, re-exported by `table`. Its offset is from 45, and a sample's place from 62 (P18). The checkpoint's bytes are as they were. | |
 | STORE-09 Value log, STORE-08 | The record of a moved value is `ValueMove` with `from` the old pointer. The count changes of a value record are `released` and `acquired`. A file that a carried value names is held, and the end of the hold is a retirement (LG24). | |
 | TXN-05 Commit | `GroupWriter`: the values first, each returning what its cell holds, then the pages in ascending order, then the pointers. A writer that is dropped before `finish` takes its bytes back, so a commit that fails before its append leaves nothing. The cells of the group hold addresses of the group's own place (LG22). | How a group is put together from the write set. |
@@ -1108,6 +1143,15 @@ owner can overrule one while version 1 is still open (U10).
     too** (LG32).
 27. **A group writer that is dropped takes its bytes back.** A commit
     that fails and returns cannot leave a value for the next group.
+28. **Replay looks at a background change before the sample's place for a
+    page the checkpoint has lost** (LG28; STORE-07's finding, the owner's
+    decision D-108 item 2). LG28 had replay look at none before the
+    place. That holds for a page whose chain a checkpoint copied. A page
+    that was freed and trimmed away has no chain, and where the checkpoint
+    covers less than the freeing version, a reclaiming step is what freed
+    the page or what emptied a slot that a later commit filled. The records
+    and their bytes are as they were. `page-table.md` K11 and K13 say the
+    same from the table's side.
 
 ## 13. Code and tests
 
@@ -1130,7 +1174,7 @@ All of this is in `lignin-format::wal`. Run the tests with
 | LG21, LG23 | `LogAddress::{of, pending}`, `read_pending_value`, `logged_read_len` | `a_pending_value_leads_to_its_bytes_or_to_the_value_it_was_carried_from`, `the_parts_of_a_value_come_whole_in_order_and_from_one_value`, `the_bytes_to_read_at_an_address_cover_either_record`. |
 | LG19 | `FlatRun`, `FlatChange`, `FlatRunWriter` | `a_page_and_a_run_give_the_page_a_model_gives`: 600 runs of drawn changes on one leaf against a model, with images and prefixes. `a_branch_takes_separators_and_gives_them_up`, `a_change_that_does_not_fit_its_page_is_refused`, `each_check_of_a_run_has_its_error`, `a_change_that_would_not_read_back_is_not_written`. An image of another page than the run's is refused by the reader and by the writer, and a run is not applied to another page's image. A run whose later records mend what an earlier one did to the prefix and the room applies, and each shorter run of it is refused. |
 | LG4: a record says how long it is | `GroupPart`, `Reclaim`, `LoggedBytes`, the records of one size | `a_changed_length_is_refused_whatever_the_checksum_says`: every record of the six logs of the acceptance test, with each of the 32 bits of its length flipped and the checksum that the new length and the bytes it then covers have. Each is refused where it stands, none by its checksum. In `tests/records.rs`, a part and a reclaiming step that state another length than they have. |
-| LG26 to LG28 | `ValueMove`, `Reclaim`, `write_reclaim` | `tests/changes.rs`: a placing and a move are due exactly while the cell holds the old place, in a tree page and in a flat leaf, and change the place and nothing else; a leaf of another page that holds the place is not the step's; a reclaiming step's rules. In `tests/records.rs`, a pending value where a value pointer must stand is `ReservedFileId`: the `to` of a value change, the source of a carried value, a released or acquired pointer of a group and of a reclaiming step. |
+| LG26 to LG28 | `ValueMove`, `Reclaim`, `write_reclaim`; replay by LG28 is `lignin-store::recovery` (`Replay::change`, `Replay::beyond_the_copy`) | `tests/changes.rs`: a placing and a move are due exactly while the cell holds the old place, in a tree page and in a flat leaf, and change the place and nothing else; a leaf of another page that holds the place is not the step's; a reclaiming step's rules. The replay rule is tested with recovery (`lignin-store`, `recovery/tests/rules.rs`): `a_page_step_is_replayed_from_the_place_of_the_sample_on` and `a_reclaiming_step_is_made_once_and_never_takes_a_later_cell` for a page whose chain was copied; for a page the checkpoint has lost, `a_page_that_a_step_freed_before_the_sample_is_free_where_the_checkpoint_lost_it`, `a_cell_that_a_step_took_out_before_the_sample_is_out_of_a_page_replay_made` and `a_history_with_pages_the_checkpoint_lost_recovers_the_same_wherever_it_is_killed`, which kills one session after each of its acts. In `tests/records.rs`, a pending value where a value pointer must stand is `ReservedFileId`: the `to` of a value change, the source of a carried value, a released or acquired pointer of a group and of a reclaiming step. |
 | LG29 | `CheckpointMark`, `table::FIRST_SAMPLE_OFFSET` | `the_versions_of_the_groups_go_up_by_one_and_nothing_is_ahead_of_them`; in `table`, `the_end_record_must_agree_with_the_counts_and_name_a_place_in_the_log`. |
 | B8 | every reader and writer | In the acceptance test and in the tests of arbitrary bytes, every item that is read is written again and gives the bytes it was read from. |
 | B10 | every reader | `arbitrary_bytes_are_an_error_or_a_log_and_never_a_panic`: 45,000 files, a third arbitrary, a third records with valid checksums and arbitrary fields, a third written logs with a record changed under a valid checksum. `an_arbitrary_flat_run_is_an_error_or_a_run_that_applies_or_is_refused`. |
