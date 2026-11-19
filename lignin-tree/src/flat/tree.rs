@@ -383,7 +383,6 @@ impl FlatTree {
         key: &[u8],
         value: &[u8],
     ) -> Result<(), FlatError> {
-        value_len(value)?;
         let (steps, page) = self.descend(pages, key)?;
         let old = pages.take(page)?;
         let leaf = leaf(&old, page)?;
@@ -567,14 +566,9 @@ enum Joined<'a> {
 }
 
 impl<'a> Joined<'a> {
-    /// The two children `left` and `right` of the branch `parent`, which
-    /// has `between` between them, as one page.
-    fn of(
-        parent: PageId,
-        left: FlatPage<'a>,
-        between: &'a [u8],
-        right: FlatPage<'a>,
-    ) -> Result<Self, FlatError> {
+    /// The neighbours `left` and `right` below one branch, which has
+    /// `between` between them, as one page.
+    fn of(left: FlatPage<'a>, between: &'a [u8], right: FlatPage<'a>) -> Result<Self, FlatError> {
         match (left, right) {
             (FlatPage::Leaf(left), FlatPage::Leaf(right)) => Ok(Self::Leaves(
                 [leaf_entries(&left), leaf_entries(&right)].concat(),
@@ -588,9 +582,10 @@ impl<'a> Joined<'a> {
                 entries.extend(branch_entries(&right)?);
                 Ok(Self::Branches(left.level(), child(&left, 0)?, entries))
             }
-            _ => Err(FlatError::Damaged {
-                page: parent,
-                what: "a branch over a leaf and a branch",
+            // Two pages of one level are of one kind.
+            (left, _) => Err(FlatError::Damaged {
+                page: left.id(),
+                what: "a leaf and a branch below one branch",
             }),
         }
     }
@@ -681,7 +676,7 @@ impl FlatTree {
         let join = |first, second| {
             let first = Self::checked(first, left, Some(level))?;
             let second = Self::checked(second, right, Some(level))?;
-            Joined::of(parent, first, &separator, second)
+            Joined::of(first, &separator, second)
         };
 
         // The two are looked at before they are taken, one after the
@@ -948,12 +943,14 @@ impl FlatTree {
         page: PageId,
         entry: &LeafEntry<'_>,
     ) -> Result<(), FlatError> {
-        match entry.value {
-            ValueRef::Inline(root) if self.config.is_bucket(entry.key.len()) => {
-                self.free_all(pages, bucket_root(page, FlatValue::Inline(root))?, None)
-            }
-            value => drop_held(pages, page, value),
+        if !self.config.is_bucket(entry.key.len()) {
+            return drop_held(pages, page, entry.value);
         }
+        let root = match entry.value {
+            ValueRef::Inline(root) => FlatValue::Inline(root),
+            ValueRef::Held { place, .. } | ValueRef::New(place) => FlatValue::OutOfLine(place),
+        };
+        self.free_all(pages, bucket_root(page, root)?, None)
     }
 
     /// Frees `page`, which is below a branch of the level `above`, and

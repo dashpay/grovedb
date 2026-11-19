@@ -109,10 +109,11 @@
 //! The tree of a bucket is a tree like any other: it grows and shrinks by
 //! pages, there is no limit to the keys that share their first bytes or to
 //! their values, and a write to one of them changes the pages on its way
-//! and no others. It is never empty: the last key that leaves it takes the
-//! bucket along. A key is as many trees deep as it has eighths of a page,
-//! and a write of it reads one leaf for each: keys that long are for what
-//! RocksDB accepts and nobody writes, not for a workload.
+//! and no others. A write never leaves it empty: the last key that a
+//! delete takes out of it takes the bucket along. A key is as many trees
+//! deep as it has eighths of a page, and a write of it reads one leaf for
+//! each: keys that long are for what RocksDB accepts and nobody writes,
+//! not for a workload.
 //!
 //! # The tree
 //!
@@ -353,7 +354,13 @@
 //!     the place of a value, without moving an entry to another page. The
 //!     tree relies on it between its way down and its copy of the leaf. A
 //!     step that changed a branch would need the tree to copy every page
-//!     on its way.
+//!     on its way. **No page step takes a bucket out**: a write reads the
+//!     bucket of a long key before it copies anything. A step that takes
+//!     the last key out of a bucket's tree leaves the bucket with an empty
+//!     tree, which reads as no key, is passed by a cursor, takes the next
+//!     put, and leaves with a range delete that covers it, or with the
+//!     last key that a later delete takes out of it. The reclaim of a
+//!     dropped subtree's entries (TREE-09) keeps to both.
 
 mod cursor;
 mod error;

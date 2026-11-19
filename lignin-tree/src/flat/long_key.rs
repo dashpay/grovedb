@@ -12,8 +12,9 @@
 //! A stored key that is longer than the limit is therefore a bucket, and no
 //! key of a caller is ever stored at that length. A bucket sorts where its
 //! keys belong: behind the key that is exactly its head, if there is one,
-//! and before every other key that is greater than the head. Its tree is
-//! never empty: the last key that leaves it takes the bucket along.
+//! and before every other key that is greater than the head. A write never
+//! leaves its tree empty: the last key that a delete takes out of it takes
+//! the bucket along.
 
 use lignin_format::{flat_page::FlatValue, PageId};
 

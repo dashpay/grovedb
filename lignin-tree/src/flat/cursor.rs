@@ -229,7 +229,6 @@ impl Level {
 pub struct Cursor {
     tree: FlatTree,
     prefix: Vec<u8>,
-    end: Option<Vec<u8>>,
     /// The position: one level, and under a long key one more for each
     /// bucket the key is in. Empty when the cursor is not positioned.
     levels: Vec<Level>,
@@ -242,7 +241,6 @@ impl Cursor {
         Self {
             tree,
             prefix: prefix.to_vec(),
-            end: prefix_end(prefix),
             levels: Vec::new(),
             key: Vec::new(),
             revision: 0,
@@ -289,9 +287,7 @@ impl Cursor {
 
     /// Goes to the first record whose key is `key` or greater.
     pub fn seek<P: FlatPages + ?Sized>(&mut self, pages: &P, key: &[u8]) -> Result<(), FlatError> {
-        let key = [&self.prefix, key].concat();
-        let moved = self.land(pages, &key, false);
-        self.arrive(pages, moved)
+        self.seek_to(pages, key, false)
     }
 
     /// Goes to the last record whose key is `key` or less.
@@ -300,8 +296,17 @@ impl Cursor {
         pages: &P,
         key: &[u8],
     ) -> Result<(), FlatError> {
+        self.seek_to(pages, key, true)
+    }
+
+    fn seek_to<P: FlatPages + ?Sized>(
+        &mut self,
+        pages: &P,
+        key: &[u8],
+        back: bool,
+    ) -> Result<(), FlatError> {
         let key = [&self.prefix, key].concat();
-        let moved = self.land(pages, &key, true);
+        let moved = self.land(pages, &key, back);
         self.arrive(pages, moved)
     }
 
@@ -312,7 +317,7 @@ impl Cursor {
 
     /// Goes to the last record.
     pub fn seek_to_last<P: FlatPages + ?Sized>(&mut self, pages: &P) -> Result<(), FlatError> {
-        let moved = match self.end.clone() {
+        let moved = match prefix_end(&self.prefix) {
             Some(end) => self.past(pages, &end, true),
             None => self.last(pages),
         };
@@ -444,8 +449,16 @@ impl Cursor {
 
     /// While the innermost entry is a bucket, goes into its tree: to its
     /// first key, or with `back` to its last.
+    ///
+    /// A bucket whose tree is one of the trees the cursor is in is damage:
+    /// the trees on the way to a key are different ones, so the way ends.
     fn enter<P: FlatPages + ?Sized>(&mut self, pages: &P, back: bool) -> Result<(), FlatError> {
         while let Some(inner) = self.levels.last().and_then(|level| level.bucket) {
+            let page = inner.root();
+            if self.levels.iter().any(|level| level.tree.root() == page) {
+                let what = "a bucket of long keys whose tree is a tree it is in";
+                return Err(FlatError::Damaged { page, what });
+            }
             let mut level = Level::new(inner);
             if !level.edge(pages, back)? {
                 // No bucket is empty, and if one is, it is passed by.

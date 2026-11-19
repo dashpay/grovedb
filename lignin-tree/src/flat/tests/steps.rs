@@ -196,6 +196,52 @@ fn pages_that_are_reached_twice_end_a_write_with_an_error() {
     // Every key is as many trees deep as it has heads, and no deeper.
     let long = [head.as_slice(), &head, &head, b"rest"].concat();
     assert_eq!(get(&pages, &tree, &long), None);
+    // A cursor goes into the tree of a bucket once.
+    let ring = "a bucket of long keys whose tree is a tree it is in";
+    let mut cursor = tree.cursor();
+    for seek in [Cursor::seek_to_first::<Mem>, Cursor::seek_to_last::<Mem>] {
+        assert_eq!(damaged(seek(&mut cursor, &pages)), (one, ring));
+        assert!(!cursor.valid());
+    }
+    // A seek goes as deep as its key is long, and finds nothing there.
+    cursor.seek(&pages, &long).expect("a seek");
+    assert!(!cursor.valid());
     let inside = tree.delete_range(&mut pages, b"", None);
     assert!(matches!(inside, Err(FlatError::Freed { page }) if page == one));
+
+    // The same with a record before the bucket: the step that would go
+    // into the tree again is the one that fails.
+    let mut leaf = FlatLeafBuilder::new(one, b"", 4_096).expect("a leaf");
+    leaf.push(b"a", FlatValue::Inline(b"value"))
+        .expect("an entry");
+    leaf.push(
+        &[head.as_slice(), &[0]].concat(),
+        FlatValue::Inline(&one.encode()),
+    )
+    .expect("an entry");
+    let (pages, tree) = with(vec![leaf.finish()]);
+    let mut cursor = tree.cursor();
+    cursor.seek_to_first(&pages).expect("a seek");
+    assert_eq!(cursor.key(), Some(&b"a"[..]));
+    assert_eq!(damaged(cursor.next(&pages)), (one, ring));
+    assert!(!cursor.valid());
+
+    // A bucket whose value is out of line names no page, for a range
+    // delete as for a read: the value is not dropped as a record's.
+    let place = ValuePointer::new(FileId::MIN, 20, 600)
+        .expect("a pointer")
+        .encode();
+    let mut leaf = FlatLeafBuilder::new(one, b"", 4_096).expect("a leaf");
+    leaf.push(
+        &[head.as_slice(), &[0]].concat(),
+        FlatValue::OutOfLine(&place),
+    )
+    .expect("an entry");
+    let (mut pages, tree) = with(vec![leaf.finish()]);
+    let names = "a bucket of long keys that names no page";
+    assert_eq!(
+        damaged(tree.delete_range(&mut pages, b"", None)),
+        (one, names)
+    );
+    assert!(pages.released.is_empty());
 }
