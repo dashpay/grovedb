@@ -24,7 +24,7 @@ use lignin_tree::{
     },
 };
 
-use super::error::TxnError;
+use super::{error::TxnError, view::ChildKeys};
 use crate::snapshot::OperationGuard;
 
 /// The most cells a descent by key passes before the pages are taken for
@@ -104,6 +104,32 @@ pub(crate) fn find<P: NodePages>(
         }
     }
     Err(TxnError::Damaged("a Merk deeper than any tree of nodes"))
+}
+
+/// Reads the key of each child of the cell at `at` from the child's cell
+/// (`tree-page.md` TP10).
+pub(crate) fn child_keys<P: NodePages>(
+    pages: &mut P,
+    at: CellAddress,
+    keys: &mut ChildKeys,
+) -> Result<(), TxnError> {
+    let children = pages.page(at.page(), |page| {
+        let node = page.node(at.slot())?;
+        Some([Side::Left, Side::Right].map(|side| (side, node.link(side).map(|link| link.child))))
+    })?;
+    for (side, child) in children.ok_or(NodeError::NoNode { address: at })? {
+        let key = keys.slot(side);
+        let Some(address) = child else {
+            continue;
+        };
+        let read = pages.page(address.page(), |page| {
+            let child = page.node(address.slot())?;
+            key.extend_from_slice(child.key());
+            Some(())
+        })?;
+        read.ok_or(NodeError::NoNode { address })?;
+    }
+    Ok(())
 }
 
 /// The address `handle` names, if the handle is of `lease` and its cell

@@ -66,8 +66,62 @@ pub struct LinkView<'a> {
     pub aggregate: &'a [u8],
     /// The child's key, where the node is a record of the transaction's
     /// write set. A cell names its child by an address, which is followed
-    /// through the node's handle ([`Scope::child`](super::Scope::child)).
+    /// through the node's handle ([`Scope::child`](super::Scope::child)),
+    /// or read with the node under a cursor ([`ChildKeys`]).
     pub key: Option<&'a [u8]>,
+}
+
+/// The keys of the children of one node, read with the node
+/// ([`MerkCursor::node_with_children`](super::MerkCursor::node_with_children)).
+///
+/// A cell names its children by address and holds the length of each
+/// child's key (`tree-page.md` TP10): the key itself is in the child's
+/// cell. Merk's record of a node names each child by its key, so whoever
+/// builds that record reads the two cells too.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ChildKeys {
+    keys: [Vec<u8>; 2],
+}
+
+impl ChildKeys {
+    /// No keys yet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The key of the child on `side`. It is empty where the node has no
+    /// child there, as the key of a child can be: [`NodeView::link`] says
+    /// whether there is one.
+    pub fn key(&self, side: Side) -> &[u8] {
+        &self.keys[Self::at(side)]
+    }
+
+    const fn at(side: Side) -> usize {
+        match side {
+            Side::Left => 0,
+            Side::Right => 1,
+        }
+    }
+
+    /// The key on `side`, emptied, to be read into.
+    pub(crate) fn slot(&mut self, side: Side) -> &mut Vec<u8> {
+        let key = &mut self.keys[Self::at(side)];
+        key.clear();
+        key
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.keys.iter_mut().for_each(Vec::clear);
+    }
+
+    /// Takes the keys from a record of the write set, which names its
+    /// children by key.
+    pub(crate) fn of_record(&mut self, node: &NodeView<'_>) {
+        for side in [Side::Left, Side::Right] {
+            let key = node.link(side).and_then(|link| link.key);
+            self.slot(side).extend_from_slice(key.unwrap_or_default());
+        }
+    }
 }
 
 /// How the value of a cell is read where it is not in the cell.

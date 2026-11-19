@@ -9,6 +9,7 @@ mod drops;
 mod errors;
 mod handles;
 mod hashes;
+mod parked;
 pub(crate) mod random;
 mod readers;
 mod reads;
@@ -386,9 +387,7 @@ pub(crate) fn scan_merk(
         let Some(Val::Node(expected)) = view.get(&key) else {
             panic!("the cursor shows {key:?}, which is no node of the view");
         };
-        cursor
-            .node(|shown| expected.check(&key, &shown.expect("a node under the cursor's key")))
-            .expect("the node is read");
+        check_under(cursor, &key, expected);
         keys.push(key);
         match back {
             false => cursor.next(),
@@ -397,6 +396,27 @@ pub(crate) fn scan_merk(
         .expect("a step");
     }
     keys
+}
+
+/// Checks the node under the key `cursor` stands on against `expected`,
+/// and the key of each child as it is read with the node.
+fn check_under(cursor: &mut MerkCursor<'_, '_>, key: &[u8], expected: &model::NodeRec) {
+    use lignin_format::tree_page::Side;
+
+    let mut children = ChildKeys::new();
+    cursor
+        .node_with_children(&mut children, |shown| {
+            expected.check(key, &shown.expect("a node under the cursor's key"))
+        })
+        .expect("the node is read");
+    for side in [Side::Left, Side::Right] {
+        let child = expected.link(side).map(|link| &link.key[..]);
+        assert_eq!(
+            children.key(side),
+            child.unwrap_or_default(),
+            "a child of {key:?}"
+        );
+    }
 }
 
 /// The bytes of a node's value, wherever the value is.
