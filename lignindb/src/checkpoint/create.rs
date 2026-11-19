@@ -2,9 +2,10 @@
 //! CK10).
 
 use std::{
+    cmp::Ordering,
     fmt,
     path::Path,
-    sync::{Mutex, MutexGuard, PoisonError},
+    sync::{Mutex, MutexGuard, PoisonError, TryLockError},
 };
 
 use lignin_format::{
@@ -15,12 +16,14 @@ use lignin_format::{
 use lignin_store::{
     flush::{Checkpointed, FlushError, WriteBack},
     segment::{FileNames, ManifestStore},
+    values::ValueHold,
+    wal::LogHold,
 };
 
 use super::{error::CheckpointError, files::Target};
 use crate::{
     commit::{CommitState, Committer},
-    snapshot::Versions,
+    snapshot::{VersionPin, Versions},
 };
 
 /// How much log a checkpoint leaves for its first open to replay before
@@ -76,11 +79,19 @@ pub struct Created {
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Step {
-    /// The sampling step has ended, and both of its locks are given back.
-    /// The log is not synced yet and no log file is in the target.
+    /// The target is made, and nothing is sampled.
+    Made,
+    /// The sample found the manifest locked. The commit lock is given
+    /// back, and the creation is about to wait for the manifest.
+    Waiting,
+    /// The sample is taken and the commit lock is given back. The lock on
+    /// the manifest is held, and nothing is in the target yet.
+    Linking,
+    /// The lock on the manifest is given back too. The log is not synced
+    /// yet and no log file is in the target.
     Sampled,
     /// Every file is in the target, or open to be copied. The pin and the
-    /// hold on the log are given back, and the manifest is not written.
+    /// holds are given back, and the manifest is not written.
     Secured,
 }
 
@@ -113,14 +124,19 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The numbered files of each kind that a manifest names as live.
-const fn names_of(kind: FileKind) -> Option<FileNames> {
-    match kind {
-        FileKind::Wal => Some(FileNames::WAL),
-        FileKind::Segment => Some(FileNames::SEGMENT),
-        FileKind::ValueLog => Some(FileNames::VALUE_LOG),
-        FileKind::Manifest | FileKind::PageTable => None,
-    }
+/// What a creation reads in its sampling step, and what it holds in the
+/// live database from then until its files are in the target (CK3).
+struct Sample<'s> {
+    /// The latest version.
+    version: CommitVersion,
+    /// Where the log ends.
+    end: Option<LogPlace>,
+    /// The durable manifest.
+    named: Manifest,
+    /// The pin on the version, the hold on the whole log, and the hold on
+    /// the value-log files, which the value log asks a checkpoint to take
+    /// (`lignin_store::values`).
+    held: (VersionPin<'s>, LogHold, ValueHold),
 }
 
 impl<'s> Checkpointer<'s> {
@@ -190,24 +206,38 @@ impl<'s> Checkpointer<'s> {
     /// version in the live database** (CK4). `target` is then a database
     /// directory like any other, and is opened as one.
     ///
-    /// Commits are kept out for the sampling step and for nothing else of
-    /// this call (CK5). Open write transactions are not waited for, and
-    /// nothing of them is in the checkpoint (CK8). Any number of
-    /// checkpoints may be made at once (CK9).
+    /// Commits are kept out for the sampling step, which reads three
+    /// things, and for nothing else of this call (CK5). Open write
+    /// transactions are not waited for, and nothing of them is in the
+    /// checkpoint (CK8). Any number of checkpoints may be made at once
+    /// (CK9).
     ///
-    /// If it fails, the live database is as it was (CK10), and what was
-    /// made of `target` is taken away again as far as the file layer lets
-    /// it. Where that fails too, `target` is left without a manifest, or
-    /// with one that this call does not vouch for, and removing it is the
-    /// caller's.
+    /// If it fails, the live database is as it was (CK10), with one
+    /// exception: where the sync of its log failed
+    /// ([`CheckpointError::Sync`]), the log makes nothing more durable
+    /// until the database is opened again, as after any sync of it that
+    /// fails (`lignin_store::wal`). What was made of `target` is taken away
+    /// again as far as the file layer lets it. Where that fails too,
+    /// `target` is left without a manifest, or with one that this call does
+    /// not vouch for, and removing it is the caller's.
     pub fn create(&self, target: &Path) -> Result<Created, CheckpointError> {
+        if let Some(stopped) = self.state.stopped() {
+            return Err(CheckpointError::Stopped(stopped));
+        }
         let stores = self.write_back.stores();
         let (vfs, source) = {
             let manifest = lock(stores.manifest);
             (manifest.vfs().clone(), manifest.dir().to_path_buf())
         };
+        // The catch-up comes before the target is made, so that nothing of
+        // a checkpoint is on disk for as long as it takes. A target that
+        // is there is refused before it, and again when it is made.
+        Target::refuse_existing(&*vfs, target)?;
+        let catch_up = self.catch_up();
         let mut made = Target::make(vfs, target)?;
-        let created = self.fill(&mut made, &source);
+        #[cfg(test)]
+        self.reached(Step::Made);
+        let created = self.fill(&mut made, &source, catch_up);
         if created.is_err() {
             made.remove();
         }
@@ -223,41 +253,80 @@ impl<'s> Checkpointer<'s> {
         (self.write_back.log_held() > above).then(|| self.write_back.checkpoint())
     }
 
-    /// Everything of a creation after the target was made.
-    fn fill(&self, target: &mut Target, source: &Path) -> Result<Created, CheckpointError> {
+    /// The sampling step (CK2): the latest version, the end of the log and
+    /// the durable manifest, read under the commit lock and the lock on
+    /// the manifest, which is the file-set lock (levels 1 and 3 of LT7).
+    /// No commit is published, no manifest is replaced and no file of the
+    /// store is deleted while both are held.
+    ///
+    /// It returns with the commit lock given back and the lock on the
+    /// manifest still held.
+    ///
+    /// **No commit waits for the manifest.** Write-back holds that lock
+    /// over a sync when it replaces a manifest, and another creation holds
+    /// it while it links. So the manifest is only tried under the commit
+    /// lock: where it is taken, the commit lock is given back, the
+    /// manifest is waited for, and both are taken anew. A commit so waits
+    /// for the reads below and for nothing else (CK5, CM8).
+    fn sample(&self) -> Result<(Sample<'s>, MutexGuard<'s, ManifestStore>), CheckpointError> {
         let stores = self.write_back.stores();
-        let log = stores.log;
-        // The name of a database directory is durable before its first
-        // manifest is written (`lignin_store::segment`).
-        target.sync_parent()?;
-        let catch_up = self.catch_up();
-
-        // The sampling step (CK2): the commit lock, then the lock on the
-        // manifest, which is the file-set lock (levels 1 and 3 of LT7). No
-        // commit is published, no manifest is replaced and no file of the
-        // store is deleted while both are held.
-        let commits = self.state.lock();
+        let (commits, manifest) = loop {
+            let commits = self.state.lock();
+            match stores.manifest.try_lock() {
+                Ok(manifest) => break (commits, manifest),
+                Err(TryLockError::Poisoned(poisoned)) => break (commits, poisoned.into_inner()),
+                Err(TryLockError::WouldBlock) => {}
+            }
+            drop(commits);
+            #[cfg(test)]
+            self.reached(Step::Waiting);
+            drop(lock(stores.manifest));
+        };
         if let Some(stopped) = self.state.stopped() {
             return Err(CheckpointError::Stopped(stopped));
         }
-        let manifest = lock(stores.manifest);
         let named = manifest
             .manifest()
             .map_err(CheckpointError::Manifest)?
             .clone();
-        // From here until the files are in the target, the version is
-        // pinned and the whole log is kept (CK3).
         let pin = self.versions.pin();
         let version = pin.version();
-        let (end, logged) = (log.end(), log.latest());
+        let (end, logged) = (stores.log.end(), stores.log.latest());
         if logged != version {
             return Err(CheckpointError::LogAhead {
                 log: logged,
                 latest: version,
             });
         }
-        let hold = log.hold_from(None)?;
+        let log_hold = stores.log.hold_from(None)?;
+        let value_hold = stores.values.hold_files();
         drop(commits);
+        let sample = Sample {
+            version,
+            end,
+            named,
+            held: (pin, log_hold, value_hold),
+        };
+        Ok((sample, manifest))
+    }
+
+    /// Everything of a creation after the target was made.
+    fn fill(
+        &self,
+        target: &mut Target,
+        source: &Path,
+        catch_up: Option<Result<Checkpointed, FlushError>>,
+    ) -> Result<Created, CheckpointError> {
+        let log = self.write_back.stores().log;
+        let (sample, manifest) = self.sample()?;
+        let Sample {
+            version,
+            end,
+            named,
+            held,
+        } = sample;
+        #[cfg(test)]
+        self.reached(Step::Linking);
 
         // Still under the file-set lock: the table checkpoint, the
         // segments and the value-log files that the sampled manifest
@@ -277,8 +346,12 @@ impl<'s> Checkpointer<'s> {
         let mut files = Vec::with_capacity(named.files().len());
         for file in named.files() {
             let (kind, id, len) = (file.kind(), file.id(), file.valid_len());
-            let Some(names) = names_of(kind).filter(|_| kind != FileKind::Wal) else {
-                continue;
+            let names = match kind {
+                FileKind::Segment => FileNames::SEGMENT,
+                FileKind::ValueLog => FileNames::VALUE_LOG,
+                // The log's files are taken from the log, once it is
+                // durable.
+                FileKind::Wal | FileKind::Manifest | FileKind::PageTable => continue,
             };
             // What a later session of the live database appends behind
             // this length, a segment's footer included, is not the
@@ -316,21 +389,21 @@ impl<'s> Checkpointer<'s> {
             for file in log.files_named()? {
                 let id = file.id();
                 let len = match id.cmp(&end.file()) {
-                    std::cmp::Ordering::Greater => continue,
-                    std::cmp::Ordering::Less if file.state() != FileState::Closed => {
+                    Ordering::Greater => continue,
+                    Ordering::Less if file.state() != FileState::Closed => {
                         return Err(CheckpointError::LogFile {
                             file: id,
                             reason: "lies before the end of the checkpoint's log and is not closed",
                         });
                     }
-                    std::cmp::Ordering::Less => file.valid_len(),
-                    std::cmp::Ordering::Equal if file.valid_len() < end.offset() => {
+                    Ordering::Less => file.valid_len(),
+                    Ordering::Equal if file.valid_len() < end.offset() => {
                         return Err(CheckpointError::LogFile {
                             file: id,
                             reason: "is not durable through the end of the checkpoint's log",
                         });
                     }
-                    std::cmp::Ordering::Equal => {
+                    Ordering::Equal => {
                         ended = true;
                         end.offset()
                     }
@@ -342,20 +415,25 @@ impl<'s> Checkpointer<'s> {
             if !ended {
                 return Err(CheckpointError::LogFile {
                     file: end.file(),
-                    reason:
-                        "holds the end of the checkpoint's log and is not among the log's files",
+                    reason: "holds the end of the checkpoint's log and is not among the log's \
+                             files",
                 });
             }
         }
-        drop((pin, hold));
+        drop(held);
         #[cfg(test)]
         self.reached(Step::Secured);
 
         if target.has_waiting() {
             target.copy_waiting()?;
         }
-        // Every name is durable before the manifest that names it is.
+        // Every name in the target is durable before the target's own name
+        // is, and that before the manifest is written: the name of a
+        // database directory is durable before its first manifest
+        // (`lignin_store::segment`), and a target that a power cut leaves
+        // has its files or does not exist.
         target.sync_names()?;
+        target.sync_parent()?;
         let mut last_file_ids = named.last_file_ids();
         last_file_ids.wal = last_log_id;
         let first = Manifest::new(named.page_size(), last_file_ids, table, files)?;

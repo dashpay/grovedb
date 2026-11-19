@@ -503,6 +503,11 @@ fn an_existing_target_is_refused_and_left_untouched() {
     );
     let refused = checkpointer(&db, &versions).create(Path::new("/"));
     assert!(
+        matches!(refused, Err(CheckpointError::TargetExists { .. })),
+        "{refused:?}"
+    );
+    let refused = checkpointer(&db, &versions).create(Path::new(""));
+    assert!(
         matches!(refused, Err(CheckpointError::NoParent { .. })),
         "{refused:?}"
     );
@@ -516,4 +521,64 @@ fn an_existing_target_is_refused_and_left_untouched() {
     );
     assert!(!orphan.parent().expect("a parent").exists());
     world.check_committed();
+}
+
+/// A manifest that a replacement left in doubt is not sampled: the
+/// creation is refused, with nothing left of the target, until write-back
+/// has found out which manifest is in force. Then it is made.
+#[test]
+fn a_manifest_in_doubt_is_not_sampled() {
+    use lignin_io::sim::{Fault, FaultRule, OpKind, OpSet};
+    use lignin_store::segment::SegmentStoreError;
+
+    let fs = sim(10);
+    let (db, versions) = store_on(&fs);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(10);
+    for round in 0..3 {
+        block(&mut world, &mut rng, round * 10, 10);
+    }
+    (db.write_back(&versions).pass()).expect("a pass of write-back");
+    db.segments.sync().expect("the segment is synced");
+    // The rename of the next manifest fails: the directory has the old one
+    // or the new one, and the store does not know which.
+    let renames = OpSet::of(&[OpKind::Rename]);
+    fs.add_rule(FaultRule::new(Fault::Eio).on(renames));
+    {
+        let mut manifest = db.manifest.lock().expect("the manifest");
+        let failed = db.segments.commit(&mut manifest);
+        assert!(
+            failed.is_err() && manifest.manifest().is_err(),
+            "{failed:?}"
+        );
+    }
+    fs.clear_rules();
+
+    let target = checkpoints_in(&db).join("1");
+    let maker = checkpointer(&db, &versions).with_options(CheckpointOptions {
+        catch_up_above: None,
+    });
+    let refused = maker.create(&target);
+    assert!(
+        matches!(
+            &refused,
+            Err(CheckpointError::Manifest(
+                SegmentStoreError::ManifestInDoubt { .. }
+            ))
+        ),
+        "{refused:?}"
+    );
+    assert!(
+        fs.read_dir(&target).is_err(),
+        "a refused checkpoint leaves a directory"
+    );
+    assert_eq!(versions.pins_held(), 0);
+
+    // Write-back's next table checkpoint opens the manifest again.
+    (db.write_back(&versions).checkpoint()).expect("a table checkpoint");
+    let created = maker.create(&target).expect("a checkpoint");
+    assert_eq!(created.version, versions.latest());
+    let vfs: Arc<dyn Vfs> = Arc::new(fs.clone());
+    let opened = open_on(vfs, &target, &db).expect("the checkpoint opens");
+    opened.check(&world.model);
 }

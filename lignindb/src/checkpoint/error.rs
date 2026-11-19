@@ -14,8 +14,10 @@ use crate::commit::Stopped;
 /// Why [`Checkpointer::create`](super::Checkpointer::create) made no
 /// checkpoint, or [`delete`](super::delete) deleted none.
 ///
-/// Whatever the error, the live database is as it was: a creation changes
-/// nothing of it but how far its log is durable.
+/// Whatever the error, the live database holds what it held: a creation
+/// changes nothing of it but how far its log is durable. After
+/// [`Self::Sync`] its log makes nothing more durable until the database is
+/// opened again, as after any sync of the log that fails.
 #[derive(Debug)]
 pub enum CheckpointError {
     /// The target is there already, as a directory or as anything else.
@@ -53,7 +55,9 @@ pub enum CheckpointError {
     /// write-back has not settled it yet. The call can be made again.
     Manifest(SegmentStoreError),
     /// The log could not be made durable through the version of the
-    /// checkpoint.
+    /// checkpoint. A sync of the log that fails stays failed for the
+    /// session (`lignin_store::wal`): no commit of it becomes durable, and
+    /// no checkpoint is made, before the database is opened again.
     Sync(FlushError),
     /// The log refused to be held, or to say what its files are.
     Log(LogError),
