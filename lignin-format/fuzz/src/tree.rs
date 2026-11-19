@@ -1,7 +1,9 @@
 //! Reading every part of a tree page, and changing a valid one.
 
 use lignin_format::{
-    tree_page::{CellContent, CellValue, HashField, Side, TreeCell, TreeLink, TreePage, TreePageMut},
+    tree_page::{
+        CellContent, CellValue, HashField, Side, TreeCell, TreeLink, TreePage, TreePageMut,
+    },
     value_log::{PendingValue, ValuePointer},
     CellAddress, FileId, PageId, PageSize, SlotId,
 };
@@ -11,9 +13,18 @@ use crate::{ok, take_u16, take_up_to};
 /// Calls every accessor of a page that may never have been checked. None
 /// may panic, whatever the bytes are.
 pub fn touch_page(page: &TreePage<'_>, size: PageSize) {
-    let _ = (page.version(), page.id(), page.encoded_len(), page.slot_count());
+    let _ = (
+        page.version(),
+        page.id(),
+        page.encoded_len(),
+        page.slot_count(),
+    );
     let _ = (page.cell_count(), page.is_empty(), page.departures());
-    let _ = (page.unused_bytes(), page.free_bytes(size), page.used_bytes());
+    let _ = (
+        page.unused_bytes(),
+        page.free_bytes(size),
+        page.used_bytes(),
+    );
     let _ = (page.lowest_free_slot(), page.has_pending_value());
     let _ = page.fragment_roots().count();
     let _ = page.pending_values().count();
@@ -43,18 +54,30 @@ pub fn touch_page(page: &TreePage<'_>, size: PageSize) {
 /// Calls every accessor of a cell.
 pub fn touch_cell(cell: &TreeCell<'_>) {
     let _ = (cell.key(), cell.feature(), cell.value_len(), cell.value());
-    let _ = (cell.value_pointer(), cell.pending_value(), cell.value_place());
+    let _ = (
+        cell.value_pointer(),
+        cell.pending_value(),
+        cell.value_place(),
+    );
     let _ = (cell.is_fragment_root(), cell.value_hash(), cell.kv_hash());
     for field in HashField::ALL {
         let _ = cell.hash(field);
     }
     for side in Side::BOTH {
-        let _ = (cell.has_link(side), cell.link(side).map(|link| link.encoded_len()));
+        let _ = (
+            cell.has_link(side),
+            cell.link(side).map(|link| link.encoded_len()),
+        );
     }
     let _ = (cell.hosted_root_count(), cell.hosted_roots().count());
     let _ = cell.hosted_roots().rev().count();
     let value = cell.value();
-    let _ = (value.is_inline(), value.inline(), value.pointer(), value.pending());
+    let _ = (
+        value.is_inline(),
+        value.inline(),
+        value.pointer(),
+        value.pending(),
+    );
     let _ = (value.place(), value.stored_len());
 }
 
@@ -90,7 +113,10 @@ pub fn check_valid(page: &TreePage<'_>, size: PageSize) {
         assert_eq!(page.cell(slot), Some(cell));
         let address = CellAddress::new(page.id(), slot);
         assert_eq!(page.cell_by_address(address), Some(cell));
-        assert_eq!(ok(TreeCell::decode(cell.as_bytes(), page.version())), Some(cell));
+        assert_eq!(
+            ok(TreeCell::decode(cell.as_bytes(), page.version())),
+            Some(cell)
+        );
         assert!(cell.encoded_len() <= size.max_cell_len());
         assert!(cell.key().len() <= TreeCell::MAX_KEY_LEN);
 
@@ -115,7 +141,10 @@ pub fn check_valid(page: &TreePage<'_>, size: PageSize) {
         }
         for side in Side::BOTH {
             assert_eq!(cell.has_link(side), cell.link(side).is_some());
-            assert_eq!(cell.hash(HashField::Child(side)), cell.link(side).map(|link| link.hash));
+            assert_eq!(
+                cell.hash(HashField::Child(side)),
+                cell.link(side).map(|link| link.hash)
+            );
         }
     }
     assert_eq!(page.has_pending_value(), pending);
@@ -179,13 +208,20 @@ fn value<'a>(ops: &mut &'a [u8]) -> CellValue<'a> {
         0 => CellValue::Inline(take_up_to(ops, usize::from(len >> 2))),
         1 => ValuePointer::new(FileId::MIN, 20 + u64::from(len), 1 + u32::from(len))
             .map_or(CellValue::Inline(&[]), CellValue::OutOfLine),
-        2 => PendingValue::new([(len >> 8) as u8 | 1, 0, 0, 0, 0, 0, 0, 0], 1 + u32::from(len))
-            .map_or(CellValue::Inline(&[]), CellValue::Pending),
+        2 => PendingValue::new(
+            [(len >> 8) as u8 | 1, 0, 0, 0, 0, 0, 0, 0],
+            1 + u32::from(len),
+        )
+        .map_or(CellValue::Inline(&[]), CellValue::Pending),
         _ => CellValue::Inline(&[]),
     }
 }
 
-fn change(page: &mut TreePageMut<'_>, op: u8, ops: &mut &[u8]) -> Result<(), lignin_format::FormatError> {
+fn change(
+    page: &mut TreePageMut<'_>,
+    op: u8,
+    ops: &mut &[u8],
+) -> Result<(), lignin_format::FormatError> {
     let slot = slot(page, ops);
     match op % 14 {
         0 => page.remove(slot),
@@ -233,7 +269,8 @@ fn change(page: &mut TreePageMut<'_>, op: u8, ops: &mut &[u8]) -> Result<(), lig
             let Some(copy) = copy else {
                 return page.remove(slot);
             };
-            let cell = TreeCell::decode(&copy, lignin_format::FormatVersion::V1).expect("a cell of a valid page");
+            let cell = TreeCell::decode(&copy, lignin_format::FormatVersion::V1)
+                .expect("a cell of a valid page");
             if op % 14 == 10 {
                 page.insert_encoded(slot, cell)
             } else {

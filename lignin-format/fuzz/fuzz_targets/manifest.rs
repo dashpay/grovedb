@@ -17,16 +17,25 @@ fuzz_target!(|data: &[u8]| {
     assert_eq!(ok(manifest.encode()).as_deref(), Some(bytes.as_slice()));
 
     let table = manifest.table_checkpoint().map(|table| {
-        ok(TableCheckpoint::new(table.file(), table.valid_len(), table.covers()))
-            .expect("a checkpoint that was read")
+        ok(TableCheckpoint::new(
+            table.file(),
+            table.valid_len(),
+            table.covers(),
+        ))
+        .expect("a checkpoint that was read")
     });
     let files: Vec<LiveFile> = manifest
         .files()
         .iter()
         .rev()
         .map(|file| {
-            ok(LiveFile::new(file.kind(), file.id(), file.state(), file.valid_len()))
-                .expect("a file that was read")
+            ok(LiveFile::new(
+                file.kind(),
+                file.id(),
+                file.state(),
+                file.valid_len(),
+            ))
+            .expect("a file that was read")
         })
         .collect();
     let again = Manifest::new(manifest.page_size(), manifest.last_file_ids(), table, files);

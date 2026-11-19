@@ -11,7 +11,7 @@ use lignin_format::{
     },
     FileId, FormatVersion,
 };
-use lignin_format_fuzz::{ok, page_size, segment_frame_len, sealed_file, Input};
+use lignin_format_fuzz::{ok, page_size, sealed_file, segment_frame_len, Input};
 
 fuzz_target!(|data: &[u8]| {
     let Some(input) = Input::split(data) else {
@@ -94,7 +94,11 @@ fn footer(file: &[u8], version: FormatVersion, max_payload_len: usize) {
     if let Some(at) = file.len().checked_sub(SegmentTrailer::ENCODED_LEN) {
         let trailer = ok(SegmentTrailer::decode(version, &file[at..], valid_len));
         if let Some(trailer) = trailer {
-            let _ = (trailer.index_offset(), trailer.block_count(), trailer.index_len());
+            let _ = (
+                trailer.index_offset(),
+                trailer.block_count(),
+                trailer.index_len(),
+            );
         }
     }
     let Some(index) = ok(SegmentIndex::decode_tail(version, file, valid_len)) else {
@@ -110,9 +114,9 @@ fn footer(file: &[u8], version: FormatVersion, max_payload_len: usize) {
             tag: block.tag,
         })
         .collect();
-    let index_offset = listed
-        .last()
-        .map_or(DATA_START, |block| block.offset + block.tag.block_len() as u64);
+    let index_offset = listed.last().map_or(DATA_START, |block| {
+        block.offset + block.tag.block_len() as u64
+    });
     let mut written = Vec::new();
     segment::write_footer(&entries, index_offset, &mut written).expect("a footer that was read");
     assert_eq!(written, file[index_offset as usize..]);

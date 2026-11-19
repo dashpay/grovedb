@@ -71,7 +71,10 @@ pub fn seal_frames(bytes: &mut [u8], start: usize, len: FrameLen) {
     let mut at = start;
     while let Some(word) = bytes.get(at..at + 4) {
         let body_len = len(u32::from_le_bytes(word.try_into().expect("four bytes")));
-        let Some(end) = (at + 8).checked_add(body_len).filter(|&end| end <= bytes.len()) else {
+        let Some(end) = (at + 8)
+            .checked_add(body_len)
+            .filter(|&end| end <= bytes.len())
+        else {
             return;
         };
         let checksum = Checksum::of(&[&bytes[at..at + 4], &bytes[at + 8..end]]);

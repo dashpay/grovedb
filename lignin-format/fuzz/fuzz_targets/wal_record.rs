@@ -123,7 +123,9 @@ fn change(
     if let Some(tree) = tree {
         let due = value.is_due_in_tree(tree);
         if due {
-            let cell = tree.cell(value.slot().expect("a tree change")).expect("a due cell");
+            let cell = tree
+                .cell(value.slot().expect("a tree change"))
+                .expect("a due cell");
             assert_eq!(cell.value_place(), Some(value.from()));
         }
     }

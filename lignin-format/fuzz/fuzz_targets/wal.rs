@@ -42,7 +42,9 @@ fuzz_target!(|data: &[u8]| {
             LogItem::Change(change) => self::change(bytes, &change),
             LogItem::Mark(mark) => {
                 let mut written = Vec::new();
-                CheckpointMark::new(mark.covers()).write(&mut written).expect("a mark");
+                CheckpointMark::new(mark.covers())
+                    .write(&mut written)
+                    .expect("a mark");
                 assert_eq!(written, bytes);
             }
         }
@@ -57,7 +59,10 @@ fuzz_target!(|data: &[u8]| {
         assert_eq!(tail.valid_len(), file.len() as u64);
     }
     if let Some(next) = ok(start.next(tail.valid_len(), tail.latest())) {
-        assert_eq!(ok(start.check_next(tail.valid_len(), tail.latest(), &next)), Some(()));
+        assert_eq!(
+            ok(start.check_next(tail.valid_len(), tail.latest(), &next)),
+            Some(())
+        );
         let other = LogStart::new(next.base() ^ 1, next.after()).expect("a base");
         assert!(ok(start.check_next(tail.valid_len(), tail.latest(), &other)).is_none());
     }
@@ -156,7 +161,10 @@ fn commit(file: &[u8], start: &LogStart, at: u64, bytes: &[u8], group: &Group<'_
 fn change(bytes: &[u8], change: &Change<'_>) {
     let _ = change.page();
     if let Change::Reclaim(reclaim) = change {
-        let _ = (reclaim.removed().map(|removed| removed.page()), reclaim.freed());
+        let _ = (
+            reclaim.removed().map(|removed| removed.page()),
+            reclaim.freed(),
+        );
         assert_eq!(reclaim.released().count(), reclaim.released().len());
     }
     if let Change::Value(value) = change {

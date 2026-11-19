@@ -45,7 +45,10 @@ fn file(file: &[u8]) {
         assert_eq!(pointer.value_len(), value.value_len());
         assert_eq!(ValuePointer::decode(pointer.encode()), Ok(pointer));
         assert_eq!(pointer.extent_len(V1), value.encoded_len() as u64);
-        assert_eq!(value_log::extent_len(value.value_len(), V1), value.encoded_len() as u64);
+        assert_eq!(
+            value_log::extent_len(value.value_len(), V1),
+            value.encoded_len() as u64
+        );
         assert_eq!(pointer.end(V1), offset + value.encoded_len() as u64);
 
         let extent = &file[offset as usize..];
@@ -77,7 +80,10 @@ fn records(bytes: &[u8]) {
         };
         assert_eq!(len, Some(record.encoded_len()));
         assert_eq!(record.encoded_len(), rest.len() - after.len());
-        assert_eq!(record.encoded_len(), RECORD_HEADER_LEN + record.data().len());
+        assert_eq!(
+            record.encoded_len(),
+            RECORD_HEADER_LEN + record.data().len()
+        );
         assert!(record.data().len() <= record.value_len() as usize);
         let _ = (record.owner(), record.part());
         rest = after;
@@ -92,11 +98,24 @@ fn places(input: &Input<'_>) {
         let pointer = ok(ValuePointer::decode(*place));
         if let Some(pointer) = pointer {
             assert_eq!(pointer.encode(), *place);
-            assert_eq!(ok(ValuePointer::new(pointer.file(), pointer.offset(), pointer.value_len())), Some(pointer));
+            assert_eq!(
+                ok(ValuePointer::new(
+                    pointer.file(),
+                    pointer.offset(),
+                    pointer.value_len()
+                )),
+                Some(pointer)
+            );
             assert!(pointer.value_len() > 0);
             assert!(pointer.offset() <= value_log::MAX_VALUE_OFFSET);
             let _ = pointer.end(V1);
-            let extent = sealed_records(&Input { control: input.control, bytes: rest }, default_frame_len);
+            let extent = sealed_records(
+                &Input {
+                    control: input.control,
+                    bytes: rest,
+                },
+                default_frame_len,
+            );
             let owner = PageId::new(input.control.into()).unwrap_or(PageId::MIN);
             if let Some(value) = ok(pointer.read(&extent, owner, V1)) {
                 assert_eq!(value.owner(), owner);
@@ -113,7 +132,8 @@ fn places(input: &Input<'_>) {
         assert_eq!(decoded.is_pending(), pointer.is_none());
         if let Some(pending) = decoded.pending() {
             assert_eq!(pending.value_len(), decoded.value_len());
-            let again = lignin_format::value_log::PendingValue::new(pending.id(), pending.value_len());
+            let again =
+                lignin_format::value_log::PendingValue::new(pending.id(), pending.value_len());
             assert_eq!(ok(again), Some(pending));
         }
     }

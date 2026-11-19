@@ -31,7 +31,10 @@ fuzz_target!(|data: &[u8]| {
     if let Some(base) = &base {
         check_valid(base, size);
     }
-    let Some(page) = base.map(|base| base.id()).or_else(|| runs.first().map(DeltaRun::page)) else {
+    let Some(page) = base
+        .map(|base| base.id())
+        .or_else(|| runs.first().map(DeltaRun::page))
+    else {
         return;
     };
     let base = base.map(|base| base.as_bytes());
@@ -53,7 +56,9 @@ fn decoded(bytes: &[u8]) -> Option<DeltaRun<'_>> {
     for delta in deltas {
         let _ = delta.slot();
         let mut alone = Vec::new();
-        delta.encode_into(&mut alone).expect("a delta that was read");
+        delta
+            .encode_into(&mut alone)
+            .expect("a delta that was read");
         assert_eq!(alone.len(), delta.encoded_len());
         writer.push(&delta).expect("a delta that was read");
         seen += 1;

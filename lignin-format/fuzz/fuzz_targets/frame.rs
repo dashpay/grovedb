@@ -45,7 +45,9 @@ fn ids(bytes: &[u8]) {
         }
         let checksum = Checksum::decode(window[..4].try_into().unwrap());
         assert_eq!(checksum.encode(), window[..4]);
-        assert!(Checksum::of(&[window]).verify(&[&window[..4], &window[4..]]).is_ok());
+        assert!(Checksum::of(&[window])
+            .verify(&[&window[..4], &window[4..]])
+            .is_ok());
     }
     let mut rest = bytes;
     while let (Some(raw), Some(code)) = (take_u16(&mut rest), take_u16(&mut rest)) {

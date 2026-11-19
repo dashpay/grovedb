@@ -58,13 +58,24 @@ fn probes(bytes: &[u8]) -> Vec<&[u8]> {
 }
 
 fn unchecked(page: FlatPage<'_>, probes: &[&[u8]]) {
-    let _ = (page.kind(), page.id(), page.level(), page.prefix(), page.is_empty());
+    let _ = (
+        page.kind(),
+        page.id(),
+        page.level(),
+        page.prefix(),
+        page.is_empty(),
+    );
     let _ = page.has_pending_value();
     match page {
         FlatPage::Leaf(leaf) => {
             for slot in 0..=leaf.len() {
                 if let Some((key, value)) = leaf.entry(slot) {
-                    let _ = (key.to_vec(), key.is_empty(), value.is_inline(), value.is_pending());
+                    let _ = (
+                        key.to_vec(),
+                        key.is_empty(),
+                        value.is_inline(),
+                        value.is_pending(),
+                    );
                 }
                 let _ = (leaf.key(slot), leaf.value(slot));
             }
@@ -133,13 +144,17 @@ fn checked_leaf(leaf: FlatLeaf<'_>, probes: &[&[u8]]) {
             pending |= place.is_pending();
             assert_eq!(value.is_pending(), place.is_pending());
             if let Some(pointer) = place.pointer() {
-                let found = pointer.find_in_flat_leaf(&leaf).expect("the pointer is there");
+                let found = pointer
+                    .find_in_flat_leaf(&leaf)
+                    .expect("the pointer is there");
                 assert!(found <= slot);
             }
         } else {
             assert!(!value.is_pending());
         }
-        builder.push_key(*key, *value).expect("an entry that was read");
+        builder
+            .push_key(*key, *value)
+            .expect("an entry that was read");
         assert_eq!(
             FlatLeaf::entry_len(key.suffix().len(), value.bytes().len()),
             FlatLeaf::ENTRY_OVERHEAD + key.suffix().len() + value.bytes().len()
@@ -155,7 +170,9 @@ fn checked_leaf(leaf: FlatLeaf<'_>, probes: &[&[u8]]) {
             Ok(slot) => assert!(entries[slot].0 == **probe),
             Err(slot) => {
                 assert!(slot == 0 || entries[slot - 1].0.cmp_bytes(probe) == Ordering::Less);
-                assert!(slot == entries.len() || entries[slot].0.cmp_bytes(probe) == Ordering::Greater);
+                assert!(
+                    slot == entries.len() || entries[slot].0.cmp_bytes(probe) == Ordering::Greater
+                );
                 assert!(leaf.get(probe).is_none());
             }
         }
@@ -186,7 +203,9 @@ fn checked_branch(branch: FlatBranch<'_>, probes: &[&[u8]]) {
         if let Some(before) = separators.last() {
             assert!(before < &whole);
         }
-        builder.push_key(separator, child).expect("an entry that was read");
+        builder
+            .push_key(separator, child)
+            .expect("an entry that was read");
         assert_eq!(
             FlatBranch::entry_len(separator.suffix().len()),
             FlatBranch::ENTRY_OVERHEAD + separator.suffix().len()
