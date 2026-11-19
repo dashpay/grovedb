@@ -12,7 +12,8 @@
 //!   [`ValueSource`].
 //! - [`TreeOwners`] answers the value log's cleaner for tree cells, and
 //!   regroups the values of a page in the order a scan reads them
-//!   ([`scan_order`], [`Locality`], [`RegroupPolicy`]).
+//!   ([`scan_order`], [`Locality`], [`RegroupPolicy`]). [`Regrouping`] is
+//!   how write-back calls it.
 //!
 //! The bytes are `lignin-format`'s: `docs/lignindb/value-log-format.md` for
 //! a value's record, its pointer and the pending form, `tree-page.md` TP13
@@ -258,6 +259,17 @@
 //!   and every handle. Of a cell only the 12 bytes of its value's place
 //!   change, and no cell moves.
 //!
+//! **How the flusher reaches it.** `lignin-store` knows no tree, so
+//! write-back defines what it needs as a trait,
+//! [`PageValues`](lignin_store::flush::PageValues), and [`Regrouping`] is
+//! this module's implementation of it: [`scan_order`] for the order in
+//! which write-back appends the pending values of a page, so that a new
+//! page's values are one run from the start, and the two halves of the
+//! regrouping, with a [`RegroupPolicy`], for a page that is about to get a
+//! new base image. Whoever opens a store hands it to write-back
+//! (`Stores::page_values`), with a [`StepLog`](crate::flat::StepLog) that
+//! appends through write-back.
+//!
 //! # What the callers do
 //!
 //! - **A write scope** hands its [`TreeValues`] to every
@@ -330,6 +342,7 @@ mod order;
 mod owners;
 mod policy;
 mod read;
+mod regroup;
 mod write;
 
 #[cfg(test)]
@@ -340,4 +353,5 @@ pub use order::{scan_order, Locality, RegroupPolicy};
 pub use owners::{Grouped, Regrouped, TreeOwners};
 pub use policy::InlinePolicy;
 pub use read::{read_value, ValueBuf, ValueSource};
+pub use regroup::Regrouping;
 pub use write::{ScopeReader, TreeValues};
