@@ -443,6 +443,60 @@ fn elements_give_the_same_tree_on_a_store_that_keeps_only_what_changed() {
     }
 }
 
+/// A conversion replaces the feature type of every node in place, and the
+/// feature type is in the value part: no node may be reported as a change of
+/// its hash or structure alone. The in-memory store keeps the parts a kind
+/// does not name and compares the result with the node on every write.
+#[test]
+fn a_conversion_to_a_big_sum_tree_writes_the_value_part_of_every_node() {
+    let grove_version = GroveVersion::latest();
+    let key = |n: u64| n.to_be_bytes().to_vec();
+    for (narrow, wide) in [
+        (TreeType::SumTree, TreeType::BigSumTree),
+        (TreeType::CountSumTree, TreeType::CountBigSumTree),
+    ] {
+        let store = MemNodeStore::new();
+        let rows: Vec<_> = (1..=40).map(|n| put(narrow, n, n)).collect();
+        apply(&mut open(&store, narrow), &rows);
+        store.take_log();
+
+        let converted = open(&store, narrow)
+            .convert_to_big_sum_tree(
+                &|_, _, _| Ok(()),
+                &|_, _| Ok(0),
+                NO_VALUE_DEFINED_COST.as_ref(),
+                grove_version,
+            )
+            .unwrap()
+            .expect("the tree converts");
+        assert_eq!(converted.tree_type, wide);
+        let converted_root = converted.root_hash().unwrap();
+        drop(converted);
+
+        let log: BTreeMap<Vec<u8>, Option<NodeChange>> = store.take_log().into_iter().collect();
+        assert_eq!(
+            log,
+            (1..=40)
+                .map(|n| (key(n), Some(NodeChange::ValueWritten)))
+                .collect(),
+            "{narrow}"
+        );
+
+        let reopened = open(&store, wide);
+        assert_eq!(reopened.root_hash().unwrap(), converted_root, "{narrow}");
+        for (_, record) in records(&store) {
+            use ed::Decode;
+
+            let node = crate::tree::TreeNodeInner::decode(record.as_slice()).unwrap();
+            assert_eq!(
+                node.kv.feature_type().node_type(),
+                wide.inner_node_type(),
+                "{narrow}"
+            );
+        }
+    }
+}
+
 #[test]
 fn a_commit_names_what_changed_in_each_node() {
     let tree_type = TreeType::NormalTree;

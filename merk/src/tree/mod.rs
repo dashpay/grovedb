@@ -110,6 +110,9 @@ pub struct NodeMarks {
     /// A walk detached this node from its parent to lend it to a closure,
     /// and the node has not been attached since.
     pub(crate) on_loan: bool,
+    /// The feature type was replaced in place since the node was loaded or
+    /// last committed, with no value put on the node.
+    pub(crate) feature_type_changed: bool,
 }
 
 #[cfg(feature = "minimal")]
@@ -640,6 +643,7 @@ impl TreeNode {
     #[inline]
     pub(crate) fn set_feature_type(&mut self, feature_type: TreeFeatureType) {
         self.inner.kv.feature_type = feature_type;
+        self.inner.marks.feature_type_changed = true;
     }
 
     /// Returns the root node's key as a slice.
@@ -1653,7 +1657,8 @@ impl TreeNode {
     /// next commit's account, so a commit asks once the write cannot fail.
     pub(crate) fn take_node_change(&mut self, value_put: bool) -> NodeChange {
         let children_changed = std::mem::take(&mut self.inner.marks.children_changed);
-        if self.old_value.is_none() || value_put {
+        let feature_type_changed = std::mem::take(&mut self.inner.marks.feature_type_changed);
+        if self.old_value.is_none() || value_put || feature_type_changed {
             return NodeChange::ValueWritten;
         }
         debug_assert_eq!(self.old_value.as_deref(), Some(self.value_as_slice()));
@@ -2472,6 +2477,10 @@ mod test {
         loaded.inner.marks.children_changed = true;
         assert_eq!(loaded.take_node_change(true), NodeChange::ValueWritten);
         assert!(!loaded.inner.marks.children_changed);
+
+        loaded.set_feature_type(crate::TreeFeatureType::BigSummedMerkNode(1));
+        assert_eq!(loaded.take_node_change(false), NodeChange::ValueWritten);
+        assert_eq!(loaded.take_node_change(false), NodeChange::HashOnly);
     }
 
     #[test]
