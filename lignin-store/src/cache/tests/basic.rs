@@ -654,8 +654,21 @@ fn a_pool_has_at_most_a_lane_for_every_two_frames_and_no_more_than_it_may() {
 
 #[test]
 fn a_frame_takes_less_than_512_bytes_beside_its_page() {
-    for size in [8_192, 16_384, 32_768, 65_536] {
-        for frames in (1..=40).chain([63, 64, 65, 255, 256, 257, 1_000, 4_097]) {
+    // Miri is given a few small pools: it takes long over a large one.
+    let sizes: &[usize] = if cfg!(miri) {
+        &[8_192]
+    } else {
+        &[8_192, 16_384, 32_768, 65_536]
+    };
+    let counts: Vec<usize> = if cfg!(miri) {
+        vec![1, 2, 3, 9]
+    } else {
+        (1..=40)
+            .chain([63, 64, 65, 255, 256, 257, 1_000, 4_097])
+            .collect()
+    };
+    for &size in sizes {
+        for &frames in &counts {
             let config = PoolConfig {
                 page_size: PageSize::new(size).expect("a page size"),
                 capacity: frames * (size + 512),
