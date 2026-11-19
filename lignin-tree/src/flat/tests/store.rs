@@ -969,6 +969,15 @@ fn a_writer_copies_a_page_that_the_pool_does_not_hold() {
     let base = Committed::new(loader, &db.values, &Guard(0), first);
     let mut writer = Private::new(base, &pool, OwnerId::new(1), &db.ids);
     assert_eq!(pool.stats().misses, 0);
+    // The writer takes a page that nothing has read into the pool: the
+    // pool says so, the page is loaded, and the copy is made of it.
+    let root = tree.root();
+    assert_eq!(pool.census().published, 0, "no page is in the pool");
+    let taken = writer.take(root).expect("loaded and copied");
+    let committed = db.reader_at(first).page(root).expect("the root");
+    assert_eq!(taken, committed[..taken.len()]);
+    assert_eq!(pool.page_step(root).private_copies(), 1);
+    assert_eq!(writer.written().collect::<Vec<_>>(), [root]);
     for n in (0..60).step_by(2) {
         assert!(tree.delete(&mut writer, &key(n)).expect("a delete"));
     }
