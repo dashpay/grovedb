@@ -393,3 +393,85 @@ fn the_children_of_a_node_that_is_found_by_its_key_are_read_at_the_cursors_versi
     world.check(&tx);
     world.check_committed();
 }
+
+/// What a walk asks of the buffer pool, for PERF-01 and PERF-03: a step, a
+/// step with the node read, and a step with the node and the keys of its
+/// children. Each request is one lookup in the pool, and a load only where
+/// the page is not there.
+///
+/// The keys of a node's children are read from the children's cells: at
+/// most two requests more for a node, and none for a leaf.
+#[test]
+fn a_node_with_the_keys_of_its_children_asks_the_pool_for_at_most_two_pages_more() {
+    let (db, versions) = Db::new(256);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(5);
+    let subtree = model::subtree(1);
+    let nodes = 2_000;
+    world.edit_outside(
+        1,
+        |items| {
+            for index in 0..nodes {
+                items.insert(key(index), value(&mut rng, 80));
+            }
+        },
+        &[],
+    );
+    let tx = world.begin();
+    let view = (tx.model.borrow()).view(&world.model.records, Unit::data(subtree));
+    let (mut children_of, mut leaves) = (0, 0);
+    for node in view.values() {
+        let Val::Node(node) = node else {
+            unreachable!("a Merk");
+        };
+        let children = usize::from(node.left.is_some()) + usize::from(node.right.is_some());
+        children_of += children;
+        leaves += usize::from(children == 0);
+    }
+    assert_eq!(children_of, nodes - 1, "every node but the root is a child");
+
+    let requests = || {
+        let stats = db.pool.stats();
+        stats.hits + stats.misses
+    };
+    #[derive(Clone, Copy)]
+    enum Reads {
+        Keys,
+        Nodes,
+        Children,
+    }
+    let mut cursor = tx.txn.merk_cursor(subtree).expect("a cursor");
+    let mut walk = |reads: Reads| {
+        let before = requests();
+        let mut children = ChildKeys::new();
+        let mut seen = 0;
+        cursor.seek_to_first().expect("a seek");
+        while cursor.valid() {
+            match reads {
+                Reads::Keys => {}
+                Reads::Nodes => cursor.node(|node| assert!(node.is_some())).expect("a read"),
+                Reads::Children => cursor
+                    .node_with_children(&mut children, |node| assert!(node.is_some()))
+                    .expect("a read"),
+            }
+            seen += 1;
+            cursor.next().expect("a step");
+        }
+        assert_eq!(seen, nodes);
+        (requests() - before) as usize
+    };
+    let (keys, with_nodes, with_children) =
+        (walk(Reads::Keys), walk(Reads::Nodes), walk(Reads::Children));
+    println!(
+        "pool requests over {nodes} nodes ({leaves} leaves): {keys} for the steps, \
+         {} more with each node read, {} more with the keys of its children",
+        with_nodes - keys,
+        with_children - with_nodes,
+    );
+    // TREE-06: a step asks for one to three pages.
+    assert!(keys >= nodes && keys <= 3 * nodes + 64, "{keys}");
+    // The node under the cursor is one request.
+    assert_eq!(with_nodes - keys, nodes);
+    // And one for each child there is: two at most for a node.
+    assert_eq!(with_children - with_nodes, children_of);
+}
