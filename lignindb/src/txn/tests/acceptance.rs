@@ -25,7 +25,14 @@ fn filled(world: &mut World<'_>, rng: &mut Rng) {
     }
     records.push(put(meta, b"m", b"meta"));
     let merks = Vec::new();
-    let outcome = world.write_outside(&OwnedBatch { merks, records }, &[]);
+    let outcome = world.write_outside(
+        &OwnedBatch {
+            merks,
+            records,
+            ..OwnedBatch::default()
+        },
+        &[],
+    );
     assert!(matches!(outcome, Outcome::Committed(_)));
     for name in [1, 2] {
         world.edit_outside(
@@ -230,12 +237,7 @@ fn a_read_inside_the_transaction_sees_a_write_committed_outside_unless_it_wrote_
         found.then_some(out)
     }
     fn node(tx: &Tx<'_>, name: u8, key: &[u8]) -> Option<Vec<u8>> {
-        let read = |view: Option<NodeView<'_>>| {
-            view.map(|view| match view.value() {
-                NodeValue::Bytes(bytes) => bytes.to_vec(),
-                other => panic!("the value is {other:?}"),
-            })
-        };
+        let read = |view: Option<NodeView<'_>>| view.map(|view| value_of(&view));
         (tx.txn.node(model::subtree(name), key, read)).expect("a read")
     }
 
@@ -256,6 +258,7 @@ fn a_read_inside_the_transaction_sees_a_write_committed_outside_unless_it_wrote_
             put(aux, &key(4), b"outside"),
             put(aux, b"new", b"outside"),
         ],
+        ..OwnedBatch::default()
     };
     assert!(matches!(
         world.write_outside(&outside, &[&tx]),

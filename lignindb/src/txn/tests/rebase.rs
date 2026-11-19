@@ -17,8 +17,8 @@ fn aux() -> Unit {
 
 fn records(records: Vec<Write>) -> OwnedBatch {
     OwnedBatch {
-        merks: Vec::new(),
         records,
+        ..OwnedBatch::default()
     }
 }
 
@@ -309,6 +309,7 @@ fn an_overlapped_transaction_serves_its_records_as_they_are() {
         &OwnedBatch {
             merks,
             records: roots,
+            ..OwnedBatch::default()
         },
     ))
     .expect("the root Merk");
@@ -324,7 +325,15 @@ fn an_overlapped_transaction_serves_its_records_as_they_are() {
             root_edit(world, tx, a, b),
         ];
         let records = merks.iter().filter_map(World::root_record).collect();
-        (world.apply(tx, &OwnedBatch { merks, records })).expect("an insert");
+        (world.apply(
+            tx,
+            &OwnedBatch {
+                merks,
+                records,
+                ..OwnedBatch::default()
+            },
+        ))
+        .expect("an insert");
     }
     // The element of A in the root Merk as the transaction reads it, with
     // the hashes of its children: every write of the transaction rewrites
@@ -425,10 +434,7 @@ fn a_kept_value_is_the_transactions_own_after_a_commit_outside_overwrote_it() {
         },
         &[&tx],
     );
-    let value = |view: Option<NodeView<'_>>| match view.expect("a node").value() {
-        NodeValue::Bytes(bytes) => bytes.to_vec(),
-        other => panic!("{other:?}"),
-    };
+    let value = |view: Option<NodeView<'_>>| value_of(&view.expect("a node"));
     for at in &kept {
         let index = at[1];
         let shown = (tx.txn.node(model::subtree(1), at, value)).expect("a read");
@@ -473,7 +479,15 @@ fn a_root_that_two_transactions_made_in_an_empty_merk_is_refused() {
             items.insert(name.to_vec(), b"a first node".to_vec());
         })];
         let records = Vec::new();
-        (world.apply(tx, &OwnedBatch { merks, records })).expect("a first node");
+        (world.apply(
+            tx,
+            &OwnedBatch {
+                merks,
+                records,
+                ..OwnedBatch::default()
+            },
+        ))
+        .expect("a first node");
     }
     let (first, second) = (world.begin(), world.begin());
     make(&world, &first, b"one");
@@ -516,7 +530,15 @@ fn a_transaction_is_laid_out_again_when_the_root_it_could_not_take_is_gone() {
             items.insert(name.to_vec(), b"a first node".to_vec());
         })];
         let records = Vec::new();
-        (world.apply(tx, &OwnedBatch { merks, records })).expect("a first node");
+        (world.apply(
+            tx,
+            &OwnedBatch {
+                merks,
+                records,
+                ..OwnedBatch::default()
+            },
+        ))
+        .expect("a first node");
     }
     let (first, second) = (world.begin(), world.begin());
     make(&world, &first, b"one");
@@ -574,6 +596,7 @@ fn a_delete_in_a_merk_with_no_node_does_not_take_its_root() {
         let batch = OwnedBatch {
             merks: vec![gone],
             records: Vec::new(),
+            ..OwnedBatch::default()
         };
         world.apply(&tx, &batch).expect("a delete of no node");
         world.check(&tx);

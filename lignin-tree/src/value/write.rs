@@ -24,6 +24,7 @@ use super::{
 };
 use crate::{
     fragment::{Pages, ValueWrite, Values},
+    hash,
     node::{NodeError, NodeRef},
 };
 
@@ -176,11 +177,50 @@ impl TreeValues {
         buf: &'a mut ValueBuf,
     ) -> Result<&'a [u8], ValueError> {
         let page = node.address().page();
-        let pending = match node.value() {
-            CellValue::Inline(bytes) => return Ok(bytes),
-            CellValue::OutOfLine(pointer) => return source.placed(pointer, page, buf),
-            CellValue::Pending(pending) => pending,
-        };
+        match node.value() {
+            CellValue::Inline(bytes) => Ok(bytes),
+            CellValue::OutOfLine(pointer) => source.placed(pointer, page, buf),
+            CellValue::Pending(pending) => self.read_pending(source, pending, page, buf),
+        }
+    }
+
+    /// The value at `place`, which a cell of `page` holds, in a page as the
+    /// scope has it: the read of [`Self::read`] for a caller that has the
+    /// place of a value and not its node, as an evaluation of stale hashes
+    /// has between two page steps ([`hash::ValueReader`]).
+    pub fn read_at<'a>(
+        &'a self,
+        source: &ValueSource<'_>,
+        place: ValuePlace,
+        page: PageId,
+        buf: &'a mut ValueBuf,
+    ) -> Result<&'a [u8], ValueError> {
+        match place {
+            ValuePlace::Placed(pointer) => source.placed(pointer, page, buf),
+            ValuePlace::Pending(pending) => self.read_pending(source, pending, page, buf),
+        }
+    }
+
+    /// The values of the scope as an evaluation of stale hashes reads
+    /// them, with `source` for those that are not in the scope's memory.
+    pub fn reader<'a, 's>(&'a self, source: &'a ValueSource<'s>) -> ScopeReader<'a, 's> {
+        ScopeReader {
+            values: self,
+            source,
+            buf: ValueBuf::new(),
+        }
+    }
+
+    /// The bytes of the pending value `pending`, which a cell of `page`
+    /// holds: the scope's own, or one that an earlier commit left with the
+    /// frame of the committed page.
+    fn read_pending<'a>(
+        &'a self,
+        source: &ValueSource<'_>,
+        pending: PendingValue,
+        page: PageId,
+        buf: &'a mut ValueBuf,
+    ) -> Result<&'a [u8], ValueError> {
         match own_value(self.pages.get(&page), page, pending)? {
             Some(own) => own.read(source, buf),
             None => source.pending(page, pending, buf),
@@ -396,6 +436,30 @@ fn own_values<'h>(
         return Err(ValueError::NoCell { page });
     }
     Ok(own)
+}
+
+/// The values of one write scope, read by place: what
+/// [`Hashes::evaluate`](crate::hash::Hashes::evaluate) and the calls beside
+/// it are given for the values that are not in their cells
+/// ([`TreeValues::reader`]).
+#[derive(Debug)]
+pub struct ScopeReader<'a, 's> {
+    values: &'a TreeValues,
+    source: &'a ValueSource<'s>,
+    buf: ValueBuf,
+}
+
+impl hash::ValueReader for ScopeReader<'_, '_> {
+    fn read(
+        &mut self,
+        place: ValuePlace,
+        page: PageId,
+        into: &mut Vec<u8>,
+    ) -> Result<(), hash::Refusal> {
+        let bytes = (self.values).read_at(self.source, place, page, &mut self.buf)?;
+        into.extend_from_slice(bytes);
+        Ok(())
+    }
 }
 
 impl Values for TreeValues {

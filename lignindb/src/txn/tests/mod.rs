@@ -4,9 +4,12 @@ mod store;
 mod acceptance;
 mod errors;
 mod handles;
+mod hashes;
 mod random;
 mod reads;
+
 mod rebase;
+mod subtrees;
 mod threads;
 mod trees;
 
@@ -18,7 +21,7 @@ use std::{
 use lignin_format::CommitVersion;
 
 use self::{
-    model::{Committed, OwnedBatch, OwnedMerk, TxnModel, Val, Write},
+    model::{Committed, OwnedBatch, OwnedMerk, OwnedSubtree, TxnModel, Val, Write},
     store::{version, Db, Outcome},
 };
 use super::*;
@@ -30,6 +33,9 @@ struct World<'s> {
     versions: &'s Versions,
     path: WritePath<'s>,
     model: Committed,
+    /// Every subtree that was entered with a host, with the subtree of
+    /// its host: what the model knows of which subtree is below which.
+    hosts: RefCell<Vec<(Subtree, Subtree)>>,
 }
 
 /// A write transaction with its model.
@@ -56,6 +62,7 @@ impl<'s> World<'s> {
             versions,
             path: db.path(versions),
             model,
+            hosts: RefCell::default(),
         }
     }
 
@@ -105,9 +112,43 @@ impl<'s> World<'s> {
         let applied = batch.with(|batch| scope.apply(batch));
         scope.merge();
         let applied = applied?;
-        let writes = batch.writes().into_iter();
-        (tx.model.borrow_mut().writes).extend(writes.map(|write| (write, first_write, false)));
+        let mut model = tx.model.borrow_mut();
+        for mut write in batch.writes() {
+            if let Write::Leave(left) = &mut write {
+                // A drop names one subtree: what is below it goes too, and
+                // what the transaction had written there is covered.
+                left.below = self.below(left.subtree);
+                let written = |subtree: &Subtree| {
+                    let units = Column::ALL.map(|column| Unit::new(column, *subtree));
+                    (model.writes.iter())
+                        .any(|(write, ..)| units.iter().any(|unit| write.touches(*unit)))
+                };
+                left.cut = left.below.iter().copied().filter(written).collect();
+            }
+            model.writes.push((write, first_write, false));
+        }
+        for subtree in &batch.subtrees {
+            if let OwnedSubtree::Enter(subtree, Some((host, ..))) = subtree {
+                self.hosts.borrow_mut().push((*subtree, *host));
+            }
+        }
         Ok(applied)
+    }
+
+    /// Every subtree that was entered below `subtree`, at any depth.
+    fn below(&self, subtree: Subtree) -> Vec<Subtree> {
+        let hosts = self.hosts.borrow();
+        let mut below = vec![subtree];
+        let mut at = 0;
+        while at < below.len() {
+            for (child, host) in hosts.iter() {
+                if *host == below[at] && !below.contains(child) {
+                    below.push(*child);
+                }
+            }
+            at += 1;
+        }
+        below.split_off(1)
     }
 
     /// Applies one change of one Merk.
@@ -119,15 +160,29 @@ impl<'s> World<'s> {
     ) -> Applied {
         let merks = vec![self.merk(tx, name, edit)];
         let records = merks.iter().filter_map(Self::root_record).collect();
-        self.apply(tx, &OwnedBatch { merks, records })
-            .expect("the change is applied")
+        self.apply(
+            tx,
+            &OwnedBatch {
+                merks,
+                records,
+                ..OwnedBatch::default()
+            },
+        )
+        .expect("the change is applied")
     }
 
     /// Applies writes of flat records.
     fn write(&self, tx: &Tx<'s>, records: Vec<Write>) {
         let merks = Vec::new();
-        self.apply(tx, &OwnedBatch { merks, records })
-            .expect("the records are written");
+        self.apply(
+            tx,
+            &OwnedBatch {
+                merks,
+                records,
+                ..OwnedBatch::default()
+            },
+        )
+        .expect("the records are written");
     }
 
     /// Commits `tx` in the store and in the model, and tells the models of
@@ -349,6 +404,12 @@ fn scan_merk(
         .expect("a step");
     }
     keys
+}
+
+/// The bytes of a node's value, wherever the value is.
+fn value_of(view: &NodeView<'_>) -> Vec<u8> {
+    let mut buf = lignin_tree::value::ValueBuf::new();
+    view.value(&mut buf).expect("the value is read").to_vec()
 }
 
 fn flat(value: &[u8]) -> Val {

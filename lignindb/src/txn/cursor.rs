@@ -15,6 +15,7 @@ use super::{
     error::TxnError,
     frames::stored_key,
     key::{Subtree, Unit},
+    opened::Opened,
     pages::find,
     path::{FlatReader, Idle, WritePath, IDLE},
     txn::{show_committed, WriteTxn},
@@ -189,13 +190,15 @@ impl<'s> MerkSide<'s> {
         if self.cursor.key() == Some(key) {
             let reader = self.reader(guard);
             let node = self.cursor.node(&reader, &mut self.buffers)?;
-            let view = node.as_ref().map(|node| NodeView::cell(node.node(), None));
-            return Ok(read(view));
+            let store = self.path.values;
+            return Ok(read(
+                node.as_ref().map(|node| NodeView::committed(node, store)),
+            ));
         }
         // The cursor stands on a key that the transaction wrote and has
         // taken back since: the version's node under it, if it has one, is
         // found by the key.
-        let mut pages = (self.path).committed_pages(self.at, self.lease, &mut self.buffers);
+        let mut pages = (self.path).committed_pages(guard, self.at, self.lease, &mut self.buffers);
         let found = find(&mut pages, self.cursor.root(), key)?;
         show_committed(&mut pages, found, read)
     }
@@ -253,6 +256,9 @@ pub type MerkCursor<'t, 's> = Cursor<'t, 's, MerkSide<'s>>;
 enum Way {
     Forward,
     Back,
+    /// The committed side stands nowhere that follows from the cursor's
+    /// key: it was not moved while it was not read.
+    Lost,
 }
 
 /// A cursor through a write transaction over the records of one unit, in
@@ -283,6 +289,13 @@ pub struct Cursor<'t, 's, C = FlatSide<'s>> {
     unit: Unit,
     pin: VersionPin<'s>,
     side: C,
+    /// The subtree directory of the cursor's version, through which the
+    /// cursor opens its subtree.
+    opened: Option<Opened>,
+    /// Whether the committed side is read, and the count of the
+    /// transaction's drops and clears it was found at
+    /// ([`WriteSet::left`]): the cursor asks again when that moved.
+    seen: Option<(u64, bool)>,
     key: Option<Vec<u8>>,
     way: Way,
 }
@@ -315,7 +328,10 @@ impl<'t, 's> Cursor<'t, 's> {
         let Some(key) = &self.key else {
             return Ok(false);
         };
+        let key = key.clone();
+        let key = &key;
         let guard = self.txn.path().versions().guard();
+        let reads = self.reads(&guard)?;
         let unit = self.unit;
         let own = self
             .txn
@@ -330,7 +346,8 @@ impl<'t, 's> Cursor<'t, 's> {
             })??;
         match own {
             Some(found) => Ok(found),
-            None => self.side.value(&guard, key, out),
+            None if reads => self.side.value(&guard, key, out),
+            None => Ok(false),
         }
     }
 }
@@ -347,9 +364,9 @@ impl<'t, 's> MerkCursor<'t, 's> {
         let guard = path.versions().guard();
         let pin = path.versions().pin();
         let at = pin.version();
-        let committed = path.committed(&guard, at);
-        let root =
-            (path.directory.committed_root(&committed, &subtree)).map_err(TxnError::Directory)?;
+        let mut opened = None;
+        let directory = Opened::at(&mut opened, &path, &guard, at)?;
+        let root = directory.root(&path, &guard, &subtree)?.flatten();
         let lease = Lease::take();
         let reader = NodeReader::new(path.loader, &guard, lease, at);
         let side = MerkSide {
@@ -359,7 +376,9 @@ impl<'t, 's> MerkCursor<'t, 's> {
             cursor: tree::Cursor::open(&reader, root),
             buffers: LoadBuffers::new(),
         };
-        Ok(Self::over(txn, scoped, Unit::data(subtree), pin, side))
+        let mut cursor = Self::over(txn, scoped, Unit::data(subtree), pin, side);
+        cursor.opened = opened;
+        Ok(cursor)
     }
 
     /// Shows `read` the node under the key the cursor stands on: the
@@ -373,13 +392,17 @@ impl<'t, 's> MerkCursor<'t, 's> {
         let Some(key) = &self.key else {
             return Ok(read(None));
         };
+        let key = key.clone();
         let subtree = self.unit.subtree;
-        let read = match (self.txn).own_node_in(self.scoped, subtree, key, read)? {
+        let read = match (self.txn).own_node_in(self.scoped, subtree, &key, read)? {
             Ok(shown) => return Ok(shown),
             Err(read) => read,
         };
         let guard = self.txn.path().versions().guard();
-        self.side.node(&guard, key, read)
+        match self.reads(&guard)? {
+            true => self.side.node(&guard, &key, read),
+            false => Ok(read(None)),
+        }
     }
 }
 
@@ -399,9 +422,41 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
             unit,
             pin,
             side,
+            opened: None,
+            seen: None,
             key: None,
             way: Way::Forward,
         }
+    }
+
+    /// Whether the committed side is read: the cursor's version has the
+    /// subtree entered, and the transaction has not dropped or cleared a
+    /// Merk it is below (`transactions.md` CV9). No record is read under a
+    /// subtree without its entry.
+    ///
+    /// The subtree is opened once, and asked for again whenever the
+    /// transaction has dropped or cleared a subtree since, or has taken
+    /// such a write back.
+    fn reads(&mut self, guard: &OperationGuard<'s>) -> Result<bool, TxnError> {
+        let (path, at, subtree) = (*self.txn.path(), self.pin.version(), self.unit.subtree);
+        let (opened, seen) = (&mut self.opened, self.seen);
+        let (left, reads) = self.txn.with_set(self.scoped, |set| {
+            if let Some((_, reads)) = seen.filter(|(left, _)| *left == set.left()) {
+                return Ok((set.left(), reads));
+            }
+            let opened = Opened::at(opened, &path, guard, at)?;
+            let reads = opened.seen(&path, guard, set, &subtree)?.is_some();
+            Ok::<_, TxnError>((set.left(), reads))
+        })??;
+        if seen != Some((left, reads)) {
+            // The transaction dropped or cleared a subtree, or took such a
+            // write back: the committed side may have come into the
+            // cursor's view or left it, and is placed again by the next
+            // move.
+            self.way = Way::Lost;
+        }
+        self.seen = Some((left, reads));
+        Ok(reads)
     }
 
     /// The committed version the cursor reads beside the transaction's
@@ -423,28 +478,36 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
     /// Goes to the first key at or after `key`.
     pub fn seek(&mut self, key: &[u8]) -> Result<(), TxnError> {
         let guard = self.txn.path().versions().guard();
-        self.side.seek(&guard, key)?;
+        if self.reads(&guard)? {
+            self.side.seek(&guard, key)?;
+        }
         self.settle(&guard, Bound::Included(key.to_vec()), Way::Forward)
     }
 
     /// Goes to the last key at or before `key`.
     pub fn seek_for_prev(&mut self, key: &[u8]) -> Result<(), TxnError> {
         let guard = self.txn.path().versions().guard();
-        self.side.seek_for_prev(&guard, key)?;
+        if self.reads(&guard)? {
+            self.side.seek_for_prev(&guard, key)?;
+        }
         self.settle(&guard, Bound::Included(key.to_vec()), Way::Back)
     }
 
     /// Goes to the first key.
     pub fn seek_to_first(&mut self) -> Result<(), TxnError> {
         let guard = self.txn.path().versions().guard();
-        self.side.seek_to_first(&guard)?;
+        if self.reads(&guard)? {
+            self.side.seek_to_first(&guard)?;
+        }
         self.settle(&guard, Bound::Unbounded, Way::Forward)
     }
 
     /// Goes to the last key.
     pub fn seek_to_last(&mut self) -> Result<(), TxnError> {
         let guard = self.txn.path().versions().guard();
-        self.side.seek_to_last(&guard)?;
+        if self.reads(&guard)? {
+            self.side.seek_to_last(&guard)?;
+        }
         self.settle(&guard, Bound::Unbounded, Way::Back)
     }
 
@@ -457,11 +520,13 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
         };
         let guard = self.txn.path().versions().guard();
         // The committed side goes to the first committed key after `key`.
-        if self.way != Way::Forward {
-            self.side.seek(&guard, &key)?;
-        }
-        if self.side.key() == Some(&key[..]) {
-            self.side.next(&guard)?;
+        if self.reads(&guard)? {
+            if self.way != Way::Forward {
+                self.side.seek(&guard, &key)?;
+            }
+            if self.side.key() == Some(&key[..]) {
+                self.side.next(&guard)?;
+            }
         }
         self.settle(&guard, Bound::Excluded(key), Way::Forward)
     }
@@ -473,11 +538,13 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
             return Ok(());
         };
         let guard = self.txn.path().versions().guard();
-        if self.way != Way::Back {
-            self.side.seek_for_prev(&guard, &key)?;
-        }
-        if self.side.key() == Some(&key[..]) {
-            self.side.prev(&guard)?;
+        if self.reads(&guard)? {
+            if self.way != Way::Back {
+                self.side.seek_for_prev(&guard, &key)?;
+            }
+            if self.side.key() == Some(&key[..]) {
+                self.side.prev(&guard)?;
+            }
         }
         self.settle(&guard, Bound::Excluded(key), Way::Back)
     }
@@ -491,12 +558,17 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
         mut bound: Bound<Vec<u8>>,
         way: Way,
     ) -> Result<(), TxnError> {
-        self.way = way;
+        // Where the committed side is not read, it stands nowhere.
+        let reads = self.seen.is_some_and(|(_, reads)| reads);
+        self.way = match reads {
+            true => way,
+            false => Way::Lost,
+        };
         self.key = None;
         let back = way == Way::Back;
         let unit = self.unit;
         loop {
-            let committed = self.side.key();
+            let committed = self.side.key().filter(|_| reads);
             // The next key the transaction wrote, and whether it is a
             // record now.
             let own = self.txn.with_set(self.scoped, |set| {
@@ -520,10 +592,10 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
             }
             // The key has no record in the transaction's view: it goes on
             // behind it.
-            if self.side.key() == Some(&key[..]) {
-                match way {
-                    Way::Forward => self.side.next(guard)?,
-                    Way::Back => self.side.prev(guard)?,
+            if committed == Some(&key[..]) {
+                match back {
+                    false => self.side.next(guard)?,
+                    true => self.side.prev(guard)?,
                 }
             }
             bound = Bound::Excluded(key);

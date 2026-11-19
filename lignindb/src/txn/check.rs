@@ -7,7 +7,7 @@ use lignin_format::value_log::MAX_VALUE_LEN;
 use super::{
     error::BatchError,
     key::{Column, Unit},
-    write::{Batch, Hosted, RecordWrite, RootPut, ValuePut},
+    write::{Batch, Hosted, RecordWrite, RootPut, SubtreeWrite, ValuePut},
 };
 
 /// The longest key of a Merk node: a cell has one byte for its length
@@ -17,13 +17,43 @@ const MAX_NODE_KEY: usize = u8::MAX as usize;
 /// The most Merks a node hosts: a pointer is named by one byte.
 const MAX_HOSTED: usize = u8::MAX as usize;
 
+/// The longest tree type the subtree directory keeps.
+const MAX_TREE_TYPE: usize = u8::MAX as usize;
+
 /// Checks what can be checked of `batch` without reading a page: that it
 /// writes each record key once, names each Merk once, sets no root without
 /// a node and none that it deletes, writes no flat record among the nodes of
-/// a Merk, and holds no key or value that is too long.
+/// a Merk, holds no key or value that is too long, and enters no subtree
+/// twice and drops or clears none twice.
 pub(crate) fn check(batch: &Batch<'_>) -> Result<(), BatchError> {
     let mut keys: HashSet<(Unit, &[u8])> = HashSet::new();
     let mut merks = HashSet::new();
+    let (mut entered, mut left) = (HashSet::new(), HashSet::new());
+    for write in batch.subtrees {
+        let subtree = write.subtree();
+        let once = match write {
+            SubtreeWrite::Enter { .. } => entered.insert(subtree),
+            SubtreeWrite::Drop { .. } | SubtreeWrite::Clear { .. } => left.insert(subtree),
+        };
+        if !once {
+            return Err(BatchError::SubtreeTwice { subtree });
+        }
+        if let SubtreeWrite::Enter {
+            tree_type, host, ..
+        } = write
+        {
+            if tree_type.len() > MAX_TREE_TYPE {
+                let len = tree_type.len();
+                return Err(BatchError::TreeTypeTooLong { subtree, len });
+            }
+            if let Some(host) = host.filter(|host| host.key.len() > MAX_NODE_KEY) {
+                return Err(BatchError::KeyTooLong {
+                    subtree: host.subtree,
+                    len: host.key.len(),
+                });
+            }
+        }
+    }
     let value_len = |len: usize| match len > MAX_VALUE_LEN {
         true => Err(BatchError::ValueTooLong { len }),
         false => Ok(()),

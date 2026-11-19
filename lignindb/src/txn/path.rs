@@ -1,12 +1,11 @@
 //! The write path of one database: what a write transaction is made of.
 
 use std::{
-    error::Error,
     fmt,
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use lignin_format::{CellAddress, CommitVersion, PageSize};
+use lignin_format::{CommitVersion, PageSize};
 use lignin_store::{
     alloc::PageAllocator,
     cache::{BufferPool, OwnerId},
@@ -14,18 +13,14 @@ use lignin_store::{
     values::ValueStore,
 };
 use lignin_tree::{
-    flat::{Committed, FlatTree, Private},
+    directory::{Directory, DirectoryError},
+    flat::{Committed, FlatPages, FlatTree, Private},
     fragment::Layout,
     node::Lease,
     value::InlinePolicy,
 };
 
-use super::{
-    commits::Commits,
-    key::{Column, Subtree},
-    pages::CommittedPages,
-    txn::WriteTxn,
-};
+use super::{commits::Commits, key::Column, pages::CommittedPages, txn::WriteTxn};
 use crate::snapshot::{OperationGuard, Versions};
 
 /// The committed flat pages of one version, as one operation reads them:
@@ -52,58 +47,6 @@ impl lignin_tree::OperationGuard for Idle {}
 
 /// The one [`Idle`].
 pub(crate) static IDLE: Idle = Idle;
-
-/// An error of the subtree directory.
-pub type DirectoryError = Box<dyn Error + Send + Sync>;
-
-/// What a write transaction asks of the subtree directory (TREE-05): where
-/// the root cell of a Merk is.
-///
-/// An entry is no record (`transactions.md` ST3). It is derived from the
-/// records, it is in no write set, and the transaction that changes the
-/// root of a Merk rewrites the Merk's entry in the same operation (SC2):
-/// when the root cell is carried, when another node becomes the root, and
-/// when the Merk becomes empty or stops being empty (`tree-layout.md` S3).
-/// The entries are in flat pages, so they are read and written through the
-/// flat pages of the reader or of the transaction, and commit, roll back
-/// and are made again with them.
-pub trait Directory: Send + Sync {
-    /// The address of the root cell of the Merk `subtree` in a committed
-    /// version, or `None` for a Merk with no node, or one that is not
-    /// there.
-    fn committed_root(
-        &self,
-        pages: &FlatReader<'_, '_>,
-        subtree: &Subtree,
-    ) -> Result<Option<CellAddress>, DirectoryError>;
-
-    /// As [`Self::committed_root`], as a write transaction sees it.
-    fn root(
-        &self,
-        pages: &FlatWriter<'_, '_>,
-        subtree: &Subtree,
-    ) -> Result<Option<CellAddress>, DirectoryError>;
-
-    /// The root cell of the Merk `subtree` is at `root` now, or the Merk
-    /// has no node.
-    fn set_root(
-        &self,
-        pages: &mut FlatWriter<'_, '_>,
-        subtree: &Subtree,
-        root: Option<CellAddress>,
-    ) -> Result<(), DirectoryError>;
-
-    /// The root cell that was at `from` is at `to` now: it was carried with
-    /// its host, in a write that did not name its Merk
-    /// (`tree-layout.md` L2, S3). An address that is the root of no Merk
-    /// changes nothing.
-    fn moved(
-        &self,
-        pages: &mut FlatWriter<'_, '_>,
-        from: CellAddress,
-        to: CellAddress,
-    ) -> Result<(), DirectoryError>;
-}
 
 /// The flat keyspaces that hold the records which are not Merk nodes: one
 /// tree for each column, in which a record of a subtree is stored under the
@@ -149,7 +92,8 @@ pub struct WritePath<'s> {
     pub(crate) ids: &'s PageAllocator,
     pub(crate) values: &'s ValueStore,
     pub(crate) commits: &'s Commits,
-    pub(crate) directory: &'s dyn Directory,
+    /// The keyspace of the subtree directory (`lignin_tree::directory`).
+    pub(crate) directory: FlatTree,
     pub(crate) keyspaces: Keyspaces,
     pub(crate) layout: Layout,
     pub(crate) inline: InlinePolicy,
@@ -167,7 +111,9 @@ pub(crate) struct Store<'s> {
     pub(crate) ids: &'s PageAllocator,
     pub(crate) values: &'s ValueStore,
     pub(crate) commits: &'s Commits,
-    pub(crate) directory: &'s dyn Directory,
+    /// The keyspace of the store's subtree directory: its root page, which
+    /// is the same for good, and the configuration of its pages.
+    pub(crate) directory: FlatTree,
 }
 
 impl<'s> WritePath<'s> {
@@ -224,6 +170,24 @@ impl<'s> WritePath<'s> {
         self.inline
     }
 
+    /// The keyspace of the subtree directory.
+    pub const fn directory(&self) -> FlatTree {
+        self.directory
+    }
+
+    /// The subtree directory as `pages` have it: the committed pages of
+    /// one version, or the pages of a write transaction.
+    ///
+    /// A handle is of the pages it was loaded from
+    /// (`lignin_tree::directory`): it is loaded for every version that is
+    /// read, and for the frames of a transaction whenever they are made.
+    pub(crate) fn load_directory<P: FlatPages + ?Sized>(
+        &self,
+        pages: &P,
+    ) -> Result<Directory, DirectoryError> {
+        Directory::load(pages, self.directory.root(), self.directory.config())
+    }
+
     /// Begins a write transaction (`transactions.md` WT1). Any number of
     /// them may be open. It holds nothing until it writes: no version pin,
     /// no private copy and no page id (PN1).
@@ -242,15 +206,19 @@ impl<'s> WritePath<'s> {
         Committed::new(self.loader, self.values, guard, version)
     }
 
-    /// The committed tree pages at `version`, read under `lease`.
+    /// The committed tree pages at `version`, read under `lease` in the
+    /// operation that holds `guard`.
     pub(crate) fn committed_pages<'a>(
         &self,
+        guard: &'a OperationGuard<'s>,
         version: CommitVersion,
         lease: Lease,
         buffers: &'a mut LoadBuffers,
     ) -> CommittedPages<'a, 's> {
         CommittedPages {
             loader: self.loader,
+            values: self.values,
+            guard,
             at: version,
             lease,
             buffers,

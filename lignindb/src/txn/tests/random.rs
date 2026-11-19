@@ -5,6 +5,8 @@
 //! read and every commit outcome agrees with it, and the committed tree
 //! pages pass the physical check after every commit.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use super::{
     model::{self, value, OwnedBatch},
     store::{Db, Outcome, Rng},
@@ -180,6 +182,15 @@ fn run(seed: u64, steps: usize, keys: usize) {
         "seed {seed}: no id is left with a transaction"
     );
     assert_eq!(db.pool.census().private, 0, "seed {seed}: no copy is left");
+    // A write plans on its own copies of the pages it reads for the plan.
+    // That costs no copy here: every page a plan read, its write changed.
+    let copies = |count: &AtomicU64| count.load(Ordering::Relaxed);
+    assert!(copies(&db.counts.tree_copies) > 0);
+    assert_eq!(
+        copies(&db.counts.tree_copies_unchanged),
+        0,
+        "seed {seed}: a commit was handed a copy that no write changed"
+    );
     assert!(commits > steps / 20, "seed {seed}: {commits} commits");
     assert!(conflicts > 0 || steps < 400, "seed {seed}: no conflict");
     assert!(rebuilds > 0 || steps < 400, "seed {seed}: no rebase");

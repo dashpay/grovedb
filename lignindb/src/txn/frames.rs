@@ -1,28 +1,33 @@
 //! The private frames of a write transaction, and how a batch is applied
 //! to them by key.
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::collections::{HashMap, HashSet};
 
-use lignin_format::{CellAddress, CommitVersion};
+use lignin_format::{
+    tree_page::{HashField, Side},
+    CellAddress, CommitVersion,
+};
 use lignin_store::alloc::PageAllocator;
 use lignin_tree::{
+    directory::{Directory, DirectoryError, Dropped, Entry, Host, MerkId, Root, RootChange},
     flat::Private,
     fragment::{
-        FragmentError, Fragments, HostedWrite, LinkWrite, NodeWrite, RootWrite, Target, ValueWrite,
-        Write,
+        FragmentError, Fragments, HostedWrite, LinkWrite, NodeWrite, Report, RootWrite, Target,
+        ValueWrite, Write,
     },
+    hash::{Hashes, Stale},
     node::{Lease, NodeError, NodeHandle},
+    value::{TreeValues, ValueSource},
 };
 
 use super::{
     error::{BatchError, TxnError},
     key::{Column, Subtree},
-    pages::{find, follow, NodePages, TreePages, TreeValues},
+    pages::{find, follow, NodePages, TreePages},
     path::{FlatWriter, Idle, WritePath, IDLE},
-    write::{Applied, Batch, Hosted, LinkPut, MerkWrite, RecordWrite, RootPut, ValuePut},
+    write::{
+        Applied, Batch, Hosted, LinkPut, MerkWrite, RecordWrite, RootPut, SubtreeWrite, ValuePut,
+    },
     write_set::WriteSet,
 };
 use crate::snapshot::OperationGuard;
@@ -52,9 +57,56 @@ impl Refused {
             dirty: true,
         }
     }
+}
 
-    fn directory(error: super::path::DirectoryError) -> Self {
-        Self::dirty(TxnError::Directory(error))
+/// What the tests arm and count in the write of an operation, on their own
+/// thread.
+#[cfg(all(test, not(loom)))]
+pub(crate) mod probe {
+    use std::cell::Cell;
+
+    use lignin_format::CellAddress;
+    use lignin_tree::directory::RootChange;
+
+    thread_local! {
+        static PANIC: Cell<bool> = const { Cell::new(false) };
+        static TAKEN: Cell<u64> = const { Cell::new(0) };
+        static CHAINED: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// The next write panics once the tree pages have taken its batch,
+    /// before the subtree directory is told.
+    pub(crate) fn panic_next() {
+        PANIC.set(true);
+    }
+
+    pub(super) fn strike() {
+        assert!(!PANIC.replace(false), "the write was told to panic");
+    }
+
+    /// Counts what one write states of its roots.
+    pub(super) fn count(changes: &[RootChange<'_>]) {
+        let left = |address: CellAddress| {
+            (changes.iter()).any(
+                |change| matches!(change, RootChange::Carried { from, .. } if *from == address),
+            )
+        };
+        for change in changes {
+            match change {
+                RootChange::Named {
+                    root: Some(root), ..
+                } if left(root.address) => TAKEN.set(TAKEN.get() + 1),
+                RootChange::Carried { to, .. } if left(*to) => CHAINED.set(CHAINED.get() + 1),
+                _ => {}
+            }
+        }
+    }
+
+    /// How many roots this thread's writes named in a cell that a carried
+    /// root left in the same write, and how many carried roots came to
+    /// such a cell.
+    pub(crate) fn counts() -> (u64, u64) {
+        (TAKEN.get(), CHAINED.get())
     }
 }
 
@@ -96,8 +148,23 @@ pub(crate) fn subtree_end(subtree: &Subtree) -> Option<Vec<u8>> {
 pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
     base: CommitVersion,
     pub(crate) tree: TreePages<'s>,
-    pub(crate) values: TreeValues<'s>,
+    /// The values of the transaction's cells that are not in their cells,
+    /// and where those are read from that are not in its memory.
+    pub(crate) values: TreeValues,
+    pub(crate) source: ValueSource<'s>,
     pub(crate) flat: FlatFrames<'s, 'g, G>,
+    /// The subtree directory as these pages have it: loaded from them when
+    /// the frames are made, and told every root, every Merk that is entered
+    /// and every one that leaves by the writes that are applied to them
+    /// (`lignin_tree::directory`). It is made again with them.
+    pub(crate) directory: Directory,
+    /// What each Merk that the transaction dropped or cleared left for the
+    /// reclaimer.
+    pub(crate) dropped: Vec<Dropped>,
+    /// Which hashes of the frames' cells are stale: marked by the writes
+    /// that left them so, and evaluated by the commit (`lignin_tree::hash`).
+    /// They are marks of these pages, so they are made again with them.
+    pub(crate) hashes: Hashes,
     fragments: Fragments,
     key: Vec<u8>,
     /// For each Merk of the batch that was applied last, whether it had no
@@ -227,6 +294,81 @@ impl<'a, 's: 'g, 'g> Drop for Woken<'a, 's, 'g> {
     }
 }
 
+/// A Merk that a batch drops or clears, as the directory has it before.
+struct Leaving {
+    subtree: Subtree,
+    entry: Entry,
+    root: Option<CellAddress>,
+    /// Whether it is dropped, and not cleared.
+    dropped: bool,
+}
+
+/// What one batch does to subtrees as a whole.
+#[derive(Default)]
+struct Subtrees {
+    leaving: Vec<Leaving>,
+    entering: HashSet<Subtree>,
+}
+
+impl Subtrees {
+    /// Whether the Merk of `entry` is below one that the batch drops or
+    /// clears. A Merk with no node hosts none, and a clear of it leaves
+    /// the directory as it is.
+    fn below_leaving(&self, entry: &Entry) -> bool {
+        let leaves = |id: MerkId| {
+            (self.leaving.iter()).any(|left| left.root.is_some() && left.entry.id() == id)
+        };
+        entry.lineage().any(leaves)
+    }
+}
+
+/// The roots that one write changed, as the directory is told them: all in
+/// one statement, which it resolves against the entries as they were before
+/// the write (`Directory::set_roots`). The cell that one root left can be
+/// the cell another root is in afterwards, so no root is told by itself.
+///
+/// `named` has, for each Merk of the batch, its change set and the address
+/// of its root before the write and after it. `hosted` has the carried
+/// roots of hosted Merks, as the write's report gives them
+/// ([`RootChange::carried`]).
+///
+/// - A Merk whose change set sets its root is named with the root's key.
+/// - A root that is the node it was and was carried is told by its address,
+///   as is every carried root of a hosted Merk that the write did not open
+///   (`tree-layout.md` S3, P5). One that is both is told once.
+pub(crate) fn root_changes<'a>(
+    named: impl Iterator<Item = (&'a MerkWrite<'a>, Option<CellAddress>, Option<CellAddress>)>,
+    hosted: impl Iterator<Item = RootChange<'a>>,
+) -> Vec<RootChange<'a>> {
+    let mut changes = Vec::new();
+    let mut told = HashSet::new();
+    for (write, was, now) in named {
+        match write.root {
+            RootPut::Keep => {
+                if let (Some(from), Some(to)) = (was, now)
+                    && from != to
+                    && told.insert(from)
+                {
+                    changes.push(RootChange::Carried { from, to });
+                }
+            }
+            // A Merk that had no node and has none is as it was.
+            RootPut::Set(None) if was.is_none() => {}
+            RootPut::Set(key) => {
+                let root = key.zip(now).map(|(key, address)| Root { address, key });
+                let prefix = write.subtree.as_bytes();
+                changes.push(RootChange::Named { prefix, root });
+            }
+        }
+    }
+    for change in hosted {
+        if matches!(change, RootChange::Carried { from, .. } if told.insert(from)) {
+            changes.push(change);
+        }
+    }
+    changes
+}
+
 /// The nodes that the keys of one batch name, as the tree layer names them.
 struct Resolver<'a> {
     merks: &'a [MerkWrite<'a>],
@@ -318,7 +460,11 @@ impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> Frames<'s, 'g, G> {
             base: self.base,
             tree: self.tree,
             values: self.values,
+            source: self.source,
             flat: self.flat.under(guard),
+            directory: self.directory,
+            dropped: self.dropped,
+            hashes: self.hashes,
             fragments: self.fragments,
             key: self.key,
             empty: self.empty,
@@ -329,28 +475,32 @@ impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> Frames<'s, 'g, G> {
 impl<'s: 'g, 'g> Awake<'s, 'g> {
     /// Frames with no copy, over the committed pages of the version `at`,
     /// which the transaction keeps pinned for as long as it has them.
+    ///
+    /// The subtree directory is loaded from those pages here, so frames
+    /// that are made again have it as their pages do: after a commit of
+    /// another landed, and after a rollback.
     pub(crate) fn new(
         path: &WritePath<'s>,
         guard: &'g OperationGuard<'s>,
         at: CommitVersion,
-    ) -> Self {
+    ) -> Result<Self, TxnError> {
         let owner = WritePath::next_owner();
         let lease = Lease::take();
         let size = path.layout.page_size();
-        Self {
+        let flat = FlatWriter::new(path.committed(guard, at), path.pool, owner, path.ids);
+        Ok(Self {
             tree: TreePages::new(path.loader, path.pool, path.ids, owner, at, lease, size),
-            values: TreeValues::new(path.values),
-            flat: FlatFrames(Some(FlatWriter::new(
-                path.committed(guard, at),
-                path.pool,
-                owner,
-                path.ids,
-            ))),
+            values: TreeValues::new(path.inline),
+            source: ValueSource::new(path.values, path.loader, at),
+            directory: path.load_directory(&flat)?,
+            dropped: Vec::new(),
+            flat: FlatFrames(Some(flat)),
+            hashes: Hashes::new(),
             fragments: Fragments::new(path.layout),
             key: Vec::new(),
             empty: Vec::new(),
             base: at,
-        }
+        })
     }
 
     /// The frames as the transaction keeps them until its next operation.
@@ -371,14 +521,16 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         at: CommitVersion,
         set: &WriteSet,
     ) -> Result<Parked<'s>, TxnError> {
-        let mut frames = Self::new(path, guard, at);
+        let mut frames = Self::new(path, guard, at)?;
         for op in 0..set.ops() {
             let hosted = set.hosted_lists(op);
             let batch = set.batch(op, &hosted);
             let merks = batch.merks();
+            let subtrees = batch.subtrees();
             let batch = Batch {
                 records: batch.records(),
                 merks: &merks,
+                subtrees: &subtrees,
             };
             frames
                 .apply(path, &batch, Some(&set.made(op)))
@@ -399,13 +551,105 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         self.tree.lease()
     }
 
-    /// The root cell of the Merk `subtree`, as the transaction sees it.
-    pub(crate) fn root(
+    /// The root cell of the Merk `subtree`, as the transaction sees it:
+    /// none for a Merk with no node, and for a subtree that is not entered,
+    /// or that is below a Merk the transaction dropped or cleared
+    /// (`transactions.md` CV9).
+    pub(crate) fn root(&self, subtree: &Subtree) -> Result<Option<CellAddress>, TxnError> {
+        let entry = self.directory.open(&*self.flat, subtree.as_bytes())?;
+        Ok(entry.and_then(|entry| entry.root().map(|root| root.address)))
+    }
+
+    /// What `batch` does to subtrees as a whole, checked against the
+    /// directory with nothing changed.
+    fn subtrees(&self, batch: &Batch<'_>) -> Result<Subtrees, TxnError> {
+        let mut view = Subtrees::default();
+        for write in batch.subtrees {
+            let (subtree, dropped) = match *write {
+                SubtreeWrite::Drop { subtree } => (subtree, true),
+                SubtreeWrite::Clear { subtree } => (subtree, false),
+                SubtreeWrite::Enter { .. } => continue,
+            };
+            let entry = self.directory.open(&*self.flat, subtree.as_bytes())?;
+            let entry = entry.ok_or(BatchError::NotEntered { subtree })?;
+            let root = entry.root().map(|root| root.address);
+            // A Merk with no node hosts none: the directory would refuse
+            // the drop after the pages took the batch.
+            if dropped && root.is_none() {
+                let below = self.directory.children(entry.id()).next(&*self.flat)?;
+                if below.is_some() {
+                    let prefix = *subtree.as_bytes();
+                    return Err(DirectoryError::NotEmpty { prefix }.into());
+                }
+            }
+            view.leaving.push(Leaving {
+                subtree,
+                entry,
+                root,
+                dropped,
+            });
+        }
+        // A drop takes the Merks below with it: none of them is named.
+        for left in &view.leaving {
+            if view.below_leaving(&left.entry) {
+                let subtree = left.subtree;
+                return Err(BatchError::NotEntered { subtree }.into());
+            }
+        }
+        for write in batch.subtrees {
+            let SubtreeWrite::Enter { subtree, host, .. } = write else {
+                continue;
+            };
+            if self.entered(&view, subtree)?.is_some() {
+                return Err(BatchError::Entered { subtree: *subtree }.into());
+            }
+            if let Some(host) = host
+                && self.entered(&view, &host.subtree)?.is_none()
+            {
+                let subtree = host.subtree;
+                return Err(BatchError::NotEntered { subtree }.into());
+            }
+            view.entering.insert(*subtree);
+        }
+        Ok(view)
+    }
+
+    /// Those of `written` that are below a Merk that `batch` drops or
+    /// clears, as the directory has them before the batch: what the
+    /// transaction wrote there goes with the drop.
+    pub(crate) fn below(
         &self,
-        path: &WritePath<'s>,
+        batch: &Batch<'_>,
+        written: impl Iterator<Item = Subtree>,
+    ) -> Result<Vec<Subtree>, TxnError> {
+        let view = self.subtrees(batch)?;
+        let mut below = Vec::new();
+        for subtree in written {
+            let entry = self.directory.open(&*self.flat, subtree.as_bytes())?;
+            if entry.is_some_and(|entry| view.below_leaving(&entry)) {
+                below.push(subtree);
+            }
+        }
+        Ok(below)
+    }
+
+    /// Whether `subtree` is entered once the subtrees of the batch have
+    /// left and are entered, and with which root: `None` for a subtree that
+    /// is not entered then, `Some(None)` for one with no node.
+    fn entered(
+        &self,
+        view: &Subtrees,
         subtree: &Subtree,
-    ) -> Result<Option<CellAddress>, TxnError> {
-        (path.directory.root(&self.flat, subtree)).map_err(TxnError::Directory)
+    ) -> Result<Option<Option<CellAddress>>, TxnError> {
+        if view.entering.contains(subtree) {
+            return Ok(Some(None));
+        }
+        if let Some(left) = view.leaving.iter().find(|left| left.subtree == *subtree) {
+            return Ok((!left.dropped).then_some(None));
+        }
+        let entry = self.directory.open(&*self.flat, subtree.as_bytes())?;
+        let entry = entry.filter(|entry| !view.below_leaving(entry));
+        Ok(entry.map(|entry| entry.root().map(|root| root.address)))
     }
 
     /// The address `handle` names, if the handle is still good in these
@@ -416,8 +660,9 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
     }
 
     /// Applies `batch` to the frames: the change sets of its Merks as one
-    /// write of the tree layer, with each Merk's directory entry, and then
-    /// its records.
+    /// write of the tree layer, in which the root of each Merk that leaves
+    /// is named as dropped, then what the write did to the subtree
+    /// directory, and then its records.
     ///
     /// The batch has passed [`check`](super::check::check). `made` is given
     /// for a batch that is applied again (WT7): it says of each Merk
@@ -430,19 +675,46 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         batch: &Batch<'_>,
         made: Option<&[bool]>,
     ) -> Result<Applied, Refused> {
-        let directory = path.directory;
+        let view = self.subtrees(batch).map_err(Refused::clean)?;
+        let mut entered = HashMap::new();
         for record in batch.records {
-            // The nodes of a Merk are not written through a flat tree.
+            // A record is of a subtree that is entered, in every column,
+            // and the nodes of a Merk are not written through a flat tree.
             let unit = record.unit();
-            if unit.column == Column::Data
-                && (directory.root(&self.flat, &unit.subtree))
-                    .map_err(|error| Refused::clean(TxnError::Directory(error)))?
-                    .is_some()
-            {
+            let subtree = unit.subtree;
+            let root = match entered.get(&subtree) {
+                Some(root) => *root,
+                None => {
+                    let root = self.entered(&view, &subtree).map_err(Refused::clean)?;
+                    entered.insert(subtree, root);
+                    root
+                }
+            };
+            let Some(root) = root else {
+                return Err(Refused::clean(BatchError::NotEntered { subtree }));
+            };
+            if unit.column == Column::Data && root.is_some() {
                 return Err(Refused::clean(BatchError::NotFlat { unit }));
             }
         }
-        let applied = self.apply_merks(path, batch.merks, made)?;
+        let applied = self.apply_merks(batch, &view, made)?;
+        // The flat records under a subtree that left: every column of a
+        // dropped one, and the data of a cleared one. This reads every leaf
+        // it frees; the lazy form is TREE-09's
+        // (`lignin_tree::drop::FlatDrops::unlink_range`), and takes this
+        // call's place.
+        for left in &view.leaving {
+            let columns: &[Column] = match left.dropped {
+                true => &Column::ALL,
+                false => &[Column::Data],
+            };
+            let end = subtree_end(&left.subtree);
+            for column in columns {
+                let tree = path.keyspaces.of(*column);
+                tree.delete_range(&mut *self.flat, left.subtree.as_bytes(), end.as_deref())
+                    .map_err(Refused::dirty)?;
+            }
+        }
         for record in batch.records {
             let tree = path.keyspaces.of(record.unit().column);
             let subtree = record.unit().subtree;
@@ -475,15 +747,15 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
 
     fn apply_merks(
         &mut self,
-        path: &WritePath<'s>,
-        merks: &[MerkWrite<'_>],
+        batch: &Batch<'_>,
+        view: &Subtrees,
         made: Option<&[bool]>,
     ) -> Result<Applied, Refused> {
         self.empty.clear();
-        if merks.is_empty() {
+        let merks = batch.merks;
+        if merks.is_empty() && batch.subtrees.is_empty() {
             return Ok(Applied::default());
         }
-        let directory = path.directory;
         let mut offsets = Vec::with_capacity(merks.len());
         let mut total = 0;
         for merk in merks {
@@ -492,8 +764,9 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         }
         let mut roots = Vec::with_capacity(merks.len());
         for merk in merks {
-            let root = directory.root(&self.flat, &merk.subtree);
-            roots.push(root.map_err(|error| Refused::clean(TxnError::Directory(error)))?);
+            let subtree = merk.subtree;
+            let root = self.entered(view, &subtree).map_err(Refused::clean)?;
+            roots.push(root.ok_or_else(|| Refused::clean(BatchError::NotEntered { subtree }))?);
         }
         self.empty.extend(roots.iter().map(Option::is_none));
         let made = made.unwrap_or_default().iter();
@@ -525,7 +798,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         // is changed, so a batch that names what is not there is refused
         // with every page as it was.
         let mut held = Vec::new();
-        let resolved = self.resolve(path, &resolver, total, &mut held);
+        let resolved = self.resolve(view, &resolver, total, &mut held);
         let ResolvedBatch {
             nodes,
             hosted,
@@ -535,7 +808,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         } = match resolved {
             Ok(resolved) => resolved,
             Err(error) => {
-                self.values.forget(&held);
+                self.forget(&held);
                 return Err(Refused::clean(error));
             }
         };
@@ -557,30 +830,103 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             })
             .collect();
         let roots: Vec<RootWrite> = root_writes.iter().flatten().copied().collect();
+        // The roots of the Merks that leave are named as dropped: their
+        // cells stay in their pages for the reclaimer, and nothing of them
+        // is read (`tree-layout.md` D1, D4). This write and the calls to
+        // the directory below are what `lignin_tree::drop::unlink` does
+        // (TREE-09), which takes their place.
+        let dropped: Vec<CellAddress> = view.leaving.iter().filter_map(|left| left.root).collect();
         let write = Write {
             nodes: &node_writes,
             removed: &removed,
-            dropped: &[],
+            dropped: &dropped,
             roots: &roots,
         };
-        let report = match (self.fragments).apply(&mut self.tree, &mut self.values, &write) {
+        // A Merk that leaves keeps its cells in their pages, so a handle
+        // into them would still be followed. Every handle that was read
+        // before ends here: the write is made under a new lease, and
+        // reports its nodes under that one (PN8).
+        let lease = self.tree.lease();
+        if !view.leaving.is_empty() {
+            self.tree.set_lease(Lease::take());
+        }
+        let report = match merks.is_empty() && dropped.is_empty() {
+            true => Ok(Report::default()),
+            false => (self.fragments).apply(&mut self.tree, &mut self.values, &write),
+        };
+        let report = match report {
             Ok(report) => report,
             Err(error @ (FragmentError::Write(_) | FragmentError::NoRoom { .. })) => {
-                self.values.forget(&held);
+                self.forget(&held);
+                self.tree.set_lease(lease);
                 return Err(Refused::clean(error));
             }
             Err(error) => return Err(Refused::dirty(error)),
         };
-        self.values.take_failure().map_err(Refused::dirty)?;
+        self.values.check().map_err(Refused::dirty)?;
+        // The marks follow the cells the write moved. Then each node of
+        // the write has the marks its writer states, under the address the
+        // report gives: a hash the writer made is stale no more. Where
+        // nothing is or was stale, nothing is done.
+        self.hashes.follow(&write, &report);
+        let puts = merks.iter().flat_map(|merk| merk.nodes);
+        let marks = !self.hashes.is_empty() || puts.clone().any(|put| !put.stale.is_empty());
+        for (put, node) in puts.zip(&report.nodes).filter(|_| marks) {
+            let links = [(Side::Left, &put.left), (Side::Right, &put.right)];
+            let missing = links.iter().filter(|(_, link)| link.is_none());
+            let stale = missing.fold(put.stale, |stale, (side, _)| {
+                stale.without(HashField::Child(*side))
+            });
+            // The key-value hash is made of the value hash: it is stale
+            // with it, whatever the writer states.
+            let stale = match stale.has(HashField::Value) {
+                true => stale.with(HashField::KeyValue),
+                false => stale,
+            };
+            for field in Stale::ALL.fields() {
+                match stale.has(field) {
+                    true => self.hashes.mark(node.address(), field),
+                    false => self.hashes.unmark(node.address(), field),
+                }
+            }
+        }
 
-        // The directory entry of each Merk whose root is another cell now,
-        // and of each Merk whose root went along with its host.
-        let carried: HashMap<CellAddress, CellAddress> = (report.carried.iter())
+        #[cfg(all(test, not(loom)))]
+        probe::strike();
+
+        // The directory: the Merks that leave, the Merks that are entered,
+        // and then every root the write changed.
+        for left in &view.leaving {
+            let prefix = left.subtree.as_bytes();
+            let gone = match left.dropped {
+                true => (self.directory.unlink(&mut *self.flat, prefix)).map(Some),
+                false => self.directory.clear(&mut *self.flat, prefix),
+            };
+            self.dropped.extend(gone.map_err(Refused::dirty)?);
+        }
+        for write in batch.subtrees {
+            let SubtreeWrite::Enter {
+                subtree,
+                tree_type,
+                host,
+            } = write
+            else {
+                continue;
+            };
+            let host = host.as_ref().map(|host| Host {
+                parent: host.subtree.as_bytes(),
+                key: host.key,
+                position: host.position,
+            });
+            (self.directory)
+                .add(&mut *self.flat, subtree.as_bytes(), tree_type, host)
+                .map_err(Refused::dirty)?;
+        }
+        let moved: HashMap<CellAddress, CellAddress> = (report.carried.iter())
             .map(|carried| (carried.from, carried.to.address()))
             .collect();
-        let mut settled = HashSet::new();
         let mut pointer = 0;
-        for (merk, write) in merks.iter().enumerate() {
+        let named = merks.iter().enumerate().map(|(merk, write)| {
             let root = match root_writes[merk] {
                 Some(_) => {
                     pointer += 1;
@@ -589,23 +935,17 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 None => match root_targets[merk] {
                     None | Some(Target::Kept) => None,
                     Some(Target::Node(node)) => Some(report.nodes[node].address()),
-                    Some(Target::At(at)) => Some(*carried.get(&at).unwrap_or(&at)),
+                    Some(Target::At(at)) => Some(*moved.get(&at).unwrap_or(&at)),
                 },
             };
-            if root != resolver.roots[merk] {
-                directory
-                    .set_root(&mut self.flat, &write.subtree, root)
-                    .map_err(Refused::directory)?;
-            }
-            settled.extend(root);
-        }
-        for carried in &report.carried {
-            let to = carried.to.address();
-            if carried.hosted_by.is_some() && !settled.contains(&to) {
-                directory
-                    .moved(&mut self.flat, carried.from, to)
-                    .map_err(Refused::directory)?;
-            }
+            (write, resolver.roots[merk], root)
+        });
+        let hosted = report.carried.iter().filter_map(RootChange::carried);
+        let changes = root_changes(named, hosted);
+        #[cfg(all(test, not(loom)))]
+        probe::count(&changes);
+        if !changes.is_empty() {
+            (self.directory.set_roots(&mut *self.flat, &changes)).map_err(Refused::dirty)?;
         }
         Ok(Applied {
             carried: (report.carried.iter())
@@ -613,6 +953,13 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 .collect(),
             nodes: report.nodes,
         })
+    }
+
+    /// Gives up the pending values of a write that was refused.
+    fn forget(&mut self, held: &[lignin_format::value_log::PendingValue]) {
+        for pending in held {
+            self.values.forget(*pending);
+        }
     }
 
     /// Checks that the cell at `host`, which is written and keeps the Merks
@@ -645,7 +992,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
     /// Merk, by a hint that is still good or by the key (PN8).
     fn resolve<'a>(
         &mut self,
-        path: &WritePath<'s>,
+        view: &Subtrees,
         resolver: &Resolver<'a>,
         total: usize,
         held: &mut Vec<lignin_format::value_log::PendingValue>,
@@ -662,7 +1009,11 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         for (merk, write) in merks.iter().enumerate() {
             let subtree = write.subtree;
             for put in write.nodes {
-                let hinted = put.at.and_then(|handle| self.follow(handle, put.key));
+                // No hint is followed in a batch that drops or clears a
+                // Merk: its cells stay in their pages, and a handle from
+                // before would name one of them.
+                let hint = put.at.filter(|_| view.leaving.is_empty());
+                let hinted = hint.and_then(|handle| self.follow(handle, put.key));
                 let at = match hinted {
                     Some(at) => Some(at),
                     None => find(&mut self.tree, resolver.roots[merk], put.key)?,
@@ -690,9 +1041,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                                     hosted_here[merk] = true;
                                     root_targets[merk]
                                 }
-                                None => (path.directory.root(&self.flat, hosted))
-                                    .map_err(TxnError::Directory)?
-                                    .map(Target::At),
+                                None => self.entered(view, hosted)?.flatten().map(Target::At),
                             });
                         }
                         hosted.push(targets);
@@ -706,13 +1055,12 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                     ValuePut::Keep => ValueWrite::Keep,
                     // The length alone says where a value goes, and a
                     // value of no bytes is never out of line.
-                    ValuePut::Value(value) if path.inline.is_inline(value.len()) => {
-                        ValueWrite::Inline(value)
-                    }
                     ValuePut::Value(value) => {
-                        let pending = self.values.hold(Arc::from(value))?;
-                        held.push(pending);
-                        ValueWrite::Pending(pending)
+                        let write = self.values.write(value)?;
+                        if let ValueWrite::Pending(pending) = write {
+                            held.push(pending);
+                        }
+                        write
                     }
                 };
                 nodes.push(Resolved {

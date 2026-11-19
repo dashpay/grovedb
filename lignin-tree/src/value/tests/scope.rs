@@ -872,3 +872,82 @@ fn tree_pending(db: &Db) -> Vec<PageId> {
     };
     db.pages().into_iter().filter(has_pending).collect()
 }
+
+/// The rules of an evaluation that keep what they were given.
+#[derive(Default)]
+struct Seen {
+    values: Vec<(Vec<u8>, Vec<u8>)>,
+}
+
+impl crate::hash::HashRules for Seen {
+    fn value_hash(
+        &mut self,
+        node: crate::node::NodeRef<'_>,
+        value: &[u8],
+        _: &[Option<Hash>],
+    ) -> Result<Hash, crate::hash::Refusal> {
+        self.values.push((node.key().to_vec(), value.to_vec()));
+        Ok([1; 32])
+    }
+
+    fn kv_hash(&mut self, _: &[u8], _: &Hash) -> Result<Hash, crate::hash::Refusal> {
+        Ok([2; 32])
+    }
+
+    fn node_hash(&mut self, _: crate::node::NodeRef<'_>) -> Result<Hash, crate::hash::Refusal> {
+        Ok([3; 32])
+    }
+}
+
+/// An evaluation of stale hashes reads a value that is not in its cell by
+/// its place and the page of its cell: one that write-back has placed in
+/// the value log, and one that the scope holds pending.
+#[test]
+fn an_evaluation_reads_a_placed_and_a_pending_value_by_its_place() {
+    use crate::hash::{Hashes, ValueReader};
+    use lignin_format::tree_page::HashField;
+
+    let db = Db::new();
+    let mut tree = Tree::new();
+    let mut scope = db.scope();
+    tree.put(&key(1), &big(1));
+    tree.flush(&mut scope);
+    db.commit(scope);
+    db.place_values();
+
+    let mut scope = db.scope();
+    tree.put(&key(2), &big(2));
+    tree.flush(&mut scope);
+    let (placed, pending) = (tree.at(&key(1)), tree.at(&key(2)));
+    let (in_log, own) = (scope.place(placed), scope.place(pending));
+    assert!(matches!(in_log, Some(ValuePlace::Placed(_))), "{in_log:?}");
+    assert!(matches!(own, Some(ValuePlace::Pending(_))), "{own:?}");
+
+    // By the place alone, as the trait asks.
+    let source = ValueSource::new(&db.values, db.loader(), scope.pages.at);
+    let mut reader = scope.values.reader(&source);
+    for (place, address, value) in [(in_log, placed, big(1)), (own, pending, big(2))] {
+        let mut read = Vec::new();
+        (reader.read(place.expect("a place"), address.page(), &mut read)).expect("a read");
+        assert_eq!(read, value);
+    }
+    // And a place the scope's cell does not hold is refused.
+    let lost = PendingValue::new((1u64 << 63 | 99).to_le_bytes(), 300).expect("a name");
+    let mut read = Vec::new();
+    let refused = reader.read(ValuePlace::Pending(lost), pending.page(), &mut read);
+    assert!(refused.is_err() && read.is_empty());
+    drop(reader);
+
+    // Both value hashes are stale: the evaluation is given both values.
+    let mut hashes = Hashes::new();
+    hashes.mark(placed, HashField::Value);
+    hashes.mark(pending, HashField::Value);
+    let mut rules = Seen::default();
+    let Scope { pages, values } = &mut scope;
+    hashes
+        .evaluate_all(pages, &mut values.reader(&source), &mut rules)
+        .expect("an evaluation");
+    rules.values.sort();
+    assert_eq!(rules.values, [(key(1), big(1)), (key(2), big(2))]);
+    assert!(hashes.is_empty());
+}

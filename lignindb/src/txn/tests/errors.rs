@@ -3,12 +3,12 @@
 //! Also the rules of the one scope a transaction has, the Merks that
 //! nodes host, and values that are out of line.
 
-use std::{error::Error, sync::atomic::Ordering};
+use std::error::Error;
 
 use lignin_format::tree_page::Hash;
 
 use super::{
-    model::{self, value, OwnedBatch, OwnedMerk},
+    model::{self, value, OwnedBatch, OwnedMerk, OwnedSubtree},
     store::{Db, Outcome, Rng},
     *,
 };
@@ -30,6 +30,7 @@ fn node<'a>(key: &'a [u8], value: ValuePut<'a>) -> NodePut<'a> {
         right: None,
         hosted: Hosted::Keep,
         value,
+        stale: lignin_tree::hash::Stale::NONE,
         at: None,
     }
 }
@@ -57,6 +58,7 @@ fn records<'a>(records: &'a [RecordWrite<'a>]) -> Batch<'a> {
     Batch {
         records,
         merks: &[],
+        ..Batch::default()
     }
 }
 
@@ -64,13 +66,14 @@ fn merks<'a>(merks: &'a [MerkWrite<'a>]) -> Batch<'a> {
     Batch {
         records: &[],
         merks,
+        ..Batch::default()
     }
 }
 
 fn records_of(records: Vec<Write>) -> OwnedBatch {
     OwnedBatch {
-        merks: Vec::new(),
         records,
+        ..OwnedBatch::default()
     }
 }
 
@@ -105,6 +108,7 @@ fn a_batch_that_names_what_is_not_there_is_refused_whole() {
     let committed = OwnedBatch {
         merks: Vec::new(),
         records: vec![put(aux(), b"k", b"v")],
+        ..OwnedBatch::default()
     };
     world.write_outside(&committed, &[]);
     let (one, other) = (model::subtree(1), model::subtree(2));
@@ -118,6 +122,7 @@ fn a_batch_that_names_what_is_not_there_is_refused_whole() {
             let outside = OwnedBatch {
                 merks: Vec::new(),
                 records: vec![put(aux(), b"mine", b"2")],
+                ..OwnedBatch::default()
             };
             world.write_outside(&outside, &[&tx]);
             world.check(&tx);
@@ -317,6 +322,7 @@ fn a_transaction_that_only_fails_holds_nothing() {
         &Batch {
             records: &[],
             merks: &merks,
+            ..Batch::default()
         },
     );
     assert_eq!(
@@ -333,6 +339,7 @@ fn a_transaction_that_only_fails_holds_nothing() {
         &Batch {
             records: &[],
             merks: &merks,
+            ..Batch::default()
         },
     );
     assert_eq!(
@@ -373,12 +380,20 @@ fn an_operation_that_fails_half_way_adds_nothing() {
         drop(items.insert(b"first".to_vec(), b"1".to_vec()))
     });
     world.write(&tx, vec![put(aux(), b"k", b"v")]);
+    // A subtree that the node `first` hosts.
+    let host = (model::subtree(1), b"first".to_vec(), 0);
+    let hosted = OwnedBatch {
+        subtrees: vec![OwnedSubtree::Enter(model::subtree(200), Some(host.clone()))],
+        ..OwnedBatch::default()
+    };
+    world.apply(&tx, &hosted).expect("the subtree is entered");
     let handle = |view: Option<NodeView<'_>>| view.and_then(|view| view.handle());
     let kept = (tx.txn.node(model::subtree(1), b"first", handle)).expect("a read");
     let before = tx.txn.stats();
 
-    // The batch makes a Merk, which writes a directory entry: that write
-    // fails, after the tree pages were changed.
+    // The batch makes a Merk and enters a subtree where the host has one
+    // already: the directory refuses that, after the tree pages were
+    // changed.
     let failing = world.merk(&tx, 2, |items| {
         for index in 0..30u8 {
             items.insert(vec![b'n', index], vec![index; 200]);
@@ -387,11 +402,18 @@ fn an_operation_that_fails_half_way_adds_nothing() {
     let batch = OwnedBatch {
         merks: vec![failing],
         records: vec![put(aux(), b"with", b"it")],
+        subtrees: vec![OwnedSubtree::Enter(model::subtree(201), Some(host.clone()))],
     };
-    db.roots.writes_left.store(0, Ordering::Relaxed);
-    let error = world.apply(&tx, &batch).expect_err("the directory fails");
-    assert!(matches!(error, TxnError::Directory(_)), "{error}");
-    assert!(error.to_string().contains("told to fail") && error.source().is_some());
+    let error = world.apply(&tx, &batch).expect_err("the directory refuses");
+    let taken = lignin_tree::directory::DirectoryError::HostTaken {
+        parent: *model::subtree(1).as_bytes(),
+        position: 0,
+    };
+    assert!(
+        matches!(&error, TxnError::Directory(error) if error.to_string() == taken.to_string()),
+        "{error}"
+    );
+    assert!(error.source().is_some());
 
     let after = tx.txn.stats();
     assert_eq!(
@@ -421,12 +443,21 @@ fn an_operation_that_fails_half_way_adds_nothing() {
         "it is found by its key"
     );
 
-    // The same batch goes through afterwards.
-    world.apply(&tx, &batch).expect("the directory works again");
+    // The same batch goes through afterwards, with the subtree at a place
+    // that is free.
+    let batch = OwnedBatch {
+        subtrees: vec![OwnedSubtree::Enter(
+            model::subtree(201),
+            Some((host.0, host.1, 1)),
+        )],
+        ..batch
+    };
+    world.apply(&tx, &batch).expect("the batch is applied");
     world.check(&tx);
     assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
     world.check_committed();
     assert_eq!(db.private_ids(), 0);
+    assert_eq!(db.counts.census.lock().expect("a census").0, 202);
 }
 
 /// The data column of a subtree holds the nodes of a Merk or flat records,
@@ -472,6 +503,7 @@ fn nodes_and_flat_records_do_not_share_a_data_column() {
         let batch = OwnedBatch {
             merks: vec![gone],
             records: vec![put(model::unit(Column::Data, 7), b"flat", b"1")],
+            ..OwnedBatch::default()
         };
         (world.apply(&tx, &batch)).expect("a delete and a flat record");
         if overlapped {
@@ -497,6 +529,7 @@ fn nodes_and_flat_records_do_not_share_a_data_column() {
             let batch = Batch {
                 records: std::slice::from_ref(record),
                 merks: &[merk(8, &nodes, RootPut::Set(Some(b"n")))],
+                ..Batch::default()
             };
             assert_eq!(batch_error(&tx, &batch), not_flat(8));
         }
@@ -640,10 +673,11 @@ fn a_first_write_that_panics_leaves_nothing_held() {
     let batch = OwnedBatch {
         merks: vec![made],
         records: Vec::new(),
+        ..OwnedBatch::default()
     };
-    // The directory panics when the Merk's entry is written, after the
-    // tree pages were changed.
-    db.roots.panics.store(true, Ordering::Relaxed);
+    // The write panics before the Merk's entry is written, after the tree
+    // pages were changed.
+    crate::txn::frames::probe::panic_next();
     let write = std::panic::AssertUnwindSafe(|| world.apply(&tx, &batch));
     assert!(std::panic::catch_unwind(write).is_err());
 
@@ -657,7 +691,7 @@ fn a_first_write_that_panics_leaves_nothing_held() {
     assert_eq!(db.commits.kept(), 1);
 
     // The same batch goes through afterwards.
-    world.apply(&tx, &batch).expect("the directory works again");
+    world.apply(&tx, &batch).expect("the write goes through");
     world.check(&tx);
     assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
     world.check_committed();
@@ -678,6 +712,7 @@ fn a_transaction_has_one_scope_at_a_time() {
     let batch = Batch {
         records: &records,
         merks: &[],
+        ..Batch::default()
     };
     let get = |txn: &WriteTxn<'_>| {
         let mut out = Vec::new();
@@ -727,6 +762,7 @@ fn a_transaction_has_one_scope_at_a_time() {
         .apply(&Batch {
             records: &more,
             merks: &[],
+            ..Batch::default()
         })
         .expect("a write");
     scope.rollback();
@@ -757,6 +793,10 @@ fn every_error_says_what_it_is() {
         BatchError::NotFlat { unit },
         BatchError::NotMerk { subtree },
         BatchError::HostKeeps { subtree },
+        BatchError::NotEntered { subtree },
+        BatchError::Entered { subtree },
+        BatchError::SubtreeTwice { subtree },
+        BatchError::TreeTypeTooLong { subtree, len: 256 },
     ];
     let mut texts: BTreeSet<String> = batch.iter().map(BatchError::to_string).collect();
     assert_eq!(texts.len(), batch.len(), "{texts:?}");
@@ -784,12 +824,12 @@ fn every_error_says_what_it_is() {
             freed: None,
         }),
         TxnError::Format(lignin_format::FormatError::MissingId),
-        TxnError::Directory("no entry".into()),
+        TxnError::Directory(lignin_tree::directory::DirectoryError::TooDeep),
         TxnError::PageFreed { page },
         TxnError::Damaged("a page"),
-        TxnError::PendingValue { subtree },
+        TxnError::TreeValue(lignin_tree::value::ValueError::TooLong { len: 1 << 40 }),
     ];
-    let sourceless = [1usize, 11, 12, 13];
+    let sourceless = [1usize, 11, 12];
     for (at, error) in errors.iter().enumerate() {
         assert_eq!(
             error.source().is_none(),

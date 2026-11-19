@@ -212,6 +212,10 @@
 //!
 //! [`TreeValues::read`] is the same for a page that a scope has copied or
 //! made, with the scope's own values found by their names.
+//! [`TreeValues::read_at`] is that read by the place of a value and the
+//! page of its cell, for a caller that holds no node: an evaluation of
+//! stale hashes, which is given [`TreeValues::reader`] as its
+//! [`ValueReader`](crate::hash::ValueReader).
 //!
 //! # The cleaner, and regrouping
 //!
@@ -336,4 +340,4 @@ pub use order::{scan_order, Locality, RegroupPolicy};
 pub use owners::{Grouped, Regrouped, TreeOwners};
 pub use policy::InlinePolicy;
 pub use read::{read_value, ValueBuf, ValueSource};
-pub use write::TreeValues;
+pub use write::{ScopeReader, TreeValues};

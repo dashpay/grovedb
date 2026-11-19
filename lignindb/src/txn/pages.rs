@@ -3,14 +3,12 @@
 
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, BTreeSet, HashMap},
-    sync::Arc,
+    collections::{BTreeMap, BTreeSet},
 };
 
 use lignin_format::{
     delta::{Delta, DeltaRun, DeltaRunWriter},
     tree_page::Side,
-    value_log::{PendingValue, ValuePlace, ValuePointer},
     CellAddress, CommitVersion, PageId, PageSize,
 };
 use lignin_store::{
@@ -20,11 +18,14 @@ use lignin_store::{
     values::ValueStore,
 };
 use lignin_tree::{
-    fragment::{FragmentError, PageMut, Pages, Values},
-    node::{ChangeSink, Lease, NodeError, NodeHandle, NodePage, NodePageMut},
+    fragment::{FragmentError, PageMut, Pages},
+    node::{
+        ChangeSink, Lease, NodeError, NodeHandle, NodePage, NodePageMut, NodeReader, PinnedNode,
+    },
 };
 
 use super::error::TxnError;
+use crate::snapshot::OperationGuard;
 
 /// The most cells a descent by key passes before the pages are taken for
 /// damaged. A Merk of 2^64 nodes is at most 93 levels deep.
@@ -41,13 +42,25 @@ pub(crate) trait NodePages {
     ) -> Result<R, TxnError>;
 }
 
-/// The committed tree pages of a store, as a reader at one version sees
-/// them. The reader holds its operation guard for as long as it uses this.
+/// The committed tree pages of a store, as the operation that holds
+/// `guard` reads them at one version.
 pub(crate) struct CommittedPages<'a, 's> {
     pub(crate) loader: PageLoader<'s>,
+    pub(crate) values: &'s ValueStore,
+    pub(crate) guard: &'a OperationGuard<'s>,
     pub(crate) at: CommitVersion,
     pub(crate) lease: Lease,
     pub(crate) buffers: &'a mut LoadBuffers,
+}
+
+impl<'a> CommittedPages<'a, '_> {
+    /// The node at `address`, pinned for the operation: what its value is
+    /// read from, where that is not in its cell
+    /// ([`read_value`](lignin_tree::value::read_value)).
+    pub(crate) fn pinned(&mut self, address: CellAddress) -> Result<PinnedNode<'a>, TxnError> {
+        let reader = NodeReader::new(self.loader, self.guard, self.lease, self.at);
+        Ok(reader.node(address, self.buffers)?)
+    }
 }
 
 impl NodePages for CommittedPages<'_, '_> {
@@ -209,6 +222,12 @@ impl<'s> TreePages<'s> {
     /// The lease the pages are read and changed under.
     pub(crate) const fn lease(&self) -> Lease {
         self.lease
+    }
+
+    /// Reads and changes the pages under `lease` from here on: every
+    /// handle that was issued under another has ended (PN8).
+    pub(crate) fn set_lease(&mut self, lease: Lease) {
+        self.lease = lease;
     }
 
     /// How many private copies the transaction holds: of pages it changed,
@@ -373,6 +392,13 @@ impl Pages for TreePages<'_> {
         page: PageId,
         read: impl FnOnce(NodePage<'_>) -> R,
     ) -> Result<R, FragmentError> {
+        // A write is planned on the pages as they are and then applied, so
+        // nothing may change them in between (`lignin_tree::fragment`,
+        // "One writer"). What a write reads for its plan is therefore the
+        // transaction's own copy: no page step is installed beside a
+        // private copy (CL6), where a committed page that is only read can
+        // lose the cells of a dropped Merk between the plan and the write.
+        self.copy(page).map_err(TxnError::into_pages)?;
         self.page(page, read).map_err(TxnError::into_pages)
     }
 
@@ -433,170 +459,5 @@ impl Pages for TreePages<'_> {
             self.freed.insert(page, copy.frame);
         }
         Ok(())
-    }
-}
-
-/// The bit that the names of a transaction's new values begin with: the
-/// address of a value in the log has it only in a log of more than 2^63
-/// bytes (`log-format.md` LG21).
-const NEW_VALUE: u64 = 1 << 63;
-
-/// A cell that was carried to another page with a pending value that an
-/// earlier commit logged: the commit repeats the value for its new page
-/// (`log-format.md` LG23).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct CarriedPending {
-    pub(crate) value: PendingValue,
-    pub(crate) from: PageId,
-    pub(crate) to: PageId,
-}
-
-/// The values of a transaction's tree cells that are not in their cells
-/// (`transactions.md` WT4, FL7): the bytes of those it wrote, which stay
-/// with it until its commit, and the value pointers its cells stopped
-/// holding, which its commit releases.
-pub(crate) struct TreeValues<'s> {
-    values: &'s ValueStore,
-    /// The values the transaction's cells hold as pending and that no log
-    /// has, by the 8 bytes that name them.
-    held: HashMap<[u8; PendingValue::ID_LEN], Arc<[u8]>>,
-    released: Vec<ValuePointer>,
-    carried: Vec<CarriedPending>,
-    next: u64,
-    buf: Vec<u8>,
-    /// What went wrong inside a call that cannot say so.
-    failed: Option<TxnError>,
-}
-
-impl<'s> TreeValues<'s> {
-    pub(crate) fn new(values: &'s ValueStore) -> Self {
-        Self {
-            values,
-            held: HashMap::new(),
-            released: Vec::new(),
-            carried: Vec::new(),
-            next: 0,
-            buf: Vec::new(),
-            failed: None,
-        }
-    }
-
-    /// Takes `value` as a value of the transaction that goes out of line,
-    /// and returns what stands in its cell until the commit names it by
-    /// its place in the log.
-    pub(crate) fn hold(&mut self, value: Arc<[u8]>) -> Result<PendingValue, TxnError> {
-        let len = lignin_format::value_log::checked_value_len(value.len())?;
-        let name = self.next_name();
-        let pending = PendingValue::new(name, len)?;
-        self.held.insert(name, value);
-        Ok(pending)
-    }
-
-    /// A name that no value of the transaction has had.
-    fn next_name(&mut self) -> [u8; PendingValue::ID_LEN] {
-        self.next += 1;
-        (NEW_VALUE | self.next).to_le_bytes()
-    }
-
-    /// Lets go of values that were taken for a write that was then refused.
-    pub(crate) fn forget(&mut self, values: &[PendingValue]) {
-        for value in values {
-            self.held.remove(&value.id());
-        }
-    }
-
-    /// The bytes of the pending value `pending`, if it is one the
-    /// transaction holds.
-    pub(crate) fn held(&self, pending: PendingValue) -> Option<&[u8]> {
-        self.held.get(&pending.id()).map(|value| &**value)
-    }
-
-    /// Appends the value at `pointer`, which a cell of `page` holds, to
-    /// `out`.
-    pub(crate) fn read_placed(
-        &mut self,
-        pointer: ValuePointer,
-        page: PageId,
-        out: &mut Vec<u8>,
-    ) -> Result<(), TxnError> {
-        let value = self.values.read(pointer, page, &mut self.buf)?;
-        value.parts().for_each(|part| out.extend_from_slice(part));
-        Ok(())
-    }
-
-    /// The error of a call that could not return one, if there was one.
-    pub(crate) fn take_failure(&mut self) -> Result<(), TxnError> {
-        self.failed.take().map_or(Ok(()), Err)
-    }
-
-    /// The value pointers that cells stopped holding, in ascending order of
-    /// file and offset: what the commit releases.
-    #[cfg_attr(
-        any(not(test), loom),
-        expect(dead_code, reason = "the commit (TXN-05) is its one caller")
-    )]
-    pub(crate) fn released(&mut self) -> &[ValuePointer] {
-        self.released
-            .sort_unstable_by_key(|pointer| (pointer.file(), pointer.offset()));
-        &self.released
-    }
-
-    /// The cells that were carried with a pending value of an earlier
-    /// commit.
-    #[cfg_attr(
-        any(not(test), loom),
-        expect(dead_code, reason = "the commit (TXN-05) is its one caller")
-    )]
-    pub(crate) fn carried(&self) -> &[CarriedPending] {
-        &self.carried
-    }
-
-    /// How many values the transaction holds out of line, and their bytes.
-    pub(crate) fn held_bytes(&self) -> (usize, usize) {
-        let bytes = self.held.values().map(|value| value.len()).sum();
-        (self.held.len(), bytes)
-    }
-}
-
-impl Values for TreeValues<'_> {
-    fn released(&mut self, place: ValuePlace, _: PageId) {
-        match place {
-            ValuePlace::Placed(pointer) => self.released.push(pointer),
-            ValuePlace::Pending(pending) => {
-                self.held.remove(&pending.id());
-            }
-        }
-    }
-
-    /// The transaction took the value's bytes when it made the write
-    /// ([`Self::hold`]): they are its own whichever page owns them.
-    fn placed(&mut self, _: PendingValue, _: PageId) {}
-
-    fn carried(&mut self, place: ValuePlace, from: PageId, to: PageId) -> PendingValue {
-        match place {
-            // A value the transaction holds goes with its cell as it is.
-            ValuePlace::Pending(pending) if self.held.contains_key(&pending.id()) => pending,
-            // One that an earlier commit logged keeps its name, and the
-            // commit repeats its bytes for the new page.
-            ValuePlace::Pending(value) => {
-                self.carried.push(CarriedPending { value, from, to });
-                value
-            }
-            // A value in the value log is read once, and held as a new
-            // value of the transaction. Its pointer is released.
-            ValuePlace::Placed(pointer) => {
-                let mut bytes = Vec::new();
-                let read = self.read_placed(pointer, from, &mut bytes);
-                let held = read.and_then(|()| self.hold(bytes.into()));
-                self.released.push(pointer);
-                held.unwrap_or_else(|error| {
-                    self.failed.get_or_insert(error);
-                    // What stands in the cell of a write that has failed:
-                    // the caller gives the pages up.
-                    PendingValue::new(self.next_name(), pointer.value_len())
-                        .expect("a named value of a pointer's length")
-                })
-            }
-        }
     }
 }

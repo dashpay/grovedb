@@ -20,12 +20,7 @@ fn get(tx: &Tx<'_>, unit: Unit, key: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn node_value(tx: &Tx<'_>, name: u8, key: &[u8]) -> Option<Vec<u8>> {
-    let read = |view: Option<NodeView<'_>>| {
-        view.map(|view| match view.value() {
-            NodeValue::Bytes(bytes) => bytes.to_vec(),
-            other => panic!("the value is {other:?}"),
-        })
-    };
+    let read = |view: Option<NodeView<'_>>| view.map(|view| value_of(&view));
     (tx.txn.node(model::subtree(name), key, read)).expect("a read")
 }
 
@@ -36,6 +31,7 @@ fn a_read_sees_a_commit_made_outside_unless_the_transaction_wrote_the_key() {
     let batch = |records| OwnedBatch {
         merks: Vec::new(),
         records,
+        ..OwnedBatch::default()
     };
 
     // A3: T puts K1; W puts K2; T reads K2 and commits.
@@ -159,7 +155,14 @@ fn a_transaction_keeps_its_key_beside_one_committed_on_the_same_page() {
     let base = tx.txn.stats().base;
     let records = vec![put(aux(), b"y", b"committed outside")];
     let merks = Vec::new();
-    world.write_outside(&OwnedBatch { merks, records }, &[&tx]);
+    world.write_outside(
+        &OwnedBatch {
+            merks,
+            records,
+            ..OwnedBatch::default()
+        },
+        &[&tx],
+    );
 
     assert_eq!(get(&tx, aux(), b"y"), Some(b"committed outside".to_vec()));
     assert_eq!(get(&tx, aux(), b"x"), Some(b"the transaction's".to_vec()));
@@ -192,8 +195,8 @@ fn a_cursor_reads_the_state_it_was_opened_on_and_the_transactions_later_writes()
     let (db, versions) = Db::new(48);
     let mut world = World::new(&db, &versions);
     let batch = |records| OwnedBatch {
-        merks: Vec::new(),
         records,
+        ..OwnedBatch::default()
     };
     world.write_outside(
         &batch(vec![put(aux(), b"k1", b"1"), put(aux(), b"k3", b"3")]),
@@ -247,7 +250,14 @@ fn a_cursor_sees_the_transactions_writes_in_key_order() {
         records.push(put(unit, &key(index * 3), &value(&mut rng, len)));
     }
     let merks = Vec::new();
-    world.write_outside(&OwnedBatch { merks, records }, &[]);
+    world.write_outside(
+        &OwnedBatch {
+            merks,
+            records,
+            ..OwnedBatch::default()
+        },
+        &[],
+    );
 
     let tx = world.begin();
     // Puts between the committed keys and over them, deletes, and ranges
@@ -358,6 +368,7 @@ fn a_scope_writes_under_its_own_cursor() {
     let batch = OwnedBatch {
         merks: Vec::new(),
         records: committed.to_vec(),
+        ..OwnedBatch::default()
     };
     world.write_outside(&batch, &[]);
 
@@ -375,6 +386,7 @@ fn a_scope_writes_under_its_own_cursor() {
     let batch = Batch {
         records: &writes,
         merks: &[],
+        ..Batch::default()
     };
     let first_write = world.latest().get();
     scope.apply(&batch).expect("a write under the cursor");
@@ -540,11 +552,7 @@ fn a_merk_cursor_reads_its_version_and_the_transactions_nodes() {
         items.insert(key(41), b"written under the cursor".to_vec());
         items.remove(&key(42));
     });
-    let value = |node: Option<NodeView<'_>>| match node.map(|node| node.value()) {
-        Some(NodeValue::Bytes(bytes)) => Some(bytes.to_vec()),
-        Some(other) => panic!("the value is {other:?}"),
-        None => None,
-    };
+    let value = |node: Option<NodeView<'_>>| node.map(|node| value_of(&node));
     cursor.next().expect("a step");
     assert_eq!(cursor.key(), Some(&key(41)[..]));
     assert_eq!(
@@ -618,6 +626,7 @@ fn a_merk_cursor_stands_on_a_key_whose_node_was_rolled_back() {
             let outside = OwnedBatch {
                 merks: Vec::new(),
                 records: vec![put(aux(), b"mine", b"2")],
+                ..OwnedBatch::default()
             };
             world.write_outside(&outside, &[&tx]);
         }
@@ -659,6 +668,7 @@ fn a_cursor_keeps_its_version_while_commits_free_and_reuse_pages() {
     let batch = |records| OwnedBatch {
         merks: Vec::new(),
         records,
+        ..OwnedBatch::default()
     };
     let fill = |rng: &mut Rng, from: usize| -> Vec<Write> {
         (from..from + 400)
@@ -732,6 +742,7 @@ fn a_write_through_a_snapshot_is_refused() {
     let batch = Batch {
         records: &records,
         merks: &[],
+        ..Batch::default()
     };
     assert_eq!(snapshot.apply(&batch), Err(SnapshotError::ReadOnly));
     assert_eq!(snapshot.commit(), Err(SnapshotError::ReadOnly));

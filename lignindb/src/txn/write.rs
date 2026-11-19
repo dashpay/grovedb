@@ -2,7 +2,7 @@
 //! told when they are applied.
 
 use lignin_format::{tree_page::Hash, CellAddress};
-use lignin_tree::node::NodeHandle;
+use lignin_tree::{hash::Stale, node::NodeHandle};
 
 use super::key::{Column, Subtree, Unit};
 
@@ -138,6 +138,17 @@ pub struct NodePut<'a> {
     pub hosted: Hosted<'a>,
     /// The node's value.
     pub value: ValuePut<'a>,
+    /// The hashes of the node that its writer did not make: they are stale
+    /// until they are evaluated, at the latest by the commit
+    /// (`lignin_tree::hash`, `transactions.md` CM3 step 5). For a stale
+    /// hash the write states the bytes the cell has, or any bytes in a
+    /// node or a link that is new. A hash of a child is stale only where
+    /// the node has a link on that side.
+    ///
+    /// [`Stale::NONE`] where the writer makes every hash itself, as Merk
+    /// does on existing GroveVersions: nothing is marked there, and no
+    /// rule runs at the commit.
+    pub stale: Stale,
     /// Where the caller last saw the node, if it kept that. It is a hint:
     /// it is followed while it is good, and the node is found by its key
     /// otherwise (PN8).
@@ -192,6 +203,83 @@ pub struct MerkWrite<'a> {
     pub anchored: bool,
 }
 
+/// The element that hosts an entered subtree: the node it is, and which of
+/// that node's subtrees this one is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostPut<'a> {
+    /// The subtree of the Merk the host is a node of. It is entered.
+    pub subtree: Subtree,
+    /// The host's key in that Merk.
+    pub key: &'a [u8],
+    /// The position of the entered subtree among those the host hosts:
+    /// its place in the host's [`Hosted::Set`].
+    pub position: u8,
+}
+
+/// What an operation does to a subtree as a whole: to its entry in the
+/// subtree directory (`lignin_tree::directory`).
+///
+/// - **A subtree is entered before anything is written in it**, in the
+///   same batch or in an earlier one: a change set or a flat record, in
+///   any column, for a subtree that is not entered is refused
+///   ([`BatchError::NotEntered`](super::BatchError::NotEntered)).
+///   While the transaction serves its records by key (WT7b) a batch is
+///   not checked against the directory: this is checked when its frames
+///   are made, and at the latest its commit is refused.
+/// - **Every subtree that a node hosts is entered**, a Merk with no node
+///   and a tree that keeps its data in a flat keyspace among them: what is
+///   not entered is not found below a dropped Merk.
+/// - **A drop takes every subtree below with it**, and names none of them:
+///   a batch drops the outermost. So does a clear.
+/// - **A drop or a clear ends every node handle** that was read through
+///   the transaction before it (PN8), and no hint of the batch that makes
+///   it is followed ([`NodePut::at`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubtreeWrite<'a> {
+    /// Enters the subtree, with no node: the operation writes the element
+    /// that hosts it.
+    Enter {
+        /// The subtree.
+        subtree: Subtree,
+        /// The tree type, as bytes that are kept and given back: up to 255.
+        tree_type: &'a [u8],
+        /// The element that hosts the subtree, or `None` for the root of
+        /// the grove and for a Merk that stands alone.
+        host: Option<HostPut<'a>>,
+    },
+    /// Drops the subtree: the operation deletes the element that hosts it,
+    /// or writes it without the subtree (`tree-layout.md` D1). No node of
+    /// it is read. From here on the transaction reads no record under it,
+    /// in any column, and none of a subtree below it.
+    Drop {
+        /// The subtree.
+        subtree: Subtree,
+    },
+    /// Clears the subtree: a drop that keeps the host (D4). The subtree
+    /// stays entered, with no node, and the same batch may write it.
+    Clear {
+        /// The subtree.
+        subtree: Subtree,
+    },
+}
+
+impl SubtreeWrite<'_> {
+    /// Whether the write enters its subtree. The others take it out, or
+    /// what it holds.
+    pub const fn enters(&self) -> bool {
+        matches!(self, Self::Enter { .. })
+    }
+
+    /// The subtree the write names.
+    pub const fn subtree(&self) -> Subtree {
+        match *self {
+            Self::Enter { subtree, .. } | Self::Drop { subtree } | Self::Clear { subtree } => {
+                subtree
+            }
+        }
+    }
+}
+
 /// The writes of one operation (`transactions.md` section 1): one batch,
 /// applied to the transaction as a whole or not at all (WT10), with one
 /// first-write version (WT5).
@@ -202,12 +290,18 @@ pub struct MerkWrite<'a> {
 /// key is written at most once in a batch, as a storage batch holds one
 /// outcome for a key (GM0); which call survives for a key is the rule of
 /// the batch above this one (TXN-08).
+///
+/// The parts of a batch are applied in this order, wherever they stand in
+/// it: the drops and the clears, the enters in the order they are given,
+/// the change sets, and the records.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Batch<'a> {
     /// The writes of flat records.
     pub records: &'a [RecordWrite<'a>],
     /// The change sets of the Merks.
     pub merks: &'a [MerkWrite<'a>],
+    /// The subtrees the operation enters, drops and clears.
+    pub subtrees: &'a [SubtreeWrite<'a>],
 }
 
 impl Batch<'_> {
@@ -215,9 +309,15 @@ impl Batch<'_> {
     /// write set (GM0).
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
+            && self.subtrees.is_empty()
             && self.merks.iter().all(|merk| {
                 merk.nodes.is_empty() && merk.removed.is_empty() && merk.root == RootPut::Keep
             })
+    }
+
+    /// Whether the batch drops or clears `subtree`.
+    pub(crate) fn leaves(&self, subtree: Subtree) -> bool {
+        (self.subtrees.iter()).any(|write| !write.enters() && write.subtree() == subtree)
     }
 }
 
