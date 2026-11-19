@@ -262,3 +262,84 @@ fn an_entry_carried_while_its_value_is_pending_releases_nothing() {
     assert_eq!(pages.pending.len(), 30);
     assert_eq!(records(&pages, &tree).len(), 30);
 }
+
+/// Pages that carry a value as the trait does unless told otherwise: the
+/// value is read from the page it leaves, held for the page it goes to,
+/// and dropped where it was.
+struct Plain(Mem);
+
+impl FlatPages for Plain {
+    type Page<'a> = &'a [u8];
+
+    fn page(&self, page: PageId) -> Result<&[u8], FlatError> {
+        self.0.page(page)
+    }
+
+    fn read_value(
+        &self,
+        page: PageId,
+        slot: usize,
+        place: ValuePlace,
+        out: &mut Vec<u8>,
+    ) -> Result<(), FlatError> {
+        self.0.read_value(page, slot, place, out)
+    }
+}
+
+impl FlatPagesMut for Plain {
+    fn allocate(&mut self) -> Result<PageId, FlatError> {
+        self.0.allocate()
+    }
+
+    fn take(&mut self, page: PageId) -> Result<Vec<u8>, FlatError> {
+        self.0.take(page)
+    }
+
+    fn write(&mut self, page: PageId, image: &[u8]) -> Result<(), FlatError> {
+        self.0.write(page, image)
+    }
+
+    fn free(&mut self, page: PageId) -> Result<(), FlatError> {
+        self.0.free(page)
+    }
+
+    fn hold_value(&mut self, page: PageId, value: &[u8]) -> Result<PendingValue, FlatError> {
+        self.0.hold_value(page, value)
+    }
+
+    fn drop_value(&mut self, page: PageId, place: ValuePlace) -> Result<(), FlatError> {
+        self.0.drop_value(page, place)
+    }
+}
+
+#[test]
+fn a_value_is_carried_by_reading_holding_and_dropping_it() {
+    let config = small();
+    let (pages, tree) = Mem::tree(config);
+    let mut pages = Plain(pages);
+    assert_eq!(
+        pages.revision(),
+        0,
+        "pages that say nothing of their changes"
+    );
+    let key = |n: u8| [vec![n], vec![b'k'; 400]].concat();
+    let big = |n: u8| vec![n; config.max_inline() + 1];
+    for n in 0..10 {
+        tree.put(&mut pages, &key(n), &big(n)).expect("a put");
+    }
+    pages.0.commit();
+    pages.0.place_values();
+    let placed: HashSet<ValuePointer> = pages.0.live.clone();
+    for n in 10..30 {
+        tree.put(&mut pages, &key(n), b"small").expect("a put");
+    }
+    // Each value was read through its old pointer, is held for its new
+    // page, and the old pointer was released.
+    let released: HashSet<ValuePointer> = pages.0.released.iter().copied().collect();
+    assert_eq!(released, placed);
+    assert_eq!((pages.0.held.len(), pages.0.pending.len()), (20, 10));
+    for n in 0..10 {
+        assert_eq!(get(&pages, &tree, &key(n)), Some(big(n)));
+    }
+    assert_eq!(records(&pages.0, &tree).len(), 30);
+}

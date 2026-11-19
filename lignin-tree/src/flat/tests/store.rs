@@ -928,6 +928,60 @@ fn a_rewrite_is_refused_for_a_page_that_is_no_longer_as_it_was_looked_at() {
     assert_eq!(get(&db.reader(), &tree, &key(1)), None);
 }
 
+/// A page that the pool does not hold is loaded for its copy, and the copy
+/// is made while what was loaded is held.
+#[test]
+fn a_writer_copies_a_page_that_the_pool_does_not_hold() {
+    let db = Db::new();
+    let big = |n: u8| vec![n; db.config.max_inline() + 1];
+    let key = |n: u8| [vec![n], vec![b'k'; 400]].concat();
+    let mut writer = db.writer();
+    let tree = FlatTree::create(&mut writer, db.config).expect("a keyspace");
+    for n in 0..60 {
+        tree.put(&mut writer, &key(n), &big(n)).expect("a put");
+    }
+    let first = db.commit(writer);
+    db.write_back();
+
+    // Another pool over the same segments: every page is a miss.
+    let pool = BufferPool::new(PoolConfig {
+        page_size: db.size,
+        capacity: 4 << 20,
+    })
+    .expect("a pool");
+    let loader = PageLoader::new(&pool, &db.table, &db.segments, db.size).expect("a loader");
+    let base = Committed::new(loader, &db.values, first);
+    let mut writer = Private::new(base, &pool, OwnerId::new(1), &db.ids);
+    assert_eq!(pool.stats().misses, 0);
+    for n in (0..60).step_by(2) {
+        assert!(tree.delete(&mut writer, &key(n)).expect("a delete"));
+    }
+    tree.put(&mut writer, &key(1), &big(100)).expect("a put");
+    assert!(pool.stats().misses > 0);
+    for n in (3..60).step_by(2) {
+        assert_eq!(get(&writer, &tree, &key(n)), Some(big(n)));
+    }
+    assert_eq!(get(&writer, &tree, &key(1)), Some(big(100)));
+    assert_eq!(scan_all(&writer, &tree).len(), 30);
+    // The pointers of the values that left, and of those that a merge
+    // carried, are released, each once, in the order of the value log.
+    let released = writer.released().to_vec();
+    assert!(released.len() >= 31, "{} pointers", released.len());
+    assert!(released.is_sorted_by(|a, b| (a.file(), a.offset()) < (b.file(), b.offset())));
+    let parts = writer.into_parts();
+    for (copy, created) in parts.written.iter().map(|(copy, created)| (copy, *created)) {
+        pool.discard(copy).expect("discarded");
+        if created {
+            db.ids.release(copy.page()).expect("released");
+        }
+    }
+    parts
+        .freed
+        .iter()
+        .for_each(|copy| pool.discard(copy).expect("discarded"));
+    assert_eq!(scan_all(&db.reader(), &tree).len(), 60);
+}
+
 #[test]
 fn a_writer_keeps_the_pages_it_frees_and_refuses_them() {
     let db = Db::new();
