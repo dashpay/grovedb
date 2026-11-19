@@ -157,34 +157,38 @@ impl<'a, I: NodeCursor> KVIterator<'a, I> {
 
     /// Returns the current node the iter points to if it's valid for the given
     /// query item returns None otherwise
+    ///
+    /// A key the cursor stands on with no record under it was removed under
+    /// the cursor, and is passed over. Where the record could not be read,
+    /// which the cursor's status says, the walk ends.
     fn get_kv(&mut self, query_item: &QueryItem) -> CostContext<Option<(Vec<u8>, Vec<u8>)>> {
         let mut cost = OperationCost::default();
 
-        if query_item
+        while query_item
             .iter_is_valid_for_type(&self.raw_iter, None, None, self.left_to_right)
             .unwrap_add_cost(&mut cost)
         {
-            let kv = (
-                self.raw_iter
-                    .key()
-                    .unwrap_add_cost(&mut cost)
-                    .expect("key must exist as iter is valid")
-                    .to_vec(),
-                self.raw_iter
-                    .value()
-                    .unwrap_add_cost(&mut cost)
-                    .expect("value must exists as iter is valid")
-                    .to_vec(),
-            );
+            let key = self
+                .raw_iter
+                .key()
+                .unwrap_add_cost(&mut cost)
+                .expect("key must exist as iter is valid")
+                .to_vec();
+            let value = self.raw_iter.value().unwrap_add_cost(&mut cost);
+            let value = value.map(<[u8]>::to_vec);
+            if value.is_none() && self.raw_iter.status().is_err() {
+                break;
+            }
             if self.left_to_right {
                 self.raw_iter.next().unwrap_add_cost(&mut cost)
             } else {
                 self.raw_iter.prev().unwrap_add_cost(&mut cost)
             }
-            Some(kv).wrap_with_cost(cost)
-        } else {
-            None.wrap_with_cost(cost)
+            if let Some(value) = value {
+                return Some((key, value)).wrap_with_cost(cost);
+            }
         }
+        None.wrap_with_cost(cost)
     }
 
     /// Moves the iter to the start of the next query item
