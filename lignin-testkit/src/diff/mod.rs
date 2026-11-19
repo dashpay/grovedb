@@ -84,6 +84,11 @@
 //!   other that is gone. And storage under no path that a comparison ever
 //!   reached: the fuzzer reads what GroveDB can address, not what a file
 //!   holds.
+//! - A tree created again at a path whose drop is still pending, which
+//!   GroveDB forbids its callers. An engine that keeps the records of the
+//!   dropped tree until the flush shows them under the new tree, one that
+//!   hides them at the drop does not, and the comparison of what is stored
+//!   would report it. The workloads do not do it. A mutated stream could.
 //! - One transaction writes at a time: the streams are applied from one
 //!   thread. Commits that race, and what a crash leaves, are other tasks'
 //!   (VER-11, VER-04).
