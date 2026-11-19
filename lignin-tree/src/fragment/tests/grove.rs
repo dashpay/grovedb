@@ -14,7 +14,7 @@ use super::*;
 pub(super) const INLINE_MAX: usize = 256;
 
 #[derive(Debug, Clone)]
-pub(super) struct Node {
+pub(crate) struct Node {
     pub merk: usize,
     pub key: Vec<u8>,
     pub value: Vec<u8>,
@@ -38,7 +38,7 @@ pub(super) struct Node {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct Merk {
+pub(crate) struct Merk {
     pub root: Option<usize>,
     pub host: Option<usize>,
     /// Whether its nodes have a feature and aggregates of nine bytes.
@@ -47,7 +47,7 @@ pub(super) struct Merk {
 }
 
 #[derive(Debug)]
-pub(super) struct Grove {
+pub(crate) struct Grove {
     pub mem: Mem,
     pub log: Log,
     pub fragments: Fragments,
@@ -478,6 +478,11 @@ impl Grove {
 
     /// Makes the node under `key` host one more Merk, and returns it.
     pub fn host(&mut self, merk: usize, key: &[u8], wide: bool) -> usize {
+        self.host_reported(merk, key, wide).0
+    }
+
+    /// As [`Self::host`], with the report of the write.
+    pub fn host_reported(&mut self, merk: usize, key: &[u8], wide: bool) -> (usize, Report) {
         let node = self.find(merk, key).expect("the key is in the Merk");
         self.merks.push(Merk {
             root: None,
@@ -488,8 +493,8 @@ impl Grove {
         let hosted = self.merks.len() - 1;
         self.nodes[node].hosted.push(hosted);
         self.stating.insert(node);
-        self.touch(merk, key);
-        hosted
+        let report = self.touch(merk, key);
+        (hosted, report)
     }
 
     /// Clears a hosted Merk: its host keeps it, with no root.
