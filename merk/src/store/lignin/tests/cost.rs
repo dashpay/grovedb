@@ -30,7 +30,7 @@ use grovedb_storage::{rocksdb_storage::RocksDbStorage, Error as StorageError};
 use grovedb_version::version::GROVE_VERSIONS;
 
 use super::*;
-use crate::{proofs::Query, store::NodeWriteCost};
+use crate::{cost_model::HANDLE_COST_MODEL, proofs::Query, store::NodeWriteCost};
 
 type Tx<'db> = <RocksDbStorage as Storage<'db>>::Transaction;
 
@@ -146,10 +146,6 @@ fn done(result: CostResult<(), Error>) -> (OperationCost, Ended) {
 fn record(result: CostResult<Option<Vec<u8>>, Error>) -> (OperationCost, Ended) {
     (result.cost, outcome(result.value, Ended::Found))
 }
-
-// ---------------------------------------------------------------------
-// A Merk on both stores
-// ---------------------------------------------------------------------
 
 /// What a key of the comparison holds: the kind of its value.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -522,10 +518,6 @@ fn a_merk_on_lignindb_costs_what_it_costs_on_rocksdb_on_every_grove_version() {
     }
 }
 
-// ---------------------------------------------------------------------
-// Each operation of the seam on both engines
-// ---------------------------------------------------------------------
-
 fn at(n: u8) -> Prefix {
     [n; 32]
 }
@@ -591,27 +583,35 @@ enum Bill {
     Prepaid,
 }
 
-/// What a put of `node` is to pay for its value, by the rule the storage
-/// layer checks a writer's cost with (`cost-model.md` K2).
+/// What a put of `node` is to pay for its value: what the storage layer
+/// charges a put of its record that comes with no cost, less the stored
+/// key (`cost-model.md` K1, K2).
 fn paid_value_len(node: &TreeNode) -> u32 {
-    use integer_encoding::VarInt;
-
-    let stored_key_len = (32 + node.key().len()) as u32;
+    let stored_key_len = HANDLE_COST_MODEL.stored_key_len(node.key().len());
     let sizes = (
         node.feature_type()
             .tree_feature_specialized_type_and_length(),
         node.child_ref_and_sum_size(true),
         node.child_ref_and_sum_size(false),
     );
-    let mut cost = OperationCost::default();
-    cost.add_key_value_storage_costs(
-        stored_key_len,
-        node.encoding_length() as u32,
-        Some(sizes),
-        None,
-    )
-    .expect("a put with no cost of the writer's");
-    cost.storage_cost.added_bytes - stored_key_len - stored_key_len.required_space() as u32
+    let mut unbilled = OperationCost::default();
+    unbilled
+        .add_key_value_storage_costs(
+            stored_key_len as u32,
+            node.encoding_length() as u32,
+            Some(sizes),
+            None,
+        )
+        .expect("a put with no cost of the writer's");
+    let new_key = KeyValueStorageCost {
+        new_node: true,
+        ..Default::default()
+    };
+    let key_cost = (HANDLE_COST_MODEL.complete_new_key_cost(Some(new_key), stored_key_len))
+        .expect("a cost stays a cost")
+        .key_storage_cost
+        .added_bytes;
+    unbilled.storage_cost.added_bytes - key_cost
 }
 
 fn billed(node: &TreeNode, bill: Bill) -> Option<NodeWriteCost> {
@@ -959,6 +959,8 @@ fn history() -> Vec<Part> {
     let g = plain(b"g", 77);
     let h = plain(b"h", 5);
     let n = plain(b"n", 64);
+    let late = plain(b"late", 9);
+    let z = plain(b"z", 6);
     let (k, m) = (b"k".to_vec(), b"m".to_vec());
     let key_freed = Freed::Plain(34);
     let root_cost = |old, new: &[u8]| {
@@ -1011,6 +1013,9 @@ fn history() -> Vec<Part> {
         step(15, Step::PutMeta(m.clone(), vec![3; 9])),
         put_lone(16, &g, NodeChange::ValueWritten, Bill::New),
         put_lone(17, &h, NodeChange::ValueWritten, Bill::New),
+        put_lone(23, &late, NodeChange::ValueWritten, Bill::New),
+        put_lone(24, &z, NodeChange::ValueWritten, Bill::New),
+        put_lone(25, &plain(b"a", 6), NodeChange::ValueWritten, Bill::New),
         step(10, Step::Has(a.key.clone())),
     ]);
 
@@ -1095,12 +1100,28 @@ fn history() -> Vec<Part> {
         step(15, Step::DeleteMeta(m.clone())),
     ];
 
+    // A batch is charged by subtree and then by key. The removal in the
+    // first subtree frees plain bytes and the one in the second frees
+    // bytes of the owner that the first way of adding removals up drops
+    // when they join plain ones, so the sum says which came first. Their
+    // keys are in the other order.
+    let ordered = vec![
+        delete_lone(
+            25,
+            &plain(b"a", 6),
+            freeing(Freed::Sectioned(3, 34), Freed::Sectioned(0, 60)),
+        ),
+        delete_lone(24, &z, freeing(key_freed, Freed::Plain(50))),
+    ];
+
     // A put whose cost does not match its record refuses the batch. What
     // came before it in the order of a batch stays charged, and what
-    // comes after it is not reached.
+    // comes after it is not reached: the removal after it would load a
+    // committed record.
     let refused = vec![
         step(22, Step::PutMeta(b"before".to_vec(), vec![1; 30])),
         step(22, Step::Commit(vec![Change::DeleteAux(k.clone(), None)])),
+        delete_lone(23, &late, None),
         put_lone(21, &plain(b"early", 9), NodeChange::ValueWritten, Bill::New),
         put_lone(
             22,
@@ -1108,11 +1129,10 @@ fn history() -> Vec<Part> {
             NodeChange::ValueWritten,
             Bill::Mismatched,
         ),
-        put_lone(23, &plain(b"late", 9), NodeChange::ValueWritten, Bill::New),
     ];
     let after_the_refusal = vec![
         step(21, Step::Has(b"early".to_vec())),
-        step(23, Step::Has(b"late".to_vec())),
+        step(23, Step::Has(late.key.clone())),
         step(22, Step::Meta(b"before".to_vec())),
     ];
 
@@ -1188,6 +1208,7 @@ fn history() -> Vec<Part> {
         Part::Commit,
         Part::Deferred(second),
         Part::Deferred(third),
+        Part::Deferred(ordered),
         Part::Deferred(refused),
         Part::Unstaged(after_the_refusal),
         Part::NotTaken(not_taken),
@@ -1210,7 +1231,7 @@ fn every_operation_of_the_store_costs_what_it_costs_on_rocksdb() {
         let _arithmetic = use_basic_sectioned_removal_addition_version(arithmetic);
         let expected = play_on_rocks(&history);
         let found = play_on_lignin(&history, |_, _| ());
-        assert_eq!(found.len(), parts.len());
+        assert_eq!((found.len(), expected.len()), (parts.len(), parts.len()));
         for (n, ((found, expected), part)) in found.iter().zip(&expected).zip(&parts).enumerate() {
             let script = match part {
                 Part::Deferred(script)
@@ -1219,6 +1240,10 @@ fn every_operation_of_the_store_costs_what_it_costs_on_rocksdb() {
                 | Part::NotTaken(script) => script,
                 Part::Commit => unreachable!("a commit is no act"),
             };
+            assert_eq!(
+                (found.0.len(), expected.0.len()),
+                (script.len(), script.len())
+            );
             for (((found, expected), step), s) in
                 found.0.iter().zip(&expected.0).zip(script).zip(0..)
             {
@@ -1249,11 +1274,23 @@ fn every_operation_of_the_store_costs_what_it_costs_on_rocksdb() {
             removals.storage_cost.removed_bytes.has_removal(),
             "{removals:?}"
         );
-        let refused = applied(3);
+        // The two removals of the ordered batch add up to another sum in
+        // the other order, under the first arithmetic.
+        let (ordered, ended) = applied(3);
+        assert_eq!(ended, Ended::Done);
+        let mut in_the_other_order = sectioned(3, 34) + sectioned(0, 60);
+        in_the_other_order += Freed::Plain(84).bytes();
+        assert_eq!(
+            ordered.storage_cost.removed_bytes == in_the_other_order,
+            arithmetic == 1,
+            "{ordered:?}"
+        );
+        let refused = applied(4);
         assert_eq!(refused.1, Ended::Failed("cost"));
-        assert!(refused.0.seek_count >= 4, "{refused:?}");
+        assert_eq!(refused.0.seek_count, 5, "{refused:?}");
+        assert_eq!(refused.0.storage_loaded_bytes, 0, "{refused:?}");
         assert_eq!(refused.0.storage_cost, StorageCost::default());
-        let not_taken = applied(5);
+        let not_taken = applied(6);
         assert_eq!(not_taken.1, Ended::Failed("storage"));
         assert!(not_taken.0.seek_count >= 4, "{not_taken:?}");
         assert_eq!(not_taken.0.storage_cost, StorageCost::default());
@@ -1272,7 +1309,7 @@ fn the_store_reports_what_the_model_hands_out_and_nothing_else() {
     // part, and compared with what the cost model handed out meanwhile. A
     // charge worked out beside the model is in the first sum only, and a
     // charge of the model that the store dropped in the second only. The
-    // test calls no function of the model itself.
+    // test asks the model for no charge itself.
     let history = history();
     let mut total = OperationCost::default();
     ledger::take();
@@ -1286,17 +1323,6 @@ fn the_store_reports_what_the_model_hands_out_and_nothing_else() {
     assert!(total.storage_cost.added_bytes > 1_500, "{total:?}");
     assert!(total.storage_cost.replaced_bytes > 100, "{total:?}");
     assert!(total.storage_cost.removed_bytes.has_removal(), "{total:?}");
-
-    // A cost from beside the model does not balance.
-    let store = Lignin::new();
-    let path = store.path();
-    let transaction = path.begin();
-    let reader = LigninNodeStore::read_only(&transaction, ROOT);
-    let read = reader.has_node(b"k");
-    assert!(!read.value.expect("the read"));
-    assert_eq!(read.cost, ledger::issued());
-    let beside = read.cost + OperationCost::with_seek_count(1);
-    assert_ne!(beside, ledger::take());
 }
 
 fn seek_and_load(loaded: usize) -> OperationCost {
@@ -1369,6 +1395,17 @@ fn a_fetch_is_one_seek_and_the_record_length_however_it_is_served() {
     );
     assert!(engine_reads() - before > 3);
     assert_eq!(again.cost, read.cost);
+
+    // A read that gives up is charged as a lookup that found nothing.
+    let unsteady = Unsteady {
+        under: &writer,
+        stale: AtomicUsize::new(usize::MAX),
+        missing: AtomicUsize::new(0),
+    };
+    let store = LigninNodeStore::new(&unsteady, ROOT, Mode::Deferred(None));
+    let given_up = store.get_node(&root, NO_VALUE_DEFINED_COST, version());
+    assert!(matches!(given_up.value, Err(Error::StorageError(_))));
+    assert_eq!(given_up.cost, seek_and_load(0));
 
     // An immediate handle is charged nothing for the same reads.
     let store = LigninNodeStore::immediate(&writer, ROOT);

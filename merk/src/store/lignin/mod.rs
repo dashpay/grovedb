@@ -476,8 +476,7 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
     fn write_node(&self, node: &TreeNode, change: NodeChange) -> CostResult<(), Error> {
         match LigninChangeSet::of_node(self.subtree.clone(), node, change) {
             Ok(change_set) => self.submit(change_set, "a write", false),
-            // Nothing was handed on, and nothing is charged.
-            Err(error) => Err(error).wrap_with_cost(Default::default()),
+            Err(error) => Err(error).wrap_with_cost(MODEL.refused_write()),
         }
     }
 

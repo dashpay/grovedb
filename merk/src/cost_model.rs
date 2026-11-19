@@ -32,8 +32,8 @@ use crate::{
 /// charges by.
 ///
 /// A handle is opened with no grove version, on every engine: neither the
-/// storage contexts of `grovedb-storage` nor the handles of
-/// [`store::lignin`](crate::store) are given one, and most operations of a
+/// storage contexts of `grovedb-storage` nor the handles of `store::lignin`
+/// are given one, and most operations of a
 /// [`NodeStore`](crate::store::NodeStore) take none. So a handle charges by
 /// one version, this one, and that is right while
 /// [`storage_cost_model`] gives it for every grove version. A grove version
