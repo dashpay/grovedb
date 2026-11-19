@@ -1,13 +1,14 @@
 //! A page store on disk with what a write transaction needs around it that
-//! is not built yet: the commit (TXN-05), reduced to the steps that install
-//! a transaction's frames and publish its version, and the check of the
-//! committed tree pages (VER-07). The subtree directory is the real one
-//! (`lignin_tree::directory`).
+//! is not built yet: the open of the engine (TXN-07), reduced to making the
+//! stores, the log and the first commit, and the check of the committed
+//! tree pages (VER-07). The subtree directory is the real one
+//! (`lignin_tree::directory`), and so is the commit (`crate::commit`).
 
 #![allow(dead_code)]
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex, MutexGuard, OnceLock, PoisonError,
@@ -17,17 +18,20 @@ use std::{
 use lignin_format::{
     manifest::Manifest,
     tree_page::{Hash, Side},
-    wal::{write_file_start, GroupWriter, LogStart},
-    CellAddress, CommitVersion, FileId, PageId, PageSize,
+    wal::GroupWriter,
+    CellAddress, CommitVersion, PageId, PageSize,
 };
 use lignin_io::{StdVfs, Vfs};
 use lignin_store::{
     alloc::{PageAllocator, PageState, Pins},
     cache::{BufferPool, OwnerId, PoolConfig},
+    flush::{FlushConfig, FlushError, FlushState, Stores, WriteBack},
     load::{LoadBuffers, PageLoader},
     segment::{ManifestStore, SegmentStore},
-    table::{Link, LinkError, PageTable},
+    stats::Stats,
+    table::{PageTable, TableCheckpoints},
     values::ValueStore,
+    wal::{LogOptions, LogReader, LogStore},
 };
 use lignin_tree::{
     directory::Directory,
@@ -35,12 +39,13 @@ use lignin_tree::{
     fragment::Layout,
     hash::{HashRules, Refusal},
     node::{Lease, NodePage, NodeRef},
-    value::{InlinePolicy, ValueSource},
+    value::InlinePolicy,
 };
 
 use crate::{
+    commit::{CommitError, CommitState, Committer, Published},
     snapshot::{ReadPath, Reclaim, Versions},
-    txn::{path::Store, txn::Sealed, Commits, Keyspaces, Subtree, TxnError, WritePath, WriteTxn},
+    txn::{path::Store, Batch, Commits, KeySet, Keyspaces, Subtree, TxnError, WritePath, WriteTxn},
 };
 
 pub const SIZE: PageSize = PageSize::MIN;
@@ -168,14 +173,27 @@ pub struct Db {
     pub values: ValueStore,
     pub commits: Commits,
     pub counts: Counts,
+    /// The log, which every commit appends its group to.
+    pub log: LogStore,
+    pub manifest: Mutex<ManifestStore>,
+    pub checkpoints: TableCheckpoints,
+    /// What write-back keeps of the store. No loop runs it: a test makes
+    /// its turns, and so does a committer that has to wait for room.
+    pub flush: FlushState,
+    /// What the commits of the store share, and the errors of write-back
+    /// that they were told.
+    pub committing: CommitState,
+    pub flush_errors: Arc<Mutex<Vec<String>>>,
+    /// The counts of the store, which a write transaction is counted in
+    /// while it has a write.
+    pub stats: Stats,
+    /// The files of the store, and the directory they are in.
+    pub vfs: Arc<dyn Vfs>,
+    pub dir: PathBuf,
     keyspaces: OnceLock<Keyspaces>,
     directory: OnceLock<FlatTree>,
-    commit_lock: Mutex<()>,
-    /// The log groups of the commits, one after the other: what gives each
-    /// committed value that is out of line its name.
-    log: Mutex<Vec<u8>>,
     used: Mutex<BTreeSet<PageId>>,
-    _dir: tempfile::TempDir,
+    _dir: Option<tempfile::TempDir>,
 }
 
 struct Hook(Arc<Db>);
@@ -195,15 +213,51 @@ impl Reclaim for Hook {
 }
 
 impl Db {
-    /// An empty store with a pool of `frames` frames. Its first commit
-    /// makes the flat keyspaces and the directory.
+    /// An empty store with a pool of `frames` frames, in a directory of its
+    /// own. Its first commit makes the flat keyspaces and the directory.
     pub fn new(frames: usize) -> (Arc<Self>, Versions) {
-        let dir = tempfile::tempdir().expect("a directory");
-        let vfs: Arc<dyn Vfs> = Arc::new(StdVfs);
+        // In memory where there is such a place: the syncs of a store's
+        // first files are most of what its tests would wait for.
+        let memory = Path::new("/dev/shm");
+        let dir = match memory.is_dir() {
+            true => tempfile::tempdir_in(memory),
+            false => tempfile::tempdir(),
+        };
+        let dir = dir.expect("a directory");
+        let path = dir.path().to_path_buf();
+        Self::on(
+            Arc::new(StdVfs),
+            &path,
+            frames,
+            LogOptions::default(),
+            FlushConfig::new(SIZE),
+            Some(dir),
+        )
+    }
+
+    /// An empty store in the directory `dir` of `vfs`, which is there and
+    /// holds nothing, with a log that is written as `options` say and a
+    /// write-back that works as `flush` says.
+    pub fn on(
+        vfs: Arc<dyn Vfs>,
+        dir: &Path,
+        frames: usize,
+        options: LogOptions,
+        flush: FlushConfig,
+        keep: Option<tempfile::TempDir>,
+    ) -> (Arc<Self>, Versions) {
         let empty = Manifest::new(SIZE, Default::default(), None, Vec::new()).expect("a manifest");
-        let manifest = ManifestStore::create(vfs, dir.path(), empty).expect("a manifest");
+        let manifest = ManifestStore::create(vfs.clone(), dir, empty).expect("a manifest");
         let segments = SegmentStore::open(&manifest).expect("the segments");
         let values = ValueStore::open(&manifest, &[]).expect("the value log");
+        let checkpoints = TableCheckpoints::open(&manifest).expect("the table checkpoints");
+        // A session reads the log to its end and opens it there.
+        let named = manifest.manifest().expect("the manifest");
+        let end = (LogReader::new(vfs.clone(), dir, named).into_end()).expect("the log is read");
+        let log = LogStore::open(&manifest, &end, options).expect("the log");
+        let flush_errors = Arc::new(Mutex::new(Vec::new()));
+        let told = flush_errors.clone();
+        let report = move |error: &FlushError| locked(&told).push(error.to_string());
         let pool = BufferPool::new(PoolConfig {
             page_size: SIZE,
             capacity: frames * (SIZE.get() + 512),
@@ -217,20 +271,46 @@ impl Db {
             values,
             commits: Commits::new(CommitVersion::EMPTY),
             counts: Counts::default(),
+            log,
+            manifest: Mutex::new(manifest),
+            checkpoints,
+            flush: FlushState::new(flush),
+            committing: CommitState::reporting(report),
+            flush_errors,
+            stats: Stats::new(),
+            vfs,
+            dir: dir.to_path_buf(),
             keyspaces: OnceLock::new(),
             directory: OnceLock::new(),
-            commit_lock: Mutex::new(()),
-            log: Mutex::new({
-                let mut log = Vec::new();
-                write_file_start(FileId::MIN, &LogStart::FIRST, &mut log).expect("a log file");
-                log
-            }),
             used: Mutex::new(BTreeSet::new()),
-            _dir: dir,
+            _dir: keep,
         });
         let versions = Versions::with_reclaim(CommitVersion::EMPTY, Box::new(Hook(db.clone())));
+        {
+            // The manifest names no table checkpoint, and the log turns to
+            // a file of this session before its first append.
+            let write_back = db.write_back(&versions);
+            write_back.adopt(None).expect("the whole log is kept");
+            assert!(write_back.roll_log().expect("the log has a file"));
+        }
         db.make_keyspaces(&versions);
         (db, versions)
+    }
+
+    /// The write-back of this store under its `versions`.
+    pub fn write_back<'s>(&'s self, versions: &'s Versions) -> WriteBack<'s> {
+        let stores = Stores {
+            pool: &self.pool,
+            table: &self.table,
+            segments: &self.segments,
+            values: &self.values,
+            log: &self.log,
+            checkpoints: &self.checkpoints,
+            manifest: &self.manifest,
+            versions,
+            page_values: None,
+        };
+        WriteBack::new(stores, &self.flush, SIZE).expect("a pool of the store's page size")
     }
 
     pub fn loader(&self) -> PageLoader<'_> {
@@ -242,7 +322,9 @@ impl Db {
     }
 
     /// The first commit: four empty flat trees, and the subtree directory
-    /// with the Merks every test may write ([`ENTERED`]).
+    /// with the Merks every test may write ([`ENTERED`]). It is made by
+    /// hand, as the engine's create will make it (TXN-07): a write path
+    /// needs the keyspaces to be there.
     fn make_keyspaces(&self, versions: &Versions) {
         let guard = versions.guard();
         let base = self.committed(&guard, CommitVersion::EMPTY);
@@ -260,7 +342,23 @@ impl Db {
         }
         self.keyspaces.set(keyspaces).expect("made once");
         self.directory.set(*directory.tree()).expect("made once");
-        let commit = version(1);
+
+        let lock = self.committing.lock();
+        let counts = self.values.step().expect("the counts");
+        let at = self.log.next_group().expect("a place");
+        let commit = at.version();
+        assert_eq!(commit, version(1));
+        let mut bytes = Vec::new();
+        let mut group = GroupWriter::new(commit, at.address(), &mut bytes).expect("a group");
+        pages.log_values(&mut group).expect("no value");
+        for page in pages.written().collect::<Vec<_>>() {
+            assert!(pages.log_page(page, &mut group).expect("a run"));
+        }
+        group.finish();
+        let appended = self.log.append_group(&at, &bytes).expect("it is appended");
+        (self.write_back(versions))
+            .committed(commit, appended.at, &bytes)
+            .expect("write-back is told");
         for (copy, created) in pages.into_parts().written {
             assert!(created);
             let page = copy.page();
@@ -268,8 +366,10 @@ impl Db {
             self.ids.publish(page).expect("it is private");
             locked(&self.used).insert(page);
         }
+        drop(counts);
         self.commits.record(commit, Default::default());
         versions.publish(commit).expect("the first version");
+        drop(lock);
     }
 
     pub fn keyspaces(&self) -> Keyspaces {
@@ -312,6 +412,7 @@ impl Db {
             ids: &self.ids,
             values: &self.values,
             commits: &self.commits,
+            stats: &self.stats,
             directory: self.directory(),
         };
         WritePath::new(
@@ -337,146 +438,123 @@ impl Db {
         Committed::new(self.loader(), &self.values, guard, at)
     }
 
-    /// Commits `txn`: the conflict rule, the rebase, the install and the
-    /// publication (CM3 steps 1 to 4, 7 and 8). It writes no log.
+    /// The commit path of this store under its `versions`.
+    pub fn committer<'s>(&'s self, versions: &'s Versions) -> Committer<'s> {
+        Committer::new(
+            self.path(versions),
+            self.write_back(versions),
+            &self.table,
+            &self.log,
+            &self.committing,
+        )
+    }
+
+    /// Commits `txn` (`crate::commit`), with the hash rules of these
+    /// tests, and counts what the commit did.
     pub fn commit(&self, versions: &Versions, txn: &WriteTxn<'_>) -> Result<Outcome, TxnError> {
-        let lock = locked(&self.commit_lock);
-        let parts = match txn.seal()? {
-            Sealed::Empty => return Ok(Outcome::Empty),
-            Sealed::Conflict => {
-                self.counts.conflicts.fetch_add(1, Ordering::Relaxed);
-                return Ok(Outcome::Conflict);
+        let committer = self.committer(versions);
+        let stale = txn.stats().stale_nodes as u64;
+        match self.commit_as(&committer, txn, None) {
+            Ok(None) => Ok(Outcome::Empty),
+            Ok(Some(published)) => {
+                assert_eq!(published.evaluated as u64, stale);
+                Ok(Outcome::Committed(published.version))
             }
-            Sealed::Ready(parts) => *parts,
-        };
-        assert_eq!(parts.base, versions.latest(), "the frames are rebased");
-        let commit = parts.base.next().expect("a next version");
-        let mut created = Vec::new();
-        let mut freed = Vec::new();
-        let mut unused = Vec::new();
+            Err(CommitError::Conflict) => Ok(Outcome::Conflict),
+            Err(CommitError::ScopesOpen) => Err(TxnError::ScopeOpen),
+            Err(CommitError::NotFinalized) => Err(TxnError::NotFinalized),
+            // The commit was refused, and the transaction is as it was.
+            Err(CommitError::Refused(error)) => Err(error),
+            Err(error) => panic!("the commit: {error}"),
+        }
+    }
 
-        // The values of tree cells, as the commit will handle them
-        // (`lignin_tree::value`, "The commit"): each goes into the group
-        // for the page of its cell, which names it by its place in the log
-        // from then on, and its bytes go with the frame of that page.
-        // Nothing of these stores is in the value log, so no pointer is
-        // released and the counts do not change.
-        let (mut tree, mut values, mut hashes) = (parts.tree, parts.values, parts.hashes);
-        let source = ValueSource::new(&self.values, self.loader(), parts.base);
-        // Every stale hash is made before a page is logged (CM3 step 5).
-        // Where the writer made every hash itself, no rule is called.
-        let stale = hashes.len() as u64;
-        self.counts.stale_nodes.fetch_add(stale, Ordering::Relaxed);
-        hashes
-            .evaluate_all(
-                &mut tree,
-                &mut values.reader(&source),
-                &mut Rules(&self.counts.rule_calls),
-            )
-            .expect("the stale hashes are made");
-        let mut log = locked(&self.log);
-        let address = LogStart::FIRST
-            .address(log.len() as u64)
-            .expect("an address");
-        let mut group = GroupWriter::new(commit, address, &mut log).expect("a group");
-        values
-            .log_values(&mut tree, &source, &mut group)
-            .expect("the values are logged");
-        group.finish();
-        drop(log);
-        assert!(values.released_pointers().is_empty() && values.change().is_empty());
-        self.counts
-            .value_pages
-            .fetch_add(values.pages().count() as u64, Ordering::Relaxed);
-        self.counts
-            .dropped
-            .fetch_add(parts.dropped.len() as u64, Ordering::Relaxed);
-        let tree = tree.into_parts();
-        for (page, copy) in tree.written {
-            self.counts.tree_copies.fetch_add(1, Ordering::Relaxed);
-            if copy.is_unchanged() {
-                (self.counts.tree_copies_unchanged).fetch_add(1, Ordering::Relaxed);
-                self.pool.discard(&copy.frame).expect("it is discarded");
-                continue;
-            }
-            let mut latch = copy.frame.write().expect("the copy is the commit's");
-            values.attach(&mut latch).expect("the bytes are attached");
-            drop(latch);
-            drop(self.pool.install(&copy.frame, commit).expect("it installs"));
-            if copy.created {
-                created.push(page);
-            }
-        }
-        for (page, copy) in tree.freed {
-            self.pool.discard(&copy).expect("it is discarded");
-            freed.push(page);
-        }
-        unused.extend(tree.unused);
+    /// Commits `txn` through `committer`, a commit path of this store, with
+    /// `also` in the key set of the commit, and counts what the commit
+    /// did: `None` for a commit that took no version.
+    pub fn commit_as(
+        &self,
+        committer: &Committer<'_>,
+        txn: &WriteTxn<'_>,
+        also: Option<&KeySet>,
+    ) -> Result<Option<Box<Published>>, CommitError> {
+        self.counted(committer, |rules| {
+            committer.commit_covering(txn, rules, also)
+        })
+    }
 
-        let guard = versions.guard();
-        let flat = parts.flat.into_writer(&guard).into_parts();
-        drop(guard);
-        for (copy, made) in flat.written {
-            let page = copy.page();
-            drop(self.pool.install(&copy, commit).expect("it installs"));
-            if made {
-                created.push(page);
+    /// Writes `batch` through `committer` with no transaction (RD7), and
+    /// counts what its commit did.
+    pub fn write_as(
+        &self,
+        committer: &Committer<'_>,
+        batch: &Batch<'_>,
+    ) -> Result<Option<Box<Published>>, CommitError> {
+        self.counted(committer, |rules| committer.write(batch, rules))
+    }
+
+    /// Runs `commit` with the hash rules of these tests, and counts what
+    /// the commit did.
+    fn counted(
+        &self,
+        committer: &Committer<'_>,
+        commit: impl FnOnce(&mut Rules<'_>) -> Result<crate::commit::Committed, CommitError>,
+    ) -> Result<Option<Box<Published>>, CommitError> {
+        let versions = committer.path().versions();
+        let before = versions.latest();
+        let committed = commit(&mut Rules(&self.counts.rule_calls));
+        match committed {
+            Ok(crate::commit::Committed::Empty) => Ok(None),
+            Ok(crate::commit::Committed::Published(published)) => {
+                self.count(versions, before, &published);
+                Ok(Some(published))
+            }
+            Err(CommitError::NotDurable { published, source }) => {
+                self.count(versions, before, &published);
+                Err(CommitError::NotDurable { published, source })
+            }
+            Err(error) => {
+                if matches!(error, CommitError::Conflict) {
+                    self.counts.conflicts.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(error)
             }
         }
-        for copy in flat.freed {
-            self.pool.discard(&copy).expect("it is discarded");
-            freed.push(copy.page());
-        }
-        unused.extend(flat.unused);
+    }
 
+    /// Adds what the commit `published` did to the counts of the store.
+    fn count(&self, versions: &Versions, before: CommitVersion, published: &Published) {
+        let counts = &self.counts;
+        let add = |count: &AtomicU64, by: usize| count.fetch_add(by as u64, Ordering::Relaxed);
+        assert!(published.version > before, "a commit takes a later version");
+        assert!(published.miscounted.is_none(), "a value is miscounted");
         let mut used = locked(&self.used);
-        for page in created {
-            self.ids.publish(page).expect("it is private");
-            if !used.insert(page) {
-                self.counts.ids_reused.fetch_add(1, Ordering::Relaxed);
+        for page in &published.created {
+            if !used.insert(*page) {
+                add(&counts.ids_reused, 1);
             }
         }
         drop(used);
-        for page in freed {
-            // A page that was made under an id that had been freed, and
-            // that is freed again before write-back gave it a link, has
-            // the earlier free link as its newest: the table takes no
-            // second one.
-            match self.table.push(page, Link::free(commit)) {
-                Ok(()) => {}
-                Err(LinkError::AlreadyFree) => {
-                    self.counts.freed_unwritten.fetch_add(1, Ordering::Relaxed);
-                }
-                Err(error) => panic!("the free link of {page}: {error}"),
-            }
-            self.pool.free(page, commit).expect("it is freed");
-            self.ids.free(page, commit).expect("it is live");
-            self.counts.pages_freed.fetch_add(1, Ordering::Relaxed);
-        }
-        for page in unused {
-            self.ids.release(page).expect("it is private");
-        }
-        // The key set is recorded before the version is published, so that
-        // whoever reads the version finds it (CM3 step 8).
-        self.commits.record(commit, parts.keys);
-        versions.publish(commit).expect("the next version");
-        if !parts.dropped.is_empty() {
-            // The handle the transaction hands on is the directory of the
+        add(&counts.pages_freed, published.freed.len());
+        add(&counts.freed_unwritten, published.freed_unlinked);
+        add(&counts.value_pages, published.value_pages);
+        add(&counts.stale_nodes, published.evaluated);
+        add(&counts.dropped, published.dropped.len());
+        add(&counts.tree_copies, published.tree_copies);
+        add(&counts.tree_copies_unchanged, published.unchanged_tree);
+        add(&counts.commits, 1);
+        if !published.dropped.is_empty() {
+            // The handle the commit hands on is the directory of the
             // version that was published: it leaves out what the freshly
             // loaded one leaves out.
             let guard = versions.guard();
-            let pages = self.committed(&guard, commit);
+            let pages = self.committed(&guard, published.version);
             let fresh = self.directory_at(&pages);
             let mut entries = fresh.entries();
             while let Some((_, entry)) = entries.next(&pages).expect("an entry") {
-                assert_eq!(parts.directory.is_live(&entry), fresh.is_live(&entry));
+                assert_eq!(published.directory.is_live(&entry), fresh.is_live(&entry));
             }
         }
-        drop(parts.pin);
-        drop(lock);
-        self.counts.commits.fetch_add(1, Ordering::Relaxed);
-        versions.reclaim();
-        Ok(Outcome::Committed(commit))
     }
 
     /// How many page ids are in each state.

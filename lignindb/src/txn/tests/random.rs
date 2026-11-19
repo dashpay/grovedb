@@ -24,7 +24,7 @@ fn key(rng: &mut Rng, keys: usize) -> Vec<u8> {
 }
 
 /// A batch of a few changes, as `tx` would make them now.
-fn batch<'s>(world: &World<'s>, tx: &Tx<'s>, rng: &mut Rng, keys: usize) -> OwnedBatch {
+pub(crate) fn batch<'s>(world: &World<'s>, tx: &Tx<'s>, rng: &mut Rng, keys: usize) -> OwnedBatch {
     let mut batch = OwnedBatch::default();
     if rng.chance(70) {
         let merks = 1 + rng.below(2);

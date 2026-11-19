@@ -32,8 +32,8 @@ use super::key::KeySet;
 /// What this costs is the keys of the commits that are published while a
 /// transaction with writes runs no operation. Remembering only the entries
 /// a commit meets, at the commit, would bound that, and would make the
-/// committer take each transaction's lock. TXN-05 owns how CF3 is kept and
-/// can change this without changing what a transaction is told.
+/// committer take each transaction's lock. The commit keeps CF3 this way
+/// (`crate::commit`, "The conflict rule").
 pub struct Commits {
     inner: Mutex<Inner>,
 }

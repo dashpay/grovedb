@@ -10,6 +10,7 @@ use lignin_store::{
     alloc::PageAllocator,
     cache::{BufferPool, OwnerId},
     load::{LoadBuffers, PageLoader},
+    stats::Stats,
     values::ValueStore,
 };
 use lignin_tree::{
@@ -92,6 +93,9 @@ pub struct WritePath<'s> {
     pub(crate) ids: &'s PageAllocator,
     pub(crate) values: &'s ValueStore,
     pub(crate) commits: &'s Commits,
+    /// The counts of the store, which are told of every write transaction
+    /// that has a write (`lignin_store::stats`).
+    pub(crate) stats: &'s Stats,
     /// The keyspace of the subtree directory (`lignin_tree::directory`).
     pub(crate) directory: FlatTree,
     pub(crate) keyspaces: Keyspaces,
@@ -111,6 +115,8 @@ pub(crate) struct Store<'s> {
     pub(crate) ids: &'s PageAllocator,
     pub(crate) values: &'s ValueStore,
     pub(crate) commits: &'s Commits,
+    /// The counts of the store, made beside its write-back.
+    pub(crate) stats: &'s Stats,
     /// The keyspace of the store's subtree directory: its root page, which
     /// is the same for good, and the configuration of its pages.
     pub(crate) directory: FlatTree,
@@ -138,6 +144,7 @@ impl<'s> WritePath<'s> {
             ids: store.ids,
             values: store.values,
             commits: store.commits,
+            stats: store.stats,
             directory: store.directory,
             keyspaces,
             layout,
@@ -153,6 +160,12 @@ impl<'s> WritePath<'s> {
     /// The key sets of the database's commits.
     pub fn commits(&self) -> &'s Commits {
         self.commits
+    }
+
+    /// The counts of the store. A write transaction counts among its open
+    /// ones while it has a write ([`Stats::open_writes`]).
+    pub fn stats(&self) -> &'s Stats {
+        self.stats
     }
 
     /// The flat keyspaces of the records.
@@ -190,7 +203,8 @@ impl<'s> WritePath<'s> {
 
     /// Begins a write transaction (`transactions.md` WT1). Any number of
     /// them may be open. It holds nothing until it writes: no version pin,
-    /// no private copy and no page id (PN1).
+    /// no private copy and no page id (PN1). So it is with its first write
+    /// that it counts as an open write transaction of the store.
     pub fn begin(&self) -> WriteTxn<'s> {
         WriteTxn::new(*self)
     }

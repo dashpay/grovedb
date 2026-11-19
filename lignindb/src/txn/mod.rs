@@ -21,8 +21,8 @@
 //! RD10 for what a transaction reads, section 7 for its write set, its
 //! frames, the rebase and rollback, PN8 for locations that are kept, PV7
 //! and ID1 for what its private copies and page ids hold back. The module
-//! writes no file (WT4) and takes no version: the commit is TXN-05's, and
-//! what it is handed is at the end of this page.
+//! writes no file (WT4) and takes no version: the commit is
+//! [`crate::commit`], and what it is handed is at the end of this page.
 //!
 //! No example runs here: a [`WritePath`] is made where the database is
 //! opened, of the structures of one store (TXN-07). The tests make one over
@@ -226,8 +226,9 @@
 //!
 //! # What the commit takes
 //!
-//! `WriteTxn::seal` hands the transaction to its commit, which holds the
-//! commit lock (CM3 steps 1 to 4): the commits published since are taken
+//! `WriteTxn::seal` hands the transaction to its commit
+//! ([`crate::commit`]), which holds the commit lock (CM3 steps 1 to 4):
+//! the commits published since are taken
 //! in, a met write is the conflict (CF2), and otherwise the frames are over
 //! the latest version and are handed over with the key set of the commit.
 //! The commit installs the tree copies, each with the run of delta records
@@ -255,6 +256,13 @@
 //!   its frames are given up (ID1).
 //! - **A watch on the key sets of commits** while it has a write
 //!   ([`Commits`]).
+//! - **A place among the open write transactions of the store's counts**
+//!   ([`WritePath::stats`]), from its first write until its write set is
+//!   empty again: by its commit, a rollback, a rollback to a savepoint
+//!   that takes every write out, or its drop. That is the time in which it
+//!   can hold private copies, which is what holds the log
+//!   (`lignin_store::stats`, "What an operator watches"). A transaction
+//!   that only reads is not counted.
 //!
 //! # Choices made here that the plan left open
 //!
@@ -265,8 +273,8 @@
 //! 2. **The key sets of commits are kept until every transaction with
 //!    writes has taken them** ([`Commits`]). The other way, marking the
 //!    met writes at the commit, makes the committer take each
-//!    transaction's lock. TXN-05 owns how CF3 is kept and can change it
-//!    behind the same calls.
+//!    transaction's lock. The commit keeps CF3 this way
+//!    ([`crate::commit`], "The conflict rule").
 //! 3. **The subtree directory is written through the transaction's own
 //!    flat pages**, in the operation that changes it, so its records
 //!    commit, roll back and are made again with the frames. A batch is
@@ -347,15 +355,17 @@ mod view;
 mod write;
 pub(crate) mod write_set;
 
-/// A page store on disk with the parts of a commit that install a
-/// transaction's frames and publish its version: the store of this module's
-/// own tests.
+/// A page store on disk with its log and its write-back, as the open of the
+/// engine will make them: the store of this crate's own tests.
 ///
 /// It is for the tests of crates that build on a write transaction before
-/// the engine can be opened (TXN-07) and before the commit exists (TXN-05):
-/// [`testing::Db::new`] makes a store, [`testing::Db::path`] its write path,
-/// and [`testing::Db::commit`] commits a transaction. It writes no log, and
-/// it panics where a database would return an error.
+/// the engine can be opened (TXN-07): [`testing::Db::new`] makes a store,
+/// [`testing::Db::path`] its write path, and [`testing::Db::commit`]
+/// commits a transaction through the commit of this crate
+/// ([`crate::commit`]), which appends a group to the store's log. It runs
+/// no write-back loop, and it panics where a database would return an
+/// error other than a conflict or a refusal that leaves the transaction
+/// open.
 #[cfg(all(feature = "testing", not(loom)))]
 #[path = "tests/store.rs"]
 #[expect(
@@ -380,6 +390,11 @@ pub use write::{
     SubtreeWrite, ValuePut,
 };
 pub use write_set::Mark;
+pub(crate) use {
+    frames::FlatFrames,
+    pages::{TreeCopy, TreePages},
+    txn::{Parts, Sealed},
+};
 
 /// The write half of a snapshot being read-only (`transactions.md` RD1,
 /// T-RD5): the entry point that writes through a transaction answers

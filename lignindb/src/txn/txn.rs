@@ -7,7 +7,7 @@ use std::{
 };
 
 use lignin_format::{tree_page::Side, CellAddress, CommitVersion};
-use lignin_store::load::LoadBuffers;
+use lignin_store::{load::LoadBuffers, stats::OpenWrite};
 use lignin_tree::{
     directory::{Directory, DirectoryError, MerkId},
     fragment::FragmentError,
@@ -85,6 +85,11 @@ struct State<'s> {
     /// The private frames, as they are kept between two operations.
     frames: Option<Parked<'s>>,
     watch: Option<Watch<'s>>,
+    /// The transaction among the open write transactions of the store's
+    /// counts, from its first write until its write set is empty again:
+    /// while it can hold private copies, and with them the log
+    /// (`lignin_store::stats`, "What an operator watches").
+    open: Option<OpenWrite<'s>>,
     /// The lease committed pages are read under where the transaction has
     /// no frames, and the version it is for (PN8).
     lease: Lease,
@@ -131,6 +136,7 @@ impl State<'_> {
         self.stuck = None;
         if self.set.is_empty() {
             self.watch = None;
+            self.open = None;
             self.under.clear();
             self.owed.clear();
         }
@@ -248,6 +254,7 @@ impl<'s> WriteTxn<'s> {
                 base: None,
                 frames: None,
                 watch: None,
+                open: None,
                 lease: Lease::take(),
                 lease_at: None,
                 directory: None,
@@ -478,6 +485,9 @@ impl<'s> WriteTxn<'s> {
         let guard = path.versions.guard();
         if writing && state.watch.is_none() {
             state.watch = Some(path.commits.watch());
+        }
+        if writing && state.open.is_none() {
+            state.open = Some(path.stats.write_opened());
         }
         let mut at = guard.latest();
         loop {
@@ -1014,6 +1024,25 @@ impl<'s> WriteTxn<'s> {
         Ok(read(&state.set))
     }
 
+    /// Commits a transaction that has written nothing, and says whether it
+    /// was one: such a commit succeeds and takes no version (CV2), so it
+    /// needs no commit lock (CM3 step 1). What [`Self::seal`] does for an
+    /// empty write set is done here: the savepoints go (WT8).
+    ///
+    /// It is refused while a scope is open or a pending mark stands (CM1),
+    /// as the commit is.
+    pub(crate) fn seal_empty(&self) -> Result<bool, TxnError> {
+        let mut state = self.closed()?;
+        if !state.scopes.finalized() {
+            return Err(TxnError::NotFinalized);
+        }
+        if !state.set.is_empty() {
+            return Ok(false);
+        }
+        state.savepoints.clear();
+        Ok(true)
+    }
+
     /// Hands the transaction to its commit (`transactions.md` CM3 steps 1
     /// to 4). The caller holds the commit lock, so the latest version does
     /// not move.
@@ -1028,10 +1057,6 @@ impl<'s> WriteTxn<'s> {
     /// It is refused while a scope is open (CM1), and for a write set that
     /// cannot be laid out over the committed state. The transaction is
     /// then as it was.
-    #[cfg_attr(
-        any(not(any(test, feature = "testing")), loom),
-        expect(dead_code, reason = "the commit (TXN-05) is its one caller")
-    )]
     pub(crate) fn seal(&self) -> Result<Sealed<'s>, TxnError> {
         let mut state = self.closed()?;
         let state = &mut *state;
@@ -1136,10 +1161,6 @@ impl fmt::Debug for WriteTxn<'_> {
 }
 
 /// What a write transaction is when it is handed to its commit.
-#[cfg_attr(
-    any(not(any(test, feature = "testing")), loom),
-    expect(dead_code, reason = "the commit (TXN-05) is its one reader")
-)]
 pub(crate) enum Sealed<'s> {
     /// The write set is empty: the commit succeeds and takes no version
     /// (CV2).
@@ -1155,10 +1176,6 @@ pub(crate) enum Sealed<'s> {
 ///
 /// Parts that are dropped and not installed give up their private copies
 /// and the page ids they took, as a rollback does (CM5).
-#[cfg_attr(
-    any(not(any(test, feature = "testing")), loom),
-    expect(dead_code, reason = "the commit (TXN-05) is its one reader")
-)]
 pub(crate) struct Parts<'s> {
     /// The latest version, which the frames are built over.
     pub(crate) base: CommitVersion,
