@@ -21,13 +21,16 @@
 //!     --ignored --nocapture the_reference_workload
 //! ```
 //!
-//! With `BULK_LOAD_ONLY_READ=1` the grove is read and nothing is loaded:
-//! the difference between the two runs, in time or in instructions, is the
-//! load.
+//! `BULK_LOAD_STORE` names another directory for the store the load is
+//! written to, to have it on a disk. Two more settings are for measuring
+//! the load in instructions, as the difference of two runs under `perf
+//! stat`: with `BULK_LOAD_ONLY_READ=1` the grove is read and nothing is
+//! loaded, and with `BULK_LOAD_NO_READ_BACK=1` it is read and loaded, and
+//! the store is not read back.
 
 use std::{
     collections::HashMap,
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
     thread,
     time::{Duration, Instant},
@@ -742,10 +745,12 @@ fn load(dir: &Path, workload: Documents) -> Outcome {
     let root_key = root_key.expect("the root Merk opens");
     let layout = Layout::proposed(SIZE);
     let only_read = std::env::var_os("BULK_LOAD_ONLY_READ").is_some();
+    let store = std::env::var_os("BULK_LOAD_STORE").map(PathBuf::from);
+    let store = store.unwrap_or_else(|| dir.join("lignin"));
     let loader = Loader::new(layout, LoadParams::DEFAULT).expect("a fill");
     let mut walk = Walk {
         source: source(),
-        load: (!only_read).then(|| (loader, Sink::new(&dir.join("lignin"), layout))),
+        load: (!only_read).then(|| (loader, Sink::new(&store, layout))),
         nodes: 0,
         merks: 0,
         given: 0,
@@ -855,6 +860,17 @@ fn load(dir: &Path, workload: Documents) -> Outcome {
         syncing.as_secs_f64(),
     );
 
+    let outcome = |shape| Outcome {
+        nodes: walk.nodes,
+        merks: walk.merks,
+        shape,
+        fill,
+        seconds,
+    };
+    if std::env::var_os("BULK_LOAD_NO_READ_BACK").is_some() {
+        return outcome(sink.shape);
+    }
+
     let reported: HashMap<Loaded, CellAddress> = reported
         .into_iter()
         .map(|root| (root.subtree, root.address))
@@ -892,13 +908,7 @@ fn load(dir: &Path, workload: Documents) -> Outcome {
         check.nodes,
         started.elapsed().as_secs_f64()
     );
-    Outcome {
-        nodes: walk.nodes,
-        merks: walk.merks,
-        shape: sink.shape,
-        fill,
-        seconds,
-    }
+    outcome(sink.shape)
 }
 
 #[test]
@@ -922,7 +932,7 @@ fn a_grove_of_documents_is_loaded_as_grovedb_has_it() {
 #[test]
 #[ignore = "loads one million documents; run it in release mode"]
 fn the_reference_workload_loads_within_the_time_and_fill() {
-    let kept = std::env::var_os("BULK_LOAD_DIR").map(std::path::PathBuf::from);
+    let kept = std::env::var_os("BULK_LOAD_DIR").map(PathBuf::from);
     let temporary = tempfile::tempdir().expect("a directory");
     let dir = kept.as_deref().unwrap_or(temporary.path());
     std::fs::create_dir_all(dir).expect("the directory of the load");
