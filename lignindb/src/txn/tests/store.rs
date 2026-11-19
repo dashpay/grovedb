@@ -61,6 +61,30 @@ pub const ENTERED: u8 = 200;
 /// The tree type of the Merks a store is made with.
 pub const TREE_TYPE: &[u8] = b"merk";
 
+/// Mixes `bytes` into `seed`: what the hashes and the tree shapes of the
+/// tests' model are made of.
+pub fn mix(seed: u64, bytes: &[u8]) -> u64 {
+    let mut state = seed ^ 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        state = (state ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    state ^ (state >> 29)
+}
+
+/// The hash of `parts`, as the model of the tests makes its hashes.
+pub fn hash_of(parts: &[&[u8]]) -> Hash {
+    let mut hash = [0; 32];
+    let mut state = 0x1234_5678;
+    for part in parts {
+        state = mix(state, part).wrapping_add(part.len() as u64);
+    }
+    for (index, chunk) in hash.chunks_mut(8).enumerate() {
+        state = mix(state.wrapping_add(index as u64), &state.to_le_bytes());
+        chunk.copy_from_slice(&state.to_le_bytes());
+    }
+    hash
+}
+
 /// The hash rules of these tests, which are those the model makes its
 /// hashes by, with a count of the calls.
 pub struct Rules<'a>(pub &'a AtomicU64);
@@ -73,19 +97,19 @@ impl HashRules for Rules<'_> {
         _: &[Option<Hash>],
     ) -> Result<Hash, Refusal> {
         self.0.fetch_add(1, Ordering::Relaxed);
-        Ok(super::model::hash_of(&[value]))
+        Ok(hash_of(&[value]))
     }
 
     fn kv_hash(&mut self, key: &[u8], value_hash: &Hash) -> Result<Hash, Refusal> {
         self.0.fetch_add(1, Ordering::Relaxed);
-        Ok(super::model::hash_of(&[key, value_hash]))
+        Ok(hash_of(&[key, value_hash]))
     }
 
     fn node_hash(&mut self, node: NodeRef<'_>) -> Result<Hash, Refusal> {
         self.0.fetch_add(1, Ordering::Relaxed);
         let none = [0; 32];
         let child = |side| node.link(side).map_or(&none, |link| link.hash);
-        Ok(super::model::hash_of(&[
+        Ok(hash_of(&[
             node.kv_hash(),
             child(Side::Left),
             child(Side::Right),

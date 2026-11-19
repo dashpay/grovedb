@@ -4,7 +4,7 @@
 
 use std::sync::atomic::Ordering;
 
-use lignin_format::{CellAddress, PageId, SlotId};
+use lignin_format::{tree_page::Side, CellAddress, PageId, SlotId};
 use lignin_store::cache::OwnerId;
 use lignin_tree::{
     directory::{DirectoryError, Root, RootChange},
@@ -63,7 +63,8 @@ fn node_count(tx: &Tx<'_>, name: u8, keys: &[&[u8]]) -> usize {
 }
 
 /// A batch that enters `OUTER` with three nodes and flat records beside
-/// them, and `INNER` under its node `host`, with two nodes.
+/// them, and `INNER` under its node `host`, with two nodes and flat
+/// records of its own.
 fn planted<'s>(world: &World<'s>, tx: &Tx<'s>) {
     let mut outer = world.merk(tx, OUTER, |items| {
         items.insert(b"host".to_vec(), b"tree".to_vec());
@@ -81,20 +82,65 @@ fn planted<'s>(world: &World<'s>, tx: &Tx<'s>) {
             put(aux(OUTER), b"a", b"1"),
             put(model::unit(Column::Meta, OUTER), b"m", b"2"),
             put(model::unit(Column::Roots, OUTER), b"r", b"3"),
+            put(aux(INNER), b"ia", b"7"),
+            put(model::unit(Column::Meta, INNER), b"im", b"8"),
         ],
         subtrees: vec![enter(OUTER), hosted(INNER, OUTER, b"host")],
     };
     world.apply(tx, &batch).expect("the subtrees are made");
 }
 
-/// Drops `OUTER` through `tx`. The model is told of the Merk below it as
-/// well, which the drop does not name.
+/// Drops `OUTER` through `tx`. The drop names that subtree alone: the
+/// model works out what is below it, as the transaction has to.
 fn drop_outer<'s>(world: &World<'s>, tx: &Tx<'s>) {
-    let first_write = world.latest().get();
     let batch = subtrees(vec![OwnedSubtree::Drop(model::subtree(OUTER))]);
     world.apply(tx, &batch).expect("the subtree is dropped");
-    let below = model::Write::Drop(model::subtree(INNER));
-    (tx.model.borrow_mut().writes).push((below, first_write, false));
+}
+
+/// A change of `INNER` through `tx`, with its host written in the same
+/// batch, which names its root again.
+fn inner_batch<'s>(world: &World<'s>, tx: &Tx<'s>, edit: impl FnOnce(&mut Items)) -> OwnedBatch {
+    let inner = world.merk(tx, INNER, edit);
+    let stamp = inner.nodes.len() as u8;
+    let mut outer = world.merk(tx, OUTER, |items| {
+        let mut value = items.get(&b"host"[..]).cloned().unwrap_or_default();
+        value.push(stamp);
+        items.insert(b"host".to_vec(), value);
+    });
+    (outer.hosted).insert(b"host".to_vec(), vec![model::subtree(INNER)]);
+    OwnedBatch {
+        merks: vec![inner, outer],
+        ..OwnedBatch::default()
+    }
+}
+
+/// The flat records that [`planted`] puts under `OUTER` and `INNER`.
+fn planted_records() -> [(Unit, &'static [u8]); 5] {
+    [
+        (aux(OUTER), b"a"),
+        (model::unit(Column::Meta, OUTER), b"m"),
+        (model::unit(Column::Roots, OUTER), b"r"),
+        (aux(INNER), b"ia"),
+        (model::unit(Column::Meta, INNER), b"im"),
+    ]
+}
+
+/// How many of the records [`planted`] made a transaction that has written
+/// nothing reads now: by key, as committed records, and under a cursor.
+fn planted_read(world: &World<'_>) -> usize {
+    let reader = world.begin();
+    let mut found = 0;
+    for (unit, key) in planted_records() {
+        let mut out = Vec::new();
+        let read = reader.txn.get(unit, key, &mut out).expect("a read");
+        let committed = (reader.txn.committed_get(unit, key, &mut out)).expect("a read");
+        let mut cursor = reader.txn.cursor(unit);
+        cursor.seek(key).expect("a seek");
+        let under = cursor.key() == Some(key);
+        assert!(read == committed && read == under, "{unit}: one answer");
+        found += usize::from(read);
+    }
+    found
 }
 
 fn census(db: &Db) -> (u64, u64, u64) {
@@ -335,35 +381,77 @@ fn a_dropped_subtree_is_gone_from_the_drop_on_and_for_the_others_from_its_commit
     ));
     world.check_committed();
     world.check(&reader);
+    assert_eq!(planted_read(&world), 0, "no record of either subtree");
     assert_eq!(db.counts.dropped.load(Ordering::Relaxed), 1);
     // One Merk left, and the entry of the Merk below waits for the
     // reclaimer.
     assert_eq!(census(&db), (u64::from(ENTERED), 1, 1));
 
-    // A subtree that is entered again under a dropped prefix starts empty,
-    // and so does one under the prefix of what was below.
+    // A subtree that is entered again under the dropped prefix starts
+    // empty, in every column.
     let tx = world.begin();
     let outer = world.merk(&tx, OUTER, |items| {
         assert!(items.is_empty());
         items.insert(b"host".to_vec(), b"again".to_vec());
     });
+    let batch = OwnedBatch {
+        merks: vec![outer],
+        records: vec![put(aux(OUTER), b"b", b"4")],
+        subtrees: vec![enter(OUTER)],
+    };
+    (world.apply(&tx, &batch)).expect("the subtree is entered again");
+    world.check(&tx);
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+    world.check_committed();
+    assert_eq!(planted_read(&world), 0, "none of the records of before");
+    assert_eq!(census(&db), (u64::from(ENTERED) + 1, 1, 1));
+    assert_eq!(db.private_ids(), 0);
+}
+
+/// Open, and owed by the unit that wires TREE-09's `drop::enter` into the
+/// transaction (D-084): a subtree that is entered again under the prefix of
+/// one that was below a dropped subtree starts empty in every column also
+/// before the reclaimer has come (`transactions.md` CV9, T-CL1). Today its
+/// flat records of before are read once the new subtree is committed: the
+/// drop reads nothing below the Merk it drops, and so deletes nothing
+/// there.
+#[test]
+#[ignore = "owed: an enter over a left-over entry unlinks its prefix in every flat column (TREE-09)"]
+fn a_subtree_entered_again_below_a_dropped_one_starts_empty() {
+    let (db, versions) = Db::new(128);
+    let mut world = World::new(&db, &versions);
+    let tx = world.begin();
+    planted(&world, &tx);
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+    let tx = world.begin();
+    drop_outer(&world, &tx);
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+    world.check_committed();
+
+    let tx = world.begin();
+    let mut outer = world.merk(&tx, OUTER, |items| {
+        items.insert(b"host".to_vec(), b"again".to_vec());
+    });
+    (outer.hosted).insert(b"host".to_vec(), vec![model::subtree(INNER)]);
     let inner = world.merk(&tx, INNER, |items| {
         assert!(items.is_empty());
         items.insert(b"three".to_vec(), vec![5; 20]);
     });
     let batch = OwnedBatch {
         merks: vec![inner, outer],
-        records: vec![put(aux(OUTER), b"b", b"4")],
         subtrees: vec![enter(OUTER), hosted(INNER, OUTER, b"host")],
+        ..OwnedBatch::default()
     };
-    world
-        .apply(&tx, &batch)
-        .expect("the subtrees are entered again");
+    (world.apply(&tx, &batch)).expect("the subtrees are entered again");
+    // Inside the transaction the records of before are not read: the
+    // committed version has no live entry under the prefix.
     world.check(&tx);
+    let mut out = Vec::new();
+    assert!(!tx.txn.get(aux(INNER), b"ia", &mut out).expect("a read"));
     assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
     world.check_committed();
-    assert_eq!(census(&db), (u64::from(ENTERED) + 2, 0, 1));
-    assert_eq!(db.private_ids(), 0);
+    // Here two of them are read again, under the new subtree.
+    assert_eq!(planted_read(&world), 0, "none of the records of before");
 }
 
 /// A drop and what takes its place in one batch, and a clear that keeps
@@ -397,13 +485,7 @@ fn a_batch_drops_a_subtree_and_enters_it_again_and_clears_a_merk() {
         records: vec![put(aux(OUTER), b"z", b"9")],
         subtrees: vec![enter(OUTER), OwnedSubtree::Drop(model::subtree(OUTER))],
     };
-    let first_write = world.latest().get();
     world.apply(&tx, &batch).expect("the subtree is replaced");
-    let below = model::Write::Drop(model::subtree(INNER));
-    let mut writes = tx.model.borrow().writes.clone();
-    let at = writes.len() - batch.writes().len() + 1;
-    writes.insert(at, (below, first_write, false));
-    tx.model.borrow_mut().writes = writes;
     world.check(&tx);
 
     // A clear, and the Merk's new nodes with it.
@@ -513,6 +595,307 @@ fn a_drop_outside_is_seen_by_the_next_read_and_meets_the_writes_under_it() {
     assert_eq!(world.commit(under, &[]), Outcome::Conflict);
     assert_eq!(world.commit(own, &[]), Outcome::Conflict);
     world.check_committed();
+    assert_eq!(db.private_ids(), 0);
+}
+
+/// What the transaction itself wrote below a subtree goes with the drop of
+/// that subtree: under a cursor, by key, in the frames and without them,
+/// and also where it enters the subtrees again.
+#[test]
+fn what_the_transaction_wrote_below_a_dropped_subtree_goes_with_it() {
+    let (db, versions) = Db::new(128);
+    let mut world = World::new(&db, &versions);
+    let tx = world.begin();
+    planted(&world, &tx);
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+
+    for by_key in [false, true] {
+        let tx = world.begin();
+        world.write(&tx, vec![put(aux(1), b"met", &[by_key as u8])]);
+        if by_key {
+            // A commit outside meets the write: no frames from here on.
+            let met = OwnedBatch {
+                records: vec![put(aux(1), b"met", b"other")],
+                ..OwnedBatch::default()
+            };
+            world.write_outside(&met, &[&tx]);
+        }
+        let batch = inner_batch(&world, &tx, |items| {
+            drop(items.insert(b"own".to_vec(), vec![6; 30]))
+        });
+        world.apply(&tx, &batch).expect("a node below");
+        world.write(&tx, vec![put(aux(INNER), b"own", b"9")]);
+        world.check(&tx);
+        assert_eq!(tx.txn.stats().base.is_none(), by_key);
+
+        drop_outer(&world, &tx);
+        world.check(&tx);
+        assert_eq!(node_count(&tx, INNER, &[b"own", b"one", b"two"]), 0);
+        let mut cursor = tx.txn.merk_cursor(model::subtree(INNER)).expect("a cursor");
+        cursor.seek_to_first().expect("a seek");
+        assert_eq!(cursor.key(), None, "no node it wrote before is shown");
+        drop(cursor);
+        let mut out = Vec::new();
+        assert!(!tx.txn.get(aux(INNER), b"own", &mut out).expect("a read"));
+
+        // Both are entered again, and hold what is written from here on.
+        let mut outer = world.merk(&tx, OUTER, |items| {
+            assert!(items.is_empty());
+            items.insert(b"host".to_vec(), b"again".to_vec());
+        });
+        (outer.hosted).insert(b"host".to_vec(), vec![model::subtree(INNER)]);
+        let inner = world.merk(&tx, INNER, |items| {
+            assert!(items.is_empty());
+            items.insert(b"new".to_vec(), vec![5; 20]);
+        });
+        let batch = OwnedBatch {
+            merks: vec![inner, outer],
+            records: vec![put(aux(INNER), b"fresh", b"1")],
+            subtrees: vec![enter(OUTER), hosted(INNER, OUTER, b"host")],
+        };
+        (world.apply(&tx, &batch)).expect("the subtrees are entered again");
+        world.check(&tx);
+        assert_eq!(node_count(&tx, INNER, &[b"own", b"one", b"two", b"new"]), 1);
+        match by_key {
+            true => assert_eq!(world.commit(tx, &[]), Outcome::Conflict),
+            false => tx.txn.rollback().expect("a rollback"),
+        }
+    }
+    world.check_committed();
+    assert_eq!(db.private_ids(), 0);
+}
+
+/// The cells of a Merk that leaves stay in their pages, so a handle into
+/// them would still name a node: every handle that was read before a drop
+/// or a clear ends with it (PN8), in the frames and without them.
+#[test]
+fn a_drop_ends_the_handles_that_were_read_before_it() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    world.edit_outside(
+        5,
+        |items| {
+            for index in 0..12u8 {
+                items.insert(vec![b'k', index], vec![index; 40]);
+            }
+        },
+        &[],
+    );
+    let key: &[u8] = b"k\x05";
+    let subtree = model::subtree(5);
+    let handle = |view: Option<NodeView<'_>>| view.and_then(|view| view.handle());
+    let hash = [0x11; 32];
+
+    for by_key in [false, true] {
+        let tx = world.begin();
+        world.write(&tx, vec![put(aux(1), b"met", &[by_key as u8])]);
+        if by_key {
+            let met = OwnedBatch {
+                records: vec![put(aux(1), b"met", b"other")],
+                ..OwnedBatch::default()
+            };
+            world.write_outside(&met, &[&tx]);
+        }
+        let kept = (tx.txn.node(subtree, key, handle)).expect("a read");
+        let kept = kept.expect("a cell");
+        let followed = |tx: &Tx<'_>| tx.txn.stats().handles_followed;
+        let before = followed(&tx);
+        assert!(tx
+            .txn
+            .follow(subtree, kept, key, |node| node.is_some())
+            .expect("a read"));
+        assert_eq!(followed(&tx), before + 1);
+
+        // A hint from before the clear is not followed by the batch that
+        // clears: the node is new, and has no value to keep.
+        let nodes = [NodePut {
+            key,
+            feature: &[3, 1, 0, 0, 0, 0, 0, 0, 0],
+            value_hash: &hash,
+            kv_hash: &hash,
+            left: None,
+            right: None,
+            hosted: Hosted::Keep,
+            value: ValuePut::Keep,
+            stale: lignin_tree::hash::Stale::NONE,
+            at: Some(kept),
+        }];
+        let merks = [MerkWrite {
+            subtree,
+            nodes: &nodes,
+            removed: &[],
+            root: RootPut::Set(Some(key)),
+            anchored: false,
+        }];
+        let clear = [SubtreeWrite::Clear { subtree }];
+        let scope = tx.txn.scope().expect("a scope");
+        let refused = scope.apply(&Batch {
+            merks: &merks,
+            subtrees: &clear,
+            ..Batch::default()
+        });
+        assert_eq!(batch_error(refused), BatchError::NoValue { subtree });
+        scope.merge();
+
+        let batch = subtrees(vec![OwnedSubtree::Clear(subtree)]);
+        world.apply(&tx, &batch).expect("the Merk is cleared");
+        let before = followed(&tx);
+        assert!(tx
+            .txn
+            .follow(subtree, kept, key, |node| node.is_none())
+            .expect("a read"));
+        let child = tx
+            .txn
+            .child(subtree, kept, Side::Left, |node| node.is_some());
+        assert_eq!(child.expect("a read"), None, "the handle has ended");
+        assert_eq!(followed(&tx), before);
+        world.check(&tx);
+        tx.txn.rollback().expect("a rollback");
+    }
+    assert_eq!(db.private_ids(), 0);
+}
+
+/// The drop as GroveDB makes it: the element that hosts the Merk is
+/// deleted in the batch that drops the Merk. And what a batch may not say
+/// of the subtrees it drops and writes.
+#[test]
+fn a_hosted_merk_is_dropped_with_its_host_and_no_record_is_written_without_its_subtree() {
+    let (db, versions) = Db::new(128);
+    let mut world = World::new(&db, &versions);
+    let tx = world.begin();
+    planted(&world, &tx);
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+    let (outer, inner) = (model::subtree(OUTER), model::subtree(INNER));
+    let other = model::subtree(ENTERED + 40);
+
+    let tx = world.begin();
+    let refused = |batch: OwnedBatch| world.apply(&tx, &batch).expect_err("it is refused");
+    // A drop names the outermost subtree, and takes what is below.
+    let both = subtrees(vec![OwnedSubtree::Drop(outer), OwnedSubtree::Drop(inner)]);
+    let error = refused(both);
+    assert!(
+        matches!(error, TxnError::Batch(BatchError::NotEntered { subtree }) if subtree == inner),
+        "{error}"
+    );
+    // A record is of a subtree that is entered, in every column.
+    for column in Column::ALL {
+        let unit = Unit::new(column, other);
+        let batch = OwnedBatch {
+            records: vec![put(unit, b"k", b"v")],
+            ..OwnedBatch::default()
+        };
+        let error = refused(batch);
+        assert!(
+            matches!(error, TxnError::Batch(BatchError::NotEntered { subtree }) if subtree == other),
+            "{error}"
+        );
+    }
+    // A Merk with no node hosts none, so one that has a subtree below it
+    // is not dropped: the directory would not find what is below.
+    let empty = subtrees(vec![
+        enter(ENTERED + 40),
+        hosted(ENTERED + 41, ENTERED + 40, b"no node"),
+    ]);
+    world.apply(&tx, &empty).expect("two subtrees with no node");
+    let error = refused(subtrees(vec![OwnedSubtree::Drop(other)]));
+    assert!(
+        matches!(&error, TxnError::Directory(DirectoryError::NotEmpty { prefix }) if prefix == other.as_bytes()),
+        "{error}"
+    );
+    assert_eq!(tx.txn.stats().writes, 0, "none of them added a write");
+    tx.txn.rollback().expect("a rollback");
+    tx.forget();
+
+    // The host goes, and the Merk with it.
+    let tx = world.begin();
+    let host = world.merk(&tx, OUTER, |items| drop(items.remove(&b"host"[..])));
+    let batch = OwnedBatch {
+        merks: vec![host],
+        subtrees: vec![OwnedSubtree::Drop(inner)],
+        ..OwnedBatch::default()
+    };
+    world.apply(&tx, &batch).expect("the Merk is dropped");
+    world.check(&tx);
+    // Nothing is written under it from here on.
+    let batch = OwnedBatch {
+        records: vec![put(aux(INNER), b"late", b"v")],
+        ..OwnedBatch::default()
+    };
+    let error = world.apply(&tx, &batch).expect_err("it is refused");
+    assert!(
+        matches!(error, TxnError::Batch(BatchError::NotEntered { subtree }) if subtree == inner),
+        "{error}"
+    );
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+    world.check_committed();
+    assert_eq!(
+        planted_read(&world),
+        3,
+        "the records of the subtree that stays"
+    );
+    assert_eq!(census(&db), (u64::from(ENTERED) + 1, 0, 1));
+    assert_eq!(db.private_ids(), 0);
+}
+
+/// A cursor opens its subtree through the directory and asks again after
+/// the transaction dropped something: its committed side is not read while
+/// the subtree is below a dropped one, and is read again after a rollback.
+#[test]
+fn a_cursor_reads_no_committed_record_of_a_subtree_that_went_with_a_drop() {
+    let (db, versions) = Db::new(128);
+    let mut world = World::new(&db, &versions);
+    let tx = world.begin();
+    planted(&world, &tx);
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+
+    let tx = world.begin();
+    let mut flat = tx.txn.cursor(aux(INNER));
+    let mut nodes = tx.txn.merk_cursor(model::subtree(INNER)).expect("a cursor");
+    flat.seek_to_first().expect("a seek");
+    nodes.seek_to_first().expect("a seek");
+    assert_eq!(
+        (flat.key(), nodes.key()),
+        (Some(&b"ia"[..]), Some(&b"one"[..]))
+    );
+    drop((flat, nodes));
+
+    let scope = tx.txn.scope().expect("a scope");
+    let mut flat = scope.cursor(aux(INNER));
+    let mut nodes = scope.merk_cursor(model::subtree(INNER)).expect("a cursor");
+    flat.seek_to_first().expect("a seek");
+    nodes.seek_to_first().expect("a seek");
+    let dropped = subtrees(vec![OwnedSubtree::Drop(model::subtree(OUTER))]);
+    (dropped.with(|batch| scope.apply(batch))).expect("the subtree is dropped");
+    // The cursors stand on their keys, with nothing under them, and find
+    // no other.
+    let mut out = Vec::new();
+    assert!(!flat.value(&mut out).expect("a read"));
+    assert!(nodes.node(|node| node.is_none()).expect("a read"));
+    flat.next().expect("a step");
+    nodes.next().expect("a step");
+    assert_eq!((flat.key(), nodes.key()), (None, None));
+    flat.seek_to_last().expect("a seek");
+    nodes.seek_for_prev(b"zzz").expect("a seek");
+    assert_eq!((flat.key(), nodes.key()), (None, None));
+    // A cursor that is opened now is over a subtree the transaction does
+    // not have.
+    let mut late = scope.cursor(model::unit(Column::Meta, INNER));
+    late.seek(b"").expect("a seek");
+    assert_eq!(late.key(), None);
+    drop((flat, nodes, late));
+    scope.rollback();
+
+    // After the rollback the same subtree is read again.
+    let mut flat = tx.txn.cursor(aux(INNER));
+    let mut nodes = tx.txn.merk_cursor(model::subtree(INNER)).expect("a cursor");
+    flat.seek_to_last().expect("a seek");
+    nodes.seek_to_last().expect("a seek");
+    assert_eq!(
+        (flat.key(), nodes.key()),
+        (Some(&b"ia"[..]), Some(&b"two"[..]))
+    );
+    drop((flat, nodes));
+    world.check(&tx);
     assert_eq!(db.private_ids(), 0);
 }
 

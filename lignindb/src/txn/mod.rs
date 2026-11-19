@@ -118,8 +118,15 @@
 //!
 //! - **A batch says which subtrees it enters, drops and clears**
 //!   ([`SubtreeWrite`]), as the caller that writes the hosting elements
-//!   knows them. A change set names a subtree that is entered
-//!   ([`BatchError::NotEntered`]).
+//!   knows them. A change set and a flat record, in any column, are of a
+//!   subtree that is entered ([`BatchError::NotEntered`]).
+//! - **No record of a subtree is read without its entry.** In every
+//!   column the committed records under a prefix belong to the entry the
+//!   directory has under that prefix, so where the version that is read
+//!   has no live entry, nothing is read: not a node, not a flat record,
+//!   and not under a cursor. An entry that was found is kept for its
+//!   version, and what the transaction itself dropped since is asked of
+//!   its write set at every read.
 //! - **Every root that one write changed is told in one statement**
 //!   ([`Directory::set_roots`](lignin_tree::directory::Directory::set_roots)),
 //!   from the report of the write: the Merks of the batch whose change set
@@ -130,16 +137,25 @@
 //!   as they were before the write.
 //! - **A handle on the directory is of the pages it was loaded from.** The
 //!   frames load theirs when they are made, so it is read again after a
-//!   commit of another landed and after every rollback, and what the
-//!   transaction reads with no frames is read through a handle of the
-//!   committed version of that read.
+//!   commit of another landed and after every rollback. The committed
+//!   records beside them are read through a handle of the committed
+//!   version of that read, and a cursor through one of its own version.
 //! - **A drop is one write** (`transactions.md` CV9, CF5): one entry of
 //!   the write set, a delete of every key of every column under the
 //!   subtree, which is in the key set of the commit as the subtree. A
 //!   clear is one entry as well, a delete of every key of the data column;
-//!   what else a clear takes is GROVE-05's to state. From the drop on the
-//!   transaction reads no record of the subtree, and no node of a Merk
-//!   below it: an open does not return it, in the frames or without them.
+//!   what else a clear takes is GROVE-05's to state. The Merks below go
+//!   with either, and neither names them:
+//!   - what is committed below is not read from the drop on, because no
+//!     open returns it: the frames' directory has no live entry for it,
+//!     and what is read beside the frames is not read under a Merk the
+//!     transaction dropped or cleared;
+//!   - what the transaction itself had written below is covered by the
+//!     entry of the drop, which names those subtrees, so that it is gone
+//!     also where the same transaction enters the subtree again.
+//! - **A drop ends every handle that was read before it** (PN8): the
+//!   cells of the Merk stay in their pages, and a handle into them would
+//!   still be followed.
 //! - **What a drop writes** is the root of the Merk named as dropped in
 //!   the write of the tree pages
 //!   ([`Write::dropped`](lignin_tree::fragment::Write::dropped)), the
@@ -298,14 +314,27 @@
 //!   of a range unread where the range delete here reads every leaf it
 //!   frees. Both take the place of the calls in `frames.rs` that name
 //!   them.
-//! - **The records under the prefixes below a dropped subtree, where no
-//!   open is asked**: a read of a flat record by its key and a cursor over
-//!   flat records do not open their subtree, so under the prefix of a
-//!   subtree below a dropped one they read what is there until it is
-//!   reclaimed. The transaction cannot name those prefixes: the drop reads
-//!   nothing below the Merk it drops. Whoever reads under a prefix opens
-//!   the subtree first (GROVE-05). A cursor over the nodes of such a Merk
-//!   that was opened before the drop keeps its committed side.
+//! - **A subtree that is entered again under the prefix of one that was
+//!   below a dropped subtree** starts with the flat records of before,
+//!   once it is committed and until the reclaimer has come: the drop reads
+//!   nothing below the Merk it drops, and so deletes nothing there. An
+//!   enter over a left-over entry has to unlink that prefix in every flat
+//!   column (TREE-09's `drop::enter`). Inside the transaction that enters
+//!   it, they are not read. The subtree that was dropped itself starts
+//!   empty: its prefix is deleted with the drop.
+//! - **The conflict rule for a write below a dropped subtree that writes
+//!   nothing in the dropped subtree itself** (CF5): the key set of a drop
+//!   names the dropped subtree, and those below it that the dropping
+//!   transaction had written. A commit outside that writes another one
+//!   below does not meet the drop. The other way is caught late: a
+//!   transaction that wrote below a subtree which a commit outside dropped
+//!   cannot lay its writes out any more, and its commit is refused
+//!   ([`BatchError::NotEntered`]) and not failed as a conflict. On
+//!   existing GroveVersions neither happens: a write below also writes the
+//!   element that hosts its subtree, which is a key of the dropped one.
+//! - **While the transaction serves its records by key**, a batch is not
+//!   checked against the directory: what it says of subtrees is checked
+//!   when the frames are made, and its commit is refused then.
 //! - **A flat write among the nodes of a Merk** is refused
 //!   ([`BatchError::NotFlat`]).
 //! - **Pending marks and a host that is behind** (SC9): no element is
@@ -319,6 +348,7 @@ mod cursor;
 mod error;
 mod frames;
 mod key;
+mod opened;
 mod pages;
 mod path;
 #[allow(clippy::module_inception)]

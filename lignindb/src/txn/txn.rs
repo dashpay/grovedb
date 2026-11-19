@@ -22,10 +22,11 @@ use super::{
     error::{BatchError, TxnError},
     frames::{stored_key, Awake, Frames, Parked, Woken},
     key::{Column, Subtree, Unit},
+    opened::Opened,
     pages::{find, follow, CommittedPages, NodePages},
     path::WritePath,
     view::NodeView,
-    write::{Applied, Batch, ValuePut},
+    write::{Applied, Batch, SubtreeWrite, ValuePut},
     write_set::{EntryId, Mark, Own, WriteSet},
 };
 use crate::snapshot::{OperationGuard, VersionPin};
@@ -86,10 +87,10 @@ struct State<'s> {
     /// no frames, and the version it is for (PN8).
     lease: Lease,
     lease_at: Option<CommitVersion>,
-    /// The subtree directory of the committed version that was read last
-    /// where the transaction has no frames, or beside them (RD10). A handle
-    /// is of the pages it was loaded from, so it is kept with its version.
-    directory: Option<(CommitVersion, Directory)>,
+    /// The subtree directory of the committed version that was read last,
+    /// with the subtrees that were opened through it: for the committed
+    /// records the transaction reads beside its own.
+    directory: Option<Opened>,
     /// The version and the number of operations of the write set at which
     /// the frames could not be made: the write set names what the
     /// committed state does not hold.
@@ -148,6 +149,10 @@ impl State<'_> {
         true
     }
 }
+
+/// How many subtrees one inside the other the hosts of a transaction's own
+/// subtrees are followed through: the depth the directory takes.
+const MAX_DEPTH: usize = 1 << 16;
 
 /// One operation of a transaction: its guard, and the one version it reads
 /// committed records at (RD4).
@@ -483,9 +488,15 @@ impl<'s> WriteTxn<'s> {
         let Some(mut frames) = Woken::wake(&mut state.frames, &op.guard) else {
             return self.write_by_key(state, op, batch);
         };
+        // What the transaction wrote below a Merk that the batch drops or
+        // clears goes with it: the directory says which, before the batch.
+        let cut = match batch.subtrees.iter().any(|write| !write.enters()) {
+            true => frames.below(batch, state.set.written())?,
+            false => Vec::new(),
+        };
         match frames.apply(path, batch, None) {
             Ok(applied) => {
-                state.set.add(batch, op.at, frames.empty_before());
+                state.set.add(batch, op.at, frames.empty_before(), &cut);
                 Ok(applied)
             }
             Err(refused) => {
@@ -543,7 +554,8 @@ impl<'s> WriteTxn<'s> {
                     Own::Deleted | Own::Put(_) => None,
                     Own::Unwritten if left => None,
                     Own::Unwritten => {
-                        let root = self.seen_root(state, &op.guard, op.at, &subtree)?;
+                        let seen = self.seen(state, &op.guard, op.at, &subtree)?;
+                        let root = seen.flatten();
                         let mut pages =
                             path.committed_pages(&op.guard, op.at, state.lease, &mut state.buffers);
                         match find(&mut pages, root, node.key)? {
@@ -556,7 +568,14 @@ impl<'s> WriteTxn<'s> {
             }
             entry += merk.removed.len() as EntryId;
         }
-        let first = state.set.add(batch, op.at, &empty);
+        let cut = self.cut(state, op, batch)?;
+        if batch.subtrees.iter().any(|write| !write.enters()) {
+            // The cells of a Merk that leaves stay in their pages: every
+            // handle that was read before ends (PN8).
+            state.renew_lease();
+            state.lease_at = Some(op.at);
+        }
+        let first = state.set.add(batch, op.at, &empty, &cut);
         for (offset, value) in kept {
             state.set.keep(first + offset, &value);
         }
@@ -591,7 +610,12 @@ impl<'s> WriteTxn<'s> {
             }
             Own::Deleted => Ok(false),
             Own::Node(_) => Err(TxnError::Damaged("a Merk node is read as a flat record")),
-            Own::Unwritten => self.committed_record(state, &op, unit, key, out),
+            // No record is read under a subtree that is not entered, or
+            // that went with one the transaction dropped.
+            Own::Unwritten => match self.seen(state, &op.guard, op.at, &unit.subtree)? {
+                Some(_) => self.committed_record(state, &op, unit, key, out),
+                None => Ok(false),
+            },
         }
     }
 
@@ -619,23 +643,11 @@ impl<'s> WriteTxn<'s> {
         let mut state = self.enter(scoped)?;
         let state = &mut *state;
         let op = self.begin(state, false)?;
-        self.committed_record(state, &op, unit, key, out)
-    }
-
-    /// The subtree directory as the committed version `at` has it. It is
-    /// loaded when another version is read than the last time.
-    fn directory_at(
-        &self,
-        state: &mut State<'s>,
-        guard: &OperationGuard<'s>,
-        at: CommitVersion,
-    ) -> Result<Directory, TxnError> {
-        if let Some((_, directory)) = (state.directory.as_ref()).filter(|(of, _)| *of == at) {
-            return Ok(directory.clone());
+        let opened = Opened::at(&mut state.directory, &self.path, &op.guard, op.at)?;
+        match opened.root(&self.path, &op.guard, &unit.subtree)? {
+            Some(_) => self.committed_record(state, &op, unit, key, out),
+            None => Ok(false),
         }
-        let directory = (self.path).load_directory(&self.path.committed(guard, at))?;
-        state.directory = Some((at, directory.clone()));
-        Ok(directory)
     }
 
     /// The root cell of the Merk `subtree` in the committed version `at`,
@@ -648,37 +660,24 @@ impl<'s> WriteTxn<'s> {
         at: CommitVersion,
         subtree: &Subtree,
     ) -> Result<Option<CellAddress>, TxnError> {
-        let directory = self.directory_at(state, guard, at)?;
-        let entry = directory.open(&self.path.committed(guard, at), subtree.as_bytes())?;
-        Ok(entry.and_then(|entry| entry.root().map(|root| root.address)))
+        let opened = Opened::at(&mut state.directory, &self.path, guard, at)?;
+        Ok(opened.root(&self.path, guard, subtree)?.flatten())
     }
 
-    /// The root cell that the committed Merk `subtree` has at `at` for the
-    /// transaction: the committed one, or none where the Merk is below one
-    /// that the transaction dropped or cleared (`transactions.md` CV9).
-    ///
-    /// It is for the committed side of what the transaction reads with no
-    /// frames, and of a cursor. The subtree itself is not looked for among
-    /// those the transaction dropped: its own writes cover every key there.
-    fn seen_root(
+    /// Whether the committed version `at` has records of `subtree` for the
+    /// transaction to read beside its own, and where the root of its Merk
+    /// is: `None` for a subtree that is not entered there, or that is
+    /// below one the transaction dropped or cleared ([`Opened::seen`]).
+    fn seen(
         &self,
         state: &mut State<'s>,
         guard: &OperationGuard<'s>,
         at: CommitVersion,
         subtree: &Subtree,
-    ) -> Result<Option<CellAddress>, TxnError> {
-        let directory = self.directory_at(state, guard, at)?;
-        let pages = self.path.committed(guard, at);
-        let Some(entry) = directory.open(&pages, subtree.as_bytes())? else {
-            return Ok(None);
-        };
-        for left in state.set.leaving() {
-            let above = directory.open(&pages, left.as_bytes())?;
-            if above.is_some_and(|above| entry.lineage().any(|id| id == above.id())) {
-                return Ok(None);
-            }
-        }
-        Ok(entry.root().map(|root| root.address))
+    ) -> Result<Option<Option<CellAddress>>, TxnError> {
+        let State { directory, set, .. } = state;
+        let opened = Opened::at(directory, &self.path, guard, at)?;
+        opened.seen(&self.path, guard, set, subtree)
     }
 
     /// Whether the Merk `subtree` has a root as a transaction with no
@@ -692,21 +691,51 @@ impl<'s> WriteTxn<'s> {
     ) -> Result<bool, TxnError> {
         match state.set.rooted(subtree) {
             Some(rooted) => Ok(rooted),
-            None => Ok((self.seen_root(state, &op.guard, op.at, subtree)?).is_some()),
+            None => {
+                let seen = self.seen(state, &op.guard, op.at, subtree)?;
+                Ok(seen.flatten().is_some())
+            }
         }
     }
 
-    /// The root of the committed side of a cursor over the Merk `subtree`
-    /// that reads the version `at`. A cursor is opened beside an open scope
-    /// as well, and is refused there when it is moved.
-    pub(crate) fn cursor_root(
+    /// Those of the subtrees the transaction has written that are below
+    /// one that `batch` drops or clears, where the transaction has no
+    /// frames to ask: by the hosts of the subtrees it entered itself, and
+    /// by the committed directory from there up.
+    fn cut(
         &self,
-        guard: &OperationGuard<'s>,
-        at: CommitVersion,
-        subtree: &Subtree,
-    ) -> Result<Option<CellAddress>, TxnError> {
-        let mut state = self.lock();
-        self.seen_root(&mut state, guard, at, subtree)
+        state: &mut State<'s>,
+        op: &Op<'s>,
+        batch: &Batch<'_>,
+    ) -> Result<Vec<Subtree>, TxnError> {
+        let leaves = (batch.subtrees.iter()).filter(|write| !write.enters());
+        let leaving: Vec<Subtree> = leaves.map(SubtreeWrite::subtree).collect();
+        if leaving.is_empty() {
+            return Ok(Vec::new());
+        }
+        let State { directory, set, .. } = state;
+        let opened = Opened::at(directory, &self.path, &op.guard, op.at)?;
+        let mut cut = Vec::new();
+        for written in set.written().filter(|written| !leaving.contains(written)) {
+            let (mut at, mut below) = (written, false);
+            for _ in 0..MAX_DEPTH {
+                let Some(Some(host)) = set.host_of(&at) else {
+                    break;
+                };
+                below = leaving.contains(&host);
+                if below {
+                    break;
+                }
+                at = host;
+            }
+            if !below && set.host_of(&at).is_none() {
+                below = opened.below(&self.path, &op.guard, &at, &leaving)?;
+            }
+            if below {
+                cut.push(written);
+            }
+        }
+        Ok(cut)
     }
 
     /// Shows `read` the node under `key` as the transaction has it: in its
@@ -771,7 +800,7 @@ impl<'s> WriteTxn<'s> {
         };
         // What the transaction dropped hides the Merks below it, also from
         // a handle.
-        let root = self.seen_root(state, &op.guard, op.at, &subtree)?;
+        let root = (self.seen(state, &op.guard, op.at, &subtree)?).flatten();
         let lease = state.lease;
         let mut pages = (self.path).committed_pages(&op.guard, op.at, lease, &mut state.buffers);
         let followed = (hint.filter(|_| root.is_some()))
@@ -1247,11 +1276,12 @@ impl<'t, 's> Scope<'t, 's> {
     /// nothing (WT10). Every write of the batch gets the latest version
     /// that this call reads as its first-write version (WT5).
     ///
-    /// A batch that is refused with [`TxnError::Batch`], and one the tree
-    /// layer refuses before it changes a page, leave everything as it was.
-    /// After any other error the private frames are made again from the
-    /// write set, which the batch was never added to, and every node
-    /// handle read through the transaction has ended.
+    /// A batch that is refused with [`TxnError::Batch`], and one that the
+    /// tree layer or the subtree directory refuses before a page is
+    /// changed, leave everything as it was. After an error that came with
+    /// a page changed, the private frames are made again from the write
+    /// set, which the batch was never added to, and every node handle read
+    /// through the transaction has ended.
     ///
     /// A cursor of the scope may be open: it sees the writes (RD6).
     pub fn apply(&self, batch: &Batch<'_>) -> Result<Applied, TxnError> {

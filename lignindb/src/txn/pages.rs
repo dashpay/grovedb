@@ -224,6 +224,12 @@ impl<'s> TreePages<'s> {
         self.lease
     }
 
+    /// Reads and changes the pages under `lease` from here on: every
+    /// handle that was issued under another has ended (PN8).
+    pub(crate) fn set_lease(&mut self, lease: Lease) {
+        self.lease = lease;
+    }
+
     /// How many private copies the transaction holds: of pages it changed,
     /// made or freed.
     pub(crate) fn copies(&self) -> usize {

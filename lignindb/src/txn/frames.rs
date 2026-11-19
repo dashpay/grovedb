@@ -312,9 +312,12 @@ struct Subtrees {
 
 impl Subtrees {
     /// Whether the Merk of `entry` is below one that the batch drops or
-    /// clears.
+    /// clears. A Merk with no node hosts none, and a clear of it leaves
+    /// the directory as it is.
     fn below_leaving(&self, entry: &Entry) -> bool {
-        let leaves = |id: MerkId| self.leaving.iter().any(|left| left.entry.id() == id);
+        let leaves = |id: MerkId| {
+            (self.leaving.iter()).any(|left| left.root.is_some() && left.entry.id() == id)
+        };
         entry.lineage().any(leaves)
     }
 }
@@ -611,6 +614,25 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         Ok(view)
     }
 
+    /// Those of `written` that are below a Merk that `batch` drops or
+    /// clears, as the directory has them before the batch: what the
+    /// transaction wrote there goes with the drop.
+    pub(crate) fn below(
+        &self,
+        batch: &Batch<'_>,
+        written: impl Iterator<Item = Subtree>,
+    ) -> Result<Vec<Subtree>, TxnError> {
+        let view = self.subtrees(batch)?;
+        let mut below = Vec::new();
+        for subtree in written {
+            let entry = self.directory.open(&*self.flat, subtree.as_bytes())?;
+            if entry.is_some_and(|entry| view.below_leaving(&entry)) {
+                below.push(subtree);
+            }
+        }
+        Ok(below)
+    }
+
     /// Whether `subtree` is entered once the subtrees of the batch have
     /// left and are entered, and with which root: `None` for a subtree that
     /// is not entered then, `Some(None)` for one with no node.
@@ -654,11 +676,22 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         made: Option<&[bool]>,
     ) -> Result<Applied, Refused> {
         let view = self.subtrees(batch).map_err(Refused::clean)?;
+        let mut entered = HashMap::new();
         for record in batch.records {
-            // The nodes of a Merk are not written through a flat tree.
+            // A record is of a subtree that is entered, in every column,
+            // and the nodes of a Merk are not written through a flat tree.
             let unit = record.unit();
-            let entered = self.entered(&view, &unit.subtree);
-            let root = entered.map_err(Refused::clean)?.flatten();
+            let subtree = unit.subtree;
+            let root = match entered.get(&subtree) {
+                Some(root) => *root,
+                None => {
+                    let root = self.entered(&view, &subtree).map_err(Refused::clean)?;
+                    *entered.entry(subtree).or_insert(root)
+                }
+            };
+            let Some(root) = root else {
+                return Err(Refused::clean(BatchError::NotEntered { subtree }));
+            };
             if unit.column == Column::Data && root.is_some() {
                 return Err(Refused::clean(BatchError::NotFlat { unit }));
             }
@@ -808,6 +841,14 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             dropped: &dropped,
             roots: &roots,
         };
+        // A Merk that leaves keeps its cells in their pages, so a handle
+        // into them would still be followed. Every handle that was read
+        // before ends here: the write is made under a new lease, and
+        // reports its nodes under that one (PN8).
+        let lease = self.tree.lease();
+        if !view.leaving.is_empty() {
+            self.tree.set_lease(Lease::take());
+        }
         let report = match merks.is_empty() && dropped.is_empty() {
             true => Ok(Report::default()),
             false => (self.fragments).apply(&mut self.tree, &mut self.values, &write),
@@ -816,6 +857,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             Ok(report) => report,
             Err(error @ (FragmentError::Write(_) | FragmentError::NoRoom { .. })) => {
                 self.forget(&held);
+                self.tree.set_lease(lease);
                 return Err(Refused::clean(error));
             }
             Err(error) => return Err(Refused::dirty(error)),
@@ -834,6 +876,12 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             let stale = missing.fold(put.stale, |stale, (side, _)| {
                 stale.without(HashField::Child(*side))
             });
+            // The key-value hash is made of the value hash: it is stale
+            // with it, whatever the writer states.
+            let stale = match stale.has(HashField::Value) {
+                true => stale.with(HashField::KeyValue),
+                false => stale,
+            };
             for field in Stale::ALL.fields() {
                 match stale.has(field) {
                     true => self.hashes.mark(node.address(), field),
@@ -960,7 +1008,11 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         for (merk, write) in merks.iter().enumerate() {
             let subtree = write.subtree;
             for put in write.nodes {
-                let hinted = put.at.and_then(|handle| self.follow(handle, put.key));
+                // No hint is followed in a batch that drops or clears a
+                // Merk: its cells stay in their pages, and a handle from
+                // before would name one of them.
+                let hint = put.at.filter(|_| view.leaving.is_empty());
+                let hinted = hint.and_then(|handle| self.follow(handle, put.key));
                 let at = match hinted {
                     Some(at) => Some(at),
                     None => find(&mut self.tree, resolver.roots[merk], put.key)?,

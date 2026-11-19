@@ -219,14 +219,18 @@ pub struct HostPut<'a> {
 /// What an operation does to a subtree as a whole: to its entry in the
 /// subtree directory (`lignin_tree::directory`).
 ///
-/// - **A subtree is entered before a change set names it**, in the same
-///   batch or in an earlier one, and a change set for a subtree that is not
-///   entered is refused ([`BatchError::NotEntered`](super::BatchError::NotEntered)).
+/// - **A subtree is entered before anything is written in it**, in the
+///   same batch or in an earlier one: a change set or a flat record, in
+///   any column, for a subtree that is not entered is refused
+///   ([`BatchError::NotEntered`](super::BatchError::NotEntered)).
 /// - **Every subtree that a node hosts is entered**, a Merk with no node
 ///   and a tree that keeps its data in a flat keyspace among them: what is
 ///   not entered is not found below a dropped Merk.
 /// - **A drop takes every subtree below with it**, and names none of them:
-///   a batch drops the outermost.
+///   a batch drops the outermost. So does a clear.
+/// - **A drop or a clear ends every node handle** that was read through
+///   the transaction before it (PN8), and no hint of the batch that makes
+///   it is followed ([`NodePut::at`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubtreeWrite<'a> {
     /// Enters the subtree, with no node: the operation writes the element

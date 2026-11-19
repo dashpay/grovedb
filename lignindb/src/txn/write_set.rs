@@ -82,9 +82,14 @@ pub(crate) enum Kind {
     Range { end: Option<Span> },
     /// A drop of the entry's subtree: a delete of every key of every
     /// column under it (`transactions.md` ST4, CV9).
+    ///
+    /// The Merks below go with it, and the drop names none of them. Those
+    /// among them that the transaction had written are named in the bytes
+    /// of the entry's key, 32 each, and the entry deletes every key of
+    /// every column under each: what it wrote there is gone with the drop.
     Dropped,
     /// A clear of the entry's subtree: a delete of every key of its data
-    /// column.
+    /// column, and of what the transaction wrote below it, as for a drop.
     Cleared,
 }
 
@@ -216,6 +221,8 @@ pub(crate) struct WriteSet {
     subtrees: Vec<SubtreeEntry>,
     /// The drops and the clears among the entries, oldest first.
     leaving: Vec<EntryId>,
+    /// How many times `leaving` changed. It never goes back.
+    left: u64,
     arena: Arena,
     /// The copies of committed values that entries kept. They are not taken
     /// out with a mark: an entry from before the mark can have its copy
@@ -372,7 +379,7 @@ impl WriteSet {
             if entry.met {
                 self.met -= 1;
             }
-            for unit in Self::covered(&entry) {
+            for unit in Self::covered(&self.arena, &entry) {
                 let index = (self.units.get_mut(&unit)).expect("the unit of an entry is indexed");
                 if entry.kind.is_range() {
                     let last = index.ranges.pop();
@@ -394,6 +401,7 @@ impl WriteSet {
             }
             if self.leaving.last() == Some(&id) {
                 self.leaving.pop();
+                self.left += 1;
             }
         }
         self.ops.truncate(mark.ops);
@@ -413,22 +421,37 @@ impl WriteSet {
         self.merks.clear();
         self.subtrees.clear();
         self.leaving.clear();
+        self.left += 1;
         self.arena.clear();
         self.kept.clear();
         self.units.clear();
         self.met = 0;
     }
 
-    /// The units an entry is indexed in: its own, or for a drop every
-    /// column of its subtree.
-    fn covered(entry: &Entry) -> impl Iterator<Item = Unit> {
-        let own = match entry.kind.leaves() {
-            [] => Some(entry.unit),
-            _ => None,
+    /// The subtrees below the one a drop or a clear names that the
+    /// transaction had written, and that the entry covers.
+    fn cut<'a>(arena: &'a Arena, entry: &Entry) -> impl Iterator<Item = Subtree> + 'a {
+        let cut: &[u8] = match entry.kind.leaves() {
+            [] => &[],
+            _ => arena.get(entry.key),
         };
+        let (subtrees, _) = cut.as_chunks::<{ Subtree::LEN }>();
+        subtrees.iter().copied().map(Subtree::new)
+    }
+
+    /// The units an entry is indexed in: its own, or for a drop every
+    /// column of its subtree, and every column of each subtree it cut.
+    fn covered(arena: &Arena, entry: &Entry) -> Vec<Unit> {
         let subtree = entry.unit.subtree;
-        let whole = (entry.kind.leaves().iter()).map(move |column| Unit::new(*column, subtree));
-        own.into_iter().chain(whole)
+        let own = match entry.kind.leaves() {
+            [] => vec![entry.unit],
+            columns => (columns.iter())
+                .map(|column| Unit::new(*column, subtree))
+                .collect(),
+        };
+        let below = Self::cut(arena, entry)
+            .flat_map(|subtree| Column::ALL.map(|column| Unit::new(column, subtree)));
+        own.into_iter().chain(below).collect()
     }
 
     fn push(&mut self, unit: Unit, key: &[u8], kind: Kind, first_write: CommitVersion) -> EntryId {
@@ -442,7 +465,7 @@ impl WriteSet {
             prev: None,
         };
         if kind.is_range() {
-            for unit in Self::covered(&entry) {
+            for unit in Self::covered(&self.arena, &entry) {
                 self.units.entry(unit).or_default().ranges.push(id);
             }
         } else {
@@ -480,12 +503,15 @@ impl WriteSet {
     /// [`check`](super::check::check).
     ///
     /// `empty` says of each Merk of the batch whether it had no root in the
-    /// transaction's view before the operation.
+    /// transaction's view before the operation. `cut` has the subtrees the
+    /// transaction had written that are below one the batch drops or
+    /// clears: the first of those entries covers them.
     pub(crate) fn add(
         &mut self,
         batch: &Batch<'_>,
         first_write: CommitVersion,
         empty: &[bool],
+        cut: &[Subtree],
     ) -> EntryId {
         self.serial += 1;
         self.ops.push(Op {
@@ -510,14 +536,17 @@ impl WriteSet {
             };
             self.subtrees.push(entry);
         }
+        let mut cut = cut.concat_bytes();
         for write in batch.subtrees {
             let kind = match write {
                 SubtreeWrite::Drop { .. } => Kind::Dropped,
                 SubtreeWrite::Clear { .. } => Kind::Cleared,
                 SubtreeWrite::Enter { .. } => continue,
             };
-            let id = self.push(Unit::data(write.subtree()), &[], kind, first_write);
+            let below = std::mem::take(&mut cut);
+            let id = self.push(Unit::data(write.subtree()), &below, kind, first_write);
             self.leaving.push(id);
+            self.left += 1;
         }
         let first = self.entries.len() as EntryId;
         for (merk, empty) in batch.merks.iter().zip(empty) {
@@ -737,6 +766,34 @@ impl WriteSet {
         (self.leaving.iter()).map(|id| self.entry(*id).unit.subtree)
     }
 
+    /// A number that is another whenever the transaction drops or clears a
+    /// subtree, or takes such a write out: whoever keeps what it found
+    /// open asks again when it changed.
+    pub(crate) fn left(&self) -> u64 {
+        self.left
+    }
+
+    /// The subtrees the transaction has an entry under, in any column.
+    pub(crate) fn written(&self) -> impl Iterator<Item = Subtree> + '_ {
+        let mut subtrees: Vec<Subtree> = self.units.keys().map(|unit| unit.subtree).collect();
+        subtrees.sort_unstable();
+        subtrees.dedup();
+        subtrees.into_iter()
+    }
+
+    /// The subtree of the element that hosts `subtree`, if the transaction
+    /// entered it: `Some(None)` for one it entered with no host.
+    pub(crate) fn host_of(&self, subtree: &Subtree) -> Option<Option<Subtree>> {
+        self.subtrees.iter().rev().find_map(|entry| match entry {
+            SubtreeEntry::Enter {
+                subtree: entered,
+                host,
+                ..
+            } if entered == subtree => Some(host.map(|(host, ..)| host)),
+            _ => None,
+        })
+    }
+
     /// Checks `batch` against what the transaction has written: the data
     /// column of a subtree holds the nodes of a Merk or flat records, and
     /// not both (ST1).
@@ -780,7 +837,12 @@ impl WriteSet {
                 | SubtreeEntry::Drop(named)
                 | SubtreeEntry::Clear(named) => named == subtree,
             };
-            if self.op_subtrees(op).iter().any(named) {
+            // A Merk below one that the operation dropped or cleared went
+            // with it.
+            let (entries, to, ..) = self.op_bounds(op);
+            let mut cut =
+                (self.entries[entries..to].iter()).flat_map(|entry| Self::cut(&self.arena, entry));
+            if self.op_subtrees(op).iter().any(named) || cut.any(|cut| cut == *subtree) {
                 return Some(false);
             }
         }
@@ -993,8 +1055,14 @@ impl WriteSet {
                 set.key(*unit, key);
             }
             for range in &index.ranges {
-                match self.entry(*range).kind {
+                let entry = self.entry(*range);
+                match entry.kind {
+                    // Every column of the dropped subtree, and of each one
+                    // below it that the entry covers.
                     Kind::Dropped => {
+                        set.subtree(unit.subtree);
+                    }
+                    Kind::Cleared if unit.subtree != entry.unit.subtree => {
                         set.subtree(unit.subtree);
                     }
                     _ => {
@@ -1125,7 +1193,7 @@ mod tests {
                             merks: &[],
                             ..Batch::default()
                         };
-                        set.add(&batch, version(latest), &[]);
+                        set.add(&batch, version(latest), &[], &[]);
                         model.push((write, latest, false));
                     }
                     6 => marks.push((set.mark(), model.len())),
@@ -1279,7 +1347,7 @@ mod tests {
                 merks: &[],
                 ..Batch::default()
             };
-            set.add(&batch, version(1), &[]);
+            set.add(&batch, version(1), &[], &[]);
         };
         let empty = set.mark();
         add(&mut set, &[b"a"]);
@@ -1336,7 +1404,7 @@ mod tests {
                 merks: &[],
                 ..Batch::default()
             };
-            set.add(&batch, version(3), &[]);
+            set.add(&batch, version(3), &[], &[]);
         }
         let mut dropped = KeySet::new();
         dropped.subtree(unit(1).subtree);
