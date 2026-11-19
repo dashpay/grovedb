@@ -2,7 +2,7 @@
 
 LigninDB task SEAM-01 ([plan](https://github.com/dashpay/grovedb/issues/1052), [task register 1](https://github.com/dashpay/grovedb/issues/1052#issuecomment-6960582299)).
 
-`NodeStore` is the handle through which a Merk reads and writes the nodes of one subtree. It lives in `merk/src/store/mod.rs`. Since SEAM-01, Merk reaches storage only through it. The one implementation today is the adapter over the storage contexts of `grovedb-storage`, in `merk/src/store/kv.rs`. LigninDB adds its own in `merk::store::lignin` (MERK-01).
+`NodeStore` is the handle through which a Merk reads and writes the nodes of one subtree. It lives in `merk/src/store/mod.rs`. Since SEAM-01, Merk reaches storage only through it. It has two implementations: the adapter over the storage contexts of `grovedb-storage`, in `merk/src/store/kv.rs`, and the store over a write transaction of LigninDB, in `merk/src/store/lignin` (MERK-01, [The LigninDB store](#the-lignindb-store)).
 
 This document states the contract of the trait, how the RocksDB adapter meets it, how the trait gives an engine the write set and the reads that the transaction rules need (`transactions.md`, ST6 and RD5), and which operation serves each place where GroveDB reaches Merk's records without going through Merk ([findings 2 and 3 of the storage surface inventory](storage-surface.md#findings-for-the-seams)).
 
@@ -47,6 +47,7 @@ A change set (`NodeChangeSet`) takes:
 | `prepare_node(node, change)` | Takes from a node in memory what the store needs to write it. | encodes the whole record |
 | `put_node(key, prepared, cost)` | Writes a prepared node. | `Batch::put` |
 | `delete_node(key, cost)` | Removes a node. | `Batch::delete` |
+| `state_root(key)` | States the key of the root node as the change set leaves the Merk, or that it leaves the Merk empty. Not a write. | nothing: the default |
 | `put_root_key(key, cost)`, `delete_root_key(cost)` | Records or removes the root key. | `Batch::put_root`, `Batch::delete_root` on `ROOT_KEY_KEY` |
 | `put_aux_record(key, value, cost)`, `delete_aux_record(key, cost)` | Writes or removes an aux record. | `Batch::put_aux`, `Batch::delete_aux` |
 
@@ -63,6 +64,8 @@ A change set (`NodeChangeSet`) takes:
 ### The root key
 
 A Merk that is not layered under a parent element (base and standalone Merks) keeps the key of its root node in its store. `root_key` reads it on open. `put_root_key` and `delete_root_key` change it as part of a commit. `set_root_key` changes it at once (`Merk::set_base_root_key`).
+
+`state_root` is not that record. `Merk::commit` calls it once in every change set, for every kind of Merk, after the commit walk and before the first `put_node`: with the key of the root node as the commit leaves the tree, whether or not it is another node than before, and with `None` when the commit leaves the Merk with no node. Nothing else calls it: chunk restore, `clear` and `write_node` state no root. It makes no write, is charged nothing and cannot fail. A store that finds every node by its key has no use for it, and the RocksDB adapter keeps the default, which does nothing. A store that keeps the links of the tree has to know where a walk begins: LigninDB keeps the Merk's entry in its subtree directory by it. MERK-01 added it, because the root cannot be worked out below the seam: `put_root_key` is issued only for a Merk with no parent element, and only when the key changed; the written node that no other written node links to is the root in a commit, but not in a chunk of a restore, and not when a record changes with no hash (#1059).
 
 A layered Merk takes its root key from its parent element and does not use the record. On LigninDB the subtree directory names the root as well (MERK-04). Loading the root node is `get_node` with that key: no separate operation exists, because a store that knows where the root is answers that lookup without a search.
 
@@ -201,6 +204,13 @@ The reads that matter to the rule are covered in [Reads](#reads): every read is 
 3. **A check before use.** A location is good only at the version it was read at (PN8). The store checks it before it follows it and otherwise finds the node by the link's key, which the link always carries. Either way the answer is the one the key gives. No signature changes.
 4. **Nodes this Merk wrote.** A written node gets its location from the engine, and it gets it late. A node is placed when its write is applied, for all change sets of an operation together, not when it is prepared or put ([P5 of the tree layout](tree-layout.md), owner ruling D-034). So the location cannot come back through `prepare_node`, which takes the node by shared reference, or through `put_node`, which returns nothing, and on a batch it does not exist yet when `NodeStore::commit` returns. It comes back from the application of the batch, which is an operation of the engine: `Engine::apply_batch` and `Engine::apply_write_group` return `Applied`, the engine's report of the nodes the write created and carried ([engine.md](engine.md#the-batch-across-subtrees)). Until a Merk that stays open takes that report (PERF-03), a link to a node it wrote since it was opened is followed by key, which is correct and is a keyed lookup. `NodeStore`'s reads and the change set stay as they are.
 
+How MERK-01 settled the four, in `merk::store::lignin`:
+
+- The location is kept by the store, not in `Link`: a table in the handle, from a node's key to where its cell was last seen (a `lignin_tree::node::NodeHandle`). `Link` and `merk::tree` are as they were. PERF-01 changes what a node in memory is, and can move the location into the link then.
+- A read of a node fills each link's key from the child's cell, because a cell holds only the length of that key (`tree-page.md` TP10). The child's cell is therefore seen with its parent, and its location goes into the table. `fetch_node(link)` looks the link's key up in the table and reads through the location (`Scope::follow`).
+- The check is the transaction's (PN8): a handle that is no longer good is not followed, and the node is found by its key.
+- A written node's location comes back from the application of its write: for an immediate handle from its own commit, and for a deferred handle from `LigninBatch::apply`, whose report the handle takes in with `LigninNodeStore::take_locations`. A handle that does not take it in finds such a node by key the next time, and has its location again from that read.
+
 A Merk that GroveDB opens for one batch and commits once never follows a link it wrote. The report matters for a Merk that is kept open and written again, which a cache of open Merks for a transaction would do (PERF-03).
 
 ### Threads
@@ -267,6 +277,86 @@ The last row covers commits, reads, proofs, cursors, the side records, the root 
 | `what_a_storage_batch_holds_is_read_once_the_batch_is_applied` | On a transactional context nothing written through the adapter, in a change set or at once, is seen by a read or a cursor before the storage batch is applied to the transaction. This is the storage context's rule; the test holds that the adapter keeps nothing that would answer earlier. |
 | `a_read_is_answered_by_the_transaction_when_it_is_made` | RD3, RD5 and RD6 at the seam: a fetch returns the transaction's own node, a node committed by another transaction as soon as it is committed, and nothing of an uncommitted one. A cursor opened before that commit does not show it and the next cursor does. These are RocksDB's rules; the test holds that the adapter pins no view and keeps no node. |
 | `the_cursor_and_the_batch_are_the_storage_contexts_own` | The cursor of the adapter is the context's raw iterator and its change set holds the context's batch. This is checked by the compiler. |
+
+## The LigninDB store
+
+`merk::store::lignin` (MERK-01, behind the Cargo feature `lignin_storage`) implements `NodeStore<'db>` for `LigninNodeStore<'db>`, a type of Merk that reads and writes through a write transaction of `lignindb::txn`. Its module documentation says what each part does. This section says how it meets the contract above and which choices it made.
+
+### Handles
+
+A handle is of one subtree, named by its 32 bytes, inside one transaction.
+
+| Handle | Reads | Writes |
+| --- | --- | --- |
+| deferred (`LigninNodeStore::deferred`) | the transaction's view, and nothing that is staged | staged in the `LigninBatch` it was opened with; refused with no batch |
+| immediate (`LigninNodeStore::immediate`) | the transaction's view, with its own writes | applied at once; each commit is a write of its own |
+| read-only (`LigninNodeStore::read_only`) | a transaction that has no scope open | refused |
+
+The first two go through a `LigninWriter`, which holds the write scope of one writer. A scope is one thread's at a time and is not `Sync`, and a handle has to be `Send`, so the writer keeps the scope behind a lock that each read and each application takes. One thread uses a writer at a time, so the lock is never waited for. `LigninNodeStore`, a `Merk` on it, `LigninChangeSet`, `LigninBatch` and `LigninWriter` are `Send`, asserted at compile time in `merk/src/store/lignin/mod.rs`.
+
+Everything the store asks of `lignindb::txn` is in one file, `merk/src/store/lignin/access.rs`: the reads of a node view, the batch a change set becomes, and the report of its application. The rest of the store reaches a transaction through the trait `Access` of that file, as a trait object, which is what lets a handle have the one lifetime that `Engine::Subtree<'a>` has.
+
+### Reads
+
+- `get_node`, `get_node_for_read` and `fetch_node` read the node's cell, then the cell of each child for its key, and build a `TreeNode` with the value. That is up to three operations of the transaction, and a commit can land between two of them. The transaction then answers that the node's location is no longer good, and the node is read again, up to eight times. A link that leads to no node is an error.
+- `has_node` reads the cell and no child.
+- A read is charged by `StorageCostModel::read` with the record length of the node (`cost-model.md` N1), which is measured from the cell: the value's length, the feature, and for each link the length of the child's key and the aggregate. An immediate handle charges `read_immediate`. A read that failed is charged as one that found nothing.
+- A read the transaction did not perform is `Error::StorageError`. A cell whose feature or aggregate is no feature of Merk's is `Error::CorruptedData`, as a record that does not decode is an encoding error on RocksDB.
+
+### Writes
+
+- `prepare_node` copies the node's parts as a cell has them: the feature and each link's aggregate as the bytes of `tree-page.md` TP12 (`merk/src/store/lignin/feature.rs`), the two hashes, the links by child key, and the value only for `ValueWritten`.
+- Every `put_node` and every `delete_node` is one node of the engine's change set, under its key (ST6). A `HashOnly` or `StructureChanged` node says that it keeps its value (`ValuePut::Keep`).
+- **A value is written only when it changed.** A `ValueWritten` node states its value. When the write is applied, the stated bytes are compared with the bytes the transaction holds under that key, and equal bytes are kept where they are. The bytes are compared, never a hash. Merk reports the tree element of every Merk on the way up as written on every write below it, and such a put now costs no value. The comparison is one read for each stated value, made in the operation before the application. `LigninApplied` counts the values written and kept.
+- The root is what `state_root` stated, and the root that was otherwise. A change set that states a root and writes and removes no node, which is the commit of an empty Merk that stays empty, hands the transaction no change set: a root changes only with a node.
+- The root key of a Merk with no parent element, the aux records and the meta records are flat records of the subtree in the columns of those names.
+- A deferred handle charges a staged write nothing. `LigninBatch::apply` charges as the application of a storage batch does (`cost-model.md` B1): the keyspaces in `batch_order()`, each by stored key, a delete with no cost from the committed record, and the storage cost only if the transaction took the writes. An immediate handle charges each change as it joins the change set (M2).
+
+### The batch of an operation
+
+`LigninBatch` holds what the deferred handles of one operation committed. `LigninBatch::apply` hands all of it to the transaction as one batch, so the change sets of all Merks are one write of the tree layer (`tree-layout.md` P5). The batch is empty afterwards, and a handle that stays open stages its next writes in it.
+
+A handle is opened with the element that hosts its Merk, if one does (`LigninSubtree::host`): the host's subtree and key, and every Merk that element hosts by position. When the batch also writes the host's node, that node names its Merks (`Hosted::Set`), so that its cell points at their roots. A Merk whose host the batch does not write is `anchored`, and so is a hosted Merk that an immediate handle commits by itself.
+
+A batch also says what its operation does to whole subtrees, which the transaction keeps in its subtree directory:
+
+| Call | What it says |
+| --- | --- |
+| `LigninBatch::enter(subtree, tree_type)` | The subtree is there from this batch on, with no node. Its tree type is bytes the directory keeps. Its host is `LigninSubtree::host`, and its position among the subtrees of that element is the position of its prefix in `LigninHost::hosted`. |
+| `LigninBatch::drop_subtree(subtree)` | The subtree goes with every subtree below it. The outermost one is named. The batch deletes the element that hosted it or writes it without the subtree, and `LigninSubtree::host` says which subtrees that element hosts afterwards. |
+
+The transaction reads nothing under a subtree that is not entered, and refuses a change set and a side record for one. It applies the drops of a batch first, then its enters, then its change sets. So a Merk whose subtree the batch enters has no node before the write, whatever the transaction holds under the prefix until then: every value stated for it is written with no comparison. A location that a handle kept of a node which went is a hint the transaction finds stale. A deferred handle sees a staged drop no more than a staged write, so a Merk that is new under such a prefix is opened with no root.
+
+Every `LigninHost` that names one element in one batch gives the same list, which is what the element hosts once the batch is applied. The list has no gap, so an element loses the subtrees it hosts from the last one or all together, as the elements of GroveDB do. Which subtrees an operation enters and drops is GroveDB's to say (MERK-04, GROVE-01, GROVE-05). The transaction also offers the clear of a subtree. The store does not pass one on: what a clear takes is GROVE-05's to state, and until then a Merk loses its nodes by key.
+
+### Choices MERK-01 made
+
+1. **The location of a node is kept in the handle, by key**, and not in `Link` (see [Following a location](#following-a-location)).
+2. **`NodeChangeSet::state_root`** is new on the seam (see [The root key](#the-root-key)).
+3. **The comparison that keeps an unchanged value is made in the store**, one operation before the application. The place for it is the application itself, where the cell is at hand: PERF-03 can move it there.
+4. **A batch holds one change set for a Merk**, and a second is refused. Which of two stands is the rule of the batch across subtrees (TXN-08). For a side record a batch holds one outcome by the rule of a storage batch inside one operation: a put stands against a delete of the same key, and otherwise the later write stands. An immediate handle makes its writes in the order they were given.
+5. **The cursor is not built** (MERK-05): `cursor()` gives one that stands on no record and whose `status()` is an error. A cursor that lives across calls cannot be taken from a `Send` handle as `lignindb::txn` stands, because `Scope::merk_cursor` borrows the scope.
+6. **The store charges by the first version of the cost rules**, as the storage contexts do, with no grove version given to a handle.
+7. **`lignindb` has a Cargo feature `testing`**, a test fixture and no API: its own test store with a stand-in commit, for tests outside the crate until the engine can be opened (TXN-07).
+
+### How it is checked
+
+`merk/src/store/lignin/tests.rs` runs on a store on disk.
+
+| Test | What it holds |
+| --- | --- |
+| `a_merk_on_lignindb_has_the_tree_it_has_on_rocksdb` | For twelve tree types and three ways of writing (a deferred handle with a batch, an immediate handle with a Merk that stays open, a transaction committed after every batch): random batches of puts, puts of the same bytes, references and deletes give the root hash and root key they give on RocksDB, and every node read back is, as a record, the record RocksDB holds. On a deferred handle the Merk and the batch also charge what they charge on RocksDB. |
+| `a_value_is_written_only_when_it_changed` | A value put again with the same bytes, in a cell or out of line, is not written, and other bytes of the same length are: the transaction's write set grows by the same nodes both times, and by the bytes of the values only the second time. |
+| `every_node_merk_writes_is_one_write_of_its_key`, `a_commit_that_changes_nothing_writes_what_merk_writes` | The transaction's write set grows by exactly one write for each node Merk wrote or removed, whatever its kind. A commit that changes nothing writes the root of a Merk that has one, and for an empty Merk that keeps its own root key the delete of that record. |
+| `a_link_is_followed_to_where_its_node_was_seen` | A walk down a tree looks no key up after the root, in a transaction's own frames and on committed pages, and a handle that takes in the report of a batch finds what it wrote without a lookup. |
+| `a_host_names_the_merk_it_hosts_when_one_batch_writes_both` | A batch that enters a subtree and writes its Merk and its host names the Merk in the host, the engine refuses the same batch without the name, and a hosted Merk committed alone is anchored. |
+| `a_merk_that_is_entered_with_no_node_is_written_by_a_later_batch` | A Merk is entered with no node by the batch that writes its host, gets its first nodes from a batch that does not write the host, and more from one that does. |
+| `a_subtree_that_a_batch_drops_and_enters_again_is_written_whole` | A Merk under a subtree that one batch drops and enters again is written whole although the transaction held the same bytes under the same keys, and on a handle that had seen them. A batch that does not enter the subtree keeps them. Under a dropped subtree nothing is read, and a change set for it is refused. |
+| `a_deferred_handle_reads_nothing_that_is_staged`, `the_root_key_and_the_side_records_are_records_of_their_subtree`, `a_node_written_outside_a_commit_leaves_the_root_where_it_is`, `a_committed_tree_is_read_and_written_by_the_next_transaction` | The write modes, the side records, `write_node`, and trees across commits and a rollback. |
+| `a_handle_that_only_reads_refuses_every_write`, `a_node_whose_location_went_stale_between_two_reads_is_read_again`, `the_cursor_is_not_built_and_says_so` | The errors, and what each is charged. |
+| `a_merk_on_lignindb_moves_to_another_thread_and_is_written_there` | A Merk on the store is sent to another thread and written there. |
+
+`lignin-testkit/tests/merk_store.rs` replays the golden corpus through the store. GroveDB does not run on LigninDB yet, so each trace runs on RocksDB, and what each operation did to the nodes of every Merk is handed to a LigninDB transaction as one batch: a drop for each tree the operation removed, an enter for each Merk it made, and the change sets, each Merk named in the element that hosts it. Every written node is read back and compared with RocksDB's record, and every node of every Merk at intervals and at the end of the trace. Half of the traces are also handed over with every node as `ValueWritten`, and the store then writes exactly the values whose bytes changed and the values of each Merk its operation made.
 
 ## What later tasks get
 
