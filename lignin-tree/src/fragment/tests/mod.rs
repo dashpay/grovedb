@@ -165,10 +165,6 @@ impl Mem {
         self.frames.keys().map(|page| self.view(*page).len()).sum()
     }
 
-    fn image(&self, page: PageId) -> Vec<u8> {
-        self.view(page).tree_page().to_image()
-    }
-
     /// How many records of `kind` the sink was told since `from`.
     fn count(&self, from: usize, kind: Rec) -> usize {
         let records = &self.shadow.records[from..];

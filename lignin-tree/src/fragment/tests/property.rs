@@ -173,6 +173,10 @@ fn any_sequence_of_reorganisations_leaves_the_logical_tree_unchanged() {
                 reorganised += run.reorganise(layout, 60);
             }
         }
+        // The same nodes under each layout in turn: only cells move.
+        for layout in layouts.into_iter().rev() {
+            reorganised += run.reorganise(layout, 300);
+        }
         run.grove.check();
         carried += run.carried();
         pages += run.grove.mem.frames.len();
@@ -182,6 +186,10 @@ fn any_sequence_of_reorganisations_leaves_the_logical_tree_unchanged() {
             run.grove.mem.frames.len() as u64
         );
     }
+    println!(
+        "{pages} pages in six groves, {carried} cells carried, {reorganised} of them by writes that \
+         changed no node"
+    );
     assert!(pages > 60, "the groves span many pages: {pages}");
     assert!(carried > 3000, "the writes carried cells: {carried}");
     assert!(reorganised > 100, "writes that changed no node carried cells: {reorganised}");

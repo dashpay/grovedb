@@ -60,6 +60,10 @@ pub(super) struct Grove {
     pub ghosts: usize,
     /// Names every child by its address where it has one.
     pub plain_names: bool,
+    /// Leaves the pointer to the root of the grove out of the writes.
+    pub rootless: bool,
+    /// The longest value the grove keeps in its cell.
+    pub inline_max: usize,
     by_address: HashMap<CellAddress, usize>,
     dirty: BTreeSet<usize>,
     removed: Vec<usize>,
@@ -129,6 +133,8 @@ impl Grove {
             root_at: None,
             ghosts: 0,
             plain_names: false,
+            rootless: false,
+            inline_max: INLINE_MAX,
             by_address: HashMap::new(),
             dirty: BTreeSet::new(),
             removed: Vec::new(),
@@ -427,6 +433,33 @@ impl Grove {
         self.touch(above, &key)
     }
 
+    /// Deletes one key of `merk` and puts another in one write.
+    pub fn delete_and_put(&mut self, merk: usize, gone: &[u8], key: &[u8], value: &[u8]) -> Report {
+        self.merks[merk].root = self.delete_at(self.merks[merk].root, gone);
+        let root = self.insert_at(self.merks[merk].root, merk, key, value);
+        self.merks[merk].root = Some(root);
+        self.flush(merk)
+    }
+
+    /// Gives the node under `key` another value in a write that holds no
+    /// other node and no root pointer, and leaves its hashes as they are. A
+    /// write that is refused leaves the grove as it was.
+    pub fn alone(&mut self, merk: usize, key: &[u8], value: &[u8]) -> Result<Report, FragmentError> {
+        let node = self.find(merk, key).expect("the key is in the Merk");
+        let old = std::mem::replace(&mut self.nodes[node].value, value.to_vec());
+        self.nodes[node].value_dirty = true;
+        self.dirty.insert(node);
+        let rootless = std::mem::replace(&mut self.rootless, true);
+        let report = self.apply();
+        self.rootless = rootless;
+        if report.is_err() {
+            self.nodes[node].value = old;
+            self.nodes[node].value_dirty = false;
+            self.dirty.clear();
+        }
+        report
+    }
+
     fn flush(&mut self, merk: usize) -> Report {
         self.prepare(merk);
         self.apply().expect("the write is applied")
@@ -486,7 +519,7 @@ impl Grove {
                 let kept = root.is_some() && node.stored_hosted.get(position) == Some(root);
                 named.push(root.map(|root| name(rng, plain, nodes, &index_of, root, kept)));
             }
-            let out_of_line = node.value_dirty && node.value.len() > INLINE_MAX;
+            let out_of_line = node.value_dirty && node.value.len() > self.inline_max;
             parts.push(Parts {
                 links,
                 hosted,
@@ -545,7 +578,10 @@ impl Grove {
         let write = Write {
             nodes: &node_writes,
             removed: &removed,
-            roots: &roots,
+            roots: match self.rootless {
+                true => &[],
+                false => &roots,
+            },
         };
         let from = self.mem.shadow.records.len();
         let pages_before = self.mem.frames.len();
@@ -558,6 +594,12 @@ impl Grove {
 
         assert_eq!(report.nodes.len(), written.len());
         assert_eq!(report.carries.total().cells, report.carried.len() as u64);
+        let created = written.iter().filter(|node| nodes[**node].at.is_none()).count();
+        let arrived = created + report.carried.len();
+        assert_eq!(self.mem.count(from, Rec::Insert), arrived, "a cell arrives once");
+        let left = removed.len() + report.carried.len();
+        assert_eq!(self.mem.count(from, Rec::Remove), left, "a cell leaves once");
+        assert_eq!(self.mem.count(from, Rec::Replace), 0);
         for address in &removed {
             self.by_address.remove(address);
         }
@@ -587,7 +629,9 @@ impl Grove {
             node.stored = [node.left, node.right];
             node.stored_hosted = parts.roots;
         }
-        self.root_at = report.roots[0];
+        if let Some(named) = report.roots.first() {
+            self.root_at = *named;
+        }
         assert_eq!(self.root_at, root.and_then(|root| self.nodes[root].at));
         let mut orphans = std::mem::take(&mut self.orphans);
         let mut reported = report.orphaned.clone();
@@ -675,7 +719,7 @@ impl Grove {
         assert_eq!(cell.value_hash(), &node.value_hash);
         assert_eq!(cell.kv_hash(), &node.kv_hash);
         assert_eq!(self.log.read(cell.value(), at.page()), node.value);
-        assert_eq!(cell.value().is_inline(), node.value.len() <= INLINE_MAX);
+        assert_eq!(cell.value().is_inline(), node.value.len() <= self.inline_max);
         assert_eq!(cell.is_fragment_root(), above != Some(at.page()));
         *reached += 1;
         for (side, child) in Side::BOTH.into_iter().zip([node.left, node.right]) {
@@ -745,6 +789,30 @@ impl Grove {
     /// The page the node under `key` is in.
     pub fn page_of(&self, merk: usize, key: &[u8]) -> PageId {
         self.node(merk, key).at.expect("the node has a cell").page()
+    }
+
+    /// The bytes of the largest fragment that does not hold the root of
+    /// the grove, with its slots.
+    pub fn largest_fragment(&self) -> usize {
+        let mut largest = 0;
+        for &id in self.mem.frames.keys() {
+            let view = self.mem.view(id);
+            for root in view.nodes().filter(|node| node.is_fragment_root()) {
+                if Some(root.address()) == self.root_at {
+                    continue;
+                }
+                let (mut bytes, mut pending) = (0, vec![root]);
+                while let Some(node) = pending.pop() {
+                    bytes += node.cell().encoded_len() + 2;
+                    let links = Side::BOTH.into_iter().filter_map(|side| node.link(side));
+                    let below = links.map(|link| link.child).chain(node.hosted_roots().flatten());
+                    let here = below.filter(|child| child.page() == id);
+                    pending.extend(here.filter_map(|child| view.node(child.slot())));
+                }
+                largest = largest.max(bytes);
+            }
+        }
+        largest
     }
 
     /// The share of the pages' bytes that cells, slots and headers take.
