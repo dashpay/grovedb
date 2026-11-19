@@ -351,7 +351,8 @@ impl<'a, P: Pages, V: ValueReader, R: HashRules> Run<'a, P, V, R> {
 
     /// Makes the marked hashes of the node that was opened last, writes
     /// those that differ into its cell, takes its marks off, and returns
-    /// the node's hash if `want`.
+    /// the node's hash if `want`. The marks are off once the stored hashes
+    /// are in the cell, also when the node's own hash is then refused.
     fn close(&mut self, want: bool) -> Result<Option<Hash>, HashError> {
         let frame = self.stack.last().expect("a node is open");
         let at = frame.at;
@@ -374,12 +375,7 @@ impl<'a, P: Pages, V: ValueReader, R: HashRules> Run<'a, P, V, R> {
                     counters.written += 1;
                 }
             }
-            if !want {
-                return Ok(Ok(None));
-            }
-            let hash = rules.node_hash(cell.node());
-            counters.node_hashes += u64::from(hash.is_ok());
-            Ok(hash.map(Some).map_err(HashError::Rule))
+            Ok(Ok(want.then(|| rules.node_hash(cell.node()))))
         });
         let hash = written.map_err(HashError::Pages)??;
         self.lists.deps.truncate(frame.deps);
@@ -387,6 +383,8 @@ impl<'a, P: Pages, V: ValueReader, R: HashRules> Run<'a, P, V, R> {
         self.hashes.marks.remove(&at);
         self.hashes.counters.nodes += 1;
         self.stack.pop();
+        let hash = hash.transpose().map_err(HashError::Rule)?;
+        self.hashes.counters.node_hashes += u64::from(hash.is_some());
         Ok(hash)
     }
 }

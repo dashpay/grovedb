@@ -209,6 +209,29 @@ fn a_rule_that_refuses_loses_no_mark() {
 }
 
 #[test]
+fn hashes_that_are_in_their_cell_are_not_made_again_after_an_error() {
+    let (mut grove, ..) = marked();
+    let root = grove.merks[0].root.expect("a root");
+    let root_key = grove.nodes[root].key.clone();
+
+    // Every stored hash is made and written, and then the hash of the root,
+    // which no cell stores, is refused.
+    grove.rules.refuse = Some((Rule::Node, root_key.clone()));
+    let error = root_hash(&mut grove).expect_err("the root's hash is refused");
+    assert!(matches!(error, HashError::Rule(_)), "{error}");
+    assert!(grove.hashes.is_empty(), "no stored hash is stale");
+    grove.check_hashes();
+
+    // Asked again, only that hash is made.
+    grove.rules.refuse = None;
+    let calls = grove.rules.calls.len();
+    let records = grove.mem.shadow.hashes.len();
+    assert_eq!(grove.root_hash(), grove.expected_root());
+    assert_eq!(grove.rules.since(calls), [(Rule::Node, root_key)]);
+    assert_eq!(grove.mem.shadow.hashes.len(), records);
+}
+
+#[test]
 fn a_value_that_cannot_be_read_loses_no_mark() {
     let large = || {
         let (mut grove, hosted, changed) = marked();
@@ -539,6 +562,38 @@ fn a_cell_that_changed_during_an_evaluation_is_refused() {
         meddled.free(page(2)).expect("freed");
         assert!(!meddled.host_is_behind(first));
     }
+}
+
+#[test]
+fn what_is_not_a_pointer_is_read_in_the_step_that_writes_the_cell() {
+    let (mut mem, id) = page_of(&[leaf(b"a", b"value")]);
+    let at = CellAddress::new(id, slot(1));
+    let mut hashes = Hashes::new();
+    hashes.mark(at, HashField::Value);
+    // The cell is read, and its value changes where it is before the cell
+    // is written: the cell points at nothing else than before.
+    let another: fn(&mut Mem) = |mem| {
+        mem.write(page(1), |page| {
+            let mut node = page.node_mut(slot(1)).expect("the node");
+            node.set_value(CellValue::Inline(b"another value"))
+        })
+        .expect("the value changes");
+    };
+    let mut meddled = Meddled {
+        mem: &mut mem,
+        before: 1,
+        meddle: Some(another),
+    };
+    let evaluated = hashes.evaluate(&mut meddled, &mut (), &mut Plain, at);
+    evaluated.expect("the cell points at what it pointed at");
+    assert!(hashes.is_empty());
+
+    // The hashes are those of the value the cell has.
+    let value_hash = value_rule(b"another value", &[]);
+    assert_eq!(mem.node(at).value_hash(), &value_hash);
+    assert_eq!(mem.node(at).kv_hash(), &kv_rule(b"a", &value_hash));
+    let differing = check(&mut mem, &mut (), &mut Plain, at);
+    assert_eq!(differing.expect("checked"), Stale::NONE);
 }
 
 #[test]

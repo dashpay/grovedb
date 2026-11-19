@@ -60,8 +60,10 @@ pub enum HashError {
         /// A node of the circle.
         node: CellAddress,
     },
-    /// A cell is not as it was read two steps earlier in the same
-    /// evaluation: something else changed the pages meanwhile.
+    /// A cell does not point at what it pointed at when it was read, a
+    /// step earlier in the same evaluation: the child on a marked side, a
+    /// root it hosts, or the place of its value. Something else changed the
+    /// pages meanwhile, and a hash made from what was read would be wrong.
     Changed {
         /// The node.
         node: CellAddress,

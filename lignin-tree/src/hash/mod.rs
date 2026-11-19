@@ -76,6 +76,10 @@
 //! that value to the root: the value hash and the key-value hash of the
 //! node and of every host above it, and the hash of every node of the path.
 //! A node that many changes pass through is marked by each and made once.
+//! An evaluation that an error stops has made hashes it did not write: the
+//! hash of a node whose parent was not written, or a value hash whose
+//! key-value hash was refused. Those are made again when it is asked for
+//! again. What was written is not.
 //!
 //! **A hash that changed is one hash record.** A hash is written with
 //! [`NodeMut::set_hash`](crate::node::NodeMut::set_hash), so it is told to
@@ -137,8 +141,15 @@
 //! # What the callers do
 //!
 //! - **One writer.** Nothing else changes the pages during an evaluation,
-//!   as during a write. A cell that is not as it was read is refused
-//!   ([`HashError::Changed`]).
+//!   as during a write. An evaluation reads a marked cell in one step and
+//!   writes it in a later one. What it keeps from the first step is what
+//!   the cell points at: the child on a marked side, the roots it hosts and
+//!   the place of a value that is not in the cell. It compares those in
+//!   the second step, and a cell that points elsewhere is refused
+//!   ([`HashError::Changed`]), so no hash is made from a pointer the cell
+//!   no longer has. Everything else of the cell is read in the step that
+//!   writes it. This guards one cell and is no test of the rule: a change
+//!   to another cell between two steps is not seen.
 //! - **Marks are complete.** A change that is not marked leaves a stale
 //!   hash that nothing finds. [`check`] is the test of it: at every moment,
 //!   what it reports for a node is marked for that node.
