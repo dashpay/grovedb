@@ -5,3 +5,5 @@
 #[cfg(not(loom))]
 mod claims;
 mod model;
+#[cfg(not(loom))]
+mod set;

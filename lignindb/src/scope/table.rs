@@ -140,7 +140,9 @@ impl Scopes {
     /// Opens a scope. Its writes are laid out as it makes them if no
     /// other scope is open.
     pub(crate) fn open(&mut self) -> ScopeId {
-        self.last += 1;
+        // An id is never given twice, and none is that of the merged
+        // writes.
+        self.last = self.last.checked_add(1).expect("fewer scopes than ids");
         let scope = Open {
             laid: self.open.is_empty(),
             units: Vec::new(),
@@ -232,46 +234,73 @@ impl Scopes {
         if self.open.is_empty() {
             return Ok(());
         }
-        match self.claims.get(&unit) {
-            Some(Claim::Write(holder)) if Some(*holder) != who.id() => {
-                return Err(Refused::Overlap(unit));
-            }
-            Some(Claim::Write(_)) => return Ok(()),
-            Some(Claim::Read(readers)) if who.id().is_some_and(|id| readers.contains(&id)) => {
-                return Ok(());
-            }
-            _ => {}
-        }
-        if let Some(above) = self.held_above(who, unit, lineage)? {
-            return Err(Refused::Overlap(Unit::new(Column::Data, above)));
+        if let Some(held) = self.read_refused(who, unit, lineage)? {
+            return Err(Refused::Overlap(held));
         }
         if let Some(id) = who.id() {
-            match self.claims.entry(unit).or_insert(Claim::Read(Vec::new())) {
-                Claim::Read(readers) => readers.push(id),
-                Claim::Write(_) => unreachable!("the unit is written by nobody else"),
-            }
-            self.scope(id).units.push(unit);
+            self.note_read(id, unit);
         }
         Ok(())
     }
 
-    /// Takes the write claims of one operation of the scope `id` (SC3):
-    /// on each of `units`, and on every unit below each subtree of `whole`,
-    /// which the operation drops or clears. All are granted, or none is.
+    /// The unit that refuses `who` a read of `unit`, if one does: `unit`
+    /// where another open scope writes it, and otherwise the data column
+    /// of a subtree above it that another open scope dropped or cleared.
+    fn read_refused<L: Lineage>(
+        &self,
+        who: Who,
+        unit: Unit,
+        lineage: &mut L,
+    ) -> Result<Option<Unit>, L::Error> {
+        match self.claims.get(&unit) {
+            Some(Claim::Write(holder)) if Some(*holder) != who.id() => return Ok(Some(unit)),
+            Some(Claim::Write(_)) => return Ok(None),
+            Some(Claim::Read(readers)) if who.id().is_some_and(|id| readers.contains(&id)) => {
+                return Ok(None);
+            }
+            _ => {}
+        }
+        let above = self.held_above(who, unit, lineage)?;
+        Ok(above.map(|above| Unit::new(Column::Data, above)))
+    }
+
+    /// Keeps the read claim of the scope `id` on `unit`, which no other
+    /// scope writes. A scope that holds the unit already holds it as it
+    /// did.
+    fn note_read(&mut self, id: ScopeId, unit: Unit) {
+        match self.claims.entry(unit).or_insert(Claim::Read(Vec::new())) {
+            Claim::Read(readers) if !readers.contains(&id) => readers.push(id),
+            _ => return,
+        }
+        self.scope(id).units.push(unit);
+    }
+
+    /// Takes the claims of one operation of the scope `id` (SC3): a write
+    /// claim on each of `units`, a read claim on each of `reads`, which the
+    /// operation reads and does not write, and a claim on every unit below
+    /// each subtree of `whole`, which the operation drops or clears. All
+    /// are granted, or none is.
     ///
     /// A write claim is refused if another open scope has read or written
-    /// the unit, or has dropped or cleared a subtree it is below. A claim
-    /// on everything below a subtree is refused if another open scope holds
-    /// a unit there.
+    /// the unit, or has dropped or cleared a subtree it is below. A read
+    /// claim is refused as [`Self::read`] refuses it. A claim on
+    /// everything below a subtree is refused if another open scope holds a
+    /// unit there.
     pub(crate) fn write<L: Lineage>(
         &mut self,
         id: ScopeId,
         units: &[Unit],
+        reads: &[Unit],
         whole: &[Subtree],
         lineage: &mut L,
     ) -> Result<(), Refused<L::Error>> {
         let who = Who::scope(id);
         if self.open.len() > 1 {
+            for unit in reads {
+                if let Some(held) = self.read_refused(who, *unit, lineage)? {
+                    return Err(Refused::Overlap(held));
+                }
+            }
             for unit in units {
                 if (self.claims.get(unit)).is_some_and(|claim| claim.held_beside(who)) {
                     return Err(Refused::Overlap(*unit));
@@ -292,15 +321,16 @@ impl Scopes {
             }
         }
         for unit in units {
-            let fresh = match self.claims.insert(*unit, Claim::Write(id)) {
-                None => true,
-                Some(Claim::Write(_)) => false,
-                // It had read the unit, and nobody else had.
-                Some(Claim::Read(_)) => false,
-            };
-            if fresh {
+            // The unit is the scope's to write from here on. What the map
+            // had for it was nothing, or a claim of this scope alone: it
+            // wrote the unit before, or had read it and nobody else had.
+            let held = self.claims.insert(*unit, Claim::Write(id)).is_some();
+            if !held {
                 self.scope(id).units.push(*unit);
             }
+        }
+        for unit in reads {
+            self.note_read(id, *unit);
         }
         for above in whole {
             if !self.whole.contains(&(id, *above)) {
@@ -427,6 +457,13 @@ impl Scopes {
             };
         }
         marks
+    }
+
+    /// Whether `key` may be marked in the pages the transaction's frames
+    /// show: a merged scope left the mark, or an open scope whose writes
+    /// the frames show has set it.
+    pub(crate) fn marked_on_pages(&self, key: &MarkKey) -> bool {
+        self.pending.contains(key) || self.laid_changes().any(|(set, at)| *set && at == key)
     }
 
     /// Every mark that stood at some point of the writes the transaction's

@@ -3,7 +3,7 @@
 use std::{
     collections::HashMap,
     fmt,
-    sync::{Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
 use lignin_format::{tree_page::Side, CellAddress, CommitVersion};
@@ -20,7 +20,7 @@ use super::{
     commits::Watch,
     error::{BatchError, TxnError},
     frames::{stored_key, Awake, Frames, Parked, Woken},
-    key::{Column, Subtree, Unit},
+    key::{Column, KeySet, Subtree, Unit},
     opened::Opened,
     pages::{find, follow, CommittedPages, NodePages},
     path::WritePath,
@@ -105,6 +105,14 @@ struct State<'s> {
     /// or none where that version has not entered it (CF5,
     /// `WriteTxn::meet_below`).
     under: HashMap<Subtree, Option<Vec<MerkId>>>,
+    /// The commits whose key sets were taken and that were not looked at
+    /// for what their drops cover (`WriteTxn::meet_below`): the look that
+    /// was owed them failed on a read, and the next one makes it.
+    owed: Vec<(CommitVersion, Arc<KeySet>)>,
+    /// The next look at what the drops of commits cover is refused: for a
+    /// test of a read that fails there.
+    #[cfg(test)]
+    refuse_look: bool,
     /// The savepoints that are set, oldest first, each the place of the
     /// write set at which it was set (WT8, `crate::savepoint`).
     savepoints: Vec<Mark>,
@@ -124,6 +132,7 @@ impl State<'_> {
         if self.set.is_empty() {
             self.watch = None;
             self.under.clear();
+            self.owed.clear();
         }
     }
 
@@ -246,6 +255,9 @@ impl<'s> WriteTxn<'s> {
                 stuck: None,
                 scopes: Scopes::default(),
                 under: HashMap::new(),
+                owed: Vec::new(),
+                #[cfg(test)]
+                refuse_look: false,
                 savepoints: Vec::new(),
                 buffers: LoadBuffers::new(),
                 key: Vec::new(),
@@ -329,8 +341,8 @@ impl<'s> WriteTxn<'s> {
         Held(self.lock())
     }
 
-    /// The place after the transaction's last write: what a savepoint and a
-    /// scope remember (WT8, SC6).
+    /// The place after the transaction's last write: what a savepoint
+    /// remembers (WT8).
     #[cfg_attr(
         any(not(test), loom),
         expect(dead_code, reason = "a savepoint takes its mark through `Held`")
@@ -371,14 +383,28 @@ impl<'s> WriteTxn<'s> {
         guard: &OperationGuard<'s>,
         at: CommitVersion,
     ) -> Result<(), TxnError> {
-        let mut commits = Vec::new();
         if let Some(watch) = &mut state.watch {
-            watch.take(at, &mut commits);
-            for (version, keys) in &commits {
+            let taken = state.owed.len();
+            watch.take(at, &mut state.owed);
+            for (version, keys) in &state.owed[taken..] {
                 state.set.meet(*version, keys);
             }
         }
-        self.meet_below(state, guard, at, &commits)
+        // The key sets are taken once. A look that fails on a read leaves
+        // its commits owed, so that no drop goes unmet.
+        let owed: Vec<_> = std::mem::take(&mut state.owed);
+        let looked = self.meet_below(state, guard, at, &owed);
+        if looked.is_err() {
+            state.owed = owed;
+        }
+        looked
+    }
+
+    /// Has the transaction's next look at what the drops of commits cover
+    /// fail, as a page read does.
+    #[cfg(test)]
+    pub(crate) fn refuse_look(&self) {
+        self.lock().refuse_look = true;
     }
 
     /// Brings the transaction to the commits that were published up to
@@ -1021,15 +1047,18 @@ impl<'s> WriteTxn<'s> {
         }
         // The conflict is decided before anything else is read, so that no
         // error of a read the transaction has no more use for stands in
-        // its place (CF6).
-        {
+        // its place (CF6). What a drop covers below the subtree it names
+        // is read from the subtree directory: a write that is met without
+        // it is the conflict, whatever that read came to.
+        let taken = {
             let guard = self.path.versions.guard();
-            self.take_in(state, &guard, guard.latest())?;
-        }
+            self.take_in(state, &guard, guard.latest())
+        };
         if state.set.met() > 0 {
             state.end();
             return Ok(Sealed::Conflict);
         }
+        taken?;
         let op = self.begin(state, false)?;
         let Some(frames) = state.frames.take() else {
             if state.set.met() > 0 {

@@ -13,8 +13,8 @@
 //!   ([`TxnError::NotFinalized`](crate::txn::TxnError)).
 //!
 //! `docs/lignindb/transactions.md`, section 9, is the specification: SC1
-//! to SC9 for scopes, claims and marks, LT1 to LT5 for pages that the Merks
-//! of two scopes share, CM1 for what a commit needs. This page says how
+//! to SC9 for scopes, claims and marks, LT1 to LT7 for pages that the Merks
+//! of two scopes share and for the locks, CM1 for what a commit needs. This page says how
 //! each is kept, and at the end which choices were made here.
 //!
 //! No example runs here, for the reason [`crate::txn`] gives: a write
@@ -32,6 +32,7 @@
 //! | a read of a flat record, a committed read of one, a cursor over a unit | that unit, for reading |
 //! | a read of a node by key, by handle or as a child, a committed read of one, a cursor over a Merk | the Merk's data column, for reading |
 //! | [`Scope::apply`] | for writing: the data column of every Merk the batch has a change set for or enters, and the unit of every flat record |
+//! | a batch with a node that names a Merk it hosts, and no change set for that Merk | that Merk's data column, for reading: the node's cell is written with the Merk's root, which is read from its entry in the subtree directory |
 //! | a batch that drops a subtree | for writing: every column of the subtree, and every unit of every subtree below it |
 //! | a batch that clears a subtree | for writing: its data column, and every unit of every subtree below it |
 //!
@@ -40,8 +41,11 @@
 //!   read a unit and then writes it keeps the unit if no other scope holds
 //!   it.
 //! - **A claim never waits.** It is granted or refused inside the call,
-//!   under the transaction's lock. A call that is refused has no effect,
-//!   and its scope stays open and usable.
+//!   under the transaction's lock. A call that is refused reads nothing,
+//!   writes nothing and claims nothing, and its scope stays open and
+//!   usable. It is an operation of the transaction all the same: it takes
+//!   in the commits that were published since the last one, which can end
+//!   the node handles read before (PN8).
 //! - **A scope keeps its claims until it ends**, also the claims of a
 //!   batch that was then refused for what it says.
 //! - **The claims of one batch are granted together or not at all.**
@@ -50,11 +54,13 @@
 //!   nothing.
 //! - **A drop takes everything below it** (`transactions.md` CV9). Which
 //!   subtree is below which is read from the hosts: of the subtrees the
-//!   transaction's scopes entered, from the write set, and from there up
-//!   from the subtree directory, also from an entry that a drop left. So a
-//!   scope that reaches below a subtree which another open scope has
-//!   dropped or cleared is refused, where it would otherwise read that
-//!   scope's write as "nothing is there".
+//!   batch that asks enters, of those the transaction's scopes entered,
+//!   from the write set, and from there up from the subtree directory, also
+//!   from an entry that a drop left. So a scope that reaches below a
+//!   subtree which another open scope has dropped or cleared is refused,
+//!   where it would otherwise read that scope's write as "nothing is
+//!   there", and so is one that enters a subtree there. A subtree is below
+//!   its host from the batch that enters it.
 //!
 //! Read claims are what makes the result independent of timing (SC7): no
 //! scope reads a unit before or after another open scope's write to it.
@@ -86,8 +92,7 @@
 //! ([`Fragments::apply`](lignin_tree::fragment::Fragments::apply)). A
 //! scope that was opened beside another makes no change to a page before
 //! that, so it holds no copy of a page, takes no page id and cannot move a
-//! cell of another scope's Merk. Its rollback costs what it wrote, and
-//! leaves the pages alone.
+//! cell of another scope's Merk. Its rollback leaves the pages alone.
 //!
 //! What it gives up until its writes are laid out:
 //!
@@ -123,7 +128,10 @@
 //!   as after a rollback to a savepoint. Every node handle read through
 //!   the transaction ends (PN8).
 //! - Operations of other scopes that came after a rolled-back scope's are
-//!   kept in their order, with their first-write versions.
+//!   kept in their order, with their first-write versions. They are added
+//!   again to a copy of the write set, so such a rollback costs what the
+//!   whole write set holds, and one whose operations are the last of the
+//!   set costs what it wrote.
 //! - A scope that is dropped is rolled back.
 //!
 //! **Every scope is closed before** a savepoint is set, taken or popped
@@ -145,6 +153,11 @@
 //! - **Marks go with what set them**: with their scope's rollback, and
 //!   with a rollback to a savepoint that was set before the scope merged
 //!   (WT8).
+//! - **The changes of a scope take effect at its merge**, in the order of
+//!   the merges and not in the order they were made. The two agree for
+//!   every element: the write that names an element's roots again reads
+//!   the Merks it hosts, so no scope takes a mark off beside an open scope
+//!   that writes one of them.
 //! - **Who is shown which mark.** [`Scope::is_pending`] answers from the
 //!   marks the scope set and took off, and otherwise from those of the
 //!   merged scopes. A mark of another open scope is not shown. A snapshot
@@ -154,7 +167,8 @@
 //!   the pointers of a marked element to the roots it hosts are not
 //!   followed (`tree-layout.md` T3). The frames keep the cells of the
 //!   marked elements whose scope's writes they show. A cell is found by
-//!   its key when the mark is set, and followed when a write carries it.
+//!   its key when the mark is set, followed when a write carries it, and
+//!   let go when a write deletes its node.
 //!   When the frames are made again from the write set, the moment each
 //!   mark was set among the writes is not known: every host whose key is
 //!   that of an element which was marked at some point is then taken to be
@@ -192,10 +206,11 @@
 //! Every call of a scope holds the transaction's own lock for its length
 //! (LT7 level 2), as every call of the transaction does, and no latch of a
 //! page when it returns (LT3). So the operations of scopes on several
-//! threads come one after another, in an order that the threads decide,
-//! and a call waits for at most one operation, one merge or one rebase of
-//! its transaction. What runs on several threads at once is everything
-//! above the engine: the work of the Merks.
+//! threads come one after another, in an order that the threads decide. A
+//! call waits for the calls that hold the lock before it: an operation, a
+//! merge or a rebase each, and as many as there are threads ahead of it,
+//! since the lock is not fair. What runs on several threads at once is
+//! everything above the engine: the work of the Merks.
 //!
 //! A [`Scope`] is `Send` and not `Sync`: it is one thread's at a time.
 //!
@@ -219,7 +234,7 @@
 //!    scope at a time is what iteration one uses, and its path is that of
 //!    [`crate::txn`], unchanged.
 //! 4. **The operations of all scopes wait for one lock.** A scope can wait
-//!    for an operation of another, where LT3 allows one physical step. The
+//!    for the operations of others, where LT3 allows one physical step. The
 //!    frames are bound to one operation at a time ([`crate::txn`]), and
 //!    readers of one transaction do not yet read them together.
 //! 5. **Claims are kept by a batch that fails**, and released only with

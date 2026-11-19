@@ -13,7 +13,7 @@ use lignin_tree::directory::MerkId;
 use super::*;
 use crate::{
     scope::table::{Lineage, MarkKey, Refused, ScopeId},
-    txn::{key::KeySet, write_set::OpBatch, RecordWrite},
+    txn::{key::KeySet, write_set::OpBatch, Hosted, RecordWrite},
 };
 
 /// The handle one thread writes a transaction through (`transactions.md`
@@ -65,7 +65,9 @@ impl<'t, 's> Scope<'t, 's> {
     /// The batch takes a write claim on the data column of every Merk it
     /// has a change set for or enters, on the unit of every flat record,
     /// and on every column of a subtree it drops with everything below it
-    /// (for a clear: its data column, with everything below). If another
+    /// (for a clear: its data column, with everything below). It takes a
+    /// read claim on the data column of every Merk that one of its nodes
+    /// names as hosted and that it has no change set for. If another
     /// open scope holds one of them the batch is refused with
     /// [`TxnError::ScopeOverlap`] and has no effect (SC3). A claim that was
     /// granted is kept, also where the batch is then refused for what it
@@ -182,10 +184,13 @@ impl fmt::Debug for Scope<'_, '_> {
 }
 
 /// Which subtree is below which, as a transaction has it: by the hosts of
-/// the subtrees its scopes entered, and from there up by the subtree
-/// directory of its frames, or of the committed version it reads.
+/// the subtrees that the batch which asks enters, then of those its scopes
+/// entered, and from there up by the subtree directory of its frames, or
+/// of the committed version it reads.
 struct Hosts<'a, 's> {
     path: &'a WritePath<'s>,
+    /// The subtrees the batch enters, each with the subtree of its host.
+    entering: &'a [(Subtree, Option<Subtree>)],
     set: &'a WriteSet,
     frames: &'a mut Option<Parked<'s>>,
     directory: &'a mut Option<Opened>,
@@ -196,6 +201,10 @@ struct Hosts<'a, 's> {
 impl Hosts<'_, '_> {
     /// The subtree of the element that hosts `subtree`.
     fn host(&mut self, subtree: &Subtree) -> Result<Option<Subtree>, TxnError> {
+        let entering = self.entering.iter().rev();
+        if let Some((_, host)) = entering.clone().find(|(entered, _)| entered == subtree) {
+            return Ok(*host);
+        }
         if let Some(host) = self.set.host_of(subtree) {
             return Ok(host);
         }
@@ -261,6 +270,40 @@ fn follow_behind(
     behind.extend(moved.iter().map(|(_, to)| to.address()));
 }
 
+/// The cells of hosts that are behind in `frames` and that `batch`
+/// deletes, where `marked` says which elements may be marked. Once the
+/// batch is applied nothing is behind there, whichever node takes the
+/// cell.
+fn behind_deleted(
+    frames: &mut Awake<'_, '_>,
+    batch: &Batch<'_>,
+    marked: impl Fn(&MarkKey) -> bool,
+) -> Result<Vec<CellAddress>, TxnError> {
+    let mut deleted = Vec::new();
+    if frames.tree.behind.is_empty() {
+        return Ok(deleted);
+    }
+    for merk in batch.merks {
+        let removed = merk.removed.iter();
+        for key in removed.filter(|key| marked(&(merk.subtree, (**key).into()))) {
+            let root = frames.root(&merk.subtree)?;
+            let cell = find(&mut frames.tree, root, key)?;
+            deleted.extend(cell.filter(|cell| frames.tree.behind.contains(cell)));
+        }
+    }
+    Ok(deleted)
+}
+
+/// What the write `applied` did to the hosts that are behind in `frames`:
+/// those it deleted are behind no more, and those it carried are behind
+/// where they are now.
+fn move_behind(frames: &mut Awake<'_, '_>, deleted: &[CellAddress], applied: &Applied) {
+    for cell in deleted {
+        frames.tree.behind.remove(cell);
+    }
+    follow_behind(&mut frames.tree.behind, &applied.carried);
+}
+
 /// One operation of a write set as the batch it was, for applying it again
 /// by key.
 fn with_op<R>(set: &WriteSet, op: usize, apply: impl FnOnce(&Batch<'_>, &[bool]) -> R) -> R {
@@ -311,6 +354,23 @@ impl<'s> WriteTxn<'s> {
         (state.scopes).is_pending(Who::OUTSIDE, &(subtree, key.into()))
     }
 
+    /// The cells of the hosts that are behind in the transaction's frames,
+    /// in order, each as the pages answer the tree layer for it
+    /// ([`Pages::host_is_behind`](lignin_tree::fragment::Pages::host_is_behind)),
+    /// and what they answer for `other`. None without frames.
+    #[cfg(test)]
+    pub(crate) fn behind(&self, other: CellAddress) -> Option<(Vec<CellAddress>, bool)> {
+        use lignin_tree::fragment::Pages;
+        let mut state = self.lock();
+        let guard = self.path.versions.guard();
+        let mut frames = Woken::wake(&mut state.frames, &guard)?;
+        let mut cells: Vec<CellAddress> = frames.tree.behind.iter().copied().collect();
+        cells.sort_unstable();
+        cells.retain(|cell| frames.tree.host_is_behind(*cell));
+        let other = frames.tree.host_is_behind(other);
+        Some((cells, other))
+    }
+
     /// Takes the read claim of `who` on `unit` (SC3), or checks it for a
     /// caller outside any scope.
     pub(super) fn claim_read(
@@ -326,6 +386,7 @@ impl<'s> WriteTxn<'s> {
         }
         let mut hosts = Hosts {
             path: &self.path,
+            entering: &[],
             set: &state.set,
             frames: &mut state.frames,
             directory: &mut state.directory,
@@ -350,8 +411,14 @@ impl<'s> WriteTxn<'s> {
         self.claim_read(state, &guard, at, who, unit)
     }
 
-    /// Takes the write claims of `batch` for the scope `id` (SC3): all of
-    /// them, or none.
+    /// Takes the claims of `batch` for the scope `id` (SC3): all of them,
+    /// or none.
+    ///
+    /// A node that names a Merk it hosts has its cell point at that Merk's
+    /// root, which is read from the Merk's entry in the subtree directory
+    /// where the batch has no change set for the Merk: the batch reads the
+    /// Merk's unit (SC2). What is below what is asked with the subtrees the
+    /// batch enters under their hosts.
     pub(super) fn claim_batch(
         &self,
         state: &mut State<'s>,
@@ -364,12 +431,16 @@ impl<'s> WriteTxn<'s> {
             .collect();
         units.extend(batch.records.iter().map(RecordWrite::unit));
         let mut whole = Vec::new();
+        let mut entering = Vec::new();
         for write in batch.subtrees {
             // The entry of a Merk in the subtree directory is of that
             // Merk's unit (SC2).
             let subtree = write.subtree();
             match write {
-                SubtreeWrite::Enter { .. } => units.push(Unit::data(subtree)),
+                SubtreeWrite::Enter { host, .. } => {
+                    units.push(Unit::data(subtree));
+                    entering.push((subtree, host.map(|host| host.subtree)));
+                }
                 SubtreeWrite::Clear { .. } => {
                     units.push(Unit::data(subtree));
                     whole.push(subtree);
@@ -380,15 +451,28 @@ impl<'s> WriteTxn<'s> {
                 }
             }
         }
+        let nodes = batch.merks.iter().flat_map(|merk| merk.nodes);
+        let mut reads: Vec<Unit> = nodes
+            .filter_map(|node| match node.hosted {
+                Hosted::Set(hosted) => Some(hosted),
+                Hosted::Keep => None,
+            })
+            .flatten()
+            .map(|hosted| Unit::data(*hosted))
+            .filter(|unit| !units.contains(unit))
+            .collect();
+        reads.sort_unstable();
+        reads.dedup();
         let mut hosts = Hosts {
             path: &self.path,
+            entering: &entering,
             set: &state.set,
             frames: &mut state.frames,
             directory: &mut state.directory,
             guard: &op.guard,
             at: op.at,
         };
-        (state.scopes.write(id, &units, &whole, &mut hosts)).map_err(overlap)
+        (state.scopes.write(id, &units, &reads, &whole, &mut hosts)).map_err(overlap)
     }
 
     /// Frames that show, applied in order to the committed state of the
@@ -438,16 +522,26 @@ impl<'s> WriteTxn<'s> {
             self.note_under(state, &op, batch)?;
             let laid = state.scopes.laid(id);
             let applied = match laid {
-                true => self.write(state, &op, batch)?,
+                true => {
+                    let scopes = &state.scopes;
+                    let deleted = match Woken::wake(&mut state.frames, &op.guard) {
+                        Some(mut frames) => {
+                            behind_deleted(&mut frames, batch, |key| scopes.marked_on_pages(key))?
+                        }
+                        None => Vec::new(),
+                    };
+                    let applied = self.write(state, &op, batch)?;
+                    if let Some(mut frames) = Woken::wake(&mut state.frames, &op.guard) {
+                        move_behind(&mut frames, &deleted, &applied);
+                    }
+                    applied
+                }
                 false => {
                     state.set.admits(batch)?;
                     self.write_by_key(state, &op, batch)?
                 }
             };
             state.set.tag_last(id, laid);
-            if let Some(frames) = state.frames.as_mut().filter(|_| laid) {
-                follow_behind(&mut frames.tree.behind, &applied.carried);
-            }
             Ok(applied)
         });
         if state.set.is_empty() {
@@ -616,12 +710,17 @@ impl<'s> WriteTxn<'s> {
             dirty |= cell.is_some_and(|cell| frames.tree.behind.insert(cell));
         }
         for op in ops {
-            let applied = with_op(set, *op, |batch, made| {
-                frames.apply(path, batch, Some(made))
-            })
-            .map_err(|refused| (refused.error, dirty || refused.dirty))?;
+            with_op(set, *op, |batch, made| {
+                // A host that is behind here may be marked: every mark of
+                // the scope is of a host that was found above.
+                let deleted =
+                    behind_deleted(frames, batch, |_| true).map_err(|error| (error, dirty))?;
+                let applied = (frames.apply(path, batch, Some(made)))
+                    .map_err(|refused| (refused.error, dirty || refused.dirty))?;
+                move_behind(frames, &deleted, &applied);
+                Ok(())
+            })?;
             dirty = true;
-            follow_behind(&mut frames.tree.behind, &applied.carried);
         }
         for (set, mark) in marks {
             let cell = marked_cell(frames, mark).map_err(|error| (error, true))?;
@@ -746,6 +845,10 @@ impl<'s> WriteTxn<'s> {
     ) -> Result<(), TxnError> {
         if commits.is_empty() || state.set.is_empty() {
             return Ok(());
+        }
+        #[cfg(test)]
+        if std::mem::take(&mut state.refuse_look) {
+            return Err(TxnError::Damaged("a look that a test refuses"));
         }
         let State {
             directory,

@@ -204,7 +204,8 @@ struct UnitIndex {
 }
 
 /// A place in a write set: the writes after it can be taken out again, which
-/// is what a savepoint and a scope are (WT8, SC6).
+/// is what a savepoint is (WT8). The writes of a scope are taken out by the
+/// scope they name ([`WriteSet::remove_scope`], SC6).
 ///
 /// It is a place of the set for as long as every write before it stays. A
 /// rollback behind it ends it, and it is then refused.
@@ -719,22 +720,25 @@ impl WriteSet {
     /// rollback to the place before them. Where operations of others came
     /// after one of them, those are added again behind what stays, each
     /// with the first-write version, the serial and the place in the
-    /// overlap set it had: the set is copied for it, once.
+    /// overlap set it had. That is done in a copy of the set, which takes
+    /// the set's place when all of them are in: the cost is that of the
+    /// whole write set, once.
     pub(crate) fn remove_scope(&mut self, scope: u32) -> bool {
         let Some(first) = self.ops.iter().position(|op| op.scope == scope) else {
             return false;
         };
-        let last = self.ops[first..].iter().all(|op| op.scope == scope);
-        let old = (!last).then(|| self.clone());
-        let removed = self.rewind(self.mark_at(first));
-        debug_assert!(removed, "the place before an operation of the set");
-        let Some(old) = old else {
+        if self.ops[first..].iter().all(|op| op.scope == scope) {
+            let removed = self.rewind(self.mark_at(first));
+            debug_assert!(removed, "the place before an operation of the set");
             return true;
-        };
-        for op in (first..old.ops.len()).filter(|op| old.ops[*op].scope != scope) {
-            let was = old.ops[op];
-            let hosted = old.hosted_lists(op);
-            let batch = old.batch(op, &hosted);
+        }
+        let mut kept = self.clone();
+        let removed = kept.rewind(kept.mark_at(first));
+        debug_assert!(removed, "the place before an operation of the set");
+        for op in (first..self.ops.len()).filter(|op| self.ops[*op].scope != scope) {
+            let was = self.ops[op];
+            let hosted = self.hosted_lists(op);
+            let batch = self.batch(op, &hosted);
             let (merks, subtrees) = (batch.merks(), batch.subtrees());
             let batch = Batch {
                 records: batch.records(),
@@ -744,17 +748,21 @@ impl WriteSet {
             // A Merk that the operation gave its first root is stated as
             // one that had none, and every other root is stated as it was
             // kept: both come out as they went in.
-            let start = self.entries.len();
-            self.add(&batch, was.first_write, &old.made(op), &old.op_cut(op));
-            let added = self.ops.last_mut().expect("it was added");
+            let start = kept.entries.len();
+            kept.add(&batch, was.first_write, &self.made(op), &self.op_cut(op));
+            let added = kept.ops.last_mut().expect("it was added");
             (added.serial, added.scope, added.laid) = (was.serial, was.scope, was.laid);
-            let (from, to, ..) = old.op_bounds(op);
-            for (entry, was) in self.entries[start..].iter_mut().zip(&old.entries[from..to]) {
+            let (from, to, ..) = self.op_bounds(op);
+            for (entry, was) in kept.entries[start..]
+                .iter_mut()
+                .zip(&self.entries[from..to])
+            {
                 entry.met = was.met;
-                self.met += usize::from(was.met);
+                kept.met += usize::from(was.met);
             }
         }
-        self.serial = old.serial;
+        kept.serial = self.serial;
+        *self = kept;
         true
     }
 

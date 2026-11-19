@@ -66,6 +66,9 @@ enum Step {
     Put(Unit, &'static [u8], &'static [u8]),
     /// Puts a node of the Merk of that name, with a hash of that byte.
     Node(u8, &'static [u8], u8),
+    /// Asks how many operations the write set has: of two scripts that
+    /// ask after their writes, the one that is told more wrote later.
+    Count,
     Merge,
     Rollback,
 }
@@ -78,6 +81,8 @@ enum Seen {
     /// The key-value hash of a node.
     Node(Vec<u8>),
     Refused(Unit),
+    /// The operations of the write set.
+    Count(usize),
 }
 
 struct Model {
@@ -143,7 +148,7 @@ impl Model {
             }),
             Step::Put(unit, key, value) => {
                 let id = who.expect("a scope writes");
-                match self.scopes.write(id, &[unit], &[], &mut Flat) {
+                match self.scopes.write(id, &[unit], &[], &[], &mut Flat) {
                     Ok(()) => {
                         let laid = self.scopes.laid(id);
                         self.put(id, laid, unit, key, value);
@@ -155,7 +160,7 @@ impl Model {
             Step::Node(name, key, hash) => {
                 let id = who.expect("a scope writes");
                 let subtree = merk(name);
-                match (self.scopes).write(id, &[Unit::data(subtree)], &[], &mut Flat) {
+                match (self.scopes).write(id, &[Unit::data(subtree)], &[], &[], &mut Flat) {
                     Ok(()) => {
                         let hash = [hash; 32];
                         let nodes = [NodePut {
@@ -189,6 +194,7 @@ impl Model {
                     Err(error) => Some(refused(error)),
                 }
             }
+            Step::Count => Some(Seen::Count(self.set.ops())),
             Step::Merge => {
                 let id = who.take().expect("a scope merges");
                 let closed = self.scopes.close(id).expect("it is open");
@@ -254,6 +260,7 @@ impl Scripts {
     }
 
     /// Every order in which the steps of the scripts can come.
+    #[cfg(not(loom))]
     fn orders(&self) -> Vec<Vec<usize>> {
         fn extend(left: &mut [usize], order: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
             if left.iter().all(|left| *left == 0) {
@@ -458,24 +465,34 @@ fn of_two_scopes_on_one_unit_one_holds_it_at_a_time() {
     let scripts = Scripts {
         merged: Vec::new(),
         scripts: vec![
-            vec![Step::Open, Step::Put(a, b"x", b"first"), Step::Merge],
-            vec![Step::Open, Step::Put(a, b"x", b"second"), Step::Merge],
+            vec![
+                Step::Open,
+                Step::Put(a, b"x", b"first"),
+                Step::Count,
+                Step::Merge,
+            ],
+            vec![
+                Step::Open,
+                Step::Put(a, b"x", b"second"),
+                Step::Count,
+                Step::Merge,
+            ],
         ],
         keys: vec![(a, b"x")],
     };
     every_interleaving(scripts, move |(records, seen)| {
-        let refused = |scope: usize| seen[scope] == vec![Seen::Refused(a)];
+        let refused = |scope: usize| seen[scope].contains(&Seen::Refused(a));
+        let count = |scope: usize| seen[scope].last().cloned();
         let expected: &[u8] = match (refused(0), refused(1)) {
             (true, true) => unreachable!("one of the two came first"),
             (true, false) => b"second",
             (false, true) => b"first",
             // Neither was refused: one had merged before the other wrote,
-            // and the later write stands. Which it was, the order says.
-            (false, false) => match &records[&(a, b"x".to_vec())] {
-                Seen::Record(value) => {
-                    assert!(value == b"first" || value == b"second");
-                    return;
-                }
+            // and the later write stands. The write set had the merged
+            // write when the later one was made.
+            (false, false) => match (count(0), count(1)) {
+                (Some(Seen::Count(1)), Some(Seen::Count(2))) => b"second",
+                (Some(Seen::Count(2)), Some(Seen::Count(1))) => b"first",
                 other => panic!("{other:?}"),
             },
         };

@@ -12,7 +12,7 @@ use std::{
     thread,
 };
 
-use lignin_format::tree_page::Side;
+use lignin_format::{tree_page::Side, CellAddress};
 
 use super::{
     model::{self, Committed, OwnedBatch, OwnedMerk, OwnedSubtree},
@@ -347,6 +347,25 @@ fn finalize<'s>(world: &World<'s>, tx: &Tx<'s>, which: &[usize], value: &[u8]) -
         merks: vec![parent],
         ..OwnedBatch::default()
     }
+}
+
+/// The cell of the node under `key` of the Merk `name` on the pages of
+/// `tx`.
+fn cell_of(tx: &Tx<'_>, name: u8, key: &[u8]) -> CellAddress {
+    let handle = |view: Option<NodeView<'_>>| view.and_then(|view| view.handle());
+    let handle = tx.txn.node(model::subtree(name), key, handle);
+    handle.expect("a read").expect("a cell").address()
+}
+
+/// Checks that the pages of `tx` answer the tree layer "behind" for the
+/// cells of the elements `hosts` of [`PARENT`], where they are now, and
+/// for no other cell (`lignin_tree::fragment::Pages::host_is_behind`).
+fn behind_are(tx: &Tx<'_>, hosts: &[usize]) {
+    let cells = hosts.iter().map(|at| cell_of(tx, PARENT, &host_of(*at)));
+    let mut cells: Vec<CellAddress> = cells.collect();
+    cells.sort_unstable();
+    let other = cell_of(tx, PARENT, &key(0));
+    assert_eq!(tx.txn.behind(other), Some((cells, false)));
 }
 
 /// T-SC3: a scope that rolls back beside a scope that merges leaves
@@ -787,6 +806,103 @@ fn a_scope_that_drops_a_subtree_holds_everything_below_it() {
     }
 }
 
+/// A subtree that a batch enters is below its host from that batch on
+/// (CV9, SC3): a scope cannot enter one below a subtree that another open
+/// scope has dropped or cleared, also where its batch writes nothing of
+/// the subtree above, and nobody drops or clears above a subtree that
+/// another open scope has entered.
+#[test]
+fn a_subtree_is_below_its_host_from_the_batch_that_enters_it() {
+    let (db, versions) = Db::new(64);
+    let mut world = World::new(&db, &versions);
+    nested(&mut world, false);
+    let new = ENTERED + 26;
+    let enter = OwnedBatch {
+        subtrees: vec![OwnedSubtree::Enter(
+            model::subtree(new),
+            Some((model::subtree(INNER), key(0), 0)),
+        )],
+        ..OwnedBatch::default()
+    };
+    let leave = |clears: bool| OwnedBatch {
+        subtrees: vec![match clears {
+            true => OwnedSubtree::Clear(model::subtree(OUTER)),
+            false => OwnedSubtree::Drop(model::subtree(OUTER)),
+        }],
+        ..OwnedBatch::default()
+    };
+    for case in 0..4 {
+        let (clears, enters_first) = (case & 1 == 1, case & 2 == 2);
+        let tx = world.begin();
+        let owners = Owners::default();
+        let leaver = tx.txn.scope().expect("a scope");
+        let enterer = tx.txn.scope().expect("a scope");
+        match enters_first {
+            false => {
+                (owners.apply(&world, &tx, (1, &leaver), &leave(clears))).expect("it leaves");
+                let error = enter.with(|batch| enterer.apply(batch)).expect_err("held");
+                assert!(held(&error, data(OUTER)), "{case}: {error}");
+            }
+            true => {
+                (owners.apply(&world, &tx, (2, &enterer), &enter)).expect("it is entered");
+                let leave = leave(clears);
+                let error = leave.with(|batch| leaver.apply(batch)).expect_err("held");
+                assert!(held(&error, data(new)), "{case}: {error}");
+            }
+        }
+        enterer.rollback();
+        leaver.rollback();
+        tx.txn.rollback().expect("no scope is open");
+    }
+    world.check_committed();
+    assert_eq!(db.private_ids(), 0);
+}
+
+/// The look at what the drops of commits cover reads pages, and a read can
+/// fail (CF5). The commits it was owed stay owed: the next operation, or
+/// the commit, makes the look, and the transaction's drop is met.
+#[test]
+fn a_look_at_what_a_drop_covers_that_fails_is_made_again() {
+    let (db, versions) = Db::new(64);
+    let mut world = World::new(&db, &versions);
+    nested(&mut world, false);
+    for at_commit in [false, true] {
+        let below = OwnedBatch {
+            records: vec![put(aux(INNER), b"late", &[u8::from(at_commit); 4])],
+            ..OwnedBatch::default()
+        };
+        let tx = world.begin();
+        world.apply(&tx, &drop_outer()).expect("the drop");
+        assert!(committed(world.write_outside(&below, &[&tx])));
+        tx.txn.refuse_look();
+        let refused = match at_commit {
+            true => tx.txn.seal().map(drop),
+            false => (tx.txn.get(aux(BESIDE), b"k", &mut Vec::new())).map(drop),
+        };
+        assert!(matches!(refused, Err(TxnError::Damaged(_))), "{refused:?}");
+        assert_eq!(tx.txn.stats().overlapped, 0);
+        if !at_commit {
+            world.check(&tx);
+            assert_eq!(tx.txn.stats().overlapped, 1, "the drop is met");
+        }
+        assert_eq!(world.commit(tx, &[]), Outcome::Conflict);
+    }
+    // A commit whose look fails answers with the conflict that the key
+    // sets have shown it: the error is no reason to try again (CF6).
+    let beside = |value: &[u8]| OwnedBatch {
+        records: vec![put(aux(BESIDE), b"k", value)],
+        ..OwnedBatch::default()
+    };
+    let tx = world.begin();
+    world.apply(&tx, &drop_outer()).expect("the drop");
+    world.apply(&tx, &beside(b"mine")).expect("a record beside");
+    assert!(committed(world.write_outside(&beside(b"theirs"), &[&tx])));
+    tx.txn.refuse_look();
+    assert_eq!(world.commit(tx, &[]), Outcome::Conflict);
+    world.check_committed();
+    assert_eq!(db.private_ids(), 0);
+}
+
 /// CF5, both ways (D-090 item 4), with writes that name no key of the
 /// subtree above, which is what a write that stops below its host is:
 ///
@@ -893,21 +1009,26 @@ fn a_drop_meets_every_write_below_it() {
     assert_eq!(db.private_ids(), 0);
 }
 
-/// Writes nodes into [`PARENT`] until its cells have to go to other pages,
-/// and returns how many cells the writes carried. Every read through `tx`
-/// is checked after each write.
-fn grow<'s>(world: &World<'s>, tx: &Tx<'s>, from: usize) -> usize {
-    let mut carried = 0;
-    for round in 0..6 {
-        let applied = world.edit(tx, PARENT, |items| {
+/// Writes [`PARENT`] until a write carries the cell of the element that
+/// hosts `SMALL[0]` to another place: nodes beside the element, and the
+/// element itself with a longer value, which keeps the Merk it hosts.
+/// Every read through `tx` is checked after each write.
+fn grow<'s>(world: &World<'s>, tx: &Tx<'s>) {
+    let host = cell_of(tx, PARENT, &host_of(0));
+    for round in 0..8 {
+        world.edit(tx, PARENT, |items| {
             for node in 0..14 {
-                items.insert(key(1000 + from + round * 14 + node), vec![9; 180]);
+                let beside = format!("host-0-0000-{round:03}-{node:02}");
+                items.insert(beside.into_bytes(), vec![9; 180]);
             }
+            items.insert(host_of(0), vec![4; 30 + round * 30]);
         });
-        carried += applied.carried.len();
         world.check(tx);
+        if cell_of(tx, PARENT, &host_of(0)) != host {
+            return;
+        }
     }
-    carried
+    panic!("no write carried the host's cell");
 }
 
 /// A change set of the Merk `name` whose node links a child that the Merk
@@ -946,10 +1067,11 @@ fn the_pointer_of_a_marked_host_is_not_followed() {
         let scope = tx.txn.scope().expect("a scope");
         assert_eq!(scope.is_laid_out(), !beside);
         let before = db.roots(&versions, versions.latest())[&model::subtree(SMALL[0])];
+        // The Merk loses nodes until one is left: its root is another
+        // node, and the cell that the host's pointer names holds none.
         for round in 0..4 {
             let batch = stopped(&world, &tx, 0, |items| {
                 items.remove(&key(round * 2));
-                items.insert(key(300 + round), vec![5; 70]);
             });
             (owners.apply(&world, &tx, (1, &scope), &batch)).expect("its Merk");
             if round == 0 {
@@ -960,35 +1082,44 @@ fn the_pointer_of_a_marked_host_is_not_followed() {
         scope.merge();
         drop(other);
         assert!(tx.txn.is_pending(parent, &host_of(0)));
+        behind_are(&tx, &[0]);
 
-        // The parent grows until its cells move to other pages, the hosts
-        // among them. The Merk below the marked host is read by its entry
-        // all along.
+        // The parent grows until the cell of the marked host is carried.
+        // The Merk below it is read by its entry all along.
         let saved = tx.model.borrow().writes.len();
         if rebuilt {
             tx.txn.set_savepoint().expect("no scope is open");
         }
-        assert!(grow(&world, &tx, 0) > 0, "no cell of the parent moved");
+        grow(&world, &tx);
+        behind_are(&tx, &[0]);
         if rebuilt {
             // The frames are made again from the write set, with the mark
-            // standing, and the parent grows another way.
+            // standing, and the parent grows again.
             let rebuilds = tx.txn.stats().rebuilds;
             tx.txn.rollback_to_savepoint().expect("a savepoint is set");
             tx.model.borrow_mut().writes.truncate(saved);
             assert!(tx.txn.is_pending(parent, &host_of(0)));
-            assert!(grow(&world, &tx, 500) > 0, "no cell of the parent moved");
+            behind_are(&tx, &[0]);
+            grow(&world, &tx);
             assert!(tx.txn.stats().rebuilds > rebuilds);
+            behind_are(&tx, &[0]);
         }
         if rebased {
-            // A commit outside lands: the frames are made again over it.
+            // A commit outside lands: the frames are made again over it,
+            // with the write that carried the host among those that are
+            // applied again.
             let rebuilds = tx.txn.stats().rebuilds;
             world.edit_outside(
                 BESIDE,
                 |items| drop(items.insert(key(7), b"x".to_vec())),
                 &[&tx],
             );
-            assert!(grow(&world, &tx, 700) > 0, "no cell of the parent moved");
+            world.edit(&tx, PARENT, |items| {
+                drop(items.insert(b"host-0-later".to_vec(), vec![9; 180]))
+            });
+            world.check(&tx);
             assert!(tx.txn.stats().rebuilds > rebuilds);
+            behind_are(&tx, &[0]);
         }
         let root = |tx: &Tx<'_>| {
             let name = model::subtree(SMALL[0]);
@@ -1007,6 +1138,7 @@ fn the_pointer_of_a_marked_host_is_not_followed() {
             .clear_pending(parent, &host_of(0))
             .expect("the mark is taken off");
         scope.merge();
+        behind_are(&tx, &[]);
         world.check(&tx);
         assert!(committed(world.commit(tx, &[])), "{case}");
         world.check_committed();
@@ -1014,6 +1146,100 @@ fn the_pointer_of_a_marked_host_is_not_followed() {
         assert_ne!(before, after, "the root of the Merk is another cell");
         assert_eq!(db.private_ids(), 0, "{case}");
     }
+}
+
+/// An element that is deleted while it is marked, with the Merk it hosts,
+/// is behind no more, whatever takes its cell: the pages answer for cells,
+/// and the mark is on a key (`tree-layout.md` T3). The mark stays the
+/// caller's to take off.
+#[test]
+fn a_marked_host_that_is_deleted_is_behind_no_more() {
+    for beside in [false, true] {
+        let (db, versions) = Db::new(96);
+        let mut world = World::new(&db, &versions);
+        hosted(&mut world, &db, &versions);
+        let parent = model::subtree(PARENT);
+        let tx = world.begin();
+        let owners = Owners::default();
+        let other = beside.then(|| tx.txn.scope().expect("a scope"));
+        let scope = tx.txn.scope().expect("a scope");
+        for at in 0..SMALL.len() {
+            let batch = stopped(&world, &tx, at, |items| {
+                items.remove(&key(2));
+                items.insert(key(300), vec![5; 70]);
+            });
+            (owners.apply(&world, &tx, (1, &scope), &batch)).expect("its Merk");
+            scope.mark_pending(parent, &host_of(at)).expect("a mark");
+        }
+        // The first element goes, with the Merk it hosts.
+        let gone = world.merk(&tx, PARENT, |items| drop(items.remove(&host_of(0))));
+        let batch = OwnedBatch {
+            records: World::root_record(&gone).into_iter().collect(),
+            merks: vec![gone],
+            subtrees: vec![OwnedSubtree::Drop(model::subtree(SMALL[0]))],
+        };
+        (owners.apply(&world, &tx, (1, &scope), &batch)).expect("the element is deleted");
+        scope.merge();
+        drop(other);
+        behind_are(&tx, &[1]);
+        assert!(tx.txn.is_pending(parent, &host_of(0)));
+        assert!(matches!(tx.txn.seal(), Err(TxnError::NotFinalized)));
+
+        let scope = tx.txn.scope().expect("a scope");
+        (scope.clear_pending(parent, &host_of(0))).expect("the mark is taken off");
+        let batch = finalize(&world, &tx, &[1], b"tree, again");
+        (owners.apply(&world, &tx, (2, &scope), &batch)).expect("the host is written");
+        (scope.clear_pending(parent, &host_of(1))).expect("the mark is taken off");
+        scope.merge();
+        behind_are(&tx, &[]);
+        world.check(&tx);
+        assert!(committed(world.commit(tx, &[])), "{beside}");
+        world.check_committed();
+        assert_eq!(db.private_ids(), 0, "{beside}");
+    }
+}
+
+/// A node that names a Merk it hosts has the Merk's root read for it
+/// (SC2): a batch with such a node and no change set for the Merk reads
+/// the Merk's unit. It is refused while another scope writes the Merk,
+/// and a scope that reads it so keeps every other scope from writing it.
+#[test]
+fn a_node_that_names_a_merk_reads_its_unit() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    hosted(&mut world, &db, &versions);
+    let tx = world.begin();
+    let owners = Owners::default();
+    let namer = tx.txn.scope().expect("a scope");
+    let writer = tx.txn.scope().expect("a scope");
+    let batch = stopped(&world, &tx, 0, |items| {
+        drop(items.insert(key(300), vec![5; 70]))
+    });
+    (owners.apply(&world, &tx, (2, &writer), &batch)).expect("its Merk");
+    let names = finalize(&world, &tx, &[0, 1], b"tree, again");
+    let error = names.with(|batch| namer.apply(batch)).expect_err("held");
+    assert!(held(&error, data(SMALL[0])), "{error}");
+    // None of the claims of the batch that was refused is kept.
+    let parent = model::subtree(PARENT);
+    let seen = |view: Option<NodeView<'_>>| view.is_some();
+    assert!(tx.txn.node(parent, &key(0), seen).expect("nobody holds it"));
+    let names = finalize(&world, &tx, &[1], b"tree, again");
+    (owners.apply(&world, &tx, (1, &namer), &names)).expect("nobody writes that Merk");
+    assert!((tx.txn.node(parent, &key(0), seen)).is_err_and(|error| held(&error, data(PARENT))));
+    let batch = stopped(&world, &tx, 1, |items| {
+        drop(items.insert(key(300), vec![5; 70]))
+    });
+    let error = batch.with(|batch| writer.apply(batch)).expect_err("held");
+    assert!(held(&error, data(SMALL[1])), "{error}");
+    check_through(&world, &tx, &namer, &[PARENT, SMALL[1]]);
+    check_through(&world, &tx, &writer, &[SMALL[0]]);
+    namer.merge();
+    writer.rollback();
+    owners.forget(&world, &tx, 2);
+    world.check(&tx);
+    assert!(committed(world.commit(tx, &[])));
+    world.check_committed();
+    assert_eq!(db.private_ids(), 0);
 }
 
 /// The small Merks of [`many_hosted`], which no store has entered, and the

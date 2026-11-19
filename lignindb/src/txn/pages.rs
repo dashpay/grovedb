@@ -469,14 +469,18 @@ impl Pages for TreePages<'_> {
         // was first made is not known by its cell. A host that is taken to
         // be behind and is not keeps its pointers as they are, which is
         // what a write does for a host it cannot tell
-        // (`lignin_tree::fragment`).
+        // (`lignin_tree::fragment`). So is a host whose page cannot be
+        // read here: this answer cannot fail, and the write that asked
+        // reads the page next.
         let marked = |page: NodePage<'_>| {
             (page.node(host.slot())).is_some_and(|node| keys.contains(node.key()))
         };
         match copies.get(&host.page()) {
-            Some(copy) => NodePage::open(&copy.frame.read(), self.lease).is_ok_and(marked),
+            Some(copy) => NodePage::open(&copy.frame.read(), self.lease).map_or(true, marked),
             None => (self.loader.get(host.page(), self.at, &mut self.buffers))
-                .is_ok_and(|frame| NodePage::open(&frame, self.lease).is_ok_and(marked)),
+                .map_or(true, |frame| {
+                    NodePage::open(&frame, self.lease).map_or(true, marked)
+                }),
         }
     }
 

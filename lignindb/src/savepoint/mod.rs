@@ -114,11 +114,12 @@
 //!
 //! # What is not here
 //!
-//! - **Pending marks** (SC9). A rollback to a savepoint removes the pending
-//!   marks that were added after it (WT8). A transaction keeps none yet: no
-//!   element is marked on existing GroveVersions, and the marks come with
-//!   stop points (GROVE-11). Whoever adds them makes them part of what a
-//!   mark takes back.
+//! - **Pending marks** (SC9). They are the scopes' ([`crate::scope`]), and
+//!   a [`Mark`](crate::txn::Mark) remembers how many changes the
+//!   transaction's marks had taken: a rollback to a savepoint takes back
+//!   every change that a scope merged after it (WT8). No element is marked
+//!   on existing GroveVersions: the marks are set with stop points
+//!   (GROVE-11).
 //! - **Memory that a rollback gives back late.** The transaction's own
 //!   copies of committed values (WT3), which it makes when a commit outside
 //!   it meets one of its writes, are kept apart from the writes and go when

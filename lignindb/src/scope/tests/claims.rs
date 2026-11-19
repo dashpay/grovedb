@@ -77,19 +77,22 @@ fn a_unit_has_any_number_of_readers_or_one_writer() {
     }
     // Write against read: refused, and nothing is taken.
     assert_eq!(
-        scopes.write(three, &[data(1)], &[], &mut grove),
+        scopes.write(three, &[data(1)], &[], &[], &mut grove),
         overlap(data(1))
     );
     assert_eq!(
-        scopes.write(one, &[data(1)], &[], &mut grove),
+        scopes.write(one, &[data(1)], &[], &[], &mut grove),
         overlap(data(1))
     );
     assert!(!scopes.writes(one, data(1)));
     // Write against write, and read against write.
-    assert_eq!(scopes.write(three, &[data(2)], &[], &mut grove), Ok(()));
+    assert_eq!(
+        scopes.write(three, &[data(2)], &[], &[], &mut grove),
+        Ok(())
+    );
     assert!(scopes.writes(three, data(2)));
     assert_eq!(
-        scopes.write(one, &[data(2)], &[], &mut grove),
+        scopes.write(one, &[data(2)], &[], &[], &mut grove),
         overlap(data(2))
     );
     assert_eq!(
@@ -103,19 +106,22 @@ fn a_unit_has_any_number_of_readers_or_one_writer() {
     // The writer reads and writes its unit again. Another column of the
     // subtree is another unit.
     assert_eq!(scopes.read(Who::scope(three), data(2), &mut grove), Ok(()));
-    assert_eq!(scopes.write(three, &[data(2)], &[], &mut grove), Ok(()));
-    assert_eq!(scopes.write(one, &[aux(2)], &[], &mut grove), Ok(()));
+    assert_eq!(
+        scopes.write(three, &[data(2)], &[], &[], &mut grove),
+        Ok(())
+    );
+    assert_eq!(scopes.write(one, &[aux(2)], &[], &[], &mut grove), Ok(()));
     // A reader outside keeps nothing: the unit is written afterwards.
     assert_eq!(scopes.read(Who::OUTSIDE, data(3), &mut grove), Ok(()));
-    assert_eq!(scopes.write(two, &[data(3)], &[], &mut grove), Ok(()));
+    assert_eq!(scopes.write(two, &[data(3)], &[], &[], &mut grove), Ok(()));
     scopes.check();
 
     // A scope that ends gives up what it held, and the others keep theirs.
     assert!(scopes.close(two).is_some_and(|closed| !closed.laid));
     assert!(scopes.close(two).is_none());
-    assert_eq!(scopes.write(one, &[data(3)], &[], &mut grove), Ok(()));
+    assert_eq!(scopes.write(one, &[data(3)], &[], &[], &mut grove), Ok(()));
     // The one reader that is left of a unit writes it.
-    assert_eq!(scopes.write(one, &[data(1)], &[], &mut grove), Ok(()));
+    assert_eq!(scopes.write(one, &[data(1)], &[], &[], &mut grove), Ok(()));
     assert!(scopes.writes(one, data(1)));
     assert_eq!(
         scopes.read(Who::scope(three), data(1), &mut grove),
@@ -140,11 +146,11 @@ fn the_claims_of_one_operation_are_granted_together_or_not_at_all() {
     let mut scopes = Scopes::default();
     let (one, two) = (scopes.open(), scopes.open());
     assert_eq!(scopes.read(Who::scope(two), data(2), &mut grove), Ok(()));
-    let refused = scopes.write(one, &[data(1), data(2), data(3)], &[], &mut grove);
+    let refused = scopes.write(one, &[data(1), data(2), data(3)], &[], &[], &mut grove);
     assert_eq!(refused, overlap(data(2)));
     for unit in [data(1), data(3)] {
         assert!(!scopes.writes(one, unit));
-        assert_eq!(scopes.write(two, &[unit], &[], &mut grove), Ok(()));
+        assert_eq!(scopes.write(two, &[unit], &[], &[], &mut grove), Ok(()));
     }
     scopes.check();
 }
@@ -162,7 +168,7 @@ fn a_drop_holds_everything_below_it() {
     // the unit is read or written, and takes nothing.
     assert_eq!(scopes.read(Who::scope(two), aux(3), &mut grove), Ok(()));
     let columns = Column::ALL.map(|column| Unit::new(column, subtree(1)));
-    let drop = scopes.write(one, &columns, &[subtree(1)], &mut grove);
+    let drop = scopes.write(one, &columns, &[], &[subtree(1)], &mut grove);
     assert_eq!(drop, overlap(aux(3)));
     assert!(!scopes.writes(one, data(1)));
     scopes.close(two);
@@ -172,36 +178,36 @@ fn a_drop_holds_everything_below_it() {
     // at any depth, in any column, also a subtree that is entered later.
     let two = scopes.open();
     assert_eq!(
-        scopes.write(one, &columns, &[subtree(1)], &mut grove),
+        scopes.write(one, &columns, &[], &[subtree(1)], &mut grove),
         Ok(())
     );
     let held = overlap(data(1));
     assert_eq!(scopes.read(Who::scope(two), aux(3), &mut grove), held);
-    assert_eq!(scopes.write(two, &[data(2)], &[], &mut grove), held);
+    assert_eq!(scopes.write(two, &[data(2)], &[], &[], &mut grove), held);
     assert_eq!(scopes.read(Who::OUTSIDE, data(3), &mut grove), held);
     grove.hosts.insert(subtree(5), subtree(3));
-    assert_eq!(scopes.write(two, &[data(5)], &[], &mut grove), held);
+    assert_eq!(scopes.write(two, &[data(5)], &[], &[], &mut grove), held);
     // The dropped subtree itself is held by its units, and what is beside
     // it is free. The dropping scope reaches below its own drop.
     assert_eq!(
         scopes.read(Who::scope(two), aux(1), &mut grove),
         overlap(aux(1))
     );
-    assert_eq!(scopes.write(two, &[data(4)], &[], &mut grove), Ok(()));
-    assert_eq!(scopes.write(one, &[data(3)], &[], &mut grove), Ok(()));
+    assert_eq!(scopes.write(two, &[data(4)], &[], &[], &mut grove), Ok(()));
+    assert_eq!(scopes.write(one, &[data(3)], &[], &[], &mut grove), Ok(()));
     assert_eq!(
-        scopes.write(one, &columns, &[subtree(1)], &mut grove),
+        scopes.write(one, &columns, &[], &[subtree(1)], &mut grove),
         Ok(())
     );
     // A drop below another scope's drop is refused as any write there is,
     // and a drop above another scope's unit as well.
     assert_eq!(
-        scopes.write(two, &[data(2)], &[subtree(2)], &mut grove),
+        scopes.write(two, &[data(2)], &[], &[subtree(2)], &mut grove),
         held
     );
     grove.hosts.insert(subtree(1), subtree(6));
     grove.hosts.insert(subtree(4), subtree(6));
-    let above = scopes.write(two, &[data(6)], &[subtree(6)], &mut grove);
+    let above = scopes.write(two, &[data(6)], &[], &[subtree(6)], &mut grove);
     assert!(matches!(above, Err(Refused::Overlap(unit)) if unit.subtree != subtree(6)));
     scopes.check();
 
@@ -209,7 +215,7 @@ fn a_drop_holds_everything_below_it() {
     let three = scopes.open();
     grove.hosts.insert(subtree(8), subtree(7));
     assert_eq!(
-        scopes.write(three, &[data(7)], &[subtree(7)], &mut grove),
+        scopes.write(three, &[data(7)], &[], &[subtree(7)], &mut grove),
         Ok(())
     );
     assert_eq!(scopes.read(Who::scope(two), aux(7), &mut grove), Ok(()));
@@ -228,8 +234,80 @@ fn a_drop_holds_everything_below_it() {
         scopes.read(Who::scope(two), aux(9), &mut Unread),
         Err(Refused::Lineage("unread"))
     );
-    let unread = scopes.write(two, &[aux(9)], &[], &mut Unread);
+    let unread = scopes.write(two, &[aux(9)], &[], &[], &mut Unread);
     assert_eq!(unread, Err(Refused::Lineage("unread")));
+}
+
+/// An operation reads units it does not write: the Merks that its nodes
+/// name as hosted. Those claims are granted with its write claims or not
+/// at all, and kept as every read claim is.
+#[test]
+fn an_operation_reads_units_beside_those_it_writes() {
+    let mut grove = Grove::default();
+    let mut scopes = Scopes::default();
+    let (one, two) = (scopes.open(), scopes.open());
+    assert_eq!(scopes.write(two, &[data(2)], &[], &[], &mut grove), Ok(()));
+    // A unit that another scope writes is not read, and the operation is
+    // granted nothing.
+    let refused = scopes.write(one, &[data(1)], &[data(4), data(2)], &[], &mut grove);
+    assert_eq!(refused, overlap(data(2)));
+    assert!(!scopes.writes(one, data(1)));
+    assert_eq!(scopes.write(two, &[data(4)], &[], &[], &mut grove), Ok(()));
+    // A unit that is read is written by nobody else from here on, and read
+    // by anybody.
+    let granted = scopes.write(one, &[data(1)], &[data(5), data(5)], &[], &mut grove);
+    assert_eq!(granted, Ok(()));
+    assert_eq!(scopes.read(Who::scope(two), data(5), &mut grove), Ok(()));
+    assert_eq!(
+        scopes.write(two, &[data(5)], &[], &[], &mut grove),
+        overlap(data(5))
+    );
+    assert_eq!(
+        scopes.write(one, &[data(5)], &[], &[], &mut grove),
+        overlap(data(5))
+    );
+    // A unit the scope writes is not read less for being named: it stays
+    // written.
+    let granted = scopes.write(one, &[data(8)], &[data(1)], &[], &mut grove);
+    assert_eq!(granted, Ok(()));
+    assert!(scopes.writes(one, data(1)));
+    // Nothing is read below a subtree that another scope dropped.
+    grove.hosts.insert(subtree(7), subtree(6));
+    let columns = Column::ALL.map(|column| Unit::new(column, subtree(6)));
+    let dropped = scopes.write(two, &columns, &[], &[subtree(6)], &mut grove);
+    assert_eq!(dropped, Ok(()));
+    let below = scopes.write(one, &[data(9)], &[data(7)], &[], &mut grove);
+    assert_eq!(below, overlap(data(6)));
+    assert!(!scopes.writes(one, data(9)));
+    let unread = scopes.write(one, &[], &[data(7)], &[], &mut Unread);
+    assert_eq!(unread, Err(Refused::Lineage("unread")));
+    scopes.check();
+
+    // A scope that is alone is asked nothing, and keeps what it read for
+    // the scope that opens beside it.
+    let mut scopes = Scopes::default();
+    let alone = scopes.open();
+    let granted = scopes.write(alone, &[data(1)], &[data(2)], &[], &mut Unread);
+    assert_eq!(granted, Ok(()));
+    let beside = scopes.open();
+    assert_eq!(
+        scopes.write(beside, &[data(2)], &[], &[], &mut grove),
+        overlap(data(2))
+    );
+    assert_eq!(scopes.read(Who::scope(beside), data(2), &mut grove), Ok(()));
+    scopes.close(alone);
+    // The one reader that is left writes the unit, and holds it alone.
+    assert_eq!(
+        scopes.write(beside, &[data(2)], &[], &[], &mut grove),
+        Ok(())
+    );
+    assert!(scopes.writes(beside, data(2)));
+    let third = scopes.open();
+    assert_eq!(
+        scopes.read(Who::scope(third), data(2), &mut grove),
+        overlap(data(2))
+    );
+    scopes.check();
 }
 
 fn mark(name: u8, key: &[u8]) -> MarkKey {
@@ -257,14 +335,14 @@ fn marks_are_a_scopes_until_it_merges() {
     assert!(scopes.marks_of(99).is_empty());
     // The frames show the writes of the scope that is alone, and its marks
     // with them.
-    assert_eq!(
-        scopes.laid_marks().into_iter().collect::<Vec<_>>(),
-        [host.clone()]
-    );
+    let laid = |scopes: &Scopes| scopes.laid_marks().into_iter().collect::<Vec<_>>();
+    assert_eq!(laid(&scopes), std::slice::from_ref(&host));
+    assert!(scopes.marked_on_pages(&host) && !scopes.marked_on_pages(&other));
 
     // Merged, it is the transaction's, and shown to everybody.
     let closed = scopes.close(one).expect("open");
     scopes.merge_marks(closed.marks);
+    assert!(scopes.marked_on_pages(&host));
     assert!(scopes.is_pending(Who::scope(two), &host));
     assert!(scopes.is_pending(Who::OUTSIDE, &host));
     assert!(!scopes.finalized());
@@ -280,10 +358,7 @@ fn marks_are_a_scopes_until_it_merges() {
     scopes.close(three);
     assert!(scopes.is_pending(Who::OUTSIDE, &host));
     scopes.set_laid(two);
-    assert_eq!(
-        scopes.laid_marks().into_iter().collect::<Vec<_>>(),
-        [other.clone()]
-    );
+    assert_eq!(laid(&scopes), std::slice::from_ref(&other));
     let ever: Vec<MarkKey> = scopes.ever_marked().into_iter().collect();
     assert_eq!(ever, [host.clone(), other.clone()]);
     let closed = scopes.close(two).expect("open");
