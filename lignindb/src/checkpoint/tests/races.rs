@@ -148,8 +148,21 @@ fn checkpoints_beside_commits_and_page_steps_hold_one_version_each() {
         committed.fetch_add(1, Ordering::SeqCst);
     };
 
+    // A thread that fails says so to the others, which would wait for it
+    // for good: the test then ends with the failure and not in a hang.
+    struct Failing<'a>(&'a AtomicBool);
+    impl Drop for Failing<'_> {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
     let made = std::thread::scope(|scope| {
+        let _failing = Failing(&done);
         scope.spawn(|| {
+            let _failing = Failing(&done);
             let mut world = World::new(&db, &versions);
             let mut rng = Rng::new(22);
             note(&world);
@@ -168,13 +181,14 @@ fn checkpoints_beside_commits_and_page_steps_hold_one_version_each() {
             }
         });
         scope.spawn(|| {
+            let _failing = Failing(&done);
             let write_back = db.write_back(&versions);
             let mut turns = 0u64;
             while !done.load(Ordering::SeqCst) {
                 write_back.roll_log().expect("the log is rolled");
                 write_back.pass().expect("a pass of write-back");
                 turns += 1;
-                if turns % 8 == 0 {
+                if turns.is_multiple_of(8) {
                     write_back.checkpoint().expect("a table checkpoint");
                 }
                 std::thread::yield_now();
@@ -182,13 +196,15 @@ fn checkpoints_beside_commits_and_page_steps_hold_one_version_each() {
         });
         let makers: Vec<_> = (0..2)
             .map(|maker| {
-                let (db, versions, committed, checkpoints) =
-                    (&db, &versions, &committed, &checkpoints);
+                let (db, versions, committed, checkpoints, done) =
+                    (&db, &versions, &committed, &checkpoints, &done);
                 scope.spawn(move || {
+                    let _failing = Failing(done);
                     let mut made = Vec::new();
                     let mut seen = 0;
                     for index in 0..CHECKPOINTS / 2 {
                         while committed.load(Ordering::SeqCst) <= seen + 2 {
+                            assert!(!done.load(Ordering::SeqCst), "another thread failed");
                             std::thread::yield_now();
                         }
                         seen = committed.load(Ordering::SeqCst);
@@ -263,10 +279,13 @@ fn the_log_of_a_checkpoint_ends_where_the_sample_ended() {
     let mut made = Vec::new();
     for round in 0..4u64 {
         block(&mut world, &mut rng, round * 10, 10);
-        // Every block is longer than a log file is to be, so each turn
-        // leaves the log in a file that holds its start record alone.
+        // Every block is longer than a log file is to be, so the log is
+        // due to turn after each, and a turn leaves it in a file that
+        // holds its start record alone. No pass follows the turn here: its
+        // page steps would put their records into that file.
         if round % 2 == 0 {
-            turn(&db, &versions);
+            let turned = db.write_back(&versions).roll_log();
+            assert!(turned.expect("the log is rolled"), "the log did not turn");
         }
         let target = checkpoints.join(round.to_string());
         let created = (checkpointer(&db, &versions).create(&target)).expect("a checkpoint");
@@ -277,8 +296,7 @@ fn the_log_of_a_checkpoint_ends_where_the_sample_ended() {
     for (target, version, model, end) in &made {
         let manifest = lignin_store::segment::read_manifest(&StdVfs, target).expect("a manifest");
         let last = (manifest.files().iter())
-            .filter(|file| file.kind() == lignin_format::FileKind::Wal)
-            .next_back()
+            .rfind(|file| file.kind() == lignin_format::FileKind::Wal)
             .expect("a log file");
         assert_eq!((last.id(), last.valid_len()), (end.file(), end.offset()));
         let live_len =
@@ -290,6 +308,12 @@ fn the_log_of_a_checkpoint_ends_where_the_sample_ended() {
         assert_eq!(opened.versions.latest(), *version);
         opened.check(model);
     }
+    // Both were made: a checkpoint whose log ends in a file that holds its
+    // start record alone, and one whose log ends behind a commit.
+    let alone = lignin_format::wal::FIRST_ITEM_OFFSET;
+    let ends_alone = |made: &&(_, _, _, lignin_format::wal::LogPlace)| made.3.offset() == alone;
+    let alone = made.iter().filter(ends_alone).count();
+    assert!(alone > 0 && alone < made.len(), "{alone} of {}", made.len());
 }
 
 /// Waits until `met`, and gives up after a minute: a test that would hang

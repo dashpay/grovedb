@@ -2,7 +2,11 @@
 //! when" but the timings (`reference.rs`), and the tests that
 //! `transactions.md` 15.2 asks of it for one thread.
 
-use std::{collections::BTreeSet, path::Path, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use lignin_format::{manifest::FileState, wal::GroupWriter};
 use lignin_io::{StdVfs, Vfs};
@@ -266,10 +270,14 @@ fn the_writes_of_an_open_transaction_are_in_no_checkpoint() {
 ///
 /// The checkpoint is open and has commits of its own that are not written
 /// back. Its directory is removed as Platform removes it (P-18). The
-/// handle still reads, and closing it writes nothing and brings nothing
-/// back: write-back ends with an error and no panic, and the directory is
-/// still gone. The live store reads and writes as before, and a checkpoint
-/// can be made under the same name again.
+/// handle still reads, and closing it brings nothing back: write-back ends
+/// with an error and no panic, and the directory is still gone. The live
+/// store has every file it had, byte for byte, reads and writes as before,
+/// and a checkpoint can be made under the same name again.
+///
+/// What the close of the handle writes to its own files, which have no
+/// name any more, is not looked at here: a close that writes nothing is
+/// the engine's (TXN-07).
 #[test]
 fn a_checkpoint_whose_directory_is_removed_while_it_is_open_closes_cleanly() {
     let (db, versions) = store_with_log(24 << 10, 256);
@@ -282,7 +290,16 @@ fn a_checkpoint_whose_directory_is_removed_while_it_is_open_closes_cleanly() {
     let target = checkpoints_in(&db).join("1");
     (checkpointer(&db, &versions).create(&target)).expect("a checkpoint");
     let captured = world.model.clone();
-    let live_before = store_files(&StdVfs, &db.dir);
+    let live_files = || -> Vec<(PathBuf, Vec<u8>)> {
+        (store_files(&StdVfs, &db.dir).into_iter())
+            .map(|file| {
+                let bytes = std::fs::read(db.dir.join(&file)).expect("a live file");
+                (file, bytes)
+            })
+            .collect()
+    };
+    let live_before = live_files();
+    assert!(live_before.len() >= 3);
 
     let opened = open(&db, &target);
     let mut theirs = opened.world(&captured);
@@ -300,7 +317,7 @@ fn a_checkpoint_whose_directory_is_removed_while_it_is_open_closes_cleanly() {
     drop(opened);
     assert!(!target.exists(), "the close brought the directory back");
 
-    assert_eq!(store_files(&StdVfs, &db.dir), live_before);
+    assert!(live_files() == live_before, "a live file has changed");
     world.check_committed();
     block(&mut world, &mut rng, 5 * 20, 20);
     turn(&db, &versions);
