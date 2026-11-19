@@ -16,7 +16,7 @@
 
 #[cfg(feature = "rocksdb_storage")]
 pub mod rocksdb;
-#[cfg(all(test, grovedb_test_engine))]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod tests;
 
 use std::path::Path;

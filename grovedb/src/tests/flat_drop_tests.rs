@@ -29,7 +29,7 @@ mod tests {
     use grovedb_costs::OperationCost;
     use grovedb_merk::tree_type::TreeType;
     use grovedb_path::SubtreePath;
-    use grovedb_storage::{rocksdb_storage::RocksDbStorage, Storage, StorageContext};
+    use grovedb_storage::{Storage, StorageContext};
     use grovedb_version::version::{v3::GROVE_V3, GroveVersion};
 
     use crate::{
@@ -51,7 +51,7 @@ mod tests {
     }
 
     fn prefix_of(path: &[&[u8]]) -> [u8; 32] {
-        RocksDbStorage::build_prefix(path.into()).unwrap()
+        grovedb_storage::prefix::build_prefix(path.into()).unwrap()
     }
 
     /// A populated flat tree at `[TEST_LEAF]/key` with `entries` items.
@@ -1007,7 +1007,7 @@ mod tests {
         let primary_prefix = prefix_of(&[TEST_LEAF, b"cidx"]);
         let secondary_prefixes: Vec<[u8; 32]> = (0..3u8)
             .map(|axis_tag| {
-                RocksDbStorage::secondary_prefix_for(&primary_prefix, axis_tag).unwrap()
+                grovedb_storage::prefix::secondary_prefix_for(&primary_prefix, axis_tag).unwrap()
             })
             .collect();
         assert!(data_namespace_key_count(&db, primary_prefix) > 0);
@@ -1223,7 +1223,8 @@ mod tests {
             .expect("insert row");
         }
         let primary_prefix = prefix_of(&[TEST_LEAF, b"cidx"]);
-        let count_secondary = RocksDbStorage::secondary_prefix_for(&primary_prefix, 0).unwrap();
+        let count_secondary =
+            grovedb_storage::prefix::secondary_prefix_for(&primary_prefix, 0).unwrap();
         assert!(data_namespace_key_count(&db, count_secondary) > 0);
 
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(

@@ -29,7 +29,7 @@ mod tests {
         tree::{combine_hash, value_hash},
     };
     use grovedb_path::SubtreePath;
-    use grovedb_storage::rocksdb_storage::RocksDbStorage;
+
     use grovedb_version::version::{
         v1::GROVE_V1, v2::GROVE_V2, v3::GROVE_V3, v4::GROVE_V4, GroveVersion,
     };
@@ -105,12 +105,12 @@ mod tests {
     }
 
     fn prefix_of(subtree: &[&[u8]]) -> [u8; 32] {
-        RocksDbStorage::build_prefix(subtree.into()).unwrap()
+        grovedb_storage::prefix::build_prefix(subtree.into()).unwrap()
     }
 
     /// The secondary namespace of an indexed tree at `subtree` for `axis`.
     fn axis_prefix_of(subtree: &[&[u8]], axis: IndexAxis) -> [u8; 32] {
-        RocksDbStorage::secondary_prefix_for(&prefix_of(subtree), axis.tag()).unwrap()
+        grovedb_storage::prefix::secondary_prefix_for(&prefix_of(subtree), axis.tag()).unwrap()
     }
 
     fn insert(

@@ -430,7 +430,6 @@ mod tests {
     /// than a magic number.
     fn secondary_starving_indexed_source(grove_version: &GroveVersion) -> (TempGroveDb, u64) {
         use grovedb_query::axis_query::IndexAxis;
-        use grovedb_storage::rocksdb_storage::RocksDbStorage;
 
         // A primary whose axis-secondary prefix is high in the ordering,
         // leaving most of the space below it for its children.
@@ -439,9 +438,10 @@ mod tests {
             .find_map(|i| {
                 let key = format!("primary{i}").into_bytes();
                 let path: &[&[u8]] = &[TEST_LEAF, &key];
-                let prefix = RocksDbStorage::build_prefix(path.into()).unwrap();
+                let prefix = grovedb_storage::prefix::build_prefix(path.into()).unwrap();
                 let secondary =
-                    RocksDbStorage::secondary_prefix_for(&prefix, IndexAxis::Count.tag()).unwrap();
+                    grovedb_storage::prefix::secondary_prefix_for(&prefix, IndexAxis::Count.tag())
+                        .unwrap();
                 (secondary[0] >= 0xF0).then_some((key, secondary))
             })
             .expect("a primary with a high axis-secondary prefix must exist");
@@ -453,7 +453,7 @@ mod tests {
             .filter_map(|i| {
                 let key = format!("child{i}").into_bytes();
                 let path: &[&[u8]] = &[TEST_LEAF, &primary_key, &key];
-                let prefix = RocksDbStorage::build_prefix(path.into()).unwrap();
+                let prefix = grovedb_storage::prefix::build_prefix(path.into()).unwrap();
                 (prefix < secondary_prefix).then_some(key)
             })
             .take(STARVING_CHILDREN)

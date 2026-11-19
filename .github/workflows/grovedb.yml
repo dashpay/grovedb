@@ -224,7 +224,9 @@ jobs:
           cache-on-failure: "false"
       - uses: taiki-e/install-action@cargo-nextest
         if: runner.environment == 'github-hosted'
-      # Coverage is measured by the test shards, on the first engine.
+      # The engine of a suite is the engine of the package's unit tests, so
+      # this runs those. The integration tests use the package as a dependent
+      # does and are run by the test shards, which also measure coverage.
       - name: Run the suite on ${{ matrix.suite.engine }}
         env:
           SUITE_PACKAGE: ${{ matrix.suite.package }}
@@ -232,7 +234,7 @@ jobs:
           SUITE_ENGINE: ${{ matrix.suite.engine }}
         run: >
           env "$SUITE_VARIABLE=$SUITE_ENGINE"
-          cargo nextest run -p "$SUITE_PACKAGE" --all-features
+          cargo nextest run -p "$SUITE_PACKAGE" --all-features --lib
 
   linting:
     name: Linting

@@ -471,20 +471,14 @@ impl GroveDb {
     }
 }
 
-#[cfg(all(test, feature = "full"))]
+#[cfg(all(test, feature = "full", grovedb_test_engine))]
 mod test {
     use std::option::Option::None;
 
     use grovedb_costs::OperationCost;
     use grovedb_merk::{
-        estimated_costs::worst_case_costs::add_worst_case_get_merk_node,
-        merk::NodeType,
-        test_utils::{
-            empty_path_merk, empty_path_merk_read_only, make_batch_seq, SuiteBatch, TempEngine,
-            TestEngine,
-        },
-        tree::kv::ValueDefinedCostType,
-        tree_type::TreeType,
+        estimated_costs::worst_case_costs::add_worst_case_get_merk_node, merk::NodeType,
+        test_utils::make_batch_seq, tree::kv::ValueDefinedCostType, tree_type::TreeType, Merk,
     };
     use grovedb_storage::{rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength};
     use grovedb_version::version::GroveVersion;
@@ -492,19 +486,29 @@ mod test {
 
     use crate::{
         batch::{key_info::KeyInfo::KnownKey, KeyInfoPath},
-        tests::{common::EMPTY_PATH, TEST_LEAF},
-        Element, GroveDb,
+        tests::{common::EMPTY_PATH, make_empty_grovedb, SuiteBatch, TEST_LEAF},
+        Element, Engine, GroveDb,
     };
 
     #[test]
     fn test_get_merk_node_worst_case() {
         let grove_version = GroveVersion::latest();
         // Open a merk and insert 10 elements.
-        let storage = TempEngine::new();
+        let db = make_empty_grovedb();
+        let storage = db.engine();
         let batch = SuiteBatch::default();
         let transaction = storage.start_transaction();
 
-        let mut merk = empty_path_merk(&*storage, &transaction, &batch, grove_version);
+        let mut merk = Merk::open_base(
+            storage
+                .subtree(EMPTY_PATH, Some(&batch), &transaction)
+                .unwrap(),
+            TreeType::NormalTree,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot open merk");
 
         let merk_batch = make_batch_seq(1..10);
         merk.apply::<_, Vec<_>>(merk_batch.as_slice(), &[], None, grove_version)
@@ -515,7 +519,14 @@ mod test {
         storage.apply_batch(batch, &transaction).unwrap().unwrap();
 
         // Reopen merk: this time, only root node is loaded to memory
-        let merk = empty_path_merk_read_only(&*storage, &transaction, grove_version);
+        let merk = Merk::open_base(
+            storage.subtree(EMPTY_PATH, None, &transaction).unwrap(),
+            TreeType::NormalTree,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot open merk");
 
         // To simulate worst case, we need to pick a node that:
         // 1. Is not in memory

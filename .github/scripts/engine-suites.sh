@@ -8,6 +8,11 @@
 #   engine-suites.sh run [ARGS]     every suite on every engine, one after the
 #                                   other; ARGS follow `cargo test -p PACKAGE`
 #
+# The engine of a suite is the engine of the package's unit tests. Its
+# integration tests and doc tests use the package as a dependent does, on
+# the engine it exports by default. So a run on the first engine is of every
+# target, and a run on another engine is of the unit tests (`--lib`).
+#
 # A suite is a package, the variable that selects its engine and its
 # registry: a file with one engine a line, its name first, and the default
 # engine first.
@@ -40,14 +45,16 @@ run)
     shift
     cd "$repo"
     while read -r package variable registry; do
+        targets=()
         for engine in $(engines "$registry"); do
             echo "== $package on $engine"
-            env "$variable=$engine" cargo test -p "$package" "$@"
+            env "$variable=$engine" cargo test -p "$package" "${targets[@]}" "$@"
+            targets=(--lib)
         done
     done < <(suites)
     ;;
 *)
-    sed -n '2,13p' "${BASH_SOURCE[0]}" >&2
+    sed -n '2,18p' "${BASH_SOURCE[0]}" >&2
     exit 2
     ;;
 esac

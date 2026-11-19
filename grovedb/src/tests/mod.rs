@@ -2,6 +2,7 @@
 
 pub mod common;
 pub(crate) mod faultable_reads;
+#[cfg(feature = "rocksdb_storage")]
 pub(crate) mod pinned_reads;
 
 mod query_tests;
@@ -126,6 +127,7 @@ mod non_counted_tests;
 mod non_merk_wrapper_preservation_tests;
 mod not_counted_or_summed_tests;
 mod not_summed_tests;
+#[cfg(feature = "rocksdb_storage")]
 mod one_transaction_per_operation_tests;
 mod operations_coverage_tests;
 mod overlong_path_segment_tests;

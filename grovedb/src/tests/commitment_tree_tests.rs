@@ -38,7 +38,7 @@ use grovedb_path::SubtreePath;
     not(lignin_cost_model)
 ))]
 use grovedb_storage::{
-    rocksdb_storage::{Options, RocksDbStorage, SstFileWriter},
+    rocksdb_storage::{Options, SstFileWriter},
     RawIterator, Storage, StorageContext,
 };
 #[cfg(all(
@@ -2651,7 +2651,7 @@ fn unsafe_dump_load_subtree_roundtrip_preserves_root_hash() {
     // --- Compute combined_root by re-opening CommitmentTree on A's storage ---
     let pool_segments: [&[u8]; 1] = [b"pool"];
     let subtree_path = SubtreePath::from(pool_segments.as_slice());
-    let prefix: [u8; 32] = RocksDbStorage::build_prefix(subtree_path.clone()).value;
+    let prefix: [u8; 32] = grovedb_storage::prefix::build_prefix(subtree_path.clone()).value;
 
     let tx_a = db_a.start_transaction();
     let ctx_open = db_a

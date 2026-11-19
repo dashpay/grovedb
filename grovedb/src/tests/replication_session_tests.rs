@@ -1494,8 +1494,6 @@ mod tests {
     /// (and everything below it) and still commits a "verified" restore.
     #[test]
     fn state_sync_empty_payload_for_a_populated_subtree_is_rejected() {
-        use grovedb_storage::rocksdb_storage::RocksDbStorage;
-
         use crate::replication::utils::{
             decode_global_chunk_id, pack_nested_bytes, unpack_nested_bytes,
         };
@@ -1548,7 +1546,7 @@ mod tests {
 
         // The subtree the byzantine source will claim is empty.
         let victim_path: &[&[u8]] = &[TEST_LEAF, b"child"];
-        let victim_prefix = RocksDbStorage::build_prefix(victim_path.into()).unwrap();
+        let victim_prefix = grovedb_storage::prefix::build_prefix(victim_path.into()).unwrap();
 
         let dest = make_empty_grovedb();
         let empty_dest_hash = dest
@@ -1896,9 +1894,7 @@ mod tests {
         );
 
         let ct_path: &[&[u8]] = &[TEST_LEAF, b"ct"];
-        let prefix =
-            grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(ct_path.as_ref().into())
-                .unwrap();
+        let prefix = grovedb_storage::prefix::build_prefix(ct_path.as_ref().into()).unwrap();
         // No nested chunk ids — a malformed, cursor-less request.
         let global_chunk_id =
             encode_global_chunk_id(prefix, root_key, tree_type, vec![]).expect("encode chunk id");
@@ -1960,10 +1956,7 @@ mod tests {
             .expect("open mmr merk for replication");
         drop(merk);
         let mmr_path: &[&[u8]] = &[TEST_LEAF, b"mmr"];
-        let prefix = grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(
-            mmr_path.as_ref().into(),
-        )
-        .unwrap();
+        let prefix = grovedb_storage::prefix::build_prefix(mmr_path.as_ref().into()).unwrap();
 
         let fetch = |id: NonMerkChunkId| -> Result<Vec<u8>, crate::Error> {
             let global_chunk_id =
@@ -4480,7 +4473,6 @@ mod tests {
             proofs::{Node, Op},
             tree::value_hash,
         };
-        use grovedb_storage::rocksdb_storage::RocksDbStorage;
 
         use crate::replication::utils::{
             decode_vec_ops, encode_vec_ops, pack_nested_bytes, unpack_nested_bytes,
@@ -4499,7 +4491,7 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-        let prefix = RocksDbStorage::build_prefix([TEST_LEAF].as_ref().into()).unwrap();
+        let prefix = grovedb_storage::prefix::build_prefix([TEST_LEAF].as_ref().into()).unwrap();
         let forged_bytes = Element::new_item(vec![2]).serialize(grove_version).unwrap();
         let forged = Cell::new(0);
         let err = run_sync_with_version(
@@ -4753,7 +4745,6 @@ mod tests {
         use std::cell::Cell;
 
         use grovedb_merk::proofs::{Node, Op};
-        use grovedb_storage::rocksdb_storage::RocksDbStorage;
 
         use crate::replication::utils::{
             decode_vec_ops, encode_vec_ops, pack_nested_bytes, unpack_nested_bytes,
@@ -4786,7 +4777,7 @@ mod tests {
                 .expect("insert sum item");
         }
         let victim_path: &[&[u8]] = &[TEST_LEAF, b"sums"];
-        let victim_prefix = RocksDbStorage::build_prefix(victim_path.into()).unwrap();
+        let victim_prefix = grovedb_storage::prefix::build_prefix(victim_path.into()).unwrap();
         let victim_key = vec![3u8];
         let forged_bytes = forged_element
             .serialize(grove_version)
@@ -4879,8 +4870,6 @@ mod tests {
     /// append-only subtree; anything beyond is refused up front.
     #[test]
     fn fetch_chunk_bounds_the_number_of_chunk_ids_per_request() {
-        use grovedb_storage::rocksdb_storage::RocksDbStorage;
-
         use crate::replication::{
             non_merk_sync::NonMerkChunkId,
             utils::{encode_global_chunk_id, pack_nested_bytes},
@@ -4951,7 +4940,7 @@ mod tests {
             .expect("open test leaf for replication");
         drop(merk);
         let leaf_path: &[&[u8]] = &[TEST_LEAF];
-        let leaf_prefix = RocksDbStorage::build_prefix(leaf_path.into()).unwrap();
+        let leaf_prefix = grovedb_storage::prefix::build_prefix(leaf_path.into()).unwrap();
         let honest_max = encode_global_chunk_id(
             leaf_prefix,
             root_key.clone(),
@@ -4980,7 +4969,7 @@ mod tests {
             .expect("open commitment tree for replication");
         drop(merk);
         let ct_path: &[&[u8]] = &[TEST_LEAF, b"ct"];
-        let ct_prefix = RocksDbStorage::build_prefix(ct_path.into()).unwrap();
+        let ct_prefix = grovedb_storage::prefix::build_prefix(ct_path.into()).unwrap();
         let cursor = NonMerkChunkId {
             start: 0,
             state: 1,
@@ -5022,8 +5011,6 @@ mod tests {
         let handle = std::thread::Builder::new()
             .stack_size(1024 * 1024)
             .spawn(|| {
-                use grovedb_storage::rocksdb_storage::RocksDbStorage;
-
                 use crate::replication::utils::{encode_global_chunk_id, pack_nested_bytes};
 
                 let grove_version = GroveVersion::latest();
@@ -5049,7 +5036,7 @@ mod tests {
                 drop(merk);
                 drop(tx);
                 let leaf_path: &[&[u8]] = &[TEST_LEAF];
-                let leaf_prefix = RocksDbStorage::build_prefix(leaf_path.into()).unwrap();
+                let leaf_prefix = grovedb_storage::prefix::build_prefix(leaf_path.into()).unwrap();
 
                 let fetch = |local_id: Vec<u8>| {
                     let global = encode_global_chunk_id(
@@ -5172,8 +5159,6 @@ mod tests {
     /// joint verification then rejects.)
     #[test]
     fn fetch_chunk_rejects_malformed_indexed_header_requests() {
-        use grovedb_storage::rocksdb_storage::RocksDbStorage;
-
         use crate::replication::{
             indexed_sync::IndexedHeaderRequest,
             utils::{encode_global_chunk_id, pack_nested_bytes},
@@ -5193,7 +5178,7 @@ mod tests {
         };
         assert!(secondary_root_key.is_some(), "sanity: populated secondary");
         let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
-        let prefix = RocksDbStorage::build_prefix(path.into()).unwrap();
+        let prefix = grovedb_storage::prefix::build_prefix(path.into()).unwrap();
         let fetch = |global_id: Vec<u8>| {
             source.fetch_chunk(
                 &pack_nested_bytes(vec![global_id]).expect("pack"),

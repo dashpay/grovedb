@@ -12,7 +12,7 @@ GroveDB's and Merk's test suites name no storage engine. Each is built for one e
 | `GROVEDB_TEST_ENGINE=pinned-reads cargo test -p grovedb` | the same suite on the engine of that name |
 | `cargo test -p grovedb-merk` | Merk's suite on the first engine of `merk/test-engines.txt` |
 | `MERK_TEST_ENGINE=node-store-only cargo test -p grovedb-merk` | the same suite on the engine of that name |
-| `.github/scripts/engine-suites.sh run` | both suites on every registered engine, one run after the other. Arguments follow `cargo test -p PACKAGE`. |
+| `.github/scripts/engine-suites.sh run` | both suites on every registered engine, one run after the other: every target on the first engine of a suite, the unit tests (`--lib`) on the others. Arguments follow `cargo test -p PACKAGE`. |
 
 A name that is not registered fails the build, and the message lists the names that are.
 
@@ -78,7 +78,7 @@ The functions of `impl GroveDb` that take no `self` (rule 2 of [`engine.md`](eng
 
 - **No engine.** That is every test of a GroveDB operation. It runs on every registered engine.
 - **`Engine`, through `db.engine()` or `db.db`.** A test that opens a handle, a transaction or a batch itself calls the trait (`Engine::subtree`, `Engine::apply_batch`), as the ten tests of `parent_read_fault_tests.rs` do. It runs on every registered engine.
-- **One engine, by name.** A test of that engine: `grovedb/src/engine/tests.rs` names `RocksDbEngine`, and `one_transaction_per_operation_tests.rs` names `PinnedReads`. It is the same test in every run.
+- **One engine, by name.** A test of that engine: `grovedb/src/engine/tests.rs` names `RocksDbEngine`, and `one_transaction_per_operation_tests.rs` names `PinnedReads`. It is the same test in every run, and it is under the feature that compiles its engine (`rocksdb_storage` for both), not under the cfg of the suite.
 - **The records of one engine.** A test that reads or damages what is stored, or looks at an error or a file of one engine, is compiled for that engine alone: `#[cfg(grovedb_test_engine = "rocksdb")]`. On RocksDB it reaches the storage through `RocksDbEngine::storage()`.
 
 The tests of the last kind are the ones a new engine has to answer for: each is a behaviour that was checked by looking under RocksDB. They are listed in [RocksDB-only tests](#rocksdb-only-tests-of-grovedb).
@@ -89,7 +89,7 @@ In a test build for an engine other than RocksDB, what only the RocksDB-only tes
 
 ### Integration tests, doc tests and benches
 
-The eight files of `grovedb/tests/` use the crate as a dependent does. They are not built with `cfg(test)` set on the library, so `GroveDb` is `GroveDb<RocksDbEngine>` there whatever engine the suite is on, and they run on RocksDB in every run. So do the doc tests and the benches. GROVE-10 gives them the suite's engine once an engine other than RocksDB is exported: the cfg `grovedb_test_engine` is set for them as well.
+The eight files of `grovedb/tests/` (80 tests) use the crate as a dependent does. They are not built with `cfg(test)` set on the library, so `GroveDb` is `GroveDb<RocksDbEngine>` there whatever engine is selected. So it is for the doc tests and the benches. They are not part of what is run once for every engine: the engine of a suite is the engine of the crate's unit tests, and a run on an engine other than the first is of those (`--lib`). The run on the first engine, and CI's test shards, run the integration tests on the engine the crate exports by default. GROVE-10 gives them the suite's engine once an engine other than RocksDB is exported: the cfg `grovedb_test_engine` is set for them as well.
 
 ### RocksDB-only tests of GroveDB
 
@@ -108,11 +108,13 @@ The eight files of `grovedb/tests/` use the crate as a dependent does. They are 
 | `tests/coverage_round7_tests.rs` | 2 | delete rows from a secondary |
 | `batch/move_element.rs` | 1 | bill a move against the stored size of each record, key prefix included |
 
-Besides these, the tests of `grovedb/src/engine/tests.rs` name `RocksDbEngine` and run on it whatever engine the suite is on, and the tests of the hatches `raw_storage` and `ingest_subtree_sst` (feature `unsafe-dump-load`) are compiled for the RocksDB engine alone, as the hatches are.
+Besides these, the tests of `grovedb/src/engine/tests.rs` name `RocksDbEngine` and run on it whatever engine the suite is on, as said above, and the tests of the hatches `raw_storage` and `ingest_subtree_sst` (feature `unsafe-dump-load`) are compiled for the RocksDB engine alone, as the hatches are.
 
 Thirteen tests that only read through RocksDB contexts, or committed a batch through the storage, go through `Engine` now (`Engine::subtree`, `Engine::apply_batch`, `NodeStore::cursor`, `NodeStore::has_node`) and run on every engine.
 
 One thing the second engine does not catch: `PinnedReads` is a type of its own, and its batch, transactions and handles are RocksDB's. A test that names `StorageBatch` (93 places write `StorageBatch::new()`), or calls a method of a storage context on a handle it opened through `Engine`, compiles on both engines of today. On an engine with types of its own it does not compile, so nothing can run on the wrong engine unseen, and `SuiteBatch` of the fixtures is the name to use instead.
+
+What the suite still names of RocksDB, for an engine that is built without it (GROVE-10): the storage type parameter of the estimated-cost helpers, `::<RocksDbStorage>`, in 17 calls of tests of those helpers (the parameter is public API until OPS-10 folds it away); the context type in the imports of `coverage_lib_paths_tests.rs`, whose RocksDB-only helpers take it; and `PinnedReads` itself, which is under `rocksdb_storage`. The prefix of a path is not among them: the tests derive it with `grovedb_storage::prefix::build_prefix` and `secondary_prefix_for`, which name no engine.
 
 What the list means for LigninDB: the behaviour each of these checks, most of it `verify_grovedb` finding a damaged store, has no test on an engine that is not RocksDB until that engine has a way to damage its own records. GROVE-10 decides which of them it needs.
 
@@ -167,7 +169,7 @@ Their suites on an engine are GroveDB's: `mmr_tree_tests`, `bulk_append_tree_tes
 `.github/workflows/grovedb.yml`:
 
 - The three test shards run the whole workspace, each suite on its first engine, with coverage. This is unchanged.
-- The job `test-engines` runs each suite on each of its other engines: `cargo nextest run -p PACKAGE --all-features` with the suite's variable set. Its matrix is what `.github/scripts/engine-suites.sh matrix` prints, which the job `detect-changes` puts in an output. No engine is named in the workflow, so registering an engine adds its run.
+- The job `test-engines` runs each suite on each of its other engines: `cargo nextest run -p PACKAGE --all-features --lib` with the suite's variable set. Its matrix is what `.github/scripts/engine-suites.sh matrix` prints, which the job `detect-changes` puts in an output. No engine is named in the workflow, so registering an engine adds its run.
 - A change to a registry or to the script runs the tests.
 
 ## Registering an engine

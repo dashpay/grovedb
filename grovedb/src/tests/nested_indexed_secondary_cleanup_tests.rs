@@ -27,7 +27,7 @@ mod tests {
     use grovedb_element::indexed::IndexAxis;
     use grovedb_merk::tree_type::TreeType;
     use grovedb_path::SubtreePath;
-    use grovedb_storage::rocksdb_storage::RocksDbStorage;
+
     use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 
     use crate::{
@@ -157,8 +157,8 @@ mod tests {
     /// `primary_path` and axis `axis`.
     fn secondary_prefix_for_path(primary_path: &[&[u8]], axis: IndexAxis) -> [u8; 32] {
         let subtree: SubtreePath<&[u8]> = primary_path.into();
-        let primary_prefix = RocksDbStorage::build_prefix(subtree).unwrap();
-        RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag()).unwrap()
+        let primary_prefix = grovedb_storage::prefix::build_prefix(subtree).unwrap();
+        grovedb_storage::prefix::secondary_prefix_for(&primary_prefix, axis.tag()).unwrap()
     }
 
     /// Whether the storage namespace at `prefix` holds any rows.

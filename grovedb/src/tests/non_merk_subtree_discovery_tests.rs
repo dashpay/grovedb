@@ -4,7 +4,6 @@
 use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::tree_type::TreeType;
 use grovedb_path::SubtreePath;
-use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 
 use crate::{
@@ -89,7 +88,7 @@ fn namespace_non_empty(db: &TempGroveDb, prefix: [u8; 32], tx: TransactionArg) -
 }
 
 fn prefix(path: &[&[u8]]) -> [u8; 32] {
-    RocksDbStorage::build_prefix(SubtreePath::from(path)).unwrap()
+    grovedb_storage::prefix::build_prefix(SubtreePath::from(path)).unwrap()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -217,7 +216,8 @@ fn assert_discovery_and_cleanup(family: Family, wrapped: bool) {
             let primary_prefixes: Vec<_> = paths
                 .iter()
                 .map(|path| {
-                    RocksDbStorage::build_prefix(SubtreePath::from(path.as_slice())).unwrap()
+                    grovedb_storage::prefix::build_prefix(SubtreePath::from(path.as_slice()))
+                        .unwrap()
                 })
                 .collect();
             let payload_prefix = prefix(&[b"outer", b"mid", b"payload"]);
@@ -226,7 +226,8 @@ fn assert_discovery_and_cleanup(family: Family, wrapped: bool) {
             let secondary_prefixes: Vec<_> = [IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg]
                 .into_iter()
                 .map(|axis| {
-                    RocksDbStorage::secondary_prefix_for(&indexed_prefix, axis.tag()).unwrap()
+                    grovedb_storage::prefix::secondary_prefix_for(&indexed_prefix, axis.tag())
+                        .unwrap()
                 })
                 .collect();
             for &secondary in &secondary_prefixes {

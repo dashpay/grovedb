@@ -860,9 +860,7 @@ mod tests {
         OperationCost,
     };
     use grovedb_path::SubtreePath;
-    use grovedb_storage::{
-        rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageBatch, StorageContext,
-    };
+    use grovedb_storage::{RawIterator, Storage, StorageBatch, StorageContext};
     use grovedb_version::version::GroveVersion;
     use integer_encoding::VarInt;
 
@@ -982,12 +980,13 @@ mod tests {
             grove_version,
         );
         copy.value.expect("copy");
-        let prefix_hashes = RocksDbStorage::build_prefix(SubtreePath::from(from.as_slice()))
-            .cost
-            .hash_node_calls
-            + RocksDbStorage::build_prefix(SubtreePath::from(to.as_slice()))
+        let prefix_hashes =
+            grovedb_storage::prefix::build_prefix(SubtreePath::from(from.as_slice()))
                 .cost
-                .hash_node_calls;
+                .hash_node_calls
+                + grovedb_storage::prefix::build_prefix(SubtreePath::from(to.as_slice()))
+                    .cost
+                    .hash_node_calls;
         // A seek to start and one per record; the prefixed key is loaded by
         // `valid`, `key` and `value` alike, the value once, and the scan ends
         // on the fixed 288-byte boundary charge.
