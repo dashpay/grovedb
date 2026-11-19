@@ -16,23 +16,18 @@
 //! then fail: that is what shows that they can.
 
 #[cfg(loom)]
-use ::loom::{
-    sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
-    },
-    thread,
-};
+use ::loom as rt;
 #[cfg(not(loom))]
-use std::{
-    sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
-    },
-    thread,
-};
+use std as rt;
 
 use lignin_store::alloc::Pins;
+use rt::{
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
+    thread,
+};
 
 use super::*;
 
@@ -56,6 +51,21 @@ fn model(body: impl Fn() + Sync + Send + 'static) {
     }
 }
 
+/// A flag that is not set, stored the way every later value is: loom gives
+/// a new atomic its first value as a weaker store, which a `SeqCst` load
+/// could still return after a later `SeqCst` store.
+fn flag() -> AtomicBool {
+    let flag = AtomicBool::new(false);
+    flag.store(false, Ordering::SeqCst);
+    flag
+}
+
+fn counter(value: u64) -> AtomicU64 {
+    let counter = AtomicU64::new(value);
+    counter.store(value, Ordering::SeqCst);
+    counter
+}
+
 /// A database at version 1 with one page, which commit 2 supersedes.
 struct World {
     versions: Versions,
@@ -70,8 +80,8 @@ impl World {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             versions: Versions::new(version(1)),
-            reclaimed: AtomicBool::new(false),
-            retired_at: AtomicU64::new(0),
+            reclaimed: flag(),
+            retired_at: counter(0),
         })
     }
 
@@ -185,6 +195,75 @@ fn two_readers_pin_beside_a_commit() {
         }
         assert_eq!(world.versions.oldest_pin(), version(2));
         assert_eq!(world.versions.pins_held(), 0);
+    });
+}
+
+/// The reader's pin is in a chunk that it links itself, because every cell
+/// of the first chunk is claimed. The reclaimer's scan has to see that
+/// chunk whenever the pin is one it has to respect.
+#[test]
+fn a_pin_that_makes_the_table_grow_is_seen_by_the_reclaimer() {
+    race(|world| {
+        world.versions.fill_first_chunk_of_pins();
+        let pin = world.versions.pin();
+        world.read(pin.version());
+        drop(pin);
+    });
+}
+
+/// Counts the reclaims that run, and fails if two run at once.
+struct Counted {
+    inside: AtomicBool,
+    runs: AtomicU64,
+    /// Whether each of the two callers had asked when the last one began.
+    asked: [AtomicBool; 2],
+    seen: [AtomicBool; 2],
+}
+
+struct CountedHook(Arc<Counted>);
+
+impl Reclaim for CountedHook {
+    fn reclaim(&self, _: &Versions) {
+        let counted = &self.0;
+        assert!(!counted.inside.swap(true, Ordering::SeqCst), "two at once");
+        counted.runs.fetch_add(1, Ordering::SeqCst);
+        for (seen, asked) in counted.seen.iter().zip(&counted.asked) {
+            seen.store(asked.load(Ordering::SeqCst), Ordering::SeqCst);
+        }
+        counted.inside.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Two threads ask for a reclaim. One runs at a time, neither waits, and
+/// the last one that runs began after both had asked.
+#[test]
+fn a_reclaim_starts_after_each_of_two_calls_that_ask() {
+    model(|| {
+        let counted = Arc::new(Counted {
+            inside: flag(),
+            runs: counter(0),
+            asked: [flag(), flag()],
+            seen: [flag(), flag()],
+        });
+        let versions = Arc::new(Versions::with_reclaim(
+            version(1),
+            Box::new(CountedHook(counted.clone())),
+        ));
+        let callers: Vec<_> = (0..2)
+            .map(|caller| {
+                let (versions, counted) = (versions.clone(), counted.clone());
+                thread::spawn(move || {
+                    counted.asked[caller].store(true, Ordering::SeqCst);
+                    versions.reclaim();
+                })
+            })
+            .collect();
+        for caller in callers {
+            caller.join().expect("the thread ends");
+        }
+        let runs = counted.runs.load(Ordering::SeqCst);
+        assert!((1..=2).contains(&runs), "{runs} reclaims ran");
+        assert!(counted.seen.iter().all(|seen| seen.load(Ordering::SeqCst)));
     });
 }
 

@@ -30,18 +30,76 @@ impl Versions {
     /// with an empty write set makes them (PN1, RD4): it takes its guard,
     /// and then reads the latest version, at which it reads its pages.
     ///
-    /// `lease` is the caller's, for the node handles it keeps from one
-    /// operation to the next. With no pin it takes a new one whenever the
-    /// latest version has moved (PN8, `lignin_tree::node`).
-    pub fn operation<'s>(&'s self, pages: PageLoader<'s>, lease: Lease) -> Operation<'s> {
+    /// `lease` is the caller's, kept from one operation to the next. It is
+    /// given a new lease here whenever the latest version is not the one
+    /// its last operation read, so that a node handle that was read at an
+    /// earlier version is not followed (PN8).
+    pub fn operation<'s>(
+        &'s self,
+        pages: PageLoader<'s>,
+        lease: &mut LatestLease,
+    ) -> Operation<'s> {
         let guard = self.guard();
         let at = guard.latest();
         Operation {
             guard,
             at,
             pages,
-            lease: Leased::By(lease),
+            lease: Leased::Own(lease.at(at)),
         }
+    }
+}
+
+/// The lease of a reader that pins no version and reads the latest one
+/// (`transactions.md` PN8): good for the node handles it read at one
+/// version, and replaced when it reads at another.
+///
+/// With no pin, a page id is good only until the next commit, which can
+/// free the page and give its id to another. So the handles of such a
+/// reader end when the latest version moves, and
+/// [`Versions::operation`] sees to that. A reader that has other reasons
+/// to end them, as a write transaction has when it rolls back, calls
+/// [`Self::renew`].
+#[derive(Debug)]
+pub struct LatestLease {
+    lease: Lease,
+    read_at: Option<CommitVersion>,
+}
+
+impl LatestLease {
+    /// A lease that no handle has been issued under.
+    pub fn new() -> Self {
+        Self {
+            lease: Lease::take(),
+            read_at: None,
+        }
+    }
+
+    /// The lease as it is now.
+    pub fn lease(&self) -> Lease {
+        self.lease
+    }
+
+    /// Ends every handle that was issued under the lease.
+    pub fn renew(&mut self) {
+        *self = Self::new();
+    }
+
+    /// The lease for an operation that reads at `version`: the one of the
+    /// operation before it if that read at `version` too, and a new one
+    /// otherwise.
+    fn at(&mut self, version: CommitVersion) -> Lease {
+        if self.read_at.is_some_and(|read_at| read_at != version) {
+            self.renew();
+        }
+        self.read_at = Some(version);
+        self.lease
+    }
+}
+
+impl Default for LatestLease {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -85,7 +143,7 @@ impl<'s> Snapshot<'s> {
             guard: self.pin.versions().guard(),
             at: self.version(),
             pages: self.pages,
-            lease: Leased::BySnapshot(&self.lease),
+            lease: Leased::Snapshot(&self.lease),
         }
     }
 
@@ -106,10 +164,9 @@ impl fmt::Debug for Snapshot<'_> {
 }
 
 /// Where an operation has its lease from.
-#[derive(Clone, Copy)]
 enum Leased<'o> {
-    By(Lease),
-    BySnapshot(&'o OnceLock<Lease>),
+    Own(Lease),
+    Snapshot(&'o OnceLock<Lease>),
 }
 
 /// One operation of a reader (`transactions.md` section 1): its guard, the
@@ -141,8 +198,8 @@ impl<'o> Operation<'o> {
     /// under: its snapshot's, or the one it was begun with.
     pub fn lease(&self) -> Lease {
         match self.lease {
-            Leased::By(lease) => lease,
-            Leased::BySnapshot(lease) => *lease.get_or_init(Lease::take),
+            Leased::Own(lease) => lease,
+            Leased::Snapshot(lease) => *lease.get_or_init(Lease::take),
         }
     }
 

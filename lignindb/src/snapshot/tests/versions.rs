@@ -28,7 +28,6 @@ fn a_pin_is_on_the_latest_version_and_stays_there() {
     assert_eq!(versions.latest(), version(7));
     let pin = versions.pin();
     assert_eq!(pin.version(), version(7));
-    assert!(std::ptr::eq(pin.versions(), &versions));
 
     versions.publish(version(8)).expect("the next version");
     let later = versions.pin();
@@ -383,7 +382,12 @@ fn no_answer_is_overtaken_by_a_pin_or_a_guard_on_real_threads() {
         for raw in 2..=COMMITS {
             versions.publish(version(raw)).expect("the next version");
         }
-        while reads.load(Ordering::Relaxed) < COMMITS / 10 {
+        // The readers have read, and the reclaimers have been answered
+        // with more than the first version and the first epoch.
+        while reads.load(Ordering::Relaxed) < COMMITS / 10
+            || answered_pin.load(Ordering::SeqCst) <= 1
+            || answered_guard.load(Ordering::SeqCst) <= 1
+        {
             thread::yield_now();
         }
         done.store(true, Ordering::Relaxed);
@@ -391,6 +395,61 @@ fn no_answer_is_overtaken_by_a_pin_or_a_guard_on_real_threads() {
 
     assert_eq!((versions.pins_held(), versions.guards_held()), (0, 0));
     assert_eq!(versions.oldest_pin(), version(COMMITS));
-    assert!(answered_pin.load(Ordering::SeqCst) > 1);
-    assert!(answered_guard.load(Ordering::SeqCst) > 1);
+}
+
+/// Asks for another reclaim from inside every one it runs.
+struct AlwaysAsksAgain(Arc<AtomicUsize>);
+
+impl Reclaim for AlwaysAsksAgain {
+    fn reclaim(&self, pins: &Versions) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        pins.reclaim();
+    }
+}
+
+#[test]
+fn a_thread_runs_two_reclaims_at_most_and_the_next_call_runs_what_was_left() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let versions = Versions::with_reclaim(version(1), Box::new(AlwaysAsksAgain(calls.clone())));
+    versions.reclaim();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    // Word was left during the second one. A pin that goes runs it.
+    let pin = versions.pin();
+    versions.publish(version(2)).expect("the next version");
+    drop(pin);
+    assert_eq!(calls.load(Ordering::SeqCst), 4);
+}
+
+/// Panics in its first reclaim.
+struct Panics(Arc<AtomicUsize>);
+
+impl Reclaim for Panics {
+    fn reclaim(&self, _: &Versions) {
+        if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+            panic!("the first reclaim fails");
+        }
+    }
+}
+
+#[test]
+fn a_reclaim_that_panics_does_not_stop_the_next_one() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let versions = Versions::with_reclaim(version(1), Box::new(Panics(calls.clone())));
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| versions.reclaim()));
+    assert!(failed.is_err());
+    versions.reclaim();
+    versions.reclaim();
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+}
+
+#[test]
+fn a_pin_in_a_chunk_that_was_linked_later_is_in_the_answer() {
+    let versions = published(3);
+    versions.fill_first_chunk_of_pins();
+    assert_eq!(versions.oldest_pin(), version(3));
+    let pin = versions.pin();
+    versions.publish(version(4)).expect("the next version");
+    assert_eq!(versions.oldest_pin(), version(3));
+    drop(pin);
+    assert_eq!(versions.oldest_pin(), version(4));
 }

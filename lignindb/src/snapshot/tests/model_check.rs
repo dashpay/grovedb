@@ -482,58 +482,43 @@ impl<'v> World<'v> {
                 maybe(self.stamps.get(&id).map(|stamp| rank(*stamp))),
             ]);
         }
-        let mut pages: Vec<[u64; 3]> = self
+        let pages = self
             .pages
             .iter()
-            .map(|page| [page.id.into(), page.born, maybe(page.gone)])
-            .collect();
-        pages.sort();
-        key.push(u64::MAX);
-        key.extend(pages.into_iter().flatten());
-        let mut txns: Vec<[u64; 3]> = self
-            .txns
-            .iter()
-            .map(|txn| {
-                let (id, born) = txn.mark.map_or((0, 0), |(id, born)| (id.into(), born + 1));
-                [maybe(txn.private.map(u64::from)), id, born]
-            })
-            .collect();
-        txns.sort();
-        key.push(u64::MAX);
-        key.extend(txns.into_iter().flatten());
-        let mut pins: Vec<u64> = self.pins.iter().map(|pin| pin.version().get()).collect();
-        pins.sort();
-        key.push(u64::MAX);
-        key.extend(pins);
-        let mut ops: Vec<[u64; 3]> = self
-            .ops
-            .iter()
-            .map(|op| match op {
-                Op::Idle => [0, 0, 0],
-                Op::Guarded(guard) => [1, rank(guard.epoch().get()), 0],
-                Op::Unguarded(read) => [2, 0, *read],
-                Op::Reading(guard, read) => [3, rank(guard.epoch().get()), *read],
-            })
-            .collect();
-        ops.sort();
-        key.push(u64::MAX);
-        key.extend(ops.into_iter().flatten());
-        let mut reclaimers: Vec<[u64; 3]> = self
-            .reclaimers
-            .iter()
-            .map(|answers| {
-                [
-                    maybe(answers.oldest_pin),
-                    maybe(answers.epoch.map(rank)),
-                    maybe(answers.oldest_guard.map(rank)),
-                ]
-            })
-            .collect();
-        reclaimers.sort();
-        key.push(u64::MAX);
-        key.extend(reclaimers.into_iter().flatten());
+            .map(|page| [page.id.into(), page.born, maybe(page.gone)]);
+        section(&mut key, pages.collect());
+        let txns = self.txns.iter().map(|txn| {
+            let (id, born) = txn.mark.map_or((0, 0), |(id, born)| (id.into(), born + 1));
+            [maybe(txn.private.map(u64::from)), id, born]
+        });
+        section(&mut key, txns.collect());
+        let pins = self.pins.iter().map(|pin| [pin.version().get()]);
+        section(&mut key, pins.collect());
+        let ops = self.ops.iter().map(|op| match op {
+            Op::Idle => [0, 0, 0],
+            Op::Guarded(guard) => [1, rank(guard.epoch().get()), 0],
+            Op::Unguarded(read) => [2, 0, *read],
+            Op::Reading(guard, read) => [3, rank(guard.epoch().get()), *read],
+        });
+        section(&mut key, ops.collect());
+        let reclaimers = self.reclaimers.iter().map(|answers| {
+            [
+                maybe(answers.oldest_pin),
+                maybe(answers.epoch.map(rank)),
+                maybe(answers.oldest_guard.map(rank)),
+            ]
+        });
+        section(&mut key, reclaimers.collect());
         key
     }
+}
+
+/// Adds one part of a state's key: its rows in an order that does not
+/// depend on which actor has which, behind a mark no row holds.
+fn section<const N: usize>(key: &mut Vec<u64>, mut rows: Vec<[u64; N]>) {
+    rows.sort();
+    key.push(u64::MAX);
+    key.extend(rows.into_iter().flatten());
 }
 
 /// The state that `path` leads to: what tells it apart, and the steps that

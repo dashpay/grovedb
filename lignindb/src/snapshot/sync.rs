@@ -22,6 +22,15 @@ pub(super) fn atomic(value: u64) -> AtomicU64 {
     atomic
 }
 
+/// A flag that is not set. See [`atomic`] for why it is stored once more
+/// under loom.
+pub(super) fn flag() -> AtomicBool {
+    let flag = AtomicBool::new(false);
+    #[cfg(loom)]
+    flag.store(false, Ordering::SeqCst);
+    flag
+}
+
 /// A value on cache lines of its own, so that a thread that writes it does
 /// not slow the threads that use its neighbours.
 #[derive(Debug, Default)]

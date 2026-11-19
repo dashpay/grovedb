@@ -9,7 +9,7 @@ use lignin_store::alloc::{Epoch, Pins};
 use super::{
     error::PublishError,
     slots::{Slot, Slots},
-    sync::{atomic, AtomicBool, AtomicU64, Ordering, Padded},
+    sync::{atomic, flag, AtomicBool, AtomicU64, Ordering, Padded},
 };
 
 /// What is asked to reclaim when the oldest pin may have moved up: the page
@@ -74,8 +74,8 @@ impl Versions {
             pins: Slots::new(),
             guards: Slots::new(),
             reclaim,
-            reclaim_wanted: Padded(AtomicBool::new(false)),
-            reclaim_running: Padded(AtomicBool::new(false)),
+            reclaim_wanted: Padded(flag()),
+            reclaim_running: Padded(flag()),
         }
     }
 
@@ -124,16 +124,7 @@ impl Versions {
     /// the latest still. If a commit was published in between, the newer
     /// version is announced and looked at again.
     pub fn pin(&self) -> VersionPin<'_> {
-        let mut pinned = self.latest.0.load(Ordering::SeqCst);
-        let slot = self.pins.claim(pinned);
-        loop {
-            let latest = self.latest.0.load(Ordering::SeqCst);
-            if latest == pinned {
-                break;
-            }
-            pinned = latest;
-            slot.announce(pinned);
-        }
+        let (slot, pinned) = self.pins.claim_current(&self.latest.0);
         VersionPin {
             versions: self,
             slot,
@@ -148,16 +139,7 @@ impl Versions {
     /// The guard is of the epoch that is current when it is given out, by
     /// the same two steps as a pin: announce, then look again.
     pub fn guard(&self) -> OperationGuard<'_> {
-        let mut taken = self.epoch.0.load(Ordering::SeqCst);
-        let slot = self.guards.claim(taken);
-        loop {
-            let epoch = self.epoch.0.load(Ordering::SeqCst);
-            if epoch == taken {
-                break;
-            }
-            taken = epoch;
-            slot.announce(taken);
-        }
+        let (slot, taken) = self.guards.claim_current(&self.epoch.0);
         OperationGuard {
             versions: self,
             slot,
@@ -188,31 +170,64 @@ impl Versions {
     /// itself. No call is owed when a guard is released (`page-alloc.md`
     /// N8).
     ///
-    /// One reclaim runs at a time. A call that finds one running leaves
-    /// word and returns, and the thread that runs it starts another once it
-    /// is done: a reclaim always starts after the last call that asked.
+    /// One reclaim runs at a time, and no call waits for another. A call
+    /// that finds one running leaves word and returns. The thread that
+    /// runs one starts a second if word was left meanwhile, so a reclaim
+    /// starts after every call that was made while the first one ran. It
+    /// runs no third: word that is left during its second one is for the
+    /// next call, whenever that comes. So no thread is kept reclaiming for
+    /// the others, and what such word was about stays retired until then,
+    /// as it does for a guard.
     pub fn reclaim(&self) {
+        const RUNS: usize = 2;
         let Some(reclaim) = &self.reclaim else {
             return;
         };
         if !self.reclaim_wanted.0.load(Ordering::SeqCst) {
             self.reclaim_wanted.0.store(true, Ordering::SeqCst);
         }
-        while !self.reclaim_running.0.load(Ordering::SeqCst)
-            && self
-                .reclaim_running
-                .0
-                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
-        {
+        for _ in 0..RUNS {
+            let Some(running) = Running::begin(&self.reclaim_running.0) else {
+                return;
+            };
             if self.reclaim_wanted.0.swap(false, Ordering::SeqCst) {
                 reclaim.reclaim(self);
             }
-            self.reclaim_running.0.store(false, Ordering::SeqCst);
+            drop(running);
             if !self.reclaim_wanted.0.load(Ordering::SeqCst) {
-                break;
+                return;
             }
         }
+    }
+
+    /// Claims every cell of the first chunk of the pins, with announcements
+    /// that hold nothing back, so that the next pin makes the table grow.
+    #[cfg(test)]
+    pub(super) fn fill_first_chunk_of_pins(&self) {
+        while self.pins.claimed() < super::slots::FIRST_CHUNK {
+            self.pins.claim(CommitVersion::MAX.get());
+        }
+    }
+}
+
+/// The mark that a reclaim is running, taken by one thread at a time and
+/// given back when it is dropped: also when the reclaim panics, so that
+/// the next call can run one.
+struct Running<'v>(&'v AtomicBool);
+
+impl<'v> Running<'v> {
+    fn begin(running: &'v AtomicBool) -> Option<Self> {
+        let free = !running.load(Ordering::SeqCst)
+            && running
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok();
+        free.then_some(Self(running))
+    }
+}
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
     }
 }
 
@@ -227,6 +242,12 @@ fn version(raw: u64) -> CommitVersion {
 /// true lower bound afterwards: the latest version and the epoch only go
 /// up, and a pin or a guard that is given out later has looked at them
 /// after it announced itself.
+///
+/// A later answer can be lower than an earlier one. A reader that has
+/// announced a version and has not yet looked again is in the answer with
+/// that version, though it will not keep it if a commit was published in
+/// between. Both answers are true, and a reclaimer uses each as the bound
+/// it is, not as a number that only rises.
 impl Pins for Versions {
     fn oldest_pin(&self) -> CommitVersion {
         let latest = self.latest.0.load(Ordering::SeqCst);
@@ -249,6 +270,10 @@ impl Pins for Versions {
 ///
 /// It never blocks anything and is never refused (PN7). Held for long, it
 /// costs disk space, page ids and memory that could be reclaimed.
+///
+/// A pin on a version before the latest asks for a reclaim when it is
+/// dropped ([`Versions::reclaim`]), on the thread that drops it. So it is
+/// not dropped under the commit lock, or under any lock a reclaimer takes.
 pub struct VersionPin<'v> {
     versions: &'v Versions,
     slot: Slot<'v>,
@@ -262,7 +287,7 @@ impl<'v> VersionPin<'v> {
     }
 
     /// The versions the pin is held in.
-    pub fn versions(&self) -> &'v Versions {
+    pub(super) fn versions(&self) -> &'v Versions {
         self.versions
     }
 }

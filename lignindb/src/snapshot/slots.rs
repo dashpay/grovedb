@@ -4,7 +4,13 @@
 //! Version pins announce the version they pin, and operation guards the
 //! epoch they were taken in. Claiming a cell, changing what it says and
 //! giving it back are each one atomic write to a cell that only its holder
-//! writes. Nothing here takes a lock or waits.
+//! writes. None of that takes a lock or waits.
+//!
+//! The one place a thread can wait is growth. When every cell is claimed,
+//! a chunk of cells is linked behind the last through a `OnceLock`, and a
+//! thread that links one can wait there for another thread that is linking
+//! the same chunk, for as long as it takes to store a pointer. The table
+//! never shrinks, so that happens a few times in the life of a database.
 
 use std::sync::OnceLock;
 
@@ -17,9 +23,9 @@ pub(super) const VACANT: u64 = u64::MAX;
 /// The cells of the first chunk. Each chunk after it has twice the cells of
 /// the one before.
 #[cfg(not(loom))]
-const FIRST_CHUNK: usize = 256;
+pub(super) const FIRST_CHUNK: usize = 256;
 #[cfg(loom)]
-const FIRST_CHUNK: usize = 2;
+pub(super) const FIRST_CHUNK: usize = 2;
 
 /// The cells between the places where two threads start to look for a
 /// vacant one, so that a thread that holds a few claims at once stays among
@@ -64,12 +70,19 @@ fn home() -> usize {
 /// shrinks.
 pub(super) struct Slots {
     first: Chunk,
+    /// How many chunks are linked behind the first. A claim counts a chunk
+    /// here before it claims a cell in it, and a scan reads the count
+    /// before it reads a cell, both `SeqCst`. A chunk's link is not: it is
+    /// a `OnceLock`. So the count is what orders a claim in a new chunk
+    /// before the scans that have to see it.
+    grown: AtomicU64,
 }
 
 impl Slots {
     pub(super) fn new() -> Self {
         Self {
             first: Chunk::new(FIRST_CHUNK),
+            grown: atomic(0),
         }
     }
 
@@ -78,25 +91,56 @@ impl Slots {
         debug_assert_ne!(value, VACANT);
         let home = home();
         let mut chunk = &self.first;
+        let mut behind_first = 0;
         loop {
             let len = chunk.cells.len();
             for probe in 0..len {
                 let cell = &chunk.cells[home.wrapping_add(probe) % len].0;
-                if cell
-                    .compare_exchange(VACANT, value, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_ok()
+                if cell.load(Ordering::SeqCst) == VACANT
+                    && cell
+                        .compare_exchange(VACANT, value, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_ok()
                 {
                     return Slot { cell };
                 }
             }
-            chunk = chunk.next.get_or_init(|| Box::new(Chunk::new(2 * len)));
+            if chunk.next.get().is_none() {
+                let _ = chunk.next.set(Box::new(Chunk::new(2 * len)));
+            }
+            chunk = chunk.next.get().expect("a chunk was linked just now");
+            behind_first += 1;
+            self.grown.fetch_max(behind_first, Ordering::SeqCst);
         }
     }
 
+    /// Claims a cell that announces what `source` holds, and returns the
+    /// cell with the announced number once `source` has been found to hold
+    /// that number still: announce, then look again. If `source` has moved
+    /// on in between, its newer number is announced and looked at again.
+    ///
+    /// So the number returned was the one in `source` at a moment after it
+    /// was announced. That is what makes an answer of [`Self::min`] stay
+    /// true when it was taken after a read of `source`.
+    pub(super) fn claim_current(&self, source: &AtomicU64) -> (Slot<'_>, u64) {
+        let mut announced = source.load(Ordering::SeqCst);
+        let slot = self.claim(announced);
+        loop {
+            let now = source.load(Ordering::SeqCst);
+            if now == announced {
+                return (slot, announced);
+            }
+            announced = now;
+            slot.announce(announced);
+        }
+    }
+
+    /// The cells of every chunk that was counted before this was called.
     fn cells(&self) -> impl Iterator<Item = &AtomicU64> {
+        let chunks = 1 + self.grown.load(Ordering::SeqCst) as usize;
         std::iter::successors(Some(&self.first), |chunk| {
             chunk.next.get().map(|next| &**next)
         })
+        .take(chunks)
         .flat_map(|chunk| chunk.cells.iter().map(|cell| &cell.0))
     }
 

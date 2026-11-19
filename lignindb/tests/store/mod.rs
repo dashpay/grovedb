@@ -99,6 +99,16 @@ pub struct Changes {
     pub free: Vec<PageId>,
 }
 
+impl Changes {
+    /// A commit that creates `count` pages and does nothing else.
+    pub fn create(count: usize) -> Self {
+        Self {
+            create: count,
+            ..Self::default()
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Counts {
     pub commits: AtomicU64,
@@ -115,22 +125,34 @@ pub struct Store {
     pub pool: BufferPool,
     pub ids: PageAllocator,
     pub counts: Counts,
-    /// The pages of each version, by its number.
+    /// The pages of each version, by its number, or of the latest version
+    /// alone.
     history: Mutex<Vec<Arc<Pages>>>,
+    keep_history: bool,
     writer: Mutex<SegmentWriter>,
     /// The cleaner's part: an oldest pin that was answered, with the epoch
     /// that was started after it. The chains are trimmed to it once every
     /// guard of an earlier epoch is gone (PN6).
     trims: Mutex<Vec<(CommitVersion, Epoch)>>,
-    trim: bool,
     used: Mutex<Vec<u32>>,
     _dir: tempfile::TempDir,
 }
 
 impl Store {
-    /// An empty store with a pool of `frames` frames. With `trim`, a
-    /// reclaim also trims the page table's chains.
-    pub fn new(frames: usize, trim: bool) -> Arc<Self> {
+    /// An empty store with a pool of `frames` frames, which keeps the pages
+    /// of every version for [`Self::pages_at`]. A reclaim also trims the
+    /// page table's chains.
+    pub fn new(frames: usize) -> Arc<Self> {
+        Self::build(frames, true)
+    }
+
+    /// As [`Self::new`], for a run of any length: only the pages of the
+    /// latest version are kept, and the chains are not trimmed.
+    pub fn without_history(frames: usize) -> Arc<Self> {
+        Self::build(frames, false)
+    }
+
+    fn build(frames: usize, keep_history: bool) -> Arc<Self> {
         let dir = tempfile::tempdir().expect("a directory");
         let vfs: Arc<dyn Vfs> = Arc::new(StdVfs);
         let empty = Manifest::new(SIZE, Default::default(), None, Vec::new()).expect("a manifest");
@@ -154,7 +176,7 @@ impl Store {
             history: Mutex::new(vec![Arc::new(Pages::new())]),
             writer: Mutex::new(writer),
             trims: Mutex::new(Vec::new()),
-            trim,
+            keep_history,
             used: Mutex::new(Vec::new()),
             _dir: dir,
         })
@@ -169,9 +191,16 @@ impl Store {
         PageLoader::new(&self.pool, &self.table, &self.segments, SIZE).expect("a loader")
     }
 
-    /// The pages of `version`.
+    /// The pages of `version`. A store without history has those of the
+    /// latest version only.
     pub fn pages_at(&self, version: CommitVersion) -> Arc<Pages> {
-        locked(&self.history)[version.get() as usize].clone()
+        let history = locked(&self.history);
+        let at = if self.keep_history {
+            version.get() as usize
+        } else {
+            0
+        };
+        history[at].clone()
     }
 
     /// One commit, from its install to its publication (CM3 steps 7 and
@@ -210,12 +239,15 @@ impl Store {
             copies.push(copy);
             created.push(id);
         }
-        locked(&self.history).push(Arc::new({
-            for id in &changes.free {
-                pages.remove(&id.get());
-            }
-            pages
-        }));
+        for id in &changes.free {
+            pages.remove(&id.get());
+        }
+        let mut history = locked(&self.history);
+        if !self.keep_history {
+            history.clear();
+        }
+        history.push(Arc::new(pages));
+        drop(history);
 
         for copy in &copies {
             drop(self.pool.install(copy, commit).expect("it installs"));
@@ -270,23 +302,31 @@ impl Store {
             }
         }
     }
+}
 
+struct Hook(Arc<Store>);
+
+/// What a reclaim does to the store: the page id allocator and the buffer
+/// pool take their steps, and then the cleaner's part.
+impl Reclaim for Hook {
     fn reclaim(&self, pins: &Versions) {
-        self.counts.reclaims.fetch_add(1, Ordering::Relaxed);
+        let store = &self.0;
+        store.counts.reclaims.fetch_add(1, Ordering::Relaxed);
         let mut released = Vec::new();
-        self.ids.reclaim(pins, &mut released);
-        self.counts
+        store.ids.reclaim(pins, &mut released);
+        store
+            .counts
             .ids_released
             .fetch_add(released.len() as u64, Ordering::Relaxed);
-        self.pool.reclaim(pins);
-        if !self.trim {
+        store.pool.reclaim(pins);
+        if !store.keep_history {
             return;
         }
 
         let oldest_pin = pins.oldest_pin();
         let epoch = pins.next_epoch();
         let oldest_guard = pins.oldest_guard();
-        let mut trims = locked(&self.trims);
+        let mut trims = locked(&store.trims);
         trims.push((oldest_pin, epoch));
         let due = trims
             .iter()
@@ -295,24 +335,17 @@ impl Store {
             .max();
         trims.retain(|(_, epoch)| *epoch > oldest_guard);
         drop(trims);
-        let (Some(oldest), Some(last)) = (due, self.table.high_water()) else {
+        let (Some(oldest), Some(last)) = (due, store.table.high_water()) else {
             return;
         };
         let mut removed = Vec::new();
         for raw in 1..=last.get() {
-            self.table.trim(page(raw), oldest, &mut removed);
+            store.table.trim(page(raw), oldest, &mut removed);
         }
-        self.counts
+        store
+            .counts
             .links_trimmed
             .fetch_add(removed.len() as u64, Ordering::Relaxed);
-    }
-}
-
-struct Hook(Arc<Store>);
-
-impl Reclaim for Hook {
-    fn reclaim(&self, pins: &Versions) {
-        self.0.reclaim(pins);
     }
 }
 

@@ -16,8 +16,7 @@ use lignin_store::{
     alloc::Pins,
     load::{LoadBuffers, LoadError},
 };
-use lignin_tree::node::Lease;
-use lignindb::snapshot::{Operation, SnapshotError, Versions};
+use lignindb::snapshot::{LatestLease, Operation, SnapshotError, Versions};
 use store::{page, read_page, version, Changes, Pages, Rng, Store};
 
 /// Reads every page of `pages` through `operation` and checks that each is
@@ -57,15 +56,9 @@ fn draw(rng: &mut Rng, store: &Store, versions: &Versions, round: u64) -> Change
 fn a_snapshot_reads_its_version_while_pages_are_superseded_freed_and_reused() {
     const COMMITS: u64 = if cfg!(miri) { 30 } else { 1_500 };
 
-    let store = Store::new(6, true);
+    let store = Store::new(6);
     let versions = store.versions();
-    let first = store.commit(
-        &versions,
-        &Changes {
-            create: 10,
-            ..Changes::default()
-        },
-    );
+    let first = store.commit(&versions, &Changes::create(10));
     store.write_back();
     assert_eq!(first, version(1));
 
@@ -100,10 +93,10 @@ fn a_snapshot_reads_its_version_while_pages_are_superseded_freed_and_reused() {
         for _ in 0..2 {
             let (store, versions, done, reads) = (&store, &versions, &done, &reads);
             scope.spawn(move || {
-                let lease = Lease::take();
+                let mut lease = LatestLease::new();
                 let mut buffers = LoadBuffers::new();
                 while !done.load(Ordering::Relaxed) {
-                    let operation = versions.operation(store.loader(), lease);
+                    let operation = versions.operation(store.loader(), &mut lease);
                     let pages = store.pages_at(operation.at());
                     check_pages(&operation, &pages, &mut buffers);
                     reads.fetch_add(1, Ordering::Relaxed);
@@ -186,16 +179,13 @@ fn a_snapshot_reads_its_version_while_pages_are_superseded_freed_and_reused() {
 
 #[test]
 fn a_snapshot_never_sees_a_later_commit_and_is_read_only() {
-    let store = Store::new(8, true);
+    let store = Store::new(8);
     let versions = store.versions();
-    let create = |count| Changes {
-        create: count,
-        ..Changes::default()
-    };
-    store.commit(&versions, &create(2));
+    store.commit(&versions, &Changes::create(2));
     let snapshot = versions.snapshot(store.loader());
     assert_eq!(snapshot.version(), version(1));
     assert_eq!(snapshot.pin().version(), version(1));
+    assert_eq!(format!("{:?}", snapshot.pin()), "VersionPin(v1)");
     assert_eq!(format!("{snapshot:?}"), "Snapshot(v1)");
 
     // Commit 2 writes page 1 again, frees page 2 and creates page 3.
@@ -231,9 +221,9 @@ fn a_snapshot_never_sees_a_later_commit_and_is_read_only() {
     drop(operation);
 
     // A reader with no pin reads the latest version, under its guard.
-    let lease = Lease::take();
-    let latest = versions.operation(store.loader(), lease);
-    assert_eq!((latest.at(), latest.lease()), (version(2), lease));
+    let mut lease = LatestLease::new();
+    let latest = versions.operation(store.loader(), &mut lease);
+    assert_eq!((latest.at(), latest.lease()), (version(2), lease.lease()));
     assert_eq!(latest.guard().latest(), version(2));
     assert_eq!(
         read_page(&latest.page(page(1), &mut buffers).expect("a page")),
@@ -267,15 +257,9 @@ fn a_snapshot_never_sees_a_later_commit_and_is_read_only() {
 
 #[test]
 fn a_snapshot_reads_nodes_under_one_lease_and_its_guard() {
-    let store = Store::new(8, false);
+    let store = Store::new(8);
     let versions = store.versions();
-    store.commit(
-        &versions,
-        &Changes {
-            create: 2,
-            ..Changes::default()
-        },
-    );
+    store.commit(&versions, &Changes::create(2));
     let snapshot = versions.snapshot(store.loader());
     let lease = snapshot.lease();
     assert_eq!(snapshot.lease(), lease);
@@ -303,12 +287,40 @@ fn a_snapshot_reads_nodes_under_one_lease_and_its_guard() {
         .resolve(handle, &mut buffers)
         .expect("it reads");
     assert_eq!(found.expect("the handle is good").node().key(), b"page");
-    let other = versions.operation(store.loader(), Lease::take());
+    let mut unpinned = LatestLease::default();
+    let other = versions.operation(store.loader(), &mut unpinned);
     assert!(other
         .nodes()
         .resolve(handle, &mut buffers)
         .expect("it reads")
         .is_none());
+
+    // A reader with no pin keeps its lease, and a handle it read, for as
+    // long as the latest version stays. A commit ends both.
+    let kept = other
+        .nodes()
+        .node(CellAddress::new(page(1), SlotId::MIN), &mut buffers)
+        .expect("the node")
+        .handle();
+    drop(other);
+    let before = unpinned.lease();
+    let same = versions.operation(store.loader(), &mut unpinned);
+    assert_eq!((same.lease(), unpinned.lease()), (before, before));
+    let found = same.nodes().resolve(kept, &mut buffers).expect("it reads");
+    assert!(found.is_some());
+    drop(found);
+    drop(same);
+    store.commit(&versions, &Changes::create(1));
+    let moved = versions.operation(store.loader(), &mut unpinned);
+    assert_ne!(moved.lease(), before);
+    assert_eq!(moved.lease(), unpinned.lease());
+    let found = moved.nodes().resolve(kept, &mut buffers).expect("it reads");
+    assert!(found.is_none());
+    drop(found);
+    drop(moved);
+    let before = unpinned.lease();
+    unpinned.renew();
+    assert_ne!(unpinned.lease(), before);
 
     // A snapshot that is first asked through an operation takes its lease
     // then, and keeps it.
