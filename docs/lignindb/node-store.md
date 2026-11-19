@@ -290,7 +290,7 @@ A handle is of one subtree, named by its 32 bytes, inside one transaction.
 | --- | --- | --- |
 | deferred (`LigninNodeStore::deferred`) | the transaction's view, and nothing that is staged | staged in the `LigninBatch` it was opened with; refused with no batch |
 | immediate (`LigninNodeStore::immediate`) | the transaction's view, with its own writes | applied at once; each commit is a write of its own |
-| read-only (`LigninNodeStore::read_only`) | a transaction that has no scope open | refused |
+| read-only (`LigninNodeStore::read_only`) | the transaction's view from outside every scope; a read of a unit that an open scope holds for writing is refused | refused |
 
 The first two go through a `LigninWriter`, which holds the write scope of one writer. A scope is one thread's at a time and is not `Sync`, and a handle has to be `Send`, so the writer keeps the scope behind a lock that each read and each application takes. One thread uses a writer at a time, so the lock is never waited for. `LigninNodeStore`, a `Merk` on it, `LigninChangeSet`, `LigninBatch` and `LigninWriter` are `Send`, asserted at compile time in `merk/src/store/lignin/mod.rs`.
 
