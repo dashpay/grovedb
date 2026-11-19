@@ -67,7 +67,7 @@ fn options() -> RecoveryOptions {
     }
 }
 
-/// A database directory, in memory where there is such a place.
+/// A database directory.
 struct Dir {
     _tmp: TempDir,
     vfs: Arc<dyn Vfs>,
@@ -83,12 +83,7 @@ impl Dir {
     }
 
     fn of(size: PageSize) -> Self {
-        let memory = Path::new("/dev/shm");
-        let tmp = match memory.is_dir() {
-            true => tempfile::tempdir_in(memory),
-            false => tempfile::tempdir(),
-        }
-        .expect("a directory");
+        let tmp = tempfile::tempdir().expect("a directory");
         let vfs: Arc<dyn Vfs> = Arc::new(StdVfs);
         let empty = Manifest::new(size, Default::default(), None, Vec::new()).expect("a manifest");
         ManifestStore::create(vfs.clone(), tmp.path(), empty).expect("a store");
@@ -102,7 +97,8 @@ impl Dir {
 
     /// A copy of the directory, every file synced, in the directory that
     /// the environment variable `LIGNIN_STORE_TEST_DIR` names, if it is
-    /// set: this is how the acceptance measurement is put on a disk.
+    /// set: this is how the acceptance measurement is put on a disk when
+    /// the store is built with `TMPDIR` in memory.
     fn on_disk(&self) -> Option<Self> {
         let named = std::env::var_os("LIGNIN_STORE_TEST_DIR")?;
         let tmp = tempfile::tempdir_in(named).expect("a directory");

@@ -21,13 +21,11 @@ use lignin_testkit::diff::{
 
 const A_MINUTE: Duration = Duration::from_secs(60);
 
-/// A directory for the databases: in memory where the machine has such a
-/// file system, so that the minute is the fuzzer's and not that of a disk
-/// the other tests write to at the same time.
+/// A directory for the databases, in the temporary directory: whoever runs
+/// the tests says with `TMPDIR` where that is, and the minute is measured
+/// on what is there.
 fn scratch() -> tempfile::TempDir {
-    tempfile::tempdir_in("/dev/shm")
-        .or_else(|_| tempfile::tempdir())
-        .expect("a directory")
+    tempfile::tempdir().expect("a directory")
 }
 
 fn settings(scratch: &tempfile::TempDir) -> Settings {

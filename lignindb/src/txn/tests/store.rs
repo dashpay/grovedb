@@ -21,7 +21,7 @@ use lignin_format::{
     wal::GroupWriter,
     CellAddress, CommitVersion, PageId, PageSize,
 };
-use lignin_io::{StdVfs, Vfs};
+use lignin_io::Vfs;
 use lignin_store::{
     alloc::{PageAllocator, PageState, Pins},
     cache::{BufferPool, OwnerId, PoolConfig},
@@ -256,21 +256,20 @@ impl Reclaim for Hook {
     }
 }
 
+#[path = "no_sync.rs"]
+mod no_sync;
+
 impl Db {
     /// An empty store with a pool of `frames` frames, in a directory of its
     /// own. Its first commit makes the flat keyspaces and the directory.
     pub fn new(frames: usize) -> (Arc<Self>, Versions) {
-        // In memory where there is such a place: the syncs of a store's
-        // first files are most of what its tests would wait for.
-        let memory = Path::new("/dev/shm");
-        let dir = match memory.is_dir() {
-            true => tempfile::tempdir_in(memory),
-            false => tempfile::tempdir(),
-        };
-        let dir = dir.expect("a directory");
+        // With syncs that do nothing: on a disk they are most of what the
+        // tests of this store would wait for, and a test of what a crash
+        // leaves names its file system itself (`Db::on`).
+        let dir = tempfile::tempdir().expect("a directory");
         let path = dir.path().to_path_buf();
         Self::on(
-            Arc::new(StdVfs),
+            Arc::new(no_sync::NoSync),
             &path,
             frames,
             LogOptions::default(),

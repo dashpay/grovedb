@@ -160,8 +160,9 @@ fn state(store: &Recovered) -> impl PartialEq + std::fmt::Debug {
 /// leaves it, and each lands on the same state. Returns how long each
 /// recovery took and what it did.
 ///
-/// The store is built in memory, where the syncs of the session that
-/// builds it cost nothing, and recovered where [`Dir::on_disk`] puts it.
+/// The store is built in the temporary directory, so with `TMPDIR` in
+/// memory the syncs of the session that builds it cost next to nothing.
+/// It is recovered there, or in the copy that [`Dir::on_disk`] makes.
 fn recover_after(log_bytes: u64, kept: &[Option<usize>]) -> Vec<(Duration, RecoveryReport)> {
     let dir = Dir::of(PageSize::DEFAULT);
     let mut workload = Workload::begin(&dir);
@@ -230,8 +231,9 @@ fn replaying_twice_gives_the_same_state() {
 /// fewer than the log changes in all: it writes pages to a segment
 /// several times over, and is held to the same 5 s.
 ///
-/// The store is in memory unless `LIGNIN_STORE_TEST_DIR` names a
-/// directory on a disk. There the time is the replay and a dozen syncs
+/// The store is recovered in the temporary directory unless
+/// `LIGNIN_STORE_TEST_DIR` names another. On a disk the time is the replay
+/// and a dozen syncs
 /// (see "What a recovery costs"), so the test measures the disk's syncs as
 /// much as the recovery, and fails on a disk that takes seconds for one.
 #[test]

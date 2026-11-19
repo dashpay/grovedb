@@ -456,6 +456,17 @@ mod tests {
         assert_eq!(command_output("false", &[]), None);
     }
 
+    /// Whether `dir` is on a file system that keeps its files in memory, a
+    /// `tmpfs` or a `ramfs`, as `statfs` names the file system of the
+    /// directory itself.
+    fn in_memory(dir: &Path) -> bool {
+        const TMPFS: i128 = 0x0102_1994;
+        const RAMFS: i128 = 0x8584_58f6;
+        let of_dir = rustix::fs::statfs(dir).expect("the file system of the directory");
+        // The kind is a signed word on some machines.
+        matches!(i128::from(of_dir.f_type) & 0xffff_ffff, TMPFS | RAMFS)
+    }
+
     #[test]
     fn file_cache_drops_are_checked_before_they_are_used() {
         let dir = tempfile::tempdir().unwrap();
@@ -468,7 +479,12 @@ mod tests {
             assert!(drop_files_from_cache(&[dir.path().join("missing")]));
             assert!(process_io("read_bytes").is_some());
         }
-        if cfg!(target_os = "linux") && Path::new("/usr/bin/python3").exists() {
+        // Files that are kept in memory have no storage to be read from
+        // again, so nothing is claimed of the method there.
+        if cfg!(target_os = "linux")
+            && Path::new("/usr/bin/python3").exists()
+            && !in_memory(dir.path())
+        {
             assert_eq!(method, ColdMethod::ReopenAndDropFileCache);
         }
         assert!(!drop_dir_cache(&dir.path().join("missing")));
