@@ -1782,7 +1782,7 @@ fn a_removal_of_a_key_that_is_no_node_is_charged_and_changes_nothing() {
         unstaged_on_rocks(&rocks, &rocks_tx, &the_tree)
     );
     writer.into_scope().merge();
-    assert_ne!(lignin.commit(&transaction), Outcome::Conflict);
+    assert!(matches!(lignin.commit(&transaction), Outcome::Committed(_)));
     assert_eq!(lignin.root_in_directory(at(10)), Some(a.key));
 }
 
@@ -1907,7 +1907,18 @@ fn a_conversion_costs_the_same(
             let expected = apply_as_a_client(&mut on_rocks, &batch, &[], grove_version);
             let found = apply_as_a_client(&mut on_lignin, &batch, &[], grove_version);
             assert_eq!(found, expected, "{}", at("a batch before the conversion"));
+            assert_eq!(
+                found.1,
+                Ended::Done,
+                "{}",
+                at("a batch before the conversion")
+            );
         }
+        assert!(
+            on_rocks.root_key().is_some(),
+            "{}",
+            at("the tree to convert")
+        );
         let (expected_cost, on_rocks, expected) = convert_as_a_client(on_rocks, grove_version);
         let (cost, on_lignin, found) = convert_as_a_client(on_lignin, grove_version);
         assert_eq!(found, expected, "{}", at("the conversion"));
@@ -1954,6 +1965,12 @@ fn a_conversion_costs_the_same(
         let expected = apply_as_a_client(&mut on_rocks, &batch, &[], grove_version);
         let found = apply_as_a_client(&mut on_lignin, &batch, &[], grove_version);
         assert_eq!(found, expected, "{}", at("a batch before the conversion"));
+        assert_eq!(
+            found.1,
+            Ended::Done,
+            "{}",
+            at("a batch before the conversion")
+        );
         root = on_rocks.root_key();
         drop((on_rocks, on_lignin));
         let expected = rocks.commit_multi_context_batch(storage_batch, Some(&rocks_tx));
@@ -2059,8 +2076,8 @@ fn a_conversion_costs_the_same(
 #[test]
 fn a_conversion_to_a_big_sum_tree_costs_what_it_costs_on_rocksdb() {
     // The primary of an indexed tree is a Merk with the nodes of the tree
-    // it mirrors. Its rows are nodes of other Merks, which GroveDB removes
-    // and puts under wider keys.
+    // it mirrors. The rows of its rankings are nodes of other Merks, which
+    // GroveDB removes and puts under wider keys.
     let indexed = [
         (TreeType::ProvableSumIndexedTree, TreeType::ProvableSumTree),
         (
