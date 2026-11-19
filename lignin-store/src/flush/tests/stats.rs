@@ -149,8 +149,16 @@ fn the_log_held_says_what_holds_it() {
         db.wb().checkpoint().expect("an attempt"),
         Checkpointed::PutOff { .. }
     ));
-    assert_eq!(read(&db, &stats).watch.checkpoints_put_off, 1);
-    assert!(text.contains("checkpoints put off: 0, failed: 0"), "{text}");
+    let put_off = read(&db, &stats);
+    assert_eq!(
+        (
+            put_off.watch.checkpoints_put_off,
+            put_off.watch.checkpoints_failed
+        ),
+        (1, 0)
+    );
+    let text = put_off.to_string();
+    assert!(text.contains("checkpoints put off: 1, failed: 0"), "{text}");
 
     txn.roll_back();
     drop(open);
