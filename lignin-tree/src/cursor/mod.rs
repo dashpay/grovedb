@@ -13,7 +13,7 @@
 //! the root down, each with the side on which the way went on. A step goes
 //! down through the links of the node it stands on, which are exact
 //! addresses, or up through that way. It starts again at the root in one
-//! case only: a handle on its way has ended (see below).
+//! case only: a handle the cursor kept has ended (see below).
 //!
 //! # Opening a cursor, and what it is given
 //!
@@ -87,14 +87,25 @@
 //!
 //! # When a handle has ended
 //!
-//! A handle on the cursor's way is a hint (S6), and it is checked whenever
-//! it is followed. At a pinned version one thing ends it: a step of
-//! background work that takes what a dropped subtree left out of the
-//! current version of a page (PV7), when that page is on the cursor's way.
-//! The node the cursor stands on is still in its Merk. The cursor then
-//! finds its key again from the root, which gives it a new way, and goes
-//! on. [`CursorStats::refinds`] counts these. They are the only walks from
-//! the root that a step makes.
+//! A cursor keeps the handle of the node it stands on and the handles of
+//! the nodes above it. Each is a hint (S6), and is checked whenever it is
+//! followed. At a pinned version one thing ends them: a step of background
+//! work that takes what a dropped subtree left out of the current version
+//! of a page (PV7) ends every handle into that page. The nodes of the page
+//! that stay are where they were, and the node the cursor stands on is
+//! still in its Merk.
+//!
+//! A call that follows a handle that has ended finds the cursor's key
+//! again from the root, which gives the cursor new handles, and goes on
+//! from there. That is a step or [`Cursor::node`] when the handle of the
+//! node the cursor stands on has ended, and a step that goes up when the
+//! handle of the node it comes to has. [`CursorStats::refinds`] counts
+//! these calls.
+//!
+//! A walk down from the root keeps the handles it reads on its way, so a
+//! page step can overtake it too, in a seek or in a re-find. The walk is
+//! then made again, once for each such page step during the call. Nothing
+//! else makes a step walk from the root.
 //!
 //! The same rule says what a step does if the key is not found again: it
 //! goes to the first node after the key, or with [`Cursor::prev`] to the
@@ -162,11 +173,13 @@ struct Above {
 /// What a cursor has done since it was opened.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CursorStats {
-    /// Walks down from the root: one for each seek, and one for each time
-    /// the cursor found its key again.
+    /// Walks down from the root: one for each seek, one for each time the
+    /// cursor found its key again, and one more for each walk that was
+    /// made again because a page step overtook it.
     pub descents: u64,
-    /// Times the cursor found its key again from the root, because a
-    /// handle on its way had ended.
+    /// Calls that found the cursor's key again from the root, because a
+    /// handle the cursor kept had ended: that of the node it stands on, or
+    /// of a node above it.
     pub refinds: u64,
     /// Pages the cursor asked its reader for: each is one lookup in the
     /// buffer pool, and a load if the page is not there.
@@ -187,8 +200,8 @@ enum Moved<'r> {
     To(PinnedNode<'r>),
     /// There is no node on that side.
     End,
-    /// A handle on the way had ended. The cursor's key is as it was before
-    /// the move, which is made again from the root.
+    /// A handle the move followed had ended. The cursor's key is as it was
+    /// before the move, which is made again from the root.
     Lost,
 }
 
