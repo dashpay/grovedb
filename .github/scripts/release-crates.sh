@@ -64,12 +64,12 @@ check)
     "") ;;
     --release) release=true ;;
     *)
-        sed -n '2,17p' "${BASH_SOURCE[0]}" >&2
+        awk 'NR > 1 && /^set -euo/ { exit } NR > 1' "${BASH_SOURCE[0]}" >&2
         exit 2
         ;;
     esac
     cd "$repo"
-    cargo metadata --no-deps --format-version 1 |
+    problems=$(cargo metadata --no-deps --format-version 1 |
         jq -r --argjson release "$release" --arg order "$(list)" '
             ($order | split("\n") | map(select(. != ""))) as $order
             | ([.packages[].name]) as $members
@@ -87,12 +87,11 @@ check)
                     | select(($place[.name] // 1e9) > $place[$crate])
                     | "\($crate) depends on \(.name) (\(.kind // "normal")\(if .optional then ", optional" else "" end)), which is not listed before it"),
                 (if $release then
-                    ($order[] | select($by_name[.] != null and $by_name[.].publish != null)
-                        | "\(.) is listed and has `publish = false`")
+                    ($order[] | select($by_name[.] != null)
+                        | select($by_name[.].publish != null and ($by_name[.].publish | index("crates-io") | not))
+                        | "\(.) is listed and cannot be published to crates.io (`publish` in its manifest)")
                  else empty end)
-            )' >"${TMPDIR:-/tmp}/release-crates.$$"
-    problems=$(cat "${TMPDIR:-/tmp}/release-crates.$$")
-    rm -f "${TMPDIR:-/tmp}/release-crates.$$"
+            )')
     if [ -n "$problems" ]; then
         echo "release-crates: the list does not match the workspace:" >&2
         echo "$problems" >&2
@@ -101,7 +100,7 @@ check)
     echo "release-crates: $(list | wc -l) crates, in an order crates.io can resolve"
     ;;
 *)
-    sed -n '2,17p' "${BASH_SOURCE[0]}" >&2
+    awk 'NR > 1 && /^set -euo/ { exit } NR > 1' "${BASH_SOURCE[0]}" >&2
     exit 2
     ;;
 esac

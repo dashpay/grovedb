@@ -6,7 +6,7 @@ GroveDB's CI runs on pull requests into `develop`, `master` and the `vX.Y-dev` b
 
 ## What a pull request runs
 
-`.github/workflows/grovedb.yml`. Every job but Formatting waits for Detect Changes and runs when the pull request changes code: Rust sources, a manifest, the toolchain file, a registry of test engines, the golden corpus, the cost model's directory, the fuzz crate of `lignin-format`, the workflow, its action or its scripts. A change of doc comments alone runs no tests.
+`.github/workflows/grovedb.yml`. The jobs below wait for Detect Changes and run when the pull request changes code (Formatting and Linting on any change of code, the tests unless the change is of doc comments alone): Rust sources, a manifest, the toolchain file, a registry of test engines, the golden corpus, the cost model's directory, the fuzz crate of `lignin-format`, the workflow, its action or its scripts.
 
 | Job | Runner | What it runs | By hand |
 | --- | --- | --- | --- |
@@ -14,7 +14,7 @@ GroveDB's CI runs on pull requests into `develop`, `master` and the `vX.Y-dev` b
 | Test *package* on *engine* | Linux x86_64 | each suite on each engine of its registry but the first ([`test-engines.md`](test-engines.md)) | `.github/scripts/engine-suites.sh run` |
 | LigninDB on Linux aarch64 | `ubuntu-24.04-arm` | the LigninDB crates' tests | `.github/scripts/lignin-ci.sh test` |
 | LigninDB on macOS aarch64 | `macos-15` | the same | the same |
-| LigninDB loom models | Linux x86_64 | every loom model of `lignin-store` and `lignindb`, at the bounds the models set | `lignin-ci.sh loom` |
+| LigninDB loom models | Linux x86_64 | the loom models of the buffer pool (`lignin-store` `cache::tests::races`), the write scopes and the snapshots (`lignindb` `scope::tests::model`, `snapshot::tests::loom`), at the bounds the models set | `lignin-ci.sh loom` |
 | LigninDB Miri and fuzz targets | `ubuntu-latest` | Miri over `lignin-io` and the buffer pool, under both borrow models, and the checksum's software path; a build of the fuzz targets of `lignin-format` | `lignin-ci.sh miri`, `lignin-ci.sh fuzz-targets` |
 | Cost model replay | Linux x86_64 | the golden corpus replayed on the cost model ([`cost-model.md`](cost-model.md)) | `lignin-ci.sh cost-model` |
 | Linting | Linux x86_64 | clippy, every target type-checked, and three steps below | |
@@ -55,7 +55,7 @@ The two aarch64 runners take the paths that x86_64 never does: `crc32c` uses the
 
 The loom models run on every pull request: with their bounds they take minutes. `loom` is a dependency of `lignin-store` and `lignindb` under `cfg(loom)` only (D-059 item 3); `cargo audit` reads the lock file, which lists it, and passes, so the models stay where they are. The models build in `target/loom`, because the cfg changes every crate they compile.
 
-Miri runs on the toolchain `nightly-2026-02-24` (`$LIGNIN_NIGHTLY`), the newest the project's machines have with Miri, so that a run in CI and one on a machine of the project interpret the same way. VER-06's audit (`unsafe-audit.md`) owns what Miri is run over; the job runs the commands of its section 3 that take minutes. The 64 schedules of the races run nightly.
+Miri runs on the toolchain `nightly-2026-02-24` (`$LIGNIN_NIGHTLY`), the newest the project's machines have with Miri, so that a run in CI and one on a machine of the project interpret the same way. The unsafe audit (VER-06) owns what Miri is run over; the job runs its commands that take minutes: the file layer and the pool under both borrow models. The 64 schedules of the races run nightly.
 
 ### Test scratch
 
@@ -84,5 +84,5 @@ The corpus from its pinned engine is what a sync with `develop` runs first (D-10
 ## Adding to it
 
 - A new LigninDB crate (a workspace member whose name begins with `lignin`) is in `lignin-ci.sh test` and `docs` with no change: the script lists the members.
-- A new loom model in `lignin-store` or `lignindb` is in `lignin-ci.sh loom`; a model in another crate needs that crate in the script's list.
+- A new loom model is in `lignin-ci.sh loom` when its module is: the script names the modules of the models, because under `--cfg loom` the other tests of a library compile too and fail outside a model.
 - A new engine of a test suite is one registry line ([`test-engines.md`](test-engines.md)).

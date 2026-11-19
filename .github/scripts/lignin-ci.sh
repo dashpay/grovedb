@@ -11,7 +11,7 @@
 #                                    alone, the engine crates on their own
 #   lignin-ci.sh docs                rustdoc with warnings denied, for the
 #                                    crates whose documentation builds clean
-#   lignin-ci.sh loom                every loom model
+#   lignin-ci.sh loom                the loom models
 #   lignin-ci.sh miri                Miri over the file layer, the buffer pool
 #                                    and the software path of the checksum
 #   lignin-ci.sh fuzz-targets        build the fuzz targets of lignin-format
@@ -50,11 +50,14 @@ crates() {
         jq -r '.packages[].name | select(startswith("lignin"))' | sort
 }
 
-each_crate() {
-    local crate
-    for crate in $(crates); do
-        printf -- '-p\n%s\n' "$crate"
-    done
+# The lines a command prints, as words for a loop. An assignment, so that
+# the command failing stops the script, which a `for` over `$(...)` would
+# not; and printing nothing is a failure too.
+listed() {
+    local lines
+    lines=$("$@")
+    [ -n "$lines" ] || fail "$* lists nothing"
+    echo "$lines"
 }
 
 # The crates of the build of package $2 with the arguments that follow,
@@ -87,7 +90,11 @@ crates)
 
 test)
     shift
-    mapfile -t packages < <(each_crate)
+    names=$(listed crates)
+    packages=()
+    for crate in $names; do
+        packages+=(-p "$crate")
+    done
     say "cargo test ${packages[*]} --all-features $*"
     cargo test "${packages[@]}" --all-features --no-fail-fast "$@"
     ;;
@@ -114,7 +121,8 @@ features)
         refuse '^lignin' "LigninDB is among the crates of Merk on RocksDB"
 
     say "The LigninDB crates that have features, with none and with every one"
-    for crate in $(crates_with_features); do
+    names=$(listed crates_with_features)
+    for crate in $names; do
         cargo check -p "$crate" --no-default-features
         cargo check -p "$crate" --all-features
     done
@@ -125,10 +133,11 @@ docs)
     # this step was added: lignin-testkit (two ambiguous links in `diff`).
     # The older crates are not in it either (grovedb-merk had 33 errors).
     # A crate leaves this list when its documentation builds clean.
-    not_clean=(lignin-testkit)
+    not_clean=" lignin-testkit "
+    names=$(listed crates)
     packages=()
-    for crate in $(crates | grep -vxF -f <(printf '%s\n' "${not_clean[@]}")); do
-        packages+=(-p "$crate")
+    for crate in $names; do
+        [[ $not_clean == *" $crate "* ]] || packages+=(-p "$crate")
     done
     say "RUSTDOCFLAGS=-D warnings cargo doc ${packages[*]} --all-features --no-deps"
     RUSTDOCFLAGS="${RUSTDOCFLAGS:-} -D warnings" \
@@ -136,13 +145,21 @@ docs)
     ;;
 
 loom)
-    # A build of its own: the cfg changes every crate it compiles.
+    # A build of its own: the cfg changes every crate it compiles. Under it
+    # every test of the library compiles, and only the models run in loom,
+    # so each run names the modules of the models.
     export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$repo/target}/loom
     export RUSTFLAGS="${RUSTFLAGS:-} --cfg loom"
-    for crate in lignin-store lignindb; do
-        say "loom: cargo test -p $crate --release --lib"
-        cargo test -p "$crate" --release --lib
-    done
+    while read -r crate models; do
+        say "loom: cargo test -p $crate --release --lib $models"
+        found=$(cargo test -p "$crate" --release --lib "$models" -- --list)
+        grep -q ': test$' <<<"$found" || fail "no test of $crate matches $models"
+        cargo test -p "$crate" --release --lib "$models"
+    done <<'MODELS'
+lignin-store cache::tests::races
+lignindb scope::tests::model
+lignindb snapshot::tests::loom
+MODELS
     ;;
 
 miri)
@@ -174,6 +191,9 @@ fuzz-targets)
     ;;
 
 cost-model)
+    # check.sh keeps the lock file it copied once; dependencies are resolved
+    # afresh for each run, as for every other job.
+    rm -f "${LIGNIN_COST_MODEL_WORK:-$repo/target/cost-model}/workspace/Cargo.lock"
     say "lignin-testkit/cost-model-storage/check.sh"
     lignin-testkit/cost-model-storage/check.sh
     ;;
@@ -192,23 +212,33 @@ corpus-reference)
 
 corpus-at-pin)
     shift
+    # The script gives the pinned build this checkout's lock file, which is
+    # not committed.
+    [ -e Cargo.lock ] || cargo generate-lockfile
     into=$(mktemp -d)
     trap 'rm -rf "$into"' EXIT
     say "record-at-pin.sh into $into $*"
     lignin-testkit/corpus/record-at-pin.sh "$into" "$@"
     say "the recording against lignin-testkit/corpus"
+    recorded=$(cd "$into" && find . -name '*.trace' | sort)
+    [ -n "$recorded" ] || fail "nothing was recorded"
     differ=0
-    while IFS= read -r -d '' trace; do
-        name=${trace#"$into"/}
-        if ! cmp -s "$trace" "lignin-testkit/corpus/$name"; then
+    for name in $recorded; do
+        if ! cmp -s "$into/$name" "lignin-testkit/corpus/$name"; then
             echo "differs from the committed corpus: $name"
             differ=1
         fi
-    done < <(find "$into" -name '*.trace' -print0)
-    recorded=$(find "$into" -name '*.trace' | wc -l)
-    [ "$recorded" -gt 0 ] || fail "nothing was recorded"
+    done
+    # A recording of the whole standard scale has every trace of it.
+    if [ $# -eq 0 ]; then
+        committed=$(cd lignin-testkit/corpus && find . -path ./reference -prune -o -name '*.trace' -print | sort)
+        if [ "$committed" != "$recorded" ]; then
+            diff <(echo "$committed") <(echo "$recorded") || true
+            differ=1
+        fi
+    fi
     [ "$differ" = 0 ] || fail "the corpus does not come out of its pinned engine as committed"
-    echo "$recorded traces recorded, all as committed"
+    echo "$(wc -l <<<"$recorded") traces recorded, all as committed"
     ;;
 
 fuzz-decoders)
@@ -223,7 +253,8 @@ fuzz-decoders)
     (cd "$fuzz" && ./seed.sh "$seeds")
     cd "$fuzz"
     cargo "+$nightly" fuzz build -s none --debug-assertions
-    for target in $(cargo "+$nightly" fuzz list); do
+    targets=$(listed cargo "+$nightly" fuzz list)
+    for target in $targets; do
         say "cargo fuzz run $target for $seconds s"
         mkdir -p "corpus/$target" "$seeds/$target"
         cargo "+$nightly" fuzz run -s none --debug-assertions "$target" \

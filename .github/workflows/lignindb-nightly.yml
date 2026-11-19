@@ -22,9 +22,14 @@ on:
       - '.github/workflows/lignindb-nightly.yml'
       - '.github/scripts/lignin-ci.sh'
 
+# A new commit of a pull request replaces its run; a run by hand does not
+# stop the night's.
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 env:
   BRIEF: ${{ github.event_name == 'pull_request' }}
@@ -118,6 +123,11 @@ jobs:
         with:
           cache-on-failure: "false"
           workspaces: ". -> target/record-at-pin/target"
+      # The script takes a lock in the kept target/ for its run. A runner runs
+      # one job at a time, so a lock found here is one a killed job left.
+      - name: Remove a lock a killed run left
+        if: runner.environment == 'self-hosted'
+        run: rmdir target/record-at-pin/lock 2>/dev/null || true
       - name: Record and compare
         run: |
           if [ "$BRIEF" = true ]; then
@@ -146,6 +156,13 @@ jobs:
         run: cargo "+$LIGNIN_NIGHTLY" install cargo-fuzz --locked
       - name: Fuzz each decoder
         run: .github/scripts/lignin-ci.sh fuzz-decoders "$([ "$BRIEF" = true ] && echo 20 || echo 300)"
+      - name: Keep the inputs that failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: lignin-format/fuzz/artifacts
+          if-no-files-found: ignore
 
   # The buffer pool's races under many of Miri's random schedules, with its
   # data-race detector and weak-memory emulation.
